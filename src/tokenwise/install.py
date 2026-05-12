@@ -51,6 +51,28 @@ def tokenwise_binary() -> str:
     return "tokenwise"
 
 
+def tokenwise_hook_binary() -> str:
+    """Path to the windowless (GUI-subsystem) entry for hooks.
+
+    On Windows, this is `tokenwise-hook.exe` from pyproject `[project.gui-scripts]`.
+    It runs the same code as `tokenwise` but with the Windows GUI subsystem so no
+    console window is allocated when Claude Code spawns it for every hook call.
+    Falls back to `tokenwise` if the windowless variant isn't installed.
+    """
+    binary = shutil.which("tokenwise-hook")
+    if binary:
+        return binary
+    return tokenwise_binary()
+
+
+def tokenwise_worker_binary() -> str:
+    """Windowless entry for the background worker. Falls back to tokenwise."""
+    binary = shutil.which("tokenwise-worker")
+    if binary:
+        return binary
+    return tokenwise_binary()
+
+
 # ---------------------------------------------------------------------------
 # Scheduled Tasks (Windows)
 # ---------------------------------------------------------------------------
@@ -83,7 +105,7 @@ def install_worker_task() -> tuple[bool, str]:
     the standard user-scope at-logon mechanism and never needs elevation.
     """
     import sys
-    binary = tokenwise_binary()
+    binary = tokenwise_worker_binary()
     cmd = f'"{binary}" worker --daemon'
 
     if sys.platform != "win32":
@@ -250,7 +272,7 @@ def patch_settings_json() -> tuple[bool, str]:
     else:
         current = {}
 
-    binary = tokenwise_binary()
+    binary = tokenwise_hook_binary()
     our_hooks = _hooks_block(binary)
 
     # Backup before any modification
@@ -662,7 +684,7 @@ def install_all(install_codex: bool = False) -> dict:
         result["worker"] = f"FAIL — {e}"
 
     if install_codex:
-        binary = tokenwise_binary()
+        binary = tokenwise_hook_binary()
         try:
             result["codex: config.toml"] = f"ok — {patch_codex_config(binary)}"
         except Exception as e:  # noqa: BLE001

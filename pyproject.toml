@@ -28,6 +28,13 @@ dependencies = [
 [project.scripts]
 tokenwise = "tokenwise.cli:app"
 
+# Windowless variant: GUI subsystem entry point used by hooks and the
+# background worker. Same code, but Windows won't allocate a console for
+# the launcher .exe — no flashing terminal windows on every hook fire.
+[project.gui-scripts]
+tokenwise-hook = "tokenwise.cli:app"
+tokenwise-worker = "tokenwise.cli:app"
+
 [project.optional-dependencies]
 dev = [
     "pytest>=8.0.0",
