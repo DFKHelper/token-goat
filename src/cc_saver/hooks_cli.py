@@ -93,6 +93,43 @@ def pre_read(payload: dict[str, Any]) -> dict[str, Any]:
     session_id = payload.get("session_id")
     cwd = payload.get("cwd")
 
+    # --- Phase 12: image-shrink ---
+    from . import image_shrink  # noqa: PLC0415
+
+    if image_shrink.is_image_path(file_path):
+        try:
+            shrunken = image_shrink.shrink(Path(file_path))
+            if shrunken is not None:
+                from . import db  # noqa: PLC0415
+
+                img_stats = image_shrink.stats_for(Path(file_path), shrunken)
+                with contextlib.suppress(Exception):
+                    db.record_stat(
+                        None,
+                        "image_shrink",
+                        bytes_saved=img_stats["bytes_saved"],
+                        detail=f"{file_path} -> {shrunken.name}",
+                    )
+                new_input = dict(tool_input)
+                new_input["file_path"] = str(shrunken)
+                return {
+                    "continue": True,
+                    "hookSpecificOutput": {
+                        "hookEventName": "PreToolUse",
+                        "updatedInput": new_input,
+                        "additionalContext": (
+                            f"Note: image auto-shrunk by cc-saver "
+                            f"({img_stats['src_bytes']:,} → {img_stats['out_bytes']:,} bytes, "
+                            f"~{img_stats['bytes_saved']:,} bytes saved). "
+                            f"Original: {file_path}"
+                        ),
+                    },
+                }
+        except Exception:  # noqa: BLE001
+            _LOG.exception("image-shrink failed during pre-read")
+            # fall through to hint logic
+
+    # --- existing hint logic ---
     hint = build_read_hint(
         session_id=session_id,
         file_path=file_path,

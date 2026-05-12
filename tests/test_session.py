@@ -1,10 +1,7 @@
 """Tests for session-context cache."""
 from __future__ import annotations
 
-import json
 import time
-
-import pytest
 
 from cc_saver import session
 
@@ -123,7 +120,7 @@ class TestPathNormalization:
 
     def test_backslash_to_forward_slash(self, tmp_data_dir):
         """Backslashes converted to forward slashes."""
-        cache1 = session.mark_file_read("s9", "C:\\foo\\bar.py")
+        session.mark_file_read("s9", "C:\\foo\\bar.py")
         cache2 = session.mark_file_read("s9", "C:/foo/bar.py")
         # Both should reference the same entry
         assert len(cache2.files) == 1
@@ -131,7 +128,7 @@ class TestPathNormalization:
 
     def test_drive_letter_lowercase(self, tmp_data_dir):
         """Drive letters normalized to lowercase."""
-        cache1 = session.mark_file_read("s10", "C:/foo.py")
+        session.mark_file_read("s10", "C:/foo.py")
         cache2 = session.mark_file_read("s10", "c:/foo.py")
         assert len(cache2.files) == 1
         assert cache2.files["c:/foo.py"].read_count == 2

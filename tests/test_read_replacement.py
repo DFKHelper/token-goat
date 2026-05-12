@@ -4,14 +4,12 @@ from __future__ import annotations
 import json
 import shutil
 from pathlib import Path
-from unittest.mock import patch
 
 import pytest
 
-from cc_saver import db
+from cc_saver import read_replacement
 from cc_saver.parser import index_project
 from cc_saver.project import Project, canonicalize, project_hash
-from cc_saver import read_replacement
 
 FIXTURE_DIR = Path(__file__).parent / "fixtures"
 TS_SAMPLE = FIXTURE_DIR / "ts_sample"
@@ -215,6 +213,7 @@ def indexed_md_cli(md_project, monkeypatch):
 
 def test_cli_read_greet_emits_body(indexed_ts_cli):
     from typer.testing import CliRunner
+
     from cc_saver.cli import app
 
     runner = CliRunner()
@@ -226,6 +225,7 @@ def test_cli_read_greet_emits_body(indexed_ts_cli):
 
 def test_cli_read_nonexistent_symbol_exit_zero(indexed_ts_cli):
     from typer.testing import CliRunner
+
     from cc_saver.cli import app
 
     runner = CliRunner()
@@ -235,6 +235,7 @@ def test_cli_read_nonexistent_symbol_exit_zero(indexed_ts_cli):
 
 def test_cli_read_missing_separator_exit_2(indexed_ts_cli):
     from typer.testing import CliRunner
+
     from cc_saver.cli import app
 
     runner = CliRunner()
@@ -244,6 +245,7 @@ def test_cli_read_missing_separator_exit_2(indexed_ts_cli):
 
 def test_cli_section_methodology(indexed_md_cli):
     from typer.testing import CliRunner
+
     from cc_saver.cli import app
 
     runner = CliRunner()
@@ -254,6 +256,7 @@ def test_cli_section_methodology(indexed_md_cli):
 
 def test_cli_read_json_output(indexed_ts_cli):
     from typer.testing import CliRunner
+
     from cc_saver.cli import app
 
     runner = CliRunner()
@@ -271,8 +274,9 @@ def test_cli_read_json_output(indexed_ts_cli):
 
 def test_cli_read_with_session_id(indexed_ts_cli, tmp_data_dir):
     from typer.testing import CliRunner
-    from cc_saver.cli import app
+
     from cc_saver import session as session_mod
+    from cc_saver.cli import app
 
     session_id = "test-phase11-session"
     runner = CliRunner()
@@ -287,6 +291,7 @@ def test_cli_read_with_session_id(indexed_ts_cli, tmp_data_dir):
 
 def test_cli_section_json_output(indexed_md_cli):
     from typer.testing import CliRunner
+
     from cc_saver.cli import app
 
     runner = CliRunner()

@@ -707,6 +707,36 @@ def uninstall(purge: bool = typer.Option(False, "--purge")):
     typer.echo("not yet implemented: uninstall")
 
 
+@app.command("image-shrink", hidden=True)
+def cmd_image_shrink(
+    src: Path = typer.Argument(...),  # noqa: B008
+    json_output: bool = typer.Option(False, "--json"),  # noqa: B008
+) -> None:
+    """Manually shrink an image (also used by hooks)."""
+    from . import image_shrink  # noqa: PLC0415
+
+    if not src.exists():
+        typer.echo(f"File not found: {src}", err=True)
+        raise typer.Exit(1)
+    out = image_shrink.shrink(src)
+    if out is None:
+        typer.echo(f"Not shrunk (below threshold or not an image): {src}")
+        raise typer.Exit(0)
+    stats = image_shrink.stats_for(src, out)
+    if json_output:
+        import json as _json  # noqa: PLC0415
+
+        typer.echo(
+            _json.dumps({"shrunken_path": str(out), **stats})
+        )
+    else:
+        typer.echo(
+            f"{src} → {out} "
+            f"({stats['src_bytes']:,} → {stats['out_bytes']:,} bytes, "
+            f"saved {stats['bytes_saved']:,})"
+        )
+
+
 @app.command("worker", hidden=True)
 def cmd_worker(
     daemon: bool = typer.Option(False, "--daemon", help="Run as background daemon (otherwise interactive)"),
