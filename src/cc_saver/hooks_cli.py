@@ -78,8 +78,38 @@ def session_start(payload: dict[str, Any]) -> dict[str, Any]:
 
 @fail_soft
 def pre_read(payload: dict[str, Any]) -> dict[str, Any]:
-    """Phase 10 (session-cache hint), Phase 12 (image shrink). Stub for now."""
-    return {"continue": True}
+    """Phase 10: session-cache hints. Phase 12 (image shrink) wires in here too."""
+    from .hints import build_read_hint  # noqa: PLC0415
+
+    tool_name = payload.get("tool_name")
+    if tool_name != "Read":
+        return {"continue": True}
+
+    tool_input = payload.get("tool_input") or {}
+    file_path = tool_input.get("file_path")
+    if not file_path:
+        return {"continue": True}
+
+    session_id = payload.get("session_id")
+    cwd = payload.get("cwd")
+
+    hint = build_read_hint(
+        session_id=session_id,
+        file_path=file_path,
+        offset=tool_input.get("offset"),
+        limit=tool_input.get("limit"),
+        cwd=cwd,
+    )
+    if not hint:
+        return {"continue": True}
+
+    return {
+        "continue": True,
+        "hookSpecificOutput": {
+            "hookEventName": "PreToolUse",
+            "additionalContext": hint,
+        },
+    }
 
 
 @fail_soft
