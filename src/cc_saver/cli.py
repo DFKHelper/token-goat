@@ -1,6 +1,7 @@
 """Typer CLI with stub subcommands."""
 from __future__ import annotations
 
+import contextlib
 import json
 import sys
 from pathlib import Path
@@ -226,15 +227,111 @@ def deps(file: str):
 
 
 @app.command()
-def read(target: str):
-    """Read file::symbol from index."""
-    typer.echo("not yet implemented: read")
+def read(
+    target: str = typer.Argument(..., help="<file>::<symbol> — e.g., 'parser.py::index_project'"),
+    session_id: str | None = typer.Option(None, "--session-id", "-s"),
+    json_output: bool = typer.Option(False, "--json"),
+    context_lines: int = typer.Option(0, "--context", "-c", help="Extra lines before/after"),
+) -> None:
+    """Read just <symbol> from <file>, not the whole file."""
+    if "::" not in target:
+        typer.echo("Error: target must be '<file>::<symbol>'", err=True)
+        raise typer.Exit(2)
+    file_part, _, symbol_part = target.partition("::")
+
+    from . import read_replacement  # noqa: PLC0415
+    from .project import find_project  # noqa: PLC0415
+
+    proj = find_project(Path.cwd())
+    if proj is None:
+        typer.echo("No project detected.", err=True)
+        raise typer.Exit(0)
+
+    rel = read_replacement.resolve_file_rel(proj, file_part)
+    if rel is None:
+        typer.echo(f"File not found in indexed project: {file_part}", err=True)
+        raise typer.Exit(0)
+
+    result = read_replacement.read_symbol(proj, rel, symbol_part, context_lines=context_lines)
+    if result is None:
+        typer.echo(f"Symbol not found: {symbol_part} (in {rel})", err=True)
+        raise typer.Exit(0)
+
+    if session_id:
+        from . import session  # noqa: PLC0415
+        with contextlib.suppress(Exception):
+            session.mark_file_read(session_id, file_part, symbol=symbol_part)
+
+    from . import db as _db  # noqa: PLC0415
+    bytes_saved = result.get("bytes_saved", 0)
+    tokens_saved = bytes_saved // 4
+    with contextlib.suppress(Exception):
+        _db.record_stat(
+            proj.hash,
+            "read_replacement",
+            tokens_saved=tokens_saved,
+            bytes_saved=bytes_saved,
+            detail=f"{rel}::{symbol_part}",
+        )
+
+    if json_output:
+        typer.echo(json.dumps(result, indent=2))
+        return
+    typer.echo(result["text"])
 
 
 @app.command()
-def section(target: str):
-    """Extract file::heading section."""
-    typer.echo("not yet implemented: section")
+def section(
+    target: str = typer.Argument(..., help="<file>::<heading> — e.g., 'README.md::Install'"),
+    session_id: str | None = typer.Option(None, "--session-id", "-s"),
+    json_output: bool = typer.Option(False, "--json"),
+    context_lines: int = typer.Option(0, "--context", "-c", help="Extra lines before/after"),
+) -> None:
+    """Extract just <heading> section from <file>, not the whole file."""
+    if "::" not in target:
+        typer.echo("Error: target must be '<file>::<heading>'", err=True)
+        raise typer.Exit(2)
+    file_part, _, heading_part = target.partition("::")
+
+    from . import read_replacement  # noqa: PLC0415
+    from .project import find_project  # noqa: PLC0415
+
+    proj = find_project(Path.cwd())
+    if proj is None:
+        typer.echo("No project detected.", err=True)
+        raise typer.Exit(0)
+
+    rel = read_replacement.resolve_file_rel(proj, file_part)
+    if rel is None:
+        typer.echo(f"File not found in indexed project: {file_part}", err=True)
+        raise typer.Exit(0)
+
+    result = read_replacement.read_section(proj, rel, heading_part, context_lines=context_lines)
+    if result is None:
+        typer.echo(f"Section not found: {heading_part} (in {rel})", err=True)
+        raise typer.Exit(0)
+
+    if session_id:
+        from . import session  # noqa: PLC0415
+        with contextlib.suppress(Exception):
+            session.mark_file_read(session_id, file_part, symbol=heading_part)
+
+    from . import db as _db  # noqa: PLC0415
+    bytes_saved = result.get("bytes_saved", 0)
+    tokens_saved = bytes_saved // 4
+    with contextlib.suppress(Exception):
+        _db.record_stat(
+            proj.hash,
+            "section_replacement",
+            tokens_saved=tokens_saved,
+            bytes_saved=bytes_saved,
+            detail=f"{rel}::{heading_part}",
+        )
+
+    if json_output:
+        typer.echo(json.dumps(result, indent=2))
+        return
+    typer.echo(result["text"])
 
 
 @app.command("session-touched")
