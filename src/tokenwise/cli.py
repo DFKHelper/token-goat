@@ -802,11 +802,13 @@ def doctor():  # noqa: C901
 
 
 @app.command("install")
-def cmd_install() -> None:
+def cmd_install(
+    codex: bool = typer.Option(False, "--codex", help="Also install Codex CLI integration"),  # noqa: B008
+) -> None:
     """One-time setup: scheduled tasks, settings.json, CLAUDE.md, skill, watchdog."""
     from . import install as inst  # noqa: PLC0415
 
-    result = inst.install_all()
+    result = inst.install_all(install_codex=codex)
     typer.echo("tokenwise install:")
     for step, detail in result.items():
         typer.echo(f"  {step}: {detail}")
@@ -819,12 +821,13 @@ def cmd_install() -> None:
 
 @app.command("uninstall")
 def cmd_uninstall(
-    purge: bool = typer.Option(False, "--purge", help=r"Also delete %LOCALAPPDATA%\tokenwise"),
+    purge: bool = typer.Option(False, "--purge", help=r"Also delete %LOCALAPPDATA%\tokenwise"),  # noqa: B008
+    codex: bool = typer.Option(False, "--codex", help="Also remove Codex CLI integration"),  # noqa: B008
 ) -> None:
     """Cleanly reverse install."""
     from . import install as inst  # noqa: PLC0415
 
-    result = inst.uninstall_all(purge=purge)
+    result = inst.uninstall_all(purge=purge, codex=codex)
     typer.echo("tokenwise uninstall:")
     for step, detail in result.items():
         typer.echo(f"  {step}: {detail}")
@@ -871,55 +874,80 @@ def cmd_worker(
 
 
 @hook_app.command()
-def session_start(input_file: Path | None = typer.Option(None, "--input-file")):  # noqa: B008
+def session_start(
+    input_file: Path | None = typer.Option(None, "--input-file"),  # noqa: B008
+    harness: str = typer.Option("claude", "--harness", help="Hook harness: claude or codex"),  # noqa: B008
+) -> None:
     """Hook: session-start event."""
     try:
-        payload = hooks_cli.read_payload(input_file)
+        raw = hooks_cli.read_payload(input_file)
+        payload = hooks_cli.normalize_payload(raw, harness)
         result = hooks_cli.dispatch("session-start", payload)
+        result = hooks_cli.denormalize_response(result, harness)
     except Exception:  # noqa: BLE001
         result = {"continue": True}
     hooks_cli.emit(result)
 
 
 @hook_app.command()
-def pre_read(input_file: Path | None = typer.Option(None, "--input-file")):  # noqa: B008
+def pre_read(
+    input_file: Path | None = typer.Option(None, "--input-file"),  # noqa: B008
+    harness: str = typer.Option("claude", "--harness", help="Hook harness: claude or codex"),  # noqa: B008
+) -> None:
     """Hook: pre-read event."""
     try:
-        payload = hooks_cli.read_payload(input_file)
+        raw = hooks_cli.read_payload(input_file)
+        payload = hooks_cli.normalize_payload(raw, harness)
         result = hooks_cli.dispatch("pre-read", payload)
+        result = hooks_cli.denormalize_response(result, harness)
     except Exception:  # noqa: BLE001
         result = {"continue": True}
     hooks_cli.emit(result)
 
 
 @hook_app.command()
-def pre_fetch(input_file: Path | None = typer.Option(None, "--input-file")):  # noqa: B008
+def pre_fetch(
+    input_file: Path | None = typer.Option(None, "--input-file"),  # noqa: B008
+    harness: str = typer.Option("claude", "--harness", help="Hook harness: claude or codex"),  # noqa: B008
+) -> None:
     """Hook: pre-fetch event."""
     try:
-        payload = hooks_cli.read_payload(input_file)
+        raw = hooks_cli.read_payload(input_file)
+        payload = hooks_cli.normalize_payload(raw, harness)
         result = hooks_cli.dispatch("pre-fetch", payload)
+        result = hooks_cli.denormalize_response(result, harness)
     except Exception:  # noqa: BLE001
         result = {"continue": True}
     hooks_cli.emit(result)
 
 
 @hook_app.command()
-def post_edit(input_file: Path | None = typer.Option(None, "--input-file")):  # noqa: B008
+def post_edit(
+    input_file: Path | None = typer.Option(None, "--input-file"),  # noqa: B008
+    harness: str = typer.Option("claude", "--harness", help="Hook harness: claude or codex"),  # noqa: B008
+) -> None:
     """Hook: post-edit event."""
     try:
-        payload = hooks_cli.read_payload(input_file)
+        raw = hooks_cli.read_payload(input_file)
+        payload = hooks_cli.normalize_payload(raw, harness)
         result = hooks_cli.dispatch("post-edit", payload)
+        result = hooks_cli.denormalize_response(result, harness)
     except Exception:  # noqa: BLE001
         result = {"continue": True}
     hooks_cli.emit(result)
 
 
 @hook_app.command()
-def post_read(input_file: Path | None = typer.Option(None, "--input-file")):  # noqa: B008
+def post_read(
+    input_file: Path | None = typer.Option(None, "--input-file"),  # noqa: B008
+    harness: str = typer.Option("claude", "--harness", help="Hook harness: claude or codex"),  # noqa: B008
+) -> None:
     """Hook: post-read event."""
     try:
-        payload = hooks_cli.read_payload(input_file)
+        raw = hooks_cli.read_payload(input_file)
+        payload = hooks_cli.normalize_payload(raw, harness)
         result = hooks_cli.dispatch("post-read", payload)
+        result = hooks_cli.denormalize_response(result, harness)
     except Exception:  # noqa: BLE001
         result = {"continue": True}
     hooks_cli.emit(result)

@@ -27,6 +27,47 @@ def _setup_logging() -> None:
         _LOG.setLevel(logging.INFO)
 
 
+def normalize_payload(payload: dict[str, Any], harness: str = "claude") -> dict[str, Any]:
+    """Translate harness-specific payloads to tokenwise's internal format.
+
+    Codex sends snake_case keys for some fields and uses 'turn_id'; Claude uses
+    camelCase. tokenwise handlers work with the Claude shape internally.
+    Most fields (session_id, cwd, tool_name, tool_input) are already identical
+    between the two harnesses — nothing needs renaming in the input direction.
+    """
+    if harness == "codex":
+        # turn_id is Codex-only — keep it in payload; no other remapping needed.
+        return payload
+    return payload
+
+
+def denormalize_response(response: dict[str, Any], harness: str = "claude") -> dict[str, Any]:
+    """Translate tokenwise's internal response format to harness-specific wire format.
+
+    Claude: hookSpecificOutput.{additionalContext, updatedInput, permissionDecision, ...}
+    Codex:  hookSpecificOutput.{additional_context, updated_input, permission_decision, ...}
+    """
+    if harness != "codex":
+        return response
+    hso = response.get("hookSpecificOutput")
+    if not isinstance(hso, dict):
+        return response
+    translated = dict(hso)
+    rename_map = {
+        "additionalContext": "additional_context",
+        "updatedInput": "updated_input",
+        "permissionDecision": "permission_decision",
+        "permissionDecisionReason": "permission_decision_reason",
+        "hookEventName": "hook_event_name",
+    }
+    for old, new in rename_map.items():
+        if old in translated:
+            translated[new] = translated.pop(old)
+    new_response = dict(response)
+    new_response["hookSpecificOutput"] = translated
+    return new_response
+
+
 def read_payload(input_file: Path | None = None) -> dict[str, Any]:
     """Read JSON payload from stdin (or a file, for testing)."""
     if input_file is not None:
@@ -105,10 +146,35 @@ def session_start(payload: dict[str, Any]) -> dict[str, Any]:
 
 @fail_soft
 def pre_read(payload: dict[str, Any]) -> dict[str, Any]:
-    """Phase 10: session-cache hints. Phase 12 (image shrink) wires in here too."""
+    """Phase 10: session-cache hints. Phase 12 (image shrink) wires in here too.
+
+    Also handles Codex's Bash tool when the command is a read-equivalent
+    (cat/head/tail/bat/…). In that case a synthetic Read payload is built and
+    the function calls itself recursively so all image-shrink and hint logic
+    fires identically regardless of harness.
+    """
     from .hints import build_read_hint  # noqa: PLC0415
 
     tool_name = payload.get("tool_name")
+
+    # Codex path: Bash command that is really a Read
+    if tool_name == "Bash":
+        from . import bash_parser  # noqa: PLC0415
+
+        cmd = (payload.get("tool_input") or {}).get("command", "")
+        intent = bash_parser.parse(cmd)
+        if intent.kind == "read" and intent.target_path:
+            synthetic = dict(payload)
+            synthetic["tool_name"] = "Read"
+            synthetic["tool_input"] = {
+                "file_path": intent.target_path,
+                "offset": intent.offset,
+                "limit": intent.limit,
+            }
+            return pre_read(synthetic)
+        # Grep/glob via Bash: could mark session but can't rewrite the command easily. Pass through.
+        return {"continue": True}
+
     if tool_name != "Read":
         return {"continue": True}
 

@@ -11,6 +11,10 @@ from pathlib import Path
 
 from . import paths
 
+# Markers for idempotent Codex AGENTS.md patching
+CODEX_AGENTS_BEGIN = "<!-- tokenwise-codex-begin -->"
+CODEX_AGENTS_END = "<!-- tokenwise-codex-end -->"
+
 _LOG = logging.getLogger("tokenwise.install")
 
 # Markers for idempotent CLAUDE.md patching
@@ -431,11 +435,204 @@ def remove_skill() -> str:
 
 
 # ---------------------------------------------------------------------------
+# Codex integration
+# ---------------------------------------------------------------------------
+
+
+def codex_dir() -> Path:
+    """Return ~/.codex/"""
+    return Path.home() / ".codex"
+
+
+def codex_config_path() -> Path:
+    return codex_dir() / "config.toml"
+
+
+def codex_agents_path() -> Path:
+    return codex_dir() / "AGENTS.md"
+
+
+def _codex_hooks_block(binary: str) -> dict:
+    """The hooks structure for Codex's config.toml."""
+    return {
+        "SessionStart": [
+            {
+                "matcher": "*",
+                "hooks": [
+                    {
+                        "type": "command",
+                        "command": f'"{binary}" hook session-start --harness codex',
+                        "timeout": 30000,
+                    }
+                ],
+            }
+        ],
+        "PreToolUse": [
+            {
+                "matcher": "view_image|Bash",
+                "hooks": [
+                    {
+                        "type": "command",
+                        "command": f'"{binary}" hook pre-read --harness codex',
+                        "timeout": 5000,
+                    }
+                ],
+            },
+            {
+                "matcher": "mcp__claude_ai_Google_Drive__.*|web_search",
+                "hooks": [
+                    {
+                        "type": "command",
+                        "command": f'"{binary}" hook pre-fetch --harness codex',
+                        "timeout": 2000,
+                    }
+                ],
+            },
+        ],
+        "PostToolUse": [
+            {
+                "matcher": "apply_patch",
+                "hooks": [
+                    {
+                        "type": "command",
+                        "command": f'"{binary}" hook post-edit --harness codex',
+                        "timeout": 2000,
+                    }
+                ],
+            },
+            {
+                "matcher": "Bash",
+                "hooks": [
+                    {
+                        "type": "command",
+                        "command": f'"{binary}" hook post-read --harness codex',
+                        "timeout": 2000,
+                    }
+                ],
+            },
+        ],
+    }
+
+
+def _strip_codex_tokenwise_entries(entries: list[dict]) -> list[dict]:
+    """Remove hook entries whose command string contains 'tokenwise'."""
+    kept = []
+    for e in entries:
+        hooks_list = e.get("hooks", [])
+        non_tw = [h for h in hooks_list if "tokenwise" not in h.get("command", "")]
+        if non_tw:
+            kept.append({"matcher": e.get("matcher", "*"), "hooks": non_tw})
+    return kept
+
+
+def patch_codex_config(binary: str) -> str:
+    """Merge tokenwise hooks into ~/.codex/config.toml idempotently."""
+    import tomllib  # noqa: PLC0415
+
+    import tomli_w  # noqa: PLC0415
+
+    cfg_path = codex_config_path()
+    cfg_path.parent.mkdir(parents=True, exist_ok=True)
+
+    existing = tomllib.loads(cfg_path.read_text(encoding="utf-8")) if cfg_path.exists() else {}
+
+    our_hooks = _codex_hooks_block(binary)
+    existing_hooks = existing.get("hooks", {})
+    for event, entries in our_hooks.items():
+        existing_entries = existing_hooks.get(event, [])
+        kept = _strip_codex_tokenwise_entries(existing_entries)
+        existing_hooks[event] = kept + entries
+    existing["hooks"] = existing_hooks
+
+    cfg_path.write_text(tomli_w.dumps(existing), encoding="utf-8")
+    return str(cfg_path)
+
+
+def unpatch_codex_config() -> str:
+    """Remove tokenwise entries from ~/.codex/config.toml."""
+    import tomllib  # noqa: PLC0415
+
+    import tomli_w  # noqa: PLC0415
+
+    cfg_path = codex_config_path()
+    if not cfg_path.exists():
+        return "codex config not found"
+
+    existing = tomllib.loads(cfg_path.read_text(encoding="utf-8"))
+    hooks = existing.get("hooks", {})
+    for event in list(hooks.keys()):
+        cleaned = _strip_codex_tokenwise_entries(hooks[event])
+        if cleaned:
+            hooks[event] = cleaned
+        else:
+            del hooks[event]
+    existing["hooks"] = hooks
+
+    cfg_path.write_text(tomli_w.dumps(existing), encoding="utf-8")
+    return str(cfg_path)
+
+
+CODEX_AGENTS_MD_CONTENT = """\
+## tokenwise — token-efficient code navigation (Codex)
+
+tokenwise hooks are active for this CLI. Before reaching for `grep`/`cat` via Bash, use:
+
+- **Symbol lookup**: `tokenwise symbol <name>` — one line per hit (10-50x fewer tokens than `rg`/`grep`). Add `--all-projects` for cross-repo.
+- **Read one symbol/section**: `tokenwise read "<file>::<symbol>"` or `tokenwise section "<file>::<heading>"` — typically ~85% fewer tokens than reading the whole file.
+- **Concept search**: `tokenwise semantic "<query>"` — vector search when you know the concept but not the name.
+- **Repo overview**: `tokenwise map --budget 4000` — PageRank-ranked, token-budgeted.
+
+Image shrinking and read-deduplication run automatically via hooks. No action required.
+"""
+
+
+def patch_codex_agents_md() -> str:
+    """Append/replace the delimited tokenwise block in ~/.codex/AGENTS.md."""
+    md = codex_agents_path()
+    md.parent.mkdir(parents=True, exist_ok=True)
+
+    block = f"{CODEX_AGENTS_BEGIN}\n{CODEX_AGENTS_MD_CONTENT}\n{CODEX_AGENTS_END}"
+
+    if md.exists():
+        content = md.read_text(encoding="utf-8")
+        if CODEX_AGENTS_BEGIN in content and CODEX_AGENTS_END in content:
+            pattern = re.compile(
+                re.escape(CODEX_AGENTS_BEGIN) + r".*?" + re.escape(CODEX_AGENTS_END),
+                re.DOTALL,
+            )
+            content = pattern.sub(block, content)
+        else:
+            if not content.endswith("\n"):
+                content += "\n"
+            content += "\n" + block + "\n"
+    else:
+        content = block + "\n"
+
+    md.write_text(content, encoding="utf-8")
+    return str(md)
+
+
+def unpatch_codex_agents_md() -> str:
+    """Remove the tokenwise block from ~/.codex/AGENTS.md."""
+    md = codex_agents_path()
+    if not md.exists():
+        return "codex AGENTS.md not found"
+
+    content = md.read_text(encoding="utf-8")
+    pattern = re.compile(
+        r"\n*" + re.escape(CODEX_AGENTS_BEGIN) + r".*?" + re.escape(CODEX_AGENTS_END) + r"\n*",
+        re.DOTALL,
+    )
+    md.write_text(pattern.sub("\n", content), encoding="utf-8")
+    return str(md)
+
+
+# ---------------------------------------------------------------------------
 # Top-level install / uninstall
 # ---------------------------------------------------------------------------
 
 
-def install_all() -> dict:
+def install_all(install_codex: bool = False) -> dict:
     """Run the full install. Returns a dict of step -> result string."""
     paths.ensure_dirs()
     result: dict[str, str] = {}
@@ -464,10 +661,21 @@ def install_all() -> dict:
     except Exception as e:  # noqa: BLE001
         result["worker"] = f"FAIL — {e}"
 
+    if install_codex:
+        binary = tokenwise_binary()
+        try:
+            result["codex: config.toml"] = f"ok — {patch_codex_config(binary)}"
+        except Exception as e:  # noqa: BLE001
+            result["codex: config.toml"] = f"FAIL — {e}"
+        try:
+            result["codex: AGENTS.md"] = f"ok — {patch_codex_agents_md()}"
+        except Exception as e:  # noqa: BLE001
+            result["codex: AGENTS.md"] = f"FAIL — {e}"
+
     return result
 
 
-def uninstall_all(purge: bool = False) -> dict:
+def uninstall_all(purge: bool = False, codex: bool = False) -> dict:
     """Reverse install. With purge=True also deletes the data directory."""
     result: dict[str, str] = {}
 
@@ -502,5 +710,9 @@ def uninstall_all(purge: bool = False) -> dict:
             result["data_dir"] = f"purged — {target}"
         else:
             result["data_dir"] = "already absent"
+
+    if codex:
+        result["codex: config.toml"] = unpatch_codex_config()
+        result["codex: AGENTS.md"] = unpatch_codex_agents_md()
 
     return result
