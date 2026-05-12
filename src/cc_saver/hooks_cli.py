@@ -151,8 +151,43 @@ def pre_read(payload: dict[str, Any]) -> dict[str, Any]:
 
 @fail_soft
 def pre_fetch(payload: dict[str, Any]) -> dict[str, Any]:
-    """Phase 13 (Drive intercept), Phase 14 (WebFetch intercept). Stub for now."""
-    return {"continue": True}
+    """Phase 13: deny Drive download tools, redirect to cc-saver gdrive-fetch shim."""
+    tool_name = payload.get("tool_name", "")
+
+    # Match Drive download tools
+    _DRIVE_TOOLS = (
+        "mcp__claude_ai_Google_Drive__download_file_content",
+        "mcp__claude_ai_Google_Drive__read_file_content",
+    )
+    if tool_name not in _DRIVE_TOOLS:
+        return {"continue": True}
+
+    tool_input = payload.get("tool_input") or {}
+    file_id = tool_input.get("file_id") or tool_input.get("fileId") or tool_input.get("id")
+    if not file_id:
+        return {"continue": True}
+
+    # Only intercept if cc-saver has working Drive credentials; otherwise pass through
+    from . import gdrive  # noqa: PLC0415
+
+    try:
+        gdrive.get_credentials()
+    except gdrive.GDriveCredsUnavailable:
+        return {"continue": True}
+
+    return {
+        "continue": True,
+        "hookSpecificOutput": {
+            "hookEventName": "PreToolUse",
+            "permissionDecision": "deny",
+            "permissionDecisionReason": "cc-saver redirects Drive image downloads to its shrink+cache shim",
+            "additionalContext": (
+                f"cc-saver intercepted a Drive download to save tokens. "
+                f"Run this Bash instead: `cc-saver gdrive-fetch {file_id}` — "
+                f"it returns a local cached path you can then Read (images are auto-shrunk)."
+            ),
+        },
+    }
 
 
 @fail_soft

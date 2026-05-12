@@ -64,6 +64,16 @@ def config_path() -> Path:
     return data_dir() / "config.toml"
 
 
+def gdrive_creds_path() -> Path:
+    """Path to gdrive_creds.json (stored OAuth tokens)."""
+    return data_dir() / "gdrive_creds.json"
+
+
+def gdrive_cache_dir() -> Path:
+    """Path to gdrive_cache/ directory."""
+    return data_dir() / "gdrive_cache"
+
+
 def ensure_dirs() -> None:
     """Create all needed subdirectories idempotently."""
     dirs = [

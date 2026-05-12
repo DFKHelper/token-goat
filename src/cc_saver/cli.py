@@ -379,10 +379,74 @@ def session_mark(
     typer.echo("ok")
 
 
-@app.command()
-def gdrive_fetch(file_id: str):
-    """Fetch image from Google Drive by ID."""
-    typer.echo("not yet implemented: gdrive-fetch")
+@app.command("gdrive-fetch")
+def cmd_gdrive_fetch(
+    file_id: str = typer.Argument(...),
+    json_output: bool = typer.Option(False, "--json"),
+) -> None:
+    """Fetch a Google Drive file (image gets auto-shrunk). Returns the local path."""
+    from . import gdrive  # noqa: PLC0415
+
+    try:
+        path = gdrive.fetch_file(file_id)
+    except gdrive.GDriveCredsUnavailable as e:
+        typer.echo(str(e), err=True)
+        raise typer.Exit(0) from None  # fail-soft: don't break Claude's session
+    except Exception as e:  # noqa: BLE001
+        typer.echo(f"Drive fetch failed: {e}", err=True)
+        raise typer.Exit(0) from None
+    if json_output:
+        typer.echo(json.dumps({"path": str(path), "size": path.stat().st_size}))
+    else:
+        typer.echo(str(path))
+
+
+@app.command("gdrive-auth")
+def cmd_gdrive_auth(
+    client_secrets: Path | None = typer.Option(None, "--client-secrets", help="Path to OAuth client_secrets.json"),  # noqa: B008
+) -> None:
+    """One-time Google Drive auth setup. Tries ADC first, then OAuth flow."""
+    from . import gdrive  # noqa: PLC0415
+
+    # Check ADC
+    creds = gdrive._try_adc()
+    if creds is not None:
+        typer.echo("Google Application Default Credentials detected. cc-saver gdrive-fetch will work.")
+        raise typer.Exit(0)
+
+    # Check existing stored creds
+    creds = gdrive._try_stored_oauth()
+    if creds is not None:
+        typer.echo("Stored OAuth credentials valid. cc-saver gdrive-fetch will work.")
+        raise typer.Exit(0)
+
+    # Need to set up OAuth
+    if client_secrets is None:
+        typer.echo("No credentials available. To set up:")
+        typer.echo("")
+        typer.echo("Option A (recommended if you have gcloud installed):")
+        typer.echo("  gcloud auth application-default login --scopes https://www.googleapis.com/auth/drive.readonly")
+        typer.echo("")
+        typer.echo("Option B: OAuth client secrets")
+        typer.echo("  1. Visit https://console.cloud.google.com/apis/credentials")
+        typer.echo("  2. Create OAuth 2.0 Client ID (type: Desktop)")
+        typer.echo("  3. Download the JSON, then run:")
+        typer.echo("       cc-saver gdrive-auth --client-secrets path/to/client_secret.json")
+        typer.echo("")
+        typer.echo("Option C: skip — cc-saver gdrive-fetch will fall back to a clear error,")
+        typer.echo("and Claude's existing Drive MCP will be used directly (no token-savings).")
+        raise typer.Exit(0)
+
+    if not client_secrets.exists():
+        typer.echo(f"File not found: {client_secrets}", err=True)
+        raise typer.Exit(1)
+
+    try:
+        out_path = gdrive.run_oauth_oob_flow(client_secrets)
+        typer.echo(f"Credentials saved to {out_path}. cc-saver gdrive-fetch will work.")
+    except Exception as e:  # noqa: BLE001
+        typer.echo(f"OAuth flow failed: {e}", err=True)
+        raise typer.Exit(1) from None
 
 
 @app.command()
