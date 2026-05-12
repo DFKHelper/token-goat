@@ -517,9 +517,33 @@ def index(
 
 
 @app.command()
-def stats():
-    """Show token savings and cache stats."""
-    typer.echo("not yet implemented: stats")
+def stats(
+    window: int = typer.Option(30, "--window", "-w", help="Days to include (0 = all time)"),
+    json_output: bool = typer.Option(False, "--json"),
+):
+    """Show cumulative token savings."""
+    from . import stats as stats_mod  # noqa: PLC0415
+
+    summary = stats_mod.summarize(window_days=window)
+    if json_output:
+        import json as jsonmod  # noqa: PLC0415
+
+        typer.echo(
+            jsonmod.dumps(
+                {
+                    "total_events": summary.total_events,
+                    "total_bytes_saved": summary.total_bytes_saved,
+                    "total_tokens_saved": summary.total_tokens_saved,
+                    "by_kind": summary.by_kind,
+                    "by_day": summary.by_day,
+                    "by_project": summary.by_project,
+                    "window_days": summary.window_days,
+                },
+                indent=2,
+            )
+        )
+        return
+    typer.echo(stats_mod.render_text(summary))
 
 
 @app.command()
