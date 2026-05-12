@@ -772,16 +772,33 @@ def doctor():  # noqa: C901
     typer.echo("")
 
 
-@app.command()
-def install():
-    """Install hook entrypoints and Windows Scheduled Task."""
-    typer.echo("not yet implemented: install")
+@app.command("install")
+def cmd_install() -> None:
+    """One-time setup: scheduled tasks, settings.json, CLAUDE.md, skill, watchdog."""
+    from . import install as inst  # noqa: PLC0415
+
+    result = inst.install_all()
+    typer.echo("cc-saver install:")
+    for step, detail in result.items():
+        typer.echo(f"  {step}: {detail}")
+    typer.echo("")
+    typer.echo("All set. cc-saver will be invisible from here on.")
+    typer.echo("Run `cc-saver doctor` anytime to check status.")
+    typer.echo("Defender exclusion (optional, for max perf):")
+    typer.echo(r'  Add-MpPreference -ExclusionPath "$env:LOCALAPPDATA\Zelys\cc-saver"')
 
 
-@app.command()
-def uninstall(purge: bool = typer.Option(False, "--purge")):
-    """Uninstall hook entrypoints and Scheduled Task."""
-    typer.echo("not yet implemented: uninstall")
+@app.command("uninstall")
+def cmd_uninstall(
+    purge: bool = typer.Option(False, "--purge", help=r"Also delete %LOCALAPPDATA%\cc-saver"),
+) -> None:
+    """Cleanly reverse install."""
+    from . import install as inst  # noqa: PLC0415
+
+    result = inst.uninstall_all(purge=purge)
+    typer.echo("cc-saver uninstall:")
+    for step, detail in result.items():
+        typer.echo(f"  {step}: {detail}")
 
 
 @app.command("image-shrink", hidden=True)

@@ -62,17 +62,35 @@ def fail_soft(handler: Callable[[dict[str, Any]], dict[str, Any]]) -> Callable[[
 
 @fail_soft
 def session_start(payload: dict[str, Any]) -> dict[str, Any]:
-    """Phase 7: reset session cache. Phase 9/15 will spawn the worker watchdog here."""
-    from . import session  # noqa: PLC0415
-
+    """Reset session cache and ensure worker daemon is running."""
     session_id = payload.get("session_id")
-    _LOG.info("session-start: session_id=%s cwd=%s", session_id, payload.get("cwd"))
+    cwd = payload.get("cwd")
+    _LOG.info("session-start: session_id=%s cwd=%s", session_id, cwd)
+
+    # Reset session cache (covers /clear, /compact, fresh-start)
     if session_id:
-        session.reset_session(session_id)
-        _LOG.info("session-start: reset cache for session_id=%s", session_id)
+        try:
+            from . import session  # noqa: PLC0415
+
+            session.reset_session(session_id)
+        except Exception:  # noqa: BLE001
+            _LOG.exception("failed to reset session cache")
+
+    # Log project detection
     proj = _detect(payload)
     if proj:
         _LOG.info("session-start: detected project %s (%s)", proj.root, proj.hash[:8])
+
+    # Watchdog: ensure worker daemon is alive
+    try:
+        from . import worker  # noqa: PLC0415
+
+        pid = worker.ensure_running()
+        if pid:
+            _LOG.info("session-start: worker pid=%s", pid)
+    except Exception:  # noqa: BLE001
+        _LOG.exception("watchdog failed")
+
     return {"continue": True}
 
 
