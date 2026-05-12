@@ -1,1 +1,257 @@
-"""Typescript language support. Phase 3-5 implements."""
+"""TypeScript/TSX/JS/JSX symbol extractor using tree_sitter_language_pack."""
+from __future__ import annotations
+
+import re
+
+import tree_sitter_language_pack as tlp
+
+from ..parser import ImpExp, Ref, Symbol
+
+# ---------------------------------------------------------------------------
+# Noise filter for call-site refs
+# ---------------------------------------------------------------------------
+
+_CALL_NOISE = frozenset([
+    # JS builtins and globals
+    "console", "Object", "Array", "Math", "JSON", "Promise", "Error",
+    "Map", "Set", "WeakMap", "WeakSet", "Symbol", "Proxy", "Reflect",
+    "String", "Number", "Boolean", "BigInt", "RegExp", "Date",
+    "parseInt", "parseFloat", "isNaN", "isFinite", "encodeURIComponent",
+    "decodeURIComponent", "encodeURI", "decodeURI", "setTimeout",
+    "setInterval", "clearTimeout", "clearInterval", "fetch", "require",
+    # Keywords that can be followed by (
+    "if", "for", "while", "switch", "catch", "return", "throw",
+    "typeof", "instanceof", "void", "delete", "yield", "await",
+    "new", "super",
+    # Single-char names
+])
+
+# Regex: identifier NOT preceded by . or -> that is immediately followed by (
+_CALL_RE = re.compile(r"(?<![.\w])([A-Za-z_$][A-Za-z0-9_$]*)\s*\(")
+
+# Regex to extract module path from import/export source line
+_FROM_RE = re.compile(r"""from\s+['"]([^'"]+)['"]""")
+_IMPORT_RE = re.compile(r"""^import\s+.*?['"]([^'"]+)['"]""")
+
+
+def _extract_module(source_line: str) -> str:
+    """Extract the module string from an import/export source text."""
+    m = _FROM_RE.search(source_line)
+    if m:
+        return m.group(1)
+    m = _IMPORT_RE.match(source_line.strip())
+    if m:
+        return m.group(1)
+    return source_line.strip()
+
+
+def _kind_str(structure_kind: object) -> str:
+    """Convert StructureKind to our kind string."""
+    s = str(structure_kind)
+    # StructureKind values are like 'Function', 'Class', 'Method', etc.
+    mapping = {
+        "Function": "function",
+        "Class": "class",
+        "Method": "method",
+        "Interface": "interface",
+        "Struct": "type",
+        "Enum": "enum",
+        "Module": "const",
+        "Namespace": "const",
+        "Trait": "interface",
+        "Impl": "class",
+        "Other": "var",
+    }
+    # Handle format like 'StructureKind.Function' or plain 'Function'
+    key = s.split(".")[-1]
+    return mapping.get(key, "var")
+
+
+def _symbol_kind_str(sym_kind: object) -> str:
+    """Convert SymbolKind to our kind string."""
+    s = str(sym_kind).split(".")[-1]
+    mapping = {
+        "Function": "function",
+        "Class": "class",
+        "Interface": "interface",
+        "Type": "type",
+        "Enum": "enum",
+        "Constant": "const",
+        "Variable": "var",
+        "Module": "const",
+        "Other": "var",
+    }
+    return mapping.get(s, "var")
+
+
+def _build_signature(source: bytes, item_span: object, body_span: object | None) -> str | None:
+    """Extract header text (before body brace/colon) from raw source bytes."""
+    if body_span is None:
+        return None
+    try:
+        header = source[item_span.start_byte : body_span.start_byte]
+        text = header.decode("utf-8", errors="replace").strip()
+        # Truncate to 200 chars
+        if len(text) > 200:
+            text = text[:200]
+        return text or None
+    except (IndexError, AttributeError):
+        return None
+
+
+def _extract_refs(source: bytes) -> list[Ref]:
+    """Extract call-site refs using regex on the source text."""
+    refs: list[Ref] = []
+    seen: set[tuple[str, int]] = set()
+    text = source.decode("utf-8", errors="replace")
+    for lineno, line in enumerate(text.splitlines(), 1):
+        for m in _CALL_RE.finditer(line):
+            name = m.group(1)
+            if name in _CALL_NOISE or len(name) <= 1:
+                continue
+            key = (name, lineno)
+            if key in seen:
+                continue
+            seen.add(key)
+            refs.append(Ref(name=name, line=lineno, col=m.start(1), context=line.strip()[:120]))
+    return refs
+
+
+def extract(source: bytes, rel_path: str) -> tuple[list[Symbol], list[Ref], list[ImpExp]]:
+    """Extract symbols, refs, and imports/exports from a TS/TSX/JS/JSX file."""
+    # Detect language for tlp
+    lower = rel_path.lower()
+    if lower.endswith((".tsx", ".jsx")):
+        lang = "tsx"
+    elif lower.endswith(".ts"):
+        lang = "typescript"
+    else:
+        lang = "javascript"
+
+    text = source.decode("utf-8", errors="replace")
+    cfg = tlp.ProcessConfig(
+        language=lang,
+        structure=True,
+        imports=True,
+        exports=True,
+        symbols=True,
+    )
+    try:
+        result = tlp.process(text, cfg)
+    except Exception:
+        return [], [], []
+
+    symbols: list[Symbol] = []
+    imp_exp: list[ImpExp] = []
+
+    # --- symbols from structure (gives us methods via children) ---
+    seen_names: set[tuple[str, int]] = set()
+
+    def _add_symbol(item: object, parent_name: str | None = None) -> None:
+        name: str = item.name  # type: ignore[attr-defined]
+        span = item.span
+        body_span = item.body_span if hasattr(item, "body_span") else None
+        line = span.start_line + 1  # convert to 1-indexed
+        end_line = span.end_line + 1
+        kind = _kind_str(item.kind)
+        sig = _build_signature(source, span, body_span)
+
+        key = (name, line)
+        if key not in seen_names:
+            seen_names.add(key)
+            symbols.append(
+                Symbol(
+                    name=name,
+                    kind=kind,
+                    line=line,
+                    end_line=end_line,
+                    signature=sig,
+                    parent_name=parent_name,
+                )
+            )
+
+        # Recurse into children (methods, nested functions)
+        for child in item.children:  # type: ignore[attr-defined]
+            _add_symbol(child, parent_name=name)
+
+    for item in result.structure:
+        _add_symbol(item)
+
+    # --- additional symbols from SymbolInfo (catches type aliases, enums) ---
+    for sym in result.symbols:
+        name: str = sym.name  # type: ignore[attr-defined]
+        span = sym.span
+        line = span.start_line + 1
+        kind = _symbol_kind_str(sym.kind)
+        key = (name, line)
+        if key not in seen_names:
+            seen_names.add(key)
+            symbols.append(
+                Symbol(
+                    name=name,
+                    kind=kind,
+                    line=line,
+                    end_line=span.end_line + 1,
+                    signature=None,
+                    parent_name=None,
+                )
+            )
+
+    # --- const/var from exports not captured above ---
+    # exports like 'export const router = express()' aren't in structure;
+    # also extract clean names for all export ImpExp entries
+    _EXPORT_NAME_RES = [
+        re.compile(r"export\s+(?:async\s+)?function\s*\*?\s*([A-Za-z_$][A-Za-z0-9_$]*)"),
+        re.compile(r"export\s+(?:abstract\s+)?class\s+([A-Za-z_$][A-Za-z0-9_$]*)"),
+        re.compile(r"export\s+interface\s+([A-Za-z_$][A-Za-z0-9_$]*)"),
+        re.compile(r"export\s+(?:type\s+)?enum\s+([A-Za-z_$][A-Za-z0-9_$]*)"),
+        re.compile(r"export\s+type\s+([A-Za-z_$][A-Za-z0-9_$]*)"),
+        re.compile(r"export\s+(?:const|let|var)\s+([A-Za-z_$][A-Za-z0-9_$]*)"),
+    ]
+
+    for exp in result.exports:
+        name_raw: str = exp.name  # type: ignore[attr-defined]
+        span = exp.span
+        line = span.start_line + 1
+
+        # Attempt to extract a clean identifier from the statement text
+        export_name: str | None = None
+        for pattern in _EXPORT_NAME_RES:
+            m = pattern.match(name_raw)
+            if m:
+                export_name = m.group(1)
+                break
+
+        if export_name is None:
+            # Fallback: use first token after 'export'
+            tokens = name_raw.strip().split()
+            export_name = tokens[1] if len(tokens) > 1 else name_raw[:80]
+
+        # For const/let/var exports not already in structure, add a symbol
+        const_m = re.match(
+            r"export\s+(?:const|let|var)\s+([A-Za-z_$][A-Za-z0-9_$]*)", name_raw
+        )
+        if const_m:
+            cname = const_m.group(1)
+            key = (cname, line)
+            if key not in seen_names:
+                seen_names.add(key)
+                symbols.append(
+                    Symbol(name=cname, kind="const", line=line, end_line=line, signature=None)
+                )
+
+        # Record as ImpExp
+        kind_str = str(exp.kind).split(".")[-1].lower()
+        ie_kind = "reexport" if kind_str == "reexport" else "export"
+        imp_exp.append(ImpExp(kind=ie_kind, target=export_name, line=line))
+
+    # --- imports ---
+    for imp in result.imports:
+        module = _extract_module(imp.source)
+        line = imp.span.start_line + 1
+        imp_exp.append(ImpExp(kind="import", target=module, line=line))
+
+    # --- refs via regex ---
+    refs = _extract_refs(source)
+
+    return symbols, refs, imp_exp

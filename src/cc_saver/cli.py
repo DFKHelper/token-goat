@@ -1,4 +1,8 @@
 """Typer CLI with stub subcommands."""
+from __future__ import annotations
+
+import json
+import sys
 from pathlib import Path
 
 import typer
@@ -14,15 +18,129 @@ app.add_typer(config_app)
 
 
 @app.command()
-def symbol(name: str, all_projects: bool = typer.Option(False, "--all-projects")):
+def symbol(
+    name: str,
+    all_projects: bool = typer.Option(False, "--all-projects"),
+    as_json: bool = typer.Option(False, "--json"),
+    limit: int = typer.Option(50, "--limit"),
+) -> None:
     """Find symbol definition across codebase."""
-    typer.echo("not yet implemented: symbol")
+    from . import db as _db  # noqa: PLC0415
+    from .project import find_project  # noqa: PLC0415
+
+    use_tty_color = sys.stdout.isatty() and not as_json
+
+    def _fmt_plain(rows: list[dict]) -> None:
+        for row in rows:
+            project_prefix = f"[{row.get('project', '')}] " if "project" in row else ""
+            sig_part = f"  {row['signature']}" if row.get("signature") else ""
+            kind_name = f"{row['kind']} {row['name']}"
+            if use_tty_color:
+                kind_name = f"\033[90m{kind_name}\033[0m"
+                sig_part = f"\033[2m{sig_part}\033[0m"
+            typer.echo(f"{project_prefix}{row['file']}:{row['line']}: {kind_name}{sig_part}")
+
+    if all_projects:
+        with _db.open_global() as gconn:
+            rows_raw = gconn.execute(
+                "SELECT sg.project_hash, p.root, sg.name, sg.kind, sg.file_rel, sg.line, sg.signature "
+                "FROM symbols_global sg "
+                "JOIN projects p ON p.hash = sg.project_hash "
+                "WHERE sg.name = ? LIMIT ?",
+                (name, limit),
+            ).fetchall()
+        results = [
+            {
+                "project": r["root"],
+                "file": r["file_rel"],
+                "line": r["line"],
+                "kind": r["kind"],
+                "name": r["name"],
+                "signature": r["signature"],
+            }
+            for r in rows_raw
+        ]
+        if as_json:
+            typer.echo(json.dumps(results))
+        elif results:
+            _fmt_plain(results)
+        else:
+            typer.echo(f"No matches for {name!r}")
+        return
+
+    proj = find_project(Path.cwd())
+    if proj is None:
+        typer.echo("no project detected, run from a project directory")
+        return
+
+    with _db.open_project(proj.hash) as conn:
+        rows_raw = conn.execute(
+            "SELECT name, kind, file_rel, line, signature FROM symbols WHERE name = ? LIMIT ?",
+            (name, limit),
+        ).fetchall()
+
+    results = [
+        {
+            "file": r["file_rel"],
+            "line": r["line"],
+            "kind": r["kind"],
+            "name": r["name"],
+            "signature": r["signature"],
+        }
+        for r in rows_raw
+    ]
+
+    if as_json:
+        typer.echo(json.dumps(results))
+    elif results:
+        _fmt_plain(results)
+    else:
+        typer.echo(f"No matches for {name!r}")
 
 
 @app.command()
-def ref(name: str):
+def ref(
+    name: str,
+    as_json: bool = typer.Option(False, "--json"),
+    limit: int = typer.Option(100, "--limit"),
+) -> None:
     """Find all references to a symbol."""
-    typer.echo("not yet implemented: ref")
+    from . import db as _db  # noqa: PLC0415
+    from .project import find_project  # noqa: PLC0415
+
+    proj = find_project(Path.cwd())
+    if proj is None:
+        typer.echo("no project detected, run from a project directory")
+        return
+
+    with _db.open_project(proj.hash) as conn:
+        rows_raw = conn.execute(
+            "SELECT file_rel, line, col, context FROM refs WHERE symbol_name = ? LIMIT ?",
+            (name, limit),
+        ).fetchall()
+
+    results = [
+        {
+            "name": name,
+            "file": r["file_rel"],
+            "line": r["line"],
+            "col": r["col"],
+            "context": r["context"],
+        }
+        for r in rows_raw
+    ]
+
+    if as_json:
+        typer.echo(json.dumps(results))
+    elif results:
+        use_tty_color = sys.stdout.isatty()
+        for row in results:
+            ctx = f"  {row['context']}" if row.get("context") else ""
+            if use_tty_color:
+                ctx = f"\033[2m{ctx}\033[0m"
+            typer.echo(f"{row['file']}:{row['line']}: ref {name!r}{ctx}")
+    else:
+        typer.echo(f"No references found for {name!r}")
 
 
 @app.command()
@@ -86,9 +204,36 @@ def caption_instead(path: str):
 
 
 @app.command()
-def index(full: bool = typer.Option(False, "--full"), embeddings: bool = typer.Option(False, "--embeddings")):
+def index(
+    full: bool = typer.Option(False, "--full"),
+    embeddings: bool = typer.Option(False, "--embeddings"),
+) -> None:
     """Rebuild project/global indices."""
-    typer.echo("not yet implemented: index")
+    from .parser import index_project  # noqa: PLC0415
+    from .project import find_project  # noqa: PLC0415
+
+    proj = find_project(Path.cwd())
+    if proj is None:
+        typer.echo("no project detected, run from a project directory")
+        return
+
+    if embeddings:
+        typer.echo("embeddings not yet implemented (phase 8)")
+
+    def _progress(done: int, total: int) -> None:
+        typer.echo(f"  {done}/{total} files processed...", err=True)
+
+    summary = index_project(proj, full=full, progress=_progress)
+
+    langs = ", ".join(summary["languages"]) if summary["languages"] else "none"
+    typer.echo(
+        f"Indexed {summary['total_files']} files "
+        f"({summary['indexed']} indexed, "
+        f"{summary['skipped_unchanged']} skipped unchanged, "
+        f"{summary['errors']} errors) "
+        f"— {langs} "
+        f"— in {summary['duration_sec']}s"
+    )
 
 
 @app.command()
