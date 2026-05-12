@@ -6,6 +6,13 @@ import json
 import sys
 from pathlib import Path
 
+# Force UTF-8 on stdout/stderr (Windows defaults to cp1252 which can't encode
+# the punctuation we use in maps, hints, and stats: → ›  etc.).
+with contextlib.suppress(AttributeError, OSError):
+    sys.stdout.reconfigure(encoding="utf-8")
+with contextlib.suppress(AttributeError, OSError):
+    sys.stderr.reconfigure(encoding="utf-8")
+
 import typer
 
 from . import hooks_cli

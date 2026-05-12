@@ -186,24 +186,32 @@ def write_file_index(conn, fi: FileIndex) -> None:
         (fi.rel_path, fi.language, fi.size, fi.mtime, fi.content_sha256, now),
     )
     for sym in fi.symbols:
+        if not sym.name or not sym.kind:
+            continue  # defensive: skip malformed rows from extractor edge cases
         conn.execute(
             "INSERT INTO symbols (name, kind, file_rel, line, col, end_line, signature, parent_id) "
             "VALUES (?, ?, ?, ?, ?, ?, ?, NULL)",
             (sym.name, sym.kind, fi.rel_path, sym.line, sym.col, sym.end_line, sym.signature),
         )
     for ref in fi.refs:
+        if not ref.name:
+            continue
         conn.execute(
             "INSERT INTO refs (symbol_name, file_rel, line, col, context) "
             "VALUES (?, ?, ?, ?, ?)",
             (ref.name, fi.rel_path, ref.line, ref.col, ref.context),
         )
     for ie in fi.imports_exports:
+        if not ie.kind or ie.target is None:
+            continue
         conn.execute(
             "INSERT INTO imports_exports (file_rel, kind, target, line) "
             "VALUES (?, ?, ?, ?)",
             (fi.rel_path, ie.kind, ie.target, ie.line),
         )
     for sec in fi.sections:
+        if not sec.heading:
+            continue
         conn.execute(
             "INSERT INTO sections (file_rel, heading, level, line, end_line) "
             "VALUES (?, ?, ?, ?, ?)",
