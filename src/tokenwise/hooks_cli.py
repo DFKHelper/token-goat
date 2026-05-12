@@ -38,9 +38,18 @@ def read_payload(input_file: Path | None = None) -> dict[str, Any]:
 
 
 def emit(result: dict[str, Any]) -> None:
-    """Write the hook result to stdout as JSON."""
-    sys.stdout.write(json.dumps(result, ensure_ascii=False))
-    sys.stdout.flush()
+    """Write the hook result to stdout as JSON.
+
+    Forces UTF-8 on stdout (Windows defaults to cp1252 which can't encode → and
+    other punctuation we use in hints).
+    """
+    payload = json.dumps(result, ensure_ascii=False)
+    try:
+        sys.stdout.buffer.write(payload.encode("utf-8"))
+        sys.stdout.buffer.flush()
+    except AttributeError:
+        sys.stdout.write(payload)
+        sys.stdout.flush()
 
 
 def fail_soft(handler: Callable[[dict[str, Any]], dict[str, Any]]) -> Callable[[dict[str, Any]], dict[str, Any]]:

@@ -682,10 +682,10 @@ def doctor():  # noqa: C901
         import tree_sitter  # noqa: PLC0415
         ts_ver = getattr(tree_sitter, "__version__", "installed")
         try:
-            importlib.import_module("tree_sitter_languages")
+            importlib.import_module("tree_sitter_language_pack")
             ok("tree-sitter", f"{ts_ver} — language-pack importable")
         except ImportError:
-            flag("tree-sitter", f"{ts_ver} — tree_sitter_languages missing", warn=True)
+            flag("tree-sitter", f"{ts_ver} — tree_sitter_language_pack missing", warn=True)
     except ImportError as e:
         flag("tree-sitter", f"not importable — {e}")
 
