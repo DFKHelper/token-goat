@@ -17,10 +17,12 @@ def test_cli_help_runs():
 
 
 def test_doctor_command_runs():
-    """Test that cc-saver doctor doesn't crash."""
+    """Test that cc-saver doctor runs successfully."""
     result = runner.invoke(cli.app, ["doctor"])
     assert result.exit_code == 0
-    assert "not yet implemented" in result.stdout
+    assert "cc-saver doctor" in result.stdout
+    assert "Python:" in result.stdout
+    assert "SQLite" in result.stdout
 
 
 def test_hook_help_runs():
