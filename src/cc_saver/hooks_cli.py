@@ -62,8 +62,14 @@ def fail_soft(handler: Callable[[dict[str, Any]], dict[str, Any]]) -> Callable[[
 
 @fail_soft
 def session_start(payload: dict[str, Any]) -> dict[str, Any]:
-    """Phase 9/15 will spawn the worker watchdog here."""
-    _LOG.info("session-start: session_id=%s cwd=%s", payload.get("session_id"), payload.get("cwd"))
+    """Phase 7: reset session cache. Phase 9/15 will spawn the worker watchdog here."""
+    from . import session  # noqa: PLC0415
+
+    session_id = payload.get("session_id")
+    _LOG.info("session-start: session_id=%s cwd=%s", session_id, payload.get("cwd"))
+    if session_id:
+        session.reset_session(session_id)
+        _LOG.info("session-start: reset cache for session_id=%s", session_id)
     proj = _detect(payload)
     if proj:
         _LOG.info("session-start: detected project %s (%s)", proj.root, proj.hash[:8])
@@ -90,7 +96,31 @@ def post_edit(payload: dict[str, Any]) -> dict[str, Any]:
 
 @fail_soft
 def post_read(payload: dict[str, Any]) -> dict[str, Any]:
-    """Phase 7 (session-mark). Stub for now."""
+    """Phase 7: record Read/Grep calls to session cache."""
+    from . import session  # noqa: PLC0415
+
+    session_id = payload.get("session_id")
+    if not session_id:
+        return {"continue": True}
+
+    tool_name = payload.get("tool_name")
+    tool_input = payload.get("tool_input") or {}
+
+    if tool_name == "Read":
+        file_path = tool_input.get("file_path")
+        if file_path:
+            offset = tool_input.get("offset")
+            limit = tool_input.get("limit")
+            session.mark_file_read(session_id, file_path, offset, limit)
+    elif tool_name == "Grep":
+        pattern = tool_input.get("pattern")
+        path = tool_input.get("path")
+        result_count = payload.get("result_count")
+        if pattern:
+            session.mark_grep(session_id, pattern, path, result_count)
+    elif tool_name == "Glob":
+        pass  # just log it
+
     return {"continue": True}
 
 

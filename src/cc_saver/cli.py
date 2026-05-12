@@ -193,16 +193,49 @@ def section(target: str):
     typer.echo("not yet implemented: section")
 
 
-@app.command()
-def session_touched():
-    """List touched files in current Claude session."""
-    typer.echo("not yet implemented: session-touched")
+@app.command("session-touched")
+def session_touched(
+    session_id: str = typer.Option(..., "--session-id", "-s", help="Claude session_id"),
+    json_output: bool = typer.Option(False, "--json"),
+):
+    """List files already read in the given Claude session."""
+    from . import session as session_mod  # noqa: PLC0415
+
+    entries = session_mod.list_touched(session_id)
+    if json_output:
+        out = [
+            {
+                "path": e.rel_or_abs,
+                "read_count": e.read_count,
+                "line_ranges": e.line_ranges,
+                "symbols_read": e.symbols_read,
+                "last_read_ts": e.last_read_ts,
+            }
+            for e in entries
+        ]
+        typer.echo(json.dumps(out, indent=2))
+        return
+    if not entries:
+        typer.echo("(no files touched in this session)")
+        return
+    for e in entries:
+        ranges = ", ".join(f"{s}-{en}" for s, en in e.line_ranges) or "(symbols only)"
+        symbols = f" symbols={','.join(e.symbols_read)}" if e.symbols_read else ""
+        typer.echo(f"{e.rel_or_abs}  reads={e.read_count}  lines={ranges}{symbols}")
 
 
-@app.command()
-def session_mark(file: str):
-    """Mark file as touched in current session."""
-    typer.echo("not yet implemented: session-mark")
+@app.command("session-mark")
+def session_mark(
+    file_path: str = typer.Argument(...),
+    session_id: str = typer.Option(..., "--session-id", "-s"),
+    offset: int = typer.Option(0, "--offset"),
+    limit: int = typer.Option(0, "--limit", help="0 means unlimited"),
+):
+    """Manually mark a file/range as read for the given session. (Mostly used by hooks.)"""
+    from . import session as session_mod  # noqa: PLC0415
+
+    session_mod.mark_file_read(session_id, file_path, offset or None, limit or None)
+    typer.echo("ok")
 
 
 @app.command()
