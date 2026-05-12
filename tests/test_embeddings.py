@@ -1,0 +1,262 @@
+"""Tests for the embeddings module (Phase 8)."""
+from __future__ import annotations
+
+import os
+import shutil
+import sqlite3
+import struct
+from pathlib import Path
+from unittest.mock import MagicMock, patch
+
+import pytest
+
+from cc_saver import db
+from cc_saver import embeddings as emb
+from cc_saver.embeddings import (
+    EmbeddingsUnavailable,
+    _check_vec_available,
+    _pack_vec,
+    extract_chunks_for_file,
+    is_available,
+)
+from cc_saver.parser import index_project
+from cc_saver.project import Project, canonicalize, project_hash
+
+FIXTURE_DIR = Path(__file__).parent / "fixtures"
+TS_SAMPLE = FIXTURE_DIR / "ts_sample"
+
+
+def _make_project(root: Path) -> Project:
+    canon = canonicalize(root)
+    return Project(root=canon, hash=project_hash(canon), marker=".git")
+
+
+@pytest.fixture
+def ts_project(tmp_path, tmp_data_dir):
+    """Copy ts_sample fixture to tmp dir, index it, and return a Project."""
+    proj_root = tmp_path / "ts_sample"
+    shutil.copytree(TS_SAMPLE, proj_root)
+    proj = _make_project(proj_root)
+    index_project(proj, full=True)
+    return proj
+
+
+# ---------------------------------------------------------------------------
+# Unit tests (no model download needed)
+# ---------------------------------------------------------------------------
+
+def test_is_available_true():
+    """fastembed is listed in deps and installed — must be importable."""
+    assert is_available() is True
+
+
+def test_pack_vec_byte_length():
+    """_pack_vec([1.0, 2.0, 3.0]) should produce exactly 12 bytes (3 floats * 4 bytes)."""
+    result = _pack_vec([1.0, 2.0, 3.0])
+    assert len(result) == 12
+
+
+def test_pack_vec_round_trips():
+    """Bytes packed by _pack_vec unpack back to the original floats."""
+    original = [0.1, 0.5, -0.3, 1.0]
+    packed = _pack_vec(original)
+    unpacked = list(struct.unpack(f"{len(original)}f", packed))
+    assert len(unpacked) == len(original)
+    for a, b in zip(unpacked, original, strict=True):
+        assert abs(a - b) < 1e-5
+
+
+def test_check_vec_available_true(tmp_data_dir):
+    """_check_vec_available returns True when sqlite-vec is loaded."""
+    with db.open_project("test_hash_checkavail") as conn:
+        assert _check_vec_available(conn) is True
+
+
+def test_check_vec_available_false():
+    """_check_vec_available returns False when vec_version() isn't callable."""
+    conn = MagicMock()
+    conn.execute.side_effect = sqlite3.OperationalError("no such function: vec_version")
+    assert _check_vec_available(conn) is False
+
+
+def test_extract_chunks_for_file_finds_symbols(ts_project):
+    """extract_chunks_for_file returns chunks for greet, UserService from ts_sample."""
+    with db.open_project(ts_project.hash) as conn:
+        chunks = extract_chunks_for_file(ts_project, conn, "index.ts")
+
+    assert len(chunks) >= 1
+    kinds = {c.kind for c in chunks}
+    # Should find at least function/class chunks
+    assert kinds & {"function", "class", "method", "interface", "type"}
+
+
+def test_extract_chunks_greet_content(ts_project):
+    """The greet function chunk text contains 'hello'."""
+    with db.open_project(ts_project.hash) as conn:
+        chunks = extract_chunks_for_file(ts_project, conn, "index.ts")
+
+    greet_chunks = [c for c in chunks if "greet" in c.text and c.kind == "function"]
+    assert greet_chunks, "Expected at least one chunk containing greet function"
+    assert "hello" in greet_chunks[0].text.lower()
+
+
+def test_extract_chunks_text_length_bounds(ts_project):
+    """All returned chunks respect MIN_CHUNK_CHARS and MAX_CHUNK_CHARS."""
+    with db.open_project(ts_project.hash) as conn:
+        chunks = extract_chunks_for_file(ts_project, conn, "index.ts")
+
+    for chunk in chunks:
+        assert emb.MIN_CHUNK_CHARS <= len(chunk.text) <= emb.MAX_CHUNK_CHARS, (
+            f"Chunk out of bounds: {len(chunk.text)} chars, kind={chunk.kind}"
+        )
+
+
+def test_extract_chunks_empty_file(ts_project):
+    """extract_chunks_for_file returns [] for an empty file."""
+    empty_file = ts_project.root / "empty.ts"
+    empty_file.write_text("", encoding="utf-8")
+    # File not in DB index — should not crash, just return []
+    with db.open_project(ts_project.hash) as conn:
+        chunks = extract_chunks_for_file(ts_project, conn, "empty.ts")
+    assert chunks == []
+
+
+def test_extract_chunks_missing_file(ts_project):
+    """extract_chunks_for_file returns [] when the file doesn't exist."""
+    with db.open_project(ts_project.hash) as conn:
+        chunks = extract_chunks_for_file(ts_project, conn, "nonexistent.ts")
+    assert chunks == []
+
+
+def test_embeddings_unavailable_when_fastembed_missing(ts_project):
+    """index_project_embeddings raises EmbeddingsUnavailable if fastembed missing."""
+    with (
+        patch.object(emb, "is_available", return_value=False),
+        pytest.raises(EmbeddingsUnavailable, match="fastembed not installed"),
+    ):
+        emb.index_project_embeddings(ts_project)
+
+
+def test_semantic_search_unavailable_when_fastembed_missing(ts_project):
+    """semantic_search raises EmbeddingsUnavailable if fastembed is not installed."""
+    with (
+        patch.object(emb, "is_available", return_value=False),
+        pytest.raises(EmbeddingsUnavailable, match="fastembed not installed"),
+    ):
+        emb.semantic_search(ts_project, "hello world")
+
+
+def test_semantic_search_unavailable_when_vec_missing(ts_project):
+    """semantic_search raises EmbeddingsUnavailable when sqlite-vec not loaded."""
+    fake_vec = [0.1] * emb.DEFAULT_DIM
+    with (
+        patch.object(emb, "embed_texts", return_value=[fake_vec]),
+        patch.object(emb, "_check_vec_available", return_value=False),
+        pytest.raises(EmbeddingsUnavailable, match="sqlite-vec not loaded"),
+    ):
+        emb.semantic_search(ts_project, "hello world")
+
+
+# ---------------------------------------------------------------------------
+# CLI integration tests (no model download)
+# ---------------------------------------------------------------------------
+
+def test_cli_semantic_no_project(tmp_data_dir):
+    """cc-saver semantic when no project detected exits 0 with helpful message."""
+    from typer.testing import CliRunner  # noqa: PLC0415
+
+    from cc_saver import cli  # noqa: PLC0415
+
+    runner = CliRunner()
+    with patch("cc_saver.project.find_project", return_value=None):
+        result = runner.invoke(cli.app, ["semantic", "foo bar"], catch_exceptions=False)
+    assert result.exit_code == 0
+    assert "No project detected" in result.output
+
+
+def test_cli_semantic_no_embeddings(ts_project, monkeypatch):
+    """cc-saver semantic in a project with no embeddings exits 0 with helpful message."""
+    from typer.testing import CliRunner  # noqa: PLC0415
+
+    from cc_saver import cli  # noqa: PLC0415
+
+    monkeypatch.chdir(ts_project.root)
+    # Force embed_texts to raise so we exercise the EmbeddingsUnavailable path
+    with patch.object(emb, "embed_texts", side_effect=EmbeddingsUnavailable("test")):
+        runner = CliRunner()
+        result = runner.invoke(cli.app, ["semantic", "test query"], catch_exceptions=False)
+    assert result.exit_code == 0
+    assert "Embeddings unavailable" in result.output
+
+
+def test_cli_index_embeddings_no_project(tmp_data_dir):
+    """cc-saver index --embeddings when no project detected exits 0 with message."""
+    from typer.testing import CliRunner  # noqa: PLC0415
+
+    from cc_saver import cli  # noqa: PLC0415
+
+    runner = CliRunner()
+    with patch("cc_saver.project.find_project", return_value=None):
+        result = runner.invoke(cli.app, ["index", "--embeddings"], catch_exceptions=False)
+    assert result.exit_code == 0
+    assert "no project detected" in result.output.lower()
+
+
+# ---------------------------------------------------------------------------
+# Slow test: full embedding cycle (requires model download ~130 MB)
+# ---------------------------------------------------------------------------
+
+@pytest.mark.skipif(
+    os.environ.get("CC_SAVER_RUN_SLOW_TESTS") != "1",
+    reason="requires fastembed model download (~130 MB); set CC_SAVER_RUN_SLOW_TESTS=1",
+)
+def test_full_embedding_cycle(ts_project):
+    """Full embed + search cycle on ts_sample. Verifies greet is the top hit."""
+    # Run embedding indexing
+    result = emb.index_project_embeddings(ts_project)
+    assert result["chunks_embedded"] > 0
+    assert result["model"] == emb.DEFAULT_MODEL
+    assert result["files_visited"] >= 1
+
+    # Run again to verify idempotency (all chunks skipped on second pass)
+    result2 = emb.index_project_embeddings(ts_project)
+    assert result2["chunks_skipped_unchanged"] == result["chunks_embedded"]
+    assert result2["chunks_embedded"] == 0
+
+    # Semantic search — "hello name greeting" should surface the greet function
+    hits = emb.semantic_search(ts_project, "hello name greeting", k=5)
+    assert len(hits) >= 1
+
+    top = hits[0]
+    # The top hit should mention greet or hello
+    assert "greet" in top.text.lower() or "hello" in top.text.lower(), (
+        f"Unexpected top hit: {top.file_rel}:{top.start_line} kind={top.kind}\n{top.text[:200]}"
+    )
+    # Distance must be in valid range (0 = identical, 2 = opposite)
+    assert 0.0 <= top.distance <= 2.0
+
+
+@pytest.mark.skipif(
+    os.environ.get("CC_SAVER_RUN_SLOW_TESTS") != "1",
+    reason="requires fastembed model download (~130 MB); set CC_SAVER_RUN_SLOW_TESTS=1",
+)
+def test_cli_semantic_with_embeddings(ts_project, monkeypatch):
+    """CLI cc-saver semantic returns results after embedding is built."""
+    from typer.testing import CliRunner  # noqa: PLC0415
+
+    from cc_saver import cli  # noqa: PLC0415
+
+    # Build embeddings first
+    emb.index_project_embeddings(ts_project)
+
+    monkeypatch.chdir(ts_project.root)
+    runner = CliRunner()
+    result = runner.invoke(
+        cli.app,
+        ["semantic", "hello name greeting", "-k", "3"],
+        catch_exceptions=False,
+    )
+    assert result.exit_code == 0
+    # Should print file:line-line (kind, d=...) format
+    assert "index.ts" in result.output
+    assert "d=" in result.output

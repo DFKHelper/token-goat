@@ -144,9 +144,53 @@ def ref(
 
 
 @app.command()
-def semantic(query: str, k: int = typer.Option(5, "-k")):
-    """Semantic search by description."""
-    typer.echo("not yet implemented: semantic")
+def semantic(
+    query: str = typer.Argument(...),
+    k: int = typer.Option(5, "-k", help="Top-k results"),
+    json_output: bool = typer.Option(False, "--json"),
+) -> None:
+    """Semantic search using local embeddings (fastembed + sqlite-vec)."""
+    from . import embeddings  # noqa: PLC0415
+    from .project import find_project  # noqa: PLC0415
+
+    proj = find_project(Path.cwd())
+    if proj is None:
+        typer.echo("No project detected.")
+        raise typer.Exit(0)
+
+    try:
+        hits = embeddings.semantic_search(proj, query, k=k)
+    except embeddings.EmbeddingsUnavailable as e:
+        typer.echo(
+            f"Embeddings unavailable ({e}). Try `cc-saver index --embeddings` first, "
+            "or use `cc-saver symbol`/`cc-saver map` for non-semantic navigation."
+        )
+        raise typer.Exit(0) from None
+
+    if json_output:
+        out = [
+            {
+                "file": h.file_rel,
+                "start": h.start_line,
+                "end": h.end_line,
+                "kind": h.kind,
+                "distance": h.distance,
+                "preview": h.text[:200],
+            }
+            for h in hits
+        ]
+        typer.echo(json.dumps(out, indent=2))
+        return
+
+    if not hits:
+        typer.echo("(no results)")
+        return
+    for h in hits:
+        preview = h.text.replace("\n", " ")[:120]
+        typer.echo(
+            f"{h.file_rel}:{h.start_line}-{h.end_line} ({h.kind}, d={h.distance:.4f})"
+        )
+        typer.echo(f"  {preview}")
 
 
 @app.command("map")
@@ -270,9 +314,6 @@ def index(
         typer.echo("no project detected, run from a project directory")
         return
 
-    if embeddings:
-        typer.echo("embeddings not yet implemented (phase 8)")
-
     def _progress(done: int, total: int) -> None:
         typer.echo(f"  {done}/{total} files processed...", err=True)
 
@@ -287,6 +328,18 @@ def index(
         f"— {langs} "
         f"— in {summary['duration_sec']}s"
     )
+
+    if embeddings:
+        from . import embeddings as emb  # noqa: PLC0415
+        try:
+            result = emb.index_project_embeddings(proj)
+            typer.echo(
+                f"Embeddings: {result['chunks_embedded']} new, "
+                f"{result['chunks_skipped_unchanged']} unchanged "
+                f"in {result['duration_sec']}s (model={result['model']})"
+            )
+        except emb.EmbeddingsUnavailable as e:
+            typer.echo(f"Embeddings skipped: {e}")
 
 
 @app.command()
