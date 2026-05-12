@@ -1,5 +1,5 @@
 """Test paths module."""
-from cc_saver import paths
+from tokenwise import paths
 
 
 def test_ensure_dirs_creates_all_dirs(tmp_data_dir):

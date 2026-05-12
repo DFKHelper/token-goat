@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from cc_saver.languages.typescript import extract
+from tokenwise.languages.typescript import extract
 
 FIXTURE_DIR = Path(__file__).parent / "fixtures" / "ts_sample"
 INDEX_TS = FIXTURE_DIR / "index.ts"

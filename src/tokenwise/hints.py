@@ -7,7 +7,7 @@ from pathlib import Path
 from . import db, session
 from .project import find_project
 
-_LOG = logging.getLogger("cc_saver.hints")
+_LOG = logging.getLogger("tokenwise.hints")
 
 # Token estimator: ~3.5 chars/token, ~60 chars/line code → ~17 tokens/line average
 CHARS_PER_TOKEN = 3.5
@@ -100,15 +100,15 @@ def _hint_from_cache(
     """Build hint when the file was already accessed this session."""
     fname = Path(file_path).name
 
-    # Case: file accessed only via cc-saver read <file>::<symbol>
+    # Case: file accessed only via tokenwise read <file>::<symbol>
     if entry.symbols_read and not entry.line_ranges:
         sym_list = ", ".join(f"`{s}`" for s in entry.symbols_read[:3])
         more = f" and {len(entry.symbols_read) - 3} more" if len(entry.symbols_read) > 3 else ""
         return (
             f"Note: `{fname}` was already accessed this session via "
-            f"`cc-saver read` for symbol(s): {sym_list}{more}. "
+            f"`tokenwise read` for symbol(s): {sym_list}{more}. "
             f"If you only need additional symbols, consider "
-            f"`cc-saver read \"{file_path}::another_symbol\"` "
+            f"`tokenwise read \"{file_path}::another_symbol\"` "
             f"instead of reading the whole file."
         )
 
@@ -205,8 +205,8 @@ def _hint_from_index(
 
     return (
         f"This file is {n_lines} lines (~{full_tokens} tokens to read fully). "
-        f"cc-saver has indexed {n_total} symbol(s) here. "
-        f"To read just one symbol, run: `cc-saver read \"{rel}::{first_sym_name}\"` "
+        f"tokenwise has indexed {n_total} symbol(s) here. "
+        f"To read just one symbol, run: `tokenwise read \"{rel}::{first_sym_name}\"` "
         f"(saves ~85% tokens). "
         f"Top symbols: {', '.join(sym_strs)}{more_note}. "
         f"Proceed with full Read if you need the surrounding context."

@@ -1,10 +1,10 @@
-# cc-saver
+# tokenwise
 
 Claude Code companion that reduces token usage via local indexing, image shrinking, and session-context caching.
 
 ## What is it?
 
-`cc-saver` watches your Claude Code edits and intelligently shrinks context: symbol tables + semantic search replace verbose file reads, cached images replace GDrive fetches, session-context replay avoids re-reading touched files. On Claude Haiku (cheaper model), savings range from 40–70% per interaction.
+`tokenwise` watches your Claude Code edits and intelligently shrinks context: symbol tables + semantic search replace verbose file reads, cached images replace GDrive fetches, session-context replay avoids re-reading touched files. On Claude Haiku (cheaper model), savings range from 40–70% per interaction.
 
 ## Install
 
@@ -37,10 +37,10 @@ See [architecture.md](docs/architecture.md).
 
 ## Windows Defender Exclusion
 
-Add cc-saver data directory to Windows Defender exclusions to prevent slowdowns:
+Add tokenwise data directory to Windows Defender exclusions to prevent slowdowns:
 
 ```powershell
-Add-MpPreference -ExclusionPath "$env:LOCALAPPDATA\cc-saver"
+Add-MpPreference -ExclusionPath "$env:LOCALAPPDATA\tokenwise"
 ```
 
 ## License

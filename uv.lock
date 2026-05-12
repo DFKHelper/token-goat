@@ -53,62 +53,6 @@ wheels = [
 ]
 
 [[package]]
-name = "cc-saver"
-version = "0.1.0"
-source = { editable = "." }
-dependencies = [
-    { name = "click" },
-    { name = "fastembed" },
-    { name = "google-api-python-client" },
-    { name = "google-auth" },
-    { name = "google-auth-oauthlib" },
-    { name = "httpx" },
-    { name = "networkx" },
-    { name = "pillow" },
-    { name = "platformdirs" },
-    { name = "psutil" },
-    { name = "pygments" },
-    { name = "sqlite-vec" },
-    { name = "tomli-w" },
-    { name = "tree-sitter" },
-    { name = "tree-sitter-language-pack" },
-    { name = "typer" },
-]
-
-[package.optional-dependencies]
-dev = [
-    { name = "mypy" },
-    { name = "pytest" },
-    { name = "pytest-cov" },
-    { name = "ruff" },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "click", specifier = ">=8.1.0" },
-    { name = "fastembed", specifier = ">=0.3.0" },
-    { name = "google-api-python-client", specifier = ">=2.100.0" },
-    { name = "google-auth", specifier = ">=2.30.0" },
-    { name = "google-auth-oauthlib", specifier = ">=1.2.0" },
-    { name = "httpx", specifier = ">=0.27.0" },
-    { name = "mypy", marker = "extra == 'dev'", specifier = ">=1.10.0" },
-    { name = "networkx", specifier = ">=3.0" },
-    { name = "pillow", specifier = ">=10.0.0" },
-    { name = "platformdirs", specifier = ">=4.0.0" },
-    { name = "psutil", specifier = ">=5.9.0" },
-    { name = "pygments", specifier = ">=2.17.0" },
-    { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.0.0" },
-    { name = "pytest-cov", marker = "extra == 'dev'", specifier = ">=5.0.0" },
-    { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.6.0" },
-    { name = "sqlite-vec", specifier = ">=0.1.5" },
-    { name = "tomli-w", specifier = ">=1.0.0" },
-    { name = "tree-sitter", specifier = ">=0.23,<0.24" },
-    { name = "tree-sitter-language-pack", specifier = ">=0.7,<2.0" },
-    { name = "typer", specifier = ">=0.12.0" },
-]
-provides-extras = ["dev"]
-
-[[package]]
 name = "certifi"
 version = "2026.4.22"
 source = { registry = "https://pypi.org/simple" }
@@ -1310,6 +1254,62 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/97/c9/2553f72aaf65a2797d4229e37fa7fbe38ffbf3e32912d31bdd78b3323e59/tokenizers-0.23.1-cp310-abi3-win_amd64.whl", hash = "sha256:e7bfaf995c1bdbbd21d13539decb6650967013759318627d85daeb7881af16b7", size = 2798223, upload-time = "2026-04-27T14:43:28.51Z" },
     { url = "https://files.pythonhosted.org/packages/cd/2b/2be299bab55fc595e3d38567edb1a87f86e594842968fa9515a07bdcf422/tokenizers-0.23.1-cp310-abi3-win_arm64.whl", hash = "sha256:a26197957d8e4425dfba746315f3c425ea00cfa8367c5fbc4ec73447893dcea9", size = 2664127, upload-time = "2026-04-27T14:43:26.949Z" },
 ]
+
+[[package]]
+name = "tokenwise"
+version = "0.1.0"
+source = { editable = "." }
+dependencies = [
+    { name = "click" },
+    { name = "fastembed" },
+    { name = "google-api-python-client" },
+    { name = "google-auth" },
+    { name = "google-auth-oauthlib" },
+    { name = "httpx" },
+    { name = "networkx" },
+    { name = "pillow" },
+    { name = "platformdirs" },
+    { name = "psutil" },
+    { name = "pygments" },
+    { name = "sqlite-vec" },
+    { name = "tomli-w" },
+    { name = "tree-sitter" },
+    { name = "tree-sitter-language-pack" },
+    { name = "typer" },
+]
+
+[package.optional-dependencies]
+dev = [
+    { name = "mypy" },
+    { name = "pytest" },
+    { name = "pytest-cov" },
+    { name = "ruff" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "click", specifier = ">=8.1.0" },
+    { name = "fastembed", specifier = ">=0.3.0" },
+    { name = "google-api-python-client", specifier = ">=2.100.0" },
+    { name = "google-auth", specifier = ">=2.30.0" },
+    { name = "google-auth-oauthlib", specifier = ">=1.2.0" },
+    { name = "httpx", specifier = ">=0.27.0" },
+    { name = "mypy", marker = "extra == 'dev'", specifier = ">=1.10.0" },
+    { name = "networkx", specifier = ">=3.0" },
+    { name = "pillow", specifier = ">=10.0.0" },
+    { name = "platformdirs", specifier = ">=4.0.0" },
+    { name = "psutil", specifier = ">=5.9.0" },
+    { name = "pygments", specifier = ">=2.17.0" },
+    { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.0.0" },
+    { name = "pytest-cov", marker = "extra == 'dev'", specifier = ">=5.0.0" },
+    { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.6.0" },
+    { name = "sqlite-vec", specifier = ">=0.1.5" },
+    { name = "tomli-w", specifier = ">=1.0.0" },
+    { name = "tree-sitter", specifier = ">=0.23,<0.24" },
+    { name = "tree-sitter-language-pack", specifier = ">=0.7,<2.0" },
+    { name = "typer", specifier = ">=0.12.0" },
+]
+provides-extras = ["dev"]
 
 [[package]]
 name = "tomli"

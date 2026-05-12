@@ -1,4 +1,4 @@
-"""Smoke tests for `cc-saver doctor`."""
+"""Smoke tests for `tokenwise doctor`."""
 from __future__ import annotations
 
 import subprocess
@@ -7,7 +7,7 @@ import sys
 
 def test_doctor_exits_zero_and_prints_sections():
     result = subprocess.run(
-        [sys.executable, "-m", "cc_saver.cli", "doctor"],
+        [sys.executable, "-m", "tokenwise.cli", "doctor"],
         capture_output=True,
         text=True,
         timeout=60,
@@ -24,13 +24,13 @@ def test_doctor_exits_zero_and_prints_sections():
 def test_doctor_via_entry_point():
     """Run via the installed entry point (uv tool run)."""
     result = subprocess.run(
-        ["uv", "run", "cc-saver", "doctor"],
+        ["uv", "run", "tokenwise", "doctor"],
         capture_output=True,
         text=True,
         timeout=60,
-        cwd="C:/Projects/cc-saver",
+        cwd="C:/Projects/tokenwise",
     )
     assert result.returncode == 0, (
         f"doctor exited {result.returncode}\nstdout:\n{result.stdout}\nstderr:\n{result.stderr}"
     )
-    assert "cc-saver doctor" in result.stdout
+    assert "tokenwise doctor" in result.stdout

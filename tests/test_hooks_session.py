@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import json
 
-from cc_saver import hooks_cli, session
+from tokenwise import hooks_cli, session
 
 
 class TestPostReadHookIntegration:
@@ -112,7 +112,7 @@ class TestCliCommands:
         """Test session-mark command via typer."""
         from typer.testing import CliRunner
 
-        from cc_saver.cli import app
+        from tokenwise.cli import app
 
         runner = CliRunner()
         result = runner.invoke(
@@ -130,7 +130,7 @@ class TestCliCommands:
         """Test session-touched command with --json."""
         from typer.testing import CliRunner
 
-        from cc_saver.cli import app
+        from tokenwise.cli import app
 
         s_id = "cli_s2"
         session.mark_file_read(s_id, "a.py", offset=0, limit=100)
@@ -149,7 +149,7 @@ class TestCliCommands:
         """Test session-touched command with plain output."""
         from typer.testing import CliRunner
 
-        from cc_saver.cli import app
+        from tokenwise.cli import app
 
         s_id = "cli_s3"
         session.mark_file_read(s_id, "x.py", offset=0, limit=100)
@@ -164,7 +164,7 @@ class TestCliCommands:
         """Test session-touched on empty session."""
         from typer.testing import CliRunner
 
-        from cc_saver.cli import app
+        from tokenwise.cli import app
 
         runner = CliRunner()
         result = runner.invoke(app, ["session-touched", "-s", "empty"])

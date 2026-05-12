@@ -8,9 +8,9 @@ from pathlib import Path
 import networkx as nx
 import pytest
 
-from cc_saver import repomap
-from cc_saver.parser import index_project
-from cc_saver.project import Project, canonicalize, project_hash
+from tokenwise import repomap
+from tokenwise.parser import index_project
+from tokenwise.project import Project, canonicalize, project_hash
 
 FIXTURE_DIR = Path(__file__).parent / "fixtures"
 TS_SAMPLE = FIXTURE_DIR / "ts_sample"

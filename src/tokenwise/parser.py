@@ -11,7 +11,7 @@ from pathlib import Path
 from . import db
 from .project import Project
 
-_LOG = logging.getLogger("cc_saver.parser")
+_LOG = logging.getLogger("tokenwise.parser")
 
 # Extension -> language_key
 LANG_BY_EXT: dict[str, str] = {

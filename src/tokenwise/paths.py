@@ -1,12 +1,12 @@
-"""Central path resolver for cc-saver data directories."""
+"""Central path resolver for tokenwise data directories."""
 from pathlib import Path
 
 import platformdirs
 
 
 def data_dir() -> Path:
-    """Get cc-saver data directory."""
-    return Path(platformdirs.user_data_dir("cc-saver", "Zelys"))
+    """Get tokenwise data directory."""
+    return Path(platformdirs.user_data_dir("tokenwise", "Zelys"))
 
 
 def global_db_path() -> Path:

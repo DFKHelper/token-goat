@@ -9,7 +9,7 @@ PROJECT_ROOT = Path(__file__).parent.parent
 
 def _run_hook(event: str, payload: dict) -> dict:
     result = subprocess.run(
-        [sys.executable, "-m", "cc_saver", "hook", event],
+        [sys.executable, "-m", "tokenwise", "hook", event],
         input=json.dumps(payload),
         capture_output=True,
         text=True,
@@ -34,7 +34,7 @@ def test_hook_pre_read_smoke():
 def test_hook_garbage_input_returns_continue(tmp_path):
     """Even if stdin is malformed JSON, the CLI must not crash."""
     result = subprocess.run(
-        [sys.executable, "-m", "cc_saver", "hook", "session-start"],
+        [sys.executable, "-m", "tokenwise", "hook", "session-start"],
         input="not valid json {{",
         capture_output=True,
         text=True,

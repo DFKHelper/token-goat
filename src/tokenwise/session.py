@@ -10,7 +10,7 @@ from pathlib import Path
 
 from . import paths
 
-_LOG = logging.getLogger("cc_saver.session")
+_LOG = logging.getLogger("tokenwise.session")
 _FILE_LOCK = threading.Lock()  # in-process; multi-process safe enough via atomic write
 
 
@@ -22,7 +22,7 @@ class FileEntry:
     last_read_ts: float  # unix
     read_count: int  # number of times Read fired for this file
     line_ranges: list[tuple[int, int]]  # [(start, end), ...] of read ranges, 1-indexed inclusive
-    symbols_read: list[str]  # via cc-saver read file::symbol
+    symbols_read: list[str]  # via tokenwise read file::symbol
 
 
 @dataclass

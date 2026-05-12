@@ -10,7 +10,7 @@ import httpx
 
 from . import image_shrink, paths
 
-_LOG = logging.getLogger("cc_saver.webfetch")
+_LOG = logging.getLogger("tokenwise.webfetch")
 
 # Common image extensions to detect from URL
 IMAGE_URL_EXTS = (".jpg", ".jpeg", ".png", ".webp", ".avif", ".gif", ".bmp", ".tiff", ".tif")

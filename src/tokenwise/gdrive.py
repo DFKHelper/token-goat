@@ -7,7 +7,7 @@ from pathlib import Path
 
 from . import image_shrink, paths
 
-_LOG = logging.getLogger("cc_saver.gdrive")
+_LOG = logging.getLogger("tokenwise.gdrive")
 
 _DRIVE_SCOPES = ["https://www.googleapis.com/auth/drive.readonly"]
 
@@ -29,7 +29,7 @@ def _try_adc() -> object | None:
 
 
 def _try_stored_oauth() -> object | None:
-    """Try cached OAuth tokens from a previous cc-saver gdrive-auth run."""
+    """Try cached OAuth tokens from a previous tokenwise gdrive-auth run."""
     creds_path = paths.gdrive_creds_path()
     if not creds_path.exists():
         return None
@@ -56,7 +56,7 @@ def get_credentials() -> object:
     if creds is not None:
         return creds
     raise GDriveCredsUnavailable(
-        "No Google Drive credentials. Run `cc-saver gdrive-auth` once, "
+        "No Google Drive credentials. Run `tokenwise gdrive-auth` once, "
         "or set up gcloud Application Default Credentials via "
         "`gcloud auth application-default login`."
     )

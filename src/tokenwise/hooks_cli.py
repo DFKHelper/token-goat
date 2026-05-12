@@ -13,7 +13,7 @@ from typing import Any
 from . import paths
 from .project import Project, find_project
 
-_LOG = logging.getLogger("cc_saver.hooks")
+_LOG = logging.getLogger("tokenwise.hooks")
 
 
 def _setup_logging() -> None:
@@ -136,7 +136,7 @@ def pre_read(payload: dict[str, Any]) -> dict[str, Any]:
                         "hookEventName": "PreToolUse",
                         "updatedInput": new_input,
                         "additionalContext": (
-                            f"Note: image auto-shrunk by cc-saver "
+                            f"Note: image auto-shrunk by tokenwise "
                             f"({img_stats['src_bytes']:,} → {img_stats['out_bytes']:,} bytes, "
                             f"~{img_stats['bytes_saved']:,} bytes saved). "
                             f"Original: {file_path}"
@@ -169,7 +169,7 @@ def pre_read(payload: dict[str, Any]) -> dict[str, Any]:
 
 @fail_soft
 def pre_fetch(payload: dict[str, Any]) -> dict[str, Any]:
-    """Phase 13+14: deny Drive/WebFetch image tools, redirect to cc-saver shims."""
+    """Phase 13+14: deny Drive/WebFetch image tools, redirect to tokenwise shims."""
     tool_name = payload.get("tool_name", "")
 
     # --- Drive intercept (Phase 13) ---
@@ -183,7 +183,7 @@ def pre_fetch(payload: dict[str, Any]) -> dict[str, Any]:
         if not file_id:
             return {"continue": True}
 
-        # Only intercept if cc-saver has working Drive credentials; otherwise pass through
+        # Only intercept if tokenwise has working Drive credentials; otherwise pass through
         from . import gdrive  # noqa: PLC0415
 
         try:
@@ -196,10 +196,10 @@ def pre_fetch(payload: dict[str, Any]) -> dict[str, Any]:
             "hookSpecificOutput": {
                 "hookEventName": "PreToolUse",
                 "permissionDecision": "deny",
-                "permissionDecisionReason": "cc-saver redirects Drive image downloads to its shrink+cache shim",
+                "permissionDecisionReason": "tokenwise redirects Drive image downloads to its shrink+cache shim",
                 "additionalContext": (
-                    f"cc-saver intercepted a Drive download to save tokens. "
-                    f"Run this Bash instead: `cc-saver gdrive-fetch {file_id}` — "
+                    f"tokenwise intercepted a Drive download to save tokens. "
+                    f"Run this Bash instead: `tokenwise gdrive-fetch {file_id}` — "
                     f"it returns a local cached path you can then Read (images are auto-shrunk)."
                 ),
             },
@@ -222,10 +222,10 @@ def pre_fetch(payload: dict[str, Any]) -> dict[str, Any]:
             "hookSpecificOutput": {
                 "hookEventName": "PreToolUse",
                 "permissionDecision": "deny",
-                "permissionDecisionReason": "cc-saver redirects image URLs to its shrink+cache shim",
+                "permissionDecisionReason": "tokenwise redirects image URLs to its shrink+cache shim",
                 "additionalContext": (
-                    f"cc-saver intercepted a WebFetch to an image URL to save tokens. "
-                    f"Run this Bash instead: `cc-saver fetch-image '{url}'` — "
+                    f"tokenwise intercepted a WebFetch to an image URL to save tokens. "
+                    f"Run this Bash instead: `tokenwise fetch-image '{url}'` — "
                     f"it downloads, shrinks, caches, and returns a local path you can then Read."
                 ),
             },

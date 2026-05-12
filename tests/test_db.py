@@ -1,4 +1,4 @@
-"""Tests for cc_saver.db — Phase 2."""
+"""Tests for tokenwise.db — Phase 2."""
 from __future__ import annotations
 
 import os
@@ -7,8 +7,8 @@ import time
 
 import pytest
 
-import cc_saver.paths as paths
-from cc_saver import db
+import tokenwise.paths as paths
+from tokenwise import db
 
 # ---------------------------------------------------------------------------
 # Helpers

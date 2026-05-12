@@ -1,7 +1,7 @@
 """Tests for the hook dispatcher's fail-soft and dispatch behavior."""
 import json
 
-from cc_saver import hooks_cli
+from tokenwise import hooks_cli
 
 
 def test_unknown_event_returns_continue():

@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import time
 
-from cc_saver import session
+from tokenwise import session
 
 
 class TestSessionCacheBasics:

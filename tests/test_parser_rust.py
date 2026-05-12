@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from cc_saver.languages.rust import extract
+from tokenwise.languages.rust import extract
 
 FIXTURE_DIR = Path(__file__).parent / "fixtures" / "rust_sample"
 MAIN_RS = FIXTURE_DIR / "src" / "main.rs"

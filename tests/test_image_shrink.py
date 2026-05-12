@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from cc_saver import image_shrink
+from tokenwise import image_shrink
 
 # ---------------------------------------------------------------------------
 # Helpers

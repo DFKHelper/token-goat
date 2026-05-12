@@ -1,1 +1,1 @@
-"""Test suite for cc-saver."""
+"""Test suite for tokenwise."""

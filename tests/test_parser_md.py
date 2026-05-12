@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from cc_saver.languages.markdown import extract
+from tokenwise.languages.markdown import extract
 
 FIXTURE_DIR = Path(__file__).parent / "fixtures" / "md_sample"
 ARTICLE_MD = FIXTURE_DIR / "article.md"

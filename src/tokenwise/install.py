@@ -11,15 +11,15 @@ from pathlib import Path
 
 from . import paths
 
-_LOG = logging.getLogger("cc_saver.install")
+_LOG = logging.getLogger("tokenwise.install")
 
 # Markers for idempotent CLAUDE.md patching
-CLAUDE_MD_BEGIN = "<!-- cc-saver-begin -->"
-CLAUDE_MD_END = "<!-- cc-saver-end -->"
+CLAUDE_MD_BEGIN = "<!-- tokenwise-begin -->"
+CLAUDE_MD_END = "<!-- tokenwise-end -->"
 
 # Scheduled task names
-TASK_WORKER = "cc-saver-worker"
-TASK_UPDATE = "cc-saver-update"
+TASK_WORKER = "tokenwise-worker"
+TASK_UPDATE = "tokenwise-update"
 
 
 def claude_dir() -> Path:
@@ -36,15 +36,15 @@ def claude_md_path() -> Path:
 
 
 def skill_dir() -> Path:
-    return claude_dir() / "skills" / "cc-saver"
+    return claude_dir() / "skills" / "tokenwise"
 
 
-def cc_saver_binary() -> str:
-    """Return the path to the cc-saver executable. Falls back to 'cc-saver' (PATH-resolved)."""
-    binary = shutil.which("cc-saver")
+def tokenwise_binary() -> str:
+    """Return the path to the tokenwise executable. Falls back to 'tokenwise' (PATH-resolved)."""
+    binary = shutil.which("tokenwise")
     if binary:
         return binary
-    return "cc-saver"
+    return "tokenwise"
 
 
 # ---------------------------------------------------------------------------
@@ -72,29 +72,41 @@ def task_exists(name: str) -> bool:
 
 
 def install_worker_task() -> tuple[bool, str]:
-    """Create or update the cc-saver-worker scheduled task (runs at logon, user scope)."""
-    binary = cc_saver_binary()
-    # Delete first to allow idempotent recreation
-    if task_exists(TASK_WORKER):
-        _run_schtasks(["/Delete", "/TN", TASK_WORKER, "/F"])
+    """Register tokenwise-worker to run at user logon via HKCU Run registry key.
 
-    args = [
-        "/Create",
-        "/TN", TASK_WORKER,
-        "/SC", "ONLOGON",
-        "/RL", "LIMITED",
-        "/F",
-        "/TR", f'"{binary}" worker --daemon',
-    ]
-    code, out = _run_schtasks(args)
-    return code == 0, out
+    schtasks ONLOGON requires admin rights even with /RU on most Windows UAC
+    configurations.  HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run is
+    the standard user-scope at-logon mechanism and never needs elevation.
+    """
+    import sys
+    binary = tokenwise_binary()
+    cmd = f'"{binary}" worker --daemon'
+
+    if sys.platform != "win32":
+        return True, "non-Windows: skipped"
+
+    try:
+        import winreg  # type: ignore[import]
+        key = winreg.OpenKey(
+            winreg.HKEY_CURRENT_USER,
+            r"Software\Microsoft\Windows\CurrentVersion\Run",
+            0,
+            winreg.KEY_SET_VALUE,
+        )
+        winreg.SetValueEx(key, TASK_WORKER, 0, winreg.REG_SZ, cmd)
+        winreg.CloseKey(key)
+        return True, f"HKCU Run key set: {cmd}"
+    except Exception as exc:
+        return False, str(exc)
 
 
 def install_update_task() -> tuple[bool, str]:
     """Create the weekly auto-update scheduled task (Sunday 03:00, user scope)."""
+    import os
     if task_exists(TASK_UPDATE):
         _run_schtasks(["/Delete", "/TN", TASK_UPDATE, "/F"])
 
+    username = os.environ.get("USERNAME") or os.environ.get("USER") or ""
     args = [
         "/Create",
         "/TN", TASK_UPDATE,
@@ -103,20 +115,43 @@ def install_update_task() -> tuple[bool, str]:
         "/ST", "03:00",
         "/RL", "LIMITED",
         "/F",
-        "/TR", 'cmd /c "uv tool upgrade cc-saver"',
+        "/TR", 'cmd /c "uv tool upgrade tokenwise"',
     ]
+    if username:
+        args += ["/RU", username]
     code, out = _run_schtasks(args)
     return code == 0, out
 
 
 def uninstall_tasks() -> list[str]:
-    """Delete both scheduled tasks. Returns list of names that were removed."""
+    """Remove worker Run key + update scheduled task. Returns list of names removed."""
+    import sys
     removed = []
-    for name in (TASK_WORKER, TASK_UPDATE):
-        if task_exists(name):
-            code, _ = _run_schtasks(["/Delete", "/TN", name, "/F"])
-            if code == 0:
-                removed.append(name)
+
+    # Worker: HKCU Run registry key
+    if sys.platform == "win32":
+        try:
+            import winreg  # type: ignore[import]
+            key = winreg.OpenKey(
+                winreg.HKEY_CURRENT_USER,
+                r"Software\Microsoft\Windows\CurrentVersion\Run",
+                0,
+                winreg.KEY_SET_VALUE,
+            )
+            winreg.DeleteValue(key, TASK_WORKER)
+            winreg.CloseKey(key)
+            removed.append(TASK_WORKER)
+        except FileNotFoundError:
+            pass  # key didn't exist
+        except Exception:
+            pass
+
+    # Update task: still a schtasks WEEKLY entry
+    if task_exists(TASK_UPDATE):
+        code, _ = _run_schtasks(["/Delete", "/TN", TASK_UPDATE, "/F"])
+        if code == 0:
+            removed.append(TASK_UPDATE)
+
     return removed
 
 
@@ -126,7 +161,7 @@ def uninstall_tasks() -> list[str]:
 
 
 def _hooks_block(binary: str) -> dict:
-    """Build the hooks structure cc-saver wants to install."""
+    """Build the hooks structure tokenwise wants to install."""
     return {
         "SessionStart": [
             {
@@ -187,19 +222,19 @@ def _hooks_block(binary: str) -> dict:
     }
 
 
-def _strip_cc_saver_entries(entries: list[dict]) -> list[dict]:
-    """Remove any hook entries whose command string contains 'cc-saver'."""
+def _strip_tokenwise_entries(entries: list[dict]) -> list[dict]:
+    """Remove any hook entries whose command string contains 'tokenwise'."""
     kept = []
     for entry in entries:
         hooks_list = entry.get("hooks", [])
-        non_cc = [h for h in hooks_list if "cc-saver" not in h.get("command", "")]
+        non_cc = [h for h in hooks_list if "tokenwise" not in h.get("command", "")]
         if non_cc:
             kept.append({"matcher": entry.get("matcher", "*"), "hooks": non_cc})
     return kept
 
 
 def patch_settings_json() -> tuple[bool, str]:
-    """Add cc-saver hooks to ~/.claude/settings.json idempotently. Preserves other hooks."""
+    """Add tokenwise hooks to ~/.claude/settings.json idempotently. Preserves other hooks."""
     settings_path = claude_settings_path()
     settings_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -211,7 +246,7 @@ def patch_settings_json() -> tuple[bool, str]:
     else:
         current = {}
 
-    binary = cc_saver_binary()
+    binary = tokenwise_binary()
     our_hooks = _hooks_block(binary)
 
     # Backup before any modification
@@ -224,16 +259,16 @@ def patch_settings_json() -> tuple[bool, str]:
     existing_hooks = current.get("hooks", {})
     for event, entries in our_hooks.items():
         existing_entries = existing_hooks.get(event, [])
-        # Strip any prior cc-saver entries, then append fresh ones
-        kept = _strip_cc_saver_entries(existing_entries)
+        # Strip any prior tokenwise entries, then append fresh ones
+        kept = _strip_tokenwise_entries(existing_entries)
         existing_hooks[event] = kept + entries
     current["hooks"] = existing_hooks
 
     # Permission allowlist
     perms = current.get("permissions", {})
     allowed = list(perms.get("allow", []))
-    if "Bash(cc-saver:*)" not in allowed:
-        allowed.append("Bash(cc-saver:*)")
+    if "Bash(tokenwise:*)" not in allowed:
+        allowed.append("Bash(tokenwise:*)")
     perms["allow"] = allowed
     current["permissions"] = perms
 
@@ -242,7 +277,7 @@ def patch_settings_json() -> tuple[bool, str]:
 
 
 def unpatch_settings_json() -> str:
-    """Remove cc-saver entries from settings.json."""
+    """Remove tokenwise entries from settings.json."""
     settings_path = claude_settings_path()
     if not settings_path.exists():
         return "settings.json not found (nothing to do)"
@@ -253,7 +288,7 @@ def unpatch_settings_json() -> str:
 
     hooks = current.get("hooks", {})
     for event in list(hooks.keys()):
-        cleaned = _strip_cc_saver_entries(hooks.get(event, []))
+        cleaned = _strip_tokenwise_entries(hooks.get(event, []))
         if cleaned:
             hooks[event] = cleaned
         else:
@@ -261,7 +296,7 @@ def unpatch_settings_json() -> str:
     current["hooks"] = hooks
 
     perms = current.get("permissions", {})
-    allowed = [a for a in perms.get("allow", []) if a != "Bash(cc-saver:*)"]
+    allowed = [a for a in perms.get("allow", []) if a != "Bash(tokenwise:*)"]
     perms["allow"] = allowed
     # Drop permissions key entirely if it has no meaningful content left
     if not perms.get("allow") and not perms.get("deny") and not perms.get("ask"):
@@ -278,22 +313,22 @@ def unpatch_settings_json() -> str:
 # ---------------------------------------------------------------------------
 
 CLAUDE_MD_CONTENT = """\
-## cc-saver — code/content navigation and image shrinking
+## tokenwise — code/content navigation and image shrinking
 
-cc-saver is installed and intercepts via hooks. For maximum token savings:
+tokenwise is installed and intercepts via hooks. For maximum token savings:
 
-- **Symbol/function lookup** (replaces `grep`): `cc-saver symbol <name>` — add `--all-projects` for cross-repo
-- **Just one symbol/section** (replaces full `Read`): `cc-saver read "<file>::<symbol>"` or `cc-saver section "<file>::<heading>"` (typically ~85% token reduction)
-- **Concept/meaning search**: `cc-saver semantic "<query>"`
-- **Repo orientation**: `cc-saver map --budget 4000`
-- **Dedup check**: `cc-saver session-touched --session-id <id>` (the SessionStart hook resets this automatically)
+- **Symbol/function lookup** (replaces `grep`): `tokenwise symbol <name>` — add `--all-projects` for cross-repo
+- **Just one symbol/section** (replaces full `Read`): `tokenwise read "<file>::<symbol>"` or `tokenwise section "<file>::<heading>"` (typically ~85% token reduction)
+- **Concept/meaning search**: `tokenwise semantic "<query>"`
+- **Repo orientation**: `tokenwise map --budget 4000`
+- **Dedup check**: `tokenwise session-touched --session-id <id>` (the SessionStart hook resets this automatically)
 
 Image-shrinking, Drive intercept, and read-deduplication are all automatic via PreToolUse hooks — you don't need to call them.
 """
 
 
 def patch_claude_md() -> str:
-    """Add or update the cc-saver block in ~/.claude/CLAUDE.md, idempotently."""
+    """Add or update the tokenwise block in ~/.claude/CLAUDE.md, idempotently."""
     md_path = claude_md_path()
     md_path.parent.mkdir(parents=True, exist_ok=True)
     block = f"{CLAUDE_MD_BEGIN}\n{CLAUDE_MD_CONTENT}\n{CLAUDE_MD_END}"
@@ -344,38 +379,38 @@ def unpatch_claude_md() -> str:
 
 SKILL_MD_CONTENT = """\
 ---
-name: cc-saver
-description: Token-efficient code and content navigation. Use cc-saver commands instead of grep/Read for symbol lookup, section extraction, semantic search, and repo overview. Hooks handle image-shrink, Drive intercept, and read-deduplication automatically.
+name: tokenwise
+description: Token-efficient code and content navigation. Use tokenwise commands instead of grep/Read for symbol lookup, section extraction, semantic search, and repo overview. Hooks handle image-shrink, Drive intercept, and read-deduplication automatically.
 ---
 
-# cc-saver
+# tokenwise
 
-`cc-saver` is installed system-wide and integrated via hooks. It dramatically reduces token usage in three ways:
+`tokenwise` is installed system-wide and integrated via hooks. It dramatically reduces token usage in three ways:
 
 ## Automatic (no Claude action required)
 - **Image shrink**: every `Read` on a large image (>100 KB) is auto-redirected to a shrunken cached version (~95% token reduction).
-- **Drive intercept**: `mcp__claude_ai_Google_Drive__download_file_content` is redirected to `cc-saver gdrive-fetch <id>` (downloads, shrinks, caches).
-- **WebFetch image intercept**: WebFetch of an image URL is redirected to `cc-saver fetch-image <url>`.
+- **Drive intercept**: `mcp__claude_ai_Google_Drive__download_file_content` is redirected to `tokenwise gdrive-fetch <id>` (downloads, shrinks, caches).
+- **WebFetch image intercept**: WebFetch of an image URL is redirected to `tokenwise fetch-image <url>`.
 - **Session dedup hints**: PreToolUse on `Read` injects a system reminder if you've already read the same file this session.
 
-## When you should explicitly call cc-saver
+## When you should explicitly call tokenwise
 
 | Goal | Command | Why |
 |------|---------|-----|
-| Find a function/class/type | `cc-saver symbol <name>` | Returns one line per match (`file:line: kind name signature`). 10-50x fewer tokens than `grep`. Add `--all-projects` for cross-repo. |
-| Read just one function | `cc-saver read "file.py::name"` | Returns only that function body. Typically ~85% reduction vs reading the whole file. |
-| Read a markdown/HTML section | `cc-saver section "article.md::Methodology"` | Returns only that section. |
-| Find code by meaning | `cc-saver semantic "<query>"` | Vector search over local embeddings. Good for "where do we handle X". |
-| Orient in a new repo | `cc-saver map --budget 4000` | Token-budgeted PageRank overview. |
-| Check session reads | `cc-saver session-touched --session-id <id>` | Lists what you've read so far this session. |
+| Find a function/class/type | `tokenwise symbol <name>` | Returns one line per match (`file:line: kind name signature`). 10-50x fewer tokens than `grep`. Add `--all-projects` for cross-repo. |
+| Read just one function | `tokenwise read "file.py::name"` | Returns only that function body. Typically ~85% reduction vs reading the whole file. |
+| Read a markdown/HTML section | `tokenwise section "article.md::Methodology"` | Returns only that section. |
+| Find code by meaning | `tokenwise semantic "<query>"` | Vector search over local embeddings. Good for "where do we handle X". |
+| Orient in a new repo | `tokenwise map --budget 4000` | Token-budgeted PageRank overview. |
+| Check session reads | `tokenwise session-touched --session-id <id>` | Lists what you've read so far this session. |
 
-## When to NOT use cc-saver
+## When to NOT use tokenwise
 - For small files (<200 lines), `Read` is fine.
 - For ambiguous names with many matches, use `grep` first to narrow.
 - For binary/image content you actually need to view visually, the auto-shrink already runs — just `Read` normally.
 
 ## Status
-Run `cc-saver doctor` if anything seems off. Run `cc-saver stats` to see cumulative token savings.
+Run `tokenwise doctor` if anything seems off. Run `tokenwise stats` to see cumulative token savings.
 """
 
 

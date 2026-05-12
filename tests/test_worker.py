@@ -1,4 +1,4 @@
-"""Tests for cc_saver.worker — Phase 9."""
+"""Tests for tokenwise.worker — Phase 9."""
 from __future__ import annotations
 
 import os
@@ -6,8 +6,8 @@ import threading
 import time
 from unittest.mock import MagicMock, patch
 
-import cc_saver.paths as paths
-from cc_saver import worker
+import tokenwise.paths as paths
+from tokenwise import worker
 
 # ---------------------------------------------------------------------------
 # 1. is_worker_alive() — no PID file
@@ -163,8 +163,8 @@ def test_evict_image_cache_over_limit(tmp_data_dir, monkeypatch):
 
 def test_process_dirty_entries_real_project(tmp_data_dir, tmp_path):
     """_process_dirty_entries should reindex without crashing for a known project."""
-    from cc_saver import db as _db
-    from cc_saver.project import project_hash as ph_fn
+    from tokenwise import db as _db
+    from tokenwise.project import project_hash as ph_fn
 
     # Create a minimal project tree
     proj_root = tmp_path / "myproject"
@@ -239,10 +239,10 @@ def test_spawn_detached_mocked(tmp_data_dir):
     fake_proc = MagicMock()
     fake_proc.pid = 12345
 
-    with patch("cc_saver.worker.subprocess.Popen", return_value=fake_proc) as mock_popen:
+    with patch("tokenwise.worker.subprocess.Popen", return_value=fake_proc) as mock_popen:
         pid = worker.spawn_detached()
 
     assert pid == 12345
     mock_popen.assert_called_once()
     cmd_arg = mock_popen.call_args[0][0]
-    assert cmd_arg == ["cc-saver", "worker", "--daemon"]
+    assert cmd_arg == ["tokenwise", "worker", "--daemon"]

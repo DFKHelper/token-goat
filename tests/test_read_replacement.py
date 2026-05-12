@@ -7,9 +7,9 @@ from pathlib import Path
 
 import pytest
 
-from cc_saver import read_replacement
-from cc_saver.parser import index_project
-from cc_saver.project import Project, canonicalize, project_hash
+from tokenwise import read_replacement
+from tokenwise.parser import index_project
+from tokenwise.project import Project, canonicalize, project_hash
 
 FIXTURE_DIR = Path(__file__).parent / "fixtures"
 TS_SAMPLE = FIXTURE_DIR / "ts_sample"
@@ -214,7 +214,7 @@ def indexed_md_cli(md_project, monkeypatch):
 def test_cli_read_greet_emits_body(indexed_ts_cli):
     from typer.testing import CliRunner
 
-    from cc_saver.cli import app
+    from tokenwise.cli import app
 
     runner = CliRunner()
     result = runner.invoke(app, ["read", "index.ts::greet"])
@@ -226,7 +226,7 @@ def test_cli_read_greet_emits_body(indexed_ts_cli):
 def test_cli_read_nonexistent_symbol_exit_zero(indexed_ts_cli):
     from typer.testing import CliRunner
 
-    from cc_saver.cli import app
+    from tokenwise.cli import app
 
     runner = CliRunner()
     result = runner.invoke(app, ["read", "index.ts::__totally_nonexistent__"])
@@ -236,7 +236,7 @@ def test_cli_read_nonexistent_symbol_exit_zero(indexed_ts_cli):
 def test_cli_read_missing_separator_exit_2(indexed_ts_cli):
     from typer.testing import CliRunner
 
-    from cc_saver.cli import app
+    from tokenwise.cli import app
 
     runner = CliRunner()
     result = runner.invoke(app, ["read", "index.ts"])
@@ -246,7 +246,7 @@ def test_cli_read_missing_separator_exit_2(indexed_ts_cli):
 def test_cli_section_methodology(indexed_md_cli):
     from typer.testing import CliRunner
 
-    from cc_saver.cli import app
+    from tokenwise.cli import app
 
     runner = CliRunner()
     result = runner.invoke(app, ["section", "article.md::Methodology"])
@@ -257,7 +257,7 @@ def test_cli_section_methodology(indexed_md_cli):
 def test_cli_read_json_output(indexed_ts_cli):
     from typer.testing import CliRunner
 
-    from cc_saver.cli import app
+    from tokenwise.cli import app
 
     runner = CliRunner()
     result = runner.invoke(app, ["read", "--json", "index.ts::greet"])
@@ -275,8 +275,8 @@ def test_cli_read_json_output(indexed_ts_cli):
 def test_cli_read_with_session_id(indexed_ts_cli, tmp_data_dir):
     from typer.testing import CliRunner
 
-    from cc_saver import session as session_mod
-    from cc_saver.cli import app
+    from tokenwise import session as session_mod
+    from tokenwise.cli import app
 
     session_id = "test-phase11-session"
     runner = CliRunner()
@@ -292,7 +292,7 @@ def test_cli_read_with_session_id(indexed_ts_cli, tmp_data_dir):
 def test_cli_section_json_output(indexed_md_cli):
     from typer.testing import CliRunner
 
-    from cc_saver.cli import app
+    from tokenwise.cli import app
 
     runner = CliRunner()
     result = runner.invoke(app, ["section", "--json", "article.md::Methodology"])

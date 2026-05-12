@@ -1,7 +1,7 @@
 """Tests for the WebFetch intercept in pre_fetch hook — Phase 14."""
 from __future__ import annotations
 
-from cc_saver import hooks_cli
+from tokenwise import hooks_cli
 
 # ---------------------------------------------------------------------------
 # 10. pre_fetch with WebFetch on image URL → deny + additionalContext
@@ -28,7 +28,7 @@ class TestPreFetchWebFetchImageUrl:
         result = hooks_cli.pre_fetch(payload)
 
         ctx = result.get("hookSpecificOutput", {}).get("additionalContext", "")
-        assert "cc-saver fetch-image" in ctx
+        assert "tokenwise fetch-image" in ctx
         assert url in ctx
 
     def test_hook_event_name_is_correct(self, tmp_data_dir):

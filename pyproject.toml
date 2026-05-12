@@ -1,5 +1,5 @@
 [project]
-name = "cc-saver"
+name = "tokenwise"
 version = "0.1.0"
 description = "Claude Code companion that reduces token usage via local indexing, image shrinking, and session-context caching."
 readme = "README.md"
@@ -26,7 +26,7 @@ dependencies = [
 ]
 
 [project.scripts]
-cc-saver = "cc_saver.cli:app"
+tokenwise = "tokenwise.cli:app"
 
 [project.optional-dependencies]
 dev = [
@@ -41,7 +41,7 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/cc_saver"]
+packages = ["src/tokenwise"]
 
 [tool.ruff]
 line-length = 100

@@ -5,7 +5,7 @@ import json
 import time
 from datetime import datetime, timedelta
 
-from cc_saver import db, stats
+from tokenwise import db, stats
 
 
 class TestStatsAggregation:
@@ -186,7 +186,7 @@ class TestRenderText:
         """render_text on empty summary includes helpful message."""
         summary = stats.summarize(window_days=30)
         text = stats.render_text(summary)
-        assert "cc-saver stats" in text
+        assert "tokenwise stats" in text
         assert "no recorded savings yet" in text
 
     def test_render_with_data(self, tmp_data_dir):
@@ -197,7 +197,7 @@ class TestRenderText:
         summary = stats.summarize(window_days=30)
         text = stats.render_text(summary)
 
-        assert "cc-saver stats" in text
+        assert "tokenwise stats" in text
         assert "Total:" in text
         assert "2 events" in text
         assert "By kind:" in text

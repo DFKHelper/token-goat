@@ -11,7 +11,7 @@ import networkx as nx
 from . import db
 from .project import Project
 
-_LOG = logging.getLogger("cc_saver.repomap")
+_LOG = logging.getLogger("tokenwise.repomap")
 
 # rough token estimator: ~3.5 chars per token for English/code mix
 def estimate_tokens(text: str) -> int:
@@ -175,7 +175,7 @@ def build_map(
         if not files:
             return (
                 f"# {project.root.name}\n\n"
-                "(no files indexed — run `cc-saver index --full`)\n"
+                "(no files indexed — run `tokenwise index --full`)\n"
             )
         graph = _build_graph(conn, files, name_to_files)
 

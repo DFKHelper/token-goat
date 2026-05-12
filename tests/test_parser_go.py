@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from cc_saver.languages.go import extract
+from tokenwise.languages.go import extract
 
 FIXTURE_DIR = Path(__file__).parent / "fixtures" / "go_sample"
 MAIN_GO = FIXTURE_DIR / "main.go"

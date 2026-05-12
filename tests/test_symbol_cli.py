@@ -15,12 +15,12 @@ TS_SAMPLE = FIXTURE_DIR / "ts_sample"
 
 
 def _run(args: list[str], cwd: Path, env: dict | None = None) -> subprocess.CompletedProcess:
-    """Run cc-saver with the given args in the given cwd."""
+    """Run tokenwise with the given args in the given cwd."""
     merged_env = {**os.environ}
     if env:
         merged_env.update(env)
     return subprocess.run(
-        [sys.executable, "-m", "cc_saver.cli", *args],
+        [sys.executable, "-m", "tokenwise.cli", *args],
         cwd=str(cwd),
         capture_output=True,
         text=True,
@@ -29,12 +29,12 @@ def _run(args: list[str], cwd: Path, env: dict | None = None) -> subprocess.Comp
 
 
 def _run_uv(args: list[str], cwd: Path, env: dict | None = None) -> subprocess.CompletedProcess:
-    """Run via uv run cc-saver."""
+    """Run via uv run tokenwise."""
     merged_env = {**os.environ}
     if env:
         merged_env.update(env)
     return subprocess.run(
-        ["uv", "run", "cc-saver", *args],
+        ["uv", "run", "tokenwise", *args],
         cwd=str(cwd),
         capture_output=True,
         text=True,
@@ -45,18 +45,18 @@ def _run_uv(args: list[str], cwd: Path, env: dict | None = None) -> subprocess.C
 @pytest.fixture
 def indexed_ts_dir(tmp_path, tmp_data_dir, monkeypatch):
     """
-    Copy ts_sample to tmp, run `cc-saver index` in it.
+    Copy ts_sample to tmp, run `tokenwise index` in it.
     Returns the project dir path.
-    Uses monkeypatch so cc_saver.paths.data_dir points to tmp_data_dir.
+    Uses monkeypatch so tokenwise.paths.data_dir points to tmp_data_dir.
     """
     proj_root = tmp_path / "ts_sample"
     shutil.copytree(TS_SAMPLE, proj_root)
 
     # Build canonical project hash
-    from cc_saver.parser import index_project
-    from cc_saver.project import find_project
+    from tokenwise.parser import index_project
+    from tokenwise.project import find_project
 
-    # We need cc_saver.paths to point to our tmp during index
+    # We need tokenwise.paths to point to our tmp during index
     monkeypatch.chdir(proj_root)
     proj = find_project(proj_root)
     assert proj is not None
@@ -70,7 +70,7 @@ def indexed_ts_dir(tmp_path, tmp_data_dir, monkeypatch):
 
 def test_symbol_greet_json(indexed_ts_dir, tmp_data_dir, monkeypatch):
     proj_root, proj = indexed_ts_dir
-    from cc_saver import db as _db
+    from tokenwise import db as _db
 
     monkeypatch.chdir(proj_root)
     # Query directly via Python (avoids subprocess env issues with tmp_data_dir)
@@ -86,7 +86,7 @@ def test_symbol_greet_json(indexed_ts_dir, tmp_data_dir, monkeypatch):
 
 def test_symbol_nonexistent_exit_zero(indexed_ts_dir, tmp_data_dir, monkeypatch):
     proj_root, proj = indexed_ts_dir
-    from cc_saver import db as _db
+    from tokenwise import db as _db
 
     with _db.open_project(proj.hash) as conn:
         rows = conn.execute(
@@ -97,7 +97,7 @@ def test_symbol_nonexistent_exit_zero(indexed_ts_dir, tmp_data_dir, monkeypatch)
 
 def test_ref_greet_returns_results(indexed_ts_dir, tmp_data_dir, monkeypatch):
     proj_root, proj = indexed_ts_dir
-    from cc_saver import db as _db
+    from tokenwise import db as _db
 
     with _db.open_project(proj.hash) as conn:
         rows = conn.execute(
@@ -110,7 +110,7 @@ def test_ref_greet_returns_results(indexed_ts_dir, tmp_data_dir, monkeypatch):
 
 def test_symbols_all_expected_present(indexed_ts_dir, tmp_data_dir):
     proj_root, proj = indexed_ts_dir
-    from cc_saver import db as _db
+    from tokenwise import db as _db
 
     with _db.open_project(proj.hash) as conn:
         names = {r["name"] for r in conn.execute("SELECT name FROM symbols")}
@@ -121,7 +121,7 @@ def test_symbols_all_expected_present(indexed_ts_dir, tmp_data_dir):
 def test_index_summary_non_trivial(indexed_ts_dir):
     """The index should contain more than zero symbols."""
     proj_root, proj = indexed_ts_dir
-    from cc_saver import db as _db
+    from tokenwise import db as _db
 
     with _db.open_project(proj.hash) as conn:
         sym_count = conn.execute("SELECT COUNT(*) FROM symbols").fetchone()[0]
@@ -133,7 +133,7 @@ def test_index_summary_non_trivial(indexed_ts_dir):
 def test_all_projects_symbol_lookup(indexed_ts_dir, tmp_data_dir):
     """After indexing, global DB should have greet in symbols_global."""
     proj_root, proj = indexed_ts_dir
-    from cc_saver import db as _db
+    from tokenwise import db as _db
 
     with _db.open_global() as gconn:
         rows = gconn.execute(
@@ -145,7 +145,7 @@ def test_all_projects_symbol_lookup(indexed_ts_dir, tmp_data_dir):
 
 def test_imports_exports_populated(indexed_ts_dir):
     proj_root, proj = indexed_ts_dir
-    from cc_saver import db as _db
+    from tokenwise import db as _db
 
     with _db.open_project(proj.hash) as conn:
         imp_count = conn.execute(
@@ -168,10 +168,10 @@ def test_no_project_symbol_is_graceful():
 
     from typer.testing import CliRunner
 
-    from cc_saver.cli import app
+    from tokenwise.cli import app
 
     runner = CliRunner()
-    with mock_patch("cc_saver.project.find_project", return_value=None):
+    with mock_patch("tokenwise.project.find_project", return_value=None):
         result = runner.invoke(app, ["symbol", "foo"])
     assert result.exit_code == 0
     assert "no project detected" in result.output.lower()
@@ -183,10 +183,10 @@ def test_no_project_ref_is_graceful():
 
     from typer.testing import CliRunner
 
-    from cc_saver.cli import app
+    from tokenwise.cli import app
 
     runner = CliRunner()
-    with mock_patch("cc_saver.project.find_project", return_value=None):
+    with mock_patch("tokenwise.project.find_project", return_value=None):
         result = runner.invoke(app, ["ref", "foo"])
     assert result.exit_code == 0
     assert "no project detected" in result.output.lower()
@@ -198,10 +198,10 @@ def test_no_project_index_is_graceful():
 
     from typer.testing import CliRunner
 
-    from cc_saver.cli import app
+    from tokenwise.cli import app
 
     runner = CliRunner()
-    with mock_patch("cc_saver.project.find_project", return_value=None):
+    with mock_patch("tokenwise.project.find_project", return_value=None):
         result = runner.invoke(app, ["index"])
     assert result.exit_code == 0
     assert "no project detected" in result.output.lower()
@@ -217,7 +217,7 @@ def test_symbol_json_output_is_valid(indexed_ts_dir, tmp_data_dir, monkeypatch):
 
     from typer.testing import CliRunner
 
-    from cc_saver.cli import app
+    from tokenwise.cli import app
 
     runner = CliRunner()
     result = runner.invoke(app, ["symbol", "greet", "--json"])
@@ -237,7 +237,7 @@ def test_ref_json_output_is_valid(indexed_ts_dir, tmp_data_dir, monkeypatch):
 
     from typer.testing import CliRunner
 
-    from cc_saver.cli import app
+    from tokenwise.cli import app
 
     runner = CliRunner()
     result = runner.invoke(app, ["ref", "greet", "--json"])
@@ -254,7 +254,7 @@ def test_index_command_prints_summary(indexed_ts_dir, tmp_data_dir, monkeypatch)
 
     from typer.testing import CliRunner
 
-    from cc_saver.cli import app
+    from tokenwise.cli import app
 
     runner = CliRunner()
     result = runner.invoke(app, ["index"])
@@ -270,7 +270,7 @@ def test_symbol_all_projects_json(indexed_ts_dir, tmp_data_dir, monkeypatch):
 
     from typer.testing import CliRunner
 
-    from cc_saver.cli import app
+    from tokenwise.cli import app
 
     runner = CliRunner()
     result = runner.invoke(app, ["symbol", "greet", "--all-projects", "--json"])

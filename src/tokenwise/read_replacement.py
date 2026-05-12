@@ -7,7 +7,7 @@ from pathlib import Path
 from . import db
 from .project import Project
 
-_LOG = logging.getLogger("cc_saver.read_replacement")
+_LOG = logging.getLogger("tokenwise.read_replacement")
 
 # Lower value = higher priority when multiple symbols share the same name
 _KIND_PRIORITY: dict[str, int] = {
@@ -28,9 +28,9 @@ def resolve_file_rel(project: Project, file_part: str) -> str | None:
     """Given the file part from a 'file::symbol' target, find the matching rel_path.
 
     Accepts:
-    - Full relative path  (e.g., 'src/cc_saver/parser.py')
+    - Full relative path  (e.g., 'src/tokenwise/parser.py')
     - Bare filename       (e.g., 'parser.py' — picks best match)
-    - Partial path        (e.g., 'cc_saver/parser.py' — endswith match)
+    - Partial path        (e.g., 'tokenwise/parser.py' — endswith match)
     - Absolute path       (resolved against project root)
     """
     file_part = file_part.replace("\\", "/").strip()

@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from cc_saver.languages.html import extract
+from tokenwise.languages.html import extract
 
 FIXTURE_DIR = Path(__file__).parent / "fixtures" / "html_sample"
 ARTICLE_HTML = FIXTURE_DIR / "article.html"

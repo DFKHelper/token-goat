@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from cc_saver.languages.python import extract
+from tokenwise.languages.python import extract
 
 FIXTURE_DIR = Path(__file__).parent / "fixtures" / "py_sample"
 APP_PY = FIXTURE_DIR / "app.py"

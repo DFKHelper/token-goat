@@ -6,9 +6,9 @@ from pathlib import Path
 
 import pytest
 
-from cc_saver import db
-from cc_saver.parser import index_file, index_project, write_file_index
-from cc_saver.project import Project, canonicalize, project_hash
+from tokenwise import db
+from tokenwise.parser import index_file, index_project, write_file_index
+from tokenwise.project import Project, canonicalize, project_hash
 
 FIXTURE_DIR = Path(__file__).parent / "fixtures"
 TS_SAMPLE = FIXTURE_DIR / "ts_sample"

@@ -9,7 +9,7 @@ from datetime import datetime, timedelta
 
 from . import db
 
-_LOG = logging.getLogger("cc_saver.stats")
+_LOG = logging.getLogger("tokenwise.stats")
 
 
 @dataclass
@@ -166,12 +166,12 @@ def _fmt_tokens(n: int) -> str:
 def render_text(
     summary: StatsSummary, *, top_days: int = 7, top_projects: int = 5
 ) -> str:
-    """Format stats as plain text for `cc-saver stats` command."""
+    """Format stats as plain text for `tokenwise stats` command."""
     out = []
     window_desc = (
         "all time" if summary.window_days == 0 else f"last {summary.window_days} days"
     )
-    out.append(f"cc-saver stats ({window_desc})")
+    out.append(f"tokenwise stats ({window_desc})")
     out.append("")
     out.append(
         f"Total: {summary.total_events:,} events, {_fmt_bytes(summary.total_bytes_saved)} saved (~{_fmt_tokens(summary.total_tokens_saved)} tokens)"
@@ -208,7 +208,7 @@ def render_text(
 
     if summary.total_events == 0:
         out.append(
-            "(no recorded savings yet — cc-saver will accumulate stats as it intercepts reads, image fetches, etc.)"
+            "(no recorded savings yet — tokenwise will accumulate stats as it intercepts reads, image fetches, etc.)"
         )
 
     return "\n".join(out)

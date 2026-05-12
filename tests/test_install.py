@@ -1,12 +1,12 @@
-"""Tests for cc_saver.install — Phase 15."""
+"""Tests for tokenwise.install — Phase 15."""
 from __future__ import annotations
 
 import json
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-import cc_saver.install as install_mod
-from cc_saver import install
+import tokenwise.install as install_mod
+from tokenwise import install
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -21,7 +21,7 @@ def _fake_home(tmp_path: Path) -> Path:
 
 
 def _patch_home(monkeypatch, home: Path):
-    """Monkeypatch Path.home() to return *home* and re-derive cc_saver.install functions."""
+    """Monkeypatch Path.home() to return *home* and re-derive tokenwise.install functions."""
     monkeypatch.setattr(Path, "home", staticmethod(lambda: home))
 
 
@@ -33,7 +33,7 @@ def _patch_home(monkeypatch, home: Path):
 def test_patch_settings_json_missing_file(tmp_path, monkeypatch):
     home = _fake_home(tmp_path)
     _patch_home(monkeypatch, home)
-    monkeypatch.setattr(install, "cc_saver_binary", lambda: "cc-saver")
+    monkeypatch.setattr(install, "tokenwise_binary", lambda: "tokenwise")
 
     ok, detail = install.patch_settings_json()
 
@@ -47,12 +47,12 @@ def test_patch_settings_json_missing_file(tmp_path, monkeypatch):
     assert "PreToolUse" in hooks
     assert "PostToolUse" in hooks
 
-    # Check at least one hook command references cc-saver
+    # Check at least one hook command references tokenwise
     ss_hooks = hooks["SessionStart"][0]["hooks"]
-    assert any("cc-saver" in h["command"] for h in ss_hooks)
+    assert any("tokenwise" in h["command"] for h in ss_hooks)
 
     # Permission allowlist
-    assert "Bash(cc-saver:*)" in data["permissions"]["allow"]
+    assert "Bash(tokenwise:*)" in data["permissions"]["allow"]
 
 
 # ---------------------------------------------------------------------------
@@ -63,7 +63,7 @@ def test_patch_settings_json_missing_file(tmp_path, monkeypatch):
 def test_patch_settings_json_preserves_existing_hooks(tmp_path, monkeypatch):
     home = _fake_home(tmp_path)
     _patch_home(monkeypatch, home)
-    monkeypatch.setattr(install, "cc_saver_binary", lambda: "cc-saver")
+    monkeypatch.setattr(install, "tokenwise_binary", lambda: "tokenwise")
 
     claude_dir = home / ".claude"
     claude_dir.mkdir(parents=True, exist_ok=True)
@@ -90,7 +90,7 @@ def test_patch_settings_json_preserves_existing_hooks(tmp_path, monkeypatch):
     # Existing unrelated entry must survive
     assert any("other-tool" in c for c in commands_flat)
     # Our entries must be present too
-    assert any("cc-saver" in c for c in commands_flat)
+    assert any("tokenwise" in c for c in commands_flat)
 
 
 # ---------------------------------------------------------------------------
@@ -101,19 +101,19 @@ def test_patch_settings_json_preserves_existing_hooks(tmp_path, monkeypatch):
 def test_patch_settings_json_idempotent(tmp_path, monkeypatch):
     home = _fake_home(tmp_path)
     _patch_home(monkeypatch, home)
-    monkeypatch.setattr(install, "cc_saver_binary", lambda: "cc-saver")
+    monkeypatch.setattr(install, "tokenwise_binary", lambda: "tokenwise")
 
     install.patch_settings_json()
     install.patch_settings_json()
 
     data = json.loads((home / ".claude" / "settings.json").read_text())
     ss_entries = data["hooks"]["SessionStart"]
-    # Should only have ONE cc-saver SessionStart entry, not two
+    # Should only have ONE tokenwise SessionStart entry, not two
     cc_commands = [
         h["command"]
         for entry in ss_entries
         for h in entry.get("hooks", [])
-        if "cc-saver" in h["command"]
+        if "tokenwise" in h["command"]
     ]
     assert len(cc_commands) == 1, f"expected 1, got {len(cc_commands)}: {cc_commands}"
 
@@ -123,10 +123,10 @@ def test_patch_settings_json_idempotent(tmp_path, monkeypatch):
 # ---------------------------------------------------------------------------
 
 
-def test_unpatch_settings_json_removes_cc_saver(tmp_path, monkeypatch):
+def test_unpatch_settings_json_removes_tokenwise(tmp_path, monkeypatch):
     home = _fake_home(tmp_path)
     _patch_home(monkeypatch, home)
-    monkeypatch.setattr(install, "cc_saver_binary", lambda: "cc-saver")
+    monkeypatch.setattr(install, "tokenwise_binary", lambda: "tokenwise")
 
     install.patch_settings_json()
     install.unpatch_settings_json()
@@ -137,8 +137,8 @@ def test_unpatch_settings_json_removes_cc_saver(tmp_path, monkeypatch):
     for event, entries in hooks.items():
         for entry in entries:
             for h in entry.get("hooks", []):
-                assert "cc-saver" not in h.get("command", ""), (
-                    f"cc-saver found in event {event}: {h}"
+                assert "tokenwise" not in h.get("command", ""), (
+                    f"tokenwise found in event {event}: {h}"
                 )
 
 
@@ -157,7 +157,7 @@ def test_patch_claude_md_missing_file(tmp_path, monkeypatch):
     content = md_path.read_text()
     assert install.CLAUDE_MD_BEGIN in content
     assert install.CLAUDE_MD_END in content
-    assert "cc-saver" in content
+    assert "tokenwise" in content
 
 
 # ---------------------------------------------------------------------------
@@ -219,7 +219,7 @@ def test_unpatch_claude_md_removes_block(tmp_path, monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# 9. write_skill — creates SKILL.md under ~/.claude/skills/cc-saver/
+# 9. write_skill — creates SKILL.md under ~/.claude/skills/tokenwise/
 # ---------------------------------------------------------------------------
 
 
@@ -228,10 +228,10 @@ def test_write_skill(tmp_path, monkeypatch):
     _patch_home(monkeypatch, home)
 
     install.write_skill()
-    skill_path = home / ".claude" / "skills" / "cc-saver" / "SKILL.md"
+    skill_path = home / ".claude" / "skills" / "tokenwise" / "SKILL.md"
     assert skill_path.exists()
     content = skill_path.read_text()
-    assert "name: cc-saver" in content
+    assert "name: tokenwise" in content
     assert "description:" in content
 
 
@@ -245,7 +245,7 @@ def test_remove_skill(tmp_path, monkeypatch):
     _patch_home(monkeypatch, home)
 
     install.write_skill()
-    skill_dir = home / ".claude" / "skills" / "cc-saver"
+    skill_dir = home / ".claude" / "skills" / "tokenwise"
     assert skill_dir.exists()
 
     install.remove_skill()
@@ -253,33 +253,53 @@ def test_remove_skill(tmp_path, monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# 11. install_worker_task — builds correct schtasks args (mocked)
+# 11. install_worker_task — writes HKCU Run key (mocked)
 # ---------------------------------------------------------------------------
 
 
 def test_install_worker_task_correct_args(monkeypatch):
-    calls = []
+    """install_worker_task uses HKCU Run registry key (not schtasks), verified via mock."""
+    written = {}
 
-    def fake_run_schtasks(args):
-        calls.append(args)
-        # First call is /Query (task_exists check) → return non-zero (task absent)
-        if args[0] == "/Query":
-            return 1, "not found"
-        # Second call is /Create
-        return 0, "SUCCESS"
+    class FakeKey:
+        pass
 
-    monkeypatch.setattr(install, "_run_schtasks", fake_run_schtasks)
-    monkeypatch.setattr(install, "cc_saver_binary", lambda: "cc-saver")
+    class FakeWinreg:
+        HKEY_CURRENT_USER = "HKCU"
+        REG_SZ = 1
+        KEY_SET_VALUE = 2
+
+        def OpenKey(self, hive, path, reserved, access):  # noqa: N802
+            return FakeKey()
+
+        def SetValueEx(self, key, name, reserved, reg_type, value):  # noqa: N802
+            written[name] = value
+
+        def CloseKey(self, key):  # noqa: N802
+            pass
+
+    fake_winreg = FakeWinreg()
+
+    import sys
+    import types
+    fake_module = types.ModuleType("winreg")
+    fake_module.HKEY_CURRENT_USER = fake_winreg.HKEY_CURRENT_USER
+    fake_module.REG_SZ = fake_winreg.REG_SZ
+    fake_module.KEY_SET_VALUE = fake_winreg.KEY_SET_VALUE
+    fake_module.OpenKey = fake_winreg.OpenKey
+    fake_module.SetValueEx = fake_winreg.SetValueEx
+    fake_module.CloseKey = fake_winreg.CloseKey
+
+    monkeypatch.setitem(sys.modules, "winreg", fake_module)
+    monkeypatch.setattr(install, "tokenwise_binary", lambda: "tokenwise")
+    monkeypatch.setattr(sys, "platform", "win32")
 
     ok, out = install.install_worker_task()
 
     assert ok is True
-    create_call = next(a for a in calls if "/Create" in a)
-    assert "/TN" in create_call
-    assert install.TASK_WORKER in create_call
-    assert "/SC" in create_call
-    assert "ONLOGON" in create_call
-    assert "--daemon" in " ".join(create_call)
+    assert install.TASK_WORKER in written
+    assert "--daemon" in written[install.TASK_WORKER]
+    assert "tokenwise" in written[install.TASK_WORKER]
 
 
 # ---------------------------------------------------------------------------
@@ -306,7 +326,7 @@ def test_install_uninstall_round_trip(tmp_path, monkeypatch, tmp_data_dir):
     """install_all creates files; uninstall_all removes them. Full hermetic round-trip."""
     home = _fake_home(tmp_path)
     _patch_home(monkeypatch, home)
-    monkeypatch.setattr(install, "cc_saver_binary", lambda: "cc-saver")
+    monkeypatch.setattr(install, "tokenwise_binary", lambda: "tokenwise")
 
     # Mock schtasks so no real Windows calls happen
     def fake_schtasks(args):
@@ -322,15 +342,15 @@ def test_install_uninstall_round_trip(tmp_path, monkeypatch, tmp_data_dir):
     monkeypatch.setattr(install_mod, "paths", install_mod.paths)
 
     with (
-        patch("cc_saver.install.paths.ensure_dirs"),
-        patch("cc_saver.worker.ensure_running", return_value=12345),
+        patch("tokenwise.install.paths.ensure_dirs"),
+        patch("tokenwise.worker.ensure_running", return_value=12345),
     ):
         install_result = install.install_all()
 
     # settings.json, CLAUDE.md, skill must exist
     settings_path = home / ".claude" / "settings.json"
     md_path = home / ".claude" / "CLAUDE.md"
-    skill_path = home / ".claude" / "skills" / "cc-saver" / "SKILL.md"
+    skill_path = home / ".claude" / "skills" / "tokenwise" / "SKILL.md"
 
     assert settings_path.exists(), "settings.json not created"
     assert md_path.exists(), "CLAUDE.md not created"
@@ -348,16 +368,16 @@ def test_install_uninstall_round_trip(tmp_path, monkeypatch, tmp_data_dir):
 
     monkeypatch.setattr(install, "_run_schtasks", fake_schtasks_with_exists)
 
-    with patch("cc_saver.install.paths.worker_pid_path", return_value=tmp_path / "worker.pid"):
+    with patch("tokenwise.install.paths.worker_pid_path", return_value=tmp_path / "worker.pid"):
         install.uninstall_all(purge=False)
 
-    # cc-saver hooks gone from settings.json
+    # tokenwise hooks gone from settings.json
     data = json.loads(settings_path.read_text())
     hooks = data.get("hooks", {})
     for _event, entries in hooks.items():
         for entry in entries:
             for h in entry.get("hooks", []):
-                assert "cc-saver" not in h.get("command", "")
+                assert "tokenwise" not in h.get("command", "")
 
     # CLAUDE.md block gone
     md_content = md_path.read_text()

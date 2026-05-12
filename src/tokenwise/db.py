@@ -16,7 +16,7 @@ from . import paths
 SCHEMA_VERSION = 1
 EMBED_DIM = 384  # BAAI/bge-small-en-v1.5
 
-_LOG = logging.getLogger("cc_saver.db")
+_LOG = logging.getLogger("tokenwise.db")
 
 
 class VecExtensionUnavailable(Exception):

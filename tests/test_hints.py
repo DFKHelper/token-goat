@@ -3,8 +3,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from cc_saver import db, session
-from cc_saver.hints import (
+from tokenwise import db, session
+from tokenwise.hints import (
     LARGE_FILE_LINE_THRESHOLD,
     _est_tokens_from_lines,
     build_read_hint,
@@ -207,7 +207,7 @@ class TestCachedNonOverlappingRange:
 
 
 # ---------------------------------------------------------------------------
-# Case 6: symbol-only prior reads → mention cc-saver read
+# Case 6: symbol-only prior reads → mention tokenwise read
 # ---------------------------------------------------------------------------
 
 
@@ -226,7 +226,7 @@ class TestSymbolOnlyCache:
             cwd=None,
         )
         assert hint is not None
-        assert "cc-saver read" in hint
+        assert "tokenwise read" in hint
         assert "MyClass" in hint
         assert "symbol" in hint.lower()
 
@@ -250,7 +250,7 @@ class TestSymbolOnlyCache:
 
 
 # ---------------------------------------------------------------------------
-# Case 7: large indexed file, not in session cache → cc-saver read suggestion
+# Case 7: large indexed file, not in session cache → tokenwise read suggestion
 # ---------------------------------------------------------------------------
 
 
@@ -265,7 +265,7 @@ class TestLargeIndexedFile:
         _make_large_file(src_file, n_lines=LARGE_FILE_LINE_THRESHOLD + 100)
 
         # Index a symbol into the project DB
-        from cc_saver.project import find_project
+        from tokenwise.project import find_project
         proj = find_project(tmp_path)
         assert proj is not None
 
@@ -288,7 +288,7 @@ class TestLargeIndexedFile:
             cwd=str(tmp_path),
         )
         assert hint is not None
-        assert "cc-saver read" in hint
+        assert "tokenwise read" in hint
         assert "MyClass" in hint
         assert "symbol" in hint.lower()
         assert "85%" in hint

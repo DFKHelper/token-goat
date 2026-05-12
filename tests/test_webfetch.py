@@ -6,7 +6,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from cc_saver import webfetch
+from tokenwise import webfetch
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -45,7 +45,7 @@ def _make_large_png_bytes() -> bytes:
     img.save(buf, "PNG")
     data = buf.getvalue()
     # Pad if still under threshold
-    from cc_saver import image_shrink
+    from tokenwise import image_shrink
     while len(data) <= image_shrink.SIZE_THRESHOLD_BYTES:
         data += b"\x00" * 10240
     return data
@@ -299,7 +299,7 @@ class TestFetchUrlShrink:
         body = _make_large_png_bytes()
 
         # Only run if we actually made a large enough body
-        from cc_saver import image_shrink as _is
+        from tokenwise import image_shrink as _is
         if len(body) <= _is.SIZE_THRESHOLD_BYTES:
             pytest.skip("Could not synthesize large enough PNG body")
 
@@ -311,23 +311,23 @@ class TestFetchUrlShrink:
 
         # The returned path should exist
         assert result.exists()
-        from cc_saver import paths as _paths
+        from tokenwise import paths as _paths
         # Shrunken files land in image_cache_dir, not web_cache_dir
         assert result.parent in (_paths.image_cache_dir(), _paths.web_cache_dir())
 
 
 # ---------------------------------------------------------------------------
-# 9. CLI: cc-saver fetch-image <bad-url> exits 0 with stderr message
+# 9. CLI: tokenwise fetch-image <bad-url> exits 0 with stderr message
 # ---------------------------------------------------------------------------
 
 class TestFetchImageCli:
     def test_bad_url_exits_zero_with_stderr(self, tmp_data_dir):
         from typer.testing import CliRunner
 
-        from cc_saver.cli import app
+        from tokenwise.cli import app
 
         runner = CliRunner()
-        result = runner.invoke(app, ["fetch-image", "https://this-host-definitely-does-not-exist-cc-saver.invalid/photo.jpg"])
+        result = runner.invoke(app, ["fetch-image", "https://this-host-definitely-does-not-exist-tokenwise.invalid/photo.jpg"])
 
         assert result.exit_code == 0, f"Expected exit 0, got {result.exit_code}"
         # output contains the error message (typer CliRunner merges stderr into output by default)

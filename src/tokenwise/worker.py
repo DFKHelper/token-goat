@@ -17,7 +17,7 @@ import psutil
 from . import db, parser, paths
 from .project import Project
 
-_LOG = logging.getLogger("cc_saver.worker")
+_LOG = logging.getLogger("tokenwise.worker")
 
 # Heartbeat interval (seconds)
 HEARTBEAT_INTERVAL = 30.0
@@ -239,11 +239,11 @@ def evict_image_cache_if_over_limit() -> tuple[int, int]:
 # ---------------------------------------------------------------------------
 
 def spawn_detached() -> int | None:
-    """Spawn `cc-saver worker --daemon` as a detached background process.
+    """Spawn `tokenwise worker --daemon` as a detached background process.
 
     Returns PID or None on failure.
     """
-    cmd = ["cc-saver", "worker", "--daemon"]
+    cmd = ["tokenwise", "worker", "--daemon"]
 
     creationflags = 0
     if sys.platform == "win32":

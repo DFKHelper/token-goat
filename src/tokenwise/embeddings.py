@@ -13,7 +13,7 @@ from dataclasses import dataclass
 from . import db, paths
 from .project import Project
 
-_LOG = logging.getLogger("cc_saver.embeddings")
+_LOG = logging.getLogger("tokenwise.embeddings")
 
 DEFAULT_MODEL = "BAAI/bge-small-en-v1.5"
 DEFAULT_DIM = 384

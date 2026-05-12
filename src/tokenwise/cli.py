@@ -10,7 +10,7 @@ import typer
 
 from . import hooks_cli
 
-app = typer.Typer(name="cc-saver", no_args_is_help=True)
+app = typer.Typer(name="tokenwise", no_args_is_help=True)
 hook_app = typer.Typer(name="hook", no_args_is_help=True)
 config_app = typer.Typer(name="config", no_args_is_help=True)
 
@@ -163,8 +163,8 @@ def semantic(
         hits = embeddings.semantic_search(proj, query, k=k)
     except embeddings.EmbeddingsUnavailable as e:
         typer.echo(
-            f"Embeddings unavailable ({e}). Try `cc-saver index --embeddings` first, "
-            "or use `cc-saver symbol`/`cc-saver map` for non-semantic navigation."
+            f"Embeddings unavailable ({e}). Try `tokenwise index --embeddings` first, "
+            "or use `tokenwise symbol`/`tokenwise map` for non-semantic navigation."
         )
         raise typer.Exit(0) from None
 
@@ -411,13 +411,13 @@ def cmd_gdrive_auth(
     # Check ADC
     creds = gdrive._try_adc()
     if creds is not None:
-        typer.echo("Google Application Default Credentials detected. cc-saver gdrive-fetch will work.")
+        typer.echo("Google Application Default Credentials detected. tokenwise gdrive-fetch will work.")
         raise typer.Exit(0)
 
     # Check existing stored creds
     creds = gdrive._try_stored_oauth()
     if creds is not None:
-        typer.echo("Stored OAuth credentials valid. cc-saver gdrive-fetch will work.")
+        typer.echo("Stored OAuth credentials valid. tokenwise gdrive-fetch will work.")
         raise typer.Exit(0)
 
     # Need to set up OAuth
@@ -431,9 +431,9 @@ def cmd_gdrive_auth(
         typer.echo("  1. Visit https://console.cloud.google.com/apis/credentials")
         typer.echo("  2. Create OAuth 2.0 Client ID (type: Desktop)")
         typer.echo("  3. Download the JSON, then run:")
-        typer.echo("       cc-saver gdrive-auth --client-secrets path/to/client_secret.json")
+        typer.echo("       tokenwise gdrive-auth --client-secrets path/to/client_secret.json")
         typer.echo("")
-        typer.echo("Option C: skip — cc-saver gdrive-fetch will fall back to a clear error,")
+        typer.echo("Option C: skip — tokenwise gdrive-fetch will fall back to a clear error,")
         typer.echo("and Claude's existing Drive MCP will be used directly (no token-savings).")
         raise typer.Exit(0)
 
@@ -443,7 +443,7 @@ def cmd_gdrive_auth(
 
     try:
         out_path = gdrive.run_oauth_oob_flow(client_secrets)
-        typer.echo(f"Credentials saved to {out_path}. cc-saver gdrive-fetch will work.")
+        typer.echo(f"Credentials saved to {out_path}. tokenwise gdrive-fetch will work.")
     except Exception as e:  # noqa: BLE001
         typer.echo(f"OAuth flow failed: {e}", err=True)
         raise typer.Exit(1) from None
@@ -568,7 +568,7 @@ def doctor():  # noqa: C901
         prefix = "WARN" if warn else "FAIL"
         typer.echo(f"  [{prefix}] {label}: {value}")
 
-    typer.echo("\ncc-saver doctor\n")
+    typer.echo("\ntokenwise doctor\n")
 
     # ------------------------------------------------------------------
     # 1. Versions
@@ -578,10 +578,10 @@ def doctor():  # noqa: C901
     ok("Python", py_ver)
     try:
         import importlib.metadata
-        cc_ver = importlib.metadata.version("cc-saver")
+        cc_ver = importlib.metadata.version("tokenwise")
     except Exception:  # noqa: BLE001
         cc_ver = "unknown"
-    ok("cc-saver", cc_ver)
+    ok("tokenwise", cc_ver)
     try:
         uv_out = subprocess.run(
             ["uv", "--version"], capture_output=True, text=True, timeout=5
@@ -740,24 +740,29 @@ def doctor():  # noqa: C901
         ok("status", "not running")
 
     # ------------------------------------------------------------------
-    # 10. Scheduled tasks
+    # 10. Scheduled tasks / autostart
     # ------------------------------------------------------------------
     typer.echo("\nScheduled tasks")
-    try:
-        sched_out = subprocess.run(
-            ["schtasks", "/query", "/tn", "cc-saver-worker"],
-            capture_output=True, text=True, timeout=10,
-        )
-        if sched_out.returncode == 0:
-            lines = [ln.strip() for ln in sched_out.stdout.splitlines() if ln.strip()]
-            state_line = next(
-                (ln for ln in lines if "Status" in ln or "Ready" in ln or "Running" in ln), None
+    # Worker uses HKCU Run registry key (no admin required); update uses schtasks WEEKLY.
+    import sys as _sys
+    if _sys.platform == "win32":
+        try:
+            import winreg  # type: ignore[import]
+            _rk = winreg.OpenKey(
+                winreg.HKEY_CURRENT_USER,
+                r"Software\Microsoft\Windows\CurrentVersion\Run",
+                0,
+                winreg.KEY_READ,
             )
-            ok("cc-saver-worker", state_line or "found")
-        else:
-            flag("cc-saver-worker", "NOT INSTALLED (run `cc-saver install`)", warn=True)
-    except Exception:  # noqa: BLE001
-        flag("cc-saver-worker", "NOT INSTALLED (run `cc-saver install`)", warn=True)
+            _val, _ = winreg.QueryValueEx(_rk, "tokenwise-worker")
+            winreg.CloseKey(_rk)
+            ok("tokenwise-worker", f"Run key: {_val}")
+        except FileNotFoundError:
+            flag("tokenwise-worker", "NOT INSTALLED (run `tokenwise install`)", warn=True)
+        except Exception as _e:  # noqa: BLE001
+            flag("tokenwise-worker", f"registry error: {_e}", warn=True)
+    else:
+        flag("tokenwise-worker", "non-Windows: skipped", warn=False)
 
     # ------------------------------------------------------------------
     # 11. Recent log
@@ -802,25 +807,25 @@ def cmd_install() -> None:
     from . import install as inst  # noqa: PLC0415
 
     result = inst.install_all()
-    typer.echo("cc-saver install:")
+    typer.echo("tokenwise install:")
     for step, detail in result.items():
         typer.echo(f"  {step}: {detail}")
     typer.echo("")
-    typer.echo("All set. cc-saver will be invisible from here on.")
-    typer.echo("Run `cc-saver doctor` anytime to check status.")
+    typer.echo("All set. tokenwise will be invisible from here on.")
+    typer.echo("Run `tokenwise doctor` anytime to check status.")
     typer.echo("Defender exclusion (optional, for max perf):")
-    typer.echo(r'  Add-MpPreference -ExclusionPath "$env:LOCALAPPDATA\Zelys\cc-saver"')
+    typer.echo(r'  Add-MpPreference -ExclusionPath "$env:LOCALAPPDATA\Zelys\tokenwise"')
 
 
 @app.command("uninstall")
 def cmd_uninstall(
-    purge: bool = typer.Option(False, "--purge", help=r"Also delete %LOCALAPPDATA%\cc-saver"),
+    purge: bool = typer.Option(False, "--purge", help=r"Also delete %LOCALAPPDATA%\tokenwise"),
 ) -> None:
     """Cleanly reverse install."""
     from . import install as inst  # noqa: PLC0415
 
     result = inst.uninstall_all(purge=purge)
-    typer.echo("cc-saver uninstall:")
+    typer.echo("tokenwise uninstall:")
     for step, detail in result.items():
         typer.echo(f"  {step}: {detail}")
 

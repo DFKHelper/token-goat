@@ -5,7 +5,7 @@ import json
 import subprocess
 import sys
 
-from cc_saver import hooks_cli, session
+from tokenwise import hooks_cli, session
 
 # ---------------------------------------------------------------------------
 # Direct handler tests
@@ -115,10 +115,10 @@ class TestDispatcherPreRead:
 
 class TestPreReadCli:
     def _run_hook(self, payload: dict, tmp_data_dir) -> dict:
-        """Run `cc-saver hook pre-read` as a subprocess with JSON on stdin."""
+        """Run `tokenwise hook pre-read` as a subprocess with JSON on stdin."""
         raw = json.dumps(payload)
         proc = subprocess.run(
-            [sys.executable, "-m", "cc_saver.cli", "hook", "pre-read"],
+            [sys.executable, "-m", "tokenwise.cli", "hook", "pre-read"],
             input=raw,
             capture_output=True,
             text=True,
@@ -135,7 +135,7 @@ class TestPreReadCli:
     def test_cli_garbage_payload_continue(self, tmp_data_dir):
         """Garbage JSON payload → subprocess still exits 0, returns continue:true."""
         proc = subprocess.run(
-            [sys.executable, "-m", "cc_saver.cli", "hook", "pre-read"],
+            [sys.executable, "-m", "tokenwise.cli", "hook", "pre-read"],
             input="not-json-at-all",
             capture_output=True,
             text=True,

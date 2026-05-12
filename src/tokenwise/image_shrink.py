@@ -8,7 +8,7 @@ from pathlib import Path
 
 from . import paths
 
-_LOG = logging.getLogger("cc_saver.image_shrink")
+_LOG = logging.getLogger("tokenwise.image_shrink")
 
 # Behavior tuning
 MAX_LONG_EDGE = 1024

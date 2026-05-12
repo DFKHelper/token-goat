@@ -1,6 +1,6 @@
 """Tests for project detection and path canonicalization."""
 
-from cc_saver.project import canonicalize, find_project, project_hash
+from tokenwise.project import canonicalize, find_project, project_hash
 
 
 def test_canonicalize_lowercases_windows_drive(tmp_path):
