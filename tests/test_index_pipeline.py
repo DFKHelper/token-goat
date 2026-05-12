@@ -203,3 +203,60 @@ def test_summary_has_required_keys(ts_project):
 def test_summary_duration_is_positive(ts_project):
     summary = index_project(ts_project, full=True)
     assert summary["duration_sec"] > 0
+
+
+# ---------------------------------------------------------------------------
+# Light indexers (Liquid, Markdown, HTML, JSON)
+# ---------------------------------------------------------------------------
+
+
+def test_liquid_project_index(tmp_path, tmp_data_dir):
+    """Index a Liquid project and verify sections table is populated."""
+    proj_root = tmp_path / "liquid_sample"
+    shutil.copytree(FIXTURE_DIR / "liquid_sample", proj_root)
+    proj = _make_project(proj_root)
+
+    summary = index_project(proj, full=True)
+    assert summary["indexed"] >= 1
+    assert "liquid" in summary["languages"]
+
+    # Verify sections table has entries
+    with db.open_project(proj.hash) as conn:
+        rows = conn.execute("SELECT COUNT(*) as cnt FROM sections").fetchone()
+        assert rows["cnt"] > 0
+
+
+def test_markdown_project_index(tmp_path, tmp_data_dir):
+    """Index a Markdown project and verify sections table is populated."""
+    proj_root = tmp_path / "md_sample"
+    shutil.copytree(FIXTURE_DIR / "md_sample", proj_root)
+    proj = _make_project(proj_root)
+
+    summary = index_project(proj, full=True)
+    assert summary["indexed"] >= 1
+    assert "markdown" in summary["languages"]
+
+    # Verify sections and symbols have entries
+    with db.open_project(proj.hash) as conn:
+        sections = conn.execute("SELECT COUNT(*) as cnt FROM sections").fetchone()
+        symbols = conn.execute("SELECT COUNT(*) as cnt FROM symbols").fetchone()
+        assert sections["cnt"] > 0
+        assert symbols["cnt"] > 0
+
+
+def test_html_project_index(tmp_path, tmp_data_dir):
+    """Index an HTML project and verify symbols table is populated."""
+    proj_root = tmp_path / "html_sample"
+    shutil.copytree(FIXTURE_DIR / "html_sample", proj_root)
+    proj = _make_project(proj_root)
+
+    summary = index_project(proj, full=True)
+    assert summary["indexed"] >= 1
+    assert "html" in summary["languages"]
+
+    # Verify symbols table has id/class entries
+    with db.open_project(proj.hash) as conn:
+        rows = conn.execute(
+            "SELECT COUNT(*) as cnt FROM symbols WHERE kind IN ('html_id', 'html_class')"
+        ).fetchone()
+        assert rows["cnt"] > 0

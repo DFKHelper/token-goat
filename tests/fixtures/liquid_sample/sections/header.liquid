@@ -1,0 +1,14 @@
+<header class="site-header">
+  <h1>{{ shop.name }}</h1>
+  {% include 'social-icons' %}
+  {% section 'navigation' %}
+</header>
+
+{% schema %}
+{
+  "name": "Header",
+  "settings": [
+    { "type": "color", "id": "bg", "default": "#ffffff" }
+  ]
+}
+{% endschema %}

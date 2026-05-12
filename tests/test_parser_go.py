@@ -22,14 +22,14 @@ def go_extracted(go_source):
 
 
 def test_extract_returns_three_lists(go_extracted):
-    symbols, refs, imp_exp = go_extracted
+    symbols, refs, imp_exp, _ = go_extracted
     assert isinstance(symbols, list)
     assert isinstance(refs, list)
     assert isinstance(imp_exp, list)
 
 
 def test_main_function_extracted(go_extracted):
-    symbols, _, _ = go_extracted
+    symbols, _, _, _ = go_extracted
     names = {s.name for s in symbols}
     assert "main" in names
     main = next(s for s in symbols if s.name == "main")
@@ -37,7 +37,7 @@ def test_main_function_extracted(go_extracted):
 
 
 def test_newserver_function_extracted(go_extracted):
-    symbols, _, _ = go_extracted
+    symbols, _, _, _ = go_extracted
     names = {s.name for s in symbols}
     assert "NewServer" in names
     ns = next(s for s in symbols if s.name == "NewServer")
@@ -45,7 +45,7 @@ def test_newserver_function_extracted(go_extracted):
 
 
 def test_run_method_extracted(go_extracted):
-    symbols, _, _ = go_extracted
+    symbols, _, _, _ = go_extracted
     names = {s.name for s in symbols}
     assert "Run" in names
     run = next(s for s in symbols if s.name == "Run")
@@ -53,7 +53,7 @@ def test_run_method_extracted(go_extracted):
 
 
 def test_server_struct_extracted(go_extracted):
-    symbols, _, _ = go_extracted
+    symbols, _, _, _ = go_extracted
     names = {s.name for s in symbols}
     assert "Server" in names
     server = next(s for s in symbols if s.name == "Server")
@@ -61,7 +61,7 @@ def test_server_struct_extracted(go_extracted):
 
 
 def test_handler_interface_extracted(go_extracted):
-    symbols, _, _ = go_extracted
+    symbols, _, _, _ = go_extracted
     names = {s.name for s in symbols}
     assert "Handler" in names
     handler = next(s for s in symbols if s.name == "Handler")
@@ -69,7 +69,7 @@ def test_handler_interface_extracted(go_extracted):
 
 
 def test_version_const_extracted(go_extracted):
-    symbols, _, _ = go_extracted
+    symbols, _, _, _ = go_extracted
     names = {s.name for s in symbols}
     assert "Version" in names
     version = next(s for s in symbols if s.name == "Version")
@@ -77,7 +77,7 @@ def test_version_const_extracted(go_extracted):
 
 
 def test_defaultport_var_extracted(go_extracted):
-    symbols, _, _ = go_extracted
+    symbols, _, _, _ = go_extracted
     names = {s.name for s in symbols}
     assert "defaultPort" in names
     dp = next(s for s in symbols if s.name == "defaultPort")
@@ -85,25 +85,25 @@ def test_defaultport_var_extracted(go_extracted):
 
 
 def test_imports_include_fmt(go_extracted):
-    _, _, imp_exp = go_extracted
+    _, _, imp_exp, _ = go_extracted
     import_targets = {ie.target for ie in imp_exp if ie.kind == "import"}
     assert "fmt" in import_targets
 
 
 def test_imports_include_errors(go_extracted):
-    _, _, imp_exp = go_extracted
+    _, _, imp_exp, _ = go_extracted
     import_targets = {ie.target for ie in imp_exp if ie.kind == "import"}
     assert "errors" in import_targets
 
 
 def test_refs_include_newserver_call(go_extracted):
-    _, refs, _ = go_extracted
+    _, refs, _, _ = go_extracted
     ref_names = {r.name for r in refs}
     assert "NewServer" in ref_names
 
 
 def test_ref_has_line_and_context(go_extracted):
-    _, refs, _ = go_extracted
+    _, refs, _, _ = go_extracted
     ns_refs = [r for r in refs if r.name == "NewServer"]
     assert len(ns_refs) > 0
     for r in ns_refs:
@@ -112,27 +112,27 @@ def test_ref_has_line_and_context(go_extracted):
 
 
 def test_function_has_signature(go_extracted):
-    symbols, _, _ = go_extracted
+    symbols, _, _, _ = go_extracted
     ns = next(s for s in symbols if s.name == "NewServer")
     assert ns.signature is not None
     assert "NewServer" in ns.signature
 
 
 def test_method_has_signature(go_extracted):
-    symbols, _, _ = go_extracted
+    symbols, _, _, _ = go_extracted
     run = next(s for s in symbols if s.name == "Run")
     assert run.signature is not None
     assert "Run" in run.signature
 
 
 def test_no_single_char_refs(go_extracted):
-    _, refs, _ = go_extracted
+    _, refs, _, _ = go_extracted
     for r in refs:
         assert len(r.name) > 1, f"single-char ref {r.name!r} should be filtered"
 
 
 def test_line_numbers_are_one_indexed(go_extracted):
-    symbols, _, _ = go_extracted
+    symbols, _, _, _ = go_extracted
     for s in symbols:
         assert s.line >= 1, f"symbol {s.name} has zero-indexed line {s.line}"
 
@@ -153,7 +153,7 @@ const (
     AppName = "myapp"
 )
 """
-    symbols, _, _ = extract(src, "consts.go")
+    symbols, _, _, _ = extract(src, "consts.go")
     names = {s.name for s in symbols if s.kind == "const"}
     assert "MaxConn" in names
     assert "Debug" in names

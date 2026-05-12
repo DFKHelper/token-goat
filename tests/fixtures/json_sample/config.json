@@ -1,0 +1,13 @@
+{
+  "name": "test-project",
+  "version": "1.0.0",
+  "description": "Test configuration",
+  "scripts": {
+    "build": "tsc",
+    "test": "pytest"
+  },
+  "dependencies": {
+    "lodash": "^4.17.21",
+    "axios": "^0.27.2"
+  }
+}

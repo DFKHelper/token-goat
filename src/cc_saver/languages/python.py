@@ -5,7 +5,7 @@ import re
 
 import tree_sitter_language_pack as tlp
 
-from ..parser import ImpExp, Ref, Symbol
+from ..parser import ImpExp, Ref, Section, Symbol
 
 # ---------------------------------------------------------------------------
 # Noise filter for call-site refs
@@ -100,7 +100,7 @@ def _extract_refs(source: bytes) -> list[Ref]:
     return refs
 
 
-def extract(source: bytes, rel_path: str) -> tuple[list[Symbol], list[Ref], list[ImpExp]]:
+def extract(source: bytes, rel_path: str) -> tuple[list[Symbol], list[Ref], list[ImpExp], list[Section]]:
     """Extract symbols, refs, and imports from a Python file."""
     text = source.decode("utf-8", errors="replace")
     cfg = tlp.ProcessConfig(
@@ -113,7 +113,7 @@ def extract(source: bytes, rel_path: str) -> tuple[list[Symbol], list[Ref], list
     try:
         result = tlp.process(text, cfg)
     except Exception:
-        return [], [], []
+        return [], [], [], []
 
     symbols: list[Symbol] = []
     imp_exp: list[ImpExp] = []
@@ -191,4 +191,4 @@ def extract(source: bytes, rel_path: str) -> tuple[list[Symbol], list[Ref], list
     # --- refs ---
     refs = _extract_refs(source)
 
-    return symbols, refs, imp_exp
+    return symbols, refs, imp_exp, []

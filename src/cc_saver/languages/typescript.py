@@ -6,7 +6,7 @@ import re
 
 import tree_sitter_language_pack as tlp
 
-from ..parser import ImpExp, Ref, Symbol
+from ..parser import ImpExp, Ref, Section, Symbol
 
 # ---------------------------------------------------------------------------
 # ABI special-case config (tunable via caller meta, not exposed in CLI yet)
@@ -74,7 +74,7 @@ def _extract_abi(source: bytes) -> tuple[list[Symbol], list[Ref], list[ImpExp]]:
         if len(symbols) >= _ABI_MAX_SYMBOLS:
             break
 
-    return symbols, [], []
+    return symbols, [], [], []
 
 # ---------------------------------------------------------------------------
 # Noise filter for call-site refs
@@ -191,7 +191,7 @@ def extract(
     rel_path: str,
     *,
     meta: dict | None = None,
-) -> tuple[list[Symbol], list[Ref], list[ImpExp]]:
+) -> tuple[list[Symbol], list[Ref], list[ImpExp], list[Section]]:
     """Extract symbols, refs, and imports/exports from a TS/TSX/JS/JSX file.
 
     ``meta`` is an optional dict supporting:
@@ -207,9 +207,9 @@ def extract(
 
     # ABI fast path: skip expensive structure walk for huge generated type files
     if len(source) >= abi_threshold and _is_abi_file(source, rel_path, threshold=abi_threshold):
-        syms, refs, ie = _extract_abi(source)
+        syms, refs, ie, _ = _extract_abi(source)
         # Honour caller-supplied cap
-        return syms[:abi_max], refs, ie
+        return syms[:abi_max], refs, ie, []
 
     # Detect language for tlp
     lower = rel_path.lower()
@@ -231,7 +231,7 @@ def extract(
     try:
         result = tlp.process(text, cfg)
     except Exception:
-        return [], [], []
+        return [], [], [], []
 
     symbols: list[Symbol] = []
     imp_exp: list[ImpExp] = []
@@ -346,4 +346,4 @@ def extract(
     # --- refs via regex ---
     refs = _extract_refs(source)
 
-    return symbols, refs, imp_exp
+    return symbols, refs, imp_exp, []

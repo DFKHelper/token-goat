@@ -22,14 +22,14 @@ def rust_extracted(rust_source):
 
 
 def test_extract_returns_three_lists(rust_extracted):
-    symbols, refs, imp_exp = rust_extracted
+    symbols, refs, imp_exp, _ = rust_extracted
     assert isinstance(symbols, list)
     assert isinstance(refs, list)
     assert isinstance(imp_exp, list)
 
 
 def test_main_function_extracted(rust_extracted):
-    symbols, _, _ = rust_extracted
+    symbols, _, _, _ = rust_extracted
     names = {s.name for s in symbols}
     assert "main" in names
     main = next(s for s in symbols if s.name == "main")
@@ -37,7 +37,7 @@ def test_main_function_extracted(rust_extracted):
 
 
 def test_server_struct_extracted(rust_extracted):
-    symbols, _, _ = rust_extracted
+    symbols, _, _, _ = rust_extracted
     names = {s.name for s in symbols}
     assert "Server" in names
     server = next(s for s in symbols if s.name == "Server" and s.kind == "type")
@@ -45,7 +45,7 @@ def test_server_struct_extracted(rust_extracted):
 
 
 def test_handler_trait_extracted(rust_extracted):
-    symbols, _, _ = rust_extracted
+    symbols, _, _, _ = rust_extracted
     names = {s.name for s in symbols}
     assert "Handler" in names
     handler = next(s for s in symbols if s.name == "Handler")
@@ -53,7 +53,7 @@ def test_handler_trait_extracted(rust_extracted):
 
 
 def test_error_enum_extracted(rust_extracted):
-    symbols, _, _ = rust_extracted
+    symbols, _, _, _ = rust_extracted
     names = {s.name for s in symbols}
     assert "Error" in names
     error = next(s for s in symbols if s.name == "Error" and s.kind == "enum")
@@ -61,7 +61,7 @@ def test_error_enum_extracted(rust_extracted):
 
 
 def test_new_method_extracted(rust_extracted):
-    symbols, _, _ = rust_extracted
+    symbols, _, _, _ = rust_extracted
     names = {s.name for s in symbols}
     assert "new" in names
     new = next(s for s in symbols if s.name == "new")
@@ -70,7 +70,7 @@ def test_new_method_extracted(rust_extracted):
 
 
 def test_run_method_extracted(rust_extracted):
-    symbols, _, _ = rust_extracted
+    symbols, _, _, _ = rust_extracted
     names = {s.name for s in symbols}
     assert "run" in names
     run = next(s for s in symbols if s.name == "run")
@@ -79,7 +79,7 @@ def test_run_method_extracted(rust_extracted):
 
 
 def test_version_const_extracted(rust_extracted):
-    symbols, _, _ = rust_extracted
+    symbols, _, _, _ = rust_extracted
     names = {s.name for s in symbols}
     assert "VERSION" in names
     v = next(s for s in symbols if s.name == "VERSION")
@@ -87,39 +87,39 @@ def test_version_const_extracted(rust_extracted):
 
 
 def test_imports_include_hashmap(rust_extracted):
-    _, _, imp_exp = rust_extracted
+    _, _, imp_exp, _ = rust_extracted
     import_targets = {ie.target for ie in imp_exp if ie.kind == "import"}
     assert any("HashMap" in t for t in import_targets)
 
 
 def test_imports_include_fmt(rust_extracted):
-    _, _, imp_exp = rust_extracted
+    _, _, imp_exp, _ = rust_extracted
     import_targets = {ie.target for ie in imp_exp if ie.kind == "import"}
     assert any("fmt" in t for t in import_targets)
 
 
 def test_method_has_signature(rust_extracted):
-    symbols, _, _ = rust_extracted
+    symbols, _, _, _ = rust_extracted
     new = next(s for s in symbols if s.name == "new" and s.kind == "method")
     assert new.signature is not None
     assert "fn new" in new.signature
 
 
 def test_no_single_char_refs(rust_extracted):
-    _, refs, _ = rust_extracted
+    _, refs, _, _ = rust_extracted
     for r in refs:
         assert len(r.name) > 1, f"single-char ref {r.name!r} should be filtered"
 
 
 def test_line_numbers_are_one_indexed(rust_extracted):
-    symbols, _, _ = rust_extracted
+    symbols, _, _, _ = rust_extracted
     for s in symbols:
         assert s.line >= 1, f"symbol {s.name} has zero-indexed line {s.line}"
 
 
 def test_impl_block_recorded(rust_extracted):
     """The impl Server block should produce an 'impl' symbol."""
-    symbols, _, _ = rust_extracted
+    symbols, _, _, _ = rust_extracted
     impl_syms = [s for s in symbols if s.kind == "impl"]
     assert len(impl_syms) >= 1
     assert any(s.name == "Server" for s in impl_syms)

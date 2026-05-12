@@ -25,6 +25,12 @@ LANG_BY_EXT: dict[str, str] = {
     ".pyi": "python",
     ".go": "go",
     ".rs": "rust",
+    ".liquid": "liquid",
+    ".md": "markdown",
+    ".markdown": "markdown",
+    ".html": "html",
+    ".htm": "html",
+    ".json": "json",
 }
 
 # Directories that should never be indexed
@@ -66,6 +72,14 @@ class ImpExp:
 
 
 @dataclass
+class Section:
+    heading: str
+    level: int
+    line: int
+    end_line: int | None = None
+
+
+@dataclass
 class FileIndex:
     rel_path: str
     language: str
@@ -75,10 +89,11 @@ class FileIndex:
     symbols: list[Symbol] = field(default_factory=list)
     refs: list[Ref] = field(default_factory=list)
     imports_exports: list[ImpExp] = field(default_factory=list)
+    sections: list[Section] = field(default_factory=list)
 
 
-# Each language module exposes: extract(source: bytes, rel_path: str) -> tuple[list[Symbol], list[Ref], list[ImpExp]]
-Extractor = Callable[[bytes, str], tuple[list[Symbol], list[Ref], list[ImpExp]]]
+# Each language module exposes: extract(source: bytes, rel_path: str) -> tuple[list[Symbol], list[Ref], list[ImpExp], list[Section]]
+Extractor = Callable[[bytes, str], tuple[list[Symbol], list[Ref], list[ImpExp], list[Section]]]
 
 
 def get_extractor(language: str) -> Extractor | None:
@@ -95,6 +110,18 @@ def get_extractor(language: str) -> Extractor | None:
     if language == "rust":
         from .languages import rust  # noqa: PLC0415
         return rust.extract
+    if language == "liquid":
+        from .languages import liquid  # noqa: PLC0415
+        return liquid.extract
+    if language == "markdown":
+        from .languages import markdown  # noqa: PLC0415
+        return markdown.extract
+    if language == "html":
+        from .languages import html  # noqa: PLC0415
+        return html.extract
+    if language == "json":
+        from .languages import json_idx  # noqa: PLC0415
+        return json_idx.extract
     return None
 
 
@@ -130,7 +157,7 @@ def index_file(project: Project, file_path: Path) -> FileIndex | None:
     if extractor is None:
         return None
     try:
-        symbols, refs, imp_exp = extractor(raw, rel)
+        symbols, refs, imp_exp, sections = extractor(raw, rel)
     except Exception:
         _LOG.exception("extractor crashed on %s", rel)
         return None
@@ -144,13 +171,14 @@ def index_file(project: Project, file_path: Path) -> FileIndex | None:
         symbols=symbols,
         refs=refs,
         imports_exports=imp_exp,
+        sections=sections,
     )
 
 
 def write_file_index(conn, fi: FileIndex) -> None:
     """Replace all rows for this file with the new index."""
     now = int(time.time())
-    # Delete old rows (cascade handles symbols/refs/imports_exports)
+    # Delete old rows (cascade handles symbols/refs/imports_exports/sections)
     conn.execute("DELETE FROM files WHERE rel_path = ?", (fi.rel_path,))
     conn.execute(
         "INSERT INTO files (rel_path, language, size, mtime, content_sha256, indexed_at) "
@@ -174,6 +202,12 @@ def write_file_index(conn, fi: FileIndex) -> None:
             "INSERT INTO imports_exports (file_rel, kind, target, line) "
             "VALUES (?, ?, ?, ?)",
             (fi.rel_path, ie.kind, ie.target, ie.line),
+        )
+    for sec in fi.sections:
+        conn.execute(
+            "INSERT INTO sections (file_rel, heading, level, line, end_line) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (fi.rel_path, sec.heading, sec.level, sec.line, sec.end_line),
         )
 
 

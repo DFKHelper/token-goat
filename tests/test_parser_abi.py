@@ -81,7 +81,7 @@ def test_as_const_with_abi_inputs_detected():
 
 def test_abi_extract_returns_symbols_no_refs_no_imports():
     src = _large_abi_file()
-    symbols, refs, imp_exp = extract(src, "HeroAbi.ts")
+    symbols, refs, imp_exp, _ = extract(src, "HeroAbi.ts")
     assert len(symbols) > 0
     assert len(refs) == 0
     assert len(imp_exp) == 0
@@ -89,14 +89,14 @@ def test_abi_extract_returns_symbols_no_refs_no_imports():
 
 def test_abi_symbols_have_correct_kind():
     src = _large_abi_file()
-    symbols, _, _ = extract(src, "HeroAbi.ts")
+    symbols, _, _, _ = extract(src, "HeroAbi.ts")
     for sym in symbols:
         assert sym.kind == "abi_export", f"{sym.name} has kind {sym.kind!r}, expected 'abi_export'"
 
 
 def test_abi_exports_captured():
     src = _large_abi_file()
-    symbols, _, _ = extract(src, "HeroAbi.ts")
+    symbols, _, _, _ = extract(src, "HeroAbi.ts")
     names = {s.name for s in symbols}
     assert "HeroAbi" in names
     assert "QuestAbi" in names
@@ -105,21 +105,21 @@ def test_abi_exports_captured():
 
 def test_abi_no_duplicate_symbols():
     src = _large_abi_file()
-    symbols, _, _ = extract(src, "HeroAbi.ts")
+    symbols, _, _, _ = extract(src, "HeroAbi.ts")
     names = [s.name for s in symbols]
     assert len(names) == len(set(names)), "Duplicate symbols found in ABI output"
 
 
 def test_abi_symbols_have_line_numbers():
     src = _large_abi_file()
-    symbols, _, _ = extract(src, "HeroAbi.ts")
+    symbols, _, _, _ = extract(src, "HeroAbi.ts")
     for sym in symbols:
         assert sym.line >= 1, f"{sym.name} has line {sym.line}"
 
 
 def test_abi_symbols_have_signatures():
     src = _large_abi_file()
-    symbols, _, _ = extract(src, "HeroAbi.ts")
+    symbols, _, _, _ = extract(src, "HeroAbi.ts")
     for sym in symbols:
         assert sym.signature is not None, f"{sym.name} missing signature"
 
@@ -127,7 +127,7 @@ def test_abi_symbols_have_signatures():
 def test_small_file_falls_through_to_normal_extraction():
     """A file under the threshold should NOT get abi_export kinds."""
     src = _small_abi_file()
-    symbols, refs, imp_exp = extract(src, "HeroAbi.ts")
+    symbols, refs, imp_exp, _ = extract(src, "HeroAbi.ts")
     abi_syms = [s for s in symbols if s.kind == "abi_export"]
     assert len(abi_syms) == 0, "Small file incorrectly treated as ABI"
 
@@ -139,7 +139,7 @@ def test_abi_max_symbols_cap():
         f"export const Export{i} = [] as const;\n".encode() for i in range(600)
     )
     src = _ABI_HEADER + many_exports + _FILLER
-    symbols, _, _ = extract(src, "big.ts", meta={"abi_max_symbols_per_file": 10})
+    symbols, _, _, _ = extract(src, "big.ts", meta={"abi_max_symbols_per_file": 10})
     assert len(symbols) <= 10
 
 
@@ -147,7 +147,7 @@ def test_abi_size_threshold_meta_override():
     """abi_size_threshold meta knob lets callers lower the threshold."""
     src = _small_abi_file()  # only ~428 bytes
     # With threshold lowered to 100 bytes, should trigger ABI mode
-    symbols, refs, _ = extract(src, "HeroAbi.ts", meta={"abi_size_threshold": 100})
+    symbols, refs, _, _ = extract(src, "HeroAbi.ts", meta={"abi_size_threshold": 100})
     abi_syms = [s for s in symbols if s.kind == "abi_export"]
     assert len(abi_syms) > 0
     assert len(refs) == 0
