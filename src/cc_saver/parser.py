@@ -23,7 +23,8 @@ LANG_BY_EXT: dict[str, str] = {
     ".cjs": "javascript",
     ".py": "python",
     ".pyi": "python",
-    # phase 4 adds: .go, .rs
+    ".go": "go",
+    ".rs": "rust",
 }
 
 # Directories that should never be indexed
@@ -88,7 +89,12 @@ def get_extractor(language: str) -> Extractor | None:
     if language == "python":
         from .languages import python  # noqa: PLC0415
         return python.extract
-    # Phase 4 adds: go, rust
+    if language == "go":
+        from .languages import go  # noqa: PLC0415
+        return go.extract
+    if language == "rust":
+        from .languages import rust  # noqa: PLC0415
+        return rust.extract
     return None
 
 
