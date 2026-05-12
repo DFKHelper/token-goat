@@ -74,6 +74,11 @@ def gdrive_cache_dir() -> Path:
     return data_dir() / "gdrive_cache"
 
 
+def web_cache_dir() -> Path:
+    """Path to web_cache/ directory."""
+    return data_dir() / "web_cache"
+
+
 def ensure_dirs() -> None:
     """Create all needed subdirectories idempotently."""
     dirs = [

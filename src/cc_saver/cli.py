@@ -449,10 +449,23 @@ def cmd_gdrive_auth(
         raise typer.Exit(1) from None
 
 
-@app.command()
-def fetch_image(url: str):
-    """Cache image from URL locally."""
-    typer.echo("not yet implemented: fetch-image")
+@app.command("fetch-image")
+def cmd_fetch_image(
+    url: str = typer.Argument(...),
+    json_output: bool = typer.Option(False, "--json"),
+) -> None:
+    """Fetch an image URL (auto-shrunk). Returns the local cached path."""
+    from . import webfetch  # noqa: PLC0415
+
+    try:
+        path = webfetch.fetch_url(url)
+    except Exception as e:  # noqa: BLE001
+        typer.echo(f"WebFetch failed: {e}", err=True)
+        raise typer.Exit(0) from None  # fail-soft
+    if json_output:
+        typer.echo(json.dumps({"path": str(path), "size": path.stat().st_size}))
+    else:
+        typer.echo(str(path))
 
 
 @app.command()
