@@ -610,10 +610,14 @@ def uninstall(purge: bool = typer.Option(False, "--purge")):
     typer.echo("not yet implemented: uninstall")
 
 
-@app.command(hidden=True)
-def worker(daemon: bool = typer.Option(False, "--daemon")):
-    """Background worker daemon."""
-    typer.echo("not yet implemented: worker")
+@app.command("worker", hidden=True)
+def cmd_worker(
+    daemon: bool = typer.Option(False, "--daemon", help="Run as background daemon (otherwise interactive)"),
+) -> None:
+    """Internal: background worker daemon. Should be invoked by the SessionStart watchdog, not directly."""
+    from . import worker  # noqa: PLC0415
+
+    worker.run_daemon()
 
 
 @hook_app.command()
