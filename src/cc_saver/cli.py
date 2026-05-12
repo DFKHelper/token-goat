@@ -1,5 +1,9 @@
 """Typer CLI with stub subcommands."""
+from pathlib import Path
+
 import typer
+
+from . import hooks_cli
 
 app = typer.Typer(name="cc-saver", no_args_is_help=True)
 hook_app = typer.Typer(name="hook", no_args_is_help=True)
@@ -118,33 +122,58 @@ def worker(daemon: bool = typer.Option(False, "--daemon")):
 
 
 @hook_app.command()
-def session_start(input_file: str = typer.Option(None, "--input-file")):
+def session_start(input_file: Path | None = typer.Option(None, "--input-file")):  # noqa: B008
     """Hook: session-start event."""
-    typer.echo('{"continue": true}')
+    try:
+        payload = hooks_cli.read_payload(input_file)
+        result = hooks_cli.dispatch("session-start", payload)
+    except Exception:  # noqa: BLE001
+        result = {"continue": True}
+    hooks_cli.emit(result)
 
 
 @hook_app.command()
-def pre_read(input_file: str = typer.Option(None, "--input-file")):
+def pre_read(input_file: Path | None = typer.Option(None, "--input-file")):  # noqa: B008
     """Hook: pre-read event."""
-    typer.echo('{"continue": true}')
+    try:
+        payload = hooks_cli.read_payload(input_file)
+        result = hooks_cli.dispatch("pre-read", payload)
+    except Exception:  # noqa: BLE001
+        result = {"continue": True}
+    hooks_cli.emit(result)
 
 
 @hook_app.command()
-def pre_fetch(input_file: str = typer.Option(None, "--input-file")):
+def pre_fetch(input_file: Path | None = typer.Option(None, "--input-file")):  # noqa: B008
     """Hook: pre-fetch event."""
-    typer.echo('{"continue": true}')
+    try:
+        payload = hooks_cli.read_payload(input_file)
+        result = hooks_cli.dispatch("pre-fetch", payload)
+    except Exception:  # noqa: BLE001
+        result = {"continue": True}
+    hooks_cli.emit(result)
 
 
 @hook_app.command()
-def post_edit(input_file: str = typer.Option(None, "--input-file")):
+def post_edit(input_file: Path | None = typer.Option(None, "--input-file")):  # noqa: B008
     """Hook: post-edit event."""
-    typer.echo('{"continue": true}')
+    try:
+        payload = hooks_cli.read_payload(input_file)
+        result = hooks_cli.dispatch("post-edit", payload)
+    except Exception:  # noqa: BLE001
+        result = {"continue": True}
+    hooks_cli.emit(result)
 
 
 @hook_app.command()
-def post_read(input_file: str = typer.Option(None, "--input-file")):
+def post_read(input_file: Path | None = typer.Option(None, "--input-file")):  # noqa: B008
     """Hook: post-read event."""
-    typer.echo('{"continue": true}')
+    try:
+        payload = hooks_cli.read_payload(input_file)
+        result = hooks_cli.dispatch("post-read", payload)
+    except Exception:  # noqa: BLE001
+        result = {"continue": True}
+    hooks_cli.emit(result)
 
 
 @config_app.command()
