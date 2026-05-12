@@ -149,10 +149,30 @@ def semantic(query: str, k: int = typer.Option(5, "-k")):
     typer.echo("not yet implemented: semantic")
 
 
-@app.command()
-def map(budget: int = typer.Option(4000, "--budget")):
-    """Generate repo map (PageRank layout)."""
-    typer.echo("not yet implemented: map")
+@app.command("map")
+def cmd_map(
+    budget: int = typer.Option(4000, "--budget", "-b", help="Approximate token budget"),
+    json_output: bool = typer.Option(False, "--json", help="Output structured JSON"),
+) -> None:
+    """Generate a PageRank-ranked, token-budgeted overview of the current project."""
+    from . import repomap  # noqa: PLC0415
+    from .project import find_project  # noqa: PLC0415
+
+    proj = find_project(Path.cwd())
+    if proj is None:
+        typer.echo(
+            "No project detected (no .git, package.json, etc. found). "
+            "Run from a project directory."
+        )
+        raise typer.Exit(code=0)
+
+    if json_output:
+        data = repomap.build_map_json(proj)
+        typer.echo(json.dumps(data, indent=2))
+        return
+
+    text = repomap.build_map(proj, budget_tokens=budget)
+    typer.echo(text)
 
 
 @app.command()
