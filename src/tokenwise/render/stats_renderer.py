@@ -198,7 +198,7 @@ def _table_row(
     else:
         tok_str = pad_l(f"{fg(*C.BLUE)}{_fmt_tokens(tokens)}{RESET}", _COL_TOKENS)
 
-    ev_str = pad_l(f"{fg(*C.TEXT_PRIMARY)}{events}{RESET}", _COL_EVENTS)
+    ev_str = pad_l(f"{fg(*C.TEXT_PRIMARY)}{events:,}{RESET}", _COL_EVENTS)
 
     share_pct = share * 100
     share_color: RGB = C.GREEN5 if share_pct >= 50 else (C.TEXT_PRIMARY if share_pct >= 10 else C.TEXT_MUTED)
@@ -221,7 +221,7 @@ def _render_kpi_section(stats: StatsData) -> list[str]:
         )
 
     spark = totals.sparklines
-    c1 = card("events",       str(totals.events),            _fmt_delta(totals.events_delta),
+    c1 = card("events",       f"{totals.events:,}",           _fmt_delta(totals.events_delta),
               _render_sparkline(spark.events) if spark else None)
     c2 = card("data saved",   _fmt_bytes(totals.bytes),      _fmt_delta(totals.bytes_delta),
               _render_sparkline(spark.bytes)  if spark else None)
@@ -328,7 +328,7 @@ def _render_activity_section(stats: StatsData) -> list[str]:
             c: RGB = C.GREEN5 if d.events / max_events > 0.5 else C.GREEN4
             panel_lines.append(
                 f"{fg(*C.TEXT_MUTED)}{d.date[5:]}  {fg(*c)}●{RESET}  "
-                f"{fg(*C.TEXT_MUTED)}{d.events} ev · {_fmt_bytes(d.bytes)}{RESET}"
+                f"{fg(*C.TEXT_MUTED)}{d.events:,} ev · {_fmt_bytes(d.bytes)}{RESET}"
             )
         panel_lines.append("")
         panel_lines.append(f"{fg(*C.TEXT_BRIGHT)}Rhythm{RESET}")
@@ -368,7 +368,7 @@ def _render_activity_section(stats: StatsData) -> list[str]:
     plural = "" if active_count == 1 else "s"
     subtitle = (
         f"·  {_fmt_date(period_start)} → {_fmt_date(period_end)}"
-        f"  ·  {stats.totals.events} events across {active_count} active day{plural}"
+        f"  ·  {stats.totals.events:,} events across {active_count} active day{plural}"
     )
 
     lines: list[str] = [*_section_header("Activity", subtitle)]
@@ -452,7 +452,7 @@ def _render_insights_section(stats: StatsData) -> list[str]:
         lines.append(
             f"{_M}{bullet} {dim('Biggest saver  ')}{fg(*C.TEXT_PRIMARY)}{top_kind.kind}{RESET}"
             f"{dim(' — ')}{fg(*C.GREEN5)}{_fmt_pct(share)}{RESET}"
-            f"{dim(f' of saved data across {top_kind.events} events')}"
+            f"{dim(f' of saved data across {top_kind.events:,} events')}"
         )
 
     # Most active day
@@ -460,7 +460,7 @@ def _render_insights_section(stats: StatsData) -> list[str]:
     if top_day:
         lines.append(
             f"{_M}{bullet} {dim('Most active    ')}{fg(*C.TEXT_PRIMARY)}{top_day.date}{RESET}"
-            f"{dim(' — ')}{top_day.events} events, {fg(*C.GREEN5)}{_fmt_bytes(top_day.bytes)}{RESET}{dim(' saved')}"
+            f"{dim(' — ')}{top_day.events:,} events, {fg(*C.GREEN5)}{_fmt_bytes(top_day.bytes)}{RESET}{dim(' saved')}"
         )
 
     # Token leader (excluding bytes_mode_only kinds)
@@ -470,7 +470,7 @@ def _render_insights_section(stats: StatsData) -> list[str]:
         lines.append(
             f"{_M}{bullet} {dim('Token leader   ')}{fg(*C.TEXT_PRIMARY)}{top_token.kind}{RESET}"
             f"{dim(' — ')}{fg(*C.BLUE)}{_fmt_tokens(top_token.tokens)}{RESET}"
-            f"{dim(f' saved in {top_token.events} events')}"
+            f"{dim(f' saved in {top_token.events:,} events')}"
         )
 
     return lines
