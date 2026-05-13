@@ -28,19 +28,23 @@ _RULE = _M + fg(*C.TEXT_DIM) + "─" * (_CONTENT_W - len(_M) * 2) + RESET
 # ── Formatters ─────────────────────────────────────────────────────────────────
 
 def _fmt_bytes(n: int) -> str:
+    if n >= 1_000_000_000:
+        return f"{fg(*C.TEAL)}{n / 1_000_000_000:,.1f} GB{RESET}"
     if n >= 1_000_000:
-        return f"{n / 1_000_000:,.1f} MB"
+        return f"{fg(*C.GREEN4)}{n / 1_000_000:,.1f} MB{RESET}"
     if n >= 1_000:
-        return f"{n / 1_000:,.1f} KB"
-    return f"{n} B"
+        return f"{fg(*C.TEXT_MUTED)}{n / 1_000:,.1f} KB{RESET}"
+    return f"{fg(*C.TEXT_DIM)}{n} B{RESET}"
 
 
 def _fmt_tokens(n: int) -> str:
     if n == 0:
         return f"{fg(*C.TEXT_DIM)}0 t{RESET}"
+    if n >= 1_000_000:
+        return f"{fg(*C.PURPLE)}{n / 1_000_000:,.1f} Mt{RESET}"
     if n >= 1_000:
-        return f"{n / 1_000:,.1f} kt"
-    return f"{n} t"
+        return f"{fg(*C.BLUE)}{n / 1_000:,.1f} kt{RESET}"
+    return f"{fg(*C.TEXT_DIM)}{n} t{RESET}"
 
 
 def _fmt_pct(fraction: float) -> str:
@@ -191,12 +195,12 @@ def _table_row(
     truncated = (name[: max_name - 1] + "…") if len(name) > max_name else name
     name_str = pad_r(f"{name_prefix}{fg(*name_color)}{truncated}{RESET}", _COL_NAME)
 
-    data_str = pad_l(f"{fg(*C.TEXT_PRIMARY)}{_fmt_bytes(bytes_val)}{RESET}", _COL_DATA)
+    data_str = pad_l(_fmt_bytes(bytes_val), _COL_DATA)
 
     if bytes_mode_only:
         tok_str = pad_l(f"{fg(*C.TEXT_DIM)}—{RESET}", _COL_TOKENS)
     else:
-        tok_str = pad_l(f"{fg(*C.BLUE)}{_fmt_tokens(tokens)}{RESET}", _COL_TOKENS)
+        tok_str = pad_l(_fmt_tokens(tokens), _COL_TOKENS)
 
     ev_str = pad_l(f"{fg(*C.TEXT_PRIMARY)}{events:,}{RESET}", _COL_EVENTS)
 
@@ -328,7 +332,7 @@ def _render_activity_section(stats: StatsData) -> list[str]:
             c: RGB = C.GREEN5 if d.events / max_events > 0.5 else C.GREEN4
             panel_lines.append(
                 f"{fg(*C.TEXT_MUTED)}{d.date[5:]}  {fg(*c)}●{RESET}  "
-                f"{fg(*C.TEXT_MUTED)}{d.events:,} ev · {_fmt_bytes(d.bytes)}{RESET}"
+                f"{fg(*C.TEXT_MUTED)}{d.events:,} ev · {RESET}{_fmt_bytes(d.bytes)}"
             )
         panel_lines.append("")
         panel_lines.append(f"{fg(*C.TEXT_BRIGHT)}Rhythm{RESET}")
@@ -460,7 +464,7 @@ def _render_insights_section(stats: StatsData) -> list[str]:
     if top_day:
         lines.append(
             f"{_M}{bullet} {dim('Most active    ')}{fg(*C.TEXT_PRIMARY)}{top_day.date}{RESET}"
-            f"{dim(' — ')}{top_day.events:,} events, {fg(*C.GREEN5)}{_fmt_bytes(top_day.bytes)}{RESET}{dim(' saved')}"
+            f"{dim(' — ')}{top_day.events:,} events, {_fmt_bytes(top_day.bytes)}{dim(' saved')}"
         )
 
     # Token leader (excluding bytes_mode_only kinds)
@@ -469,7 +473,7 @@ def _render_insights_section(stats: StatsData) -> list[str]:
     if top_token:
         lines.append(
             f"{_M}{bullet} {dim('Token leader   ')}{fg(*C.TEXT_PRIMARY)}{top_token.kind}{RESET}"
-            f"{dim(' — ')}{fg(*C.BLUE)}{_fmt_tokens(top_token.tokens)}{RESET}"
+            f"{dim(' — ')}{_fmt_tokens(top_token.tokens)}"
             f"{dim(f' saved in {top_token.events:,} events')}"
         )
 
