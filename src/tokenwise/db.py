@@ -49,8 +49,10 @@ def _connect(db_path: Path, *, load_vec: bool = True) -> sqlite3.Connection:
             conn.enable_load_extension(True)
             sqlite_vec.load(conn)
             conn.enable_load_extension(False)
+            _LOG.debug("sqlite-vec loaded for %s", db_path.name)
         except (sqlite3.OperationalError, AttributeError) as e:
             _LOG.warning("sqlite-vec unavailable: %s", e)
+    _LOG.debug("connection opened: %s", db_path.name)
     return conn
 
 
@@ -284,6 +286,7 @@ def _ensure_project_schema(conn: sqlite3.Connection) -> None:
 def open_global() -> Iterator[sqlite3.Connection]:
     """Yield a connection to global.db with schema applied."""
     path = paths.global_db_path()
+    _LOG.info("opening global db: %s", path)
     try:
         conn = _connect(path)
     except sqlite3.DatabaseError as exc:
@@ -293,6 +296,7 @@ def open_global() -> Iterator[sqlite3.Connection]:
     try:
         # Only check integrity once per file per session to avoid repeated PRAGMA checks
         if path not in _INTEGRITY_CHECKED and not _integrity_ok(conn):
+            _LOG.info("integrity check failed; quarantining and rebuilding")
             conn.close()
             # Try quarantine; whether it succeeds or fails, just reopen the
             # (possibly-new) file. If quarantine failed (Windows lock), we
@@ -303,6 +307,7 @@ def open_global() -> Iterator[sqlite3.Connection]:
         _ensure_global_schema(conn)
         yield conn
     finally:
+        _LOG.debug("closing global db")
         conn.close()
 
 
@@ -324,6 +329,7 @@ def open_project(project_hash: str) -> Iterator[sqlite3.Connection]:
     """Yield a connection to a per-project DB with schema applied."""
     _validate_project_hash(project_hash)
     path = paths.project_db_path(project_hash)
+    _LOG.info("opening project db: %s (hash=%s)", path, project_hash)
     try:
         conn = _connect(path)
     except sqlite3.DatabaseError as exc:
@@ -333,6 +339,7 @@ def open_project(project_hash: str) -> Iterator[sqlite3.Connection]:
     try:
         # Only check integrity once per file per session to avoid repeated PRAGMA checks
         if path not in _INTEGRITY_CHECKED and not _integrity_ok(conn):
+            _LOG.info("integrity check failed for project %s; quarantining and rebuilding", project_hash)
             conn.close()
             # Try quarantine; whether it succeeds or fails, just reopen the
             # (possibly-new) file. If quarantine failed (Windows lock), we
@@ -343,6 +350,7 @@ def open_project(project_hash: str) -> Iterator[sqlite3.Connection]:
         _ensure_project_schema(conn)
         yield conn
     finally:
+        _LOG.debug("closing project db: %s", project_hash)
         conn.close()
 
 
@@ -407,11 +415,13 @@ def project_writer_lock(project_hash: str, timeout_sec: float = 5.0) -> Iterator
             f"could not acquire writer lock for project {project_hash[:8]} "
             f"within {timeout_sec}s"
         )
+    _LOG.debug("writer lock acquired for project %s", project_hash[:8])
     try:
         yield
     finally:
         with contextlib.suppress(OSError):
             lock_path.unlink(missing_ok=True)
+        _LOG.debug("writer lock released for project %s", project_hash[:8])
 
 
 # ---------------------------------------------------------------------------

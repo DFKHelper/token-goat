@@ -235,8 +235,12 @@ def index_project(
     """Full or incremental indexing. Returns summary dict with keys:
     total_files, indexed, skipped_unchanged, errors, languages, duration_sec.
     """
+    index_mode = "full" if full else "incremental"
+    _LOG.info("index_project started: mode=%s path=%s", index_mode, project.root)
+
     files = list(iter_source_files(project))
     n_total = len(files)
+    _LOG.debug("index walk: found %d source files", n_total)
     n_indexed = 0
     n_skipped_unchanged = 0
     n_errors = 0
@@ -314,11 +318,22 @@ def index_project(
                 ],
             )
 
-    return {
+    elapsed = time.time() - t0
+    result = {
         "total_files": n_total,
         "indexed": n_indexed,
         "skipped_unchanged": n_skipped_unchanged,
         "errors": n_errors,
         "languages": sorted(languages),
-        "duration_sec": round(time.time() - t0, 2),
+        "duration_sec": round(elapsed, 2),
     }
+
+    _LOG.info(
+        "index_project completed: indexed=%d skipped=%d errors=%d languages=%s duration=%.2fs",
+        n_indexed,
+        n_skipped_unchanged,
+        n_errors,
+        ",".join(sorted(languages)),
+        elapsed,
+    )
+    return result

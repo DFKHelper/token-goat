@@ -167,6 +167,7 @@ def drain_dirty_queue() -> list[dict]:
             entries.append(entry)
         except json.JSONDecodeError:
             _LOG.warning("bad dirty queue entry (not valid JSON): %s", line[:120])
+    _LOG.info("drained dirty queue: %d entries", len(entries))
     return entries
 
 
@@ -420,10 +421,13 @@ def run_daemon(stop_event=None) -> None:
 
             # Periodic maintenance
             if now - last_maintenance >= MAINTENANCE_INTERVAL:
+                _LOG.info("starting maintenance cycle")
                 try:
                     s = cleanup_on_startup()
                     if any(s.values()):
-                        _LOG.info("periodic maintenance: %s", s)
+                        _LOG.info("periodic maintenance completed: %s", s)
+                    else:
+                        _LOG.debug("periodic maintenance completed (no actions needed)")
                 except Exception:  # noqa: BLE001
                     _LOG.exception("periodic maintenance failed")
                 last_maintenance = now

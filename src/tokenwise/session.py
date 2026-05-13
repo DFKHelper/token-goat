@@ -116,9 +116,12 @@ def load(session_id: str) -> SessionCache:
     p = paths.session_cache_path(session_id)
     if not p.exists():
         now = time.time()
+        _LOG.info("session opened: %s (new)", session_id[:16])
         return SessionCache(session_id=session_id, started_ts=now, last_activity_ts=now)
     try:
-        return SessionCache.from_dict(json.loads(p.read_text(encoding="utf-8")))
+        cache = SessionCache.from_dict(json.loads(p.read_text(encoding="utf-8")))
+        _LOG.info("session opened: %s (resuming, %d files tracked)", session_id[:16], len(cache.files))
+        return cache
     except (json.JSONDecodeError, KeyError, TypeError) as e:
         _LOG.warning("session cache corrupted (%s); resetting", e)
         now = time.time()
@@ -132,6 +135,7 @@ def save(cache: SessionCache) -> None:
             paths.session_cache_path(cache.session_id),
             json.dumps(cache.to_dict(), ensure_ascii=False),
         )
+    _LOG.debug("session saved: %s (%d files, %d greps)", cache.session_id[:16], len(cache.files), len(cache.greps))
 
 
 def mark_file_read(

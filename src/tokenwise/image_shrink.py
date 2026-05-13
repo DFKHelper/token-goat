@@ -76,6 +76,7 @@ def shrink(src_path: Path) -> Path | None:
     for suffix in (".jpg", ".png"):
         candidate = stem.with_suffix(suffix)
         if candidate.exists():
+            _LOG.debug("image cache hit: %s -> %s", src_path.name, candidate.name)
             return candidate
 
     try:
@@ -115,6 +116,17 @@ def shrink(src_path: Path) -> Path | None:
                 final_path = stem.with_suffix(".jpg")
                 img.save(final_path, "JPEG", quality=JPEG_QUALITY, optimize=True)
 
+        src_size = src_path.stat().st_size
+        out_size = final_path.stat().st_size
+        savings_pct = 100.0 * (1.0 - out_size / src_size) if src_size > 0 else 0.0
+        _LOG.info(
+            "image shrink: %s | %d → %d bytes (%.1f%% reduction, %s)",
+            src_path.name,
+            src_size,
+            out_size,
+            savings_pct,
+            final_path.suffix,
+        )
         return final_path
     except Exception as e:  # noqa: BLE001
         _LOG.warning("shrink failed for %s: %s", src_path, e)
