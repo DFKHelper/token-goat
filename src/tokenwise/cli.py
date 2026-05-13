@@ -19,6 +19,34 @@ import typer
 
 from . import hooks_cli
 
+def _write_raw(text: str) -> None:
+    """Write text with truecolor ANSI codes directly, bypassing colorama.
+
+    colorama wraps sys.stdout in a StreamWrapper whose write() either strips
+    all ANSI codes (strip=True, piped output) or converts them via Win32 API
+    (convert=True, TTY).  Neither path handles 24-bit color: the Win32 path
+    iterates semicolon-separated params individually, so fg(31,77,44) becomes
+    ANSI red (SGR 31) instead of RGB(31,77,44).
+
+    Fix: unwrap to the raw TextIOWrapper and write bytes directly, letting
+    Windows Terminal's native VT processor handle the sequences correctly.
+    """
+    stream: object = sys.stdout
+    # colorama.StreamWrapper stores original stream as a name-mangled attr
+    if hasattr(stream, "_StreamWrapper__wrapped"):
+        stream = stream._StreamWrapper__wrapped  # type: ignore[attr-defined]
+    # colorama.AnsiToWin32 stores it as .stream
+    while hasattr(stream, "stream"):
+        stream = stream.stream  # type: ignore[attr-defined]
+    encoded = (text + "\n").encode("utf-8")
+    if hasattr(stream, "buffer"):
+        stream.buffer.write(encoded)  # type: ignore[attr-defined]
+        stream.buffer.flush()  # type: ignore[attr-defined]
+    else:
+        stream.write(text + "\n")  # type: ignore[attr-defined]
+        stream.flush()  # type: ignore[attr-defined]
+
+
 app = typer.Typer(name="tokenwise", no_args_is_help=True)
 hook_app = typer.Typer(name="hook", no_args_is_help=True)
 config_app = typer.Typer(name="config", no_args_is_help=True)
@@ -618,7 +646,10 @@ def stats(
             )
         )
         return
-    typer.echo(stats_mod.render_text(summary))
+    # Write directly, bypassing colorama's AnsiToWin32 wrapper which
+    # misinterprets truecolor sequences (splits on `;` and processes
+    # the R value as a legacy ANSI color code, turning green into red).
+    _write_raw(stats_mod.render_text(summary))
 
 
 @app.command()
