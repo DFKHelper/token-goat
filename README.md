@@ -23,7 +23,7 @@ Three wins, all silent, all automatic.
 
 **Surgical reads from a small CLI.** Pull one function, one Markdown heading, or one semantic match instead of dumping a whole module into context. Targeted reads run about 85% smaller than whole-file reads on the same source.
 
-Four hours of use on the author's machine: 15+ MB in measured savings from image shrink and surgical reads, where the byte difference is exact. Session hints add more on top — that figure is an estimated upper bound, not a measured one.
+Four hours of use on the author's machine: 59.7 MB of data that never hit the model, with an estimated 11.5 million tokens avoided. Token counts are derived from byte sizes, not the model's tokenizer — treat them as directional.
 
 ## Install
 
