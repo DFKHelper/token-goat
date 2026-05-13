@@ -44,6 +44,8 @@ class SessionCache:
     last_activity_ts: float
     files: dict[str, FileEntry] = field(default_factory=dict)  # key = normalized path
     greps: list[GrepEntry] = field(default_factory=list)
+    # Tracks files edited this session: normalized_path → edit count
+    edited_files: dict[str, int] = field(default_factory=dict)
 
     def to_dict(self) -> dict:
         """Serialize to dict for JSON."""
@@ -53,6 +55,7 @@ class SessionCache:
             "last_activity_ts": self.last_activity_ts,
             "files": {k: asdict(v) for k, v in self.files.items()},
             "greps": [asdict(g) for g in self.greps],
+            "edited_files": self.edited_files,
         }
 
     @classmethod
@@ -75,6 +78,7 @@ class SessionCache:
             last_activity_ts=d["last_activity_ts"],
             files=files,
             greps=greps,
+            edited_files=d.get("edited_files", {}),
         )
 
 
@@ -212,6 +216,21 @@ def reset_session(session_id: str) -> None:
             p.unlink()
         except OSError as e:
             _LOG.warning("failed to delete session cache %s: %s", p, e)
+
+
+def mark_file_edited(session_id: str, path: str) -> SessionCache:
+    """Record that a file was edited (written/modified) this session."""
+    cache = load(session_id)
+    key = _normalize_path(path)
+    cache.edited_files[key] = cache.edited_files.get(key, 0) + 1
+    cache.last_activity_ts = time.time()
+    save(cache)
+    return cache
+
+
+def list_edited(session_id: str) -> dict[str, int]:
+    """Return edited files for this session: normalized_path → edit count."""
+    return load(session_id).edited_files
 
 
 def list_touched(session_id: str) -> list[FileEntry]:
