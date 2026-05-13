@@ -3,6 +3,8 @@ from __future__ import annotations
 
 import contextlib
 import json
+import os
+import re
 import sys
 from pathlib import Path
 
@@ -31,6 +33,9 @@ def _write_raw(text: str) -> None:
     Fix: unwrap to the raw TextIOWrapper and write bytes directly, letting
     Windows Terminal's native VT processor handle the sequences correctly.
     """
+    if os.environ.get("NO_COLOR") or not sys.stdout.isatty():
+        text = re.sub(r"\x1b\[[0-9;]*m", "", text)
+
     stream: object = sys.stdout
     # colorama.StreamWrapper stores original stream as a name-mangled attr
     if hasattr(stream, "_StreamWrapper__wrapped"):
