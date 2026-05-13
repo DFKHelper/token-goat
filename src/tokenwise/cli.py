@@ -349,19 +349,27 @@ def read(
     from .project import find_project  # noqa: PLC0415
 
     proj = find_project(Path.cwd())
-    if proj is None:
-        typer.echo("No project detected.", err=True)
-        raise typer.Exit(0)
+    rel: str | None = None
+    if proj is not None:
+        rel = read_replacement.resolve_file_rel(proj, file_part)
 
-    rel = read_replacement.resolve_file_rel(proj, file_part)
     if rel is None:
-        hint = _not_indexed_hint(proj.hash)
-        if hint:
-            typer.echo(hint)
+        # Fall back to searching all indexed projects (e.g. skills, plugins)
+        cross = read_replacement.find_in_all_projects(file_part)
+        if cross is not None:
+            proj, rel = cross
         else:
-            typer.echo(f"File not found in indexed project: {file_part}", err=True)
-        raise typer.Exit(0)
+            if proj is None:
+                typer.echo("No project detected.", err=True)
+            else:
+                hint = _not_indexed_hint(proj.hash)
+                if hint:
+                    typer.echo(hint)
+                else:
+                    typer.echo(f"File not found in any indexed project: {file_part}", err=True)
+            raise typer.Exit(0)
 
+    assert proj is not None  # guaranteed: either cross-project match or we exited above
     result = read_replacement.read_symbol(proj, rel, symbol_part, context_lines=context_lines)
     if result is None:
         typer.echo(f"Symbol not found: {symbol_part} (in {rel})", err=True)
@@ -407,19 +415,27 @@ def section(
     from .project import find_project  # noqa: PLC0415
 
     proj = find_project(Path.cwd())
-    if proj is None:
-        typer.echo("No project detected.", err=True)
-        raise typer.Exit(0)
+    rel: str | None = None
+    if proj is not None:
+        rel = read_replacement.resolve_file_rel(proj, file_part)
 
-    rel = read_replacement.resolve_file_rel(proj, file_part)
     if rel is None:
-        hint = _not_indexed_hint(proj.hash)
-        if hint:
-            typer.echo(hint)
+        # Fall back to searching all indexed projects (e.g. skills, plugins)
+        cross = read_replacement.find_in_all_projects(file_part)
+        if cross is not None:
+            proj, rel = cross
         else:
-            typer.echo(f"File not found in indexed project: {file_part}", err=True)
-        raise typer.Exit(0)
+            if proj is None:
+                typer.echo("No project detected.", err=True)
+            else:
+                hint = _not_indexed_hint(proj.hash)
+                if hint:
+                    typer.echo(hint)
+                else:
+                    typer.echo(f"File not found in any indexed project: {file_part}", err=True)
+            raise typer.Exit(0)
 
+    assert proj is not None  # guaranteed: either cross-project match or we exited above
     result = read_replacement.read_section(proj, rel, heading_part, context_lines=context_lines)
     if result is None:
         typer.echo(f"Section not found: {heading_part} (in {rel})", err=True)
@@ -592,15 +608,44 @@ def caption_instead(path: str) -> None:
 def index(
     full: bool = typer.Option(False, "--full"),
     embeddings: bool = typer.Option(False, "--embeddings"),
+    root: str | None = typer.Option(None, "--root", help="Index an arbitrary directory (skips project detection)"),
+    skills: bool = typer.Option(False, "--skills", help="Index ~/.claude/skills/"),
+    plugins: bool = typer.Option(False, "--plugins", help="Index ~/.claude/plugins/"),
 ) -> None:
     """Rebuild project/global indices."""
+    from . import paths as _paths  # noqa: PLC0415
     from .parser import index_project  # noqa: PLC0415
-    from .project import find_project  # noqa: PLC0415
+    from .project import Project, find_project, make_project_at  # noqa: PLC0415
 
-    proj = find_project(Path.cwd())
-    if proj is None:
-        typer.echo("no project detected, run from a project directory")
-        return
+    proj: Project | None = None
+    if root is not None:
+        root_path = Path(root).expanduser().resolve()
+        if not root_path.is_dir():
+            typer.echo(f"Error: {root_path} is not a directory", err=True)
+            raise typer.Exit(2)
+        proj = make_project_at(root_path)
+        typer.echo(f"Indexing {root_path} ...")
+    elif skills:
+        root_path = _paths.claude_skills_dir()
+        if not root_path.is_dir():
+            typer.echo(f"Skills directory not found: {root_path}", err=True)
+            raise typer.Exit(1)
+        proj = make_project_at(root_path)
+        typer.echo(f"Indexing skills: {root_path} ...")
+    elif plugins:
+        root_path = _paths.claude_plugins_dir()
+        if not root_path.is_dir():
+            typer.echo(f"Plugins directory not found: {root_path}", err=True)
+            raise typer.Exit(1)
+        proj = make_project_at(root_path)
+        typer.echo(f"Indexing plugins: {root_path} ...")
+    else:
+        proj = find_project(Path.cwd())
+        if proj is None:
+            typer.echo("no project detected, run from a project directory")
+            return
+
+    assert proj is not None  # guaranteed: all branches either set proj or return/exit early
 
     def _progress(done: int, total: int) -> None:
         typer.echo(f"  {done}/{total} files processed...", err=True)

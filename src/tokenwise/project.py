@@ -42,6 +42,16 @@ def project_hash(canonical_root: Path) -> str:
     return hashlib.sha1(canonical_root.as_posix().encode("utf-8")).hexdigest()
 
 
+def make_project_at(root: Path) -> Project:
+    """Create a Project for any directory without requiring a project marker.
+
+    Used for indexing arbitrary directories like ~/.claude/skills/ that have no
+    .git, pyproject.toml, or other marker files.
+    """
+    canonical = canonicalize(root)
+    return Project(root=canonical, hash=project_hash(canonical), marker="manual")
+
+
 def find_project(cwd: Path | str) -> Project | None:
     r"""
     Walk up from cwd looking for a project marker.
