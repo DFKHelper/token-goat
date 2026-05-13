@@ -249,3 +249,144 @@ def test_spawn_detached_mocked(tmp_data_dir):
     # either way the trailing args are stable.
     assert cmd_arg[-2:] == ["worker", "--daemon"]
     assert "tokenwise" in cmd_arg[0].lower()
+
+
+# ---------------------------------------------------------------------------
+# 12. enqueue_dirty with None project_hash
+# ---------------------------------------------------------------------------
+
+def test_enqueue_dirty_none_project_hash(tmp_data_dir):
+    """enqueue_dirty should accept None as project_hash."""
+    worker.enqueue_dirty("src/foo.ts", project_hash=None)
+    entries = worker.drain_dirty_queue()
+    assert len(entries) == 1
+    assert entries[0]["path"] == "src/foo.ts"
+    assert entries[0]["project_hash"] is None
+
+
+# ---------------------------------------------------------------------------
+# 13. drain_dirty_queue returns empty list when queue file doesn't exist
+# ---------------------------------------------------------------------------
+
+def test_drain_dirty_queue_missing_file(tmp_data_dir):
+    """drain_dirty_queue should return [] when queue file missing."""
+    entries = worker.drain_dirty_queue()
+    assert entries == []
+
+
+# ---------------------------------------------------------------------------
+# 14. is_worker_alive with malformed PID file
+# ---------------------------------------------------------------------------
+
+def test_is_worker_alive_malformed_pid_file(tmp_data_dir):
+    """is_worker_alive should handle non-numeric PID gracefully."""
+    paths.ensure_dirs()
+    paths.worker_pid_path().write_text("not_a_number", encoding="utf-8")
+    # Should not raise; should return False
+    result = worker.is_worker_alive()
+    assert result is False
+
+
+# ---------------------------------------------------------------------------
+# 15. is_worker_alive with empty PID file
+# ---------------------------------------------------------------------------
+
+def test_is_worker_alive_empty_pid_file(tmp_data_dir):
+    """is_worker_alive should handle empty PID file gracefully."""
+    paths.ensure_dirs()
+    paths.worker_pid_path().write_text("", encoding="utf-8")
+    result = worker.is_worker_alive()
+    assert result is False
+
+
+# ---------------------------------------------------------------------------
+# 16. is_worker_alive with fresh heartbeat (current mtime)
+# ---------------------------------------------------------------------------
+
+def test_is_worker_alive_fresh_heartbeat_mtime(tmp_data_dir):
+    """is_worker_alive should return True for fresh heartbeat (mtime-based check)."""
+    paths.ensure_dirs()
+    pid = os.getpid()
+    paths.worker_pid_path().write_text(str(pid), encoding="utf-8")
+    hb_path = paths.worker_heartbeat_path()
+    # Write any content; the actual check is mtime-based
+    hb_path.write_text("x", encoding="utf-8")
+    # Fresh mtime (just created), so should return True
+    result = worker.is_worker_alive()
+    assert result is True
+
+
+# ---------------------------------------------------------------------------
+# 16b. is_worker_alive with heartbeat file missing and dead PID
+# ---------------------------------------------------------------------------
+
+def test_is_worker_alive_no_heartbeat_dead_pid(tmp_data_dir):
+    """is_worker_alive should return False if PID is dead and no heartbeat."""
+    paths.ensure_dirs()
+    # Use a PID that definitely doesn't exist
+    stale_pid = 99999999
+    paths.worker_pid_path().write_text(str(stale_pid), encoding="utf-8")
+    result = worker.is_worker_alive()
+    # Should return False because PID doesn't exist
+    assert result is False
+
+
+# ---------------------------------------------------------------------------
+# 17. cleanup_on_startup with mixed stale/fresh locks
+# ---------------------------------------------------------------------------
+
+def test_cleanup_on_startup_mixed_locks(tmp_data_dir):
+    """cleanup_on_startup should only clear stale locks, not fresh ones."""
+    paths.ensure_dirs()
+    locks = paths.locks_dir()
+
+    # Stale lock (dead PID)
+    stale_lock = locks / "proj_stale.lock"
+    stale_lock.write_text("99999999\n0.0", encoding="utf-8")
+
+    # Fresh lock (current PID)
+    fresh_lock = locks / "proj_fresh.lock"
+    fresh_lock.write_text(f"{os.getpid()}\n{time.time()}", encoding="utf-8")
+
+    stats = worker.cleanup_on_startup()
+    assert not stale_lock.exists()
+    assert fresh_lock.exists()
+
+
+# ---------------------------------------------------------------------------
+# 18. enqueue_dirty multiple calls queue correctly
+# ---------------------------------------------------------------------------
+
+def test_enqueue_dirty_multiple_sequential(tmp_data_dir):
+    """Multiple enqueue_dirty calls should append to queue."""
+    worker.enqueue_dirty("file1.ts")
+    worker.enqueue_dirty("file2.py")
+    worker.enqueue_dirty("file3.go")
+
+    entries = worker.drain_dirty_queue()
+    assert len(entries) == 3
+    paths_list = [e["path"] for e in entries]
+    assert paths_list == ["file1.ts", "file2.py", "file3.go"]
+
+
+# ---------------------------------------------------------------------------
+# 19. evict_image_cache with no files to evict
+# ---------------------------------------------------------------------------
+
+def test_evict_image_cache_below_limit(tmp_data_dir, monkeypatch):
+    """evict_image_cache should not evict if cache is below limit."""
+    paths.ensure_dirs()
+    img_dir = paths.image_cache_dir()
+
+    # Set a large limit
+    large_limit = 1000000  # 1 MB
+    monkeypatch.setattr(worker, "IMAGE_CACHE_LIMIT", large_limit)
+
+    # Write only 100 bytes (below limit)
+    small_file = img_dir / "tiny.png"
+    small_file.write_bytes(b"x" * 100)
+
+    bytes_freed, files_freed = worker.evict_image_cache_if_over_limit()
+    # Should not evict because below limit
+    assert (bytes_freed, files_freed) == (0, 0)
+    assert small_file.exists()

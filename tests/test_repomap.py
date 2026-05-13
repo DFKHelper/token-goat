@@ -134,3 +134,143 @@ def test_build_map_json_serialisable(ts_project):
     dumped = json.dumps(data)
     loaded = json.loads(dumped)
     assert loaded == data
+
+
+# ---------------------------------------------------------------------------
+# 10. estimate_tokens with empty string
+# ---------------------------------------------------------------------------
+
+def test_estimate_tokens_empty_string():
+    """estimate_tokens should return minimal value for empty string."""
+    t = repomap.estimate_tokens("")
+    assert t >= 0
+    assert isinstance(t, int)
+
+
+# ---------------------------------------------------------------------------
+# 11. estimate_tokens with very large text
+# ---------------------------------------------------------------------------
+
+def test_estimate_tokens_large_text():
+    """estimate_tokens should scale linearly with text size."""
+    small_text = "a" * 100
+    large_text = "a" * 10000
+    small_tokens = repomap.estimate_tokens(small_text)
+    large_tokens = repomap.estimate_tokens(large_text)
+    # Large should be roughly 100x more tokens
+    assert large_tokens > small_tokens
+    assert large_tokens > 100 * (small_tokens // 2)  # Allow some variance
+
+
+# ---------------------------------------------------------------------------
+# 12. estimate_tokens with newlines and whitespace
+# ---------------------------------------------------------------------------
+
+def test_estimate_tokens_with_whitespace():
+    """estimate_tokens should handle mixed whitespace correctly."""
+    text_with_spaces = "a b c d e f g h i j"
+    text_no_spaces = "abcdefghij"
+    tokens1 = repomap.estimate_tokens(text_with_spaces)
+    tokens2 = repomap.estimate_tokens(text_no_spaces)
+    # Should be roughly similar (whitespace doesn't change char count much)
+    assert abs(tokens1 - tokens2) < 5
+
+
+# ---------------------------------------------------------------------------
+# 13. compute_ranks with self-loops
+# ---------------------------------------------------------------------------
+
+def test_compute_ranks_with_self_loops():
+    """compute_ranks should handle self-referencing nodes."""
+    g = nx.MultiDiGraph()
+    g.add_edge("A", "A")  # Self-loop
+    g.add_edge("A", "B")
+    ranks = repomap.compute_ranks(g)
+    assert "A" in ranks
+    assert "B" in ranks
+    assert isinstance(ranks["A"], float)
+    assert isinstance(ranks["B"], float)
+
+
+# ---------------------------------------------------------------------------
+# 14. compute_ranks with isolated nodes (no edges)
+# ---------------------------------------------------------------------------
+
+def test_compute_ranks_isolated_nodes():
+    """compute_ranks should assign equal ranks to isolated nodes."""
+    g = nx.MultiDiGraph()
+    g.add_node("X")
+    g.add_node("Y")
+    g.add_node("Z")
+    ranks = repomap.compute_ranks(g)
+    # All isolated nodes should have roughly equal PageRank
+    assert "X" in ranks
+    assert "Y" in ranks
+    assert "Z" in ranks
+    # Ranks should be close in value (within small epsilon)
+    assert abs(ranks["X"] - ranks["Y"]) < 0.01
+    assert abs(ranks["Y"] - ranks["Z"]) < 0.01
+
+
+# ---------------------------------------------------------------------------
+# 15. build_map with zero budget
+# ---------------------------------------------------------------------------
+
+def test_build_map_zero_budget(ts_project):
+    """build_map should handle zero budget gracefully."""
+    text = repomap.build_map(ts_project, budget_tokens=0)
+    # Should return a minimal header, not crash
+    assert isinstance(text, str)
+
+
+# ---------------------------------------------------------------------------
+# 16. build_map_json with empty file list
+# ---------------------------------------------------------------------------
+
+def test_build_map_json_rank_values_positive(ts_project):
+    """Rank values should be positive (PageRank output)."""
+    data = repomap.build_map_json(ts_project)
+    for entry in data:
+        # PageRank values should be positive
+        assert entry["rank"] >= 0.0
+        # Should not be NaN or invalid
+        assert isinstance(entry["rank"], (int, float))
+
+
+# ---------------------------------------------------------------------------
+# 17. estimate_tokens consistency
+# ---------------------------------------------------------------------------
+
+def test_estimate_tokens_deterministic():
+    """estimate_tokens should be deterministic (same input => same output)."""
+    text = "The quick brown fox jumps over the lazy dog.\nLine 2.\n"
+    t1 = repomap.estimate_tokens(text)
+    t2 = repomap.estimate_tokens(text)
+    assert t1 == t2
+
+
+# ---------------------------------------------------------------------------
+# 18. build_map_json entries have non-empty language field
+# ---------------------------------------------------------------------------
+
+def test_build_map_json_language_field(ts_project):
+    """All JSON entries should have a language field."""
+    data = repomap.build_map_json(ts_project)
+    for entry in data:
+        assert "language" in entry
+        # Language should be a non-empty string or None
+        assert isinstance(entry["language"], (str, type(None)))
+
+
+# ---------------------------------------------------------------------------
+# 19. build_map_json entries have positive line count
+# ---------------------------------------------------------------------------
+
+def test_build_map_json_line_counts(ts_project):
+    """JSON entries should have realistic line counts."""
+    data = repomap.build_map_json(ts_project)
+    for entry in data:
+        # Line count should be non-negative
+        assert entry["approx_lines"] >= 0
+        # Should be reasonable (not absurd)
+        assert entry["approx_lines"] < 1000000
