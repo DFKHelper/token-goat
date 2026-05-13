@@ -217,6 +217,104 @@ class TestRenderText:
         assert "image_shrink" in text_all
 
 
+class TestPathProjectAttribution:
+    """Test path-based project attribution for global.db events."""
+
+    def test_extract_file_path_session_hint(self):
+        """session_hint detail is the path directly."""
+        assert stats._extract_file_path("session_hint", r"C:\Projects\myrepo\src\foo.py") == r"C:\Projects\myrepo\src\foo.py"
+
+    def test_extract_file_path_image_shrink_arrow_format(self):
+        """image_shrink detail has 'src -> dest'; only the source is returned."""
+        detail = r"C:\Projects\myrepo\bg.png -> abc123.jpg"
+        assert stats._extract_file_path("image_shrink", detail) == r"C:\Projects\myrepo\bg.png"
+
+    def test_extract_file_path_none_detail(self):
+        assert stats._extract_file_path("session_hint", None) is None
+
+    def test_extract_file_path_empty_detail(self):
+        assert stats._extract_file_path("session_hint", "") is None
+
+    def test_infer_project_root_registered_exact_prefix(self):
+        """Longest registered root wins on prefix match."""
+        roots = ["c:/Projects", "c:/Projects/myrepo"]
+        result = stats._infer_project_root("c:/Projects/myrepo/src/foo.py", roots)
+        assert result == "c:/Projects/myrepo"
+
+    def test_infer_project_root_normalizes_backslashes(self):
+        """Windows backslashes in file_path are normalized before matching."""
+        roots = ["c:/Projects/myrepo"]
+        result = stats._infer_project_root(r"C:\Projects\myrepo\src\foo.py", roots)
+        assert result == "c:/Projects/myrepo"
+
+    def test_infer_project_root_git_walk(self, tmp_path):
+        """Falls back to .git walk when no registered root matches."""
+        repo = tmp_path / "oss-repo"
+        repo.mkdir()
+        (repo / ".git").mkdir()
+        src = repo / "src" / "main.py"
+        src.parent.mkdir()
+        src.touch()
+
+        # Clear cache so this test is isolated
+        stats._git_root_cache.clear()
+
+        result = stats._infer_project_root(str(src), registered_roots=[])
+        assert result is not None
+        assert result.endswith("oss-repo")
+
+    def test_infer_project_root_no_match(self, tmp_path):
+        """Returns None when no registered root and no .git ancestor."""
+        stats._git_root_cache.clear()
+        # tmp_path has no .git — result should be None
+        orphan = tmp_path / "orphan" / "file.py"
+        orphan.parent.mkdir()
+        orphan.touch()
+        result = stats._infer_project_root(str(orphan), registered_roots=[])
+        assert result is None
+
+    def test_summarize_attributes_global_events_via_registered_root(self, tmp_data_dir):
+        """session_hint events in global.db appear in by_project when root is registered."""
+        with db.open_global() as conn:
+            conn.execute(
+                "INSERT INTO projects (hash, root, marker, first_seen, last_seen, file_count)"
+                " VALUES (?, ?, ?, ?, ?, ?)",
+                ("aabbccddeeff", "c:/Projects/myrepo", ".git",
+                 int(time.time()), int(time.time()), 5),
+            )
+
+        db.record_stat(None, "session_hint", bytes_saved=4000, tokens_saved=1000,
+                       detail="c:/Projects/myrepo/src/foo.py")
+
+        summary = stats.summarize(window_days=30)
+        assert summary.total_events == 1
+        assert len(summary.by_project) == 1
+        proj = summary.by_project[0]
+        assert proj["project_root"] == "c:/Projects/myrepo"
+        assert proj["bytes_saved"] == 4000
+
+    def test_summarize_attributes_global_events_via_git_walk(self, tmp_data_dir, tmp_path):
+        """session_hint events attribute to unregistered project via .git walk."""
+        repo = tmp_path / "oss-repo"
+        repo.mkdir()
+        (repo / ".git").mkdir()
+        file_in_repo = repo / "src" / "lib.py"
+        file_in_repo.parent.mkdir()
+        file_in_repo.touch()
+
+        stats._git_root_cache.clear()
+
+        db.record_stat(None, "session_hint", bytes_saved=8000, tokens_saved=2000,
+                       detail=str(file_in_repo))
+
+        summary = stats.summarize(window_days=30)
+        assert summary.total_events == 1
+        assert len(summary.by_project) == 1
+        proj = summary.by_project[0]
+        assert proj["project_root"].endswith("oss-repo")
+        assert proj["bytes_saved"] == 8000
+
+
 class TestJSONOutput:
     """Test JSON serialization."""
 
