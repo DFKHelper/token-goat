@@ -39,9 +39,7 @@ def _is_safe_rel_path(rel_path: str) -> bool:
     if rel_path.startswith("/") or rel_path.startswith("\\"):
         return False
     # Reject parent directory traversal
-    if ".." in rel_path.split("/") or ".." in rel_path.split("\\"):
-        return False
-    return True
+    return ".." not in rel_path.split("/") and ".." not in rel_path.split("\\")
 
 # Chunk size constraints (chars)
 MIN_CHUNK_CHARS = 50
