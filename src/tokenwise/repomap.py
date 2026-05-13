@@ -73,7 +73,7 @@ def _load_project_data(
 
     sections_by_file: dict[str, list[tuple[int, str]]] = defaultdict(list)
     for row in conn.execute(
-        "SELECT file_rel, heading, level FROM sections ORDER BY level, line"
+        "SELECT file_rel, heading, level FROM sections ORDER BY file_rel, level, line"
     ):
         sections_by_file[row["file_rel"]].append((row["level"], row["heading"]))
 
@@ -137,17 +137,16 @@ def _summarize_file(
         symbols,
         key=lambda ks: (KIND_PRIORITY.get(ks[0], 99), ks[1]),
     )
-    seen: set[tuple[str, str]] = set()
+    # Build top_symbols with single pass; duplicates are rare, so use linear check
     top_symbols: list[tuple[str, str]] = []
     for kind, name in sorted_syms:
-        if (kind, name) in seen:
-            continue
-        seen.add((kind, name))
-        top_symbols.append((kind, name))
-        if len(top_symbols) >= max_symbols:
-            break
+        if (kind, name) not in top_symbols:  # Single check per item (faster for small lists)
+            top_symbols.append((kind, name))
+            if len(top_symbols) >= max_symbols:
+                break
 
-    top_sections = [h for (lvl, h) in sections if lvl <= 2][:max_sections]
+    # Filter sections to level <= 2 and limit to max_sections
+    top_sections = [h for lvl, h in sections if lvl <= 2][:max_sections]
     approx_lines = max(1, info["size"] // 50)
     return FileSummary(
         rel_path=rel,

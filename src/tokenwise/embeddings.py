@@ -200,15 +200,24 @@ def extract_chunks_for_file(
 
     # 3) Sliding-window fallback for uncovered ranges (code files only)
     if language in _WINDOW_LANGS:
-        covered_lines: set[int] = set()
-        for start, end in covered:
-            covered_lines.update(range(start, end + 1))
+        # Sort covered ranges to avoid expanding them into a set (O(n) memory)
+        covered.sort()
         n = len(lines)
         i = 1
+        covered_idx = 0
+
         while i <= n:
-            if i in covered_lines:
+            # Check if current line is covered using binary range logic
+            is_covered = False
+            while covered_idx < len(covered) and covered[covered_idx][1] < i:
+                covered_idx += 1
+            if covered_idx < len(covered) and covered[covered_idx][0] <= i <= covered[covered_idx][1]:
+                is_covered = True
+
+            if is_covered:
                 i += 1
                 continue
+
             window_end = min(i + WINDOW_LINES - 1, n)
             chunk_text = "\n".join(lines[i - 1 : window_end])
             if MIN_CHUNK_CHARS <= len(chunk_text) <= MAX_CHUNK_CHARS:
