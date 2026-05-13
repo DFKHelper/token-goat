@@ -5,8 +5,8 @@ import re
 
 import tree_sitter_language_pack as tlp
 
-from . import common
 from ..parser import ImpExp, Ref, Section, Symbol
+from . import common
 
 # ---------------------------------------------------------------------------
 # Noise filter for call-site refs

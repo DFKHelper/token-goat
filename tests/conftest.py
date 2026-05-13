@@ -1,6 +1,5 @@
 """Shared test fixtures."""
 import logging
-import shutil
 from pathlib import Path
 from unittest.mock import patch
 
