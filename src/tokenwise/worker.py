@@ -106,14 +106,17 @@ def is_worker_alive() -> bool:
 
 
 def _write_pid() -> None:
+    """Write the current process ID to the worker PID file for liveness tracking."""
     paths.worker_pid_path().write_text(str(os.getpid()), encoding="utf-8")
 
 
 def _heartbeat() -> None:
+    """Write current timestamp to heartbeat file to indicate the worker is alive."""
     paths.worker_heartbeat_path().write_text(str(time.time()), encoding="utf-8")
 
 
 def _clear_pid() -> None:
+    """Remove PID and heartbeat files to signal the worker is stopping."""
     for p in (paths.worker_pid_path(), paths.worker_heartbeat_path()):
         try:
             p.unlink()

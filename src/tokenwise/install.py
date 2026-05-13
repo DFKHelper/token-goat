@@ -32,14 +32,17 @@ def claude_dir() -> Path:
 
 
 def claude_settings_path() -> Path:
+    """Return the path to ~/.claude/settings.json where hooks and permissions are configured."""
     return claude_dir() / "settings.json"
 
 
 def claude_md_path() -> Path:
+    """Return the path to ~/.claude/CLAUDE.md where project memory and instructions live."""
     return claude_dir() / "CLAUDE.md"
 
 
 def skill_dir() -> Path:
+    """Return the directory where the tokenwise skill is installed (Claude Code plugins)."""
     return claude_dir() / "skills" / "tokenwise"
 
 
@@ -93,6 +96,7 @@ def _run_schtasks(args: list[str]) -> tuple[int, str]:
 
 
 def task_exists(name: str) -> bool:
+    """Check if a Windows scheduled task with the given name exists."""
     code, _ = _run_schtasks(["/Query", "/TN", name])
     return code == 0
 
@@ -400,6 +404,7 @@ def patch_claude_md() -> str:
 
 
 def unpatch_claude_md() -> str:
+    """Remove the tokenwise block from ~/.claude/CLAUDE.md."""
     md_path = claude_md_path()
     if not md_path.exists():
         return "CLAUDE.md not found"
@@ -469,6 +474,7 @@ Run `tokenwise stats` and watch event counts climb. Flat counts during code work
 
 
 def write_skill() -> str:
+    """Write the tokenwise skill to the Claude Code skills directory."""
     sd = skill_dir()
     sd.mkdir(parents=True, exist_ok=True)
     skill_path = sd / "SKILL.md"
@@ -477,6 +483,7 @@ def write_skill() -> str:
 
 
 def remove_skill() -> str:
+    """Remove the tokenwise skill from the Claude Code skills directory."""
     sd = skill_dir()
     if sd.exists():
         shutil.rmtree(sd, ignore_errors=True)
@@ -495,10 +502,12 @@ def codex_dir() -> Path:
 
 
 def codex_config_path() -> Path:
+    """Return the path to ~/.codex/config.toml where Codex hooks are configured."""
     return codex_dir() / "config.toml"
 
 
 def codex_agents_path() -> Path:
+    """Return the path to ~/.codex/AGENTS.md where Codex agents are configured."""
     return codex_dir() / "AGENTS.md"
 
 

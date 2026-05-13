@@ -448,6 +448,7 @@ def post_read(payload: dict[str, Any]) -> dict[str, Any]:
 
 
 def _detect(payload: dict[str, Any]) -> Project | None:
+    """Detect the current project from cwd. Returns None if not in a project root."""
     cwd = payload.get("cwd")
     if not cwd:
         return None
