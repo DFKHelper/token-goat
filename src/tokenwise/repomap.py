@@ -5,11 +5,22 @@ import logging
 import sqlite3
 from collections import defaultdict
 from dataclasses import dataclass
+from typing import Any, TypedDict
 
 import networkx as nx
 
 from . import db
 from .project import Project
+
+
+class FileMapItem(TypedDict):
+    """Structured representation of a file in the repo map."""
+    path: str
+    language: str
+    rank: float
+    symbols: list[dict[str, str]]
+    sections: list[str]
+    approx_lines: int
 
 _LOG = logging.getLogger("tokenwise.repomap")
 
@@ -219,7 +230,7 @@ def build_map(
     return "".join(out)
 
 
-def build_map_json(project: Project) -> list[dict]:
+def build_map_json(project: Project) -> list[FileMapItem]:
     """Same data as build_map but as structured list of dicts (for tools)."""
     with db.open_project(project.hash) as conn:
         files, symbols_by_file, sections_by_file, name_to_files = _load_project_data(conn)
@@ -240,13 +251,13 @@ def build_map_json(project: Project) -> list[dict]:
             ranks.get(rel, 0.0),
         )
         out.append(
-            {
-                "path": summary.rel_path,
-                "language": summary.language,
-                "rank": summary.rank,
-                "symbols": [{"kind": k, "name": n} for k, n in summary.top_symbols],
-                "sections": summary.top_sections,
-                "approx_lines": summary.line_count,
-            }
+            FileMapItem(
+                path=summary.rel_path,
+                language=summary.language,
+                rank=summary.rank,
+                symbols=[{"kind": k, "name": n} for k, n in summary.top_symbols],
+                sections=summary.top_sections,
+                approx_lines=summary.line_count,
+            )
         )
     return out

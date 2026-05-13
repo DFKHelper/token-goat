@@ -288,7 +288,7 @@ def cmd_map(
 
 
 @app.command()
-def deps(file: str):
+def deps(file: str) -> None:
     """Show dependency graph for file."""
     typer.echo("not yet implemented: deps")
 
@@ -413,7 +413,7 @@ def section(
 def session_touched(
     session_id: str = typer.Option(..., "--session-id", "-s", help="Claude session_id"),
     json_output: bool = typer.Option(False, "--json"),
-):
+) -> None:
     """List files already read in the given Claude session."""
     from . import session as session_mod  # noqa: PLC0415
 
@@ -446,7 +446,7 @@ def session_mark(
     session_id: str = typer.Option(..., "--session-id", "-s"),
     offset: int = typer.Option(0, "--offset"),
     limit: int = typer.Option(0, "--limit", help="0 means unlimited"),
-):
+) -> None:
     """Manually mark a file/range as read for the given session. (Mostly used by hooks.)"""
     from . import session as session_mod  # noqa: PLC0415
 
@@ -544,7 +544,7 @@ def cmd_fetch_image(
 
 
 @app.command()
-def caption_instead(path: str):
+def caption_instead(path: str) -> None:
     """Generate text caption instead of image (v2 feature)."""
     typer.echo("v2 feature, not in v1")
 
@@ -595,7 +595,7 @@ def index(
 def stats(
     window: int = typer.Option(30, "--window", "-w", help="Days to include (0 = all time)"),
     json_output: bool = typer.Option(False, "--json"),
-):
+) -> None:
     """Show cumulative token savings."""
     from . import stats as stats_mod  # noqa: PLC0415
 
@@ -622,7 +622,7 @@ def stats(
 
 
 @app.command()
-def doctor():  # noqa: C901
+def doctor() -> None:  # noqa: C901
     """Diagnose indexing health."""
     import importlib
     import sqlite3
@@ -1009,13 +1009,13 @@ def post_read(
 
 
 @config_app.command()
-def get(key: str):
+def get(key: str) -> None:
     """Get config value."""
     typer.echo("not yet implemented: config get")
 
 
 @config_app.command()
-def set(key: str, value: str):
+def set(key: str, value: str) -> None:
     """Set config value."""
     typer.echo("not yet implemented: config set")
 

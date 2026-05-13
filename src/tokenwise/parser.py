@@ -7,6 +7,7 @@ import time
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any
 
 from . import db
 from .project import Project
@@ -224,8 +225,10 @@ def index_project(
     *,
     full: bool = True,
     progress: Callable[[int, int], None] | None = None,
-) -> dict:
-    """Full or incremental indexing. Returns summary dict."""
+) -> dict[str, Any]:
+    """Full or incremental indexing. Returns summary dict with keys:
+    total_files, indexed, skipped_unchanged, errors, languages, duration_sec.
+    """
     files = list(iter_source_files(project))
     n_total = len(files)
     n_indexed = 0
