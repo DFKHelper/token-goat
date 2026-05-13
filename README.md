@@ -15,11 +15,13 @@ Copyright (c) 2026 DFK Helper LLC. Built by Zelys.
 
 ## What you get
 
-Three wins, all silent, all automatic.
+Four wins, all silent, all automatic.
 
 **Large images shrink before the model ever sees them.** When the agent opens a big PNG or JPEG from disk, Google Drive, or a URL, Tokenwise returns a compressed copy. A 3.3 MB screenshot from a recent session landed at 84 KB on the way through. That is a 97.4% cut on a single read. Drive shrinking only kicks in if you have already authorized Google Drive in Claude Code's built-in connector. Tokenwise reuses that auth and never asks for its own.
 
 **No more re-reading the same file.** When the agent tries to read a file already pulled into the current session, it gets a short reminder of the prior read and a nudge to grab a narrower slice instead. Long sessions stop replaying themselves.
+
+**Compaction stays useful.** Before Claude Code compacts a long conversation, Tokenwise injects a structured session manifest — which files were edited, which symbols were accessed, which files were read most — so the compaction LLM knows what to preserve. The manifest is under 400 tokens. Sessions that would otherwise lose important context keep it.
 
 **Surgical reads from a small CLI.** Pull one function, one Markdown heading, or one semantic match instead of dumping a whole module into context. Targeted reads run about 85% smaller than whole-file reads on the same source.
 
@@ -52,6 +54,7 @@ The `--codex` flag patches both Claude Code and Codex CLI in one pass.
 | `tokenwise semantic "<query>"` | Find code by meaning, not by filename |
 | `tokenwise map` | Get a compact orientation of the repo |
 | `tokenwise stats` | See how many tokens you have saved |
+| `tokenwise compact-hint --session-id <id>` | Inspect the compaction manifest for a session |
 | `tokenwise doctor` | Confirm everything is wired correctly |
 
 First `tokenwise semantic` call downloads a small embedding model, about 130 MB, into `%LOCALAPPDATA%\tokenwise\models\`. One-time. Offline after that.
