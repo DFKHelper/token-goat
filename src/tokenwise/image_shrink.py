@@ -63,8 +63,26 @@ def should_shrink(src_path: Path) -> bool:
         return False
 
 
+def _is_safe_path(path: Path) -> bool:
+    """Validate path is absolute and doesn't attempt traversal."""
+    try:
+        # Must be absolute
+        if not path.is_absolute():
+            return False
+        # Resolve to catch any .. or symlink tricks
+        resolved = path.resolve()
+        # Path must exist to be processable
+        return resolved.exists()
+    except (OSError, ValueError):
+        return False
+
+
 def shrink(src_path: Path) -> Path | None:
     """Shrink the image and return the path to the cached shrunken version. None on failure."""
+    # Validate input path for safety
+    if not _is_safe_path(src_path):
+        _LOG.warning("rejected unsafe path: %s", src_path)
+        return None
     if not should_shrink(src_path):
         return None
 
@@ -136,6 +154,10 @@ def shrink(src_path: Path) -> Path | None:
 def stats_for(src_path: Path, shrunken_path: Path) -> dict:
     """Return savings stats for telemetry."""
     try:
+        # Validate both paths
+        if not _is_safe_path(src_path) or not _is_safe_path(shrunken_path):
+            _LOG.warning("rejected unsafe path in stats_for")
+            return {"src_bytes": 0, "out_bytes": 0, "bytes_saved": 0}
         src_size = src_path.stat().st_size
         out_size = shrunken_path.stat().st_size
         return {

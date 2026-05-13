@@ -71,10 +71,16 @@ def _validate_file_id(file_id: str) -> None:
     Google Drive file IDs are base64url without padding, ~25-40 chars.
     Reject anything that looks like a path.
     """
-    if not file_id:
+    if not file_id or not isinstance(file_id, str):
         raise ValueError("file_id cannot be empty")
+    file_id = file_id.strip()
+    if not file_id:
+        raise ValueError("file_id cannot be empty or whitespace-only")
     if len(file_id) > 128:
         raise ValueError(f"file_id too long (max 128 chars): {len(file_id)}")
+    # Reject path-like patterns
+    if "/" in file_id or "\\" in file_id or ".." in file_id:
+        raise ValueError(f"file_id contains invalid characters: {file_id!r}")
     # Allow alphanumeric, hyphen, underscore (base64url alphabet)
     if not all(c.isalnum() or c in "-_" for c in file_id):
         raise ValueError(f"file_id contains invalid characters: {file_id!r}")
@@ -108,11 +114,20 @@ def fetch_file(file_id: str, *, shrink_if_image: bool = True) -> Path:
     name: str = meta.get("name", file_id)
     mime: str = meta.get("mimeType", "")
 
-    # Build a safe local filename
+    # Build a safe local filename — remove path separators and control chars
+    # Allow only alphanumeric, dot, hyphen, underscore
     safe_name = "".join(c for c in name if c.isalnum() or c in "._-")
     if not safe_name:
         safe_name = file_id
+    # Truncate to reasonable length to prevent filesystem issues
+    safe_name = safe_name[:200]
     local_path = cache_dir / f"{file_id}_{safe_name}"
+
+    # Final safety check: ensure the path is still within cache_dir
+    try:
+        local_path.resolve().relative_to(cache_dir.resolve())
+    except ValueError:
+        raise RuntimeError(f"Computed path escapes cache directory: {local_path}") from None
 
     if local_path.exists():
         _LOG.info("gdrive cache hit: %s", local_path.name)

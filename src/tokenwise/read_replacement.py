@@ -24,6 +24,17 @@ _KIND_PRIORITY: dict[str, int] = {
 }
 
 
+def _is_safe_rel_path(rel_path: str) -> bool:
+    """Validate that rel_path cannot escape project root via path traversal."""
+    # Reject absolute paths and parent directory references
+    if rel_path.startswith("/") or rel_path.startswith("\\"):
+        return False
+    # Reject parent directory traversal
+    if ".." in rel_path.split("/") or ".." in rel_path.split("\\"):
+        return False
+    return True
+
+
 def resolve_file_rel(project: Project, file_part: str) -> str | None:
     """Given the file part from a 'file::symbol' target, find the matching rel_path.
 
@@ -84,6 +95,11 @@ def read_symbol(
         signature, bytes_total, bytes_extracted, bytes_saved
     Returns None if the symbol is not found or the file cannot be read.
     """
+    # Prevent path traversal attacks
+    if not _is_safe_rel_path(rel_path):
+        _LOG.warning("rejected unsafe rel_path: %s", rel_path)
+        return None
+
     with db.open_project(project.hash) as conn:
         rows = conn.execute(
             "SELECT name, kind, line, end_line, signature FROM symbols "
@@ -143,6 +159,11 @@ def read_section(
         bytes_total, bytes_extracted, bytes_saved
     Returns None if the heading is not found or the file cannot be read.
     """
+    # Prevent path traversal attacks
+    if not _is_safe_rel_path(rel_path):
+        _LOG.warning("rejected unsafe rel_path: %s", rel_path)
+        return None
+
     with db.open_project(project.hash) as conn:
         rows = conn.execute(
             "SELECT heading, level, line, end_line FROM sections "

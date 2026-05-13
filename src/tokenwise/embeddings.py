@@ -32,6 +32,17 @@ _LOG = logging.getLogger("tokenwise.embeddings")
 DEFAULT_MODEL = "BAAI/bge-small-en-v1.5"
 DEFAULT_DIM = 384
 
+
+def _is_safe_rel_path(rel_path: str) -> bool:
+    """Validate that rel_path cannot escape project root via path traversal."""
+    # Reject absolute paths and parent directory references
+    if rel_path.startswith("/") or rel_path.startswith("\\"):
+        return False
+    # Reject parent directory traversal
+    if ".." in rel_path.split("/") or ".." in rel_path.split("\\"):
+        return False
+    return True
+
 # Chunk size constraints (chars)
 MIN_CHUNK_CHARS = 50
 MAX_CHUNK_CHARS = 8000
@@ -156,6 +167,10 @@ def extract_chunks_for_file(
     rel_path: str,
 ) -> list[Chunk]:
     """Build chunks for one file from its indexed symbols/sections + windowed fallback."""
+    # Prevent path traversal attacks
+    if not _is_safe_rel_path(rel_path):
+        _LOG.warning("rejected unsafe rel_path: %s", rel_path)
+        return []
     abs_path = project.root / rel_path
     try:
         text = abs_path.read_text(encoding="utf-8", errors="replace")
