@@ -112,6 +112,12 @@ All caches and the index live in `%LOCALAPPDATA%\tokenwise\`. Delete the folder 
 
 Available for senior or staff engineering roles. tokenwise@dfkhelper.com
 
+## Disclaimer
+
+**THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE, AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES, OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT, OR OTHERWISE, ARISING FROM, OUT OF, OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.**
+
+Use Tokenwise at your own risk. DFK Helper LLC and its contributors make no guarantees about correctness, completeness, data integrity, or fitness for any purpose. See the LICENSE file for the full limitation of liability terms.
+
 ## License
 
 Tokenwise is licensed under the PolyForm Noncommercial License 1.0.0. See the LICENSE file for the full terms.
