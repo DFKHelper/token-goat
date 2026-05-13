@@ -120,7 +120,7 @@ def extract(source: bytes, rel_path: str) -> tuple[list[Symbol], list[Ref], list
     try:
         result = tlp.process(text, cfg)
     except Exception:
-        return [], [], []
+        return [], [], [], []
 
     symbols: list[Symbol] = []
     imp_exp: list[ImpExp] = []

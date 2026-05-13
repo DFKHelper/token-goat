@@ -1,7 +1,44 @@
 """Central path resolver for tokenwise data directories."""
+import sys
 from pathlib import Path
 
 import platformdirs
+
+
+def python_runner_argv(*subcommand: str) -> list[str]:
+    """Argv to invoke tokenwise via pythonw + module, NOT the launcher .exe.
+
+    AV/EDR products (Bitdefender ATD, Defender ASR, Norton SONAR, ...) flag
+    PyInstaller-style launcher .exe files in user-writable directories as
+    payload-drop signatures, especially when the parent process is node.exe
+    or cmd.exe. pythonw.exe is Python-Software-Foundation-signed, lives in a
+    well-known tool venv path, and `python -m module` is the most boring
+    spawn pattern on Windows. AV products treat it as benign.
+    """
+    py = Path(sys.executable)
+    pythonw = py.parent / "pythonw.exe"
+    runner = pythonw if pythonw.exists() else py
+    return [str(runner), "-m", "tokenwise.cli", *subcommand]
+
+
+def python_runner_command(*subcommand: str) -> str:
+    """Same as ``python_runner_argv`` but as a single shell-style command string,
+    for embedding in settings.json / config.toml hook entries.
+
+    The interpreter path uses forward slashes. Claude Code on Windows runs
+    hook commands through Git Bash, which strips backslashes as escape
+    sequences (``C:\\Users\\zelys`` becomes ``C:Userszelys``). Windows itself
+    accepts forward slashes in paths just fine, so this works for cmd.exe,
+    PowerShell, bash, and direct CreateProcess invocations.
+    """
+    argv = python_runner_argv(*subcommand)
+    # Convert backslashes to forward slashes on the interpreter path
+    # specifically (first element). Args after that are flags and module
+    # names with no separators in them.
+    if argv:
+        argv[0] = argv[0].replace("\\", "/")
+    quoted = [f'"{a}"' if " " in a else a for a in argv]
+    return " ".join(quoted)
 
 
 def data_dir() -> Path:

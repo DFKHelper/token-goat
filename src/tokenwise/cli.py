@@ -8,10 +8,12 @@ from pathlib import Path
 
 # Force UTF-8 on stdout/stderr (Windows defaults to cp1252 which can't encode
 # the punctuation we use in maps, hints, and stats: → ›  etc.).
+# `.reconfigure` exists on TextIOWrapper but not on the generic TextIO base.
+# contextlib.suppress(AttributeError) handles environments where it isn't there.
 with contextlib.suppress(AttributeError, OSError):
-    sys.stdout.reconfigure(encoding="utf-8")
+    sys.stdout.reconfigure(encoding="utf-8")  # type: ignore[union-attr]
 with contextlib.suppress(AttributeError, OSError):
-    sys.stderr.reconfigure(encoding="utf-8")
+    sys.stderr.reconfigure(encoding="utf-8")  # type: ignore[union-attr]
 
 import typer
 
@@ -23,6 +25,56 @@ config_app = typer.Typer(name="config", no_args_is_help=True)
 
 app.add_typer(hook_app)
 app.add_typer(config_app)
+
+
+def main() -> None:
+    """Process entry point. Wraps ``app()`` so hook subcommands NEVER propagate
+    a non-zero exit even when click/typer itself rejects unknown arguments.
+
+    Hook harnesses (Codex in particular) pass version-specific args we can't
+    predict; click's ``no_such_option`` raises before our handler runs and
+    becomes a top-level ``SystemExit(2)``. Catching it here, emitting a
+    ``{"continue": true}`` placeholder, and exiting 0 keeps the harness happy.
+    Non-hook commands keep their normal exit behaviour so real CLI usage still
+    surfaces bad flags to the user.
+    """
+    try:
+        app()
+    except SystemExit as exc:
+        code = exc.code
+        if not isinstance(code, int) or code == 0:
+            raise
+        argv = sys.argv[1:] if len(sys.argv) > 1 else []
+        is_hook_call = bool(argv) and argv[0] == "hook"
+        if not is_hook_call:
+            raise
+        try:
+            sys.stdout.write('{"continue": true}')
+            sys.stdout.flush()
+        except Exception:  # noqa: BLE001
+            pass
+        raise SystemExit(0) from None
+
+
+def _not_indexed_hint(project_hash: str) -> str | None:
+    """Return a one-line hint when this project has no indexed files.
+
+    Distinguishes "no match for that name" from "nothing in the DB yet". Agents
+    (especially Codex) otherwise interpret an empty result as "tokenwise is
+    failing" and fall back to direct file reads.
+    """
+    from . import db as _db  # noqa: PLC0415
+    try:
+        if _db.file_count(project_hash) == 0:
+            return (
+                "(project not yet indexed. auto-indexing started in the "
+                "background on first SessionStart; if it has not finished, "
+                "rerun in a moment, or run `tokenwise index --full` to force "
+                "synchronous indexing.)"
+            )
+    except Exception:  # noqa: BLE001
+        return None
+    return None
 
 
 @app.command()
@@ -103,7 +155,11 @@ def symbol(
     elif results:
         _fmt_plain(results)
     else:
-        typer.echo(f"No matches for {name!r}")
+        hint = _not_indexed_hint(proj.hash)
+        if hint:
+            typer.echo(hint)
+        else:
+            typer.echo(f"No matches for {name!r}")
 
 
 @app.command()
@@ -148,7 +204,11 @@ def ref(
                 ctx = f"\033[2m{ctx}\033[0m"
             typer.echo(f"{row['file']}:{row['line']}: ref {name!r}{ctx}")
     else:
-        typer.echo(f"No references found for {name!r}")
+        hint = _not_indexed_hint(proj.hash)
+        if hint:
+            typer.echo(hint)
+        else:
+            typer.echo(f"No references found for {name!r}")
 
 
 @app.command()
@@ -256,7 +316,11 @@ def read(
 
     rel = read_replacement.resolve_file_rel(proj, file_part)
     if rel is None:
-        typer.echo(f"File not found in indexed project: {file_part}", err=True)
+        hint = _not_indexed_hint(proj.hash)
+        if hint:
+            typer.echo(hint)
+        else:
+            typer.echo(f"File not found in indexed project: {file_part}", err=True)
         raise typer.Exit(0)
 
     result = read_replacement.read_symbol(proj, rel, symbol_part, context_lines=context_lines)
@@ -310,7 +374,11 @@ def section(
 
     rel = read_replacement.resolve_file_rel(proj, file_part)
     if rel is None:
-        typer.echo(f"File not found in indexed project: {file_part}", err=True)
+        hint = _not_indexed_hint(proj.hash)
+        if hint:
+            typer.echo(hint)
+        else:
+            typer.echo(f"File not found in indexed project: {file_part}", err=True)
         raise typer.Exit(0)
 
     result = read_replacement.read_section(proj, rel, heading_part, context_lines=context_lines)
@@ -880,84 +948,64 @@ def cmd_worker(
     worker.run_daemon()
 
 
-@hook_app.command()
+# Hook entry points. Each one delegates to hooks_cli.safe_run, which is
+# bulletproof: catches BaseException, always emits valid JSON, always exits 0.
+# That way a hook never marks itself failed to Claude Code or Codex even when
+# the underlying handler trips on an unexpected payload shape or environment.
+#
+# context_settings tells typer/click to ACCEPT any unknown options or extra
+# positional args silently. Codex passes hook-specific args that vary between
+# its versions; without this, typer would exit 2 ("No such option ...") before
+# safe_run ever runs and the entire hook would appear to fail.
+
+_HARNESS_OPT = typer.Option("claude", "--harness", help="Hook harness: claude or codex")
+_INPUT_OPT = typer.Option(None, "--input-file")
+_HOOK_CTX = {"ignore_unknown_options": True, "allow_extra_args": True}
+
+
+@hook_app.command(context_settings=_HOOK_CTX)
 def session_start(
-    input_file: Path | None = typer.Option(None, "--input-file"),  # noqa: B008
-    harness: str = typer.Option("claude", "--harness", help="Hook harness: claude or codex"),  # noqa: B008
+    input_file: Path | None = _INPUT_OPT,
+    harness: str = _HARNESS_OPT,
 ) -> None:
     """Hook: session-start event."""
-    try:
-        raw = hooks_cli.read_payload(input_file)
-        payload = hooks_cli.normalize_payload(raw, harness)
-        result = hooks_cli.dispatch("session-start", payload)
-        result = hooks_cli.denormalize_response(result, harness)
-    except Exception:  # noqa: BLE001
-        result = {"continue": True}
-    hooks_cli.emit(result)
+    hooks_cli.safe_run("session-start", input_file, harness)
 
 
-@hook_app.command()
+@hook_app.command(context_settings=_HOOK_CTX)
 def pre_read(
-    input_file: Path | None = typer.Option(None, "--input-file"),  # noqa: B008
-    harness: str = typer.Option("claude", "--harness", help="Hook harness: claude or codex"),  # noqa: B008
+    input_file: Path | None = _INPUT_OPT,
+    harness: str = _HARNESS_OPT,
 ) -> None:
     """Hook: pre-read event."""
-    try:
-        raw = hooks_cli.read_payload(input_file)
-        payload = hooks_cli.normalize_payload(raw, harness)
-        result = hooks_cli.dispatch("pre-read", payload)
-        result = hooks_cli.denormalize_response(result, harness)
-    except Exception:  # noqa: BLE001
-        result = {"continue": True}
-    hooks_cli.emit(result)
+    hooks_cli.safe_run("pre-read", input_file, harness)
 
 
-@hook_app.command()
+@hook_app.command(context_settings=_HOOK_CTX)
 def pre_fetch(
-    input_file: Path | None = typer.Option(None, "--input-file"),  # noqa: B008
-    harness: str = typer.Option("claude", "--harness", help="Hook harness: claude or codex"),  # noqa: B008
+    input_file: Path | None = _INPUT_OPT,
+    harness: str = _HARNESS_OPT,
 ) -> None:
     """Hook: pre-fetch event."""
-    try:
-        raw = hooks_cli.read_payload(input_file)
-        payload = hooks_cli.normalize_payload(raw, harness)
-        result = hooks_cli.dispatch("pre-fetch", payload)
-        result = hooks_cli.denormalize_response(result, harness)
-    except Exception:  # noqa: BLE001
-        result = {"continue": True}
-    hooks_cli.emit(result)
+    hooks_cli.safe_run("pre-fetch", input_file, harness)
 
 
-@hook_app.command()
+@hook_app.command(context_settings=_HOOK_CTX)
 def post_edit(
-    input_file: Path | None = typer.Option(None, "--input-file"),  # noqa: B008
-    harness: str = typer.Option("claude", "--harness", help="Hook harness: claude or codex"),  # noqa: B008
+    input_file: Path | None = _INPUT_OPT,
+    harness: str = _HARNESS_OPT,
 ) -> None:
     """Hook: post-edit event."""
-    try:
-        raw = hooks_cli.read_payload(input_file)
-        payload = hooks_cli.normalize_payload(raw, harness)
-        result = hooks_cli.dispatch("post-edit", payload)
-        result = hooks_cli.denormalize_response(result, harness)
-    except Exception:  # noqa: BLE001
-        result = {"continue": True}
-    hooks_cli.emit(result)
+    hooks_cli.safe_run("post-edit", input_file, harness)
 
 
-@hook_app.command()
+@hook_app.command(context_settings=_HOOK_CTX)
 def post_read(
-    input_file: Path | None = typer.Option(None, "--input-file"),  # noqa: B008
-    harness: str = typer.Option("claude", "--harness", help="Hook harness: claude or codex"),  # noqa: B008
+    input_file: Path | None = _INPUT_OPT,
+    harness: str = _HARNESS_OPT,
 ) -> None:
     """Hook: post-read event."""
-    try:
-        raw = hooks_cli.read_payload(input_file)
-        payload = hooks_cli.normalize_payload(raw, harness)
-        result = hooks_cli.dispatch("post-read", payload)
-        result = hooks_cli.denormalize_response(result, harness)
-    except Exception:  # noqa: BLE001
-        result = {"continue": True}
-    hooks_cli.emit(result)
+    hooks_cli.safe_run("post-read", input_file, harness)
 
 
 @config_app.command()

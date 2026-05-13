@@ -81,6 +81,9 @@ def shrink(src_path: Path) -> Path | None:
     try:
         from PIL import Image, ImageOps  # noqa: PLC0415
 
+        # Image.open returns ImageFile; downstream resize/convert/paste return
+        # Image. Annotate broadly so reassignment doesn't trip the type checker.
+        img: Image.Image
         with Image.open(src_path) as img:
             # Preserve EXIF orientation
             with contextlib.suppress(Exception):
@@ -92,7 +95,7 @@ def shrink(src_path: Path) -> Path | None:
             if long_edge > MAX_LONG_EDGE:
                 scale = MAX_LONG_EDGE / long_edge
                 new_size = (int(w * scale), int(h * scale))
-                img = img.resize(new_size, Image.LANCZOS)
+                img = img.resize(new_size, Image.Resampling.LANCZOS)
 
             # Choose output format
             is_screenshot = _looks_like_screenshot_or_text(img)

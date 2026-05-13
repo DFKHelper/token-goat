@@ -1,11 +1,11 @@
 [project]
 name = "tokenwise"
-version = "0.1.0"
+version = "0.2.0"
 description = "Claude Code companion that reduces token usage via local indexing, image shrinking, and session-context caching."
 readme = "README.md"
-requires-python = ">=3.11,<3.14"
+requires-python = ">=3.11,<3.15"
 authors = [{ name = "Zelys" }]
-license = { text = "MIT" }
+license = { text = "PolyForm Noncommercial License 1.0.0" }
 dependencies = [
     "typer>=0.12.0",
     "click>=8.1.0",
@@ -23,17 +23,19 @@ dependencies = [
     "pygments>=2.17.0",
     "tomli-w>=1.0.0",
     "tree-sitter-language-pack>=0.7,<2.0",
+    "rich>=13.0.0",
 ]
 
 [project.scripts]
-tokenwise = "tokenwise.cli:app"
+tokenwise = "tokenwise.cli:main"
 
 # Windowless variant: GUI subsystem entry point used by hooks and the
 # background worker. Same code, but Windows won't allocate a console for
 # the launcher .exe — no flashing terminal windows on every hook fire.
+# Both use main() so hook subcommands cannot propagate non-zero exits.
 [project.gui-scripts]
-tokenwise-hook = "tokenwise.cli:app"
-tokenwise-worker = "tokenwise.cli:app"
+tokenwise-hook = "tokenwise.cli:main"
+tokenwise-worker = "tokenwise.cli:main"
 
 [project.optional-dependencies]
 dev = [
@@ -41,6 +43,7 @@ dev = [
     "pytest-cov>=5.0.0",
     "ruff>=0.6.0",
     "mypy>=1.10.0",
+    "types-psutil>=5.9.0",
 ]
 
 [build-system]
@@ -61,3 +64,30 @@ ignore = ["E501"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-ra --strict-markers"
+
+[tool.mypy]
+python_version = "3.11"
+warn_unused_ignores = false
+
+# Tree-sitter language pack returns are typed as `object` and we unpack
+# .name/.kind/.span/.start_byte by duck typing. Each language adapter trips
+# the same attr-defined / arg-type errors; suppress at module scope.
+[[tool.mypy.overrides]]
+module = "tokenwise.languages.*"
+disable_error_code = ["attr-defined", "arg-type", "misc"]
+
+# Fastembed's model object is a runtime duck type with .embed(); mypy can't see it.
+[[tool.mypy.overrides]]
+module = "tokenwise.embeddings"
+disable_error_code = ["attr-defined", "union-attr"]
+
+# Third-party libraries that don't ship type stubs.
+[[tool.mypy.overrides]]
+module = [
+    "sqlite_vec",
+    "googleapiclient.*",
+    "google_auth_oauthlib.*",
+    "networkx",
+    "networkx.*",
+]
+ignore_missing_imports = true

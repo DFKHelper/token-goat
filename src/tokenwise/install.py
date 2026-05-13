@@ -98,15 +98,19 @@ def task_exists(name: str) -> bool:
 
 
 def install_worker_task() -> tuple[bool, str]:
-    """Register tokenwise-worker to run at user logon via HKCU Run registry key.
+    """Register the tokenwise worker to run at user logon via the HKCU Run key.
 
-    schtasks ONLOGON requires admin rights even with /RU on most Windows UAC
-    configurations.  HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run is
-    the standard user-scope at-logon mechanism and never needs elevation.
+    schtasks ONLOGON requires admin even with /RU on most Windows UAC setups.
+    HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run is the standard
+    user-scope at-logon mechanism and never needs elevation.
+
+    Command uses ``pythonw.exe -m tokenwise.cli worker --daemon`` so AV/EDR
+    products don't behavior-flag the at-logon spawn (a tiny launcher .exe in
+    a user-writable directory is a textbook payload-drop signature; pythonw
+    invoking a module is not).
     """
     import sys
-    binary = tokenwise_worker_binary()
-    cmd = f'"{binary}" worker --daemon'
+    cmd = paths.python_runner_command("worker", "--daemon")
 
     if sys.platform != "win32":
         return True, "non-Windows: skipped"
@@ -186,8 +190,14 @@ def uninstall_tasks() -> list[str]:
 # ---------------------------------------------------------------------------
 
 
-def _hooks_block(binary: str) -> dict:
-    """Build the hooks structure tokenwise wants to install."""
+def _hooks_block(binary: str | None = None) -> dict:
+    """Build the hooks structure tokenwise wants to install.
+
+    The ``binary`` parameter is kept for backwards compatibility but unused;
+    commands now invoke ``pythonw.exe -m tokenwise.cli`` directly. See
+    ``paths.python_runner_command`` for why (AV/EDR launcher-binary flagging).
+    """
+    runner = paths.python_runner_command
     return {
         "SessionStart": [
             {
@@ -195,7 +205,7 @@ def _hooks_block(binary: str) -> dict:
                 "hooks": [
                     {
                         "type": "command",
-                        "command": f'"{binary}" hook session-start',
+                        "command": runner("hook", "session-start"),
                         "timeout": 30000,
                     }
                 ],
@@ -207,7 +217,7 @@ def _hooks_block(binary: str) -> dict:
                 "hooks": [
                     {
                         "type": "command",
-                        "command": f'"{binary}" hook pre-read',
+                        "command": runner("hook", "pre-read"),
                         "timeout": 5000,
                     }
                 ],
@@ -217,7 +227,7 @@ def _hooks_block(binary: str) -> dict:
                 "hooks": [
                     {
                         "type": "command",
-                        "command": f'"{binary}" hook pre-fetch',
+                        "command": runner("hook", "pre-fetch"),
                         "timeout": 2000,
                     }
                 ],
@@ -229,7 +239,7 @@ def _hooks_block(binary: str) -> dict:
                 "hooks": [
                     {
                         "type": "command",
-                        "command": f'"{binary}" hook post-edit',
+                        "command": runner("hook", "post-edit"),
                         "timeout": 2000,
                     }
                 ],
@@ -239,7 +249,7 @@ def _hooks_block(binary: str) -> dict:
                 "hooks": [
                     {
                         "type": "command",
-                        "command": f'"{binary}" hook post-read',
+                        "command": runner("hook", "post-read"),
                         "timeout": 2000,
                     }
                 ],
@@ -339,17 +349,26 @@ def unpatch_settings_json() -> str:
 # ---------------------------------------------------------------------------
 
 CLAUDE_MD_CONTENT = """\
-## tokenwise — code/content navigation and image shrinking
+## tokenwise - route code reads through tokenwise first
 
-tokenwise is installed and intercepts via hooks. For maximum token savings:
+tokenwise is installed. Before you call Read or Grep on a source file, check for a tokenwise command that does the same job for a fraction of the tokens. This is the default path, not an optimization. Skipping it burns context you will need later in the session.
 
-- **Symbol/function lookup** (replaces `grep`): `tokenwise symbol <name>` — add `--all-projects` for cross-repo
-- **Just one symbol/section** (replaces full `Read`): `tokenwise read "<file>::<symbol>"` or `tokenwise section "<file>::<heading>"` (typically ~85% token reduction)
-- **Concept/meaning search**: `tokenwise semantic "<query>"`
-- **Repo orientation**: `tokenwise map --budget 4000`
-- **Dedup check**: `tokenwise session-touched --session-id <id>` (the SessionStart hook resets this automatically)
+| Goal | Do this | Not this |
+|------|---------|----------|
+| Find a function, class, or type | `tokenwise symbol getUser` | `Grep "getUser"` (10 to 50x more tokens) |
+| Read one function or method body | `tokenwise read "src/auth.py::login"` | `Read src/auth.py` (about 85% more tokens) |
+| Read one section of a doc | `tokenwise section "README.md::Install"` | `Read README.md` |
+| Find code by meaning, not name | `tokenwise semantic "rate limit retry"` | Several rounds of `Grep` |
+| Get oriented in an unfamiliar repo | `tokenwise map --budget 4000` | Recursive `ls` plus multiple `Read` calls |
 
-Image-shrinking, Drive intercept, and read-deduplication are all automatic via PreToolUse hooks — you don't need to call them.
+Add `--all-projects` to `tokenwise symbol` for cross-repo lookups.
+
+Read is the right call when:
+- The file is under about 200 lines and you need the whole thing.
+- The file has never been indexed (new path, scratch script, untracked draft).
+- It is an image you need to see visually. The shrink runs automatically. Just Read it.
+
+Verify the habit. Run `tokenwise stats` and watch event counts climb. Flat counts during code work mean you are reaching for Read or Grep where tokenwise would apply.
 """
 
 
@@ -406,37 +425,46 @@ def unpatch_claude_md() -> str:
 SKILL_MD_CONTENT = """\
 ---
 name: tokenwise
-description: Token-efficient code and content navigation. Use tokenwise commands instead of grep/Read for symbol lookup, section extraction, semantic search, and repo overview. Hooks handle image-shrink, Drive intercept, and read-deduplication automatically.
+description: Use BEFORE reaching for Read or Grep on a source file. tokenwise commands replace symbol search, single-function reads, doc-section reads, semantic search, and repo overviews at a fraction of the token cost. Hooks handle image shrink, Drive intercept, and read dedup automatically. Skipping tokenwise burns session context.
 ---
 
 # tokenwise
 
-`tokenwise` is installed system-wide and integrated via hooks. It dramatically reduces token usage in three ways:
+tokenwise is installed. Route code and content reads through it first. This is the default path, not optional polish. Tokens you spend rereading files or grepping wide are tokens you will not have for the work that matters.
 
-## Automatic (no Claude action required)
-- **Image shrink**: every `Read` on a large image (>100 KB) is auto-redirected to a shrunken cached version (~95% token reduction).
-- **Drive intercept**: `mcp__claude_ai_Google_Drive__download_file_content` is redirected to `tokenwise gdrive-fetch <id>` (downloads, shrinks, caches).
-- **WebFetch image intercept**: WebFetch of an image URL is redirected to `tokenwise fetch-image <url>`.
-- **Session dedup hints**: PreToolUse on `Read` injects a system reminder if you've already read the same file this session.
+## Automatic. Do not duplicate.
 
-## When you should explicitly call tokenwise
+- Large images on Read get redirected to a shrunken cached copy (about 95% fewer tokens).
+- Google Drive downloads get redirected to a tokenwise fetch that downloads, shrinks, and caches.
+- WebFetch on an image URL gets the same treatment.
+- Repeat reads of the same file in one session trigger a system reminder so you do not pay twice.
 
-| Goal | Command | Why |
-|------|---------|-----|
-| Find a function/class/type | `tokenwise symbol <name>` | Returns one line per match (`file:line: kind name signature`). 10-50x fewer tokens than `grep`. Add `--all-projects` for cross-repo. |
-| Read just one function | `tokenwise read "file.py::name"` | Returns only that function body. Typically ~85% reduction vs reading the whole file. |
-| Read a markdown/HTML section | `tokenwise section "article.md::Methodology"` | Returns only that section. |
-| Find code by meaning | `tokenwise semantic "<query>"` | Vector search over local embeddings. Good for "where do we handle X". |
-| Orient in a new repo | `tokenwise map --budget 4000` | Token-budgeted PageRank overview. |
-| Check session reads | `tokenwise session-touched --session-id <id>` | Lists what you've read so far this session. |
+You do not call these. They run on their own.
 
-## When to NOT use tokenwise
-- For small files (<200 lines), `Read` is fine.
-- For ambiguous names with many matches, use `grep` first to narrow.
-- For binary/image content you actually need to view visually, the auto-shrink already runs — just `Read` normally.
+## What you DO call
 
-## Status
-Run `tokenwise doctor` if anything seems off. Run `tokenwise stats` to see cumulative token savings.
+Before reaching for Read or Grep on a code file, check this table.
+
+| Goal | Do this | Not this |
+|------|---------|----------|
+| Find a function, class, or type | `tokenwise symbol getUser` | `Grep "getUser"` (10 to 50x more tokens) |
+| Read one function or method body | `tokenwise read "src/auth.py::login"` | `Read src/auth.py` (about 85% more tokens) |
+| Read one section of a doc | `tokenwise section "README.md::Install"` | `Read README.md` |
+| Find code by meaning, not name | `tokenwise semantic "rate limit retry"` | Several rounds of `Grep` |
+| Get oriented in an unfamiliar repo | `tokenwise map --budget 4000` | Recursive `ls` plus multiple `Read` calls |
+| See what you have already touched | `tokenwise session-touched` | Re-reading and hoping you remember |
+
+Add `--all-projects` to `tokenwise symbol` to search every indexed repo at once.
+
+## When Read is the right call
+
+- The file is under about 200 lines and you need the whole thing.
+- The file has never been indexed (new path, scratch script, untracked draft).
+- You need to view an image visually. The shrink already ran. Just Read it.
+
+## Verify the habit
+
+Run `tokenwise stats` and watch event counts climb. Flat counts during code work mean you are reaching for Read or Grep where a tokenwise command would apply. Run `tokenwise doctor` if anything looks wrong.
 """
 
 
@@ -474,8 +502,12 @@ def codex_agents_path() -> Path:
     return codex_dir() / "AGENTS.md"
 
 
-def _codex_hooks_block(binary: str) -> dict:
-    """The hooks structure for Codex's config.toml."""
+def _codex_hooks_block(binary: str | None = None) -> dict:
+    """The hooks structure for Codex's config.toml.
+
+    The ``binary`` parameter is kept for backwards compatibility but unused.
+    """
+    runner = paths.python_runner_command
     return {
         "SessionStart": [
             {
@@ -483,7 +515,7 @@ def _codex_hooks_block(binary: str) -> dict:
                 "hooks": [
                     {
                         "type": "command",
-                        "command": f'"{binary}" hook session-start --harness codex',
+                        "command": runner("hook", "session-start", "--harness", "codex"),
                         "timeout": 30000,
                     }
                 ],
@@ -495,7 +527,7 @@ def _codex_hooks_block(binary: str) -> dict:
                 "hooks": [
                     {
                         "type": "command",
-                        "command": f'"{binary}" hook pre-read --harness codex',
+                        "command": runner("hook", "pre-read", "--harness", "codex"),
                         "timeout": 5000,
                     }
                 ],
@@ -505,7 +537,7 @@ def _codex_hooks_block(binary: str) -> dict:
                 "hooks": [
                     {
                         "type": "command",
-                        "command": f'"{binary}" hook pre-fetch --harness codex',
+                        "command": runner("hook", "pre-fetch", "--harness", "codex"),
                         "timeout": 2000,
                     }
                 ],
@@ -517,7 +549,7 @@ def _codex_hooks_block(binary: str) -> dict:
                 "hooks": [
                     {
                         "type": "command",
-                        "command": f'"{binary}" hook post-edit --harness codex',
+                        "command": runner("hook", "post-edit", "--harness", "codex"),
                         "timeout": 2000,
                     }
                 ],
@@ -527,7 +559,7 @@ def _codex_hooks_block(binary: str) -> dict:
                 "hooks": [
                     {
                         "type": "command",
-                        "command": f'"{binary}" hook post-read --harness codex',
+                        "command": runner("hook", "post-read", "--harness", "codex"),
                         "timeout": 2000,
                     }
                 ],
@@ -595,16 +627,26 @@ def unpatch_codex_config() -> str:
 
 
 CODEX_AGENTS_MD_CONTENT = """\
-## tokenwise — token-efficient code navigation (Codex)
+## tokenwise - route code reads through tokenwise first (Codex)
 
-tokenwise hooks are active for this CLI. Before reaching for `grep`/`cat` via Bash, use:
+tokenwise is installed. Before you run `rg`, `grep`, `cat`, `head`, `bat`, or any Bash read of a source file, check whether a tokenwise command does the same job for a fraction of the tokens. Route through tokenwise by default. Skipping it burns context you will need later in the session.
 
-- **Symbol lookup**: `tokenwise symbol <name>` — one line per hit (10-50x fewer tokens than `rg`/`grep`). Add `--all-projects` for cross-repo.
-- **Read one symbol/section**: `tokenwise read "<file>::<symbol>"` or `tokenwise section "<file>::<heading>"` — typically ~85% fewer tokens than reading the whole file.
-- **Concept search**: `tokenwise semantic "<query>"` — vector search when you know the concept but not the name.
-- **Repo overview**: `tokenwise map --budget 4000` — PageRank-ranked, token-budgeted.
+| Goal | Do this | Not this |
+|------|---------|----------|
+| Find a function, class, or type | `tokenwise symbol getUser` | `rg "getUser"` (10 to 50x more tokens) |
+| Read one function or method body | `tokenwise read "src/auth.py::login"` | `cat src/auth.py` (about 85% more tokens) |
+| Read one section of a doc | `tokenwise section "README.md::Install"` | `cat README.md` |
+| Find code by meaning, not name | `tokenwise semantic "rate limit retry"` | Several rounds of `rg` |
+| Get oriented in an unfamiliar repo | `tokenwise map --budget 4000` | `ls -R` plus multiple `cat` calls |
 
-Image shrinking and read-deduplication run automatically via hooks. No action required.
+Add `--all-projects` to `tokenwise symbol` for cross-repo lookups.
+
+Plain Bash reads are the right call when:
+- The file is under about 200 lines and you need the whole thing.
+- The file has never been indexed (new path, scratch script, untracked draft).
+- You need exact bytes to build an `apply_patch` hunk that must match the file verbatim.
+
+Verify the habit. Run `tokenwise stats` and watch event counts climb. Flat counts during code work mean you are reaching for `rg` or `cat` where a tokenwise command would apply.
 """
 
 

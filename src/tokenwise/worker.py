@@ -26,6 +26,12 @@ POLL_INTERVAL = 2.0
 # Periodic maintenance interval (cleanup tasks)
 MAINTENANCE_INTERVAL = 300.0  # 5 min
 
+# How many days of granular stats events to keep in global.db before pruning.
+# After this many days, rows are deleted from the stats table to keep the DB
+# bounded. Aggregate counts/by-day are computed at query time from the
+# remaining window, so historical totals beyond this window simply roll off.
+STATS_RETENTION_DAYS = 90
+
 # Image cache eviction threshold (bytes)
 IMAGE_CACHE_LIMIT = 500 * 1024 * 1024  # 500 MB
 IMAGE_CACHE_TARGET = int(IMAGE_CACHE_LIMIT * 0.8)  # evict to 80%
@@ -154,6 +160,7 @@ def cleanup_on_startup() -> dict:
         "logs_deleted": 0,
         "image_bytes_evicted": 0,
         "image_files_evicted": 0,
+        "stats_rows_pruned": 0,
     }
 
     # 1. Stale lockfile cleanup
@@ -193,6 +200,19 @@ def cleanup_on_startup() -> dict:
     bytes_evicted, files_evicted = evict_image_cache_if_over_limit()
     stats["image_bytes_evicted"] = bytes_evicted
     stats["image_files_evicted"] = files_evicted
+
+    # 4. Stats table pruning. read_intercept / tool_use / session_hint events
+    # accumulate one row per tool call, so the table grows unboundedly without
+    # this. Drops rows older than STATS_RETENTION_DAYS from global.db. Recent
+    # data and savings totals are unaffected.
+    try:
+        from . import db as _db  # noqa: PLC0415
+        cutoff_ts = int(time.time() - STATS_RETENTION_DAYS * 86400)
+        with _db.open_global() as conn:
+            cur = conn.execute("DELETE FROM stats WHERE ts < ?", (cutoff_ts,))
+            stats["stats_rows_pruned"] = cur.rowcount or 0
+    except Exception:  # noqa: BLE001
+        _LOG.exception("stats prune failed")
 
     return stats
 
@@ -239,11 +259,14 @@ def evict_image_cache_if_over_limit() -> tuple[int, int]:
 # ---------------------------------------------------------------------------
 
 def spawn_detached() -> int | None:
-    """Spawn `tokenwise worker --daemon` as a detached background process.
+    """Spawn the tokenwise worker as a detached background process.
 
+    Uses ``pythonw.exe -m tokenwise.cli worker --daemon`` rather than the
+    launcher .exe so AV/EDR products don't behavior-flag the spawn.
     Returns PID or None on failure.
     """
-    cmd = ["tokenwise", "worker", "--daemon"]
+    from . import paths  # noqa: PLC0415
+    cmd = paths.python_runner_argv("worker", "--daemon")
 
     creationflags = 0
     if sys.platform == "win32":
@@ -263,6 +286,40 @@ def spawn_detached() -> int | None:
         return proc.pid
     except (OSError, FileNotFoundError) as e:
         _LOG.error("failed to spawn worker: %s", e)
+        return None
+
+
+def spawn_index_detached(project_root: str) -> int | None:
+    """Spawn `tokenwise index --full` from the given project root, detached.
+
+    Used by the SessionStart hook to auto-populate a project's symbol DB the
+    first time tokenwise sees that project. Runs in the background; the user
+    or agent's subsequent tokenwise commands work as soon as it finishes.
+
+    Uses ``pythonw.exe -m tokenwise.cli`` rather than the launcher .exe so
+    AV/EDR products don't behavior-flag the spawn.
+    """
+    from . import paths  # noqa: PLC0415
+    cmd = paths.python_runner_argv("index", "--full")
+
+    creationflags = 0
+    if sys.platform == "win32":
+        creationflags = 0x00000008 | 0x00000200 | 0x08000000
+
+    try:
+        proc = subprocess.Popen(
+            cmd,
+            cwd=project_root,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            close_fds=True,
+            creationflags=creationflags,
+            start_new_session=(sys.platform != "win32"),
+        )
+        return proc.pid
+    except (OSError, FileNotFoundError) as e:
+        _LOG.error("failed to spawn auto-index: %s", e)
         return None
 
 

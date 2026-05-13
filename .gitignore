@@ -123,3 +123,4 @@ dmypy.json
 *.db-wal
 *.db-shm
 .cc-shrunken.*
+.improve-state-*.json

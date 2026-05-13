@@ -69,28 +69,68 @@ def denormalize_response(response: dict[str, Any], harness: str = "claude") -> d
 
 
 def read_payload(input_file: Path | None = None) -> dict[str, Any]:
-    """Read JSON payload from stdin (or a file, for testing)."""
+    """Read JSON payload from stdin (or a file, for testing).
+
+    Always returns a dict. Coerces non-dict JSON (``null``, lists, scalars)
+    to ``{}`` so handlers can safely call ``payload.get(...)``.
+    """
     if input_file is not None:
-        return json.loads(input_file.read_text(encoding="utf-8"))
-    raw = sys.stdin.read()
-    if not raw.strip():
-        return {}
-    return json.loads(raw)
+        data = json.loads(input_file.read_text(encoding="utf-8"))
+    else:
+        raw = sys.stdin.read()
+        if not raw.strip():
+            return {}
+        data = json.loads(raw)
+    return data if isinstance(data, dict) else {}
 
 
 def emit(result: dict[str, Any]) -> None:
-    """Write the hook result to stdout as JSON.
+    """Write the hook result to stdout as JSON, swallowing every output error.
 
     Forces UTF-8 on stdout (Windows defaults to cp1252 which can't encode → and
-    other punctuation we use in hints).
+    other punctuation we use in hints). Never raises: a broken pipe, missing
+    buffer, or closed stream simply ends the call without surfacing an error
+    to the harness, which would otherwise see the hook as failed.
     """
     payload = json.dumps(result, ensure_ascii=False)
+    # Preferred: raw bytes through .buffer so UTF-8 is correct on Windows.
     try:
         sys.stdout.buffer.write(payload.encode("utf-8"))
-        sys.stdout.buffer.flush()
-    except AttributeError:
+        with contextlib.suppress(Exception):
+            sys.stdout.buffer.flush()
+        return
+    except Exception:  # noqa: BLE001
+        pass
+    # Fallback: text-mode write.
+    with contextlib.suppress(Exception):
         sys.stdout.write(payload)
-        sys.stdout.flush()
+        with contextlib.suppress(Exception):
+            sys.stdout.flush()
+
+
+def safe_run(event: str, input_file: Path | None = None, harness: str = "claude") -> None:
+    """Run a hook event end-to-end with absolute fail-soft semantics.
+
+    Catches every exception (including BaseException) so the process always
+    exits with code 0, no matter what. On failure we still emit a valid
+    ``{"continue": true}`` response so the harness has something to parse,
+    and we log a one-line diagnostic to stderr so the harness's
+    hook-error display has the cause if you go looking for it.
+    """
+    result: dict[str, Any] = {"continue": True}
+    try:
+        raw = read_payload(input_file)
+        payload = normalize_payload(raw, harness)
+        result = dispatch(event, payload)
+        result = denormalize_response(result, harness)
+    except BaseException as exc:  # noqa: BLE001 — bulletproof
+        with contextlib.suppress(Exception):
+            print(
+                f"tokenwise hook {event} failed: {type(exc).__name__}: {exc}",
+                file=sys.stderr,
+            )
+        result = {"continue": True}
+    emit(result)
 
 
 def fail_soft(handler: Callable[[dict[str, Any]], dict[str, Any]]) -> Callable[[dict[str, Any]], dict[str, Any]]:
@@ -126,10 +166,25 @@ def session_start(payload: dict[str, Any]) -> dict[str, Any]:
         except Exception:  # noqa: BLE001
             _LOG.exception("failed to reset session cache")
 
-    # Log project detection
+    # Project detection + auto-index on first contact with an unindexed project.
+    # Without this the symbol/read/section/ref commands have no data to return,
+    # which downstream agents (especially Codex) interpret as "DB is failing"
+    # instead of "not indexed yet". Detached subprocess; returns immediately.
     proj = _detect(payload)
     if proj:
         _LOG.info("session-start: detected project %s (%s)", proj.root, proj.hash[:8])
+        try:
+            from . import db, worker  # noqa: PLC0415
+
+            if db.file_count(proj.hash) == 0:
+                pid = worker.spawn_index_detached(str(proj.root))
+                if pid:
+                    _LOG.info(
+                        "session-start: auto-indexing %s in background (pid=%s)",
+                        proj.root, pid,
+                    )
+        except Exception:  # noqa: BLE001
+            _LOG.exception("auto-index spawn failed")
 
     # Watchdog: ensure worker daemon is alive
     try:
@@ -196,11 +251,17 @@ def pre_read(payload: dict[str, Any]) -> dict[str, Any]:
                 from . import db  # noqa: PLC0415
 
                 img_stats = image_shrink.stats_for(Path(file_path), shrunken)
+                # Conservative token estimate. Assumes the image would have been
+                # base64-encoded inline in the Claude prompt content (typical for
+                # Read on a local image). Roughly 1 token per 4 base64 chars.
+                # For pure vision-tokenized embeds this undersells.
+                tokens_saved_estimate = img_stats["bytes_saved"] // 4
                 with contextlib.suppress(Exception):
                     db.record_stat(
                         None,
                         "image_shrink",
                         bytes_saved=img_stats["bytes_saved"],
+                        tokens_saved=tokens_saved_estimate,
                         detail=f"{file_path} -> {shrunken.name}",
                     )
                 new_input = dict(tool_input)
@@ -232,6 +293,27 @@ def pre_read(payload: dict[str, Any]) -> dict[str, Any]:
     )
     if not hint:
         return {"continue": True}
+
+    # Record a session_hint stat event so users see Tokenwise working on
+    # plain code reads (not only image shrinks). The agent MAY heed the
+    # hint (narrower offset/limit, or `tokenwise read`); we don't observe
+    # what it does next. Assume a conservative 25% effective avoidance of
+    # the would-be read. Marked "estimated" in stats output.
+    with contextlib.suppress(Exception):
+        from . import db  # noqa: PLC0415
+
+        file_size = 0
+        with contextlib.suppress(OSError):
+            file_size = Path(file_path).stat().st_size
+        est_bytes = file_size // 4
+        est_tokens = est_bytes // 4
+        db.record_stat(
+            None,
+            "session_hint",
+            bytes_saved=est_bytes,
+            tokens_saved=est_tokens,
+            detail=f"{file_path}",
+        )
 
     return {
         "continue": True,
@@ -311,7 +393,12 @@ def pre_fetch(payload: dict[str, Any]) -> dict[str, Any]:
 
 @fail_soft
 def post_edit(payload: dict[str, Any]) -> dict[str, Any]:
-    """Phase 3+ (symbol invalidation). Stub for now."""
+    """Post-edit hook. Reserved for future symbol-invalidation work.
+
+    Currently a no-op. Edits do not generate stat events because Tokenwise
+    has no savings to claim on a write; the headline counters track real
+    or estimated savings only.
+    """
     return {"continue": True}
 
 

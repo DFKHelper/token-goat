@@ -56,22 +56,46 @@ def _connect(db_path: Path, *, load_vec: bool = True) -> sqlite3.Connection:
 # ---------------------------------------------------------------------------
 
 def _integrity_ok(conn: sqlite3.Connection) -> bool:
+    """Return True if the DB is verifiably healthy.
+
+    Note: an exception or "busy/locked" result is NOT evidence of corruption.
+    Only an explicit non-"ok" result from PRAGMA integrity_check counts. The
+    previous version treated every DatabaseError as corruption, which on
+    Windows caused false positives when the worker held the file open during
+    indexing. Tokenwise then tried to quarantine a perfectly healthy DB,
+    failed with WinError 5, and surfaced "Exit code: 1" to the agent.
+    """
     try:
         row = conn.execute("PRAGMA integrity_check").fetchone()
-        return row is not None and row[0] == "ok"
-    except sqlite3.DatabaseError:
+    except sqlite3.DatabaseError as e:
+        msg = str(e).lower()
+        if "locked" in msg or "busy" in msg or "i/o" in msg:
+            return True  # transient — not corruption
+        # Anything else: log but still don't quarantine reflexively.
+        _LOG.warning("integrity_check raised (treating as healthy): %s", e)
+        return True
+    if row is None:
+        return True
+    return row[0] == "ok"
+
+
+def _rebuild(db_path: Path) -> bool:
+    """Try to quarantine a corrupt file. Returns True on success.
+
+    Never raises. If the file is in use by another process (Windows file
+    lock), logs and returns False so callers can continue with the existing
+    connection rather than destroying user data.
+    """
+    if not db_path.exists():
         return False
-
-
-def _rebuild(db_path: Path) -> None:
-    """Quarantine the corrupt file so the caller can recreate it."""
-    if db_path.exists():
-        bad = db_path.with_suffix(db_path.suffix + f".bad-{int(time.time())}")
-        try:
-            db_path.rename(bad)
-            _LOG.warning("quarantined corrupt db: %s -> %s", db_path, bad)
-        except OSError as e:
-            _LOG.error("failed to quarantine %s: %s", db_path, e)
+    bad = db_path.with_suffix(db_path.suffix + f".bad-{int(time.time())}")
+    try:
+        db_path.rename(bad)
+        _LOG.warning("quarantined corrupt db: %s -> %s", db_path, bad)
+        return True
+    except OSError as e:
+        _LOG.error("failed to quarantine %s: %s (continuing with existing DB)", db_path, e)
+        return False
 
 
 # ---------------------------------------------------------------------------
@@ -255,11 +279,16 @@ def open_global() -> Iterator[sqlite3.Connection]:
         conn = _connect(path)
     except sqlite3.DatabaseError as exc:
         _LOG.warning("corrupt db at connect time: %s", exc)
-        _rebuild(path)
-        conn = _connect(path)
+        if _rebuild(path):
+            conn = _connect(path)
+        else:
+            raise
     try:
         if not _integrity_ok(conn):
             conn.close()
+            # Try quarantine; whether it succeeds or fails, just reopen the
+            # (possibly-new) file. If quarantine failed (Windows lock), we
+            # reopen the original and proceed; better than crashing.
             _rebuild(path)
             conn = _connect(path)
         _ensure_global_schema(conn)
@@ -275,11 +304,16 @@ def open_project(project_hash: str) -> Iterator[sqlite3.Connection]:
     try:
         conn = _connect(path)
     except sqlite3.DatabaseError:
-        _rebuild(path)
-        conn = _connect(path)
+        if _rebuild(path):
+            conn = _connect(path)
+        else:
+            raise
     try:
         if not _integrity_ok(conn):
             conn.close()
+            # Try quarantine; whether it succeeds or fails, just reopen the
+            # (possibly-new) file. If quarantine failed (Windows lock), we
+            # reopen the original and proceed; better than crashing.
             _rebuild(path)
             conn = _connect(path)
         _ensure_project_schema(conn)
@@ -358,6 +392,16 @@ def project_writer_lock(project_hash: str, timeout_sec: float = 5.0) -> Iterator
 # ---------------------------------------------------------------------------
 # Stats helper
 # ---------------------------------------------------------------------------
+
+def file_count(project_hash: str) -> int:
+    """How many files are indexed for this project. 0 means never indexed."""
+    try:
+        with open_project(project_hash) as conn:
+            row = conn.execute("SELECT COUNT(*) FROM files").fetchone()
+            return int(row[0]) if row else 0
+    except Exception:  # noqa: BLE001
+        return 0
+
 
 def record_stat(
     project_hash: str | None,

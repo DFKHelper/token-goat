@@ -147,11 +147,12 @@ def _accumulate(row: sqlite3.Row, by_kind: dict, by_day: dict) -> None:
 
 def _fmt_bytes(n: int) -> str:
     """Format byte count as human-readable (B/KB/MB/GB)."""
+    value: float = float(n)
     for unit in ("B", "KB", "MB", "GB"):
-        if abs(n) < 1024:
-            return f"{n:.1f}{unit}" if unit != "B" else f"{n}{unit}"
-        n = n / 1024
-    return f"{n:.1f}TB"
+        if abs(value) < 1024:
+            return f"{int(value)}{unit}" if unit == "B" else f"{value:.1f}{unit}"
+        value = value / 1024
+    return f"{value:.1f}TB"
 
 
 def _fmt_tokens(n: int) -> str:
@@ -163,52 +164,277 @@ def _fmt_tokens(n: int) -> str:
     return f"{n/1_000_000:.2f}Mt"
 
 
+def _short_project(root: str) -> str:
+    """Last path component of a project root, for compact display."""
+    if not root:
+        return "(unknown)"
+    cleaned = root.rstrip("/\\")
+    sep = "\\" if "\\" in cleaned else "/"
+    tail = cleaned.split(sep)[-1] if sep in cleaned else cleaned
+    return tail[:28]
+
+
+# Bar character set; finer-grained than █░ for half-block resolution.
+_BAR_FILL = "█"
+_BAR_PARTIAL = "▏▎▍▌▋▊▉"  # 1/8 through 7/8
+_BAR_EMPTY = " "
+
+# Sparkline char set; 0/8 (no value) through 8/8 (max).
+_SPARK = " ▁▂▃▄▅▆▇█"
+
+
+def _bar_text(value: int, max_value: int, width: int = 28) -> tuple[str, str]:
+    """Return (bar_string, rich_style) where bar uses 1/8-block resolution.
+
+    Style ramps yellow -> green -> cyan as fill grows, giving the eye a
+    quick read of relative magnitude across rows.
+    """
+    if max_value <= 0 or value <= 0:
+        return _BAR_EMPTY * width, "dim"
+    fill_units = (value / max_value) * width
+    whole = int(fill_units)
+    remainder = fill_units - whole
+    bar = _BAR_FILL * whole
+    if whole < width and remainder > 0:
+        idx = max(0, min(6, int(remainder * 8) - 1))
+        bar += _BAR_PARTIAL[idx]
+        bar += _BAR_EMPTY * (width - whole - 1)
+    else:
+        bar += _BAR_EMPTY * (width - whole)
+    # Color graded by saturation ratio.
+    ratio = min(1.0, value / max_value)
+    if ratio >= 0.66:
+        style = "bold cyan"
+    elif ratio >= 0.33:
+        style = "bold green"
+    else:
+        style = "yellow"
+    return bar, style
+
+
+def _sparkline(values: list[int]) -> str:
+    """Render a sequence of values as a unicode sparkline."""
+    if not values:
+        return ""
+    hi = max(values)
+    if hi <= 0:
+        return _SPARK[0] * len(values)
+    out = []
+    for v in values:
+        idx = 0 if v <= 0 else max(1, min(8, round((v / hi) * 8)))
+        out.append(_SPARK[idx])
+    return "".join(out)
+
+
 def render_text(
     summary: StatsSummary, *, top_days: int = 7, top_projects: int = 5
 ) -> str:
-    """Format stats as plain text for `tokenwise stats` command."""
-    out = []
+    """Render stats as a richly-styled terminal panel.
+
+    Uses the rich library for Panels, color-graded bars, a sparkline of
+    recent activity, and aligned tables. The returned string contains ANSI
+    color codes; terminals that support them render in full color, plain
+    pipes get the underlying text. Substring matches like 'tokenwise stats',
+    'Total:', and 'By kind:' are preserved across the styling so callers
+    (including tests) can match on them.
+    """
+    import io
+
+    from rich.box import ROUNDED
+    from rich.console import Console
+    from rich.panel import Panel
+    from rich.table import Table
+    from rich.text import Text
+
+    buf = io.StringIO()
+    console = Console(
+        file=buf,
+        force_terminal=True,
+        color_system="truecolor",
+        width=80,
+        legacy_windows=False,
+    )
+
     window_desc = (
         "all time" if summary.window_days == 0 else f"last {summary.window_days} days"
     )
-    out.append(f"tokenwise stats ({window_desc})")
-    out.append("")
-    out.append(
-        f"Total: {summary.total_events:,} events, {_fmt_bytes(summary.total_bytes_saved)} saved (~{_fmt_tokens(summary.total_tokens_saved)} tokens)"
+
+    # ---- Headline panel ----
+    # Keep label+value pairs as single styled segments so substring matches
+    # (e.g. "Total: 2 events") survive the ANSI wrapping.
+    headline = Text("\n  ", style="")
+    headline.append(f"Total: {summary.total_events:,} events", style="bold magenta")
+    headline.append("     ", style="")
+    headline.append(
+        f"{_fmt_bytes(summary.total_bytes_saved)} saved", style="bold green"
     )
-    out.append("")
+    headline.append("     ", style="")
+    headline.append(
+        f"~{_fmt_tokens(summary.total_tokens_saved)} tokens (estimated)",
+        style="bold cyan",
+    )
+    headline.append("\n", style="")
 
+    console.print(
+        Panel(
+            headline,
+            title=Text.assemble(
+                ("tokenwise stats", "bold white"),
+                ("  ·  ", "dim"),
+                (window_desc, "cyan"),
+            ),
+            title_align="left",
+            border_style="bright_cyan",
+            box=ROUNDED,
+            padding=(0, 1),
+        )
+    )
+
+    # ---- By kind ----
     if summary.by_kind:
-        out.append("By kind:")
-        for kind in sorted(
-            summary.by_kind, key=lambda k: summary.by_kind[k]["bytes_saved"], reverse=True
-        ):
+        console.print()
+        console.print(Text("By kind:", style="bold"))
+        kinds_sorted = sorted(
+            summary.by_kind,
+            key=lambda k: summary.by_kind[k]["bytes_saved"],
+            reverse=True,
+        )
+        max_bytes = max(
+            (summary.by_kind[k]["bytes_saved"] for k in kinds_sorted), default=0
+        )
+        tbl = Table(
+            show_header=True,
+            header_style="bold dim",
+            show_lines=False,
+            show_edge=False,
+            box=None,
+            pad_edge=False,
+            padding=(0, 1),
+        )
+        tbl.add_column("kind", style="white", no_wrap=True, width=18)
+        tbl.add_column("savings (relative)", no_wrap=True, width=28)
+        tbl.add_column("bytes", justify="right", style="bold green", width=10)
+        tbl.add_column("tokens", justify="right", style="bold cyan", width=10)
+        tbl.add_column("events", justify="right", style="dim", width=7)
+        for kind in kinds_sorted:
             v = summary.by_kind[kind]
-            out.append(
-                f"  {kind:24} events={v['events']:5d}  bytes={_fmt_bytes(v['bytes_saved']):>9}  tokens={_fmt_tokens(v['tokens_saved']):>9}"
+            bar, bar_style = _bar_text(v["bytes_saved"], max_bytes)
+            tbl.add_row(
+                kind,
+                Text(bar, style=bar_style),
+                _fmt_bytes(v["bytes_saved"]),
+                _fmt_tokens(v["tokens_saved"]),
+                f"{v['events']} ev",
             )
-        out.append("")
+        console.print(tbl)
 
+        # Hint when image_shrink shows 0 tokens. Not a bug; we track bytes
+        # for images because vision-token cost is model-specific.
+        img = summary.by_kind.get("image_shrink")
+        if img and img["events"] > 0 and img["tokens_saved"] == 0:
+            console.print(
+                Text(
+                    "  note: image_shrink tracks bytes, not vision tokens "
+                    "(model-specific math).",
+                    style="dim italic",
+                )
+            )
+
+    # ---- Activity sparkline (last 7 days, oldest -> newest) ----
     if summary.by_day:
-        out.append(f"By day (top {top_days}):")
-        for d in summary.by_day[:top_days]:
-            out.append(
-                f"  {d['date']}  events={d['events']:5d}  bytes={_fmt_bytes(d['bytes_saved']):>9}  tokens={_fmt_tokens(d['tokens_saved']):>9}"
-            )
-        out.append("")
+        days_for_spark = summary.by_day[:top_days]
+        # by_day is newest-first; reverse for left-to-right time progression.
+        days_chrono = list(reversed(days_for_spark))
+        spark_values = [d["events"] for d in days_chrono]
+        spark = _sparkline(spark_values)
+        date_range = (
+            f"{days_chrono[0]['date']} -> {days_chrono[-1]['date']}"
+            if len(days_chrono) > 1
+            else days_chrono[0]["date"]
+        )
+        console.print()
+        spark_line = Text()
+        spark_line.append("Activity ", style="bold")
+        spark_line.append(f"({date_range})  ", style="dim")
+        spark_line.append(spark, style="bold green")
+        console.print(spark_line)
 
+    # ---- By day (top N) ----
+    if summary.by_day:
+        console.print()
+        console.print(Text(f"By day (top {top_days}):", style="bold"))
+        days = summary.by_day[:top_days]
+        max_bytes = max((d["bytes_saved"] for d in days), default=0)
+        tbl = Table(
+            show_header=True,
+            header_style="bold dim",
+            show_edge=False,
+            box=None,
+            pad_edge=False,
+            padding=(0, 1),
+        )
+        tbl.add_column("date", style="white", no_wrap=True, width=18)
+        tbl.add_column("savings (relative)", no_wrap=True, width=28)
+        tbl.add_column("bytes", justify="right", style="bold green", width=10)
+        tbl.add_column("tokens", justify="right", style="bold cyan", width=10)
+        tbl.add_column("events", justify="right", style="dim", width=7)
+        for d in days:
+            bar, bar_style = _bar_text(d["bytes_saved"], max_bytes)
+            tbl.add_row(
+                d["date"],
+                Text(bar, style=bar_style),
+                _fmt_bytes(d["bytes_saved"]),
+                _fmt_tokens(d["tokens_saved"]),
+                f"{d['events']} ev",
+            )
+        console.print(tbl)
+
+    # ---- By project ----
     if summary.by_project:
-        out.append(f"By project (top {top_projects}):")
-        for p in summary.by_project[:top_projects]:
-            root = p["project_root"] or "(unknown)"
-            out.append(f"  {p['project_hash']}  {root}")
-            out.append(
-                f"    events={p['events']:5d}  bytes={_fmt_bytes(p['bytes_saved']):>9}  tokens={_fmt_tokens(p['tokens_saved']):>9}"
+        console.print()
+        console.print(Text(f"By project (top {top_projects}):", style="bold"))
+        projs = summary.by_project[:top_projects]
+        max_bytes = max((p["bytes_saved"] for p in projs), default=0)
+        tbl = Table(
+            show_header=True,
+            header_style="bold dim",
+            show_edge=False,
+            box=None,
+            pad_edge=False,
+            padding=(0, 1),
+        )
+        tbl.add_column("project", style="white", no_wrap=True, width=18)
+        tbl.add_column("savings (relative)", no_wrap=True, width=28)
+        tbl.add_column("bytes", justify="right", style="bold green", width=10)
+        tbl.add_column("tokens", justify="right", style="bold cyan", width=10)
+        tbl.add_column("events", justify="right", style="dim", width=7)
+        for p in projs:
+            label = _short_project(p["project_root"])
+            bar, bar_style = _bar_text(p["bytes_saved"], max_bytes)
+            tbl.add_row(
+                label,
+                Text(bar, style=bar_style),
+                _fmt_bytes(p["bytes_saved"]),
+                _fmt_tokens(p["tokens_saved"]),
+                f"{p['events']} ev",
+            )
+        console.print(tbl)
+        # Hash + full path under each row, dimmed.
+        for p in projs:
+            console.print(
+                Text("    ", style="")
+                + Text(f"{p['project_hash']}  ", style="dim cyan")
+                + Text(p["project_root"] or "(unknown)", style="dim")
             )
 
     if summary.total_events == 0:
-        out.append(
-            "(no recorded savings yet — tokenwise will accumulate stats as it intercepts reads, image fetches, etc.)"
+        console.print()
+        console.print(
+            Text(
+                "(no recorded savings yet. tokenwise will accumulate stats as it "
+                "intercepts reads, image fetches, etc.)",
+                style="dim italic",
+            )
         )
 
-    return "\n".join(out)
+    return buf.getvalue()

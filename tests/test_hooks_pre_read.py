@@ -61,6 +61,30 @@ class TestPreReadHandlerDirect:
         result = hooks_cli.pre_read(None)  # type: ignore[arg-type]
         assert result == {"continue": True}
 
+    def test_hint_records_session_hint_stat(self, tmp_data_dir):
+        """When pre_read emits a hint, a session_hint stat row is appended."""
+        from tokenwise import db  # local import to honor tmp_data_dir patching
+
+        sid = "stat_smoke"
+        path = "C:/proj/cached.py"
+        session.mark_file_read(sid, path, offset=0, limit=200)
+
+        payload = {
+            "session_id": sid,
+            "tool_name": "Read",
+            "tool_input": {"file_path": path, "offset": 0, "limit": 200},
+            "cwd": "C:/proj",
+        }
+        result = hooks_cli.pre_read(payload)
+        assert "hookSpecificOutput" in result
+
+        with db.open_global() as conn:
+            rows = conn.execute(
+                "SELECT kind, detail FROM stats WHERE kind = 'session_hint'"
+            ).fetchall()
+        assert len(rows) == 1
+        assert rows[0]["detail"] == path
+
     def test_missing_tool_name_passes_through(self, tmp_data_dir):
         """No tool_name in payload → passes through as non-Read."""
         payload = {"session_id": "s4", "tool_input": {"file_path": "foo.py"}}

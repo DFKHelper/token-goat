@@ -170,8 +170,8 @@ def extract_chunks_for_file(
     language = file_lang_row["language"] if file_lang_row else "other"
     if language in _WINDOW_LANGS:
         covered_lines: set[int] = set()
-        for s, e in covered:
-            covered_lines.update(range(s, e + 1))
+        for start, end in covered:
+            covered_lines.update(range(start, end + 1))
         n = len(lines)
         i = 1
         while i <= n:

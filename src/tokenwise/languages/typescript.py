@@ -55,8 +55,12 @@ def _is_abi_file(source: bytes, rel_path: str, threshold: int = _ABI_SIZE_THRESH
     return False
 
 
-def _extract_abi(source: bytes) -> tuple[list[Symbol], list[Ref], list[ImpExp]]:
-    """Fast path for generated ABI files: index top-level exports only, no refs."""
+def _extract_abi(source: bytes) -> tuple[list[Symbol], list[Ref], list[ImpExp], list]:
+    """Fast path for generated ABI files: index top-level exports only, no refs.
+
+    Returns a 4-tuple matching the Extractor protocol (symbols, refs,
+    imports/exports, sections). Sections is always empty for ABI files.
+    """
     text = source.decode("utf-8", errors="replace")
     lines = text.splitlines()
     symbols: list[Symbol] = []

@@ -245,4 +245,7 @@ def test_spawn_detached_mocked(tmp_data_dir):
     assert pid == 12345
     mock_popen.assert_called_once()
     cmd_arg = mock_popen.call_args[0][0]
-    assert cmd_arg == ["tokenwise", "worker", "--daemon"]
+    # Prefer the windowless tokenwise-worker binary (or fall back to tokenwise);
+    # either way the trailing args are stable.
+    assert cmd_arg[-2:] == ["worker", "--daemon"]
+    assert "tokenwise" in cmd_arg[0].lower()
