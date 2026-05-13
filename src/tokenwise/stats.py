@@ -1,12 +1,14 @@
 """Token-savings telemetry aggregator."""
 from __future__ import annotations
 
+import hashlib
 import logging
 import sqlite3
 import time
 from collections import defaultdict
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 from . import db
@@ -18,6 +20,66 @@ if TYPE_CHECKING:
 BYTES_MODE_ONLY_KINDS: frozenset[str] = frozenset({"image_shrink", "webfetch_image", "gdrive_image"})
 
 _LOG = logging.getLogger("tokenwise.stats")
+
+# Cache directory → inferred git root so we don't re-walk on every event.
+_git_root_cache: dict[str, str | None] = {}
+
+
+def _norm_path(p: str) -> str:
+    """Normalize to forward slashes with lowercase drive letter."""
+    n = p.replace("\\", "/")
+    if len(n) >= 2 and n[1] == ":":
+        n = n[0].lower() + n[1:]
+    return n
+
+
+def _extract_file_path(kind: str, detail: str | None) -> str | None:
+    """Pull the source filesystem path out of a stats detail field.
+
+    image_shrink stores "src -> dest"; everything else is the path directly.
+    """
+    if not detail:
+        return None
+    if kind in BYTES_MODE_ONLY_KINDS and " -> " in detail:
+        return detail.split(" -> ", 1)[0].strip()
+    return detail
+
+
+def _infer_project_root(file_path: str, registered_roots: list[str]) -> str | None:
+    """Return the project root for *file_path*.
+
+    Tries registered roots first (longest-prefix match). Falls back to
+    walking up the directory tree to find the nearest .git parent.
+    """
+    norm = _norm_path(file_path)
+
+    for root in sorted(registered_roots, key=len, reverse=True):
+        root_norm = _norm_path(root).rstrip("/")
+        if norm.startswith(root_norm + "/") or norm == root_norm:
+            return root
+
+    parent_dir = str(Path(file_path).parent)
+    if parent_dir in _git_root_cache:
+        return _git_root_cache[parent_dir]
+
+    result: str | None = None
+    p = Path(file_path).parent
+    for _ in range(20):
+        if (p / ".git").exists():
+            result = _norm_path(str(p))
+            break
+        up = p.parent
+        if up == p:
+            break
+        p = up
+
+    _git_root_cache[parent_dir] = result
+    return result
+
+
+def _root_hash(root: str) -> str:
+    """Stable key for a project root that isn't in the projects table."""
+    return hashlib.sha1(root.encode()).hexdigest()
 
 
 @dataclass
@@ -113,6 +175,25 @@ def summarize(window_days: int = 30) -> StatsSummary:
                 _LOG.debug("project %s: aggregated %d rows", project_hash[:8], len(rows))
         except Exception:  # noqa: BLE001
             _LOG.exception("project stats read failed: %s", project_hash[:8])
+
+    # Attribute global.db events (session hints, image shrink, etc.) to projects
+    # by matching each event's file path against registered roots, then falling
+    # back to a .git walk for projects opened from a parent directory.
+    root_to_hash = {root: h for h, root in projects}
+    registered_roots = list(root_to_hash.keys())
+    for row in global_rows:
+        file_path = _extract_file_path(row["kind"], row["detail"])
+        if not file_path:
+            continue
+        root = _infer_project_root(file_path, registered_roots)
+        if root is None:
+            continue
+        proj_key = root_to_hash.get(root) or _root_hash(root)
+        p = by_project[proj_key]
+        p["events"] += 1
+        p["bytes_saved"] += row["bytes_saved"] or 0
+        p["tokens_saved"] += row["tokens_saved"] or 0
+        p["project_root"] = root
 
     by_day_list = sorted(
         [{"date": k, **v} for k, v in by_day.items()],
