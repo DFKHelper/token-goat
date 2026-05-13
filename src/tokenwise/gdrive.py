@@ -44,7 +44,7 @@ def _try_stored_oauth() -> object | None:
             creds_path.write_text(creds.to_json(), encoding="utf-8")
             _LOG.info("refreshed OAuth credentials")
         return creds
-    except Exception as e:  # noqa: BLE001
+    except Exception:  # noqa: BLE001
         # Do NOT log the exception message if it contains credentials
         _LOG.warning("stored OAuth invalid or refresh failed")
         return None

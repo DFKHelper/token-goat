@@ -7,6 +7,7 @@ import os
 import re
 import sys
 from pathlib import Path
+from typing import Any
 
 # Force UTF-8 on stdout/stderr (Windows defaults to cp1252 which can't encode
 # the punctuation we use in maps, hints, and stats: → ›  etc.).
@@ -20,6 +21,7 @@ with contextlib.suppress(AttributeError, OSError):
 import typer
 
 from . import hooks_cli
+
 
 def _write_raw(text: str) -> None:
     """Write text with truecolor ANSI codes directly, bypassing colorama.
@@ -36,7 +38,7 @@ def _write_raw(text: str) -> None:
     if os.environ.get("NO_COLOR") or not sys.stdout.isatty():
         text = re.sub(r"\x1b\[[0-9;]*m", "", text)
 
-    stream: object = sys.stdout
+    stream: Any = sys.stdout
     # colorama.StreamWrapper stores original stream as a name-mangled attr
     if hasattr(stream, "_StreamWrapper__wrapped"):
         stream = stream._StreamWrapper__wrapped  # type: ignore[attr-defined]

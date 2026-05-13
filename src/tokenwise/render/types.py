@@ -1,8 +1,7 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import date
-from typing import Optional
 
 
 @dataclass
@@ -18,11 +17,11 @@ class TotalStats:
     bytes: int
     tokens: int
     # % change vs the equivalent prior period, e.g. 12 means +12%. Omit if unavailable.
-    events_delta: Optional[float] = None
-    bytes_delta: Optional[float] = None
-    tokens_delta: Optional[float] = None
+    events_delta: float | None = None
+    bytes_delta: float | None = None
+    tokens_delta: float | None = None
     # 8+ recent data points for mini sparklines under each KPI. Omit to skip sparkline row.
-    sparklines: Optional[Sparklines] = None
+    sparklines: Sparklines | None = None
 
 
 @dataclass
