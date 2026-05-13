@@ -24,6 +24,24 @@ class FileMapItem(TypedDict):
 
 _LOG = logging.getLogger("tokenwise.repomap")
 
+# Files below this approximate line count are structural noise (empty __init__.py stubs, etc.)
+_MIN_DISPLAY_LINES = 4
+# POSIX path prefixes excluded from the map — these dirs are test fixtures, not source
+_EXCLUDED_PREFIXES = ("tests/fixtures/",)
+
+
+def _is_map_worthy(rel_path: str, approx_lines: int) -> bool:
+    """Return True if this file should appear in the repo map.
+
+    Excludes test fixture stubs (which distort PageRank by accumulating refs
+    from all parser tests) and trivially small files (empty __init__.py, etc.).
+    """
+    posix = rel_path.replace("\\", "/")
+    if any(posix.startswith(p) for p in _EXCLUDED_PREFIXES):
+        return False
+    return approx_lines >= _MIN_DISPLAY_LINES
+
+
 # rough token estimator: ~3.5 chars per token for English/code mix
 def estimate_tokens(text: str) -> int:
     return max(1, len(text) // 3 + 1)
@@ -94,10 +112,12 @@ def _build_graph(
     for row in conn.execute("SELECT symbol_name, file_rel FROM refs"):
         referenced_symbol = row["symbol_name"]
         referencing_file = row["file_rel"]
+        if referencing_file not in files:
+            continue
         definition_files = name_to_files.get(referenced_symbol, set())
 
         for definition_file in definition_files:
-            if definition_file != referencing_file:
+            if definition_file != referencing_file and definition_file in files:
                 graph.add_edge(referencing_file, definition_file)
 
     return graph
@@ -207,6 +227,11 @@ def build_map(
                 f"# {project.root.name}\n\n"
                 "(no files indexed — run `tokenwise index --full`)\n"
             )
+        files = {
+            rel: info
+            for rel, info in files.items()
+            if _is_map_worthy(rel, max(1, info["size"] // 50))
+        }
         graph = _build_graph(conn, files, name_to_files)
 
     ranks = compute_ranks(graph)
@@ -253,6 +278,11 @@ def build_map_json(project: Project) -> list[FileMapItem]:
     """Same data as build_map but as structured list of dicts (for tools)."""
     with db.open_project(project.hash) as conn:
         files, symbols_by_file, sections_by_file, name_to_files = _load_project_data(conn)
+        files = {
+            rel: info
+            for rel, info in files.items()
+            if _is_map_worthy(rel, max(1, info["size"] // 50))
+        }
         graph = _build_graph(conn, files, name_to_files)
 
     ranks = compute_ranks(graph)
