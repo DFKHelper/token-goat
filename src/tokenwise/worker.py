@@ -126,7 +126,11 @@ def enqueue_dirty(rel_path: str, project_hash: str | None = None) -> None:
 
 
 def drain_dirty_queue() -> list[dict]:
-    """Read all queued entries and clear the file. Returns the entries."""
+    """Read all queued entries and clear the file. Returns the entries.
+
+    Validates each entry is a dict before appending to ensure type safety.
+    Skips malformed entries with a warning.
+    """
     p = paths.dirty_queue_path()
     if not p.exists():
         return []
@@ -143,9 +147,13 @@ def drain_dirty_queue() -> list[dict]:
         if not line:
             continue
         try:
-            entries.append(json.loads(line))
+            entry = json.loads(line)
+            if not isinstance(entry, dict):
+                _LOG.warning("dirty queue entry is not a dict: %s", line[:120])
+                continue
+            entries.append(entry)
         except json.JSONDecodeError:
-            _LOG.warning("bad dirty queue entry: %s", line[:120])
+            _LOG.warning("bad dirty queue entry (not valid JSON): %s", line[:120])
     return entries
 
 
@@ -170,19 +178,22 @@ def cleanup_on_startup() -> dict:
             try:
                 content = lock_path.read_text(encoding="utf-8")
                 pid_str = content.split("\n", 1)[0].strip()
+                if not pid_str:
+                    raise ValueError("empty PID in lock file")
                 pid = int(pid_str)
                 dead = not psutil.pid_exists(pid)
                 old = time.time() - lock_path.stat().st_mtime > 600
                 if dead or old:
                     lock_path.unlink()
                     stats["stale_locks_cleared"] += 1
-            except (ValueError, OSError):
+            except (ValueError, OSError) as e:
                 # Malformed lock or unable to read — remove it
+                _LOG.debug("removing stale/malformed lock %s: %s", lock_path.name, e)
                 try:
                     lock_path.unlink()
                     stats["stale_locks_cleared"] += 1
-                except OSError:
-                    pass
+                except OSError as unlink_err:
+                    _LOG.warning("failed to remove lock %s: %s", lock_path.name, unlink_err)
 
     # 2. Log rotation: delete logs older than LOG_RETENTION_DAYS
     logs = paths.logs_dir()

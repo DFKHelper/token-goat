@@ -162,7 +162,13 @@ def index_file(project: Project, file_path: Path) -> FileIndex | None:
     except Exception:
         _LOG.exception("extractor crashed on %s", rel)
         return None
-    stat = file_path.stat()
+
+    try:
+        stat = file_path.stat()
+    except OSError as e:
+        _LOG.warning("stat failed after reading: %s: %s", file_path, e)
+        return None
+
     return FileIndex(
         rel_path=rel,
         language=language,

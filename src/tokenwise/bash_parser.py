@@ -70,18 +70,24 @@ def _parse_read(binary: str, args: list[str]) -> BashIntent:
         if binary in ("head", "tail"):
             if a in ("-n", "--lines"):
                 if i + 1 < len(args):
-                    with contextlib.suppress(ValueError):
+                    try:
                         limit = int(args[i + 1])
+                    except ValueError:
+                        pass
                     i += 2
                     continue
             elif a.startswith("-n") and len(a) > 2:
-                with contextlib.suppress(ValueError):
+                try:
                     limit = int(a[2:])
+                except ValueError:
+                    pass
                 i += 1
                 continue
             elif a.startswith("--lines="):
-                with contextlib.suppress(ValueError):
+                try:
                     limit = int(a.split("=", 1)[1])
+                except ValueError:
+                    pass
                 i += 1
                 continue
         if a.startswith("-"):

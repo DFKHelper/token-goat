@@ -79,7 +79,13 @@ def fetch_file(file_id: str, *, shrink_if_image: bool = True) -> Path:
     service = build("drive", "v3", credentials=creds, cache_discovery=False)
 
     # Get metadata first
-    meta = service.files().get(fileId=file_id, fields="id, name, mimeType, size").execute()
+    try:
+        meta = service.files().get(fileId=file_id, fields="id, name, mimeType, size").execute()
+    except Exception as e:
+        raise RuntimeError(f"Failed to fetch Drive file metadata for {file_id}: {e}") from e
+
+    if not isinstance(meta, dict):
+        raise RuntimeError(f"Expected dict metadata from Drive API, got {type(meta).__name__}")
     name: str = meta.get("name", file_id)
     mime: str = meta.get("mimeType", "")
 
@@ -104,11 +110,18 @@ def fetch_file(file_id: str, *, shrink_if_image: bool = True) -> Path:
         buf = io.BytesIO()
         downloader = MediaIoBaseDownload(buf, request)
         done = False
-        while not done:
-            _status, done = downloader.next_chunk()
-        local_path.parent.mkdir(parents=True, exist_ok=True)
-        local_path.write_bytes(buf.getvalue())
-        _LOG.info("gdrive downloaded: %s → %s (%d bytes)", file_id, local_path.name, local_path.stat().st_size)
+        try:
+            while not done:
+                _status, done = downloader.next_chunk()
+        except Exception as e:
+            raise RuntimeError(f"Download failed for {file_id}: {e}") from e
+
+        try:
+            local_path.parent.mkdir(parents=True, exist_ok=True)
+            local_path.write_bytes(buf.getvalue())
+            _LOG.info("gdrive downloaded: %s → %s (%d bytes)", file_id, local_path.name, local_path.stat().st_size)
+        except OSError as e:
+            raise RuntimeError(f"Failed to write downloaded file to {local_path}: {e}") from e
 
     # Shrink if image
     if shrink_if_image and image_shrink.is_image_path(str(local_path)):

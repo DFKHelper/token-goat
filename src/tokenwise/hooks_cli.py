@@ -73,14 +73,22 @@ def read_payload(input_file: Path | None = None) -> dict[str, Any]:
 
     Always returns a dict. Coerces non-dict JSON (``null``, lists, scalars)
     to ``{}`` so handlers can safely call ``payload.get(...)``.
+    Catches JSON decode errors and returns empty dict instead of crashing.
     """
-    if input_file is not None:
-        data = json.loads(input_file.read_text(encoding="utf-8"))
-    else:
-        raw = sys.stdin.read()
-        if not raw.strip():
-            return {}
-        data = json.loads(raw)
+    try:
+        if input_file is not None:
+            data = json.loads(input_file.read_text(encoding="utf-8"))
+        else:
+            raw = sys.stdin.read()
+            if not raw.strip():
+                return {}
+            data = json.loads(raw)
+    except json.JSONDecodeError as e:
+        _LOG.warning("failed to decode JSON payload: %s", e)
+        return {}
+    except OSError as e:
+        _LOG.warning("failed to read payload from file: %s", e)
+        return {}
     return data if isinstance(data, dict) else {}
 
 
