@@ -18,6 +18,9 @@ EMBED_DIM = 384  # BAAI/bge-small-en-v1.5
 
 _LOG = logging.getLogger("tokenwise.db")
 
+# Cache integrity check results per DB file to avoid repeated PRAGMA checks
+_INTEGRITY_CHECKED: dict[Path, bool] = {}
+
 
 class VecExtensionUnavailable(Exception):
     """sqlite-vec couldn't be loaded — embeddings disabled."""
@@ -282,13 +285,15 @@ def open_global() -> Iterator[sqlite3.Connection]:
         _rebuild(path)
         conn = _connect(path)
     try:
-        if not _integrity_ok(conn):
+        # Only check integrity once per file per session to avoid repeated PRAGMA checks
+        if path not in _INTEGRITY_CHECKED and not _integrity_ok(conn):
             conn.close()
             # Try quarantine; whether it succeeds or fails, just reopen the
             # (possibly-new) file. If quarantine failed (Windows lock), we
             # reopen the original and proceed; better than crashing.
             _rebuild(path)
             conn = _connect(path)
+        _INTEGRITY_CHECKED[path] = True
         _ensure_global_schema(conn)
         yield conn
     finally:
@@ -306,13 +311,15 @@ def open_project(project_hash: str) -> Iterator[sqlite3.Connection]:
         _rebuild(path)
         conn = _connect(path)
     try:
-        if not _integrity_ok(conn):
+        # Only check integrity once per file per session to avoid repeated PRAGMA checks
+        if path not in _INTEGRITY_CHECKED and not _integrity_ok(conn):
             conn.close()
             # Try quarantine; whether it succeeds or fails, just reopen the
             # (possibly-new) file. If quarantine failed (Windows lock), we
             # reopen the original and proceed; better than crashing.
             _rebuild(path)
             conn = _connect(path)
+        _INTEGRITY_CHECKED[path] = True
         _ensure_project_schema(conn)
         yield conn
     finally:

@@ -61,6 +61,46 @@ def _get_indexed_symbols(file_rel: str, project_hash: str) -> list[dict]:
         return []
 
 
+def _get_indexed_symbols_and_line_count(
+    file_rel: str, project_hash: str
+) -> tuple[list[dict], int | None]:
+    """Return symbols AND actual or estimated line count in one query.
+
+    Falls back to _line_count only if DB has no file metadata.
+    """
+    try:
+        with db.open_project(project_hash) as conn:
+            # Fetch file metadata and symbols in one round-trip
+            file_row = conn.execute(
+                "SELECT size FROM files WHERE rel_path = ?",
+                (file_rel,),
+            ).fetchone()
+
+            sym_rows = conn.execute(
+                """
+                SELECT kind, name, line, end_line
+                FROM symbols
+                WHERE file_rel = ? AND name IS NOT NULL
+                ORDER BY line
+                LIMIT 50
+                """,
+                (file_rel,),
+            ).fetchall()
+
+            # If DB has file metadata, estimate lines from file size.
+            # Rough estimate: 50-100 bytes per line for code.
+            if file_row:
+                size = file_row["size"]
+                n_lines = max(1, size // 75)  # conservative estimate
+            else:
+                n_lines = None
+
+            return [dict(r) for r in sym_rows], n_lines
+    except Exception:  # noqa: BLE001
+        _LOG.exception("failed to load indexed symbols for %s", file_rel)
+        return [], None
+
+
 def build_read_hint(
     *,
     session_id: str | None,
@@ -173,19 +213,23 @@ def _hint_from_index(
     if not abs_path.is_absolute():
         abs_path = (project.root / file_path).resolve()
 
-    n_lines = _line_count(abs_path)
-    if n_lines is None or n_lines < LARGE_FILE_LINE_THRESHOLD:
-        return None
-
     # Compute relative path for DB lookup.
     try:
         rel = abs_path.relative_to(project.root).as_posix()
     except ValueError:
         return None
 
-    symbols = _get_indexed_symbols(rel, project.hash)
+    # Fetch symbols; line count comes from file if DB estimate is unreliable
+    symbols, estimated_lines = _get_indexed_symbols_and_line_count(rel, project.hash)
     if not symbols:
         return None
+
+    # Use estimated line count from DB if available; fall back to actual read
+    n_lines = estimated_lines
+    if n_lines is None or n_lines < LARGE_FILE_LINE_THRESHOLD:
+        n_lines = _line_count(abs_path)
+        if n_lines is None or n_lines < LARGE_FILE_LINE_THRESHOLD:
+            return None
 
     full_tokens = _est_tokens_from_lines(n_lines)
 

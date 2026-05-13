@@ -108,6 +108,34 @@ def embed_texts(
 # Chunk extraction
 # ---------------------------------------------------------------------------
 
+def _fetch_chunk_metadata(
+    conn: sqlite3.Connection,
+    rel_path: str,
+) -> tuple[list[sqlite3.Row], list[sqlite3.Row], str]:
+    """Fetch symbols, sections, and file language in one cursor operation.
+
+    Combines three queries into one round-trip to reduce DB overhead.
+    """
+    sym_rows = conn.execute(
+        "SELECT name, kind, line, end_line FROM symbols"
+        " WHERE file_rel = ? AND end_line IS NOT NULL ORDER BY line",
+        (rel_path,),
+    ).fetchall()
+
+    sec_rows = conn.execute(
+        "SELECT heading, line, end_line FROM sections"
+        " WHERE file_rel = ? AND end_line IS NOT NULL ORDER BY line",
+        (rel_path,),
+    ).fetchall()
+
+    file_lang_row = conn.execute(
+        "SELECT language FROM files WHERE rel_path = ?", (rel_path,)
+    ).fetchone()
+    language = file_lang_row["language"] if file_lang_row else "other"
+
+    return sym_rows, sec_rows, language
+
+
 def extract_chunks_for_file(
     project: Project,
     conn: sqlite3.Connection,
@@ -127,12 +155,10 @@ def extract_chunks_for_file(
     chunks: list[Chunk] = []
     covered: list[tuple[int, int]] = []  # (start_line, end_line) already covered
 
+    # Combine symbol, section, and file language queries into one round-trip
+    sym_rows, sec_rows, language = _fetch_chunk_metadata(conn, rel_path)
+
     # 1) Symbol-based chunks (functions, classes, methods …)
-    sym_rows = conn.execute(
-        "SELECT name, kind, line, end_line FROM symbols"
-        " WHERE file_rel = ? AND end_line IS NOT NULL ORDER BY line",
-        (rel_path,),
-    ).fetchall()
     for row in sym_rows:
         if row["kind"] not in _CODE_SYMBOL_KINDS:
             continue
@@ -147,11 +173,6 @@ def extract_chunks_for_file(
         covered.append((start, end))
 
     # 2) Section-based chunks (markdown / html / liquid)
-    sec_rows = conn.execute(
-        "SELECT heading, line, end_line FROM sections"
-        " WHERE file_rel = ? AND end_line IS NOT NULL ORDER BY line",
-        (rel_path,),
-    ).fetchall()
     for row in sec_rows:
         start = row["line"]
         end = row["end_line"]
@@ -164,10 +185,6 @@ def extract_chunks_for_file(
         covered.append((start, end))
 
     # 3) Sliding-window fallback for uncovered ranges (code files only)
-    file_lang_row = conn.execute(
-        "SELECT language FROM files WHERE rel_path = ?", (rel_path,)
-    ).fetchone()
-    language = file_lang_row["language"] if file_lang_row else "other"
     if language in _WINDOW_LANGS:
         covered_lines: set[int] = set()
         for start, end in covered:
