@@ -349,10 +349,16 @@ def index_project_embeddings(
                 new_chunks.append((ch, sha))
 
         # Embed + persist in batches
+        _LOG.debug("processing %d new chunks in batches of %d", len(new_chunks), batch_size)
         for i in range(0, len(new_chunks), batch_size):
             batch = new_chunks[i : i + batch_size]
             texts = [ch.text for ch, _ in batch]
+            batch_t0 = time.time()
             vecs = embed_texts(texts, model_name=model_name)
+            batch_elapsed = time.time() - batch_t0
+            _LOG.debug("embedded batch %d/%d: %d texts in %.3fs",
+                       i // batch_size + 1, (len(new_chunks) + batch_size - 1) // batch_size,
+                       len(texts), batch_elapsed)
             for (ch, sha), vec in zip(batch, vecs, strict=True):
                 # Remove stale row at same (file, line range) before reinserting
                 old = conn.execute(
@@ -441,7 +447,12 @@ def semantic_search(
     """
     if not is_available():
         raise EmbeddingsUnavailable("fastembed not installed")
+    t0 = time.time()
     qvec = embed_texts([query], model_name=model_name)[0]
+    embed_elapsed = time.time() - t0
+    _LOG.debug("query embedded in %.3fs: %d dims", embed_elapsed, len(qvec))
+
+    t0 = time.time()
     with db.open_project(project.hash) as conn:
         if not _check_vec_available(conn):
             raise EmbeddingsUnavailable("sqlite-vec not loaded")
@@ -456,6 +467,10 @@ def semantic_search(
             """,
             (_pack_vec(qvec), k),
         ).fetchall()
+    search_elapsed = time.time() - t0
+    _LOG.info("semantic search completed: query_len=%d k=%d results=%d search_elapsed=%.3fs",
+              len(query), k, len(rows), search_elapsed)
+
     return [
         SearchHit(
             file_rel=r["file_rel"],

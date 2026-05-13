@@ -210,6 +210,7 @@ def iter_source_files(project: Project) -> Iterable[Path]:
 
 def index_file(project: Project, file_path: Path) -> FileIndex | None:
     """Read and parse one file. Return FileIndex (no DB write yet). Returns None on errors."""
+    t0 = time.time()
     try:
         raw = file_path.read_bytes()
     except OSError as e:
@@ -219,6 +220,7 @@ def index_file(project: Project, file_path: Path) -> FileIndex | None:
     language = LANG_BY_EXT[file_path.suffix.lower()]
     extractor = get_extractor(language)
     if extractor is None:
+        _LOG.debug("no extractor for %s (%s)", rel, language)
         return None
     try:
         symbols, refs, imp_exp, sections = extractor(raw, rel)
@@ -231,6 +233,12 @@ def index_file(project: Project, file_path: Path) -> FileIndex | None:
     except OSError as e:
         _LOG.warning("stat failed after reading: %s: %s", file_path, e)
         return None
+
+    elapsed = time.time() - t0
+    _LOG.debug(
+        "indexed %s: symbols=%d refs=%d imports=%d sections=%d size=%d elapsed=%.3fs",
+        rel, len(symbols), len(refs), len(imp_exp), len(sections), stat.st_size, elapsed
+    )
 
     return FileIndex(
         rel_path=rel,
@@ -333,6 +341,7 @@ def index_project(
                 existing = {}
                 for row in conn.execute("SELECT rel_path, content_sha256 FROM files"):
                     existing[row["rel_path"]] = row["content_sha256"]
+                _LOG.debug("incremental mode: loaded %d cached file hashes", len(existing))
 
             for i, fp in enumerate(files):
                 fi = index_file(project, fp)
@@ -342,10 +351,13 @@ def index_project(
                     # Skip write only if incremental mode and SHA matches
                     if existing is not None and existing.get(fi.rel_path) == fi.content_sha256:
                         n_skipped_unchanged += 1
+                        _LOG.debug("skipped unchanged: %s (incremental)", fi.rel_path)
                     else:
                         write_file_index(conn, fi)
                         n_indexed += 1
                         languages.add(fi.language)
+                        if existing is not None:
+                            _LOG.debug("updated changed file: %s", fi.rel_path)
                 if progress and (i + 1) % 100 == 0:
                     progress(i + 1, n_total)
 

@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import logging
 import sqlite3
+import time
 from collections import defaultdict
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
@@ -50,11 +51,13 @@ def _read_stats(
 
 def summarize(window_days: int = 30) -> StatsSummary:
     """Aggregate stats from global.db + all known per-project DBs over the last N days."""
+    t0 = time.time()
     since_ts = (
         (datetime.now() - timedelta(days=window_days)).timestamp()
         if window_days > 0
         else None
     )
+    _LOG.debug("summarize started: window=%d days, since_ts=%s", window_days, since_ts)
 
     by_kind: dict[str, dict] = defaultdict(
         lambda: {"events": 0, "bytes_saved": 0, "tokens_saved": 0}
@@ -73,25 +76,29 @@ def summarize(window_days: int = 30) -> StatsSummary:
     projects = []
     try:
         with db.open_global() as conn:
-            for row in _read_stats(conn, since_ts):
+            global_rows = list(_read_stats(conn, since_ts))
+            for row in global_rows:
                 _accumulate(row, by_kind, by_day)
                 total_events += 1
                 total_bytes += row["bytes_saved"] or 0
                 total_tokens += row["tokens_saved"] or 0
+            _LOG.debug("global.db: aggregated %d rows", len(global_rows))
 
             # Pull project list for per-project rollup
             project_rows = conn.execute(
                 "SELECT hash, root FROM projects"
             ).fetchall()
             projects = [(r["hash"], r["root"]) for r in project_rows]
+            _LOG.debug("found %d projects to aggregate", len(projects))
     except Exception:  # noqa: BLE001
         _LOG.exception("global stats read failed")
 
     # Per-project DBs
+    projects_aggregated = 0
     for project_hash, project_root in projects:
         try:
             with db.open_project(project_hash) as conn:
-                rows = _read_stats(conn, since_ts)
+                rows = list(_read_stats(conn, since_ts))
                 for row in rows:
                     _accumulate(row, by_kind, by_day)
                     total_events += 1
@@ -102,6 +109,8 @@ def summarize(window_days: int = 30) -> StatsSummary:
                     p["bytes_saved"] += row["bytes_saved"] or 0
                     p["tokens_saved"] += row["tokens_saved"] or 0
                     p["project_root"] = project_root
+                projects_aggregated += 1
+                _LOG.debug("project %s: aggregated %d rows", project_hash[:8], len(rows))
         except Exception:  # noqa: BLE001
             _LOG.exception("project stats read failed: %s", project_hash[:8])
 
@@ -124,6 +133,10 @@ def summarize(window_days: int = 30) -> StatsSummary:
         key=lambda p: p["bytes_saved"],
         reverse=True,
     )
+
+    elapsed = time.time() - t0
+    _LOG.info("summarize completed: events=%d bytes=%.0f tokens=%d projects_read=%d elapsed=%.3fs",
+              total_events, total_bytes, total_tokens, projects_aggregated, elapsed)
 
     return StatsSummary(
         total_events=total_events,
