@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import contextlib
 import json
+import logging
 import os
 import re
 import sys
@@ -21,6 +22,8 @@ with contextlib.suppress(AttributeError, OSError):
 import typer
 
 from . import hooks_cli
+
+_LOG = logging.getLogger(__name__)
 
 
 def _write_raw(text: str) -> None:
@@ -86,8 +89,8 @@ def main() -> None:
         try:
             sys.stdout.write('{"continue": true}')
             sys.stdout.flush()
-        except Exception:  # noqa: BLE001
-            pass
+        except Exception as e:  # noqa: BLE001
+            _LOG.exception("failed to emit hook response: %s", e)
         raise SystemExit(0) from None
 
 
@@ -107,7 +110,8 @@ def _not_indexed_hint(project_hash: str) -> str | None:
                 "rerun in a moment, or run `tokenwise index --full` to force "
                 "synchronous indexing.)"
             )
-    except Exception:  # noqa: BLE001
+    except Exception as e:  # noqa: BLE001
+        _LOG.warning("failed to check project index status: %s", e)
         return None
     return None
 
