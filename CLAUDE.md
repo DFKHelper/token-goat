@@ -24,13 +24,15 @@ Tokenwise is a Claude Code / Codex CLI companion that reduces token burn on Wind
 ```
 src/tokenwise/
 ├── cli.py              # Typer CLI — all user-facing and internal subcommands
-├── hooks_cli.py        # Hook dispatcher: session-start, pre-read, pre-fetch, post-edit, post-read
+├── hooks_cli.py        # Hook dispatcher: session-start, pre-read, pre-fetch, post-edit, post-read, pre-compact
 ├── worker.py           # Background daemon — dirty-queue polling, maintenance, LRU eviction
 ├── db.py               # SQLite + sqlite-vec — global.db + per-project DBs
 ├── parser.py           # Tree-sitter orchestration — index walk, symbol/ref/section extraction
 ├── embeddings.py       # Fastembed (BAAI/bge-small-en-v1.5, 384 dims) + sqlite-vec queries
 ├── read_replacement.py # Symbol/section extraction for tokenwise read / tokenwise section
-├── session.py          # Per-session JSON cache: tracks (file, ranges, symbols, read_count)
+├── session.py          # Per-session JSON cache: tracks (file, ranges, symbols, read_count, edited_files)
+├── compact.py          # Compaction assist: build_manifest() produces session manifest for PreCompact hook
+├── config.py           # TOML config loader (paths.config_path()); [compact_assist] section + env override
 ├── hints.py            # Builds "already read" hint text injected by pre-read hook
 ├── image_shrink.py     # Pillow compression + image cache (LRU at 500 MB / 80% target)
 ├── gdrive.py           # Google Drive API — credentials, fetch, image cache integration
@@ -48,7 +50,7 @@ src/tokenwise/
 
 1. **Indexing** — `parser.py` walks the project, extracts symbols/refs/sections via tree-sitter language adapters, stores rows in the per-project SQLite DB. `embeddings.py` chunks the content and stores 384-dim vectors in a `vec0` virtual table (sqlite-vec).
 2. **Incremental updates** — `hooks_cli.py::post-edit` appends touched paths to `queue/dirty.txt`. `worker.py` drains this queue every 2 s, SHA-checks each file, and reindexes only changed files.
-3. **Hook intercept** — On every `Read`/`Grep`/`Glob`/`WebFetch` call, hooks fire before and after. Pre-read: image-shrink or emit session hints. Post-read: mark file in session cache.
+3. **Hook intercept** — On every `Read`/`Grep`/`Glob`/`WebFetch` call, hooks fire before and after. Pre-read: image-shrink or emit session hints. Post-read: mark file in session cache. Post-edit: record edited files to session cache. Pre-compact: build and inject a session manifest as `systemMessage` before Claude Code compacts the conversation.
 4. **CLI reads** — `tokenwise symbol`, `tokenwise read`, `tokenwise section`, `tokenwise semantic` query the indexed DBs and return narrow slices, typically 85–97% smaller than the full file.
 
 ### Storage Layout (`%LOCALAPPDATA%\Zelys\tokenwise\`)
@@ -74,7 +76,11 @@ Project hash = SHA1 of the canonical POSIX path with lowercase drive letter.
 
 **Corruption auto-recovery** — `db.py` distinguishes a busy/locked DB (transient, retry) from a genuinely corrupt DB (quarantine + rebuild). `PRAGMA integrity_check` runs on connection open. Stale locks (PID gone or >10 min old) are auto-cleared.
 
-**Session cache** — `session.py` writes a JSON file keyed by Claude session ID. The pre-read hook reads this to emit "you already read lines X–Y of this file" nudges. Post-read hook updates it after every Read/Grep/Glob.
+**Session cache** — `session.py` writes a JSON file keyed by Claude session ID. The pre-read hook reads this to emit "you already read lines X–Y of this file" nudges. Post-read hook updates it after every Read/Grep/Glob. Post-edit hook records every Write/Edit/MultiEdit to `edited_files`.
+
+**Compaction assist** — Before Claude Code compacts the conversation, the `PreCompact` hook calls `compact.build_manifest()` to build a structured `<400-token` summary (edited files first, then symbols accessed, then key files read) and returns it as `systemMessage`. The compaction LLM receives the manifest in context and preserves the most important details. Configurable via `config.toml` (`[compact_assist]`) or disabled via `TOKENWISE_COMPACT_ASSIST=0`. Inspect what would be emitted with `tokenwise compact-hint --session-id <id>`.
+
+**Read-only DB path** — `db.open_global_readonly()` / `db.open_project_readonly()` open SQLite with `?mode=ro` URI flag, skipping `PRAGMA integrity_check`, DDL `executescript`, WAL activation, and sqlite-vec loading. Used by `stats.py` to avoid the N×integrity_check overhead that previously caused `tokenwise stats` to take ~10 s.
 
 **Codex compatibility** — Hook handlers accept unknown CLI options (`ignore_unknown_options=True`) because Codex passes harness-specific flags. `bash_parser.py` detects read-equivalent Bash commands (cat/head/tail/bat/…) inside Codex's Bash tool and synthesizes a Read payload so image-shrink and session-hint logic applies identically.
 
