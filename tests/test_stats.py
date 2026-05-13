@@ -162,21 +162,27 @@ class TestFormatters:
     """Test formatting helpers."""
 
     def test_fmt_bytes(self):
-        """_fmt_bytes formats byte counts correctly."""
+        """_fmt_bytes formats byte counts correctly through PB."""
         assert stats._fmt_bytes(512) == "512B"
         assert stats._fmt_bytes(1024) == "1.0KB"
         assert stats._fmt_bytes(1024 * 1024) == "1.0MB"
         assert stats._fmt_bytes(5 * 1024 * 1024) == "5.0MB"
         assert stats._fmt_bytes(1024 * 1024 * 1024) == "1.0GB"
+        assert stats._fmt_bytes(1024 ** 4) == "1.0TB"
+        assert stats._fmt_bytes(1024 ** 5) == "1.0PB"
 
     def test_fmt_tokens(self):
-        """_fmt_tokens formats token counts correctly."""
+        """_fmt_tokens formats token counts correctly through Tt."""
         assert stats._fmt_tokens(100) == "100t"
         assert stats._fmt_tokens(999) == "999t"
         assert stats._fmt_tokens(1000) == "1.0kt"
         assert stats._fmt_tokens(1500) == "1.5kt"
         assert stats._fmt_tokens(1_000_000) == "1.00Mt"
         assert stats._fmt_tokens(2_500_000) == "2.50Mt"
+        assert stats._fmt_tokens(1_000_000_000) == "1.00Gt"
+        assert stats._fmt_tokens(2_500_000_000) == "2.50Gt"
+        assert stats._fmt_tokens(1_000_000_000_000) == "1.00Tt"
+        assert stats._fmt_tokens(2_500_000_000_000) == "2.50Tt"
 
 
 class TestRenderText:
@@ -235,17 +241,36 @@ class TestPathProjectAttribution:
     def test_extract_file_path_empty_detail(self):
         assert stats._extract_file_path("session_hint", "") is None
 
-    def test_infer_project_root_registered_exact_prefix(self):
-        """Longest registered root wins on prefix match."""
-        roots = ["c:/Projects", "c:/Projects/myrepo"]
-        result = stats._infer_project_root("c:/Projects/myrepo/src/foo.py", roots)
-        assert result == "c:/Projects/myrepo"
+    def test_infer_project_root_registered_exact_prefix(self, tmp_path):
+        """Longest registered root wins when no .git is present (non-git project fallback)."""
+        workspace = tmp_path / "workspace"
+        myrepo = workspace / "myrepo"
+        src = myrepo / "src"
+        src.mkdir(parents=True)
+        # No .git anywhere → .git walk returns None → fallback to registered roots
 
-    def test_infer_project_root_normalizes_backslashes(self):
-        """Windows backslashes in file_path are normalized before matching."""
-        roots = ["c:/Projects/myrepo"]
-        result = stats._infer_project_root(r"C:\Projects\myrepo\src\foo.py", roots)
-        assert result == "c:/Projects/myrepo"
+        stats._git_root_cache.clear()
+
+        workspace_root = str(workspace).replace("\\", "/")
+        myrepo_root = str(myrepo).replace("\\", "/")
+        result = stats._infer_project_root(str(src / "foo.py"), [workspace_root, myrepo_root])
+        assert result == myrepo_root
+
+    def test_infer_project_root_normalizes_backslashes(self, tmp_path):
+        """Windows backslashes in file_path are normalized before registered-root match."""
+        myrepo = tmp_path / "myrepo"
+        src = myrepo / "src"
+        src.mkdir(parents=True)
+        src_file = src / "foo.py"
+        src_file.touch()
+        # No .git → fallback; file path will have native backslashes on Windows
+
+        stats._git_root_cache.clear()
+
+        myrepo_root = str(myrepo).replace("\\", "/")
+        # str(src_file) on Windows has backslashes
+        result = stats._infer_project_root(str(src_file), [myrepo_root])
+        assert result == myrepo_root
 
     def test_infer_project_root_git_walk(self, tmp_path):
         """Falls back to .git walk when no registered root matches."""
@@ -273,24 +298,58 @@ class TestPathProjectAttribution:
         result = stats._infer_project_root(str(orphan), registered_roots=[])
         assert result is None
 
-    def test_summarize_attributes_global_events_via_registered_root(self, tmp_data_dir):
+    def test_infer_project_root_git_beats_registered_parent(self, tmp_path):
+        """A .git walk finding a sub-repo wins over a registered parent dir (no .git).
+
+        Models the real-world case: session opened in c:\\Projects (registered),
+        files belong to c:\\Projects\\some-oss-repo (has .git, never edited → not
+        registered). The .git walk must win so events go to the right project.
+        """
+        parent = tmp_path / "workspace"
+        parent.mkdir()
+        repo = parent / "myrepo"
+        repo.mkdir()
+        (repo / ".git").mkdir()
+        src = repo / "src" / "main.py"
+        src.parent.mkdir()
+        src.touch()
+
+        stats._git_root_cache.clear()
+
+        registered_roots = [str(parent).replace("\\", "/")]
+        result = stats._infer_project_root(str(src), registered_roots)
+
+        assert result is not None
+        assert result.endswith("myrepo")
+
+    def test_summarize_attributes_global_events_via_registered_root(self, tmp_data_dir, tmp_path):
         """session_hint events in global.db appear in by_project when root is registered."""
+        repo = tmp_path / "myrepo"
+        repo.mkdir()
+        (repo / ".git").mkdir()  # real git root so the walk finds it
+        src_file = repo / "src" / "foo.py"
+        src_file.parent.mkdir()
+        src_file.touch()
+
+        stats._git_root_cache.clear()
+
+        repo_root = str(repo).replace("\\", "/")
         with db.open_global() as conn:
             conn.execute(
                 "INSERT INTO projects (hash, root, marker, first_seen, last_seen, file_count)"
                 " VALUES (?, ?, ?, ?, ?, ?)",
-                ("aabbccddeeff", "c:/Projects/myrepo", ".git",
+                ("aabbccddeeff", repo_root, ".git",
                  int(time.time()), int(time.time()), 5),
             )
 
         db.record_stat(None, "session_hint", bytes_saved=4000, tokens_saved=1000,
-                       detail="c:/Projects/myrepo/src/foo.py")
+                       detail=str(src_file))
 
         summary = stats.summarize(window_days=30)
         assert summary.total_events == 1
         assert len(summary.by_project) == 1
         proj = summary.by_project[0]
-        assert proj["project_root"] == "c:/Projects/myrepo"
+        assert proj["project_root"].endswith("myrepo")
         assert proj["bytes_saved"] == 4000
 
     def test_summarize_attributes_global_events_via_git_walk(self, tmp_data_dir, tmp_path):
@@ -313,6 +372,45 @@ class TestPathProjectAttribution:
         proj = summary.by_project[0]
         assert proj["project_root"].endswith("oss-repo")
         assert proj["bytes_saved"] == 8000
+
+    def test_summarize_subrepo_beats_registered_parent(self, tmp_data_dir, tmp_path):
+        """Events in a sub-repo go to the sub-repo, not the registered parent dir.
+
+        Reproduces: session opened in c:\\Projects (no .git, registered). Repo
+        c:\\Projects\\myrepo has .git but was never edited so isn't separately
+        registered. The .git walk must win over the parent prefix match.
+        """
+        parent = tmp_path / "workspace"
+        parent.mkdir()
+        repo = parent / "myrepo"
+        repo.mkdir()
+        (repo / ".git").mkdir()
+        src = repo / "src" / "lib.py"
+        src.parent.mkdir()
+        src.touch()
+
+        parent_root = str(parent).replace("\\", "/")
+        with db.open_global() as conn:
+            conn.execute(
+                "INSERT INTO projects (hash, root, marker, first_seen, last_seen, file_count)"
+                " VALUES (?, ?, ?, ?, ?, ?)",
+                ("parenthash1234", parent_root, "none",
+                 int(time.time()), int(time.time()), 0),
+            )
+
+        stats._git_root_cache.clear()
+
+        db.record_stat(None, "session_hint", bytes_saved=5000, tokens_saved=1250,
+                       detail=str(src))
+
+        summary = stats.summarize(window_days=30)
+        assert summary.total_events == 1
+        assert len(summary.by_project) == 1
+        proj = summary.by_project[0]
+        assert proj["project_root"].endswith("myrepo"), (
+            f"Expected myrepo attribution, got: {proj['project_root']!r}"
+        )
+        assert proj["bytes_saved"] == 5000
 
 
 class TestJSONOutput:

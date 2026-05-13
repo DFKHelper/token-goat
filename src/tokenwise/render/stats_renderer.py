@@ -28,6 +28,11 @@ _RULE = _M + fg(*C.TEXT_DIM) + "─" * (_CONTENT_W - len(_M) * 2) + RESET
 # ── Formatters ─────────────────────────────────────────────────────────────────
 
 def _fmt_bytes(n: int) -> str:
+    # Color escalates with magnitude: dim → green → teal → blue → purple
+    if n >= 1_000_000_000_000_000:
+        return f"{fg(*C.PURPLE)}{n / 1_000_000_000_000_000:,.1f} PB{RESET}"
+    if n >= 1_000_000_000_000:
+        return f"{fg(*C.BLUE)}{n / 1_000_000_000_000:,.1f} TB{RESET}"
     if n >= 1_000_000_000:
         return f"{fg(*C.TEAL)}{n / 1_000_000_000:,.1f} GB{RESET}"
     if n >= 1_000_000:
@@ -38,8 +43,13 @@ def _fmt_bytes(n: int) -> str:
 
 
 def _fmt_tokens(n: int) -> str:
+    # Color escalates with magnitude: dim → blue → purple → teal → green
     if n == 0:
         return f"{fg(*C.TEXT_DIM)}0 t{RESET}"
+    if n >= 1_000_000_000_000:
+        return f"{fg(*C.GREEN5)}{n / 1_000_000_000_000:,.1f} Tt{RESET}"
+    if n >= 1_000_000_000:
+        return f"{fg(*C.TEAL)}{n / 1_000_000_000:,.1f} Gt{RESET}"
     if n >= 1_000_000:
         return f"{fg(*C.PURPLE)}{n / 1_000_000:,.1f} Mt{RESET}"
     if n >= 1_000:
@@ -216,6 +226,7 @@ def _table_row(
 def _render_kpi_section(stats: StatsData) -> list[str]:
     totals = stats.totals
     col_w = (_CONTENT_W - len(_M) * 2) // 3
+    inner_w = col_w * 3  # visible width of the three cards combined
 
     def card(label: str, value: str, delta: str, spark: str | None) -> tuple[str, str, str]:
         return (
@@ -232,13 +243,21 @@ def _render_kpi_section(stats: StatsData) -> list[str]:
     c3 = card("tokens saved", _fmt_tokens(totals.tokens),    _fmt_delta(totals.tokens_delta),
               _render_sparkline(spark.tokens) if spark else None)
 
+    border = fg(*C.TEXT_DIM)
+    frame_bar = "─" * (inner_w + 2)  # +2 for single-space padding on each side
+
+    def framed(content: str) -> str:
+        return f"{_M}{border}│{RESET} {content} {border}│{RESET}"
+
     lines = [
         "",
-        _M + c1[0] + c2[0] + c3[0],  # labels
-        _M + c1[1] + c2[1] + c3[1],  # values + deltas
+        f"{_M}{border}╭{frame_bar}╮{RESET}",
+        framed(c1[0] + c2[0] + c3[0]),  # labels
+        framed(c1[1] + c2[1] + c3[1]),  # values + deltas
     ]
     if spark:
-        lines.append(_M + c1[2] + c2[2] + c3[2])
+        lines.append(framed(c1[2] + c2[2] + c3[2]))
+    lines.append(f"{_M}{border}╰{frame_bar}╯{RESET}")
     return lines
 
 

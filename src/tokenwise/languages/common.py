@@ -54,10 +54,7 @@ def kind_str(structure_kind: object, language: str = "go") -> str:
     Python, Go, TypeScript use base mapping; Rust has overrides.
     """
     s = str(structure_kind).split(".")[-1]
-    if language == "rust":
-        mapping = _RUST_KIND_STR_MAPPING
-    else:
-        mapping = _BASE_KIND_STR_MAPPING
+    mapping = _RUST_KIND_STR_MAPPING if language == "rust" else _BASE_KIND_STR_MAPPING
     return mapping.get(s, "var")
 
 

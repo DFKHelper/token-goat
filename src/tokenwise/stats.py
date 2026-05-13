@@ -48,33 +48,36 @@ def _extract_file_path(kind: str, detail: str | None) -> str | None:
 def _infer_project_root(file_path: str, registered_roots: list[str]) -> str | None:
     """Return the project root for *file_path*.
 
-    Tries registered roots first (longest-prefix match). Falls back to
-    walking up the directory tree to find the nearest .git parent.
+    Walks up the directory tree for a .git ancestor first — that is always
+    the most specific boundary and handles repos cloned inside a registered
+    parent directory. Falls back to longest-prefix match against registered
+    roots for the rare case of non-git projects.
     """
-    norm = _norm_path(file_path)
+    parent_dir = str(Path(file_path).parent)
+    if parent_dir not in _git_root_cache:
+        result: str | None = None
+        p = Path(file_path).parent
+        for _ in range(20):
+            if (p / ".git").exists():
+                result = _norm_path(str(p))
+                break
+            up = p.parent
+            if up == p:
+                break
+            p = up
+        _git_root_cache[parent_dir] = result
 
+    git_root = _git_root_cache[parent_dir]
+    if git_root is not None:
+        return git_root
+
+    norm = _norm_path(file_path)
     for root in sorted(registered_roots, key=len, reverse=True):
         root_norm = _norm_path(root).rstrip("/")
         if norm.startswith(root_norm + "/") or norm == root_norm:
             return root
 
-    parent_dir = str(Path(file_path).parent)
-    if parent_dir in _git_root_cache:
-        return _git_root_cache[parent_dir]
-
-    result: str | None = None
-    p = Path(file_path).parent
-    for _ in range(20):
-        if (p / ".git").exists():
-            result = _norm_path(str(p))
-            break
-        up = p.parent
-        if up == p:
-            break
-        p = up
-
-    _git_root_cache[parent_dir] = result
-    return result
+    return None
 
 
 def _root_hash(root: str) -> str:
@@ -135,7 +138,8 @@ def summarize(window_days: int = 30) -> StatsSummary:
     total_tokens = 0
 
     # Global DB
-    projects = []
+    projects: list[tuple[str, str]] = []
+    global_rows: list[sqlite3.Row] = []
     try:
         with db.open_global() as conn:
             global_rows = list(_read_stats(conn, since_ts))
@@ -180,6 +184,9 @@ def summarize(window_days: int = 30) -> StatsSummary:
     # by matching each event's file path against registered roots, then falling
     # back to a .git walk for projects opened from a parent directory.
     root_to_hash = {root: h for h, root in projects}
+    # Normalized lookup so .git-walk results (always normalized) match DB roots
+    # that may use original Windows casing (e.g. "C:/Projects" vs "c:/Projects").
+    norm_root_to_hash = {_norm_path(root).rstrip("/"): h for root, h in root_to_hash.items()}
     registered_roots = list(root_to_hash.keys())
     for row in global_rows:
         file_path = _extract_file_path(row["kind"], row["detail"])
@@ -188,7 +195,12 @@ def summarize(window_days: int = 30) -> StatsSummary:
         root = _infer_project_root(file_path, registered_roots)
         if root is None:
             continue
-        proj_key = root_to_hash.get(root) or _root_hash(root)
+        norm_root = _norm_path(root).rstrip("/")
+        proj_key = (
+            root_to_hash.get(root)
+            or norm_root_to_hash.get(norm_root)
+            or _root_hash(root)
+        )
         p = by_project[proj_key]
         p["events"] += 1
         p["bytes_saved"] += row["bytes_saved"] or 0
@@ -247,22 +259,26 @@ def _accumulate(row: sqlite3.Row, by_kind: dict, by_day: dict) -> None:
 
 
 def _fmt_bytes(n: int) -> str:
-    """Format byte count as human-readable (B/KB/MB/GB)."""
+    """Format byte count as human-readable (B/KB/MB/GB/TB/PB)."""
     value: float = float(n)
-    for unit in ("B", "KB", "MB", "GB"):
+    for unit in ("B", "KB", "MB", "GB", "TB"):
         if abs(value) < 1024:
             return f"{int(value)}{unit}" if unit == "B" else f"{value:.1f}{unit}"
         value = value / 1024
-    return f"{value:.1f}TB"
+    return f"{value:.1f}PB"
 
 
 def _fmt_tokens(n: int) -> str:
-    """Format token count as human-readable (t/kt/Mt)."""
+    """Format token count as human-readable (t/kt/Mt/Gt/Tt)."""
     if n < 1000:
         return f"{n}t"
     if n < 1_000_000:
         return f"{n/1000:.1f}kt"
-    return f"{n/1_000_000:.2f}Mt"
+    if n < 1_000_000_000:
+        return f"{n/1_000_000:.2f}Mt"
+    if n < 1_000_000_000_000:
+        return f"{n/1_000_000_000:.2f}Gt"
+    return f"{n/1_000_000_000_000:.2f}Tt"
 
 
 def _short_project(root: str) -> str:
