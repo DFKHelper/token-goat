@@ -268,3 +268,75 @@ def test_build_map_json_line_counts(ts_project):
         assert entry["approx_lines"] >= 0
         # Should be reasonable (not absurd)
         assert entry["approx_lines"] < 1000000
+
+
+# ---------------------------------------------------------------------------
+# 20. _is_map_worthy: fixture paths are excluded
+# ---------------------------------------------------------------------------
+
+def test_is_map_worthy_excludes_fixture_paths():
+    """Files under tests/fixtures/ must be excluded regardless of size."""
+    assert not repomap._is_map_worthy("tests/fixtures/ts_sample/index.ts", 100)
+    assert not repomap._is_map_worthy("tests/fixtures/some_stub.py", 500)
+
+
+def test_is_map_worthy_windows_paths_normalized():
+    """Windows backslash paths should be normalised before prefix check."""
+    assert not repomap._is_map_worthy("tests\\fixtures\\ts_sample\\index.ts", 100)
+
+
+def test_is_map_worthy_excludes_tiny_files():
+    """Files with fewer than _MIN_DISPLAY_LINES should be excluded."""
+    assert not repomap._is_map_worthy("src/tokenwise/__init__.py", 2)
+    assert not repomap._is_map_worthy("src/foo.py", 0)
+
+
+def test_is_map_worthy_accepts_normal_source_files():
+    """Normal source files above the line threshold must be included."""
+    assert repomap._is_map_worthy("src/tokenwise/cli.py", 50)
+    assert repomap._is_map_worthy("src/tokenwise/worker.py", 10)
+
+
+def test_is_map_worthy_boundary_at_min_lines():
+    """File exactly at _MIN_DISPLAY_LINES must be included."""
+    assert repomap._is_map_worthy("src/foo.py", repomap._MIN_DISPLAY_LINES)
+    assert not repomap._is_map_worthy("src/foo.py", repomap._MIN_DISPLAY_LINES - 1)
+
+
+# ---------------------------------------------------------------------------
+# 21. _build_graph: refs from excluded files don't create ghost nodes
+# ---------------------------------------------------------------------------
+
+def test_build_graph_no_ghost_nodes():
+    """graph.add_edge() auto-adds nodes — verify bounds checks prevent ghost nodes."""
+    import sqlite3
+
+    con = sqlite3.connect(":memory:")
+    con.row_factory = sqlite3.Row
+    con.executescript("""
+        CREATE TABLE files (rel_path TEXT, language TEXT, size INTEGER);
+        CREATE TABLE symbols (name TEXT, kind TEXT, file_rel TEXT);
+        CREATE TABLE refs (symbol_name TEXT, file_rel TEXT);
+        CREATE TABLE sections (file_rel TEXT, heading TEXT, level INTEGER, line INTEGER);
+
+        INSERT INTO files VALUES ('src/a.py', 'python', 500);
+        INSERT INTO files VALUES ('src/b.py', 'python', 500);
+
+        INSERT INTO symbols VALUES ('MyClass', 'class', 'src/b.py');
+
+        -- A ref FROM a fixture file (not in `files` dict) that points to src/b.py
+        INSERT INTO refs VALUES ('MyClass', 'tests/fixtures/stub.py');
+        -- A normal ref from src/a.py to src/b.py
+        INSERT INTO refs VALUES ('MyClass', 'src/a.py');
+    """)
+
+    files = {"src/a.py": {"language": "python", "size": 500},
+             "src/b.py": {"language": "python", "size": 500}}
+    name_to_files: dict = {"MyClass": {"src/b.py"}}
+
+    g = repomap._build_graph(con, files, name_to_files)
+
+    # Only the two source files should be nodes — no ghost fixture node
+    assert set(g.nodes()) == {"src/a.py", "src/b.py"}
+    # The legitimate edge must be present
+    assert g.has_edge("src/a.py", "src/b.py")
