@@ -1,10 +1,13 @@
 """Shared test fixtures."""
 import logging
+import shutil
+from pathlib import Path
 from unittest.mock import patch
 
 import pytest
 
 import tokenwise.paths as paths
+from tokenwise.project import Project, canonicalize, project_hash
 
 
 @pytest.fixture
@@ -12,6 +15,32 @@ def tmp_data_dir(tmp_path):
     """Monkeypatch tokenwise.paths.data_dir to a temporary directory."""
     with patch.object(paths, 'data_dir', return_value=tmp_path):
         yield tmp_path
+
+
+def make_project_from_root(root: Path) -> Project:
+    """Construct a Project from a root directory.
+
+    Helper function for test fixtures. Use in project fixtures like:
+        proj_root = tmp_path / "sample"
+        shutil.copytree(SOURCE, proj_root)
+        return make_project_from_root(proj_root)
+    """
+    canon = canonicalize(root)
+    return Project(root=canon, hash=project_hash(canon), marker=".git")
+
+
+# Expose as fixture for use in test files
+@pytest.fixture
+def make_project(tmp_data_dir):
+    """Fixture that provides make_project_from_root function.
+
+    Use in test functions like:
+        def test_something(make_project):
+            proj_root = tmp_path / "sample"
+            shutil.copytree(SOURCE, proj_root)
+            proj = make_project(proj_root)
+    """
+    return make_project_from_root
 
 
 @pytest.fixture(autouse=True)

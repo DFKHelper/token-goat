@@ -20,23 +20,17 @@ from tokenwise.embeddings import (
     is_available,
 )
 from tokenwise.parser import index_project
-from tokenwise.project import Project, canonicalize, project_hash
 
 FIXTURE_DIR = Path(__file__).parent / "fixtures"
 TS_SAMPLE = FIXTURE_DIR / "ts_sample"
 
 
-def _make_project(root: Path) -> Project:
-    canon = canonicalize(root)
-    return Project(root=canon, hash=project_hash(canon), marker=".git")
-
-
 @pytest.fixture
-def ts_project(tmp_path, tmp_data_dir):
+def ts_project(tmp_path, tmp_data_dir, make_project):
     """Copy ts_sample fixture to tmp dir, index it, and return a Project."""
     proj_root = tmp_path / "ts_sample"
     shutil.copytree(TS_SAMPLE, proj_root)
-    proj = _make_project(proj_root)
+    proj = make_project(proj_root)
     index_project(proj, full=True)
     return proj
 

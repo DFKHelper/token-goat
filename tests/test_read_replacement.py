@@ -9,7 +9,6 @@ import pytest
 
 from tokenwise import read_replacement
 from tokenwise.parser import index_project
-from tokenwise.project import Project, canonicalize, project_hash
 
 FIXTURE_DIR = Path(__file__).parent / "fixtures"
 TS_SAMPLE = FIXTURE_DIR / "ts_sample"
@@ -17,41 +16,36 @@ PY_SAMPLE = FIXTURE_DIR / "py_sample"
 MD_SAMPLE = FIXTURE_DIR / "md_sample"
 
 
-def _make_project(root: Path) -> Project:
-    canon = canonicalize(root)
-    return Project(root=canon, hash=project_hash(canon), marker=".git")
-
-
 # ---------------------------------------------------------------------------
 # Shared fixtures
 # ---------------------------------------------------------------------------
 
 @pytest.fixture
-def ts_project(tmp_path, tmp_data_dir):
+def ts_project(tmp_path, tmp_data_dir, make_project):
     """Copy ts_sample to tmp dir, index it, return (proj_root, project)."""
     proj_root = tmp_path / "ts_sample"
     shutil.copytree(TS_SAMPLE, proj_root)
-    proj = _make_project(proj_root)
+    proj = make_project(proj_root)
     index_project(proj, full=True)
     return proj_root, proj
 
 
 @pytest.fixture
-def py_project(tmp_path, tmp_data_dir):
+def py_project(tmp_path, tmp_data_dir, make_project):
     """Copy py_sample to tmp dir, index it, return (proj_root, project)."""
     proj_root = tmp_path / "py_sample"
     shutil.copytree(PY_SAMPLE, proj_root)
-    proj = _make_project(proj_root)
+    proj = make_project(proj_root)
     index_project(proj, full=True)
     return proj_root, proj
 
 
 @pytest.fixture
-def md_project(tmp_path, tmp_data_dir):
+def md_project(tmp_path, tmp_data_dir, make_project):
     """Copy md_sample to tmp dir, index it, return (proj_root, project)."""
     proj_root = tmp_path / "md_sample"
     shutil.copytree(MD_SAMPLE, proj_root)
-    proj = _make_project(proj_root)
+    proj = make_project(proj_root)
     index_project(proj, full=True)
     return proj_root, proj
 

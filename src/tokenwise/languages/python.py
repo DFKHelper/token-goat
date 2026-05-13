@@ -5,6 +5,7 @@ import re
 
 import tree_sitter_language_pack as tlp
 
+from . import common
 from ..parser import ImpExp, Ref, Section, Symbol
 
 # ---------------------------------------------------------------------------
@@ -57,15 +58,7 @@ def _parse_import_source(source_line: str) -> list[str]:
 
 def _kind_str(structure_kind: object) -> str:
     """Convert StructureKind to our kind string."""
-    s = str(structure_kind).split(".")[-1]
-    mapping = {
-        "Function": "function",
-        "Class": "class",
-        "Method": "method",
-        "Interface": "interface",
-        "Other": "var",
-    }
-    return mapping.get(s, "var")
+    return common.kind_str(structure_kind)
 
 
 def _build_signature(source: bytes, item_span: object, body_span: object | None) -> str | None:
