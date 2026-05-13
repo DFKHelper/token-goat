@@ -6,12 +6,11 @@ error paths, and boundary conditions.
 from __future__ import annotations
 
 import json
-import time
 from pathlib import Path
 
 import pytest
 
-from tokenwise import bash_parser, gdrive, session, webfetch
+from tokenwise import bash_parser, gdrive, session
 
 
 class TestSessionValidation:

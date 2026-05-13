@@ -1536,7 +1536,6 @@ name = "tokenwise"
 version = "0.2.0"
 source = { editable = "." }
 dependencies = [
-    { name = "click" },
     { name = "fastembed" },
     { name = "google-api-python-client" },
     { name = "google-auth" },
@@ -1546,7 +1545,6 @@ dependencies = [
     { name = "pillow" },
     { name = "platformdirs" },
     { name = "psutil" },
-    { name = "pygments" },
     { name = "rich" },
     { name = "sqlite-vec" },
     { name = "tomli-w" },
@@ -1566,7 +1564,6 @@ dev = [
 
 [package.metadata]
 requires-dist = [
-    { name = "click", specifier = ">=8.1.0" },
     { name = "fastembed", specifier = ">=0.3.0" },
     { name = "google-api-python-client", specifier = ">=2.100.0" },
     { name = "google-auth", specifier = ">=2.30.0" },
@@ -1577,7 +1574,6 @@ requires-dist = [
     { name = "pillow", specifier = ">=10.0.0" },
     { name = "platformdirs", specifier = ">=4.0.0" },
     { name = "psutil", specifier = ">=5.9.0" },
-    { name = "pygments", specifier = ">=2.17.0" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.0.0" },
     { name = "pytest-cov", marker = "extra == 'dev'", specifier = ">=5.0.0" },
     { name = "rich", specifier = ">=13.0.0" },
