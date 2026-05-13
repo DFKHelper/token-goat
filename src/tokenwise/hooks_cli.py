@@ -41,6 +41,22 @@ def normalize_payload(payload: dict[str, Any], harness: str = "claude") -> dict[
     return payload
 
 
+def _translate_hso_to_codex(hso: dict[str, Any]) -> dict[str, Any]:
+    """Convert camelCase hookSpecificOutput keys to snake_case for Codex wire format."""
+    camel_to_snake = {
+        "additionalContext": "additional_context",
+        "updatedInput": "updated_input",
+        "permissionDecision": "permission_decision",
+        "permissionDecisionReason": "permission_decision_reason",
+        "hookEventName": "hook_event_name",
+    }
+    translated = dict(hso)
+    for camel_key, snake_key in camel_to_snake.items():
+        if camel_key in translated:
+            translated[snake_key] = translated.pop(camel_key)
+    return translated
+
+
 def denormalize_response(response: dict[str, Any], harness: str = "claude") -> dict[str, Any]:
     """Translate tokenwise's internal response format to harness-specific wire format.
 
@@ -49,23 +65,14 @@ def denormalize_response(response: dict[str, Any], harness: str = "claude") -> d
     """
     if harness != "codex":
         return response
+
     hso = response.get("hookSpecificOutput")
     if not isinstance(hso, dict):
         return response
-    translated = dict(hso)
-    rename_map = {
-        "additionalContext": "additional_context",
-        "updatedInput": "updated_input",
-        "permissionDecision": "permission_decision",
-        "permissionDecisionReason": "permission_decision_reason",
-        "hookEventName": "hook_event_name",
-    }
-    for old, new in rename_map.items():
-        if old in translated:
-            translated[new] = translated.pop(old)
-    new_response = dict(response)
-    new_response["hookSpecificOutput"] = translated
-    return new_response
+
+    result = dict(response)
+    result["hookSpecificOutput"] = _translate_hso_to_codex(hso)
+    return result
 
 
 def read_payload(input_file: Path | None = None) -> dict[str, Any]:

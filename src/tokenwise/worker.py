@@ -63,6 +63,27 @@ def _setup_logging() -> None:
 # Liveness
 # ---------------------------------------------------------------------------
 
+def _is_heartbeat_fresh(hb_path: Path) -> bool:
+    """Check if heartbeat file exists and is recent (within 2x interval + grace)."""
+    if not hb_path.exists():
+        return False
+    try:
+        last = hb_path.stat().st_mtime
+        return time.time() - last <= 2 * HEARTBEAT_INTERVAL + 5
+    except OSError:
+        return False
+
+
+def _is_process_recent(pid: int) -> bool:
+    """Check if process exists and is younger than startup grace window."""
+    try:
+        p = psutil.Process(pid)
+        age = time.time() - p.create_time()
+        return age <= WORKER_STARTUP_GRACE
+    except (psutil.NoSuchProcess, psutil.AccessDenied):
+        return False
+
+
 def is_worker_alive() -> bool:
     """True if the PID file exists, points to a live process, and heartbeat is fresh."""
     pid_path = paths.worker_pid_path()
@@ -74,25 +95,14 @@ def is_worker_alive() -> bool:
         return False
     if not psutil.pid_exists(pid):
         return False
-    # Best-effort heartbeat freshness check
+
+    # Check heartbeat freshness or startup grace period
     hb_path = paths.worker_heartbeat_path()
     if hb_path.exists():
-        try:
-            last = hb_path.stat().st_mtime
-            if time.time() - last > 2 * HEARTBEAT_INTERVAL + 5:
-                return False
-        except OSError:
-            return False
-    else:
-        # PID exists but no heartbeat — give it the startup grace window
-        try:
-            p = psutil.Process(pid)
-            age = time.time() - p.create_time()
-            if age > WORKER_STARTUP_GRACE:
-                return False
-        except (psutil.NoSuchProcess, psutil.AccessDenied):
-            return False
-    return True
+        return _is_heartbeat_fresh(hb_path)
+
+    # No heartbeat yet — worker is still starting up
+    return _is_process_recent(pid)
 
 
 def _write_pid() -> None:

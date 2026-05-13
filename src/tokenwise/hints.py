@@ -156,10 +156,10 @@ def _hint_from_cache(
     overlap_lines = 0
     exact_match = False
     for cached_start, cached_end in entry.line_ranges:
-        ov_s = max(cached_start, req_start)
-        ov_e = min(cached_end, req_end)
-        if ov_e >= ov_s:
-            overlap_lines += ov_e - ov_s + 1
+        overlap_start = max(cached_start, req_start)
+        overlap_end = min(cached_end, req_end)
+        if overlap_end >= overlap_start:
+            overlap_lines += overlap_end - overlap_start + 1
         if cached_start <= req_start and cached_end >= req_end:
             exact_match = True
 

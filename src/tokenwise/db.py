@@ -58,6 +58,12 @@ def _connect(db_path: Path, *, load_vec: bool = True) -> sqlite3.Connection:
 # Corruption detection + auto-rebuild
 # ---------------------------------------------------------------------------
 
+def _is_transient_db_error(error: sqlite3.DatabaseError) -> bool:
+    """Check if a DatabaseError is transient (not evidence of corruption)."""
+    msg = str(error).lower()
+    return "locked" in msg or "busy" in msg or "i/o" in msg
+
+
 def _integrity_ok(conn: sqlite3.Connection) -> bool:
     """Return True if the DB is verifiably healthy.
 
@@ -71,12 +77,12 @@ def _integrity_ok(conn: sqlite3.Connection) -> bool:
     try:
         row = conn.execute("PRAGMA integrity_check").fetchone()
     except sqlite3.DatabaseError as e:
-        msg = str(e).lower()
-        if "locked" in msg or "busy" in msg or "i/o" in msg:
-            return True  # transient — not corruption
+        if _is_transient_db_error(e):
+            return True
         # Anything else: log but still don't quarantine reflexively.
         _LOG.warning("integrity_check raised (treating as healthy): %s", e)
         return True
+
     if row is None:
         return True
     return row[0] == "ok"
