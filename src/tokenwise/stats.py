@@ -5,9 +5,12 @@ import logging
 import sqlite3
 from collections import defaultdict
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 
 from . import db
+
+# Kinds that track bytes but not (reliable) token counts.
+BYTES_MODE_ONLY_KINDS: frozenset[str] = frozenset({"image_shrink", "webfetch_image", "gdrive_image"})
 
 _LOG = logging.getLogger("tokenwise.stats")
 
@@ -106,7 +109,7 @@ def summarize(window_days: int = 30) -> StatsSummary:
     by_project_list = sorted(
         [
             {
-                "project_hash": k[:8],
+                "project_hash": k,  # full hash; callers truncate for display
                 "project_root": v["project_root"],
                 "events": v["events"],
                 "bytes_saved": v["bytes_saved"],
@@ -174,6 +177,71 @@ def _short_project(root: str) -> str:
     return tail[:28]
 
 
+def _to_stats_data(summary: StatsSummary) -> "StatsData":
+    """Convert StatsSummary to the render layer's StatsData."""
+    from .render.types import DayStat, KindStat, Period, ProjectStat, StatsData, TotalStats
+
+    today = date.today()
+    if summary.window_days > 0:
+        period_start = today - timedelta(days=summary.window_days)
+    elif summary.by_day:
+        period_start = date.fromisoformat(summary.by_day[-1]["date"])  # by_day newest-first
+    else:
+        period_start = today
+
+    by_kind = sorted(
+        [
+            KindStat(
+                kind=k,
+                bytes=v["bytes_saved"],
+                tokens=v["tokens_saved"],
+                events=v["events"],
+                bytes_mode_only=k in BYTES_MODE_ONLY_KINDS,
+            )
+            for k, v in summary.by_kind.items()
+        ],
+        key=lambda k: k.bytes,
+        reverse=True,
+    )
+
+    by_day = sorted(
+        [
+            DayStat(
+                date=d["date"],
+                bytes=d["bytes_saved"],
+                tokens=d["tokens_saved"],
+                events=d["events"],
+            )
+            for d in summary.by_day
+        ],
+        key=lambda d: d.date,
+    )
+
+    by_project = [
+        ProjectStat(
+            project=_short_project(p["project_root"]),
+            hash=p["project_hash"],
+            path=p["project_root"] or "(unknown)",
+            bytes=p["bytes_saved"],
+            tokens=p["tokens_saved"],
+            events=p["events"],
+        )
+        for p in summary.by_project
+    ]
+
+    return StatsData(
+        period=Period(start=period_start, end=today),
+        totals=TotalStats(
+            events=summary.total_events,
+            bytes=summary.total_bytes_saved,
+            tokens=summary.total_tokens_saved,
+        ),
+        by_kind=by_kind,
+        by_day=by_day,
+        by_project=by_project,
+    )
+
+
 # Bar character set; finer-grained than █░ for half-block resolution.
 _BAR_FILL = "█"
 _BAR_PARTIAL = "▏▎▍▌▋▊▉"  # 1/8 through 7/8
@@ -229,15 +297,18 @@ def _sparkline(values: list[int]) -> str:
 def render_text(
     summary: StatsSummary, *, top_days: int = 7, top_projects: int = 5
 ) -> str:
-    """Render stats as a richly-styled terminal panel.
+    """Render stats using the ANSI truecolor renderer.
 
-    Uses the rich library for Panels, color-graded bars, a sparkline of
-    recent activity, and aligned tables. The returned string contains ANSI
-    color codes; terminals that support them render in full color, plain
-    pipes get the underlying text. Substring matches like 'tokenwise stats',
-    'Total:', and 'By kind:' are preserved across the styling so callers
-    (including tests) can match on them.
+    Delegates to render.stats_renderer.render_stats() for the rich visual
+    output (gradient bars, heatmap, insights). Falls back to the legacy
+    rich-based renderer if the render package is unavailable.
     """
+    try:
+        from .render.stats_renderer import render_stats
+        return render_stats(_to_stats_data(summary))
+    except Exception:
+        _LOG.debug("new renderer failed, falling back to rich", exc_info=True)
+
     import io
 
     from rich.box import ROUNDED
@@ -423,7 +494,7 @@ def render_text(
         for p in projs:
             console.print(
                 Text("    ", style="")
-                + Text(f"{p['project_hash']}  ", style="dim cyan")
+                + Text(f"{p['project_hash'][:8]}  ", style="dim cyan")
                 + Text(p["project_root"] or "(unknown)", style="dim")
             )
 

@@ -279,10 +279,8 @@ def open_global() -> Iterator[sqlite3.Connection]:
         conn = _connect(path)
     except sqlite3.DatabaseError as exc:
         _LOG.warning("corrupt db at connect time: %s", exc)
-        if _rebuild(path):
-            conn = _connect(path)
-        else:
-            raise
+        _rebuild(path)
+        conn = _connect(path)
     try:
         if not _integrity_ok(conn):
             conn.close()
@@ -303,11 +301,10 @@ def open_project(project_hash: str) -> Iterator[sqlite3.Connection]:
     path = paths.project_db_path(project_hash)
     try:
         conn = _connect(path)
-    except sqlite3.DatabaseError:
-        if _rebuild(path):
-            conn = _connect(path)
-        else:
-            raise
+    except sqlite3.DatabaseError as exc:
+        _LOG.warning("corrupt db at connect time: %s", exc)
+        _rebuild(path)
+        conn = _connect(path)
     try:
         if not _integrity_ok(conn):
             conn.close()
