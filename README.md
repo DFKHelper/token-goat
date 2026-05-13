@@ -23,7 +23,7 @@ Three wins, all silent, all automatic.
 
 **Surgical reads from a small CLI.** Pull one function, one Markdown heading, or one semantic match instead of dumping a whole module into context. Targeted reads run about 85% smaller than whole-file reads on the same source.
 
-Cumulative on the author's machine after a handful of sessions: 12+ MB saved.
+Cumulative on the author's machine: 15+ MB in measured savings from image shrink and surgical reads, where the byte difference is exact. Session hints add more on top — that figure is an estimated upper bound, not a measured one.
 
 ## Install
 
