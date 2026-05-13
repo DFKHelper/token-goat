@@ -177,8 +177,8 @@ def uninstall_tasks() -> list[str]:
             removed.append(TASK_WORKER)
         except FileNotFoundError:
             pass  # key didn't exist
-        except Exception:
-            pass
+        except Exception as e:
+            _LOG.warning("failed to remove registry autostart entry: %s", e)
 
     # Update task: still a schtasks WEEKLY entry
     if task_exists(TASK_UPDATE):
@@ -762,8 +762,8 @@ def uninstall_all(purge: bool = False, codex: bool = False) -> dict:
                 pid = int(pid_path.read_text(encoding="utf-8").strip())
                 if psutil.pid_exists(pid):
                     psutil.Process(pid).terminate()
-            except Exception:  # noqa: BLE001
-                pass
+            except Exception as e:  # noqa: BLE001
+                _LOG.warning("failed to terminate worker process: %s", e)
             pid_path.unlink(missing_ok=True)
         result["worker"] = "stopped"
     except Exception as e:  # noqa: BLE001
