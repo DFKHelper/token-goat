@@ -270,7 +270,10 @@ def _render_by_kind_section(stats: StatsData) -> list[str]:
     lines: list[str] = [*_section_header("By kind"), _table_header("name")]
 
     for k in stats.by_kind:
-        share = k.bytes / stats.totals.bytes if stats.totals.bytes > 0 else 0.0
+        if k.bytes_mode_only or stats.totals.tokens == 0:
+            share = k.bytes / stats.totals.bytes if stats.totals.bytes > 0 else 0.0
+        else:
+            share = k.tokens / stats.totals.tokens
         lines.append(_table_row(
             k.kind, share, k.bytes, k.tokens, k.events, share,
             bytes_mode_only=k.bytes_mode_only,
@@ -430,7 +433,7 @@ def _render_by_day_section(stats: StatsData) -> list[str]:
     lines: list[str] = [*_section_header("By day (top 7)"), _table_header("date")]
 
     for d in stats.by_day:
-        share = d.bytes / stats.totals.bytes if stats.totals.bytes > 0 else 0.0
+        share = d.tokens / stats.totals.tokens if stats.totals.tokens > 0 else (d.bytes / stats.totals.bytes if stats.totals.bytes > 0 else 0.0)
         lines.append(_table_row(d.date, share, d.bytes, d.tokens, d.events, share))
 
     return lines
@@ -442,12 +445,13 @@ def _render_by_project_section(stats: StatsData) -> list[str]:
     if not stats.by_project:
         return []
 
-    project_total = sum(p.bytes for p in stats.by_project)
+    project_total_bytes = sum(p.bytes for p in stats.by_project)
+    project_total_tokens = sum(p.tokens for p in stats.by_project)
 
     lines: list[str] = [*_section_header("By project (top 5)"), _table_header("project")]
 
     for p in stats.by_project:
-        share = p.bytes / project_total if project_total > 0 else 0.0
+        share = p.tokens / project_total_tokens if project_total_tokens > 0 else (p.bytes / project_total_bytes if project_total_bytes > 0 else 0.0)
         color = _hash_color(p.hash)
         lines.append(_table_row(
             p.project, share, p.bytes, p.tokens, p.events, share,
