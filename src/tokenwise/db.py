@@ -355,6 +355,53 @@ def open_project(project_hash: str) -> Iterator[sqlite3.Connection]:
 
 
 # ---------------------------------------------------------------------------
+# Read-only openers (for stats — skip integrity_check + DDL executescript)
+# ---------------------------------------------------------------------------
+
+def _connect_readonly(db_path: Path) -> sqlite3.Connection:
+    """Open a read-only SQLite connection via URI mode. No WAL, no vec, no DDL."""
+    uri = str(db_path.as_uri()) + "?mode=ro"
+    conn = sqlite3.connect(uri, uri=True, isolation_level=None, timeout=10.0)
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA busy_timeout = 5000")
+    return conn
+
+
+@contextlib.contextmanager
+def open_global_readonly() -> Iterator[sqlite3.Connection]:
+    """Read-only connection to global.db, skipping integrity_check and schema DDL.
+
+    Intended for stats reads where correctness and performance matter more than
+    schema migrations. Raises FileNotFoundError if global.db does not exist yet.
+    """
+    path = paths.global_db_path()
+    if not path.exists():
+        raise FileNotFoundError(f"global.db not found: {path}")
+    conn = _connect_readonly(path)
+    try:
+        yield conn
+    finally:
+        conn.close()
+
+
+@contextlib.contextmanager
+def open_project_readonly(project_hash: str) -> Iterator[sqlite3.Connection]:
+    """Read-only connection to a per-project DB, skipping integrity_check and schema DDL.
+
+    Raises FileNotFoundError if the project DB does not exist yet.
+    """
+    _validate_project_hash(project_hash)
+    path = paths.project_db_path(project_hash)
+    if not path.exists():
+        raise FileNotFoundError(f"project db not found: {path}")
+    conn = _connect_readonly(path)
+    try:
+        yield conn
+    finally:
+        conn.close()
+
+
+# ---------------------------------------------------------------------------
 # Writer lockfile
 # ---------------------------------------------------------------------------
 
