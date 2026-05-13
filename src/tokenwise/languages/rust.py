@@ -6,6 +6,7 @@ import re
 import tree_sitter_language_pack as tlp
 
 from ..parser import ImpExp, Ref, Section, Symbol
+from . import common
 
 # ---------------------------------------------------------------------------
 # Noise filter for call-site refs
@@ -30,38 +31,12 @@ _USE_PATH_RE = re.compile(r"^use\s+([^;{]+)")
 
 def _kind_str(structure_kind: object) -> str:
     """Convert tlp StructureKind to our kind string."""
-    s = str(structure_kind).split(".")[-1]
-    mapping = {
-        "Function": "function",
-        "Method": "method",
-        "Class": "class",
-        "Struct": "type",
-        "Interface": "interface",
-        "Enum": "enum",
-        "Trait": "interface",
-        "Impl": "impl",
-        "Module": "module",
-        "Namespace": "module",
-        "Other": "var",
-    }
-    return mapping.get(s, "var")
+    return common.kind_str(structure_kind, language="rust")
 
 
 def _sym_kind_str(sym_kind: object) -> str:
     """Convert tlp SymbolKind to our kind string."""
-    s = str(sym_kind).split(".")[-1]
-    mapping = {
-        "Function": "function",
-        "Class": "class",
-        "Interface": "interface",
-        "Type": "type",
-        "Enum": "enum",
-        "Constant": "const",
-        "Variable": "var",
-        "Module": "module",
-        "Other": "var",
-    }
-    return mapping.get(s, "var")
+    return common.sym_kind_str(sym_kind, language="rust")
 
 
 def _build_signature(source: bytes, item_span: object, body_span: object | None) -> str | None:

@@ -26,6 +26,17 @@ GREP_BINS = frozenset(["rg", "grep", "ag", "ack", "ripgrep"])
 GLOB_BINS = frozenset(["find", "fd", "fdfind", "ls", "eza"])
 
 
+def _try_parse_int(value: str) -> int | None:
+    """Attempt to parse a string as an integer, return None on failure.
+
+    Consolidates repeated try/except ValueError patterns across argument parsing.
+    """
+    try:
+        return int(value)
+    except ValueError:
+        return None
+
+
 def parse(command: str) -> BashIntent:
     """Best-effort parse of a single Bash command line.
 
@@ -70,24 +81,21 @@ def _parse_read(binary: str, args: list[str]) -> BashIntent:
         if binary in ("head", "tail"):
             if a in ("-n", "--lines"):
                 if i + 1 < len(args):
-                    try:
-                        limit = int(args[i + 1])
-                    except ValueError:
-                        pass
+                    parsed = _try_parse_int(args[i + 1])
+                    if parsed is not None:
+                        limit = parsed
                     i += 2
                     continue
             elif a.startswith("-n") and len(a) > 2:
-                try:
-                    limit = int(a[2:])
-                except ValueError:
-                    pass
+                parsed = _try_parse_int(a[2:])
+                if parsed is not None:
+                    limit = parsed
                 i += 1
                 continue
             elif a.startswith("--lines="):
-                try:
-                    limit = int(a.split("=", 1)[1])
-                except ValueError:
-                    pass
+                parsed = _try_parse_int(a.split("=", 1)[1])
+                if parsed is not None:
+                    limit = parsed
                 i += 1
                 continue
         if a.startswith("-"):
