@@ -13,7 +13,13 @@ _DRIVE_SCOPES = ["https://www.googleapis.com/auth/drive.readonly"]
 
 
 class GDriveCredsUnavailable(Exception):
-    pass
+    """Raised when Google Drive credentials cannot be obtained via any method.
+
+    Attempts multiple fallback paths in order: Application Default Credentials (ADC)
+    via gcloud auth, stored OAuth tokens, and browser-based OAuth flow. If all fail,
+    this exception is raised, indicating that Google Drive integration is unavailable
+    for this session.
+    """
 
 
 def _try_adc() -> object | None:

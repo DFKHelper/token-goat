@@ -48,6 +48,20 @@ MAX_FILE_SIZE = 2_000_000  # 2 MB
 
 @dataclass
 class Symbol:
+    """Represents a named entity (function, class, variable, etc.) in source code.
+
+    Attributes:
+        name: Symbol name as declared in code (e.g., 'getUserId', 'UserService', 'VERSION').
+        kind: Symbol type: 'function', 'class', 'method', 'type', 'interface', 'const',
+              'enum', 'var', 'arrow_fn', 'trait', 'impl', 'abi_export', etc. Language-specific.
+        line: 1-based line number where symbol definition begins.
+        col: 0-based column offset (default 0). Optional; not all languages track column data.
+        end_line: 1-based line where symbol definition ends (inclusive). None if single-line or unavailable.
+        signature: Parsed signature string for callables (e.g., '(x: int, y: str) -> bool').
+                  None if not a callable or signature extraction not implemented for this language.
+        parent_name: For nested symbols (methods, inner functions), the name of the enclosing
+                    scope (e.g., 'UserService' for method hello). None for top-level symbols.
+    """
     name: str
     kind: str            # function|class|method|type|interface|const|enum|var|arrow_fn
     line: int            # 1-indexed
@@ -59,6 +73,18 @@ class Symbol:
 
 @dataclass
 class Ref:
+    """Represents a reference to a symbol in source code (usage or mention).
+
+    Used to identify where symbols are invoked/accessed, supporting cross-file tracing
+    and dependency analysis.
+
+    Attributes:
+        name: Name of the symbol being referenced.
+        line: 1-based line number where the reference occurs.
+        col: 0-based column offset (default 0).
+        context: Optional contextual snippet around the reference (e.g., the surrounding
+                statement or method name). Helps disambiguate which 'name' is referenced.
+    """
     name: str
     line: int
     col: int = 0
@@ -74,6 +100,16 @@ class ImpExp:
 
 @dataclass
 class Section:
+    """Represents a heading/section in a document (markdown, HTML, etc.).
+
+    Attributes:
+        heading: The text of the heading (e.g., 'Installation', 'API Reference').
+        level: Heading hierarchy level. Markdown/HTML: 1-6; Liquid/other: language-specific.
+               Lower numbers = higher level in hierarchy (1 = top-level, 6 = nested).
+        line: 1-based line number where the heading appears.
+        end_line: 1-based line where this section's content ends (before next heading or EOF).
+                 None if unavailable.
+    """
     heading: str
     level: int
     line: int
@@ -82,6 +118,22 @@ class Section:
 
 @dataclass
 class FileIndex:
+    """Complete analysis of a single file: symbols, references, imports/exports, and sections.
+
+    Produced by index_file() and persisted in the SQLite DB. Enables symbol search, cross-file
+    dependency tracking, and section-based document navigation.
+
+    Attributes:
+        rel_path: Path to the file, relative to project root (normalized to POSIX style).
+        language: Detected language ('python', 'typescript', 'go', 'rust', 'markdown', etc.).
+        size: File size in bytes.
+        mtime: Last-modified timestamp (unix epoch, float).
+        content_sha256: SHA256 hash of file content. Used to detect changes and skip re-indexing.
+        symbols: List of named definitions (functions, classes, variables, etc.) in the file.
+        refs: List of symbol references (usages) within the file.
+        imports_exports: List of import/export statements (modules pulled in, symbols exposed).
+        sections: List of headings/sections (only for document formats like markdown, HTML).
+    """
     rel_path: str
     language: str
     size: int

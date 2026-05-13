@@ -66,6 +66,16 @@ class EmbeddingsUnavailable(Exception):
 
 @dataclass
 class Chunk:
+    """A contiguous code or text segment suitable for embedding.
+
+    Attributes:
+        file_rel: Path to source file, relative to project root.
+        start_line: 1-based line number where segment begins.
+        end_line: 1-based line number where segment ends (inclusive).
+        text: Raw text content of the segment.
+        kind: Semantic category: 'function', 'class', 'method', 'section', 'window', or 'symbol'.
+              'window' = sliding-window fallback for unparsed code; 'symbol' = parsed definition.
+    """
     file_rel: str
     start_line: int
     end_line: int
@@ -75,6 +85,16 @@ class Chunk:
 
 @dataclass
 class SearchHit:
+    """Result of a semantic search query against indexed chunks.
+
+    Attributes:
+        file_rel: Path to source file, relative to project root.
+        start_line: 1-based line number where matching segment begins.
+        end_line: 1-based line number where matching segment ends (inclusive).
+        kind: Semantic category (same as Chunk.kind).
+        text: Raw text content of the matching segment.
+        distance: Cosine distance from query vector (0=identical, 2=opposite). Smaller = closer match.
+    """
     file_rel: str
     start_line: int
     end_line: int
@@ -121,7 +141,22 @@ def is_available() -> bool:
 def embed_texts(
     texts: Sequence[str], *, model_name: str = DEFAULT_MODEL
 ) -> list[list[float]]:
-    """Embed a batch of texts. Raises EmbeddingsUnavailable if model can't be loaded."""
+    """Embed a batch of texts to fixed-dimension semantic vectors.
+
+    Uses fastembed's ONNX-based TextEmbedding model (BAAI/bge-small-en-v1.5 by default,
+    384-dimensional output). Model is cached in FASTEMBED_CACHE_PATH (tokenwise models/ dir).
+
+    Args:
+        texts: Sequence of strings to embed. Empty sequence returns empty list.
+        model_name: HuggingFace model name (default: BAAI/bge-small-en-v1.5).
+
+    Returns:
+        List of embedding vectors, one per input string. Each vector is a list of floats
+        with length = model's dimension (384 for default model).
+
+    Raises:
+        EmbeddingsUnavailable: If fastembed is not installed or model cannot be loaded.
+    """
     model = _get_model(model_name)
     vecs: list[list[float]] = []
     for arr in model.embed(list(texts)):  # type: ignore[union-attr]
@@ -384,7 +419,26 @@ def semantic_search(
     k: int = 5,
     model_name: str = DEFAULT_MODEL,
 ) -> list[SearchHit]:
-    """Embed query, vec-search the project DB. Returns top-k hits sorted by distance."""
+    """Find semantically similar code/text chunks via vector similarity search.
+
+    Embeds the query string and searches the project's indexed chunks (via sqlite-vec)
+    for the k most similar matches, sorted by cosine distance (ascending).
+
+    Args:
+        project: Project metadata (root, hash, etc.).
+        query: Natural language or code snippet to search for. Examples: 'rate limit retry',
+               'async/await boundary', 'null guard'.
+        k: Number of top results to return (default 5).
+        model_name: Embedding model (default: BAAI/bge-small-en-v1.5).
+
+    Returns:
+        List of SearchHit objects, sorted by distance (closest first). Empty list if no
+        chunks indexed or query has no semantic content.
+
+    Raises:
+        EmbeddingsUnavailable: If fastembed not installed, sqlite-vec not loaded, or
+                                project has no indexed chunks.
+    """
     if not is_available():
         raise EmbeddingsUnavailable("fastembed not installed")
     qvec = embed_texts([query], model_name=model_name)[0]

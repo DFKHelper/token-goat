@@ -162,7 +162,16 @@ def safe_run(event: str, input_file: Path | None = None, harness: str = "claude"
 
 
 def fail_soft(handler: Callable[[dict[str, Any]], dict[str, Any]]) -> Callable[[dict[str, Any]], dict[str, Any]]:
-    """Decorator: never raise. Log everything, always return {'continue': True}."""
+    """Decorator: wrap hook handler to never raise or crash the harness.
+
+    CRITICAL INVARIANT: A broken tokenwise hook must NEVER interrupt Claude Code's work.
+    This decorator guarantees:
+      1. Returns {'continue': True} even if handler raises/crashes.
+      2. Logs exception without surfacing it to the caller.
+      3. Exits with code 0 (no error signal to harness).
+
+    Used on all hook dispatchers to ensure harness resilience.
+    """
 
     def wrapper(payload: dict[str, Any]) -> dict[str, Any]:
         try:
@@ -264,7 +273,7 @@ def _try_shrink_image(
     file_path: str, tool_input: dict[str, Any]
 ) -> dict[str, Any] | None:
     """Attempt image shrinking. Returns hook response with updated input, or None if no shrinking occurred."""
-    from . import image_shrink, db  # noqa: PLC0415
+    from . import db, image_shrink  # noqa: PLC0415
 
     if not image_shrink.is_image_path(file_path):
         return None
