@@ -178,43 +178,36 @@ def fail_soft(handler: Callable[[dict[str, Any]], dict[str, Any]]) -> Callable[[
 # --- handlers (stubs for later phases, but real fail-soft wrappers) ---
 
 
-@fail_soft
-def session_start(payload: dict[str, Any]) -> dict[str, Any]:
-    """Reset session cache and ensure worker daemon is running."""
-    session_id = payload.get("session_id")
-    cwd = payload.get("cwd")
-    _LOG.info("session-start: session_id=%s cwd=%s", session_id, cwd)
+def _reset_session_cache(session_id: str | None) -> None:
+    """Reset session cache for /clear, /compact, fresh-start events."""
+    if not session_id:
+        return
+    try:
+        from . import session  # noqa: PLC0415
 
-    # Reset session cache (covers /clear, /compact, fresh-start)
-    if session_id:
-        try:
-            from . import session  # noqa: PLC0415
+        session.reset_session(session_id)
+    except Exception:  # noqa: BLE001
+        _LOG.exception("failed to reset session cache")
 
-            session.reset_session(session_id)
-        except Exception:  # noqa: BLE001
-            _LOG.exception("failed to reset session cache")
 
-    # Project detection + auto-index on first contact with an unindexed project.
-    # Without this the symbol/read/section/ref commands have no data to return,
-    # which downstream agents (especially Codex) interpret as "DB is failing"
-    # instead of "not indexed yet". Detached subprocess; returns immediately.
-    proj = _detect(payload)
-    if proj:
-        _LOG.info("session-start: detected project %s (%s)", proj.root, proj.hash[:8])
-        try:
-            from . import db, worker  # noqa: PLC0415
+def _auto_index_if_needed(proj: Project) -> None:
+    """Auto-index unindexed projects on first contact to avoid downstream DB-failure misinterpretation."""
+    try:
+        from . import db, worker  # noqa: PLC0415
 
-            if db.file_count(proj.hash) == 0:
-                pid = worker.spawn_index_detached(str(proj.root))
-                if pid:
-                    _LOG.info(
-                        "session-start: auto-indexing %s in background (pid=%s)",
-                        proj.root, pid,
-                    )
-        except Exception:  # noqa: BLE001
-            _LOG.exception("auto-index spawn failed")
+        if db.file_count(proj.hash) == 0:
+            pid = worker.spawn_index_detached(str(proj.root))
+            if pid:
+                _LOG.info(
+                    "session-start: auto-indexing %s in background (pid=%s)",
+                    proj.root, pid,
+                )
+    except Exception:  # noqa: BLE001
+        _LOG.exception("auto-index spawn failed")
 
-    # Watchdog: ensure worker daemon is alive
+
+def _ensure_worker_running() -> None:
+    """Watchdog: start or verify worker daemon is alive."""
     try:
         from . import worker  # noqa: PLC0415
 
@@ -224,7 +217,115 @@ def session_start(payload: dict[str, Any]) -> dict[str, Any]:
     except Exception:  # noqa: BLE001
         _LOG.exception("watchdog failed")
 
+
+@fail_soft
+def session_start(payload: dict[str, Any]) -> dict[str, Any]:
+    """Reset session cache and ensure worker daemon is running."""
+    session_id = payload.get("session_id")
+    cwd = payload.get("cwd")
+    _LOG.info("session-start: session_id=%s cwd=%s", session_id, cwd)
+
+    _reset_session_cache(session_id)
+
+    proj = _detect(payload)
+    if proj:
+        _LOG.info("session-start: detected project %s (%s)", proj.root, proj.hash[:8])
+        _auto_index_if_needed(proj)
+
+    _ensure_worker_running()
     return {"continue": True}
+
+
+def _handle_bash_read_equivalent(payload: dict[str, Any]) -> dict[str, Any] | None:
+    """Convert Bash read-equivalent commands to Read payload for recursive processing.
+
+    Returns updated payload if Bash command is a read-equivalent (cat/head/tail/bat),
+    or None if it's not a read or if parsing fails.
+    """
+    from . import bash_parser  # noqa: PLC0415
+
+    tool_input = payload.get("tool_input") or {}
+    cmd = tool_input.get("command", "")
+    intent = bash_parser.parse(cmd)
+    if intent.kind != "read" or not intent.target_path:
+        return None
+
+    read_payload = dict(payload)
+    read_payload["tool_name"] = "Read"
+    read_payload["tool_input"] = {
+        "file_path": intent.target_path,
+        "offset": intent.offset,
+        "limit": intent.limit,
+    }
+    return read_payload
+
+
+def _try_shrink_image(
+    file_path: str, tool_input: dict[str, Any]
+) -> dict[str, Any] | None:
+    """Attempt image shrinking. Returns hook response with updated input, or None if no shrinking occurred."""
+    from . import image_shrink, db  # noqa: PLC0415
+
+    if not image_shrink.is_image_path(file_path):
+        return None
+
+    try:
+        shrunken = image_shrink.shrink(Path(file_path))
+        if shrunken is None:
+            return None
+
+        img_stats = image_shrink.stats_for(Path(file_path), shrunken)
+        tokens_saved = img_stats["bytes_saved"] // 4  # Estimate: 1 token per 4 base64 chars
+        with contextlib.suppress(Exception):
+            db.record_stat(
+                None,
+                "image_shrink",
+                bytes_saved=img_stats["bytes_saved"],
+                tokens_saved=tokens_saved,
+                detail=f"{file_path} -> {shrunken.name}",
+            )
+
+        shrink_response = dict(tool_input)
+        shrink_response["file_path"] = str(shrunken)
+        return {
+            "continue": True,
+            "hookSpecificOutput": {
+                "hookEventName": "PreToolUse",
+                "updatedInput": shrink_response,
+                "additionalContext": (
+                    f"Note: image auto-shrunk by tokenwise "
+                    f"({img_stats['src_bytes']:,} → {img_stats['out_bytes']:,} bytes, "
+                    f"~{img_stats['bytes_saved']:,} bytes saved). "
+                    f"Original: {file_path}"
+                ),
+            },
+        }
+    except Exception:  # noqa: BLE001
+        _LOG.exception("image-shrink failed during pre-read")
+        return None
+
+
+def _record_session_hint_savings(file_path: str) -> None:
+    """Record savings from session hints (estimated 25% avoidance of full file read)."""
+    from . import db  # noqa: PLC0415
+
+    try:
+        file_size = 0
+        with contextlib.suppress(OSError):
+            file_size = Path(file_path).stat().st_size
+        # Estimate: 25% of file would have been read (conservative).
+        # Assume 4 bytes per token average.
+        est_bytes = file_size // 4
+        est_tokens = est_bytes // 4
+        db.record_stat(
+            None,
+            "session_hint",
+            bytes_saved=est_bytes,
+            tokens_saved=est_tokens,
+            detail=f"{file_path}",
+        )
+    except Exception:  # noqa: BLE001
+        _LOG.exception("failed to record session_hint savings")
 
 
 @fail_soft
@@ -242,20 +343,10 @@ def pre_read(payload: dict[str, Any]) -> dict[str, Any]:
 
     # Codex path: Bash command that is really a Read
     if tool_name == "Bash":
-        from . import bash_parser  # noqa: PLC0415
-
-        cmd = (payload.get("tool_input") or {}).get("command", "")
-        intent = bash_parser.parse(cmd)
-        if intent.kind == "read" and intent.target_path:
-            synthetic = dict(payload)
-            synthetic["tool_name"] = "Read"
-            synthetic["tool_input"] = {
-                "file_path": intent.target_path,
-                "offset": intent.offset,
-                "limit": intent.limit,
-            }
-            return pre_read(synthetic)
-        # Grep/glob via Bash: could mark session but can't rewrite the command easily. Pass through.
+        read_payload = _handle_bash_read_equivalent(payload)
+        if read_payload:
+            return pre_read(read_payload)
+        # Grep/glob via Bash: could mark session but can't rewrite easily. Pass through.
         return {"continue": True}
 
     if tool_name != "Read":
@@ -269,49 +360,12 @@ def pre_read(payload: dict[str, Any]) -> dict[str, Any]:
     session_id = payload.get("session_id")
     cwd = payload.get("cwd")
 
-    # --- Phase 12: image-shrink ---
-    from . import image_shrink  # noqa: PLC0415
+    # Attempt image shrinking (Phase 12)
+    shrink_response = _try_shrink_image(file_path, tool_input)
+    if shrink_response:
+        return shrink_response
 
-    if image_shrink.is_image_path(file_path):
-        try:
-            shrunken = image_shrink.shrink(Path(file_path))
-            if shrunken is not None:
-                from . import db  # noqa: PLC0415
-
-                img_stats = image_shrink.stats_for(Path(file_path), shrunken)
-                # Conservative token estimate. Assumes the image would have been
-                # base64-encoded inline in the Claude prompt content (typical for
-                # Read on a local image). Roughly 1 token per 4 base64 chars.
-                # For pure vision-tokenized embeds this undersells.
-                tokens_saved_estimate = img_stats["bytes_saved"] // 4
-                with contextlib.suppress(Exception):
-                    db.record_stat(
-                        None,
-                        "image_shrink",
-                        bytes_saved=img_stats["bytes_saved"],
-                        tokens_saved=tokens_saved_estimate,
-                        detail=f"{file_path} -> {shrunken.name}",
-                    )
-                new_input = dict(tool_input)
-                new_input["file_path"] = str(shrunken)
-                return {
-                    "continue": True,
-                    "hookSpecificOutput": {
-                        "hookEventName": "PreToolUse",
-                        "updatedInput": new_input,
-                        "additionalContext": (
-                            f"Note: image auto-shrunk by tokenwise "
-                            f"({img_stats['src_bytes']:,} → {img_stats['out_bytes']:,} bytes, "
-                            f"~{img_stats['bytes_saved']:,} bytes saved). "
-                            f"Original: {file_path}"
-                        ),
-                    },
-                }
-        except Exception:  # noqa: BLE001
-            _LOG.exception("image-shrink failed during pre-read")
-            # fall through to hint logic
-
-    # --- existing hint logic ---
+    # Build session-cache hint (Phase 10)
     hint = build_read_hint(
         session_id=session_id,
         file_path=file_path,
@@ -322,32 +376,47 @@ def pre_read(payload: dict[str, Any]) -> dict[str, Any]:
     if not hint:
         return {"continue": True}
 
-    # Record a session_hint stat event so users see Tokenwise working on
-    # plain code reads (not only image shrinks). The agent MAY heed the
-    # hint (narrower offset/limit, or `tokenwise read`); we don't observe
-    # what it does next. Assume a conservative 25% effective avoidance of
-    # the would-be read. Marked "estimated" in stats output.
-    with contextlib.suppress(Exception):
-        from . import db  # noqa: PLC0415
-
-        file_size = 0
-        with contextlib.suppress(OSError):
-            file_size = Path(file_path).stat().st_size
-        est_bytes = file_size // 4
-        est_tokens = est_bytes // 4
-        db.record_stat(
-            None,
-            "session_hint",
-            bytes_saved=est_bytes,
-            tokens_saved=est_tokens,
-            detail=f"{file_path}",
-        )
+    _record_session_hint_savings(file_path)
 
     return {
         "continue": True,
         "hookSpecificOutput": {
             "hookEventName": "PreToolUse",
             "additionalContext": hint,
+        },
+    }
+
+
+def _intercept_drive_download(file_id: str) -> dict[str, Any]:
+    """Build denial response for Drive download with redirect to tokenwise shim."""
+    return {
+        "continue": True,
+        "hookSpecificOutput": {
+            "hookEventName": "PreToolUse",
+            "permissionDecision": "deny",
+            "permissionDecisionReason": "tokenwise redirects Drive image downloads to its shrink+cache shim",
+            "additionalContext": (
+                f"tokenwise intercepted a Drive download to save tokens. "
+                f"Run this Bash instead: `tokenwise gdrive-fetch {file_id}` — "
+                f"it returns a local cached path you can then Read (images are auto-shrunk)."
+            ),
+        },
+    }
+
+
+def _intercept_webfetch_image(url: str) -> dict[str, Any]:
+    """Build denial response for WebFetch image with redirect to tokenwise shim."""
+    return {
+        "continue": True,
+        "hookSpecificOutput": {
+            "hookEventName": "PreToolUse",
+            "permissionDecision": "deny",
+            "permissionDecisionReason": "tokenwise redirects image URLs to its shrink+cache shim",
+            "additionalContext": (
+                f"tokenwise intercepted a WebFetch to an image URL to save tokens. "
+                f"Run this Bash instead: `tokenwise fetch-image '{url}'` — "
+                f"it downloads, shrinks, caches, and returns a local path you can then Read."
+            ),
         },
     }
 
@@ -376,19 +445,7 @@ def pre_fetch(payload: dict[str, Any]) -> dict[str, Any]:
         except gdrive.GDriveCredsUnavailable:
             return {"continue": True}
 
-        return {
-            "continue": True,
-            "hookSpecificOutput": {
-                "hookEventName": "PreToolUse",
-                "permissionDecision": "deny",
-                "permissionDecisionReason": "tokenwise redirects Drive image downloads to its shrink+cache shim",
-                "additionalContext": (
-                    f"tokenwise intercepted a Drive download to save tokens. "
-                    f"Run this Bash instead: `tokenwise gdrive-fetch {file_id}` — "
-                    f"it returns a local cached path you can then Read (images are auto-shrunk)."
-                ),
-            },
-        }
+        return _intercept_drive_download(file_id)
 
     # --- WebFetch intercept (Phase 14) ---
     if tool_name == "WebFetch":
@@ -402,19 +459,7 @@ def pre_fetch(payload: dict[str, Any]) -> dict[str, Any]:
         if not webfetch.is_image_url(url):
             return {"continue": True}
 
-        return {
-            "continue": True,
-            "hookSpecificOutput": {
-                "hookEventName": "PreToolUse",
-                "permissionDecision": "deny",
-                "permissionDecisionReason": "tokenwise redirects image URLs to its shrink+cache shim",
-                "additionalContext": (
-                    f"tokenwise intercepted a WebFetch to an image URL to save tokens. "
-                    f"Run this Bash instead: `tokenwise fetch-image '{url}'` — "
-                    f"it downloads, shrinks, caches, and returns a local path you can then Read."
-                ),
-            },
-        }
+        return _intercept_webfetch_image(url)
 
     return {"continue": True}
 

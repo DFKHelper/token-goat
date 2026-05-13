@@ -84,17 +84,41 @@ def _build_graph(
     conn: sqlite3.Connection, files: dict, name_to_files: dict
 ) -> nx.MultiDiGraph:
     """Edges: file -> file based on call refs that resolve to a defined symbol elsewhere."""
-    g = nx.MultiDiGraph()
-    for f in files:
-        g.add_node(f)
+    graph = nx.MultiDiGraph()
+
+    # Add all files as nodes
+    for file_path in files:
+        graph.add_node(file_path)
+
+    # Add edges from references to their definitions
     for row in conn.execute("SELECT symbol_name, file_rel FROM refs"):
-        ref_name = row["symbol_name"]
-        src = row["file_rel"]
-        targets = name_to_files.get(ref_name, set())
-        for tgt in targets:
-            if tgt != src:
-                g.add_edge(src, tgt)
-    return g
+        referenced_symbol = row["symbol_name"]
+        referencing_file = row["file_rel"]
+        definition_files = name_to_files.get(referenced_symbol, set())
+
+        for definition_file in definition_files:
+            if definition_file != referencing_file:
+                graph.add_edge(referencing_file, definition_file)
+
+    return graph
+
+
+def _multigraph_to_weighted_digraph(multigraph: nx.MultiDiGraph) -> nx.DiGraph:
+    """Convert multigraph to simple DiGraph, aggregating parallel edges as weights."""
+    simple_graph = nx.DiGraph()
+
+    # Add all nodes
+    for node in multigraph.nodes:
+        simple_graph.add_node(node)
+
+    # Aggregate parallel edges into weights
+    for source, target in multigraph.edges():
+        if simple_graph.has_edge(source, target):
+            simple_graph[source][target]["weight"] += 1.0
+        else:
+            simple_graph.add_edge(source, target, weight=1.0)
+
+    return simple_graph
 
 
 def compute_ranks(g: nx.MultiDiGraph, *, alpha: float = 0.85) -> dict[str, float]:
@@ -105,22 +129,18 @@ def compute_ranks(g: nx.MultiDiGraph, *, alpha: float = 0.85) -> dict[str, float
     """
     if g.number_of_nodes() == 0:
         return {}
-    simple = nx.DiGraph()
-    for node in g.nodes:
-        simple.add_node(node)
-    for u, v in g.edges():
-        if simple.has_edge(u, v):
-            simple[u][v]["weight"] += 1.0
-        else:
-            simple.add_edge(u, v, weight=1.0)
+
+    simple_graph = _multigraph_to_weighted_digraph(g)
+
     # Use the pure-Python implementation — avoids requiring scipy.
     from networkx.algorithms.link_analysis.pagerank_alg import (  # noqa: PLC0415
         _pagerank_python,
     )
+
     try:
-        return _pagerank_python(simple, alpha=alpha, weight="weight", max_iter=200, tol=1e-6)
+        return _pagerank_python(simple_graph, alpha=alpha, weight="weight", max_iter=200, tol=1e-6)
     except nx.PowerIterationFailedConvergence:
-        return _pagerank_python(simple, alpha=alpha, weight="weight", max_iter=500, tol=1e-4)
+        return _pagerank_python(simple_graph, alpha=alpha, weight="weight", max_iter=500, tol=1e-4)
 
 
 def _summarize_file(
