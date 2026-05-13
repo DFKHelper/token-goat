@@ -6,6 +6,9 @@ All notable changes to Tokenwise are documented in this file. Format follows Kee
 
 ### Added
 
+- **Skills and plugins indexing.** `tokenwise index --root <path>` indexes any directory — no `.git` or project marker required. Shorthand flags: `--skills` indexes `~/.claude/skills/`, `--plugins` indexes `~/.claude/plugins/`. After indexing, `tokenwise section "superman/SKILL.md::Plan Gate"` and `tokenwise read "ralph/SKILL.md::symbol"` work from any directory, and `tokenwise symbol --all-projects` picks up symbols defined in skills. Run once and forget — incremental re-indexing keeps skills current as you update them.
+- **Cross-project file resolution.** `tokenwise section` and `tokenwise read` now fall back to searching all indexed projects when the file is not found in the current project. This means `tokenwise section "superman/SKILL.md::Plan Gate"` works from inside any project directory, not just from inside `~/.claude/skills/`.
+
 - **Compaction assist.** Before Claude Code compacts the conversation, a new `PreCompact` hook builds a structured session manifest and injects it as `systemMessage` so the compaction LLM can preserve edited files, accessed symbols, and frequently read files in its summary. The manifest stays under a configurable token budget (default 400 tokens). Configure via `[compact_assist]` in `config.toml` or set `TOKENWISE_COMPACT_ASSIST=0` to disable entirely.
 - `tokenwise compact-hint --session-id <id>` debug command shows exactly what the `PreCompact` hook would emit for any session.
 - `session.py` now tracks which files were edited this session (`edited_files: dict[str, int]`). The `post_edit` hook (previously a no-op) now calls `session.mark_file_edited()` on every Write/Edit/MultiEdit. Edited files are listed first in the compaction manifest — they are the most critical context to preserve.

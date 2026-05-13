@@ -38,8 +38,8 @@ src/tokenwise/
 ├── gdrive.py           # Google Drive API — credentials, fetch, image cache integration
 ├── webfetch.py         # URL image download + cache
 ├── install.py          # One-time setup: HKCU Run registry, settings.json, skill, CLAUDE.md
-├── paths.py            # All paths under %LOCALAPPDATA%\Zelys\tokenwise\
-├── project.py          # Project root detection (walks up to .git / pyproject.toml / etc.)
+├── paths.py            # All paths under %LOCALAPPDATA%\Zelys\tokenwise\; also claude_skills_dir(), claude_plugins_dir()
+├── project.py          # Project root detection; make_project_at() for marker-free directories
 ├── repomap.py          # PageRank-ranked, token-budgeted repo overview (tokenwise map)
 ├── bash_parser.py      # Codex Bash tool read-equivalent detection (cat/head/tail/bat/…)
 ├── stats.py            # Cumulative token/byte savings tracking
@@ -81,6 +81,8 @@ Project hash = SHA1 of the canonical POSIX path with lowercase drive letter.
 **Compaction assist** — Before Claude Code compacts the conversation, the `PreCompact` hook calls `compact.build_manifest()` to build a structured `<400-token` summary (edited files first, then symbols accessed, then key files read) and returns it as `systemMessage`. The compaction LLM receives the manifest in context and preserves the most important details. Configurable via `config.toml` (`[compact_assist]`) or disabled via `TOKENWISE_COMPACT_ASSIST=0`. Inspect what would be emitted with `tokenwise compact-hint --session-id <id>`.
 
 **Read-only DB path** — `db.open_global_readonly()` / `db.open_project_readonly()` open SQLite with `?mode=ro` URI flag, skipping `PRAGMA integrity_check`, DDL `executescript`, WAL activation, and sqlite-vec loading. Used by `stats.py` to avoid the N×integrity_check overhead that previously caused `tokenwise stats` to take ~10 s.
+
+**Marker-free indexing** — `project.make_project_at(root)` creates a `Project` with `marker="manual"` for any directory, bypassing detection. `tokenwise index --root <path>` uses this so directories like `~/.claude/skills/` and `~/.claude/plugins/` can be indexed without any project marker. Cross-project file resolution: `tokenwise section` and `tokenwise read` fall back to `read_replacement.find_in_all_projects()` when a file is not found in the current project, so skills are reachable from any working directory.
 
 **Codex compatibility** — Hook handlers accept unknown CLI options (`ignore_unknown_options=True`) because Codex passes harness-specific flags. `bash_parser.py` detects read-equivalent Bash commands (cat/head/tail/bat/…) inside Codex's Bash tool and synthesizes a Read payload so image-shrink and session-hint logic applies identically.
 

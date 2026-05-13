@@ -79,6 +79,32 @@ def resolve_file_rel(project: Project, file_part: str) -> str | None:
     return None
 
 
+def find_in_all_projects(file_part: str) -> tuple[Project, str] | None:
+    """Search every indexed project for a file matching file_part.
+
+    Returns (project, rel_path) for the first match, or None. Used as a
+    cross-project fallback so `tokenwise section "superman/SKILL.md::Heading"`
+    works from any working directory once the skills dir has been indexed.
+    """
+    from . import db as _db  # noqa: PLC0415
+
+    try:
+        with _db.open_global_readonly() as gconn:
+            rows = gconn.execute("SELECT hash, root, marker FROM projects").fetchall()
+    except Exception:
+        return None
+
+    for row in rows:
+        proj = Project(root=Path(row["root"]), hash=row["hash"], marker=row["marker"])
+        try:
+            rel = resolve_file_rel(proj, file_part)
+            if rel is not None:
+                return proj, rel
+        except Exception:
+            continue
+    return None
+
+
 def read_symbol(
     project: Project,
     rel_path: str,

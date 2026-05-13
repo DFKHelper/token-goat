@@ -116,6 +116,21 @@ def web_cache_dir() -> Path:
     return data_dir() / "web_cache"
 
 
+def claude_config_dir() -> Path:
+    """Path to Claude Code's config directory (~/.claude)."""
+    return Path.home() / ".claude"
+
+
+def claude_skills_dir() -> Path:
+    """Path to Claude Code skills directory (~/.claude/skills)."""
+    return claude_config_dir() / "skills"
+
+
+def claude_plugins_dir() -> Path:
+    """Path to Claude Code plugins directory (~/.claude/plugins)."""
+    return claude_config_dir() / "plugins"
+
+
 def ensure_dirs() -> None:
     """Create all needed subdirectories idempotently."""
     dirs = [
