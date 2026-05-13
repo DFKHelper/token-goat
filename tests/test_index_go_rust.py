@@ -8,30 +8,24 @@ import pytest
 
 from tokenwise import db
 from tokenwise.parser import index_project
-from tokenwise.project import Project, canonicalize, project_hash
 
 FIXTURE_DIR = Path(__file__).parent / "fixtures"
 GO_SAMPLE = FIXTURE_DIR / "go_sample"
 RUST_SAMPLE = FIXTURE_DIR / "rust_sample"
 
 
-def _make_project(root: Path) -> Project:
-    canon = canonicalize(root)
-    return Project(root=canon, hash=project_hash(canon), marker=".git")
-
-
 @pytest.fixture
-def go_project(tmp_path, tmp_data_dir):
+def go_project(tmp_path, tmp_data_dir, make_project):
     proj_root = tmp_path / "go_sample"
     shutil.copytree(GO_SAMPLE, proj_root)
-    return _make_project(proj_root)
+    return make_project(proj_root)
 
 
 @pytest.fixture
-def rust_project(tmp_path, tmp_data_dir):
+def rust_project(tmp_path, tmp_data_dir, make_project):
     proj_root = tmp_path / "rust_sample"
     shutil.copytree(RUST_SAMPLE, proj_root)
-    return _make_project(proj_root)
+    return make_project(proj_root)
 
 
 # ---------------------------------------------------------------------------

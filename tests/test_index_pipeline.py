@@ -8,32 +8,26 @@ import pytest
 
 from tokenwise import db
 from tokenwise.parser import index_file, index_project, write_file_index
-from tokenwise.project import Project, canonicalize, project_hash
 
 FIXTURE_DIR = Path(__file__).parent / "fixtures"
 TS_SAMPLE = FIXTURE_DIR / "ts_sample"
 PY_SAMPLE = FIXTURE_DIR / "py_sample"
 
 
-def _make_project(root: Path) -> Project:
-    canon = canonicalize(root)
-    return Project(root=canon, hash=project_hash(canon), marker=".git")
-
-
 @pytest.fixture
-def ts_project(tmp_path, tmp_data_dir):
+def ts_project(tmp_path, tmp_data_dir, make_project):
     """Copy ts_sample fixture to tmp dir and return a Project."""
     proj_root = tmp_path / "ts_sample"
     shutil.copytree(TS_SAMPLE, proj_root)
-    return _make_project(proj_root)
+    return make_project(proj_root)
 
 
 @pytest.fixture
-def py_project(tmp_path, tmp_data_dir):
+def py_project(tmp_path, tmp_data_dir, make_project):
     """Copy py_sample fixture to tmp dir and return a Project."""
     proj_root = tmp_path / "py_sample"
     shutil.copytree(PY_SAMPLE, proj_root)
-    return _make_project(proj_root)
+    return make_project(proj_root)
 
 
 # ---------------------------------------------------------------------------
@@ -210,11 +204,11 @@ def test_summary_duration_is_positive(ts_project):
 # ---------------------------------------------------------------------------
 
 
-def test_liquid_project_index(tmp_path, tmp_data_dir):
+def test_liquid_project_index(tmp_path, tmp_data_dir, make_project):
     """Index a Liquid project and verify sections table is populated."""
     proj_root = tmp_path / "liquid_sample"
     shutil.copytree(FIXTURE_DIR / "liquid_sample", proj_root)
-    proj = _make_project(proj_root)
+    proj = make_project(proj_root)
 
     summary = index_project(proj, full=True)
     assert summary["indexed"] >= 1
@@ -226,11 +220,11 @@ def test_liquid_project_index(tmp_path, tmp_data_dir):
         assert rows["cnt"] > 0
 
 
-def test_markdown_project_index(tmp_path, tmp_data_dir):
+def test_markdown_project_index(tmp_path, tmp_data_dir, make_project):
     """Index a Markdown project and verify sections table is populated."""
     proj_root = tmp_path / "md_sample"
     shutil.copytree(FIXTURE_DIR / "md_sample", proj_root)
-    proj = _make_project(proj_root)
+    proj = make_project(proj_root)
 
     summary = index_project(proj, full=True)
     assert summary["indexed"] >= 1
@@ -244,11 +238,11 @@ def test_markdown_project_index(tmp_path, tmp_data_dir):
         assert symbols["cnt"] > 0
 
 
-def test_html_project_index(tmp_path, tmp_data_dir):
+def test_html_project_index(tmp_path, tmp_data_dir, make_project):
     """Index an HTML project and verify symbols table is populated."""
     proj_root = tmp_path / "html_sample"
     shutil.copytree(FIXTURE_DIR / "html_sample", proj_root)
-    proj = _make_project(proj_root)
+    proj = make_project(proj_root)
 
     summary = index_project(proj, full=True)
     assert summary["indexed"] >= 1
