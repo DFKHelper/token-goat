@@ -29,9 +29,9 @@ _RULE = _M + fg(*C.TEXT_DIM) + "─" * (_CONTENT_W - len(_M) * 2) + RESET
 
 def _fmt_bytes(n: int) -> str:
     if n >= 1_000_000:
-        return f"{n / 1_000_000:.1f} MB"
+        return f"{n / 1_000_000:,.1f} MB"
     if n >= 1_000:
-        return f"{n / 1_000:.1f} KB"
+        return f"{n / 1_000:,.1f} KB"
     return f"{n} B"
 
 
@@ -39,7 +39,7 @@ def _fmt_tokens(n: int) -> str:
     if n == 0:
         return f"{fg(*C.TEXT_DIM)}0 t{RESET}"
     if n >= 1_000:
-        return f"{n / 1_000:.1f} kt"
+        return f"{n / 1_000:,.1f} kt"
     return f"{n} t"
 
 
