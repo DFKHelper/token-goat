@@ -114,9 +114,11 @@ Available for senior or staff engineering roles. tokenwise@dfkhelper.com
 
 ## Disclaimer
 
+Tokenwise runs on your machine and touches your files. No warranty, express or implied. Whether it fits your use case is your call.
+
 **THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE, AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES, OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT, OR OTHERWISE, ARISING FROM, OUT OF, OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.**
 
-Use Tokenwise at your own risk. DFK Helper LLC and its contributors make no guarantees about correctness, completeness, data integrity, or fitness for any purpose. See the LICENSE file for the full limitation of liability terms.
+DFK Helper LLC and its contributors make no guarantees about correctness, completeness, or data integrity. Full terms are in the LICENSE file.
 
 ## License
 
