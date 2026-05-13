@@ -287,3 +287,27 @@ class TestPngToJpeg:
         assert result.suffix.lower() == ".jpg", (
             f"Expected .jpg for RGB PNG photo, got {result.suffix}"
         )
+
+
+# ---------------------------------------------------------------------------
+# 11. Token savings — shrinking a large image saves a meaningful token count
+# ---------------------------------------------------------------------------
+
+class TestTokenSavings:
+    # Same formula as hooks_cli.py: 1 token per 4 bytes of base64-encoded image data
+    _BYTES_PER_TOKEN = 4
+
+    def test_large_jpeg_saves_meaningful_tokens(self, tmp_data_dir, tmp_path):
+        """A 1600×1200 JPEG must yield ≥500 tokens saved after shrinking."""
+        p = _make_large_jpeg(tmp_path)
+        shrunken = image_shrink.shrink(p)
+        assert shrunken is not None, "shrink() returned None — no output produced"
+
+        stats = image_shrink.stats_for(p, shrunken)
+        tokens_saved = stats["bytes_saved"] // self._BYTES_PER_TOKEN
+
+        assert tokens_saved >= 500, (
+            f"Expected ≥500 tokens saved; got {tokens_saved} "
+            f"(src={stats['src_bytes']} B, out={stats['out_bytes']} B, "
+            f"saved={stats['bytes_saved']} B)"
+        )

@@ -141,7 +141,7 @@ def summarize(window_days: int = 30) -> StatsSummary:
     projects: list[tuple[str, str]] = []
     global_rows: list[sqlite3.Row] = []
     try:
-        with db.open_global() as conn:
+        with db.open_global_readonly() as conn:
             global_rows = list(_read_stats(conn, since_ts))
             for row in global_rows:
                 _accumulate(row, by_kind, by_day)
@@ -163,7 +163,7 @@ def summarize(window_days: int = 30) -> StatsSummary:
     projects_aggregated = 0
     for project_hash, project_root in projects:
         try:
-            with db.open_project(project_hash) as conn:
+            with db.open_project_readonly(project_hash) as conn:
                 rows = list(_read_stats(conn, since_ts))
                 for row in rows:
                     _accumulate(row, by_kind, by_day)
