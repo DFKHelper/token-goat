@@ -40,10 +40,13 @@ def _try_stored_oauth() -> object | None:
         creds = Credentials.from_authorized_user_file(str(creds_path), scopes=_DRIVE_SCOPES)
         if creds.expired and creds.refresh_token:
             creds.refresh(Request())
+            # Do NOT log creds.to_json() — it contains refresh tokens
             creds_path.write_text(creds.to_json(), encoding="utf-8")
+            _LOG.info("refreshed OAuth credentials")
         return creds
     except Exception as e:  # noqa: BLE001
-        _LOG.warning("stored OAuth invalid: %s", e)
+        # Do NOT log the exception message if it contains credentials
+        _LOG.warning("stored OAuth invalid or refresh failed")
         return None
 
 
@@ -62,12 +65,28 @@ def get_credentials() -> object:
     )
 
 
+def _validate_file_id(file_id: str) -> None:
+    """Validate file_id to prevent path traversal attacks.
+
+    Google Drive file IDs are base64url without padding, ~25-40 chars.
+    Reject anything that looks like a path.
+    """
+    if not file_id:
+        raise ValueError("file_id cannot be empty")
+    if len(file_id) > 128:
+        raise ValueError(f"file_id too long (max 128 chars): {len(file_id)}")
+    # Allow alphanumeric, hyphen, underscore (base64url alphabet)
+    if not all(c.isalnum() or c in "-_" for c in file_id):
+        raise ValueError(f"file_id contains invalid characters: {file_id!r}")
+
+
 def fetch_file(file_id: str, *, shrink_if_image: bool = True) -> Path:
     """Download a Drive file. Return the local cached path.
 
     Shrinks if it's an image and large enough. Raises GDriveCredsUnavailable if
     credentials aren't set up. Raises RuntimeError on download failure.
     """
+    _validate_file_id(file_id)
     creds = get_credentials()
 
     from googleapiclient.discovery import build  # noqa: PLC0415

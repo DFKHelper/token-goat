@@ -95,8 +95,24 @@ def _atomic_write(path: Path, content: str) -> None:
     tmp.replace(path)
 
 
+def _validate_session_id(session_id: str) -> None:
+    """Validate session_id to prevent path traversal attacks.
+
+    Session IDs should be alphanumeric, hyphens, and underscores only.
+    Reject anything with path separators or suspicious characters.
+    """
+    if not session_id:
+        raise ValueError("session_id cannot be empty")
+    if len(session_id) > 256:
+        raise ValueError("session_id too long (max 256 chars)")
+    # Allow alphanumeric, hyphen, underscore only
+    if not all(c.isalnum() or c in "-_" for c in session_id):
+        raise ValueError(f"session_id contains invalid characters: {session_id!r}")
+
+
 def load(session_id: str) -> SessionCache:
     """Load a session cache, or return an empty one."""
+    _validate_session_id(session_id)
     p = paths.session_cache_path(session_id)
     if not p.exists():
         now = time.time()

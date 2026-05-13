@@ -300,9 +300,23 @@ def open_global() -> Iterator[sqlite3.Connection]:
         conn.close()
 
 
+def _validate_project_hash(project_hash: str) -> None:
+    """Validate project_hash to prevent path traversal attacks.
+
+    Project hashes should be alphanumeric + underscore (no separators or path components).
+    """
+    if not project_hash:
+        raise ValueError("project_hash cannot be empty")
+    if len(project_hash) > 128:
+        raise ValueError(f"project_hash too long (max 128 chars): {len(project_hash)}")
+    if not all(c.isalnum() or c == "_" for c in project_hash):
+        raise ValueError(f"project_hash must be alphanumeric or underscore: {project_hash!r}")
+
+
 @contextlib.contextmanager
 def open_project(project_hash: str) -> Iterator[sqlite3.Connection]:
     """Yield a connection to a per-project DB with schema applied."""
+    _validate_project_hash(project_hash)
     path = paths.project_db_path(project_hash)
     try:
         conn = _connect(path)
@@ -340,6 +354,7 @@ def project_writer_lock(project_hash: str, timeout_sec: float = 5.0) -> Iterator
     """
     import psutil
 
+    _validate_project_hash(project_hash)
     lock_path = paths.locks_dir() / f"{project_hash}.lock"
     lock_path.parent.mkdir(parents=True, exist_ok=True)
     deadline = time.monotonic() + timeout_sec
