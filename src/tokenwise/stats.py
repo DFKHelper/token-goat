@@ -6,8 +6,12 @@ import sqlite3
 from collections import defaultdict
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
+from typing import TYPE_CHECKING
 
 from . import db
+
+if TYPE_CHECKING:
+    from .render.types import StatsData
 
 # Kinds that track bytes but not (reliable) token counts.
 BYTES_MODE_ONLY_KINDS: frozenset[str] = frozenset({"image_shrink", "webfetch_image", "gdrive_image"})
@@ -177,7 +181,7 @@ def _short_project(root: str) -> str:
     return tail[:28]
 
 
-def _to_stats_data(summary: StatsSummary) -> "StatsData":
+def _to_stats_data(summary: StatsSummary) -> StatsData:
     """Convert StatsSummary to the render layer's StatsData."""
     from .render.types import DayStat, KindStat, ProjectStat, StatsData, TotalStats
 

@@ -8,10 +8,23 @@ import sys
 from collections.abc import Callable
 from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, TypedDict
 
 from . import paths
 from .project import Project, find_project
+
+
+class HookPayload(TypedDict, total=False):
+    """Base hook payload structure (optional fields depend on hook event)."""
+
+    session_id: str
+    cwd: str
+    turn_id: str
+    tool_name: str
+    tool_input: dict[str, Any]
+    file_path: str
+    file_content: str
+    line_number: int
 
 _LOG = logging.getLogger("tokenwise.hooks")
 

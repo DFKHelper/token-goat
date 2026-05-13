@@ -7,11 +7,25 @@ import os
 import sqlite3
 import struct
 import time
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
+from typing import TYPE_CHECKING, TypedDict
 
 from . import db, paths
 from .project import Project
+
+if TYPE_CHECKING:
+    from fastembed import TextEmbedding
+
+
+class EmbeddingsResult(TypedDict):
+    """Result of index_project_embeddings operation."""
+
+    files_visited: int
+    chunks_embedded: int
+    chunks_skipped_unchanged: int
+    duration_sec: float
+    model: str
 
 _LOG = logging.getLogger("tokenwise.embeddings")
 
@@ -62,10 +76,10 @@ class SearchHit:
 # Model lifecycle
 # ---------------------------------------------------------------------------
 
-_MODEL_CACHE: dict[str, object] = {}  # singleton per model name
+_MODEL_CACHE: dict[str, TextEmbedding] = {}  # singleton per model name
 
 
-def _get_model(model_name: str = DEFAULT_MODEL) -> object:
+def _get_model(model_name: str = DEFAULT_MODEL) -> TextEmbedding:
     """Lazily import + load fastembed. Raises EmbeddingsUnavailable on any failure."""
     if model_name in _MODEL_CACHE:
         return _MODEL_CACHE[model_name]
@@ -229,8 +243,8 @@ def index_project_embeddings(
     *,
     model_name: str = DEFAULT_MODEL,
     batch_size: int = 32,
-    progress=None,
-) -> dict:
+    progress: Callable[[int, int], None] | None = None,
+) -> EmbeddingsResult:
     """Compute embeddings for all chunks in a project. Idempotent on chunk SHA256."""
     if not is_available():
         raise EmbeddingsUnavailable("fastembed not installed")
@@ -326,13 +340,13 @@ def index_project_embeddings(
             ("embedding_dim", str(DEFAULT_DIM)),
         )
 
-    return {
-        "files_visited": n_files,
-        "chunks_embedded": n_chunks_new,
-        "chunks_skipped_unchanged": n_chunks_skipped,
-        "duration_sec": round(time.time() - t0, 2),
-        "model": model_name,
-    }
+    return EmbeddingsResult(
+        files_visited=n_files,
+        chunks_embedded=n_chunks_new,
+        chunks_skipped_unchanged=n_chunks_skipped,
+        duration_sec=round(time.time() - t0, 2),
+        model=model_name,
+    )
 
 
 # ---------------------------------------------------------------------------

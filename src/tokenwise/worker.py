@@ -11,11 +11,22 @@ import sys
 import time
 from datetime import datetime
 from pathlib import Path
+from typing import TypedDict
 
 import psutil
 
 from . import db, parser, paths
 from .project import Project
+
+
+class CleanupStats(TypedDict):
+    """Result of cleanup_on_startup operation."""
+
+    stale_locks_cleared: int
+    logs_deleted: int
+    image_bytes_evicted: int
+    image_files_evicted: int
+    stats_rows_pruned: int
 
 _LOG = logging.getLogger("tokenwise.worker")
 
@@ -175,9 +186,9 @@ def drain_dirty_queue() -> list[dict]:
 # Self-healing
 # ---------------------------------------------------------------------------
 
-def cleanup_on_startup() -> dict:
+def cleanup_on_startup() -> CleanupStats:
     """Run all the self-healing tasks. Returns a stats dict."""
-    stats = {
+    stats: CleanupStats = {
         "stale_locks_cleared": 0,
         "logs_deleted": 0,
         "image_bytes_evicted": 0,

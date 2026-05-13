@@ -4,7 +4,7 @@ import math
 import shutil
 from datetime import date, timedelta
 
-from .ansi import RGB, RESET, C, fg, bg, pad_l, pad_r, vlen, lerp_rgb
+from .ansi import RESET, RGB, C, bg, fg, lerp_rgb, pad_l, pad_r, vlen
 from .types import DayStat, KindStat, StatsData
 
 # ── Layout constants ───────────────────────────────────────────────────────────

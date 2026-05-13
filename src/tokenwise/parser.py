@@ -7,7 +7,7 @@ import time
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import TypedDict
 
 from . import db
 from .project import Project
@@ -95,6 +95,17 @@ class FileIndex:
 
 # Each language module exposes: extract(source: bytes, rel_path: str) -> tuple[list[Symbol], list[Ref], list[ImpExp], list[Section]]
 Extractor = Callable[[bytes, str], tuple[list[Symbol], list[Ref], list[ImpExp], list[Section]]]
+
+
+class IndexProjectResult(TypedDict):
+    """Result of index_project operation."""
+
+    total_files: int
+    indexed: int
+    skipped_unchanged: int
+    errors: int
+    languages: list[str]
+    duration_sec: float
 
 
 def get_extractor(language: str) -> Extractor | None:
@@ -231,7 +242,7 @@ def index_project(
     *,
     full: bool = True,
     progress: Callable[[int, int], None] | None = None,
-) -> dict[str, Any]:
+) -> IndexProjectResult:
     """Full or incremental indexing. Returns summary dict with keys:
     total_files, indexed, skipped_unchanged, errors, languages, duration_sec.
     """
@@ -319,7 +330,7 @@ def index_project(
             )
 
     elapsed = time.time() - t0
-    result = {
+    result: IndexProjectResult = {
         "total_files": n_total,
         "indexed": n_indexed,
         "skipped_unchanged": n_skipped_unchanged,
