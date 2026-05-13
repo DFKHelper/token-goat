@@ -183,11 +183,11 @@ class TestRenderText:
     """Test text rendering."""
 
     def test_render_empty(self, tmp_data_dir):
-        """render_text on empty summary includes helpful message."""
+        """render_text on empty summary shows KPI tiles but no kind/day sections."""
         summary = stats.summarize(window_days=30)
         text = stats.render_text(summary)
-        assert "no recorded savings yet" in text
-        assert "events" in text  # KPI label always present
+        assert "events" in text       # KPI label always present
+        assert "By kind" not in text  # no rows → section omitted
 
     def test_render_with_data(self, tmp_data_dir):
         """render_text includes all expected sections."""
@@ -202,7 +202,7 @@ class TestRenderText:
         assert "image_shrink" in text
         assert "read_replacement" in text
         assert "By day (top" in text
-        assert "no recorded savings yet" not in text
+        assert "Insights" in text
 
     def test_render_window_description(self, tmp_data_dir):
         """render_text completes without error for both window sizes."""

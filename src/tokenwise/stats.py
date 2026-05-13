@@ -179,7 +179,7 @@ def _short_project(root: str) -> str:
 
 def _to_stats_data(summary: StatsSummary) -> "StatsData":
     """Convert StatsSummary to the render layer's StatsData."""
-    from .render.types import DayStat, KindStat, Period, ProjectStat, StatsData, TotalStats
+    from .render.types import DayStat, KindStat, ProjectStat, StatsData, TotalStats
 
     today = date.today()
     if summary.window_days > 0:
@@ -214,23 +214,25 @@ def _to_stats_data(summary: StatsSummary) -> "StatsData":
             )
             for d in summary.by_day
         ],
-        key=lambda d: d.date,
-    )
+        key=lambda d: d.bytes,
+        reverse=True,
+    )[:7]
 
     by_project = [
         ProjectStat(
             project=_short_project(p["project_root"]),
-            hash=p["project_hash"],
+            hash=p["project_hash"][:8],
             path=p["project_root"] or "(unknown)",
             bytes=p["bytes_saved"],
             tokens=p["tokens_saved"],
             events=p["events"],
         )
         for p in summary.by_project
-    ]
+    ][:5]
 
     return StatsData(
-        period=Period(start=period_start, end=today),
+        period_start=period_start,
+        period_end=today,
         totals=TotalStats(
             events=summary.total_events,
             bytes=summary.total_bytes_saved,
