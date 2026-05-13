@@ -259,6 +259,18 @@ def _hooks_block(binary: str | None = None) -> dict:
                 ],
             },
         ],
+        "PreCompact": [
+            {
+                "matcher": "*",
+                "hooks": [
+                    {
+                        "type": "command",
+                        "command": runner("hook", "pre-compact"),
+                        "timeout": 5000,
+                    }
+                ],
+            }
+        ],
     }
 
 
@@ -573,6 +585,18 @@ def _codex_hooks_block(binary: str | None = None) -> dict:
                     }
                 ],
             },
+        ],
+        "PreCompact": [
+            {
+                "matcher": "*",
+                "hooks": [
+                    {
+                        "type": "command",
+                        "command": runner("hook", "pre-compact", "--harness", "codex"),
+                        "timeout": 5000,
+                    }
+                ],
+            }
         ],
     }
 

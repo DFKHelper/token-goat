@@ -1050,6 +1050,72 @@ def post_read(
     hooks_cli.safe_run("post-read", input_file, harness)
 
 
+@hook_app.command(context_settings=_HOOK_CTX)
+def pre_compact(
+    input_file: Path | None = _INPUT_OPT,
+    harness: str = _HARNESS_OPT,
+) -> None:
+    """Hook: pre-compact event."""
+    hooks_cli.safe_run("pre-compact", input_file, harness)
+
+
+@app.command("compact-hint")
+def compact_hint(
+    session_id: str = typer.Option(..., "--session-id", "-s", help="Claude session_id"),
+    json_output: bool = typer.Option(False, "--json"),
+    max_tokens: int = typer.Option(400, "--max-tokens", help="Token budget for the manifest"),
+) -> None:
+    """Show the compaction manifest tokenwise would inject for a session.
+
+    Use this to inspect what the PreCompact hook will emit as systemMessage
+    before Claude Code compacts the conversation. Useful for debugging.
+    """
+    from . import compact as compact_mod  # noqa: PLC0415
+    from . import config as config_mod  # noqa: PLC0415
+
+    cfg = config_mod.load().compact_assist
+
+    if json_output:
+        import json as _json  # noqa: PLC0415
+
+        n_events = compact_mod.event_count(session_id)
+        manifest = compact_mod.build_manifest(session_id, max_tokens=max_tokens)
+        typer.echo(_json.dumps({
+            "enabled": cfg.enabled,
+            "triggers": cfg.triggers,
+            "min_events": cfg.min_events,
+            "max_manifest_tokens": cfg.max_manifest_tokens,
+            "event_count": n_events,
+            "would_emit": cfg.enabled and n_events >= cfg.min_events and bool(manifest),
+            "manifest": manifest,
+        }, indent=2))
+        return
+
+    n_events = compact_mod.event_count(session_id)
+    typer.echo(f"compact-assist enabled: {cfg.enabled}")
+    typer.echo(f"triggers: {', '.join(cfg.triggers)}")
+    typer.echo(f"min_events: {cfg.min_events}  |  session events: {n_events}")
+    typer.echo("")
+
+    if not cfg.enabled:
+        typer.echo("(disabled — set TOKENWISE_COMPACT_ASSIST=1 or edit config.toml to enable)")
+        return
+
+    if n_events < cfg.min_events:
+        typer.echo(f"(no manifest: {n_events} events < min_events {cfg.min_events})")
+        return
+
+    manifest = compact_mod.build_manifest(session_id, max_tokens=max_tokens)
+    if not manifest:
+        typer.echo("(no manifest: session cache empty)")
+        return
+
+    typer.echo("--- manifest that would be injected as systemMessage ---")
+    typer.echo(manifest)
+    typer.echo("---")
+    typer.echo(f"({len(manifest)} chars, ~{len(manifest) // 4} tokens)")
+
+
 @config_app.command()
 def get(key: str) -> None:
     """Get config value."""

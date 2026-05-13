@@ -348,7 +348,7 @@ def test_cleanup_on_startup_mixed_locks(tmp_data_dir):
     fresh_lock = locks / "proj_fresh.lock"
     fresh_lock.write_text(f"{os.getpid()}\n{time.time()}", encoding="utf-8")
 
-    stats = worker.cleanup_on_startup()
+    worker.cleanup_on_startup()
     assert not stale_lock.exists()
     assert fresh_lock.exists()
 

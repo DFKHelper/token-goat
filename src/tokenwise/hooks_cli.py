@@ -475,12 +475,18 @@ def pre_fetch(payload: dict[str, Any]) -> dict[str, Any]:
 
 @fail_soft
 def post_edit(payload: dict[str, Any]) -> dict[str, Any]:
-    """Post-edit hook. Reserved for future symbol-invalidation work.
+    """Post-edit hook: record edited files to session cache for compaction assist."""
+    from . import session  # noqa: PLC0415
 
-    Currently a no-op. Edits do not generate stat events because Tokenwise
-    has no savings to claim on a write; the headline counters track real
-    or estimated savings only.
-    """
+    session_id = payload.get("session_id")
+    if not session_id:
+        return {"continue": True}
+
+    tool_input = payload.get("tool_input") or {}
+    file_path = tool_input.get("file_path")
+    if file_path:
+        session.mark_file_edited(session_id, file_path)
+
     return {"continue": True}
 
 
@@ -524,12 +530,53 @@ def _detect(payload: dict[str, Any]) -> Project | None:
 
 # --- dispatcher entry point used by cli.py ---
 
+@fail_soft
+def pre_compact(payload: dict[str, Any]) -> dict[str, Any]:
+    """PreCompact hook: inject a session manifest as systemMessage before compaction.
+
+    The compaction LLM receives the manifest in its context and includes it in
+    the summary, so edited files and accessed symbols survive the compaction.
+    Configurable via config.toml [compact_assist] or TOKENWISE_COMPACT_ASSIST=0.
+    """
+    from . import compact as compact_mod  # noqa: PLC0415
+    from . import config as config_mod  # noqa: PLC0415
+
+    cfg = config_mod.load().compact_assist
+    if not cfg.enabled:
+        return {"continue": True}
+
+    trigger = payload.get("trigger", "manual")
+    if trigger not in cfg.triggers:
+        _LOG.info("pre-compact: skipping (trigger=%s not in %s)", trigger, cfg.triggers)
+        return {"continue": True}
+
+    session_id = payload.get("session_id")
+    if not session_id:
+        return {"continue": True}
+
+    n_events = compact_mod.event_count(session_id)
+    if n_events < cfg.min_events:
+        _LOG.info("pre-compact: skipping manifest (events=%d < min=%d)", n_events, cfg.min_events)
+        return {"continue": True}
+
+    manifest = compact_mod.build_manifest(session_id, max_tokens=cfg.max_manifest_tokens)
+    if not manifest:
+        return {"continue": True}
+
+    _LOG.info(
+        "pre-compact: injecting manifest (%d chars, trigger=%s, events=%d)",
+        len(manifest), trigger, n_events,
+    )
+    return {"continue": True, "systemMessage": manifest}
+
+
 EVENTS: dict[str, Callable[[dict[str, Any]], dict[str, Any]]] = {
     "session-start": session_start,
     "pre-read": pre_read,
     "pre-fetch": pre_fetch,
     "post-edit": post_edit,
     "post-read": post_read,
+    "pre-compact": pre_compact,
 }
 
 
