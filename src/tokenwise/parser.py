@@ -203,37 +203,52 @@ def write_file_index(conn, fi: FileIndex) -> None:
         "VALUES (?, ?, ?, ?, ?, ?)",
         (fi.rel_path, fi.language, fi.size, fi.mtime, fi.content_sha256, now),
     )
-    for sym in fi.symbols:
-        if not sym.name or not sym.kind:
-            continue  # defensive: skip malformed rows from extractor edge cases
-        conn.execute(
+    # Batch insert symbols (filter malformed rows)
+    symbol_rows = [
+        (sym.name, sym.kind, fi.rel_path, sym.line, sym.col, sym.end_line, sym.signature)
+        for sym in fi.symbols if sym.name and sym.kind
+    ]
+    if symbol_rows:
+        conn.executemany(
             "INSERT INTO symbols (name, kind, file_rel, line, col, end_line, signature, parent_id) "
             "VALUES (?, ?, ?, ?, ?, ?, ?, NULL)",
-            (sym.name, sym.kind, fi.rel_path, sym.line, sym.col, sym.end_line, sym.signature),
+            symbol_rows,
         )
-    for ref in fi.refs:
-        if not ref.name:
-            continue
-        conn.execute(
+
+    # Batch insert refs (filter empty names)
+    ref_rows = [
+        (ref.name, fi.rel_path, ref.line, ref.col, ref.context)
+        for ref in fi.refs if ref.name
+    ]
+    if ref_rows:
+        conn.executemany(
             "INSERT INTO refs (symbol_name, file_rel, line, col, context) "
             "VALUES (?, ?, ?, ?, ?)",
-            (ref.name, fi.rel_path, ref.line, ref.col, ref.context),
+            ref_rows,
         )
-    for ie in fi.imports_exports:
-        if not ie.kind or ie.target is None:
-            continue
-        conn.execute(
+
+    # Batch insert imports/exports (filter invalid rows)
+    ie_rows = [
+        (fi.rel_path, ie.kind, ie.target, ie.line)
+        for ie in fi.imports_exports if ie.kind and ie.target is not None
+    ]
+    if ie_rows:
+        conn.executemany(
             "INSERT INTO imports_exports (file_rel, kind, target, line) "
             "VALUES (?, ?, ?, ?)",
-            (fi.rel_path, ie.kind, ie.target, ie.line),
+            ie_rows,
         )
-    for sec in fi.sections:
-        if not sec.heading:
-            continue
-        conn.execute(
+
+    # Batch insert sections (filter empty headings)
+    sec_rows = [
+        (fi.rel_path, sec.heading, sec.level, sec.line, sec.end_line)
+        for sec in fi.sections if sec.heading
+    ]
+    if sec_rows:
+        conn.executemany(
             "INSERT INTO sections (file_rel, heading, level, line, end_line) "
             "VALUES (?, ?, ?, ?, ?)",
-            (fi.rel_path, sec.heading, sec.level, sec.line, sec.end_line),
+            sec_rows,
         )
 
 
@@ -260,9 +275,10 @@ def index_project(
 
     with db.project_writer_lock(project.hash, timeout_sec=30.0):
         with db.open_project(project.hash) as conn:
-            # For incremental: pre-load existing file SHAs
-            existing: dict[str, str] = {}
+            # For incremental: pre-load existing file SHAs only if needed
+            existing: dict[str, str] | None = None
             if not full:
+                existing = {}
                 for row in conn.execute("SELECT rel_path, content_sha256 FROM files"):
                     existing[row["rel_path"]] = row["content_sha256"]
 
@@ -271,7 +287,8 @@ def index_project(
                 if fi is None:
                     n_errors += 1
                 else:
-                    if not full and existing.get(fi.rel_path) == fi.content_sha256:
+                    # Skip write only if incremental mode and SHA matches
+                    if existing is not None and existing.get(fi.rel_path) == fi.content_sha256:
                         n_skipped_unchanged += 1
                     else:
                         write_file_index(conn, fi)
