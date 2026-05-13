@@ -5,7 +5,7 @@ import logging
 import sqlite3
 from collections import defaultdict
 from dataclasses import dataclass
-from typing import Any, TypedDict
+from typing import TypedDict
 
 import networkx as nx
 

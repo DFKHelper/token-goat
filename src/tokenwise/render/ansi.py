@@ -4,8 +4,9 @@ from __future__ import annotations
 import os
 import re
 import sys
+from typing import TypeAlias
 
-type RGB = tuple[int, int, int]
+RGB: TypeAlias = tuple[int, int, int]
 
 RESET = "\x1b[0m"
 

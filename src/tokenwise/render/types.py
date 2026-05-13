@@ -1,7 +1,7 @@
 """Data types consumed by the stats renderer — Python port of types.ts."""
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import date
 
 

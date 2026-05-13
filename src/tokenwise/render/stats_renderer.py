@@ -10,10 +10,9 @@ import math
 import shutil
 from datetime import date, timedelta
 
-from .ansi import C, RESET, lerp_rgb, pad_l, pad_r, use_color, vlen
+from .ansi import RESET, RGB, C, lerp_rgb, pad_l, pad_r, use_color, vlen
 from .ansi import bg as _bg
 from .ansi import fg as _fg
-from .ansi import RGB
 from .types import DayStat, StatsData
 
 # ── Layout constants ──────────────────────────────────────────────────────────
