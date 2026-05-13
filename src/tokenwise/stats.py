@@ -17,7 +17,7 @@ if TYPE_CHECKING:
     from .render.types import StatsData
 
 # Kinds that track bytes but not (reliable) token counts.
-BYTES_MODE_ONLY_KINDS: frozenset[str] = frozenset({"image_shrink", "webfetch_image", "gdrive_image"})
+BYTES_MODE_ONLY_KINDS: frozenset[str] = frozenset({"webfetch_image", "gdrive_image"})
 
 _LOG = logging.getLogger("tokenwise.stats")
 
@@ -40,7 +40,7 @@ def _extract_file_path(kind: str, detail: str | None) -> str | None:
     """
     if not detail:
         return None
-    if kind in BYTES_MODE_ONLY_KINDS and " -> " in detail:
+    if " -> " in detail and (kind in BYTES_MODE_ONLY_KINDS or kind == "image_shrink"):
         return detail.split(" -> ", 1)[0].strip()
     return detail
 
