@@ -61,13 +61,33 @@ def global_db_path() -> Path:
 
 
 def project_db_path(project_hash: str) -> Path:
-    """Path to projects/{hash}.db."""
-    return data_dir() / "projects" / f"{project_hash}.db"
+    """Path to projects/{hash}.db.
+
+    Raises ValueError if the resolved path escapes the projects/ subdirectory,
+    which would happen with traversal sequences like ``../../../evil``.
+    """
+    base = data_dir() / "projects"
+    candidate = (base / f"{project_hash}.db").resolve()
+    try:
+        candidate.relative_to(base.resolve())
+    except ValueError as exc:
+        raise ValueError(f"project_hash produces a path outside the projects directory: {project_hash!r}") from exc
+    return candidate
 
 
 def session_cache_path(session_id: str) -> Path:
-    """Path to sessions/{session_id}.json."""
-    return data_dir() / "sessions" / f"{session_id}.json"
+    """Path to sessions/{session_id}.json.
+
+    Raises ValueError if the resolved path escapes the sessions/ subdirectory,
+    which would happen with traversal sequences like ``../../../evil``.
+    """
+    base = data_dir() / "sessions"
+    candidate = (base / f"{session_id}.json").resolve()
+    try:
+        candidate.relative_to(base.resolve())
+    except ValueError as exc:
+        raise ValueError(f"session_id produces a path outside the sessions directory: {session_id!r}") from exc
+    return candidate
 
 
 def image_cache_dir() -> Path:
