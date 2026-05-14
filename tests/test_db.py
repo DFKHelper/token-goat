@@ -4,6 +4,7 @@ from __future__ import annotations
 import os
 import sqlite3
 import time
+from unittest.mock import patch
 
 import pytest
 
@@ -225,3 +226,161 @@ def test_schema_version_meta_global(tmp_data_dir):
         row = conn.execute("SELECT value FROM meta WHERE key='schema_version'").fetchone()
     assert row is not None
     assert row[0] == str(db.SCHEMA_VERSION)
+
+
+# ---------------------------------------------------------------------------
+# 14. WAL fallback — OperationalError on WAL PRAGMA must not crash _connect()
+# ---------------------------------------------------------------------------
+
+def test_connect_wal_operational_error_handled(tmp_data_dir):
+    """Regression: _connect() must continue if WAL PRAGMA raises OperationalError.
+
+    Sandboxed environments (e.g. Codex unelevated on Windows) may not be able
+    to create the WAL shm file.  The previous code re-raised this as DatabaseError
+    and the caller treated it as DB corruption, triggering a pointless quarantine
+    cycle.
+    """
+    from unittest.mock import MagicMock
+
+    db_path = tmp_data_dir / "wal_fallback_test.db"
+
+    def execute_side_effect(sql, *args, **kw):
+        if isinstance(sql, str) and "journal_mode" in sql.upper() and "WAL" in sql.upper():
+            raise sqlite3.OperationalError("unable to open database file")
+        return MagicMock()
+
+    mock_conn = MagicMock()
+    mock_conn.execute.side_effect = execute_side_effect
+
+    with patch("tokenwise.db.sqlite3.connect", return_value=mock_conn):
+        conn = db._connect(db_path, load_vec=False)
+
+    # _connect() must return rather than raise — WAL failure is non-fatal
+    assert conn is mock_conn
+
+
+# ---------------------------------------------------------------------------
+# 15. _open_with_rebuild re-raises if both _connect() attempts fail
+# ---------------------------------------------------------------------------
+
+def test_open_with_rebuild_raises_on_double_failure(tmp_data_dir):
+    """Regression: _open_with_rebuild must re-raise (not silently crash) when
+    _connect fails on both the first and second (post-quarantine) attempts.
+
+    The old open_global() / open_project() code left the second _connect() call
+    unwrapped, so the OperationalError propagated with no log message, appearing
+    as a mystery crash to the caller.
+    """
+    with patch("tokenwise.db._connect", side_effect=sqlite3.OperationalError("unable to open")), \
+            pytest.raises(sqlite3.OperationalError):
+        db._open_with_rebuild(tmp_data_dir / "no_such.db")
+
+
+# ---------------------------------------------------------------------------
+# 16. open_global / open_project surface errors cleanly on persistent failure
+# ---------------------------------------------------------------------------
+
+def test_open_global_raises_cleanly_on_persistent_connect_failure(tmp_data_dir):
+    """open_global() must raise (not crash silently) if DB can't be opened."""
+    with (
+        patch("tokenwise.db._connect", side_effect=sqlite3.OperationalError("unable to open")),
+        pytest.raises(sqlite3.OperationalError),
+        db.open_global(),
+    ):
+        pass
+
+
+def test_open_project_raises_cleanly_on_persistent_connect_failure(tmp_data_dir):
+    """open_project() must raise (not crash silently) if DB can't be opened."""
+    with (
+        patch("tokenwise.db._connect", side_effect=sqlite3.OperationalError("unable to open")),
+        pytest.raises(sqlite3.OperationalError),
+        db.open_project("abc123def456"),
+    ):
+        pass
+
+
+# ---------------------------------------------------------------------------
+# 17. _connect_readonly falls back to immutable=1 when ?mode=ro fails
+# ---------------------------------------------------------------------------
+
+def test_connect_readonly_immutable_fallback(tmp_data_dir):
+    """Regression: _connect_readonly() must retry with immutable=1 when ?mode=ro
+    raises OperationalError.
+
+    Sandboxed environments (e.g. Codex unelevated on Windows) cannot access the
+    WAL shared-memory file even for read-only opens.  immutable=1 bypasses all
+    WAL/SHM coordination and reads the DB file directly.
+    """
+
+    real_connect = sqlite3.connect
+    call_count = 0
+    captured_uris: list[str] = []
+
+    def fake_connect(database, **kw):
+        nonlocal call_count
+        call_count += 1
+        captured_uris.append(database)
+        if call_count == 1:
+            raise sqlite3.OperationalError("unable to open database file")
+        # Second call (immutable) succeeds — return a real in-memory connection so
+        # row_factory assignment doesn't blow up.
+        conn = real_connect(":memory:", isolation_level=None)
+        conn.row_factory = sqlite3.Row
+        return conn
+
+    with patch("tokenwise.db.sqlite3.connect", side_effect=fake_connect):
+        conn = db._connect_readonly(tmp_data_dir / "test.db")
+
+    assert call_count == 2, "expected exactly 2 connect() calls"
+    assert "immutable=1" in captured_uris[1], f"second URI should use immutable=1; got {captured_uris[1]}"
+    conn.close()
+
+
+# ---------------------------------------------------------------------------
+# 18. conn.close() errors in finally blocks don't propagate to callers
+# ---------------------------------------------------------------------------
+
+def test_open_project_close_error_does_not_propagate(tmp_data_dir):
+    """Regression: an OperationalError from conn.close() (WAL checkpoint) in the
+    finally block of open_project() must not crash the caller.
+
+    Codex unelevated sandbox: WAL SHM inaccessible, so conn.close() raises
+    OperationalError when SQLite attempts the WAL checkpoint on connection close.
+    The caller already received the map output — the close error must be swallowed.
+    """
+    from unittest.mock import MagicMock
+
+    h = "closeerr0001"
+    # Create and initialize the real project DB first so schema exists.
+    with db.open_project(h):
+        pass
+
+    mock_conn = MagicMock()
+    mock_conn.close.side_effect = sqlite3.OperationalError("unable to open database file")
+    with (
+        patch("tokenwise.db._connect", return_value=mock_conn),
+        patch("tokenwise.db._integrity_ok", return_value=True),
+        patch("tokenwise.db._ensure_project_schema"),db.open_project(h)
+    ):
+        pass
+    # Reaching here means OperationalError from close() was swallowed
+
+
+def test_open_global_close_error_does_not_propagate(tmp_data_dir):
+    """Same as above but for open_global()."""
+    from unittest.mock import MagicMock
+
+    # Create and initialize the real global DB first.
+    with db.open_global():
+        pass
+
+    mock_conn = MagicMock()
+    mock_conn.close.side_effect = sqlite3.OperationalError("unable to open database file")
+    with (
+        patch("tokenwise.db._connect", return_value=mock_conn),
+        patch("tokenwise.db._integrity_ok", return_value=True),
+        patch("tokenwise.db._ensure_global_schema"),db.open_global()
+    ):
+        pass
+    # Reaching here means OperationalError from close() was swallowed

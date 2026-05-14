@@ -156,8 +156,8 @@ def summarize(window_days: int = 30) -> StatsSummary:
             ).fetchall()
             projects = [(r["hash"], r["root"]) for r in project_rows]
             _LOG.debug("found %d projects to aggregate", len(projects))
-    except Exception:  # noqa: BLE001
-        _LOG.exception("global stats read failed")
+    except Exception as _exc:  # noqa: BLE001
+        _LOG.error("global stats read failed: %s", _exc)
 
     # Per-project DBs
     projects_aggregated = 0
@@ -177,8 +177,8 @@ def summarize(window_days: int = 30) -> StatsSummary:
                     p["project_root"] = project_root
                 projects_aggregated += 1
                 _LOG.debug("project %s: aggregated %d rows", project_hash[:8], len(rows))
-        except Exception:  # noqa: BLE001
-            _LOG.exception("project stats read failed: %s", project_hash[:8])
+        except Exception as _exc:  # noqa: BLE001
+            _LOG.error("project stats read failed %s: %s", project_hash[:8], _exc)
 
     # Attribute global.db events (session hints, image shrink, etc.) to projects
     # by matching each event's file path against registered roots, then falling

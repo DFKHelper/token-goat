@@ -378,6 +378,22 @@ def index_project(
                 if progress and (i + 1) % 100 == 0:
                     progress(i + 1, n_total)
 
+            # Prune index entries for files that no longer exist on disk.
+            # Without this, deleted/renamed files linger forever — tokenwise
+            # symbol/read/map would surface dead paths. FK ON DELETE CASCADE
+            # cleans up symbols/refs/sections/chunks for the removed file.
+            on_disk = {fp.relative_to(project.root).as_posix() for fp in files}
+            db_rel_paths = {r["rel_path"] for r in conn.execute("SELECT rel_path FROM files")}
+            stale = db_rel_paths - on_disk
+            for rel in stale:
+                conn.execute("DELETE FROM files WHERE rel_path = ?", (rel,))
+            if stale:
+                _LOG.info(
+                    "pruned %d deleted file(s) from index: %s",
+                    len(stale),
+                    ", ".join(sorted(stale)[:5]),
+                )
+
             # Update project meta
             conn.execute(
                 "INSERT OR REPLACE INTO meta(key, value) VALUES ('last_full_index_at', ?)",

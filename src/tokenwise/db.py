@@ -31,7 +31,14 @@ class VecExtensionUnavailable(Exception):
 # ---------------------------------------------------------------------------
 
 def _connect(db_path: Path, *, load_vec: bool = True) -> sqlite3.Connection:
-    """Open a connection with WAL, foreign keys, and (optional) sqlite-vec."""
+    """Open a connection with WAL, foreign keys, and (optional) sqlite-vec.
+
+    Falls back to an *immutable read-only* connection when WAL coordination
+    fails (e.g. Codex unelevated sandbox on Windows cannot create the WAL shm
+    file).  The fallback connection bypasses WAL entirely and serves all read
+    paths; any write attempt will fail with "attempt to write a readonly
+    database", which is the correct behaviour for a sandboxed read-only caller.
+    """
     db_path.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(str(db_path), isolation_level=None, timeout=10.0)
     conn.row_factory = sqlite3.Row
@@ -40,8 +47,28 @@ def _connect(db_path: Path, *, load_vec: bool = True) -> sqlite3.Connection:
         conn.execute("PRAGMA synchronous = NORMAL")
         conn.execute("PRAGMA foreign_keys = ON")
         conn.execute("PRAGMA busy_timeout = 5000")
+    except sqlite3.OperationalError as e:
+        # INFO (not WARNING): expected in sandboxed contexts like Codex
+        # unelevated.  File loggers capture it; lastResort stderr handler
+        # suppresses it so CLI output stays clean.
+        _LOG.info(
+            "WAL coordination unavailable for %s: %s — opening read-only (immutable)",
+            db_path.name,
+            e,
+        )
+        with contextlib.suppress(Exception):
+            conn.close()
+        uri = str(db_path.as_uri()) + "?mode=ro&immutable=1"
+        conn = sqlite3.connect(uri, uri=True, isolation_level=None, timeout=10.0)
+        conn.row_factory = sqlite3.Row
+        with contextlib.suppress(sqlite3.OperationalError):
+            conn.execute("PRAGMA busy_timeout = 5000")
+        # Validate the fallback open with a real read; SQLite is otherwise lazy
+        # and the failure would surface inside the caller's first query.
+        conn.execute("SELECT 1 FROM sqlite_master LIMIT 1").fetchone()
     except sqlite3.DatabaseError:
-        # Close the handle before raising so callers can rename/delete the file.
+        # Genuine corruption (not WAL/SHM access failure) — close so callers
+        # can rename/delete the file, then re-raise.
         conn.close()
         raise
     if load_vec:
@@ -251,31 +278,70 @@ CREATE VIRTUAL TABLE IF NOT EXISTS embeddings USING vec0(
 
 
 def _ensure_global_schema(conn: sqlite3.Connection) -> None:
-    conn.executescript(_GLOBAL_TABLES)
-    row = conn.execute("SELECT value FROM meta WHERE key='schema_version'").fetchone()
-    if row is None:
-        conn.execute(
-            "INSERT INTO meta (key, value) VALUES ('schema_version', ?)",
-            (str(SCHEMA_VERSION),),
-        )
+    try:
+        conn.executescript(_GLOBAL_TABLES)
+        row = conn.execute("SELECT value FROM meta WHERE key='schema_version'").fetchone()
+        if row is None:
+            conn.execute(
+                "INSERT INTO meta (key, value) VALUES ('schema_version', ?)",
+                (str(SCHEMA_VERSION),),
+            )
+    except sqlite3.OperationalError as e:
+        # Read-only fallback connection (sandbox) cannot run DDL. The schema
+        # already exists from prior writable opens — read-only callers can
+        # proceed against the existing tables.
+        if "readonly" in str(e).lower():
+            _LOG.debug("global schema ensure skipped (read-only connection): %s", e)
+        else:
+            raise
 
 
 def _ensure_project_schema(conn: sqlite3.Connection) -> None:
-    conn.executescript(_PROJECT_TABLES)
+    try:
+        conn.executescript(_PROJECT_TABLES)
+    except sqlite3.OperationalError as e:
+        if "readonly" in str(e).lower():
+            _LOG.debug("project schema ensure skipped (read-only connection): %s", e)
+            return
+        raise
     # Try to create the sqlite-vec virtual table.
     try:
         conn.executescript(_EMBEDDINGS_DDL)
     except sqlite3.OperationalError as e:
         _LOG.warning("embeddings table unavailable: %s", e)
-        conn.execute(
-            "INSERT OR IGNORE INTO meta (key, value) VALUES ('embeddings_disabled', '1')"
-        )
+        with contextlib.suppress(sqlite3.OperationalError):
+            conn.execute(
+                "INSERT OR IGNORE INTO meta (key, value) VALUES ('embeddings_disabled', '1')"
+            )
     row = conn.execute("SELECT value FROM meta WHERE key='schema_version'").fetchone()
     if row is None:
-        conn.execute(
-            "INSERT INTO meta (key, value) VALUES ('schema_version', ?)",
-            (str(SCHEMA_VERSION),),
-        )
+        with contextlib.suppress(sqlite3.OperationalError):
+            conn.execute(
+                "INSERT INTO meta (key, value) VALUES ('schema_version', ?)",
+                (str(SCHEMA_VERSION),),
+            )
+
+
+# ---------------------------------------------------------------------------
+# Internal helper
+# ---------------------------------------------------------------------------
+
+def _open_with_rebuild(path: Path, *, load_vec: bool = True) -> sqlite3.Connection:
+    """Try _connect(); on DatabaseError, quarantine and retry once.
+
+    Always re-raises if the second attempt also fails so callers get a clear
+    exception rather than a silent None or an AttributeError later.
+    """
+    try:
+        return _connect(path, load_vec=load_vec)
+    except sqlite3.DatabaseError as exc:
+        _LOG.warning("db open failed: %s — attempting quarantine and rebuild", exc)
+        _rebuild(path)
+        try:
+            return _connect(path, load_vec=load_vec)
+        except sqlite3.DatabaseError as exc2:
+            _LOG.error("db open failed after quarantine attempt: %s", exc2)
+            raise
 
 
 # ---------------------------------------------------------------------------
@@ -287,12 +353,7 @@ def open_global() -> Iterator[sqlite3.Connection]:
     """Yield a connection to global.db with schema applied."""
     path = paths.global_db_path()
     _LOG.info("opening global db: %s", path)
-    try:
-        conn = _connect(path)
-    except sqlite3.DatabaseError as exc:
-        _LOG.warning("corrupt db at connect time: %s", exc)
-        _rebuild(path)
-        conn = _connect(path)
+    conn = _open_with_rebuild(path)
     try:
         # Only check integrity once per file per session to avoid repeated PRAGMA checks
         if path not in _INTEGRITY_CHECKED and not _integrity_ok(conn):
@@ -302,13 +363,14 @@ def open_global() -> Iterator[sqlite3.Connection]:
             # (possibly-new) file. If quarantine failed (Windows lock), we
             # reopen the original and proceed; better than crashing.
             _rebuild(path)
-            conn = _connect(path)
+            conn = _open_with_rebuild(path)
         _INTEGRITY_CHECKED[path] = True
         _ensure_global_schema(conn)
         yield conn
     finally:
         _LOG.debug("closing global db")
-        conn.close()
+        with contextlib.suppress(Exception):
+            conn.close()
 
 
 def _validate_project_hash(project_hash: str) -> None:
@@ -330,12 +392,7 @@ def open_project(project_hash: str) -> Iterator[sqlite3.Connection]:
     _validate_project_hash(project_hash)
     path = paths.project_db_path(project_hash)
     _LOG.info("opening project db: %s (hash=%s)", path, project_hash)
-    try:
-        conn = _connect(path)
-    except sqlite3.DatabaseError as exc:
-        _LOG.warning("corrupt db at connect time: %s", exc)
-        _rebuild(path)
-        conn = _connect(path)
+    conn = _open_with_rebuild(path)
     try:
         # Only check integrity once per file per session to avoid repeated PRAGMA checks
         if path not in _INTEGRITY_CHECKED and not _integrity_ok(conn):
@@ -345,13 +402,14 @@ def open_project(project_hash: str) -> Iterator[sqlite3.Connection]:
             # (possibly-new) file. If quarantine failed (Windows lock), we
             # reopen the original and proceed; better than crashing.
             _rebuild(path)
-            conn = _connect(path)
+            conn = _open_with_rebuild(path)
         _INTEGRITY_CHECKED[path] = True
         _ensure_project_schema(conn)
         yield conn
     finally:
         _LOG.debug("closing project db: %s", project_hash)
-        conn.close()
+        with contextlib.suppress(Exception):
+            conn.close()
 
 
 # ---------------------------------------------------------------------------
@@ -359,12 +417,40 @@ def open_project(project_hash: str) -> Iterator[sqlite3.Connection]:
 # ---------------------------------------------------------------------------
 
 def _connect_readonly(db_path: Path) -> sqlite3.Connection:
-    """Open a read-only SQLite connection via URI mode. No WAL, no vec, no DDL."""
-    uri = str(db_path.as_uri()) + "?mode=ro"
-    conn = sqlite3.connect(uri, uri=True, isolation_level=None, timeout=10.0)
-    conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA busy_timeout = 5000")
-    return conn
+    """Open a read-only SQLite connection via URI mode. No WAL, no vec, no DDL.
+
+    Falls back to immutable=1 when the WAL shared-memory file is inaccessible
+    (e.g. Codex unelevated sandbox on Windows).  immutable=1 reads the DB file
+    directly, bypassing all WAL/SHM coordination — safe for read-only callers.
+
+    SQLite is lazy: ``sqlite3.connect()`` and ``PRAGMA busy_timeout`` do *not*
+    actually open the DB file or its WAL sidecars.  A real read (``SELECT FROM
+    sqlite_master``) is required to surface "unable to open database file" at
+    connect-time so the fallback can take over — otherwise the failure happens
+    later inside the caller's query.
+    """
+    uri_ro = str(db_path.as_uri()) + "?mode=ro"
+    try:
+        conn = sqlite3.connect(uri_ro, uri=True, isolation_level=None, timeout=10.0)
+        conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA busy_timeout = 5000")
+        # Force SQLite to actually open the DB file and its WAL sidecars.
+        conn.execute("SELECT 1 FROM sqlite_master LIMIT 1").fetchone()
+        return conn
+    except sqlite3.OperationalError as exc:
+        _LOG.info(
+            "WAL read-only open failed for %s (%s) — retrying in immutable mode",
+            db_path.name,
+            exc,
+        )
+        with contextlib.suppress(Exception):
+            conn.close()  # type: ignore[possibly-undefined]
+        uri_imm = str(db_path.as_uri()) + "?mode=ro&immutable=1"
+        conn = sqlite3.connect(uri_imm, uri=True, isolation_level=None, timeout=10.0)
+        conn.row_factory = sqlite3.Row
+        # Verify the immutable open actually works (same lazy-open reason).
+        conn.execute("SELECT 1 FROM sqlite_master LIMIT 1").fetchone()
+        return conn
 
 
 @contextlib.contextmanager
@@ -381,7 +467,8 @@ def open_global_readonly() -> Iterator[sqlite3.Connection]:
     try:
         yield conn
     finally:
-        conn.close()
+        with contextlib.suppress(Exception):
+            conn.close()
 
 
 @contextlib.contextmanager
@@ -398,7 +485,8 @@ def open_project_readonly(project_hash: str) -> Iterator[sqlite3.Connection]:
     try:
         yield conn
     finally:
-        conn.close()
+        with contextlib.suppress(Exception):
+            conn.close()
 
 
 # ---------------------------------------------------------------------------
@@ -510,5 +598,13 @@ def record_stat(
         else:
             with open_global() as conn:
                 conn.execute(sql, params)
+    except sqlite3.OperationalError as exc:
+        # "attempt to write a readonly database" is expected in sandboxed
+        # contexts (Codex unelevated) where _connect() falls back to immutable
+        # mode.  Drop to debug — telemetry is best-effort.
+        if "readonly" in str(exc).lower():
+            _LOG.debug("record_stat skipped (read-only fallback): %s", exc)
+        else:
+            _LOG.error("record_stat failed: %s", exc)
     except Exception as exc:  # noqa: BLE001
         _LOG.error("record_stat failed: %s", exc)

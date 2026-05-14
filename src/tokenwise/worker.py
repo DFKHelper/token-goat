@@ -143,6 +143,79 @@ def _clear_pid() -> None:
             _LOG.warning("failed to clear %s: %s", p, e)
 
 
+def _worker_claim_path() -> Path:
+    """Path to the atomic single-worker claim file."""
+    return paths.locks_dir() / "worker.claim"
+
+
+def _proc_create_time(pid: int) -> float | None:
+    """Return the process creation time, or None if the process is gone."""
+    try:
+        return psutil.Process(pid).create_time()
+    except (psutil.NoSuchProcess, psutil.AccessDenied):
+        return None
+
+
+def _worker_claim_is_stale(claim_path: Path) -> bool:
+    """True only if the claim's owning process is definitely gone.
+
+    The claim records ``pid\\ncreate_time``. It is stale iff that *exact*
+    process is no longer alive — either dead, or the PID was recycled to a
+    different process (detected via create-time mismatch). The owning worker
+    holds the claim for its whole lifetime, so "owner process alive" is the
+    one true liveness signal — no heartbeat or grace-window heuristics needed,
+    which is what made the previous version misjudge healthy long-running
+    workers as stale.
+
+    An empty / malformed claim is treated as NOT stale: the owner is mid-startup
+    (the gap between the O_EXCL create and the single write is microscopic), and
+    reclaiming that window would re-open the race this mechanism closes.
+    """
+    try:
+        pid_str, ct_str = claim_path.read_text(encoding="utf-8").split("\n", 1)
+        pid, claimed_ct = int(pid_str), float(ct_str.strip())
+    except (OSError, ValueError):
+        return False  # empty/malformed — owner mid-startup, not stale
+    actual_ct = _proc_create_time(pid)
+    if actual_ct is None:
+        return True  # owner process is gone — reclaim
+    # PID alive — stale only if it was recycled to a different process.
+    return abs(actual_ct - claimed_ct) > 1.0
+
+
+def _try_claim_worker_slot() -> int | None:
+    """Atomically claim the single-worker slot. Returns an open fd, or None.
+
+    Uses ``os.open(O_CREAT | O_EXCL)`` as a cross-platform mutex — exactly one
+    process can create the claim file. Returns None if another *live* worker
+    already holds it. A claim left by a crashed worker is reclaimed once.
+
+    This closes the TOCTOU race in the old ``is_worker_alive()`` →
+    ``_write_pid()`` sequence, where two workers starting in the same window
+    both saw "no worker alive" and both ran the main loop.
+    """
+    claim_path = _worker_claim_path()
+    claim_path.parent.mkdir(parents=True, exist_ok=True)
+    for attempt in (1, 2):
+        try:
+            fd = os.open(str(claim_path), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+            create_time = _proc_create_time(os.getpid()) or time.time()
+            # Single write — keeps the empty-claim window microscopic.
+            os.write(fd, f"{os.getpid()}\n{create_time}".encode())
+            return fd
+        except FileExistsError:
+            if attempt == 1 and _worker_claim_is_stale(claim_path):
+                _LOG.info("removing stale worker claim file")
+                with contextlib.suppress(OSError):
+                    claim_path.unlink()
+                continue  # retry the atomic create once
+            return None  # a live worker holds the slot (or lost the retry race)
+        except OSError as e:
+            _LOG.warning("failed to claim worker slot: %s", e)
+            return None
+    return None
+
+
 # ---------------------------------------------------------------------------
 # Dirty queue
 # ---------------------------------------------------------------------------
@@ -331,19 +404,56 @@ def spawn_detached() -> int | None:
         return None
 
 
-def spawn_index_detached(project_root: str) -> int | None:
+# A spawn marker older than this is treated as stale (hung index) — a fresh
+# spawn is then allowed. Longer than any realistic first-index run.
+INDEX_SPAWN_TTL = 600.0  # 10 min
+
+
+def _index_spawn_active(marker: Path) -> bool:
+    """True if *marker* records an index spawn that is still running and fresh.
+
+    The marker holds ``pid\\ntimestamp``. It is "active" only if the timestamp
+    is within INDEX_SPAWN_TTL *and* the PID is still alive — so a completed or
+    crashed index naturally frees the slot for the next legitimate spawn.
+    """
+    try:
+        pid_str, ts_str = marker.read_text(encoding="utf-8").split("\n", 1)
+        pid, ts = int(pid_str), float(ts_str.strip())
+    except (OSError, ValueError):
+        return False  # missing or malformed marker — not active
+    if time.time() - ts > INDEX_SPAWN_TTL:
+        return False  # stale — a hung index; allow a fresh spawn
+    return psutil.pid_exists(pid)
+
+
+def spawn_index_detached(project_root: str, project_hash: str) -> int | None:
     """Spawn `tokenwise index --full` from the given project root, detached.
 
     Used by the SessionStart hook to auto-populate a project's symbol DB the
     first time tokenwise sees that project. Runs in the background; the user
     or agent's subsequent tokenwise commands work as soon as it finishes.
 
+    **Idempotent.** If an index for this project was recently spawned and is
+    still running, this is a no-op. Without the guard, every SessionStart hook
+    Popen's another ``index --full``; concurrent indexers contend on the 30 s
+    writer lock, time out, exit *without writing*, so ``file_count`` stays 0
+    and the next session spawns yet another — a runaway pileup (observed in
+    the field: 44 concurrent processes, ~41 GB paged memory).
+
     Uses ``pythonw.exe -m tokenwise.cli`` rather than the launcher .exe so
     AV/EDR products don't behavior-flag the spawn.
     """
     from . import paths  # noqa: PLC0415
-    cmd = paths.python_runner_argv("index", "--full")
 
+    marker = paths.locks_dir() / f"{project_hash}.indexing"
+    if _index_spawn_active(marker):
+        _LOG.info(
+            "auto-index skipped for %s — an index spawn is already running",
+            project_hash[:8],
+        )
+        return None
+
+    cmd = paths.python_runner_argv("index", "--full")
     creationflags = 0
     if sys.platform == "win32":
         creationflags = 0x00000008 | 0x00000200 | 0x08000000
@@ -359,10 +469,16 @@ def spawn_index_detached(project_root: str) -> int | None:
             creationflags=creationflags,
             start_new_session=(sys.platform != "win32"),
         )
-        return proc.pid
     except (OSError, FileNotFoundError) as e:
         _LOG.error("failed to spawn auto-index: %s", e)
         return None
+
+    # Record the spawn so concurrent SessionStart hooks don't pile on. The
+    # marker self-expires via PID-liveness + TTL — no explicit cleanup needed.
+    with contextlib.suppress(OSError):
+        marker.parent.mkdir(parents=True, exist_ok=True)
+        marker.write_text(f"{proc.pid}\n{time.time()}", encoding="utf-8")
+    return proc.pid
 
 
 def ensure_running() -> int | None:
@@ -391,12 +507,15 @@ def run_daemon(stop_event=None) -> None:
     """
     _setup_logging()
 
-    # Refuse to start if another worker is alive
-    if is_worker_alive():
-        _LOG.info("another worker is alive; exiting")
+    # Atomically claim the single-worker slot. Closes the startup race where
+    # two workers both passed is_worker_alive() and both ran the main loop —
+    # observed in the field as duplicate daemons draining the same queue.
+    claim_fd = _try_claim_worker_slot()
+    if claim_fd is None:
+        _LOG.info("another worker holds the slot; exiting")
         return
 
-    # Take ownership
+    # We own the slot — take ownership of the pid/heartbeat files too.
     _clear_pid()
     _write_pid()
     _heartbeat()
@@ -462,6 +581,10 @@ def run_daemon(stop_event=None) -> None:
     finally:
         _LOG.info("worker shutting down, pid=%s", os.getpid())
         _clear_pid()
+        with contextlib.suppress(OSError):
+            os.close(claim_fd)
+        with contextlib.suppress(OSError):
+            _worker_claim_path().unlink()
 
 
 def _reindex_manual_projects() -> None:
