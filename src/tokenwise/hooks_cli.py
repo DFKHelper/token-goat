@@ -610,8 +610,11 @@ def _enqueue_for_reindex(file_path: str, cwd: str | None) -> None:
             "ts": time.time(),
         }
     )
-    with queue_path.open("a", encoding="utf-8") as f:
-        f.write(line + "\n")
+    try:
+        with queue_path.open("a", encoding="utf-8") as f:
+            f.write(line + "\n")
+    except OSError as e:
+        _LOG.warning("failed to enqueue %s for reindex: %s", rel, e)
 
 
 @fail_soft
