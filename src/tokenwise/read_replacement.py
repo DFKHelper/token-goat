@@ -105,6 +105,24 @@ def find_in_all_projects(file_part: str) -> tuple[Project, str] | None:
     return None
 
 
+def _read_file_lines(abs_path: Path) -> tuple[list[str], int] | None:
+    """Read *abs_path*, split into lines, and return (lines, byte_size).
+
+    Returns ``None`` on any I/O error or if the file is empty, so callers can
+    ``result = _read_file_lines(p); if result is None: return None`` without
+    repeating the try/except or empty-file check.
+    """
+    try:
+        full_text = abs_path.read_text(encoding="utf-8", errors="replace")
+    except OSError as e:
+        _LOG.warning("read failed: %s: %s", abs_path, e)
+        return None
+    lines = full_text.splitlines()
+    if not lines:
+        return None
+    return lines, len(full_text.encode("utf-8"))
+
+
 def read_symbol(
     project: Project,
     rel_path: str,
@@ -138,21 +156,14 @@ def read_symbol(
     chosen = min(rows, key=lambda r: (_KIND_PRIORITY.get(r["kind"], 9), r["line"]))
 
     abs_path = project.root / rel_path
-    try:
-        full_text = abs_path.read_text(encoding="utf-8", errors="replace")
-    except OSError as e:
-        _LOG.warning("read failed: %s: %s", abs_path, e)
+    read_result = _read_file_lines(abs_path)
+    if read_result is None:
         return None
-
-    lines = full_text.splitlines()
-    if not lines:
-        return None
+    lines, full_bytes = read_result
 
     start = max(1, chosen["line"] - context_lines)
     end = min(len(lines), chosen["end_line"] + context_lines)
     snippet = "\n".join(lines[start - 1 : end])
-
-    full_bytes = len(full_text.encode("utf-8"))
     snippet_bytes = len(snippet.encode("utf-8"))
 
     return {
@@ -207,18 +218,14 @@ def read_section(
     chosen = rows[0]  # first match by line order
 
     abs_path = project.root / rel_path
-    try:
-        full_text = abs_path.read_text(encoding="utf-8", errors="replace")
-    except OSError as e:
-        _LOG.warning("read failed: %s: %s", abs_path, e)
+    read_result = _read_file_lines(abs_path)
+    if read_result is None:
         return None
+    lines, full_bytes = read_result
 
-    lines = full_text.splitlines()
     start = max(1, chosen["line"] - context_lines)
     end = min(len(lines), chosen["end_line"] + context_lines)
     snippet = "\n".join(lines[start - 1 : end])
-
-    full_bytes = len(full_text.encode("utf-8"))
     snippet_bytes = len(snippet.encode("utf-8"))
 
     return {
