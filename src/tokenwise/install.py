@@ -278,10 +278,9 @@ def _strip_tokenwise_entries(entries: list[dict]) -> list[dict]:
     """Remove any hook entries whose command string contains 'tokenwise'."""
     kept = []
     for entry in entries:
-        hooks_list = entry.get("hooks", [])
-        non_cc = [h for h in hooks_list if "tokenwise" not in h.get("command", "")]
-        if non_cc:
-            kept.append({"matcher": entry.get("matcher", "*"), "hooks": non_cc})
+        surviving_hooks = [h for h in entry.get("hooks", []) if "tokenwise" not in h.get("command", "")]
+        if surviving_hooks:
+            kept.append({"matcher": entry.get("matcher", "*"), "hooks": surviving_hooks})
     return kept
 
 
@@ -603,13 +602,7 @@ def _codex_hooks_block(binary: str | None = None) -> dict:
 
 def _strip_codex_tokenwise_entries(entries: list[dict]) -> list[dict]:
     """Remove hook entries whose command string contains 'tokenwise'."""
-    kept = []
-    for e in entries:
-        hooks_list = e.get("hooks", [])
-        non_tw = [h for h in hooks_list if "tokenwise" not in h.get("command", "")]
-        if non_tw:
-            kept.append({"matcher": e.get("matcher", "*"), "hooks": non_tw})
-    return kept
+    return _strip_tokenwise_entries(entries)
 
 
 def patch_codex_config(binary: str) -> str:
@@ -772,24 +765,28 @@ def install_all(install_codex: bool = False) -> dict:
     return result
 
 
+def _stop_worker() -> str:
+    """Terminate the background worker if running. Returns a status string."""
+    pid_path = paths.worker_pid_path()
+    if not pid_path.exists():
+        return "stopped"
+    import psutil  # noqa: PLC0415
+    try:
+        pid = int(pid_path.read_text(encoding="utf-8").strip())
+        if psutil.pid_exists(pid):
+            psutil.Process(pid).terminate()
+    except Exception as e:  # noqa: BLE001
+        _LOG.warning("failed to terminate worker process: %s", e)
+    pid_path.unlink(missing_ok=True)
+    return "stopped"
+
+
 def uninstall_all(purge: bool = False, codex: bool = False) -> dict:
     """Reverse install. With purge=True also deletes the data directory."""
     result: dict[str, str] = {}
 
-    # Stop worker first
     try:
-        pid_path = paths.worker_pid_path()
-        if pid_path.exists():
-            import psutil  # noqa: PLC0415
-
-            try:
-                pid = int(pid_path.read_text(encoding="utf-8").strip())
-                if psutil.pid_exists(pid):
-                    psutil.Process(pid).terminate()
-            except Exception as e:  # noqa: BLE001
-                _LOG.warning("failed to terminate worker process: %s", e)
-            pid_path.unlink(missing_ok=True)
-        result["worker"] = "stopped"
+        result["worker"] = _stop_worker()
     except Exception as e:  # noqa: BLE001
         result["worker"] = f"stop failed: {e}"
 

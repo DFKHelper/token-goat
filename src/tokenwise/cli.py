@@ -112,7 +112,6 @@ def _not_indexed_hint(project_hash: str) -> str | None:
             )
     except Exception as e:  # noqa: BLE001
         _LOG.warning("failed to check project index status: %s", e)
-        return None
     return None
 
 
@@ -356,18 +355,14 @@ def read(
     if rel is None:
         # Fall back to searching all indexed projects (e.g. skills, plugins)
         cross = read_replacement.find_in_all_projects(file_part)
-        if cross is not None:
-            proj, rel = cross
-        else:
+        if cross is None:
             if proj is None:
                 typer.echo("No project detected.", err=True)
             else:
                 hint = _not_indexed_hint(proj.hash)
-                if hint:
-                    typer.echo(hint)
-                else:
-                    typer.echo(f"File not found in any indexed project: {file_part}", err=True)
+                typer.echo(hint if hint else f"File not found in any indexed project: {file_part}", err=True)
             raise typer.Exit(0)
+        proj, rel = cross
 
     assert proj is not None  # guaranteed: either cross-project match or we exited above
     result = read_replacement.read_symbol(proj, rel, symbol_part, context_lines=context_lines)
@@ -422,18 +417,14 @@ def section(
     if rel is None:
         # Fall back to searching all indexed projects (e.g. skills, plugins)
         cross = read_replacement.find_in_all_projects(file_part)
-        if cross is not None:
-            proj, rel = cross
-        else:
+        if cross is None:
             if proj is None:
                 typer.echo("No project detected.", err=True)
             else:
                 hint = _not_indexed_hint(proj.hash)
-                if hint:
-                    typer.echo(hint)
-                else:
-                    typer.echo(f"File not found in any indexed project: {file_part}", err=True)
+                typer.echo(hint if hint else f"File not found in any indexed project: {file_part}", err=True)
             raise typer.Exit(0)
+        proj, rel = cross
 
     assert proj is not None  # guaranteed: either cross-project match or we exited above
     result = read_replacement.read_section(proj, rel, heading_part, context_lines=context_lines)
@@ -782,21 +773,24 @@ def doctor(  # noqa: C901
     # ------------------------------------------------------------------
     typer.echo("\nSQLite")
     ok("version", sqlite3.sqlite_version)
+
     # WAL check requires a real file — :memory: always returns "memory" mode.
     import tempfile  # noqa: PLC0415
-    _wal_ok = False
-    try:
-        with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as _tf:
-            _tf_path = _tf.name
-        _wconn = sqlite3.connect(_tf_path, isolation_level=None)
-        _wal_mode = _wconn.execute("PRAGMA journal_mode = WAL").fetchone()[0]
-        _wconn.close()
-        Path(_tf_path).unlink(missing_ok=True)
-        _wal_ok = _wal_mode == "wal"
-    except Exception:  # noqa: BLE001
-        pass
+
+    def _wal_supported() -> bool:
+        try:
+            with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as tf:
+                tf_path = tf.name
+            conn = sqlite3.connect(tf_path, isolation_level=None)
+            mode = conn.execute("PRAGMA journal_mode = WAL").fetchone()[0]
+            conn.close()
+            Path(tf_path).unlink(missing_ok=True)
+            return mode == "wal"
+        except Exception:  # noqa: BLE001
+            return False
+
     conn_test = sqlite3.connect(":memory:", isolation_level=None)
-    if _wal_ok:
+    if _wal_supported():
         ok("WAL", "yes")
     else:
         flag("WAL", "not supported or errored")
