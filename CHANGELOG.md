@@ -13,6 +13,7 @@ All notable changes to Tokenwise are documented in this file. Format follows Kee
 - `tokenwise compact-hint --session-id <id>` debug command shows exactly what the `PreCompact` hook would emit for any session.
 - `session.py` now tracks which files were edited this session (`edited_files: dict[str, int]`). The `post_edit` hook (previously a no-op) now calls `session.mark_file_edited()` on every Write/Edit/MultiEdit. Edited files are listed first in the compaction manifest — they are the most critical context to preserve.
 - `tokenwise doctor` now reports worker-watchdog state: the single-worker claim file (held / stale / absent), any index-spawn markers (`locks/{hash}.indexing`) and whether they are active or stale, and the dirty-queue depth (flagged when a backlog suggests the worker is down or behind). These cover the failure modes introduced with the worker claim file and index-spawn deduplication.
+- `tokenwise doctor --fix` clears the stale `.indexing` spawn markers doctor flags — the on-demand counterpart to the worker's startup reaping, for when the worker is down. It only ever removes markers `spawn_index_detached` already reads as inactive, so an in-flight indexer is never disturbed.
 
 ### Changed
 
@@ -28,6 +29,7 @@ All notable changes to Tokenwise are documented in this file. Format follows Kee
 
 ### Fixed
 
+- **Stale `.indexing` spawn markers were never reaped.** `spawn_index_detached` writes a `locks/{hash}.indexing` marker and treats a present, *active* marker as "an index is already running" — but the marker was only ever cleared implicitly, via the PID-liveness + TTL check in `_index_spawn_active`. A marker whose indexer finished or crashed without its PID being recycled lingered on disk indefinitely (16 were found in the field). The worker's `cleanup_on_startup` — run on startup and every maintenance cycle — now reaps them with the exact predicate `spawn_index_detached` uses, so it can never remove a marker still doing its job.
 - `post_edit` hook was registered but never called any session-tracking logic. It now records file edits, which feeds both the compaction manifest and future session-aware features.
 - Double `@fail_soft` decorator on `post_edit` (applied twice, causing the decorator to wrap itself). Reduced to a single application.
 - **Incremental reindex never ran for normal projects.** `post_edit` recorded edits to the session cache but never appended them to the dirty queue, and `enqueue_dirty()` — the function meant to do this — was defined but called from nowhere. The entire incremental-reindex path was dead code for git-detected projects: a project's symbol index went stale the moment you edited a file, so `tokenwise read "file::symbol"` returned the wrong function body and the pre-read hint showed stale line numbers. `post_edit` now resolves the edited file's project and enqueues it; the worker drains and reindexes within ~2 s.

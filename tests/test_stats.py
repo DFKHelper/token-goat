@@ -222,6 +222,38 @@ class TestRenderText:
         text_all = stats.render_text(summary_all)
         assert "image_shrink" in text_all
 
+    def test_render_negative_net_session_hint(self, tmp_data_dir):
+        """A session_hint whose injection cost outweighs its realized saving
+        records a *negative* net row (the honest signal). render_text must
+        carry that through every section without raising — the renderer is the
+        only consumer that turns these rows into bars, shares and totals."""
+        # Suggestion-only hint: nothing was actually saved, the hint text cost
+        # tokens to inject → net is negative. This is a legitimate stored row.
+        db.record_stat(None, "session_hint", bytes_saved=-480, tokens_saved=-120,
+                       detail=r"C:\Projects\myrepo\src\foo.py")
+
+        summary = stats.summarize(window_days=30)
+        assert summary.total_tokens_saved == -120
+        assert summary.by_kind["session_hint"]["tokens_saved"] == -120
+
+        # Must not raise — bar fill, share math and formatters all see a
+        # negative value here.
+        text = stats.render_text(summary)
+        assert "session_hint" in text
+        assert "-120" in text  # the negative token total is rendered, not hidden
+
+    def test_render_zero_net_session_hint(self, tmp_data_dir):
+        """A session_hint with exactly zero net must render — totals.tokens == 0
+        routes share math down the bytes branch, a distinct code path."""
+        db.record_stat(None, "session_hint", bytes_saved=0, tokens_saved=0,
+                       detail=r"C:\Projects\myrepo\src\bar.py")
+
+        summary = stats.summarize(window_days=30)
+        assert summary.total_tokens_saved == 0
+
+        text = stats.render_text(summary)
+        assert "session_hint" in text
+
 
 class TestPathProjectAttribution:
     """Test path-based project attribution for global.db events."""

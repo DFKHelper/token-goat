@@ -23,6 +23,7 @@ class CleanupStats(TypedDict):
     """Result of cleanup_on_startup operation."""
 
     stale_locks_cleared: int
+    stale_index_markers_cleared: int
     logs_deleted: int
     image_bytes_evicted: int
     image_files_evicted: int
@@ -280,6 +281,7 @@ def cleanup_on_startup() -> CleanupStats:
     """Run all the self-healing tasks. Returns a stats dict."""
     stats: CleanupStats = {
         "stale_locks_cleared": 0,
+        "stale_index_markers_cleared": 0,
         "logs_deleted": 0,
         "image_bytes_evicted": 0,
         "image_files_evicted": 0,
@@ -309,6 +311,16 @@ def cleanup_on_startup() -> CleanupStats:
                     stats["stale_locks_cleared"] += 1
                 except OSError as unlink_err:
                     _LOG.warning("failed to remove lock %s: %s", lock_path.name, unlink_err)
+
+    # 1b. Stale index-spawn marker cleanup. spawn_index_detached() writes a
+    # `<hash>.indexing` marker and treats a *present, active* marker as "an
+    # index is already running", skipping the spawn. But the marker is only
+    # ever cleared implicitly — via the PID-liveness + TTL check in
+    # _index_spawn_active(). A marker whose indexer finished or crashed without
+    # the PID being recycled lingers on disk indefinitely: harmless to the
+    # spawn guard (it reads as inactive) but it accumulates and shows up in
+    # `doctor`. Reap them the same way stale locks are reaped.
+    stats["stale_index_markers_cleared"] = reap_stale_index_markers()
 
     # 2. Log rotation: delete logs older than LOG_RETENTION_DAYS
     logs = paths.logs_dir()
@@ -435,6 +447,31 @@ def _index_spawn_active(marker: Path) -> bool:
     if time.time() - ts > INDEX_SPAWN_TTL:
         return False  # stale — a hung index; allow a fresh spawn
     return psutil.pid_exists(pid)
+
+
+def reap_stale_index_markers() -> int:
+    """Delete `.indexing` spawn markers whose index process is gone or hung.
+
+    A marker is kept only while ``_index_spawn_active`` confirms its PID is
+    alive *and* within INDEX_SPAWN_TTL — exactly the predicate
+    ``spawn_index_detached`` uses to decide a marker means "already indexing".
+    Reaping everything that predicate reads as inactive can therefore never
+    remove a marker that is still doing its job; it only clears the debris a
+    completed or crashed indexer left behind. Returns the number removed.
+    """
+    locks = paths.locks_dir()
+    if not locks.exists():
+        return 0
+    cleared = 0
+    for marker in locks.glob("*.indexing"):
+        if _index_spawn_active(marker):
+            continue
+        try:
+            marker.unlink()
+            cleared += 1
+        except OSError as e:
+            _LOG.warning("failed to remove stale index marker %s: %s", marker.name, e)
+    return cleared
 
 
 def spawn_index_detached(project_root: str, project_hash: str) -> int | None:
