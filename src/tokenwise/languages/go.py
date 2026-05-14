@@ -29,20 +29,6 @@ _CALL_RE = re.compile(r"(?<![.\w])([A-Za-z_][A-Za-z0-9_]*)\s*\(")
 # Regex to extract quoted import path from a Go import line
 _GO_IMPORT_RE = re.compile(r'"([^"]+)"')
 
-# Regex for package-level const/var declarations (tlp doesn't surface these)
-_CONST_SINGLE_RE = re.compile(
-    r"^const\s+([A-Za-z_][A-Za-z0-9_]*)\s", re.MULTILINE
-)
-_CONST_BLOCK_NAME_RE = re.compile(
-    r"^\s+([A-Za-z_][A-Za-z0-9_]*)\s*(?:=|[A-Za-z_])", re.MULTILINE
-)
-_VAR_SINGLE_RE = re.compile(
-    r"^var\s+([A-Za-z_][A-Za-z0-9_]*)\s", re.MULTILINE
-)
-_VAR_BLOCK_NAME_RE = re.compile(
-    r"^\s+([A-Za-z_][A-Za-z0-9_]*)\s*(?:=|[A-Za-z_])", re.MULTILINE
-)
-
 
 def _kind_str(structure_kind: object) -> str:
     """Convert tlp StructureKind to our kind string."""
