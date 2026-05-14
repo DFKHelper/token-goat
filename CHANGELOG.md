@@ -4,8 +4,11 @@ All notable changes to Tokenwise are documented in this file. Format follows Kee
 
 ## [Unreleased]
 
+## [0.2.3] - 2026-05-14
+
 ### Changed
 
+- **`tokenwise stats` reorders its table columns.** In the by-kind, by-day and by-project tables the `share` percentage now sits directly after `tokens saved`, ahead of the raw `events` count. The share is the at-a-glance "how much of the total is this" number; the event count is supporting detail — so the eye lands on share first and the column order matches that priority.
 - **The worker now restarts on a same-version reinstall.** Its version-self-restart compared only the installed version *string*, so `uv tool install --reinstall` without a version bump — the common case during development — left the worker running stale code until something restarted it manually. `run_daemon` now also compares a content fingerprint of the installed package (a hash over the size and mtime of every `.py` file in the package directory), captured at boot and re-read on the same once-a-minute cadence. A change in either the version string or the fingerprint triggers the graceful slot-release-and-respawn. Fails soft: a fingerprint that can't be computed falls back to the version-string check.
 - **Daily log files are now size-capped.** The `worker.log` and hook daily logs used a plain `FileHandler` with no size bound — they were bounded in *count* (date-named, 7-day retention sweep) but a single pathological day, e.g. a worker stuck in a fast error loop, could still bloat one file. Both handlers, and the `worker-stderr.log` crash sink, now share `paths.roll_log_if_oversized()`, which rolls a log over to a `.prev.log` sibling once it passes its cap (5 MB for daily logs, 1 MB for the crash sink) before the handler is attached. Best-effort under Windows multi-process contention — the roll is suppressed if another process holds the file and retried by the next opener — and `.prev.log` ends in `.log` so the retention sweep still reaps it.
 
