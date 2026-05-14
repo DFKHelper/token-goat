@@ -210,6 +210,40 @@ def test_record_stat_global(tmp_data_dir):
 
 
 # ---------------------------------------------------------------------------
+# 12b. touch_project_last_seen — marks user activity for the reindex window
+# ---------------------------------------------------------------------------
+
+def test_touch_project_last_seen_updates_registered_project(tmp_data_dir):
+    h = "touch0001"
+    with db.open_global() as conn:
+        conn.execute(
+            "INSERT INTO projects(hash, root, marker, first_seen, last_seen, file_count, languages) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (h, "c:/proj", ".git", 1000, 1000, 3, "python"),
+        )
+
+    db.touch_project_last_seen(h)
+
+    with db.open_global() as conn:
+        last_seen = conn.execute(
+            "SELECT last_seen FROM projects WHERE hash = ?", (h,)
+        ).fetchone()[0]
+    # Bumped from the stale 1000 to ~now.
+    assert last_seen > 1000
+    assert abs(last_seen - time.time()) < 60
+
+
+def test_touch_project_last_seen_noop_for_unregistered_project(tmp_data_dir):
+    """No row to update — must not raise, must not create a bogus row."""
+    db.touch_project_last_seen("neverseen0001")
+    with db.open_global() as conn:
+        row = conn.execute(
+            "SELECT 1 FROM projects WHERE hash = ?", ("neverseen0001",)
+        ).fetchone()
+    assert row is None
+
+
+# ---------------------------------------------------------------------------
 # 13. schema_version meta row exists after first open
 # ---------------------------------------------------------------------------
 
