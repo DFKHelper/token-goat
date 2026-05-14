@@ -11,7 +11,7 @@ import sys
 import time
 from datetime import datetime
 from pathlib import Path
-from typing import Any, TypedDict
+from typing import IO, Any, TypedDict
 
 import psutil
 
@@ -105,10 +105,13 @@ def _setup_logging() -> None:
             logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s")
         )
         _LOG.addHandler(handler)
-        # also stream to stderr for daemon visibility
-        stream = logging.StreamHandler(sys.stderr)
-        stream.setFormatter(logging.Formatter("%(asctime)s %(levelname)s: %(message)s"))
-        _LOG.addHandler(stream)
+        # Console echo only for an interactive run. A detached daemon's stderr
+        # is the worker-stderr.log crash sink (see spawn_detached); echoing
+        # every INFO line into it would bury a real traceback in routine noise.
+        if sys.stderr is not None and sys.stderr.isatty():
+            stream = logging.StreamHandler(sys.stderr)
+            stream.setFormatter(logging.Formatter("%(asctime)s %(levelname)s: %(message)s"))
+            _LOG.addHandler(stream)
         _LOG.setLevel(logging.INFO)
 
 
@@ -468,12 +471,26 @@ def spawn_detached() -> int | None:
         # DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW
         creationflags = 0x00000008 | 0x00000200 | 0x08000000
 
+    # Capture the spawned worker's stderr to a file rather than DEVNULL. A
+    # worker that fails before its logging FileHandler is attached — an import
+    # error, a crash in _setup_logging — would otherwise die with no trace at
+    # all, which is exactly what makes a silent worker death undebuggable.
+    stderr_sink: int | IO[Any] = subprocess.DEVNULL
+    stderr_file: IO[Any] | None = None
+    try:
+        stderr_path = paths.logs_dir() / "worker-stderr.log"
+        stderr_path.parent.mkdir(parents=True, exist_ok=True)
+        stderr_file = open(stderr_path, "a", encoding="utf-8")  # noqa: SIM115
+        stderr_sink = stderr_file
+    except OSError as e:
+        _LOG.warning("could not open worker stderr log, falling back to DEVNULL: %s", e)
+
     try:
         proc = subprocess.Popen(
             cmd,
             stdin=subprocess.DEVNULL,
             stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
+            stderr=stderr_sink,
             close_fds=True,
             creationflags=creationflags,
             start_new_session=(sys.platform != "win32"),
@@ -482,6 +499,11 @@ def spawn_detached() -> int | None:
     except (OSError, FileNotFoundError) as e:
         _LOG.error("failed to spawn worker: %s", e)
         return None
+    finally:
+        # The child inherited its own handle; the parent's copy is now spare.
+        if stderr_file is not None:
+            with contextlib.suppress(OSError):
+                stderr_file.close()
 
 
 # A spawn marker older than this is treated as stale (hung index) — a fresh
@@ -683,6 +705,25 @@ def ensure_running() -> int | None:
 # Main run loop (daemon mode)
 # ---------------------------------------------------------------------------
 
+def _register_autostart() -> None:
+    """Self-register the worker for at-logon autostart (HKCU Run key).
+
+    install_worker_task() otherwise only runs during `tokenwise install`; a
+    `uv tool install --reinstall` (or a cleared Run key) leaves the worker with
+    no autostart, so it survives only as long as a hook keeps respawning it.
+    Re-asserting the registration on every startup makes autostart self-healing
+    and keeps the registered command current. Fail-soft: a registry error must
+    never take the worker down. (Lazy import — install.py imports worker.)
+    """
+    try:
+        from . import install  # noqa: PLC0415
+
+        ok, detail = install.install_worker_task()
+        _LOG.info("autostart self-register: %s", detail if ok else f"failed — {detail}")
+    except Exception:  # noqa: BLE001
+        _LOG.exception("autostart self-register failed")
+
+
 def run_daemon(stop_event=None) -> None:
     """Main loop: heartbeat + dirty-queue processing + periodic maintenance.
 
@@ -702,6 +743,9 @@ def run_daemon(stop_event=None) -> None:
     _clear_pid()
     _write_pid()
     _heartbeat()
+
+    # Self-register for at-logon autostart now that we own the slot.
+    _register_autostart()
 
     # Self-healing on startup
     stats = cleanup_on_startup()
