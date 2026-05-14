@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import threading
 import time
@@ -10,6 +11,10 @@ from unittest.mock import MagicMock, patch
 
 import tokenwise.paths as paths
 from tokenwise import worker
+
+# Captured at import, before the isolate_worker_autostart fixture stubs it —
+# lets a test invoke the genuine self-registration logic on demand.
+_REAL_REGISTER_AUTOSTART = worker._register_autostart
 
 # ---------------------------------------------------------------------------
 # 1. is_worker_alive() — no PID file
@@ -261,6 +266,51 @@ def test_run_daemon_stop_event(tmp_data_dir):
     # PID file must be cleaned up after exit
     assert not paths.worker_pid_path().exists()
     assert not paths.worker_heartbeat_path().exists()
+
+
+def test_run_daemon_self_registers_autostart(tmp_data_dir, monkeypatch):
+    """The claim-winning worker must self-register autostart on startup.
+
+    A `uv tool install --reinstall` (or a cleared Run key) otherwise leaves the
+    worker with no autostart — it then survives only as long as a hook keeps
+    respawning it. run_daemon re-asserts the registration every startup.
+    """
+    called = threading.Event()
+    monkeypatch.setattr(worker, "_register_autostart", called.set)
+
+    stop = threading.Event()
+    threading.Thread(
+        target=lambda: (time.sleep(0.3), stop.set()), daemon=True
+    ).start()
+    worker.run_daemon(stop_event=stop)
+
+    assert called.is_set(), "run_daemon did not call _register_autostart()"
+
+
+def test_register_autostart_invokes_install_task(tmp_data_dir, monkeypatch):
+    """_register_autostart() must drive install_worker_task(), fail-soft.
+
+    Uses the real callable captured at import (the autouse fixture stubs the
+    one bound on the worker module).
+    """
+    import tokenwise.install as install
+
+    called = threading.Event()
+
+    def spy():
+        called.set()
+        return (True, "spy")
+
+    monkeypatch.setattr(install, "install_worker_task", spy)
+    _REAL_REGISTER_AUTOSTART()
+    assert called.is_set(), "_register_autostart did not call install_worker_task()"
+
+    # Fail-soft: a registry error must not propagate out of the worker.
+    def boom():
+        raise OSError("registry unavailable")
+
+    monkeypatch.setattr(install, "install_worker_task", boom)
+    _REAL_REGISTER_AUTOSTART()  # must not raise
     # The atomic claim file must also be released on shutdown.
     assert not worker._worker_claim_path().exists()
 
@@ -504,6 +554,59 @@ def test_spawn_detached_mocked(tmp_data_dir):
     # either way the trailing args are stable.
     assert cmd_arg[-2:] == ["worker", "--daemon"]
     assert "tokenwise" in cmd_arg[0].lower()
+
+
+def test_spawn_detached_captures_stderr_to_file(tmp_data_dir):
+    """spawn_detached must not send the worker's stderr to DEVNULL.
+
+    A worker that crashes before its logging FileHandler is attached — an
+    import error, a failure in _setup_logging — would otherwise die with no
+    trace at all. Its stderr now goes to logs/worker-stderr.log instead.
+    """
+    fake_proc = MagicMock()
+    fake_proc.pid = 999
+
+    with patch("tokenwise.worker.subprocess.Popen", return_value=fake_proc) as mock_popen:
+        pid = worker.spawn_detached()
+
+    assert pid == 999
+    stderr_arg = mock_popen.call_args.kwargs["stderr"]
+    assert stderr_arg is not worker.subprocess.DEVNULL, "worker stderr must not be DEVNULL"
+    assert str(getattr(stderr_arg, "name", "")).endswith("worker-stderr.log")
+    assert (tmp_data_dir / "logs" / "worker-stderr.log").exists()
+
+
+def test_setup_logging_skips_console_handler_when_not_tty(tmp_data_dir, monkeypatch):
+    """A detached daemon (non-tty stderr) gets only the FileHandler.
+
+    Its stderr is the worker-stderr.log crash sink (see spawn_detached); a
+    console StreamHandler there would bury real tracebacks under routine logs.
+    """
+    log = logging.getLogger("tokenwise.worker")
+    saved = list(log.handlers)
+    for h in saved:
+        log.removeHandler(h)
+
+    class _NotATty:
+        def isatty(self):
+            return False
+
+    monkeypatch.setattr(worker.sys, "stderr", _NotATty())
+    try:
+        worker._setup_logging()
+        console = [
+            h
+            for h in log.handlers
+            if isinstance(h, logging.StreamHandler)
+            and not isinstance(h, logging.FileHandler)
+        ]
+        assert not console, "console StreamHandler attached despite non-tty stderr"
+        assert any(isinstance(h, logging.FileHandler) for h in log.handlers)
+    finally:
+        for h in list(log.handlers):
+            log.removeHandler(h)
+        for h in saved:
+            log.addHandler(h)
 
 
 # ---------------------------------------------------------------------------

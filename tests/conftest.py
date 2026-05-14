@@ -43,6 +43,21 @@ def make_project(tmp_data_dir):
 
 
 @pytest.fixture(autouse=True)
+def isolate_worker_autostart(monkeypatch):
+    """Stop the worker from touching the real HKCU Run key during tests.
+
+    run_daemon() self-registers autostart via worker._register_autostart(),
+    which writes to the user's actual Windows registry. Every run_daemon test
+    would otherwise mutate the real machine. Stub the worker's registration
+    seam to a no-op; tests that exercise the registration itself capture the
+    real callable at import time and invoke it directly.
+    """
+    import tokenwise.worker as worker
+    monkeypatch.setattr(worker, "_register_autostart", lambda: None)
+    yield
+
+
+@pytest.fixture(autouse=True)
 def isolate_hook_logging(monkeypatch):
     """Stop hook handlers from writing to the production log file during tests.
 
