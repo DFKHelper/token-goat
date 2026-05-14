@@ -1183,6 +1183,10 @@ def test_run_daemon_restarts_on_version_change(tmp_data_dir, monkeypatch):
     monkeypatch.setattr(worker, "VERSION_CHECK_INTERVAL", 0.0)
     monkeypatch.setattr(worker, "_BOOTED_VERSION", "0.0.1")
     monkeypatch.setattr(worker, "_installed_version", lambda: "0.0.2")
+    # Pin the fingerprint to a matching value so the version string is the only
+    # variable that triggers the restart in this test.
+    monkeypatch.setattr(worker, "_BOOTED_FINGERPRINT", "fp-same")
+    monkeypatch.setattr(worker, "_package_fingerprint", lambda: "fp-same")
 
     spawned = {"count": 0}
 
@@ -1202,11 +1206,37 @@ def test_run_daemon_restarts_on_version_change(tmp_data_dir, monkeypatch):
     assert not paths.worker_pid_path().exists()
 
 
-def test_run_daemon_no_restart_when_version_unchanged(tmp_data_dir, monkeypatch):
-    """A matching on-disk version must not trigger a respawn."""
+def test_run_daemon_restarts_on_code_change(tmp_data_dir, monkeypatch):
+    """A same-version reinstall (version unchanged, code fingerprint changed)
+    must still trigger a respawn — the version-string check alone misses it."""
     monkeypatch.setattr(worker, "VERSION_CHECK_INTERVAL", 0.0)
     monkeypatch.setattr(worker, "_BOOTED_VERSION", "1.2.3")
     monkeypatch.setattr(worker, "_installed_version", lambda: "1.2.3")
+    monkeypatch.setattr(worker, "_BOOTED_FINGERPRINT", "fp-old")
+    monkeypatch.setattr(worker, "_package_fingerprint", lambda: "fp-new")
+
+    spawned = {"count": 0}
+
+    def fake_spawn():
+        spawned["count"] += 1
+        return 4321
+
+    monkeypatch.setattr(worker, "spawn_detached", fake_spawn)
+
+    worker.run_daemon(stop_event=threading.Event())
+
+    assert spawned["count"] == 1, "worker did not respawn after same-version reinstall"
+    assert not worker._worker_claim_path().exists()
+    assert not paths.worker_pid_path().exists()
+
+
+def test_run_daemon_no_restart_when_version_unchanged(tmp_data_dir, monkeypatch):
+    """A matching on-disk version *and* code fingerprint must not trigger a respawn."""
+    monkeypatch.setattr(worker, "VERSION_CHECK_INTERVAL", 0.0)
+    monkeypatch.setattr(worker, "_BOOTED_VERSION", "1.2.3")
+    monkeypatch.setattr(worker, "_installed_version", lambda: "1.2.3")
+    monkeypatch.setattr(worker, "_BOOTED_FINGERPRINT", "fp-same")
+    monkeypatch.setattr(worker, "_package_fingerprint", lambda: "fp-same")
 
     spawned = {"count": 0}
     monkeypatch.setattr(
@@ -1225,3 +1255,23 @@ def test_run_daemon_no_restart_when_version_unchanged(tmp_data_dir, monkeypatch)
     t.join(timeout=5.0)
 
     assert spawned["count"] == 0, "worker respawned despite an unchanged version"
+
+
+def test_package_fingerprint_changes_with_file_content(tmp_data_dir):
+    """_package_fingerprint must produce a stable hash that changes when any
+    package file's size or mtime changes — the signal a reinstall relies on."""
+    fp1 = worker._package_fingerprint()
+    assert fp1 is not None and len(fp1) == 40, "expected a sha1 hex digest"
+    # Stable across calls when nothing on disk changed.
+    assert worker._package_fingerprint() == fp1
+
+    # Touching a package file (bumping its mtime) must change the fingerprint.
+    worker_py = Path(worker.__file__)
+    st = worker_py.stat()
+    try:
+        os.utime(worker_py, (st.st_atime, st.st_mtime + 5))
+        assert worker._package_fingerprint() != fp1, (
+            "fingerprint did not change after a package file's mtime changed"
+        )
+    finally:
+        os.utime(worker_py, (st.st_atime, st.st_mtime))
