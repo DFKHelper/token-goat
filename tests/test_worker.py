@@ -576,6 +576,33 @@ def test_spawn_detached_captures_stderr_to_file(tmp_data_dir):
     assert (tmp_data_dir / "logs" / "worker-stderr.log").exists()
 
 
+def test_spawn_detached_rotates_oversized_stderr_log(tmp_data_dir):
+    """An oversized worker-stderr.log rolls over before the next spawn.
+
+    spawn_detached appends to logs/worker-stderr.log on every spawn; without a
+    size cap the crash sink grows without bound — the daily-log retention sweep
+    never catches it because each append refreshes the mtime. Once the file
+    exceeds STDERR_LOG_MAX_BYTES it must roll over to worker-stderr.prev.log.
+    """
+    logs_dir = tmp_data_dir / "logs"
+    logs_dir.mkdir(parents=True, exist_ok=True)
+    stderr_log = logs_dir / "worker-stderr.log"
+    oversized = b"x" * (worker.STDERR_LOG_MAX_BYTES + 1)
+    stderr_log.write_bytes(oversized)
+
+    fake_proc = MagicMock()
+    fake_proc.pid = 555
+
+    with patch("tokenwise.worker.subprocess.Popen", return_value=fake_proc):
+        worker.spawn_detached()
+
+    prev = logs_dir / "worker-stderr.prev.log"
+    assert prev.exists(), "oversized stderr log must roll over to .prev.log"
+    assert prev.stat().st_size == len(oversized), "rolled-over content must be preserved intact"
+    # The live file was reopened fresh in append mode — back to empty.
+    assert stderr_log.stat().st_size == 0, "live stderr log must be reset after rollover"
+
+
 def test_setup_logging_skips_console_handler_when_not_tty(tmp_data_dir, monkeypatch):
     """A detached daemon (non-tty stderr) gets only the FileHandler.
 

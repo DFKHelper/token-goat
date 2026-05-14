@@ -61,6 +61,13 @@ IMAGE_CACHE_TARGET = int(IMAGE_CACHE_LIMIT * 0.8)  # evict to 80%
 # Log retention (days)
 LOG_RETENTION_DAYS = 7
 
+# Size cap for the worker-stderr.log crash sink. spawn_detached appends to this
+# file on every worker spawn (one per SessionStart hook); the daily-log
+# retention sweep never catches it because each append refreshes the mtime. Once
+# the file exceeds this size it is rolled over to worker-stderr.prev.log, so the
+# crash sink is bounded at ~2x this value while still retaining recent output.
+STDERR_LOG_MAX_BYTES = 1_000_000
+
 # Worker timeout: if started but never heartbeats within this many seconds, watchdog clears the PID
 WORKER_STARTUP_GRACE = 15.0
 
@@ -456,6 +463,23 @@ def evict_image_cache_if_over_limit() -> tuple[int, int]:
 # Spawn API (called by SessionStart watchdog)
 # ---------------------------------------------------------------------------
 
+def _rotate_stderr_log_if_large(path: Path) -> None:
+    """Roll worker-stderr.log over to .prev.log once it exceeds the size cap.
+
+    spawn_detached opens this file in append mode on every worker spawn. Crash
+    output would otherwise accumulate forever — the daily-log retention sweep
+    never catches it because each append refreshes the mtime. Keep at most one
+    rolled-over generation (~2x STDERR_LOG_MAX_BYTES total).
+    """
+    try:
+        if path.stat().st_size <= STDERR_LOG_MAX_BYTES:
+            return
+    except OSError:
+        return
+    with contextlib.suppress(OSError):
+        os.replace(path, path.with_suffix(".prev.log"))
+
+
 def spawn_detached() -> int | None:
     """Spawn the tokenwise worker as a detached background process.
 
@@ -480,6 +504,7 @@ def spawn_detached() -> int | None:
     try:
         stderr_path = paths.logs_dir() / "worker-stderr.log"
         stderr_path.parent.mkdir(parents=True, exist_ok=True)
+        _rotate_stderr_log_if_large(stderr_path)
         stderr_file = open(stderr_path, "a", encoding="utf-8")  # noqa: SIM115
         stderr_sink = stderr_file
     except OSError as e:
