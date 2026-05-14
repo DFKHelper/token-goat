@@ -254,6 +254,35 @@ class TestRenderText:
         text = stats.render_text(summary)
         assert "session_hint" in text
 
+    def test_table_share_column_precedes_events_column(self):
+        """The share column is rendered before the events column in every table.
+
+        _table_header is the single source of column order for the by-kind,
+        by-day and by-project tables, so asserting on it covers all three.
+        The ANSI styling wraps the labels but leaves the literal words intact,
+        so a plain substring-index comparison is enough.
+        """
+        from tokenwise.render.stats_renderer import _table_header
+
+        header = _table_header("name")
+        assert "share" in header and "events" in header
+        assert header.index("share") < header.index("events"), (
+            f"expected 'share' before 'events' in table header, got: {header!r}"
+        )
+
+    def test_table_row_share_value_precedes_events_value(self):
+        """A rendered row places its share % ahead of its event count, matching
+        the header order — guards against header/row column drift."""
+        from tokenwise.render.stats_renderer import _table_row
+
+        # Distinct markers that cannot collide with the RGB ANSI escapes the bar
+        # emits: share renders as "25.0%" (no '%' in escapes) and the event
+        # count as "999,999" (no ',' in escapes).
+        row = _table_row("widget", 0.25, bytes_val=10, tokens=500, events=999999, share=0.25)
+        assert row.index("25.0%") < row.index("999,999"), (
+            f"expected share value before events value in row, got: {row!r}"
+        )
+
 
 class TestPathProjectAttribution:
     """Test path-based project attribution for global.db events."""
