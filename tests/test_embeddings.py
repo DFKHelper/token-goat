@@ -1,10 +1,13 @@
 """Tests for the embeddings module (Phase 8)."""
 from __future__ import annotations
 
+import hashlib
+import math
 import os
 import shutil
 import sqlite3
 import struct
+from collections.abc import Sequence
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -194,6 +197,78 @@ def test_cli_index_embeddings_no_project(tmp_data_dir):
         result = runner.invoke(cli.app, ["index", "--embeddings"], catch_exceptions=False)
     assert result.exit_code == 0
     assert "no project detected" in result.output.lower()
+
+
+# ---------------------------------------------------------------------------
+# Stub-model integration: exercises the real sqlite-vec storage + query path
+# without the ~130 MB fastembed download. The slow tests below cover the real
+# model; these guard the storage/search plumbing on every CI run.
+# ---------------------------------------------------------------------------
+
+def _stub_embed(
+    texts: Sequence[str], *, model_name: str = emb.DEFAULT_MODEL
+) -> list[list[float]]:
+    """Deterministic stand-in for embed_texts — no model, no download.
+
+    Hashes each text into a fixed DEFAULT_DIM L2-normalized vector. Identical
+    text always yields the identical vector (distance 0 on an exact-match
+    query), which is enough to verify storage, MATCH/k querying, and distance
+    ordering against real sqlite-vec.
+    """
+    out: list[list[float]] = []
+    for text in texts:
+        digest = hashlib.sha256(text.encode("utf-8", errors="replace")).digest()
+        raw = (digest * (emb.DEFAULT_DIM // len(digest) + 1))[: emb.DEFAULT_DIM]
+        vec = [b / 255.0 - 0.5 for b in raw]
+        norm = math.sqrt(sum(x * x for x in vec)) or 1.0
+        out.append([x / norm for x in vec])
+    return out
+
+
+def test_embed_and_search_cycle_with_stub(ts_project, monkeypatch):
+    """Full index + idempotency + search cycle against real sqlite-vec, stub model."""
+    monkeypatch.setattr(emb, "embed_texts", _stub_embed)
+
+    result = emb.index_project_embeddings(ts_project)
+    assert result["chunks_embedded"] > 0
+    assert result["files_visited"] >= 1
+
+    # Second pass: every chunk unchanged, so nothing is re-embedded.
+    result2 = emb.index_project_embeddings(ts_project)
+    assert result2["chunks_embedded"] == 0
+    assert result2["chunks_skipped_unchanged"] == result["chunks_embedded"]
+
+    # Searching with the exact text of an indexed chunk must surface that chunk
+    # first, at ~0 distance, with results sorted by ascending distance.
+    with db.open_project(ts_project.hash) as conn:
+        row = conn.execute(
+            "SELECT text, file_rel, start_line FROM chunks LIMIT 1"
+        ).fetchone()
+
+    hits = emb.semantic_search(ts_project, row["text"], k=5)
+    assert hits, "expected at least one hit for an exact-match query"
+    assert hits[0].text == row["text"]
+    assert hits[0].file_rel == row["file_rel"]
+    assert hits[0].distance < 1e-3
+    assert hits == sorted(hits, key=lambda h: h.distance)
+
+
+def test_cli_semantic_with_stub_embeddings(ts_project, monkeypatch):
+    """`tokenwise semantic` returns results after a stub-model embedding build."""
+    from typer.testing import CliRunner  # noqa: PLC0415
+
+    from tokenwise import cli  # noqa: PLC0415
+
+    monkeypatch.setattr(emb, "embed_texts", _stub_embed)
+    emb.index_project_embeddings(ts_project)
+
+    monkeypatch.chdir(ts_project.root)
+    result = CliRunner().invoke(
+        cli.app, ["semantic", "user service greeting", "-k", "3"],
+        catch_exceptions=False,
+    )
+    assert result.exit_code == 0
+    assert "d=" in result.output
 
 
 # ---------------------------------------------------------------------------
