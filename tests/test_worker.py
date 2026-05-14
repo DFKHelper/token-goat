@@ -1,9 +1,11 @@
 """Tests for tokenwise.worker — Phase 9."""
 from __future__ import annotations
 
+import json
 import os
 import threading
 import time
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import tokenwise.paths as paths
@@ -905,3 +907,111 @@ class TestReindexActiveProjects:
         t.join(timeout=3.0)
 
         assert called.is_set(), "_reindex_active_projects was never called by run_daemon"
+
+
+# ---------------------------------------------------------------------------
+# 16. drain_dirty_queue — atomic rename closes the read-then-truncate race
+# ---------------------------------------------------------------------------
+
+def test_drain_dirty_queue_preserves_concurrent_append(tmp_data_dir, monkeypatch):
+    """An enqueue during the drain's read window must not be lost.
+
+    The old read-then-truncate truncated away any line a hook appended between
+    the read and the write. The atomic rename-and-process closes that window:
+    the late append lands in a fresh dirty.txt and is picked up next cycle.
+    """
+    worker.enqueue_dirty("a.py", project_hash="h1")
+    fired = {"done": False}
+    orig_read = Path.read_text
+
+    def read_with_concurrent_enqueue(self, *args, **kwargs):
+        result = orig_read(self, *args, **kwargs)
+        if not fired["done"] and "dirty" in self.name:
+            # Simulate a post-edit hook firing mid-drain.
+            fired["done"] = True
+            worker.enqueue_dirty("b.py", project_hash="h1")
+        return result
+
+    monkeypatch.setattr(Path, "read_text", read_with_concurrent_enqueue)
+    first = worker.drain_dirty_queue()
+    second = worker.drain_dirty_queue()
+    monkeypatch.undo()
+
+    seen = {e["path"] for e in first + second}
+    assert seen == {"a.py", "b.py"}, f"a concurrent append was lost: {seen}"
+
+
+def test_drain_dirty_queue_recovers_abandoned_draining_file(tmp_data_dir):
+    """A .draining file left by a worker that crashed mid-drain is recovered."""
+    paths.ensure_dirs()
+    p = paths.dirty_queue_path()
+    p.parent.mkdir(parents=True, exist_ok=True)
+    draining = p.with_name(p.name + ".draining")
+    draining.write_text(
+        json.dumps({"path": "crashed.py", "project_hash": "h1", "ts": 1.0}) + "\n",
+        encoding="utf-8",
+    )
+
+    entries = worker.drain_dirty_queue()
+    assert [e["path"] for e in entries] == ["crashed.py"]
+    assert not draining.exists(), "the recovered .draining file must be removed"
+
+
+def test_drain_dirty_queue_removes_queue_file(tmp_data_dir):
+    """After a drain, dirty.txt is gone (renamed away) — not left as an empty file."""
+    worker.enqueue_dirty("x.py", project_hash="h1")
+    worker.drain_dirty_queue()
+    assert not paths.dirty_queue_path().exists()
+
+
+# ---------------------------------------------------------------------------
+# 17. run_daemon — hands off to a freshly-installed version
+# ---------------------------------------------------------------------------
+
+def test_run_daemon_restarts_on_version_change(tmp_data_dir, monkeypatch):
+    """When a different version is installed on disk, the daemon exits and respawns."""
+    monkeypatch.setattr(worker, "VERSION_CHECK_INTERVAL", 0.0)
+    monkeypatch.setattr(worker, "_BOOTED_VERSION", "0.0.1")
+    monkeypatch.setattr(worker, "_installed_version", lambda: "0.0.2")
+
+    spawned = {"count": 0}
+
+    def fake_spawn():
+        spawned["count"] += 1
+        return 4321
+
+    monkeypatch.setattr(worker, "spawn_detached", fake_spawn)
+
+    # run_daemon should detect the version change on its first loop pass and
+    # return on its own — no stop_event needed.
+    worker.run_daemon(stop_event=threading.Event())
+
+    assert spawned["count"] == 1, "worker did not respawn after version change"
+    # The slot must be released so the successor can claim it cleanly.
+    assert not worker._worker_claim_path().exists()
+    assert not paths.worker_pid_path().exists()
+
+
+def test_run_daemon_no_restart_when_version_unchanged(tmp_data_dir, monkeypatch):
+    """A matching on-disk version must not trigger a respawn."""
+    monkeypatch.setattr(worker, "VERSION_CHECK_INTERVAL", 0.0)
+    monkeypatch.setattr(worker, "_BOOTED_VERSION", "1.2.3")
+    monkeypatch.setattr(worker, "_installed_version", lambda: "1.2.3")
+
+    spawned = {"count": 0}
+    monkeypatch.setattr(
+        worker, "spawn_detached", lambda: spawned.__setitem__("count", 1)
+    )
+
+    stop = threading.Event()
+
+    def _stopper():
+        time.sleep(0.3)
+        stop.set()
+
+    t = threading.Thread(target=_stopper, daemon=True)
+    t.start()
+    worker.run_daemon(stop_event=stop)
+    t.join(timeout=5.0)
+
+    assert spawned["count"] == 0, "worker respawned despite an unchanged version"

@@ -71,6 +71,30 @@ WORKER_STARTUP_GRACE = 15.0
 # still-running process is unambiguous evidence of a hang.
 WORKER_HUNG_THRESHOLD = 900.0
 
+# How often the daemon checks whether it has been replaced on disk by a
+# `uv tool install --reinstall`. On a change it hands off to the new code.
+VERSION_CHECK_INTERVAL = 60.0
+
+
+def _installed_version() -> str | None:
+    """The tokenwise version currently installed on disk.
+
+    Read fresh on every call — unlike ``_BOOTED_VERSION``, which is captured
+    once at import — so a long-running worker can notice it has been replaced
+    by ``uv tool install --reinstall`` and hand off to the new code.
+    """
+    try:
+        from importlib.metadata import version  # noqa: PLC0415
+
+        return version("tokenwise")
+    except Exception:  # noqa: BLE001 — PackageNotFoundError or anything else
+        return None
+
+
+# Version this process booted with. A later _installed_version() that differs
+# means the on-disk package was reinstalled under the running worker.
+_BOOTED_VERSION = _installed_version()
+
 
 def _setup_logging() -> None:
     paths.ensure_dirs()
@@ -241,23 +265,55 @@ def enqueue_dirty(rel_path: str, project_hash: str | None = None) -> None:
 
 
 def drain_dirty_queue() -> list[dict]:
-    """Read all queued entries and clear the file. Returns the entries.
+    """Atomically claim and return all queued entries.
 
-    Validates each entry is a dict before appending to ensure type safety.
-    Skips malformed entries with a warning.
+    The queue is drained by *renaming* dirty.txt to a private ``.draining``
+    file before reading it. The previous read-then-truncate lost any line a
+    hook appended in the window between the read and the truncate; with the
+    rename, a concurrent ``enqueue_dirty`` either appended before the rename
+    (its line travels in ``.draining``) or creates a fresh dirty.txt after it
+    (picked up next cycle) — it can never be truncated away. A ``.draining``
+    file left behind by a worker that crashed mid-drain is recovered on the
+    next call.
+
+    Validates each entry is a dict before appending; skips malformed entries
+    with a warning.
     """
     p = paths.dirty_queue_path()
-    if not p.exists():
-        return []
-    try:
-        lines = p.read_text(encoding="utf-8").splitlines()
-        # truncate the file
-        p.write_text("", encoding="utf-8")
-    except OSError as e:
-        _LOG.warning("failed to read/clear dirty queue: %s", e)
-        return []
+    draining = p.with_name(p.name + ".draining")
+    raw_lines: list[str] = []
+
+    # Recover entries from a .draining file a previous (crashed) drain abandoned.
+    if draining.exists():
+        try:
+            raw_lines.extend(draining.read_text(encoding="utf-8").splitlines())
+            draining.unlink()
+        except OSError as e:
+            _LOG.warning("failed to recover abandoned .draining queue file: %s", e)
+
+    # Atomically claim the live queue. The brief append in enqueue_dirty may
+    # still hold dirty.txt open on Windows; retry the rename a few times, then
+    # leave the queue for the next poll rather than risk a partial read.
+    if p.exists():
+        claimed = False
+        for _ in range(5):
+            try:
+                os.replace(p, draining)
+                claimed = True
+                break
+            except OSError:
+                time.sleep(0.05)
+        if claimed:
+            try:
+                raw_lines.extend(draining.read_text(encoding="utf-8").splitlines())
+                draining.unlink()
+            except OSError as e:
+                _LOG.warning("failed to read/clear drained queue file: %s", e)
+        else:
+            _LOG.warning("dirty queue busy; deferring drain to next cycle")
+
     entries = []
-    for line in lines:
+    for line in raw_lines:
         line = line.strip()
         if not line:
             continue
@@ -269,7 +325,8 @@ def drain_dirty_queue() -> list[dict]:
             entries.append(entry)
         except json.JSONDecodeError:
             _LOG.warning("bad dirty queue entry (not valid JSON): %s", line[:120])
-    _LOG.info("drained dirty queue: %d entries", len(entries))
+    if entries:
+        _LOG.info("drained dirty queue: %d entries", len(entries))
     return entries
 
 
@@ -654,6 +711,8 @@ def run_daemon(stop_event=None) -> None:
     last_heartbeat = time.time()
     last_maintenance = time.time()
     last_periodic_reindex = time.time()
+    last_version_check = time.time()
+    restart_for_upgrade = False
 
     def should_stop() -> bool:
         return stop_event is not None and stop_event.is_set()
@@ -704,6 +763,27 @@ def run_daemon(stop_event=None) -> None:
                     _LOG.exception("periodic reindex cycle failed")
                 last_periodic_reindex = now
 
+            # Hand off to a freshly-installed version. `uv tool install
+            # --reinstall` replaces the on-disk package but cannot touch this
+            # already-running process — without this check the worker keeps
+            # executing stale code until something external restarts it.
+            if now - last_version_check >= VERSION_CHECK_INTERVAL:
+                current = _installed_version()
+                if (
+                    _BOOTED_VERSION is not None
+                    and current is not None
+                    and current != _BOOTED_VERSION
+                ):
+                    _LOG.info(
+                        "tokenwise version changed on disk (%s -> %s); "
+                        "restarting worker to load new code",
+                        _BOOTED_VERSION,
+                        current,
+                    )
+                    restart_for_upgrade = True
+                    break
+                last_version_check = now
+
             time.sleep(POLL_INTERVAL)
     finally:
         _LOG.info("worker shutting down, pid=%s", os.getpid())
@@ -712,6 +792,12 @@ def run_daemon(stop_event=None) -> None:
             os.close(claim_fd)
         with contextlib.suppress(OSError):
             _worker_claim_path().unlink()
+
+    # Respawn *after* releasing the slot above, so the successor — which loads
+    # the new code fresh from disk — can claim it cleanly with no overlap.
+    if restart_for_upgrade:
+        _LOG.info("respawning worker with updated code")
+        spawn_detached()
 
 
 def _reindex_active_projects() -> None:
