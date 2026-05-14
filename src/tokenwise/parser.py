@@ -335,28 +335,45 @@ def index_project(
 
     with db.project_writer_lock(project.hash, timeout_sec=30.0):
         with db.open_project(project.hash) as conn:
-            # For incremental: pre-load existing file SHAs only if needed
-            existing: dict[str, str] | None = None
+            # For incremental: pre-load existing mtimes + SHAs
+            existing_sha: dict[str, str] | None = None
+            existing_mtime: dict[str, float] | None = None
             if not full:
-                existing = {}
-                for row in conn.execute("SELECT rel_path, content_sha256 FROM files"):
-                    existing[row["rel_path"]] = row["content_sha256"]
-                _LOG.debug("incremental mode: loaded %d cached file hashes", len(existing))
+                existing_sha = {}
+                existing_mtime = {}
+                for row in conn.execute("SELECT rel_path, mtime, content_sha256 FROM files"):
+                    existing_sha[row["rel_path"]] = row["content_sha256"]
+                    existing_mtime[row["rel_path"]] = row["mtime"]
+                _LOG.debug("incremental mode: loaded %d cached mtimes+hashes", len(existing_sha))
 
             for i, fp in enumerate(files):
+                rel = fp.relative_to(project.root).as_posix()
+
+                # mtime fast-path: skip file read + SHA entirely when mtime is unchanged
+                if existing_mtime is not None and rel in existing_mtime:
+                    try:
+                        if fp.stat().st_mtime == existing_mtime[rel]:
+                            n_skipped_unchanged += 1
+                            _LOG.debug("skipped unchanged (mtime): %s", rel)
+                            if progress and (i + 1) % 100 == 0:
+                                progress(i + 1, n_total)
+                            continue
+                    except OSError:
+                        pass  # stat failed — fall through to full index_file
+
                 fi = index_file(project, fp)
                 if fi is None:
                     n_errors += 1
                 else:
-                    # Skip write only if incremental mode and SHA matches
-                    if existing is not None and existing.get(fi.rel_path) == fi.content_sha256:
+                    # SHA check guards against same-mtime content changes (copies, touch+overwrite)
+                    if existing_sha is not None and existing_sha.get(fi.rel_path) == fi.content_sha256:
                         n_skipped_unchanged += 1
-                        _LOG.debug("skipped unchanged: %s (incremental)", fi.rel_path)
+                        _LOG.debug("skipped unchanged (sha): %s", fi.rel_path)
                     else:
                         write_file_index(conn, fi)
                         n_indexed += 1
                         languages.add(fi.language)
-                        if existing is not None:
+                        if existing_sha is not None:
                             _LOG.debug("updated changed file: %s", fi.rel_path)
                 if progress and (i + 1) % 100 == 0:
                     progress(i + 1, n_total)
