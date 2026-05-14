@@ -177,25 +177,63 @@ class TestShrinkIdempotent:
         assert result2 is not None
         assert result1 == result2, "Second call must return same cached path"
 
+    def test_identical_content_different_paths_share_cache(self, tmp_data_dir, tmp_path):
+        """The same image staged under two different filenames — exactly what
+        Claude Code does when a prompt references one image more than once, or
+        re-uses an image across prompts — is shrunk once and shares a single
+        cache entry. The cache key is content-addressed, so the path differs but
+        the bytes are identical."""
+        import shutil
+
+        p1 = _make_large_jpeg(tmp_path)
+        p2 = tmp_path / "staged_copy.jpg"
+        shutil.copyfile(p1, p2)
+
+        result1 = image_shrink.shrink(p1)
+        result2 = image_shrink.shrink(p2)
+
+        assert result1 is not None
+        assert result2 is not None
+        assert result1 == result2, "identical content must map to one cache entry"
+
 
 # ---------------------------------------------------------------------------
 # 7. Cache invalidation on source change
 # ---------------------------------------------------------------------------
 
 class TestCacheInvalidation:
-    def test_new_cache_path_after_mtime_change(self, tmp_data_dir, tmp_path):
+    def test_same_cache_path_after_mtime_only_change(self, tmp_data_dir, tmp_path):
+        """A bare touch — mtime bumped, content unchanged — is a cache hit. The
+        key is content-addressed, so unchanged bytes reuse the existing entry
+        instead of triggering a redundant re-shrink."""
         p = _make_large_jpeg(tmp_path)
 
         result1 = image_shrink.shrink(p)
         assert result1 is not None
 
-        # Modify mtime without changing content (forces new cache key)
-        new_mtime = p.stat().st_mtime + 2.0
+        new_mtime = p.stat().st_mtime + 1000.0
         os.utime(p, (new_mtime, new_mtime))
 
         result2 = image_shrink.shrink(p)
         assert result2 is not None
-        assert result1 != result2, "New mtime must produce a new cache path"
+        assert result1 == result2, "mtime-only change must still hit the cache"
+
+    def test_new_cache_path_after_content_change(self, tmp_data_dir, tmp_path):
+        """Changing the image's actual content invalidates the cache entry."""
+        import shutil
+
+        p1 = _make_large_jpeg(tmp_path / "a")
+        p2 = _make_large_jpeg(tmp_path / "b")  # different random pixel data
+
+        result1 = image_shrink.shrink(p1)
+        assert result1 is not None
+
+        # Overwrite p1's bytes with genuinely different content.
+        shutil.copyfile(p2, p1)
+
+        result2 = image_shrink.shrink(p1)
+        assert result2 is not None
+        assert result1 != result2, "content change must produce a new cache path"
 
 
 # ---------------------------------------------------------------------------

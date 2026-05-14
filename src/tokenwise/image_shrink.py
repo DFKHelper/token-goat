@@ -27,12 +27,22 @@ def is_image_path(path: str) -> bool:
 
 
 def _cache_key(src_path: Path) -> str:
-    """sha256 of (absolute_path, mtime, size) to invalidate cache when the source changes."""
+    """sha256 of the image's *content*.
+
+    Content-addressing — rather than keying on path+mtime+size — means identical
+    images share one cache entry regardless of where they live, and any real
+    content change invalidates the entry while a bare mtime touch does not. This
+    matters because Claude Code stages prompt-attached images to a fresh temp
+    filename on every prompt: a path/mtime key misses the cache for the same
+    image re-used across prompts, and even for one image referenced twice in a
+    single prompt.
+    """
     try:
-        st = src_path.stat()
-        canon = str(src_path.resolve()).lower().replace("\\", "/")
-        material = f"{canon}|{st.st_mtime_ns}|{st.st_size}".encode()
-        return hashlib.sha256(material).hexdigest()
+        h = hashlib.sha256()
+        with src_path.open("rb") as f:
+            for chunk in iter(lambda: f.read(1 << 20), b""):
+                h.update(chunk)
+        return h.hexdigest()
     except OSError:
         return hashlib.sha256(str(src_path).encode()).hexdigest()
 
