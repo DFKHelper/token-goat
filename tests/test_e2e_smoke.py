@@ -14,12 +14,37 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
 from typer.testing import CliRunner
 
 import tokenwise.paths as paths
 from tokenwise import cli, hooks_cli, worker
 
 runner = CliRunner()
+
+# One case per source language adapter that extracts symbols. The chain under
+# test (hook -> queue -> worker drain -> index -> CLI query) is identical for
+# every language, but each routes through its own tree-sitter adapter — so a
+# regression in any single adapter would slip past a Python-only smoke test.
+# (filename, source content, symbol name as the extractor records it)
+_LANG_CASES = [
+    pytest.param(
+        "widget.py", "def assemble_widget():\n    return 42\n", "assemble_widget",
+        id="python",
+    ),
+    pytest.param(
+        "widget.ts", "export function assembleWidget() {\n    return 42;\n}\n", "assembleWidget",
+        id="typescript",
+    ),
+    pytest.param(
+        "widget.go", "package main\n\nfunc AssembleWidget() int {\n    return 42\n}\n", "AssembleWidget",
+        id="go",
+    ),
+    pytest.param(
+        "widget.rs", "fn assemble_widget() -> i32 {\n    42\n}\n", "assemble_widget",
+        id="rust",
+    ),
+]
 
 
 def _make_project(tmp_path: Path) -> Path:
@@ -48,13 +73,18 @@ def _drain_and_index() -> list[dict]:
     return entries
 
 
-def test_edit_to_query_end_to_end(tmp_path, tmp_data_dir, monkeypatch):
-    """A first edit to a never-indexed project flows hook -> queue -> worker -> query."""
+@pytest.mark.parametrize("filename,content,symbol", _LANG_CASES)
+def test_edit_to_query_end_to_end(filename, content, symbol, tmp_path, tmp_data_dir, monkeypatch):
+    """A first edit to a never-indexed project flows hook -> queue -> worker -> query.
+
+    Parameterized per language so each tree-sitter adapter is exercised through
+    the full chain, not just the Python one.
+    """
     monkeypatch.setattr(hooks_cli, "_nudge_worker_if_down", lambda: None)
 
     proj_root = _make_project(tmp_path)
-    src = proj_root / "widget.py"
-    src.write_text("def assemble_widget():\n    return 42\n", encoding="utf-8")
+    src = proj_root / filename
+    src.write_text(content, encoding="utf-8")
 
     # Leg 1: the post-edit hook resolves the project and appends to the queue.
     _post_edit(proj_root, src)
@@ -63,16 +93,16 @@ def test_edit_to_query_end_to_end(tmp_path, tmp_data_dir, monkeypatch):
     # Leg 2: the worker drains the queue and runs a first full index.
     entries = _drain_and_index()
     assert entries, "worker.drain_dirty_queue returned nothing the hook had enqueued"
-    assert entries[0]["path"] == "widget.py"
+    assert entries[0]["path"] == filename
 
     # Leg 3: the CLI query surfaces the symbol from the freshly-built index.
     monkeypatch.chdir(proj_root)
-    result = runner.invoke(cli.app, ["symbol", "assemble_widget", "--json"])
+    result = runner.invoke(cli.app, ["symbol", symbol, "--json"])
     assert result.exit_code == 0, result.stdout
     rows = json.loads(result.stdout)
     assert any(
-        r["name"] == "assemble_widget" and r["file"] == "widget.py" for r in rows
-    ), f"symbol not queryable after end-to-end flow: {result.stdout!r}"
+        r["name"] == symbol and r["file"] == filename for r in rows
+    ), f"symbol not queryable after end-to-end flow ({filename}): {result.stdout!r}"
 
 
 def test_incremental_edit_propagates_end_to_end(tmp_path, tmp_data_dir, monkeypatch):
@@ -104,4 +134,40 @@ def test_incremental_edit_propagates_end_to_end(tmp_path, tmp_data_dir, monkeypa
     rows = json.loads(result.stdout)
     assert any(r["name"] == "paint_widget" for r in rows), (
         f"newly-added symbol not queryable after incremental end-to-end flow: {result.stdout!r}"
+    )
+
+
+def test_stale_worker_is_respawned_end_to_end(tmp_path, tmp_data_dir, monkeypatch):
+    """A stale heartbeat drives the real recovery chain end-to-end:
+    post-edit hook -> _nudge_worker_if_down -> worker.ensure_running -> spawn_detached.
+
+    Every leg runs for real except the final spawn_detached, which is stubbed so
+    the test never launches a detached process. The dispatcher-level tests stub
+    ensure_running wholesale and the worker tests stub the watchdog that calls
+    it — nothing chains the watchdog to ensure_running's crashed/hung/busy state
+    machine. This does.
+    """
+    import os
+    import time as _time
+
+    # Stale heartbeat + no pid file => ensure_running sees no healthy/live worker
+    # and falls through to spawn_detached.
+    paths.ensure_dirs()
+    hb = paths.worker_heartbeat_path()
+    hb.write_text("stale", encoding="utf-8")
+    old = _time.time() - 600
+    os.utime(hb, (old, old))
+
+    spawned: list[bool] = []
+    monkeypatch.setattr(worker, "spawn_detached", lambda: (spawned.append(True), 4321)[1])
+
+    proj_root = _make_project(tmp_path)
+    src = proj_root / "widget.py"
+    src.write_text("def assemble_widget():\n    return 42\n", encoding="utf-8")
+
+    # Real post-edit hook -> real nudge -> real ensure_running -> stubbed spawn.
+    _post_edit(proj_root, src)
+
+    assert spawned == [True], (
+        "a stale-heartbeat worker must be respawned through the real recovery chain"
     )
