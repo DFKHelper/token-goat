@@ -211,6 +211,126 @@ def test_run_daemon_stop_event(tmp_data_dir):
     # PID file must be cleaned up after exit
     assert not paths.worker_pid_path().exists()
     assert not paths.worker_heartbeat_path().exists()
+    # The atomic claim file must also be released on shutdown.
+    assert not worker._worker_claim_path().exists()
+
+
+# ---------------------------------------------------------------------------
+# 9b. Atomic worker-slot claim — closes the duplicate-daemon startup race
+# ---------------------------------------------------------------------------
+
+def test_claim_worker_slot_first_caller_wins(tmp_data_dir):
+    """First caller gets an fd; the claim file is created with its pid."""
+    fd = worker._try_claim_worker_slot()
+    assert fd is not None
+    try:
+        claim = worker._worker_claim_path()
+        assert claim.exists()
+        recorded_pid = int(claim.read_text(encoding="utf-8").split("\n", 1)[0])
+        assert recorded_pid == os.getpid()
+    finally:
+        os.close(fd)
+        worker._worker_claim_path().unlink(missing_ok=True)
+
+
+def test_claim_worker_slot_second_caller_blocked_by_live_owner(tmp_data_dir):
+    """A second claim attempt must fail while a live owner holds the slot.
+
+    Regression: two workers starting in the same window both passed the old
+    is_worker_alive() check and both ran the main loop, leaving duplicate
+    daemons draining the same dirty queue.
+    """
+    paths.ensure_dirs()
+    # Existing claim owned by THIS process (alive) — record its real create
+    # time so the identity check recognizes it as the live owner.
+    claim = worker._worker_claim_path()
+    real_ct = worker._proc_create_time(os.getpid())
+    claim.write_text(f"{os.getpid()}\n{real_ct}", encoding="utf-8")
+
+    fd = worker._try_claim_worker_slot()
+    assert fd is None, "second claim must be refused while a live worker holds it"
+    claim.unlink(missing_ok=True)
+
+
+def test_claim_worker_slot_not_stale_for_long_running_owner(tmp_data_dir):
+    """Regression: a healthy owner alive longer than any grace window must NOT
+    be judged stale.
+
+    The previous implementation compared the claim's spawn timestamp against
+    WORKER_STARTUP_GRACE (15 s), so any worker alive >15 s was wrongly
+    reclaimed — spawning a duplicate daemon. The create-time identity check
+    has no such window.
+    """
+    paths.ensure_dirs()
+    claim = worker._worker_claim_path()
+    real_ct = worker._proc_create_time(os.getpid())
+    claim.write_text(f"{os.getpid()}\n{real_ct}", encoding="utf-8")
+
+    # _worker_claim_is_stale must say "not stale" regardless of how long ago
+    # the claim's create_time is — this process has been alive far longer
+    # than WORKER_STARTUP_GRACE.
+    assert worker._worker_claim_is_stale(claim) is False
+    claim.unlink(missing_ok=True)
+
+
+def test_claim_worker_slot_reclaims_dead_owner(tmp_data_dir):
+    """A claim left by a dead worker must be reclaimable."""
+    paths.ensure_dirs()
+    claim = worker._worker_claim_path()
+    # Claim owned by a PID that is almost certainly not alive.
+    claim.write_text(f"999999999\n{time.time()}", encoding="utf-8")
+
+    fd = worker._try_claim_worker_slot()
+    assert fd is not None, "a dead owner's claim must be reclaimable"
+    try:
+        assert int(claim.read_text(encoding="utf-8").split("\n", 1)[0]) == os.getpid()
+    finally:
+        os.close(fd)
+        claim.unlink(missing_ok=True)
+
+
+def test_claim_worker_slot_reclaims_recycled_pid(tmp_data_dir):
+    """If the PID is alive but its create-time differs, the PID was recycled —
+    the claim must be reclaimable."""
+    paths.ensure_dirs()
+    claim = worker._worker_claim_path()
+    # This PID is alive (it's us) but the recorded create_time is bogus,
+    # simulating a PID that was recycled to a different process.
+    claim.write_text(f"{os.getpid()}\n1.0", encoding="utf-8")
+
+    assert worker._worker_claim_is_stale(claim) is True
+    claim.unlink(missing_ok=True)
+
+
+def test_claim_worker_slot_empty_claim_is_not_stale(tmp_data_dir):
+    """An empty/mid-write claim must be treated as a live owner, not reclaimed.
+
+    The window between O_EXCL create and the write is microscopic; if a racing
+    caller treated that empty file as stale it would re-open the race.
+    """
+    paths.ensure_dirs()
+    claim = worker._worker_claim_path()
+    claim.write_text("", encoding="utf-8")  # owner mid-startup
+
+    fd = worker._try_claim_worker_slot()
+    assert fd is None, "empty claim must be treated as owner-mid-startup, not stale"
+    claim.unlink(missing_ok=True)
+
+
+def test_run_daemon_second_instance_exits_immediately(tmp_data_dir):
+    """If the slot is already claimed, run_daemon must return without running."""
+    paths.ensure_dirs()
+    # Pre-claim the slot as a live owner (this process).
+    claim = worker._worker_claim_path()
+    real_ct = worker._proc_create_time(os.getpid())
+    claim.write_text(f"{os.getpid()}\n{real_ct}", encoding="utf-8")
+
+    with patch.object(worker, "drain_dirty_queue") as mock_drain:
+        worker.run_daemon(stop_event=threading.Event())
+
+    # The second instance must bail before the main loop ever drains the queue.
+    mock_drain.assert_not_called()
+    claim.unlink(missing_ok=True)
 
 
 # ---------------------------------------------------------------------------
@@ -249,6 +369,78 @@ def test_spawn_detached_mocked(tmp_data_dir):
     # either way the trailing args are stable.
     assert cmd_arg[-2:] == ["worker", "--daemon"]
     assert "tokenwise" in cmd_arg[0].lower()
+
+
+# ---------------------------------------------------------------------------
+# spawn_index_detached — idempotency guard against the 44-process pileup
+# ---------------------------------------------------------------------------
+
+def test_spawn_index_detached_writes_marker(tmp_data_dir):
+    """First spawn for a project Popens an index and records a spawn marker."""
+    fake_proc = MagicMock()
+    fake_proc.pid = 55501
+
+    with patch("tokenwise.worker.subprocess.Popen", return_value=fake_proc):
+        pid = worker.spawn_index_detached("C:/proj", "hashAAA")
+
+    assert pid == 55501
+    marker = paths.locks_dir() / "hashAAA.indexing"
+    assert marker.exists()
+    recorded_pid, _ts = marker.read_text(encoding="utf-8").split("\n", 1)
+    assert recorded_pid == "55501"
+
+
+def test_spawn_index_detached_skips_when_already_running(tmp_data_dir):
+    """Regression: a second spawn must be a no-op while the first is alive.
+
+    This is the guard against the runaway pileup — 44 concurrent
+    `index --full` processes (~41 GB paged memory) were observed in the field
+    because every SessionStart hook Popen'd another indexer with no dedup.
+    """
+    marker = paths.locks_dir() / "hashBBB.indexing"
+    marker.parent.mkdir(parents=True, exist_ok=True)
+    # Marker owned by *this* process (definitely alive) with a fresh timestamp.
+    marker.write_text(f"{os.getpid()}\n{time.time()}", encoding="utf-8")
+
+    with patch("tokenwise.worker.subprocess.Popen") as mock_popen:
+        pid = worker.spawn_index_detached("C:/proj", "hashBBB")
+
+    assert pid is None, "spawn must be skipped while an index is already running"
+    mock_popen.assert_not_called()
+
+
+def test_spawn_index_detached_respawns_when_marker_stale(tmp_data_dir):
+    """A stale marker (timestamp older than the TTL) must not block a new spawn."""
+    marker = paths.locks_dir() / "hashCCC.indexing"
+    marker.parent.mkdir(parents=True, exist_ok=True)
+    stale_ts = time.time() - (worker.INDEX_SPAWN_TTL + 60)
+    marker.write_text(f"{os.getpid()}\n{stale_ts}", encoding="utf-8")
+
+    fake_proc = MagicMock()
+    fake_proc.pid = 55503
+    with patch("tokenwise.worker.subprocess.Popen", return_value=fake_proc) as mock_popen:
+        pid = worker.spawn_index_detached("C:/proj", "hashCCC")
+
+    assert pid == 55503
+    mock_popen.assert_called_once()
+
+
+def test_spawn_index_detached_respawns_when_pid_dead(tmp_data_dir):
+    """A marker whose PID is no longer alive must not block a new spawn."""
+    marker = paths.locks_dir() / "hashDDD.indexing"
+    marker.parent.mkdir(parents=True, exist_ok=True)
+    # PID 1 with a port-style high number that is almost certainly not alive;
+    # use a fresh timestamp so only the dead-PID condition is under test.
+    dead_pid = 999999999
+    marker.write_text(f"{dead_pid}\n{time.time()}", encoding="utf-8")
+
+    fake_proc = MagicMock()
+    fake_proc.pid = 55504
+    with patch("tokenwise.worker.subprocess.Popen", return_value=fake_proc) as mock_popen:
+        pid = worker.spawn_index_detached("C:/proj", "hashDDD")
+
+    assert pid == 55504
+    mock_popen.assert_called_once()
 
 
 # ---------------------------------------------------------------------------
@@ -426,7 +618,7 @@ class TestReindexManualProjects:
 
     def test_reindexes_manual_project(self, tmp_data_dir, tmp_path):
         from tokenwise import db as _db
-        from tokenwise.project import project_hash, canonicalize
+        from tokenwise.project import canonicalize, project_hash
 
         skill_root = tmp_path / "skills"
         skill_root.mkdir()
@@ -463,8 +655,7 @@ class TestReindexManualProjects:
 
     def test_one_project_failing_does_not_block_others(self, tmp_data_dir, tmp_path):
         from tokenwise import db as _db
-        from tokenwise.project import project_hash, canonicalize
-        from tokenwise.project import make_project_at
+        from tokenwise.project import canonicalize, make_project_at, project_hash
 
         good_root = tmp_path / "good"
         good_root.mkdir()

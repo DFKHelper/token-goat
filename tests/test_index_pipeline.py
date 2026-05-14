@@ -163,6 +163,56 @@ def test_incremental_replaces_symbols_for_modified_file(ts_project):
     assert count_after >= 1
 
 
+def test_incremental_prunes_deleted_files(ts_project):
+    """Regression: a deleted file must be removed from the index, not lingered.
+
+    Without pruning, `tokenwise symbol`/`read`/`map` surface dead paths forever
+    after a file is deleted or renamed.
+    """
+    index_project(ts_project, full=True)
+
+    # Create then index a throwaway file.
+    scratch = ts_project.root / "scratch_prune.ts"
+    scratch.write_text("export function pruneMarker() {}\n", encoding="utf-8")
+    index_project(ts_project, full=False)
+    with db.open_project(ts_project.hash) as conn:
+        assert conn.execute(
+            "SELECT COUNT(*) FROM files WHERE rel_path='scratch_prune.ts'"
+        ).fetchone()[0] == 1
+        assert conn.execute(
+            "SELECT COUNT(*) FROM symbols WHERE name='pruneMarker'"
+        ).fetchone()[0] >= 1
+
+    # Delete it and re-index — file and its symbols must be gone.
+    scratch.unlink()
+    index_project(ts_project, full=False)
+    with db.open_project(ts_project.hash) as conn:
+        assert conn.execute(
+            "SELECT COUNT(*) FROM files WHERE rel_path='scratch_prune.ts'"
+        ).fetchone()[0] == 0
+        assert conn.execute(
+            "SELECT COUNT(*) FROM symbols WHERE name='pruneMarker'"
+        ).fetchone()[0] == 0
+
+
+def test_full_index_prunes_deleted_files(ts_project):
+    """Pruning must also apply on a full re-index, not just incremental."""
+    scratch = ts_project.root / "scratch_full.ts"
+    scratch.write_text("export function fullMarker() {}\n", encoding="utf-8")
+    index_project(ts_project, full=True)
+    with db.open_project(ts_project.hash) as conn:
+        assert conn.execute(
+            "SELECT COUNT(*) FROM files WHERE rel_path='scratch_full.ts'"
+        ).fetchone()[0] == 1
+
+    scratch.unlink()
+    index_project(ts_project, full=True)
+    with db.open_project(ts_project.hash) as conn:
+        assert conn.execute(
+            "SELECT COUNT(*) FROM files WHERE rel_path='scratch_full.ts'"
+        ).fetchone()[0] == 0
+
+
 # ---------------------------------------------------------------------------
 # write_file_index replaces stale rows
 # ---------------------------------------------------------------------------

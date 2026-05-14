@@ -30,14 +30,23 @@ _LOG = logging.getLogger("tokenwise.hooks")
 
 
 def _setup_logging() -> None:
-    """Idempotent: daily-rotated log file in logs/."""
-    paths.ensure_dirs()
-    log_path = paths.logs_dir() / f"{datetime.now():%Y-%m-%d}.log"
-    if not _LOG.handlers:
-        handler = logging.FileHandler(log_path, encoding="utf-8")
+    """Idempotent: daily-rotated log file in logs/.
+
+    In sandboxed environments (e.g. Codex unelevated) the log directory may be
+    read-only or inaccessible.  Fall back to a NullHandler so the hook still
+    runs and returns ``{"continue": true}`` instead of failing on logger setup.
+    """
+    if _LOG.handlers:
+        return
+    try:
+        paths.ensure_dirs()
+        log_path = paths.logs_dir() / f"{datetime.now():%Y-%m-%d}.log"
+        handler: logging.Handler = logging.FileHandler(log_path, encoding="utf-8")
         handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s"))
-        _LOG.addHandler(handler)
-        _LOG.setLevel(logging.INFO)
+    except (OSError, PermissionError):
+        handler = logging.NullHandler()
+    _LOG.addHandler(handler)
+    _LOG.setLevel(logging.INFO)
 
 
 def normalize_payload(payload: dict[str, Any], harness: str = "claude") -> dict[str, Any]:
@@ -205,7 +214,7 @@ def _auto_index_if_needed(proj: Project) -> None:
         from . import db, worker  # noqa: PLC0415
 
         if db.file_count(proj.hash) == 0:
-            pid = worker.spawn_index_detached(str(proj.root))
+            pid = worker.spawn_index_detached(str(proj.root), proj.hash)
             if pid:
                 _LOG.info(
                     "session-start: auto-indexing %s in background (pid=%s)",
@@ -475,19 +484,62 @@ def pre_fetch(payload: dict[str, Any]) -> dict[str, Any]:
 
 @fail_soft
 def post_edit(payload: dict[str, Any]) -> dict[str, Any]:
-    """Post-edit hook: record edited files to session cache for compaction assist."""
+    """Post-edit hook: record edited files + queue them for incremental reindex.
+
+    Two responsibilities:
+      1. Mark the file in the session cache (compaction assist).
+      2. Append the file to the dirty queue so the worker reindexes it.  Without
+         (2) a project's symbol index goes stale the moment you edit a file —
+         `tokenwise read`/`symbol` then return wrong line ranges and the
+         pre-read hint shows stale data, costing tokens for no benefit.
+    """
     from . import session  # noqa: PLC0415
 
     session_id = payload.get("session_id")
-    if not session_id:
-        return {"continue": True}
-
     tool_input = payload.get("tool_input") or {}
     file_path = tool_input.get("file_path")
-    if file_path:
+
+    if session_id and file_path:
         session.mark_file_edited(session_id, file_path)
 
+    if file_path:
+        _enqueue_for_reindex(file_path, payload.get("cwd"))
+
     return {"continue": True}
+
+
+def _enqueue_for_reindex(file_path: str, cwd: str | None) -> None:
+    """Resolve *file_path* to (project_hash, rel_path) and append to the dirty queue.
+
+    The enqueue is inlined (rather than calling ``worker.enqueue_dirty``) so the
+    per-edit hook stays light — importing ``worker`` would pull in tree-sitter
+    via ``parser``.  The line format must stay in sync with
+    ``worker.drain_dirty_queue``: one JSON object per line with ``path``,
+    ``project_hash``, and ``ts`` keys.
+    """
+    import json  # noqa: PLC0415
+    import time  # noqa: PLC0415
+    from pathlib import Path  # noqa: PLC0415
+
+    from .project import find_project  # noqa: PLC0415
+
+    abs_path = Path(file_path)
+    search_root = abs_path.parent if abs_path.is_absolute() else Path(cwd or ".")
+    project = find_project(search_root)
+    if project is None:
+        return
+    if not abs_path.is_absolute():
+        abs_path = (project.root / file_path).resolve()
+    try:
+        rel = abs_path.relative_to(project.root).as_posix()
+    except ValueError:
+        return  # edited file lives outside the detected project
+
+    queue_path = paths.dirty_queue_path()
+    queue_path.parent.mkdir(parents=True, exist_ok=True)
+    line = json.dumps({"path": rel, "project_hash": project.hash, "ts": time.time()})
+    with queue_path.open("a", encoding="utf-8") as f:
+        f.write(line + "\n")
 
 
 @fail_soft

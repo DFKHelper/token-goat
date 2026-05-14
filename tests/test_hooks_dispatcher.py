@@ -58,3 +58,77 @@ def test_emit_writes_json(capsys):
     parsed = json.loads(captured.out)
     assert parsed["continue"] is True
     assert parsed["hookSpecificOutput"]["x"] == 1
+
+
+# ---------------------------------------------------------------------------
+# post_edit — must enqueue edited files for incremental reindex
+# ---------------------------------------------------------------------------
+
+def test_post_edit_enqueues_dirty_file(tmp_data_dir, tmp_path):
+    """Regression: post_edit must append the edited file to the dirty queue.
+
+    Without this, a project's symbol index goes stale the moment a file is
+    edited — `enqueue_dirty()` existed but nothing ever called it, so the
+    worker's dirty-queue reindex path was dead code for normal git projects.
+    `tokenwise read`/`symbol` then return wrong line ranges and the pre-read
+    hint shows stale data.
+    """
+    import json
+
+    import tokenwise.paths as paths
+    from tokenwise.project import canonicalize, project_hash
+
+    proj_root = tmp_path / "myproj"
+    proj_root.mkdir()
+    (proj_root / ".git").mkdir()
+    edited = proj_root / "src" / "module.py"
+    edited.parent.mkdir()
+    edited.write_text("def f(): pass\n", encoding="utf-8")
+
+    result = hooks_cli.dispatch(
+        "post-edit",
+        {
+            "session_id": "sess-1",
+            "cwd": str(proj_root),
+            "tool_name": "Edit",
+            "tool_input": {"file_path": str(edited)},
+        },
+    )
+    assert result == {"continue": True}
+
+    queue_path = paths.dirty_queue_path()
+    assert queue_path.exists(), "dirty queue file was not created"
+    lines = [ln for ln in queue_path.read_text(encoding="utf-8").splitlines() if ln.strip()]
+    assert len(lines) == 1, f"expected exactly one queued entry, got: {lines}"
+    entry = json.loads(lines[0])
+    assert entry["path"] == "src/module.py"
+    assert entry["project_hash"] == project_hash(canonicalize(proj_root))
+    assert "ts" in entry
+
+
+def test_post_edit_file_outside_project_does_not_enqueue(tmp_data_dir, tmp_path, monkeypatch):
+    """A file with no detectable project must not crash and must not enqueue."""
+    import tokenwise.paths as paths
+    from tokenwise import project as project_mod
+
+    # Force "no project" deterministically — the test machine's temp dir may
+    # have a stray package.json ancestor that would otherwise be detected.
+    monkeypatch.setattr(project_mod, "find_project", lambda _cwd: None)
+
+    stray = tmp_path / "stray.py"
+    stray.write_text("x = 1\n", encoding="utf-8")
+
+    result = hooks_cli.dispatch(
+        "post-edit",
+        {
+            "session_id": "sess-2",
+            "cwd": str(tmp_path),
+            "tool_name": "Edit",
+            "tool_input": {"file_path": str(stray)},
+        },
+    )
+    assert result == {"continue": True}
+
+    queue_path = paths.dirty_queue_path()
+    queued = queue_path.exists() and queue_path.read_text(encoding="utf-8").strip()
+    assert not queued, "no project detected — nothing should have been enqueued"

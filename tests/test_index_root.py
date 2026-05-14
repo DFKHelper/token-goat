@@ -5,8 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from tokenwise.project import make_project_at, canonicalize, project_hash, Project
-
+from tokenwise.project import canonicalize, make_project_at, project_hash
 
 # ---------------------------------------------------------------------------
 # make_project_at
@@ -38,7 +37,8 @@ class TestMakeProjectAt:
 
     def test_project_is_frozen(self, tmp_path):
         proj = make_project_at(tmp_path)
-        with pytest.raises(Exception):
+        import dataclasses  # noqa: PLC0415
+        with pytest.raises(dataclasses.FrozenInstanceError):
             proj.marker = "changed"  # type: ignore[misc]
 
 
@@ -170,6 +170,7 @@ class TestIndexRootCli:
 
     def test_index_root_indexes_directory(self, tmp_data_dir, tmp_path):
         from typer.testing import CliRunner
+
         from tokenwise.cli import app
 
         skill_root = self._make_skill_dir(tmp_path)
@@ -180,6 +181,7 @@ class TestIndexRootCli:
 
     def test_index_root_bad_path_exits_2(self, tmp_data_dir, tmp_path):
         from typer.testing import CliRunner
+
         from tokenwise.cli import app
 
         runner = CliRunner()
@@ -188,6 +190,7 @@ class TestIndexRootCli:
 
     def test_index_skills_flag(self, tmp_data_dir, tmp_path, monkeypatch):
         from typer.testing import CliRunner
+
         from tokenwise import paths
         from tokenwise.cli import app
 
@@ -201,6 +204,7 @@ class TestIndexRootCli:
 
     def test_index_skills_missing_dir_exits_1(self, tmp_data_dir, tmp_path, monkeypatch):
         from typer.testing import CliRunner
+
         from tokenwise import paths
         from tokenwise.cli import app
 
@@ -212,6 +216,7 @@ class TestIndexRootCli:
 
     def test_index_plugins_flag(self, tmp_data_dir, tmp_path, monkeypatch):
         from typer.testing import CliRunner
+
         from tokenwise import paths
         from tokenwise.cli import app
 
@@ -227,6 +232,7 @@ class TestIndexRootCli:
 
     def test_indexed_file_findable_cross_project(self, tmp_data_dir, tmp_path):
         from typer.testing import CliRunner
+
         from tokenwise.cli import app
         from tokenwise.read_replacement import find_in_all_projects
 
