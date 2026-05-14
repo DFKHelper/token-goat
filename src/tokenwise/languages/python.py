@@ -30,11 +30,6 @@ _CALL_NOISE = frozenset([
 # Regex: identifier NOT preceded by . that is immediately followed by (
 _CALL_RE = re.compile(r"(?<![.\w])([A-Za-z_][A-Za-z0-9_]*)\s*\(")
 
-# Regex for import source parsing
-_FROM_IMPORT_RE = re.compile(
-    r"^from\s+(\S+)\s+import\s+(.+)$", re.MULTILINE
-)
-_PLAIN_IMPORT_RE = re.compile(r"^import\s+(\S+(?:\s*,\s*\S+)*)", re.MULTILINE)
 
 
 def _parse_import_source(source_line: str) -> list[str]:
