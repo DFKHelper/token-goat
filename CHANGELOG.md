@@ -15,6 +15,8 @@ All notable changes to Tokenwise are documented in this file. Format follows Kee
 
 ### Changed
 
+- Incremental indexing is now O(N × stat) instead of O(N × file-read + SHA) for unchanged projects. The previous path called `index_file()` — reading file bytes and computing SHA256 — for every file in the project just to determine nothing had changed. The incremental path now loads `(rel_path, mtime, content_sha256)` from the DB, checks `stat().st_mtime` first, and skips `index_file()` entirely when mtime is unchanged. The SHA check is preserved as a secondary guard for same-mtime content changes (e.g., `touch` + overwrite). This makes the 10-minute worker sweeps over skills and plugins near-instant when nothing has changed.
+
 - `tokenwise stats` startup time reduced from ~10 s to ~2 s. Root cause was N `PRAGMA integrity_check` + N DDL `executescript` calls per registered project on every invocation. `stats.py` now uses new read-only DB openers (`db.open_global_readonly()` / `db.open_project_readonly()`) that open SQLite with `?mode=ro` URI flag, skipping integrity checks, DDL, WAL activation, and sqlite-vec loading.
 - `tokenwise stats` bar widths and share percentages now reflect token savings rather than bytes saved. Event kinds that cannot produce a token estimate (webfetch and Drive image downloads, which report raw bytes with no token equivalent) fall back to bytes for their bar, with visual distinction.
 - `image_shrink` events now correctly show token savings in `tokenwise stats`. The tokens column was hardcoded to `—` despite the data being present in the DB.

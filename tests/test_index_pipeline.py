@@ -1,8 +1,10 @@
 """Tests for the full index pipeline (index_project + DB writes)."""
 from __future__ import annotations
 
+import os
 import shutil
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 
@@ -254,3 +256,42 @@ def test_html_project_index(tmp_path, tmp_data_dir, make_project):
             "SELECT COUNT(*) as cnt FROM symbols WHERE kind IN ('html_id', 'html_class')"
         ).fetchone()
         assert rows["cnt"] > 0
+
+
+# ---------------------------------------------------------------------------
+# mtime fast-path
+# ---------------------------------------------------------------------------
+
+def test_incremental_mtime_fastpath_bypasses_index_file(ts_project):
+    """After a full index, incremental mode must not call index_file for any unchanged file."""
+    index_project(ts_project, full=True)
+    with patch("tokenwise.parser.index_file") as spy:
+        summary = index_project(ts_project, full=False)
+    assert spy.call_count == 0, (
+        f"index_file called {spy.call_count}x — mtime fast-path should have short-circuited all"
+    )
+    assert summary["skipped_unchanged"] > 0
+    assert summary["indexed"] == 0
+
+
+def test_incremental_mtime_changed_same_content_is_skipped(ts_project):
+    """Touching a file (mtime bumped, content identical) counts as skipped_unchanged, not indexed."""
+    index_project(ts_project, full=True)
+
+    ts_file = ts_project.root / "index.ts"
+    original = ts_file.read_bytes()
+    ts_file.write_bytes(original)  # same content
+    os.utime(ts_file, (ts_file.stat().st_atime, ts_file.stat().st_mtime + 1.0))
+
+    summary = index_project(ts_project, full=False)
+    # mtime differs → index_file runs → SHA matches → skipped_unchanged
+    assert summary["indexed"] == 0
+    assert summary["skipped_unchanged"] > 0
+
+
+def test_incremental_mtime_new_file_is_indexed(ts_project):
+    """A file added after the initial full index is picked up in the next incremental pass."""
+    index_project(ts_project, full=True)
+    (ts_project.root / "added.ts").write_text("export function added() {}", encoding="utf-8")
+    summary = index_project(ts_project, full=False)
+    assert summary["indexed"] >= 1
