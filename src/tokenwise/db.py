@@ -580,6 +580,31 @@ def file_count(project_hash: str) -> int:
         return 0
 
 
+def touch_project_last_seen(project_hash: str) -> None:
+    """Bump a project's last_seen to mark recent user activity. Best-effort.
+
+    No-op if the project is not yet registered (never indexed) — the first
+    index_project() call registers it. Called by the SessionStart hook so the
+    worker's periodic-reindex window tracks real user activity rather than the
+    worker's own background reindex cadence (which would otherwise keep every
+    project "active" forever).
+    """
+    try:
+        with open_global() as conn:
+            conn.execute(
+                "UPDATE projects SET last_seen = ? WHERE hash = ?",
+                (int(time.time()), project_hash),
+            )
+    except sqlite3.OperationalError as exc:
+        # Read-only fallback (sandbox) — expected, telemetry is best-effort.
+        if "readonly" in str(exc).lower():
+            _LOG.debug("touch_project_last_seen skipped (read-only fallback)")
+        else:
+            _LOG.error("touch_project_last_seen failed: %s", exc)
+    except Exception as exc:  # noqa: BLE001
+        _LOG.error("touch_project_last_seen failed: %s", exc)
+
+
 def record_stat(
     project_hash: str | None,
     kind: str,

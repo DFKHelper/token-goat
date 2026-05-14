@@ -248,6 +248,12 @@ def session_start(payload: dict[str, Any]) -> dict[str, Any]:
     proj = _detect(payload)
     if proj:
         _LOG.info("session-start: detected project %s (%s)", proj.root, proj.hash[:8])
+        # Mark user activity so the worker's periodic-reindex window stays
+        # anchored to projects actually in use.
+        with contextlib.suppress(Exception):
+            from . import db  # noqa: PLC0415
+
+            db.touch_project_last_seen(proj.hash)
         _auto_index_if_needed(proj)
 
     _ensure_worker_running()
@@ -323,24 +329,25 @@ def _try_shrink_image(
         return None
 
 
-def _record_session_hint_savings(file_path: str) -> None:
-    """Record savings from session hints (estimated 25% avoidance of full file read)."""
+def _record_session_hint_savings(file_path: str, tokens_saved: int) -> None:
+    """Record the *realized* saving from a session dedup hint.
+
+    Only called when the hint represents a concrete avoided re-read (the agent
+    was about to re-read content already in its session context). Suggestion
+    hints — "this file is large, use tokenwise read" — pass tokens_saved=0 and
+    never reach here: counting them would inflate ``tokenwise stats`` with
+    savings that never happened (or double-count, since ``tokenwise read``
+    records the real ``read_replacement`` stat when the suggestion is followed).
+    """
     from . import db  # noqa: PLC0415
 
     try:
-        file_size = 0
-        with contextlib.suppress(OSError):
-            file_size = Path(file_path).stat().st_size
-        # Estimate: 25% of file would have been read (conservative).
-        # Assume 4 bytes per token average.
-        est_bytes = file_size // 4
-        est_tokens = est_bytes // 4
         db.record_stat(
             None,
             "session_hint",
-            bytes_saved=est_bytes,
-            tokens_saved=est_tokens,
-            detail=f"{file_path}",
+            bytes_saved=tokens_saved * 4,  # project convention: ~4 bytes/token
+            tokens_saved=tokens_saved,
+            detail=file_path,
         )
     except Exception:  # noqa: BLE001
         _LOG.exception("failed to record session_hint savings")
@@ -394,13 +401,16 @@ def pre_read(payload: dict[str, Any]) -> dict[str, Any]:
     if not hint:
         return {"continue": True}
 
-    _record_session_hint_savings(file_path)
+    # Only record a saving for hints that represent a *realized* avoided cost
+    # (a re-read of session-cached content). Suggestion hints carry 0.
+    if hint.tokens_saved > 0:
+        _record_session_hint_savings(file_path, hint.tokens_saved)
 
     return {
         "continue": True,
         "hookSpecificOutput": {
             "hookEventName": "PreToolUse",
-            "additionalContext": hint,
+            "additionalContext": str(hint),
         },
     }
 

@@ -20,6 +20,29 @@ MIN_OVERLAP_TO_WARN = 50  # only warn about overlap if >50 lines overlap
 DEFAULT_READ_LIMIT = 2000  # Claude Code's default lines-per-Read
 
 
+class ReadHint(str):
+    """A pre-read hint string carrying the genuine token saving it represents.
+
+    Subclasses ``str`` so every existing consumer (substring checks, JSON
+    serialization as ``additionalContext``) keeps working unchanged, while
+    ``tokens_saved`` rides along for honest stats accounting.
+
+    ``tokens_saved`` is **0** for *suggestion* hints — "this file is large, you
+    could use ``tokenwise read``" — because firing the suggestion realizes no
+    saving; if the agent acts on it, ``tokenwise read`` records the real
+    ``read_replacement`` stat itself. It is non-zero only for dedup hints that
+    warn about re-reading content already in the session: a concrete, already-
+    realized avoided cost.
+    """
+
+    tokens_saved: int
+
+    def __new__(cls, text: str, tokens_saved: int = 0) -> ReadHint:
+        obj = super().__new__(cls, text)
+        obj.tokens_saved = tokens_saved
+        return obj
+
+
 def _est_tokens_from_lines(n_lines: int) -> int:
     """Rough token estimate from line count (integer, never < 1)."""
     return max(1, int(n_lines * TOKENS_PER_LINE))
@@ -108,8 +131,8 @@ def build_read_hint(
     offset: int | None,
     limit: int | None,
     cwd: str | None,
-) -> str | None:
-    """Return a hint string, or None when no hint is warranted."""
+) -> ReadHint | None:
+    """Return a ReadHint, or None when no hint is warranted."""
     if not session_id or not file_path:
         return None
 
@@ -136,20 +159,22 @@ def _hint_from_cache(
     req_start: int,
     req_end: int,
     file_path: str,
-) -> str | None:
+) -> ReadHint | None:
     """Build hint when the file was already accessed this session."""
     fname = Path(file_path).name
 
-    # Case: file accessed only via tokenwise read <file>::<symbol>
+    # Case: file accessed only via tokenwise read <file>::<symbol>.
+    # A suggestion, not a realized saving → tokens_saved=0.
     if entry.symbols_read and not entry.line_ranges:
         sym_list = ", ".join(f"`{s}`" for s in entry.symbols_read[:3])
         more = f" and {len(entry.symbols_read) - 3} more" if len(entry.symbols_read) > 3 else ""
-        return (
+        return ReadHint(
             f"Note: `{fname}` was already accessed this session via "
             f"`tokenwise read` for symbol(s): {sym_list}{more}. "
             f"If you only need additional symbols, consider "
             f"`tokenwise read \"{file_path}::another_symbol\"` "
-            f"instead of reading the whole file."
+            f"instead of reading the whole file.",
+            0,
         )
 
     # Compute overlap against all cached ranges.
@@ -166,32 +191,38 @@ def _hint_from_cache(
     cached_summary = ", ".join(f"{s}-{e}" for s, e in entry.line_ranges[:3])
     extra = f" (+{len(entry.line_ranges) - 3} more ranges)" if len(entry.line_ranges) > 3 else ""
 
+    # Exact re-read of already-cached lines — the full request is avoidable.
     if exact_match:
         wasted = _est_tokens_from_lines(req_end - req_start + 1)
-        return (
+        return ReadHint(
             f"Note: `{fname}` lines {req_start}-{req_end} were already read this session "
             f"(cached ranges: {cached_summary}{extra}). "
             f"Re-reading wastes ~{wasted} tokens. "
             f"Consider whether your existing context is sufficient, or use a different "
-            f"offset/limit to read only new content."
+            f"offset/limit to read only new content.",
+            wasted,
         )
 
+    # Partial overlap — only the overlapping lines are avoidable.
     if overlap_lines > MIN_OVERLAP_TO_WARN:
         wasted = _est_tokens_from_lines(overlap_lines)
         # Suggest skipping to just past the last cached end.
         last_cached_end = max(e for _, e in entry.line_ranges)
         suggested_offset = last_cached_end  # offset is 0-indexed, so last_cached_end skips up to that line
-        return (
+        return ReadHint(
             f"Note: `{fname}` was previously read this session at lines {cached_summary}{extra}. "
             f"Your current request (lines {req_start}-{req_end}) overlaps by {overlap_lines} lines "
             f"(~{wasted} wasted tokens). "
-            f"Consider using `offset={suggested_offset}` to skip the overlap."
+            f"Consider using `offset={suggested_offset}` to skip the overlap.",
+            wasted,
         )
 
-    # Non-overlapping prior read — mild informational note only.
-    return (
+    # Non-overlapping prior read — purely informational, the agent proceeds
+    # with the read, so nothing is actually saved → tokens_saved=0.
+    return ReadHint(
         f"FYI: `{fname}` was read earlier this session at lines {cached_summary}{extra}. "
-        f"Current request (lines {req_start}-{req_end}) is new content — proceeding."
+        f"Current request (lines {req_start}-{req_end}) is new content — proceeding.",
+        0,
     )
 
 
@@ -200,7 +231,7 @@ def _hint_from_index(
     cwd: str | None,
     req_start: int,
     req_end: int,
-) -> str | None:
+) -> ReadHint | None:
     """Build hint when file is large and has indexed symbols but not yet cached."""
     if cwd is None:
         return None
@@ -247,11 +278,16 @@ def _hint_from_index(
     more_note = f", plus {n_total - 8} more" if n_total > 8 else ""
     first_sym_name = symbols[0].get("name", "")
 
-    return (
+    # A *suggestion*, not a realized saving. tokens_saved=0: if the agent acts
+    # on it, `tokenwise read` records the real `read_replacement` stat — counting
+    # a saving here too would double-count, and counting one when the agent
+    # ignores the hint and reads the whole file is pure phantom inflation.
+    return ReadHint(
         f"This file is {n_lines} lines (~{full_tokens} tokens to read fully). "
         f"tokenwise has indexed {n_total} symbol(s) here. "
         f"To read just one symbol, run: `tokenwise read \"{rel}::{first_sym_name}\"` "
         f"(saves ~85% tokens). "
         f"Top symbols: {', '.join(sym_strs)}{more_note}. "
-        f"Proceed with full Read if you need the surrounding context."
+        f"Proceed with full Read if you need the surrounding context.",
+        0,
     )

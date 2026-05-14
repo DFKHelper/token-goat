@@ -585,36 +585,46 @@ def test_evict_image_cache_below_limit(tmp_data_dir, monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# _reindex_manual_projects
+# _reindex_active_projects — periodic sweep of all recently-active projects
 # ---------------------------------------------------------------------------
 
-class TestReindexManualProjects:
-    def _register_project(self, gconn, hash_: str, root: str, marker: str, file_count: int) -> None:
+class TestReindexActiveProjects:
+    def _register_project(
+        self, gconn, hash_: str, root: str, marker: str, file_count: int,
+        *, last_seen: int | None = None,
+    ) -> None:
         now = int(time.time())
+        ls = now if last_seen is None else last_seen
         gconn.execute(
             "INSERT OR REPLACE INTO projects(hash, root, marker, first_seen, last_seen, file_count, languages) "
             "VALUES (?, ?, ?, ?, ?, ?, ?)",
-            (hash_, root, marker, now, now, file_count, "markdown"),
+            (hash_, root, marker, now, ls, file_count, "markdown"),
         )
 
-    def test_does_nothing_when_no_manual_projects(self, tmp_data_dir):
+    def test_does_nothing_when_no_projects(self, tmp_data_dir):
         # No projects registered at all — should not raise
-        worker._reindex_manual_projects()
+        worker._reindex_active_projects()
 
-    def test_skips_non_manual_projects(self, tmp_data_dir, tmp_path):
+    def test_reindexes_git_project(self, tmp_data_dir, tmp_path):
+        """Regression: git-detected projects must be swept too — this is the
+        fix for edits made outside Claude Code, which never hit the dirty
+        queue. The previous _reindex_manual_projects only covered
+        marker='manual' (skills/plugins), so normal projects drifted stale."""
         from tokenwise import db as _db
-        from tokenwise.project import project_hash
+        from tokenwise.parser import index_project
+        from tokenwise.project import canonicalize, make_project_at, project_hash
 
         proj_root = tmp_path / "code"
         proj_root.mkdir()
-        ph = project_hash(proj_root.resolve())
+        (proj_root / "mod.py").write_text("def f():\n    return 1\n", encoding="utf-8")
+        ph = project_hash(canonicalize(proj_root))
+        index_project(make_project_at(proj_root), full=True)
         with _db.open_global() as gconn:
-            self._register_project(gconn, ph, str(proj_root), ".git", 5)
+            self._register_project(gconn, ph, proj_root.as_posix(), ".git", 1)
 
-        # .git project — should be ignored, no reindex attempted
         with patch("tokenwise.parser.index_project") as mock_index:
-            worker._reindex_manual_projects()
-            mock_index.assert_not_called()
+            worker._reindex_active_projects()
+            mock_index.assert_called_once()
 
     def test_reindexes_manual_project(self, tmp_data_dir, tmp_path):
         from tokenwise import db as _db
@@ -634,7 +644,24 @@ class TestReindexManualProjects:
         index_project(make_project_at(skill_root), full=True)
 
         # Now call the sweep — should run without raising
-        worker._reindex_manual_projects()
+        worker._reindex_active_projects()
+
+    def test_skips_project_outside_active_window(self, tmp_data_dir, tmp_path):
+        """A project not seen within PERIODIC_REINDEX_ACTIVE_WINDOW is skipped."""
+        from tokenwise import db as _db
+        from tokenwise.project import project_hash
+
+        old_root = tmp_path / "dormant"
+        old_root.mkdir()
+        ph = project_hash(old_root.resolve())
+        # last_seen well outside the active window
+        stale_ts = int(time.time() - worker.PERIODIC_REINDEX_ACTIVE_WINDOW - 3600)
+        with _db.open_global() as gconn:
+            self._register_project(gconn, ph, str(old_root), ".git", 5, last_seen=stale_ts)
+
+        with patch("tokenwise.parser.index_project") as mock_index:
+            worker._reindex_active_projects()
+            mock_index.assert_not_called()
 
     def test_skips_project_exceeding_file_cap(self, tmp_data_dir, tmp_path, monkeypatch):
         from tokenwise import db as _db
@@ -647,10 +674,10 @@ class TestReindexManualProjects:
             # Register with file_count > cap
             self._register_project(gconn, ph, str(big_root), "manual", 9999)
 
-        monkeypatch.setattr(worker, "MANUAL_REINDEX_MAX_FILES", 500)
+        monkeypatch.setattr(worker, "PERIODIC_REINDEX_MAX_FILES", 500)
 
         with patch("tokenwise.parser.index_project") as mock_index:
-            worker._reindex_manual_projects()
+            worker._reindex_active_projects()
             mock_index.assert_not_called()
 
     def test_one_project_failing_does_not_block_others(self, tmp_data_dir, tmp_path):
@@ -684,7 +711,7 @@ class TestReindexManualProjects:
             return original_index(proj, **kw)
 
         with patch("tokenwise.parser.index_project", side_effect=_patched_index):
-            worker._reindex_manual_projects()  # must not raise
+            worker._reindex_active_projects()  # must not raise
 
         # good project was still processed despite bad project failing
         assert good_ph in call_log
@@ -697,23 +724,23 @@ class TestReindexManualProjects:
 
         monkeypatch.setattr(_db, "open_global_readonly", _boom)
         # Should not raise — error is caught and logged
-        worker._reindex_manual_projects()
+        worker._reindex_active_projects()
 
-    def test_run_daemon_triggers_manual_reindex(self, tmp_data_dir, monkeypatch):
-        """run_daemon calls _reindex_manual_projects when MANUAL_REINDEX_INTERVAL elapses."""
+    def test_run_daemon_triggers_periodic_reindex(self, tmp_data_dir, monkeypatch):
+        """run_daemon calls _reindex_active_projects when the interval elapses."""
         import threading
 
-        monkeypatch.setattr(worker, "MANUAL_REINDEX_INTERVAL", 0.0)  # trigger immediately
+        monkeypatch.setattr(worker, "PERIODIC_REINDEX_INTERVAL", 0.0)  # trigger immediately
         monkeypatch.setattr(worker, "POLL_INTERVAL", 0.05)
 
         called = threading.Event()
-        original = worker._reindex_manual_projects
+        original = worker._reindex_active_projects
 
         def _spy():
             called.set()
             original()
 
-        monkeypatch.setattr(worker, "_reindex_manual_projects", _spy)
+        monkeypatch.setattr(worker, "_reindex_active_projects", _spy)
 
         stop = threading.Event()
         t = threading.Thread(target=worker.run_daemon, kwargs={"stop_event": stop}, daemon=True)
@@ -722,4 +749,4 @@ class TestReindexManualProjects:
         stop.set()
         t.join(timeout=3.0)
 
-        assert called.is_set(), "_reindex_manual_projects was never called by run_daemon"
+        assert called.is_set(), "_reindex_active_projects was never called by run_daemon"

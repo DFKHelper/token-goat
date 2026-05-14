@@ -36,12 +36,16 @@ HEARTBEAT_INTERVAL = 30.0
 POLL_INTERVAL = 2.0
 # Periodic maintenance interval (cleanup tasks)
 MAINTENANCE_INTERVAL = 300.0  # 5 min
-# How often to incrementally re-index manual projects (skills, plugins, --root dirs).
+# How often to incrementally re-index active projects.
 # Longer than MAINTENANCE_INTERVAL so it does not compete with dirty-queue processing.
-MANUAL_REINDEX_INTERVAL = 600.0  # 10 min
-# Skip re-indexing any manual project that has grown beyond this many files.
+PERIODIC_REINDEX_INTERVAL = 600.0  # 10 min
+# Skip re-indexing any project that has grown beyond this many files.
 # Guards against accidentally indexing a huge directory and thrashing disk.
-MANUAL_REINDEX_MAX_FILES = 500
+PERIODIC_REINDEX_MAX_FILES = 500
+# Only periodically re-index projects seen within this window. Bounds the sweep
+# to projects actually in use — the `projects` table accumulates every project
+# tokenwise has ever touched, and reindexing all of them would be wasteful.
+PERIODIC_REINDEX_ACTIVE_WINDOW = 7 * 24 * 3600.0  # 7 days
 
 # How many days of granular stats events to keep in global.db before pruning.
 # After this many days, rows are deleted from the stats table to keep the DB
@@ -527,7 +531,7 @@ def run_daemon(stop_event=None) -> None:
 
     last_heartbeat = time.time()
     last_maintenance = time.time()
-    last_manual_reindex = time.time()
+    last_periodic_reindex = time.time()
 
     def should_stop() -> bool:
         return stop_event is not None and stop_event.is_set()
@@ -569,13 +573,14 @@ def run_daemon(stop_event=None) -> None:
                     _LOG.exception("periodic maintenance failed")
                 last_maintenance = now
 
-            # Re-index manually-added projects (skills, plugins) on a longer cadence
-            if now - last_manual_reindex >= MANUAL_REINDEX_INTERVAL:
+            # Re-index recently-active projects on a longer cadence — catches
+            # edits made outside Claude Code that never hit the dirty queue.
+            if now - last_periodic_reindex >= PERIODIC_REINDEX_INTERVAL:
                 try:
-                    _reindex_manual_projects()
+                    _reindex_active_projects()
                 except Exception:  # noqa: BLE001
-                    _LOG.exception("manual reindex cycle failed")
-                last_manual_reindex = now
+                    _LOG.exception("periodic reindex cycle failed")
+                last_periodic_reindex = now
 
             time.sleep(POLL_INTERVAL)
     finally:
@@ -587,34 +592,43 @@ def run_daemon(stop_event=None) -> None:
             _worker_claim_path().unlink()
 
 
-def _reindex_manual_projects() -> None:
-    """Incrementally re-index all projects with marker='manual' (skills, plugins, --root dirs).
+def _reindex_active_projects() -> None:
+    """Incrementally re-index every recently-active project.
 
-    Called on the MANUAL_REINDEX_INTERVAL cadence (10 min). Only processes files whose
-    SHA-256 has changed — unchanged files are skipped with no disk I/O beyond a stat call.
-    Projects with more than MANUAL_REINDEX_MAX_FILES indexed files are skipped to avoid
-    unexpectedly thrashing disk on large manually-added directories.
+    Runs on the PERIODIC_REINDEX_INTERVAL cadence (10 min). Covers ALL projects
+    — not just marker='manual' skills/plugins — whose ``last_seen`` falls within
+    PERIODIC_REINDEX_ACTIVE_WINDOW. This is what catches edits made *outside*
+    Claude Code (e.g. in an IDE): those never fire the post_edit hook, so they
+    never reach the dirty queue, and without this sweep the project's symbol
+    index would drift stale until the file happened to be edited through Claude.
+
+    Incremental: unchanged files are skipped with no I/O beyond a stat() call.
+    Projects larger than PERIODIC_REINDEX_MAX_FILES are skipped to bound disk
+    load. ``last_seen`` is bumped by the SessionStart hook, so the active window
+    tracks real user activity instead of growing without bound.
     """
+    cutoff = int(time.time() - PERIODIC_REINDEX_ACTIVE_WINDOW)
     try:
         with db.open_global_readonly() as gconn:
             rows = gconn.execute(
-                "SELECT hash, root, marker, file_count FROM projects WHERE marker = 'manual'"
+                "SELECT hash, root, marker, file_count FROM projects WHERE last_seen >= ?",
+                (cutoff,),
             ).fetchall()
     except Exception:  # noqa: BLE001
-        _LOG.exception("could not query manual projects for reindex")
+        _LOG.exception("could not query active projects for reindex")
         return
 
     if not rows:
         return
 
-    _LOG.info("manual-project reindex: %d project(s) to check", len(rows))
+    _LOG.info("periodic reindex: %d active project(s) to check", len(rows))
     for row in rows:
-        if row["file_count"] > MANUAL_REINDEX_MAX_FILES:
+        if row["file_count"] > PERIODIC_REINDEX_MAX_FILES:
             _LOG.warning(
-                "manual-project reindex: skipping %s (%d files > %d limit)",
+                "periodic reindex: skipping %s (%d files > %d limit)",
                 row["root"],
                 row["file_count"],
-                MANUAL_REINDEX_MAX_FILES,
+                PERIODIC_REINDEX_MAX_FILES,
             )
             continue
         proj = Project(root=Path(row["root"]), hash=row["hash"], marker=row["marker"])
@@ -622,7 +636,7 @@ def _reindex_manual_projects() -> None:
             summary = parser.index_project(proj, full=False)
             if summary["indexed"] > 0 or summary["errors"] > 0:
                 _LOG.info(
-                    "manual-project reindex: root=%s indexed=%d skipped=%d errors=%d dur=%.2fs",
+                    "periodic reindex: root=%s indexed=%d skipped=%d errors=%d dur=%.2fs",
                     row["root"],
                     summary["indexed"],
                     summary["skipped_unchanged"],
@@ -630,9 +644,9 @@ def _reindex_manual_projects() -> None:
                     summary["duration_sec"],
                 )
             else:
-                _LOG.debug("manual-project reindex: root=%s no changes", row["root"])
+                _LOG.debug("periodic reindex: root=%s no changes", row["root"])
         except Exception:  # noqa: BLE001
-            _LOG.exception("manual-project reindex failed for %s", row["root"])
+            _LOG.exception("periodic reindex failed for %s", row["root"])
 
 
 def _process_dirty_entries(entries: list[dict]) -> None:

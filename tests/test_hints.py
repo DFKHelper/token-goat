@@ -338,3 +338,91 @@ class TestNonProjectCwd:
             cwd=str(tmp_path),
         )
         assert hint is None
+
+
+# ---------------------------------------------------------------------------
+# Honest savings accounting — ReadHint.tokens_saved
+# ---------------------------------------------------------------------------
+
+
+class TestReadHintTokensSaved:
+    """tokens_saved must reflect *realized* avoided cost, not speculation.
+
+    Regression: the pre-read hook used to record `session_hint` savings for
+    every hint — including pure suggestions — at a flat "25% of file" estimate,
+    inflating `tokenwise stats` with savings that never happened.
+    """
+
+    def test_exact_match_hint_carries_real_saving(self, tmp_data_dir):
+        sid, path = "s_ts_exact", "C:/proj/foo.py"
+        _mark(tmp_data_dir, sid, path, offset=0, limit=200)
+        hint = build_read_hint(
+            session_id=sid, file_path=path, offset=0, limit=200, cwd=None
+        )
+        assert hint is not None
+        # An exact re-read of 200 cached lines — the whole request is avoidable.
+        assert hint.tokens_saved == _est_tokens_from_lines(200)
+
+    def test_overlap_hint_carries_overlap_saving(self, tmp_data_dir):
+        sid, path = "s_ts_overlap", "C:/proj/baz.py"
+        _mark(tmp_data_dir, sid, path, offset=0, limit=300)
+        hint = build_read_hint(
+            session_id=sid, file_path=path, offset=200, limit=250, cwd=None
+        )
+        assert hint is not None
+        # Overlap is lines 201-300 = 100 lines — only that is avoidable.
+        assert hint.tokens_saved == _est_tokens_from_lines(100)
+
+    def test_fyi_hint_records_no_saving(self, tmp_data_dir):
+        """Non-overlapping prior read: the agent proceeds — nothing is saved."""
+        sid, path = "s_ts_fyi", "C:/proj/noop.py"
+        _mark(tmp_data_dir, sid, path, offset=0, limit=100)
+        hint = build_read_hint(
+            session_id=sid, file_path=path, offset=499, limit=100, cwd=None
+        )
+        assert hint is not None
+        assert hint.tokens_saved == 0
+
+    def test_symbol_only_hint_records_no_saving(self, tmp_data_dir):
+        """Symbol-access nudge is a suggestion, not a realized saving."""
+        sid, path = "s_ts_sym", "C:/proj/syms.py"
+        _mark(tmp_data_dir, sid, path, symbol="some_func")
+        hint = build_read_hint(
+            session_id=sid, file_path=path, offset=0, limit=2000, cwd=None
+        )
+        assert hint is not None
+        assert hint.tokens_saved == 0
+
+    def test_index_suggestion_hint_records_no_saving(self, tmp_data_dir, tmp_path):
+        """The 'large file, use tokenwise read' hint is a suggestion → 0 saving.
+
+        If acted on, `tokenwise read` records the real `read_replacement` stat;
+        counting a saving here too would double-count, and counting one when
+        the hint is ignored is phantom inflation.
+        """
+        from tokenwise.parser import index_project
+        from tokenwise.project import make_project_at
+
+        proj_root = tmp_path / "proj"
+        proj_root.mkdir()
+        (proj_root / ".git").mkdir()  # so build_read_hint's find_project detects it
+        big = proj_root / "big.py"
+        # Give it an indexed symbol so _hint_from_index has something to show.
+        big.write_text(
+            "def indexed_marker():\n    return 1\n"
+            + "\n".join(f"# line {i}" for i in range(LARGE_FILE_LINE_THRESHOLD + 50)),
+            encoding="utf-8",
+        )
+        proj = make_project_at(proj_root)
+        index_project(proj, full=True)
+
+        hint = build_read_hint(
+            session_id="s_ts_index",
+            file_path=str(big),
+            offset=0,
+            limit=2000,
+            cwd=str(proj_root),
+        )
+        assert hint is not None
+        assert "tokenwise read" in hint  # confirms it's the index suggestion hint
+        assert hint.tokens_saved == 0
