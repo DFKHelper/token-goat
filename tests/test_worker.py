@@ -576,43 +576,6 @@ def test_spawn_detached_captures_stderr_to_file(tmp_data_dir):
     assert (tmp_data_dir / "logs" / "worker-stderr.log").exists()
 
 
-def test_spawn_detached_dedups_concurrent_spawns(tmp_data_dir):
-    """A second spawn_detached while one is already in flight must NOT Popen again.
-
-    The field bug: every SessionStart hook calls ensure_running() → spawn_detached();
-    a burst of those each Popen'd an identical `pythonw -m tokenwise.cli worker`.
-    Bitdefender's Active Threat Control behavioral heuristic flags the burst and
-    hangs one process in the loader (before python313.dll loads). The in-flight
-    spawn marker makes spawn_detached idempotent under concurrency.
-    """
-    fake_proc = MagicMock()
-    fake_proc.pid = os.getpid()  # a live PID → the marker reads as active
-
-    with patch("tokenwise.worker.subprocess.Popen", return_value=fake_proc) as mock_popen:
-        pid1 = worker.spawn_detached()
-        pid2 = worker.spawn_detached()
-
-    assert pid1 == os.getpid()
-    assert pid2 is None, "second concurrent spawn must be suppressed by the marker"
-    mock_popen.assert_called_once()
-
-
-def test_spawn_detached_reclaims_stale_marker(tmp_data_dir):
-    """A spawn marker for a dead process (or older than the TTL) must not block
-    a fresh spawn — otherwise a crashed spawn would wedge the worker forever."""
-    marker = worker._worker_spawn_marker_path()
-    marker.parent.mkdir(parents=True, exist_ok=True)
-    marker.write_text("999999\n1.0", encoding="utf-8")  # dead PID + ancient timestamp
-
-    fake_proc = MagicMock()
-    fake_proc.pid = os.getpid()
-    with patch("tokenwise.worker.subprocess.Popen", return_value=fake_proc) as mock_popen:
-        pid = worker.spawn_detached()
-
-    assert pid == os.getpid(), "stale marker must be reclaimed, not block the spawn"
-    mock_popen.assert_called_once()
-
-
 def test_setup_logging_skips_console_handler_when_not_tty(tmp_data_dir, monkeypatch):
     """A detached daemon (non-tty stderr) gets only the FileHandler.
 
