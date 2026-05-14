@@ -179,10 +179,9 @@ def mark_grep(
 ) -> SessionCache:
     """Record a Grep call. Returns the updated cache."""
     cache = load(session_id)
-    cache.greps.append(
-        GrepEntry(pattern=pattern, path=path, ts=time.time(), result_count=result_count)
-    )
-    cache.last_activity_ts = time.time()
+    now = time.time()
+    cache.greps.append(GrepEntry(pattern=pattern, path=path, ts=now, result_count=result_count))
+    cache.last_activity_ts = now
     save(cache)
     return cache
 

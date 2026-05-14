@@ -4,6 +4,7 @@ from __future__ import annotations
 import contextlib
 import hashlib
 import logging
+import stat
 from pathlib import Path
 
 from . import paths
@@ -63,12 +64,10 @@ def _looks_like_screenshot_or_text(img) -> bool:  # type: ignore[no-untyped-def]
 def should_shrink(src_path: Path) -> bool:
     """Threshold check: is this image worth shrinking?"""
     try:
-        if not src_path.is_file():
-            return False
         if not is_image_path(str(src_path)):
             return False
-        size = src_path.stat().st_size
-        return size > SIZE_THRESHOLD_BYTES
+        st = src_path.stat()  # single syscall: raises FileNotFoundError if absent
+        return stat.S_ISREG(st.st_mode) and st.st_size > SIZE_THRESHOLD_BYTES
     except OSError:
         return False
 
@@ -93,7 +92,11 @@ def shrink(src_path: Path) -> Path | None:
     if not _is_safe_path(src_path):
         _LOG.warning("rejected unsafe path: %s", src_path)
         return None
-    if not should_shrink(src_path):
+    try:
+        src_size = src_path.stat().st_size
+    except OSError:
+        return None
+    if not (is_image_path(str(src_path)) and src_size > SIZE_THRESHOLD_BYTES):
         return None
 
     cache_dir = paths.image_cache_dir()
@@ -144,7 +147,6 @@ def shrink(src_path: Path) -> Path | None:
                 final_path = stem.with_suffix(".jpg")
                 img.save(final_path, "JPEG", quality=JPEG_QUALITY, optimize=True)
 
-        src_size = src_path.stat().st_size
         out_size = final_path.stat().st_size
         savings_pct = 100.0 * (1.0 - out_size / src_size) if src_size > 0 else 0.0
         _LOG.info(
