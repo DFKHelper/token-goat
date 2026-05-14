@@ -36,6 +36,12 @@ HEARTBEAT_INTERVAL = 30.0
 POLL_INTERVAL = 2.0
 # Periodic maintenance interval (cleanup tasks)
 MAINTENANCE_INTERVAL = 300.0  # 5 min
+# How often to incrementally re-index manual projects (skills, plugins, --root dirs).
+# Longer than MAINTENANCE_INTERVAL so it does not compete with dirty-queue processing.
+MANUAL_REINDEX_INTERVAL = 600.0  # 10 min
+# Skip re-indexing any manual project that has grown beyond this many files.
+# Guards against accidentally indexing a huge directory and thrashing disk.
+MANUAL_REINDEX_MAX_FILES = 500
 
 # How many days of granular stats events to keep in global.db before pruning.
 # After this many days, rows are deleted from the stats table to keep the DB
@@ -402,6 +408,7 @@ def run_daemon(stop_event=None) -> None:
 
     last_heartbeat = time.time()
     last_maintenance = time.time()
+    last_manual_reindex = time.time()
 
     def should_stop() -> bool:
         return stop_event is not None and stop_event.is_set()
@@ -443,10 +450,66 @@ def run_daemon(stop_event=None) -> None:
                     _LOG.exception("periodic maintenance failed")
                 last_maintenance = now
 
+            # Re-index manually-added projects (skills, plugins) on a longer cadence
+            if now - last_manual_reindex >= MANUAL_REINDEX_INTERVAL:
+                try:
+                    _reindex_manual_projects()
+                except Exception:  # noqa: BLE001
+                    _LOG.exception("manual reindex cycle failed")
+                last_manual_reindex = now
+
             time.sleep(POLL_INTERVAL)
     finally:
         _LOG.info("worker shutting down, pid=%s", os.getpid())
         _clear_pid()
+
+
+def _reindex_manual_projects() -> None:
+    """Incrementally re-index all projects with marker='manual' (skills, plugins, --root dirs).
+
+    Called on the MANUAL_REINDEX_INTERVAL cadence (10 min). Only processes files whose
+    SHA-256 has changed — unchanged files are skipped with no disk I/O beyond a stat call.
+    Projects with more than MANUAL_REINDEX_MAX_FILES indexed files are skipped to avoid
+    unexpectedly thrashing disk on large manually-added directories.
+    """
+    try:
+        with db.open_global_readonly() as gconn:
+            rows = gconn.execute(
+                "SELECT hash, root, marker, file_count FROM projects WHERE marker = 'manual'"
+            ).fetchall()
+    except Exception:  # noqa: BLE001
+        _LOG.exception("could not query manual projects for reindex")
+        return
+
+    if not rows:
+        return
+
+    _LOG.info("manual-project reindex: %d project(s) to check", len(rows))
+    for row in rows:
+        if row["file_count"] > MANUAL_REINDEX_MAX_FILES:
+            _LOG.warning(
+                "manual-project reindex: skipping %s (%d files > %d limit)",
+                row["root"],
+                row["file_count"],
+                MANUAL_REINDEX_MAX_FILES,
+            )
+            continue
+        proj = Project(root=Path(row["root"]), hash=row["hash"], marker=row["marker"])
+        try:
+            summary = parser.index_project(proj, full=False)
+            if summary["indexed"] > 0 or summary["errors"] > 0:
+                _LOG.info(
+                    "manual-project reindex: root=%s indexed=%d skipped=%d errors=%d dur=%.2fs",
+                    row["root"],
+                    summary["indexed"],
+                    summary["skipped_unchanged"],
+                    summary["errors"],
+                    summary["duration_sec"],
+                )
+            else:
+                _LOG.debug("manual-project reindex: root=%s no changes", row["root"])
+        except Exception:  # noqa: BLE001
+            _LOG.exception("manual-project reindex failed for %s", row["root"])
 
 
 def _process_dirty_entries(entries: list[dict]) -> None:
