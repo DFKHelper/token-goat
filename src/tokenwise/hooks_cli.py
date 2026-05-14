@@ -574,7 +574,11 @@ def _enqueue_for_reindex(file_path: str, cwd: str | None) -> None:
     per-edit hook stays light — importing ``worker`` would pull in tree-sitter
     via ``parser``.  The line format must stay in sync with
     ``worker.drain_dirty_queue``: one JSON object per line with ``path``,
-    ``project_hash``, and ``ts`` keys.
+    ``project_hash``, ``project_root``, ``project_marker``, and ``ts`` keys.
+    ``project_root``/``project_marker`` make the entry self-sufficient: if the
+    project has never been indexed (so its hash is not yet in ``global.db``),
+    the worker can still reconstruct it and run a first index instead of
+    dropping the edit.
     """
     import json  # noqa: PLC0415
     import time  # noqa: PLC0415
@@ -596,7 +600,15 @@ def _enqueue_for_reindex(file_path: str, cwd: str | None) -> None:
 
     queue_path = paths.dirty_queue_path()
     queue_path.parent.mkdir(parents=True, exist_ok=True)
-    line = json.dumps({"path": rel, "project_hash": project.hash, "ts": time.time()})
+    line = json.dumps(
+        {
+            "path": rel,
+            "project_hash": project.hash,
+            "project_root": project.root.as_posix(),
+            "project_marker": project.marker,
+            "ts": time.time(),
+        }
+    )
     with queue_path.open("a", encoding="utf-8") as f:
         f.write(line + "\n")
 

@@ -11,7 +11,7 @@ import sys
 import time
 from datetime import datetime
 from pathlib import Path
-from typing import TypedDict
+from typing import Any, TypedDict
 
 import psutil
 
@@ -859,33 +859,55 @@ def _reindex_active_projects() -> None:
 
 def _process_dirty_entries(entries: list[dict]) -> None:
     """Re-index files that were marked dirty by Edit/Write hooks."""
-    # Group by project_hash
-    by_project: dict[str, set[str]] = {}
+    # Group by project_hash, carrying the project root/marker from the first
+    # entry that records them. Newer entries (see hooks_cli._enqueue_for_reindex)
+    # are self-sufficient: they include project_root/project_marker so a project
+    # whose hash is not yet in global.db can still be reconstructed and indexed.
+    by_project: dict[str, dict[str, Any]] = {}
     for entry in entries:
         ph = entry.get("project_hash")
         rel = entry.get("path")
         if not ph or not rel:
             continue
-        by_project.setdefault(ph, set()).add(rel)
+        bucket = by_project.setdefault(ph, {"rels": set(), "root": None, "marker": None})
+        bucket["rels"].add(rel)
+        if bucket["root"] is None and entry.get("project_root"):
+            bucket["root"] = entry["project_root"]
+            bucket["marker"] = entry.get("project_marker") or "manual"
 
-    for ph, _rels in by_project.items():
+    for ph, bucket in by_project.items():
         try:
-            # Look up project root from global.db
+            # Look up project root from global.db.
             with db.open_global() as gconn:
                 row = gconn.execute(
                     "SELECT root, marker FROM projects WHERE hash = ?", (ph,)
                 ).fetchone()
-                if not row:
-                    _LOG.warning("dirty queue refers to unknown project hash %s", ph)
-                    continue
-                project = Project(
-                    root=Path(row["root"]),
-                    hash=ph,
-                    marker=row["marker"],
-                )
 
-            # Incremental reindex (full=False uses SHA-based skip-unchanged logic)
-            result = parser.index_project(project, full=False)
+            if row:
+                project = Project(root=Path(row["root"]), hash=ph, marker=row["marker"])
+                full = False  # incremental: SHA-based skip-unchanged logic
+            elif bucket["root"]:
+                # Project not yet registered — the first edit landed before the
+                # project was ever indexed. Reconstruct it from the queue entry
+                # and run a first full index so the edit is not lost.
+                # index_project self-registers the project up front.
+                project = Project(
+                    root=Path(bucket["root"]), hash=ph, marker=bucket["marker"] or "manual"
+                )
+                full = True
+                _LOG.info(
+                    "dirty queue: project %s not yet registered; running first index", ph[:8]
+                )
+            else:
+                # Legacy entry with no project_root recorded — nothing to anchor
+                # the reconstruction to. This only happens for entries enqueued
+                # before the self-sufficient format; drop with an explicit log.
+                _LOG.warning(
+                    "dirty queue refers to unknown project hash %s with no root; dropping", ph
+                )
+                continue
+
+            result = parser.index_project(project, full=full)
             _LOG.info(
                 "reindexed %d/%d files in project %s after dirty queue drain",
                 result["indexed"],

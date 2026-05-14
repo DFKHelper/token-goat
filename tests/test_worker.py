@@ -192,6 +192,54 @@ def test_process_dirty_entries_real_project(tmp_data_dir, tmp_path):
     worker._process_dirty_entries(entries)
 
 
+def test_process_dirty_entries_indexes_unregistered_project(tmp_data_dir, tmp_path):
+    """An edit in a project that was never indexed must not be silently dropped.
+
+    Before this fix, _process_dirty_entries looked the project hash up in
+    global.db and, on a miss, logged "unknown project hash" and dropped the
+    entry — so the very first edit in a not-yet-indexed project was lost and
+    nothing ever triggered an initial index. The queue entry now carries
+    project_root/project_marker, so the worker can reconstruct the project and
+    run a first index instead.
+    """
+    from tokenwise import db as _db
+    from tokenwise.project import canonicalize
+    from tokenwise.project import project_hash as ph_fn
+
+    proj_root = tmp_path / "fresh_project"
+    proj_root.mkdir()
+    (proj_root / "package.json").write_text('{"name":"fresh"}', encoding="utf-8")
+    src = proj_root / "src"
+    src.mkdir()
+    (src / "index.ts").write_text("export const x = 1;\n", encoding="utf-8")
+
+    canonical = canonicalize(proj_root)
+    ph = ph_fn(canonical)
+
+    # Project deliberately NOT registered in global.db.
+    with _db.open_global() as gconn:
+        assert (
+            gconn.execute("SELECT 1 FROM projects WHERE hash = ?", (ph,)).fetchone() is None
+        )
+
+    entries = [
+        {
+            "path": "src/index.ts",
+            "project_hash": ph,
+            "project_root": canonical.as_posix(),
+            "project_marker": "package.json",
+            "ts": time.time(),
+        }
+    ]
+    worker._process_dirty_entries(entries)
+
+    # The project was reconstructed from the self-sufficient entry and indexed,
+    # so it is now registered — the edit was not dropped.
+    with _db.open_global() as gconn:
+        row = gconn.execute("SELECT root FROM projects WHERE hash = ?", (ph,)).fetchone()
+    assert row is not None, "unregistered project was dropped instead of indexed"
+
+
 # ---------------------------------------------------------------------------
 # 9. run_daemon smoke test — stop_event shuts it down, PID file is cleaned up
 # ---------------------------------------------------------------------------
