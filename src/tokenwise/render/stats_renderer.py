@@ -18,10 +18,10 @@ _M = "  "  # left margin
 _COL_NAME   = 18
 _COL_DATA   = 10
 _COL_TOKENS = 12
-_COL_EVENTS =  6
 _COL_SHARE  =  6
-# Gaps: 1 (name→bar) + 2 (bar→data) + 2 (data→tokens) + 2 (tokens→events) + 2 (events→share)
-_COLS_FIXED = _COL_NAME + 1 + 2 + _COL_DATA + 2 + _COL_TOKENS + 2 + _COL_EVENTS + 2 + _COL_SHARE
+_COL_EVENTS =  6
+# Gaps: 1 (name→bar) + 2 (bar→data) + 2 (data→tokens) + 2 (tokens→share) + 2 (share→events)
+_COLS_FIXED = _COL_NAME + 1 + 2 + _COL_DATA + 2 + _COL_TOKENS + 2 + _COL_SHARE + 2 + _COL_EVENTS
 _BAR_W = max(16, _CONTENT_W - len(_M) * 2 - _COLS_FIXED)
 _RULE = _M + fg(*C.TEXT_DIM) + "─" * (_CONTENT_W - len(_M) * 2) + RESET
 
@@ -183,9 +183,9 @@ def _table_header(first_col_label: str) -> str:
         "  ",
         pad_l(f"{fg(*C.TEXT_DIM)}tokens saved{RESET}", _COL_TOKENS),
         "  ",
-        pad_l(f"{fg(*C.TEXT_DIM)}events{RESET}", _COL_EVENTS),
-        "  ",
         pad_l(f"{fg(*C.TEXT_DIM)}share{RESET}", _COL_SHARE),
+        "  ",
+        pad_l(f"{fg(*C.TEXT_DIM)}events{RESET}", _COL_EVENTS),
     ])
 
 
@@ -212,13 +212,13 @@ def _table_row(
     else:
         tok_str = pad_l(_fmt_tokens(tokens), _COL_TOKENS)
 
-    ev_str = pad_l(f"{fg(*C.TEXT_PRIMARY)}{events:,}{RESET}", _COL_EVENTS)
-
     share_pct = share * 100
     share_color: RGB = C.GREEN5 if share_pct >= 50 else (C.TEXT_PRIMARY if share_pct >= 10 else C.TEXT_MUTED)
     share_str = pad_l(f"{fg(*share_color)}{_fmt_pct(share)}{RESET}", _COL_SHARE)
 
-    return "".join([_M, name_str, " ", _render_bar(fraction), "  ", data_str, "  ", tok_str, "  ", ev_str, "  ", share_str])
+    ev_str = pad_l(f"{fg(*C.TEXT_PRIMARY)}{events:,}{RESET}", _COL_EVENTS)
+
+    return "".join([_M, name_str, " ", _render_bar(fraction), "  ", data_str, "  ", tok_str, "  ", share_str, "  ", ev_str])
 
 
 # ── Section: KPI tiles ─────────────────────────────────────────────────────────
