@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import sqlite3
 import time
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
@@ -253,7 +254,7 @@ def index_file(project: Project, file_path: Path) -> FileIndex | None:
     )
 
 
-def write_file_index(conn, fi: FileIndex) -> None:
+def write_file_index(conn: sqlite3.Connection, fi: FileIndex) -> None:
     """Replace all rows for this file with the new index."""
     now = int(time.time())
     # Delete old rows (cascade handles symbols/refs/imports_exports/sections)
