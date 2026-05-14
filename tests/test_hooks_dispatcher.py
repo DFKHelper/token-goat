@@ -195,3 +195,44 @@ def test_post_edit_skips_nudge_when_heartbeat_fresh(tmp_data_dir, tmp_path, monk
     )
     assert result == {"continue": True}
     assert called == [], "a live worker must not be respawned"
+
+
+def test_post_edit_nudges_worker_when_heartbeat_stale(tmp_data_dir, tmp_path, monkeypatch):
+    """A heartbeat file that exists but is older than the freshness window means
+    the worker hung or died — post_edit must respawn it, same as a missing one.
+
+    This is the middle case between 'missing' and 'fresh': the watchdog keys off
+    the heartbeat's mtime, so an old-but-present file must still trip the nudge.
+    """
+    import os
+    import time as _time
+
+    import tokenwise.paths as paths
+    from tokenwise import project as project_mod
+    from tokenwise import worker as worker_mod
+
+    monkeypatch.setattr(project_mod, "find_project", lambda _cwd: None)
+    called: list[bool] = []
+    monkeypatch.setattr(worker_mod, "ensure_running", lambda: called.append(True))
+
+    paths.ensure_dirs()
+    hb = paths.worker_heartbeat_path()
+    hb.write_text("stale", encoding="utf-8")
+    # Backdate the heartbeat well past the 65 s freshness window.
+    old = _time.time() - 600
+    os.utime(hb, (old, old))
+
+    stray = tmp_path / "edited.py"
+    stray.write_text("x = 1\n", encoding="utf-8")
+
+    result = hooks_cli.dispatch(
+        "post-edit",
+        {
+            "session_id": "sess-hb-stale",
+            "cwd": str(tmp_path),
+            "tool_name": "Edit",
+            "tool_input": {"file_path": str(stray)},
+        },
+    )
+    assert result == {"continue": True}
+    assert called == [True], "a worker with a stale heartbeat must be respawned"
