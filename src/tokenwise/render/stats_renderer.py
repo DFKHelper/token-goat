@@ -213,12 +213,19 @@ def _table_row(
         tok_str = pad_l(_fmt_tokens(tokens), _COL_TOKENS)
 
     share_pct = share * 100
-    share_color: RGB = C.GREEN5 if share_pct >= 50 else (C.TEXT_PRIMARY if share_pct >= 10 else C.TEXT_MUTED)
+    if share_pct >= 50:
+        share_color: RGB = C.GREEN5
+    elif share_pct >= 10:
+        share_color = C.TEXT_PRIMARY
+    else:
+        share_color = C.TEXT_MUTED
     share_str = pad_l(f"{fg(*share_color)}{_fmt_pct(share)}{RESET}", _COL_SHARE)
 
     ev_str = pad_l(f"{fg(*C.TEXT_PRIMARY)}{events:,}{RESET}", _COL_EVENTS)
 
-    return "".join([_M, name_str, " ", _render_bar(fraction), "  ", data_str, "  ", tok_str, "  ", share_str, "  ", ev_str])
+    parts = [_M, name_str, " ", _render_bar(fraction), "  ", data_str, "  ",
+             tok_str, "  ", share_str, "  ", ev_str]
+    return "".join(parts)
 
 
 # ── Section: KPI tiles ─────────────────────────────────────────────────────────
@@ -282,7 +289,11 @@ def _render_by_kind_section(stats: StatsData) -> list[str]:
     bytes_mode_kinds = [k.kind for k in stats.by_kind if k.bytes_mode_only]
     if bytes_mode_kinds:
         names = ", ".join(bytes_mode_kinds)
-        lines.append(f"{_M}{fg(*C.TEXT_DIM)}i  {names} tracks bytes, not vision tokens (model-specific math){RESET}")
+        msg = (
+            f"{_M}{fg(*C.TEXT_DIM)}i  {names} tracks bytes, not vision tokens "
+            f"(model-specific math){RESET}"
+        )
+        lines.append(msg)
 
     return lines
 
@@ -385,7 +396,11 @@ def _render_activity_section(stats: StatsData) -> list[str]:
         panel_lines.append(f"{fg(*C.TEXT_MUTED)}{rhythm}{RESET}")
         panel_lines.append(f"{fg(*C.TEXT_MUTED)}{weekday_bias}{RESET}")
         plural = "" if len(active_days) == 1 else "s"
-        panel_lines.append(f"{fg(*C.TEXT_MUTED)}{len(active_days)} active day{plural} of {total_period_days}{RESET}")
+        day_msg = (
+            f"{fg(*C.TEXT_MUTED)}{len(active_days)} active day{plural} of "
+            f"{total_period_days}{RESET}"
+        )
+        panel_lines.append(day_msg)
 
     # Visible width of grid rows: M + "Mon " + n_weeks × 2 cells + (n_weeks-1) spaces
     grid_vis_w = len(_M) + 4 + n_weeks * 2 + (n_weeks - 1)
@@ -419,7 +434,11 @@ def _render_activity_section(stats: StatsData) -> list[str]:
         for t in [0.0, 0.25, 0.5, 0.75, 1.0]
     )
     lines.append("")
-    lines.append(f"{_M}    {fg(*C.TEXT_DIM)}Less{RESET}  {legend_cells}  {fg(*C.TEXT_DIM)}More{RESET}")
+    legend = (
+        f"{_M}    {fg(*C.TEXT_DIM)}Less{RESET}  {legend_cells}  "
+        f"{fg(*C.TEXT_DIM)}More{RESET}"
+    )
+    lines.append(legend)
 
     return lines
 
@@ -433,7 +452,12 @@ def _render_by_day_section(stats: StatsData) -> list[str]:
     lines: list[str] = [*_section_header("By day (top 7)"), _table_header("date")]
 
     for d in stats.by_day:
-        share = d.tokens / stats.totals.tokens if stats.totals.tokens > 0 else (d.bytes / stats.totals.bytes if stats.totals.bytes > 0 else 0.0)
+        if stats.totals.tokens > 0:
+            share = d.tokens / stats.totals.tokens
+        elif stats.totals.bytes > 0:
+            share = d.bytes / stats.totals.bytes
+        else:
+            share = 0.0
         lines.append(_table_row(d.date, share, d.bytes, d.tokens, d.events, share))
 
     return lines
@@ -451,7 +475,12 @@ def _render_by_project_section(stats: StatsData) -> list[str]:
     lines: list[str] = [*_section_header("By project (top 5)"), _table_header("project")]
 
     for p in stats.by_project:
-        share = p.tokens / project_total_tokens if project_total_tokens > 0 else (p.bytes / project_total_bytes if project_total_bytes > 0 else 0.0)
+        if project_total_tokens > 0:
+            share = p.tokens / project_total_tokens
+        elif project_total_bytes > 0:
+            share = p.bytes / project_total_bytes
+        else:
+            share = 0.0
         color = _hash_color(p.hash)
         lines.append(_table_row(
             p.project, share, p.bytes, p.tokens, p.events, share,

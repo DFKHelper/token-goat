@@ -103,10 +103,11 @@ def _read_stats(
 ) -> list[sqlite3.Row]:
     """Fetch stats rows from the given connection."""
     if since_ts:
-        rows = conn.execute(
-            "SELECT ts, kind, tokens_saved, bytes_saved, detail FROM stats WHERE ts >= ? ORDER BY ts",
-            (int(since_ts),),
-        ).fetchall()
+        query = (
+            "SELECT ts, kind, tokens_saved, bytes_saved, detail "
+            "FROM stats WHERE ts >= ? ORDER BY ts"
+        )
+        rows = conn.execute(query, (int(since_ts),)).fetchall()
     else:
         rows = conn.execute(
             "SELECT ts, kind, tokens_saved, bytes_saved, detail FROM stats ORDER BY ts"
