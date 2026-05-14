@@ -709,8 +709,17 @@ def stats(
 
 
 @app.command()
-def doctor() -> None:  # noqa: C901
-    """Diagnose indexing health."""
+def doctor(  # noqa: C901
+    fix: bool = typer.Option(  # noqa: B008
+        False, "--fix", help="Clear stale index-spawn markers that doctor flags."
+    ),
+) -> None:
+    """Diagnose indexing health.
+
+    Pass ``--fix`` to also clear the stale ``.indexing`` spawn markers doctor
+    flags — the same reaping the worker does on startup, available on demand
+    for when the worker is down.
+    """
     import importlib
     import sqlite3
     import subprocess
@@ -920,8 +929,12 @@ def doctor() -> None:  # noqa: C901
 
     # Index-spawn markers (locks/{hash}.indexing). A stale marker is harmless
     # — _index_spawn_active() ignores it — but a pile of them hints at indexers
-    # that crashed or were killed.
+    # that crashed or were killed. With --fix, reap them here (the same logic
+    # the worker runs on startup) rather than only reporting them.
     locks_dir = paths.locks_dir()
+    if fix:
+        reaped = _worker.reap_stale_index_markers()
+        ok("index markers", f"reaped {reaped} stale marker(s)")
     markers = sorted(locks_dir.glob("*.indexing")) if locks_dir.exists() else []
     if not markers:
         ok("index markers", "none")

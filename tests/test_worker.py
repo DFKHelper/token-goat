@@ -529,6 +529,76 @@ def test_spawn_index_detached_respawns_when_pid_dead(tmp_data_dir):
 
 
 # ---------------------------------------------------------------------------
+# 11b. reap_stale_index_markers — clear the debris left by finished/crashed
+#      indexers so it cannot accumulate (the gap that left 16 markers on disk)
+# ---------------------------------------------------------------------------
+
+def test_reap_stale_index_markers_removes_dead_pid_marker(tmp_data_dir):
+    """A marker whose indexer PID is gone is debris — reap it."""
+    paths.ensure_dirs()
+    marker = paths.locks_dir() / "deadpid.indexing"
+    # Fresh timestamp so only the dead-PID condition is under test.
+    marker.write_text(f"999999999\n{time.time()}", encoding="utf-8")
+
+    cleared = worker.reap_stale_index_markers()
+    assert cleared == 1
+    assert not marker.exists()
+
+
+def test_reap_stale_index_markers_removes_expired_marker(tmp_data_dir):
+    """A marker older than INDEX_SPAWN_TTL is reaped even if its PID is alive."""
+    paths.ensure_dirs()
+    marker = paths.locks_dir() / "expired.indexing"
+    stale_ts = time.time() - (worker.INDEX_SPAWN_TTL + 60)
+    # This process's PID is definitely alive — TTL alone must trigger the reap.
+    marker.write_text(f"{os.getpid()}\n{stale_ts}", encoding="utf-8")
+
+    cleared = worker.reap_stale_index_markers()
+    assert cleared == 1
+    assert not marker.exists()
+
+
+def test_reap_stale_index_markers_removes_malformed_marker(tmp_data_dir):
+    """A marker that cannot be parsed is debris — reap it."""
+    paths.ensure_dirs()
+    marker = paths.locks_dir() / "garbage.indexing"
+    marker.write_text("not a valid marker", encoding="utf-8")
+
+    cleared = worker.reap_stale_index_markers()
+    assert cleared == 1
+    assert not marker.exists()
+
+
+def test_reap_stale_index_markers_spares_active_marker(tmp_data_dir):
+    """A marker for a live, fresh indexer must never be reaped — reaping it
+    would re-open the runaway-pileup race spawn_index_detached() guards."""
+    paths.ensure_dirs()
+    marker = paths.locks_dir() / "active.indexing"
+    # This process is alive, timestamp is fresh: _index_spawn_active() → True.
+    marker.write_text(f"{os.getpid()}\n{time.time()}", encoding="utf-8")
+
+    cleared = worker.reap_stale_index_markers()
+    assert cleared == 0
+    assert marker.exists()
+
+
+def test_cleanup_on_startup_reaps_stale_index_markers(tmp_data_dir):
+    """cleanup_on_startup (run on startup *and* every maintenance cycle) clears
+    stale index markers while leaving an active one in place."""
+    paths.ensure_dirs()
+    locks = paths.locks_dir()
+    stale = locks / "stalehash.indexing"
+    stale.write_text(f"999999999\n{time.time()}", encoding="utf-8")
+    active = locks / "activehash.indexing"
+    active.write_text(f"{os.getpid()}\n{time.time()}", encoding="utf-8")
+
+    stats = worker.cleanup_on_startup()
+    assert stats["stale_index_markers_cleared"] >= 1
+    assert not stale.exists()
+    assert active.exists()
+
+
+# ---------------------------------------------------------------------------
 # 12. enqueue_dirty with None project_hash
 # ---------------------------------------------------------------------------
 
