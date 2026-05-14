@@ -384,7 +384,7 @@ def index_project_embeddings(
                         ch.text,
                     ),
                 )
-                chunk_id = cur.lastrowid
+                chunk_id: int = cur.lastrowid  # type: ignore[assignment]  # INSERT always sets lastrowid
                 conn.execute(
                     "INSERT INTO embeddings (chunk_id, embedding) VALUES (?, ?)",
                     (chunk_id, _pack_vec(vec)),
