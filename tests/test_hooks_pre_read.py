@@ -85,6 +85,74 @@ class TestPreReadHandlerDirect:
         assert len(rows) == 1
         assert rows[0]["detail"] == path
 
+    def test_session_hint_stat_is_net_of_injection_cost(self, tmp_data_dir):
+        """The session_hint stat is *net*: realized saving minus the token cost
+        of the injected hint text — not the gross saving.
+
+        Regression for the honest-accounting fix: a hint is not free, so
+        `tokenwise stats` must subtract the cost of injecting it.
+        """
+        from tokenwise import db
+        from tokenwise.hints import CHARS_PER_TOKEN, build_read_hint
+
+        sid = "net_acct"
+        path = "C:/proj/cached.py"
+        session.mark_file_read(sid, path, offset=0, limit=200)
+
+        # Build the hint directly to derive the expected net independently.
+        hint = build_read_hint(
+            session_id=sid, file_path=path, offset=0, limit=200, cwd="C:/proj"
+        )
+        assert hint is not None
+        injection_cost = max(1, int(len(hint) / CHARS_PER_TOKEN))
+        assert injection_cost > 0  # the hint text is not free
+        expected_net_tokens = hint.tokens_saved - injection_cost
+        expected_net_bytes = hint.tokens_saved * 4 - len(hint)
+
+        payload = {
+            "session_id": sid,
+            "tool_name": "Read",
+            "tool_input": {"file_path": path, "offset": 0, "limit": 200},
+            "cwd": "C:/proj",
+        }
+        result = hooks_cli.pre_read(payload)
+        assert "hookSpecificOutput" in result
+
+        with db.open_global() as conn:
+            rows = conn.execute(
+                "SELECT tokens_saved, bytes_saved FROM stats WHERE kind = 'session_hint'"
+            ).fetchall()
+        assert len(rows) == 1
+        assert rows[0]["tokens_saved"] == expected_net_tokens
+        assert rows[0]["bytes_saved"] == expected_net_bytes
+
+    def test_suggestion_hint_records_negative_net(self, tmp_data_dir):
+        """A pure-suggestion hint (tokens_saved=0) records a *negative* net — it
+        cost tokens to inject and has realized nothing yet. The real saving, if
+        the agent acts on it, is recorded later by `tokenwise read`."""
+        from tokenwise import db
+
+        sid = "neg_net"
+        path = "C:/proj/syms.py"
+        # Symbol-only prior access → produces a suggestion hint (tokens_saved=0).
+        session.mark_file_read(sid, path, symbol="some_func")
+
+        payload = {
+            "session_id": sid,
+            "tool_name": "Read",
+            "tool_input": {"file_path": path, "offset": 0, "limit": 2000},
+            "cwd": "C:/proj",
+        }
+        result = hooks_cli.pre_read(payload)
+        assert "hookSpecificOutput" in result
+
+        with db.open_global() as conn:
+            row = conn.execute(
+                "SELECT tokens_saved FROM stats WHERE kind = 'session_hint'"
+            ).fetchone()
+        assert row is not None
+        assert row["tokens_saved"] < 0
+
     def test_missing_tool_name_passes_through(self, tmp_data_dir):
         """No tool_name in payload → passes through as non-Read."""
         payload = {"session_id": "s4", "tool_input": {"file_path": "foo.py"}}

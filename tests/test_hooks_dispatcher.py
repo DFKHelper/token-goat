@@ -132,3 +132,66 @@ def test_post_edit_file_outside_project_does_not_enqueue(tmp_data_dir, tmp_path,
     queue_path = paths.dirty_queue_path()
     queued = queue_path.exists() and queue_path.read_text(encoding="utf-8").strip()
     assert not queued, "no project detected — nothing should have been enqueued"
+
+
+# ---------------------------------------------------------------------------
+# post_edit — mid-session watchdog: respawn the worker if it has gone down
+# ---------------------------------------------------------------------------
+
+def test_post_edit_nudges_worker_when_heartbeat_missing(tmp_data_dir, tmp_path, monkeypatch):
+    """post_edit feeds the dirty queue, so it must make sure something will
+    drain it: with no fresh heartbeat, the watchdog calls ensure_running()."""
+    from tokenwise import project as project_mod
+    from tokenwise import worker as worker_mod
+
+    monkeypatch.setattr(project_mod, "find_project", lambda _cwd: None)
+    called: list[bool] = []
+    monkeypatch.setattr(worker_mod, "ensure_running", lambda: called.append(True))
+
+    stray = tmp_path / "edited.py"
+    stray.write_text("x = 1\n", encoding="utf-8")
+    # No heartbeat file → worker considered down.
+
+    result = hooks_cli.dispatch(
+        "post-edit",
+        {
+            "session_id": "sess-hb-missing",
+            "cwd": str(tmp_path),
+            "tool_name": "Edit",
+            "tool_input": {"file_path": str(stray)},
+        },
+    )
+    assert result == {"continue": True}
+    assert called == [True], "a down worker must be respawned from post_edit"
+
+
+def test_post_edit_skips_nudge_when_heartbeat_fresh(tmp_data_dir, tmp_path, monkeypatch):
+    """A fresh heartbeat means the worker is alive — the watchdog must not
+    respawn it (the common path stays a single stat() with no worker import)."""
+    import time as _time
+
+    import tokenwise.paths as paths
+    from tokenwise import project as project_mod
+    from tokenwise import worker as worker_mod
+
+    monkeypatch.setattr(project_mod, "find_project", lambda _cwd: None)
+    called: list[bool] = []
+    monkeypatch.setattr(worker_mod, "ensure_running", lambda: called.append(True))
+
+    paths.ensure_dirs()
+    paths.worker_heartbeat_path().write_text(str(_time.time()), encoding="utf-8")
+
+    stray = tmp_path / "edited.py"
+    stray.write_text("x = 1\n", encoding="utf-8")
+
+    result = hooks_cli.dispatch(
+        "post-edit",
+        {
+            "session_id": "sess-hb-fresh",
+            "cwd": str(tmp_path),
+            "tool_name": "Edit",
+            "tool_input": {"file_path": str(stray)},
+        },
+    )
+    assert result == {"continue": True}
+    assert called == [], "a live worker must not be respawned"
