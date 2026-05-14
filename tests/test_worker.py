@@ -390,3 +390,145 @@ def test_evict_image_cache_below_limit(tmp_data_dir, monkeypatch):
     # Should not evict because below limit
     assert (bytes_freed, files_freed) == (0, 0)
     assert small_file.exists()
+
+
+# ---------------------------------------------------------------------------
+# _reindex_manual_projects
+# ---------------------------------------------------------------------------
+
+class TestReindexManualProjects:
+    def _register_project(self, gconn, hash_: str, root: str, marker: str, file_count: int) -> None:
+        now = int(time.time())
+        gconn.execute(
+            "INSERT OR REPLACE INTO projects(hash, root, marker, first_seen, last_seen, file_count, languages) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (hash_, root, marker, now, now, file_count, "markdown"),
+        )
+
+    def test_does_nothing_when_no_manual_projects(self, tmp_data_dir):
+        # No projects registered at all — should not raise
+        worker._reindex_manual_projects()
+
+    def test_skips_non_manual_projects(self, tmp_data_dir, tmp_path):
+        from tokenwise import db as _db
+        from tokenwise.project import project_hash
+
+        proj_root = tmp_path / "code"
+        proj_root.mkdir()
+        ph = project_hash(proj_root.resolve())
+        with _db.open_global() as gconn:
+            self._register_project(gconn, ph, str(proj_root), ".git", 5)
+
+        # .git project — should be ignored, no reindex attempted
+        with patch("tokenwise.parser.index_project") as mock_index:
+            worker._reindex_manual_projects()
+            mock_index.assert_not_called()
+
+    def test_reindexes_manual_project(self, tmp_data_dir, tmp_path):
+        from tokenwise import db as _db
+        from tokenwise.project import project_hash, canonicalize
+
+        skill_root = tmp_path / "skills"
+        skill_root.mkdir()
+        (skill_root / "tool.md").write_text("# Tool\n\n## Section\n\nContent.\n", encoding="utf-8")
+        ph = project_hash(canonicalize(skill_root))
+
+        with _db.open_global() as gconn:
+            self._register_project(gconn, ph, skill_root.as_posix(), "manual", 1)
+
+        # First index so there is a project DB to update
+        from tokenwise.parser import index_project
+        from tokenwise.project import make_project_at
+        index_project(make_project_at(skill_root), full=True)
+
+        # Now call the sweep — should run without raising
+        worker._reindex_manual_projects()
+
+    def test_skips_project_exceeding_file_cap(self, tmp_data_dir, tmp_path, monkeypatch):
+        from tokenwise import db as _db
+        from tokenwise.project import project_hash
+
+        big_root = tmp_path / "huge"
+        big_root.mkdir()
+        ph = project_hash(big_root.resolve())
+        with _db.open_global() as gconn:
+            # Register with file_count > cap
+            self._register_project(gconn, ph, str(big_root), "manual", 9999)
+
+        monkeypatch.setattr(worker, "MANUAL_REINDEX_MAX_FILES", 500)
+
+        with patch("tokenwise.parser.index_project") as mock_index:
+            worker._reindex_manual_projects()
+            mock_index.assert_not_called()
+
+    def test_one_project_failing_does_not_block_others(self, tmp_data_dir, tmp_path):
+        from tokenwise import db as _db
+        from tokenwise.project import project_hash, canonicalize
+        from tokenwise.project import make_project_at
+
+        good_root = tmp_path / "good"
+        good_root.mkdir()
+        (good_root / "skill.md").write_text("# Good\n", encoding="utf-8")
+        bad_root = tmp_path / "bad"
+        bad_root.mkdir()
+
+        good_ph = project_hash(canonicalize(good_root))
+        bad_ph = project_hash(canonicalize(bad_root))
+
+        from tokenwise.parser import index_project
+        index_project(make_project_at(good_root), full=True)
+
+        with _db.open_global() as gconn:
+            self._register_project(gconn, bad_ph, bad_root.as_posix(), "manual", 1)
+            self._register_project(gconn, good_ph, good_root.as_posix(), "manual", 1)
+
+        call_log: list[str] = []
+
+        original_index = __import__("tokenwise.parser", fromlist=["index_project"]).index_project
+
+        def _patched_index(proj, **kw):
+            if proj.hash == bad_ph:
+                raise RuntimeError("simulated index failure")
+            call_log.append(proj.hash)
+            return original_index(proj, **kw)
+
+        with patch("tokenwise.parser.index_project", side_effect=_patched_index):
+            worker._reindex_manual_projects()  # must not raise
+
+        # good project was still processed despite bad project failing
+        assert good_ph in call_log
+
+    def test_global_db_error_is_swallowed(self, tmp_data_dir, monkeypatch):
+        from tokenwise import db as _db
+
+        def _boom(*a, **kw):
+            raise RuntimeError("DB gone")
+
+        monkeypatch.setattr(_db, "open_global_readonly", _boom)
+        # Should not raise — error is caught and logged
+        worker._reindex_manual_projects()
+
+    def test_run_daemon_triggers_manual_reindex(self, tmp_data_dir, monkeypatch):
+        """run_daemon calls _reindex_manual_projects when MANUAL_REINDEX_INTERVAL elapses."""
+        import threading
+
+        monkeypatch.setattr(worker, "MANUAL_REINDEX_INTERVAL", 0.0)  # trigger immediately
+        monkeypatch.setattr(worker, "POLL_INTERVAL", 0.05)
+
+        called = threading.Event()
+        original = worker._reindex_manual_projects
+
+        def _spy():
+            called.set()
+            original()
+
+        monkeypatch.setattr(worker, "_reindex_manual_projects", _spy)
+
+        stop = threading.Event()
+        t = threading.Thread(target=worker.run_daemon, kwargs={"stop_event": stop}, daemon=True)
+        t.start()
+        called.wait(timeout=3.0)
+        stop.set()
+        t.join(timeout=3.0)
+
+        assert called.is_set(), "_reindex_manual_projects was never called by run_daemon"
