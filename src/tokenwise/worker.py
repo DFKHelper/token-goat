@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import contextlib
+import hashlib
 import json
 import logging
 import os
@@ -98,9 +99,36 @@ def _installed_version() -> str | None:
         return None
 
 
+def _package_fingerprint() -> str | None:
+    """A content fingerprint of the installed tokenwise package's code on disk.
+
+    The version-string check alone misses a same-version reinstall — e.g.
+    ``uv tool install --reinstall`` during development without a version bump
+    rewrites the package files but leaves the version unchanged, so the worker
+    keeps running stale code. This hashes (relative path, size, mtime) of every
+    ``.py`` file under the package directory, which changes whenever any file is
+    rewritten, added, or removed. Best-effort: returns None on any error so the
+    daemon falls back to the version-string check rather than crashing.
+    """
+    try:
+        pkg_dir = Path(__file__).parent
+        entries = [
+            f"{py.relative_to(pkg_dir).as_posix()}:{st.st_size}:{st.st_mtime_ns}"
+            for py in sorted(pkg_dir.rglob("*.py"))
+            for st in (py.stat(),)
+        ]
+        return hashlib.sha1("\n".join(entries).encode("utf-8")).hexdigest()
+    except Exception:  # noqa: BLE001
+        return None
+
+
 # Version this process booted with. A later _installed_version() that differs
 # means the on-disk package was reinstalled under the running worker.
 _BOOTED_VERSION = _installed_version()
+
+# Code fingerprint this process booted with. A later _package_fingerprint() that
+# differs catches a same-version reinstall that the version check would miss.
+_BOOTED_FINGERPRINT = _package_fingerprint()
 
 
 def _setup_logging() -> None:
@@ -819,17 +847,27 @@ def run_daemon(stop_event=None) -> None:
             # Hand off to a freshly-installed version. `uv tool install
             # --reinstall` replaces the on-disk package but cannot touch this
             # already-running process — without this check the worker keeps
-            # executing stale code until something external restarts it.
+            # executing stale code until something external restarts it. The
+            # code-fingerprint check also catches a same-version reinstall,
+            # which the version-string comparison alone would miss.
             if now - last_version_check >= VERSION_CHECK_INTERVAL:
                 current = _installed_version()
-                if (
+                current_fp = _package_fingerprint()
+                version_changed = (
                     _BOOTED_VERSION is not None
                     and current is not None
                     and current != _BOOTED_VERSION
-                ):
+                )
+                code_changed = (
+                    _BOOTED_FINGERPRINT is not None
+                    and current_fp is not None
+                    and current_fp != _BOOTED_FINGERPRINT
+                )
+                if version_changed or code_changed:
                     _LOG.info(
-                        "tokenwise version changed on disk (%s -> %s); "
+                        "tokenwise %s changed on disk (version %s -> %s); "
                         "restarting worker to load new code",
+                        "version" if version_changed else "code",
                         _BOOTED_VERSION,
                         current,
                     )
