@@ -302,6 +302,32 @@ def test_install_worker_task_correct_args(monkeypatch):
     assert "tokenwise" in written[install.TASK_WORKER]
 
 
+def test_registry_is_isolated_in_tests():
+    r"""Regression guard: no test may touch the real Windows registry.
+
+    test_install_uninstall_round_trip runs install_all()/uninstall_all(),
+    which call winreg.SetValueEx/DeleteValue on HKCU\...\Run directly. With
+    winreg unmocked, that wrote — then DELETED — the user's real
+    `tokenwise-worker` autostart entry on every `pytest` run. The
+    isolate_registry autouse fixture swaps in an in-memory fake; this guards
+    that it is active so the regression cannot silently return.
+    """
+    import sys
+
+    winreg = sys.modules.get("winreg")
+    assert winreg is not None, "winreg must be stubbed into sys.modules during tests"
+    assert type(winreg).__name__ == "_FakeWinreg", (
+        f"winreg in tests must be the in-memory fake, got {type(winreg)!r} — "
+        "a test could mutate the real registry"
+    )
+    # It round-trips a write / read / delete entirely in memory.
+    key = winreg.OpenKey(winreg.HKEY_CURRENT_USER, r"Software\Probe", 0, winreg.KEY_SET_VALUE)
+    winreg.SetValueEx(key, "probe", 0, winreg.REG_SZ, "v")
+    assert winreg.QueryValueEx(key, "probe")[0] == "v"
+    winreg.DeleteValue(key, "probe")
+    winreg.CloseKey(key)
+
+
 # ---------------------------------------------------------------------------
 # 12. task_exists — reports based on subprocess return code
 # ---------------------------------------------------------------------------

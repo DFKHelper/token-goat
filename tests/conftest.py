@@ -42,6 +42,69 @@ def make_project(tmp_data_dir):
     return make_project_from_root
 
 
+class _FakeRegistryKey:
+    """In-memory stand-in for an open registry key handle."""
+
+    def __init__(self, values: dict):
+        self.values = values
+
+
+class _FakeWinreg:
+    """In-memory fake of the stdlib ``winreg`` module.
+
+    Covers exactly the surface tokenwise's install/uninstall/doctor code uses.
+    Backed by one dict so a write through one handle is visible to a read
+    through another within the same test. Used by the ``isolate_registry``
+    autouse fixture so no test can ever touch the real Windows registry.
+    """
+
+    HKEY_CURRENT_USER = "HKCU"
+    REG_SZ = 1
+    KEY_SET_VALUE = 0x0002
+    KEY_READ = 0x20019
+
+    def __init__(self) -> None:
+        self._values: dict[str, object] = {}
+
+    def OpenKey(self, hive, path, reserved, access):  # noqa: N802
+        return _FakeRegistryKey(self._values)
+
+    def SetValueEx(self, key, name, reserved, reg_type, value):  # noqa: N802
+        key.values[name] = value
+
+    def QueryValueEx(self, key, name):  # noqa: N802
+        if name not in key.values:
+            raise FileNotFoundError(name)
+        return key.values[name], self.REG_SZ
+
+    def DeleteValue(self, key, name):  # noqa: N802
+        if name not in key.values:
+            raise FileNotFoundError(name)
+        del key.values[name]
+
+    def CloseKey(self, key):  # noqa: N802
+        pass
+
+
+@pytest.fixture(autouse=True)
+def isolate_registry(monkeypatch):
+    r"""Stop any test from reading or writing the real Windows registry.
+
+    install_all()/uninstall_all() — and install_worker_task()/uninstall_tasks()
+    — call ``winreg`` directly. A test exercising them unmocked writes, then
+    DELETES, the user's real ``tokenwise-worker`` HKCU Run key (the worker's
+    autostart entry) on every ``pytest`` run — which is exactly what
+    test_install_uninstall_round_trip did. Replace ``winreg`` in sys.modules
+    with an in-memory fake for every test. A test that needs to assert on
+    specific registry writes installs its own fake on top — it wins, being set
+    up after this fixture.
+    """
+    import sys
+
+    monkeypatch.setitem(sys.modules, "winreg", _FakeWinreg())
+    yield
+
+
 @pytest.fixture(autouse=True)
 def isolate_worker_autostart(monkeypatch):
     """Stop the worker from touching the real HKCU Run key during tests.
