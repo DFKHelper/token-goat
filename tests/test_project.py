@@ -55,3 +55,37 @@ def test_find_project_shopify_marker(tmp_path):
     proj = find_project(tmp_path)
     assert proj is not None
     assert proj.marker == "shopify.app.toml"
+
+
+def test_find_project_skips_repo_container(tmp_path):
+    """A stray `.git` at a directory that merely holds many independent repos
+    must not swallow the whole supertree into one giant project.
+
+    This is the environmental half of the "unknown project hash" bug: an
+    accidental `git init` at a container like C:\\Projects made find_project
+    return the container, and everything under it indexed as one project.
+    """
+    container = tmp_path / "Projects"
+    container.mkdir()
+    (container / ".git").mkdir()  # the stray accidental `git init`
+    for name in ("repo_a", "repo_b", "repo_c"):
+        child = container / name
+        child.mkdir()
+        (child / ".git").mkdir()
+
+    # A markerless scratch dir directly under the container.
+    scratch = container / "scratch"
+    scratch.mkdir()
+    proj = find_project(scratch)
+    assert proj is None or proj.root != canonicalize(container), (
+        "find_project returned the repo-container as a project"
+    )
+
+    # Querying the container directly also does not treat it as a project.
+    direct = find_project(container)
+    assert direct is None or direct.root != canonicalize(container)
+
+    # A real repo nested in the container is still detected as itself.
+    repo_a = find_project(container / "repo_a")
+    assert repo_a is not None
+    assert repo_a.root == canonicalize(container / "repo_a")
