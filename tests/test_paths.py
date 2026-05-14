@@ -184,3 +184,40 @@ def test_web_cache_dir_structure(tmp_data_dir):
     web_cache = paths.web_cache_dir()
     assert isinstance(web_cache, Path)
     assert web_cache.name == "web_cache"
+
+
+def test_roll_log_if_oversized_under_cap_is_noop(tmp_path):
+    """A log under the size cap is left untouched — no .prev.log produced."""
+    log = tmp_path / "2026-05-14.log"
+    log.write_bytes(b"x" * 100)
+
+    paths.roll_log_if_oversized(log, max_bytes=1000)
+
+    assert log.exists()
+    assert log.read_bytes() == b"x" * 100
+    assert not (tmp_path / "2026-05-14.prev.log").exists()
+
+
+def test_roll_log_if_oversized_over_cap_rolls_to_prev(tmp_path):
+    """A log over the cap is rolled to a .prev.log sibling, content intact.
+
+    Regression guard: without the size cap a single day's log (or the
+    worker-stderr crash sink) grows without an upper bound on its footprint.
+    """
+    log = tmp_path / "2026-05-14.log"
+    payload = b"y" * 2000
+    log.write_bytes(payload)
+
+    paths.roll_log_if_oversized(log, max_bytes=1000)
+
+    prev = tmp_path / "2026-05-14.prev.log"
+    assert prev.exists(), "oversized log must roll over to .prev.log"
+    assert prev.read_bytes() == payload, "rolled-over content must be preserved intact"
+    assert not log.exists(), "the live log path is freed for the caller to recreate"
+    # .prev.log ends in .log so the worker's 7-day retention sweep still reaps it.
+    assert prev.suffix == ".log"
+
+
+def test_roll_log_if_oversized_missing_file_is_silent(tmp_path):
+    """A missing log path is a no-op, not an error (first run before any log)."""
+    paths.roll_log_if_oversized(tmp_path / "nonexistent.log", max_bytes=1000)
