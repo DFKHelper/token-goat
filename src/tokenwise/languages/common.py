@@ -48,7 +48,7 @@ _RUST_SYM_KIND_STR_MAPPING = {
 
 
 def kind_str(structure_kind: object, language: str = "go") -> str:
-    """Convert tlp StructureKind to our kind string.
+    """Convert tree-sitter StructureKind to canonical kind string.
 
     Supports language-specific overrides for Impl, Module, Namespace mappings.
     Python, Go, TypeScript use base mapping; Rust has overrides.
@@ -59,7 +59,7 @@ def kind_str(structure_kind: object, language: str = "go") -> str:
 
 
 def sym_kind_str(sym_kind: object, language: str = "go") -> str:
-    """Convert tlp SymbolKind to our kind string.
+    """Convert tree-sitter SymbolKind to canonical kind string.
 
     Supports language-specific overrides for Module mappings.
     """
