@@ -1,9 +1,12 @@
 """Detect Read/Grep-equivalent patterns inside Codex's Bash tool calls."""
 from __future__ import annotations
 
+import logging
 import shlex
 from dataclasses import dataclass
 from pathlib import Path
+
+_LOG = logging.getLogger("tokenwise.bash_parser")
 
 
 @dataclass
@@ -47,7 +50,8 @@ def parse(command: str) -> BashIntent:
 
     try:
         tokens = shlex.split(command, posix=True)
-    except ValueError:
+    except ValueError as e:
+        _LOG.debug("bash_parser: shlex.split failed: %s", e)
         return BashIntent(kind="unknown")
 
     # Strip common prefixes like sudo, time, nice, exec and env VAR=val assignments

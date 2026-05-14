@@ -47,7 +47,8 @@ def event_count(session_id: str) -> int:
     try:
         cache = session_mod.load(session_id)
         return len(cache.files) + len(cache.greps) + len(cache.edited_files)
-    except Exception:  # noqa: BLE001
+    except Exception as e:  # noqa: BLE001
+        _LOG.debug("event_count(%s) failed: %s", session_id[:8], e)
         return 0
 
 

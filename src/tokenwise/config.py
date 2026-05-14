@@ -39,8 +39,11 @@ def load() -> Config:
     if p.exists():
         try:
             raw = tomllib.loads(p.read_text(encoding="utf-8"))
+            _LOG.debug("config loaded from %s", p)
         except Exception as e:  # noqa: BLE001
             _LOG.warning("config load failed (%s); using defaults", e)
+    else:
+        _LOG.debug("config not found; using defaults")
 
     ca_raw = raw.get("compact_assist", {})
     ca = CompactAssistConfig(
@@ -53,6 +56,7 @@ def load() -> Config:
     # Environment override: TOKENWISE_COMPACT_ASSIST=0 / false / no / off disables
     env_val = os.environ.get(_ENV_COMPACT_ASSIST, "").strip().lower()
     if env_val in ("0", "false", "no", "off"):
+        _LOG.debug("%s=%s; compact_assist disabled", _ENV_COMPACT_ASSIST, env_val)
         ca.enabled = False
 
     return Config(compact_assist=ca)
