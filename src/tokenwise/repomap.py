@@ -213,20 +213,18 @@ def render_summary(s: FileSummary) -> str:
     return "\n".join(lines)
 
 
-def build_map(
+def _load_and_rank(
     project: Project,
-    *,
-    budget_tokens: int = 4000,
-    include_unranked_tail: bool = True,
-) -> str:
-    """Build the repo map text under the token budget."""
+) -> tuple[dict, dict, dict, list[tuple[str, dict]], dict[str, float]] | None:
+    """Load project data, filter, compute PageRank, and return sorted ranking.
+
+    Returns ``(files, symbols_by_file, sections_by_file, ranked, ranks)`` or
+    ``None`` when there are no indexed files (callers handle the empty case).
+    """
     with db.open_project(project.hash) as conn:
         files, symbols_by_file, sections_by_file, name_to_files = _load_project_data(conn)
         if not files:
-            return (
-                f"# {project.root.name}\n\n"
-                "(no files indexed — run `tokenwise index --full`)\n"
-            )
+            return None
         files = {
             rel: info
             for rel, info in files.items()
@@ -240,6 +238,23 @@ def build_map(
         ranks = {f: float(info["size"]) for f, info in files.items()}
 
     ranked = sorted(files.items(), key=lambda kv: ranks.get(kv[0], 0.0), reverse=True)
+    return files, symbols_by_file, sections_by_file, ranked, ranks
+
+
+def build_map(
+    project: Project,
+    *,
+    budget_tokens: int = 4000,
+    include_unranked_tail: bool = True,
+) -> str:
+    """Build the repo map text under the token budget."""
+    result = _load_and_rank(project)
+    if result is None:
+        return (
+            f"# {project.root.name}\n\n"
+            "(no files indexed — run `tokenwise index --full`)\n"
+        )
+    files, symbols_by_file, sections_by_file, ranked, ranks = result
 
     lang_set = sorted({info["language"] for info in files.values()})
     header = f"# {project.root.name}\n  files={len(files)} languages={','.join(lang_set)}\n\n"
@@ -276,20 +291,10 @@ def build_map(
 
 def build_map_json(project: Project) -> list[FileMapItem]:
     """Same data as build_map but as structured list of dicts (for tools)."""
-    with db.open_project(project.hash) as conn:
-        files, symbols_by_file, sections_by_file, name_to_files = _load_project_data(conn)
-        files = {
-            rel: info
-            for rel, info in files.items()
-            if _is_map_worthy(rel, max(1, info["size"] // 50))
-        }
-        graph = _build_graph(conn, files, name_to_files)
-
-    ranks = compute_ranks(graph)
-    if not ranks or len(set(ranks.values())) <= 1:
-        ranks = {f: float(info["size"]) for f, info in files.items()}
-
-    ranked = sorted(files.items(), key=lambda kv: ranks.get(kv[0], 0.0), reverse=True)
+    result = _load_and_rank(project)
+    if result is None:
+        return []
+    files, symbols_by_file, sections_by_file, ranked, ranks = result
     out = []
     for rel, info in ranked:
         summary = _summarize_file(
