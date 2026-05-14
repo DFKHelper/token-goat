@@ -351,6 +351,91 @@ def test_ensure_running_already_alive(tmp_data_dir):
 
 
 # ---------------------------------------------------------------------------
+# 10b. Worker self-heal — ensure_running must distinguish crashed / hung / busy
+# ---------------------------------------------------------------------------
+
+
+class TestWorkerSelfHeal:
+    """ensure_running() must respawn a crashed or hung worker, but never
+    disturb a healthy-but-busy one (which would orphan it or spawn a
+    duplicate that just loses the claim race)."""
+
+    def test_is_tokenwise_worker_false_for_dead_pid(self, tmp_data_dir):
+        # 999999999 is not a real PID — cmdline lookup fails → not a worker.
+        assert worker._is_tokenwise_worker(999999999) is False
+
+    def test_live_worker_pid_none_for_dead_pid(self, tmp_data_dir):
+        paths.ensure_dirs()
+        paths.worker_pid_path().write_text("999999999", encoding="utf-8")
+        assert worker._live_worker_pid() is None
+
+    def test_reap_hung_worker_noop_when_no_live_worker(self, tmp_data_dir):
+        """No live worker process → nothing to reap."""
+        with patch.object(worker, "_live_worker_pid", return_value=None):
+            assert worker._reap_hung_worker() is False
+
+    def test_reap_hung_worker_spares_busy_worker(self, tmp_data_dir):
+        """A live worker with a only-moderately-stale heartbeat is *busy*, not
+        hung — it must not be killed."""
+        paths.ensure_dirs()
+        # Heartbeat 100 s old: past is_worker_alive()'s 65 s window, but far
+        # under WORKER_HUNG_THRESHOLD.
+        hb = paths.worker_heartbeat_path()
+        hb.write_text(str(time.time()), encoding="utf-8")
+        old = time.time() - 100
+        os.utime(hb, (old, old))
+
+        with patch.object(worker, "_live_worker_pid", return_value=4242), \
+             patch.object(worker.psutil, "Process") as mock_proc:
+            assert worker._reap_hung_worker() is False
+            mock_proc.assert_not_called()  # never even looked the process up
+
+    def test_reap_hung_worker_kills_genuinely_hung_worker(self, tmp_data_dir):
+        """A live worker silent past WORKER_HUNG_THRESHOLD is hung → terminate."""
+        paths.ensure_dirs()
+        hb = paths.worker_heartbeat_path()
+        hb.write_text(str(time.time()), encoding="utf-8")
+        very_old = time.time() - (worker.WORKER_HUNG_THRESHOLD + 60)
+        os.utime(hb, (very_old, very_old))
+
+        fake_proc = MagicMock()
+        with patch.object(worker, "_live_worker_pid", return_value=4242), \
+             patch.object(worker.psutil, "Process", return_value=fake_proc):
+            assert worker._reap_hung_worker() is True
+        fake_proc.terminate.assert_called_once()
+
+    def test_ensure_running_leaves_busy_worker_alone(self, tmp_data_dir):
+        """is_worker_alive() False but a live worker exists and is not hung →
+        return its PID, never spawn a duplicate or clear its pid file."""
+        with patch.object(worker, "is_worker_alive", return_value=False), \
+             patch.object(worker, "_reap_hung_worker", return_value=False), \
+             patch.object(worker, "_live_worker_pid", return_value=4242), \
+             patch.object(worker, "spawn_detached") as mock_spawn:
+            result = worker.ensure_running()
+        assert result == 4242
+        mock_spawn.assert_not_called()
+
+    def test_ensure_running_respawns_crashed_worker(self, tmp_data_dir):
+        """No live worker at all → clear stale state and spawn a fresh one."""
+        with patch.object(worker, "is_worker_alive", return_value=False), \
+             patch.object(worker, "_reap_hung_worker", return_value=False), \
+             patch.object(worker, "_live_worker_pid", return_value=None), \
+             patch.object(worker, "spawn_detached", return_value=777) as mock_spawn:
+            result = worker.ensure_running()
+        assert result == 777
+        mock_spawn.assert_called_once()
+
+    def test_ensure_running_respawns_after_reaping_hung_worker(self, tmp_data_dir):
+        """A hung worker was reaped → spawn a replacement."""
+        with patch.object(worker, "is_worker_alive", return_value=False), \
+             patch.object(worker, "_reap_hung_worker", return_value=True), \
+             patch.object(worker, "spawn_detached", return_value=888) as mock_spawn:
+            result = worker.ensure_running()
+        assert result == 888
+        mock_spawn.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
 # 11. spawn_detached — mocked; does not actually fork in CI
 # ---------------------------------------------------------------------------
 

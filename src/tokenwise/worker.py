@@ -63,6 +63,13 @@ LOG_RETENTION_DAYS = 7
 # Worker timeout: if started but never heartbeats within this many seconds, watchdog clears the PID
 WORKER_STARTUP_GRACE = 15.0
 
+# Heartbeat staleness beyond which a *live* worker process is treated as hung
+# (not merely busy) and may be reaped. Set far above any legitimate blocking
+# operation in the main loop — dirty-queue drains and the bounded periodic
+# reindex both finish in well under a minute — so a 15-minute silence from a
+# still-running process is unambiguous evidence of a hang.
+WORKER_HUNG_THRESHOLD = 900.0
+
 
 def _setup_logging() -> None:
     paths.ensure_dirs()
@@ -485,18 +492,96 @@ def spawn_index_detached(project_root: str, project_hash: str) -> int | None:
     return proc.pid
 
 
-def ensure_running() -> int | None:
-    """Idempotent watchdog: spawn the worker if it's not already running.
+def _heartbeat_age() -> float | None:
+    """Seconds since the worker last heartbeat, or None if there is no heartbeat file."""
+    try:
+        return time.time() - paths.worker_heartbeat_path().stat().st_mtime
+    except OSError:
+        return None
 
-    Returns PID (existing or new).
+
+def _is_tokenwise_worker(pid: int) -> bool:
+    """True if *pid* is a live process whose command line is a tokenwise worker.
+
+    Guards against PID recycling: a PID that was recycled to an unrelated
+    process after the original worker died must never be terminated.
+    """
+    try:
+        cmdline = " ".join(psutil.Process(pid).cmdline()).lower()
+    except (psutil.NoSuchProcess, psutil.AccessDenied):
+        return False
+    return "tokenwise" in cmdline and "worker" in cmdline
+
+
+def _live_worker_pid() -> int | None:
+    """PID from the pid file, but only if it names a live tokenwise-worker process."""
+    try:
+        pid = int(paths.worker_pid_path().read_text(encoding="utf-8").strip())
+    except (OSError, ValueError):
+        return None
+    return pid if _is_tokenwise_worker(pid) else None
+
+
+def _reap_hung_worker() -> bool:
+    """Terminate the worker iff it is alive but its heartbeat proves it is hung.
+
+    Returns True if a process was reaped. A worker whose heartbeat is only
+    moderately stale is assumed *busy*, not hung, and is left untouched — only
+    a silence beyond WORKER_HUNG_THRESHOLD, which no legitimate main-loop
+    operation can produce, justifies killing a live process.
+    """
+    pid = _live_worker_pid()
+    if pid is None:
+        return False
+    age = _heartbeat_age()
+    if age is None or age < WORKER_HUNG_THRESHOLD:
+        return False  # no heartbeat file yet, or busy-not-hung — leave it alone
+    _LOG.warning("reaping hung worker pid=%s (heartbeat %.0fs stale)", pid, age)
+    try:
+        proc = psutil.Process(pid)
+        proc.terminate()
+        try:
+            proc.wait(timeout=3)
+        except psutil.TimeoutExpired:
+            proc.kill()
+    except (psutil.NoSuchProcess, psutil.AccessDenied):
+        pass
+    return True
+
+
+def ensure_running() -> int | None:
+    """Idempotent watchdog: ensure exactly one healthy worker is running.
+
+    Returns the worker PID (existing or freshly spawned), or None on spawn
+    failure. Handles four states explicitly:
+
+      * healthy — heartbeat fresh: return its PID, do nothing else.
+      * crashed — process gone: clear stale pid/claim state, spawn a new one.
+      * hung    — process alive but heartbeat stale beyond any plausible busy
+                  period: reap it, then spawn a replacement.
+      * busy    — process alive, heartbeat only moderately stale: leave it be.
+                  Spawning a duplicate would just lose the claim race and exit,
+                  and clearing its pid file would orphan a working daemon.
     """
     if is_worker_alive():
         try:
             return int(paths.worker_pid_path().read_text(encoding="utf-8").strip())
         except (OSError, ValueError):
             return None
-    # Stale state — clean up before spawn
+
+    # No *healthy* worker. Reap a hung one if present; otherwise, if a live
+    # worker process still exists it is merely busy — don't disturb it.
+    reaped = _reap_hung_worker()
+    if not reaped:
+        busy_pid = _live_worker_pid()
+        if busy_pid is not None:
+            return busy_pid
+
+    # Either nothing was running, or we just reaped a hung worker. Clear stale
+    # pid/claim state so the fresh worker can take the slot cleanly.
     _clear_pid()
+    with contextlib.suppress(OSError):
+        _worker_claim_path().unlink()
     return spawn_detached()
 
 

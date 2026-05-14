@@ -19,6 +19,10 @@ def test_doctor_exits_zero_and_prints_sections():
     assert "Python:" in out
     assert "SQLite" in out
     assert "Project" in out
+    # Worker self-heal + queue diagnostics added alongside the watchdog work.
+    assert "claim file" in out
+    assert "index marker" in out  # "index markers: none" or per-marker "index marker:"
+    assert "Dirty queue" in out
 
 
 def test_doctor_via_entry_point():

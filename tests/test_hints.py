@@ -159,8 +159,13 @@ class TestCachedOverlappingRange:
         assert "overlap" in hint.lower()
         assert "offset" in hint.lower()
 
-    def test_small_overlap_no_warn(self, tmp_data_dir):
-        """Overlap below MIN_OVERLAP_TO_WARN should not produce an overlap warning."""
+    def test_small_overlap_no_hint(self, tmp_data_dir):
+        """Overlap below MIN_OVERLAP_TO_WARN produces no hint at all.
+
+        The avoidable cost is too small to be worth an overlap warning, and the
+        bulk of the request is new content — so, like a fully non-overlapping
+        re-read, there is nothing actionable to inject.
+        """
         sid = "s_small_ov"
         path = "C:/proj/small_ov.py"
         # Cache lines 1-100
@@ -174,10 +179,7 @@ class TestCachedOverlappingRange:
             limit=110,
             cwd=None,
         )
-        # Should get the mild FYI, not the overlap warning
-        assert hint is not None
-        assert "overlap" not in hint.lower()
-        assert "fyi" in hint.lower() or "earlier" in hint.lower()
+        assert hint is None
 
 
 # ---------------------------------------------------------------------------
@@ -186,7 +188,13 @@ class TestCachedOverlappingRange:
 
 
 class TestCachedNonOverlappingRange:
-    def test_non_overlapping_produces_fyi(self, tmp_data_dir):
+    def test_non_overlapping_produces_no_hint(self, tmp_data_dir):
+        """A prior read with zero overlap is suppressed entirely.
+
+        The agent is reading genuinely new content, so there is nothing
+        actionable to say — injecting an "FYI, proceeding" note would only
+        cost tokens in the conversation for no benefit.
+        """
         sid = "s_fyi"
         path = "C:/proj/noop.py"
         # Cache lines 1-100
@@ -200,10 +208,7 @@ class TestCachedNonOverlappingRange:
             limit=100,
             cwd=None,
         )
-        assert hint is not None
-        assert "fyi" in hint.lower() or "earlier" in hint.lower()
-        # Should NOT warn about wasted tokens
-        assert "wastes" not in hint.lower()
+        assert hint is None
 
 
 # ---------------------------------------------------------------------------
@@ -293,6 +298,48 @@ class TestLargeIndexedFile:
         assert "symbol" in hint.lower()
         assert "85%" in hint
 
+    def test_large_file_hint_is_terse(self, tmp_data_dir, tmp_path):
+        """The large-file hint must not enumerate every indexed symbol.
+
+        The hint text itself costs tokens in the conversation, so it carries
+        one example command, not a per-symbol listing. Regression guard against
+        the old verbose 'Top symbols: ...' block creeping back.
+        """
+        (tmp_path / ".git").mkdir()
+        src_file = tmp_path / "many.py"
+        _make_large_file(src_file, n_lines=LARGE_FILE_LINE_THRESHOLD + 100)
+
+        from tokenwise.project import find_project
+
+        proj = find_project(tmp_path)
+        assert proj is not None
+        with db.open_project(proj.hash) as conn:
+            conn.execute(
+                "INSERT OR IGNORE INTO files (rel_path, language, size, mtime, content_sha256, indexed_at) "
+                "VALUES (?, ?, ?, ?, ?, ?)",
+                ("many.py", "python", 1000, 0.0, "abc123", 0),
+            )
+            for i in range(12):
+                conn.execute(
+                    "INSERT INTO symbols (name, kind, file_rel, line, col, end_line) "
+                    "VALUES (?, ?, ?, ?, ?, ?)",
+                    (f"sym_{i}", "function", "many.py", 10 + i, 0, 12 + i),
+                )
+
+        hint = build_read_hint(
+            session_id="s_terse",
+            file_path=str(src_file),
+            offset=0,
+            limit=2000,
+            cwd=str(tmp_path),
+        )
+        assert hint is not None
+        assert "Top symbols:" not in hint
+        # Only the first symbol appears (inside the example command); the rest
+        # are not enumerated.
+        assert "sym_5" not in hint
+        assert len(hint) < 400  # comfortably terse
+
     def test_large_file_no_symbols_no_hint(self, tmp_data_dir, tmp_path):
         """Large file but no indexed symbols → no hint."""
         (tmp_path / ".git").mkdir()
@@ -373,15 +420,19 @@ class TestReadHintTokensSaved:
         # Overlap is lines 201-300 = 100 lines — only that is avoidable.
         assert hint.tokens_saved == _est_tokens_from_lines(100)
 
-    def test_fyi_hint_records_no_saving(self, tmp_data_dir):
-        """Non-overlapping prior read: the agent proceeds — nothing is saved."""
+    def test_fyi_hint_is_suppressed(self, tmp_data_dir):
+        """Non-overlapping prior read: nothing actionable → no hint at all.
+
+        Previously this returned an "FYI, proceeding" ReadHint with
+        tokens_saved=0. That hint cost tokens to inject for zero benefit, so it
+        is now suppressed entirely (build_read_hint returns None).
+        """
         sid, path = "s_ts_fyi", "C:/proj/noop.py"
         _mark(tmp_data_dir, sid, path, offset=0, limit=100)
         hint = build_read_hint(
             session_id=sid, file_path=path, offset=499, limit=100, cwd=None
         )
-        assert hint is not None
-        assert hint.tokens_saved == 0
+        assert hint is None
 
     def test_symbol_only_hint_records_no_saving(self, tmp_data_dir):
         """Symbol-access nudge is a suggestion, not a realized saving."""

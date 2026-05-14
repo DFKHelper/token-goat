@@ -217,13 +217,11 @@ def _hint_from_cache(
             wasted,
         )
 
-    # Non-overlapping prior read — purely informational, the agent proceeds
-    # with the read, so nothing is actually saved → tokens_saved=0.
-    return ReadHint(
-        f"FYI: `{fname}` was read earlier this session at lines {cached_summary}{extra}. "
-        f"Current request (lines {req_start}-{req_end}) is new content — proceeding.",
-        0,
-    )
+    # Non-overlapping prior read — there is nothing actionable to say: the
+    # agent is reading genuinely new content and the file is not necessarily
+    # large. An "FYI, proceeding" note would cost tokens in the conversation
+    # for zero benefit, so suppress it entirely rather than inject noise.
+    return None
 
 
 def _hint_from_index(
@@ -263,31 +261,21 @@ def _hint_from_index(
             return None
 
     full_tokens = _est_tokens_from_lines(n_lines)
-
-    # Build a readable symbol list (up to 8 entries).
-    sym_strs: list[str] = []
-    for sym in symbols[:8]:
-        kind = sym.get("kind") or "?"
-        name = sym.get("name") or "?"
-        line = sym.get("line") or 0
-        end = sym.get("end_line") or line
-        approx_tokens = _est_tokens_from_lines(max(1, end - line + 1))
-        sym_strs.append(f"`{name}` ({kind}, line {line}, ~{approx_tokens}t)")
-
     n_total = len(symbols)
-    more_note = f", plus {n_total - 8} more" if n_total > 8 else ""
     first_sym_name = symbols[0].get("name", "")
 
     # A *suggestion*, not a realized saving. tokens_saved=0: if the agent acts
     # on it, `tokenwise read` records the real `read_replacement` stat — counting
     # a saving here too would double-count, and counting one when the agent
     # ignores the hint and reads the whole file is pure phantom inflation.
+    #
+    # Kept deliberately terse: the hint text itself costs tokens in the
+    # conversation, so it carries one example command rather than enumerating
+    # every indexed symbol (`tokenwise symbol`/`map` cover that on demand).
     return ReadHint(
-        f"This file is {n_lines} lines (~{full_tokens} tokens to read fully). "
-        f"tokenwise has indexed {n_total} symbol(s) here. "
-        f"To read just one symbol, run: `tokenwise read \"{rel}::{first_sym_name}\"` "
-        f"(saves ~85% tokens). "
-        f"Top symbols: {', '.join(sym_strs)}{more_note}. "
-        f"Proceed with full Read if you need the surrounding context.",
+        f"`{Path(file_path).name}` is {n_lines} lines (~{full_tokens} tokens to read fully). "
+        f"tokenwise has {n_total} symbol(s) indexed here — e.g. "
+        f"`tokenwise read \"{rel}::{first_sym_name}\"` extracts just one (~85% fewer tokens). "
+        f"Use a full Read if you need the surrounding context.",
         0,
     )

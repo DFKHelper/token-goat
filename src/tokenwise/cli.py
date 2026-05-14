@@ -901,8 +901,61 @@ def doctor() -> None:  # noqa: C901
         ok("pid file", "not present")
         ok("status", "not running")
 
+    # Worker claim file — the authoritative single-worker lock. A stale claim
+    # left by a crashed worker is auto-reclaimed on the next spawn, but it is
+    # worth surfacing so an unexpected one is visible.
+    from . import worker as _worker  # noqa: PLC0415
+
+    claim_path = _worker._worker_claim_path()
+    if not claim_path.exists():
+        ok("claim file", "not present")
+    elif _worker._worker_claim_is_stale(claim_path):
+        flag("claim file", "stale (owner gone) — auto-reclaimed on next spawn", warn=True)
+    else:
+        try:
+            claim_pid = int(claim_path.read_text(encoding="utf-8").split("\n", 1)[0])
+            ok("claim file", f"held by live PID {claim_pid}")
+        except (OSError, ValueError):
+            ok("claim file", "held (owner mid-startup)")
+
+    # Index-spawn markers (locks/{hash}.indexing). A stale marker is harmless
+    # — _index_spawn_active() ignores it — but a pile of them hints at indexers
+    # that crashed or were killed.
+    locks_dir = paths.locks_dir()
+    markers = sorted(locks_dir.glob("*.indexing")) if locks_dir.exists() else []
+    if not markers:
+        ok("index markers", "none")
+    else:
+        for m in markers:
+            if _worker._index_spawn_active(m):
+                ok("index marker", f"{m.stem[:8]} — index spawn active")
+            else:
+                flag("index marker", f"{m.stem[:8]} — stale, safe to delete", warn=True)
+
     # ------------------------------------------------------------------
-    # 10. Scheduled tasks / autostart
+    # 10. Dirty queue
+    # ------------------------------------------------------------------
+    typer.echo("\nDirty queue")
+    queue_path = paths.dirty_queue_path()
+    if not queue_path.exists():
+        ok("depth", "0 (no queue file)")
+    else:
+        try:
+            depth = sum(
+                1 for ln in queue_path.read_text(encoding="utf-8").splitlines() if ln.strip()
+            )
+        except OSError as e:
+            flag("depth", f"unreadable — {e}", warn=True)
+        else:
+            if depth == 0:
+                ok("depth", "0 (empty)")
+            elif depth < 200:
+                ok("depth", f"{depth} pending (worker drains on next poll)")
+            else:
+                flag("depth", f"{depth} pending — worker may be down or behind", warn=True)
+
+    # ------------------------------------------------------------------
+    # 11. Scheduled tasks / autostart
     # ------------------------------------------------------------------
     typer.echo("\nScheduled tasks")
     # Worker uses HKCU Run registry key (no admin required); update uses schtasks WEEKLY.
@@ -927,7 +980,7 @@ def doctor() -> None:  # noqa: C901
         flag("tokenwise-worker", "non-Windows: skipped", warn=False)
 
     # ------------------------------------------------------------------
-    # 11. Recent log
+    # 12. Recent log
     # ------------------------------------------------------------------
     typer.echo("\nRecent log")
     today = date.today().strftime("%Y-%m-%d")
@@ -943,7 +996,7 @@ def doctor() -> None:  # noqa: C901
         ok("(none)", "no log for today")
 
     # ------------------------------------------------------------------
-    # 12. Stats summary
+    # 13. Stats summary
     # ------------------------------------------------------------------
     typer.echo("\nStats")
     try:

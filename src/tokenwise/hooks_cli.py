@@ -329,28 +329,44 @@ def _try_shrink_image(
         return None
 
 
-def _record_session_hint_savings(file_path: str, tokens_saved: int) -> None:
-    """Record the *realized* saving from a session dedup hint.
+def _record_session_hint_impact(file_path: str, hint: str) -> None:
+    """Record the *net* token impact of injecting a pre-read hint.
 
-    Only called when the hint represents a concrete avoided re-read (the agent
-    was about to re-read content already in its session context). Suggestion
-    hints — "this file is large, use tokenwise read" — pass tokens_saved=0 and
-    never reach here: counting them would inflate ``tokenwise stats`` with
-    savings that never happened (or double-count, since ``tokenwise read``
-    records the real ``read_replacement`` stat when the suggestion is followed).
+    A hint is not free: the text tokenwise injects as ``additionalContext``
+    costs tokens in the conversation every time it fires. The honest figure to
+    track is therefore *net* — the realized avoided cost minus the cost of the
+    injected text:
+
+      net = hint.tokens_saved - (len(hint) / chars-per-token)
+
+    ``hint.tokens_saved`` is non-zero only for dedup hints that warn about
+    re-reading already-cached content (see ``hints.ReadHint``). Suggestion
+    hints ("this file is large, use tokenwise read") carry 0, so they record a
+    small *negative* net — which is the truth: they cost tokens now and realize
+    their saving only later, via the ``read_replacement`` stat that
+    ``tokenwise read`` records if the agent acts on the suggestion. Counting a
+    saving here too would double-count; counting nothing would hide the cost.
+    Summing this kind in ``tokenwise stats`` thus answers "is the pre-read hook
+    net-positive?" directly.
     """
     from . import db  # noqa: PLC0415
+    from .hints import CHARS_PER_TOKEN  # noqa: PLC0415
+
+    realized_tokens = getattr(hint, "tokens_saved", 0)
+    injection_cost_tokens = max(1, int(len(hint) / CHARS_PER_TOKEN))
+    net_tokens = realized_tokens - injection_cost_tokens
+    net_bytes = realized_tokens * 4 - len(hint)  # project convention: ~4 bytes/token
 
     try:
         db.record_stat(
             None,
             "session_hint",
-            bytes_saved=tokens_saved * 4,  # project convention: ~4 bytes/token
-            tokens_saved=tokens_saved,
+            bytes_saved=net_bytes,
+            tokens_saved=net_tokens,
             detail=file_path,
         )
     except Exception:  # noqa: BLE001
-        _LOG.exception("failed to record session_hint savings")
+        _LOG.exception("failed to record session_hint impact")
 
 
 @fail_soft
@@ -401,10 +417,11 @@ def pre_read(payload: dict[str, Any]) -> dict[str, Any]:
     if not hint:
         return {"continue": True}
 
-    # Only record a saving for hints that represent a *realized* avoided cost
-    # (a re-read of session-cached content). Suggestion hints carry 0.
-    if hint.tokens_saved > 0:
-        _record_session_hint_savings(file_path, hint.tokens_saved)
+    # Every injected hint has a token cost (the additionalContext text) and,
+    # for dedup hints, a realized saving. Record the net of the two so
+    # `tokenwise stats` reflects the hook's true contribution, not just its
+    # upside.
+    _record_session_hint_impact(file_path, hint)
 
     return {
         "continue": True,
@@ -514,8 +531,40 @@ def post_edit(payload: dict[str, Any]) -> dict[str, Any]:
 
     if file_path:
         _enqueue_for_reindex(file_path, payload.get("cwd"))
+        _nudge_worker_if_down()
 
     return {"continue": True}
+
+
+def _nudge_worker_if_down() -> None:
+    """Mid-session watchdog: respawn the worker if its heartbeat has gone stale.
+
+    The ``SessionStart`` hook starts the worker, but if it crashes or hangs
+    *mid-session* nothing notices until the next session begins — and the
+    dirty queue this hook just appended to would silently never drain.
+    ``post_edit`` is the right place to check because it is the hook that
+    *feeds* the queue.
+
+    The common path is a single ``stat()`` on the heartbeat file. The heavy
+    ``worker`` import — which pulls in tree-sitter via ``parser`` — happens
+    only on the rare stale path, so the per-edit cost stays negligible.
+    """
+    import time  # noqa: PLC0415
+
+    try:
+        hb_path = paths.worker_heartbeat_path()
+        try:
+            # 2 × heartbeat interval (30 s) + margin — matches is_worker_alive().
+            fresh = (time.time() - hb_path.stat().st_mtime) <= 65.0
+        except OSError:
+            fresh = False  # missing heartbeat → worker not confirmed alive
+        if fresh:
+            return
+        from . import worker  # noqa: PLC0415
+
+        worker.ensure_running()
+    except Exception:  # noqa: BLE001
+        _LOG.exception("worker nudge failed")
 
 
 def _enqueue_for_reindex(file_path: str, cwd: str | None) -> None:
