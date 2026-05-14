@@ -324,6 +324,22 @@ def index_project(
     index_mode = "full" if full else "incremental"
     _LOG.info("index_project started: mode=%s path=%s", index_mode, project.root)
 
+    # Register the project in the global registry up front, before the
+    # potentially slow (or hang-prone) file walk. The final registry update
+    # below fills in real file_count/languages once indexing completes. Without
+    # this, the project is unresolvable for the entire indexing window: the
+    # worker's dirty-queue drain hits "unknown project hash" and silently drops
+    # every edit made while indexing is in flight — permanently, if the index
+    # spawn crashes before reaching the end.
+    with db.open_global() as gconn:
+        now = int(time.time())
+        gconn.execute(
+            "INSERT INTO projects(hash, root, marker, first_seen, last_seen, file_count, languages) "
+            "VALUES (?, ?, ?, ?, ?, 0, '') "
+            "ON CONFLICT(hash) DO UPDATE SET last_seen=excluded.last_seen, marker=excluded.marker",
+            (project.hash, project.root.as_posix(), project.marker, now, now),
+        )
+
     files = list(iter_source_files(project))
     n_total = len(files)
     _LOG.debug("index walk: found %d source files", n_total)

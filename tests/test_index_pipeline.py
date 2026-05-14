@@ -121,6 +121,36 @@ def test_full_index_updates_global_symbols(ts_project):
     assert count >= 4
 
 
+def test_index_registers_project_before_file_walk(ts_project, monkeypatch):
+    """The project must land in the global `projects` table BEFORE the file walk.
+
+    Registration used to happen only after the full walk+index completed. For a
+    large (or hang-prone) tree that window is minutes long, and the worker's
+    dirty-queue drain hits "unknown project hash" for every edit made meanwhile
+    — silently dropping it. Registering up front closes that window.
+    """
+    from tokenwise import parser
+
+    real_iter = parser.iter_source_files
+    registered_during_walk: dict[str, bool] = {}
+
+    def spy_iter(project):
+        with db.open_global() as gconn:
+            row = gconn.execute(
+                "SELECT 1 FROM projects WHERE hash=?", (project.hash,)
+            ).fetchone()
+        registered_during_walk["seen"] = row is not None
+        return real_iter(project)
+
+    monkeypatch.setattr(parser, "iter_source_files", spy_iter)
+    index_project(ts_project, full=True)
+
+    assert registered_during_walk["seen"], (
+        "project was not in global.db when the file walk started — mid-index "
+        "dirty-queue entries would be dropped as 'unknown project hash'"
+    )
+
+
 # ---------------------------------------------------------------------------
 # Incremental indexing
 # ---------------------------------------------------------------------------
