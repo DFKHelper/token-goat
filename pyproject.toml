@@ -1,6 +1,6 @@
 [project]
 name = "tokenwise"
-version = "0.2.2"
+version = "0.2.3"
 description = "Claude Code companion that reduces token usage via local indexing, image shrinking, and session-context caching."
 readme = "README.md"
 requires-python = ">=3.11,<3.15"
