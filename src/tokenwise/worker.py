@@ -456,87 +456,14 @@ def evict_image_cache_if_over_limit() -> tuple[int, int]:
 # Spawn API (called by SessionStart watchdog)
 # ---------------------------------------------------------------------------
 
-# A worker-spawn marker older than this is treated as stale — a fresh spawn is
-# then allowed. Long enough to cover a slow (AV-scanned) interpreter startup,
-# short enough that a genuinely stuck spawn does not block a retry for long.
-WORKER_SPAWN_TTL = 120.0
-
-
-def _worker_spawn_marker_path() -> Path:
-    """Path to the single in-flight-worker-spawn marker."""
-    return paths.locks_dir() / "worker.spawn"
-
-
-def _worker_spawn_active(marker: Path) -> bool:
-    r"""True if *marker* records a worker spawn that is still in flight.
-
-    Holds ``pid\ntimestamp``. Active only while the timestamp is within
-    WORKER_SPAWN_TTL *and* the PID is alive — so a worker that finished
-    starting, exited as a claim-loser, or crashed frees the marker for the next
-    legitimate spawn. An empty / half-written marker is treated as active: the
-    owner is mid-write (the gap between the O_EXCL create and the single write
-    is microscopic), and reclaiming that window would re-open the spawn race.
-    """
-    try:
-        content = marker.read_text(encoding="utf-8")
-    except OSError:
-        return False  # marker gone
-    try:
-        pid_str, ts_str = content.split("\n", 1)
-        pid, ts = int(pid_str), float(ts_str.strip())
-    except ValueError:
-        return True  # empty/half-written — owner mid-write, treat as active
-    if time.time() - ts > WORKER_SPAWN_TTL:
-        return False
-    return psutil.pid_exists(pid)
-
-
 def spawn_detached() -> int | None:
     """Spawn the tokenwise worker as a detached background process.
 
     Uses ``pythonw.exe -m tokenwise.cli worker --daemon`` rather than the
     launcher .exe so AV/EDR products don't behavior-flag the spawn.
-
-    **Idempotent under concurrency.** A single in-flight worker spawn is
-    recorded in an atomically-created marker file, so a burst of
-    ``ensure_running()`` calls — one per SessionStart hook — results in exactly
-    one spawned process. Without this guard, N near-simultaneous identical
-    pythonw spawns trip Bitdefender's Active Threat Control behavioral
-    heuristic, which hangs one process in the loader (before ``python313.dll``
-    ever loads) and can take the running claim-holder down with it.
-    ``ensure_running`` already dedupes against a *running* worker; this closes
-    the gap for a worker that is still *starting up*.
-
-    Returns the spawned PID, or None (spawn failed, or skipped because a spawn
-    is already in flight).
+    Returns PID or None on failure.
     """
     from . import paths  # noqa: PLC0415
-
-    # Atomically claim the right to spawn. O_EXCL makes this race-free: of N
-    # concurrent callers exactly one creates the marker and spawns; the rest
-    # see an active marker and skip. A stale marker (process gone, or older
-    # than WORKER_SPAWN_TTL) is reclaimed once.
-    marker = _worker_spawn_marker_path()
-    spawn_fd: int | None = None
-    with contextlib.suppress(OSError):
-        marker.parent.mkdir(parents=True, exist_ok=True)
-    for attempt in (1, 2):
-        try:
-            spawn_fd = os.open(str(marker), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
-            break
-        except FileExistsError:
-            if attempt == 1 and not _worker_spawn_active(marker):
-                _LOG.info("removing stale worker spawn marker")
-                with contextlib.suppress(OSError):
-                    marker.unlink()
-                continue
-            _LOG.info("worker spawn already in flight; skipping duplicate spawn")
-            return None
-        except OSError as e:
-            # Marker I/O failed — spawn anyway rather than risk having no worker.
-            _LOG.warning("worker spawn marker unavailable (%s); spawning unguarded", e)
-            break
-
     cmd = paths.python_runner_argv("worker", "--daemon")
 
     creationflags = 0
@@ -558,7 +485,6 @@ def spawn_detached() -> int | None:
     except OSError as e:
         _LOG.warning("could not open worker stderr log, falling back to DEVNULL: %s", e)
 
-    spawned_pid: int | None = None
     try:
         proc = subprocess.Popen(
             cmd,
@@ -569,30 +495,15 @@ def spawn_detached() -> int | None:
             creationflags=creationflags,
             start_new_session=(sys.platform != "win32"),
         )
-        spawned_pid = proc.pid
-        # Record the spawned worker's PID so concurrent callers see the spawn
-        # as in flight. The marker self-expires via PID-liveness + TTL.
-        if spawn_fd is not None:
-            with contextlib.suppress(OSError):
-                os.write(spawn_fd, f"{proc.pid}\n{time.time()}".encode())
+        return proc.pid
     except (OSError, FileNotFoundError) as e:
         _LOG.error("failed to spawn worker: %s", e)
+        return None
     finally:
-        if spawn_fd is not None:
-            with contextlib.suppress(OSError):
-                os.close(spawn_fd)
         # The child inherited its own handle; the parent's copy is now spare.
         if stderr_file is not None:
             with contextlib.suppress(OSError):
                 stderr_file.close()
-
-    # Spawn failed: drop the marker so it does not block the next attempt for
-    # up to WORKER_SPAWN_TTL. Unlink only after the fd is closed — Windows
-    # refuses to unlink a file that still has an open handle.
-    if spawned_pid is None and spawn_fd is not None:
-        with contextlib.suppress(OSError):
-            marker.unlink()
-    return spawned_pid
 
 
 # A spawn marker older than this is treated as stale (hung index) — a fresh
