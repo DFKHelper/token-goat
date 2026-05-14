@@ -636,6 +636,38 @@ def test_setup_logging_skips_console_handler_when_not_tty(tmp_data_dir, monkeypa
             log.addHandler(h)
 
 
+def test_setup_logging_rolls_oversized_daily_log(tmp_data_dir):
+    """_setup_logging rolls an oversized daily log before attaching its handler.
+
+    Regression guard: the daily log handler used a plain FileHandler with no
+    size cap, so a single pathological day (a worker stuck in a fast error
+    loop) could bloat one day's file. _setup_logging now rolls it via
+    paths.roll_log_if_oversized before opening the handler.
+    """
+    from datetime import datetime
+
+    log = logging.getLogger("tokenwise.worker")
+    saved = list(log.handlers)
+    for h in saved:
+        log.removeHandler(h)
+
+    log_path = tmp_data_dir / "logs" / f"{datetime.now():%Y-%m-%d}.log"
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    payload = b"z" * (paths.LOG_FILE_MAX_BYTES + 1)
+    log_path.write_bytes(payload)
+
+    try:
+        worker._setup_logging()
+        prev = log_path.with_suffix(".prev.log")
+        assert prev.exists(), "oversized daily log must roll over before handler attach"
+        assert prev.stat().st_size == len(payload), "rolled-over content must be intact"
+    finally:
+        for h in list(log.handlers):
+            log.removeHandler(h)
+        for h in saved:
+            log.addHandler(h)
+
+
 # ---------------------------------------------------------------------------
 # spawn_index_detached — idempotency guard against the 44-process pileup
 # ---------------------------------------------------------------------------

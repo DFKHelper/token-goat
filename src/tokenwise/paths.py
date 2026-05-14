@@ -1,8 +1,17 @@
 """Central path resolver for tokenwise data directories."""
+import contextlib
+import os
 import sys
 from pathlib import Path
 
 import platformdirs
+
+# Size cap for a structured daily log file. The daily logs are date-named and
+# age out via the worker's 7-day retention sweep, so they are already bounded
+# in count — but a single pathological day (e.g. a worker stuck in a fast error
+# loop) could still bloat one file. Rolling it over to a .prev.log sibling caps
+# any one day's footprint.
+LOG_FILE_MAX_BYTES = 5_000_000
 
 
 def python_runner_argv(*subcommand: str) -> list[str]:
@@ -74,6 +83,27 @@ def models_dir() -> Path:
 def logs_dir() -> Path:
     """Path to logs/ directory."""
     return data_dir() / "logs"
+
+
+def roll_log_if_oversized(path: Path, max_bytes: int) -> None:
+    """Roll a log file over to a .prev.log sibling once it exceeds max_bytes.
+
+    Called at handler-attach time by the worker and every hook invocation, and
+    by spawn_detached for the worker-stderr crash sink. Best-effort: on Windows
+    os.replace fails if another process holds the file open (the daily log is
+    shared by the worker and every hook), so the roll is suppressed on OSError
+    and simply retried by the next process that opens the log while it is
+    briefly unheld. The caller then appends to the still-large file — never
+    worse than not rolling at all. The .prev.log name ends in .log so the
+    worker's 7-day retention sweep reaps it too.
+    """
+    try:
+        if path.stat().st_size <= max_bytes:
+            return
+    except OSError:
+        return
+    with contextlib.suppress(OSError):
+        os.replace(path, path.with_suffix(".prev.log"))
 
 
 def locks_dir() -> Path:
