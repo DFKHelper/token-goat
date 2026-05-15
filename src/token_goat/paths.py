@@ -52,7 +52,7 @@ def python_runner_command(*subcommand: str) -> str:
 
 def data_dir() -> Path:
     """Get token-goat data directory."""
-    return Path(platformdirs.user_data_dir("token-goat", "DFK Helper LLC"))
+    return Path(platformdirs.user_data_dir("token-goat", "dfk-helper"))
 
 
 def global_db_path() -> Path:
