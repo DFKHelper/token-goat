@@ -146,3 +146,5 @@ Personal use is always permitted, including for developers who work at for-profi
 Commercial use is reserved. That means copying or incorporating this codebase into a product, charging for access to it, or running it as shared infrastructure across a team at a for-profit company. Commercial licensing: tokenwise@dfkhelper.com.
 
 Copyright (c) 2026 DFK Helper LLC.
+
+Patent Pending — U.S. Provisional Application No. 64/066,067.
