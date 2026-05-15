@@ -1,11 +1,14 @@
 """TypeScript/TSX/JS/JSX symbol extractor using tree_sitter_language_pack."""
 from __future__ import annotations
 
+import logging
 import os
 import re
 
 from ..parser import ImpExp, Ref, Section, Symbol
 from . import common
+
+_LOG = logging.getLogger("tokenwise.languages.typescript")
 
 
 def _get_tlp() -> object | None:
@@ -217,6 +220,7 @@ def extract(
     try:
         result = tlp.process(text, cfg)
     except Exception:
+        _LOG.debug("tree-sitter parse failed for typescript source", exc_info=True)
         return [], [], [], []
 
     symbols: list[Symbol] = []

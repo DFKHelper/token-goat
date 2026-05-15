@@ -1,10 +1,13 @@
 """Python symbol extractor using tree_sitter_language_pack."""
 from __future__ import annotations
 
+import logging
 import re
 
 from ..parser import ImpExp, Ref, Section, Symbol
 from . import common
+
+_LOG = logging.getLogger("tokenwise.languages.python")
 
 
 def _get_tlp() -> object | None:
@@ -111,6 +114,7 @@ def extract(source: bytes, rel_path: str) -> tuple[list[Symbol], list[Ref], list
     try:
         result = tlp.process(text, cfg)
     except Exception:
+        _LOG.debug("tree-sitter parse failed for python source", exc_info=True)
         return [], [], [], []
 
     symbols: list[Symbol] = []
