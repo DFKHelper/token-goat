@@ -74,7 +74,7 @@ class CompactAssistConfig:
 class Config:
     """Top-level token-goat configuration.
 
-    Loaded from ``%LOCALAPPDATA%\\DFK Helper LLC\\token-goat\\config.toml`` by ``load()``.
+    Loaded from ``%LOCALAPPDATA%\\dfk-helper\\token-goat\\config.toml`` by ``load()``.
     Missing or unreadable files silently fall back to all defaults so token-goat
     never blocks the agent even when the config is absent.
     """

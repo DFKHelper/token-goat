@@ -10,6 +10,7 @@ Cuts the tokens Claude Code and Codex CLI burn on Windows. Install once, then fo
 
 - Windows 10 or 11
 - Python 3.11, 3.12, or 3.13
+- [uv](https://docs.astral.sh/uv/) (install via `winget install astral-sh.uv` or `pip install uv`)
 
 ## The problem
 
@@ -59,7 +60,7 @@ The `--codex` flag patches both Claude Code and Codex CLI in one pass.
 | `token-goat compact-hint --session-id <id>` | Inspect the compaction manifest for a session |
 | `token-goat doctor` | Confirm everything is wired correctly |
 
-First `token-goat semantic` call downloads a small embedding model, about 130 MB, into `%LOCALAPPDATA%\token-goat\models\`. One-time. Offline after that.
+First `token-goat semantic` call downloads a small embedding model, about 130 MB, into `%LOCALAPPDATA%\dfk-helper\token-goat\models\`. One-time. Offline after that.
 
 ## Set and forget
 
@@ -79,7 +80,7 @@ Optional speed-up for large repos. Token-goat works fine without it.
 Real-time scanning slows indexing. To exclude the token-goat folder, open PowerShell as administrator (right-click PowerShell, "Run as administrator") and run:
 
 ```powershell
-Add-MpPreference -ExclusionPath "$env:LOCALAPPDATA\token-goat"
+Add-MpPreference -ExclusionPath "$env:LOCALAPPDATA\dfk-helper\token-goat"
 ```
 
 If you see `0x800106ba`, the prompt is not elevated. Reopen as administrator.
@@ -111,11 +112,11 @@ Outbound network only in three explicitly disclosed cases:
 - Google Drive API calls, only if you already authorized Drive in Claude Code. Token-goat never prompts for its own auth.
 - Explicit, user-triggered URL fetches via `token-goat fetch-image <url>`.
 
-All caches and the index live in `%LOCALAPPDATA%\token-goat\`. Delete the folder any time. Nothing else on the system depends on it.
+All caches and the index live in `%LOCALAPPDATA%\dfk-helper\token-goat\`. Delete the folder any time. Nothing else on the system depends on it.
 
 ## About
 
-I built this because long Claude Code and Codex sessions on my machine kept burning context in the same ways: screenshots landing at 2-3 MB, the agent re-reading a file it parsed hours earlier in the same conversation, compactions that forgot which functions were edited. Each felt preventable. The architecture for how it's wired is in [CLAUDE.md](CLAUDE.md).
+I built this because long Claude Code and Codex sessions on my machine kept burning context in the same ways: screenshots landing at 2-3 MB, the agent re-reading a file it parsed hours earlier in the same conversation, compactions that forgot which functions were edited. Each felt preventable.
 
 This is a solo project. I use it daily on Windows 11. Tests run across Python 3.11, 3.12, and 3.13.
 
