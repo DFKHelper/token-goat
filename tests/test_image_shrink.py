@@ -252,6 +252,10 @@ class TestStatsFor:
         assert stats["out_bytes"] == shrunken.stat().st_size
         assert stats["bytes_saved"] == max(0, stats["src_bytes"] - stats["out_bytes"])
         assert stats["bytes_saved"] > 0
+        assert stats["orig_width"] > 0 and stats["orig_height"] > 0
+        assert stats["out_width"] > 0 and stats["out_height"] > 0
+        # Shrunken image must be no larger than MAX_LONG_EDGE on its long side
+        assert max(stats["out_width"], stats["out_height"]) <= image_shrink.MAX_LONG_EDGE
 
 
 # ---------------------------------------------------------------------------
@@ -332,20 +336,25 @@ class TestPngToJpeg:
 # ---------------------------------------------------------------------------
 
 class TestTokenSavings:
-    # Same formula as hooks_cli.py: 1 token per 4 bytes of base64-encoded image data
-    _BYTES_PER_TOKEN = 4
-
     def test_large_jpeg_saves_meaningful_tokens(self, tmp_data_dir, tmp_path):
-        """A 1600×1200 JPEG must yield ≥500 tokens saved after shrinking."""
+        """A 1600×1200 JPEG must yield ≥1000 vision tokens saved after shrinking.
+
+        1600×1200 → Claude tokenizes at (1568×1176)÷750 ≈ 2459 tokens.
+        Shrunken to 1024×768 → (1024×768)÷750 ≈ 1049 tokens.
+        Expected savings ≈ 1410 tokens.
+        """
         p = _make_large_jpeg(tmp_path)
         shrunken = image_shrink.shrink(p)
         assert shrunken is not None, "shrink() returned None — no output produced"
 
         stats = image_shrink.stats_for(p, shrunken)
-        tokens_saved = stats["bytes_saved"] // self._BYTES_PER_TOKEN
+        tokens_saved = max(0,
+            image_shrink.vision_tokens(stats["orig_width"], stats["orig_height"])
+            - image_shrink.vision_tokens(stats["out_width"], stats["out_height"])
+        )
 
-        assert tokens_saved >= 500, (
-            f"Expected ≥500 tokens saved; got {tokens_saved} "
-            f"(src={stats['src_bytes']} B, out={stats['out_bytes']} B, "
-            f"saved={stats['bytes_saved']} B)"
+        assert tokens_saved >= 1000, (
+            f"Expected ≥1000 vision tokens saved; got {tokens_saved} "
+            f"(orig={stats['orig_width']}×{stats['orig_height']}, "
+            f"out={stats['out_width']}×{stats['out_height']})"
         )

@@ -27,7 +27,7 @@ Four wins, all silent, all automatic.
 
 **Surgical reads from a small CLI.** Pull one function, one Markdown heading, or one semantic match instead of dumping a whole module into context. Targeted reads run about 85% smaller than whole-file reads on the same source.
 
-Four hours of use on the author's machine: 59.7 MB of data that never hit the model, with an estimated 11.5 million tokens avoided. Token counts are derived from byte sizes, not the model's tokenizer — treat them as directional.
+Four hours of use on the author's machine: 59.7 MB of data that never hit the model, with an estimated 11.5 million tokens avoided. Image token savings are estimated using Claude's vision pricing formula (pixel dimensions ÷ 750, capped at 1568 px per side). Text savings use bytes ÷ 4. Both are estimates — treat them as directional.
 
 ## Install
 

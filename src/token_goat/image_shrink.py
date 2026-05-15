@@ -58,12 +58,32 @@ def _cache_path_for(src_path: Path) -> Path:
     return paths.image_cache_dir() / f"{key}.shrunk"
 
 
+def vision_tokens(width: int, height: int) -> int:
+    """Approximate Claude vision token cost for an image of given dimensions.
+
+    Claude resizes images to fit within 1568 px on the long edge before tokenizing.
+    Token cost ≈ (effective_width × effective_height) / 750.
+    """
+    if width <= 0 or height <= 0:
+        return 0
+    max_edge = 1568
+    if max(width, height) > max_edge:
+        scale = max_edge / max(width, height)
+        width = int(width * scale)
+        height = int(height * scale)
+    return max(1, (width * height) // 750)
+
+
 class ImageStats(TypedDict):
     """Return value of stats_for(): per-image compression telemetry."""
 
     src_bytes: int
     out_bytes: int
     bytes_saved: int
+    orig_width: int
+    orig_height: int
+    out_width: int
+    out_height: int
 
 
 def _looks_like_screenshot_or_text(img: _PilImage.Image) -> bool:
@@ -188,17 +208,35 @@ def shrink(src_path: Path) -> Path | None:
 
 def stats_for(src_path: Path, shrunken_path: Path) -> ImageStats:
     """Return savings stats for telemetry."""
+    _empty = ImageStats(
+        src_bytes=0, out_bytes=0, bytes_saved=0,
+        orig_width=0, orig_height=0, out_width=0, out_height=0,
+    )
     try:
-        # Validate both paths
         if not _is_safe_path(src_path) or not _is_safe_path(shrunken_path):
             _LOG.warning("rejected unsafe path in stats_for")
-            return ImageStats(src_bytes=0, out_bytes=0, bytes_saved=0)
+            return _empty
         src_size = src_path.stat().st_size
         out_size = shrunken_path.stat().st_size
+
+        orig_w = orig_h = out_w = out_h = 0
+        try:
+            from PIL import Image  # noqa: PLC0415
+            with Image.open(src_path) as img:
+                orig_w, orig_h = img.size
+            with Image.open(shrunken_path) as img:
+                out_w, out_h = img.size
+        except Exception:  # noqa: BLE001
+            pass
+
         return ImageStats(
             src_bytes=src_size,
             out_bytes=out_size,
             bytes_saved=max(0, src_size - out_size),
+            orig_width=orig_w,
+            orig_height=orig_h,
+            out_width=out_w,
+            out_height=out_h,
         )
     except OSError:
-        return ImageStats(src_bytes=0, out_bytes=0, bytes_saved=0)
+        return _empty
