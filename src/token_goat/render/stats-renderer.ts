@@ -492,7 +492,7 @@ const renderInsightsSection = (stats: StatsData): string[] => {
 // ── Main export ───────────────────────────────────────────────────────────────
 
 /**
- * Render a complete tokenwise stats report to a single string ready for console.log().
+ * Render a complete token-goat stats report to a single string ready for console.log().
  *
  * @example
  * ```ts
