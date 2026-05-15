@@ -12,7 +12,7 @@ import sys
 import time
 from datetime import datetime
 from pathlib import Path
-from typing import IO, Any, TypedDict
+from typing import IO, Any, TypedDict, cast
 
 try:
     import psutil
@@ -52,6 +52,25 @@ class CleanupStats(TypedDict):
     image_bytes_evicted: int
     image_files_evicted: int
     stats_rows_pruned: int
+
+
+class DirtyQueueEntry(TypedDict, total=False):
+    """One line from the dirty queue (written by hooks_cli._enqueue_for_reindex)."""
+
+    path: str
+    project_hash: str
+    project_root: str
+    project_marker: str
+    ts: float
+
+
+class _ProjectBucket(TypedDict):
+    """Accumulator used inside _process_dirty_entries to group files by project."""
+
+    rels: set[str]
+    root: str | None
+    marker: str | None
+
 
 _LOG = logging.getLogger("tokenwise.worker")
 
@@ -326,7 +345,7 @@ def enqueue_dirty(rel_path: str, project_hash: str | None = None) -> None:
         f.write(line + "\n")
 
 
-def drain_dirty_queue() -> list[dict]:
+def drain_dirty_queue() -> list[DirtyQueueEntry]:
     """Atomically claim and return all queued entries.
 
     The queue is drained by *renaming* dirty.txt to a private ``.draining``
@@ -374,7 +393,7 @@ def drain_dirty_queue() -> list[dict]:
         else:
             _LOG.warning("dirty queue busy; deferring drain to next cycle")
 
-    entries = []
+    entries: list[DirtyQueueEntry] = []
     for line in raw_lines:
         line = line.strip()
         if not line:
@@ -384,7 +403,7 @@ def drain_dirty_queue() -> list[dict]:
             if not isinstance(entry, dict):
                 _LOG.warning("dirty queue entry is not a dict: %s", line[:120])
                 continue
-            entries.append(entry)
+            entries.append(cast(DirtyQueueEntry, entry))
         except json.JSONDecodeError:
             _LOG.warning("bad dirty queue entry (not valid JSON): %s", line[:120])
     if entries:
@@ -971,19 +990,21 @@ def _reindex_active_projects() -> None:
             _LOG.exception("periodic reindex failed for %s", row["root"])
 
 
-def _process_dirty_entries(entries: list[dict]) -> None:
+def _process_dirty_entries(entries: list[DirtyQueueEntry]) -> None:
     """Re-index files that were marked dirty by Edit/Write hooks."""
     # Group by project_hash, carrying the project root/marker from the first
     # entry that records them. Newer entries (see hooks_cli._enqueue_for_reindex)
     # are self-sufficient: they include project_root/project_marker so a project
     # whose hash is not yet in global.db can still be reconstructed and indexed.
-    by_project: dict[str, dict[str, Any]] = {}
+    by_project: dict[str, _ProjectBucket] = {}
     for entry in entries:
         ph = entry.get("project_hash")
         rel = entry.get("path")
         if not ph or not rel:
             continue
-        bucket = by_project.setdefault(ph, {"rels": set(), "root": None, "marker": None})
+        if ph not in by_project:
+            by_project[ph] = _ProjectBucket(rels=set(), root=None, marker=None)
+        bucket = by_project[ph]
         bucket["rels"].add(rel)
         if bucket["root"] is None and entry.get("project_root"):
             bucket["root"] = entry["project_root"]

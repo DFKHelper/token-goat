@@ -6,6 +6,10 @@ import hashlib
 import logging
 import stat
 from pathlib import Path
+from typing import TYPE_CHECKING, TypedDict
+
+if TYPE_CHECKING:
+    from PIL import Image as _PilImage
 
 from . import paths
 
@@ -54,7 +58,15 @@ def _cache_path_for(src_path: Path) -> Path:
     return paths.image_cache_dir() / f"{key}.shrunk"
 
 
-def _looks_like_screenshot_or_text(img) -> bool:  # type: ignore[no-untyped-def]
+class ImageStats(TypedDict):
+    """Return value of stats_for(): per-image compression telemetry."""
+
+    src_bytes: int
+    out_bytes: int
+    bytes_saved: int
+
+
+def _looks_like_screenshot_or_text(img: _PilImage.Image) -> bool:
     """Cheap heuristic: PNG images with palette/alpha modes are probably screenshots."""
     mode = img.mode
     w, h = img.size
@@ -163,19 +175,19 @@ def shrink(src_path: Path) -> Path | None:
         return None
 
 
-def stats_for(src_path: Path, shrunken_path: Path) -> dict:
+def stats_for(src_path: Path, shrunken_path: Path) -> ImageStats:
     """Return savings stats for telemetry."""
     try:
         # Validate both paths
         if not _is_safe_path(src_path) or not _is_safe_path(shrunken_path):
             _LOG.warning("rejected unsafe path in stats_for")
-            return {"src_bytes": 0, "out_bytes": 0, "bytes_saved": 0}
+            return ImageStats(src_bytes=0, out_bytes=0, bytes_saved=0)
         src_size = src_path.stat().st_size
         out_size = shrunken_path.stat().st_size
-        return {
-            "src_bytes": src_size,
-            "out_bytes": out_size,
-            "bytes_saved": max(0, src_size - out_size),
-        }
+        return ImageStats(
+            src_bytes=src_size,
+            out_bytes=out_size,
+            bytes_saved=max(0, src_size - out_size),
+        )
     except OSError:
-        return {"src_bytes": 0, "out_bytes": 0, "bytes_saved": 0}
+        return ImageStats(src_bytes=0, out_bytes=0, bytes_saved=0)

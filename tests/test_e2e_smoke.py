@@ -18,7 +18,7 @@ import pytest
 from typer.testing import CliRunner
 
 import tokenwise.paths as paths
-from tokenwise import cli, hooks_cli, worker
+from tokenwise import cli, hooks_cli, hooks_edit, worker
 
 runner = CliRunner()
 
@@ -80,7 +80,7 @@ def test_edit_to_query_end_to_end(filename, content, symbol, tmp_path, tmp_data_
     Parameterized per language so each tree-sitter adapter is exercised through
     the full chain, not just the Python one.
     """
-    monkeypatch.setattr(hooks_cli, "_nudge_worker_if_down", lambda: None)
+    monkeypatch.setattr(hooks_edit, "_nudge_worker_if_down", lambda: None)
 
     proj_root = _make_project(tmp_path)
     src = proj_root / filename
@@ -109,7 +109,7 @@ def test_incremental_edit_propagates_end_to_end(tmp_path, tmp_data_dir, monkeypa
     """A *second* edit to an already-indexed project flows through the incremental
     leg of the same chain — _process_dirty_entries runs index_project(full=False)
     once the project is registered, a different branch from the first-index path."""
-    monkeypatch.setattr(hooks_cli, "_nudge_worker_if_down", lambda: None)
+    monkeypatch.setattr(hooks_edit, "_nudge_worker_if_down", lambda: None)
 
     proj_root = _make_project(tmp_path)
     src = proj_root / "widget.py"
