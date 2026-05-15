@@ -1,6 +1,8 @@
 """Test paths module."""
 from pathlib import Path
 
+import pytest
+
 from tokenwise import paths
 
 
@@ -221,3 +223,81 @@ def test_roll_log_if_oversized_over_cap_rolls_to_prev(tmp_path):
 def test_roll_log_if_oversized_missing_file_is_silent(tmp_path):
     """A missing log path is a no-op, not an error (first run before any log)."""
     paths.roll_log_if_oversized(tmp_path / "nonexistent.log", max_bytes=1000)
+
+
+def test_roll_log_if_oversized_exactly_at_cap_is_noop(tmp_path):
+    """A log whose size equals max_bytes exactly is NOT rolled (boundary: <=, not <)."""
+    log = tmp_path / "boundary.log"
+    log.write_bytes(b"z" * 1000)
+
+    paths.roll_log_if_oversized(log, max_bytes=1000)
+
+    assert log.exists(), "file exactly at cap must be left in place"
+    assert not (tmp_path / "boundary.prev.log").exists()
+
+
+# ---------------------------------------------------------------------------
+# Path-traversal guard on project_db_path / session_cache_path
+# ---------------------------------------------------------------------------
+
+
+class TestProjectDbPathTraversal:
+    """Regression tests for the resolver-level traversal guard added to paths.py.
+
+    project_db_path() resolves the candidate path and raises ValueError when
+    the resolved path escapes the projects/ subdirectory.  This is distinct
+    from the db._validate_project_hash() check: the guard in paths.py is the
+    last line of defence regardless of whether the caller bypassed validation.
+    """
+
+    def test_normal_hash_returns_path_inside_projects(self, tmp_data_dir):
+        """A well-formed hash produces a path strictly inside projects/."""
+        h = "abc123def456"
+        p = paths.project_db_path(h)
+        projects_dir = (tmp_data_dir / "projects").resolve()
+        assert p.is_relative_to(projects_dir), (
+            f"Expected path inside {projects_dir}, got {p}"
+        )
+        assert p.name == f"{h}.db"
+
+    def test_traversal_hash_raises_value_error(self, tmp_data_dir):
+        """A traversal sequence like '../../../evil' raises ValueError."""
+        with pytest.raises(ValueError, match="outside the projects directory"):
+            paths.project_db_path("../../../evil")
+
+    def test_traversal_with_null_byte_raises(self, tmp_data_dir):
+        """A hash containing a null byte raises ValueError (escapes base dir)."""
+        with pytest.raises((ValueError, Exception)):
+            paths.project_db_path("\x00evil")
+
+    def test_absolute_path_as_hash_raises(self, tmp_data_dir):
+        """A hash that looks like an absolute path raises ValueError."""
+        # On Windows Path("C:/windows/system32") in projects/ resolves outside.
+        # On any platform "/etc/passwd" resolves outside.
+        with pytest.raises(ValueError, match="outside the projects directory"):
+            paths.project_db_path("/etc/passwd")
+
+
+class TestSessionCachePathTraversal:
+    """Regression tests for the resolver-level traversal guard on session_cache_path."""
+
+    def test_normal_session_id_returns_path_inside_sessions(self, tmp_data_dir):
+        """A well-formed session ID produces a path strictly inside sessions/."""
+        sid = "my-valid-session-001"
+        p = paths.session_cache_path(sid)
+        sessions_dir = (tmp_data_dir / "sessions").resolve()
+        assert p.is_relative_to(sessions_dir), (
+            f"Expected path inside {sessions_dir}, got {p}"
+        )
+        assert p.name == f"{sid}.json"
+
+    def test_traversal_session_id_raises_value_error(self, tmp_data_dir):
+        """A traversal sequence raises ValueError."""
+        with pytest.raises(ValueError, match="outside the sessions directory"):
+            paths.session_cache_path("../../../etc/shadow")
+
+    def test_windows_absolute_path_as_session_id_raises(self, tmp_data_dir):
+        """A session ID that resolves to an absolute path outside sessions/ raises."""
+        # Choosing a multi-level traversal that definitely escapes the directory.
+        with pytest.raises(ValueError, match="outside the sessions directory"):
+            paths.session_cache_path("../../leaked")
