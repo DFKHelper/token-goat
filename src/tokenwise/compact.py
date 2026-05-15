@@ -9,11 +9,11 @@ import logging
 from datetime import UTC, datetime
 
 from . import session as session_mod
+from .repomap import estimate_tokens
 from .session import SessionCache
 
 _LOG = logging.getLogger("tokenwise.compact")
 
-_CHARS_PER_TOKEN = 4  # rough estimate: 1 token ≈ 4 chars
 _MAX_FILES_READ = 10
 _MAX_SYMBOLS_FILES = 8
 _MAX_RANGES_PER_FILE = 4
@@ -116,13 +116,12 @@ def _render(cache: SessionCache, session_id: str, max_tokens: int) -> str:
         sections.append("")
 
     result = "\n".join(sections).rstrip()
-    max_chars = max_tokens * _CHARS_PER_TOKEN
 
-    if len(result) <= max_chars:
+    if estimate_tokens(result) <= max_tokens:
         return result
 
     # Trim: drop lines from the bottom until within budget, preserving headers
     lines = result.splitlines()
-    while len("\n".join(lines)) > max_chars and len(lines) > 3:
+    while estimate_tokens("\n".join(lines)) > max_tokens and len(lines) > 3:
         lines.pop()
     return "\n".join(lines)
