@@ -165,6 +165,8 @@ def test_bat_read():
         ("zless README.md", "README.md"),
         ("zmore README.md", "README.md"),
         ("batcat README.md", "README.md"),
+        ("nl README.md", "README.md"),
+        ("cat -n README.md", "README.md"),
         ("awk 'BEGIN { print }' src/main.py", "src/main.py"),
         ("perl -ne 'print' src/main.py", "src/main.py"),
     ],
@@ -198,12 +200,20 @@ def test_sed_scripted_read():
 
 
 # ---------------------------------------------------------------------------
-# 14c. sed -i 's/a/b/' file.py → unknown
+# 14c. sed / perl -i... 's/a/b/' file.py → unknown
 # ---------------------------------------------------------------------------
 
 
-def test_sed_in_place_not_read():
-    intent = parse("sed -i 's/a/b/' src/main.py")
+@pytest.mark.parametrize(
+    "command",
+    [
+        "sed -i 's/a/b/' src/main.py",
+        "sed --in-place 's/a/b/' src/main.py",
+        "perl -i.bak -ne 'print' src/main.py",
+    ],
+)
+def test_scripted_in_place_not_read(command):
+    intent = parse(command)
     assert intent.kind == "unknown"
     assert intent.reason is not None
     assert "in place" in intent.reason

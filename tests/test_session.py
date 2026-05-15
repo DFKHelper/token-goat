@@ -208,8 +208,10 @@ class TestUnavailableCacheAccess:
         assert len(rows) == 1
         assert rows[0]["detail"].startswith("load:")
 
-    def test_mark_file_read_skips_persist_when_replace_is_locked(self, tmp_data_dir, monkeypatch):
-        """Locked session cache during save keeps the existing cache intact."""
+    def test_mark_file_read_save_failure_does_not_poison_cache(
+        self, tmp_data_dir, monkeypatch
+    ):
+        """A save failure leaves the in-memory cache usable for later writes."""
         from tokenwise import db
 
         session_id = "locked_write"
@@ -221,12 +223,16 @@ class TestUnavailableCacheAccess:
         with monkeypatch.context() as m:
             m.setattr(session.Path, "replace", boom)
             cache = session.mark_file_read(session_id, "new.py", offset=0, limit=10)
-            assert cache.unavailable is True
+            assert cache.unavailable is False
             assert "new.py" in cache.files
+
+        cache = session.mark_file_read(session_id, "later.py", cache=cache)
+        assert "later.py" in cache.files
 
         loaded = session.load(session_id)
         assert "seed.py" in loaded.files
-        assert "new.py" not in loaded.files
+        assert "new.py" in loaded.files
+        assert "later.py" in loaded.files
 
         with db.open_global() as conn:
             rows = conn.execute(

@@ -226,18 +226,29 @@ def save(cache: SessionCache) -> None:
     if cache.unavailable:
         _LOG.debug("session save skipped (cache unavailable): %s", cache.session_id[:16])
         return
-    with _FILE_LOCK:
-        try:
-            _atomic_write(
-                paths.session_cache_path(cache.session_id),
-                json.dumps(cache.to_dict(), ensure_ascii=False),
-            )
-        except OSError as exc:
-            _LOG.debug("session save skipped (locked/unavailable): %s", exc)
-            _record_cache_contention(cache.session_id, "save", exc)
-            cache.unavailable = True
-            return
-    _LOG.debug("session saved: %s (%d files, %d greps)", cache.session_id[:16], len(cache.files), len(cache.greps))
+    last_exc: OSError | None = None
+    for delay in (0.0, 0.05, 0.15):
+        if delay:
+            time.sleep(delay)
+        with _FILE_LOCK:
+            try:
+                _atomic_write(
+                    paths.session_cache_path(cache.session_id),
+                    json.dumps(cache.to_dict(), ensure_ascii=False),
+                )
+            except OSError as exc:
+                last_exc = exc
+                continue
+        _LOG.debug(
+            "session saved: %s (%d files, %d greps)",
+            cache.session_id[:16],
+            len(cache.files),
+            len(cache.greps),
+        )
+        return
+    if last_exc is not None:
+        _LOG.debug("session save skipped (locked/unavailable): %s", last_exc)
+        _record_cache_contention(cache.session_id, "save", last_exc)
 
 
 def mark_file_read(
