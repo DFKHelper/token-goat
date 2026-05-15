@@ -5,7 +5,7 @@ import logging
 import os
 import tomllib
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, TypedDict
 
 import tomli_w
 
@@ -14,6 +14,21 @@ from . import paths
 _LOG = logging.getLogger("tokenwise.config")
 
 _ENV_COMPACT_ASSIST = "TOKENWISE_COMPACT_ASSIST"  # set to "0"/"false"/"no"/"off" to disable
+
+
+class _CompactAssistToml(TypedDict, total=False):
+    """Expected shape of the [compact_assist] TOML section."""
+
+    enabled: bool
+    triggers: list[str]
+    min_events: int
+    max_manifest_tokens: int
+
+
+class _ConfigToml(TypedDict, total=False):
+    """Expected shape of the tokenwise config TOML file."""
+
+    compact_assist: _CompactAssistToml
 
 
 @dataclass
@@ -35,17 +50,18 @@ class Config:
 def load() -> Config:
     """Load config from TOML. Returns defaults if file is absent or unreadable."""
     p = paths.config_path()
-    raw: dict[str, Any] = {}
+    raw: _ConfigToml = {}  # type: ignore[typeddict-item]
     if p.exists():
         try:
-            raw = tomllib.loads(p.read_text(encoding="utf-8"))
+            parsed: dict[str, Any] = tomllib.loads(p.read_text(encoding="utf-8"))
+            raw = parsed  # type: ignore[assignment]
             _LOG.debug("config loaded from %s", p)
         except Exception as e:  # noqa: BLE001
             _LOG.warning("config load failed (%s); using defaults", e)
     else:
         _LOG.debug("config not found; using defaults")
 
-    ca_raw = raw.get("compact_assist", {})
+    ca_raw: _CompactAssistToml = raw.get("compact_assist", {})  # type: ignore[typeddict-item]
     ca = CompactAssistConfig(
         enabled=bool(ca_raw.get("enabled", True)),
         triggers=list(ca_raw.get("triggers", ["manual", "auto"])),
@@ -67,7 +83,7 @@ def save(config: Config) -> None:
     p = paths.config_path()
     p.parent.mkdir(parents=True, exist_ok=True)
     ca = config.compact_assist
-    data: dict[str, Any] = {
+    data: _ConfigToml = {
         "compact_assist": {
             "enabled": ca.enabled,
             "triggers": ca.triggers,
@@ -76,6 +92,6 @@ def save(config: Config) -> None:
         }
     }
     try:
-        p.write_bytes(tomli_w.dumps(data).encode("utf-8"))
+        p.write_bytes(tomli_w.dumps(data).encode("utf-8"))  # type: ignore[arg-type]
     except Exception as e:  # noqa: BLE001
         _LOG.warning("config save failed: %s", e)
