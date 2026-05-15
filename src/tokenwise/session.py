@@ -12,6 +12,7 @@ from . import paths
 
 _LOG = logging.getLogger("tokenwise.session")
 _FILE_LOCK = threading.Lock()  # in-process; multi-process safe enough via atomic write
+_REPORTED_CONTENTION: set[tuple[str, str]] = set()
 
 
 @dataclass
@@ -138,6 +139,24 @@ def _validate_session_id(session_id: str) -> None:
         raise ValueError(f"session_id contains invalid characters: {session_id!r}")
 
 
+def _record_cache_contention(session_id: str, phase: str, exc: OSError) -> None:
+    """Record a best-effort telemetry row when the session cache is locked."""
+    key = (session_id, phase)
+    if key in _REPORTED_CONTENTION:
+        return
+    _REPORTED_CONTENTION.add(key)
+    try:
+        from . import db  # noqa: PLC0415
+
+        db.record_stat(
+            None,
+            "session_cache_unavailable",
+            detail=f"{phase}:{session_id[:16]}:{type(exc).__name__}",
+        )
+    except Exception:  # noqa: BLE001
+        _LOG.debug("failed to record session cache contention", exc_info=True)
+
+
 def load(session_id: str) -> SessionCache:
     """Load a session cache, or return an empty one."""
     _validate_session_id(session_id)
@@ -148,6 +167,7 @@ def load(session_id: str) -> SessionCache:
             return _fresh_cache(session_id)
     except OSError as exc:
         _LOG.debug("session cache unavailable (%s); returning empty cache", exc)
+        _record_cache_contention(session_id, "load", exc)
         return _fresh_cache(session_id, unavailable=True)
 
     read_error: OSError | None = None
@@ -170,6 +190,7 @@ def load(session_id: str) -> SessionCache:
 
     if read_error is not None:
         _LOG.debug("session cache unavailable (%s); returning empty cache", read_error)
+        _record_cache_contention(session_id, "load", read_error)
     return _fresh_cache(session_id, unavailable=True)
 
 
@@ -186,6 +207,8 @@ def save(cache: SessionCache) -> None:
             )
         except OSError as exc:
             _LOG.debug("session save skipped (locked/unavailable): %s", exc)
+            _record_cache_contention(cache.session_id, "save", exc)
+            cache.unavailable = True
             return
     _LOG.debug("session saved: %s (%d files, %d greps)", cache.session_id[:16], len(cache.files), len(cache.greps))
 

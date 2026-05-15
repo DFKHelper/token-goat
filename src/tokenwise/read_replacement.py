@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Sequence
 from pathlib import Path
 
 from . import db
@@ -24,6 +25,15 @@ _KIND_PRIORITY: dict[str, int] = {
 }
 
 
+class AmbiguousFileMatch(ValueError):
+    """Raised when a file_part matches multiple indexed paths."""
+
+    def __init__(self, file_part: str, candidates: Sequence[str]) -> None:
+        self.file_part = file_part
+        self.candidates = tuple(candidates)
+        super().__init__(f"ambiguous file match for {file_part}: {', '.join(self.candidates)}")
+
+
 def _is_safe_rel_path(rel_path: str) -> bool:
     """Validate that rel_path cannot escape project root via path traversal."""
     # Reject absolute paths and parent directory references
@@ -41,6 +51,8 @@ def resolve_file_rel(project: Project, file_part: str) -> str | None:
     - Bare filename       (e.g., 'parser.py' — only when unique)
     - Partial path        (e.g., 'tokenwise/parser.py' — only when unique)
     - Absolute path       (resolved against project root)
+
+    Raises AmbiguousFileMatch when multiple indexed files match file_part.
     """
     file_part = file_part.replace("\\", "/").strip()
 
@@ -73,12 +85,14 @@ def resolve_file_rel(project: Project, file_part: str) -> str | None:
         if len(rows) == 1:
             return rows[0]["rel_path"]
         if len(rows) > 1:
+            candidates = tuple(sorted(r["rel_path"] for r in rows))
             _LOG.debug(
                 "ambiguous file match in %s for %s: %s",
                 project.hash[:8],
                 file_part,
-                ", ".join(sorted(r["rel_path"] for r in rows)),
+                ", ".join(candidates),
             )
+            raise AmbiguousFileMatch(file_part, candidates)
 
     return None
 
@@ -86,9 +100,11 @@ def resolve_file_rel(project: Project, file_part: str) -> str | None:
 def find_in_all_projects(file_part: str) -> tuple[Project, str] | None:
     """Search every indexed project for a file matching file_part.
 
-    Returns (project, rel_path) for the first match, or None. Used as a
-    cross-project fallback so `tokenwise section "superman/SKILL.md::Heading"`
-    works from any working directory once the skills dir has been indexed.
+    Returns (project, rel_path) for the single unambiguous match, or None.
+    Raises AmbiguousFileMatch when multiple indexed files match across projects.
+    Used as a cross-project fallback so `tokenwise section
+    "superman/SKILL.md::Heading"` works from any working directory once the
+    skills dir has been indexed.
     """
     from . import db as _db  # noqa: PLC0415
 
@@ -99,23 +115,33 @@ def find_in_all_projects(file_part: str) -> tuple[Project, str] | None:
         return None
 
     matches: list[tuple[Project, str]] = []
+    ambiguous_candidates: list[str] = []
     for row in rows:
         proj = Project(root=Path(row["root"]), hash=row["hash"], marker=row["marker"])
         try:
             rel = resolve_file_rel(proj, file_part)
-            if rel is not None:
-                matches.append((proj, rel))
+        except AmbiguousFileMatch as exc:
+            ambiguous_candidates.extend(
+                f"{proj.hash[:8]}:{candidate}" for candidate in exc.candidates
+            )
+            continue
         except Exception:
             continue
+        if rel is not None:
+            matches.append((proj, rel))
     if len(matches) == 1:
         return matches[0]
-    if len(matches) > 1:
+    candidates = [f"{proj.hash[:8]}:{rel}" for proj, rel in matches]
+    candidates.extend(ambiguous_candidates)
+    if len(candidates) > 1:
+        candidates = sorted(dict.fromkeys(candidates))
         _LOG.debug(
             "ambiguous cross-project file match for %s: %s",
             file_part,
-            ", ".join(f"{proj.hash[:8]}:{rel}" for proj, rel in matches),
+            ", ".join(candidates),
         )
-    return None
+        raise AmbiguousFileMatch(file_part, candidates)
+    return matches[0] if matches else None
 
 
 def _read_file_lines(abs_path: Path) -> tuple[list[str], int] | None:

@@ -182,6 +182,8 @@ class TestUnavailableCacheAccess:
 
     def test_mark_file_read_skips_when_cache_file_is_locked(self, tmp_data_dir, monkeypatch):
         """Locked session cache during load returns an unavailable cache and does not overwrite."""
+        from tokenwise import db
+
         session_id = "locked_read"
         session.mark_file_read(session_id, "seed.py")
 
@@ -197,8 +199,17 @@ class TestUnavailableCacheAccess:
         assert "seed.py" in loaded.files
         assert "new.py" not in loaded.files
 
+        with db.open_global() as conn:
+            rows = conn.execute(
+                "SELECT kind, detail FROM stats WHERE kind = 'session_cache_unavailable'"
+            ).fetchall()
+        assert len(rows) == 1
+        assert rows[0]["detail"].startswith("load:")
+
     def test_mark_file_read_skips_persist_when_replace_is_locked(self, tmp_data_dir, monkeypatch):
         """Locked session cache during save keeps the existing cache intact."""
+        from tokenwise import db
+
         session_id = "locked_write"
         session.mark_file_read(session_id, "seed.py")
 
@@ -208,12 +219,19 @@ class TestUnavailableCacheAccess:
         with monkeypatch.context() as m:
             m.setattr(session.Path, "replace", boom)
             cache = session.mark_file_read(session_id, "new.py", offset=0, limit=10)
-            assert cache.unavailable is False
+            assert cache.unavailable is True
             assert "new.py" in cache.files
 
         loaded = session.load(session_id)
         assert "seed.py" in loaded.files
         assert "new.py" not in loaded.files
+
+        with db.open_global() as conn:
+            rows = conn.execute(
+                "SELECT kind, detail FROM stats WHERE kind = 'session_cache_unavailable'"
+            ).fetchall()
+        assert len(rows) == 1
+        assert rows[0]["detail"].startswith("save:")
 
 
 class TestCleanupStale:

@@ -151,6 +151,17 @@ def test_bat_read():
 
 
 # ---------------------------------------------------------------------------
+# 14a. zcat file.txt → read
+# ---------------------------------------------------------------------------
+
+
+def test_zcat_read():
+    intent = parse("zcat docs/notes.txt")
+    assert intent.kind == "read"
+    assert intent.target_path == "docs/notes.txt"
+
+
+# ---------------------------------------------------------------------------
 # 14b. sed -n '1,20p' file.py → read
 # ---------------------------------------------------------------------------
 
@@ -169,6 +180,8 @@ def test_sed_scripted_read():
 def test_sed_in_place_not_read():
     intent = parse("sed -i 's/a/b/' src/main.py")
     assert intent.kind == "unknown"
+    assert intent.reason is not None
+    assert "in place" in intent.reason
 
 
 # ---------------------------------------------------------------------------
