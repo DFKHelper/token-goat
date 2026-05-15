@@ -264,6 +264,29 @@ class TestRenderText:
         text = stats.render_text(summary)
         assert "session_hint" in text
 
+    def test_render_image_shrink_bytes_note(self, tmp_data_dir):
+        """image_shrink with zero tokens_saved should emit the bytes-mode note."""
+        db.record_stat(None, "image_shrink", bytes_saved=50000, tokens_saved=0)
+        summary = stats.summarize(window_days=30)
+        output = stats.render_text(summary)
+        assert "image_shrink" in output or "vision token" in output or len(output) > 0
+
+    def test_render_forces_fallback_renderer(self, tmp_data_dir, monkeypatch):
+        """When the new renderer raises, the fallback rich renderer is used."""
+        import tokenwise.stats as stats_mod
+        monkeypatch.setattr(
+            "tokenwise.stats.render_text",
+            lambda summary, **kw: stats_mod._render_text_legacy(summary, **kw)
+            if hasattr(stats_mod, "_render_text_legacy")
+            else stats_mod.render_text.__wrapped__(summary, **kw)
+            if hasattr(stats_mod.render_text, "__wrapped__")
+            else "",
+        )
+        db.record_stat(None, "read_replacement", bytes_saved=1024, tokens_saved=256)
+        summary = stats.summarize(window_days=30)
+        result = stats.render_text(summary)
+        assert isinstance(result, str)
+
     def test_table_share_column_precedes_events_column(self):
         """The share column is rendered before the events column in every table.
 
@@ -671,52 +694,3 @@ class TestSparkline:
         spark_chars = " ▁▂▃▄▅▆▇█"
         indices = [spark_chars.index(c) for c in result]
         assert indices == sorted(indices)
-
-
-# ---------------------------------------------------------------------------
-# render_text — smoke test covering the full rendering path
-# ---------------------------------------------------------------------------
-
-class TestRenderText:
-    """Smoke tests for render_text to ensure the rendering path executes."""
-
-    def test_render_text_empty_summary(self, tmp_data_dir):
-        summary = stats.summarize(window_days=30)
-        output = stats.render_text(summary)
-        assert isinstance(output, str)
-        # Even empty summary should include some output
-        assert len(output) > 0
-
-    def test_render_text_with_events(self, tmp_data_dir):
-        db.record_stat(None, "image_shrink", bytes_saved=102400, tokens_saved=0)
-        db.record_stat(None, "read_replacement", bytes_saved=5120, tokens_saved=1280)
-        summary = stats.summarize(window_days=30)
-        output = stats.render_text(summary)
-        assert isinstance(output, str)
-        assert len(output) > 0
-
-    def test_render_text_image_shrink_bytes_note(self, tmp_data_dir):
-        """image_shrink with zero tokens_saved should emit the bytes-mode note."""
-        db.record_stat(None, "image_shrink", bytes_saved=50000, tokens_saved=0)
-        summary = stats.summarize(window_days=30)
-        output = stats.render_text(summary)
-        # The renderer note mentions vision tokens
-        assert "image_shrink" in output or "vision token" in output or len(output) > 0
-
-    def test_render_text_forces_fallback_renderer(self, tmp_data_dir, monkeypatch):
-        """When the new renderer raises, the fallback rich renderer is used."""
-        import tokenwise.stats as stats_mod
-        monkeypatch.setattr(
-            "tokenwise.stats.render_text",
-            lambda summary, **kw: stats_mod._render_text_legacy(summary, **kw)
-            if hasattr(stats_mod, "_render_text_legacy")
-            else stats_mod.render_text.__wrapped__(summary, **kw)
-            if hasattr(stats_mod.render_text, "__wrapped__")
-            else "",
-        )
-        db.record_stat(None, "read_replacement", bytes_saved=1024, tokens_saved=256)
-        summary = stats.summarize(window_days=30)
-        # Even when monkeypatched, render_text (the module-level function) must
-        # still be callable and return a string.
-        result = stats.render_text(summary)
-        assert isinstance(result, str)

@@ -315,8 +315,6 @@ class TestSafeRun:
         # Inject a handler that returns a camelCase hookSpecificOutput
         from tokenwise import hooks_cli as hc
 
-        original_dispatch = hc.dispatch
-
         def patched_dispatch(event, payload):
             return {
                 "continue": True,
@@ -381,18 +379,11 @@ class TestSetupLogging:
 
     def _get_real_setup_logging(self):
         """Return the original _setup_logging, bypassing the fixture's no-op."""
-        import tokenwise.hooks_cli as hc
-        # The conftest replaces the attribute; the original lives in the
-        # function's own closure.  We reconstruct it from the same module by
-        # re-binding to the real source object stored under __wrapped__ if
-        # present, or by fetching it from the module's globals dict directly
-        # (which still holds the original since Python keeps function objects).
-        # Simplest reliable path: exec the function body against the module's
-        # real globals so it uses the live logger / paths bindings.
-        import types
+        # Reconstruct _setup_logging from scratch using the same module's live
+        # logger / paths bindings, bypassing the fixture's no-op patch.
         import logging as _logging
-        import contextlib as _contextlib
         from datetime import datetime as _datetime
+
         from tokenwise import paths as _paths
 
         _LOG = _logging.getLogger("tokenwise.hooks")
@@ -441,8 +432,6 @@ class TestSetupLogging:
 
     def test_setup_logging_idempotent(self, monkeypatch):
         """Calling _setup_logging twice must not add duplicate handlers."""
-        import logging
-
         real_setup, log = self._get_real_setup_logging()
 
         saved = list(log.handlers)

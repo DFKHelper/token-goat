@@ -1571,19 +1571,19 @@ requires-dist = [
     { name = "httpx", specifier = ">=0.27.0" },
     { name = "mypy", marker = "extra == 'dev'", specifier = ">=1.10.0" },
     { name = "networkx", specifier = ">=3.0" },
-    { name = "pillow", specifier = ">=10.0.0" },
+    { name = "pillow", specifier = ">=10.4.0" },
     { name = "platformdirs", specifier = ">=4.0.0" },
-    { name = "psutil", specifier = ">=5.9.0" },
+    { name = "psutil", specifier = ">=6.0.0" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.0.0" },
     { name = "pytest-cov", marker = "extra == 'dev'", specifier = ">=5.0.0" },
-    { name = "rich", specifier = ">=13.0.0" },
+    { name = "rich", specifier = ">=14.0.0" },
     { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.6.0" },
     { name = "sqlite-vec", specifier = ">=0.1.5" },
     { name = "tomli-w", specifier = ">=1.0.0" },
     { name = "tree-sitter", specifier = ">=0.23,<0.24" },
     { name = "tree-sitter-language-pack", specifier = ">=0.7,<2.0" },
     { name = "typer", specifier = ">=0.12.0" },
-    { name = "types-psutil", marker = "extra == 'dev'", specifier = ">=5.9.0" },
+    { name = "types-psutil", marker = "extra == 'dev'", specifier = ">=6.0.0" },
 ]
 provides-extras = ["dev"]
 
