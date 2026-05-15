@@ -39,6 +39,20 @@ _STATS_MESSAGES = _load_stats_messages()
 
 def _fmt_bytes(n: int) -> str:
     # Color escalates with magnitude: dim → green → teal → blue → purple
+    if n < 0:
+        a = -n
+        color = C.TEXT_DIM
+        if a >= 1_000_000_000_000_000:
+            return f"{fg(*color)}−{a / 1_000_000_000_000_000:,.1f} PB{RESET}"
+        if a >= 1_000_000_000_000:
+            return f"{fg(*color)}−{a / 1_000_000_000_000:,.1f} TB{RESET}"
+        if a >= 1_000_000_000:
+            return f"{fg(*color)}−{a / 1_000_000_000:,.1f} GB{RESET}"
+        if a >= 1_000_000:
+            return f"{fg(*color)}−{a / 1_000_000:,.1f} MB{RESET}"
+        if a >= 1_000:
+            return f"{fg(*color)}−{a / 1_000:,.1f} KB{RESET}"
+        return f"{fg(*color)}−{a} B{RESET}"
     if n >= 1_000_000_000_000_000:
         return f"{fg(*C.PURPLE)}{n / 1_000_000_000_000_000:,.1f} PB{RESET}"
     if n >= 1_000_000_000_000:
@@ -56,6 +70,18 @@ def _fmt_tokens(n: int) -> str:
     # Color escalates with magnitude: dim → blue → purple → teal → green
     if n == 0:
         return f"{fg(*C.TEXT_DIM)}0 t{RESET}"
+    if n < 0:
+        a = -n
+        color = C.TEXT_DIM
+        if a >= 1_000_000_000_000:
+            return f"{fg(*color)}−{a / 1_000_000_000_000:,.1f} Tt{RESET}"
+        if a >= 1_000_000_000:
+            return f"{fg(*color)}−{a / 1_000_000_000:,.1f} Gt{RESET}"
+        if a >= 1_000_000:
+            return f"{fg(*color)}−{a / 1_000_000:,.1f} Mt{RESET}"
+        if a >= 1_000:
+            return f"{fg(*color)}−{a / 1_000:,.1f} kt{RESET}"
+        return f"{fg(*color)}−{a} t{RESET}"
     if n >= 1_000_000_000_000:
         return f"{fg(*C.GREEN5)}{n / 1_000_000_000_000:,.1f} Tt{RESET}"
     if n >= 1_000_000_000:
@@ -223,8 +249,10 @@ def _table_row(
         tok_str = pad_l(_fmt_tokens(tokens), _COL_TOKENS)
 
     share_pct = share * 100
-    if share_pct >= 50:
-        share_color: RGB = C.GREEN5
+    if share_pct < 0:
+        share_color: RGB = C.RED
+    elif share_pct >= 50:
+        share_color = C.GREEN5
     elif share_pct >= 10:
         share_color = C.TEXT_PRIMARY
     else:
@@ -286,13 +314,19 @@ def _render_by_kind_section(stats: StatsData) -> list[str]:
 
     lines: list[str] = [*_section_header("By kind"), _table_header("name")]
 
+    # Denominator uses gross positive totals so overhead kinds (negative bytes/tokens)
+    # don't shrink the net total and cause positive kinds to show share > 100%.
+    gross_bytes = max(sum(k.bytes for k in stats.by_kind if k.bytes > 0), 1)
+    gross_tokens = sum(k.tokens for k in stats.by_kind if k.tokens > 0)
+
     for k in stats.by_kind:
-        if k.bytes_mode_only or stats.totals.tokens == 0:
-            share = k.bytes / stats.totals.bytes if stats.totals.bytes > 0 else 0.0
+        if k.bytes_mode_only or gross_tokens == 0:
+            share = k.bytes / gross_bytes
         else:
-            share = k.tokens / stats.totals.tokens
+            share = k.tokens / gross_tokens
+        bar_fraction = k.bytes / gross_bytes if k.bytes > 0 else 0.0
         lines.append(_table_row(
-            k.kind, share, k.bytes, k.tokens, k.events, share,
+            k.kind, bar_fraction, k.bytes, k.tokens, k.events, share,
             bytes_mode_only=k.bytes_mode_only,
         ))
 
