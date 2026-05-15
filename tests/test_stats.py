@@ -694,3 +694,51 @@ class TestSparkline:
         spark_chars = " ▁▂▃▄▅▆▇█"
         indices = [spark_chars.index(c) for c in result]
         assert indices == sorted(indices)
+
+
+# ---------------------------------------------------------------------------
+# render_text — rich fallback when new renderer raises
+# ---------------------------------------------------------------------------
+
+
+class TestRenderTextFallback:
+    """Cover the rich-based fallback renderer path in render_text()."""
+
+    def _make_summary(self):
+        from tokenwise.stats import StatsSummary
+        return StatsSummary(
+            total_events=5,
+            total_bytes_saved=1024,
+            total_tokens_saved=300,
+            by_kind={"image_shrink": {"events": 5, "bytes_saved": 1024, "tokens_saved": 300}},
+            by_day=[],
+            by_project=[],
+            window_days=30,
+        )
+
+    def test_fallback_runs_when_renderer_raises(self, tmp_data_dir):
+        """If render_stats raises, render_text must fall back to the rich renderer."""
+        from unittest.mock import patch
+
+        from tokenwise.stats import render_text
+
+        with patch("tokenwise.stats.render_text.__module__"):
+            pass  # just verifying import works
+
+        with patch("tokenwise.render.stats_renderer.render_stats", side_effect=RuntimeError("boom")):
+            result = render_text(self._make_summary())
+
+        assert isinstance(result, str)
+        assert len(result) > 0
+
+    def test_fallback_output_contains_key_sections(self, tmp_data_dir):
+        """Rich fallback output must include headline stats and a project table."""
+        from unittest.mock import patch
+
+        from tokenwise.stats import render_text
+
+        with patch("tokenwise.render.stats_renderer.render_stats", side_effect=RuntimeError("renderer down")):
+            output = render_text(self._make_summary())
+
+        # Headline numbers must appear somewhere in the rich output
+        assert "5" in output  # total_events

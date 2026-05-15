@@ -64,26 +64,6 @@ def _line_count(path: Path) -> int | None:
         return None
 
 
-def _get_indexed_symbols(file_rel: str, project_hash: str) -> list[dict]:
-    """Return symbols indexed for this file (up to 50), ordered by line number."""
-    try:
-        with db.open_project(project_hash) as conn:
-            rows = conn.execute(
-                """
-                SELECT kind, name, line, end_line
-                FROM symbols
-                WHERE file_rel = ? AND name IS NOT NULL
-                ORDER BY line
-                LIMIT 50
-                """,
-                (file_rel,),
-            ).fetchall()
-            return [dict(r) for r in rows]
-    except Exception:  # noqa: BLE001
-        _LOG.exception("failed to load indexed symbols for %s", file_rel)
-        return []
-
-
 def _get_indexed_symbols_and_line_count(
     file_rel: str, project_hash: str
 ) -> tuple[list[dict], int | None]:
