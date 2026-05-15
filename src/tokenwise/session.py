@@ -285,7 +285,13 @@ def get_file_entry(session_id: str, path: str) -> FileEntry | None:
 
 
 def reset_session(session_id: str) -> None:
-    """Wipe the cache for a session (called by SessionStart on /clear / compact)."""
+    """Wipe the cache for a session (called by SessionStart on /clear / compact).
+
+    Validates session_id before use (defense-in-depth: paths.session_cache_path
+    also validates, but an explicit guard here makes the invariant obvious at the
+    call site and prevents future callers from bypassing path-level checks).
+    """
+    _validate_session_id(session_id)
     p = paths.session_cache_path(session_id)
     if p.exists():
         try:

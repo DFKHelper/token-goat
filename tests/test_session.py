@@ -3,6 +3,8 @@ from __future__ import annotations
 
 import time
 
+import pytest
+
 from tokenwise import session
 
 
@@ -326,3 +328,58 @@ class TestGetFileEntry:
         session.mark_file_read(s_id, "C:/foo.py")
         entry = session.get_file_entry(s_id, "c:\\foo.py")
         assert entry is not None
+
+
+# ---------------------------------------------------------------------------
+# Security: session_id validation (path traversal / injection prevention)
+# ---------------------------------------------------------------------------
+
+class TestSessionIdValidation:
+    """_validate_session_id is enforced by load(), reset_session(), and all callers
+    that derive a file path from the session_id."""
+
+    # ── load() ──────────────────────────────────────────────────────────────
+
+    def test_load_rejects_path_traversal(self, tmp_data_dir):
+        with pytest.raises(ValueError, match="invalid characters"):
+            session.load("../../etc/passwd")
+
+    def test_load_rejects_empty_id(self, tmp_data_dir):
+        with pytest.raises(ValueError, match="cannot be empty"):
+            session.load("")
+
+    def test_load_rejects_too_long_id(self, tmp_data_dir):
+        with pytest.raises(ValueError, match="too long"):
+            session.load("a" * 300)
+
+    def test_load_rejects_slash_in_id(self, tmp_data_dir):
+        with pytest.raises(ValueError, match="invalid characters"):
+            session.load("session/evil")
+
+    def test_load_rejects_backslash_in_id(self, tmp_data_dir):
+        with pytest.raises(ValueError, match="invalid characters"):
+            session.load("session\\evil")
+
+    def test_load_rejects_null_byte(self, tmp_data_dir):
+        with pytest.raises(ValueError, match="invalid characters"):
+            session.load("abc\x00def")
+
+    def test_load_accepts_valid_alphanum(self, tmp_data_dir):
+        """Normal session IDs (UUID-style) must be accepted."""
+        cache = session.load("abc-123_XYZ")
+        assert cache.session_id == "abc-123_XYZ"
+
+    # ── reset_session() ─────────────────────────────────────────────────────
+
+    def test_reset_session_rejects_path_traversal(self, tmp_data_dir):
+        """Defense-in-depth: reset_session() now validates before touching the path."""
+        with pytest.raises(ValueError, match="invalid characters"):
+            session.reset_session("../../etc/passwd")
+
+    def test_reset_session_rejects_empty_id(self, tmp_data_dir):
+        with pytest.raises(ValueError, match="cannot be empty"):
+            session.reset_session("")
+
+    def test_reset_session_accepts_valid_id(self, tmp_data_dir):
+        """reset_session with a valid ID must not raise even if file doesn't exist."""
+        session.reset_session("valid-session-id")  # no error

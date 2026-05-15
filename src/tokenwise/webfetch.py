@@ -2,7 +2,9 @@
 from __future__ import annotations
 
 import hashlib
+import ipaddress
 import logging
+import socket
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -14,6 +16,68 @@ _LOG = logging.getLogger("tokenwise.webfetch")
 
 # Common image extensions to detect from URL
 IMAGE_URL_EXTS = (".jpg", ".jpeg", ".png", ".webp", ".avif", ".gif", ".bmp", ".tiff", ".tif")
+
+# Hostnames that must never be fetched (SSRF protection)
+_BLOCKED_HOSTNAMES = frozenset(
+    [
+        "localhost",
+        "metadata.google.internal",  # GCP metadata endpoint
+    ]
+)
+
+
+def _is_ssrf_safe(url: str) -> bool:
+    """Return True only if the URL is safe to fetch (not an SSRF risk).
+
+    Blocks:
+    - Non-http/https schemes (file://, ftp://, etc.)
+    - Known metadata hostnames (localhost, metadata.google.internal)
+    - Private / loopback / link-local IP addresses:
+        127.x.x.x, 10.x, 172.16-31.x, 192.168.x, 169.254.x (AWS/GCP/Azure metadata),
+        ::1, fc00::/7, fe80::/10
+    - Bare IP literals for the above ranges
+    """
+    try:
+        parsed = urlparse(url)
+    except ValueError:
+        return False
+
+    if parsed.scheme not in ("http", "https"):
+        return False
+
+    hostname = parsed.hostname
+    if not hostname:
+        return False
+
+    hostname_lower = hostname.lower().rstrip(".")
+    if hostname_lower in _BLOCKED_HOSTNAMES:
+        _LOG.warning("SSRF guard: blocked hostname %r in URL", hostname)
+        return False
+
+    # Try resolving the hostname to an IP and checking if it is private/loopback/link-local.
+    # We do a best-effort resolution; if it fails we allow the request (the HTTP client
+    # will fail on its own if unreachable, and we prefer not to silently drop legitimate URLs).
+    try:
+        addr_info = socket.getaddrinfo(hostname_lower, None, proto=socket.IPPROTO_TCP)
+    except OSError:
+        # Cannot resolve — let the HTTP request fail naturally; not a known-bad address.
+        return True
+
+    for _family, _type, _proto, _canonname, sockaddr in addr_info:
+        ip_str = sockaddr[0]
+        try:
+            ip = ipaddress.ip_address(ip_str)
+        except ValueError:
+            continue
+        if ip.is_loopback or ip.is_private or ip.is_link_local or ip.is_reserved:
+            _LOG.warning(
+                "SSRF guard: blocked %r (resolves to %s which is private/loopback/link-local)",
+                hostname,
+                ip_str,
+            )
+            return False
+
+    return True
 
 
 def is_image_url(url: str) -> bool:
@@ -67,7 +131,14 @@ def fetch_url(
     timeout_sec: float = 30.0,
     max_size_bytes: int = 50 * 1024 * 1024,
 ) -> Path:
-    """Download a URL. Return the local cached path. Shrink if image and big enough."""
+    """Download a URL. Return the local cached path. Shrink if image and big enough.
+
+    Raises ValueError if the URL fails SSRF safety checks (private/loopback IPs,
+    metadata endpoints, non-http/https schemes).
+    """
+    if not _is_ssrf_safe(url):
+        raise ValueError(f"URL blocked by SSRF safety check: {url!r}")
+
     cache_dir = paths.web_cache_dir()
     cache_dir.mkdir(parents=True, exist_ok=True)
 

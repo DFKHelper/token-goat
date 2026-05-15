@@ -317,7 +317,85 @@ class TestFetchUrlShrink:
 
 
 # ---------------------------------------------------------------------------
-# 9. CLI: tokenwise fetch-image <bad-url> exits 0 with stderr message
+# 9. SSRF protection: _is_ssrf_safe and fetch_url refuse private/loopback URLs
+# ---------------------------------------------------------------------------
+
+class TestIsSsrfSafe:
+    def test_public_https_allowed(self):
+        assert webfetch._is_ssrf_safe("https://example.com/image.png") is True
+
+    def test_public_http_allowed(self):
+        assert webfetch._is_ssrf_safe("http://example.com/image.png") is True
+
+    def test_non_http_scheme_blocked(self):
+        assert webfetch._is_ssrf_safe("file:///etc/passwd") is False
+
+    def test_ftp_scheme_blocked(self):
+        assert webfetch._is_ssrf_safe("ftp://example.com/file.jpg") is False
+
+    def test_localhost_blocked(self):
+        assert webfetch._is_ssrf_safe("http://localhost/admin") is False
+
+    def test_localhost_uppercase_blocked(self):
+        assert webfetch._is_ssrf_safe("http://LOCALHOST/admin") is False
+
+    def test_gcp_metadata_hostname_blocked(self):
+        assert webfetch._is_ssrf_safe("http://metadata.google.internal/computeMetadata/v1/") is False
+
+    def test_loopback_ipv4_blocked(self):
+        assert webfetch._is_ssrf_safe("http://127.0.0.1/") is False
+
+    def test_loopback_ipv4_variant_blocked(self):
+        assert webfetch._is_ssrf_safe("http://127.1.2.3/") is False
+
+    def test_aws_metadata_ip_blocked(self):
+        # 169.254.169.254 is the link-local AWS/Azure/GCP IMDS endpoint
+        assert webfetch._is_ssrf_safe("http://169.254.169.254/latest/meta-data/") is False
+
+    def test_link_local_range_blocked(self):
+        assert webfetch._is_ssrf_safe("http://169.254.0.1/anything") is False
+
+    def test_private_rfc1918_10_blocked(self):
+        assert webfetch._is_ssrf_safe("http://10.0.0.1/") is False
+
+    def test_private_rfc1918_192_168_blocked(self):
+        assert webfetch._is_ssrf_safe("http://192.168.1.1/router") is False
+
+    def test_private_rfc1918_172_blocked(self):
+        assert webfetch._is_ssrf_safe("http://172.16.0.1/internal") is False
+
+    def test_empty_url_blocked(self):
+        assert webfetch._is_ssrf_safe("") is False
+
+    def test_no_hostname_blocked(self):
+        assert webfetch._is_ssrf_safe("https:///image.png") is False
+
+
+class TestFetchUrlSsrfGuard:
+    """fetch_url must raise ValueError for SSRF-blocked URLs (never make the request)."""
+
+    def test_localhost_raises_value_error(self, tmp_data_dir):
+        with pytest.raises(ValueError, match="SSRF"):
+            webfetch.fetch_url("http://localhost/image.png")
+
+    def test_aws_metadata_raises_value_error(self, tmp_data_dir):
+        with pytest.raises(ValueError, match="SSRF"):
+            webfetch.fetch_url("http://169.254.169.254/latest/meta-data/iam/security-credentials/")
+
+    def test_private_ip_raises_value_error(self, tmp_data_dir):
+        with pytest.raises(ValueError, match="SSRF"):
+            webfetch.fetch_url("http://10.0.0.1/image.png")
+
+    def test_loopback_raises_no_http_request(self, tmp_data_dir):
+        """Verify httpx.Client is never constructed for a blocked URL."""
+        with patch("httpx.Client") as mock_cls, \
+                pytest.raises(ValueError):
+            webfetch.fetch_url("http://127.0.0.1/image.png")
+        mock_cls.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# 11. CLI: tokenwise fetch-image <bad-url> exits 0 with stderr message
 # ---------------------------------------------------------------------------
 
 class TestFetchImageCli:
