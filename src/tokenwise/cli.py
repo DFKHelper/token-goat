@@ -21,7 +21,7 @@ with contextlib.suppress(AttributeError, OSError):
 
 import typer
 
-from . import hooks_cli
+from . import hooks_cli, read_commands
 
 _LOG = logging.getLogger(__name__)
 
@@ -92,29 +92,6 @@ def main() -> None:
         except Exception as e:  # noqa: BLE001
             _LOG.exception("failed to emit hook response: %s", e)
         raise SystemExit(0) from None
-
-
-def _not_indexed_hint(project_hash: str) -> str | None:
-    """Return a one-line hint when this project has no indexed files.
-
-    Distinguishes "no match for that name" from "nothing in the DB yet". Agents
-    (especially Codex) otherwise interpret an empty result as "tokenwise is
-    failing" and fall back to direct file reads.
-    """
-    from . import db as _db  # noqa: PLC0415
-    try:
-        if _db.file_count(project_hash) == 0:
-            return (
-                "(project not yet indexed. auto-indexing started in the "
-                "background on first SessionStart; if it has not finished, "
-                "rerun in a moment, or run `tokenwise index --full` to force "
-                "synchronous indexing.)"
-            )
-    except Exception as e:  # noqa: BLE001
-        _LOG.warning("failed to check project index status: %s", e)
-    return None
-
-
 @app.command()
 def symbol(
     name: str,
@@ -193,7 +170,7 @@ def symbol(
     elif results:
         _fmt_plain(results)
     else:
-        hint = _not_indexed_hint(proj.hash)
+        hint = read_commands._not_indexed_hint(proj.hash)
         if hint:
             typer.echo(hint)
         else:
@@ -242,7 +219,7 @@ def ref(
                 ctx = f"\033[2m{ctx}\033[0m"
             typer.echo(f"{row['file']}:{row['line']}: ref {name!r}{ctx}")
     else:
-        hint = _not_indexed_hint(proj.hash)
+        hint = read_commands._not_indexed_hint(proj.hash)
         if hint:
             typer.echo(hint)
         else:
@@ -328,7 +305,7 @@ def cmd_map(
 @app.command()
 def deps(file: str) -> None:
     """Show dependency graph for file."""
-    typer.echo("not yet implemented: deps")
+    read_commands.deps(file)
 
 
 @app.command()
@@ -339,58 +316,12 @@ def read(
     context_lines: int = typer.Option(0, "--context", "-c", help="Extra lines before/after"),
 ) -> None:
     """Read just <symbol> from <file>, not the whole file."""
-    if "::" not in target:
-        typer.echo("Error: target must be '<file>::<symbol>'", err=True)
-        raise typer.Exit(2)
-    file_part, _, symbol_part = target.partition("::")
-
-    from . import read_replacement  # noqa: PLC0415
-    from .project import find_project  # noqa: PLC0415
-
-    proj = find_project(Path.cwd())
-    rel: str | None = None
-    if proj is not None:
-        rel = read_replacement.resolve_file_rel(proj, file_part)
-
-    if rel is None:
-        # Fall back to searching all indexed projects (e.g. skills, plugins)
-        cross = read_replacement.find_in_all_projects(file_part)
-        if cross is None:
-            if proj is None:
-                typer.echo("No project detected.", err=True)
-            else:
-                hint = _not_indexed_hint(proj.hash)
-                typer.echo(hint if hint else f"File not found in any indexed project: {file_part}", err=True)
-            raise typer.Exit(0)
-        proj, rel = cross
-
-    assert proj is not None  # guaranteed: either cross-project match or we exited above
-    result = read_replacement.read_symbol(proj, rel, symbol_part, context_lines=context_lines)
-    if result is None:
-        typer.echo(f"Symbol not found: {symbol_part} (in {rel})", err=True)
-        raise typer.Exit(0)
-
-    if session_id:
-        from . import session  # noqa: PLC0415
-        with contextlib.suppress(Exception):
-            session.mark_file_read(session_id, rel or file_part, symbol=symbol_part)
-
-    from . import db as _db  # noqa: PLC0415
-    bytes_saved = result.get("bytes_saved", 0)
-    tokens_saved = bytes_saved // 4
-    with contextlib.suppress(Exception):
-        _db.record_stat(
-            proj.hash,
-            "read_replacement",
-            tokens_saved=tokens_saved,
-            bytes_saved=bytes_saved,
-            detail=f"{rel}::{symbol_part}",
-        )
-
-    if json_output:
-        typer.echo(json.dumps(result, indent=2))
-        return
-    typer.echo(result["text"])
+    read_commands.read(
+        target=target,
+        session_id=session_id,
+        json_output=json_output,
+        context_lines=context_lines,
+    )
 
 
 @app.command()
@@ -401,58 +332,12 @@ def section(
     context_lines: int = typer.Option(0, "--context", "-c", help="Extra lines before/after"),
 ) -> None:
     """Extract just <heading> section from <file>, not the whole file."""
-    if "::" not in target:
-        typer.echo("Error: target must be '<file>::<heading>'", err=True)
-        raise typer.Exit(2)
-    file_part, _, heading_part = target.partition("::")
-
-    from . import read_replacement  # noqa: PLC0415
-    from .project import find_project  # noqa: PLC0415
-
-    proj = find_project(Path.cwd())
-    rel: str | None = None
-    if proj is not None:
-        rel = read_replacement.resolve_file_rel(proj, file_part)
-
-    if rel is None:
-        # Fall back to searching all indexed projects (e.g. skills, plugins)
-        cross = read_replacement.find_in_all_projects(file_part)
-        if cross is None:
-            if proj is None:
-                typer.echo("No project detected.", err=True)
-            else:
-                hint = _not_indexed_hint(proj.hash)
-                typer.echo(hint if hint else f"File not found in any indexed project: {file_part}", err=True)
-            raise typer.Exit(0)
-        proj, rel = cross
-
-    assert proj is not None  # guaranteed: either cross-project match or we exited above
-    result = read_replacement.read_section(proj, rel, heading_part, context_lines=context_lines)
-    if result is None:
-        typer.echo(f"Section not found: {heading_part} (in {rel})", err=True)
-        raise typer.Exit(0)
-
-    if session_id:
-        from . import session  # noqa: PLC0415
-        with contextlib.suppress(Exception):
-            session.mark_file_read(session_id, rel or file_part, symbol=heading_part)
-
-    from . import db as _db  # noqa: PLC0415
-    bytes_saved = result.get("bytes_saved", 0)
-    tokens_saved = bytes_saved // 4
-    with contextlib.suppress(Exception):
-        _db.record_stat(
-            proj.hash,
-            "section_replacement",
-            tokens_saved=tokens_saved,
-            bytes_saved=bytes_saved,
-            detail=f"{rel}::{heading_part}",
-        )
-
-    if json_output:
-        typer.echo(json.dumps(result, indent=2))
-        return
-    typer.echo(result["text"])
+    read_commands.section(
+        target=target,
+        session_id=session_id,
+        json_output=json_output,
+        context_lines=context_lines,
+    )
 
 
 @app.command("session-touched")
@@ -1011,12 +896,24 @@ def doctor(  # noqa: C901
             row = conn.execute(
                 "SELECT COUNT(*), SUM(tokens_saved), SUM(bytes_saved) FROM stats"
             ).fetchone()
+            cache_row = conn.execute(
+                "SELECT COUNT(*) FROM stats WHERE kind = ? AND ts >= ?",
+                ("session_cache_unavailable", int(time.time()) - 3600),
+            ).fetchone()
         if row and row[0]:
             ok("events", str(row[0]))
             ok("tokens saved", str(row[1] or 0))
             ok("bytes saved", str(row[2] or 0))
         else:
             ok("(none)", "no recorded savings yet")
+        if cache_row and cache_row[0]:
+            flag(
+                "session-cache",
+                f"{cache_row[0]} contention event(s) in the last hour",
+                warn=True,
+            )
+        else:
+            ok("session-cache", "no contention events in the last hour")
     except Exception as e:  # noqa: BLE001
         flag("stats", str(e), warn=True)
 

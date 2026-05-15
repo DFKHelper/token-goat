@@ -50,6 +50,23 @@ def md_project(tmp_path, tmp_data_dir, make_project):
     return proj_root, proj
 
 
+def _make_ambiguous_project(
+    tmp_path,
+    make_project,
+    rel_name: str,
+    content_a: str,
+    content_b: str,
+):
+    proj_root = tmp_path / "ambiguous"
+    (proj_root / "a").mkdir(parents=True)
+    (proj_root / "b").mkdir(parents=True)
+    (proj_root / "a" / rel_name).write_text(content_a, encoding="utf-8")
+    (proj_root / "b" / rel_name).write_text(content_b, encoding="utf-8")
+    proj = make_project(proj_root)
+    index_project(proj, full=True)
+    return proj_root, proj
+
+
 # ---------------------------------------------------------------------------
 # resolve_file_rel tests
 # ---------------------------------------------------------------------------
@@ -81,19 +98,21 @@ def test_resolve_garbage_returns_none(ts_project):
     assert rel is None
 
 
-def test_resolve_ambiguous_bare_filename_returns_none(tmp_path, tmp_data_dir, make_project):
-    from tokenwise.parser import index_project
+def test_resolve_ambiguous_bare_filename_raises(tmp_path, tmp_data_dir, make_project):
+    from tokenwise.read_replacement import AmbiguousFileMatch
 
-    proj_root = tmp_path / "ambiguous"
-    (proj_root / "a").mkdir(parents=True)
-    (proj_root / "b").mkdir(parents=True)
-    (proj_root / "a" / "index.ts").write_text("export const a = 1;\n", encoding="utf-8")
-    (proj_root / "b" / "index.ts").write_text("export const b = 2;\n", encoding="utf-8")
+    _proj_root, proj = _make_ambiguous_project(
+        tmp_path,
+        make_project,
+        "index.ts",
+        "export const a = 1;\n",
+        "export const b = 2;\n",
+    )
 
-    proj = make_project(proj_root)
-    index_project(proj, full=True)
-
-    assert read_replacement.resolve_file_rel(proj, "index.ts") is None
+    with pytest.raises(AmbiguousFileMatch) as excinfo:
+        read_replacement.resolve_file_rel(proj, "index.ts")
+    assert excinfo.value.file_part == "index.ts"
+    assert excinfo.value.candidates == ("a/index.ts", "b/index.ts")
 
 
 # ---------------------------------------------------------------------------
@@ -313,3 +332,47 @@ def test_cli_section_json_output(indexed_md_cli):
     assert "text" in data
     assert "bytes_saved" in data
     assert data["bytes_saved"] > 0
+
+
+def test_cli_read_reports_ambiguous_file_match(tmp_path, tmp_data_dir, make_project, monkeypatch):
+    from typer.testing import CliRunner
+
+    from tokenwise.cli import app
+
+    proj_root, _ = _make_ambiguous_project(
+        tmp_path,
+        make_project,
+        "index.ts",
+        "export const a = 1;\n",
+        "export const b = 2;\n",
+    )
+    monkeypatch.chdir(proj_root)
+
+    runner = CliRunner()
+    result = runner.invoke(app, ["read", "index.ts::greet"])
+    assert result.exit_code == 0
+    assert "Ambiguous file match: index.ts" in result.output
+    assert "a/index.ts" in result.output
+    assert "b/index.ts" in result.output
+
+
+def test_cli_section_reports_ambiguous_file_match(tmp_path, tmp_data_dir, make_project, monkeypatch):
+    from typer.testing import CliRunner
+
+    from tokenwise.cli import app
+
+    proj_root, _ = _make_ambiguous_project(
+        tmp_path,
+        make_project,
+        "article.md",
+        "# One\n\n## Methodology\n\nA.\n",
+        "# Two\n\n## Methodology\n\nB.\n",
+    )
+    monkeypatch.chdir(proj_root)
+
+    runner = CliRunner()
+    result = runner.invoke(app, ["section", "article.md::Methodology"])
+    assert result.exit_code == 0
+    assert "Ambiguous file match: article.md" in result.output
+    assert "a/article.md" in result.output
+    assert "b/article.md" in result.output

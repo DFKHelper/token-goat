@@ -528,6 +528,17 @@ def render_text(
                 )
             )
 
+        hint_gross = summary.by_kind.get("session_hint")
+        hint_overhead = summary.by_kind.get("session_hint_overhead")
+        if hint_gross and hint_overhead:
+            console.print(
+                Text(
+                    "  note: session_hint shows realized savings; session_hint_overhead "
+                    "shows injected hint cost; headline totals are net.",
+                    style="dim italic",
+                )
+            )
+
     # ---- Activity sparkline (last 7 days, oldest -> newest) ----
     if summary.by_day:
         days_for_spark = summary.by_day[:top_days]

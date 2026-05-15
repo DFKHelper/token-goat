@@ -295,6 +295,14 @@ def _render_by_kind_section(stats: StatsData) -> list[str]:
         )
         lines.append(msg)
 
+    if any(k.kind == "session_hint" for k in stats.by_kind) and any(
+        k.kind == "session_hint_overhead" for k in stats.by_kind
+    ):
+        lines.append(
+            f"{_M}{fg(*C.TEXT_DIM)}i  session_hint shows realized savings; "
+            f"session_hint_overhead shows injected hint cost; headline totals are net{RESET}"
+        )
+
     return lines
 
 

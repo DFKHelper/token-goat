@@ -240,6 +240,10 @@ const renderByKindSection = (stats: StatsData): string[] => {
     lines.push(`${M}${fg(...C.textDim)}i  ${names} tracks bytes, not vision tokens (model-specific math)${RESET}`)
   }
 
+  if (byKind.some(k => k.kind === 'session_hint') && byKind.some(k => k.kind === 'session_hint_overhead')) {
+    lines.push(`${M}${fg(...C.textDim)}i  session_hint shows realized savings; session_hint_overhead shows injected hint cost; headline totals are net${RESET}`)
+  }
+
   return lines
 }
 

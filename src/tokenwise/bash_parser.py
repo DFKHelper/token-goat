@@ -18,11 +18,14 @@ class BashIntent:
     pattern: str | None = None  # for 'grep' and 'glob'
     offset: int | None = None
     limit: int | None = None
+    reason: str | None = None
 
 
-# Read tools we recognize: cat, head, tail, less, bat, more, nl
+# Read tools we recognize: cat, head, tail, less, bat, more, nl, zcat.
 # Scripted readers like sed/awk/perl usually put the file path after the script.
-READ_BINS = frozenset(["cat", "head", "tail", "bat", "less", "more", "nl", "sed", "awk", "perl"])
+READ_BINS = frozenset(
+    ["cat", "head", "tail", "bat", "batcat", "less", "more", "nl", "zcat", "zless", "zmore", "sed", "awk", "perl"]
+)
 SCRIPTED_READ_BINS = frozenset(["sed", "awk", "perl"])
 # Grep tools
 GREP_BINS = frozenset(["rg", "grep", "ag", "ack", "ripgrep"])
@@ -54,14 +57,14 @@ def parse(command: str) -> BashIntent:
         tokens = shlex.split(command, posix=True)
     except ValueError as e:
         _LOG.debug("bash_parser: shlex.split failed: %s", e)
-        return BashIntent(kind="unknown")
+        return BashIntent(kind="unknown", reason="invalid shell quoting")
 
     # Strip common prefixes like sudo, time, nice, exec and env VAR=val assignments
     while tokens and (tokens[0] in {"sudo", "time", "nice", "exec"} or "=" in tokens[0]):
         tokens.pop(0)
 
     if not tokens:
-        return BashIntent(kind="unknown")
+        return BashIntent(kind="unknown", reason="empty command after stripping prefixes")
 
     binary = Path(tokens[0]).stem
     args = tokens[1:]
@@ -78,7 +81,7 @@ def parse(command: str) -> BashIntent:
 def _parse_read(binary: str, args: list[str]) -> BashIntent:
     """Parse cat/head/tail/bat with their common flags."""
     if binary in SCRIPTED_READ_BINS and any(a == "--in-place" or a.startswith("-i") for a in args):
-        return BashIntent(kind="unknown")
+        return BashIntent(kind="unknown", reason=f"{binary} edits files in place")
 
     offset: int | None = None
     limit: int | None = None
@@ -113,10 +116,10 @@ def _parse_read(binary: str, args: list[str]) -> BashIntent:
         i += 1
 
     if not paths:
-        return BashIntent(kind="unknown")
+        return BashIntent(kind="unknown", reason=f"{binary} command is missing a file path")
     target_path = paths[-1] if binary in SCRIPTED_READ_BINS else paths[0]
     if binary in SCRIPTED_READ_BINS and len(paths) < 2:
-        return BashIntent(kind="unknown")
+        return BashIntent(kind="unknown", reason=f"{binary} command is missing a target file")
     return BashIntent(kind="read", target_path=target_path, offset=offset, limit=limit)
 
 

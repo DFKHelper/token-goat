@@ -62,7 +62,7 @@ class TestPreReadHandlerDirect:
         assert result == {"continue": True}
 
     def test_hint_records_session_hint_stat(self, tmp_data_dir):
-        """When pre_read emits a hint, a session_hint stat row is appended."""
+        """When pre_read emits a hint, the gross and overhead stat rows are appended."""
         from tokenwise import db  # local import to honor tmp_data_dir patching
 
         sid = "stat_smoke"
@@ -80,14 +80,18 @@ class TestPreReadHandlerDirect:
 
         with db.open_global() as conn:
             rows = conn.execute(
-                "SELECT kind, detail FROM stats WHERE kind = 'session_hint'"
+                "SELECT kind, detail FROM stats "
+                "WHERE kind IN ('session_hint', 'session_hint_overhead') "
+                "ORDER BY kind"
             ).fetchall()
-        assert len(rows) == 1
+        assert len(rows) == 2
         assert rows[0]["detail"] == path
+        assert rows[1]["detail"] == path
+        assert rows[0]["kind"] == "session_hint"
+        assert rows[1]["kind"] == "session_hint_overhead"
 
     def test_session_hint_stat_is_net_of_injection_cost(self, tmp_data_dir):
-        """The session_hint stat is *net*: realized saving minus the token cost
-        of the injected hint text — not the gross saving.
+        """The gross and overhead rows sum to the same net the user pays.
 
         Regression for the honest-accounting fix: a hint is not free, so
         `tokenwise stats` must subtract the cost of injecting it.
@@ -120,16 +124,23 @@ class TestPreReadHandlerDirect:
 
         with db.open_global() as conn:
             rows = conn.execute(
-                "SELECT tokens_saved, bytes_saved FROM stats WHERE kind = 'session_hint'"
+                "SELECT kind, tokens_saved, bytes_saved FROM stats "
+                "WHERE kind IN ('session_hint', 'session_hint_overhead') "
+                "ORDER BY kind"
             ).fetchall()
-        assert len(rows) == 1
-        assert rows[0]["tokens_saved"] == expected_net_tokens
-        assert rows[0]["bytes_saved"] == expected_net_bytes
+        assert len(rows) == 2
+        gross_row, overhead_row = rows
+        assert gross_row["kind"] == "session_hint"
+        assert gross_row["tokens_saved"] == hint.tokens_saved
+        assert gross_row["bytes_saved"] == hint.tokens_saved * 4
+        assert overhead_row["kind"] == "session_hint_overhead"
+        assert overhead_row["tokens_saved"] == -injection_cost
+        assert overhead_row["bytes_saved"] == -len(hint)
+        assert gross_row["tokens_saved"] + overhead_row["tokens_saved"] == expected_net_tokens
+        assert gross_row["bytes_saved"] + overhead_row["bytes_saved"] == expected_net_bytes
 
     def test_suggestion_hint_records_negative_net(self, tmp_data_dir):
-        """A pure-suggestion hint (tokens_saved=0) records a *negative* net — it
-        cost tokens to inject and has realized nothing yet. The real saving, if
-        the agent acts on it, is recorded later by `tokenwise read`."""
+        """A pure-suggestion hint records a zero gross row plus a negative overhead row."""
         from tokenwise import db
 
         sid = "neg_net"
@@ -147,11 +158,18 @@ class TestPreReadHandlerDirect:
         assert "hookSpecificOutput" in result
 
         with db.open_global() as conn:
-            row = conn.execute(
-                "SELECT tokens_saved FROM stats WHERE kind = 'session_hint'"
-            ).fetchone()
-        assert row is not None
-        assert row["tokens_saved"] < 0
+            rows = conn.execute(
+                "SELECT kind, tokens_saved FROM stats "
+                "WHERE kind IN ('session_hint', 'session_hint_overhead') "
+                "ORDER BY kind"
+            ).fetchall()
+        assert len(rows) == 2
+        gross_row, overhead_row = rows
+        assert gross_row["kind"] == "session_hint"
+        assert gross_row["tokens_saved"] == 0
+        assert overhead_row["kind"] == "session_hint_overhead"
+        assert overhead_row["tokens_saved"] < 0
+        assert gross_row["tokens_saved"] + overhead_row["tokens_saved"] < 0
 
     def test_missing_tool_name_passes_through(self, tmp_data_dir):
         """No tool_name in payload → passes through as non-Read."""

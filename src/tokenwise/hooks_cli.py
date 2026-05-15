@@ -10,7 +10,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, TypedDict
 
-from . import paths
+from . import hooks_edit, hooks_fetch, hooks_read, hooks_session, paths
 from .project import Project, find_project
 
 
@@ -653,6 +653,13 @@ def _detect(payload: dict[str, Any]) -> Project | None:
     if not cwd:
         return None
     return find_project(Path(cwd))
+
+
+session_start = fail_soft(hooks_session.session_start)
+pre_read = fail_soft(hooks_read.pre_read)
+pre_fetch = fail_soft(hooks_fetch.pre_fetch)
+post_edit = fail_soft(hooks_edit.post_edit)
+post_read = fail_soft(hooks_read.post_read)
 
 
 # --- dispatcher entry point used by cli.py ---
