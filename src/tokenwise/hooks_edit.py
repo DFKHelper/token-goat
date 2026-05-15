@@ -80,7 +80,8 @@ def post_edit(payload: dict[str, Any]) -> dict[str, Any]:
     file_path = tool_input.get("file_path")
 
     if session_id and file_path:
-        session.mark_file_edited(session_id, file_path)
+        cache = session.load(session_id)
+        session.mark_file_edited(session_id, file_path, cache=cache)
 
     if file_path:
         _enqueue_for_reindex(file_path, payload.get("cwd"))

@@ -111,6 +111,7 @@ def test_resolve_ambiguous_bare_filename_raises(tmp_path, tmp_data_dir, make_pro
 
     with pytest.raises(AmbiguousFileMatch) as excinfo:
         read_replacement.resolve_file_rel(proj, "index.ts")
+    assert excinfo.value.code == "ambiguous_file"
     assert excinfo.value.file_part == "index.ts"
     assert excinfo.value.candidates == ("a/index.ts", "b/index.ts")
 
@@ -354,6 +355,55 @@ def test_cli_read_reports_ambiguous_file_match(tmp_path, tmp_data_dir, make_proj
     assert "Ambiguous file match: index.ts" in result.output
     assert "a/index.ts" in result.output
     assert "b/index.ts" in result.output
+
+
+def test_cli_read_reports_structured_json_error_for_ambiguous_match(
+    tmp_path, tmp_data_dir, make_project, monkeypatch
+):
+    from typer.testing import CliRunner
+
+    from tokenwise.cli import app
+
+    proj_root, _ = _make_ambiguous_project(
+        tmp_path,
+        make_project,
+        "index.ts",
+        "export const a = 1;\n",
+        "export const b = 2;\n",
+    )
+    monkeypatch.chdir(proj_root)
+
+    runner = CliRunner()
+    result = runner.invoke(app, ["read", "index.ts::greet", "--json"])
+    assert result.exit_code == 0
+    payload = json.loads(result.output)
+    assert payload["ok"] is False
+    assert payload["error"]["code"] == "ambiguous_file"
+    assert payload["error"]["file_part"] == "index.ts"
+    assert [candidate.split(":", 1)[-1] for candidate in payload["error"]["candidates"]] == [
+        "a/index.ts",
+        "b/index.ts",
+    ]
+
+
+def test_cli_read_reports_structured_json_error_for_missing_symbol(
+    ts_project, monkeypatch
+):
+    from typer.testing import CliRunner
+
+    from tokenwise.cli import app
+
+    proj_root, _ = ts_project
+    monkeypatch.chdir(proj_root)
+
+    runner = CliRunner()
+    result = runner.invoke(app, ["read", "index.ts::does_not_exist", "--json"])
+    assert result.exit_code == 0
+    payload = json.loads(result.output)
+    assert payload["ok"] is False
+    assert payload["error"]["code"] == "symbol_not_found"
+    assert payload["error"]["item"] == "does_not_exist"
+    assert payload["error"]["rel_path"] == "index.ts"
 
 
 def test_cli_section_reports_ambiguous_file_match(tmp_path, tmp_data_dir, make_project, monkeypatch):

@@ -131,6 +131,7 @@ def build_read_hint(
     offset: int | None,
     limit: int | None,
     cwd: str | None,
+    cache: session.SessionCache | None = None,
 ) -> ReadHint | None:
     """Return a ReadHint, or None when no hint is warranted."""
     if not session_id or not file_path:
@@ -141,7 +142,7 @@ def build_read_hint(
     req_end = req_start + (limit or DEFAULT_READ_LIMIT) - 1
 
     # 1. Check session cache first.
-    entry = session.get_file_entry(session_id, file_path)
+    entry = session.get_file_entry(session_id, file_path, cache=cache)
     if entry is not None:
         return _hint_from_cache(entry, req_start, req_end, file_path)
 

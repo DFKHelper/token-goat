@@ -1,6 +1,8 @@
 """Tests for tokenwise.bash_parser — Phase 18."""
 from __future__ import annotations
 
+import pytest
+
 from tokenwise.bash_parser import parse
 
 # ---------------------------------------------------------------------------
@@ -148,6 +150,29 @@ def test_bat_read():
     intent = parse("bat src/main.rs")
     assert intent.kind == "read"
     assert intent.target_path == "src/main.rs"
+
+
+# ---------------------------------------------------------------------------
+# 13b. other read-like commands → read
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "command,target_path",
+    [
+        ("less README.md", "README.md"),
+        ("more README.md", "README.md"),
+        ("zless README.md", "README.md"),
+        ("zmore README.md", "README.md"),
+        ("batcat README.md", "README.md"),
+        ("awk 'BEGIN { print }' src/main.py", "src/main.py"),
+        ("perl -ne 'print' src/main.py", "src/main.py"),
+    ],
+)
+def test_additional_read_like_commands(command, target_path):
+    intent = parse(command)
+    assert intent.kind == "read"
+    assert intent.target_path == target_path
 
 
 # ---------------------------------------------------------------------------

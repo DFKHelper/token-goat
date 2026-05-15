@@ -1,0 +1,9 @@
+{
+  "insights": {
+    "biggestSaver": "Biggest saver  ",
+    "mostActive": "Most active    ",
+    "tokenLeader": "Token leader   "
+  },
+  "bytesModeOnlyNote": "tracks bytes, not vision tokens (model-specific math)",
+  "sessionHintSplitNote": "session_hint shows realized savings; session_hint_overhead shows injected hint cost; headline totals are net"
+}

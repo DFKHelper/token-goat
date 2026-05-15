@@ -29,10 +29,36 @@ def _not_indexed_hint(project_hash: str) -> str | None:
     return None
 
 
-def _emit_ambiguous_file_match(file_part: str, candidates: Sequence[str]) -> None:
-    typer.echo(f"Ambiguous file match: {file_part}", err=True)
+def _emit_read_error(
+    *,
+    code: str,
+    message: str,
+    json_output: bool,
+    candidates: Sequence[str] = (),
+    **details: object,
+) -> None:
+    """Emit a structured read error in either text or JSON form."""
+    if json_output:
+        error: dict[str, object] = {"code": code, "message": message}
+        if candidates:
+            error["candidates"] = list(candidates)
+        error.update(details)
+        typer.echo(json.dumps({"ok": False, "error": error}, indent=2))
+        return
+
+    typer.echo(message, err=True)
     for candidate in candidates:
         typer.echo(f"  - {candidate}", err=True)
+
+
+def _emit_ambiguous_file_match(file_part: str, candidates: Sequence[str], *, json_output: bool) -> None:
+    _emit_read_error(
+        code="ambiguous_file",
+        message=f"Ambiguous file match: {file_part}",
+        candidates=candidates,
+        json_output=json_output,
+        file_part=file_part,
+    )
 
 
 def _resolve_file_target(file_part: str) -> tuple[Project | None, str | None, Project | None]:
@@ -60,7 +86,12 @@ def _run_read_like_command(
     reader: Callable[..., dict | None],
 ) -> None:
     if "::" not in target:
-        typer.echo(f"Error: target must be '<file>::<{separator_label}>'", err=True)
+        _emit_read_error(
+            code="invalid_target",
+            message=f"Error: target must be '<file>::<{separator_label}>'",
+            json_output=json_output,
+            target=target,
+        )
         raise typer.Exit(2)
 
     file_part, _, item_part = target.partition("::")
@@ -68,24 +99,40 @@ def _run_read_like_command(
     try:
         proj, rel, current_proj = _resolve_file_target(file_part)
     except read_replacement.AmbiguousFileMatch as exc:
-        _emit_ambiguous_file_match(file_part, exc.candidates)
+        _emit_ambiguous_file_match(file_part, exc.candidates, json_output=json_output)
         raise typer.Exit(0) from None
 
     if rel is None:
         if current_proj is None:
-            typer.echo("No project detected.", err=True)
+            _emit_read_error(
+                code="no_project",
+                message="No project detected.",
+                json_output=json_output,
+                file_part=file_part,
+            )
         else:
             hint = _not_indexed_hint(current_proj.hash)
-            typer.echo(
-                hint if hint else f"File not found in any indexed project: {file_part}",
-                err=True,
+            _emit_read_error(
+                code="project_not_indexed" if hint else "file_not_found",
+                message=hint if hint else f"File not found in any indexed project: {file_part}",
+                json_output=json_output,
+                file_part=file_part,
+                project_hash=current_proj.hash,
             )
         raise typer.Exit(0)
 
     assert proj is not None  # guaranteed once rel is resolved
     result = reader(proj, rel, item_part, context_lines=context_lines)
     if result is None:
-        typer.echo(f"{missing_label} not found: {item_part} (in {rel})", err=True)
+        _emit_read_error(
+            code=f"{missing_label.lower()}_not_found",
+            message=f"{missing_label} not found: {item_part} (in {rel})",
+            json_output=json_output,
+            file_part=file_part,
+            rel_path=rel,
+            item=item_part,
+            item_kind=missing_label.lower(),
+        )
         raise typer.Exit(0)
 
     if session_id:

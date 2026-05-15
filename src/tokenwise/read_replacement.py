@@ -25,8 +25,16 @@ _KIND_PRIORITY: dict[str, int] = {
 }
 
 
-class AmbiguousFileMatch(ValueError):
+class ReadLookupError(ValueError):
+    """Structured read-resolution failure."""
+
+    code = "read_lookup_error"
+
+
+class AmbiguousFileMatch(ReadLookupError):
     """Raised when a file_part matches multiple indexed paths."""
+
+    code = "ambiguous_file"
 
     def __init__(self, file_part: str, candidates: Sequence[str]) -> None:
         self.file_part = file_part

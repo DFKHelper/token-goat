@@ -1,6 +1,21 @@
+import { readFileSync } from 'node:fs'
 import { fg, bg, padL, padR, vlen, lerpRGB, RESET, C } from './ansi.js'
 import type { RGB } from './ansi.js'
 import type { StatsData, DayStat, KindStat } from './types.js'
+
+type StatsMessages = {
+  insights: {
+    biggestSaver: string
+    mostActive: string
+    tokenLeader: string
+  }
+  bytesModeOnlyNote: string
+  sessionHintSplitNote: string
+}
+
+const statsMessages = JSON.parse(
+  readFileSync(new URL('./stats_messages.json', import.meta.url), 'utf8'),
+) as StatsMessages
 
 // ── Layout constants ──────────────────────────────────────────────────────────
 
@@ -237,11 +252,11 @@ const renderByKindSection = (stats: StatsData): string[] => {
   const hasBytesModeOnly = byKind.some(k => k.bytesModeOnly)
   if (hasBytesModeOnly) {
     const names = byKind.filter(k => k.bytesModeOnly).map(k => k.kind).join(', ')
-    lines.push(`${M}${fg(...C.textDim)}i  ${names} tracks bytes, not vision tokens (model-specific math)${RESET}`)
+    lines.push(`${M}${fg(...C.textDim)}i  ${names} ${statsMessages.bytesModeOnlyNote}${RESET}`)
   }
 
   if (byKind.some(k => k.kind === 'session_hint') && byKind.some(k => k.kind === 'session_hint_overhead')) {
-    lines.push(`${M}${fg(...C.textDim)}i  session_hint shows realized savings; session_hint_overhead shows injected hint cost; headline totals are net${RESET}`)
+    lines.push(`${M}${fg(...C.textDim)}i  ${statsMessages.sessionHintSplitNote}${RESET}`)
   }
 
   return lines
@@ -449,7 +464,7 @@ const renderInsightsSection = (stats: StatsData): string[] => {
   if (topKind) {
     const share = totals.bytes > 0 ? topKind.bytes / totals.bytes : 0
     lines.push(
-      `${M}${bullet} ${dim('Biggest saver  ')}${fg(...C.textPrimary)}${topKind.kind}${RESET}${dim(' — ')}${fg(...C.green5)}${fmtPct(share)}${RESET}${dim(` of saved data across ${topKind.events} events`)}`,
+      `${M}${bullet} ${dim(statsMessages.insights.biggestSaver)}${fg(...C.textPrimary)}${topKind.kind}${RESET}${dim(' — ')}${fg(...C.green5)}${fmtPct(share)}${RESET}${dim(` of saved data across ${topKind.events} events`)}`,
     )
   }
 
@@ -457,7 +472,7 @@ const renderInsightsSection = (stats: StatsData): string[] => {
   const topDay = [...byDay].sort((a, b) => b.events - a.events)[0] as DayStat | undefined
   if (topDay) {
     lines.push(
-      `${M}${bullet} ${dim('Most active    ')}${fg(...C.textPrimary)}${topDay.date}${RESET}${dim(' — ')}${topDay.events} events, ${fg(...C.green5)}${fmtBytes(topDay.bytes)}${RESET}${dim(' saved')}`,
+      `${M}${bullet} ${dim(statsMessages.insights.mostActive)}${fg(...C.textPrimary)}${topDay.date}${RESET}${dim(' — ')}${topDay.events} events, ${fg(...C.green5)}${fmtBytes(topDay.bytes)}${RESET}${dim(' saved')}`,
     )
   }
 
@@ -467,7 +482,7 @@ const renderInsightsSection = (stats: StatsData): string[] => {
     .sort((a, b) => b.tokens - a.tokens)[0] as KindStat | undefined
   if (topToken) {
     lines.push(
-      `${M}${bullet} ${dim('Token leader   ')}${fg(...C.textPrimary)}${topToken.kind}${RESET}${dim(' — ')}${fg(...C.blue)}${fmtTokens(topToken.tokens)}${RESET}${dim(` saved in ${topToken.events} events`)}`,
+      `${M}${bullet} ${dim(statsMessages.insights.tokenLeader)}${fg(...C.textPrimary)}${topToken.kind}${RESET}${dim(' — ')}${fg(...C.blue)}${fmtTokens(topToken.tokens)}${RESET}${dim(` saved in ${topToken.events} events`)}`,
     )
   }
 

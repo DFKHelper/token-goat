@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import json
 import math
 import shutil
 from datetime import date, timedelta
+from pathlib import Path
 
 from .ansi import RESET, RGB, C, bg, fg, lerp_rgb, pad_l, pad_r, vlen
 from .types import DayStat, KindStat, StatsData
@@ -24,6 +26,13 @@ _COL_EVENTS =  6
 _COLS_FIXED = _COL_NAME + 1 + 2 + _COL_DATA + 2 + _COL_TOKENS + 2 + _COL_SHARE + 2 + _COL_EVENTS
 _BAR_W = max(16, _CONTENT_W - len(_M) * 2 - _COLS_FIXED)
 _RULE = _M + fg(*C.TEXT_DIM) + "─" * (_CONTENT_W - len(_M) * 2) + RESET
+
+
+def _load_stats_messages() -> dict[str, object]:
+    return json.loads(Path(__file__).with_name("stats_messages.json").read_text(encoding="utf-8"))
+
+
+_STATS_MESSAGES = _load_stats_messages()
 
 # ── Formatters ─────────────────────────────────────────────────────────────────
 
@@ -290,8 +299,8 @@ def _render_by_kind_section(stats: StatsData) -> list[str]:
     if bytes_mode_kinds:
         names = ", ".join(bytes_mode_kinds)
         msg = (
-            f"{_M}{fg(*C.TEXT_DIM)}i  {names} tracks bytes, not vision tokens "
-            f"(model-specific math){RESET}"
+            f"{_M}{fg(*C.TEXT_DIM)}i  {names} "
+            f"{_STATS_MESSAGES['bytesModeOnlyNote']}{RESET}"
         )
         lines.append(msg)
 
@@ -299,8 +308,7 @@ def _render_by_kind_section(stats: StatsData) -> list[str]:
         k.kind == "session_hint_overhead" for k in stats.by_kind
     ):
         lines.append(
-            f"{_M}{fg(*C.TEXT_DIM)}i  session_hint shows realized savings; "
-            f"session_hint_overhead shows injected hint cost; headline totals are net{RESET}"
+            f"{_M}{fg(*C.TEXT_DIM)}i  {_STATS_MESSAGES['sessionHintSplitNote']}{RESET}"
         )
 
     return lines
@@ -514,7 +522,7 @@ def _render_insights_section(stats: StatsData) -> list[str]:
     if top_kind:
         share = top_kind.bytes / stats.totals.bytes if stats.totals.bytes > 0 else 0.0
         lines.append(
-            f"{_M}{bullet} {dim('Biggest saver  ')}{fg(*C.TEXT_PRIMARY)}{top_kind.kind}{RESET}"
+            f"{_M}{bullet} {dim(_STATS_MESSAGES['insights']['biggestSaver'])}{fg(*C.TEXT_PRIMARY)}{top_kind.kind}{RESET}"
             f"{dim(' — ')}{fg(*C.GREEN5)}{_fmt_pct(share)}{RESET}"
             f"{dim(f' of saved data across {top_kind.events:,} events')}"
         )
@@ -523,7 +531,7 @@ def _render_insights_section(stats: StatsData) -> list[str]:
     top_day: DayStat | None = max(stats.by_day, key=lambda d: d.events, default=None)
     if top_day:
         lines.append(
-            f"{_M}{bullet} {dim('Most active    ')}{fg(*C.TEXT_PRIMARY)}{top_day.date}{RESET}"
+            f"{_M}{bullet} {dim(_STATS_MESSAGES['insights']['mostActive'])}{fg(*C.TEXT_PRIMARY)}{top_day.date}{RESET}"
             f"{dim(' — ')}{top_day.events:,} events, {_fmt_bytes(top_day.bytes)}{dim(' saved')}"
         )
 
@@ -532,7 +540,7 @@ def _render_insights_section(stats: StatsData) -> list[str]:
     top_token: KindStat | None = max(token_kinds, key=lambda k: k.tokens, default=None)
     if top_token:
         lines.append(
-            f"{_M}{bullet} {dim('Token leader   ')}{fg(*C.TEXT_PRIMARY)}{top_token.kind}{RESET}"
+            f"{_M}{bullet} {dim(_STATS_MESSAGES['insights']['tokenLeader'])}{fg(*C.TEXT_PRIMARY)}{top_token.kind}{RESET}"
             f"{dim(' — ')}{_fmt_tokens(top_token.tokens)}"
             f"{dim(f' saved in {top_token.events:,} events')}"
         )
