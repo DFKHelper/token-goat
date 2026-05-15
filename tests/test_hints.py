@@ -2,11 +2,15 @@
 from __future__ import annotations
 
 from pathlib import Path
+from unittest.mock import patch
 
 from tokenwise import db, session
 from tokenwise.hints import (
     LARGE_FILE_LINE_THRESHOLD,
+    _est_tokens_from_chars,
     _est_tokens_from_lines,
+    _get_indexed_symbols_and_line_count,
+    _line_count,
     build_read_hint,
 )
 
@@ -477,3 +481,139 @@ class TestReadHintTokensSaved:
         assert hint is not None
         assert "tokenwise read" in hint  # confirms it's the index suggestion hint
         assert hint.tokens_saved == 0
+
+
+# ---------------------------------------------------------------------------
+# _est_tokens_from_chars
+# ---------------------------------------------------------------------------
+
+
+class TestEstTokensFromChars:
+    def test_nonzero_chars(self):
+        result = _est_tokens_from_chars(350)
+        assert result == max(1, int(350 / 3.5))
+
+    def test_zero_chars_returns_one(self):
+        assert _est_tokens_from_chars(0) == 1
+
+
+# ---------------------------------------------------------------------------
+# _line_count edge cases
+# ---------------------------------------------------------------------------
+
+
+class TestLineCount:
+    def test_nonexistent_path_returns_none(self, tmp_path):
+        result = _line_count(tmp_path / "ghost.py")
+        assert result is None
+
+    def test_directory_returns_none(self, tmp_path):
+        d = tmp_path / "subdir"
+        d.mkdir()
+        result = _line_count(d)
+        assert result is None
+
+    def test_oserror_returns_none(self, tmp_path):
+        p = tmp_path / "file.py"
+        p.write_text("line1\nline2\n", encoding="utf-8")
+        with patch.object(Path, "open", side_effect=OSError("perm denied")):
+            result = _line_count(p)
+        assert result is None
+
+
+# ---------------------------------------------------------------------------
+# _get_indexed_symbols_and_line_count — exception path
+# ---------------------------------------------------------------------------
+
+
+class TestGetIndexedSymbolsAndLineCount:
+    def test_db_exception_returns_empty_and_none(self, tmp_data_dir):
+        from tokenwise import db as _db
+        with patch.object(_db, "open_project", side_effect=RuntimeError("db gone")):
+            symbols, n_lines = _get_indexed_symbols_and_line_count("foo.py", "deadhash")
+        assert symbols == []
+        assert n_lines is None
+
+
+# ---------------------------------------------------------------------------
+# _hint_from_index — relative path and out-of-root edge cases
+# ---------------------------------------------------------------------------
+
+
+class TestHintFromIndexEdgeCases:
+    def test_relative_file_path_resolves_under_project_root(self, tmp_data_dir, tmp_path):
+        """Relative file_path is joined with the project root before DB lookup."""
+        (tmp_path / ".git").mkdir()
+        src = tmp_path / "rel.py"
+        _make_large_file(src, n_lines=LARGE_FILE_LINE_THRESHOLD + 50)
+
+        from tokenwise.project import find_project
+        proj = find_project(tmp_path)
+        assert proj is not None
+
+        with db.open_project(proj.hash) as conn:
+            conn.execute(
+                "INSERT OR IGNORE INTO files (rel_path, language, size, mtime, content_sha256, indexed_at) "
+                "VALUES (?, ?, ?, ?, ?, ?)",
+                ("rel.py", "python", 50000, 0.0, "abc", 0),
+            )
+            conn.execute(
+                "INSERT INTO symbols (name, kind, file_rel, line, col, end_line) VALUES (?, ?, ?, ?, ?, ?)",
+                ("RelFunc", "function", "rel.py", 5, 0, 20),
+            )
+
+        # Pass a *relative* file_path (no leading slash)
+        hint = build_read_hint(
+            session_id="s_rel",
+            file_path="rel.py",
+            offset=0,
+            limit=2000,
+            cwd=str(tmp_path),
+        )
+        assert hint is not None
+        assert "tokenwise read" in hint
+
+    def test_file_outside_project_root_returns_none(self, tmp_data_dir, tmp_path):
+        """File path that cannot be made relative to project root → no hint."""
+        (tmp_path / ".git").mkdir()
+        outside = tmp_path.parent / "elsewhere.py"
+        outside.write_text("\n".join(["x"] * (LARGE_FILE_LINE_THRESHOLD + 10)), encoding="utf-8")
+
+        hint = build_read_hint(
+            session_id="s_outside",
+            file_path=str(outside),
+            offset=0,
+            limit=2000,
+            cwd=str(tmp_path),
+        )
+        assert hint is None
+
+    def test_db_estimate_too_small_but_actual_file_also_small_returns_none(self, tmp_data_dir, tmp_path):
+        """When DB line estimate < threshold AND actual file < threshold → no hint."""
+        (tmp_path / ".git").mkdir()
+        src = tmp_path / "tiny.py"
+        src.write_text("\n".join(["x"] * 10), encoding="utf-8")  # 10 lines, well below threshold
+
+        from tokenwise.project import find_project
+        proj = find_project(tmp_path)
+        assert proj is not None
+
+        with db.open_project(proj.hash) as conn:
+            conn.execute(
+                "INSERT OR IGNORE INTO files (rel_path, language, size, mtime, content_sha256, indexed_at) "
+                "VALUES (?, ?, ?, ?, ?, ?)",
+                ("tiny.py", "python", 50, 0.0, "abc", 0),  # tiny size → low line estimate
+            )
+            conn.execute(
+                "INSERT INTO symbols (name, kind, file_rel, line, col, end_line) VALUES (?, ?, ?, ?, ?, ?)",
+                ("fn", "function", "tiny.py", 1, 0, 3),
+            )
+
+        hint = build_read_hint(
+            session_id="s_tiny",
+            file_path=str(src),
+            offset=0,
+            limit=2000,
+            cwd=str(tmp_path),
+        )
+        assert hint is None
