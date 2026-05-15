@@ -287,6 +287,17 @@ CREATE TABLE IF NOT EXISTS stats (
 );
 CREATE INDEX IF NOT EXISTS idx_stats_ts   ON stats(ts);
 CREATE INDEX IF NOT EXISTS idx_stats_kind ON stats(kind);
+
+CREATE TABLE IF NOT EXISTS repomap_cache (
+    rel_path      TEXT    NOT NULL,
+    mtime         REAL    NOT NULL,
+    size          INTEGER NOT NULL,
+    summary_text  TEXT    NOT NULL,
+    created_at    INTEGER NOT NULL,
+    PRIMARY KEY (rel_path, mtime, size),
+    FOREIGN KEY (rel_path) REFERENCES files(rel_path) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_repomap_cache_file ON repomap_cache(rel_path);
 """
 
 _EMBEDDINGS_DDL = f"""

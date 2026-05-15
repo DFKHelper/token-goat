@@ -340,3 +340,76 @@ def test_build_graph_no_ghost_nodes():
     assert set(g.nodes()) == {"src/a.py", "src/b.py"}
     # The legitimate edge must be present
     assert g.has_edge("src/a.py", "src/b.py")
+
+
+# ---------------------------------------------------------------------------
+# 22. repomap_cache: second build_map call uses cached summaries
+# ---------------------------------------------------------------------------
+
+def test_build_map_cache_populates_on_first_call(ts_project):
+    """After the first build_map, repomap_cache must contain at least one row."""
+    from token_goat import db as tg_db
+
+    repomap.build_map(ts_project, budget_tokens=4000)
+
+    with tg_db.open_project(ts_project.hash) as conn:
+        row = conn.execute("SELECT COUNT(*) FROM repomap_cache").fetchone()
+    assert row[0] >= 1
+
+
+def test_build_map_cache_hit_on_second_call(ts_project):
+    """Second build_map call with unchanged files must return identical output."""
+    first = repomap.build_map(ts_project, budget_tokens=4000)
+    second = repomap.build_map(ts_project, budget_tokens=4000)
+    assert first == second
+
+
+def test_build_map_cache_stale_entries_evicted(ts_project):
+    """After a full re-index the cache only holds entries matching current files."""
+    from token_goat import db as tg_db
+    from token_goat.parser import index_project
+
+    # Seed the cache with a phantom entry that has no matching files row.
+    # Temporarily disable FK enforcement so we can insert the orphaned row —
+    # this simulates a cache entry left behind after its file was deleted
+    # externally (the case _evict_stale_cache is designed to clean up).
+    with tg_db.open_project(ts_project.hash) as conn:
+        conn.execute("PRAGMA foreign_keys = OFF")
+        conn.execute(
+            "INSERT OR REPLACE INTO repomap_cache "
+            "(rel_path, mtime, size, summary_text, created_at) "
+            "VALUES (?, ?, ?, ?, ?)",
+            ("ghost/phantom.py", 1.0, 999, "phantom summary\n", 1),
+        )
+        conn.execute("PRAGMA foreign_keys = ON")
+
+    # Re-index (full) then build map — eviction should clear the phantom
+    index_project(ts_project, full=True)
+    repomap.build_map(ts_project, budget_tokens=4000)
+
+    with tg_db.open_project(ts_project.hash) as conn:
+        row = conn.execute(
+            "SELECT COUNT(*) FROM repomap_cache WHERE rel_path = 'ghost/phantom.py'"
+        ).fetchone()
+    assert row[0] == 0
+
+
+def test_load_summary_cache_graceful_on_missing_table():
+    """_load_summary_cache must return empty dict when the table doesn't exist."""
+    import sqlite3 as _sqlite3
+
+    con = _sqlite3.connect(":memory:")
+    con.row_factory = _sqlite3.Row
+    # No repomap_cache table — simulates an old-schema DB
+    result = repomap._load_summary_cache(con)
+    assert result == {}
+
+
+def test_write_summary_cache_graceful_on_missing_table():
+    """_write_summary_cache must not raise when the table doesn't exist."""
+    import sqlite3 as _sqlite3
+
+    con = _sqlite3.connect(":memory:")
+    con.row_factory = _sqlite3.Row
+    # Should not raise even though the table is absent
+    repomap._write_summary_cache(con, [("src/a.py", 1.0, 100, "rendered\n")])
