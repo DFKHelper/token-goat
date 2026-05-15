@@ -165,6 +165,57 @@ class TestPreFetchDriveNoFileId:
 
 
 # ---------------------------------------------------------------------------
+# 14. Malicious file_id injection: invalid IDs must not reach the hook message
+# ---------------------------------------------------------------------------
+
+class TestPreFetchMaliciousFileId:
+    """A file_id with shell metacharacters or path traversal must be rejected
+    (pass-through) rather than embedded in additionalContext where it could
+    be executed or misinterpreted by the LLM."""
+
+    def _denied_result_for_id(self, file_id: str, tmp_data_dir):
+        payload = {
+            "tool_name": "mcp__claude_ai_Google_Drive__download_file_content",
+            "tool_input": {"file_id": file_id},
+        }
+        fake_creds = MagicMock()
+        with patch("google.auth.default", return_value=(fake_creds, "proj")):
+            return hooks_cli.pre_fetch(payload)
+
+    def test_backtick_injection_passes_through(self, tmp_data_dir):
+        result = self._denied_result_for_id("`evil`", tmp_data_dir)
+        # Should NOT deny (no embed into context) — falls through as continue:true
+        assert result == {"continue": True}
+
+    def test_command_substitution_passes_through(self, tmp_data_dir):
+        result = self._denied_result_for_id("$(rm -rf /)", tmp_data_dir)
+        assert result == {"continue": True}
+
+    def test_path_traversal_passes_through(self, tmp_data_dir):
+        result = self._denied_result_for_id("../../etc/passwd", tmp_data_dir)
+        assert result == {"continue": True}
+
+    def test_null_byte_passes_through(self, tmp_data_dir):
+        result = self._denied_result_for_id("abc\x00def", tmp_data_dir)
+        assert result == {"continue": True}
+
+    def test_newline_injection_passes_through(self, tmp_data_dir):
+        result = self._denied_result_for_id("abc\necho injected", tmp_data_dir)
+        assert result == {"continue": True}
+
+    def test_too_long_id_passes_through(self, tmp_data_dir):
+        result = self._denied_result_for_id("a" * 200, tmp_data_dir)
+        assert result == {"continue": True}
+
+    def test_valid_alphanumeric_id_still_denied(self, tmp_data_dir):
+        """A valid file_id should still trigger the deny+redirect response."""
+        result = self._denied_result_for_id("ValidFile123-abc", tmp_data_dir)
+        hso = result.get("hookSpecificOutput", {})
+        assert hso.get("permissionDecision") == "deny"
+        assert "ValidFile123-abc" in hso.get("additionalContext", "")
+
+
+# ---------------------------------------------------------------------------
 # Dispatcher integration
 # ---------------------------------------------------------------------------
 

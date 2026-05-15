@@ -54,6 +54,13 @@ def pre_fetch(payload: dict[str, Any]) -> dict[str, Any]:
 
         from . import gdrive  # noqa: PLC0415
 
+        # Validate file_id before embedding in hook message to prevent injection.
+        # Malicious IDs with shell metacharacters could be acted on by Claude.
+        try:
+            gdrive._validate_file_id(file_id)
+        except ValueError:
+            return {"continue": True}
+
         try:
             gdrive.get_credentials()
         except gdrive.GDriveCredsUnavailable:
