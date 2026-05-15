@@ -21,7 +21,9 @@ class BashIntent:
 
 
 # Read tools we recognize: cat, head, tail, less, bat, more, nl
-READ_BINS = frozenset(["cat", "head", "tail", "bat", "less", "more", "nl"])
+# Scripted readers like sed/awk/perl usually put the file path after the script.
+READ_BINS = frozenset(["cat", "head", "tail", "bat", "less", "more", "nl", "sed", "awk", "perl"])
+SCRIPTED_READ_BINS = frozenset(["sed", "awk", "perl"])
 # Grep tools
 GREP_BINS = frozenset(["rg", "grep", "ag", "ack", "ripgrep"])
 # Glob/find tools
@@ -75,6 +77,9 @@ def parse(command: str) -> BashIntent:
 
 def _parse_read(binary: str, args: list[str]) -> BashIntent:
     """Parse cat/head/tail/bat with their common flags."""
+    if binary in SCRIPTED_READ_BINS and any(a == "--in-place" or a.startswith("-i") for a in args):
+        return BashIntent(kind="unknown")
+
     offset: int | None = None
     limit: int | None = None
     paths: list[str] = []
@@ -109,7 +114,10 @@ def _parse_read(binary: str, args: list[str]) -> BashIntent:
 
     if not paths:
         return BashIntent(kind="unknown")
-    return BashIntent(kind="read", target_path=paths[0], offset=offset, limit=limit)
+    target_path = paths[-1] if binary in SCRIPTED_READ_BINS else paths[0]
+    if binary in SCRIPTED_READ_BINS and len(paths) < 2:
+        return BashIntent(kind="unknown")
+    return BashIntent(kind="read", target_path=target_path, offset=offset, limit=limit)
 
 
 def _parse_grep(binary: str, args: list[str]) -> BashIntent:

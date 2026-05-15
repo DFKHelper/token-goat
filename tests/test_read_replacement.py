@@ -81,6 +81,21 @@ def test_resolve_garbage_returns_none(ts_project):
     assert rel is None
 
 
+def test_resolve_ambiguous_bare_filename_returns_none(tmp_path, tmp_data_dir, make_project):
+    from tokenwise.parser import index_project
+
+    proj_root = tmp_path / "ambiguous"
+    (proj_root / "a").mkdir(parents=True)
+    (proj_root / "b").mkdir(parents=True)
+    (proj_root / "a" / "index.ts").write_text("export const a = 1;\n", encoding="utf-8")
+    (proj_root / "b" / "index.ts").write_text("export const b = 2;\n", encoding="utf-8")
+
+    proj = make_project(proj_root)
+    index_project(proj, full=True)
+
+    assert read_replacement.resolve_file_rel(proj, "index.ts") is None
+
+
 # ---------------------------------------------------------------------------
 # read_symbol tests
 # ---------------------------------------------------------------------------
@@ -272,14 +287,16 @@ def test_cli_read_with_session_id(indexed_ts_cli, tmp_data_dir):
     from tokenwise import session as session_mod
     from tokenwise.cli import app
 
+    proj_root, _ = indexed_ts_cli
     session_id = "test-phase11-session"
     runner = CliRunner()
-    result = runner.invoke(app, ["read", "--session-id", session_id, "index.ts::greet"])
+    result = runner.invoke(app, ["read", "--session-id", session_id, f"{proj_root / 'index.ts'}::greet"])
     assert result.exit_code == 0
 
-    # Verify the session cache has greet recorded
+    # Verify the session cache has greet recorded under the canonical relative path.
     entry = session_mod.get_file_entry(session_id, "index.ts")
     assert entry is not None
+    assert entry.rel_or_abs == "index.ts"
     assert "greet" in entry.symbols_read
 
 

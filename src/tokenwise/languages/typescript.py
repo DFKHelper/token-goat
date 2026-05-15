@@ -4,10 +4,16 @@ from __future__ import annotations
 import os
 import re
 
-import tree_sitter_language_pack as tlp
-
 from ..parser import ImpExp, Ref, Section, Symbol
 from . import common
+
+
+def _get_tlp() -> object | None:
+    try:
+        import tree_sitter_language_pack as tlp  # noqa: PLC0415
+    except ModuleNotFoundError:
+        return None
+    return tlp
 
 # ---------------------------------------------------------------------------
 # ABI special-case config (tunable via caller meta, not exposed in CLI yet)
@@ -186,6 +192,10 @@ def extract(
         syms, refs, ie, _ = _extract_abi(source)
         # Honour caller-supplied cap
         return syms[:abi_max], refs, ie, []
+
+    tlp = _get_tlp()
+    if tlp is None:
+        return [], [], [], []
 
     # Detect language for tlp
     lower = rel_path.lower()

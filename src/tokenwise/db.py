@@ -9,7 +9,10 @@ import time
 from collections.abc import Iterator
 from pathlib import Path
 
-import sqlite_vec
+try:
+    import sqlite_vec
+except ModuleNotFoundError:
+    sqlite_vec = None  # type: ignore[assignment]
 
 from . import paths
 

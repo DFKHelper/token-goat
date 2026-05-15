@@ -14,7 +14,30 @@ from datetime import datetime
 from pathlib import Path
 from typing import IO, Any, TypedDict
 
-import psutil
+try:
+    import psutil
+except ModuleNotFoundError:
+    class _PsutilNoSuchProcess(Exception):
+        pass
+
+    class _PsutilAccessDenied(Exception):
+        pass
+
+    class _PsutilTimeoutExpired(Exception):
+        pass
+
+    class _PsutilShim:
+        NoSuchProcess = _PsutilNoSuchProcess
+        AccessDenied = _PsutilAccessDenied
+        TimeoutExpired = _PsutilTimeoutExpired
+
+        def pid_exists(self, pid: int) -> bool:
+            return False
+
+        def Process(self, pid: int) -> object:
+            raise _PsutilNoSuchProcess(pid)
+
+    psutil = _PsutilShim()  # type: ignore[assignment]
 
 from . import db, parser, paths
 from .project import Project

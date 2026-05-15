@@ -48,6 +48,12 @@ class _FakeRegistryKey:
     def __init__(self, values: dict):
         self.values = values
 
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        return False
+
 
 class _FakeWinreg:
     """In-memory fake of the stdlib ``winreg`` module.
@@ -59,6 +65,7 @@ class _FakeWinreg:
     """
 
     HKEY_CURRENT_USER = "HKCU"
+    HKEY_LOCAL_MACHINE = "HKLM"
     REG_SZ = 1
     KEY_SET_VALUE = 0x0002
     KEY_READ = 0x20019
@@ -68,6 +75,9 @@ class _FakeWinreg:
 
     def OpenKey(self, hive, path, reserved, access):  # noqa: N802
         return _FakeRegistryKey(self._values)
+
+    def OpenKeyEx(self, hive, path, reserved=0, access=0):  # noqa: N802
+        return self.OpenKey(hive, path, reserved, access)
 
     def SetValueEx(self, key, name, reserved, reg_type, value):  # noqa: N802
         key.values[name] = value
