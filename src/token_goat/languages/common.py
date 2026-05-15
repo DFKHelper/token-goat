@@ -91,6 +91,49 @@ def get_tlp() -> Any:
     return tlp
 
 
+def make_process_config(
+    language: str,
+    structure: bool = True,
+    imports: bool = True,
+    exports: bool = False,
+    symbols: bool = True,
+) -> tuple[Any, Any] | tuple[None, None]:
+    """Create a ProcessConfig for tree-sitter language pack processing.
+
+    Extracted common pattern to avoid duplicating the ProcessConfig setup
+    in every language adapter.
+
+    Parameters
+    ----------
+    language:
+        The language to process (e.g., "go", "python", "typescript", "rust").
+    structure:
+        Whether to extract structure (functions, classes, etc.).
+    imports:
+        Whether to extract imports.
+    exports:
+        Whether to extract exports (TypeScript/JavaScript only).
+    symbols:
+        Whether to extract symbols.
+
+    Returns
+    -------
+    tuple[Any, Any] | tuple[None, None]
+        A tuple of (tlp_module, ProcessConfig) if tree-sitter is available,
+        or (None, None) if not.
+    """
+    tlp = get_tlp()
+    if tlp is None:
+        return None, None
+    return tlp, tlp.ProcessConfig(
+        language=language,
+        structure=structure,
+        imports=imports,
+        exports=exports,
+        symbols=symbols,
+    )
+
+
 def build_signature(source: bytes, item_span: object, body_span: object | None) -> str | None:
     """Extract declaration header (before body brace/colon) from raw source bytes.
 
@@ -203,6 +246,82 @@ def make_add_symbol(
             _add_symbol(child, parent_name=name)
 
     return _add_symbol
+
+
+def add_imports(
+    imp_exp: list[Any],
+    imports: list[Any],
+    extract_targets_fn: Any,
+) -> None:
+    """Add imports to the imp_exp list using a caller-supplied extraction function.
+
+    Extracted common pattern used by all language adapters to avoid duplicating
+    the imports loop. The extraction function may return one or more targets
+    per import (e.g., Python's multi-target imports).
+
+    Parameters
+    ----------
+    imp_exp:
+        The list to append :class:`~token_goat.parser.ImpExp` objects to.
+    imports:
+        The result.imports list from tree-sitter processing.
+    extract_targets_fn:
+        A callable(imp) -> str | list[str] that extracts target(s) from an import object.
+    """
+    from ..parser import ImpExp  # noqa: PLC0415
+
+    for imp in imports:
+        targets = extract_targets_fn(imp)
+        if isinstance(targets, str):
+            targets = [targets] if targets else []
+        line = imp.span.start_line + 1
+        for target in targets:
+            if target:
+                imp_exp.append(ImpExp(kind="import", target=target, line=line))
+
+
+def add_symbol_info(
+    symbols: list[Any],
+    seen_names: set[tuple[str, int]],
+    symbol_infos: list[Any],
+    language: str = "go",
+) -> None:
+    """Add symbols from result.symbols (SymbolInfo) to the symbol list.
+
+    Extracted common pattern used by all language adapters (go, python, typescript, rust)
+    to avoid duplicating the loop body for SymbolInfo processing.
+
+    Parameters
+    ----------
+    symbols:
+        The list to append :class:`~token_goat.parser.Symbol` objects to.
+    seen_names:
+        The deduplication set of ``(name, line)`` pairs.
+    symbol_infos:
+        The result.symbols list from tree-sitter processing.
+    language:
+        Forwarded to :func:`sym_kind_str` for language-specific kind mappings.
+    """
+    from ..parser import Symbol  # noqa: PLC0415
+
+    for sym in symbol_infos:
+        name: str = sym.name  # type: ignore[attr-defined]
+        span = sym.span
+        line = span.start_line + 1
+        kind = sym_kind_str(sym.kind, language=language)
+        key = (name, line)
+        if key not in seen_names:
+            seen_names.add(key)
+            symbols.append(
+                Symbol(
+                    name=name,
+                    kind=kind,
+                    line=line,
+                    end_line=span.end_line + 1,
+                    signature=None,
+                    parent_name=None,
+                )
+            )
 
 
 def _compute_section_end_lines(sections: list[Any], lines: list[str]) -> None:

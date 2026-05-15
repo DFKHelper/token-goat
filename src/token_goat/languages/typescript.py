@@ -146,10 +146,6 @@ def extract(
         # Honour caller-supplied cap
         return syms[:abi_max], refs, ie, []
 
-    tlp = common.get_tlp()
-    if tlp is None:
-        return [], [], [], []
-
     # Detect language for tlp
     lower = rel_path.lower()
     if lower.endswith((".tsx", ".jsx")):
@@ -160,13 +156,9 @@ def extract(
         lang = "javascript"
 
     text = source.decode("utf-8", errors="replace")
-    cfg = tlp.ProcessConfig(
-        language=lang,
-        structure=True,
-        imports=True,
-        exports=True,
-        symbols=True,
-    )
+    tlp, cfg = common.make_process_config(language=lang, exports=True)
+    if tlp is None:
+        return [], [], [], []
     try:
         result = tlp.process(text, cfg)
     except Exception:
@@ -183,24 +175,7 @@ def extract(
         _add_symbol(item)
 
     # --- additional symbols from SymbolInfo (catches type aliases, enums) ---
-    for sym in result.symbols:
-        name: str = sym.name  # type: ignore[attr-defined]
-        span = sym.span
-        line = span.start_line + 1
-        kind = common.sym_kind_str(sym.kind)
-        key = (name, line)
-        if key not in seen_names:
-            seen_names.add(key)
-            symbols.append(
-                Symbol(
-                    name=name,
-                    kind=kind,
-                    line=line,
-                    end_line=span.end_line + 1,
-                    signature=None,
-                    parent_name=None,
-                )
-            )
+    common.add_symbol_info(symbols, seen_names, result.symbols, language="typescript")
 
     # --- const/var from exports not captured above ---
     # exports like 'export const router = express()' aren't in structure;
@@ -251,10 +226,11 @@ def extract(
         imp_exp.append(ImpExp(kind=ie_kind, target=export_name, line=line))
 
     # --- imports ---
-    for imp in result.imports:
-        module = _extract_module(imp.source)
-        line = imp.span.start_line + 1
-        imp_exp.append(ImpExp(kind="import", target=module, line=line))
+    common.add_imports(
+        imp_exp,
+        result.imports,
+        lambda imp: _extract_module(imp.source),  # type: ignore[attr-defined]
+    )
 
     # --- refs via regex ---
     refs: list[Ref] = common.extract_refs_from_source(source, _CALL_RE, _CALL_NOISE)  # type: ignore[no-redef]

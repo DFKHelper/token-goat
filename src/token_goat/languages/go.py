@@ -110,18 +110,10 @@ def _extract_const_var(source: bytes) -> list[Symbol]:
 
 def extract(source: bytes, rel_path: str) -> tuple[list[Symbol], list[Ref], list[ImpExp], list[Section]]:
     """Extract symbols, refs, and imports from a Go file."""
-    tlp = common.get_tlp()
+    text = source.decode("utf-8", errors="replace")
+    tlp, cfg = common.make_process_config(language="go")
     if tlp is None:
         return [], [], [], []
-
-    text = source.decode("utf-8", errors="replace")
-    cfg = tlp.ProcessConfig(
-        language="go",
-        structure=True,
-        imports=True,
-        exports=False,
-        symbols=True,
-    )
     try:
         result = tlp.process(text, cfg)
     except Exception:
@@ -138,24 +130,7 @@ def extract(source: bytes, rel_path: str) -> tuple[list[Symbol], list[Ref], list
         _add_symbol(item)
 
     # --- symbols from SymbolInfo (structs, interfaces, module-level funcs) ---
-    for sym in result.symbols:
-        name: str = sym.name  # type: ignore[attr-defined]
-        span = sym.span
-        line = span.start_line + 1
-        kind = common.sym_kind_str(sym.kind)
-        key = (name, line)
-        if key not in seen_names:
-            seen_names.add(key)
-            symbols.append(
-                Symbol(
-                    name=name,
-                    kind=kind,
-                    line=line,
-                    end_line=span.end_line + 1,
-                    signature=None,
-                    parent_name=None,
-                )
-            )
+    common.add_symbol_info(symbols, seen_names, result.symbols, language="go")
 
     # --- const/var (not surfaced by tlp) ---
     for cv_sym in _extract_const_var(source):
@@ -165,15 +140,15 @@ def extract(source: bytes, rel_path: str) -> tuple[list[Symbol], list[Ref], list
             symbols.append(cv_sym)
 
     # --- imports ---
-    for imp in result.imports:
-        src = imp.source.strip()
+    def _extract_go_import_target(imp: object) -> str:
+        src = imp.source.strip()  # type: ignore[attr-defined]
         # Skip the block-level 'import (...)' item — the individual quoted paths are also emitted
         if src.startswith("import ("):
-            continue
+            return ""
         m = _GO_IMPORT_RE.search(src)
-        if m:
-            line = imp.span.start_line + 1
-            imp_exp.append(ImpExp(kind="import", target=m.group(1), line=line))
+        return m.group(1) if m else ""
+
+    common.add_imports(imp_exp, result.imports, _extract_go_import_target)
 
     # --- refs ---
     refs: list[Ref] = common.extract_refs_from_source(source, _CALL_RE, _CALL_NOISE)

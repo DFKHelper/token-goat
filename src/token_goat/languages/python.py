@@ -55,18 +55,10 @@ def _parse_import_source(source_line: str) -> list[str]:
 
 def extract(source: bytes, rel_path: str) -> tuple[list[Symbol], list[Ref], list[ImpExp], list[Section]]:
     """Extract symbols, refs, and imports from a Python file."""
-    tlp = common.get_tlp()
+    text = source.decode("utf-8", errors="replace")
+    tlp, cfg = common.make_process_config(language="python")
     if tlp is None:
         return [], [], [], []
-
-    text = source.decode("utf-8", errors="replace")
-    cfg = tlp.ProcessConfig(
-        language="python",
-        structure=True,
-        imports=True,
-        exports=False,
-        symbols=True,
-    )
     try:
         result = tlp.process(text, cfg)
     except Exception:
@@ -85,41 +77,14 @@ def extract(source: bytes, rel_path: str) -> tuple[list[Symbol], list[Ref], list
         _add_symbol(item)
 
     # --- additional symbols from SymbolInfo (module-level vars/consts) ---
-    for sym in result.symbols:
-        name: str = sym.name  # type: ignore[attr-defined]
-        span = sym.span
-        line = span.start_line + 1
-        # Determine kind: SymbolKind.Constant -> "const", else "var"
-        sk = str(sym.kind).split(".")[-1]
-        if sk == "Constant":
-            kind = "const"
-        elif sk == "Variable":
-            kind = "var"
-        elif sk == "Function":
-            kind = "function"
-        elif sk == "Class":
-            kind = "class"
-        else:
-            kind = "var"
-        key = (name, line)
-        if key not in seen_names:
-            seen_names.add(key)
-            symbols.append(
-                Symbol(
-                    name=name,
-                    kind=kind,
-                    line=line,
-                    end_line=span.end_line + 1,
-                    signature=None,
-                )
-            )
+    common.add_symbol_info(symbols, seen_names, result.symbols, language="python")
 
     # --- imports ---
-    for imp in result.imports:
-        targets = _parse_import_source(imp.source)
-        line = imp.span.start_line + 1
-        for target in targets:
-            imp_exp.append(ImpExp(kind="import", target=target, line=line))
+    common.add_imports(
+        imp_exp,
+        result.imports,
+        lambda imp: _parse_import_source(imp.source),  # type: ignore[attr-defined]
+    )
 
     # --- refs ---
     refs: list[Ref] = common.extract_refs_from_source(source, _CALL_RE, _CALL_NOISE)

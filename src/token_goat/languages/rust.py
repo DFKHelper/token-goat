@@ -44,18 +44,10 @@ def _parse_use_target(source_line: str) -> str:
 
 def extract(source: bytes, rel_path: str) -> tuple[list[Symbol], list[Ref], list[ImpExp], list[Section]]:
     """Extract symbols, refs, and imports from a Rust file."""
-    tlp = common.get_tlp()
+    text = source.decode("utf-8", errors="replace")
+    tlp, cfg = common.make_process_config(language="rust")
     if tlp is None:
         return [], [], [], []
-
-    text = source.decode("utf-8", errors="replace")
-    cfg = tlp.ProcessConfig(
-        language="rust",
-        structure=True,
-        imports=True,
-        exports=False,
-        symbols=True,
-    )
     try:
         result = tlp.process(text, cfg)
     except Exception:
@@ -129,30 +121,14 @@ def extract(source: bytes, rel_path: str) -> tuple[list[Symbol], list[Ref], list
         _add_symbol(item)
 
     # --- symbols from SymbolInfo (const, static, module-level items) ---
-    for sym in result.symbols:
-        name: str = sym.name  # type: ignore[attr-defined]
-        span = sym.span
-        line = span.start_line + 1
-        kind = common.sym_kind_str(sym.kind, language="rust")
-        key = (name, line)
-        if key not in seen_names:
-            seen_names.add(key)
-            symbols.append(
-                Symbol(
-                    name=name,
-                    kind=kind,
-                    line=line,
-                    end_line=span.end_line + 1,
-                    signature=None,
-                    parent_name=None,
-                )
-            )
+    common.add_symbol_info(symbols, seen_names, result.symbols, language="rust")
 
     # --- imports (use declarations) ---
-    for imp in result.imports:
-        target = _parse_use_target(imp.source)
-        line = imp.span.start_line + 1
-        imp_exp.append(ImpExp(kind="import", target=target, line=line))
+    common.add_imports(
+        imp_exp,
+        result.imports,
+        lambda imp: _parse_use_target(imp.source),  # type: ignore[attr-defined]
+    )
 
     # --- refs ---
     refs: list[Ref] = common.extract_refs_from_source(source, _CALL_RE, _CALL_NOISE)
