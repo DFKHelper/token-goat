@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from tokenwise.languages.json_idx import extract
+from token_goat.languages.json_idx import extract
 
 FIXTURE_DIR = Path(__file__).parent / "fixtures" / "json_sample"
 CONFIG_JSON = FIXTURE_DIR / "config.json"

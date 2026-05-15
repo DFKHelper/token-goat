@@ -7,8 +7,8 @@ from pathlib import Path
 
 import pytest
 
-from tokenwise import read_replacement
-from tokenwise.parser import index_project
+from token_goat import read_replacement
+from token_goat.parser import index_project
 
 FIXTURE_DIR = Path(__file__).parent / "fixtures"
 TS_SAMPLE = FIXTURE_DIR / "ts_sample"
@@ -99,7 +99,7 @@ def test_resolve_garbage_returns_none(ts_project):
 
 
 def test_resolve_ambiguous_bare_filename_raises(tmp_path, tmp_data_dir, make_project):
-    from tokenwise.read_replacement import AmbiguousFileMatch
+    from token_goat.read_replacement import AmbiguousFileMatch
 
     _proj_root, proj = _make_ambiguous_project(
         tmp_path,
@@ -243,7 +243,7 @@ def indexed_md_cli(md_project, monkeypatch):
 def test_cli_read_greet_emits_body(indexed_ts_cli):
     from typer.testing import CliRunner
 
-    from tokenwise.cli import app
+    from token_goat.cli import app
 
     runner = CliRunner()
     result = runner.invoke(app, ["read", "index.ts::greet"])
@@ -255,7 +255,7 @@ def test_cli_read_greet_emits_body(indexed_ts_cli):
 def test_cli_read_nonexistent_symbol_exit_zero(indexed_ts_cli):
     from typer.testing import CliRunner
 
-    from tokenwise.cli import app
+    from token_goat.cli import app
 
     runner = CliRunner()
     result = runner.invoke(app, ["read", "index.ts::__totally_nonexistent__"])
@@ -265,7 +265,7 @@ def test_cli_read_nonexistent_symbol_exit_zero(indexed_ts_cli):
 def test_cli_read_missing_separator_exit_2(indexed_ts_cli):
     from typer.testing import CliRunner
 
-    from tokenwise.cli import app
+    from token_goat.cli import app
 
     runner = CliRunner()
     result = runner.invoke(app, ["read", "index.ts"])
@@ -275,7 +275,7 @@ def test_cli_read_missing_separator_exit_2(indexed_ts_cli):
 def test_cli_section_methodology(indexed_md_cli):
     from typer.testing import CliRunner
 
-    from tokenwise.cli import app
+    from token_goat.cli import app
 
     runner = CliRunner()
     result = runner.invoke(app, ["section", "article.md::Methodology"])
@@ -286,7 +286,7 @@ def test_cli_section_methodology(indexed_md_cli):
 def test_cli_read_json_output(indexed_ts_cli):
     from typer.testing import CliRunner
 
-    from tokenwise.cli import app
+    from token_goat.cli import app
 
     runner = CliRunner()
     result = runner.invoke(app, ["read", "--json", "index.ts::greet"])
@@ -304,8 +304,8 @@ def test_cli_read_json_output(indexed_ts_cli):
 def test_cli_read_with_session_id(indexed_ts_cli, tmp_data_dir):
     from typer.testing import CliRunner
 
-    from tokenwise import session as session_mod
-    from tokenwise.cli import app
+    from token_goat import session as session_mod
+    from token_goat.cli import app
 
     proj_root, _ = indexed_ts_cli
     session_id = "test-phase11-session"
@@ -323,7 +323,7 @@ def test_cli_read_with_session_id(indexed_ts_cli, tmp_data_dir):
 def test_cli_section_json_output(indexed_md_cli):
     from typer.testing import CliRunner
 
-    from tokenwise.cli import app
+    from token_goat.cli import app
 
     runner = CliRunner()
     result = runner.invoke(app, ["section", "--json", "article.md::Methodology"])
@@ -338,7 +338,7 @@ def test_cli_section_json_output(indexed_md_cli):
 def test_cli_read_reports_ambiguous_file_match(tmp_path, tmp_data_dir, make_project, monkeypatch):
     from typer.testing import CliRunner
 
-    from tokenwise.cli import app
+    from token_goat.cli import app
 
     proj_root, _ = _make_ambiguous_project(
         tmp_path,
@@ -362,7 +362,7 @@ def test_cli_read_reports_structured_json_error_for_ambiguous_match(
 ):
     from typer.testing import CliRunner
 
-    from tokenwise.cli import app
+    from token_goat.cli import app
 
     proj_root, _ = _make_ambiguous_project(
         tmp_path,
@@ -391,7 +391,7 @@ def test_cli_read_reports_structured_json_error_for_missing_symbol(
 ):
     from typer.testing import CliRunner
 
-    from tokenwise.cli import app
+    from token_goat.cli import app
 
     proj_root, _ = ts_project
     monkeypatch.chdir(proj_root)
@@ -411,7 +411,7 @@ def test_cli_read_reports_structured_json_error_for_project_not_indexed(
 ):
     from typer.testing import CliRunner
 
-    from tokenwise.cli import app
+    from token_goat.cli import app
 
     proj_root = tmp_path / "empty_proj"
     proj_root.mkdir()
@@ -432,7 +432,7 @@ def test_cli_read_reports_structured_json_error_for_project_not_indexed(
 def test_cli_section_reports_ambiguous_file_match(tmp_path, tmp_data_dir, make_project, monkeypatch):
     from typer.testing import CliRunner
 
-    from tokenwise.cli import app
+    from token_goat.cli import app
 
     proj_root, _ = _make_ambiguous_project(
         tmp_path,
@@ -454,7 +454,7 @@ def test_cli_section_reports_ambiguous_file_match(tmp_path, tmp_data_dir, make_p
 def test_cli_section_reports_structured_json_error_for_missing_heading(indexed_md_cli):
     from typer.testing import CliRunner
 
-    from tokenwise.cli import app
+    from token_goat.cli import app
 
     runner = CliRunner()
     result = runner.invoke(app, ["section", "article.md::NoSuchHeading", "--json"])
@@ -476,7 +476,7 @@ class TestNotIndexedHint:
 
     def test_returns_hint_for_empty_project(self, tmp_data_dir, make_project, tmp_path):
         """When file_count == 0 (never indexed), _not_indexed_hint returns a string."""
-        from tokenwise.read_commands import _not_indexed_hint
+        from token_goat.read_commands import _not_indexed_hint
 
         proj_root = tmp_path / "empty_proj"
         proj_root.mkdir()
@@ -488,7 +488,7 @@ class TestNotIndexedHint:
 
     def test_returns_none_for_indexed_project(self, py_project):
         """When files are indexed, _not_indexed_hint returns None."""
-        from tokenwise.read_commands import _not_indexed_hint
+        from token_goat.read_commands import _not_indexed_hint
 
         _proj_root, proj = py_project
         hint = _not_indexed_hint(proj.hash)
@@ -496,8 +496,8 @@ class TestNotIndexedHint:
 
     def test_returns_none_on_db_error(self, tmp_data_dir, monkeypatch):
         """If the indexed-file probe raises, _not_indexed_hint must swallow the error."""
-        from tokenwise import db
-        from tokenwise.read_commands import _not_indexed_hint
+        from token_goat import db
+        from token_goat.read_commands import _not_indexed_hint
 
         monkeypatch.setattr(
             db,
@@ -517,11 +517,11 @@ class TestReadCommandNoProject:
     """When no project is detected for the cwd, read/section emits an error."""
 
     def test_read_no_project_exits_cleanly(self, tmp_data_dir, monkeypatch, tmp_path):
-        """tokenwise read <file>::<sym> when cwd has no project must exit 0 with error text."""
+        """token-goat read <file>::<sym> when cwd has no project must exit 0 with error text."""
         from typer.testing import CliRunner
 
-        from tokenwise import project as project_mod
-        from tokenwise.cli import app
+        from token_goat import project as project_mod
+        from token_goat.cli import app
 
         monkeypatch.setattr(project_mod, "find_project", lambda _cwd: None)
         monkeypatch.chdir(tmp_path)
@@ -532,11 +532,11 @@ class TestReadCommandNoProject:
         assert result.exit_code == 0
 
     def test_section_no_project_exits_cleanly(self, tmp_data_dir, monkeypatch, tmp_path):
-        """tokenwise section <file>::<heading> with no project must exit 0 with error text."""
+        """token-goat section <file>::<heading> with no project must exit 0 with error text."""
         from typer.testing import CliRunner
 
-        from tokenwise import project as project_mod
-        from tokenwise.cli import app
+        from token_goat import project as project_mod
+        from token_goat.cli import app
 
         monkeypatch.setattr(project_mod, "find_project", lambda _cwd: None)
         monkeypatch.chdir(tmp_path)
@@ -560,8 +560,8 @@ class TestResolveFileCrossProject:
         """A symbol in a *different* indexed project is found via cross-project lookup."""
         from typer.testing import CliRunner
 
-        from tokenwise import project as project_mod
-        from tokenwise.cli import app
+        from token_goat import project as project_mod
+        from token_goat.cli import app
 
         # Build and index a "foreign" project with a known Python file
         foreign_root = tmp_path / "foreign"
@@ -594,7 +594,7 @@ class TestDepsStub:
         """The deps stub command exits 0 and prints 'not yet implemented'."""
         from typer.testing import CliRunner
 
-        from tokenwise.cli import app
+        from token_goat.cli import app
 
         monkeypatch.chdir(tmp_path)
         runner = CliRunner()

@@ -10,7 +10,7 @@ from pathlib import Path
 
 import pytest
 
-from tokenwise import bash_parser, gdrive, session
+from token_goat import bash_parser, gdrive, session
 
 
 class TestSessionValidation:

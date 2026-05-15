@@ -4,7 +4,7 @@ from __future__ import annotations
 from pathlib import Path
 from unittest.mock import patch
 
-from tokenwise import install
+from token_goat import install
 
 # ---------------------------------------------------------------------------
 # Helpers (mirrors test_install.py pattern)
@@ -30,12 +30,12 @@ def test_patch_codex_config_creates_file(tmp_path, monkeypatch):
     home = _fake_home(tmp_path)
     _patch_home(monkeypatch, home)
 
-    cfg_path = install.patch_codex_config("tokenwise")
+    cfg_path = install.patch_codex_config("token-goat")
 
     p = Path(cfg_path)
     assert p.exists()
     content = p.read_text(encoding="utf-8")
-    assert "tokenwise" in content
+    assert "token_goat" in content
     assert "SessionStart" in content or "session-start" in content
 
 
@@ -67,7 +67,7 @@ def test_patch_codex_config_preserves_existing(tmp_path, monkeypatch):
     }
     (codex_dir / "config.toml").write_text(tomli_w.dumps(existing), encoding="utf-8")
 
-    install.patch_codex_config("tokenwise")
+    install.patch_codex_config("token-goat")
 
     import tomllib
 
@@ -75,7 +75,7 @@ def test_patch_codex_config_preserves_existing(tmp_path, monkeypatch):
     pre_entries = content["hooks"]["PreToolUse"]
     all_commands = [h["command"] for e in pre_entries for h in e.get("hooks", [])]
     assert any("other-tool" in c for c in all_commands), "existing hook was lost"
-    assert any("tokenwise" in c for c in all_commands), "tokenwise hook not added"
+    assert any("token_goat" in c for c in all_commands), "token-goat hook not added"
 
 
 # ---------------------------------------------------------------------------
@@ -89,8 +89,8 @@ def test_patch_codex_config_idempotent(tmp_path, monkeypatch):
     home = _fake_home(tmp_path)
     _patch_home(monkeypatch, home)
 
-    install.patch_codex_config("tokenwise")
-    install.patch_codex_config("tokenwise")
+    install.patch_codex_config("token-goat")
+    install.patch_codex_config("token-goat")
 
     cfg_path = home / ".codex" / "config.toml"
     content = tomllib.loads(cfg_path.read_text(encoding="utf-8"))
@@ -101,9 +101,9 @@ def test_patch_codex_config_idempotent(tmp_path, monkeypatch):
         h["command"]
         for e in ss_entries
         for h in e.get("hooks", [])
-        if "tokenwise" in h["command"]
+        if "token_goat" in h["command"]
     ]
-    assert len(tw_cmds) == 1, f"expected 1 tokenwise SessionStart entry, got {len(tw_cmds)}"
+    assert len(tw_cmds) == 1, f"expected 1 token-goat SessionStart entry, got {len(tw_cmds)}"
 
 
 # ---------------------------------------------------------------------------
@@ -136,7 +136,7 @@ def test_unpatch_codex_config_removes_tokenwise(tmp_path, monkeypatch):
     }
     (codex_dir / "config.toml").write_text(tomli_w.dumps(existing), encoding="utf-8")
 
-    install.patch_codex_config("tokenwise")
+    install.patch_codex_config("token-goat")
     install.unpatch_codex_config()
 
     content = tomllib.loads((codex_dir / "config.toml").read_text(encoding="utf-8"))
@@ -146,7 +146,7 @@ def test_unpatch_codex_config_removes_tokenwise(tmp_path, monkeypatch):
         for e in entries
         for h in e.get("hooks", [])
     ]
-    assert not any("tokenwise" in c for c in all_cmds), "tokenwise entry not removed"
+    assert not any("token_goat" in c for c in all_cmds), "token-goat entry not removed"
     assert any("other-tool" in c for c in all_cmds), "unrelated entry was removed"
 
 
@@ -166,7 +166,7 @@ def test_patch_codex_agents_md_creates_file(tmp_path, monkeypatch):
     content = md_path.read_text(encoding="utf-8")
     assert install.CODEX_AGENTS_BEGIN in content
     assert install.CODEX_AGENTS_END in content
-    assert "tokenwise" in content
+    assert "token-goat" in content
 
 
 # ---------------------------------------------------------------------------
@@ -233,7 +233,7 @@ def test_patch_codex_agents_md_appends(tmp_path, monkeypatch):
 def test_install_all_codex_flag(tmp_path, monkeypatch):
     home = _fake_home(tmp_path)
     _patch_home(monkeypatch, home)
-    monkeypatch.setattr(install, "tokenwise_binary", lambda: "tokenwise")
+    monkeypatch.setattr(install, "token_goat_binary", lambda: "token-goat")
 
     def fake_schtasks(args):
         if args[0] == "/Query":
@@ -243,8 +243,8 @@ def test_install_all_codex_flag(tmp_path, monkeypatch):
     monkeypatch.setattr(install, "_run_schtasks", fake_schtasks)
 
     with (
-        patch("tokenwise.install.paths.ensure_dirs"),
-        patch("tokenwise.worker.ensure_running", return_value=99999),
+        patch("token_goat.install.paths.ensure_dirs"),
+        patch("token_goat.worker.ensure_running", return_value=99999),
     ):
         result = install.install_all(install_codex=True)
 
@@ -267,7 +267,7 @@ def test_uninstall_all_codex_flag(tmp_path, monkeypatch):
 
     home = _fake_home(tmp_path)
     _patch_home(monkeypatch, home)
-    monkeypatch.setattr(install, "tokenwise_binary", lambda: "tokenwise")
+    monkeypatch.setattr(install, "token_goat_binary", lambda: "token-goat")
 
     def fake_schtasks(args):
         return 0, "ok"
@@ -276,13 +276,13 @@ def test_uninstall_all_codex_flag(tmp_path, monkeypatch):
 
     # Install Codex first
     with (
-        patch("tokenwise.install.paths.ensure_dirs"),
-        patch("tokenwise.worker.ensure_running", return_value=99999),
+        patch("token_goat.install.paths.ensure_dirs"),
+        patch("token_goat.worker.ensure_running", return_value=99999),
     ):
         install.install_all(install_codex=True)
 
     # Now uninstall with codex=True
-    with patch("tokenwise.install.paths.worker_pid_path", return_value=tmp_path / "w.pid"):
+    with patch("token_goat.install.paths.worker_pid_path", return_value=tmp_path / "w.pid"):
         result = install.uninstall_all(codex=True)
 
     assert "codex: config.toml" in result
@@ -298,7 +298,7 @@ def test_uninstall_all_codex_flag(tmp_path, monkeypatch):
             for e in entries
             for h in e.get("hooks", [])
         ]
-        assert not any("tokenwise" in c for c in all_cmds)
+        assert not any("token_goat" in c for c in all_cmds)
 
     # Verify AGENTS.md block is gone
     md_path = home / ".codex" / "AGENTS.md"

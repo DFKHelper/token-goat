@@ -5,7 +5,7 @@ import time
 
 import pytest
 
-from tokenwise import session
+from token_goat import session
 
 
 class TestSessionCacheBasics:
@@ -184,7 +184,7 @@ class TestUnavailableCacheAccess:
 
     def test_mark_file_read_skips_when_cache_file_is_locked(self, tmp_data_dir, monkeypatch):
         """Locked session cache during load returns an unavailable cache and does not overwrite."""
-        from tokenwise import db
+        from token_goat import db
 
         session_id = "locked_read"
         session.mark_file_read(session_id, "seed.py")
@@ -212,7 +212,7 @@ class TestUnavailableCacheAccess:
         self, tmp_data_dir, monkeypatch
     ):
         """A save failure leaves the in-memory cache usable for later writes."""
-        from tokenwise import db
+        from token_goat import db
 
         session_id = "locked_write"
         session.mark_file_read(session_id, "seed.py")

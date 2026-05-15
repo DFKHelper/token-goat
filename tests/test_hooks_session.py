@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import json
 
-from tokenwise import hooks_cli, session
+from token_goat import hooks_cli, session
 
 
 class TestPostReadHookIntegration:
@@ -89,8 +89,8 @@ class TestSessionStartHookIntegration:
 
     def test_session_start_auto_indexes_without_counting_files(self, tmp_data_dir, tmp_path, monkeypatch):
         """session_start should use the cheap project-presence probe, not a full file count."""
-        from tokenwise import db, worker
-        from tokenwise.project import find_project
+        from token_goat import db, worker
+        from token_goat.project import find_project
 
         proj_root = tmp_path / "proj"
         proj_root.mkdir()
@@ -137,7 +137,7 @@ class TestLockedSessionCacheDispatch:
 
     def test_dispatch_post_read_read_survives_locked_save(self, tmp_data_dir, monkeypatch):
         """post-read Read should continue even if the session cache cannot be replaced."""
-        from tokenwise import db
+        from token_goat import db
 
         session_id = "dispatch_lock_read"
         session.mark_file_read(session_id, "seed.py")
@@ -165,7 +165,7 @@ class TestLockedSessionCacheDispatch:
 
     def test_dispatch_post_read_grep_survives_locked_load(self, tmp_data_dir, monkeypatch):
         """post-read Grep should continue even if the session cache cannot be read."""
-        from tokenwise import db
+        from token_goat import db
 
         session_id = "dispatch_lock_grep"
         session.mark_grep(session_id, "seed")
@@ -200,7 +200,7 @@ class TestCliCommands:
         """Test session-mark command via typer."""
         from typer.testing import CliRunner
 
-        from tokenwise.cli import app
+        from token_goat.cli import app
 
         runner = CliRunner()
         result = runner.invoke(
@@ -218,7 +218,7 @@ class TestCliCommands:
         """Test session-touched command with --json."""
         from typer.testing import CliRunner
 
-        from tokenwise.cli import app
+        from token_goat.cli import app
 
         s_id = "cli_s2"
         session.mark_file_read(s_id, "a.py", offset=0, limit=100)
@@ -237,7 +237,7 @@ class TestCliCommands:
         """Test session-touched command with plain output."""
         from typer.testing import CliRunner
 
-        from tokenwise.cli import app
+        from token_goat.cli import app
 
         s_id = "cli_s3"
         session.mark_file_read(s_id, "x.py", offset=0, limit=100)
@@ -252,7 +252,7 @@ class TestCliCommands:
         """Test session-touched on empty session."""
         from typer.testing import CliRunner
 
-        from tokenwise.cli import app
+        from token_goat.cli import app
 
         runner = CliRunner()
         result = runner.invoke(app, ["session-touched", "-s", "empty"])

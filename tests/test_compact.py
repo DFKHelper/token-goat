@@ -1,7 +1,7 @@
 """Tests for compaction assist: manifest generation, config, and pre_compact hook."""
 from __future__ import annotations
 
-from tokenwise import compact, config, hooks_cli, session
+from token_goat import compact, config, hooks_cli, session
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -120,7 +120,7 @@ class TestBuildManifest:
 
 class TestConfigLoad:
     def test_defaults_when_no_file(self, tmp_path, monkeypatch):
-        from tokenwise import paths
+        from token_goat import paths
         monkeypatch.setattr(paths, "config_path", lambda: tmp_path / "config.toml")
         cfg = config.load()
         assert cfg.compact_assist.enabled is True
@@ -130,7 +130,7 @@ class TestConfigLoad:
         assert cfg.compact_assist.max_manifest_tokens == 400
 
     def test_env_var_disables_compact_assist(self, tmp_path, monkeypatch):
-        from tokenwise import paths
+        from token_goat import paths
         monkeypatch.setattr(paths, "config_path", lambda: tmp_path / "config.toml")
         for val in ("0", "false", "no", "off"):
             monkeypatch.setenv("TOKENWISE_COMPACT_ASSIST", val)
@@ -138,14 +138,14 @@ class TestConfigLoad:
             assert cfg.compact_assist.enabled is False, f"expected disabled for env={val!r}"
 
     def test_env_var_blank_leaves_enabled(self, tmp_path, monkeypatch):
-        from tokenwise import paths
+        from token_goat import paths
         monkeypatch.setattr(paths, "config_path", lambda: tmp_path / "config.toml")
         monkeypatch.setenv("TOKENWISE_COMPACT_ASSIST", "")
         cfg = config.load()
         assert cfg.compact_assist.enabled is True
 
     def test_toml_overrides_defaults(self, tmp_path, monkeypatch):
-        from tokenwise import paths
+        from token_goat import paths
         cfg_path = tmp_path / "config.toml"
         cfg_path.write_text(
             "[compact_assist]\nenabled = false\nmin_events = 10\nmax_manifest_tokens = 200\n",
@@ -159,7 +159,7 @@ class TestConfigLoad:
         assert cfg.compact_assist.max_manifest_tokens == 200
 
     def test_corrupt_toml_falls_back_to_defaults(self, tmp_path, monkeypatch):
-        from tokenwise import paths
+        from token_goat import paths
         cfg_path = tmp_path / "config.toml"
         cfg_path.write_text("this is not valid toml }{{{", encoding="utf-8")
         monkeypatch.setattr(paths, "config_path", lambda: cfg_path)
@@ -168,7 +168,7 @@ class TestConfigLoad:
         assert cfg.compact_assist.enabled is True  # fell back to default
 
     def test_save_and_reload(self, tmp_path, monkeypatch):
-        from tokenwise import paths
+        from token_goat import paths
         cfg_path = tmp_path / "config.toml"
         monkeypatch.setattr(paths, "config_path", lambda: cfg_path)
         monkeypatch.delenv("TOKENWISE_COMPACT_ASSIST", raising=False)
@@ -192,7 +192,7 @@ class TestPreCompactHandler:
         return {"session_id": session_id, "trigger": trigger}
 
     def test_disabled_returns_continue_only(self, tmp_data_dir, tmp_path, monkeypatch):
-        from tokenwise import paths
+        from token_goat import paths
         cfg_path = tmp_path / "config.toml"
         cfg_path.write_text("[compact_assist]\nenabled = false\n", encoding="utf-8")
         monkeypatch.setattr(paths, "config_path", lambda: cfg_path)
@@ -205,7 +205,7 @@ class TestPreCompactHandler:
         assert "systemMessage" not in result
 
     def test_env_var_disables_handler(self, tmp_data_dir, tmp_path, monkeypatch):
-        from tokenwise import paths
+        from token_goat import paths
         monkeypatch.setattr(paths, "config_path", lambda: tmp_path / "config.toml")
         monkeypatch.setenv("TOKENWISE_COMPACT_ASSIST", "0")
 
@@ -215,7 +215,7 @@ class TestPreCompactHandler:
         assert result == {"continue": True}
 
     def test_trigger_not_in_config_skips(self, tmp_data_dir, tmp_path, monkeypatch):
-        from tokenwise import paths
+        from token_goat import paths
         cfg_path = tmp_path / "config.toml"
         cfg_path.write_text('[compact_assist]\ntriggers = ["manual"]\n', encoding="utf-8")
         monkeypatch.setattr(paths, "config_path", lambda: cfg_path)
@@ -229,7 +229,7 @@ class TestPreCompactHandler:
         assert "systemMessage" not in result
 
     def test_below_min_events_skips(self, tmp_data_dir, tmp_path, monkeypatch):
-        from tokenwise import paths
+        from token_goat import paths
         cfg_path = tmp_path / "config.toml"
         cfg_path.write_text("[compact_assist]\nmin_events = 100\n", encoding="utf-8")
         monkeypatch.setattr(paths, "config_path", lambda: cfg_path)
@@ -242,7 +242,7 @@ class TestPreCompactHandler:
         assert "systemMessage" not in result
 
     def test_happy_path_emits_system_message(self, tmp_data_dir, tmp_path, monkeypatch):
-        from tokenwise import paths
+        from token_goat import paths
         cfg_path = tmp_path / "config.toml"
         cfg_path.write_text("[compact_assist]\nenabled = true\nmin_events = 1\n", encoding="utf-8")
         monkeypatch.setattr(paths, "config_path", lambda: cfg_path)
@@ -260,7 +260,7 @@ class TestPreCompactHandler:
         assert "Tokenwise Session Manifest" in msg
 
     def test_auto_trigger_emits_when_in_config(self, tmp_data_dir, tmp_path, monkeypatch):
-        from tokenwise import paths
+        from token_goat import paths
         cfg_path = tmp_path / "config.toml"
         cfg_path.write_text(
             '[compact_assist]\nenabled = true\nmin_events = 1\ntriggers = ["manual", "auto"]\n',
@@ -276,7 +276,7 @@ class TestPreCompactHandler:
         assert "systemMessage" in result
 
     def test_missing_session_id_returns_continue(self, tmp_data_dir, tmp_path, monkeypatch):
-        from tokenwise import paths
+        from token_goat import paths
         monkeypatch.setattr(paths, "config_path", lambda: tmp_path / "config.toml")
         monkeypatch.delenv("TOKENWISE_COMPACT_ASSIST", raising=False)
 
@@ -284,7 +284,7 @@ class TestPreCompactHandler:
         assert result == {"continue": True}
 
     def test_empty_session_returns_continue(self, tmp_data_dir, tmp_path, monkeypatch):
-        from tokenwise import paths
+        from token_goat import paths
         cfg_path = tmp_path / "config.toml"
         cfg_path.write_text("[compact_assist]\nenabled = true\nmin_events = 0\n", encoding="utf-8")
         monkeypatch.setattr(paths, "config_path", lambda: cfg_path)
@@ -295,7 +295,7 @@ class TestPreCompactHandler:
         assert result == {"continue": True}
 
     def test_system_message_respects_token_budget(self, tmp_data_dir, tmp_path, monkeypatch):
-        from tokenwise import paths
+        from token_goat import paths
         budget = 100
         cfg_path = tmp_path / "config.toml"
         cfg_path.write_text(
@@ -330,7 +330,7 @@ class TestDispatcherIntegration:
         assert "pre-compact" in hooks_cli.EVENTS
 
     def test_dispatch_pre_compact_returns_continue(self, tmp_data_dir, tmp_path, monkeypatch):
-        from tokenwise import paths
+        from token_goat import paths
         monkeypatch.setattr(paths, "config_path", lambda: tmp_path / "config.toml")
         monkeypatch.delenv("TOKENWISE_COMPACT_ASSIST", raising=False)
 

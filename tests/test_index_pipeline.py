@@ -8,8 +8,8 @@ from unittest.mock import patch
 
 import pytest
 
-from tokenwise import db
-from tokenwise.parser import index_file, index_project, write_file_index
+from token_goat import db
+from token_goat.parser import index_file, index_project, write_file_index
 
 FIXTURE_DIR = Path(__file__).parent / "fixtures"
 TS_SAMPLE = FIXTURE_DIR / "ts_sample"
@@ -129,7 +129,7 @@ def test_index_registers_project_before_file_walk(ts_project, monkeypatch):
     dirty-queue drain hits "unknown project hash" for every edit made meanwhile
     — silently dropping it. Registering up front closes that window.
     """
-    from tokenwise import parser
+    from token_goat import parser
 
     real_iter = parser.iter_source_files
     registered_during_walk: dict[str, bool] = {}
@@ -153,8 +153,8 @@ def test_index_registers_project_before_file_walk(ts_project, monkeypatch):
 
 def test_iter_source_files_prunes_ignored_directories(tmp_path):
     """The source walker should skip ignored trees without descending into them."""
-    from tokenwise import parser
-    from tokenwise.project import make_project_at
+    from token_goat import parser
+    from token_goat.project import make_project_at
 
     proj_root = tmp_path / "walk_root"
     proj_root.mkdir()
@@ -218,7 +218,7 @@ def test_incremental_replaces_symbols_for_modified_file(ts_project):
 def test_incremental_prunes_deleted_files(ts_project):
     """Regression: a deleted file must be removed from the index, not lingered.
 
-    Without pruning, `tokenwise symbol`/`read`/`map` surface dead paths forever
+    Without pruning, `token-goat symbol`/`read`/`map` surface dead paths forever
     after a file is deleted or renamed.
     """
     index_project(ts_project, full=True)
@@ -367,7 +367,7 @@ def test_html_project_index(tmp_path, tmp_data_dir, make_project):
 def test_incremental_mtime_fastpath_bypasses_index_file(ts_project):
     """After a full index, incremental mode must not call index_file for any unchanged file."""
     index_project(ts_project, full=True)
-    with patch("tokenwise.parser.index_file") as spy:
+    with patch("token_goat.parser.index_file") as spy:
         summary = index_project(ts_project, full=False)
     assert spy.call_count == 0, (
         f"index_file called {spy.call_count}x — mtime fast-path should have short-circuited all"

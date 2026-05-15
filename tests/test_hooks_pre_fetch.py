@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock, patch
 
-from tokenwise import gdrive, hooks_cli
+from token_goat import gdrive, hooks_cli
 
 # ---------------------------------------------------------------------------
 # 10. Non-Drive tool passes through unchanged
@@ -79,7 +79,7 @@ class TestPreFetchDriveWithCreds:
         assert result["continue"] is True
         hso = result.get("hookSpecificOutput", {})
         assert hso.get("permissionDecision") == "deny"
-        assert "tokenwise gdrive-fetch testfile123" in hso.get("additionalContext", "")
+        assert "token-goat gdrive-fetch testfile123" in hso.get("additionalContext", "")
 
     def test_read_file_tool_with_file_id_gets_denied(self, tmp_data_dir):
         payload = {
@@ -93,7 +93,7 @@ class TestPreFetchDriveWithCreds:
         assert result["continue"] is True
         hso = result.get("hookSpecificOutput", {})
         assert hso.get("permissionDecision") == "deny"
-        assert "tokenwise gdrive-fetch readfile456" in hso.get("additionalContext", "")
+        assert "token-goat gdrive-fetch readfile456" in hso.get("additionalContext", "")
 
     def test_additional_context_mentions_cached_path_hint(self, tmp_data_dir):
         payload = {

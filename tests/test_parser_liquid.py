@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from tokenwise.languages.liquid import extract
+from token_goat.languages.liquid import extract
 
 FIXTURE_DIR = Path(__file__).parent / "fixtures" / "liquid_sample"
 HEADER_LIQUID = FIXTURE_DIR / "sections" / "header.liquid"

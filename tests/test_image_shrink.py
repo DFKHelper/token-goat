@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from tokenwise import image_shrink
+from token_goat import image_shrink
 
 # ---------------------------------------------------------------------------
 # Helpers

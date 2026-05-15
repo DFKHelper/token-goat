@@ -4,7 +4,7 @@ from __future__ import annotations
 import random
 from pathlib import Path
 
-from tokenwise import hooks_cli, image_shrink
+from token_goat import hooks_cli, image_shrink
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -82,7 +82,7 @@ class TestPreReadHookLargeImage:
 
         hso = result.get("hookSpecificOutput", {})
         ctx = hso.get("additionalContext", "")
-        assert "tokenwise" in ctx
+        assert "token-goat" in ctx
         assert "bytes" in ctx
 
 

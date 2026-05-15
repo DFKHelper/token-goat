@@ -5,7 +5,7 @@ import json
 from pathlib import Path
 from unittest.mock import patch
 
-from tokenwise import hooks_edit, paths, session
+from token_goat import hooks_edit, paths, session
 
 # ---------------------------------------------------------------------------
 # _nudge_worker_if_down
@@ -19,7 +19,7 @@ class TestNudgeWorkerIfDown:
         hb = paths.worker_heartbeat_path()
         hb.write_text("x", encoding="utf-8")
 
-        with patch("tokenwise.worker.ensure_running") as mock_ensure:
+        with patch("token_goat.worker.ensure_running") as mock_ensure:
             hooks_edit._nudge_worker_if_down()
         mock_ensure.assert_not_called()
 
@@ -34,7 +34,7 @@ class TestNudgeWorkerIfDown:
         old_time = 0.0  # epoch — ancient mtime
         os.utime(hb, (old_time, old_time))
 
-        with patch("tokenwise.worker.ensure_running", return_value=12345) as mock_ensure:
+        with patch("token_goat.worker.ensure_running", return_value=12345) as mock_ensure:
             hooks_edit._nudge_worker_if_down()
         mock_ensure.assert_called_once()
 
@@ -48,7 +48,7 @@ class TestNudgeWorkerIfDown:
 
         os.utime(hb, (0.0, 0.0))
 
-        with patch("tokenwise.worker.ensure_running", return_value=0):
+        with patch("token_goat.worker.ensure_running", return_value=0):
             hooks_edit._nudge_worker_if_down()  # must not raise
 
     def test_exception_in_nudge_is_swallowed(self, tmp_data_dir):

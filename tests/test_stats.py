@@ -5,7 +5,7 @@ import json
 import time
 from datetime import datetime, timedelta
 
-from tokenwise import db, stats
+from token_goat import db, stats
 
 
 class TestStatsAggregation:
@@ -273,9 +273,9 @@ class TestRenderText:
 
     def test_render_forces_fallback_renderer(self, tmp_data_dir, monkeypatch):
         """When the new renderer raises, the fallback rich renderer is used."""
-        import tokenwise.stats as stats_mod
+        import token_goat.stats as stats_mod
         monkeypatch.setattr(
-            "tokenwise.stats.render_text",
+            "token_goat.stats.render_text",
             lambda summary, **kw: stats_mod._render_text_legacy(summary, **kw)
             if hasattr(stats_mod, "_render_text_legacy")
             else stats_mod.render_text.__wrapped__(summary, **kw)
@@ -295,7 +295,7 @@ class TestRenderText:
         The ANSI styling wraps the labels but leaves the literal words intact,
         so a plain substring-index comparison is enough.
         """
-        from tokenwise.render.stats_renderer import _table_header
+        from token_goat.render.stats_renderer import _table_header
 
         header = _table_header("name")
         assert "share" in header and "events" in header
@@ -306,7 +306,7 @@ class TestRenderText:
     def test_table_row_share_value_precedes_events_value(self):
         """A rendered row places its share % ahead of its event count, matching
         the header order — guards against header/row column drift."""
-        from tokenwise.render.stats_renderer import _table_row
+        from token_goat.render.stats_renderer import _table_row
 
         # Distinct markers that cannot collide with the RGB ANSI escapes the bar
         # emits: share renders as "25.0%" (no '%' in escapes) and the event
@@ -705,7 +705,7 @@ class TestRenderTextFallback:
     """Cover the rich-based fallback renderer path in render_text()."""
 
     def _make_summary(self):
-        from tokenwise.stats import StatsSummary
+        from token_goat.stats import StatsSummary
         return StatsSummary(
             total_events=5,
             total_bytes_saved=1024,
@@ -720,12 +720,12 @@ class TestRenderTextFallback:
         """If render_stats raises, render_text must fall back to the rich renderer."""
         from unittest.mock import patch
 
-        from tokenwise.stats import render_text
+        from token_goat.stats import render_text
 
-        with patch("tokenwise.stats.render_text.__module__"):
+        with patch("token_goat.stats.render_text.__module__"):
             pass  # just verifying import works
 
-        with patch("tokenwise.render.stats_renderer.render_stats", side_effect=RuntimeError("boom")):
+        with patch("token_goat.render.stats_renderer.render_stats", side_effect=RuntimeError("boom")):
             result = render_text(self._make_summary())
 
         assert isinstance(result, str)
@@ -735,9 +735,9 @@ class TestRenderTextFallback:
         """Rich fallback output must include headline stats and a project table."""
         from unittest.mock import patch
 
-        from tokenwise.stats import render_text
+        from token_goat.stats import render_text
 
-        with patch("tokenwise.render.stats_renderer.render_stats", side_effect=RuntimeError("renderer down")):
+        with patch("token_goat.render.stats_renderer.render_stats", side_effect=RuntimeError("renderer down")):
             output = render_text(self._make_summary())
 
         # Headline numbers must appear somewhere in the rich output

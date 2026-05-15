@@ -9,7 +9,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from tokenwise import gdrive, paths
+from token_goat import gdrive, paths
 
 # ---------------------------------------------------------------------------
 # 1. _try_adc returns None when google.auth.default raises
@@ -243,7 +243,7 @@ class TestGdriveAuthCli:
     def test_no_setup_prints_instructions_exit_zero(self, tmp_data_dir):
         from typer.testing import CliRunner  # noqa: PLC0415
 
-        from tokenwise.cli import app  # noqa: PLC0415
+        from token_goat.cli import app  # noqa: PLC0415
 
         runner = CliRunner()
         with patch("google.auth.default", side_effect=Exception("no ADC")):
@@ -257,7 +257,7 @@ class TestGdriveAuthCli:
     def test_with_missing_client_secrets_file_exits_one(self, tmp_data_dir, tmp_path):
         from typer.testing import CliRunner  # noqa: PLC0415
 
-        from tokenwise.cli import app  # noqa: PLC0415
+        from token_goat.cli import app  # noqa: PLC0415
 
         runner = CliRunner()
         missing = str(tmp_path / "does_not_exist.json")
@@ -269,7 +269,7 @@ class TestGdriveAuthCli:
     def test_adc_detected_prints_confirmation_exit_zero(self, tmp_data_dir):
         from typer.testing import CliRunner  # noqa: PLC0415
 
-        from tokenwise.cli import app  # noqa: PLC0415
+        from token_goat.cli import app  # noqa: PLC0415
 
         runner = CliRunner()
         fake_creds = MagicMock()
@@ -285,7 +285,7 @@ class TestGdriveFetchCli:
         """No creds → helpful message in output, exit 0 (fail-soft)."""
         from typer.testing import CliRunner  # noqa: PLC0415
 
-        from tokenwise.cli import app  # noqa: PLC0415
+        from token_goat.cli import app  # noqa: PLC0415
 
         runner = CliRunner()
         with patch("google.auth.default", side_effect=Exception("no ADC")):
@@ -298,7 +298,7 @@ class TestGdriveFetchCli:
     def test_successful_fetch_prints_path(self, tmp_data_dir, tmp_path):
         from typer.testing import CliRunner  # noqa: PLC0415
 
-        from tokenwise.cli import app  # noqa: PLC0415
+        from token_goat.cli import app  # noqa: PLC0415
 
         cached = tmp_path / "fake_id_imagejpg"
         cached.write_bytes(b"data")
@@ -313,7 +313,7 @@ class TestGdriveFetchCli:
     def test_json_output_flag(self, tmp_data_dir, tmp_path):
         from typer.testing import CliRunner  # noqa: PLC0415
 
-        from tokenwise.cli import app  # noqa: PLC0415
+        from token_goat.cli import app  # noqa: PLC0415
 
         cached = tmp_path / "fake_id_imagejpg"
         cached.write_bytes(b"data")

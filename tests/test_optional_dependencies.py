@@ -3,9 +3,9 @@ from __future__ import annotations
 import builtins
 import importlib
 
-import tokenwise.db as db
-import tokenwise.worker as worker
-from tokenwise.languages import typescript as ts
+import token_goat.db as db
+import token_goat.worker as worker
+from token_goat.languages import typescript as ts
 
 
 def _missing_import(name: str):

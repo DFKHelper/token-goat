@@ -6,7 +6,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from tokenwise import webfetch
+from token_goat import webfetch
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -45,7 +45,7 @@ def _make_large_png_bytes() -> bytes:
     img.save(buf, "PNG")
     data = buf.getvalue()
     # Pad if still under threshold
-    from tokenwise import image_shrink
+    from token_goat import image_shrink
     while len(data) <= image_shrink.SIZE_THRESHOLD_BYTES:
         data += b"\x00" * 10240
     return data
@@ -312,7 +312,7 @@ class TestFetchUrlShrink:
         body = _make_large_png_bytes()
 
         # Only run if we actually made a large enough body
-        from tokenwise import image_shrink as _is
+        from token_goat import image_shrink as _is
         if len(body) <= _is.SIZE_THRESHOLD_BYTES:
             pytest.skip("Could not synthesize large enough PNG body")
 
@@ -324,7 +324,7 @@ class TestFetchUrlShrink:
 
         # The returned path should exist
         assert result.exists()
-        from tokenwise import paths as _paths
+        from token_goat import paths as _paths
         # Shrunken files land in image_cache_dir, not web_cache_dir
         assert result.parent in (_paths.image_cache_dir(), _paths.web_cache_dir())
 
@@ -408,14 +408,14 @@ class TestFetchUrlSsrfGuard:
 
 
 # ---------------------------------------------------------------------------
-# 11. CLI: tokenwise fetch-image <bad-url> exits 0 with stderr message
+# 11. CLI: token-goat fetch-image <bad-url> exits 0 with stderr message
 # ---------------------------------------------------------------------------
 
 class TestFetchImageCli:
     def test_bad_url_exits_zero_with_stderr(self, tmp_data_dir):
         from typer.testing import CliRunner
 
-        from tokenwise.cli import app
+        from token_goat.cli import app
 
         runner = CliRunner()
         result = runner.invoke(app, ["fetch-image", "https://this-host-definitely-does-not-exist-tokenwise.invalid/photo.jpg"])

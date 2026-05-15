@@ -22,14 +22,14 @@ Token-goat is a Claude Code / Codex CLI companion that reduces token burn on Win
 ### Component Map
 
 ```
-src/tokenwise/
+src/token_goat/
 ├── cli.py              # Typer CLI — all user-facing and internal subcommands
 ├── hooks_cli.py        # Hook dispatcher: session-start, pre-read, pre-fetch, post-edit, post-read, pre-compact
 ├── worker.py           # Background daemon — dirty-queue polling, maintenance, LRU eviction
 ├── db.py               # SQLite + sqlite-vec — global.db + per-project DBs
 ├── parser.py           # Tree-sitter orchestration — index walk, symbol/ref/section extraction
 ├── embeddings.py       # Fastembed (BAAI/bge-small-en-v1.5, 384 dims) + sqlite-vec queries
-├── read_replacement.py # Symbol/section extraction for tokenwise read / tokenwise section
+├── read_replacement.py # Symbol/section extraction for token-goat read / token-goat section
 ├── session.py          # Per-session JSON cache: tracks (file, ranges, symbols, read_count, edited_files)
 ├── compact.py          # Compaction assist: build_manifest() produces session manifest for PreCompact hook
 ├── config.py           # TOML config loader (paths.config_path()); [compact_assist] section + env override
@@ -40,7 +40,7 @@ src/tokenwise/
 ├── install.py          # One-time setup: HKCU Run registry, settings.json, skill, CLAUDE.md
 ├── paths.py            # All paths under %LOCALAPPDATA%\Zelys\tokenwise\; also claude_skills_dir(), claude_plugins_dir()
 ├── project.py          # Project root detection; make_project_at() for marker-free directories
-├── repomap.py          # PageRank-ranked, token-budgeted repo overview (tokenwise map)
+├── repomap.py          # PageRank-ranked, token-budgeted repo overview (token-goat map)
 ├── bash_parser.py      # Codex Bash tool read-equivalent detection (cat/head/tail/bat/…)
 ├── stats.py            # Cumulative token/byte savings tracking
 └── languages/          # Tree-sitter adapters: python, typescript, go, rust, markdown, liquid, html, json
@@ -72,7 +72,7 @@ Project hash = SHA1 of the canonical POSIX path with lowercase drive letter.
 
 **Fail-soft hooks** — Every hook handler catches `BaseException`, always returns `{"continue": true}`, always exits 0. A broken token-goat must never interrupt the agent's work.
 
-**GUI-subsystem entry points** — `token-goat-hook` and `token-goat-worker` are `[project.gui-scripts]` entries (same `main()` as the CLI). Windows won't allocate a console for GUI-subsystem `.exe` files, so hooks fire silently without flashing terminal windows. The worker registers itself in `HKCU\Software\Microsoft\Windows\CurrentVersion\Run` via `pythonw.exe -m tokenwise.cli worker --daemon` — no admin required.
+**GUI-subsystem entry points** — `token-goat-hook` and `token-goat-worker` are `[project.gui-scripts]` entries (same `main()` as the CLI). Windows won't allocate a console for GUI-subsystem `.exe` files, so hooks fire silently without flashing terminal windows. The worker registers itself in `HKCU\Software\Microsoft\Windows\CurrentVersion\Run` via `pythonw.exe -m token_goat.cli worker --daemon` — no admin required.
 
 **Corruption auto-recovery** — `db.py` distinguishes a busy/locked DB (transient, retry) from a genuinely corrupt DB (quarantine + rebuild). `PRAGMA integrity_check` runs on connection open. Stale locks (PID gone or >10 min old) are auto-cleared.
 
@@ -90,7 +90,7 @@ Project hash = SHA1 of the canonical POSIX path with lowercase drive letter.
 
 ### Adding a New Language
 
-1. Create `src/tokenwise/languages/{lang}.py` following the pattern of an existing adapter (e.g., `go.py`). Implement `extract_symbols()`, `extract_refs()`, and optionally `extract_sections()`.
+1. Create `src/token_goat/languages/{lang}.py` following the pattern of an existing adapter (e.g., `go.py`). Implement `extract_symbols()`, `extract_refs()`, and optionally `extract_sections()`.
 2. Register the language in `parser.py`'s language dispatch table.
 3. Add the file extension → language mapping in `project.py` (or wherever file-type detection lives).
 4. Add mypy overrides in `pyproject.toml` if the tree-sitter adapter generates attr/arg errors.

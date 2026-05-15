@@ -17,8 +17,8 @@ from pathlib import Path
 import pytest
 from typer.testing import CliRunner
 
-import tokenwise.paths as paths
-from tokenwise import cli, hooks_cli, hooks_edit, worker
+import token_goat.paths as paths
+from token_goat import cli, hooks_cli, hooks_edit, worker
 
 runner = CliRunner()
 

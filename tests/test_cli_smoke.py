@@ -1,7 +1,7 @@
 """Smoke test for CLI."""
 from typer.testing import CliRunner
 
-from tokenwise import cli
+from token_goat import cli
 
 runner = CliRunner()
 
@@ -17,10 +17,10 @@ def test_cli_help_runs():
 
 
 def test_doctor_command_runs():
-    """Test that tokenwise doctor runs successfully."""
+    """Test that token-goat doctor runs successfully."""
     result = runner.invoke(cli.app, ["doctor"])
     assert result.exit_code == 0
-    assert "tokenwise doctor" in result.stdout
+    assert "token-goat doctor" in result.stdout
     assert "Python:" in result.stdout
     assert "SQLite" in result.stdout
 

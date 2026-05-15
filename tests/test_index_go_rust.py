@@ -6,8 +6,8 @@ from pathlib import Path
 
 import pytest
 
-from tokenwise import db
-from tokenwise.parser import index_project
+from token_goat import db
+from token_goat.parser import index_project
 
 FIXTURE_DIR = Path(__file__).parent / "fixtures"
 GO_SAMPLE = FIXTURE_DIR / "go_sample"

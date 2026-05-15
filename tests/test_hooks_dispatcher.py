@@ -1,7 +1,7 @@
 """Tests for the hook dispatcher's fail-soft and dispatch behavior."""
 import json
 
-from tokenwise import hooks_cli
+from token_goat import hooks_cli
 
 
 def test_unknown_event_returns_continue():
@@ -70,13 +70,13 @@ def test_post_edit_enqueues_dirty_file(tmp_data_dir, tmp_path):
     Without this, a project's symbol index goes stale the moment a file is
     edited — `enqueue_dirty()` existed but nothing ever called it, so the
     worker's dirty-queue reindex path was dead code for normal git projects.
-    `tokenwise read`/`symbol` then return wrong line ranges and the pre-read
+    `token-goat read`/`symbol` then return wrong line ranges and the pre-read
     hint shows stale data.
     """
     import json
 
-    import tokenwise.paths as paths
-    from tokenwise.project import canonicalize, project_hash
+    import token_goat.paths as paths
+    from token_goat.project import canonicalize, project_hash
 
     proj_root = tmp_path / "myproj"
     proj_root.mkdir()
@@ -108,8 +108,8 @@ def test_post_edit_enqueues_dirty_file(tmp_data_dir, tmp_path):
 
 def test_post_edit_file_outside_project_does_not_enqueue(tmp_data_dir, tmp_path, monkeypatch):
     """A file with no detectable project must not crash and must not enqueue."""
-    import tokenwise.paths as paths
-    from tokenwise import project as project_mod
+    import token_goat.paths as paths
+    from token_goat import project as project_mod
 
     # Force "no project" deterministically — the test machine's temp dir may
     # have a stray package.json ancestor that would otherwise be detected.
@@ -141,8 +141,8 @@ def test_post_edit_file_outside_project_does_not_enqueue(tmp_data_dir, tmp_path,
 def test_post_edit_nudges_worker_when_heartbeat_missing(tmp_data_dir, tmp_path, monkeypatch):
     """post_edit feeds the dirty queue, so it must make sure something will
     drain it: with no fresh heartbeat, the watchdog calls ensure_running()."""
-    from tokenwise import project as project_mod
-    from tokenwise import worker as worker_mod
+    from token_goat import project as project_mod
+    from token_goat import worker as worker_mod
 
     monkeypatch.setattr(project_mod, "find_project", lambda _cwd: None)
     called: list[bool] = []
@@ -170,9 +170,9 @@ def test_post_edit_skips_nudge_when_heartbeat_fresh(tmp_data_dir, tmp_path, monk
     respawn it (the common path stays a single stat() with no worker import)."""
     import time as _time
 
-    import tokenwise.paths as paths
-    from tokenwise import project as project_mod
-    from tokenwise import worker as worker_mod
+    import token_goat.paths as paths
+    from token_goat import project as project_mod
+    from token_goat import worker as worker_mod
 
     monkeypatch.setattr(project_mod, "find_project", lambda _cwd: None)
     called: list[bool] = []
@@ -207,9 +207,9 @@ def test_post_edit_nudges_worker_when_heartbeat_stale(tmp_data_dir, tmp_path, mo
     import os
     import time as _time
 
-    import tokenwise.paths as paths
-    from tokenwise import project as project_mod
-    from tokenwise import worker as worker_mod
+    import token_goat.paths as paths
+    from token_goat import project as project_mod
+    from token_goat import worker as worker_mod
 
     monkeypatch.setattr(project_mod, "find_project", lambda _cwd: None)
     called: list[bool] = []
@@ -313,7 +313,7 @@ class TestSafeRun:
         import json
 
         # Inject a handler that returns a camelCase hookSpecificOutput
-        from tokenwise import hooks_cli as hc
+        from token_goat import hooks_cli as hc
 
         def patched_dispatch(event, payload):
             return {
@@ -384,9 +384,9 @@ class TestSetupLogging:
         import logging as _logging
         from datetime import datetime as _datetime
 
-        from tokenwise import paths as _paths
+        from token_goat import paths as _paths
 
-        _LOG = _logging.getLogger("tokenwise.hooks")
+        _LOG = _logging.getLogger("token_goat.hooks")
 
         def real_setup_logging() -> None:
             if _LOG.handlers:
@@ -418,7 +418,7 @@ class TestSetupLogging:
         for h in saved:
             log.removeHandler(h)
 
-        monkeypatch.setattr("tokenwise.paths.ensure_dirs", lambda: (_ for _ in ()).throw(OSError("no dir")))
+        monkeypatch.setattr("token_goat.paths.ensure_dirs", lambda: (_ for _ in ()).throw(OSError("no dir")))
         try:
             # Must not raise
             real_setup()
@@ -438,7 +438,7 @@ class TestSetupLogging:
         for h in saved:
             log.removeHandler(h)
 
-        monkeypatch.setattr("tokenwise.paths.ensure_dirs", lambda: (_ for _ in ()).throw(OSError("no dir")))
+        monkeypatch.setattr("token_goat.paths.ensure_dirs", lambda: (_ for _ in ()).throw(OSError("no dir")))
         try:
             real_setup()
             count_after_first = len(log.handlers)

@@ -5,7 +5,7 @@ import json
 import subprocess
 import sys
 
-from tokenwise import hooks_cli, session
+from token_goat import hooks_cli, session
 
 # ---------------------------------------------------------------------------
 # Direct handler tests
@@ -63,7 +63,7 @@ class TestPreReadHandlerDirect:
 
     def test_hint_records_session_hint_stat(self, tmp_data_dir):
         """When pre_read emits a hint, the gross and overhead stat rows are appended."""
-        from tokenwise import db  # local import to honor tmp_data_dir patching
+        from token_goat import db  # local import to honor tmp_data_dir patching
 
         sid = "stat_smoke"
         path = "C:/proj/cached.py"
@@ -94,10 +94,10 @@ class TestPreReadHandlerDirect:
         """The gross and overhead rows sum to the same net the user pays.
 
         Regression for the honest-accounting fix: a hint is not free, so
-        `tokenwise stats` must subtract the cost of injecting it.
+        `token-goat stats` must subtract the cost of injecting it.
         """
-        from tokenwise import db
-        from tokenwise.hints import CHARS_PER_TOKEN, build_read_hint
+        from token_goat import db
+        from token_goat.hints import CHARS_PER_TOKEN, build_read_hint
 
         sid = "net_acct"
         path = "C:/proj/cached.py"
@@ -141,7 +141,7 @@ class TestPreReadHandlerDirect:
 
     def test_suggestion_hint_records_negative_net(self, tmp_data_dir):
         """A pure-suggestion hint records a zero gross row plus a negative overhead row."""
-        from tokenwise import db
+        from token_goat import db
 
         sid = "neg_net"
         path = "C:/proj/syms.py"
@@ -228,7 +228,7 @@ class TestPreReadCli:
         """Run `tokenwise hook pre-read` as a subprocess with JSON on stdin."""
         raw = json.dumps(payload)
         proc = subprocess.run(
-            [sys.executable, "-m", "tokenwise.cli", "hook", "pre-read"],
+            [sys.executable, "-m", "token_goat.cli", "hook", "pre-read"],
             input=raw,
             capture_output=True,
             text=True,
@@ -245,7 +245,7 @@ class TestPreReadCli:
     def test_cli_garbage_payload_continue(self, tmp_data_dir):
         """Garbage JSON payload → subprocess still exits 0, returns continue:true."""
         proc = subprocess.run(
-            [sys.executable, "-m", "tokenwise.cli", "hook", "pre-read"],
+            [sys.executable, "-m", "token_goat.cli", "hook", "pre-read"],
             input="not-json-at-all",
             capture_output=True,
             text=True,
