@@ -5,6 +5,7 @@ import logging
 from pathlib import Path
 from typing import Any
 
+from .hooks_common import CONTINUE
 from .project import Project, find_project
 
 _LOG = logging.getLogger("token_goat.hooks")
@@ -75,4 +76,4 @@ def session_start(payload: dict[str, Any]) -> dict[str, Any]:
         _auto_index_if_needed(proj)
 
     _ensure_worker_running()
-    return {"continue": True}
+    return CONTINUE()

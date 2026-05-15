@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any, ParamSpec, TypedDict, TypeVar
 
 from . import hooks_edit, hooks_fetch, hooks_read, hooks_session, paths
+from .hooks_common import CONTINUE
 
 
 class HookPayload(TypedDict, total=False):
@@ -171,7 +172,7 @@ def safe_run(event: str, input_file: Path | None = None, harness: str = "claude"
     and we log a one-line diagnostic to stderr so the harness's
     hook-error display has the cause if you go looking for it.
     """
-    result: dict[str, Any] = {"continue": True}
+    result: dict[str, Any] = CONTINUE()
     try:
         raw = read_payload(input_file)
         payload = normalize_payload(raw, harness)
@@ -185,7 +186,7 @@ def safe_run(event: str, input_file: Path | None = None, harness: str = "claude"
             # Attempt to persist to log file even if normal setup failed.
             _setup_logging()
             _LOG.error("%s", msg, exc_info=True)
-        result = {"continue": True}
+        result = CONTINUE()
     emit(result)
 
 
@@ -251,25 +252,25 @@ def pre_compact(payload: dict[str, Any]) -> dict[str, Any]:
 
     cfg = config_mod.load().compact_assist
     if not cfg.enabled:
-        return {"continue": True}
+        return CONTINUE()
 
     trigger = payload.get("trigger", "manual")
     if trigger not in cfg.triggers:
         _LOG.info("pre-compact: skipping (trigger=%s not in %s)", trigger, cfg.triggers)
-        return {"continue": True}
+        return CONTINUE()
 
     session_id = payload.get("session_id")
     if not session_id:
-        return {"continue": True}
+        return CONTINUE()
 
     n_events = compact_mod.event_count(session_id)
     if n_events < cfg.min_events:
         _LOG.info("pre-compact: skipping manifest (events=%d < min=%d)", n_events, cfg.min_events)
-        return {"continue": True}
+        return CONTINUE()
 
     manifest = compact_mod.build_manifest(session_id, max_tokens=cfg.max_manifest_tokens)
     if not manifest:
-        return {"continue": True}
+        return CONTINUE()
 
     _LOG.info(
         "pre-compact: injecting manifest (%d chars, trigger=%s, events=%d)",
@@ -294,7 +295,7 @@ def dispatch(event: str, payload: dict[str, Any]) -> dict[str, Any]:
     handler = EVENTS.get(event)
     if handler is None:
         _LOG.warning("unknown hook event: %s", event)
-        return {"continue": True}
+        return CONTINUE()
     _LOG.debug("hook %s started", event)
     t0 = time.monotonic()
     result = handler(payload)
