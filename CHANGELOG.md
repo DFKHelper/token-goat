@@ -105,7 +105,7 @@ First public release.
 - Session-aware read hints. When the agent tries to read a file already pulled into the current session, it gets a short reminder of the prior read and a nudge to grab a narrower slice instead.
 - Targeted symbol reads via `token-goat read "file.py::function_name"`. Pulls one function or class, not the whole file.
 - Targeted section reads via `token-goat section "doc.md::Heading"`. Pulls one Markdown section by heading.
-- Semantic search via `token-goat semantic "<query>"`. Find code by meaning, not by filename. First call downloads a small embedding model into `%LOCALAPPDATA%\Zelys\token-goat\models\`.
+- Semantic search via `token-goat semantic "<query>"`. Find code by meaning, not by filename. First call downloads a small embedding model into `%LOCALAPPDATA%\DFK Helper LLC\token-goat\models\`.
 - Repo orientation via `token-goat map`. A compact, ranked overview of the most important files in a repository.
 - Cumulative savings tracking via `token-goat stats`.
 - Install and uninstall flow for Claude Code, with `--codex` flag to patch Codex CLI in the same pass.
