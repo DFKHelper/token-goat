@@ -6,18 +6,20 @@
 
 Cuts the tokens Claude Code and Codex CLI burn on Windows. Install once, then forget it.
 
-Copyright (c) 2026 DFK Helper LLC. Built by Zelys.
-
 ## Requirements
 
 - Windows 10 or 11
 - Python 3.11, 3.12, or 3.13
 
+## The problem
+
+Long sessions accumulate waste. Screenshots cross the model at full resolution. The agent re-reads files it parsed earlier in the same conversation. Compactions lose track of which files were edited. Tokenwise intercepts each automatically.
+
 ## What you get
 
 Four wins, all silent, all automatic.
 
-**Large images shrink before the model ever sees them.** When the agent opens a big PNG or JPEG from disk, Google Drive, or a URL, Tokenwise returns a compressed copy. A 3.3 MB screenshot from a recent session landed at 84 KB on the way through. That is a 97.4% cut on a single read. Drive shrinking only kicks in if you have already authorized Google Drive in Claude Code's built-in connector. Tokenwise reuses that auth and never asks for its own.
+**Large images shrink before the model ever sees them.** When the agent opens a big PNG or JPEG from disk, Google Drive, or a URL, Tokenwise returns a compressed copy. A 3.3 MB screenshot from a recent session landed at 84 KB on the way through — a 97.4% cut on a single read. Drive shrinking only kicks in if you have already authorized Google Drive in Claude Code's built-in connector. Tokenwise reuses that auth and never asks for its own.
 
 **No more re-reading the same file.** When the agent tries to read a file already pulled into the current session, it gets a short reminder of the prior read and a nudge to grab a narrower slice instead. Long sessions stop replaying themselves.
 
@@ -103,7 +105,7 @@ tokenwise uninstall
 
 No telemetry. No analytics. Nothing phones home.
 
-Outbound network only in three honest cases:
+Outbound network only in three cases:
 
 - First `tokenwise semantic` call downloads the embedding model. After that, semantic search runs offline.
 - Google Drive API calls, only if you already authorized Drive in Claude Code. Tokenwise never prompts for its own auth.
@@ -111,9 +113,21 @@ Outbound network only in three honest cases:
 
 All caches and the index live in `%LOCALAPPDATA%\tokenwise\`. Delete the folder any time. Nothing else on the system depends on it.
 
-## Hire
+## About
 
-Available for senior or staff engineering roles. tokenwise@dfkhelper.com
+I built this because long Claude Code sessions on my machine kept burning context in the same ways: screenshots landing at 2-3 MB, the agent re-reading a file it parsed hours earlier in the same conversation, compactions that forgot which functions were edited. Each felt preventable. The architecture for how it's wired is in [CLAUDE.md](CLAUDE.md).
+
+This is a solo project. I use it daily on Windows 11. Tests run across Python 3.11, 3.12, and 3.13.
+
+## Available for work
+
+Senior or staff engineering. Developer tools, AI infrastructure, or context management.
+
+I've spent months inside Claude Code's hook system, session management, and compaction pipeline. Not reading the docs. Instrumenting them to see what was actually happening. The work is in this repo.
+
+I build systems that run without babysitting, measure their own impact, and fail quietly. If you're building tooling for developers who work with AI, reach out.
+
+tokenwise@dfkhelper.com
 
 ## Disclaimer
 
@@ -127,8 +141,8 @@ DFK Helper LLC and its contributors make no guarantees about correctness, comple
 
 Tokenwise is licensed under the PolyForm Noncommercial License 1.0.0. See the LICENSE file for the full terms.
 
-In short: you can install, use, modify, and share Tokenwise for any non-commercial purpose. Personal use, study, hobby projects, internal use at a nonprofit or school, and contributing improvements back are all welcome and require no permission.
+Personal use is always permitted, including for developers who work at for-profit companies. Installing and running Tokenwise on your own machine is personal use, not commercial use.
 
-Commercial use is reserved. That includes shipping Tokenwise inside a product, charging for it, integrating it into a paid service, or using it internally at a for-profit company as part of operations. Commercial licensing: tokenwise@dfkhelper.com.
+Commercial use is reserved. That means copying or incorporating this codebase into a product, charging for access to it, or running it as shared infrastructure across a team at a for-profit company. Commercial licensing: tokenwise@dfkhelper.com.
 
 Copyright (c) 2026 DFK Helper LLC.
