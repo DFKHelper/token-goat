@@ -33,6 +33,26 @@ class _ConfigToml(TypedDict, total=False):
 
 @dataclass
 class CompactAssistConfig:
+    """Configuration for the compaction-assist feature.
+
+    Controls whether and how tokenwise injects a session manifest as a
+    ``systemMessage`` before Claude Code compacts the conversation, so the
+    compaction LLM knows which files and symbols are most important to preserve.
+
+    Attributes:
+        enabled: Master on/off switch.  Can also be disabled at runtime by
+            setting ``TOKENWISE_COMPACT_ASSIST=0`` (or ``false``/``no``/``off``).
+        triggers: Which compaction events activate the manifest.  Recognized
+            values are ``"manual"`` (user-invoked ``/compact``) and ``"auto"``
+            (automatic compaction triggered by context pressure).
+        min_events: Minimum number of tracked events (reads + greps + edits) that
+            must have occurred before a manifest is emitted.  Sessions below this
+            threshold are too short to benefit, so the manifest is suppressed to
+            avoid injecting noise into tiny conversations.
+        max_manifest_tokens: Approximate upper bound on manifest size in tokens.
+            ``compact.build_manifest()`` trims output to stay within this budget.
+    """
+
     enabled: bool = True
     # Hook triggers that activate the manifest: "manual" (/compact) and/or "auto"
     triggers: list[str] = field(default_factory=lambda: ["manual", "auto"])
@@ -44,6 +64,13 @@ class CompactAssistConfig:
 
 @dataclass
 class Config:
+    """Top-level tokenwise configuration.
+
+    Loaded from ``%LOCALAPPDATA%\\Zelys\\tokenwise\\config.toml`` by ``load()``.
+    Missing or unreadable files silently fall back to all defaults so tokenwise
+    never blocks the agent even when the config is absent.
+    """
+
     compact_assist: CompactAssistConfig = field(default_factory=CompactAssistConfig)
 
 

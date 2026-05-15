@@ -281,6 +281,11 @@ CREATE VIRTUAL TABLE IF NOT EXISTS embeddings USING vec0(
 
 
 def _ensure_global_schema(conn: sqlite3.Connection) -> None:
+    """Create or verify the global-DB tables and stamp the schema version.
+
+    Safe to call on read-only connections (sandbox mode): DDL is skipped
+    silently because the schema was already created by a prior writable open.
+    """
     try:
         conn.executescript(_GLOBAL_TABLES)
         row = conn.execute("SELECT value FROM meta WHERE key='schema_version'").fetchone()
@@ -300,6 +305,12 @@ def _ensure_global_schema(conn: sqlite3.Connection) -> None:
 
 
 def _ensure_project_schema(conn: sqlite3.Connection) -> None:
+    """Create or verify the per-project tables including the sqlite-vec embeddings table.
+
+    If the sqlite-vec extension is unavailable the embeddings table creation is
+    skipped and a ``embeddings_disabled`` flag is written to the meta table so
+    callers can degrade gracefully.  Safe to call on read-only connections.
+    """
     try:
         conn.executescript(_PROJECT_TABLES)
     except sqlite3.OperationalError as e:
@@ -513,6 +524,11 @@ def project_writer_lock(project_hash: str, timeout_sec: float = 5.0) -> Iterator
     pid = os.getpid()
 
     def _stale(lock_text: str) -> bool:
+        """Return True if the lock file content represents a stale (dead) lock.
+
+        A lock is stale if: the owning PID no longer exists, the timestamp is
+        older than 10 minutes (crash recovery), or the file content is malformed.
+        """
         try:
             parts = lock_text.strip().split("\n", 1)
             owner_pid = int(parts[0])
@@ -524,6 +540,7 @@ def project_writer_lock(project_hash: str, timeout_sec: float = 5.0) -> Iterator
             return True  # malformed → treat as stale
 
     def _try_acquire() -> bool:
+        """Attempt a single lock acquisition; return True on success, False if held."""
         if lock_path.exists():
             try:
                 text = lock_path.read_text(encoding="utf-8")
