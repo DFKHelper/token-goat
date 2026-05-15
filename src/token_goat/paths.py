@@ -1,4 +1,4 @@
-"""Central path resolver for tokenwise data directories."""
+"""Central path resolver for token-goat data directories."""
 import contextlib
 import os
 import sys
@@ -15,7 +15,7 @@ LOG_FILE_MAX_BYTES = 5_000_000
 
 
 def python_runner_argv(*subcommand: str) -> list[str]:
-    """Argv to invoke tokenwise via pythonw + module, NOT the launcher .exe.
+    """Argv to invoke token-goat via pythonw + module, NOT the launcher .exe.
 
     AV/EDR products (Bitdefender ATD, Defender ASR, Norton SONAR, ...) flag
     PyInstaller-style launcher .exe files in user-writable directories as
@@ -51,7 +51,7 @@ def python_runner_command(*subcommand: str) -> str:
 
 
 def data_dir() -> Path:
-    """Get tokenwise data directory."""
+    """Get token-goat data directory."""
     return Path(platformdirs.user_data_dir("token-goat", "Zelys"))
 
 

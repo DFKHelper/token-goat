@@ -429,7 +429,7 @@ def index_project(
                     progress(i + 1, n_total)
 
             # Prune index entries for files that no longer exist on disk.
-            # Without this, deleted/renamed files linger forever — tokenwise
+            # Without this, deleted/renamed files linger forever — token-goat
             # symbol/read/map would surface dead paths. FK ON DELETE CASCADE
             # cleans up symbols/refs/sections/chunks for the removed file.
             on_disk = {fp.relative_to(project.root).as_posix() for fp in files}

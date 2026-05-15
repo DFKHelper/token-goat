@@ -3,9 +3,9 @@ from __future__ import annotations
 
 import os
 import subprocess
-from pathlib import Path
 import sys
 import time
+from pathlib import Path
 
 from typer.testing import CliRunner
 
@@ -94,7 +94,7 @@ class TestDoctorBranches:
         args = ["doctor"] + (extra_args or [])
         return runner.invoke(cli.app, args)
 
-    def test_tokenwise_version_unknown_on_import_error(self, tmp_data_dir):
+    def test_token_goat_version_unknown_on_import_error(self, tmp_data_dir):
         """When importlib.metadata.version raises, version is shown as 'unknown'."""
         import importlib.metadata
         from unittest.mock import patch

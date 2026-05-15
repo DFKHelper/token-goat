@@ -135,7 +135,7 @@ VERSION_CHECK_INTERVAL = 60.0
 
 
 def _installed_version() -> str | None:
-    """The tokenwise version currently installed on disk.
+    """The token-goat version currently installed on disk.
 
     Read fresh on every call — unlike ``_BOOTED_VERSION``, which is captured
     once at import — so a long-running worker can notice it has been replaced
@@ -150,7 +150,7 @@ def _installed_version() -> str | None:
 
 
 def _package_fingerprint() -> str | None:
-    """A content fingerprint of the installed tokenwise package's code on disk.
+    """A content fingerprint of the installed token-goat package's code on disk.
 
     The version-string check alone misses a same-version reinstall — e.g.
     ``uv tool install --reinstall`` during development without a version bump
@@ -543,7 +543,7 @@ def evict_image_cache_if_over_limit() -> tuple[int, int]:
 # ---------------------------------------------------------------------------
 
 def spawn_detached() -> int | None:
-    """Spawn the tokenwise worker as a detached background process.
+    """Spawn the token-goat worker as a detached background process.
 
     Uses ``pythonw.exe -m token_goat.cli worker --daemon`` rather than the
     launcher .exe so AV/EDR products don't behavior-flag the spawn.
@@ -703,8 +703,8 @@ def _heartbeat_age() -> float | None:
         return None
 
 
-def _is_tokenwise_worker(pid: int) -> bool:
-    """True if *pid* is a live process whose command line is a tokenwise worker.
+def _is_token_goat_worker(pid: int) -> bool:
+    """True if *pid* is a live process whose command line is a token-goat worker.
 
     Guards against PID recycling: a PID that was recycled to an unrelated
     process after the original worker died must never be terminated.
@@ -717,12 +717,12 @@ def _is_tokenwise_worker(pid: int) -> bool:
 
 
 def _live_worker_pid() -> int | None:
-    """PID from the pid file, but only if it names a live tokenwise-worker process."""
+    """PID from the pid file, but only if it names a live token-goat-worker process."""
     try:
         pid = int(paths.worker_pid_path().read_text(encoding="utf-8").strip())
     except (OSError, ValueError):
         return None
-    return pid if _is_tokenwise_worker(pid) else None
+    return pid if _is_token_goat_worker(pid) else None
 
 
 def _reap_hung_worker() -> bool:
@@ -812,7 +812,7 @@ def _register_autostart() -> None:
 
 
 def run_daemon(stop_event=None) -> None:
-    """Compatibility wrapper around :mod:`tokenwise.worker_daemon`."""
+    """Compatibility wrapper around :mod:`token_goat.worker_daemon`."""
     from . import worker_daemon  # noqa: PLC0415
 
     worker_daemon.run_daemon(stop_event=stop_event)

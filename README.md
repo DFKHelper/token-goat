@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="assets/logo.png" alt="Tokenwise" width="220">
+  <img src="assets/logo.png" alt="Token-Goat" width="220">
 </p>
 
 # Token-Goat
@@ -13,17 +13,17 @@ Cuts the tokens Claude Code and Codex CLI burn on Windows. Install once, then fo
 
 ## The problem
 
-Long sessions accumulate waste. Screenshots cross the model at full resolution. The agent re-reads files it parsed earlier in the same conversation. Compactions lose track of which files were edited. Tokenwise intercepts each automatically.
+Long sessions accumulate waste. Screenshots cross the model at full resolution. The agent re-reads files it parsed earlier in the same conversation. Compactions lose track of which files were edited. Token-Goat intercepts each automatically.
 
 ## What you get
 
 Four wins, all silent, all automatic.
 
-**Large images shrink before the model ever sees them.** When the agent opens a big PNG or JPEG from disk, Google Drive, or a URL, Tokenwise returns a compressed copy. A 3.3 MB screenshot from a recent session landed at 84 KB on the way through — a 97.4% cut on a single read. Drive shrinking only kicks in if you have already authorized Google Drive in Claude Code's built-in connector. Tokenwise reuses that auth and never asks for its own.
+**Large images shrink before the model ever sees them.** When the agent opens a big PNG or JPEG from disk, Google Drive, or a URL, Token-Goat returns a compressed copy. A 3.3 MB screenshot from a recent session landed at 84 KB on the way through — a 97.4% cut on a single read. Drive shrinking only kicks in if you have already authorized Google Drive in Claude Code's built-in connector. Token-Goat reuses that auth and never asks for its own.
 
 **No more re-reading the same file.** When the agent tries to read a file already pulled into the current session, it gets a short reminder of the prior read and a nudge to grab a narrower slice instead. Long sessions stop replaying themselves.
 
-**Compaction stays useful.** Before Claude Code compacts a long conversation, Tokenwise injects a structured session manifest — which files were edited, which symbols were accessed, which files were read most — so the compaction LLM knows what to preserve. The manifest is under 400 tokens. Sessions that would otherwise lose important context keep it.
+**Compaction stays useful.** Before Claude Code compacts a long conversation, Token-Goat injects a structured session manifest — which files were edited, which symbols were accessed, which files were read most — so the compaction LLM knows what to preserve. The manifest is under 400 tokens. Sessions that would otherwise lose important context keep it.
 
 **Surgical reads from a small CLI.** Pull one function, one Markdown heading, or one semantic match instead of dumping a whole module into context. Targeted reads run about 85% smaller than whole-file reads on the same source.
 
@@ -127,11 +127,11 @@ I've spent months inside Claude Code's hook system, session management, and comp
 
 I build systems that run without babysitting, measure their own impact, and fail quietly. If you're building tooling for developers who work with AI, reach out.
 
-tokenwise@dfkhelper.com
+token-goat@dfkhelper.com
 
 ## Disclaimer
 
-Tokenwise runs on your machine and touches your files. No warranty, express or implied. Whether it fits your use case is your call.
+Token-Goat runs on your machine and touches your files. No warranty, express or implied. Whether it fits your use case is your call.
 
 **THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE, AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES, OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT, OR OTHERWISE, ARISING FROM, OUT OF, OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.**
 
@@ -139,11 +139,11 @@ DFK Helper LLC and its contributors make no guarantees about correctness, comple
 
 ## License
 
-Tokenwise is licensed under the PolyForm Noncommercial License 1.0.0. See the LICENSE file for the full terms.
+Token-Goat is licensed under the PolyForm Noncommercial License 1.0.0. See the LICENSE file for the full terms.
 
-Personal use is always permitted, including for developers who work at for-profit companies. Installing and running Tokenwise on your own machine is personal use, not commercial use.
+Personal use is always permitted, including for developers who work at for-profit companies. Installing and running Token-Goat on your own machine is personal use, not commercial use.
 
-Commercial use is reserved. That means copying or incorporating this codebase into a product, charging for access to it, or running it as shared infrastructure across a team at a for-profit company. Commercial licensing: tokenwise@dfkhelper.com.
+Commercial use is reserved. That means copying or incorporating this codebase into a product, charging for access to it, or running it as shared infrastructure across a team at a for-profit company. Commercial licensing: token-goat@dfkhelper.com.
 
 Copyright (c) 2026 DFK Helper LLC.
 

@@ -605,8 +605,8 @@ class TestShortProject:
         assert result == "myproject"
 
     def test_windows_backslash_path(self):
-        result = stats._short_project("C:\\Users\\zelys\\Projects\\tokenwise")
-        assert result == "tokenwise"
+        result = stats._short_project("C:\\Users\\zelys\\Projects\\token-goat")
+        assert result == "token-goat"
 
     def test_trailing_slash_stripped(self):
         result = stats._short_project("/home/user/myproject/")

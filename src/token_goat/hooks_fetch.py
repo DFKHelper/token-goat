@@ -5,7 +5,7 @@ from typing import Any
 
 
 def _intercept_drive_download(file_id: str) -> dict[str, Any]:
-    """Build denial response for Drive download with redirect to tokenwise shim."""
+    """Build denial response for Drive download with redirect to token-goat shim."""
     return {
         "continue": True,
         "hookSpecificOutput": {
@@ -22,7 +22,7 @@ def _intercept_drive_download(file_id: str) -> dict[str, Any]:
 
 
 def _intercept_webfetch_image(url: str) -> dict[str, Any]:
-    """Build denial response for WebFetch image with redirect to tokenwise shim."""
+    """Build denial response for WebFetch image with redirect to token-goat shim."""
     return {
         "continue": True,
         "hookSpecificOutput": {
@@ -39,7 +39,7 @@ def _intercept_webfetch_image(url: str) -> dict[str, Any]:
 
 
 def pre_fetch(payload: dict[str, Any]) -> dict[str, Any]:
-    """Deny Drive/WebFetch image tools and redirect to tokenwise shims."""
+    """Deny Drive/WebFetch image tools and redirect to token-goat shims."""
     tool_name = payload.get("tool_name", "")
 
     drive_tools = (

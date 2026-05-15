@@ -1,4 +1,4 @@
-"""Tests for tokenwise.install — Phase 15."""
+"""Tests for token_goat.install."""
 from __future__ import annotations
 
 import json
@@ -21,7 +21,7 @@ def _fake_home(tmp_path: Path) -> Path:
 
 
 def _patch_home(monkeypatch, home: Path):
-    """Monkeypatch Path.home() to return *home* and re-derive tokenwise.install functions."""
+    """Monkeypatch Path.home() to return *home* and re-derive token_goat.install functions."""
     monkeypatch.setattr(Path, "home", staticmethod(lambda: home))
 
 
@@ -47,7 +47,7 @@ def test_patch_settings_json_missing_file(tmp_path, monkeypatch):
     assert "PreToolUse" in hooks
     assert "PostToolUse" in hooks
 
-    # Check at least one hook command references tokenwise
+    # Check at least one hook command references token_goat
     ss_hooks = hooks["SessionStart"][0]["hooks"]
     assert any("token_goat" in h["command"] for h in ss_hooks)
 
@@ -108,7 +108,7 @@ def test_patch_settings_json_idempotent(tmp_path, monkeypatch):
 
     data = json.loads((home / ".claude" / "settings.json").read_text())
     ss_entries = data["hooks"]["SessionStart"]
-    # Should only have ONE tokenwise SessionStart entry, not two
+    # Should only have ONE token-goat SessionStart entry, not two
     cc_commands = [
         h["command"]
         for entry in ss_entries
@@ -123,7 +123,7 @@ def test_patch_settings_json_idempotent(tmp_path, monkeypatch):
 # ---------------------------------------------------------------------------
 
 
-def test_unpatch_settings_json_removes_tokenwise(tmp_path, monkeypatch):
+def test_unpatch_settings_json_removes_token_goat(tmp_path, monkeypatch):
     home = _fake_home(tmp_path)
     _patch_home(monkeypatch, home)
     monkeypatch.setattr(install, "token_goat_binary", lambda: "token-goat")
@@ -308,7 +308,7 @@ def test_registry_is_isolated_in_tests():
     test_install_uninstall_round_trip runs install_all()/uninstall_all(),
     which call winreg.SetValueEx/DeleteValue on HKCU\...\Run directly. With
     winreg unmocked, that wrote — then DELETED — the user's real
-    `tokenwise-worker` autostart entry on every `pytest` run. The
+    `token-goat-worker` autostart entry on every `pytest` run. The
     isolate_registry autouse fixture swaps in an in-memory fake; this guards
     that it is active so the regression cannot silently return.
     """
@@ -397,7 +397,7 @@ def test_install_uninstall_round_trip(tmp_path, monkeypatch, tmp_data_dir):
     with patch("token_goat.install.paths.worker_pid_path", return_value=tmp_path / "worker.pid"):
         install.uninstall_all(purge=False)
 
-    # tokenwise hooks gone from settings.json
+    # token-goat hooks gone from settings.json
     data = json.loads(settings_path.read_text())
     hooks = data.get("hooks", {})
     for _event, entries in hooks.items():

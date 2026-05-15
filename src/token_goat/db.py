@@ -103,7 +103,7 @@ def _integrity_ok(conn: sqlite3.Connection) -> bool:
     Only an explicit non-"ok" result from PRAGMA integrity_check counts. The
     previous version treated every DatabaseError as corruption, which on
     Windows caused false positives when the worker held the file open during
-    indexing. Tokenwise then tried to quarantine a perfectly healthy DB,
+    indexing. token-goat then tried to quarantine a perfectly healthy DB,
     failed with WinError 5, and surfaced "Exit code: 1" to the agent.
     """
     try:

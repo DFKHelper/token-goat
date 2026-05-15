@@ -418,7 +418,7 @@ class TestFetchImageCli:
         from token_goat.cli import app
 
         runner = CliRunner()
-        result = runner.invoke(app, ["fetch-image", "https://this-host-definitely-does-not-exist-tokenwise.invalid/photo.jpg"])
+        result = runner.invoke(app, ["fetch-image", "https://this-host-definitely-does-not-exist-token-goat.invalid/photo.jpg"])
 
         assert result.exit_code == 0, f"Expected exit 0, got {result.exit_code}"
         # output contains the error message (typer CliRunner merges stderr into output by default)

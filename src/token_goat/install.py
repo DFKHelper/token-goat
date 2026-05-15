@@ -42,7 +42,7 @@ def claude_md_path() -> Path:
 
 
 def skill_dir() -> Path:
-    """Return the directory where the tokenwise skill is installed (Claude Code plugins)."""
+    """Return the directory where the token-goat skill is installed (Claude Code plugins)."""
     return claude_dir() / "skills" / "token-goat"
 
 
@@ -102,7 +102,7 @@ def task_exists(name: str) -> bool:
 
 
 def install_worker_task() -> tuple[bool, str]:
-    """Register the tokenwise worker to run at user logon via the HKCU Run key.
+    """Register the token-goat worker to run at user logon via the HKCU Run key.
 
     schtasks ONLOGON requires admin even with /RU on most Windows UAC setups.
     HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run is the standard
@@ -195,7 +195,7 @@ def uninstall_tasks() -> list[str]:
 
 
 def _hooks_block(binary: str | None = None) -> dict:
-    """Build the hooks structure tokenwise wants to install.
+    """Build the hooks structure token-goat wants to install.
 
     The ``binary`` parameter is kept for backwards compatibility but unused;
     commands now invoke ``pythonw.exe -m token_goat.cli`` directly. See
@@ -274,7 +274,7 @@ def _hooks_block(binary: str | None = None) -> dict:
     }
 
 
-def _strip_tokenwise_entries(entries: list[dict]) -> list[dict]:
+def _strip_token_goat_entries(entries: list[dict]) -> list[dict]:
     """Remove hook entries from both old (tokenwise) and current (token_goat) installs."""
     kept = []
     for entry in entries:
@@ -288,7 +288,7 @@ def _strip_tokenwise_entries(entries: list[dict]) -> list[dict]:
 
 
 def patch_settings_json() -> tuple[bool, str]:
-    """Add tokenwise hooks to ~/.claude/settings.json idempotently. Preserves other hooks."""
+    """Add token-goat hooks to ~/.claude/settings.json idempotently. Preserves other hooks."""
     settings_path = claude_settings_path()
     settings_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -313,8 +313,8 @@ def patch_settings_json() -> tuple[bool, str]:
     existing_hooks = current.get("hooks", {})
     for event, entries in our_hooks.items():
         existing_entries = existing_hooks.get(event, [])
-        # Strip any prior tokenwise entries, then append fresh ones
-        kept = _strip_tokenwise_entries(existing_entries)
+        # Strip any prior token-goat/tokenwise entries, then append fresh ones
+        kept = _strip_token_goat_entries(existing_entries)
         existing_hooks[event] = kept + entries
     current["hooks"] = existing_hooks
 
@@ -331,7 +331,7 @@ def patch_settings_json() -> tuple[bool, str]:
 
 
 def unpatch_settings_json() -> str:
-    """Remove tokenwise entries from settings.json."""
+    """Remove token-goat entries from settings.json."""
     settings_path = claude_settings_path()
     if not settings_path.exists():
         return "settings.json not found (nothing to do)"
@@ -342,7 +342,7 @@ def unpatch_settings_json() -> str:
 
     hooks = current.get("hooks", {})
     for event in list(hooks.keys()):
-        cleaned = _strip_tokenwise_entries(hooks.get(event, []))
+        cleaned = _strip_token_goat_entries(hooks.get(event, []))
         if cleaned:
             hooks[event] = cleaned
         else:
@@ -391,7 +391,7 @@ Verify the habit. Run `token-goat stats` and watch event counts climb. Flat coun
 
 
 def patch_claude_md() -> str:
-    """Add or update the tokenwise block in ~/.claude/CLAUDE.md, idempotently."""
+    """Add or update the token-goat block in ~/.claude/CLAUDE.md, idempotently."""
     md_path = claude_md_path()
     md_path.parent.mkdir(parents=True, exist_ok=True)
     block = f"{CLAUDE_MD_BEGIN}\n{CLAUDE_MD_CONTENT}\n{CLAUDE_MD_END}"
@@ -418,7 +418,7 @@ def patch_claude_md() -> str:
 
 
 def unpatch_claude_md() -> str:
-    """Remove the tokenwise block from ~/.claude/CLAUDE.md."""
+    """Remove the token-goat block from ~/.claude/CLAUDE.md."""
     md_path = claude_md_path()
     if not md_path.exists():
         return "CLAUDE.md not found"
@@ -488,7 +488,7 @@ Run `token-goat stats` and watch event counts climb. Flat counts during code wor
 
 
 def write_skill() -> str:
-    """Write the tokenwise skill to the Claude Code skills directory."""
+    """Write the token-goat skill to the Claude Code skills directory."""
     sd = skill_dir()
     sd.mkdir(parents=True, exist_ok=True)
     skill_path = sd / "SKILL.md"
@@ -497,7 +497,7 @@ def write_skill() -> str:
 
 
 def remove_skill() -> str:
-    """Remove the tokenwise skill from the Claude Code skills directory."""
+    """Remove the token-goat skill from the Claude Code skills directory."""
     sd = skill_dir()
     if sd.exists():
         shutil.rmtree(sd, ignore_errors=True)
@@ -603,13 +603,13 @@ def _codex_hooks_block(binary: str | None = None) -> dict:
     }
 
 
-def _strip_codex_tokenwise_entries(entries: list[dict]) -> list[dict]:
-    """Remove hook entries whose command string contains 'tokenwise'."""
-    return _strip_tokenwise_entries(entries)
+def _strip_codex_token_goat_entries(entries: list[dict]) -> list[dict]:
+    """Remove hook entries whose command string contains 'tokenwise' or 'token-goat'."""
+    return _strip_token_goat_entries(entries)
 
 
 def patch_codex_config(binary: str) -> str:
-    """Merge tokenwise hooks into ~/.codex/config.toml idempotently."""
+    """Merge token-goat hooks into ~/.codex/config.toml idempotently."""
     import tomllib  # noqa: PLC0415
 
     import tomli_w  # noqa: PLC0415
@@ -623,7 +623,7 @@ def patch_codex_config(binary: str) -> str:
     existing_hooks = existing.get("hooks", {})
     for event, entries in our_hooks.items():
         existing_entries = existing_hooks.get(event, [])
-        kept = _strip_codex_tokenwise_entries(existing_entries)
+        kept = _strip_codex_token_goat_entries(existing_entries)
         existing_hooks[event] = kept + entries
     existing["hooks"] = existing_hooks
 
@@ -632,7 +632,7 @@ def patch_codex_config(binary: str) -> str:
 
 
 def unpatch_codex_config() -> str:
-    """Remove tokenwise entries from ~/.codex/config.toml."""
+    """Remove token-goat entries from ~/.codex/config.toml."""
     import tomllib  # noqa: PLC0415
 
     import tomli_w  # noqa: PLC0415
@@ -644,7 +644,7 @@ def unpatch_codex_config() -> str:
     existing = tomllib.loads(cfg_path.read_text(encoding="utf-8"))
     hooks = existing.get("hooks", {})
     for event in list(hooks.keys()):
-        cleaned = _strip_codex_tokenwise_entries(hooks[event])
+        cleaned = _strip_codex_token_goat_entries(hooks[event])
         if cleaned:
             hooks[event] = cleaned
         else:
@@ -680,7 +680,7 @@ Verify the habit. Run `token-goat stats` and watch event counts climb. Flat coun
 
 
 def patch_codex_agents_md() -> str:
-    """Append/replace the delimited tokenwise block in ~/.codex/AGENTS.md."""
+    """Append/replace the delimited token-goat block in ~/.codex/AGENTS.md."""
     md = codex_agents_path()
     md.parent.mkdir(parents=True, exist_ok=True)
 
@@ -706,7 +706,7 @@ def patch_codex_agents_md() -> str:
 
 
 def unpatch_codex_agents_md() -> str:
-    """Remove the tokenwise block from ~/.codex/AGENTS.md."""
+    """Remove the token-goat block from ~/.codex/AGENTS.md."""
     md = codex_agents_path()
     if not md.exists():
         return "codex AGENTS.md not found"
