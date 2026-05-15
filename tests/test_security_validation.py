@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import pytest
 
-from tokenwise import db, gdrive, session
+from token_goat import db, gdrive, session
 
 
 class TestSessionIdPathTraversal:

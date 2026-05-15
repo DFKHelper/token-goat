@@ -3,7 +3,7 @@ from pathlib import Path
 
 import pytest
 
-from tokenwise import paths
+from token_goat import paths
 
 
 def test_ensure_dirs_creates_all_dirs(tmp_data_dir):
@@ -37,7 +37,7 @@ def test_python_runner_argv_basic():
     assert isinstance(argv, list)
     assert len(argv) >= 3
     assert argv[1] == "-m"
-    assert argv[2] == "tokenwise.cli"
+    assert argv[2] == "token_goat.cli"
     assert argv[3] == "symbol"
     assert argv[4] == "foo"
 
@@ -48,7 +48,7 @@ def test_python_runner_argv_no_args():
     assert isinstance(argv, list)
     assert len(argv) == 3
     assert argv[1] == "-m"
-    assert argv[2] == "tokenwise.cli"
+    assert argv[2] == "token_goat.cli"
 
 
 def test_python_runner_argv_multiple_args():
@@ -62,7 +62,7 @@ def test_python_runner_command_basic():
     """Test that python_runner_command returns a shell command string."""
     cmd = paths.python_runner_command("symbol", "test")
     assert isinstance(cmd, str)
-    assert "tokenwise.cli" in cmd
+    assert "token_goat.cli" in cmd
     assert "symbol" in cmd
     assert "test" in cmd
     # Should have forward slashes, not backslashes
@@ -79,7 +79,7 @@ def test_python_runner_command_no_args():
     """Test python_runner_command with no subcommands."""
     cmd = paths.python_runner_command()
     assert isinstance(cmd, str)
-    assert "tokenwise.cli" in cmd
+    assert "token_goat.cli" in cmd
 
 
 def test_global_db_path_structure(tmp_data_dir):

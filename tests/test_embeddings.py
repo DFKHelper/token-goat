@@ -12,16 +12,16 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from tokenwise import db
-from tokenwise import embeddings as emb
-from tokenwise.embeddings import (
+from token_goat import db
+from token_goat import embeddings as emb
+from token_goat.embeddings import (
     EmbeddingsUnavailable,
     _check_vec_available,
     _pack_vec,
     extract_chunks_for_file,
     is_available,
 )
-from tokenwise.parser import index_project
+from token_goat.parser import index_project
 
 FIXTURE_DIR = Path(__file__).parent / "fixtures"
 TS_SAMPLE = FIXTURE_DIR / "ts_sample"
@@ -158,23 +158,23 @@ def test_semantic_search_unavailable_when_vec_missing(ts_project):
 # ---------------------------------------------------------------------------
 
 def test_cli_semantic_no_project(tmp_data_dir):
-    """tokenwise semantic when no project detected exits 0 with helpful message."""
+    """token-goat semantic when no project detected exits 0 with helpful message."""
     from typer.testing import CliRunner  # noqa: PLC0415
 
-    from tokenwise import cli  # noqa: PLC0415
+    from token_goat import cli  # noqa: PLC0415
 
     runner = CliRunner()
-    with patch("tokenwise.project.find_project", return_value=None):
+    with patch("token_goat.project.find_project", return_value=None):
         result = runner.invoke(cli.app, ["semantic", "foo bar"], catch_exceptions=False)
     assert result.exit_code == 0
     assert "No project detected" in result.output
 
 
 def test_cli_semantic_no_embeddings(ts_project, monkeypatch):
-    """tokenwise semantic in a project with no embeddings exits 0 with helpful message."""
+    """token-goat semantic in a project with no embeddings exits 0 with helpful message."""
     from typer.testing import CliRunner  # noqa: PLC0415
 
-    from tokenwise import cli  # noqa: PLC0415
+    from token_goat import cli  # noqa: PLC0415
 
     monkeypatch.chdir(ts_project.root)
     # Force embed_texts to raise so we exercise the EmbeddingsUnavailable path
@@ -186,13 +186,13 @@ def test_cli_semantic_no_embeddings(ts_project, monkeypatch):
 
 
 def test_cli_index_embeddings_no_project(tmp_data_dir):
-    """tokenwise index --embeddings when no project detected exits 0 with message."""
+    """token-goat index --embeddings when no project detected exits 0 with message."""
     from typer.testing import CliRunner  # noqa: PLC0415
 
-    from tokenwise import cli  # noqa: PLC0415
+    from token_goat import cli  # noqa: PLC0415
 
     runner = CliRunner()
-    with patch("tokenwise.project.find_project", return_value=None):
+    with patch("token_goat.project.find_project", return_value=None):
         result = runner.invoke(cli.app, ["index", "--embeddings"], catch_exceptions=False)
     assert result.exit_code == 0
     assert "no project detected" in result.output.lower()
@@ -253,10 +253,10 @@ def test_embed_and_search_cycle_with_stub(ts_project, monkeypatch):
 
 
 def test_cli_semantic_with_stub_embeddings(ts_project, monkeypatch):
-    """`tokenwise semantic` returns results after a stub-model embedding build."""
+    """`token-goat semantic` returns results after a stub-model embedding build."""
     from typer.testing import CliRunner  # noqa: PLC0415
 
-    from tokenwise import cli  # noqa: PLC0415
+    from token_goat import cli  # noqa: PLC0415
 
     monkeypatch.setattr(emb, "embed_texts", _stub_embed)
     emb.index_project_embeddings(ts_project)
@@ -304,10 +304,10 @@ def test_full_embedding_cycle(ts_project, monkeypatch):
 
 
 def test_cli_semantic_with_embeddings(ts_project, monkeypatch):
-    """CLI tokenwise semantic returns results after embedding is built."""
+    """CLI token-goat semantic returns results after embedding is built."""
     from typer.testing import CliRunner  # noqa: PLC0415
 
-    from tokenwise import cli  # noqa: PLC0415
+    from token_goat import cli  # noqa: PLC0415
 
     monkeypatch.setattr(emb, "embed_texts", _stub_embed)
     emb.index_project_embeddings(ts_project)

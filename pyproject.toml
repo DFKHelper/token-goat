@@ -25,15 +25,15 @@ dependencies = [
 ]
 
 [project.scripts]
-token-goat = "tokenwise.cli:main"
+token-goat = "token_goat.cli:main"
 
 # Windowless variant: GUI subsystem entry point used by hooks and the
 # background worker. Same code, but Windows won't allocate a console for
 # the launcher .exe — no flashing terminal windows on every hook fire.
 # Both use main() so hook subcommands cannot propagate non-zero exits.
 [project.gui-scripts]
-token-goat-hook = "tokenwise.cli:main"
-token-goat-worker = "tokenwise.cli:main"
+token-goat-hook = "token_goat.cli:main"
+token-goat-worker = "token_goat.cli:main"
 
 [project.optional-dependencies]
 dev = [
@@ -49,7 +49,7 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/tokenwise"]
+packages = ["src/token_goat"]
 
 [tool.ruff]
 line-length = 100
@@ -71,12 +71,12 @@ warn_unused_ignores = false
 # .name/.kind/.span/.start_byte by duck typing. Each language adapter trips
 # the same attr-defined / arg-type errors; suppress at module scope.
 [[tool.mypy.overrides]]
-module = "tokenwise.languages.*"
+module = "token_goat.languages.*"
 disable_error_code = ["attr-defined", "arg-type", "misc"]
 
 # Fastembed's model object is a runtime duck type with .embed(); mypy can't see it.
 [[tool.mypy.overrides]]
-module = "tokenwise.embeddings"
+module = "token_goat.embeddings"
 disable_error_code = ["attr-defined", "union-attr"]
 
 # Third-party libraries that don't ship type stubs.

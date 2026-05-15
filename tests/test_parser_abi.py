@@ -1,7 +1,7 @@
 """Tests for the TypeScript ABI special-case fast path."""
 from __future__ import annotations
 
-from tokenwise.languages.typescript import _is_abi_file, extract
+from token_goat.languages.typescript import _is_abi_file, extract
 
 # ---------------------------------------------------------------------------
 # Helpers to build synthetic ABI files

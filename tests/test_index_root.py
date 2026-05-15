@@ -1,11 +1,11 @@
-"""Tests for tokenwise index --root, make_project_at, and cross-project file resolution."""
+"""Tests for token-goat index --root, make_project_at, and cross-project file resolution."""
 from __future__ import annotations
 
 from pathlib import Path
 
 import pytest
 
-from tokenwise.project import canonicalize, make_project_at, project_hash
+from token_goat.project import canonicalize, make_project_at, project_hash
 
 # ---------------------------------------------------------------------------
 # make_project_at
@@ -48,15 +48,15 @@ class TestMakeProjectAt:
 
 class TestClaudePaths:
     def test_claude_config_dir_is_home_dot_claude(self):
-        from tokenwise import paths
+        from token_goat import paths
         assert paths.claude_config_dir() == Path.home() / ".claude"
 
     def test_claude_skills_dir_is_under_claude(self):
-        from tokenwise import paths
+        from token_goat import paths
         assert paths.claude_skills_dir() == Path.home() / ".claude" / "skills"
 
     def test_claude_plugins_dir_is_under_claude(self):
-        from tokenwise import paths
+        from token_goat import paths
         assert paths.claude_plugins_dir() == Path.home() / ".claude" / "plugins"
 
 
@@ -72,12 +72,12 @@ class TestFindInAllProjects:
         return full
 
     def test_returns_none_when_no_projects_indexed(self, tmp_data_dir):
-        from tokenwise.read_replacement import find_in_all_projects
+        from token_goat.read_replacement import find_in_all_projects
         assert find_in_all_projects("nonexistent.md") is None
 
     def test_finds_file_in_indexed_project(self, tmp_data_dir, tmp_path):
-        from tokenwise.parser import index_project
-        from tokenwise.read_replacement import find_in_all_projects
+        from token_goat.parser import index_project
+        from token_goat.read_replacement import find_in_all_projects
 
         skill_root = tmp_path / "skills"
         skill_root.mkdir()
@@ -95,8 +95,8 @@ class TestFindInAllProjects:
         assert "SKILL.md" in rel
 
     def test_finds_file_by_rel_path(self, tmp_data_dir, tmp_path):
-        from tokenwise.parser import index_project
-        from tokenwise.read_replacement import find_in_all_projects
+        from token_goat.parser import index_project
+        from token_goat.read_replacement import find_in_all_projects
 
         skill_root = tmp_path / "skills"
         skill_root.mkdir()
@@ -113,8 +113,8 @@ class TestFindInAllProjects:
         assert rel == "ralph/SKILL.md"
 
     def test_returns_none_for_unknown_file(self, tmp_data_dir, tmp_path):
-        from tokenwise.parser import index_project
-        from tokenwise.read_replacement import find_in_all_projects
+        from token_goat.parser import index_project
+        from token_goat.read_replacement import find_in_all_projects
 
         skill_root = tmp_path / "skills"
         skill_root.mkdir()
@@ -125,8 +125,8 @@ class TestFindInAllProjects:
         assert find_in_all_projects("does_not_exist.md") is None
 
     def test_searches_multiple_projects(self, tmp_data_dir, tmp_path):
-        from tokenwise.parser import index_project
-        from tokenwise.read_replacement import find_in_all_projects
+        from token_goat.parser import index_project
+        from token_goat.read_replacement import find_in_all_projects
 
         skills_root = tmp_path / "skills"
         skills_root.mkdir()
@@ -143,8 +143,8 @@ class TestFindInAllProjects:
         assert find_in_all_projects("plugin.md") is not None
 
     def test_raises_for_ambiguous_file_name(self, tmp_data_dir, tmp_path):
-        from tokenwise.parser import index_project
-        from tokenwise.read_replacement import AmbiguousFileMatch, find_in_all_projects
+        from token_goat.parser import index_project
+        from token_goat.read_replacement import AmbiguousFileMatch, find_in_all_projects
 
         skills_root = tmp_path / "skills"
         skills_root.mkdir()
@@ -167,8 +167,8 @@ class TestFindInAllProjects:
         }
 
     def test_handles_corrupt_global_db_gracefully(self, tmp_data_dir, monkeypatch):
-        from tokenwise import db as _db
-        from tokenwise.read_replacement import find_in_all_projects
+        from token_goat import db as _db
+        from token_goat.read_replacement import find_in_all_projects
 
         def _boom(*a, **kw):
             raise RuntimeError("DB exploded")
@@ -195,7 +195,7 @@ class TestIndexRootCli:
     def test_index_root_indexes_directory(self, tmp_data_dir, tmp_path):
         from typer.testing import CliRunner
 
-        from tokenwise.cli import app
+        from token_goat.cli import app
 
         skill_root = self._make_skill_dir(tmp_path)
         runner = CliRunner()
@@ -206,7 +206,7 @@ class TestIndexRootCli:
     def test_index_root_bad_path_exits_2(self, tmp_data_dir, tmp_path):
         from typer.testing import CliRunner
 
-        from tokenwise.cli import app
+        from token_goat.cli import app
 
         runner = CliRunner()
         result = runner.invoke(app, ["index", "--root", str(tmp_path / "nonexistent"), "--full"])
@@ -215,8 +215,8 @@ class TestIndexRootCli:
     def test_index_skills_flag(self, tmp_data_dir, tmp_path, monkeypatch):
         from typer.testing import CliRunner
 
-        from tokenwise import paths
-        from tokenwise.cli import app
+        from token_goat import paths
+        from token_goat.cli import app
 
         skill_root = self._make_skill_dir(tmp_path)
         monkeypatch.setattr(paths, "claude_skills_dir", lambda: skill_root)
@@ -229,8 +229,8 @@ class TestIndexRootCli:
     def test_index_skills_missing_dir_exits_1(self, tmp_data_dir, tmp_path, monkeypatch):
         from typer.testing import CliRunner
 
-        from tokenwise import paths
-        from tokenwise.cli import app
+        from token_goat import paths
+        from token_goat.cli import app
 
         monkeypatch.setattr(paths, "claude_skills_dir", lambda: tmp_path / "no_such_dir")
 
@@ -241,8 +241,8 @@ class TestIndexRootCli:
     def test_index_plugins_flag(self, tmp_data_dir, tmp_path, monkeypatch):
         from typer.testing import CliRunner
 
-        from tokenwise import paths
-        from tokenwise.cli import app
+        from token_goat import paths
+        from token_goat.cli import app
 
         plugins_root = tmp_path / "plugins"
         plugins_root.mkdir()
@@ -257,8 +257,8 @@ class TestIndexRootCli:
     def test_indexed_file_findable_cross_project(self, tmp_data_dir, tmp_path):
         from typer.testing import CliRunner
 
-        from tokenwise.cli import app
-        from tokenwise.read_replacement import find_in_all_projects
+        from token_goat.cli import app
+        from token_goat.read_replacement import find_in_all_projects
 
         skill_root = self._make_skill_dir(tmp_path)
         runner = CliRunner()

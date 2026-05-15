@@ -8,8 +8,8 @@ from pathlib import Path
 import networkx as nx
 import pytest
 
-from tokenwise import repomap
-from tokenwise.parser import index_project
+from token_goat import repomap
+from token_goat.parser import index_project
 
 FIXTURE_DIR = Path(__file__).parent / "fixtures"
 TS_SAMPLE = FIXTURE_DIR / "ts_sample"
@@ -287,14 +287,14 @@ def test_is_map_worthy_windows_paths_normalized():
 
 def test_is_map_worthy_excludes_tiny_files():
     """Files with fewer than _MIN_DISPLAY_LINES should be excluded."""
-    assert not repomap._is_map_worthy("src/tokenwise/__init__.py", 2)
+    assert not repomap._is_map_worthy("src/token_goat/__init__.py", 2)
     assert not repomap._is_map_worthy("src/foo.py", 0)
 
 
 def test_is_map_worthy_accepts_normal_source_files():
     """Normal source files above the line threshold must be included."""
-    assert repomap._is_map_worthy("src/tokenwise/cli.py", 50)
-    assert repomap._is_map_worthy("src/tokenwise/worker.py", 10)
+    assert repomap._is_map_worthy("src/token_goat/cli.py", 50)
+    assert repomap._is_map_worthy("src/token_goat/worker.py", 10)
 
 
 def test_is_map_worthy_boundary_at_min_lines():

@@ -9,8 +9,8 @@ import time
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-import tokenwise.paths as paths
-from tokenwise import worker
+import token_goat.paths as paths
+from token_goat import worker
 
 # Captured at import, before the isolate_worker_autostart fixture stubs it —
 # lets a test invoke the genuine self-registration logic on demand.
@@ -170,8 +170,8 @@ def test_evict_image_cache_over_limit(tmp_data_dir, monkeypatch):
 
 def test_process_dirty_entries_real_project(tmp_data_dir, tmp_path):
     """_process_dirty_entries should reindex without crashing for a known project."""
-    from tokenwise import db as _db
-    from tokenwise.project import project_hash as ph_fn
+    from token_goat import db as _db
+    from token_goat.project import project_hash as ph_fn
 
     # Create a minimal project tree
     proj_root = tmp_path / "myproject"
@@ -207,9 +207,9 @@ def test_process_dirty_entries_indexes_unregistered_project(tmp_data_dir, tmp_pa
     project_root/project_marker, so the worker can reconstruct the project and
     run a first index instead.
     """
-    from tokenwise import db as _db
-    from tokenwise.project import canonicalize
-    from tokenwise.project import project_hash as ph_fn
+    from token_goat import db as _db
+    from token_goat.project import canonicalize
+    from token_goat.project import project_hash as ph_fn
 
     proj_root = tmp_path / "fresh_project"
     proj_root.mkdir()
@@ -293,7 +293,7 @@ def test_register_autostart_invokes_install_task(tmp_data_dir, monkeypatch):
     Uses the real callable captured at import (the autouse fixture stubs the
     one bound on the worker module).
     """
-    import tokenwise.install as install
+    import token_goat.install as install
 
     called = threading.Event()
 
@@ -544,7 +544,7 @@ def test_spawn_detached_mocked(tmp_data_dir):
     fake_proc = MagicMock()
     fake_proc.pid = 12345
 
-    with patch("tokenwise.worker.subprocess.Popen", return_value=fake_proc) as mock_popen:
+    with patch("token_goat.worker.subprocess.Popen", return_value=fake_proc) as mock_popen:
         pid = worker.spawn_detached()
 
     assert pid == 12345
@@ -553,7 +553,7 @@ def test_spawn_detached_mocked(tmp_data_dir):
     # Prefer the windowless tokenwise-worker binary (or fall back to tokenwise);
     # either way the trailing args are stable.
     assert cmd_arg[-2:] == ["worker", "--daemon"]
-    assert "tokenwise" in cmd_arg[0].lower()
+    assert any("token_goat" in arg for arg in cmd_arg)
 
 
 def test_spawn_detached_captures_stderr_to_file(tmp_data_dir):
@@ -566,7 +566,7 @@ def test_spawn_detached_captures_stderr_to_file(tmp_data_dir):
     fake_proc = MagicMock()
     fake_proc.pid = 999
 
-    with patch("tokenwise.worker.subprocess.Popen", return_value=fake_proc) as mock_popen:
+    with patch("token_goat.worker.subprocess.Popen", return_value=fake_proc) as mock_popen:
         pid = worker.spawn_detached()
 
     assert pid == 999
@@ -593,7 +593,7 @@ def test_spawn_detached_rotates_oversized_stderr_log(tmp_data_dir):
     fake_proc = MagicMock()
     fake_proc.pid = 555
 
-    with patch("tokenwise.worker.subprocess.Popen", return_value=fake_proc):
+    with patch("token_goat.worker.subprocess.Popen", return_value=fake_proc):
         worker.spawn_detached()
 
     prev = logs_dir / "worker-stderr.prev.log"
@@ -609,7 +609,7 @@ def test_setup_logging_skips_console_handler_when_not_tty(tmp_data_dir, monkeypa
     Its stderr is the worker-stderr.log crash sink (see spawn_detached); a
     console StreamHandler there would bury real tracebacks under routine logs.
     """
-    log = logging.getLogger("tokenwise.worker")
+    log = logging.getLogger("token_goat.worker")
     saved = list(log.handlers)
     for h in saved:
         log.removeHandler(h)
@@ -646,7 +646,7 @@ def test_setup_logging_rolls_oversized_daily_log(tmp_data_dir):
     """
     from datetime import datetime
 
-    log = logging.getLogger("tokenwise.worker")
+    log = logging.getLogger("token_goat.worker")
     saved = list(log.handlers)
     for h in saved:
         log.removeHandler(h)
@@ -677,7 +677,7 @@ def test_spawn_index_detached_writes_marker(tmp_data_dir):
     fake_proc = MagicMock()
     fake_proc.pid = 55501
 
-    with patch("tokenwise.worker.subprocess.Popen", return_value=fake_proc):
+    with patch("token_goat.worker.subprocess.Popen", return_value=fake_proc):
         pid = worker.spawn_index_detached("C:/proj", "hashAAA")
 
     assert pid == 55501
@@ -699,7 +699,7 @@ def test_spawn_index_detached_skips_when_already_running(tmp_data_dir):
     # Marker owned by *this* process (definitely alive) with a fresh timestamp.
     marker.write_text(f"{os.getpid()}\n{time.time()}", encoding="utf-8")
 
-    with patch("tokenwise.worker.subprocess.Popen") as mock_popen:
+    with patch("token_goat.worker.subprocess.Popen") as mock_popen:
         pid = worker.spawn_index_detached("C:/proj", "hashBBB")
 
     assert pid is None, "spawn must be skipped while an index is already running"
@@ -715,7 +715,7 @@ def test_spawn_index_detached_respawns_when_marker_stale(tmp_data_dir):
 
     fake_proc = MagicMock()
     fake_proc.pid = 55503
-    with patch("tokenwise.worker.subprocess.Popen", return_value=fake_proc) as mock_popen:
+    with patch("token_goat.worker.subprocess.Popen", return_value=fake_proc) as mock_popen:
         pid = worker.spawn_index_detached("C:/proj", "hashCCC")
 
     assert pid == 55503
@@ -733,7 +733,7 @@ def test_spawn_index_detached_respawns_when_pid_dead(tmp_data_dir):
 
     fake_proc = MagicMock()
     fake_proc.pid = 55504
-    with patch("tokenwise.worker.subprocess.Popen", return_value=fake_proc) as mock_popen:
+    with patch("token_goat.worker.subprocess.Popen", return_value=fake_proc) as mock_popen:
         pid = worker.spawn_index_detached("C:/proj", "hashDDD")
 
     assert pid == 55504
@@ -977,9 +977,9 @@ class TestReindexActiveProjects:
         fix for edits made outside Claude Code, which never hit the dirty
         queue. The previous _reindex_manual_projects only covered
         marker='manual' (skills/plugins), so normal projects drifted stale."""
-        from tokenwise import db as _db
-        from tokenwise.parser import index_project
-        from tokenwise.project import canonicalize, make_project_at, project_hash
+        from token_goat import db as _db
+        from token_goat.parser import index_project
+        from token_goat.project import canonicalize, make_project_at, project_hash
 
         proj_root = tmp_path / "code"
         proj_root.mkdir()
@@ -989,13 +989,13 @@ class TestReindexActiveProjects:
         with _db.open_global() as gconn:
             self._register_project(gconn, ph, proj_root.as_posix(), ".git", 1)
 
-        with patch("tokenwise.parser.index_project") as mock_index:
+        with patch("token_goat.parser.index_project") as mock_index:
             worker._reindex_active_projects()
             mock_index.assert_called_once()
 
     def test_reindexes_manual_project(self, tmp_data_dir, tmp_path):
-        from tokenwise import db as _db
-        from tokenwise.project import canonicalize, project_hash
+        from token_goat import db as _db
+        from token_goat.project import canonicalize, project_hash
 
         skill_root = tmp_path / "skills"
         skill_root.mkdir()
@@ -1006,8 +1006,8 @@ class TestReindexActiveProjects:
             self._register_project(gconn, ph, skill_root.as_posix(), "manual", 1)
 
         # First index so there is a project DB to update
-        from tokenwise.parser import index_project
-        from tokenwise.project import make_project_at
+        from token_goat.parser import index_project
+        from token_goat.project import make_project_at
         index_project(make_project_at(skill_root), full=True)
 
         # Now call the sweep — should run without raising
@@ -1015,8 +1015,8 @@ class TestReindexActiveProjects:
 
     def test_skips_project_outside_active_window(self, tmp_data_dir, tmp_path):
         """A project not seen within PERIODIC_REINDEX_ACTIVE_WINDOW is skipped."""
-        from tokenwise import db as _db
-        from tokenwise.project import project_hash
+        from token_goat import db as _db
+        from token_goat.project import project_hash
 
         old_root = tmp_path / "dormant"
         old_root.mkdir()
@@ -1026,13 +1026,13 @@ class TestReindexActiveProjects:
         with _db.open_global() as gconn:
             self._register_project(gconn, ph, str(old_root), ".git", 5, last_seen=stale_ts)
 
-        with patch("tokenwise.parser.index_project") as mock_index:
+        with patch("token_goat.parser.index_project") as mock_index:
             worker._reindex_active_projects()
             mock_index.assert_not_called()
 
     def test_skips_project_exceeding_file_cap(self, tmp_data_dir, tmp_path, monkeypatch):
-        from tokenwise import db as _db
-        from tokenwise.project import project_hash
+        from token_goat import db as _db
+        from token_goat.project import project_hash
 
         big_root = tmp_path / "huge"
         big_root.mkdir()
@@ -1043,13 +1043,13 @@ class TestReindexActiveProjects:
 
         monkeypatch.setattr(worker, "PERIODIC_REINDEX_MAX_FILES", 500)
 
-        with patch("tokenwise.parser.index_project") as mock_index:
+        with patch("token_goat.parser.index_project") as mock_index:
             worker._reindex_active_projects()
             mock_index.assert_not_called()
 
     def test_one_project_failing_does_not_block_others(self, tmp_data_dir, tmp_path):
-        from tokenwise import db as _db
-        from tokenwise.project import canonicalize, make_project_at, project_hash
+        from token_goat import db as _db
+        from token_goat.project import canonicalize, make_project_at, project_hash
 
         good_root = tmp_path / "good"
         good_root.mkdir()
@@ -1060,7 +1060,7 @@ class TestReindexActiveProjects:
         good_ph = project_hash(canonicalize(good_root))
         bad_ph = project_hash(canonicalize(bad_root))
 
-        from tokenwise.parser import index_project
+        from token_goat.parser import index_project
         index_project(make_project_at(good_root), full=True)
 
         with _db.open_global() as gconn:
@@ -1069,7 +1069,7 @@ class TestReindexActiveProjects:
 
         call_log: list[str] = []
 
-        original_index = __import__("tokenwise.parser", fromlist=["index_project"]).index_project
+        original_index = __import__("token_goat.parser", fromlist=["index_project"]).index_project
 
         def _patched_index(proj, **kw):
             if proj.hash == bad_ph:
@@ -1077,14 +1077,14 @@ class TestReindexActiveProjects:
             call_log.append(proj.hash)
             return original_index(proj, **kw)
 
-        with patch("tokenwise.parser.index_project", side_effect=_patched_index):
+        with patch("token_goat.parser.index_project", side_effect=_patched_index):
             worker._reindex_active_projects()  # must not raise
 
         # good project was still processed despite bad project failing
         assert good_ph in call_log
 
     def test_global_db_error_is_swallowed(self, tmp_data_dir, monkeypatch):
-        from tokenwise import db as _db
+        from token_goat import db as _db
 
         def _boom(*a, **kw):
             raise RuntimeError("DB gone")

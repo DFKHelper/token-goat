@@ -4,8 +4,8 @@ from __future__ import annotations
 from pathlib import Path
 from unittest.mock import patch
 
-from tokenwise import db, session
-from tokenwise.hints import (
+from token_goat import db, session
+from token_goat.hints import (
     LARGE_FILE_LINE_THRESHOLD,
     _est_tokens_from_chars,
     _est_tokens_from_lines,
@@ -216,7 +216,7 @@ class TestCachedNonOverlappingRange:
 
 
 # ---------------------------------------------------------------------------
-# Case 6: symbol-only prior reads → mention tokenwise read
+# Case 6: symbol-only prior reads → mention token-goat read
 # ---------------------------------------------------------------------------
 
 
@@ -235,7 +235,7 @@ class TestSymbolOnlyCache:
             cwd=None,
         )
         assert hint is not None
-        assert "tokenwise read" in hint
+        assert "token-goat read" in hint
         assert "MyClass" in hint
         assert "symbol" in hint.lower()
 
@@ -259,7 +259,7 @@ class TestSymbolOnlyCache:
 
 
 # ---------------------------------------------------------------------------
-# Case 7: large indexed file, not in session cache → tokenwise read suggestion
+# Case 7: large indexed file, not in session cache → token-goat read suggestion
 # ---------------------------------------------------------------------------
 
 
@@ -274,7 +274,7 @@ class TestLargeIndexedFile:
         _make_large_file(src_file, n_lines=LARGE_FILE_LINE_THRESHOLD + 100)
 
         # Index a symbol into the project DB
-        from tokenwise.project import find_project
+        from token_goat.project import find_project
         proj = find_project(tmp_path)
         assert proj is not None
 
@@ -297,7 +297,7 @@ class TestLargeIndexedFile:
             cwd=str(tmp_path),
         )
         assert hint is not None
-        assert "tokenwise read" in hint
+        assert "token-goat read" in hint
         assert "MyClass" in hint
         assert "symbol" in hint.lower()
         assert "85%" in hint
@@ -313,7 +313,7 @@ class TestLargeIndexedFile:
         src_file = tmp_path / "many.py"
         _make_large_file(src_file, n_lines=LARGE_FILE_LINE_THRESHOLD + 100)
 
-        from tokenwise.project import find_project
+        from token_goat.project import find_project
 
         proj = find_project(tmp_path)
         assert proj is not None
@@ -401,7 +401,7 @@ class TestReadHintTokensSaved:
 
     Regression: the pre-read hook used to record `session_hint` savings for
     every hint — including pure suggestions — at a flat "25% of file" estimate,
-    inflating `tokenwise stats` with savings that never happened.
+    inflating `token-goat stats` with savings that never happened.
     """
 
     def test_exact_match_hint_carries_real_saving(self, tmp_data_dir):
@@ -449,14 +449,14 @@ class TestReadHintTokensSaved:
         assert hint.tokens_saved == 0
 
     def test_index_suggestion_hint_records_no_saving(self, tmp_data_dir, tmp_path):
-        """The 'large file, use tokenwise read' hint is a suggestion → 0 saving.
+        """The 'large file, use token-goat read' hint is a suggestion → 0 saving.
 
-        If acted on, `tokenwise read` records the real `read_replacement` stat;
+        If acted on, `token-goat read` records the real `read_replacement` stat;
         counting a saving here too would double-count, and counting one when
         the hint is ignored is phantom inflation.
         """
-        from tokenwise.parser import index_project
-        from tokenwise.project import make_project_at
+        from token_goat.parser import index_project
+        from token_goat.project import make_project_at
 
         proj_root = tmp_path / "proj"
         proj_root.mkdir()
@@ -479,7 +479,7 @@ class TestReadHintTokensSaved:
             cwd=str(proj_root),
         )
         assert hint is not None
-        assert "tokenwise read" in hint  # confirms it's the index suggestion hint
+        assert "token-goat read" in hint  # confirms it's the index suggestion hint
         assert hint.tokens_saved == 0
 
 
@@ -528,7 +528,7 @@ class TestLineCount:
 
 class TestGetIndexedSymbolsAndLineCount:
     def test_db_exception_returns_empty_and_none(self, tmp_data_dir):
-        from tokenwise import db as _db
+        from token_goat import db as _db
         with patch.object(_db, "open_project", side_effect=RuntimeError("db gone")):
             symbols, n_lines, exact = _get_indexed_symbols_and_line_count("foo.py", "deadhash")
         assert symbols == []
@@ -544,8 +544,8 @@ class TestGetIndexedSymbolsAndLineCount:
 class TestHintFromIndexEdgeCases:
     def test_exact_line_count_skips_fallback_file_read(self, tmp_data_dir, tmp_path):
         """Stored line counts should make small indexed files return None without rereading."""
-        from tokenwise.parser import index_project
-        from tokenwise.project import find_project
+        from token_goat.parser import index_project
+        from token_goat.project import find_project
 
         (tmp_path / ".git").mkdir()
         src = tmp_path / "small.py"
@@ -555,7 +555,7 @@ class TestHintFromIndexEdgeCases:
         assert proj is not None
         index_project(proj, full=True)
 
-        with patch("tokenwise.hints._line_count", side_effect=AssertionError("fallback read should not run")):
+        with patch("token_goat.hints._line_count", side_effect=AssertionError("fallback read should not run")):
             hint = build_read_hint(
                 session_id="s_exact",
                 file_path=str(src),
@@ -576,7 +576,7 @@ class TestHintFromIndexEdgeCases:
         src = tmp_path / "rel.py"
         _make_large_file(src, n_lines=LARGE_FILE_LINE_THRESHOLD + 50)
 
-        from tokenwise.project import find_project
+        from token_goat.project import find_project
         proj = find_project(tmp_path)
         assert proj is not None
 
@@ -600,7 +600,7 @@ class TestHintFromIndexEdgeCases:
             cwd=str(tmp_path),
         )
         assert hint is not None
-        assert "tokenwise read" in hint
+        assert "token-goat read" in hint
 
     def test_file_outside_project_root_returns_none(self, tmp_data_dir, tmp_path):
         """File path that cannot be made relative to project root → no hint."""
@@ -623,7 +623,7 @@ class TestHintFromIndexEdgeCases:
         src = tmp_path / "tiny.py"
         src.write_text("\n".join(["x"] * 10), encoding="utf-8")  # 10 lines, well below threshold
 
-        from tokenwise.project import find_project
+        from token_goat.project import find_project
         proj = find_project(tmp_path)
         assert proj is not None
 

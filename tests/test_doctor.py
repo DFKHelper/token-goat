@@ -1,21 +1,22 @@
-"""Smoke tests for `tokenwise doctor`."""
+"""Smoke tests for `token-goat doctor`."""
 from __future__ import annotations
 
 import os
 import subprocess
+from pathlib import Path
 import sys
 import time
 
 from typer.testing import CliRunner
 
-from tokenwise import cli, paths
+from token_goat import cli, paths
 
 runner = CliRunner()
 
 
 def test_doctor_exits_zero_and_prints_sections():
     result = subprocess.run(
-        [sys.executable, "-m", "tokenwise.cli", "doctor"],
+        [sys.executable, "-m", "token_goat.cli", "doctor"],
         capture_output=True,
         text=True,
         timeout=60,
@@ -36,16 +37,16 @@ def test_doctor_exits_zero_and_prints_sections():
 def test_doctor_via_entry_point():
     """Run via the installed entry point (uv tool run)."""
     result = subprocess.run(
-        ["uv", "run", "tokenwise", "doctor"],
+        ["uv", "run", "token-goat", "doctor"],
         capture_output=True,
         text=True,
         timeout=60,
-        cwd="C:/Projects/tokenwise",
+        cwd=str(Path(__file__).parent.parent),
     )
     assert result.returncode == 0, (
         f"doctor exited {result.returncode}\nstdout:\n{result.stdout}\nstderr:\n{result.stderr}"
     )
-    assert "tokenwise doctor" in result.stdout
+    assert "token-goat doctor" in result.stdout
 
 
 def test_doctor_fix_reaps_stale_index_markers(tmp_data_dir):
@@ -191,7 +192,7 @@ class TestDoctorBranches:
         """When session-cache contention events exist, doctor flags them."""
         import time as _time
 
-        from tokenwise import db as _db
+        from token_goat import db as _db
 
         paths.ensure_dirs()
         with _db.open_global() as conn:
@@ -227,7 +228,7 @@ class TestDoctorBranches:
 
     def test_claim_file_stale_warns(self, tmp_data_dir):
         """Stale claim file (dead PID) shows a WARN."""
-        from tokenwise import worker as _worker
+        from token_goat import worker as _worker
         paths.ensure_dirs()
         claim = _worker._worker_claim_path()
         claim.write_text("99999999\n0.0", encoding="utf-8")
@@ -238,7 +239,7 @@ class TestDoctorBranches:
 
     def test_claim_file_live_pid_shown(self, tmp_data_dir):
         """Live-PID claim file shows the PID in the output."""
-        from tokenwise import worker as _worker
+        from token_goat import worker as _worker
         paths.ensure_dirs()
         claim = _worker._worker_claim_path()
         pid = os.getpid()

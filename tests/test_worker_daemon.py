@@ -4,8 +4,8 @@ from __future__ import annotations
 import threading
 from unittest.mock import patch
 
-import tokenwise.worker as worker
-import tokenwise.worker_daemon as daemon
+import token_goat.worker as worker
+import token_goat.worker_daemon as daemon
 
 # ---------------------------------------------------------------------------
 # Thin delegate functions

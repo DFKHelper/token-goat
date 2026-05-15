@@ -8,8 +8,8 @@ from unittest.mock import patch
 
 import pytest
 
-import tokenwise.paths as paths
-from tokenwise import db
+import token_goat.paths as paths
+from token_goat import db
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -286,7 +286,7 @@ def test_connect_wal_operational_error_handled(tmp_data_dir):
     mock_conn = MagicMock()
     mock_conn.execute.side_effect = execute_side_effect
 
-    with patch("tokenwise.db.sqlite3.connect", return_value=mock_conn):
+    with patch("token_goat.db.sqlite3.connect", return_value=mock_conn):
         conn = db._connect(db_path, load_vec=False)
 
     # _connect() must return rather than raise — WAL failure is non-fatal
@@ -305,7 +305,7 @@ def test_open_with_rebuild_raises_on_double_failure(tmp_data_dir):
     unwrapped, so the OperationalError propagated with no log message, appearing
     as a mystery crash to the caller.
     """
-    with patch("tokenwise.db._connect", side_effect=sqlite3.OperationalError("unable to open")), \
+    with patch("token_goat.db._connect", side_effect=sqlite3.OperationalError("unable to open")), \
             pytest.raises(sqlite3.OperationalError):
         db._open_with_rebuild(tmp_data_dir / "no_such.db")
 
@@ -317,7 +317,7 @@ def test_open_with_rebuild_raises_on_double_failure(tmp_data_dir):
 def test_open_global_raises_cleanly_on_persistent_connect_failure(tmp_data_dir):
     """open_global() must raise (not crash silently) if DB can't be opened."""
     with (
-        patch("tokenwise.db._connect", side_effect=sqlite3.OperationalError("unable to open")),
+        patch("token_goat.db._connect", side_effect=sqlite3.OperationalError("unable to open")),
         pytest.raises(sqlite3.OperationalError),
         db.open_global(),
     ):
@@ -327,7 +327,7 @@ def test_open_global_raises_cleanly_on_persistent_connect_failure(tmp_data_dir):
 def test_open_project_raises_cleanly_on_persistent_connect_failure(tmp_data_dir):
     """open_project() must raise (not crash silently) if DB can't be opened."""
     with (
-        patch("tokenwise.db._connect", side_effect=sqlite3.OperationalError("unable to open")),
+        patch("token_goat.db._connect", side_effect=sqlite3.OperationalError("unable to open")),
         pytest.raises(sqlite3.OperationalError),
         db.open_project("abc123def456"),
     ):
@@ -363,7 +363,7 @@ def test_connect_readonly_immutable_fallback(tmp_data_dir):
         conn.row_factory = sqlite3.Row
         return conn
 
-    with patch("tokenwise.db.sqlite3.connect", side_effect=fake_connect):
+    with patch("token_goat.db.sqlite3.connect", side_effect=fake_connect):
         conn = db._connect_readonly(tmp_data_dir / "test.db")
 
     assert call_count == 2, "expected exactly 2 connect() calls"
@@ -393,9 +393,9 @@ def test_open_project_close_error_does_not_propagate(tmp_data_dir):
     mock_conn = MagicMock()
     mock_conn.close.side_effect = sqlite3.OperationalError("unable to open database file")
     with (
-        patch("tokenwise.db._connect", return_value=mock_conn),
-        patch("tokenwise.db._integrity_ok", return_value=True),
-        patch("tokenwise.db._ensure_project_schema"),db.open_project(h)
+        patch("token_goat.db._connect", return_value=mock_conn),
+        patch("token_goat.db._integrity_ok", return_value=True),
+        patch("token_goat.db._ensure_project_schema"),db.open_project(h)
     ):
         pass
     # Reaching here means OperationalError from close() was swallowed
@@ -412,9 +412,9 @@ def test_open_global_close_error_does_not_propagate(tmp_data_dir):
     mock_conn = MagicMock()
     mock_conn.close.side_effect = sqlite3.OperationalError("unable to open database file")
     with (
-        patch("tokenwise.db._connect", return_value=mock_conn),
-        patch("tokenwise.db._integrity_ok", return_value=True),
-        patch("tokenwise.db._ensure_global_schema"),db.open_global()
+        patch("token_goat.db._connect", return_value=mock_conn),
+        patch("token_goat.db._integrity_ok", return_value=True),
+        patch("token_goat.db._ensure_global_schema"),db.open_global()
     ):
         pass
     # Reaching here means OperationalError from close() was swallowed

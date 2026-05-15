@@ -5,8 +5,8 @@ from unittest.mock import patch
 
 import pytest
 
-import tokenwise.paths as paths
-from tokenwise.project import Project, canonicalize, project_hash
+import token_goat.paths as paths
+from token_goat.project import Project, canonicalize, project_hash
 
 
 @pytest.fixture
@@ -58,7 +58,7 @@ class _FakeRegistryKey:
 class _FakeWinreg:
     """In-memory fake of the stdlib ``winreg`` module.
 
-    Covers exactly the surface tokenwise's install/uninstall/doctor code uses.
+    Covers exactly the surface token-goat's install/uninstall/doctor code uses.
     Backed by one dict so a write through one handle is visible to a read
     through another within the same test. Used by the ``isolate_registry``
     autouse fixture so no test can ever touch the real Windows registry.
@@ -125,7 +125,7 @@ def isolate_worker_autostart(monkeypatch):
     seam to a no-op; tests that exercise the registration itself capture the
     real callable at import time and invoke it directly.
     """
-    import tokenwise.worker as worker
+    import token_goat.worker as worker
     monkeypatch.setattr(worker, "_register_autostart", lambda: None)
     yield
 
@@ -140,10 +140,10 @@ def isolate_hook_logging(monkeypatch):
     We disable _setup_logging() for the test and clear any handlers that were
     already attached to the hooks logger before/after.
     """
-    import tokenwise.hooks_cli as hooks_cli
+    import token_goat.hooks_cli as hooks_cli
     monkeypatch.setattr(hooks_cli, "_setup_logging", lambda: None)
 
-    log = logging.getLogger("tokenwise.hooks")
+    log = logging.getLogger("token_goat.hooks")
     saved = list(log.handlers)
     for h in saved:
         log.removeHandler(h)

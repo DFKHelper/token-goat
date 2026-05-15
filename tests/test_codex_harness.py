@@ -6,7 +6,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-from tokenwise import hooks_cli
+from token_goat import hooks_cli
 
 PROJECT_ROOT = Path(__file__).parent.parent
 
@@ -143,7 +143,7 @@ def test_cli_pre_read_codex_snake_case(tmp_path):
         "tool_input": {"command": "cat nonexistent_file.py"},
     }
     result = subprocess.run(
-        [sys.executable, "-m", "tokenwise", "hook", "pre-read", "--harness", "codex"],
+        [sys.executable, "-m", "token_goat", "hook", "pre-read", "--harness", "codex"],
         input=json.dumps(payload),
         capture_output=True,
         text=True,
@@ -177,7 +177,7 @@ def test_cli_pre_read_codex_image_snake_case(tmp_path):
         "tool_input": {"file_path": str(test_img)},
     }
     result = subprocess.run(
-        [sys.executable, "-m", "tokenwise", "hook", "pre-read", "--harness", "codex"],
+        [sys.executable, "-m", "token_goat", "hook", "pre-read", "--harness", "codex"],
         input=json.dumps(payload),
         capture_output=True,
         text=True,

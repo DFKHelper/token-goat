@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import pytest
 
-from tokenwise.bash_parser import parse
+from token_goat.bash_parser import parse
 
 # ---------------------------------------------------------------------------
 # 1. cat foo.py → read

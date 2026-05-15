@@ -5,8 +5,8 @@ import json
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-import tokenwise.install as install_mod
-from tokenwise import install
+import token_goat.install as install_mod
+from token_goat import install
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -33,7 +33,7 @@ def _patch_home(monkeypatch, home: Path):
 def test_patch_settings_json_missing_file(tmp_path, monkeypatch):
     home = _fake_home(tmp_path)
     _patch_home(monkeypatch, home)
-    monkeypatch.setattr(install, "tokenwise_binary", lambda: "tokenwise")
+    monkeypatch.setattr(install, "token_goat_binary", lambda: "token-goat")
 
     ok, detail = install.patch_settings_json()
 
@@ -49,10 +49,10 @@ def test_patch_settings_json_missing_file(tmp_path, monkeypatch):
 
     # Check at least one hook command references tokenwise
     ss_hooks = hooks["SessionStart"][0]["hooks"]
-    assert any("tokenwise" in h["command"] for h in ss_hooks)
+    assert any("token_goat" in h["command"] for h in ss_hooks)
 
     # Permission allowlist
-    assert "Bash(tokenwise:*)" in data["permissions"]["allow"]
+    assert "Bash(token-goat:*)" in data["permissions"]["allow"]
 
 
 # ---------------------------------------------------------------------------
@@ -63,7 +63,7 @@ def test_patch_settings_json_missing_file(tmp_path, monkeypatch):
 def test_patch_settings_json_preserves_existing_hooks(tmp_path, monkeypatch):
     home = _fake_home(tmp_path)
     _patch_home(monkeypatch, home)
-    monkeypatch.setattr(install, "tokenwise_binary", lambda: "tokenwise")
+    monkeypatch.setattr(install, "token_goat_binary", lambda: "token-goat")
 
     claude_dir = home / ".claude"
     claude_dir.mkdir(parents=True, exist_ok=True)
@@ -90,7 +90,7 @@ def test_patch_settings_json_preserves_existing_hooks(tmp_path, monkeypatch):
     # Existing unrelated entry must survive
     assert any("other-tool" in c for c in commands_flat)
     # Our entries must be present too
-    assert any("tokenwise" in c for c in commands_flat)
+    assert any("token_goat" in c for c in commands_flat)
 
 
 # ---------------------------------------------------------------------------
@@ -101,7 +101,7 @@ def test_patch_settings_json_preserves_existing_hooks(tmp_path, monkeypatch):
 def test_patch_settings_json_idempotent(tmp_path, monkeypatch):
     home = _fake_home(tmp_path)
     _patch_home(monkeypatch, home)
-    monkeypatch.setattr(install, "tokenwise_binary", lambda: "tokenwise")
+    monkeypatch.setattr(install, "token_goat_binary", lambda: "token-goat")
 
     install.patch_settings_json()
     install.patch_settings_json()
@@ -113,7 +113,7 @@ def test_patch_settings_json_idempotent(tmp_path, monkeypatch):
         h["command"]
         for entry in ss_entries
         for h in entry.get("hooks", [])
-        if "tokenwise" in h["command"]
+        if "token_goat" in h["command"]
     ]
     assert len(cc_commands) == 1, f"expected 1, got {len(cc_commands)}: {cc_commands}"
 
@@ -126,7 +126,7 @@ def test_patch_settings_json_idempotent(tmp_path, monkeypatch):
 def test_unpatch_settings_json_removes_tokenwise(tmp_path, monkeypatch):
     home = _fake_home(tmp_path)
     _patch_home(monkeypatch, home)
-    monkeypatch.setattr(install, "tokenwise_binary", lambda: "tokenwise")
+    monkeypatch.setattr(install, "token_goat_binary", lambda: "token-goat")
 
     install.patch_settings_json()
     install.unpatch_settings_json()
@@ -137,8 +137,8 @@ def test_unpatch_settings_json_removes_tokenwise(tmp_path, monkeypatch):
     for event, entries in hooks.items():
         for entry in entries:
             for h in entry.get("hooks", []):
-                assert "tokenwise" not in h.get("command", ""), (
-                    f"tokenwise found in event {event}: {h}"
+                assert "token_goat" not in h.get("command", ""), (
+                    f"token-goat found in event {event}: {h}"
                 )
 
 
@@ -157,7 +157,7 @@ def test_patch_claude_md_missing_file(tmp_path, monkeypatch):
     content = md_path.read_text()
     assert install.CLAUDE_MD_BEGIN in content
     assert install.CLAUDE_MD_END in content
-    assert "tokenwise" in content
+    assert "token-goat" in content
 
 
 # ---------------------------------------------------------------------------
@@ -219,7 +219,7 @@ def test_unpatch_claude_md_removes_block(tmp_path, monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# 9. write_skill — creates SKILL.md under ~/.claude/skills/tokenwise/
+# 9. write_skill — creates SKILL.md under ~/.claude/skills/token-goat/
 # ---------------------------------------------------------------------------
 
 
@@ -228,10 +228,10 @@ def test_write_skill(tmp_path, monkeypatch):
     _patch_home(monkeypatch, home)
 
     install.write_skill()
-    skill_path = home / ".claude" / "skills" / "tokenwise" / "SKILL.md"
+    skill_path = home / ".claude" / "skills" / "token-goat" / "SKILL.md"
     assert skill_path.exists()
     content = skill_path.read_text()
-    assert "name: tokenwise" in content
+    assert "name: token-goat" in content
     assert "description:" in content
 
 
@@ -245,7 +245,7 @@ def test_remove_skill(tmp_path, monkeypatch):
     _patch_home(monkeypatch, home)
 
     install.write_skill()
-    skill_dir = home / ".claude" / "skills" / "tokenwise"
+    skill_dir = home / ".claude" / "skills" / "token-goat"
     assert skill_dir.exists()
 
     install.remove_skill()
@@ -291,7 +291,7 @@ def test_install_worker_task_correct_args(monkeypatch):
     fake_module.CloseKey = fake_winreg.CloseKey
 
     monkeypatch.setitem(sys.modules, "winreg", fake_module)
-    monkeypatch.setattr(install, "tokenwise_binary", lambda: "tokenwise")
+    monkeypatch.setattr(install, "token_goat_binary", lambda: "token-goat")
     monkeypatch.setattr(sys, "platform", "win32")
 
     ok, out = install.install_worker_task()
@@ -299,7 +299,7 @@ def test_install_worker_task_correct_args(monkeypatch):
     assert ok is True
     assert install.TASK_WORKER in written
     assert "--daemon" in written[install.TASK_WORKER]
-    assert "tokenwise" in written[install.TASK_WORKER]
+    assert "token_goat" in written[install.TASK_WORKER]
 
 
 def test_registry_is_isolated_in_tests():
@@ -352,7 +352,7 @@ def test_install_uninstall_round_trip(tmp_path, monkeypatch, tmp_data_dir):
     """install_all creates files; uninstall_all removes them. Full hermetic round-trip."""
     home = _fake_home(tmp_path)
     _patch_home(monkeypatch, home)
-    monkeypatch.setattr(install, "tokenwise_binary", lambda: "tokenwise")
+    monkeypatch.setattr(install, "token_goat_binary", lambda: "token-goat")
 
     # Mock schtasks so no real Windows calls happen
     def fake_schtasks(args):
@@ -368,15 +368,15 @@ def test_install_uninstall_round_trip(tmp_path, monkeypatch, tmp_data_dir):
     monkeypatch.setattr(install_mod, "paths", install_mod.paths)
 
     with (
-        patch("tokenwise.install.paths.ensure_dirs"),
-        patch("tokenwise.worker.ensure_running", return_value=12345),
+        patch("token_goat.install.paths.ensure_dirs"),
+        patch("token_goat.worker.ensure_running", return_value=12345),
     ):
         install_result = install.install_all()
 
     # settings.json, CLAUDE.md, skill must exist
     settings_path = home / ".claude" / "settings.json"
     md_path = home / ".claude" / "CLAUDE.md"
-    skill_path = home / ".claude" / "skills" / "tokenwise" / "SKILL.md"
+    skill_path = home / ".claude" / "skills" / "token-goat" / "SKILL.md"
 
     assert settings_path.exists(), "settings.json not created"
     assert md_path.exists(), "CLAUDE.md not created"
@@ -394,7 +394,7 @@ def test_install_uninstall_round_trip(tmp_path, monkeypatch, tmp_data_dir):
 
     monkeypatch.setattr(install, "_run_schtasks", fake_schtasks_with_exists)
 
-    with patch("tokenwise.install.paths.worker_pid_path", return_value=tmp_path / "worker.pid"):
+    with patch("token_goat.install.paths.worker_pid_path", return_value=tmp_path / "worker.pid"):
         install.uninstall_all(purge=False)
 
     # tokenwise hooks gone from settings.json
@@ -403,7 +403,7 @@ def test_install_uninstall_round_trip(tmp_path, monkeypatch, tmp_data_dir):
     for _event, entries in hooks.items():
         for entry in entries:
             for h in entry.get("hooks", []):
-                assert "tokenwise" not in h.get("command", "")
+                assert "token_goat" not in h.get("command", "")
 
     # CLAUDE.md block gone
     md_content = md_path.read_text()
