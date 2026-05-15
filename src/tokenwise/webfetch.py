@@ -124,6 +124,46 @@ def _suffix_for(url: str, content_type: str = "") -> str:
     return mapping.get(ct, ".bin")
 
 
+def _stream_to_file(response: httpx.Response, dest: Path, max_size_bytes: int) -> None:
+    """Write a streaming HTTP response to *dest* atomically, enforcing a size cap.
+
+    Downloads into a ``.tmp`` sibling first, then renames to *dest* on success.
+    The two-phase write avoids leaving a partial file behind on failure, and the
+    deferred unlink-on-error pattern is required on Windows where an open file
+    cannot be deleted until all handles are closed.
+
+    Raises ``RuntimeError`` if the ``Content-Length`` header or accumulated byte
+    count exceeds *max_size_bytes*.
+    """
+    content_length = int(response.headers.get("content-length", "0"))
+    if content_length > max_size_bytes:
+        raise RuntimeError(f"file too large: {content_length} bytes > {max_size_bytes}")
+
+    tmp = dest.with_suffix(dest.suffix + ".tmp")
+    written = 0
+    _oversize_error: RuntimeError | None = None
+    try:
+        with tmp.open("wb") as f:
+            for chunk in response.iter_bytes():
+                written += len(chunk)
+                if written > max_size_bytes:
+                    # Don't unlink here — file is still open (Windows locks it).
+                    # Record the error; the outer except will clean up after close.
+                    _oversize_error = RuntimeError(
+                        f"file too large during stream: {written} > {max_size_bytes}"
+                    )
+                    break
+                f.write(chunk)
+        # File is now closed; safe to clean up on Windows.
+        if _oversize_error is not None:
+            tmp.unlink(missing_ok=True)
+            raise _oversize_error
+        tmp.replace(dest)
+    except Exception:
+        tmp.unlink(missing_ok=True)
+        raise
+
+
 def fetch_url(
     url: str,
     *,
@@ -160,36 +200,10 @@ def fetch_url(
             client.stream("GET", url) as r:
         r.raise_for_status()
         content_type = r.headers.get("content-type", "")
-        content_length = int(r.headers.get("content-length", "0"))
-        if content_length > max_size_bytes:
-            raise RuntimeError(f"file too large: {content_length} bytes > {max_size_bytes}")
         # Final suffix (may differ from pre_suffix when URL has no extension)
         suffix = _suffix_for(url, content_type)
         cache_path = _cache_path_for(url, suffix)
-        # Download to a tmp file then atomically rename
-        tmp = cache_path.with_suffix(cache_path.suffix + ".tmp")
-        written = 0
-        _oversize_error: RuntimeError | None = None
-        try:
-            with tmp.open("wb") as f:
-                for chunk in r.iter_bytes():
-                    written += len(chunk)
-                    if written > max_size_bytes:
-                        # Don't unlink here — file is still open (Windows locks it).
-                        # Record the error; the outer except will clean up after close.
-                        _oversize_error = RuntimeError(
-                            f"file too large during stream: {written} > {max_size_bytes}"
-                        )
-                        break
-                    f.write(chunk)
-            # File is now closed; safe to clean up on Windows.
-            if _oversize_error is not None:
-                tmp.unlink(missing_ok=True)
-                raise _oversize_error
-            tmp.replace(cache_path)
-        except Exception:
-            tmp.unlink(missing_ok=True)
-            raise
+        _stream_to_file(r, cache_path, max_size_bytes)
 
     # Shrink if image
     if shrink_if_image and image_shrink.is_image_path(str(cache_path)):

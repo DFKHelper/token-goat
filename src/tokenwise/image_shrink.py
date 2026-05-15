@@ -6,7 +6,7 @@ import hashlib
 import logging
 import stat
 from pathlib import Path
-from typing import TYPE_CHECKING, TypedDict
+from typing import TYPE_CHECKING, Any, TypedDict
 
 if TYPE_CHECKING:
     from PIL import Image as _PilImage
@@ -98,6 +98,23 @@ def _is_safe_path(path: Path) -> bool:
         return False
 
 
+def _ensure_rgb(img: _PilImage.Image, Image_module: Any) -> _PilImage.Image:  # noqa: N803
+    """Flatten any non-RGB image to an RGB canvas (white background).
+
+    Handles alpha channels by compositing over white before discarding the
+    alpha plane, which avoids the black-fill artefact that a bare ``convert``
+    produces for RGBA/LA images.
+    """
+    if img.mode == "RGB":
+        return img
+    bg = Image_module.new("RGB", img.size, (255, 255, 255))
+    if "A" in img.mode:
+        bg.paste(img, mask=img.split()[-1])
+    else:
+        bg.paste(img)
+    return bg
+
+
 def shrink(src_path: Path) -> Path | None:
     """Shrink the image and return the path to the cached shrunken version. None on failure."""
     # Validate input path for safety
@@ -149,13 +166,7 @@ def shrink(src_path: Path) -> Path | None:
                 img.save(final_path, "PNG", optimize=True)
             else:
                 # Convert to RGB JPEG (smallest)
-                if img.mode != "RGB":
-                    bg = Image.new("RGB", img.size, (255, 255, 255))
-                    if "A" in img.mode:
-                        bg.paste(img, mask=img.split()[-1])
-                    else:
-                        bg.paste(img)
-                    img = bg
+                img = _ensure_rgb(img, Image)
                 final_path = stem.with_suffix(".jpg")
                 img.save(final_path, "JPEG", quality=JPEG_QUALITY, optimize=True)
 
