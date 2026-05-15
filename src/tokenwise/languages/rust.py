@@ -10,13 +10,6 @@ from . import common
 _LOG = logging.getLogger("tokenwise.languages.rust")
 
 
-def _get_tlp() -> object | None:
-    try:
-        import tree_sitter_language_pack as tlp  # noqa: PLC0415
-    except ModuleNotFoundError:
-        return None
-    return tlp
-
 # ---------------------------------------------------------------------------
 # Noise filter for call-site refs
 # ---------------------------------------------------------------------------
@@ -48,36 +41,9 @@ def _sym_kind_str(sym_kind: object) -> str:
     return common.sym_kind_str(sym_kind, language="rust")
 
 
-def _build_signature(source: bytes, item_span: object, body_span: object | None) -> str | None:
-    """Extract declaration header (before body brace) from raw source bytes."""
-    if body_span is None:
-        return None
-    try:
-        header = source[item_span.start_byte: body_span.start_byte]
-        text = header.decode("utf-8", errors="replace").strip()
-        if len(text) > 200:
-            text = text[:200]
-        return text or None
-    except (IndexError, AttributeError):
-        return None
-
-
 def _extract_refs(source: bytes) -> list[Ref]:
     """Extract call-site refs using regex on the source text."""
-    refs: list[Ref] = []
-    seen: set[tuple[str, int]] = set()
-    text = source.decode("utf-8", errors="replace")
-    for lineno, line in enumerate(text.splitlines(), 1):
-        for m in _CALL_RE.finditer(line):
-            name = m.group(1)
-            if name in _CALL_NOISE or len(name) <= 1:
-                continue
-            key = (name, lineno)
-            if key in seen:
-                continue
-            seen.add(key)
-            refs.append(Ref(name=name, line=lineno, col=m.start(1), context=line.strip()[:120]))
-    return refs
+    return common.extract_refs_from_source(source, _CALL_RE, _CALL_NOISE)  # type: ignore[return-value]
 
 
 def _parse_use_target(source_line: str) -> str:
@@ -93,7 +59,7 @@ def _parse_use_target(source_line: str) -> str:
 
 def extract(source: bytes, rel_path: str) -> tuple[list[Symbol], list[Ref], list[ImpExp], list[Section]]:
     """Extract symbols, refs, and imports from a Rust file."""
-    tlp = _get_tlp()
+    tlp = common.get_tlp()
     if tlp is None:
         return [], [], [], []
 
@@ -129,7 +95,7 @@ def extract(source: bytes, rel_path: str) -> tuple[list[Symbol], list[Ref], list
         if parent_name is not None and kind == "function":
             effective_kind = "method"
 
-        sig = _build_signature(source, span, body_span)
+        sig = common.build_signature(source, span, body_span)
 
         # For impl blocks, record as "impl" only if it has a trait (Display, etc.)
         # For plain `impl TypeName`, record as impl with the type as name
