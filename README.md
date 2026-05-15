@@ -2,7 +2,7 @@
   <img src="assets/logo.png" alt="Tokenwise" width="220">
 </p>
 
-# Tokenwise
+# Token-Goat
 
 Cuts the tokens Claude Code and Codex CLI burn on Windows. Install once, then forget it.
 
@@ -32,8 +32,8 @@ Four hours of use on the author's machine: 59.7 MB of data that never hit the mo
 ## Install
 
 ```
-uv tool install tokenwise
-tokenwise install
+uv tool install token-goat
+token-goat install
 ```
 
 That wires up Claude Code. Hooks register, a background worker starts at logon and stays out of the way. No terminal popups, no tray icon, no service to babysit.
@@ -41,7 +41,7 @@ That wires up Claude Code. Hooks register, a background worker starts at logon a
 ### Codex CLI users
 
 ```
-tokenwise install --codex
+token-goat install --codex
 ```
 
 The `--codex` flag patches both Claude Code and Codex CLI in one pass.
@@ -50,36 +50,36 @@ The `--codex` flag patches both Claude Code and Codex CLI in one pass.
 
 | Command | What it does |
 |---------|-------------|
-| `tokenwise symbol <name>` | Jump to a symbol definition |
-| `tokenwise read "file::symbol"` | Pull one function or class, not the whole file |
-| `tokenwise section "doc.md::Heading"` | Pull one Markdown section by heading |
-| `tokenwise semantic "<query>"` | Find code by meaning, not by filename |
-| `tokenwise map` | Get a compact orientation of the repo |
-| `tokenwise stats` | See how many tokens you have saved |
-| `tokenwise compact-hint --session-id <id>` | Inspect the compaction manifest for a session |
-| `tokenwise doctor` | Confirm everything is wired correctly |
+| `token-goat symbol <name>` | Jump to a symbol definition |
+| `token-goat read "file::symbol"` | Pull one function or class, not the whole file |
+| `token-goat section "doc.md::Heading"` | Pull one Markdown section by heading |
+| `token-goat semantic "<query>"` | Find code by meaning, not by filename |
+| `token-goat map` | Get a compact orientation of the repo |
+| `token-goat stats` | See how many tokens you have saved |
+| `token-goat compact-hint --session-id <id>` | Inspect the compaction manifest for a session |
+| `token-goat doctor` | Confirm everything is wired correctly |
 
-First `tokenwise semantic` call downloads a small embedding model, about 130 MB, into `%LOCALAPPDATA%\tokenwise\models\`. One-time. Offline after that.
+First `token-goat semantic` call downloads a small embedding model, about 130 MB, into `%LOCALAPPDATA%\token-goat\models\`. One-time. Offline after that.
 
 ## Set and forget
 
-After `tokenwise install`, there is nothing to start, stop, or restart. The worker:
+After `token-goat install`, there is nothing to start, stop, or restart. The worker:
 
 - starts itself at logon
 - runs without a console window
 - survives reboots
 - needs zero ongoing attention
 
-To remove it later, `tokenwise uninstall` reverses every change.
+To remove it later, `token-goat uninstall` reverses every change.
 
 ## Windows Defender
 
-Optional speed-up for large repos. Tokenwise works fine without it.
+Optional speed-up for large repos. Token-goat works fine without it.
 
-Real-time scanning slows indexing. To exclude the Tokenwise folder, open PowerShell as administrator (right-click PowerShell, "Run as administrator") and run:
+Real-time scanning slows indexing. To exclude the token-goat folder, open PowerShell as administrator (right-click PowerShell, "Run as administrator") and run:
 
 ```powershell
-Add-MpPreference -ExclusionPath "$env:LOCALAPPDATA\tokenwise"
+Add-MpPreference -ExclusionPath "$env:LOCALAPPDATA\token-goat"
 ```
 
 If you see `0x800106ba`, the prompt is not elevated. Reopen as administrator.
@@ -89,8 +89,8 @@ On enterprise-managed Windows (domain-joined or Intune-managed), Defender exclus
 ## Verify
 
 ```
-tokenwise doctor
-tokenwise stats
+token-goat doctor
+token-goat stats
 ```
 
 `doctor` confirms the install is healthy. `stats` shows cumulative savings.
@@ -98,7 +98,7 @@ tokenwise stats
 ## Uninstall
 
 ```
-tokenwise uninstall
+token-goat uninstall
 ```
 
 ## Privacy
@@ -107,11 +107,11 @@ No telemetry. No analytics. Nothing phones home.
 
 Outbound network only in three cases:
 
-- First `tokenwise semantic` call downloads the embedding model. After that, semantic search runs offline.
-- Google Drive API calls, only if you already authorized Drive in Claude Code. Tokenwise never prompts for its own auth.
-- Explicit, user-triggered URL fetches via `tokenwise fetch-image <url>`.
+- First `token-goat semantic` call downloads the embedding model. After that, semantic search runs offline.
+- Google Drive API calls, only if you already authorized Drive in Claude Code. Token-goat never prompts for its own auth.
+- Explicit, user-triggered URL fetches via `token-goat fetch-image <url>`.
 
-All caches and the index live in `%LOCALAPPDATA%\tokenwise\`. Delete the folder any time. Nothing else on the system depends on it.
+All caches and the index live in `%LOCALAPPDATA%\token-goat\`. Delete the folder any time. Nothing else on the system depends on it.
 
 ## About
 

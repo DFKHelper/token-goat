@@ -52,7 +52,7 @@ def python_runner_command(*subcommand: str) -> str:
 
 def data_dir() -> Path:
     """Get tokenwise data directory."""
-    return Path(platformdirs.user_data_dir("tokenwise", "Zelys"))
+    return Path(platformdirs.user_data_dir("token-goat", "Zelys"))
 
 
 def global_db_path() -> Path:

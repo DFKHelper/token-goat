@@ -12,18 +12,18 @@ from pathlib import Path
 from . import paths
 
 # Markers for idempotent Codex AGENTS.md patching
-CODEX_AGENTS_BEGIN = "<!-- tokenwise-codex-begin -->"
-CODEX_AGENTS_END = "<!-- tokenwise-codex-end -->"
+CODEX_AGENTS_BEGIN = "<!-- token-goat-codex-begin -->"
+CODEX_AGENTS_END = "<!-- token-goat-codex-end -->"
 
 _LOG = logging.getLogger("tokenwise.install")
 
 # Markers for idempotent CLAUDE.md patching
-CLAUDE_MD_BEGIN = "<!-- tokenwise-begin -->"
-CLAUDE_MD_END = "<!-- tokenwise-end -->"
+CLAUDE_MD_BEGIN = "<!-- token-goat-begin -->"
+CLAUDE_MD_END = "<!-- token-goat-end -->"
 
 # Scheduled task names
-TASK_WORKER = "tokenwise-worker"
-TASK_UPDATE = "tokenwise-update"
+TASK_WORKER = "token-goat-worker"
+TASK_UPDATE = "token-goat-update"
 
 
 def claude_dir() -> Path:
@@ -43,34 +43,34 @@ def claude_md_path() -> Path:
 
 def skill_dir() -> Path:
     """Return the directory where the tokenwise skill is installed (Claude Code plugins)."""
-    return claude_dir() / "skills" / "tokenwise"
+    return claude_dir() / "skills" / "token-goat"
 
 
 def tokenwise_binary() -> str:
-    """Return the path to the tokenwise executable. Falls back to 'tokenwise' (PATH-resolved)."""
-    binary = shutil.which("tokenwise")
+    """Return the path to the token-goat executable. Falls back to 'token-goat' (PATH-resolved)."""
+    binary = shutil.which("token-goat")
     if binary:
         return binary
-    return "tokenwise"
+    return "token-goat"
 
 
 def tokenwise_hook_binary() -> str:
     """Path to the windowless (GUI-subsystem) entry for hooks.
 
-    On Windows, this is `tokenwise-hook.exe` from pyproject `[project.gui-scripts]`.
-    It runs the same code as `tokenwise` but with the Windows GUI subsystem so no
+    On Windows, this is `token-goat-hook.exe` from pyproject `[project.gui-scripts]`.
+    It runs the same code as `token-goat` but with the Windows GUI subsystem so no
     console window is allocated when Claude Code spawns it for every hook call.
-    Falls back to `tokenwise` if the windowless variant isn't installed.
+    Falls back to `token-goat` if the windowless variant isn't installed.
     """
-    binary = shutil.which("tokenwise-hook")
+    binary = shutil.which("token-goat-hook")
     if binary:
         return binary
     return tokenwise_binary()
 
 
 def tokenwise_worker_binary() -> str:
-    """Windowless entry for the background worker. Falls back to tokenwise."""
-    binary = shutil.which("tokenwise-worker")
+    """Windowless entry for the background worker. Falls back to token-goat."""
+    binary = shutil.which("token-goat-worker")
     if binary:
         return binary
     return tokenwise_binary()
@@ -149,7 +149,7 @@ def install_update_task() -> tuple[bool, str]:
         "/ST", "03:00",
         "/RL", "LIMITED",
         "/F",
-        "/TR", 'cmd /c "uv tool upgrade tokenwise"',
+        "/TR", 'cmd /c "uv tool upgrade token-goat"',
     ]
     if username:
         args += ["/RU", username]
@@ -318,8 +318,8 @@ def patch_settings_json() -> tuple[bool, str]:
     # Permission allowlist
     perms = current.get("permissions", {})
     allowed = list(perms.get("allow", []))
-    if "Bash(tokenwise:*)" not in allowed:
-        allowed.append("Bash(tokenwise:*)")
+    if "Bash(token-goat:*)" not in allowed:
+        allowed.append("Bash(token-goat:*)")
     perms["allow"] = allowed
     current["permissions"] = perms
 
@@ -347,7 +347,7 @@ def unpatch_settings_json() -> str:
     current["hooks"] = hooks
 
     perms = current.get("permissions", {})
-    allowed = [a for a in perms.get("allow", []) if a != "Bash(tokenwise:*)"]
+    allowed = [a for a in perms.get("allow", []) if a not in ("Bash(tokenwise:*)", "Bash(token-goat:*)")]
     perms["allow"] = allowed
     # Drop permissions key entirely if it has no meaningful content left
     if not perms.get("allow") and not perms.get("deny") and not perms.get("ask"):
@@ -364,26 +364,26 @@ def unpatch_settings_json() -> str:
 # ---------------------------------------------------------------------------
 
 CLAUDE_MD_CONTENT = """\
-## tokenwise - route code reads through tokenwise first
+## token-goat - route code reads through token-goat first
 
-tokenwise is installed. Before you call Read or Grep on a source file, check for a tokenwise command that does the same job for a fraction of the tokens. This is the default path, not an optimization. Skipping it burns context you will need later in the session.
+token-goat is installed. Before you call Read or Grep on a source file, check for a token-goat command that does the same job for a fraction of the tokens. This is the default path, not an optimization. Skipping it burns context you will need later in the session.
 
 | Goal | Do this | Not this |
 |------|---------|----------|
-| Find a function, class, or type | `tokenwise symbol getUser` | `Grep "getUser"` (10 to 50x more tokens) |
-| Read one function or method body | `tokenwise read "src/auth.py::login"` | `Read src/auth.py` (about 85% more tokens) |
-| Read one section of a doc | `tokenwise section "README.md::Install"` | `Read README.md` |
-| Find code by meaning, not name | `tokenwise semantic "rate limit retry"` | Several rounds of `Grep` |
-| Get oriented in an unfamiliar repo | `tokenwise map --budget 4000` | Recursive `ls` plus multiple `Read` calls |
+| Find a function, class, or type | `token-goat symbol getUser` | `Grep "getUser"` (10 to 50x more tokens) |
+| Read one function or method body | `token-goat read "src/auth.py::login"` | `Read src/auth.py` (about 85% more tokens) |
+| Read one section of a doc | `token-goat section "README.md::Install"` | `Read README.md` |
+| Find code by meaning, not name | `token-goat semantic "rate limit retry"` | Several rounds of `Grep` |
+| Get oriented in an unfamiliar repo | `token-goat map --budget 4000` | Recursive `ls` plus multiple `Read` calls |
 
-Add `--all-projects` to `tokenwise symbol` for cross-repo lookups.
+Add `--all-projects` to `token-goat symbol` for cross-repo lookups.
 
 Read is the right call when:
 - The file is under about 200 lines and you need the whole thing.
 - The file has never been indexed (new path, scratch script, untracked draft).
 - It is an image you need to see visually. The shrink runs automatically. Just Read it.
 
-Verify the habit. Run `tokenwise stats` and watch event counts climb. Flat counts during code work mean you are reaching for Read or Grep where tokenwise would apply.
+Verify the habit. Run `token-goat stats` and watch event counts climb. Flat counts during code work mean you are reaching for Read or Grep where token-goat would apply.
 """
 
 
@@ -440,18 +440,18 @@ def unpatch_claude_md() -> str:
 
 SKILL_MD_CONTENT = """\
 ---
-name: tokenwise
-description: Use BEFORE reaching for Read or Grep on a source file. tokenwise commands replace symbol search, single-function reads, doc-section reads, semantic search, and repo overviews at a fraction of the token cost. Hooks handle image shrink, Drive intercept, and read dedup automatically. Skipping tokenwise burns session context.
+name: token-goat
+description: Use BEFORE reaching for Read or Grep on a source file. token-goat commands replace symbol search, single-function reads, doc-section reads, semantic search, and repo overviews at a fraction of the token cost. Hooks handle image shrink, Drive intercept, and read dedup automatically. Skipping token-goat burns session context.
 ---
 
-# tokenwise
+# token-goat
 
-tokenwise is installed. Route code and content reads through it first. This is the default path, not optional polish. Tokens you spend rereading files or grepping wide are tokens you will not have for the work that matters.
+token-goat is installed. Route code and content reads through it first. This is the default path, not optional polish. Tokens you spend rereading files or grepping wide are tokens you will not have for the work that matters.
 
 ## Automatic. Do not duplicate.
 
 - Large images on Read get redirected to a shrunken cached copy (about 95% fewer tokens).
-- Google Drive downloads get redirected to a tokenwise fetch that downloads, shrinks, and caches.
+- Google Drive downloads get redirected to a token-goat fetch that downloads, shrinks, and caches.
 - WebFetch on an image URL gets the same treatment.
 - Repeat reads of the same file in one session trigger a system reminder so you do not pay twice.
 
@@ -463,14 +463,14 @@ Before reaching for Read or Grep on a code file, check this table.
 
 | Goal | Do this | Not this |
 |------|---------|----------|
-| Find a function, class, or type | `tokenwise symbol getUser` | `Grep "getUser"` (10 to 50x more tokens) |
-| Read one function or method body | `tokenwise read "src/auth.py::login"` | `Read src/auth.py` (about 85% more tokens) |
-| Read one section of a doc | `tokenwise section "README.md::Install"` | `Read README.md` |
-| Find code by meaning, not name | `tokenwise semantic "rate limit retry"` | Several rounds of `Grep` |
-| Get oriented in an unfamiliar repo | `tokenwise map --budget 4000` | Recursive `ls` plus multiple `Read` calls |
-| See what you have already touched | `tokenwise session-touched` | Re-reading and hoping you remember |
+| Find a function, class, or type | `token-goat symbol getUser` | `Grep "getUser"` (10 to 50x more tokens) |
+| Read one function or method body | `token-goat read "src/auth.py::login"` | `Read src/auth.py` (about 85% more tokens) |
+| Read one section of a doc | `token-goat section "README.md::Install"` | `Read README.md` |
+| Find code by meaning, not name | `token-goat semantic "rate limit retry"` | Several rounds of `Grep` |
+| Get oriented in an unfamiliar repo | `token-goat map --budget 4000` | Recursive `ls` plus multiple `Read` calls |
+| See what you have already touched | `token-goat session-touched` | Re-reading and hoping you remember |
 
-Add `--all-projects` to `tokenwise symbol` to search every indexed repo at once.
+Add `--all-projects` to `token-goat symbol` to search every indexed repo at once.
 
 ## When Read is the right call
 
@@ -480,7 +480,7 @@ Add `--all-projects` to `tokenwise symbol` to search every indexed repo at once.
 
 ## Verify the habit
 
-Run `tokenwise stats` and watch event counts climb. Flat counts during code work mean you are reaching for Read or Grep where a tokenwise command would apply. Run `tokenwise doctor` if anything looks wrong.
+Run `token-goat stats` and watch event counts climb. Flat counts during code work mean you are reaching for Read or Grep where a token-goat command would apply. Run `token-goat doctor` if anything looks wrong.
 """
 
 
@@ -653,26 +653,26 @@ def unpatch_codex_config() -> str:
 
 
 CODEX_AGENTS_MD_CONTENT = """\
-## tokenwise - route code reads through tokenwise first (Codex)
+## token-goat - route code reads through token-goat first (Codex)
 
-tokenwise is installed. Before you run `rg`, `grep`, `cat`, `head`, `bat`, or any Bash read of a source file, check whether a tokenwise command does the same job for a fraction of the tokens. Route through tokenwise by default. Skipping it burns context you will need later in the session.
+token-goat is installed. Before you run `rg`, `grep`, `cat`, `head`, `bat`, or any Bash read of a source file, check whether a token-goat command does the same job for a fraction of the tokens. Route through token-goat by default. Skipping it burns context you will need later in the session.
 
 | Goal | Do this | Not this |
 |------|---------|----------|
-| Find a function, class, or type | `tokenwise symbol getUser` | `rg "getUser"` (10 to 50x more tokens) |
-| Read one function or method body | `tokenwise read "src/auth.py::login"` | `cat src/auth.py` (about 85% more tokens) |
-| Read one section of a doc | `tokenwise section "README.md::Install"` | `cat README.md` |
-| Find code by meaning, not name | `tokenwise semantic "rate limit retry"` | Several rounds of `rg` |
-| Get oriented in an unfamiliar repo | `tokenwise map --budget 4000` | `ls -R` plus multiple `cat` calls |
+| Find a function, class, or type | `token-goat symbol getUser` | `rg "getUser"` (10 to 50x more tokens) |
+| Read one function or method body | `token-goat read "src/auth.py::login"` | `cat src/auth.py` (about 85% more tokens) |
+| Read one section of a doc | `token-goat section "README.md::Install"` | `cat README.md` |
+| Find code by meaning, not name | `token-goat semantic "rate limit retry"` | Several rounds of `rg` |
+| Get oriented in an unfamiliar repo | `token-goat map --budget 4000` | `ls -R` plus multiple `cat` calls |
 
-Add `--all-projects` to `tokenwise symbol` for cross-repo lookups.
+Add `--all-projects` to `token-goat symbol` for cross-repo lookups.
 
 Plain Bash reads are the right call when:
 - The file is under about 200 lines and you need the whole thing.
 - The file has never been indexed (new path, scratch script, untracked draft).
 - You need exact bytes to build an `apply_patch` hunk that must match the file verbatim.
 
-Verify the habit. Run `tokenwise stats` and watch event counts climb. Flat counts during code work mean you are reaching for `rg` or `cat` where a tokenwise command would apply.
+Verify the habit. Run `token-goat stats` and watch event counts climb. Flat counts during code work mean you are reaching for `rg` or `cat` where a token-goat command would apply.
 """
 
 
