@@ -495,11 +495,15 @@ class TestNotIndexedHint:
         assert hint is None
 
     def test_returns_none_on_db_error(self, tmp_data_dir, monkeypatch):
-        """If file_count() raises, _not_indexed_hint must swallow the error and return None."""
+        """If the indexed-file probe raises, _not_indexed_hint must swallow the error."""
         from tokenwise import db
         from tokenwise.read_commands import _not_indexed_hint
 
-        monkeypatch.setattr(db, "file_count", lambda _: (_ for _ in ()).throw(RuntimeError("db gone")))
+        monkeypatch.setattr(
+            db,
+            "project_has_files",
+            lambda _: (_ for _ in ()).throw(RuntimeError("db gone")),
+        )
         # Must not raise
         hint = _not_indexed_hint("deadbeef1234567890ab")
         assert hint is None

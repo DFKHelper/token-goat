@@ -17,7 +17,7 @@ _LOG = logging.getLogger("tokenwise.read_commands")
 def _not_indexed_hint(project_hash: str) -> str | None:
     """Return a one-line hint when this project has no indexed files."""
     try:
-        if db.file_count(project_hash) == 0:
+        if not db.project_has_files(project_hash):
             return (
                 "(project not yet indexed. auto-indexing started in the "
                 "background on first SessionStart; if it has not finished, "

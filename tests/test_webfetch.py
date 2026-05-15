@@ -55,6 +55,7 @@ def _mock_http_response(body: bytes, content_type: str = "image/png", status: in
     """Build a mock httpx streaming response."""
     mock_resp = MagicMock()
     mock_resp.status_code = status
+    mock_resp.url = "https://example.com/final.png"
     mock_resp.headers = {
         "content-type": content_type,
         "content-length": str(len(body)),
@@ -219,6 +220,17 @@ class TestFetchUrl:
 
         assert result.stem == expected_stem
 
+    def test_redirect_to_private_target_is_blocked(self, tmp_data_dir):
+        url = "https://example.com/redirect.png"
+        resp = _mock_http_response(b"body", "image/png")
+        resp.url = "http://127.0.0.1/private.png"
+        client = _mock_client(resp)
+
+        with patch("httpx.Client", return_value=client), pytest.raises(ValueError, match="SSRF"):
+            webfetch.fetch_url(url, shrink_if_image=False)
+
+        resp.iter_bytes.assert_not_called()
+
 
 # ---------------------------------------------------------------------------
 # 6. fetch_url: cache reuse — mock not called twice for body
@@ -269,6 +281,7 @@ class TestFetchUrlOversized:
 
         resp = MagicMock()
         resp.status_code = 200
+        resp.url = "https://example.com/sneaky.png"
         resp.headers = {"content-type": "image/png", "content-length": "0"}
         resp.raise_for_status = MagicMock()
         # Yield body in one big chunk to trigger the streaming guard

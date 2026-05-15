@@ -16,7 +16,7 @@ except ModuleNotFoundError:
 
 from . import paths
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 EMBED_DIM = 384  # BAAI/bge-small-en-v1.5
 
 _LOG = logging.getLogger("tokenwise.db")
@@ -193,6 +193,7 @@ CREATE TABLE IF NOT EXISTS files (
     rel_path       TEXT    PRIMARY KEY,
     language       TEXT    NOT NULL,
     size           INTEGER NOT NULL,
+    line_count     INTEGER,
     mtime          REAL    NOT NULL,
     content_sha256 TEXT    NOT NULL,
     indexed_at     INTEGER NOT NULL
@@ -313,6 +314,16 @@ def _ensure_project_schema(conn: sqlite3.Connection) -> None:
     """
     try:
         conn.executescript(_PROJECT_TABLES)
+        columns = {
+            row["name"]
+            for row in conn.execute("PRAGMA table_info(files)").fetchall()
+        }
+        if "line_count" not in columns:
+            conn.execute("ALTER TABLE files ADD COLUMN line_count INTEGER")
+        conn.execute(
+            "INSERT OR REPLACE INTO meta (key, value) VALUES ('schema_version', ?)",
+            (str(SCHEMA_VERSION),),
+        )
     except sqlite3.OperationalError as e:
         if "readonly" in str(e).lower():
             _LOG.debug("project schema ensure skipped (read-only connection): %s", e)
@@ -327,15 +338,6 @@ def _ensure_project_schema(conn: sqlite3.Connection) -> None:
             conn.execute(
                 "INSERT OR IGNORE INTO meta (key, value) VALUES ('embeddings_disabled', '1')"
             )
-    row = conn.execute("SELECT value FROM meta WHERE key='schema_version'").fetchone()
-    if row is None:
-        with contextlib.suppress(sqlite3.OperationalError):
-            conn.execute(
-                "INSERT INTO meta (key, value) VALUES ('schema_version', ?)",
-                (str(SCHEMA_VERSION),),
-            )
-
-
 # ---------------------------------------------------------------------------
 # Internal helper
 # ---------------------------------------------------------------------------
@@ -600,6 +602,22 @@ def file_count(project_hash: str) -> int:
         return 0
 
 
+def project_has_files(project_hash: str) -> bool:
+    """Return True when the project DB already contains at least one file row."""
+    try:
+        db_path = paths.project_db_path(project_hash)
+        if not db_path.exists():
+            return False
+        conn = _connect(db_path, load_vec=False)
+        try:
+            row = conn.execute("SELECT 1 FROM files LIMIT 1").fetchone()
+            return row is not None
+        finally:
+            conn.close()
+    except Exception:  # noqa: BLE001
+        return False
+
+
 def touch_project_last_seen(project_hash: str) -> None:
     """Bump a project's last_seen to mark recent user activity. Best-effort.
 
@@ -610,11 +628,15 @@ def touch_project_last_seen(project_hash: str) -> None:
     project "active" forever).
     """
     try:
-        with open_global() as conn:
+        conn = _connect(paths.global_db_path(), load_vec=False)
+        try:
+            _ensure_global_schema(conn)
             conn.execute(
                 "UPDATE projects SET last_seen = ? WHERE hash = ?",
                 (int(time.time()), project_hash),
             )
+        finally:
+            conn.close()
     except sqlite3.OperationalError as exc:
         # Read-only fallback (sandbox) — expected, telemetry is best-effort.
         if "readonly" in str(exc).lower():

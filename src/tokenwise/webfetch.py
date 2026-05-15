@@ -164,6 +164,12 @@ def _stream_to_file(response: httpx.Response, dest: Path, max_size_bytes: int) -
         raise
 
 
+def _validate_response_url(url: str) -> None:
+    """Reject a fetched response URL if it resolves to an SSRF target."""
+    if not _is_ssrf_safe(url):
+        raise ValueError(f"URL blocked by SSRF safety check after redirect: {url!r}")
+
+
 def fetch_url(
     url: str,
     *,
@@ -199,6 +205,10 @@ def fetch_url(
     with httpx.Client(timeout=timeout_sec, follow_redirects=True) as client, \
             client.stream("GET", url) as r:
         r.raise_for_status()
+        final_url = str(r.url)
+        if final_url != url:
+            _LOG.info("web fetch redirected: %s -> %s", url, final_url)
+        _validate_response_url(final_url)
         content_type = r.headers.get("content-type", "")
         # Final suffix (may differ from pre_suffix when URL has no extension)
         suffix = _suffix_for(url, content_type)
