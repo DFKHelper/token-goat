@@ -373,7 +373,7 @@ def read(
     if session_id:
         from . import session  # noqa: PLC0415
         with contextlib.suppress(Exception):
-            session.mark_file_read(session_id, file_part, symbol=symbol_part)
+            session.mark_file_read(session_id, rel or file_part, symbol=symbol_part)
 
     from . import db as _db  # noqa: PLC0415
     bytes_saved = result.get("bytes_saved", 0)
@@ -435,7 +435,7 @@ def section(
     if session_id:
         from . import session  # noqa: PLC0415
         with contextlib.suppress(Exception):
-            session.mark_file_read(session_id, file_part, symbol=heading_part)
+            session.mark_file_read(session_id, rel or file_part, symbol=heading_part)
 
     from . import db as _db  # noqa: PLC0415
     bytes_saved = result.get("bytes_saved", 0)

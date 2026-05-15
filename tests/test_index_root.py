@@ -142,6 +142,23 @@ class TestFindInAllProjects:
         assert find_in_all_projects("tool.md") is not None
         assert find_in_all_projects("plugin.md") is not None
 
+    def test_returns_none_for_ambiguous_file_name(self, tmp_data_dir, tmp_path):
+        from tokenwise.parser import index_project
+        from tokenwise.read_replacement import find_in_all_projects
+
+        skills_root = tmp_path / "skills"
+        skills_root.mkdir()
+        plugins_root = tmp_path / "plugins"
+        plugins_root.mkdir()
+
+        self._make_md_file(skills_root, "shared.md", "# One\n")
+        self._make_md_file(plugins_root, "shared.md", "# Two\n")
+
+        index_project(make_project_at(skills_root), full=True)
+        index_project(make_project_at(plugins_root), full=True)
+
+        assert find_in_all_projects("shared.md") is None
+
     def test_handles_corrupt_global_db_gracefully(self, tmp_data_dir, monkeypatch):
         from tokenwise import db as _db
         from tokenwise.read_replacement import find_in_all_projects

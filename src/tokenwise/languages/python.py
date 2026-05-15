@@ -3,10 +3,16 @@ from __future__ import annotations
 
 import re
 
-import tree_sitter_language_pack as tlp
-
 from ..parser import ImpExp, Ref, Section, Symbol
 from . import common
+
+
+def _get_tlp() -> object | None:
+    try:
+        import tree_sitter_language_pack as tlp  # noqa: PLC0415
+    except ModuleNotFoundError:
+        return None
+    return tlp
 
 # ---------------------------------------------------------------------------
 # Noise filter for call-site refs
@@ -90,6 +96,10 @@ def _extract_refs(source: bytes) -> list[Ref]:
 
 def extract(source: bytes, rel_path: str) -> tuple[list[Symbol], list[Ref], list[ImpExp], list[Section]]:
     """Extract symbols, refs, and imports from a Python file."""
+    tlp = _get_tlp()
+    if tlp is None:
+        return [], [], [], []
+
     text = source.decode("utf-8", errors="replace")
     cfg = tlp.ProcessConfig(
         language="python",

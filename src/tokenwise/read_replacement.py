@@ -38,8 +38,8 @@ def resolve_file_rel(project: Project, file_part: str) -> str | None:
 
     Accepts:
     - Full relative path  (e.g., 'src/tokenwise/parser.py')
-    - Bare filename       (e.g., 'parser.py' — picks best match)
-    - Partial path        (e.g., 'tokenwise/parser.py' — endswith match)
+    - Bare filename       (e.g., 'parser.py' — only when unique)
+    - Partial path        (e.g., 'tokenwise/parser.py' — only when unique)
     - Absolute path       (resolved against project root)
     """
     file_part = file_part.replace("\\", "/").strip()
@@ -73,8 +73,12 @@ def resolve_file_rel(project: Project, file_part: str) -> str | None:
         if len(rows) == 1:
             return rows[0]["rel_path"]
         if len(rows) > 1:
-            # Prefer the shortest path (most specific match without extra nesting)
-            return min((r["rel_path"] for r in rows), key=len)
+            _LOG.debug(
+                "ambiguous file match in %s for %s: %s",
+                project.hash[:8],
+                file_part,
+                ", ".join(sorted(r["rel_path"] for r in rows)),
+            )
 
     return None
 
@@ -94,14 +98,23 @@ def find_in_all_projects(file_part: str) -> tuple[Project, str] | None:
     except Exception:
         return None
 
+    matches: list[tuple[Project, str]] = []
     for row in rows:
         proj = Project(root=Path(row["root"]), hash=row["hash"], marker=row["marker"])
         try:
             rel = resolve_file_rel(proj, file_part)
             if rel is not None:
-                return proj, rel
+                matches.append((proj, rel))
         except Exception:
             continue
+    if len(matches) == 1:
+        return matches[0]
+    if len(matches) > 1:
+        _LOG.debug(
+            "ambiguous cross-project file match for %s: %s",
+            file_part,
+            ", ".join(f"{proj.hash[:8]}:{rel}" for proj, rel in matches),
+        )
     return None
 
 
