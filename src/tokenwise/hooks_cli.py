@@ -5,6 +5,7 @@ import contextlib
 import json
 import logging
 import sys
+import time
 from collections.abc import Callable
 from datetime import datetime
 from pathlib import Path
@@ -161,11 +162,13 @@ def safe_run(event: str, input_file: Path | None = None, harness: str = "claude"
         result = dispatch(event, payload)
         result = denormalize_response(result, harness)
     except BaseException as exc:  # noqa: BLE001 — bulletproof
+        msg = f"tokenwise hook {event} failed: {type(exc).__name__}: {exc}"
         with contextlib.suppress(Exception):
-            print(
-                f"tokenwise hook {event} failed: {type(exc).__name__}: {exc}",
-                file=sys.stderr,
-            )
+            print(msg, file=sys.stderr)
+        with contextlib.suppress(Exception):
+            # Attempt to persist to log file even if normal setup failed.
+            _setup_logging()
+            _LOG.error("%s", msg, exc_info=True)
         result = {"continue": True}
     emit(result)
 
@@ -264,4 +267,11 @@ def dispatch(event: str, payload: dict[str, Any]) -> dict[str, Any]:
     if handler is None:
         _LOG.warning("unknown hook event: %s", event)
         return {"continue": True}
-    return handler(payload)
+    t0 = time.monotonic()
+    result = handler(payload)
+    elapsed = time.monotonic() - t0
+    if elapsed >= 0.5:
+        _LOG.warning("hook %s slow: %.3fs", event, elapsed)
+    else:
+        _LOG.debug("hook %s completed in %.3fs", event, elapsed)
+    return result

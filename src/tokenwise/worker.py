@@ -1062,12 +1062,26 @@ def _process_dirty_entries(entries: list[DirtyQueueEntry]) -> None:
                 )
                 continue
 
+            t0 = time.time()
             result = parser.index_project(project, full=is_first_index)
-            _LOG.info(
-                "reindexed %d/%d files in project %s after dirty queue drain",
-                result["indexed"],
-                result["total_files"],
-                ph[:8],
-            )
+            elapsed = time.time() - t0
+            if result["errors"] > 0:
+                _LOG.warning(
+                    "reindexed %d/%d files in project %s after dirty queue drain"
+                    " (errors=%d dur=%.2fs)",
+                    result["indexed"],
+                    result["total_files"],
+                    ph[:8],
+                    result["errors"],
+                    elapsed,
+                )
+            else:
+                _LOG.info(
+                    "reindexed %d/%d files in project %s after dirty queue drain (dur=%.2fs)",
+                    result["indexed"],
+                    result["total_files"],
+                    ph[:8],
+                    elapsed,
+                )
         except Exception:  # noqa: BLE001
             _LOG.exception("failed to reindex project %s from dirty queue", ph)

@@ -172,6 +172,8 @@ def post_read(payload: dict[str, Any]) -> dict[str, Any]:
         if pattern:
             session.mark_grep(session_id, pattern, path, result_count)
     elif tool_name == "Glob":
-        pass
+        pattern = tool_input.get("pattern")
+        path = tool_input.get("path")
+        _LOG.debug("post-read: Glob pattern=%s path=%s", pattern, path)
 
     return {"continue": True}
