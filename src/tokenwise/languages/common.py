@@ -125,3 +125,18 @@ def extract_refs_from_source(
             seen.add(key)
             refs.append(Ref(name=name, line=lineno, col=m.start(1), context=line.strip()[:120]))
     return refs
+
+
+def _compute_section_end_lines(sections: list, lines: list[str]) -> None:
+    """Assign end_line to each Section based on the next section of equal or lesser level.
+
+    Mutates sections in-place. 'lines' is used only to get the total line count (EOF).
+    """
+    total = len(lines)
+    for i, sec in enumerate(sections):
+        end_line = total
+        for j in range(i + 1, len(sections)):
+            if sections[j].level <= sec.level:
+                end_line = sections[j].line - 1
+                break
+        sec.end_line = end_line
