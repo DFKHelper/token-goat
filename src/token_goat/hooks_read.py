@@ -145,7 +145,8 @@ def pre_read(payload: dict[str, Any]) -> dict[str, Any]:
     if not hint:
         return {"continue": True}
 
-    _record_session_hint_impact(file_path, hint)
+    if hint.tokens_saved > 0:
+        _record_session_hint_impact(file_path, hint)
 
     return {
         "continue": True,

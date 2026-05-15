@@ -7,6 +7,13 @@ import sys
 
 from token_goat import hooks_cli, session
 
+
+def _assert_continue(result: dict) -> None:
+    """Assert continue:True, tolerating diagnostic fields added by dispatch."""
+    assert result.get("continue") is True
+
+
+
 # ---------------------------------------------------------------------------
 # Direct handler tests
 # ---------------------------------------------------------------------------
@@ -21,7 +28,7 @@ class TestPreReadHandlerDirect:
             "tool_input": {"pattern": "foo"},
         }
         result = hooks_cli.pre_read(payload)
-        assert result == {"continue": True}
+        _assert_continue(result)
         assert "hookSpecificOutput" not in result
 
     def test_file_not_in_cache_nonexistent_file_no_hint(self, tmp_data_dir, tmp_path):
@@ -59,7 +66,7 @@ class TestPreReadHandlerDirect:
     def test_garbage_payload_returns_continue(self, tmp_data_dir):
         """Malformed payload must not crash; fail-soft returns continue:true."""
         result = hooks_cli.pre_read(None)  # type: ignore[arg-type]
-        assert result == {"continue": True}
+        _assert_continue(result)
 
     def test_hint_records_session_hint_stat(self, tmp_data_dir):
         """When pre_read emits a hint, the gross and overhead stat rows are appended."""
@@ -139,8 +146,14 @@ class TestPreReadHandlerDirect:
         assert gross_row["tokens_saved"] + overhead_row["tokens_saved"] == expected_net_tokens
         assert gross_row["bytes_saved"] + overhead_row["bytes_saved"] == expected_net_bytes
 
-    def test_suggestion_hint_records_negative_net(self, tmp_data_dir):
-        """A pure-suggestion hint records a zero gross row plus a negative overhead row."""
+    def test_suggestion_hint_records_nothing(self, tmp_data_dir):
+        """A pure-suggestion hint (tokens_saved=0) records no stats rows.
+
+        Suggestion hints cost tokens to inject but only realize savings if the
+        agent acts on them (tracked separately by read_replacement). Recording
+        overhead with zero gross caused the headline savings counter to drift
+        negative as more suggestions fired.
+        """
         from token_goat import db
 
         sid = "neg_net"
@@ -163,19 +176,15 @@ class TestPreReadHandlerDirect:
                 "WHERE kind IN ('session_hint', 'session_hint_overhead') "
                 "ORDER BY kind"
             ).fetchall()
-        assert len(rows) == 2
-        gross_row, overhead_row = rows
-        assert gross_row["kind"] == "session_hint"
-        assert gross_row["tokens_saved"] == 0
-        assert overhead_row["kind"] == "session_hint_overhead"
-        assert overhead_row["tokens_saved"] < 0
-        assert gross_row["tokens_saved"] + overhead_row["tokens_saved"] < 0
+        assert len(rows) == 0, (
+            "Suggestion-only hints must not record stats — they carry no realized savings"
+        )
 
     def test_missing_tool_name_passes_through(self, tmp_data_dir):
         """No tool_name in payload → passes through as non-Read."""
         payload = {"session_id": "s4", "tool_input": {"file_path": "foo.py"}}
         result = hooks_cli.pre_read(payload)
-        assert result == {"continue": True}
+        _assert_continue(result)
 
     def test_no_session_id_no_hint(self, tmp_data_dir):
         """No session_id → no hint generated."""
@@ -184,7 +193,7 @@ class TestPreReadHandlerDirect:
             "tool_input": {"file_path": "foo.py", "offset": 0, "limit": 100},
         }
         result = hooks_cli.pre_read(payload)
-        assert result == {"continue": True}
+        _assert_continue(result)
 
 
 # ---------------------------------------------------------------------------
@@ -200,7 +209,7 @@ class TestDispatcherPreRead:
             "tool_input": {"file_path": "x.py"},
         }
         result = hooks_cli.dispatch("pre-read", payload)
-        assert result == {"continue": True}
+        _assert_continue(result)
 
     def test_dispatch_pre_read_cached_file_has_hint(self, tmp_data_dir):
         sid = "d2"
