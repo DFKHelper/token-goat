@@ -74,8 +74,10 @@ def resolve_file_rel(project: Project, file_part: str) -> str | None:
                 ).fetchone()
                 if row:
                     return row["rel_path"]
-            except (ValueError, OSError):
-                pass
+            except ValueError:
+                pass  # path is not under this project root — expected control flow
+            except OSError as e:
+                _LOG.debug("resolve_file_rel: could not resolve absolute path %s: %s", file_part, e)
 
         # 3. Endswith match — handles bare filename or partial path
         rows = conn.execute(
@@ -112,6 +114,7 @@ def find_in_all_projects(file_part: str) -> tuple[Project, str] | None:
         with _db.open_global_readonly() as gconn:
             rows = gconn.execute("SELECT hash, root, marker FROM projects").fetchall()
     except Exception:
+        _LOG.debug("find_in_all_projects: could not open global DB", exc_info=True)
         return None
 
     matches: list[tuple[Project, str]] = []
@@ -126,6 +129,9 @@ def find_in_all_projects(file_part: str) -> tuple[Project, str] | None:
             )
             continue
         except Exception:
+            _LOG.debug(
+                "find_in_all_projects: resolve failed for project %s", proj.hash[:8], exc_info=True
+            )
             continue
         if rel is not None:
             matches.append((proj, rel))

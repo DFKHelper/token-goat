@@ -329,6 +329,6 @@ def cleanup_stale(max_age_hours: float = 24.0) -> int:
             if f.stat().st_mtime < cutoff:
                 f.unlink()
                 removed += 1
-        except OSError:
-            pass
+        except OSError as e:
+            _LOG.debug("cleanup_stale: could not remove %s: %s", f.name, e)
     return removed
