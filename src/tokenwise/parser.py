@@ -402,8 +402,12 @@ def index_project(
             on_disk = {fp.relative_to(project.root).as_posix() for fp in files}
             db_rel_paths = {r["rel_path"] for r in conn.execute("SELECT rel_path FROM files")}
             stale = db_rel_paths - on_disk
-            for rel in stale:
-                conn.execute("DELETE FROM files WHERE rel_path = ?", (rel,))
+            if stale:
+                # Single DELETE … IN (…) instead of one DELETE per file — O(1)
+                # round-trips vs O(N). FK ON DELETE CASCADE cleans up child rows.
+                stale_list = list(stale)
+                ph = ",".join("?" for _ in stale_list)
+                conn.execute(f"DELETE FROM files WHERE rel_path IN ({ph})", stale_list)  # noqa: S608
             if stale:
                 _LOG.info(
                     "pruned %d deleted file(s) from index: %s",

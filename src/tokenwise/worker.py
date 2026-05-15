@@ -1010,13 +1010,22 @@ def _process_dirty_entries(entries: list[DirtyQueueEntry]) -> None:
             bucket["root"] = entry["project_root"]
             bucket["marker"] = entry.get("project_marker") or "manual"
 
+    # Batch-lookup all project hashes in one global.db query instead of
+    # opening global.db once per project (N+1 DB opens).
+    all_hashes = list(by_project.keys())
+    known_projects: dict[str, Any] = {}
+    if all_hashes:
+        ph_placeholders = ",".join("?" for _ in all_hashes)
+        with db.open_global() as gconn:
+            for row in gconn.execute(
+                f"SELECT hash, root, marker FROM projects WHERE hash IN ({ph_placeholders})",  # noqa: S608
+                all_hashes,
+            ):
+                known_projects[row["hash"]] = row
+
     for ph, bucket in by_project.items():
         try:
-            # Look up project root from global.db.
-            with db.open_global() as gconn:
-                row = gconn.execute(
-                    "SELECT root, marker FROM projects WHERE hash = ?", (ph,)
-                ).fetchone()
+            row = known_projects.get(ph)
 
             if row:
                 project = Project(root=Path(row["root"]), hash=ph, marker=row["marker"])

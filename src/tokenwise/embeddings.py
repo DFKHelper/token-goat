@@ -357,20 +357,27 @@ def index_project_embeddings(
             _LOG.debug("embedded batch %d/%d: %d texts in %.3fs",
                        i // batch_size + 1, (len(new_chunks) + batch_size - 1) // batch_size,
                        len(texts), batch_elapsed)
+            # Batch-delete any stale chunks at the same (file, start, end) positions
+            # before reinserting.  Doing one DELETE…IN per batch instead of
+            # SELECT+DELETE+DELETE per chunk eliminates the N+1 pattern.
+            batch_keys = [
+                (ch.file_rel, ch.start_line, ch.end_line) for ch, _ in batch
+            ]
+            placeholders = ",".join("(?,?,?)" for _ in batch_keys)
+            stale_ids = [
+                row["id"]
+                for row in conn.execute(
+                    f"SELECT id FROM chunks WHERE (file_rel, start_line, end_line) IN ({placeholders})",  # noqa: S608
+                    [v for key in batch_keys for v in key],
+                ).fetchall()
+            ]
+            if stale_ids:
+                id_ph = ",".join("?" for _ in stale_ids)
+                conn.execute(f"DELETE FROM embeddings WHERE chunk_id IN ({id_ph})", stale_ids)  # noqa: S608
+                conn.execute(f"DELETE FROM chunks WHERE id IN ({id_ph})", stale_ids)  # noqa: S608
+
+            embed_rows: list[tuple[int, bytes]] = []
             for (ch, sha), vec in zip(batch, vecs, strict=True):
-                # Remove stale row at same (file, line range) before reinserting
-                old = conn.execute(
-                    "SELECT id FROM chunks"
-                    " WHERE file_rel=? AND start_line=? AND end_line=?",
-                    (ch.file_rel, ch.start_line, ch.end_line),
-                ).fetchone()
-                if old:
-                    conn.execute(
-                        "DELETE FROM embeddings WHERE chunk_id=?", (old["id"],)
-                    )
-                    conn.execute(
-                        "DELETE FROM chunks WHERE id=?", (old["id"],)
-                    )
                 cur = conn.execute(
                     "INSERT INTO chunks"
                     " (file_rel, start_line, end_line, content_sha256, kind, text)"
@@ -385,11 +392,12 @@ def index_project_embeddings(
                     ),
                 )
                 chunk_id: int = cur.lastrowid  # type: ignore[assignment]  # INSERT always sets lastrowid
-                conn.execute(
-                    "INSERT INTO embeddings (chunk_id, embedding) VALUES (?, ?)",
-                    (chunk_id, _pack_vec(vec)),
-                )
+                embed_rows.append((chunk_id, _pack_vec(vec)))
                 n_chunks_new += 1
+            conn.executemany(
+                "INSERT INTO embeddings (chunk_id, embedding) VALUES (?, ?)",
+                embed_rows,
+            )
             if progress:
                 progress(i + len(batch), len(new_chunks))
 
