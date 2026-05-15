@@ -125,3 +125,8 @@ dmypy.json
 .cc-shrunken.*
 .improve-state-*.json
 tmp_data/
+
+# Patent filings — personal, not for public repo
+PATENT_PROVISIONAL_DRAFT.md
+PATENT_PROVISIONAL_DRAFT.pdf
+convert_patent_pdf.py
