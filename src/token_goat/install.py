@@ -275,12 +275,12 @@ def _hooks_block(binary: str | None = None) -> dict:
 
 
 def _strip_token_goat_entries(entries: list[dict]) -> list[dict]:
-    """Remove hook entries from both old (tokenwise) and current (token_goat) installs."""
+    """Remove hook entries belonging to token-goat (for idempotent re-install)."""
     kept = []
     for entry in entries:
         surviving_hooks = [
             h for h in entry.get("hooks", [])
-            if "token_goat" not in h.get("command", "") and "token_goat" not in h.get("command", "")
+            if "token_goat" not in h.get("command", "")
         ]
         if surviving_hooks:
             kept.append({"matcher": entry.get("matcher", "*"), "hooks": surviving_hooks})
@@ -313,7 +313,7 @@ def patch_settings_json() -> tuple[bool, str]:
     existing_hooks = current.get("hooks", {})
     for event, entries in our_hooks.items():
         existing_entries = existing_hooks.get(event, [])
-        # Strip any prior token-goat/tokenwise entries, then append fresh ones
+        # Strip any prior token-goat entries, then append fresh ones
         kept = _strip_token_goat_entries(existing_entries)
         existing_hooks[event] = kept + entries
     current["hooks"] = existing_hooks
@@ -350,7 +350,7 @@ def unpatch_settings_json() -> str:
     current["hooks"] = hooks
 
     perms = current.get("permissions", {})
-    allowed = [a for a in perms.get("allow", []) if a not in ("Bash(tokenwise:*)", "Bash(token-goat:*)")]
+    allowed = [a for a in perms.get("allow", []) if a != "Bash(token-goat:*)"]
     perms["allow"] = allowed
     # Drop permissions key entirely if it has no meaningful content left
     if not perms.get("allow") and not perms.get("deny") and not perms.get("ask"):
@@ -604,7 +604,7 @@ def _codex_hooks_block(binary: str | None = None) -> dict:
 
 
 def _strip_codex_token_goat_entries(entries: list[dict]) -> list[dict]:
-    """Remove hook entries whose command string contains 'tokenwise' or 'token-goat'."""
+    """Remove hook entries whose command string contains 'token-goat'."""
     return _strip_token_goat_entries(entries)
 
 

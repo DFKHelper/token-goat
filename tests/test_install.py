@@ -411,3 +411,27 @@ def test_install_uninstall_round_trip(tmp_path, monkeypatch, tmp_data_dir):
 
     # Skill dir gone
     assert not skill_path.exists()
+
+
+# ---------------------------------------------------------------------------
+# Regression: _strip_token_goat_entries deduplicates on re-install
+# ---------------------------------------------------------------------------
+
+
+def test_strip_deduplicates_on_reinstall(tmp_path, monkeypatch):
+    """Running patch_settings_json twice must not leave duplicate hook entries."""
+    home = _fake_home(tmp_path)
+    _patch_home(monkeypatch, home)
+    monkeypatch.setattr(install, "token_goat_binary", lambda: "token-goat")
+
+    install.patch_settings_json()
+    install.patch_settings_json()
+
+    data = json.loads((home / ".claude" / "settings.json").read_text())
+    pre_entries = data["hooks"].get("PreToolUse", [])
+    all_commands = [h["command"] for entry in pre_entries for h in entry.get("hooks", [])]
+    tg_commands = [c for c in all_commands if "token_goat" in c]
+
+    assert len(tg_commands) == len(set(tg_commands)), (
+        f"duplicate token-goat PreToolUse commands after re-install: {tg_commands}"
+    )
