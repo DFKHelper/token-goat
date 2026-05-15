@@ -151,3 +151,66 @@ def test_coerce_config_value_json_list_strips_inner_quotes():
     from token_goat.cli import _coerce_config_value
     result = _coerce_config_value(["manual"], '["manual", "auto"]')
     assert result == ["manual", "auto"]
+
+
+# ---------------------------------------------------------------------------
+# config list tests
+# ---------------------------------------------------------------------------
+
+def test_config_list_shows_all_keys(tmp_data_dir):
+    """config list outputs all known config keys."""
+    runner = CliRunner()
+    result = runner.invoke(app, ["config", "list"])
+    assert result.exit_code == 0
+    assert "compact_assist.enabled" in result.output
+    assert "compact_assist.triggers" in result.output
+    assert "compact_assist.min_events" in result.output
+    assert "compact_assist.max_manifest_tokens" in result.output
+
+
+def test_config_list_shows_defaults(tmp_data_dir):
+    """config list shows 'default:' annotation for each key."""
+    runner = CliRunner()
+    result = runner.invoke(app, ["config", "list"])
+    assert result.exit_code == 0
+    assert "default:" in result.output
+
+
+def test_config_list_json_output(tmp_data_dir):
+    """config list --json returns a dict with value + default for each key."""
+    runner = CliRunner()
+    result = runner.invoke(app, ["config", "list", "--json"])
+    assert result.exit_code == 0
+    data = json.loads(result.output)
+    assert isinstance(data, dict)
+    assert "compact_assist.enabled" in data
+    entry = data["compact_assist.enabled"]
+    assert "value" in entry
+    assert "default" in entry
+    assert entry["value"] is True
+    assert entry["default"] is True
+
+
+def test_config_list_json_shows_changed_values(tmp_data_dir):
+    """config list --json reflects a value changed via config set."""
+    runner = CliRunner()
+    runner.invoke(app, ["config", "set", "compact_assist.min_events", "99"])
+    result = runner.invoke(app, ["config", "list", "--json"])
+    assert result.exit_code == 0
+    data = json.loads(result.output)
+    assert data["compact_assist.min_events"]["value"] == 99
+    assert data["compact_assist.min_events"]["default"] == 5
+
+
+def test_config_list_marks_changed_keys(tmp_data_dir):
+    """config list marks keys that differ from defaults with an asterisk."""
+    runner = CliRunner()
+    runner.invoke(app, ["config", "set", "compact_assist.enabled", "false"])
+    result = runner.invoke(app, ["config", "list"])
+    assert result.exit_code == 0
+    # The changed key line should start with '* '
+    changed_line = next(
+        (ln for ln in result.output.splitlines() if "compact_assist.enabled" in ln), None
+    )
+    assert changed_line is not None
+    assert changed_line.startswith("*")

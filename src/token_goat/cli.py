@@ -85,8 +85,8 @@ app = typer.Typer(name="token-goat", no_args_is_help=True)
 hook_app = typer.Typer(name="hook", no_args_is_help=True)
 config_app = typer.Typer(name="config", no_args_is_help=True)
 
-app.add_typer(hook_app)
-app.add_typer(config_app)
+app.add_typer(hook_app, hidden=True)
+app.add_typer(config_app, rich_help_panel="Config")
 
 
 def main() -> None:
@@ -116,7 +116,7 @@ def main() -> None:
         except Exception as e:  # noqa: BLE001
             _LOG.exception("failed to emit hook response: %s", e)
         raise SystemExit(0) from None
-@app.command()
+@app.command(rich_help_panel="Core")
 def symbol(
     name: str,
     all_projects: bool = typer.Option(False, "--all-projects"),
@@ -209,7 +209,7 @@ def symbol(
             typer.echo(f"No matches for {name!r}")
 
 
-@app.command()
+@app.command(rich_help_panel="Core")
 def ref(
     name: str,
     as_json: bool = typer.Option(False, "--json"),
@@ -262,7 +262,7 @@ def ref(
             typer.echo(f"No references found for {name!r}")
 
 
-@app.command()
+@app.command(rich_help_panel="Core")
 def semantic(
     query: str = typer.Argument(...),
     k: int = typer.Option(5, "-k", help="Top-k results"),
@@ -312,7 +312,7 @@ def semantic(
         typer.echo(f"  {preview}")
 
 
-@app.command("map")
+@app.command("map", rich_help_panel="Core")
 def cmd_map(
     budget: int = typer.Option(4000, "--budget", "-b", help="Approximate token budget"),
     json_output: bool = typer.Option(False, "--json", help="Output structured JSON"),
@@ -338,7 +338,7 @@ def cmd_map(
     typer.echo(text)
 
 
-@app.command()
+@app.command(rich_help_panel="Core")
 def deps(
     file: str,
     json_output: bool = typer.Option(False, "--json"),
@@ -348,7 +348,7 @@ def deps(
     read_commands.deps(file, json_output=json_output, depth=depth)
 
 
-@app.command()
+@app.command(rich_help_panel="Core")
 def read(
     target: str = typer.Argument(..., help="<file>::<symbol> — e.g., 'parser.py::index_project'"),
     session_id: str | None = typer.Option(None, "--session-id", "-s"),
@@ -364,7 +364,7 @@ def read(
     )
 
 
-@app.command()
+@app.command(rich_help_panel="Core")
 def section(
     target: str = typer.Argument(..., help="<file>::<heading> — e.g., 'README.md::Install'"),
     session_id: str | None = typer.Option(None, "--session-id", "-s"),
@@ -380,7 +380,7 @@ def section(
     )
 
 
-@app.command("session-touched")
+@app.command("session-touched", rich_help_panel="Advanced")
 def session_touched(
     session_id: str = typer.Option(..., "--session-id", "-s", help="Claude session_id"),
     json_output: bool = typer.Option(False, "--json"),
@@ -411,7 +411,7 @@ def session_touched(
         typer.echo(f"{e.rel_or_abs}  reads={e.read_count}  lines={ranges}{symbols}")
 
 
-@app.command("session-mark")
+@app.command("session-mark", rich_help_panel="Advanced", hidden=True)
 def session_mark(
     file_path: str = typer.Argument(...),
     session_id: str = typer.Option(..., "--session-id", "-s"),
@@ -425,7 +425,7 @@ def session_mark(
     typer.echo("ok")
 
 
-@app.command("gdrive-fetch")
+@app.command("gdrive-fetch", hidden=True)
 def cmd_gdrive_fetch(
     file_id: str = typer.Argument(...),
     json_output: bool = typer.Option(False, "--json"),
@@ -447,7 +447,7 @@ def cmd_gdrive_fetch(
         typer.echo(str(path))
 
 
-@app.command("gdrive-auth")
+@app.command("gdrive-auth", hidden=True)
 def cmd_gdrive_auth(
     client_secrets: Path | None = typer.Option(None, "--client-secrets", help="Path to OAuth client_secrets.json"),  # noqa: B008
 ) -> None:
@@ -495,7 +495,7 @@ def cmd_gdrive_auth(
         raise typer.Exit(1) from None
 
 
-@app.command("fetch-image")
+@app.command("fetch-image", hidden=True)
 def cmd_fetch_image(
     url: str = typer.Argument(...),
     json_output: bool = typer.Option(False, "--json"),
@@ -514,13 +514,13 @@ def cmd_fetch_image(
         typer.echo(str(path))
 
 
-@app.command()
+@app.command(hidden=True)
 def caption_instead(path: str) -> None:
     """Generate text caption instead of image (v2 feature)."""
     typer.echo("v2 feature, not in v1")
 
 
-@app.command()
+@app.command(rich_help_panel="Core")
 def index(
     full: bool = typer.Option(False, "--full"),
     embeddings: bool = typer.Option(False, "--embeddings"),
@@ -591,7 +591,7 @@ def index(
             typer.echo(f"Embeddings skipped: {e}")
 
 
-@app.command()
+@app.command(rich_help_panel="Core")
 def stats(
     window: int = typer.Option(30, "--window", "-w", help="Days to include (0 = all time)"),
     json_output: bool = typer.Option(False, "--json"),
@@ -602,7 +602,7 @@ def stats(
     cli_stats.stats(window=window, json_output=json_output)
 
 
-@app.command()
+@app.command(rich_help_panel="Install")
 def doctor(  # noqa: C901
     fix: bool = typer.Option(  # noqa: B008
         False, "--fix", help="Clear stale index-spawn markers that doctor flags."
@@ -613,12 +613,20 @@ def doctor(  # noqa: C901
     cli_doctor.doctor(fix=fix)
 
 
-@app.command("install")
+@app.command("install", rich_help_panel="Install")
 def cmd_install(
     codex: bool = typer.Option(False, "--codex", help="Also install Codex CLI integration"),  # noqa: B008
 ) -> None:
     """One-time setup: scheduled tasks, settings.json, CLAUDE.md, skill, watchdog."""
     from . import install as inst  # noqa: PLC0415
+
+    # Show current integration state before making changes
+    status = inst.check_status()
+    typer.echo("Current integration status:")
+    for integration, state in status.items():
+        icon = "+" if state == "installed" else "-"
+        typer.echo(f"  [{icon}] {integration}: {state}")
+    typer.echo("")
 
     result = inst.install_all(install_codex=codex)
     typer.echo("token-goat install:")
@@ -631,7 +639,7 @@ def cmd_install(
     typer.echo(r'  Add-MpPreference -ExclusionPath "$env:LOCALAPPDATA\DFK Helper LLC\token-goat"')
 
 
-@app.command("uninstall")
+@app.command("uninstall", rich_help_panel="Install")
 def cmd_uninstall(
     purge: bool = typer.Option(False, "--purge", help=r"Also delete %LOCALAPPDATA%\DFK Helper LLC\token-goat"),  # noqa: B008
     codex: bool = typer.Option(False, "--codex", help="Also remove Codex CLI integration"),  # noqa: B008
@@ -754,7 +762,7 @@ def pre_compact(
     hooks_cli.safe_run("pre-compact", input_file, harness)
 
 
-@app.command("compact-hint")
+@app.command("compact-hint", rich_help_panel="Advanced")
 def compact_hint(
     session_id: str = typer.Option(..., "--session-id", "-s", help="Claude session_id"),
     json_output: bool = typer.Option(False, "--json"),
@@ -875,6 +883,56 @@ def _config_set_value(config: config_mod.Config, key: str, raw_value: str) -> An
     updated = _coerce_config_value(current, raw_value)
     setattr(target, attr, updated)
     return updated
+
+
+@config_app.command(name="list")
+def config_list(
+    json_output: bool = typer.Option(False, "--json"),
+) -> None:
+    """List all config keys with their current values and defaults."""
+    defaults = config_mod.Config()
+    current = config_mod.load()
+
+    # Flatten a dataclass to dotted-key -> value pairs
+    def _flatten(obj: Any, prefix: str = "") -> list[tuple[str, Any]]:
+        from dataclasses import fields as _fields  # noqa: PLC0415
+        pairs: list[tuple[str, Any]] = []
+        for f in _fields(obj):
+            key = f"{prefix}{f.name}" if not prefix else f"{prefix}.{f.name}"
+            val = getattr(obj, f.name)
+            if is_dataclass(val) and not isinstance(val, type):
+                pairs.extend(_flatten(val, prefix=key))
+            else:
+                pairs.append((key, val))
+        return pairs
+
+    default_pairs = dict(_flatten(defaults))
+    current_pairs = dict(_flatten(current))
+
+    if json_output:
+        out = {
+            k: {"value": current_pairs[k], "default": default_pairs[k]}
+            for k in current_pairs
+        }
+        typer.echo(json.dumps(out, ensure_ascii=False, indent=2))
+        return
+
+    # Human-readable table
+    col_key = max(len(k) for k in current_pairs) + 2
+    for k in current_pairs:
+        cur = current_pairs[k]
+        dflt = default_pairs[k]
+        cur_str = json.dumps(cur, ensure_ascii=False)
+        dflt_str = json.dumps(dflt, ensure_ascii=False)
+        changed = cur != dflt
+        marker = "*" if changed else " "
+        if sys.stdout.isatty() and not os.environ.get("NO_COLOR"):
+            key_fmt = f"\033[36m{k}\033[0m"
+            cur_fmt = f"\033[33m{cur_str}\033[0m" if changed else cur_str
+        else:
+            key_fmt = k
+            cur_fmt = cur_str
+        typer.echo(f"{marker} {key_fmt:<{col_key + 9}} {cur_fmt}  (default: {dflt_str})")
 
 
 @config_app.command()
