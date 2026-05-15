@@ -21,8 +21,9 @@ class BashIntent:
     reason: str | None = None
 
 
-# Read tools we recognize: cat, head, tail, less, bat, more, nl, zcat.
-# Scripted readers like sed/awk/perl usually put the file path after the script.
+# Read tools we recognize: cat, head, tail, less, bat, batcat, more, nl, zcat,
+# zless, zmore, sed, awk, perl. Scripted readers usually put the file path
+# after the script.
 READ_BINS = frozenset(
     ["cat", "head", "tail", "bat", "batcat", "less", "more", "nl", "zcat", "zless", "zmore", "sed", "awk", "perl"]
 )

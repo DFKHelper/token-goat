@@ -406,6 +406,29 @@ def test_cli_read_reports_structured_json_error_for_missing_symbol(
     assert payload["error"]["rel_path"] == "index.ts"
 
 
+def test_cli_read_reports_structured_json_error_for_project_not_indexed(
+    tmp_path, tmp_data_dir, make_project, monkeypatch
+):
+    from typer.testing import CliRunner
+
+    from tokenwise.cli import app
+
+    proj_root = tmp_path / "empty_proj"
+    proj_root.mkdir()
+    (proj_root / ".git").mkdir()
+    proj = make_project(proj_root)
+    monkeypatch.chdir(proj_root)
+
+    runner = CliRunner()
+    result = runner.invoke(app, ["read", "index.ts::does_not_exist", "--json"])
+    assert result.exit_code == 0
+    payload = json.loads(result.output)
+    assert payload["ok"] is False
+    assert payload["error"]["code"] == "project_not_indexed"
+    assert payload["error"]["project_hash"] == proj.hash
+    assert "not yet indexed" in payload["error"]["message"]
+
+
 def test_cli_section_reports_ambiguous_file_match(tmp_path, tmp_data_dir, make_project, monkeypatch):
     from typer.testing import CliRunner
 
@@ -426,6 +449,22 @@ def test_cli_section_reports_ambiguous_file_match(tmp_path, tmp_data_dir, make_p
     assert "Ambiguous file match: article.md" in result.output
     assert "a/article.md" in result.output
     assert "b/article.md" in result.output
+
+
+def test_cli_section_reports_structured_json_error_for_missing_heading(indexed_md_cli):
+    from typer.testing import CliRunner
+
+    from tokenwise.cli import app
+
+    runner = CliRunner()
+    result = runner.invoke(app, ["section", "article.md::NoSuchHeading", "--json"])
+    assert result.exit_code == 0
+    payload = json.loads(result.output)
+    assert payload["ok"] is False
+    assert payload["error"]["code"] == "section_not_found"
+    assert payload["error"]["item"] == "NoSuchHeading"
+    assert payload["error"]["item_kind"] == "section"
+    assert payload["error"]["rel_path"] == "article.md"
 
 
 # ---------------------------------------------------------------------------
