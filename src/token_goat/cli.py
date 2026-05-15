@@ -81,6 +81,43 @@ def _warn(msg: str) -> None:
     typer.echo(f"{prefix}{msg}", err=True)
 
 
+def _require_project(
+    msg: str = "no project detected — run from a project directory",
+) -> Any:
+    """Return the current project or exit with code 1.
+
+    Centralises the repeated pattern::
+
+        proj = find_project(Path.cwd())
+        if proj is None:
+            _error("...")
+            raise typer.Exit(1)
+
+    All callers that import ``find_project`` at module scope can use this
+    instead; it performs the import lazily so startup time is unaffected.
+    """
+    from .project import find_project  # noqa: PLC0415
+
+    proj = find_project(Path.cwd())
+    if proj is None:
+        _error(msg)
+        raise typer.Exit(1)
+    return proj
+
+
+def _emit_json(data: Any, *, indent: int | None = None) -> None:
+    """Echo ``data`` as JSON and raise ``typer.Exit(0)``.
+
+    Centralises the repeated ``if json_output: typer.echo(json.dumps(...)); return``
+    pattern.  Callers should invoke this inside an ``if json_output:`` block::
+
+        if json_output:
+            _emit_json(results)
+    """
+    typer.echo(json.dumps(data, indent=indent))
+    raise typer.Exit(0)
+
+
 app = typer.Typer(name="token-goat", no_args_is_help=True)
 hook_app = typer.Typer(name="hook", no_args_is_help=True)
 config_app = typer.Typer(name="config", no_args_is_help=True)
@@ -125,7 +162,6 @@ def symbol(
 ) -> None:
     """Find symbol definition across codebase."""
     from . import db as _db  # noqa: PLC0415
-    from .project import find_project  # noqa: PLC0415
 
     use_tty_color = sys.stdout.isatty() and not as_json
 
@@ -171,10 +207,7 @@ def symbol(
             typer.echo(f"No matches for {name!r}")
         return
 
-    proj = find_project(Path.cwd())
-    if proj is None:
-        _error("no project detected — run from a project directory")
-        raise typer.Exit(1)
+    proj = _require_project()
 
     try:
         with _db.open_project(proj.hash) as conn:
@@ -217,12 +250,8 @@ def ref(
 ) -> None:
     """Find all references to a symbol."""
     from . import db as _db  # noqa: PLC0415
-    from .project import find_project  # noqa: PLC0415
 
-    proj = find_project(Path.cwd())
-    if proj is None:
-        _error("no project detected — run from a project directory")
-        raise typer.Exit(1)
+    proj = _require_project()
 
     try:
         with _db.open_project(proj.hash) as conn:
@@ -270,12 +299,8 @@ def semantic(
 ) -> None:
     """Semantic search using local embeddings (fastembed + sqlite-vec)."""
     from . import embeddings  # noqa: PLC0415
-    from .project import find_project  # noqa: PLC0415
 
-    proj = find_project(Path.cwd())
-    if proj is None:
-        _error("no project detected — run from a project directory")
-        raise typer.Exit(1)
+    proj = _require_project()
 
     try:
         hits = embeddings.semantic_search(proj, query, k=k)
@@ -319,15 +344,11 @@ def cmd_map(
 ) -> None:
     """Generate a PageRank-ranked, token-budgeted overview of the current project."""
     from . import repomap  # noqa: PLC0415
-    from .project import find_project  # noqa: PLC0415
 
-    proj = find_project(Path.cwd())
-    if proj is None:
-        _error(
-            "no project detected (no .git, package.json, etc. found). "
-            "Run from a project directory."
-        )
-        raise typer.Exit(code=1)
+    proj = _require_project(
+        "no project detected (no .git, package.json, etc. found). "
+        "Run from a project directory."
+    )
 
     if json_output:
         data = repomap.build_map_json(proj)

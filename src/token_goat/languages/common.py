@@ -138,6 +138,73 @@ def extract_refs_from_source(
     return refs
 
 
+def make_add_symbol(
+    symbols: list[Any],
+    seen_names: set[tuple[str, int]],
+    source: bytes,
+    language: str = "go",
+    *,
+    promote_methods: bool = False,
+) -> Any:
+    """Return a recursive ``_add_symbol(item, parent_name)`` closure.
+
+    Extracted from the four language adapters (go, typescript, python, rust) to
+    eliminate the duplicated inner-function pattern.  Each adapter passes its own
+    ``symbols`` list and ``seen_names`` set so the closure mutates them directly.
+
+    Parameters
+    ----------
+    symbols:
+        The list to append :class:`~token_goat.parser.Symbol` objects to.
+    seen_names:
+        The deduplication set of ``(name, line)`` pairs.
+    source:
+        Raw file bytes used by :func:`build_signature`.
+    language:
+        Forwarded to :func:`kind_str` for language-specific kind mappings.
+    promote_methods:
+        If ``True``, any ``function`` kind whose parent is not ``None`` is
+        promoted to ``method``.  Python and Rust use this; Go and TypeScript do
+        not need it (Go has no methods via structure; TypeScript does but
+        tree-sitter already labels them).
+    """
+    from ..parser import Symbol  # noqa: PLC0415
+
+    def _add_symbol(item: object, parent_name: str | None = None) -> None:
+        name: str = item.name  # type: ignore[attr-defined]
+        if not name:
+            for child in item.children:  # type: ignore[attr-defined]
+                _add_symbol(child, parent_name=parent_name)
+            return
+        span = item.span
+        body_span = item.body_span if hasattr(item, "body_span") else None
+        line = span.start_line + 1
+        end_line = span.end_line + 1
+        kind = kind_str(item.kind, language=language)
+        if promote_methods and parent_name is not None and kind == "function":
+            kind = "method"
+        sig = build_signature(source, span, body_span)
+
+        key = (name, line)
+        if key not in seen_names:
+            seen_names.add(key)
+            symbols.append(
+                Symbol(
+                    name=name,
+                    kind=kind,
+                    line=line,
+                    end_line=end_line,
+                    signature=sig,
+                    parent_name=parent_name,
+                )
+            )
+
+        for child in item.children:  # type: ignore[attr-defined]
+            _add_symbol(child, parent_name=name)
+
+    return _add_symbol
+
+
 def _compute_section_end_lines(sections: list[Any], lines: list[str]) -> None:
     """Assign end_line to each Section based on the next section of equal or lesser level.
 
