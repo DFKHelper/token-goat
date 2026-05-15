@@ -135,6 +135,11 @@ convert_patent_pdf.py
 *patent*.md
 patantsub.pdf
 
+# IDE
+.idea/
+.vscode/
+*.iml
+
 # Test/temp artifacts
 .tmp/
 .verify-manual/

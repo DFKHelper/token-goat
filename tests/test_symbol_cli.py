@@ -163,7 +163,7 @@ def test_imports_exports_populated(indexed_ts_dir):
 # ---------------------------------------------------------------------------
 
 def test_no_project_symbol_is_graceful():
-    """Running symbol command when no project is detected exits 0 with message."""
+    """Running symbol command when no project is detected exits non-zero with a clear message."""
     from unittest.mock import patch as mock_patch
 
     from typer.testing import CliRunner
@@ -173,12 +173,12 @@ def test_no_project_symbol_is_graceful():
     runner = CliRunner()
     with mock_patch("token_goat.project.find_project", return_value=None):
         result = runner.invoke(app, ["symbol", "foo"])
-    assert result.exit_code == 0
+    assert result.exit_code != 0
     assert "no project detected" in result.output.lower()
 
 
 def test_no_project_ref_is_graceful():
-    """Running ref command when no project is detected exits 0 with message."""
+    """Running ref command when no project is detected exits non-zero with a clear message."""
     from unittest.mock import patch as mock_patch
 
     from typer.testing import CliRunner
@@ -188,12 +188,12 @@ def test_no_project_ref_is_graceful():
     runner = CliRunner()
     with mock_patch("token_goat.project.find_project", return_value=None):
         result = runner.invoke(app, ["ref", "foo"])
-    assert result.exit_code == 0
+    assert result.exit_code != 0
     assert "no project detected" in result.output.lower()
 
 
 def test_no_project_index_is_graceful():
-    """Running index command when no project is detected exits 0 with message."""
+    """Running index command when no project is detected exits non-zero with a clear message."""
     from unittest.mock import patch as mock_patch
 
     from typer.testing import CliRunner
@@ -203,7 +203,7 @@ def test_no_project_index_is_graceful():
     runner = CliRunner()
     with mock_patch("token_goat.project.find_project", return_value=None):
         result = runner.invoke(app, ["index"])
-    assert result.exit_code == 0
+    assert result.exit_code != 0
     assert "no project detected" in result.output.lower()
 
 

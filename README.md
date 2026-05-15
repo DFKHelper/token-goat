@@ -115,7 +115,7 @@ All caches and the index live in `%LOCALAPPDATA%\token-goat\`. Delete the folder
 
 ## About
 
-I built this because long Claude Code sessions on my machine kept burning context in the same ways: screenshots landing at 2-3 MB, the agent re-reading a file it parsed hours earlier in the same conversation, compactions that forgot which functions were edited. Each felt preventable. The architecture for how it's wired is in [CLAUDE.md](CLAUDE.md).
+I built this because long Claude Code and Codex sessions on my machine kept burning context in the same ways: screenshots landing at 2-3 MB, the agent re-reading a file it parsed hours earlier in the same conversation, compactions that forgot which functions were edited. Each felt preventable. The architecture for how it's wired is in [CLAUDE.md](CLAUDE.md).
 
 This is a solo project. I use it daily on Windows 11. Tests run across Python 3.11, 3.12, and 3.13.
 
