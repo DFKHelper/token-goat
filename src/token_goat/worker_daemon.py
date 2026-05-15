@@ -46,12 +46,16 @@ def run_daemon(stop_event=None) -> None:
     stats = cleanup_on_startup()
     if any(stats.values()):
         _LOG.info("startup cleanup: %s", stats)
+    else:
+        _LOG.debug("startup cleanup: no actions needed")
 
     last_heartbeat = time.time()
     last_maintenance = time.time()
     last_periodic_reindex = time.time()
     last_version_check = time.time()
     restart_for_upgrade = False
+    _LOG.debug("worker main loop initialized: heartbeat=%.1fs maintenance=%.1fs reindex=%.1fs",
+              _worker.HEARTBEAT_INTERVAL, _worker.MAINTENANCE_INTERVAL, _worker.PERIODIC_REINDEX_INTERVAL)
 
     def should_stop() -> bool:
         """Return True when the caller has signalled the worker to shut down."""
@@ -73,9 +77,11 @@ def run_daemon(stop_event=None) -> None:
             if now - last_heartbeat >= _worker.HEARTBEAT_INTERVAL:
                 _worker._heartbeat()
                 last_heartbeat = now
+                _LOG.debug("worker heartbeat written")
 
             entries = _worker.drain_dirty_queue()
             if entries:
+                _LOG.debug("found %d dirty queue entries, processing", len(entries))
                 _process_dirty_entries(entries)
 
             if now - last_maintenance >= _worker.MAINTENANCE_INTERVAL:
