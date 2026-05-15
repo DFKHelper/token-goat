@@ -767,6 +767,109 @@ def unpatch_codex_agents_md() -> str:
 
 
 # ---------------------------------------------------------------------------
+# Integration status check
+# ---------------------------------------------------------------------------
+
+
+def _check_settings_json() -> str:
+    """Return 'installed' if settings.json has token-goat hooks, otherwise 'not installed'."""
+    settings_path = claude_settings_path()
+    if not settings_path.exists():
+        return "not installed (settings.json absent)"
+    try:
+        data = json.loads(settings_path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        return "error (settings.json malformed)"
+    hooks = data.get("hooks", {})
+    for _event, entries in hooks.items():
+        for entry in entries:
+            for h in entry.get("hooks", []):
+                if "token_goat" in h.get("command", ""):
+                    return "installed"
+    return "not installed"
+
+
+def _check_claude_md() -> str:
+    """Return 'installed' if CLAUDE.md contains the token-goat block."""
+    md_path = claude_md_path()
+    if not md_path.exists():
+        return "not installed (CLAUDE.md absent)"
+    content = md_path.read_text(encoding="utf-8")
+    if CLAUDE_MD_BEGIN in content:
+        return "installed"
+    return "not installed"
+
+
+def _check_skill() -> str:
+    """Return 'installed' if the skill directory and SKILL.md exist."""
+    skill_path = skill_dir() / "SKILL.md"
+    if skill_path.exists():
+        return "installed"
+    return "not installed"
+
+
+def _check_worker_task() -> str:
+    """Return 'installed' if the HKCU Run key for the worker exists."""
+    import sys
+    if sys.platform != "win32":
+        return "n/a (non-Windows)"
+    try:
+        import winreg  # type: ignore[import]
+        key = winreg.OpenKey(
+            winreg.HKEY_CURRENT_USER,
+            r"Software\Microsoft\Windows\CurrentVersion\Run",
+            0,
+            winreg.KEY_READ,
+        )
+        try:
+            winreg.QueryValueEx(key, TASK_WORKER)
+            winreg.CloseKey(key)
+            return "installed"
+        except FileNotFoundError:
+            winreg.CloseKey(key)
+            return "not installed"
+    except Exception as e:
+        return f"error ({e})"
+
+
+def _check_update_task() -> str:
+    """Return 'installed' if the weekly auto-update scheduled task exists."""
+    return "installed" if task_exists(TASK_UPDATE) else "not installed"
+
+
+def _check_codex_config() -> str:
+    """Return 'installed' if ~/.codex/config.toml has token-goat hooks."""
+    import tomllib  # noqa: PLC0415
+
+    cfg_path = codex_config_path()
+    if not cfg_path.exists():
+        return "not installed (codex config absent)"
+    try:
+        data = tomllib.loads(cfg_path.read_text(encoding="utf-8"))
+    except Exception:  # noqa: BLE001
+        return "error (codex config malformed)"
+    hooks = data.get("hooks", {})
+    for _event, entries in hooks.items():
+        for entry in entries:
+            for h in entry.get("hooks", []):
+                if "token_goat" in h.get("command", ""):
+                    return "installed"
+    return "not installed"
+
+
+def check_status() -> dict[str, str]:
+    """Return a dict of integration name -> status string for display before install/uninstall."""
+    return {
+        "Claude Code hooks (settings.json)": _check_settings_json(),
+        "CLAUDE.md block": _check_claude_md(),
+        "skill (SKILL.md)": _check_skill(),
+        "worker autostart (HKCU Run)": _check_worker_task(),
+        "update task (schtasks)": _check_update_task(),
+        "Codex hooks (config.toml)": _check_codex_config(),
+    }
+
+
+# ---------------------------------------------------------------------------
 # Top-level install / uninstall
 # ---------------------------------------------------------------------------
 
