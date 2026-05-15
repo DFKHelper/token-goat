@@ -11,13 +11,6 @@ from . import common
 _LOG = logging.getLogger("tokenwise.languages.typescript")
 
 
-def _get_tlp() -> object | None:
-    try:
-        import tree_sitter_language_pack as tlp  # noqa: PLC0415
-    except ModuleNotFoundError:
-        return None
-    return tlp
-
 # ---------------------------------------------------------------------------
 # ABI special-case config (tunable via caller meta, not exposed in CLI yet)
 # ---------------------------------------------------------------------------
@@ -138,37 +131,9 @@ def _symbol_kind_str(sym_kind: object) -> str:
     return common.sym_kind_str(sym_kind)
 
 
-def _build_signature(source: bytes, item_span: object, body_span: object | None) -> str | None:
-    """Extract header text (before body brace/colon) from raw source bytes."""
-    if body_span is None:
-        return None
-    try:
-        header = source[item_span.start_byte : body_span.start_byte]
-        text = header.decode("utf-8", errors="replace").strip()
-        # Truncate to 200 chars
-        if len(text) > 200:
-            text = text[:200]
-        return text or None
-    except (IndexError, AttributeError):
-        return None
-
-
 def _extract_refs(source: bytes) -> list[Ref]:
     """Extract call-site refs using regex on the source text."""
-    refs: list[Ref] = []
-    seen: set[tuple[str, int]] = set()
-    text = source.decode("utf-8", errors="replace")
-    for lineno, line in enumerate(text.splitlines(), 1):
-        for m in _CALL_RE.finditer(line):
-            name = m.group(1)
-            if name in _CALL_NOISE or len(name) <= 1:
-                continue
-            key = (name, lineno)
-            if key in seen:
-                continue
-            seen.add(key)
-            refs.append(Ref(name=name, line=lineno, col=m.start(1), context=line.strip()[:120]))
-    return refs
+    return common.extract_refs_from_source(source, _CALL_RE, _CALL_NOISE)  # type: ignore[return-value]
 
 
 def extract(
@@ -196,7 +161,7 @@ def extract(
         # Honour caller-supplied cap
         return syms[:abi_max], refs, ie, []
 
-    tlp = _get_tlp()
+    tlp = common.get_tlp()
     if tlp is None:
         return [], [], [], []
 
@@ -236,7 +201,7 @@ def extract(
         line = span.start_line + 1  # convert to 1-indexed
         end_line = span.end_line + 1
         kind = _kind_str(item.kind)
-        sig = _build_signature(source, span, body_span)
+        sig = common.build_signature(source, span, body_span)
 
         key = (name, line)
         if key not in seen_names:
