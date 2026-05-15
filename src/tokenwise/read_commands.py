@@ -69,7 +69,7 @@ def _run_read_like_command(
         proj, rel, current_proj = _resolve_file_target(file_part)
     except read_replacement.AmbiguousFileMatch as exc:
         _emit_ambiguous_file_match(file_part, exc.candidates)
-        raise typer.Exit(0)
+        raise typer.Exit(0) from None
 
     if rel is None:
         if current_proj is None:

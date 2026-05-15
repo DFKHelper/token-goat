@@ -11,16 +11,16 @@ dependencies = [
     "tree-sitter>=0.23,<0.24",
     "sqlite-vec>=0.1.5",
     "fastembed>=0.3.0",
-    "Pillow>=10.0.0",
+    "Pillow>=10.4.0",
     "httpx>=0.27.0",
     "google-api-python-client>=2.100.0",
     "google-auth>=2.30.0",
     "google-auth-oauthlib>=1.2.0",
     "platformdirs>=4.0.0",
-    "psutil>=5.9.0",
+    "psutil>=6.0.0",
     "networkx>=3.0",
     "tomli-w>=1.0.0",
-    "rich>=13.0.0",
+    "rich>=14.0.0",
     "tree-sitter-language-pack>=0.7,<2.0",
 ]
 
@@ -41,7 +41,7 @@ dev = [
     "pytest-cov>=5.0.0",
     "ruff>=0.6.0",
     "mypy>=1.10.0",
-    "types-psutil>=5.9.0",
+    "types-psutil>=6.0.0",
 ]
 
 [build-system]

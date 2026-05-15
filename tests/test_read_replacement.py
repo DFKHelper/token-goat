@@ -426,8 +426,9 @@ class TestReadCommandNoProject:
     def test_read_no_project_exits_cleanly(self, tmp_data_dir, monkeypatch, tmp_path):
         """tokenwise read <file>::<sym> when cwd has no project must exit 0 with error text."""
         from typer.testing import CliRunner
-        from tokenwise.cli import app
+
         from tokenwise import project as project_mod
+        from tokenwise.cli import app
 
         monkeypatch.setattr(project_mod, "find_project", lambda _cwd: None)
         monkeypatch.chdir(tmp_path)
@@ -440,8 +441,9 @@ class TestReadCommandNoProject:
     def test_section_no_project_exits_cleanly(self, tmp_data_dir, monkeypatch, tmp_path):
         """tokenwise section <file>::<heading> with no project must exit 0 with error text."""
         from typer.testing import CliRunner
-        from tokenwise.cli import app
+
         from tokenwise import project as project_mod
+        from tokenwise.cli import app
 
         monkeypatch.setattr(project_mod, "find_project", lambda _cwd: None)
         monkeypatch.chdir(tmp_path)
@@ -464,8 +466,9 @@ class TestResolveFileCrossProject:
     ):
         """A symbol in a *different* indexed project is found via cross-project lookup."""
         from typer.testing import CliRunner
-        from tokenwise.cli import app
+
         from tokenwise import project as project_mod
+        from tokenwise.cli import app
 
         # Build and index a "foreign" project with a known Python file
         foreign_root = tmp_path / "foreign"
@@ -497,6 +500,7 @@ class TestDepsStub:
     def test_deps_command_exits_without_error(self, tmp_data_dir, tmp_path, monkeypatch):
         """The deps stub command exits 0 and prints 'not yet implemented'."""
         from typer.testing import CliRunner
+
         from tokenwise.cli import app
 
         monkeypatch.chdir(tmp_path)
