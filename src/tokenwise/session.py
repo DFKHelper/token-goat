@@ -46,6 +46,7 @@ class SessionCache:
     greps: list[GrepEntry] = field(default_factory=list)
     # Tracks files edited this session: normalized_path → edit count
     edited_files: dict[str, int] = field(default_factory=dict)
+    unavailable: bool = field(default=False, repr=False, compare=False)
 
     def to_dict(self) -> dict:
         """Serialize to dict for JSON."""
@@ -82,6 +83,16 @@ class SessionCache:
         )
 
 
+def _fresh_cache(session_id: str, *, unavailable: bool = False) -> SessionCache:
+    now = time.time()
+    return SessionCache(
+        session_id=session_id,
+        started_ts=now,
+        last_activity_ts=now,
+        unavailable=unavailable,
+    )
+
+
 def _normalize_path(p: str) -> str:
     """Normalize a path for use as a cache key. Lowercase Windows drive, forward slashes."""
     s = str(Path(p))
@@ -93,10 +104,23 @@ def _normalize_path(p: str) -> str:
 
 def _atomic_write(path: Path, content: str) -> None:
     """Write to a temp file, then rename. Avoids partial writes if killed mid-flight."""
-    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp = path.with_name(f"{path.name}.{threading.get_ident()}.{time.monotonic_ns()}.tmp")
     path.parent.mkdir(parents=True, exist_ok=True)
-    tmp.write_text(content, encoding="utf-8")
-    tmp.replace(path)
+    try:
+        tmp.write_text(content, encoding="utf-8")
+        last_exc: PermissionError | None = None
+        for delay in (0.0, 0.05, 0.15):
+            if delay:
+                time.sleep(delay)
+            try:
+                tmp.replace(path)
+                return
+            except PermissionError as exc:
+                last_exc = exc
+        if last_exc is not None:
+            raise last_exc
+    finally:
+        tmp.unlink(missing_ok=True)
 
 
 def _validate_session_id(session_id: str) -> None:
@@ -118,27 +142,51 @@ def load(session_id: str) -> SessionCache:
     """Load a session cache, or return an empty one."""
     _validate_session_id(session_id)
     p = paths.session_cache_path(session_id)
-    if not p.exists():
-        now = time.time()
-        _LOG.info("session opened: %s (new)", session_id[:16])
-        return SessionCache(session_id=session_id, started_ts=now, last_activity_ts=now)
     try:
-        cache = SessionCache.from_dict(json.loads(p.read_text(encoding="utf-8")))
+        if not p.exists():
+            _LOG.info("session opened: %s (new)", session_id[:16])
+            return _fresh_cache(session_id)
+    except OSError as exc:
+        _LOG.debug("session cache unavailable (%s); returning empty cache", exc)
+        return _fresh_cache(session_id, unavailable=True)
+
+    read_error: OSError | None = None
+    for delay in (0.0, 0.05, 0.15):
+        if delay:
+            time.sleep(delay)
+        try:
+            raw = p.read_text(encoding="utf-8")
+        except OSError as exc:
+            read_error = exc
+            continue
+        try:
+            cache = SessionCache.from_dict(json.loads(raw))
+        except (json.JSONDecodeError, KeyError, TypeError) as e:
+            _LOG.warning("session cache corrupted (%s); resetting", e)
+            return _fresh_cache(session_id)
+        cache.unavailable = False
         _LOG.info("session opened: %s (resuming, %d files tracked)", session_id[:16], len(cache.files))
         return cache
-    except (json.JSONDecodeError, KeyError, TypeError) as e:
-        _LOG.warning("session cache corrupted (%s); resetting", e)
-        now = time.time()
-        return SessionCache(session_id=session_id, started_ts=now, last_activity_ts=now)
+
+    if read_error is not None:
+        _LOG.debug("session cache unavailable (%s); returning empty cache", read_error)
+    return _fresh_cache(session_id, unavailable=True)
 
 
 def save(cache: SessionCache) -> None:
     """Atomically persist the session cache to disk."""
+    if cache.unavailable:
+        _LOG.debug("session save skipped (cache unavailable): %s", cache.session_id[:16])
+        return
     with _FILE_LOCK:
-        _atomic_write(
-            paths.session_cache_path(cache.session_id),
-            json.dumps(cache.to_dict(), ensure_ascii=False),
-        )
+        try:
+            _atomic_write(
+                paths.session_cache_path(cache.session_id),
+                json.dumps(cache.to_dict(), ensure_ascii=False),
+            )
+        except OSError as exc:
+            _LOG.debug("session save skipped (locked/unavailable): %s", exc)
+            return
     _LOG.debug("session saved: %s (%d files, %d greps)", cache.session_id[:16], len(cache.files), len(cache.greps))
 
 
@@ -152,6 +200,8 @@ def mark_file_read(
 ) -> SessionCache:
     """Record that a file (or symbol within) was read. Returns the updated cache."""
     cache = load(session_id)
+    if cache.unavailable:
+        return cache
     key = _normalize_path(path)
     entry = cache.files.get(key)
     now = time.time()
@@ -179,6 +229,8 @@ def mark_grep(
 ) -> SessionCache:
     """Record a Grep call. Returns the updated cache."""
     cache = load(session_id)
+    if cache.unavailable:
+        return cache
     now = time.time()
     cache.greps.append(GrepEntry(pattern=pattern, path=path, ts=now, result_count=result_count))
     cache.last_activity_ts = now
@@ -204,6 +256,8 @@ def _merge_ranges(ranges: list[tuple[int, int]]) -> list[tuple[int, int]]:
 def get_file_entry(session_id: str, path: str) -> FileEntry | None:
     """Get a file entry by path, or None if not found."""
     cache = load(session_id)
+    if cache.unavailable:
+        return None
     return cache.files.get(_normalize_path(path))
 
 
@@ -220,6 +274,8 @@ def reset_session(session_id: str) -> None:
 def mark_file_edited(session_id: str, path: str) -> SessionCache:
     """Record that a file was edited (written/modified) this session."""
     cache = load(session_id)
+    if cache.unavailable:
+        return cache
     key = _normalize_path(path)
     cache.edited_files[key] = cache.edited_files.get(key, 0) + 1
     cache.last_activity_ts = time.time()
