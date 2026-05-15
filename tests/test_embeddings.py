@@ -186,7 +186,7 @@ def test_cli_semantic_no_embeddings(ts_project, monkeypatch):
 
 
 def test_cli_index_embeddings_no_project(tmp_data_dir):
-    """token-goat index --embeddings when no project detected exits 0 with message."""
+    """token-goat index --embeddings when no project detected exits non-zero with message."""
     from typer.testing import CliRunner  # noqa: PLC0415
 
     from token_goat import cli  # noqa: PLC0415
@@ -194,7 +194,7 @@ def test_cli_index_embeddings_no_project(tmp_data_dir):
     runner = CliRunner()
     with patch("token_goat.project.find_project", return_value=None):
         result = runner.invoke(cli.app, ["index", "--embeddings"], catch_exceptions=False)
-    assert result.exit_code == 0
+    assert result.exit_code != 0
     assert "no project detected" in result.output.lower()
 
 
