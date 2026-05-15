@@ -177,6 +177,45 @@ class TestCorruptedJson:
         assert loaded.greps == []
 
 
+class TestUnavailableCacheAccess:
+    """Permission-error handling for session cache files."""
+
+    def test_mark_file_read_skips_when_cache_file_is_locked(self, tmp_data_dir, monkeypatch):
+        """Locked session cache during load returns an unavailable cache and does not overwrite."""
+        session_id = "locked_read"
+        session.mark_file_read(session_id, "seed.py")
+
+        def boom(self, *args, **kwargs):
+            raise PermissionError("[Errno 13] Permission denied")
+
+        with monkeypatch.context() as m:
+            m.setattr(session.Path, "read_text", boom)
+            cache = session.mark_file_read(session_id, "new.py")
+            assert cache.unavailable is True
+
+        loaded = session.load(session_id)
+        assert "seed.py" in loaded.files
+        assert "new.py" not in loaded.files
+
+    def test_mark_file_read_skips_persist_when_replace_is_locked(self, tmp_data_dir, monkeypatch):
+        """Locked session cache during save keeps the existing cache intact."""
+        session_id = "locked_write"
+        session.mark_file_read(session_id, "seed.py")
+
+        def boom(self, *args, **kwargs):
+            raise PermissionError("[WinError 32] The process cannot access the file")
+
+        with monkeypatch.context() as m:
+            m.setattr(session.Path, "replace", boom)
+            cache = session.mark_file_read(session_id, "new.py", offset=0, limit=10)
+            assert cache.unavailable is False
+            assert "new.py" in cache.files
+
+        loaded = session.load(session_id)
+        assert "seed.py" in loaded.files
+        assert "new.py" not in loaded.files
+
+
 class TestCleanupStale:
     """Stale session cleanup."""
 
