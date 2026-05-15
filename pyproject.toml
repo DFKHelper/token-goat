@@ -4,7 +4,7 @@ version = "0.3.0"
 description = "Claude Code companion that reduces token usage via local indexing, image shrinking, and session-context caching."
 readme = "README.md"
 requires-python = ">=3.11,<3.15"
-authors = [{ name = "Zelys" }]
+authors = [{ name = "DFK Helper LLC" }]
 license = { text = "PolyForm Noncommercial License 1.0.0" }
 dependencies = [
     "typer>=0.12.0",

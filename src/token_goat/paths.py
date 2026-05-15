@@ -36,7 +36,7 @@ def python_runner_command(*subcommand: str) -> str:
 
     The interpreter path uses forward slashes. Claude Code on Windows runs
     hook commands through Git Bash, which strips backslashes as escape
-    sequences (``C:\\Users\\zelys`` becomes ``C:Userszelys``). Windows itself
+    sequences (``C:\\Users\\jdoe`` becomes ``C:Usersjdoe``). Windows itself
     accepts forward slashes in paths just fine, so this works for cmd.exe,
     PowerShell, bash, and direct CreateProcess invocations.
     """
@@ -52,7 +52,7 @@ def python_runner_command(*subcommand: str) -> str:
 
 def data_dir() -> Path:
     """Get token-goat data directory."""
-    return Path(platformdirs.user_data_dir("token-goat", "Zelys"))
+    return Path(platformdirs.user_data_dir("token-goat", "DFK Helper LLC"))
 
 
 def global_db_path() -> Path:

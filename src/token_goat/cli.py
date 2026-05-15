@@ -628,12 +628,12 @@ def cmd_install(
     typer.echo("All set. token-goat will be invisible from here on.")
     typer.echo("Run `token-goat doctor` anytime to check status.")
     typer.echo("Defender exclusion (optional, for max perf):")
-    typer.echo(r'  Add-MpPreference -ExclusionPath "$env:LOCALAPPDATA\Zelys\token-goat"')
+    typer.echo(r'  Add-MpPreference -ExclusionPath "$env:LOCALAPPDATA\DFK Helper LLC\token-goat"')
 
 
 @app.command("uninstall")
 def cmd_uninstall(
-    purge: bool = typer.Option(False, "--purge", help=r"Also delete %LOCALAPPDATA%\Zelys\token-goat"),  # noqa: B008
+    purge: bool = typer.Option(False, "--purge", help=r"Also delete %LOCALAPPDATA%\DFK Helper LLC\token-goat"),  # noqa: B008
     codex: bool = typer.Option(False, "--codex", help="Also remove Codex CLI integration"),  # noqa: B008
 ) -> None:
     """Cleanly reverse install."""
