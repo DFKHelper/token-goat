@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 
+import pytest
 from typer.testing import CliRunner
 
 from token_goat import config as config_mod
@@ -30,3 +31,123 @@ def test_config_get_and_set_round_trip(tmp_data_dir):
     assert result.exit_code == 0
     assert json.loads(result.output) == ["manual", "auto"]
     assert config_mod.load().compact_assist.triggers == ["manual", "auto"]
+
+
+def test_config_get_unknown_key_exits_2(tmp_data_dir):
+    """config get with a nonexistent key must exit 2 and emit an error message."""
+    runner = CliRunner()
+    result = runner.invoke(app, ["config", "get", "compact_assist.does_not_exist"])
+    assert result.exit_code == 2
+    assert "Unknown config key" in result.output or "Unknown config key" in (result.stderr or "")
+
+
+def test_config_set_unknown_key_exits_2(tmp_data_dir):
+    """config set with a nonexistent key must exit 2 and emit an error message."""
+    runner = CliRunner()
+    result = runner.invoke(app, ["config", "set", "compact_assist.no_such_field", "42"])
+    assert result.exit_code == 2
+
+
+def test_config_set_invalid_bool_value_exits_2(tmp_data_dir):
+    """config set with a non-boolean value for a bool field must exit 2."""
+    runner = CliRunner()
+    result = runner.invoke(app, ["config", "set", "compact_assist.enabled", "maybe"])
+    assert result.exit_code == 2
+
+
+def test_config_set_invalid_int_value_exits_2(tmp_data_dir):
+    """config set with a non-integer value for an int field must exit 2."""
+    runner = CliRunner()
+    result = runner.invoke(app, ["config", "set", "compact_assist.min_events", "not_a_number"])
+    assert result.exit_code == 2
+
+
+def test_config_get_nested_int_key(tmp_data_dir):
+    """config get for compact_assist.max_manifest_tokens returns the default (400)."""
+    runner = CliRunner()
+    result = runner.invoke(app, ["config", "get", "compact_assist.max_manifest_tokens"])
+    assert result.exit_code == 0
+    assert json.loads(result.output) == 400
+
+
+def test_config_set_max_manifest_tokens_round_trip(tmp_data_dir):
+    """config set compact_assist.max_manifest_tokens persists and is readable back."""
+    runner = CliRunner()
+    result = runner.invoke(app, ["config", "set", "compact_assist.max_manifest_tokens", "250"])
+    assert result.exit_code == 0
+    assert json.loads(result.output) == 250
+    assert config_mod.load().compact_assist.max_manifest_tokens == 250
+
+    # Read it back via CLI to confirm persistence
+    result = runner.invoke(app, ["config", "get", "compact_assist.max_manifest_tokens"])
+    assert result.exit_code == 0
+    assert json.loads(result.output) == 250
+
+
+def test_config_get_section_returns_json_object(tmp_data_dir):
+    """config get compact_assist returns the full section as a JSON object."""
+    runner = CliRunner()
+    result = runner.invoke(app, ["config", "get", "compact_assist"])
+    assert result.exit_code == 0
+    data = json.loads(result.output)
+    assert isinstance(data, dict)
+    assert "enabled" in data
+    assert "triggers" in data
+    assert "min_events" in data
+    assert "max_manifest_tokens" in data
+
+
+def test_config_set_triggers_json_list_syntax(tmp_data_dir):
+    """config set accepts a JSON array string for a list field."""
+    runner = CliRunner()
+    result = runner.invoke(app, ["config", "set", "compact_assist.triggers", '["manual"]'])
+    assert result.exit_code == 0
+    assert json.loads(result.output) == ["manual"]
+    assert config_mod.load().compact_assist.triggers == ["manual"]
+
+
+def test_config_set_enabled_truthy_variants(tmp_data_dir):
+    """config set accepts 'yes', 'on', '1' as truthy boolean values."""
+    runner = CliRunner()
+    for truthy in ("yes", "on", "1", "true"):
+        # First disable
+        runner.invoke(app, ["config", "set", "compact_assist.enabled", "false"])
+        result = runner.invoke(app, ["config", "set", "compact_assist.enabled", truthy])
+        assert result.exit_code == 0, f"Failed for truthy={truthy!r}"
+        assert json.loads(result.output) is True, f"Expected True for truthy={truthy!r}"
+
+
+def test_config_set_enabled_falsy_variants(tmp_data_dir):
+    """config set accepts 'no', 'off', '0', 'false' as falsy boolean values."""
+    runner = CliRunner()
+    for falsy in ("no", "off", "0", "false"):
+        # First enable
+        runner.invoke(app, ["config", "set", "compact_assist.enabled", "true"])
+        result = runner.invoke(app, ["config", "set", "compact_assist.enabled", falsy])
+        assert result.exit_code == 0, f"Failed for falsy={falsy!r}"
+        assert json.loads(result.output) is False, f"Expected False for falsy={falsy!r}"
+
+
+# ---------------------------------------------------------------------------
+# _coerce_config_value unit tests (internal helper, but has meaningful branches)
+# ---------------------------------------------------------------------------
+
+def test_coerce_config_value_empty_string_becomes_empty_list():
+    """An empty string coerces to [] for a list field."""
+    from token_goat.cli import _coerce_config_value
+    result = _coerce_config_value(["manual"], "")
+    assert result == []
+
+
+def test_coerce_config_value_comma_separated_list():
+    """Comma-separated string coerces to list of stripped items."""
+    from token_goat.cli import _coerce_config_value
+    result = _coerce_config_value(["manual"], "manual, auto")
+    assert result == ["manual", "auto"]
+
+
+def test_coerce_config_value_json_list_strips_inner_quotes():
+    """JSON list string like '["manual"]' coerces to Python list."""
+    from token_goat.cli import _coerce_config_value
+    result = _coerce_config_value(["manual"], '["manual", "auto"]')
+    assert result == ["manual", "auto"]

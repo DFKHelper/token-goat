@@ -974,3 +974,338 @@ class TestResolveFileCache:
         with mock.patch.object(rr, "_resolve_file_rel_db", side_effect=RuntimeError("should not be called")):
             rel2 = rr.resolve_file_rel(proj, "app.py")
         assert rel2 == "app.py"
+
+
+# ---------------------------------------------------------------------------
+# section command — edge cases: nested headings, special chars, empty section
+# ---------------------------------------------------------------------------
+
+class TestSectionEdgeCases:
+    """Edge cases for token-goat section that weren't covered by existing tests."""
+
+    def test_section_top_level_heading(self, indexed_md_cli):
+        """token-goat section retrieves a top-level (H1) heading."""
+        from typer.testing import CliRunner
+        from token_goat.cli import app
+
+        runner = CliRunner()
+        result = runner.invoke(app, ["section", "article.md::Top Level"])
+        assert result.exit_code == 0
+        assert "Top Level" in result.output or "Some content" in result.output
+
+    def test_section_nested_h3_heading(self, indexed_md_cli):
+        """token-goat section can retrieve a level-3 (###) heading."""
+        from typer.testing import CliRunner
+        from token_goat.cli import app
+
+        runner = CliRunner()
+        result = runner.invoke(app, ["section", "article.md::Subsection"])
+        assert result.exit_code == 0
+        assert "Subsection" in result.output or "Details" in result.output
+
+    def test_section_results_heading(self, indexed_md_cli):
+        """Retrieving the last section in a file (Results) works correctly."""
+        from typer.testing import CliRunner
+        from token_goat.cli import app
+
+        runner = CliRunner()
+        result = runner.invoke(app, ["section", "article.md::Results"])
+        assert result.exit_code == 0
+        assert "Results" in result.output or "What we found" in result.output
+
+    def test_section_json_contains_level(self, indexed_md_cli):
+        """--json output includes a 'level' field for the heading depth."""
+        from typer.testing import CliRunner
+        from token_goat.cli import app
+
+        runner = CliRunner()
+        result = runner.invoke(app, ["section", "--json", "article.md::Methodology"])
+        assert result.exit_code == 0
+        data = json.loads(result.output)
+        assert "level" in data
+        assert data["level"] == 2  # ## Methodology is level 2
+
+    def test_section_missing_separator_exits_2(self, indexed_md_cli):
+        """token-goat section without '::' separator must exit 2."""
+        from typer.testing import CliRunner
+        from token_goat.cli import app
+
+        runner = CliRunner()
+        result = runner.invoke(app, ["section", "article.md"])
+        assert result.exit_code == 2
+
+    def test_section_nonexistent_heading_text_output(self, indexed_md_cli):
+        """Missing heading in text mode exits 0 with a message on stdout or stderr."""
+        from typer.testing import CliRunner
+        from token_goat.cli import app
+
+        runner = CliRunner()
+        result = runner.invoke(app, ["section", "article.md::NoSuchHeadingXYZ"])
+        assert result.exit_code == 0
+        combined = result.output + (result.stderr or "")
+        assert "NoSuchHeadingXYZ" in combined or "Section not found" in combined or "not found" in combined.lower()
+
+    def test_read_section_subsection_direct(self, md_project):
+        """read_replacement.read_section can find a nested ### heading directly."""
+        proj_root, proj = md_project
+        result = read_replacement.read_section(proj, "article.md", "Subsection")
+        assert result is not None
+        assert "Subsection" in result["heading"] or "Details" in result["text"]
+
+    def test_read_section_results_returns_text(self, md_project):
+        """read_replacement.read_section returns non-empty text for the last section."""
+        proj_root, proj = md_project
+        result = read_replacement.read_section(proj, "article.md", "Results")
+        assert result is not None
+        assert result["text"].strip() != ""
+
+
+# ---------------------------------------------------------------------------
+# deps --depth flag — text output for transitive dependencies
+# ---------------------------------------------------------------------------
+
+class TestDepsDepthTextOutput:
+    """Tests for deps command with --depth flag producing correct text output.
+
+    These tests use monkeypatching (same pattern as existing transitive test)
+    because tree-sitter doesn't resolve cross-file import refs in the test
+    fixture environment.
+    """
+
+    def _fake_proj_and_conn(self, tmp_path, make_project):
+        """Create a minimal indexed project and return (proj_root, proj)."""
+        from token_goat.parser import index_project
+
+        proj_root = tmp_path / "deps_text"
+        proj_root.mkdir()
+        (proj_root / ".git").mkdir()
+        (proj_root / "a.ts").write_text("export function a() { return 1; }\n", encoding="utf-8")
+        proj = make_project(proj_root)
+        index_project(proj, full=True)
+        return proj_root, proj
+
+    def test_deps_depth_1_no_transitive_section(self, tmp_path, tmp_data_dir, make_project, monkeypatch):
+        """With --depth 1 (default), no 'Transitive dependencies' header appears."""
+        from contextlib import contextmanager
+        from typer.testing import CliRunner
+        from token_goat import read_commands
+        from token_goat.cli import app
+
+        proj_root, fake_proj = self._fake_proj_and_conn(tmp_path, make_project)
+        monkeypatch.chdir(proj_root)
+
+        @contextmanager
+        def _fake_conn():
+            yield object()
+
+        monkeypatch.setattr(read_commands.db, "open_project", lambda _hash: _fake_conn())
+        monkeypatch.setattr(read_commands, "_resolve_file_target", lambda _f: (fake_proj, "a.ts", fake_proj))
+        monkeypatch.setattr(read_commands, "_collect_dependency_graph", lambda _c, _r: ({"b.ts": {"greet"}}, {}, []))
+        # depth=1 means _collect_transitive_outgoing is never called
+
+        runner = CliRunner()
+        result = runner.invoke(app, ["deps", "a.ts", "--depth", "1"])
+        assert result.exit_code == 0
+        assert "Transitive" not in result.output
+        assert "b.ts" in result.output
+
+    def test_deps_depth_2_shows_transitive_section(self, tmp_path, tmp_data_dir, make_project, monkeypatch):
+        """With --depth 2, text output contains 'Transitive dependencies' section."""
+        from contextlib import contextmanager
+        from typer.testing import CliRunner
+        from token_goat import read_commands
+        from token_goat.cli import app
+
+        proj_root, fake_proj = self._fake_proj_and_conn(tmp_path, make_project)
+        monkeypatch.chdir(proj_root)
+
+        @contextmanager
+        def _fake_conn():
+            yield object()
+
+        monkeypatch.setattr(read_commands.db, "open_project", lambda _hash: _fake_conn())
+        monkeypatch.setattr(read_commands, "_resolve_file_target", lambda _f: (fake_proj, "a.ts", fake_proj))
+        monkeypatch.setattr(read_commands, "_collect_dependency_graph", lambda _c, _r: ({"b.ts": {"greet"}}, {}, []))
+        monkeypatch.setattr(
+            read_commands,
+            "_collect_transitive_outgoing",
+            lambda _c, _s, max_depth: {
+                "b.ts": {"depth": 1, "via": "a.ts", "symbols": {"greet"}},
+                "c.ts": {"depth": 2, "via": "b.ts", "symbols": {"helper"}},
+            },
+        )
+
+        runner = CliRunner()
+        result = runner.invoke(app, ["deps", "a.ts", "--depth", "2"])
+        assert result.exit_code == 0
+        assert "Transitive" in result.output
+        assert "c.ts" in result.output
+
+    def test_deps_depth_0_unlimited_header_uses_infinity_symbol(self, tmp_path, tmp_data_dir, make_project, monkeypatch):
+        """--depth 0 text output header shows '∞' to indicate unlimited depth."""
+        from contextlib import contextmanager
+        from typer.testing import CliRunner
+        from token_goat import read_commands
+        from token_goat.cli import app
+
+        proj_root, fake_proj = self._fake_proj_and_conn(tmp_path, make_project)
+        monkeypatch.chdir(proj_root)
+
+        @contextmanager
+        def _fake_conn():
+            yield object()
+
+        monkeypatch.setattr(read_commands.db, "open_project", lambda _hash: _fake_conn())
+        monkeypatch.setattr(read_commands, "_resolve_file_target", lambda _f: (fake_proj, "a.ts", fake_proj))
+        monkeypatch.setattr(read_commands, "_collect_dependency_graph", lambda _c, _r: ({"b.ts": {"greet"}}, {}, []))
+        monkeypatch.setattr(
+            read_commands,
+            "_collect_transitive_outgoing",
+            lambda _c, _s, max_depth: {
+                "b.ts": {"depth": 1, "via": "a.ts", "symbols": {"greet"}},
+                "c.ts": {"depth": 2, "via": "b.ts", "symbols": {"helper"}},
+            },
+        )
+
+        runner = CliRunner()
+        result = runner.invoke(app, ["deps", "a.ts", "--depth", "0"])
+        assert result.exit_code == 0
+        # depth=0 means "unlimited"; the header should say depth 2–∞
+        assert "∞" in result.output  # ∞
+
+    def test_deps_depth_2_text_shows_via_annotation(self, tmp_path, tmp_data_dir, make_project, monkeypatch):
+        """Transitive deps text output annotates depth-2 entries with 'via <parent>'."""
+        from contextlib import contextmanager
+        from typer.testing import CliRunner
+        from token_goat import read_commands
+        from token_goat.cli import app
+
+        proj_root, fake_proj = self._fake_proj_and_conn(tmp_path, make_project)
+        monkeypatch.chdir(proj_root)
+
+        @contextmanager
+        def _fake_conn():
+            yield object()
+
+        monkeypatch.setattr(read_commands.db, "open_project", lambda _hash: _fake_conn())
+        monkeypatch.setattr(read_commands, "_resolve_file_target", lambda _f: (fake_proj, "a.ts", fake_proj))
+        monkeypatch.setattr(read_commands, "_collect_dependency_graph", lambda _c, _r: ({"b.ts": {"greet"}}, {}, []))
+        monkeypatch.setattr(
+            read_commands,
+            "_collect_transitive_outgoing",
+            lambda _c, _s, max_depth: {
+                "b.ts": {"depth": 1, "via": "a.ts", "symbols": {"greet"}},
+                "c.ts": {"depth": 2, "via": "b.ts", "symbols": {"helper"}},
+            },
+        )
+
+        runner = CliRunner()
+        result = runner.invoke(app, ["deps", "a.ts", "--depth", "2"])
+        assert result.exit_code == 0
+        # c.ts at depth 2 should be annotated with "via b.ts"
+        assert "via b.ts" in result.output
+
+
+# ---------------------------------------------------------------------------
+# _collect_transitive_outgoing unit tests
+# ---------------------------------------------------------------------------
+
+class TestCollectTransitiveOutgoing:
+    """Unit tests for the BFS transitive dependency collector.
+
+    Uses monkeypatching of _collect_outgoing_edges to inject synthetic edges
+    so these tests don't depend on the tree-sitter indexer resolving import refs.
+    """
+
+    def _make_minimal_project(self, tmp_path, make_project):
+        """Create a minimal project (needed for the conn object)."""
+        from token_goat import db
+        from token_goat.parser import index_project
+
+        proj_root = tmp_path / "bfs_unit"
+        proj_root.mkdir()
+        (proj_root / ".git").mkdir()
+        (proj_root / "a.ts").write_text("export function a() {}\n", encoding="utf-8")
+        proj = make_project(proj_root)
+        index_project(proj, full=True)
+        return proj.hash
+
+    def test_depth_1_does_not_include_c(self, tmp_path, tmp_data_dir, make_project, monkeypatch):
+        """max_depth=1 BFS from a.ts should include b.ts but not c.ts."""
+        from token_goat import db, read_commands
+        from token_goat.read_commands import _collect_transitive_outgoing
+
+        # Synthetic edge map: a->b, b->c
+        edge_map = {
+            "a.ts": {"b.ts": {"greet"}},
+            "b.ts": {"c.ts": {"helper"}},
+            "c.ts": {},
+        }
+        monkeypatch.setattr(read_commands, "_collect_outgoing_edges", lambda _conn, rel: edge_map.get(rel, {}))
+
+        proj_hash = self._make_minimal_project(tmp_path, make_project)
+        with db.open_project(proj_hash) as conn:
+            result = _collect_transitive_outgoing(conn, "a.ts", max_depth=1)
+        assert "b.ts" in result
+        assert "c.ts" not in result
+
+    def test_depth_2_includes_c(self, tmp_path, tmp_data_dir, make_project, monkeypatch):
+        """max_depth=2 BFS from a.ts should include both b.ts and c.ts."""
+        from token_goat import db, read_commands
+        from token_goat.read_commands import _collect_transitive_outgoing
+
+        edge_map = {
+            "a.ts": {"b.ts": {"greet"}},
+            "b.ts": {"c.ts": {"helper"}},
+            "c.ts": {},
+        }
+        monkeypatch.setattr(read_commands, "_collect_outgoing_edges", lambda _conn, rel: edge_map.get(rel, {}))
+
+        proj_hash = self._make_minimal_project(tmp_path, make_project)
+        with db.open_project(proj_hash) as conn:
+            result = _collect_transitive_outgoing(conn, "a.ts", max_depth=2)
+        assert "b.ts" in result
+        assert "c.ts" in result
+        assert result["c.ts"]["depth"] == 2
+        assert result["c.ts"]["via"] == "b.ts"
+
+    def test_depth_0_unlimited_finds_all(self, tmp_path, tmp_data_dir, make_project, monkeypatch):
+        """max_depth=0 means unlimited — all reachable files should be returned."""
+        from token_goat import db, read_commands
+        from token_goat.read_commands import _collect_transitive_outgoing
+
+        edge_map = {
+            "a.ts": {"b.ts": {"greet"}},
+            "b.ts": {"c.ts": {"helper"}},
+            "c.ts": {"d.ts": {"util"}},
+            "d.ts": {},
+        }
+        monkeypatch.setattr(read_commands, "_collect_outgoing_edges", lambda _conn, rel: edge_map.get(rel, {}))
+
+        proj_hash = self._make_minimal_project(tmp_path, make_project)
+        with db.open_project(proj_hash) as conn:
+            result = _collect_transitive_outgoing(conn, "a.ts", max_depth=0)
+        assert "b.ts" in result
+        assert "c.ts" in result
+        assert "d.ts" in result
+        assert result["d.ts"]["depth"] == 3
+
+    def test_cycle_does_not_loop_forever(self, tmp_path, tmp_data_dir, make_project, monkeypatch):
+        """BFS should terminate even when there are cycles in the edge map."""
+        from token_goat import db, read_commands
+        from token_goat.read_commands import _collect_transitive_outgoing
+
+        # a -> b -> a (cycle)
+        edge_map = {
+            "a.ts": {"b.ts": {"greet"}},
+            "b.ts": {"a.ts": {"back"}},
+        }
+        monkeypatch.setattr(read_commands, "_collect_outgoing_edges", lambda _conn, rel: edge_map.get(rel, {}))
+
+        proj_hash = self._make_minimal_project(tmp_path, make_project)
+        with db.open_project(proj_hash) as conn:
+            # Should not loop; a.ts is the start node so it's in visited from the start
+            result = _collect_transitive_outgoing(conn, "a.ts", max_depth=0)
+        # b.ts is reachable; a.ts is not in result (it's the start)
+        assert "b.ts" in result
+        assert "a.ts" not in result
