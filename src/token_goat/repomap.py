@@ -1,8 +1,10 @@
 """PageRank-based repo map: token-budgeted overview of a project."""
 from __future__ import annotations
 
+import contextlib
 import logging
 import sqlite3
+import time
 from collections import defaultdict
 from dataclasses import dataclass
 from typing import TypedDict
@@ -99,8 +101,12 @@ def _load_project_data(
 ) -> tuple[dict, dict, dict, dict]:
     """Load files, symbols-by-file, sections-by-file, name->defining_files."""
     files: dict[str, dict] = {}
-    for row in conn.execute("SELECT rel_path, language, size FROM files"):
-        files[row["rel_path"]] = {"language": row["language"], "size": row["size"]}
+    for row in conn.execute("SELECT rel_path, language, size, mtime FROM files"):
+        files[row["rel_path"]] = {
+            "language": row["language"],
+            "size": row["size"],
+            "mtime": row["mtime"],
+        }
 
     symbols_by_file: dict[str, list[tuple[str, str]]] = defaultdict(list)
     name_to_files: dict[str, set[str]] = defaultdict(set)
@@ -232,13 +238,81 @@ def render_summary(s: FileSummary) -> str:
     return "\n".join(lines)
 
 
+def _load_summary_cache(conn: sqlite3.Connection) -> dict[tuple[str, float, int], str]:
+    """Load all cached summary texts keyed on (rel_path, mtime, size).
+
+    Returns a dict for O(1) cache hits during the per-file summary loop.
+    Only called once per build_map invocation so the single full-table scan
+    pays for itself immediately when even one file is unchanged.
+    """
+    cache: dict[tuple[str, float, int], str] = {}
+    try:
+        for row in conn.execute(
+            "SELECT rel_path, mtime, size, summary_text FROM repomap_cache"
+        ):
+            cache[(row["rel_path"], row["mtime"], row["size"])] = row["summary_text"]
+    except sqlite3.OperationalError:
+        # Table may not exist yet in older DBs — treat as empty cache.
+        pass
+    return cache
+
+
+def _write_summary_cache(
+    conn: sqlite3.Connection,
+    entries: list[tuple[str, float, int, str]],
+) -> None:
+    """Persist new cache entries as (rel_path, mtime, size, summary_text).
+
+    Uses INSERT OR REPLACE so a file re-indexed with the same mtime+size
+    (e.g. after a content revert) gets a fresh entry rather than a constraint
+    error.  Silently no-ops when the table is absent (old schema fallback).
+    """
+    if not entries:
+        return
+    now = int(time.time())
+    rows = [(rel, mtime, size, text, now) for rel, mtime, size, text in entries]
+    with contextlib.suppress(sqlite3.OperationalError):
+        conn.executemany(
+            "INSERT OR REPLACE INTO repomap_cache "
+            "(rel_path, mtime, size, summary_text, created_at) "
+            "VALUES (?, ?, ?, ?, ?)",
+            rows,
+        )
+
+
+def _evict_stale_cache(conn: sqlite3.Connection, current_files: dict) -> None:
+    """Remove cache entries for files no longer in the files table.
+
+    The FOREIGN KEY ON DELETE CASCADE on repomap_cache.rel_path handles
+    deletions that go through the files table (normal re-index path).  This
+    function handles the edge case where the files table was wiped externally
+    or a full re-index reset the file rows, leaving orphaned cache rows with
+    stale mtime/size keys that will never be hit again.
+    """
+    if not current_files:
+        return
+    try:
+        ph = ",".join("?" for _ in current_files)
+        conn.execute(
+            f"DELETE FROM repomap_cache WHERE rel_path NOT IN ({ph})",  # noqa: S608
+            list(current_files.keys()),
+        )
+    except sqlite3.OperationalError:
+        pass  # Table absent — nothing to evict.
+
+
 def _load_and_rank(
     project: Project,
-) -> tuple[dict, dict, dict, list[tuple[str, dict]], dict[str, float]] | None:
+) -> tuple[dict, dict, dict, list[tuple[str, dict]], dict[str, float], dict] | None:
     """Load project data, filter, compute PageRank, and return sorted ranking.
 
-    Returns ``(files, symbols_by_file, sections_by_file, ranked, ranks)`` or
-    ``None`` when there are no indexed files (callers handle the empty case).
+    Returns ``(files, symbols_by_file, sections_by_file, ranked, ranks, summary_cache)``
+    or ``None`` when there are no indexed files (callers handle the empty case).
+
+    ``summary_cache`` maps ``(rel_path, mtime, size)`` to pre-rendered summary
+    text strings.  Callers that produce text output (``build_map``) use it to
+    skip re-computing unchanged file summaries; callers that need structured
+    data (``build_map_json``) bypass it and recompute ``FileSummary`` objects.
     """
     with db.open_project(project.hash) as conn:
         files, symbols_by_file, sections_by_file, name_to_files = _load_project_data(conn)
@@ -250,6 +324,8 @@ def _load_and_rank(
             if _is_map_worthy(rel, max(1, info["size"] // 50))
         }
         graph = _build_graph(conn, files, name_to_files)
+        summary_cache = _load_summary_cache(conn)
+        _evict_stale_cache(conn, files)
 
     ranks = compute_ranks(graph)
     # Fallback: if every node has the same rank (no edges), break ties by file size
@@ -257,7 +333,7 @@ def _load_and_rank(
         ranks = {f: float(info["size"]) for f, info in files.items()}
 
     ranked = sorted(files.items(), key=lambda kv: ranks.get(kv[0], 0.0), reverse=True)
-    return files, symbols_by_file, sections_by_file, ranked, ranks
+    return files, symbols_by_file, sections_by_file, ranked, ranks, summary_cache
 
 
 def build_map(
@@ -266,14 +342,21 @@ def build_map(
     budget_tokens: int = 4000,
     include_unranked_tail: bool = True,
 ) -> str:
-    """Build the repo map text under the token budget."""
+    """Build the repo map text under the token budget.
+
+    Uses an incremental cache (``repomap_cache`` table in the project DB) to
+    skip re-rendering file summaries whose ``(mtime, size)`` hasn't changed
+    since the last run.  Only files that are new or modified incur the full
+    ``_summarize_file`` + ``render_summary`` cost.  New rendered strings are
+    written back to the cache at the end of the call.
+    """
     result = _load_and_rank(project)
     if result is None:
         return (
             f"# {project.root.name}\n\n"
             "(no files indexed — run `token-goat index --full`)\n"
         )
-    files, symbols_by_file, sections_by_file, ranked, ranks = result
+    files, symbols_by_file, sections_by_file, ranked, ranks, summary_cache = result
 
     lang_set = sorted({info["language"] for info in files.values()})
     header = f"# {project.root.name}\n  files={len(files)} languages={','.join(lang_set)}\n\n"
@@ -281,21 +364,37 @@ def build_map(
     used = estimate_tokens(header)
     included = 0
 
+    # Collect new summaries that need to be written back to the cache
+    cache_writes: list[tuple[str, float, int, str]] = []
+
     for rel, info in ranked:
         if used >= budget_tokens:
             break
-        summary = _summarize_file(
-            rel,
-            info,
-            symbols_by_file.get(rel, []),
-            sections_by_file.get(rel, []),
-            ranks.get(rel, 0.0),
-        )
-        rendered = render_summary(summary) + "\n"
-        if used + estimate_tokens(rendered) > budget_tokens:
+
+        mtime: float = info.get("mtime", 0.0)
+        size: int = info["size"]
+        cache_key = (rel, mtime, size)
+
+        cached_text = summary_cache.get(cache_key)
+        if cached_text is not None:
+            # Cache hit: reuse rendered text, skip _summarize_file entirely
+            rendered = cached_text
+        else:
+            summary = _summarize_file(
+                rel,
+                info,
+                symbols_by_file.get(rel, []),
+                sections_by_file.get(rel, []),
+                ranks.get(rel, 0.0),
+            )
+            rendered = render_summary(summary) + "\n"
+            cache_writes.append((rel, mtime, size, rendered))
+
+        rendered_tokens = estimate_tokens(rendered)
+        if used + rendered_tokens > budget_tokens:
             break
         out.append(rendered)
-        used += estimate_tokens(rendered)
+        used += rendered_tokens
         included += 1
 
     if include_unranked_tail and included < len(ranked):
@@ -305,15 +404,28 @@ def build_map(
             f"(truncated to fit budget of ~{budget_tokens} tokens)\n"
         )
 
+    # Persist new cache entries (best-effort; failure must not affect output)
+    if cache_writes:
+        try:
+            with db.open_project(project.hash) as conn:
+                _write_summary_cache(conn, cache_writes)
+        except Exception:  # noqa: BLE001
+            _LOG.debug("repomap_cache write failed (non-fatal)", exc_info=True)
+
     return "".join(out)
 
 
 def build_map_json(project: Project) -> list[FileMapItem]:
-    """Same data as build_map but as structured list of dicts (for tools)."""
+    """Same data as build_map but as structured list of dicts (for tools).
+
+    Always recomputes ``FileSummary`` objects for structured output — the text
+    cache stores rendered strings, not the intermediate ``FileSummary`` data
+    needed here (symbols list, sections list, etc.).
+    """
     result = _load_and_rank(project)
     if result is None:
         return []
-    files, symbols_by_file, sections_by_file, ranked, ranks = result
+    files, symbols_by_file, sections_by_file, ranked, ranks, _summary_cache = result
     out = []
     for rel, info in ranked:
         summary = _summarize_file(
