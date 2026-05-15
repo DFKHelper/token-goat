@@ -13,6 +13,7 @@ from typing import TYPE_CHECKING, TypedDict
 
 from . import db, paths
 from .project import Project
+from .paths import is_safe_rel_path as _is_safe_rel_path
 
 if TYPE_CHECKING:
     from fastembed import TextEmbedding
@@ -31,15 +32,6 @@ _LOG = logging.getLogger("token_goat.embeddings")
 
 DEFAULT_MODEL = "BAAI/bge-small-en-v1.5"
 DEFAULT_DIM = 384
-
-
-def _is_safe_rel_path(rel_path: str) -> bool:
-    """Validate that rel_path cannot escape project root via path traversal."""
-    # Reject absolute paths and parent directory references
-    if rel_path.startswith("/") or rel_path.startswith("\\"):
-        return False
-    # Reject parent directory traversal
-    return ".." not in rel_path.split("/") and ".." not in rel_path.split("\\")
 
 # Chunk size constraints (chars)
 MIN_CHUNK_CHARS = 50

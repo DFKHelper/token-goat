@@ -75,6 +75,28 @@ def project_db_path(project_hash: str) -> Path:
     return candidate
 
 
+def is_safe_rel_path(rel_path: str) -> bool:
+    """Return True when rel_path is safe to join under a project root.
+
+    Rejects POSIX absolute paths, Windows drive/UNC paths, and any parent
+    directory traversal components on either separator style.
+    """
+    if not rel_path:
+        return False
+
+    candidate = rel_path.strip()
+    if not candidate or "\x00" in candidate:
+        return False
+
+    normalized = candidate.replace("\\", "/")
+    if normalized.startswith("/") or normalized.startswith("//"):
+        return False
+    if len(normalized) >= 2 and normalized[1] == ":" and normalized[0].isalpha():
+        return False
+
+    return all(part != ".." for part in normalized.split("/"))
+
+
 def session_cache_path(session_id: str) -> Path:
     """Path to sessions/{session_id}.json.
 

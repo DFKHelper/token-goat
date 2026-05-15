@@ -604,18 +604,15 @@ def file_count(project_hash: str) -> int:
 
 def project_has_files(project_hash: str) -> bool:
     """Return True when the project DB already contains at least one file row."""
-    try:
-        db_path = paths.project_db_path(project_hash)
-        if not db_path.exists():
-            return False
-        conn = _connect(db_path, load_vec=False)
-        try:
-            row = conn.execute("SELECT 1 FROM files LIMIT 1").fetchone()
-            return row is not None
-        finally:
-            conn.close()
-    except Exception:  # noqa: BLE001
+    db_path = paths.project_db_path(project_hash)
+    if not db_path.exists():
         return False
+    conn = _connect(db_path, load_vec=False)
+    try:
+        row = conn.execute("SELECT 1 FROM files LIMIT 1").fetchone()
+        return row is not None
+    finally:
+        conn.close()
 
 
 def touch_project_last_seen(project_hash: str) -> None:
