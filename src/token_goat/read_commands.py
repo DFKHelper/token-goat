@@ -3,6 +3,8 @@ from __future__ import annotations
 
 import json
 import logging
+import sqlite3
+from collections import defaultdict
 from collections.abc import Callable, Sequence
 from pathlib import Path
 
@@ -24,8 +26,12 @@ def _not_indexed_hint(project_hash: str) -> str | None:
                 "rerun in a moment, or run `token-goat index --full` to force "
                 "synchronous indexing.)"
             )
-    except Exception as exc:  # noqa: BLE001
+    except (FileNotFoundError, OSError, sqlite3.Error) as exc:
         _LOG.warning("failed to check project index status: %s", exc)
+        return (
+            "(unable to check whether this project is indexed right now; "
+            "run `token-goat index --full` again or check the logs.)"
+        )
     return None
 
 
@@ -59,6 +65,50 @@ def _emit_ambiguous_file_match(file_part: str, candidates: Sequence[str], *, jso
         json_output=json_output,
         file_part=file_part,
     )
+
+
+def _collect_dependency_graph(conn: sqlite3.Connection, rel_path: str) -> tuple[dict[str, set[str]], dict[str, set[str]]]:
+    """Return file-level dependency edges for the given file."""
+    outgoing: dict[str, set[str]] = defaultdict(set)
+    referenced_names = [
+        row["symbol_name"]
+        for row in conn.execute(
+            "SELECT DISTINCT symbol_name FROM refs WHERE file_rel = ? AND symbol_name != ''",
+            (rel_path,),
+        ).fetchall()
+    ]
+    for symbol_name in referenced_names:
+        for row in conn.execute(
+            "SELECT DISTINCT file_rel FROM symbols WHERE name = ? AND file_rel != ?",
+            (symbol_name, rel_path),
+        ).fetchall():
+            outgoing[row["file_rel"]].add(symbol_name)
+
+    incoming: dict[str, set[str]] = defaultdict(set)
+    defined_names = [
+        row["name"]
+        for row in conn.execute(
+            "SELECT DISTINCT name FROM symbols WHERE file_rel = ?",
+            (rel_path,),
+        ).fetchall()
+    ]
+    for symbol_name in defined_names:
+        for row in conn.execute(
+            "SELECT DISTINCT file_rel FROM refs WHERE symbol_name = ? AND file_rel != ?",
+            (symbol_name, rel_path),
+        ).fetchall():
+            incoming[row["file_rel"]].add(symbol_name)
+
+    return outgoing, incoming
+
+
+def _format_dependency_line(file_rel: str, symbols: set[str]) -> str:
+    symbol_list = ", ".join(sorted(symbols))
+    count = len(symbols)
+    noun = "symbol" if count == 1 else "symbols"
+    if symbol_list:
+        return f"  - {file_rel} ({count} {noun}: {symbol_list})"
+    return f"  - {file_rel} ({count} {noun})"
 
 
 def _resolve_file_target(file_part: str) -> tuple[Project | None, str | None, Project | None]:
@@ -98,6 +148,14 @@ def _run_read_like_command(
 
     try:
         proj, rel, current_proj = _resolve_file_target(file_part)
+    except read_replacement.ProjectIndexUnavailable as exc:
+        _emit_read_error(
+            code=exc.code,
+            message=str(exc),
+            json_output=json_output,
+            file_part=file_part,
+        )
+        raise typer.Exit(0) from None
     except read_replacement.AmbiguousFileMatch as exc:
         _emit_ambiguous_file_match(file_part, exc.candidates, json_output=json_output)
         raise typer.Exit(0) from None
@@ -156,7 +214,54 @@ def _run_read_like_command(
 
 def deps(file: str) -> None:
     """Show dependency graph for file."""
-    typer.echo("not yet implemented: deps")
+    try:
+        proj, rel, current_proj = _resolve_file_target(file)
+    except read_replacement.ProjectIndexUnavailable as exc:
+        _emit_read_error(
+            code=exc.code,
+            message=str(exc),
+            json_output=False,
+            file_part=file,
+        )
+        return
+
+    if rel is None:
+        if current_proj is None:
+            _emit_read_error(
+                code="no_project",
+                message="No project detected.",
+                json_output=False,
+                file_part=file,
+            )
+        else:
+            hint = _not_indexed_hint(current_proj.hash)
+            _emit_read_error(
+                code="project_not_indexed" if hint else "file_not_found",
+                message=hint if hint else f"File not found in any indexed project: {file}",
+                json_output=False,
+                file_part=file,
+                project_hash=current_proj.hash,
+            )
+        return
+
+    assert proj is not None
+    with db.open_project(proj.hash) as conn:
+        outgoing, incoming = _collect_dependency_graph(conn, rel)
+
+    typer.echo(f"Dependency graph for {rel}")
+    typer.echo("Dependencies:")
+    if outgoing:
+        for dep_rel, symbols in sorted(outgoing.items(), key=lambda item: (-len(item[1]), item[0])):
+            typer.echo(_format_dependency_line(dep_rel, symbols))
+    else:
+        typer.echo("  (none)")
+
+    typer.echo("Dependents:")
+    if incoming:
+        for dep_rel, symbols in sorted(incoming.items(), key=lambda item: (-len(item[1]), item[0])):
+            typer.echo(_format_dependency_line(dep_rel, symbols))
+    else:
+        typer.echo("  (none)")
 
 
 def read(

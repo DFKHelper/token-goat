@@ -1,12 +1,14 @@
 """Read-replacement: return just a symbol's source instead of the whole file."""
 from __future__ import annotations
 
+import sqlite3
 import logging
 from collections.abc import Sequence
 from pathlib import Path
 
 from . import db
 from .project import Project
+from .paths import is_safe_rel_path as _is_safe_rel_path
 
 _LOG = logging.getLogger("token_goat.read_replacement")
 
@@ -31,6 +33,16 @@ class ReadLookupError(ValueError):
     code = "read_lookup_error"
 
 
+class ProjectIndexUnavailable(ReadLookupError):
+    """Raised when indexed-project metadata cannot be queried safely."""
+
+    code = "project_index_unavailable"
+
+    def __init__(self, detail: str) -> None:
+        self.detail = detail
+        super().__init__(detail)
+
+
 class AmbiguousFileMatch(ReadLookupError):
     """Raised when a file_part matches multiple indexed paths."""
 
@@ -42,13 +54,9 @@ class AmbiguousFileMatch(ReadLookupError):
         super().__init__(f"ambiguous file match for {file_part}: {', '.join(self.candidates)}")
 
 
-def _is_safe_rel_path(rel_path: str) -> bool:
-    """Validate that rel_path cannot escape project root via path traversal."""
-    # Reject absolute paths and parent directory references
-    if rel_path.startswith("/") or rel_path.startswith("\\"):
-        return False
-    # Reject parent directory traversal
-    return ".." not in rel_path.split("/") and ".." not in rel_path.split("\\")
+def _escape_like_pattern(value: str) -> str:
+    """Escape SQLite LIKE wildcards so file names are matched literally."""
+    return value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
 
 
 def resolve_file_rel(project: Project, file_part: str) -> str | None:
@@ -89,8 +97,8 @@ def resolve_file_rel(project: Project, file_part: str) -> str | None:
 
         # 3. Endswith match — handles bare filename or partial path
         rows = conn.execute(
-            "SELECT rel_path FROM files WHERE rel_path LIKE ?",
-            (f"%{file_part}",),
+            "SELECT rel_path FROM files WHERE rel_path LIKE ? ESCAPE '\\'",
+            (f"%{_escape_like_pattern(file_part)}",),
         ).fetchall()
         if len(rows) == 1:
             return rows[0]["rel_path"]
@@ -121,12 +129,17 @@ def find_in_all_projects(file_part: str) -> tuple[Project, str] | None:
     try:
         with _db.open_global_readonly() as gconn:
             rows = gconn.execute("SELECT hash, root, marker FROM projects").fetchall()
-    except Exception:
-        _LOG.debug("find_in_all_projects: could not open global DB", exc_info=True)
+    except FileNotFoundError:
         return None
+    except (OSError, sqlite3.Error) as exc:
+        _LOG.warning("find_in_all_projects: global DB unavailable: %s", exc)
+        raise ProjectIndexUnavailable(
+            "Project index database is unavailable. Run `token-goat index --full` again."
+        ) from exc
 
     matches: list[tuple[Project, str]] = []
     ambiguous_candidates: list[str] = []
+    project_errors: list[str] = []
     for row in rows:
         proj = Project(root=Path(row["root"]), hash=row["hash"], marker=row["marker"])
         try:
@@ -136,10 +149,13 @@ def find_in_all_projects(file_part: str) -> tuple[Project, str] | None:
                 f"{proj.hash[:8]}:{candidate}" for candidate in exc.candidates
             )
             continue
-        except Exception:
-            _LOG.debug(
-                "find_in_all_projects: resolve failed for project %s", proj.hash[:8], exc_info=True
+        except (FileNotFoundError, OSError, sqlite3.Error, ValueError) as exc:
+            _LOG.warning(
+                "find_in_all_projects: resolve failed for project %s (%s)",
+                proj.hash[:8],
+                exc,
             )
+            project_errors.append(f"{proj.hash[:8]}: {exc}")
             continue
         if rel is not None:
             matches.append((proj, rel))
@@ -155,6 +171,11 @@ def find_in_all_projects(file_part: str) -> tuple[Project, str] | None:
             ", ".join(candidates),
         )
         raise AmbiguousFileMatch(file_part, candidates)
+    if project_errors:
+        raise ProjectIndexUnavailable(
+            "Project index database is unavailable for one or more indexed projects. "
+            "Run `token-goat index --full` again."
+        )
     return matches[0] if matches else None
 
 

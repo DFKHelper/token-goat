@@ -8,6 +8,7 @@ from pathlib import Path
 import pytest
 
 from token_goat import read_replacement
+from token_goat import embeddings as emb
 from token_goat.parser import index_project
 
 FIXTURE_DIR = Path(__file__).parent / "fixtures"
@@ -67,6 +68,20 @@ def _make_ambiguous_project(
     return proj_root, proj
 
 
+def _make_dependency_project(tmp_path, make_project):
+    proj_root = tmp_path / "deps"
+    proj_root.mkdir()
+    (proj_root / ".git").mkdir()
+    (proj_root / "a.ts").write_text(
+        'import { b } from "./b";\nexport function a() { return b(); }\n',
+        encoding="utf-8",
+    )
+    (proj_root / "b.ts").write_text("export function b() { return 1; }\n", encoding="utf-8")
+    proj = make_project(proj_root)
+    index_project(proj, full=True)
+    return proj_root, proj
+
+
 # ---------------------------------------------------------------------------
 # resolve_file_rel tests
 # ---------------------------------------------------------------------------
@@ -114,6 +129,33 @@ def test_resolve_ambiguous_bare_filename_raises(tmp_path, tmp_data_dir, make_pro
     assert excinfo.value.code == "ambiguous_file"
     assert excinfo.value.file_part == "index.ts"
     assert excinfo.value.candidates == ("a/index.ts", "b/index.ts")
+
+
+def test_resolve_bare_filename_with_literal_sql_like_chars(tmp_path, tmp_data_dir, make_project):
+    proj_root = tmp_path / "wildcards"
+    (proj_root / "src").mkdir(parents=True)
+    (proj_root / "src" / "a%file.ts").write_text("export const a = 1;\n", encoding="utf-8")
+    (proj_root / "src" / "afile.ts").write_text("export const b = 2;\n", encoding="utf-8")
+    proj = make_project(proj_root)
+    index_project(proj, full=True)
+
+    rel = read_replacement.resolve_file_rel(proj, "a%file.ts")
+    assert rel == "src/a%file.ts"
+
+
+@pytest.mark.parametrize(
+    "path_value",
+    [
+        "/etc/passwd",
+        r"C:\Windows\win.ini",
+        r"\\server\share\file.txt",
+        "../escape.py",
+        r"..\escape.py",
+    ],
+)
+def test_safe_rel_path_rejects_absolute_and_traversal(path_value):
+    assert read_replacement._is_safe_rel_path(path_value) is False
+    assert emb._is_safe_rel_path(path_value) is False
 
 
 # ---------------------------------------------------------------------------
@@ -429,6 +471,95 @@ def test_cli_read_reports_structured_json_error_for_project_not_indexed(
     assert "not yet indexed" in payload["error"]["message"]
 
 
+def test_cli_deps_reports_dependency_graph(tmp_path, make_project, monkeypatch):
+    from typer.testing import CliRunner
+
+    from token_goat import read_commands
+    from token_goat.cli import app
+    from contextlib import contextmanager
+
+    proj_root = tmp_path / "deps"
+    proj_root.mkdir()
+    (proj_root / ".git").mkdir()
+    fake_proj = make_project(proj_root)
+
+    @contextmanager
+    def _fake_conn():
+        yield object()
+
+    monkeypatch.setattr(read_commands.db, "open_project", lambda _hash: _fake_conn())
+    monkeypatch.setattr(
+        read_commands,
+        "_resolve_file_target",
+        lambda _file: (fake_proj, "a.ts", fake_proj),
+    )
+    monkeypatch.setattr(
+        read_commands,
+        "_collect_dependency_graph",
+        lambda _conn, _rel: ({"b.ts": {"greet"}}, {"c.ts": {"greet", "router"}}),
+    )
+
+    runner = CliRunner()
+    result = runner.invoke(app, ["deps", "a.ts"])
+    assert result.exit_code == 0
+    assert "Dependency graph for a.ts" in result.output
+    assert "Dependencies:" in result.output
+    assert "b.ts" in result.output
+    assert "greet" in result.output
+    assert "Dependents:" in result.output
+    assert "c.ts" in result.output
+
+
+def test_cli_read_reports_index_unavailable(tmp_path, monkeypatch):
+    from typer.testing import CliRunner
+
+    from token_goat import read_replacement
+    from token_goat.read_replacement import ProjectIndexUnavailable
+    from token_goat.cli import app
+
+    proj_root = tmp_path / "read_unavailable"
+    proj_root.mkdir()
+    (proj_root / ".git").mkdir()
+    monkeypatch.chdir(proj_root)
+
+    def _raise(_file_part: str) -> None:
+        raise ProjectIndexUnavailable(
+            "Project index database is unavailable. Run `token-goat index --full` again."
+        )
+
+    monkeypatch.setattr(read_replacement, "find_in_all_projects", _raise)
+
+    runner = CliRunner()
+    result = runner.invoke(app, ["read", "missing.ts::sym"])
+    assert result.exit_code == 0
+    assert "project index database is unavailable" in result.output.lower()
+
+
+def test_cli_deps_reports_index_unavailable(tmp_path, monkeypatch):
+    from typer.testing import CliRunner
+
+    from token_goat import read_replacement
+    from token_goat.read_replacement import ProjectIndexUnavailable
+    from token_goat.cli import app
+
+    proj_root = tmp_path / "deps_unavailable"
+    proj_root.mkdir()
+    (proj_root / ".git").mkdir()
+    monkeypatch.chdir(proj_root)
+
+    def _raise(_file_part: str) -> None:
+        raise ProjectIndexUnavailable(
+            "Project index database is unavailable. Run `token-goat index --full` again."
+        )
+
+    monkeypatch.setattr(read_replacement, "find_in_all_projects", _raise)
+
+    runner = CliRunner()
+    result = runner.invoke(app, ["deps", "missing.ts"])
+    assert result.exit_code == 0
+    assert "project index database is unavailable" in result.output.lower()
+
+
 def test_cli_section_reports_ambiguous_file_match(tmp_path, tmp_data_dir, make_project, monkeypatch):
     from typer.testing import CliRunner
 
@@ -494,19 +625,32 @@ class TestNotIndexedHint:
         hint = _not_indexed_hint(proj.hash)
         assert hint is None
 
-    def test_returns_none_on_db_error(self, tmp_data_dir, monkeypatch):
-        """If the indexed-file probe raises, _not_indexed_hint must swallow the error."""
+    def test_returns_diagnostic_on_db_error(self, tmp_data_dir, monkeypatch):
+        """If the indexed-file probe raises, _not_indexed_hint should surface that fact."""
         from token_goat import db
         from token_goat.read_commands import _not_indexed_hint
 
         monkeypatch.setattr(
             db,
             "project_has_files",
-            lambda _: (_ for _ in ()).throw(RuntimeError("db gone")),
+            lambda _: (_ for _ in ()).throw(OSError("db gone")),
         )
-        # Must not raise
         hint = _not_indexed_hint("deadbeef1234567890ab")
-        assert hint is None
+        assert hint is not None
+        assert "unable to check whether this project is indexed" in hint
+
+
+def test_find_in_all_projects_raises_when_global_db_unavailable(monkeypatch):
+    from token_goat import db
+    from token_goat.read_replacement import ProjectIndexUnavailable, find_in_all_projects
+
+    def _boom():
+        raise OSError("disk I/O error")
+
+    monkeypatch.setattr(db, "open_global_readonly", _boom)
+
+    with pytest.raises(ProjectIndexUnavailable):
+        find_in_all_projects("index.ts")
 
 
 # ---------------------------------------------------------------------------
@@ -584,20 +728,28 @@ class TestResolveFileCrossProject:
 
 
 # ---------------------------------------------------------------------------
-# read_commands.deps — stub returns gracefully (line 112)
+# read_commands.deps — error path coverage
 # ---------------------------------------------------------------------------
 
-class TestDepsStub:
-    """deps() is a stub that must not crash and must emit a message."""
+class TestDepsCommandErrors:
+    """deps() should fail cleanly when the target file is missing."""
 
-    def test_deps_command_exits_without_error(self, tmp_data_dir, tmp_path, monkeypatch):
-        """The deps stub command exits 0 and prints 'not yet implemented'."""
+    def test_deps_missing_file_exits_without_error(
+        self, tmp_path, tmp_data_dir, make_project, monkeypatch
+    ):
         from typer.testing import CliRunner
 
         from token_goat.cli import app
 
-        monkeypatch.chdir(tmp_path)
+        proj_root = tmp_path / "deps_missing"
+        proj_root.mkdir()
+        (proj_root / ".git").mkdir()
+        (proj_root / "a.ts").write_text("export function a() { return 1; }\n", encoding="utf-8")
+        proj = make_project(proj_root)
+        index_project(proj, full=True)
+        monkeypatch.chdir(proj_root)
+
         runner = CliRunner()
-        result = runner.invoke(app, ["deps", "somefile.py"])
+        result = runner.invoke(app, ["deps", "missing.ts"])
         assert result.exit_code == 0
-        assert "not yet implemented" in result.output
+        assert "File not found in any indexed project: missing.ts" in result.output

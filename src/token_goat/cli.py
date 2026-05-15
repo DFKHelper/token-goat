@@ -7,6 +7,7 @@ import logging
 import os
 import re
 import sys
+from dataclasses import asdict, is_dataclass
 from pathlib import Path
 from typing import Any
 
@@ -21,7 +22,7 @@ with contextlib.suppress(AttributeError, OSError):
 
 import typer
 
-from . import hooks_cli, read_commands
+from . import config as config_mod, hooks_cli, read_commands
 
 _LOG = logging.getLogger(__name__)
 
@@ -771,16 +772,105 @@ def compact_hint(
     typer.echo(f"({len(manifest)} chars, ~{len(manifest) // 4} tokens)")
 
 
+def _config_get_value(config: Any, key: str) -> Any:
+    target: Any = config
+    parts = [part for part in key.split(".") if part]
+    if not parts:
+        raise KeyError(key)
+    for part in parts:
+        if not hasattr(target, part):
+            raise KeyError(key)
+        target = getattr(target, part)
+    return target
+
+
+def _coerce_config_value(current: Any, raw_value: str) -> Any:
+    raw_value = raw_value.strip()
+
+    if is_dataclass(current):
+        parsed = json.loads(raw_value)
+        if not isinstance(parsed, dict):
+            raise ValueError("expected a JSON object")
+        return current.__class__(**parsed)
+
+    if isinstance(current, bool):
+        lowered = raw_value.lower()
+        if lowered in {"1", "true", "yes", "on"}:
+            return True
+        if lowered in {"0", "false", "no", "off"}:
+            return False
+        raise ValueError("expected a boolean value")
+
+    if isinstance(current, int) and not isinstance(current, bool):
+        return int(raw_value)
+
+    if isinstance(current, list):
+        if raw_value.startswith("["):
+            parsed = json.loads(raw_value)
+            if not isinstance(parsed, list):
+                raise ValueError("expected a JSON list")
+            return [str(item) for item in parsed]
+        if not raw_value:
+            return []
+        return [part.strip() for part in raw_value.split(",") if part.strip()]
+
+    return raw_value
+
+
+def _config_set_value(config: config_mod.Config, key: str, raw_value: str) -> Any:
+    parts = [part for part in key.split(".") if part]
+    if not parts:
+        raise KeyError(key)
+
+    target: Any = config
+    for part in parts[:-1]:
+        if not hasattr(target, part):
+            raise KeyError(key)
+        target = getattr(target, part)
+
+    attr = parts[-1]
+    if not hasattr(target, attr):
+        raise KeyError(key)
+
+    current = getattr(target, attr)
+    updated = _coerce_config_value(current, raw_value)
+    setattr(target, attr, updated)
+    return updated
+
+
 @config_app.command()
 def get(key: str) -> None:
     """Get config value."""
-    typer.echo("not yet implemented: config get")
+    cfg = config_mod.load()
+    try:
+        value = _config_get_value(cfg, key)
+    except KeyError:
+        typer.echo(f"Unknown config key: {key}", err=True)
+        raise typer.Exit(2) from None
+
+    if is_dataclass(value):
+        value = asdict(value)
+
+    typer.echo(json.dumps(value, ensure_ascii=False, indent=2))
 
 
 @config_app.command()
 def set(key: str, value: str) -> None:
     """Set config value."""
-    typer.echo("not yet implemented: config set")
+    cfg = config_mod.load()
+    try:
+        updated = _config_set_value(cfg, key, value)
+    except KeyError:
+        typer.echo(f"Unknown config key: {key}", err=True)
+        raise typer.Exit(2) from None
+    except (json.JSONDecodeError, TypeError, ValueError) as exc:
+        typer.echo(f"Invalid value for {key}: {exc}", err=True)
+        raise typer.Exit(2) from None
+
+    config_mod.save(cfg)
+    if is_dataclass(updated):
+        updated = asdict(updated)
+    typer.echo(json.dumps(updated, ensure_ascii=False, indent=2))
 
 
 if __name__ == "__main__":
