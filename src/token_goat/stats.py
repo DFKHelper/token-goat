@@ -516,14 +516,12 @@ def render_text(
             )
         console.print(tbl)
 
-        # Hint when image_shrink shows 0 tokens. Not a bug; we track bytes
-        # for images because vision-token cost is model-specific.
         img = summary.by_kind.get("image_shrink")
-        if img and img["events"] > 0 and img["tokens_saved"] == 0:
+        if img and img["events"] > 0:
             console.print(
                 Text(
-                    "  note: image_shrink tracks bytes, not vision tokens "
-                    "(model-specific math).",
+                    "  note: image token estimates use Claude's vision pricing formula "
+                    "(pixel dimensions ÷ 750, capped at 1568 px/side).",
                     style="dim italic",
                 )
             )

@@ -47,7 +47,10 @@ def _try_shrink_image(
             return None
 
         img_stats = image_shrink.stats_for(Path(file_path), shrunken)
-        tokens_saved = img_stats["bytes_saved"] // 4  # Estimate: 1 token per 4 base64 chars
+        tokens_saved = max(0,
+            image_shrink.vision_tokens(img_stats["orig_width"], img_stats["orig_height"])
+            - image_shrink.vision_tokens(img_stats["out_width"], img_stats["out_height"])
+        )
         db.record_stat(
             None,
             "image_shrink",
