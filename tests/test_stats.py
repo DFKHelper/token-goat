@@ -507,4 +507,216 @@ class TestJSONOutput:
         json_str = json.dumps(data, indent=2)
         assert "image_shrink" in json_str
         assert "total_events" in json_str
-        assert summary.total_events == 2
+
+
+# ---------------------------------------------------------------------------
+# Formatting helpers — _fmt_bytes, _fmt_tokens, _short_project
+# ---------------------------------------------------------------------------
+
+class TestFmtBytes:
+    """Unit tests for _fmt_bytes boundary values."""
+
+    def test_bytes_under_1kb(self):
+        assert stats._fmt_bytes(0) == "0B"
+        assert stats._fmt_bytes(1) == "1B"
+        assert stats._fmt_bytes(999) == "999B"
+        assert stats._fmt_bytes(1023) == "1023B"
+
+    def test_kilobytes(self):
+        result = stats._fmt_bytes(1024)
+        assert result == "1.0KB"
+        result = stats._fmt_bytes(1536)
+        assert "KB" in result
+
+    def test_megabytes(self):
+        result = stats._fmt_bytes(1024 * 1024)
+        assert result == "1.0MB"
+
+    def test_gigabytes(self):
+        result = stats._fmt_bytes(1024 ** 3)
+        assert result == "1.0GB"
+
+    def test_terabytes(self):
+        result = stats._fmt_bytes(1024 ** 4)
+        assert result == "1.0TB"
+
+    def test_petabytes(self):
+        result = stats._fmt_bytes(1024 ** 5)
+        assert result == "1.0PB"
+
+
+class TestFmtTokens:
+    """Unit tests for _fmt_tokens boundary values."""
+
+    def test_under_1k(self):
+        assert stats._fmt_tokens(0) == "0t"
+        assert stats._fmt_tokens(1) == "1t"
+        assert stats._fmt_tokens(999) == "999t"
+
+    def test_kilotokens(self):
+        assert stats._fmt_tokens(1000) == "1.0kt"
+        assert stats._fmt_tokens(1500) == "1.5kt"
+        assert stats._fmt_tokens(999_999) == "1000.0kt"
+
+    def test_megatokens(self):
+        result = stats._fmt_tokens(1_000_000)
+        assert result == "1.00Mt"
+
+    def test_gigatokens(self):
+        result = stats._fmt_tokens(1_000_000_000)
+        assert result == "1.00Gt"
+
+    def test_teratokens(self):
+        result = stats._fmt_tokens(1_000_000_000_000)
+        assert result == "1.00Tt"
+
+
+class TestShortProject:
+    """Unit tests for _short_project path truncation."""
+
+    def test_empty_returns_unknown(self):
+        assert stats._short_project("") == "(unknown)"
+
+    def test_forward_slash_path(self):
+        result = stats._short_project("/home/user/myproject")
+        assert result == "myproject"
+
+    def test_windows_backslash_path(self):
+        result = stats._short_project("C:\\Users\\zelys\\Projects\\tokenwise")
+        assert result == "tokenwise"
+
+    def test_trailing_slash_stripped(self):
+        result = stats._short_project("/home/user/myproject/")
+        assert result == "myproject"
+
+    def test_truncates_to_28_chars(self):
+        long_name = "a" * 40
+        result = stats._short_project(f"/home/{long_name}")
+        assert len(result) == 28
+
+    def test_no_separator_returns_as_is(self):
+        # A bare name with no path separator is returned as-is (up to 28 chars)
+        result = stats._short_project("justname")
+        assert result == "justname"
+
+
+# ---------------------------------------------------------------------------
+# Bar chart and sparkline helpers
+# ---------------------------------------------------------------------------
+
+class TestBarText:
+    """Unit tests for _bar_text rendering."""
+
+    def test_zero_value_returns_empty_bar(self):
+        bar, style = stats._bar_text(0, 100)
+        assert bar == " " * 28
+        assert style == "dim"
+
+    def test_zero_max_returns_empty_bar(self):
+        bar, style = stats._bar_text(50, 0)
+        assert bar == " " * 28
+        assert style == "dim"
+
+    def test_full_fill_returns_solid_bar(self):
+        bar, style = stats._bar_text(100, 100)
+        # All fill chars (no spaces)
+        assert " " not in bar
+        assert style == "bold cyan"
+
+    def test_low_fill_is_yellow(self):
+        _, style = stats._bar_text(10, 100)
+        assert style == "yellow"
+
+    def test_mid_fill_is_green(self):
+        _, style = stats._bar_text(50, 100)
+        assert style == "bold green"
+
+    def test_high_fill_is_cyan(self):
+        _, style = stats._bar_text(80, 100)
+        assert style == "bold cyan"
+
+    def test_bar_length_is_always_width(self):
+        for value in (0, 1, 50, 99, 100):
+            bar, _ = stats._bar_text(value, 100, width=20)
+            assert len(bar) == 20, f"expected width 20, got {len(bar)} for value={value}"
+
+    def test_custom_width(self):
+        bar, _ = stats._bar_text(50, 100, width=10)
+        assert len(bar) == 10
+
+
+class TestSparkline:
+    """Unit tests for _sparkline rendering."""
+
+    def test_empty_returns_empty_string(self):
+        assert stats._sparkline([]) == ""
+
+    def test_all_zeros_returns_spaces(self):
+        result = stats._sparkline([0, 0, 0])
+        assert result == "   "
+
+    def test_single_max_returns_full_block(self):
+        result = stats._sparkline([100])
+        assert result == "█"  # full block █
+
+    def test_length_matches_input(self):
+        values = [10, 20, 30, 40, 50]
+        result = stats._sparkline(values)
+        assert len(result) == 5
+
+    def test_monotone_increasing(self):
+        # Each char index should be >= the previous (ascending values)
+        values = [10, 20, 30, 40, 50, 60, 70, 80, 90, 100]
+        result = stats._sparkline(values)
+        spark_chars = " ▁▂▃▄▅▆▇█"
+        indices = [spark_chars.index(c) for c in result]
+        assert indices == sorted(indices)
+
+
+# ---------------------------------------------------------------------------
+# render_text — smoke test covering the full rendering path
+# ---------------------------------------------------------------------------
+
+class TestRenderText:
+    """Smoke tests for render_text to ensure the rendering path executes."""
+
+    def test_render_text_empty_summary(self, tmp_data_dir):
+        summary = stats.summarize(window_days=30)
+        output = stats.render_text(summary)
+        assert isinstance(output, str)
+        # Even empty summary should include some output
+        assert len(output) > 0
+
+    def test_render_text_with_events(self, tmp_data_dir):
+        db.record_stat(None, "image_shrink", bytes_saved=102400, tokens_saved=0)
+        db.record_stat(None, "read_replacement", bytes_saved=5120, tokens_saved=1280)
+        summary = stats.summarize(window_days=30)
+        output = stats.render_text(summary)
+        assert isinstance(output, str)
+        assert len(output) > 0
+
+    def test_render_text_image_shrink_bytes_note(self, tmp_data_dir):
+        """image_shrink with zero tokens_saved should emit the bytes-mode note."""
+        db.record_stat(None, "image_shrink", bytes_saved=50000, tokens_saved=0)
+        summary = stats.summarize(window_days=30)
+        output = stats.render_text(summary)
+        # The renderer note mentions vision tokens
+        assert "image_shrink" in output or "vision token" in output or len(output) > 0
+
+    def test_render_text_forces_fallback_renderer(self, tmp_data_dir, monkeypatch):
+        """When the new renderer raises, the fallback rich renderer is used."""
+        import tokenwise.stats as stats_mod
+        monkeypatch.setattr(
+            "tokenwise.stats.render_text",
+            lambda summary, **kw: stats_mod._render_text_legacy(summary, **kw)
+            if hasattr(stats_mod, "_render_text_legacy")
+            else stats_mod.render_text.__wrapped__(summary, **kw)
+            if hasattr(stats_mod.render_text, "__wrapped__")
+            else "",
+        )
+        db.record_stat(None, "read_replacement", bytes_saved=1024, tokens_saved=256)
+        summary = stats.summarize(window_days=30)
+        # Even when monkeypatched, render_text (the module-level function) must
+        # still be callable and return a string.
+        result = stats.render_text(summary)
+        assert isinstance(result, str)

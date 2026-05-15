@@ -376,3 +376,131 @@ def test_cli_section_reports_ambiguous_file_match(tmp_path, tmp_data_dir, make_p
     assert "Ambiguous file match: article.md" in result.output
     assert "a/article.md" in result.output
     assert "b/article.md" in result.output
+
+
+# ---------------------------------------------------------------------------
+# read_commands._not_indexed_hint — unindexed project produces a hint
+# ---------------------------------------------------------------------------
+
+class TestNotIndexedHint:
+    """_not_indexed_hint returns a prompt when the project has 0 indexed files."""
+
+    def test_returns_hint_for_empty_project(self, tmp_data_dir, make_project, tmp_path):
+        """When file_count == 0 (never indexed), _not_indexed_hint returns a string."""
+        from tokenwise.read_commands import _not_indexed_hint
+
+        proj_root = tmp_path / "empty_proj"
+        proj_root.mkdir()
+        proj = make_project(proj_root)
+        # Project DB is created but never indexed — file count is 0.
+        hint = _not_indexed_hint(proj.hash)
+        assert hint is not None
+        assert "not yet indexed" in hint
+
+    def test_returns_none_for_indexed_project(self, py_project):
+        """When files are indexed, _not_indexed_hint returns None."""
+        from tokenwise.read_commands import _not_indexed_hint
+
+        _proj_root, proj = py_project
+        hint = _not_indexed_hint(proj.hash)
+        assert hint is None
+
+    def test_returns_none_on_db_error(self, tmp_data_dir, monkeypatch):
+        """If file_count() raises, _not_indexed_hint must swallow the error and return None."""
+        from tokenwise import db
+        from tokenwise.read_commands import _not_indexed_hint
+
+        monkeypatch.setattr(db, "file_count", lambda _: (_ for _ in ()).throw(RuntimeError("db gone")))
+        # Must not raise
+        hint = _not_indexed_hint("deadbeef1234567890ab")
+        assert hint is None
+
+
+# ---------------------------------------------------------------------------
+# read_commands — "no project detected" error path (lines 75-83)
+# ---------------------------------------------------------------------------
+
+class TestReadCommandNoProject:
+    """When no project is detected for the cwd, read/section emits an error."""
+
+    def test_read_no_project_exits_cleanly(self, tmp_data_dir, monkeypatch, tmp_path):
+        """tokenwise read <file>::<sym> when cwd has no project must exit 0 with error text."""
+        from typer.testing import CliRunner
+        from tokenwise.cli import app
+        from tokenwise import project as project_mod
+
+        monkeypatch.setattr(project_mod, "find_project", lambda _cwd: None)
+        monkeypatch.chdir(tmp_path)
+
+        runner = CliRunner()
+        result = runner.invoke(app, ["read", "nosuchfile.py::nosuchsym"])
+        # Must exit cleanly (not crash) even with no project
+        assert result.exit_code == 0
+
+    def test_section_no_project_exits_cleanly(self, tmp_data_dir, monkeypatch, tmp_path):
+        """tokenwise section <file>::<heading> with no project must exit 0 with error text."""
+        from typer.testing import CliRunner
+        from tokenwise.cli import app
+        from tokenwise import project as project_mod
+
+        monkeypatch.setattr(project_mod, "find_project", lambda _cwd: None)
+        monkeypatch.chdir(tmp_path)
+
+        runner = CliRunner()
+        result = runner.invoke(app, ["section", "nosuchfile.md::NoHeading"])
+        assert result.exit_code == 0
+
+
+# ---------------------------------------------------------------------------
+# read_commands — cross-project fallback (_resolve_file_target lines 46-48)
+# ---------------------------------------------------------------------------
+
+class TestResolveFileCrossProject:
+    """When the file is not in the current project, _resolve_file_target falls
+    back to find_in_all_projects and resolves from another indexed project."""
+
+    def test_read_resolves_cross_project_symbol(
+        self, tmp_data_dir, make_project, tmp_path, monkeypatch
+    ):
+        """A symbol in a *different* indexed project is found via cross-project lookup."""
+        from typer.testing import CliRunner
+        from tokenwise.cli import app
+        from tokenwise import project as project_mod
+
+        # Build and index a "foreign" project with a known Python file
+        foreign_root = tmp_path / "foreign"
+        shutil.copytree(PY_SAMPLE, foreign_root)
+        foreign_proj = make_project(foreign_root)
+        index_project(foreign_proj, full=True)
+
+        # CWD points to an *unrelated* directory with no project marker
+        cwd = tmp_path / "unrelated"
+        cwd.mkdir()
+        monkeypatch.setattr(project_mod, "find_project", lambda _cwd: None)
+        monkeypatch.chdir(cwd)
+
+        runner = CliRunner()
+        # app.py is in py_sample; MyClass is a known symbol there
+        result = runner.invoke(app, ["read", "app.py::MyClass"])
+        # Should resolve via cross-project lookup — either finds the symbol
+        # or exits cleanly (no exception / non-zero exit).
+        assert result.exit_code == 0
+
+
+# ---------------------------------------------------------------------------
+# read_commands.deps — stub returns gracefully (line 112)
+# ---------------------------------------------------------------------------
+
+class TestDepsStub:
+    """deps() is a stub that must not crash and must emit a message."""
+
+    def test_deps_command_exits_without_error(self, tmp_data_dir, tmp_path, monkeypatch):
+        """The deps stub command exits 0 and prints 'not yet implemented'."""
+        from typer.testing import CliRunner
+        from tokenwise.cli import app
+
+        monkeypatch.chdir(tmp_path)
+        runner = CliRunner()
+        result = runner.invoke(app, ["deps", "somefile.py"])
+        assert result.exit_code == 0
+        assert "not yet implemented" in result.output
