@@ -56,7 +56,7 @@ class TestBuildManifest:
         sid = "manifest-header-session"
         _populate_session(sid, files=2, greps=1, edits=1)
         result = compact.build_manifest(sid)
-        assert "## Tokenwise Session Manifest" in result
+        assert "## Token-Goat Session Manifest" in result
 
     def test_edited_files_section_present(self, tmp_data_dir):
         sid = "edited-files-session-abc"
@@ -133,14 +133,14 @@ class TestConfigLoad:
         from token_goat import paths
         monkeypatch.setattr(paths, "config_path", lambda: tmp_path / "config.toml")
         for val in ("0", "false", "no", "off"):
-            monkeypatch.setenv("TOKENWISE_COMPACT_ASSIST", val)
+            monkeypatch.setenv("TOKEN_GOAT_COMPACT_ASSIST", val)
             cfg = config.load()
             assert cfg.compact_assist.enabled is False, f"expected disabled for env={val!r}"
 
     def test_env_var_blank_leaves_enabled(self, tmp_path, monkeypatch):
         from token_goat import paths
         monkeypatch.setattr(paths, "config_path", lambda: tmp_path / "config.toml")
-        monkeypatch.setenv("TOKENWISE_COMPACT_ASSIST", "")
+        monkeypatch.setenv("TOKEN_GOAT_COMPACT_ASSIST", "")
         cfg = config.load()
         assert cfg.compact_assist.enabled is True
 
@@ -152,7 +152,7 @@ class TestConfigLoad:
             encoding="utf-8",
         )
         monkeypatch.setattr(paths, "config_path", lambda: cfg_path)
-        monkeypatch.delenv("TOKENWISE_COMPACT_ASSIST", raising=False)
+        monkeypatch.delenv("TOKEN_GOAT_COMPACT_ASSIST", raising=False)
         cfg = config.load()
         assert cfg.compact_assist.enabled is False
         assert cfg.compact_assist.min_events == 10
@@ -163,7 +163,7 @@ class TestConfigLoad:
         cfg_path = tmp_path / "config.toml"
         cfg_path.write_text("this is not valid toml }{{{", encoding="utf-8")
         monkeypatch.setattr(paths, "config_path", lambda: cfg_path)
-        monkeypatch.delenv("TOKENWISE_COMPACT_ASSIST", raising=False)
+        monkeypatch.delenv("TOKEN_GOAT_COMPACT_ASSIST", raising=False)
         cfg = config.load()
         assert cfg.compact_assist.enabled is True  # fell back to default
 
@@ -171,7 +171,7 @@ class TestConfigLoad:
         from token_goat import paths
         cfg_path = tmp_path / "config.toml"
         monkeypatch.setattr(paths, "config_path", lambda: cfg_path)
-        monkeypatch.delenv("TOKENWISE_COMPACT_ASSIST", raising=False)
+        monkeypatch.delenv("TOKEN_GOAT_COMPACT_ASSIST", raising=False)
 
         original = config.load()
         original.compact_assist.enabled = False
@@ -196,7 +196,7 @@ class TestPreCompactHandler:
         cfg_path = tmp_path / "config.toml"
         cfg_path.write_text("[compact_assist]\nenabled = false\n", encoding="utf-8")
         monkeypatch.setattr(paths, "config_path", lambda: cfg_path)
-        monkeypatch.delenv("TOKENWISE_COMPACT_ASSIST", raising=False)
+        monkeypatch.delenv("TOKEN_GOAT_COMPACT_ASSIST", raising=False)
 
         sid = "disabled-session-abc"
         _populate_session(sid, files=5, greps=3, edits=2)
@@ -207,7 +207,7 @@ class TestPreCompactHandler:
     def test_env_var_disables_handler(self, tmp_data_dir, tmp_path, monkeypatch):
         from token_goat import paths
         monkeypatch.setattr(paths, "config_path", lambda: tmp_path / "config.toml")
-        monkeypatch.setenv("TOKENWISE_COMPACT_ASSIST", "0")
+        monkeypatch.setenv("TOKEN_GOAT_COMPACT_ASSIST", "0")
 
         sid = "envdisabled-session-abc"
         _populate_session(sid, files=5, greps=3, edits=2)
@@ -219,7 +219,7 @@ class TestPreCompactHandler:
         cfg_path = tmp_path / "config.toml"
         cfg_path.write_text('[compact_assist]\ntriggers = ["manual"]\n', encoding="utf-8")
         monkeypatch.setattr(paths, "config_path", lambda: cfg_path)
-        monkeypatch.delenv("TOKENWISE_COMPACT_ASSIST", raising=False)
+        monkeypatch.delenv("TOKEN_GOAT_COMPACT_ASSIST", raising=False)
 
         sid = "trigger-filter-session"
         _populate_session(sid, files=5, greps=3, edits=2)
@@ -233,7 +233,7 @@ class TestPreCompactHandler:
         cfg_path = tmp_path / "config.toml"
         cfg_path.write_text("[compact_assist]\nmin_events = 100\n", encoding="utf-8")
         monkeypatch.setattr(paths, "config_path", lambda: cfg_path)
-        monkeypatch.delenv("TOKENWISE_COMPACT_ASSIST", raising=False)
+        monkeypatch.delenv("TOKEN_GOAT_COMPACT_ASSIST", raising=False)
 
         sid = "below-min-session-abc"
         _populate_session(sid, files=2, greps=1, edits=0)  # 3 events < 100
@@ -246,7 +246,7 @@ class TestPreCompactHandler:
         cfg_path = tmp_path / "config.toml"
         cfg_path.write_text("[compact_assist]\nenabled = true\nmin_events = 1\n", encoding="utf-8")
         monkeypatch.setattr(paths, "config_path", lambda: cfg_path)
-        monkeypatch.delenv("TOKENWISE_COMPACT_ASSIST", raising=False)
+        monkeypatch.delenv("TOKEN_GOAT_COMPACT_ASSIST", raising=False)
 
         sid = "happy-path-session-abc"
         _populate_session(sid, files=3, greps=2, edits=1)
@@ -257,7 +257,7 @@ class TestPreCompactHandler:
         msg = result["systemMessage"]
         assert isinstance(msg, str)
         assert len(msg) > 0
-        assert "Tokenwise Session Manifest" in msg
+        assert "Token-Goat Session Manifest" in msg
 
     def test_auto_trigger_emits_when_in_config(self, tmp_data_dir, tmp_path, monkeypatch):
         from token_goat import paths
@@ -267,7 +267,7 @@ class TestPreCompactHandler:
             encoding="utf-8",
         )
         monkeypatch.setattr(paths, "config_path", lambda: cfg_path)
-        monkeypatch.delenv("TOKENWISE_COMPACT_ASSIST", raising=False)
+        monkeypatch.delenv("TOKEN_GOAT_COMPACT_ASSIST", raising=False)
 
         sid = "auto-trigger-session-abc"
         _populate_session(sid, files=2, greps=1, edits=1)
@@ -278,7 +278,7 @@ class TestPreCompactHandler:
     def test_missing_session_id_returns_continue(self, tmp_data_dir, tmp_path, monkeypatch):
         from token_goat import paths
         monkeypatch.setattr(paths, "config_path", lambda: tmp_path / "config.toml")
-        monkeypatch.delenv("TOKENWISE_COMPACT_ASSIST", raising=False)
+        monkeypatch.delenv("TOKEN_GOAT_COMPACT_ASSIST", raising=False)
 
         result = hooks_cli.pre_compact({"trigger": "manual"})
         assert result == {"continue": True}
@@ -288,7 +288,7 @@ class TestPreCompactHandler:
         cfg_path = tmp_path / "config.toml"
         cfg_path.write_text("[compact_assist]\nenabled = true\nmin_events = 0\n", encoding="utf-8")
         monkeypatch.setattr(paths, "config_path", lambda: cfg_path)
-        monkeypatch.delenv("TOKENWISE_COMPACT_ASSIST", raising=False)
+        monkeypatch.delenv("TOKEN_GOAT_COMPACT_ASSIST", raising=False)
 
         # Session exists but no activity → manifest is empty string → no systemMessage
         result = hooks_cli.pre_compact(self._make_payload("completely-empty-session-abc"))
@@ -303,7 +303,7 @@ class TestPreCompactHandler:
             encoding="utf-8",
         )
         monkeypatch.setattr(paths, "config_path", lambda: cfg_path)
-        monkeypatch.delenv("TOKENWISE_COMPACT_ASSIST", raising=False)
+        monkeypatch.delenv("TOKEN_GOAT_COMPACT_ASSIST", raising=False)
 
         sid = "budget-check-session-abc"
         for i in range(20):
@@ -332,7 +332,7 @@ class TestDispatcherIntegration:
     def test_dispatch_pre_compact_returns_continue(self, tmp_data_dir, tmp_path, monkeypatch):
         from token_goat import paths
         monkeypatch.setattr(paths, "config_path", lambda: tmp_path / "config.toml")
-        monkeypatch.delenv("TOKENWISE_COMPACT_ASSIST", raising=False)
+        monkeypatch.delenv("TOKEN_GOAT_COMPACT_ASSIST", raising=False)
 
         result = hooks_cli.dispatch("pre-compact", {"session_id": "dispatch-test-abc", "trigger": "manual"})
         assert result.get("continue") is True

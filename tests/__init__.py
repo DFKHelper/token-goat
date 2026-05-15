@@ -1,1 +1,1 @@
-"""Test suite for tokenwise."""
+"""Test suite for token-goat."""

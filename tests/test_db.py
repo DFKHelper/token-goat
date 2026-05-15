@@ -1,4 +1,4 @@
-"""Tests for tokenwise.db — Phase 2."""
+"""Tests for token_goat.db."""
 from __future__ import annotations
 
 import os

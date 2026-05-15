@@ -225,7 +225,7 @@ class TestDispatcherPreRead:
 
 class TestPreReadCli:
     def _run_hook(self, payload: dict, tmp_data_dir) -> dict:
-        """Run `tokenwise hook pre-read` as a subprocess with JSON on stdin."""
+        """Run `token-goat hook pre-read` as a subprocess with JSON on stdin."""
         raw = json.dumps(payload)
         proc = subprocess.run(
             [sys.executable, "-m", "token_goat.cli", "hook", "pre-read"],

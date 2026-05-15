@@ -95,7 +95,7 @@ def test_patch_codex_config_idempotent(tmp_path, monkeypatch):
     cfg_path = home / ".codex" / "config.toml"
     content = tomllib.loads(cfg_path.read_text(encoding="utf-8"))
 
-    # SessionStart should have exactly ONE tokenwise entry
+    # SessionStart should have exactly ONE token-goat entry
     ss_entries = content["hooks"].get("SessionStart", [])
     tw_cmds = [
         h["command"]
@@ -107,11 +107,11 @@ def test_patch_codex_config_idempotent(tmp_path, monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# 4. unpatch_codex_config removes only tokenwise entries
+# 4. unpatch_codex_config removes only token-goat entries
 # ---------------------------------------------------------------------------
 
 
-def test_unpatch_codex_config_removes_tokenwise(tmp_path, monkeypatch):
+def test_unpatch_codex_config_removes_token_goat(tmp_path, monkeypatch):
     import tomllib  # noqa: PLC0415
 
     import tomli_w  # noqa: PLC0415
@@ -119,7 +119,7 @@ def test_unpatch_codex_config_removes_tokenwise(tmp_path, monkeypatch):
     home = _fake_home(tmp_path)
     _patch_home(monkeypatch, home)
 
-    # Pre-install a config with both tokenwise and an unrelated hook
+    # Pre-install a config with both token-goat and an unrelated hook
     codex_dir = home / ".codex"
     codex_dir.mkdir(parents=True, exist_ok=True)
     existing = {
@@ -288,7 +288,7 @@ def test_uninstall_all_codex_flag(tmp_path, monkeypatch):
     assert "codex: config.toml" in result
     assert "codex: AGENTS.md" in result
 
-    # Verify tokenwise entries are gone from config.toml
+    # Verify token-goat entries are gone from config.toml
     cfg_path = home / ".codex" / "config.toml"
     if cfg_path.exists():
         content = tomllib.loads(cfg_path.read_text(encoding="utf-8"))

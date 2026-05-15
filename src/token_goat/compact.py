@@ -82,7 +82,7 @@ def _render(cache: SessionCache, session_id: str, max_tokens: int) -> str:
     now = datetime.now(UTC).strftime("%Y-%m-%d %H:%M UTC")
     sid = session_id[:8]
     sections: list[str] = [
-        "## Tokenwise Session Manifest",
+        "## Token-Goat Session Manifest",
         f"Session: {sid}  |  {now}",
         "",
     ]

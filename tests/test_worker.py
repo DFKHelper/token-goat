@@ -1,4 +1,4 @@
-"""Tests for tokenwise.worker — Phase 9."""
+"""Tests for token_goat.worker."""
 from __future__ import annotations
 
 import json
@@ -460,9 +460,9 @@ class TestWorkerSelfHeal:
     disturb a healthy-but-busy one (which would orphan it or spawn a
     duplicate that just loses the claim race)."""
 
-    def test_is_tokenwise_worker_false_for_dead_pid(self, tmp_data_dir):
+    def test_is_token_goat_worker_false_for_dead_pid(self, tmp_data_dir):
         # 999999999 is not a real PID — cmdline lookup fails → not a worker.
-        assert worker._is_tokenwise_worker(999999999) is False
+        assert worker._is_token_goat_worker(999999999) is False
 
     def test_live_worker_pid_none_for_dead_pid(self, tmp_data_dir):
         paths.ensure_dirs()
@@ -550,7 +550,7 @@ def test_spawn_detached_mocked(tmp_data_dir):
     assert pid == 12345
     mock_popen.assert_called_once()
     cmd_arg = mock_popen.call_args[0][0]
-    # Prefer the windowless tokenwise-worker binary (or fall back to tokenwise);
+    # Prefer the windowless token-goat-worker binary (or fall back to token-goat);
     # either way the trailing args are stable.
     assert cmd_arg[-2:] == ["worker", "--daemon"]
     assert any("token_goat" in arg for arg in cmd_arg)

@@ -1,4 +1,4 @@
-"""Config loader/saver for tokenwise. Reads/writes TOML at paths.config_path()."""
+"""Config loader/saver for token-goat. Reads/writes TOML at paths.config_path()."""
 from __future__ import annotations
 
 import logging
@@ -13,7 +13,8 @@ from . import paths
 
 _LOG = logging.getLogger("token_goat.config")
 
-_ENV_COMPACT_ASSIST = "TOKENWISE_COMPACT_ASSIST"  # set to "0"/"false"/"no"/"off" to disable
+_ENV_COMPACT_ASSIST = "TOKEN_GOAT_COMPACT_ASSIST"  # set to "0"/"false"/"no"/"off" to disable
+_ENV_COMPACT_ASSIST_LEGACY = "TOKENWISE_COMPACT_ASSIST"  # backward-compat alias
 
 
 class _CompactAssistToml(TypedDict, total=False):
@@ -26,7 +27,7 @@ class _CompactAssistToml(TypedDict, total=False):
 
 
 class _ConfigToml(TypedDict, total=False):
-    """Expected shape of the tokenwise config TOML file."""
+    """Expected shape of the token-goat config TOML file."""
 
     compact_assist: _CompactAssistToml
 
@@ -41,7 +42,7 @@ class CompactAssistConfig:
 
     Attributes:
         enabled: Master on/off switch.  Can also be disabled at runtime by
-            setting ``TOKENWISE_COMPACT_ASSIST=0`` (or ``false``/``no``/``off``).
+            setting ``TOKEN_GOAT_COMPACT_ASSIST=0`` (or ``false``/``no``/``off``).
         triggers: Which compaction events activate the manifest.  Recognized
             values are ``"manual"`` (user-invoked ``/compact``) and ``"auto"``
             (automatic compaction triggered by context pressure).
@@ -96,8 +97,12 @@ def load() -> Config:
         max_manifest_tokens=int(ca_raw.get("max_manifest_tokens", 400)),
     )
 
-    # Environment override: TOKENWISE_COMPACT_ASSIST=0 / false / no / off disables
-    env_val = os.environ.get(_ENV_COMPACT_ASSIST, "").strip().lower()
+    # Environment override: TOKEN_GOAT_COMPACT_ASSIST=0 / false / no / off disables
+    # Also accepts legacy TOKENWISE_COMPACT_ASSIST for backward compatibility.
+    env_val = (
+        os.environ.get(_ENV_COMPACT_ASSIST, "")
+        or os.environ.get(_ENV_COMPACT_ASSIST_LEGACY, "")
+    ).strip().lower()
     if env_val in ("0", "false", "no", "off"):
         _LOG.debug("%s=%s; compact_assist disabled", _ENV_COMPACT_ASSIST, env_val)
         ca.enabled = False

@@ -15,7 +15,7 @@ TS_SAMPLE = FIXTURE_DIR / "ts_sample"
 
 
 def _run(args: list[str], cwd: Path, env: dict | None = None) -> subprocess.CompletedProcess:
-    """Run tokenwise with the given args in the given cwd."""
+    """Run token-goat with the given args in the given cwd."""
     merged_env = {**os.environ}
     if env:
         merged_env.update(env)
@@ -29,7 +29,7 @@ def _run(args: list[str], cwd: Path, env: dict | None = None) -> subprocess.Comp
 
 
 def _run_uv(args: list[str], cwd: Path, env: dict | None = None) -> subprocess.CompletedProcess:
-    """Run via uv run tokenwise."""
+    """Run via uv run token-goat."""
     merged_env = {**os.environ}
     if env:
         merged_env.update(env)
@@ -47,7 +47,7 @@ def indexed_ts_dir(tmp_path, tmp_data_dir, monkeypatch):
     """
     Copy ts_sample to tmp, run `token-goat index` in it.
     Returns the project dir path.
-    Uses monkeypatch so tokenwise.paths.data_dir points to tmp_data_dir.
+    Uses monkeypatch so token_goat.paths.data_dir points to tmp_data_dir.
     """
     proj_root = tmp_path / "ts_sample"
     shutil.copytree(TS_SAMPLE, proj_root)
@@ -56,7 +56,7 @@ def indexed_ts_dir(tmp_path, tmp_data_dir, monkeypatch):
     from token_goat.parser import index_project
     from token_goat.project import find_project
 
-    # We need tokenwise.paths to point to our tmp during index
+    # We need token_goat.paths to point to our tmp during index
     monkeypatch.chdir(proj_root)
     proj = find_project(proj_root)
     assert proj is not None

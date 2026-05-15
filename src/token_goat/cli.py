@@ -593,7 +593,7 @@ def cmd_install(
 
 @app.command("uninstall")
 def cmd_uninstall(
-    purge: bool = typer.Option(False, "--purge", help=r"Also delete %LOCALAPPDATA%\tokenwise"),  # noqa: B008
+    purge: bool = typer.Option(False, "--purge", help=r"Also delete %LOCALAPPDATA%\Zelys\token-goat"),  # noqa: B008
     codex: bool = typer.Option(False, "--codex", help="Also remove Codex CLI integration"),  # noqa: B008
 ) -> None:
     """Cleanly reverse install."""
@@ -720,7 +720,7 @@ def compact_hint(
     json_output: bool = typer.Option(False, "--json"),
     max_tokens: int = typer.Option(400, "--max-tokens", help="Token budget for the manifest"),
 ) -> None:
-    """Show the compaction manifest tokenwise would inject for a session.
+    """Show the compaction manifest token-goat would inject for a session.
 
     Use this to inspect what the PreCompact hook will emit as systemMessage
     before Claude Code compacts the conversation. Useful for debugging.
@@ -753,7 +753,7 @@ def compact_hint(
     typer.echo("")
 
     if not cfg.enabled:
-        typer.echo("(disabled — set TOKENWISE_COMPACT_ASSIST=1 or edit config.toml to enable)")
+        typer.echo("(disabled — set TOKEN_GOAT_COMPACT_ASSIST=1 or edit config.toml to enable)")
         return
 
     if n_events < cfg.min_events:

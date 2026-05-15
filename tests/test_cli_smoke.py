@@ -7,7 +7,7 @@ runner = CliRunner()
 
 
 def test_cli_help_runs():
-    """Test that tokenwise --help doesn't crash."""
+    """Test that token-goat --help doesn't crash."""
     result = runner.invoke(cli.app, ["--help"])
     assert result.exit_code == 0
     assert "symbol" in result.stdout
@@ -26,7 +26,7 @@ def test_doctor_command_runs():
 
 
 def test_hook_help_runs():
-    """Test that tokenwise hook --help shows subcommands."""
+    """Test that token-goat hook --help shows subcommands."""
     result = runner.invoke(cli.app, ["hook", "--help"])
     assert result.exit_code == 0
     assert "session-start" in result.stdout or "session_start" in result.stdout

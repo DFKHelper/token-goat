@@ -51,7 +51,7 @@ def _setup_logging() -> None:
 
 
 def normalize_payload(payload: dict[str, Any], harness: str = "claude") -> dict[str, Any]:
-    """Translate harness-specific payloads to tokenwise's internal format.
+    """Translate harness-specific payloads to token-goat's internal format.
 
     Codex sends snake_case keys for some fields and uses 'turn_id'; Claude uses
     camelCase. token-goat handlers work with the Claude shape internally.
@@ -81,7 +81,7 @@ def _translate_hso_to_codex(hso: dict[str, Any]) -> dict[str, Any]:
 
 
 def denormalize_response(response: dict[str, Any], harness: str = "claude") -> dict[str, Any]:
-    """Translate tokenwise's internal response format to harness-specific wire format.
+    """Translate token-goat's internal response format to harness-specific wire format.
 
     Claude: hookSpecificOutput.{additionalContext, updatedInput, permissionDecision, ...}
     Codex:  hookSpecificOutput.{additional_context, updated_input, permission_decision, ...}
@@ -216,7 +216,7 @@ def pre_compact(payload: dict[str, Any]) -> dict[str, Any]:
 
     The compaction LLM receives the manifest in its context and includes it in
     the summary, so edited files and accessed symbols survive the compaction.
-    Configurable via config.toml [compact_assist] or TOKENWISE_COMPACT_ASSIST=0.
+    Configurable via config.toml [compact_assist] or TOKEN_GOAT_COMPACT_ASSIST=0.
     """
     from . import compact as compact_mod  # noqa: PLC0415
     from . import config as config_mod  # noqa: PLC0415

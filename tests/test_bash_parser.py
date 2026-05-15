@@ -1,4 +1,4 @@
-"""Tests for tokenwise.bash_parser — Phase 18."""
+"""Tests for token_goat.bash_parser."""
 from __future__ import annotations
 
 import pytest

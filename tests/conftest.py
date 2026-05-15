@@ -11,7 +11,7 @@ from token_goat.project import Project, canonicalize, project_hash
 
 @pytest.fixture
 def tmp_data_dir(tmp_path):
-    """Monkeypatch tokenwise.paths.data_dir to a temporary directory."""
+    """Monkeypatch token_goat.paths.data_dir to a temporary directory."""
     with patch.object(paths, 'data_dir', return_value=tmp_path):
         yield tmp_path
 
@@ -102,7 +102,7 @@ def isolate_registry(monkeypatch):
 
     install_all()/uninstall_all() — and install_worker_task()/uninstall_tasks()
     — call ``winreg`` directly. A test exercising them unmocked writes, then
-    DELETES, the user's real ``tokenwise-worker`` HKCU Run key (the worker's
+    DELETES, the user's real ``token-goat-worker`` HKCU Run key (the worker's
     autostart entry) on every ``pytest`` run — which is exactly what
     test_install_uninstall_round_trip did. Replace ``winreg`` in sys.modules
     with an in-memory fake for every test. A test that needs to assert on

@@ -57,7 +57,7 @@ def resolve_file_rel(project: Project, file_part: str) -> str | None:
     Accepts:
     - Full relative path  (e.g., 'src/token_goat/parser.py')
     - Bare filename       (e.g., 'parser.py' — only when unique)
-    - Partial path        (e.g., 'tokenwise/parser.py' — only when unique)
+    - Partial path        (e.g., 'token_goat/parser.py' — only when unique)
     - Absolute path       (resolved against project root)
 
     Raises AmbiguousFileMatch when multiple indexed files match file_part.
