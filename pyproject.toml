@@ -1,5 +1,5 @@
 [project]
-name = "tokenwise"
+name = "token-goat"
 version = "0.3.0"
 description = "Claude Code companion that reduces token usage via local indexing, image shrinking, and session-context caching."
 readme = "README.md"
@@ -25,15 +25,15 @@ dependencies = [
 ]
 
 [project.scripts]
-tokenwise = "tokenwise.cli:main"
+token-goat = "tokenwise.cli:main"
 
 # Windowless variant: GUI subsystem entry point used by hooks and the
 # background worker. Same code, but Windows won't allocate a console for
 # the launcher .exe — no flashing terminal windows on every hook fire.
 # Both use main() so hook subcommands cannot propagate non-zero exits.
 [project.gui-scripts]
-tokenwise-hook = "tokenwise.cli:main"
-tokenwise-worker = "tokenwise.cli:main"
+token-goat-hook = "tokenwise.cli:main"
+token-goat-worker = "tokenwise.cli:main"
 
 [project.optional-dependencies]
 dev = [
