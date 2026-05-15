@@ -151,6 +151,28 @@ def test_index_registers_project_before_file_walk(ts_project, monkeypatch):
     )
 
 
+def test_iter_source_files_prunes_ignored_directories(tmp_path):
+    """The source walker should skip ignored trees without descending into them."""
+    from tokenwise import parser
+    from tokenwise.project import make_project_at
+
+    proj_root = tmp_path / "walk_root"
+    proj_root.mkdir()
+    (proj_root / "src").mkdir()
+    (proj_root / "node_modules" / "pkg").mkdir(parents=True)
+
+    keep = proj_root / "src" / "keep.py"
+    keep.write_text("print('keep')\n", encoding="utf-8")
+    skip = proj_root / "node_modules" / "pkg" / "skip.py"
+    skip.write_text("print('skip')\n", encoding="utf-8")
+
+    proj = make_project_at(proj_root)
+    rel_paths = {p.relative_to(proj.root).as_posix() for p in parser.iter_source_files(proj)}
+
+    assert "src/keep.py" in rel_paths
+    assert "node_modules/pkg/skip.py" not in rel_paths
+
+
 # ---------------------------------------------------------------------------
 # Incremental indexing
 # ---------------------------------------------------------------------------

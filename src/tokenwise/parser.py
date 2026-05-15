@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import os
 import sqlite3
 import time
 from collections.abc import Callable, Iterable
@@ -140,6 +141,7 @@ class FileIndex:
         rel_path: Path to the file, relative to project root (normalized to POSIX style).
         language: Detected language ('python', 'typescript', 'go', 'rust', 'markdown', etc.).
         size: File size in bytes.
+        line_count: Exact number of newline-delimited lines in the file.
         mtime: Last-modified timestamp (unix epoch, float).
         content_sha256: SHA256 hash of file content. Used to detect changes and skip re-indexing.
         symbols: List of named definitions (functions, classes, variables, etc.) in the file.
@@ -150,6 +152,7 @@ class FileIndex:
     rel_path: str
     language: str
     size: int
+    line_count: int
     mtime: float
     content_sha256: str
     symbols: list[Symbol] = field(default_factory=list)
@@ -205,20 +208,28 @@ def get_extractor(language: str) -> Extractor | None:
 def iter_source_files(project: Project) -> Iterable[Path]:
     """Yield absolute paths of indexable source files under the project root."""
     root = project.root
-    for path in root.rglob("*"):
-        if not path.is_file():
-            continue
-        # skip if any parent dir is in SKIP_DIRS
-        if any(part in SKIP_DIRS for part in path.relative_to(root).parts):
-            continue
-        if path.suffix.lower() not in LANG_BY_EXT:
-            continue
-        try:
-            if path.stat().st_size > MAX_FILE_SIZE:
+    for dirpath, dirs, files in os.walk(root):
+        dirs[:] = [d for d in dirs if d not in SKIP_DIRS]
+        base = Path(dirpath)
+        for name in files:
+            if name in SKIP_DIRS:
                 continue
-        except OSError:
-            continue
-        yield path
+            path = base / name
+            if path.suffix.lower() not in LANG_BY_EXT:
+                continue
+            try:
+                if path.stat().st_size > MAX_FILE_SIZE:
+                    continue
+            except OSError:
+                continue
+            yield path
+
+
+def _line_count_from_bytes(raw: bytes) -> int:
+    """Return the exact number of newline-delimited lines in *raw*."""
+    if not raw:
+        return 0
+    return raw.count(b"\n") + (0 if raw.endswith(b"\n") else 1)
 
 
 def index_file(project: Project, file_path: Path) -> FileIndex | None:
@@ -231,6 +242,7 @@ def index_file(project: Project, file_path: Path) -> FileIndex | None:
         return None
     rel = file_path.relative_to(project.root).as_posix()
     language = LANG_BY_EXT[file_path.suffix.lower()]
+    line_count = _line_count_from_bytes(raw)
     extractor = get_extractor(language)
     if extractor is None:
         _LOG.debug("no extractor for %s (%s)", rel, language)
@@ -257,6 +269,7 @@ def index_file(project: Project, file_path: Path) -> FileIndex | None:
         rel_path=rel,
         language=language,
         size=stat.st_size,
+        line_count=line_count,
         mtime=stat.st_mtime,
         content_sha256=hashlib.sha256(raw).hexdigest(),
         symbols=symbols,
@@ -272,9 +285,17 @@ def write_file_index(conn: sqlite3.Connection, fi: FileIndex) -> None:
     # Delete old rows (cascade handles symbols/refs/imports_exports/sections)
     conn.execute("DELETE FROM files WHERE rel_path = ?", (fi.rel_path,))
     conn.execute(
-        "INSERT INTO files (rel_path, language, size, mtime, content_sha256, indexed_at) "
-        "VALUES (?, ?, ?, ?, ?, ?)",
-        (fi.rel_path, fi.language, fi.size, fi.mtime, fi.content_sha256, now),
+        "INSERT INTO files (rel_path, language, size, line_count, mtime, content_sha256, indexed_at) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?)",
+        (
+            fi.rel_path,
+            fi.language,
+            fi.size,
+            fi.line_count,
+            fi.mtime,
+            fi.content_sha256,
+            now,
+        ),
     )
     # Batch insert symbols (filter malformed rows)
     symbol_rows = [

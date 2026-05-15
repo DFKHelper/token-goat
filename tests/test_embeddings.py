@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import hashlib
 import math
-import os
 import shutil
 import sqlite3
 import struct
@@ -272,15 +271,12 @@ def test_cli_semantic_with_stub_embeddings(ts_project, monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# Slow test: full embedding cycle (requires model download ~130 MB)
+# Offline end-to-end embedding cycle
 # ---------------------------------------------------------------------------
 
-@pytest.mark.skipif(
-    os.environ.get("TOKENWISE_RUN_SLOW_TESTS") != "1",
-    reason="requires fastembed model download (~130 MB); set TOKENWISE_RUN_SLOW_TESTS=1",
-)
-def test_full_embedding_cycle(ts_project):
-    """Full embed + search cycle on ts_sample. Verifies greet is the top hit."""
+def test_full_embedding_cycle(ts_project, monkeypatch):
+    """Full embed + search cycle on ts_sample with an exact-match query."""
+    monkeypatch.setattr(emb, "embed_texts", _stub_embed)
     # Run embedding indexing
     result = emb.index_project_embeddings(ts_project)
     assert result["chunks_embedded"] > 0
@@ -292,30 +288,28 @@ def test_full_embedding_cycle(ts_project):
     assert result2["chunks_skipped_unchanged"] == result["chunks_embedded"]
     assert result2["chunks_embedded"] == 0
 
-    # Semantic search — "hello name greeting" should surface the greet function
-    hits = emb.semantic_search(ts_project, "hello name greeting", k=5)
+    # Semantic search — the exact chunk text should surface as the top hit.
+    with db.open_project(ts_project.hash) as conn:
+        row = conn.execute(
+            "SELECT text, file_rel, start_line FROM chunks LIMIT 1"
+        ).fetchone()
+
+    hits = emb.semantic_search(ts_project, row["text"], k=5)
     assert len(hits) >= 1
 
     top = hits[0]
-    # The top hit should mention greet or hello
-    assert "greet" in top.text.lower() or "hello" in top.text.lower(), (
-        f"Unexpected top hit: {top.file_rel}:{top.start_line} kind={top.kind}\n{top.text[:200]}"
-    )
-    # Distance must be in valid range (0 = identical, 2 = opposite)
+    assert top.text == row["text"]
+    assert top.file_rel == row["file_rel"]
     assert 0.0 <= top.distance <= 2.0
 
 
-@pytest.mark.skipif(
-    os.environ.get("TOKENWISE_RUN_SLOW_TESTS") != "1",
-    reason="requires fastembed model download (~130 MB); set TOKENWISE_RUN_SLOW_TESTS=1",
-)
 def test_cli_semantic_with_embeddings(ts_project, monkeypatch):
     """CLI tokenwise semantic returns results after embedding is built."""
     from typer.testing import CliRunner  # noqa: PLC0415
 
     from tokenwise import cli  # noqa: PLC0415
 
-    # Build embeddings first
+    monkeypatch.setattr(emb, "embed_texts", _stub_embed)
     emb.index_project_embeddings(ts_project)
 
     monkeypatch.chdir(ts_project.root)

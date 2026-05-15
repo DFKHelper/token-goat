@@ -530,9 +530,10 @@ class TestGetIndexedSymbolsAndLineCount:
     def test_db_exception_returns_empty_and_none(self, tmp_data_dir):
         from tokenwise import db as _db
         with patch.object(_db, "open_project", side_effect=RuntimeError("db gone")):
-            symbols, n_lines = _get_indexed_symbols_and_line_count("foo.py", "deadhash")
+            symbols, n_lines, exact = _get_indexed_symbols_and_line_count("foo.py", "deadhash")
         assert symbols == []
         assert n_lines is None
+        assert exact is False
 
 
 # ---------------------------------------------------------------------------
@@ -541,6 +542,34 @@ class TestGetIndexedSymbolsAndLineCount:
 
 
 class TestHintFromIndexEdgeCases:
+    def test_exact_line_count_skips_fallback_file_read(self, tmp_data_dir, tmp_path):
+        """Stored line counts should make small indexed files return None without rereading."""
+        from tokenwise.parser import index_project
+        from tokenwise.project import find_project
+
+        (tmp_path / ".git").mkdir()
+        src = tmp_path / "small.py"
+        src.write_text("def greet():\n    return 1\n", encoding="utf-8")
+
+        proj = find_project(tmp_path)
+        assert proj is not None
+        index_project(proj, full=True)
+
+        with patch("tokenwise.hints._line_count", side_effect=AssertionError("fallback read should not run")):
+            hint = build_read_hint(
+                session_id="s_exact",
+                file_path=str(src),
+                offset=0,
+                limit=2000,
+                cwd=str(tmp_path),
+            )
+        assert hint is None
+
+        symbols, n_lines, exact = _get_indexed_symbols_and_line_count("small.py", proj.hash)
+        assert symbols
+        assert exact is True
+        assert n_lines == 2
+
     def test_relative_file_path_resolves_under_project_root(self, tmp_data_dir, tmp_path):
         """Relative file_path is joined with the project root before DB lookup."""
         (tmp_path / ".git").mkdir()

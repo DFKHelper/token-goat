@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import logging
+import sqlite3
 from pathlib import Path
 
 from . import db, session
@@ -66,18 +67,29 @@ def _line_count(path: Path) -> int | None:
 
 def _get_indexed_symbols_and_line_count(
     file_rel: str, project_hash: str
-) -> tuple[list[dict], int | None]:
+) -> tuple[list[dict], int | None, bool]:
     """Return symbols AND actual or estimated line count in one query.
 
-    Falls back to _line_count only if DB has no file metadata.
+    Returns a third flag indicating whether the line count is exact (stored in
+    the files table) versus an estimate derived from file size.
     """
     try:
         with db.open_project(project_hash) as conn:
             # Fetch file metadata and symbols in one round-trip
-            file_row = conn.execute(
-                "SELECT size FROM files WHERE rel_path = ?",
-                (file_rel,),
-            ).fetchone()
+            try:
+                file_row = conn.execute(
+                    "SELECT size, line_count FROM files WHERE rel_path = ?",
+                    (file_rel,),
+                ).fetchone()
+                has_exact_line_count = True
+            except sqlite3.OperationalError as exc:
+                if "line_count" not in str(exc).lower():
+                    raise
+                file_row = conn.execute(
+                    "SELECT size FROM files WHERE rel_path = ?",
+                    (file_rel,),
+                ).fetchone()
+                has_exact_line_count = False
 
             sym_rows = conn.execute(
                 """
@@ -93,15 +105,21 @@ def _get_indexed_symbols_and_line_count(
             # If DB has file metadata, estimate lines from file size.
             # Rough estimate: 50-100 bytes per line for code.
             if file_row:
-                size = file_row["size"]
-                n_lines = max(1, size // 75)  # conservative estimate
+                if has_exact_line_count and file_row["line_count"] is not None:
+                    n_lines = int(file_row["line_count"])
+                    exact_line_count = True
+                else:
+                    size = file_row["size"]
+                    n_lines = max(1, size // 75)  # conservative estimate
+                    exact_line_count = False
             else:
                 n_lines = None
+                exact_line_count = False
 
-            return [dict(r) for r in sym_rows], n_lines
+            return [dict(r) for r in sym_rows], n_lines, exact_line_count
     except Exception:  # noqa: BLE001
         _LOG.exception("failed to load indexed symbols for %s", file_rel)
-        return [], None
+        return [], None, False
 
 
 def build_read_hint(
@@ -232,13 +250,20 @@ def _hint_from_index(
         return None
 
     # Fetch symbols; line count comes from file if DB estimate is unreliable
-    symbols, estimated_lines = _get_indexed_symbols_and_line_count(rel, project.hash)
+    symbols, estimated_lines, exact_line_count = _get_indexed_symbols_and_line_count(
+        rel, project.hash
+    )
     if not symbols:
         return None
 
     # Use estimated line count from DB if available; fall back to actual read
     n_lines = estimated_lines
-    if n_lines is None or n_lines < LARGE_FILE_LINE_THRESHOLD:
+    if n_lines is None:
+        return None
+    if exact_line_count:
+        if n_lines < LARGE_FILE_LINE_THRESHOLD:
+            return None
+    elif n_lines < LARGE_FILE_LINE_THRESHOLD:
         n_lines = _line_count(abs_path)
         if n_lines is None or n_lines < LARGE_FILE_LINE_THRESHOLD:
             return None

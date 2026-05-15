@@ -87,6 +87,33 @@ class TestSessionStartHookIntegration:
         assert fresh.files == {}
         assert fresh.greps == []
 
+    def test_session_start_auto_indexes_without_counting_files(self, tmp_data_dir, tmp_path, monkeypatch):
+        """session_start should use the cheap project-presence probe, not a full file count."""
+        from tokenwise import db, worker
+        from tokenwise.project import find_project
+
+        proj_root = tmp_path / "proj"
+        proj_root.mkdir()
+        (proj_root / ".git").mkdir()
+        proj = find_project(proj_root)
+        assert proj is not None
+
+        monkeypatch.setattr(db, "file_count", lambda *_: (_ for _ in ()).throw(RuntimeError("count called")))
+        monkeypatch.setattr(db, "touch_project_last_seen", lambda *_: None)
+
+        spawned: list[tuple[str, str]] = []
+        monkeypatch.setattr(
+            worker,
+            "spawn_index_detached",
+            lambda root, project_hash: spawned.append((root, project_hash)) or 4321,
+        )
+        monkeypatch.setattr(worker, "ensure_running", lambda: 99999)
+
+        payload = {"session_id": "hook_s6", "cwd": str(proj_root)}
+        result = hooks_cli.session_start(payload)
+        assert result == {"continue": True}
+        assert spawned == [(str(proj.root), proj.hash)]
+
 
 class TestDispatcherPostRead:
     """Test the full dispatcher for post_read."""

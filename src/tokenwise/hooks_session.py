@@ -32,7 +32,7 @@ def _auto_index_if_needed(proj: Project) -> None:
     try:
         from . import db, worker  # noqa: PLC0415
 
-        if db.file_count(proj.hash) == 0:
+        if not db.project_has_files(proj.hash):
             pid = worker.spawn_index_detached(str(proj.root), proj.hash)
             if pid:
                 _LOG.info(
