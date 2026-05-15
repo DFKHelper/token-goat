@@ -288,6 +288,6 @@ def extract(
         imp_exp.append(ImpExp(kind="import", target=module, line=line))
 
     # --- refs via regex ---
-    refs: list[Ref] = common.extract_refs_from_source(source, _CALL_RE, _CALL_NOISE)  # type: ignore[assignment, no-redef]
+    refs: list[Ref] = common.extract_refs_from_source(source, _CALL_RE, _CALL_NOISE)  # type: ignore[no-redef]
 
     return symbols, refs, imp_exp, []
