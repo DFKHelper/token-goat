@@ -94,6 +94,18 @@ class Ref:
 
 @dataclass
 class ImpExp:
+    """An import or export relationship extracted from a source file.
+
+    Used to build the cross-reference graph that drives PageRank scoring in
+    ``repomap.py``.
+
+    Attributes:
+        kind: Relationship type — one of ``"import"``, ``"export"``, or ``"reexport"``.
+        target: The module path or symbol being imported/exported (as written in
+            the source, e.g. ``"./db"`` or ``"tokenwise.session"``).
+        line: 1-based line number in the source file where the relationship appears.
+    """
+
     kind: str            # import|export|reexport
     target: str
     line: int

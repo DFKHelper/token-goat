@@ -85,6 +85,12 @@ class SessionCache:
 
 
 def _fresh_cache(session_id: str, *, unavailable: bool = False) -> SessionCache:
+    """Return a new empty SessionCache for the given session ID.
+
+    When *unavailable* is True the cache is created with the unavailable flag
+    set, signalling to callers that the backing file could not be written and
+    that session tracking is degraded for this session.
+    """
     now = time.time()
     return SessionCache(
         session_id=session_id,

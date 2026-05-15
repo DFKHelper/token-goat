@@ -609,9 +609,11 @@ def doctor(  # noqa: C901
     from . import paths, project
 
     def ok(label: str, value: str) -> None:
+        """Print a passing doctor-check line (plain indented ``label: value``)."""
         typer.echo(f"  {label}: {value}")
 
     def flag(label: str, value: str, *, warn: bool = False) -> None:
+        """Print a failing or warning doctor-check line prefixed with [FAIL] or [WARN]."""
         prefix = "WARN" if warn else "FAIL"
         typer.echo(f"  [{prefix}] {label}: {value}")
 

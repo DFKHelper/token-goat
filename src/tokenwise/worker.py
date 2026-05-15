@@ -18,23 +18,32 @@ try:
     import psutil
 except ModuleNotFoundError:
     class _PsutilNoSuchProcess(Exception):
-        pass
+        """Stub for psutil.NoSuchProcess — raised when a PID has no matching process."""
 
     class _PsutilAccessDenied(Exception):
-        pass
+        """Stub for psutil.AccessDenied — raised when process info cannot be read."""
 
     class _PsutilTimeoutExpired(Exception):
-        pass
+        """Stub for psutil.TimeoutExpired — raised when a wait operation times out."""
 
     class _PsutilShim:
+        """Minimal psutil stand-in used when the optional psutil package is absent.
+
+        All pid_exists() calls return False (safe: treats every PID as gone) and
+        Process() always raises NoSuchProcess, so callers that catch psutil errors
+        work correctly without the real library installed.
+        """
+
         NoSuchProcess = _PsutilNoSuchProcess
         AccessDenied = _PsutilAccessDenied
         TimeoutExpired = _PsutilTimeoutExpired
 
         def pid_exists(self, pid: int) -> bool:
+            """Return False — psutil is unavailable, so we cannot confirm any PID exists."""
             return False
 
         def Process(self, pid: int) -> object:
+            """Raise NoSuchProcess — psutil is unavailable, so no process info can be obtained."""
             raise _PsutilNoSuchProcess(pid)
 
     psutil = _PsutilShim()  # type: ignore[assignment]
@@ -838,6 +847,7 @@ def run_daemon(stop_event=None) -> None:
     restart_for_upgrade = False
 
     def should_stop() -> bool:
+        """Return True when the caller has signalled the worker to shut down."""
         return stop_event is not None and stop_event.is_set()
 
     # Best-effort signal handling

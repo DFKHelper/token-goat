@@ -42,8 +42,15 @@ def _is_map_worthy(rel_path: str, approx_lines: int) -> bool:
     return approx_lines >= _MIN_DISPLAY_LINES
 
 
-# rough token estimator: ~3.5 chars per token for English/code mix
 def estimate_tokens(text: str) -> int:
+    """Rough token estimate for a string (~3.5 chars/token for English/code mix).
+
+    Uses integer division by 3 rather than the precise 3.5 ratio to keep the
+    estimate conservative (slightly over-counts), ensuring the caller stays
+    within token budgets rather than exceeding them.
+
+    Returns at least 1 so callers never divide-by-zero on empty inputs.
+    """
     return max(1, len(text) // 3 + 1)
 
 
@@ -67,6 +74,18 @@ KIND_PRIORITY: dict[str, int] = {
 
 @dataclass
 class FileSummary:
+    """PageRank-weighted summary of a single file for the repo map output.
+
+    Attributes:
+        rel_path: Repository-relative POSIX path (e.g. ``src/tokenwise/db.py``).
+        language: Detected language name (e.g. ``python``, ``typescript``).
+        rank: PageRank score — higher means more cross-referenced by other files.
+        top_symbols: Priority-ordered symbols as ``(kind, name)`` pairs, e.g.
+            ``[('class', 'SessionCache'), ('function', 'load')]``.
+        top_sections: Headings extracted from docs/markdown files.
+        line_count: Approximate line count derived from the file's stored size.
+    """
+
     rel_path: str
     language: str
     rank: float
