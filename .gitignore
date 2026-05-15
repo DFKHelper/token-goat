@@ -140,6 +140,9 @@ patantsub.pdf
 .vscode/
 *.iml
 
+# Claude Code project instructions — kept local, not for public repo
+CLAUDE.md
+
 # Test/temp artifacts
 .tmp/
 .verify-manual/
