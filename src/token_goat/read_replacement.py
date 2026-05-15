@@ -8,8 +8,14 @@ from pathlib import Path
 from typing import Any
 
 from . import db
+from .parser import MAX_FILE_SIZE
 from .paths import is_safe_rel_path as _is_safe_rel_path
 from .project import Project
+
+# Maximum file size allowed for symbol/section extraction.  Mirrors the
+# indexer's MAX_FILE_SIZE so a file that grew after indexing cannot cause an
+# unbounded in-memory read when the caller requests a slice from it.
+_MAX_READ_BYTES = MAX_FILE_SIZE
 
 _LOG = logging.getLogger("token_goat.read_replacement")
 
@@ -149,6 +155,19 @@ def _pick_best_match(file_part: str, candidates: list[str]) -> str | None:
     return scored[0]
 
 
+def _is_absolute(file_part: str) -> bool:
+    """Return True when file_part is an absolute path on any platform.
+
+    Covers POSIX (/foo), Windows drive-letter (C:/foo or C:\\foo), and
+    UNC (//host/share) forms so the traversal guards in resolve_file_rel
+    and _resolve_file_rel_db never reject legitimate absolute-path inputs.
+    """
+    if file_part.startswith("/") or file_part.startswith("\\"):
+        return True
+    # Windows drive-letter form: X: or X:/ or X:\
+    return len(file_part) >= 2 and file_part[1] == ":" and file_part[0].isalpha()
+
+
 def resolve_file_rel(project: Project, file_part: str) -> str | None:
     """Given the file part from a 'file::symbol' target, find the matching rel_path.
 
@@ -162,8 +181,19 @@ def resolve_file_rel(project: Project, file_part: str) -> str | None:
     specificity. When one candidate is more specific than the others (longer suffix
     match or shallower path depth on tie), it is returned without raising.
     Results are cached in-process keyed on (project_hash, file_part).
+
+    Rejects relative paths that contain ``..`` traversal components.  Absolute
+    paths are allowed through; ``_resolve_file_rel_db`` resolves them against
+    the project root and enforces containment via ``Path.relative_to``.
     """
     file_part = file_part.replace("\\", "/").strip()
+
+    # Reject relative-path traversal attempts early. Absolute paths are
+    # handled safely in _resolve_file_rel_db via relative_to() which enforces
+    # project root containment — they must not be filtered here.
+    if not _is_absolute(file_part) and ".." in file_part.split("/"):
+        _LOG.warning("resolve_file_rel: rejected traversal attempt: %r", file_part)
+        return None
 
     # Cache hit — avoids DB round-trips for repeated lookups within same process
     hit, cached = _resolve_cache_get(project.hash, file_part)
@@ -178,7 +208,13 @@ def resolve_file_rel(project: Project, file_part: str) -> str | None:
 def _resolve_file_rel_db(project: Project, file_part: str) -> str | None:
     """Un-cached DB-backed resolution. Called by resolve_file_rel."""
     with db.open_project(project.hash) as conn:
-        # 1. Exact relative match
+        # 1. Exact relative match — guard against any traversal that slipped
+        #    through (e.g. callers that bypass resolve_file_rel).
+        #    Absolute paths are exempt: they are validated via relative_to()
+        #    in step 2 below, which enforces project root containment.
+        if not _is_absolute(file_part) and not _is_safe_rel_path(file_part):
+            _LOG.warning("_resolve_file_rel_db: rejected unsafe rel_path: %r", file_part)
+            return None
         row = conn.execute(
             "SELECT rel_path FROM files WHERE rel_path = ?", (file_part,)
         ).fetchone()
@@ -299,10 +335,27 @@ def find_in_all_projects(file_part: str) -> tuple[Project, str] | None:
 def _read_file_lines(abs_path: Path) -> tuple[list[str], int] | None:
     """Read *abs_path*, split into lines, and return (lines, byte_size).
 
-    Returns ``None`` on any I/O error or if the file is empty, so callers can
-    ``result = _read_file_lines(p); if result is None: return None`` without
-    repeating the try/except or empty-file check.
+    Returns ``None`` on any I/O error, if the file is empty, or if the file
+    exceeds ``_MAX_READ_BYTES``.  The size cap prevents an unbounded in-memory
+    read when a file grows well past the indexer's 2 MB cap after it was
+    indexed (e.g. a generated file appended to repeatedly).
+
+    Callers can use ``result = _read_file_lines(p); if result is None: return
+    None`` without repeating the try/except or size/empty check.
     """
+    try:
+        file_size = abs_path.stat().st_size
+    except OSError as e:
+        _LOG.warning("stat failed: %s: %s", abs_path, e)
+        return None
+
+    if file_size > _MAX_READ_BYTES:
+        _LOG.warning(
+            "read_file_lines: skipping oversized file %s (%d bytes > %d limit)",
+            abs_path, file_size, _MAX_READ_BYTES,
+        )
+        return None
+
     try:
         full_text = abs_path.read_text(encoding="utf-8", errors="replace")
     except OSError as e:
