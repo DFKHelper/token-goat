@@ -11,9 +11,9 @@ from pathlib import Path
 from typing import Any
 
 from . import db, parser
+from . import worker as _worker
 from .project import Project
 from .worker import CleanupStats, DirtyQueueEntry, _ProjectBucket
-from . import worker as _worker
 
 _LOG = logging.getLogger("tokenwise.worker")
 

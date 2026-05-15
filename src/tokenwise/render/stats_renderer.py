@@ -5,6 +5,7 @@ import math
 import shutil
 from datetime import date, timedelta
 from pathlib import Path
+from typing import Any
 
 from .ansi import RESET, RGB, C, bg, fg, lerp_rgb, pad_l, pad_r, vlen
 from .types import DayStat, KindStat, StatsData
@@ -28,7 +29,7 @@ _BAR_W = max(16, _CONTENT_W - len(_M) * 2 - _COLS_FIXED)
 _RULE = _M + fg(*C.TEXT_DIM) + "─" * (_CONTENT_W - len(_M) * 2) + RESET
 
 
-def _load_stats_messages() -> dict[str, object]:
+def _load_stats_messages() -> dict[str, Any]:
     return json.loads(Path(__file__).with_name("stats_messages.json").read_text(encoding="utf-8"))
 
 
