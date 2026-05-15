@@ -1029,16 +1029,17 @@ def _process_dirty_entries(entries: list[DirtyQueueEntry]) -> None:
 
             if row:
                 project = Project(root=Path(row["root"]), hash=ph, marker=row["marker"])
-                full = False  # incremental: SHA-based skip-unchanged logic
+                # Known project: incremental re-index (SHA-based skip-unchanged logic).
+                is_first_index = False
             elif bucket["root"]:
                 # Project not yet registered — the first edit landed before the
                 # project was ever indexed. Reconstruct it from the queue entry
-                # and run a first full index so the edit is not lost.
+                # and run a full index so the edit is not lost.
                 # index_project self-registers the project up front.
                 project = Project(
                     root=Path(bucket["root"]), hash=ph, marker=bucket["marker"] or "manual"
                 )
-                full = True
+                is_first_index = True
                 _LOG.info(
                     "dirty queue: project %s not yet registered; running first index", ph[:8]
                 )
@@ -1051,7 +1052,7 @@ def _process_dirty_entries(entries: list[DirtyQueueEntry]) -> None:
                 )
                 continue
 
-            result = parser.index_project(project, full=full)
+            result = parser.index_project(project, full=is_first_index)
             _LOG.info(
                 "reindexed %d/%d files in project %s after dirty queue drain",
                 result["indexed"],

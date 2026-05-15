@@ -206,14 +206,16 @@ def _hint_from_cache(
     # Partial overlap — only the overlapping lines are avoidable.
     if overlap_lines > MIN_OVERLAP_TO_WARN:
         wasted = _est_tokens_from_lines(overlap_lines)
-        # Suggest skipping to just past the last cached end.
+        # Suggest starting the next Read just past the last cached line.
+        # The Read tool's `offset` is 0-indexed (lines skipped before reading),
+        # so passing `last_cached_end` as offset resumes at line last_cached_end+1.
         last_cached_end = max(e for _, e in entry.line_ranges)
-        suggested_offset = last_cached_end  # offset is 0-indexed, so last_cached_end skips up to that line
+        resume_offset = last_cached_end
         return ReadHint(
             f"Note: `{fname}` was previously read this session at lines {cached_summary}{extra}. "
             f"Your current request (lines {req_start}-{req_end}) overlaps by {overlap_lines} lines "
             f"(~{wasted} wasted tokens). "
-            f"Consider using `offset={suggested_offset}` to skip the overlap.",
+            f"Consider using `offset={resume_offset}` to skip the overlap.",
             wasted,
         )
 
