@@ -62,7 +62,10 @@ class AmbiguousFileMatch(ReadLookupError):
 
 
 def _escape_like_pattern(value: str) -> str:
-    """Escape SQLite LIKE wildcards so file names are matched literally."""
+    """Escape SQLite LIKE wildcards (%, _) so file names are matched literally.
+
+    Necessary before using a user-supplied file name in a LIKE query.
+    """
     return value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
 
 
@@ -80,7 +83,11 @@ _RESOLVE_CACHE_EVICT = 128
 
 
 def _resolve_cache_get(project_hash: str, file_part: str) -> tuple[bool, str | None]:
-    """Return (found, value). Value is None for 'not found' or the rel_path."""
+    """Check the file-resolution cache.
+
+    Returns (found, value) where found=True if cached (value is rel_path or None for "not found");
+    found=False if not in cache (caller should query the DB).
+    """
     key = (project_hash, file_part)
     if key in _RESOLVE_CACHE:
         return True, _RESOLVE_CACHE[key]
@@ -88,7 +95,11 @@ def _resolve_cache_get(project_hash: str, file_part: str) -> tuple[bool, str | N
 
 
 def _resolve_cache_put(project_hash: str, file_part: str, rel_path: str | None) -> None:
-    """Store a resolution result. Evicts oldest entries when cache is full."""
+    """Store a file-resolution result in the in-process cache.
+
+    If cache is full (512 entries), evicts 128 oldest entries (FIFO). Stores either
+    a rel_path string or None (meaning "this file not found in this project").
+    """
     key = (project_hash, file_part)
     if key in _RESOLVE_CACHE:
         _RESOLVE_CACHE[key] = rel_path
