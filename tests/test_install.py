@@ -354,6 +354,27 @@ def test_install_uninstall_round_trip(tmp_path, monkeypatch, tmp_data_dir):
     _patch_home(monkeypatch, home)
     monkeypatch.setattr(install, "token_goat_binary", lambda: "token-goat")
 
+    bin_dir = home / ".local" / "bin"
+    bin_dir.mkdir(parents=True, exist_ok=True)
+    current_bin = bin_dir / "token-goat.exe"
+    current_hook = bin_dir / "token-goat-hook.exe"
+    current_worker = bin_dir / "token-goat-worker.exe"
+    legacy_bin = bin_dir / "tokenwise.exe"
+    legacy_hook = bin_dir / "tokenwise-hook.exe"
+    legacy_worker = bin_dir / "tokenwise-worker.exe"
+    for path in (current_bin, current_hook, current_worker, legacy_bin, legacy_hook, legacy_worker):
+        path.write_text("launcher", encoding="utf-8")
+
+    launcher_paths = {
+        "token-goat": current_bin,
+        "token-goat-hook": current_hook,
+        "token-goat-worker": current_worker,
+        "tokenwise": legacy_bin,
+        "tokenwise-hook": legacy_hook,
+        "tokenwise-worker": legacy_worker,
+    }
+    monkeypatch.setattr(install.shutil, "which", lambda name: str(launcher_paths[name]) if name in launcher_paths else None)
+
     # Mock schtasks so no real Windows calls happen
     def fake_schtasks(args):
         if args[0] == "/Query":
@@ -385,6 +406,16 @@ def test_install_uninstall_round_trip(tmp_path, monkeypatch, tmp_data_dir):
     assert "ok" in install_result["settings.json"]
     assert "ok" in install_result["CLAUDE.md"]
     assert "ok" in install_result["skill"]
+    assert install_result["legacy launchers"].startswith("removed — ")
+    assert not legacy_bin.exists()
+    assert not legacy_hook.exists()
+    assert not legacy_worker.exists()
+    assert current_bin.exists()
+    assert current_hook.exists()
+    assert current_worker.exists()
+
+    for path in (legacy_bin, legacy_hook, legacy_worker):
+        path.write_text("launcher", encoding="utf-8")
 
     # --- uninstall ---
     def fake_schtasks_with_exists(args):
@@ -395,7 +426,7 @@ def test_install_uninstall_round_trip(tmp_path, monkeypatch, tmp_data_dir):
     monkeypatch.setattr(install, "_run_schtasks", fake_schtasks_with_exists)
 
     with patch("token_goat.install.paths.worker_pid_path", return_value=tmp_path / "worker.pid"):
-        install.uninstall_all(purge=False)
+        uninstall_result = install.uninstall_all(purge=False)
 
     # token-goat hooks gone from settings.json
     data = json.loads(settings_path.read_text())
@@ -411,6 +442,10 @@ def test_install_uninstall_round_trip(tmp_path, monkeypatch, tmp_data_dir):
 
     # Skill dir gone
     assert not skill_path.exists()
+    assert uninstall_result["legacy launchers"].startswith("removed — ")
+    assert not legacy_bin.exists()
+    assert not legacy_hook.exists()
+    assert not legacy_worker.exists()
 
 
 # ---------------------------------------------------------------------------

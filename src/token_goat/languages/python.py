@@ -53,16 +53,6 @@ def _parse_import_source(source_line: str) -> list[str]:
     return [line]
 
 
-def _kind_str(structure_kind: object) -> str:
-    """Convert StructureKind to our kind string."""
-    return common.kind_str(structure_kind)
-
-
-def _extract_refs(source: bytes) -> list[Ref]:
-    """Extract call-site refs using regex."""
-    return common.extract_refs_from_source(source, _CALL_RE, _CALL_NOISE)  # type: ignore[return-value]
-
-
 def extract(source: bytes, rel_path: str) -> tuple[list[Symbol], list[Ref], list[ImpExp], list[Section]]:
     """Extract symbols, refs, and imports from a Python file."""
     tlp = common.get_tlp()
@@ -89,11 +79,15 @@ def extract(source: bytes, rel_path: str) -> tuple[list[Symbol], list[Ref], list
 
     def _add_symbol(item: object, parent_name: str | None = None) -> None:
         name: str = item.name  # type: ignore[attr-defined]
+        if not name:
+            for child in item.children:  # type: ignore[attr-defined]
+                _add_symbol(child, parent_name=parent_name)
+            return
         span = item.span
         body_span = item.body_span if hasattr(item, "body_span") else None
         line = span.start_line + 1
         end_line = span.end_line + 1
-        kind = _kind_str(item.kind)
+        kind = common.kind_str(item.kind)
         # Use "method" if this is a function inside a class
         if parent_name is not None and kind == "function":
             kind = "method"
@@ -157,6 +151,6 @@ def extract(source: bytes, rel_path: str) -> tuple[list[Symbol], list[Ref], list
             imp_exp.append(ImpExp(kind="import", target=target, line=line))
 
     # --- refs ---
-    refs = _extract_refs(source)
+    refs: list[Ref] = common.extract_refs_from_source(source, _CALL_RE, _CALL_NOISE)  # type: ignore[assignment]
 
     return symbols, refs, imp_exp, []

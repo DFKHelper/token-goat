@@ -1,14 +1,14 @@
 """Read-replacement: return just a symbol's source instead of the whole file."""
 from __future__ import annotations
 
-import sqlite3
 import logging
+import sqlite3
 from collections.abc import Sequence
 from pathlib import Path
 
 from . import db
-from .project import Project
 from .paths import is_safe_rel_path as _is_safe_rel_path
+from .project import Project
 
 _LOG = logging.getLogger("token_goat.read_replacement")
 
@@ -59,6 +59,95 @@ def _escape_like_pattern(value: str) -> str:
     return value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
 
 
+# ---------------------------------------------------------------------------
+# File-resolution cache (item 8)
+# ---------------------------------------------------------------------------
+# Bounded in-process cache for (project_hash, normalized_file_part) → rel_path.
+# Keyed on project_hash so invalidation per project is O(n) on cache size.
+# AmbiguousFileMatch results are never cached — callers see the exception each time.
+# Max 512 entries; evict oldest 128 when full (simple FIFO — LRU not needed here).
+
+_RESOLVE_CACHE: dict[tuple[str, str], str | None] = {}
+_RESOLVE_CACHE_MAX = 512
+_RESOLVE_CACHE_EVICT = 128
+
+
+def _resolve_cache_get(project_hash: str, file_part: str) -> tuple[bool, str | None]:
+    """Return (found, value). Value is None for 'not found' or the rel_path."""
+    key = (project_hash, file_part)
+    if key in _RESOLVE_CACHE:
+        return True, _RESOLVE_CACHE[key]
+    return False, None
+
+
+def _resolve_cache_put(project_hash: str, file_part: str, rel_path: str | None) -> None:
+    """Store a resolution result. Evicts oldest entries when cache is full."""
+    key = (project_hash, file_part)
+    if key in _RESOLVE_CACHE:
+        _RESOLVE_CACHE[key] = rel_path
+        return
+    if len(_RESOLVE_CACHE) >= _RESOLVE_CACHE_MAX:
+        # Evict oldest entries (dict preserves insertion order in Python 3.7+)
+        evict_keys = list(_RESOLVE_CACHE.keys())[:_RESOLVE_CACHE_EVICT]
+        for k in evict_keys:
+            del _RESOLVE_CACHE[k]
+    _RESOLVE_CACHE[key] = rel_path
+
+
+def invalidate_file_cache(project_hash: str) -> int:
+    """Remove all cached resolutions for a project. Returns count evicted.
+
+    Called by the post-edit hook after a file is reindexed so the next lookup
+    gets a fresh result from the DB.
+    """
+    stale = [k for k in _RESOLVE_CACHE if k[0] == project_hash]
+    for k in stale:
+        del _RESOLVE_CACHE[k]
+    return len(stale)
+
+
+# ---------------------------------------------------------------------------
+# Specificity ranking for ambiguous file matches (item 14)
+# ---------------------------------------------------------------------------
+
+def _match_specificity(file_part: str, rel_path: str) -> tuple[int, int]:
+    """Score how specifically file_part matches rel_path (higher = more specific).
+
+    Returns (suffix_match_len, neg_path_depth) as a tuple for sort comparison.
+    - suffix_match_len: number of path components in file_part that tail-match rel_path.
+      Longer suffix match = more specific.
+    - neg_path_depth: negative of the total path depth in rel_path.
+      Shorter total path (fewer components) ranks higher when suffix depth ties.
+    """
+    fp_parts = file_part.replace("\\", "/").split("/")
+    rp_parts = rel_path.split("/")
+    # Count how many trailing components of rel_path match the full file_part
+    suffix_len = 0
+    for i, part in enumerate(reversed(fp_parts)):
+        rp_idx = len(rp_parts) - 1 - i
+        if rp_idx < 0 or rp_parts[rp_idx] != part:
+            break
+        suffix_len += 1
+    return (suffix_len, -len(rp_parts))
+
+
+def _pick_best_match(file_part: str, candidates: list[str]) -> str | None:
+    """Return the single best match by specificity, or None if ambiguous.
+
+    Returns None when two or more candidates tie for the highest specificity score,
+    so callers can raise AmbiguousFileMatch with the full candidate list.
+    """
+    if not candidates:
+        return None
+    if len(candidates) == 1:
+        return candidates[0]
+    scored = sorted(candidates, key=lambda r: _match_specificity(file_part, r), reverse=True)
+    best_score = _match_specificity(file_part, scored[0])
+    if _match_specificity(file_part, scored[1]) == best_score:
+        return None  # tie → still ambiguous
+    return scored[0]
+
+
 def resolve_file_rel(project: Project, file_part: str) -> str | None:
     """Given the file part from a 'file::symbol' target, find the matching rel_path.
 
@@ -68,10 +157,25 @@ def resolve_file_rel(project: Project, file_part: str) -> str | None:
     - Partial path        (e.g., 'token_goat/parser.py' — only when unique)
     - Absolute path       (resolved against project root)
 
-    Raises AmbiguousFileMatch when multiple indexed files match file_part.
+    Raises AmbiguousFileMatch when multiple indexed files match file_part at equal
+    specificity. When one candidate is more specific than the others (longer suffix
+    match or shallower path depth on tie), it is returned without raising.
+    Results are cached in-process keyed on (project_hash, file_part).
     """
     file_part = file_part.replace("\\", "/").strip()
 
+    # Cache hit — avoids DB round-trips for repeated lookups within same process
+    hit, cached = _resolve_cache_get(project.hash, file_part)
+    if hit:
+        return cached
+
+    result = _resolve_file_rel_db(project, file_part)
+    _resolve_cache_put(project.hash, file_part, result)
+    return result
+
+
+def _resolve_file_rel_db(project: Project, file_part: str) -> str | None:
+    """Un-cached DB-backed resolution. Called by resolve_file_rel."""
     with db.open_project(project.hash) as conn:
         # 1. Exact relative match
         row = conn.execute(
@@ -100,19 +204,29 @@ def resolve_file_rel(project: Project, file_part: str) -> str | None:
             "SELECT rel_path FROM files WHERE rel_path LIKE ? ESCAPE '\\'",
             (f"%{_escape_like_pattern(file_part)}",),
         ).fetchall()
+        if len(rows) == 0:
+            return None
         if len(rows) == 1:
             return rows[0]["rel_path"]
-        if len(rows) > 1:
-            candidates = tuple(sorted(r["rel_path"] for r in rows))
-            _LOG.debug(
-                "ambiguous file match in %s for %s: %s",
-                project.hash[:8],
-                file_part,
-                ", ".join(candidates),
-            )
-            raise AmbiguousFileMatch(file_part, candidates)
 
-    return None
+        # Multiple candidates — try to pick the most specific one before raising
+        candidate_paths = [r["rel_path"] for r in rows]
+        best = _pick_best_match(file_part, candidate_paths)
+        if best is not None:
+            _LOG.debug(
+                "ambiguity resolved by specificity in %s for %s → %s",
+                project.hash[:8], file_part, best,
+            )
+            return best
+
+        candidates = tuple(sorted(candidate_paths))
+        _LOG.debug(
+            "ambiguous file match in %s for %s: %s",
+            project.hash[:8],
+            file_part,
+            ", ".join(candidates),
+        )
+        raise AmbiguousFileMatch(file_part, candidates)
 
 
 def find_in_all_projects(file_part: str) -> tuple[Project, str] | None:
@@ -131,11 +245,13 @@ def find_in_all_projects(file_part: str) -> tuple[Project, str] | None:
             rows = gconn.execute("SELECT hash, root, marker FROM projects").fetchall()
     except FileNotFoundError:
         return None
-    except (OSError, sqlite3.Error) as exc:
+    except Exception as exc:  # noqa: BLE001 — any DB failure is non-fatal for cross-project lookup
         _LOG.warning("find_in_all_projects: global DB unavailable: %s", exc)
-        raise ProjectIndexUnavailable(
-            "Project index database is unavailable. Run `token-goat index --full` again."
-        ) from exc
+        if isinstance(exc, (OSError, sqlite3.Error)):
+            raise ProjectIndexUnavailable(
+                "Project index database is unavailable. Run `token-goat index --full` again."
+            ) from exc
+        return None
 
     matches: list[tuple[Project, str]] = []
     ambiguous_candidates: list[str] = []

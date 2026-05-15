@@ -7,6 +7,13 @@ from unittest.mock import patch
 
 from token_goat import hooks_edit, paths, session
 
+
+def _assert_continue(result: dict) -> None:
+    """Assert continue:True, tolerating diagnostic fields added by dispatch."""
+    assert result.get("continue") is True
+
+
+
 # ---------------------------------------------------------------------------
 # _nudge_worker_if_down
 # ---------------------------------------------------------------------------
@@ -91,6 +98,7 @@ class TestEnqueueForReindex:
         """OSError writing to the queue must be caught and logged, not propagated."""
         from pathlib import Path as _Path
 
+
         (tmp_path / ".git").mkdir()
         src = tmp_path / "file.py"
         src.write_text("x", encoding="utf-8")
@@ -122,7 +130,7 @@ class TestPostEdit:
             "cwd": str(tmp_path),
         }
         result = hooks_edit.post_edit(payload)
-        assert result == {"continue": True}
+        _assert_continue(result)
 
         cache = session.load("s-edit-1")
         # edited_files is a dict {normalized_path: count}; keys are lowercased
@@ -134,4 +142,4 @@ class TestPostEdit:
     def test_missing_file_path_returns_continue(self, tmp_data_dir):
         """post_edit with no file_path in tool_input still returns continue:true."""
         result = hooks_edit.post_edit({"session_id": "s-edit-2", "tool_input": {}})
-        assert result == {"continue": True}
+        _assert_continue(result)

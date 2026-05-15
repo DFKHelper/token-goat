@@ -1275,3 +1275,101 @@ def test_package_fingerprint_changes_with_file_content(tmp_data_dir):
         )
     finally:
         os.utime(worker_py, (st.st_atime, st.st_mtime))
+
+
+# ---------------------------------------------------------------------------
+# cleanup_on_startup — split per-task functions and failure reporting (items 23/24)
+# ---------------------------------------------------------------------------
+
+def test_cleanup_stale_locks_standalone(tmp_data_dir):
+    """_cleanup_stale_locks returns count of removed lock files."""
+    from token_goat import paths as _paths
+
+    # Write a lock with a non-existent PID
+    locks_dir = _paths.locks_dir()
+    locks_dir.mkdir(parents=True, exist_ok=True)
+    dead_pid = 2**30  # unreachable PID
+    (locks_dir / "fake.lock").write_text(f"{dead_pid}\n", encoding="utf-8")
+
+    count = worker._cleanup_stale_locks()
+    assert count == 1
+    assert not (locks_dir / "fake.lock").exists()
+
+
+def test_cleanup_old_logs_standalone(tmp_data_dir):
+    """_cleanup_old_logs removes logs older than retention window."""
+    import os
+    import time as _time
+
+    from token_goat import paths as _paths
+
+    logs_dir = _paths.logs_dir()
+    logs_dir.mkdir(parents=True, exist_ok=True)
+    old_log = logs_dir / "2000-01-01.log"
+    old_log.write_text("old\n", encoding="utf-8")
+    # Backdate to 100 days ago
+    old_ts = _time.time() - 100 * 86400
+    os.utime(old_log, (old_ts, old_ts))
+
+    count = worker._cleanup_old_logs()
+    assert count >= 1
+    assert not old_log.exists()
+
+
+def test_cleanup_on_startup_records_failures(tmp_data_dir, monkeypatch):
+    """If a cleanup sub-task raises, the failure is recorded in stats['failures']
+    and the other tasks still run."""
+    monkeypatch.setattr(worker, "_cleanup_stale_locks", lambda: (_ for _ in ()).throw(RuntimeError("boom")))
+
+    stats = worker.cleanup_on_startup()
+    assert "failures" in stats
+    assert any("stale_locks" in f for f in stats["failures"])
+    # Other tasks still ran — logs_deleted should be an int key
+    assert "logs_deleted" in stats
+
+
+def test_cleanup_on_startup_no_failures_omits_key(tmp_data_dir, monkeypatch):
+    """When all tasks succeed, stats must NOT include a 'failures' key."""
+    monkeypatch.setattr(worker, "_cleanup_stale_locks", lambda: 0)
+    monkeypatch.setattr(worker, "_cleanup_old_logs", lambda: 0)
+    monkeypatch.setattr(worker, "_prune_stats_table", lambda: 0)
+    monkeypatch.setattr(worker, "reap_stale_index_markers", lambda: 0)
+    monkeypatch.setattr(worker, "evict_image_cache_if_over_limit", lambda: (0, 0))
+
+    stats = worker.cleanup_on_startup()
+    assert "failures" not in stats
+
+
+def test_event_wait_used_when_stop_event_provided(tmp_data_dir, monkeypatch):
+    """run_daemon must use stop_event.wait() instead of time.sleep() so the
+    loop wakes up immediately when the event is set."""
+    import threading
+
+    wait_calls: list[float] = []
+
+    class _TrackingEvent(threading.Event):
+        def wait(self, timeout=None):  # type: ignore[override]
+            wait_calls.append(timeout or 0.0)
+            self.set()  # immediately signal stop
+            return True
+
+    stop = _TrackingEvent()
+    monkeypatch.setattr(worker, "spawn_detached", lambda: None)
+    monkeypatch.setattr(worker, "_try_claim_worker_slot", lambda: 99)
+    monkeypatch.setattr(worker, "_clear_pid", lambda: None)
+    monkeypatch.setattr(worker, "_write_pid", lambda: None)
+    monkeypatch.setattr(worker, "_heartbeat", lambda: None)
+    monkeypatch.setattr(worker, "_register_autostart", lambda: None)
+    monkeypatch.setattr(worker, "cleanup_on_startup", lambda: {})
+    monkeypatch.setattr(worker, "drain_dirty_queue", lambda: [])
+    monkeypatch.setattr(worker, "_reindex_active_projects", lambda: None)
+    monkeypatch.setattr(worker, "_installed_version", lambda: None)
+    monkeypatch.setattr(worker, "_package_fingerprint", lambda: None)
+    monkeypatch.setattr(worker, "_BOOTED_VERSION", None)
+    monkeypatch.setattr(worker, "_BOOTED_FINGERPRINT", None)
+
+    from token_goat import worker_daemon
+    worker_daemon.run_daemon(stop_event=stop)
+
+    assert len(wait_calls) >= 1, "stop_event.wait() was never called"
+    assert wait_calls[0] == worker.POLL_INTERVAL

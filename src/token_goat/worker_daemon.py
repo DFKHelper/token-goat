@@ -122,7 +122,10 @@ def run_daemon(stop_event=None) -> None:
                     break
                 last_version_check = now
 
-            time.sleep(_worker.POLL_INTERVAL)
+            if stop_event is not None:
+                stop_event.wait(timeout=_worker.POLL_INTERVAL)
+            else:
+                time.sleep(_worker.POLL_INTERVAL)
     finally:
         _LOG.info("worker shutting down, pid=%s", os.getpid())
         _worker._clear_pid()

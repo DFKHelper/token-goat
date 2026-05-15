@@ -3,6 +3,14 @@ from __future__ import annotations
 
 from token_goat import hooks_cli
 
+
+def _assert_continue(result: dict) -> None:
+    """Assert continue:True, tolerating diagnostic fields added by dispatch."""
+    assert result.get("continue") is True
+
+
+
+
 # ---------------------------------------------------------------------------
 # 10. pre_fetch with WebFetch on image URL → deny + additionalContext
 # ---------------------------------------------------------------------------
@@ -75,7 +83,7 @@ class TestPreFetchWebFetchNonImageUrl:
         }
         result = hooks_cli.pre_fetch(payload)
 
-        assert result == {"continue": True}
+        _assert_continue(result)
         assert "hookSpecificOutput" not in result
 
     def test_json_url_passes_through(self, tmp_data_dir):
@@ -85,7 +93,7 @@ class TestPreFetchWebFetchNonImageUrl:
         }
         result = hooks_cli.pre_fetch(payload)
 
-        assert result == {"continue": True}
+        _assert_continue(result)
 
     def test_bare_domain_url_passes_through(self, tmp_data_dir):
         payload = {
@@ -94,7 +102,7 @@ class TestPreFetchWebFetchNonImageUrl:
         }
         result = hooks_cli.pre_fetch(payload)
 
-        assert result == {"continue": True}
+        _assert_continue(result)
 
 
 # ---------------------------------------------------------------------------
@@ -109,7 +117,7 @@ class TestPreFetchWebFetchNoUrl:
         }
         result = hooks_cli.pre_fetch(payload)
 
-        assert result == {"continue": True}
+        _assert_continue(result)
 
     def test_empty_tool_input(self, tmp_data_dir):
         payload = {
@@ -118,7 +126,7 @@ class TestPreFetchWebFetchNoUrl:
         }
         result = hooks_cli.pre_fetch(payload)
 
-        assert result == {"continue": True}
+        _assert_continue(result)
 
     def test_none_tool_input(self, tmp_data_dir):
         payload = {
@@ -127,4 +135,4 @@ class TestPreFetchWebFetchNoUrl:
         }
         result = hooks_cli.pre_fetch(payload)
 
-        assert result == {"continue": True}
+        _assert_continue(result)

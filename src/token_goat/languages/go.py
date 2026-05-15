@@ -32,21 +32,6 @@ _CALL_RE = re.compile(r"(?<![.\w])([A-Za-z_][A-Za-z0-9_]*)\s*\(")
 _GO_IMPORT_RE = re.compile(r'"([^"]+)"')
 
 
-def _kind_str(structure_kind: object) -> str:
-    """Convert tlp StructureKind to our kind string."""
-    return common.kind_str(structure_kind)
-
-
-def _sym_kind_str(sym_kind: object) -> str:
-    """Convert tlp SymbolKind to our kind string."""
-    return common.sym_kind_str(sym_kind)
-
-
-def _extract_refs(source: bytes) -> list[Ref]:
-    """Extract call-site refs using regex on the source text."""
-    return common.extract_refs_from_source(source, _CALL_RE, _CALL_NOISE)  # type: ignore[return-value]
-
-
 def _extract_const_var(source: bytes) -> list[Symbol]:
     """Extract package-level const and var declarations via regex.
 
@@ -150,11 +135,15 @@ def extract(source: bytes, rel_path: str) -> tuple[list[Symbol], list[Ref], list
     # --- structure: functions and methods ---
     def _add_symbol(item: object, parent_name: str | None = None) -> None:
         name: str = item.name  # type: ignore[attr-defined]
+        if not name:
+            for child in item.children:  # type: ignore[attr-defined]
+                _add_symbol(child, parent_name=parent_name)
+            return
         span = item.span
         body_span = item.body_span if hasattr(item, "body_span") else None
         line = span.start_line + 1
         end_line = span.end_line + 1
-        kind = _kind_str(item.kind)
+        kind = common.kind_str(item.kind)
         sig = common.build_signature(source, span, body_span)
 
         key = (name, line)
@@ -182,7 +171,7 @@ def extract(source: bytes, rel_path: str) -> tuple[list[Symbol], list[Ref], list
         name: str = sym.name  # type: ignore[attr-defined]
         span = sym.span
         line = span.start_line + 1
-        kind = _sym_kind_str(sym.kind)
+        kind = common.sym_kind_str(sym.kind)
         key = (name, line)
         if key not in seen_names:
             seen_names.add(key)
@@ -216,6 +205,6 @@ def extract(source: bytes, rel_path: str) -> tuple[list[Symbol], list[Ref], list
             imp_exp.append(ImpExp(kind="import", target=m.group(1), line=line))
 
     # --- refs ---
-    refs = _extract_refs(source)
+    refs: list[Ref] = common.extract_refs_from_source(source, _CALL_RE, _CALL_NOISE)  # type: ignore[assignment]
 
     return symbols, refs, imp_exp, []

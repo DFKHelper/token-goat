@@ -31,21 +31,6 @@ _CALL_RE = re.compile(r"(?<![.\w])([A-Za-z_][A-Za-z0-9_]*)\s*\(")
 _USE_PATH_RE = re.compile(r"^use\s+([^;{]+)")
 
 
-def _kind_str(structure_kind: object) -> str:
-    """Convert tlp StructureKind to our kind string."""
-    return common.kind_str(structure_kind, language="rust")
-
-
-def _sym_kind_str(sym_kind: object) -> str:
-    """Convert tlp SymbolKind to our kind string."""
-    return common.sym_kind_str(sym_kind, language="rust")
-
-
-def _extract_refs(source: bytes) -> list[Ref]:
-    """Extract call-site refs using regex on the source text."""
-    return common.extract_refs_from_source(source, _CALL_RE, _CALL_NOISE)  # type: ignore[return-value]
-
-
 def _parse_use_target(source_line: str) -> str:
     """Extract the path from a `use path::to::Item;` source line."""
     line = source_line.strip()
@@ -84,11 +69,15 @@ def extract(source: bytes, rel_path: str) -> tuple[list[Symbol], list[Ref], list
     # --- structure: functions, structs, enums, traits, impls, methods ---
     def _add_symbol(item: object, parent_name: str | None = None) -> None:
         name: str = item.name  # type: ignore[attr-defined]
+        if not name:
+            for child in item.children:  # type: ignore[attr-defined]
+                _add_symbol(child, parent_name=parent_name)
+            return
         span = item.span
         body_span = item.body_span if hasattr(item, "body_span") else None
         line = span.start_line + 1
         end_line = span.end_line + 1
-        kind = _kind_str(item.kind)
+        kind = common.kind_str(item.kind, language="rust")
 
         # Children of an impl block are methods
         effective_kind = kind
@@ -144,7 +133,7 @@ def extract(source: bytes, rel_path: str) -> tuple[list[Symbol], list[Ref], list
         name: str = sym.name  # type: ignore[attr-defined]
         span = sym.span
         line = span.start_line + 1
-        kind = _sym_kind_str(sym.kind)
+        kind = common.sym_kind_str(sym.kind, language="rust")
         key = (name, line)
         if key not in seen_names:
             seen_names.add(key)
@@ -166,6 +155,6 @@ def extract(source: bytes, rel_path: str) -> tuple[list[Symbol], list[Ref], list
         imp_exp.append(ImpExp(kind="import", target=target, line=line))
 
     # --- refs ---
-    refs = _extract_refs(source)
+    refs: list[Ref] = common.extract_refs_from_source(source, _CALL_RE, _CALL_NOISE)  # type: ignore[assignment]
 
     return symbols, refs, imp_exp, []

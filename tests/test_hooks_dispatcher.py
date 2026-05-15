@@ -4,38 +4,45 @@ import json
 from token_goat import hooks_cli
 
 
+def _assert_continue(result: dict) -> None:
+    """Assert continue:True, tolerating diagnostic fields added by dispatch."""
+    assert result.get("continue") is True
+
+
 def test_unknown_event_returns_continue():
     result = hooks_cli.dispatch("not-a-real-event", {})
-    assert result == {"continue": True}
+    _assert_continue(result)
 
 
 def test_session_start_no_cwd_does_not_crash():
     result = hooks_cli.dispatch("session-start", {})
-    assert result == {"continue": True}
+    _assert_continue(result)
 
 
 def test_session_start_with_project_marker(tmp_path):
     (tmp_path / ".git").mkdir()
     payload = {"session_id": "test-123", "cwd": str(tmp_path)}
     result = hooks_cli.dispatch("session-start", payload)
-    assert result == {"continue": True}
+    _assert_continue(result)
 
 
 def test_session_start_with_unknown_cwd_no_crash(tmp_path):
     payload = {"session_id": "x", "cwd": str(tmp_path)}  # no marker
     result = hooks_cli.dispatch("session-start", payload)
-    assert result == {"continue": True}
+    _assert_continue(result)
 
 
 def test_fail_soft_swallows_exceptions(monkeypatch):
-    """If a handler raises, dispatch must still return continue:true."""
+    """If a handler raises, dispatch must still return continue:true with error info."""
 
     @hooks_cli.fail_soft
     def boom(_payload):
         raise RuntimeError("intentional")
 
     result = boom({"any": "payload"})
-    assert result == {"continue": True}
+    assert result.get("continue") is True
+    assert "_tg_error" in result
+    assert "RuntimeError" in result["_tg_error"]
 
 
 def test_read_payload_from_file(tmp_path):
@@ -94,7 +101,7 @@ def test_post_edit_enqueues_dirty_file(tmp_data_dir, tmp_path):
             "tool_input": {"file_path": str(edited)},
         },
     )
-    assert result == {"continue": True}
+    _assert_continue(result)
 
     queue_path = paths.dirty_queue_path()
     assert queue_path.exists(), "dirty queue file was not created"
@@ -127,7 +134,7 @@ def test_post_edit_file_outside_project_does_not_enqueue(tmp_data_dir, tmp_path,
             "tool_input": {"file_path": str(stray)},
         },
     )
-    assert result == {"continue": True}
+    _assert_continue(result)
 
     queue_path = paths.dirty_queue_path()
     queued = queue_path.exists() and queue_path.read_text(encoding="utf-8").strip()
@@ -161,7 +168,7 @@ def test_post_edit_nudges_worker_when_heartbeat_missing(tmp_data_dir, tmp_path, 
             "tool_input": {"file_path": str(stray)},
         },
     )
-    assert result == {"continue": True}
+    _assert_continue(result)
     assert called == [True], "a down worker must be respawned from post_edit"
 
 
@@ -193,7 +200,7 @@ def test_post_edit_skips_nudge_when_heartbeat_fresh(tmp_data_dir, tmp_path, monk
             "tool_input": {"file_path": str(stray)},
         },
     )
-    assert result == {"continue": True}
+    _assert_continue(result)
     assert called == [], "a live worker must not be respawned"
 
 
@@ -234,7 +241,7 @@ def test_post_edit_nudges_worker_when_heartbeat_stale(tmp_data_dir, tmp_path, mo
             "tool_input": {"file_path": str(stray)},
         },
     )
-    assert result == {"continue": True}
+    _assert_continue(result)
     assert called == [True], "a worker with a stale heartbeat must be respawned"
 
 

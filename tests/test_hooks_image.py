@@ -10,6 +10,11 @@ from token_goat import hooks_cli, image_shrink
 # Helpers
 # ---------------------------------------------------------------------------
 
+def _assert_continue(result: dict) -> None:
+    """Assert continue:True, tolerating diagnostic fields added by dispatch."""
+    assert result.get("continue") is True
+
+
 def _make_large_jpeg(tmp_path: Path) -> Path:
     """Synthesize a >100 KB JPEG for hook tests."""
     from PIL import Image
@@ -139,11 +144,11 @@ class TestPreReadHookNonImage:
 class TestPreReadHookGarbage:
     def test_none_payload_does_not_crash(self, tmp_data_dir):
         result = hooks_cli.pre_read(None)  # type: ignore[arg-type]
-        assert result == {"continue": True}
+        _assert_continue(result)
 
     def test_empty_dict_does_not_crash(self, tmp_data_dir):
         result = hooks_cli.dispatch("pre-read", {})
-        assert result == {"continue": True}
+        _assert_continue(result)
 
     def test_missing_file_path_does_not_crash(self, tmp_data_dir):
         payload = {
@@ -152,7 +157,7 @@ class TestPreReadHookGarbage:
             "tool_input": {},
         }
         result = hooks_cli.dispatch("pre-read", payload)
-        assert result == {"continue": True}
+        _assert_continue(result)
 
     def test_nonexistent_image_path_does_not_crash(self, tmp_data_dir, tmp_path):
         payload = {

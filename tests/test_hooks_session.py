@@ -6,6 +6,13 @@ import json
 from token_goat import hooks_cli, session
 
 
+def _assert_continue(result: dict) -> None:
+    """Assert continue:True, tolerating diagnostic fields added by dispatch."""
+    assert result.get("continue") is True
+
+
+
+
 class TestPostReadHookIntegration:
     """post_read hook integration."""
 
@@ -17,7 +24,7 @@ class TestPostReadHookIntegration:
             "tool_input": {"file_path": "C:/foo.py", "offset": 0, "limit": 100},
         }
         result = hooks_cli.post_read(payload)
-        assert result == {"continue": True}
+        _assert_continue(result)
 
         # Verify cache was updated
         cache = session.load("hook_s1")
@@ -32,7 +39,7 @@ class TestPostReadHookIntegration:
             "tool_input": {"pattern": "def myfunction", "path": "src/"},
         }
         result = hooks_cli.post_read(payload)
-        assert result == {"continue": True}
+        _assert_continue(result)
 
         cache = session.load("hook_s2")
         assert len(cache.greps) == 1
@@ -46,7 +53,7 @@ class TestPostReadHookIntegration:
             "tool_input": {"pattern": "*.py"},
         }
         result = hooks_cli.post_read(payload)
-        assert result == {"continue": True}
+        _assert_continue(result)
 
     def test_post_read_no_session_id(self, tmp_data_dir):
         """post_read with no session_id returns continue:true, doesn't crash."""
@@ -55,7 +62,7 @@ class TestPostReadHookIntegration:
             "tool_input": {"file_path": "C:/foo.py", "offset": 0, "limit": 100},
         }
         result = hooks_cli.post_read(payload)
-        assert result == {"continue": True}
+        _assert_continue(result)
 
     def test_post_read_missing_tool_input(self, tmp_data_dir):
         """post_read with missing tool_input key doesn't crash."""
@@ -64,7 +71,7 @@ class TestPostReadHookIntegration:
             "tool_name": "Read",
         }
         result = hooks_cli.post_read(payload)
-        assert result == {"continue": True}
+        _assert_continue(result)
 
 
 class TestSessionStartHookIntegration:
@@ -80,7 +87,7 @@ class TestSessionStartHookIntegration:
         # Now call session_start
         payload = {"session_id": s_id, "cwd": "/some/path"}
         result = hooks_cli.session_start(payload)
-        assert result == {"continue": True}
+        _assert_continue(result)
 
         # Cache should be reset
         fresh = session.load(s_id)
@@ -111,7 +118,7 @@ class TestSessionStartHookIntegration:
 
         payload = {"session_id": "hook_s6", "cwd": str(proj_root)}
         result = hooks_cli.session_start(payload)
-        assert result == {"continue": True}
+        _assert_continue(result)
         assert spawned == [(str(proj.root), proj.hash)]
 
 
@@ -126,7 +133,7 @@ class TestDispatcherPostRead:
             "tool_input": {"file_path": "x.py", "offset": 10, "limit": 50},
         }
         result = hooks_cli.dispatch("post-read", payload)
-        assert result == {"continue": True}
+        _assert_continue(result)
 
         cache = session.load("disp_s1")
         assert "x.py" in cache.files
@@ -155,7 +162,7 @@ class TestLockedSessionCacheDispatch:
             m.setattr(session.Path, "replace", boom)
             result = hooks_cli.dispatch("post-read", payload)
 
-        assert result == {"continue": True}
+        _assert_continue(result)
 
         with db.open_global() as conn:
             rows = conn.execute(
@@ -184,7 +191,7 @@ class TestLockedSessionCacheDispatch:
             m.setattr(session.Path, "read_text", boom)
             result = hooks_cli.dispatch("post-read", payload)
 
-        assert result == {"continue": True}
+        _assert_continue(result)
 
         with db.open_global() as conn:
             rows = conn.execute(
@@ -253,6 +260,7 @@ class TestCliCommands:
         from typer.testing import CliRunner
 
         from token_goat.cli import app
+
 
         runner = CliRunner()
         result = runner.invoke(app, ["session-touched", "-s", "empty"])

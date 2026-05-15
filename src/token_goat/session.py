@@ -1,8 +1,10 @@
 """Session-context cache: tracks files/line ranges/symbols pulled into this session's context."""
 from __future__ import annotations
 
+import contextlib
 import json
 import logging
+import sys
 import threading
 import time
 from dataclasses import asdict, dataclass, field
@@ -11,6 +13,8 @@ from pathlib import Path
 from . import paths
 
 _LOG = logging.getLogger("token_goat.session")
+
+SESSION_SCHEMA_VERSION = 1
 _FILE_LOCK = threading.Lock()  # in-process; multi-process safe enough via atomic write
 _REPORTED_CONTENTION: set[tuple[str, str]] = set()
 
@@ -52,6 +56,8 @@ class SessionCache:
     def to_dict(self) -> dict:
         """Serialize to dict for JSON."""
         return {
+            "schema_version": SESSION_SCHEMA_VERSION,
+            "created_by": "token-goat",
             "session_id": self.session_id,
             "started_ts": self.started_ts,
             "last_activity_ts": self.last_activity_ts,
@@ -62,25 +68,60 @@ class SessionCache:
 
     @classmethod
     def from_dict(cls, d: dict) -> SessionCache:
-        """Deserialize from dict (JSON)."""
-        files = {
-            k: FileEntry(
-                rel_or_abs=v["rel_or_abs"],
-                last_read_ts=v["last_read_ts"],
-                read_count=v["read_count"],
-                line_ranges=[tuple(r) for r in v["line_ranges"]],
-                symbols_read=v.get("symbols_read", []),
+        """Deserialize from dict (JSON). Tolerates missing or corrupted fields."""
+        now = time.time()
+
+        schema_v = d.get("schema_version", 0)
+        if schema_v and int(schema_v) > SESSION_SCHEMA_VERSION:
+            _LOG.warning(
+                "session schema_version %s > current %s; some fields may be ignored",
+                schema_v,
+                SESSION_SCHEMA_VERSION,
             )
-            for k, v in d.get("files", {}).items()
-        }
-        greps = [GrepEntry(**g) for g in d.get("greps", [])]
+
+        session_id = d.get("session_id")
+        if not isinstance(session_id, str) or not session_id:
+            raise ValueError(f"session_id missing or invalid: {session_id!r}")
+
+        files: dict[str, FileEntry] = {}
+        for k, v in d.get("files", {}).items():
+            if not isinstance(v, dict):
+                continue
+            try:
+                raw_ranges = v.get("line_ranges", [])
+                line_ranges = [tuple(r) for r in raw_ranges if isinstance(r, (list, tuple)) and len(r) == 2]
+                files[k] = FileEntry(
+                    rel_or_abs=str(v.get("rel_or_abs", k)),
+                    last_read_ts=float(v.get("last_read_ts", now)),
+                    read_count=max(0, int(v.get("read_count", 0))),
+                    line_ranges=line_ranges,
+                    symbols_read=list(v.get("symbols_read", [])),
+                )
+            except (TypeError, ValueError, KeyError):
+                _LOG.debug("session: skipping corrupted file entry for key %r", k)
+
+        greps: list[GrepEntry] = []
+        _grep_fields = {f.name for f in GrepEntry.__dataclass_fields__.values()}  # type: ignore[attr-defined]
+        for g in d.get("greps", []):
+            if not isinstance(g, dict):
+                continue
+            try:
+                greps.append(GrepEntry(**{k: v for k, v in g.items() if k in _grep_fields}))
+            except (TypeError, ValueError, KeyError):
+                _LOG.debug("session: skipping corrupted grep entry")
+
+        edited_files: dict[str, int] = {}
+        for k, v in d.get("edited_files", {}).items():
+            with contextlib.suppress(TypeError, ValueError):
+                edited_files[k] = max(0, int(v))
+
         return cls(
-            session_id=d["session_id"],
-            started_ts=d["started_ts"],
-            last_activity_ts=d["last_activity_ts"],
+            session_id=session_id,
+            started_ts=float(d.get("started_ts", now)),
+            last_activity_ts=float(d.get("last_activity_ts", now)),
             files=files,
             greps=greps,
-            edited_files=d.get("edited_files", {}),
+            edited_files=edited_files,
         )
 
 
@@ -101,10 +142,10 @@ def _fresh_cache(session_id: str, *, unavailable: bool = False) -> SessionCache:
 
 
 def _normalize_path(p: str) -> str:
-    """Normalize a path for use as a cache key. Lowercase Windows drive, forward slashes."""
+    """Normalize a path for use as a cache key. Forward slashes; lowercase drive on Windows."""
     s = str(Path(p))
     s = s.replace("\\", "/")
-    if len(s) >= 2 and s[1] == ":":
+    if sys.platform == "win32" and len(s) >= 2 and s[1] == ":":
         s = s[0].lower() + s[1:]
     return s
 

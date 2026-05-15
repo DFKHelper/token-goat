@@ -176,33 +176,82 @@ class IndexProjectResult(TypedDict):
     duration_sec: float
 
 
+def _import_typescript() -> Extractor:
+    from .languages import typescript  # noqa: PLC0415
+    return typescript.extract
+
+def _import_python() -> Extractor:
+    from .languages import python  # noqa: PLC0415
+    return python.extract
+
+def _import_go() -> Extractor:
+    from .languages import go  # noqa: PLC0415
+    return go.extract
+
+def _import_rust() -> Extractor:
+    from .languages import rust  # noqa: PLC0415
+    return rust.extract
+
+def _import_liquid() -> Extractor:
+    from .languages import liquid  # noqa: PLC0415
+    return liquid.extract
+
+def _import_markdown() -> Extractor:
+    from .languages import markdown  # noqa: PLC0415
+    return markdown.extract
+
+def _import_html() -> Extractor:
+    from .languages import html  # noqa: PLC0415
+    return html.extract
+
+def _import_json() -> Extractor:
+    from .languages import json_idx  # noqa: PLC0415
+    return json_idx.extract
+
+
+# Registry: language key → zero-arg factory that imports and returns the extractor.
+# Extend here when adding a new language; no other code needs to change.
+_EXTRACTOR_REGISTRY: dict[str, Callable[[], Extractor]] = {
+    "typescript": _import_typescript,
+    "javascript": _import_typescript,
+    "python": _import_python,
+    "go": _import_go,
+    "rust": _import_rust,
+    "liquid": _import_liquid,
+    "markdown": _import_markdown,
+    "html": _import_html,
+    "json": _import_json,
+}
+
+# Cache resolved extractors so each language module is imported at most once.
+_EXTRACTOR_CACHE: dict[str, Extractor] = {}
+
+
 def get_extractor(language: str) -> Extractor | None:
-    """Lazy-import the per-language extractor."""
-    if language in ("typescript", "javascript"):
-        from .languages import typescript  # noqa: PLC0415
-        return typescript.extract
-    if language == "python":
-        from .languages import python  # noqa: PLC0415
-        return python.extract
-    if language == "go":
-        from .languages import go  # noqa: PLC0415
-        return go.extract
-    if language == "rust":
-        from .languages import rust  # noqa: PLC0415
-        return rust.extract
-    if language == "liquid":
-        from .languages import liquid  # noqa: PLC0415
-        return liquid.extract
-    if language == "markdown":
-        from .languages import markdown  # noqa: PLC0415
-        return markdown.extract
-    if language == "html":
-        from .languages import html  # noqa: PLC0415
-        return html.extract
-    if language == "json":
-        from .languages import json_idx  # noqa: PLC0415
-        return json_idx.extract
-    return None
+    """Return the extractor for *language*, or None if unsupported.
+
+    Imports the language module lazily on first call; subsequent calls return
+    the cached extractor without re-importing.
+    """
+    if language in _EXTRACTOR_CACHE:
+        return _EXTRACTOR_CACHE[language]
+    factory = _EXTRACTOR_REGISTRY.get(language)
+    if factory is None:
+        return None
+    extractor = factory()
+    _EXTRACTOR_CACHE[language] = extractor
+    return extractor
+
+
+def register_extractor(language: str, factory: Callable[[], Extractor]) -> None:
+    """Register a custom extractor factory for *language*.
+
+    Clears any cached extractor for that language so the new factory takes
+    effect on the next call to get_extractor().
+    Useful for plugins and tests that need to override or add language support.
+    """
+    _EXTRACTOR_REGISTRY[language] = factory
+    _EXTRACTOR_CACHE.pop(language, None)
 
 
 def iter_source_files(project: Project) -> Iterable[Path]:

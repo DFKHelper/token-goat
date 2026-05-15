@@ -22,7 +22,8 @@ with contextlib.suppress(AttributeError, OSError):
 
 import typer
 
-from . import config as config_mod, hooks_cli, read_commands
+from . import config as config_mod
+from . import hooks_cli, read_commands
 
 _LOG = logging.getLogger(__name__)
 
@@ -304,9 +305,13 @@ def cmd_map(
 
 
 @app.command()
-def deps(file: str) -> None:
+def deps(
+    file: str,
+    json_output: bool = typer.Option(False, "--json"),
+    depth: int = typer.Option(1, "--depth", "-d", help="Transitive depth (1=direct, 0=unlimited)"),
+) -> None:
     """Show dependency graph for file."""
-    read_commands.deps(file)
+    read_commands.deps(file, json_output=json_output, depth=depth)
 
 
 @app.command()

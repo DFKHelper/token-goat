@@ -3,6 +3,8 @@ from __future__ import annotations
 
 import logging
 import os
+import threading
+import time
 import tomllib
 from dataclasses import dataclass, field
 from typing import Any, TypedDict
@@ -15,6 +17,10 @@ _LOG = logging.getLogger("token_goat.config")
 
 _ENV_COMPACT_ASSIST = "TOKEN_GOAT_COMPACT_ASSIST"  # set to "0"/"false"/"no"/"off" to disable
 _ENV_COMPACT_ASSIST_LEGACY = "TOKENWISE_COMPACT_ASSIST"  # backward-compat alias
+
+CONFIG_SCHEMA_VERSION = 1
+
+_VALID_TRIGGERS = frozenset(["manual", "auto"])
 
 
 class _CompactAssistToml(TypedDict, total=False):
@@ -29,6 +35,7 @@ class _CompactAssistToml(TypedDict, total=False):
 class _ConfigToml(TypedDict, total=False):
     """Expected shape of the token-goat config TOML file."""
 
+    schema_version: int
     compact_assist: _CompactAssistToml
 
 
@@ -75,6 +82,63 @@ class Config:
     compact_assist: CompactAssistConfig = field(default_factory=CompactAssistConfig)
 
 
+# ---------------------------------------------------------------------------
+# Validation helpers
+# ---------------------------------------------------------------------------
+
+def _validated_int(val: Any, default: int, lo: int, hi: int, name: str) -> int:
+    try:
+        v = int(val)
+        if not lo <= v <= hi:
+            _LOG.warning("config: %s=%r out of range [%d, %d]; using default %d", name, val, lo, hi, default)
+            return default
+        return v
+    except (TypeError, ValueError):
+        _LOG.warning("config: %s=%r is not an int; using default %d", name, val, default)
+        return default
+
+
+def _validated_bool(val: Any, default: bool, name: str) -> bool:
+    if isinstance(val, bool):
+        return val
+    if isinstance(val, int):
+        return bool(val)
+    _LOG.warning("config: %s=%r is not a bool; using default %s", name, val, default)
+    return default
+
+
+def _validated_triggers(val: Any, default: list[str]) -> list[str]:
+    if not isinstance(val, list):
+        _LOG.warning("config: triggers must be a list; using default %s", default)
+        return list(default)
+    valid = [t for t in val if isinstance(t, str) and t in _VALID_TRIGGERS]
+    unknown = [t for t in val if not isinstance(t, str) or t not in _VALID_TRIGGERS]
+    if unknown:
+        _LOG.warning("config: unknown trigger values ignored: %s", unknown)
+    return valid if valid else list(default)
+
+
+# ---------------------------------------------------------------------------
+# Atomic write
+# ---------------------------------------------------------------------------
+
+def _atomic_write(path: paths.Path, content: bytes) -> None:
+    """Write *content* to *path* atomically via a temp file + rename.
+
+    Uses a per-thread unique stem to avoid collisions when multiple processes
+    write concurrently (each will win the rename race independently).
+    """
+    tmp = path.with_suffix(f".tmp-{threading.get_ident()}-{time.monotonic_ns()}")
+    tmp.write_bytes(content)
+    # On Windows, Path.rename() raises if the destination exists — use os.replace
+    # which is atomic on POSIX and as close as Windows gets.
+    os.replace(tmp, path)
+
+
+# ---------------------------------------------------------------------------
+# Public API
+# ---------------------------------------------------------------------------
+
 def load() -> Config:
     """Load config from TOML. Returns defaults if file is absent or unreadable."""
     p = paths.config_path()
@@ -89,12 +153,22 @@ def load() -> Config:
     else:
         _LOG.debug("config not found; using defaults")
 
+    schema_v = raw.get("schema_version", 0)
+    if schema_v and int(schema_v) > CONFIG_SCHEMA_VERSION:
+        _LOG.warning(
+            "config schema_version %s > current %s; some keys may be ignored",
+            schema_v,
+            CONFIG_SCHEMA_VERSION,
+        )
+
     ca_raw: _CompactAssistToml = raw.get("compact_assist", {})  # type: ignore[typeddict-item]
     ca = CompactAssistConfig(
-        enabled=bool(ca_raw.get("enabled", True)),
-        triggers=list(ca_raw.get("triggers", ["manual", "auto"])),
-        min_events=int(ca_raw.get("min_events", 5)),
-        max_manifest_tokens=int(ca_raw.get("max_manifest_tokens", 400)),
+        enabled=_validated_bool(ca_raw.get("enabled", True), True, "compact_assist.enabled"),
+        triggers=_validated_triggers(ca_raw.get("triggers", ["manual", "auto"]), ["manual", "auto"]),
+        min_events=_validated_int(ca_raw.get("min_events", 5), 5, 0, 1000, "compact_assist.min_events"),
+        max_manifest_tokens=_validated_int(
+            ca_raw.get("max_manifest_tokens", 400), 400, 50, 10000, "compact_assist.max_manifest_tokens"
+        ),
     )
 
     # Environment override: TOKEN_GOAT_COMPACT_ASSIST=0 / false / no / off disables
@@ -111,19 +185,20 @@ def load() -> Config:
 
 
 def save(config: Config) -> None:
-    """Persist config to TOML, creating parent dirs as needed."""
+    """Persist config to TOML atomically, creating parent dirs as needed."""
     p = paths.config_path()
     p.parent.mkdir(parents=True, exist_ok=True)
     ca = config.compact_assist
     data: _ConfigToml = {
+        "schema_version": CONFIG_SCHEMA_VERSION,
         "compact_assist": {
             "enabled": ca.enabled,
             "triggers": ca.triggers,
             "min_events": ca.min_events,
             "max_manifest_tokens": ca.max_manifest_tokens,
-        }
+        },
     }
     try:
-        p.write_bytes(tomli_w.dumps(data).encode("utf-8"))  # type: ignore[arg-type]
+        _atomic_write(p, tomli_w.dumps(data).encode("utf-8"))  # type: ignore[arg-type]
     except Exception as e:  # noqa: BLE001
         _LOG.warning("config save failed: %s", e)

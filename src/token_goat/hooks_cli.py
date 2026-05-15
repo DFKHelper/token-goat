@@ -26,6 +26,22 @@ class HookPayload(TypedDict, total=False):
     file_content: str
     line_number: int
 
+
+# Functional form required because "continue" is a Python keyword.
+HookResponse = TypedDict(
+    "HookResponse",
+    {
+        "continue": bool,
+        "systemMessage": str,
+        "hookSpecificOutput": dict[str, Any],
+        # Diagnostic fields — ignored by the harness, useful for tests/logging.
+        "_tg_elapsed_ms": float,
+        "_tg_handler": str,
+        "_tg_error": str,
+    },
+    total=False,
+)
+
 _LOG = logging.getLogger("token_goat.hooks")
 
 
@@ -194,10 +210,19 @@ def fail_soft(handler: _HookHandler) -> _HookHandler:
     def wrapper(payload: dict[str, Any]) -> dict[str, Any]:
         try:
             return handler(payload)
-        except Exception:  # noqa: BLE001 — fail-soft is the entire point
+        except Exception as exc:  # noqa: BLE001 — fail-soft is the entire point
+            session_id = payload.get("session_id", "") if isinstance(payload, dict) else ""
+            session_tag = f" session={str(session_id)[:16]}" if session_id else ""
+            handler_name = getattr(handler, "__name__", repr(handler))
+            err_summary = f"{type(exc).__name__}: {exc}"
             with contextlib.suppress(Exception):
-                _LOG.exception("hook handler crashed: payload=%s", json.dumps(payload)[:500])
-            return {"continue": True}
+                _LOG.exception(
+                    "hook handler crashed: handler=%s%s payload=%s",
+                    handler_name,
+                    session_tag,
+                    json.dumps(payload),
+                )
+            return {"continue": True, "_tg_error": err_summary, "_tg_handler": handler_name}
 
     return wrapper  # type: ignore[return-value]
 
@@ -269,9 +294,10 @@ def dispatch(event: str, payload: dict[str, Any]) -> dict[str, Any]:
         return {"continue": True}
     t0 = time.monotonic()
     result = handler(payload)
-    elapsed = time.monotonic() - t0
-    if elapsed >= 0.5:
-        _LOG.warning("hook %s slow: %.3fs", event, elapsed)
+    elapsed_ms = (time.monotonic() - t0) * 1000
+    if elapsed_ms >= 500:
+        _LOG.warning("hook %s slow: %.1fms", event, elapsed_ms)
     else:
-        _LOG.debug("hook %s completed in %.3fs", event, elapsed)
+        _LOG.debug("hook %s completed in %.1fms", event, elapsed_ms)
+    result["_tg_elapsed_ms"] = round(elapsed_ms, 2)
     return result
