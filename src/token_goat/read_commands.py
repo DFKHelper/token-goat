@@ -58,6 +58,11 @@ def _emit_read_error(
 
 
 def _emit_ambiguous_file_match(file_part: str, candidates: Sequence[str], *, json_output: bool) -> None:
+    """Emit a structured error when a file name matches multiple indexed paths.
+
+    Delegates to _emit_read_error with code='ambiguous_file' and includes all
+    candidate paths so the user can disambiguate with a more specific path pattern.
+    """
     _emit_read_error(
         code="ambiguous_file",
         message=f"Ambiguous file match: {file_part}",
@@ -172,6 +177,11 @@ def _collect_transitive_outgoing(
 
 
 def _format_dependency_line(file_rel: str, symbols: set[str]) -> str:
+    """Format a dependency entry showing a file and the symbols it uses from that file.
+
+    Returns a line like "  - path/to/file.py (2 symbols: funcA, funcB)".
+    Used by the deps command for human-readable output.
+    """
     symbol_list = ", ".join(sorted(symbols))
     count = len(symbols)
     noun = "symbol" if count == 1 else "symbols"
@@ -181,6 +191,13 @@ def _format_dependency_line(file_rel: str, symbols: set[str]) -> str:
 
 
 def _resolve_file_target(file_part: str) -> tuple[Project | None, str | None, Project | None]:
+    """Resolve a file name pattern to a concrete project-relative path.
+
+    First attempts resolution in the current project; if not found, searches across
+    all indexed projects. Returns (project, rel_path, current_project). rel_path is
+    None if file not found; project is the one owning that file (or None if not found
+    in any project).
+    """
     proj = find_project(Path.cwd())
     if proj is not None:
         rel = read_replacement.resolve_file_rel(proj, file_part)
@@ -204,6 +221,22 @@ def _run_read_like_command(
     stat_kind: str,
     reader: Callable[..., dict | None],
 ) -> None:
+    """Unified handler for read/section/deps CLI commands.
+
+    Parses target (format "file::item"), resolves the file, calls the reader function,
+    handles errors (ambiguous file, not found, not indexed), marks the read in session
+    cache, records token savings, and emits output (JSON or text).
+
+    Args:
+        target: Format "file_pattern::symbol_or_heading". Delimiter must be "::".
+        session_id: Session ID for tracking in session cache (optional).
+        json_output: If true, emit JSON response; else plain text.
+        context_lines: Extra lines before/after the result (for read command).
+        separator_label: Display label for the :: separator (e.g., "symbol", "heading").
+        missing_label: Label for missing-item error (e.g., "Symbol", "Section").
+        stat_kind: Stat kind to record (e.g., "read_replacement", "section_replacement").
+        reader: Callable(project, rel_path, item, context_lines) -> dict|None.
+    """
     if "::" not in target:
         _emit_read_error(
             code="invalid_target",

@@ -282,7 +282,11 @@ def _line_count_from_bytes(raw: bytes) -> int:
 
 
 def index_file(project: Project, file_path: Path) -> FileIndex | None:
-    """Read and parse one file. Return FileIndex (no DB write yet). Returns None on errors."""
+    """Index a single file: read, detect language, dispatch to language extractor, return FileIndex.
+
+    Extracts symbols, references, imports/exports, and sections. Returns None if file cannot
+    be read, language is unsupported, or the extractor crashes. Does not write to DB.
+    """
     t0 = time.time()
     try:
         raw = file_path.read_bytes()
@@ -401,8 +405,15 @@ def index_project(
     full: bool = True,
     progress: Callable[[int, int], None] | None = None,
 ) -> IndexProjectResult:
-    """Full or incremental indexing. Returns summary dict with keys:
-    total_files, indexed, skipped_unchanged, errors, languages, duration_sec.
+    """Index all source files in a project: full or incremental scan and persist to DB.
+
+    Full mode re-indexes all files. Incremental mode uses mtime + SHA256 caching to skip unchanged files.
+    Registers the project in the global DB upfront so it's discoverable during indexing (avoids
+    race conditions where the worker reindexes a file before project registration completes).
+    Acquires an exclusive writer lock to prevent concurrent indexing on the same project.
+
+    Returns IndexProjectResult with total_files, indexed, skipped_unchanged, errors, languages, duration_sec.
+    Calls progress(indexed_so_far, total) every 100 files if progress is supplied.
     """
     index_mode = "full" if full else "incremental"
     _LOG.info("index_project started: mode=%s path=%s", index_mode, project.root)

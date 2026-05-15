@@ -99,7 +99,14 @@ class FileSummary:
 def _load_project_data(
     conn: sqlite3.Connection,
 ) -> tuple[dict, dict, dict, dict]:
-    """Load files, symbols-by-file, sections-by-file, name->defining_files."""
+    """Load all indexed data for a project: files, symbols, sections, and reverse-index.
+
+    Returns (files, symbols_by_file, sections_by_file, name_to_files):
+      - files: {rel_path: {language, size, mtime}}
+      - symbols_by_file: {rel_path: [(kind, name), ...]}
+      - sections_by_file: {rel_path: [(level, heading), ...]}
+      - name_to_files: {symbol_name: {rel_path, ...}} — all files defining this symbol
+    """
     files: dict[str, dict] = {}
     for row in conn.execute("SELECT rel_path, language, size, mtime FROM files"):
         files[row["rel_path"]] = {
@@ -126,7 +133,11 @@ def _load_project_data(
 def _build_graph(
     conn: sqlite3.Connection, files: dict, name_to_files: dict
 ) -> nx.MultiDiGraph:
-    """Edges: file -> file based on call refs that resolve to a defined symbol elsewhere."""
+    """Build a directed dependency graph: edge from file A to file B if A references a symbol defined in B.
+
+    Nodes are all indexed files; edges represent cross-file symbol references (calls, attribute access, etc.).
+    May have multiple edges between same pair (A references multiple symbols from B).
+    """
     graph = nx.MultiDiGraph()
 
     # Add all files as nodes
@@ -149,7 +160,11 @@ def _build_graph(
 
 
 def _multigraph_to_weighted_digraph(multigraph: nx.MultiDiGraph) -> nx.DiGraph:
-    """Convert multigraph to simple DiGraph, aggregating parallel edges as weights."""
+    """Convert a multigraph (multiple edges allowed between same nodes) to a simple DiGraph.
+
+    Aggregates parallel edges: if A->B appears N times, result has single edge with weight=N.
+    Used before PageRank since PageRank requires a simple graph.
+    """
     simple_graph = nx.DiGraph()
 
     # Add all nodes
@@ -198,6 +213,12 @@ def _summarize_file(
     max_symbols: int = 8,
     max_sections: int = 5,
 ) -> FileSummary:
+    """Produce a concise FileSummary for a single file.
+
+    Filters to top N symbols (by priority: class, interface, trait, type, enum, function, etc.),
+    top N level-1/2 sections (document headings), and computes approximate line count
+    from file size. Used by build_map for text rendering and build_map_json for structured output.
+    """
     sorted_syms = sorted(
         symbols,
         key=lambda ks: (KIND_PRIORITY.get(ks[0], 99), ks[1]),
