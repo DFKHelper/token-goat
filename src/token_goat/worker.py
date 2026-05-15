@@ -369,6 +369,7 @@ def drain_dirty_queue() -> list[DirtyQueueEntry]:
     Validates each entry is a dict before appending; skips malformed entries
     with a warning.
     """
+    _LOG.debug("draining dirty queue")
     p = paths.dirty_queue_path()
     draining = p.with_name(p.name + ".draining")
     raw_lines: list[str] = []
@@ -378,6 +379,7 @@ def drain_dirty_queue() -> list[DirtyQueueEntry]:
         try:
             raw_lines.extend(draining.read_text(encoding="utf-8").splitlines())
             draining.unlink()
+            _LOG.debug("recovered %d entries from abandoned .draining file", len(raw_lines))
         except OSError as e:
             _LOG.warning("failed to recover abandoned .draining queue file: %s", e)
 
@@ -395,14 +397,17 @@ def drain_dirty_queue() -> list[DirtyQueueEntry]:
                 time.sleep(0.05)
         if claimed:
             try:
-                raw_lines.extend(draining.read_text(encoding="utf-8").splitlines())
+                draining_lines = draining.read_text(encoding="utf-8").splitlines()
+                raw_lines.extend(draining_lines)
                 draining.unlink()
+                _LOG.debug("claimed and read %d fresh queue entries", len(draining_lines))
             except OSError as e:
                 _LOG.warning("failed to read/clear drained queue file: %s", e)
         else:
             _LOG.warning("dirty queue busy; deferring drain to next cycle")
 
     entries: list[DirtyQueueEntry] = []
+    malformed_count = 0
     for line in raw_lines:
         line = line.strip()
         if not line:
@@ -411,12 +416,15 @@ def drain_dirty_queue() -> list[DirtyQueueEntry]:
             entry = json.loads(line)
             if not isinstance(entry, dict):
                 _LOG.warning("dirty queue entry is not a dict: %s", line[:120])
+                malformed_count += 1
                 continue
             entries.append(cast(DirtyQueueEntry, entry))
         except json.JSONDecodeError:
             _LOG.warning("bad dirty queue entry (not valid JSON): %s", line[:120])
+            malformed_count += 1
     if entries:
-        _LOG.info("drained dirty queue: %d entries", len(entries))
+        _LOG.info("drained dirty queue: %d valid entries%s", len(entries),
+                  f", {malformed_count} malformed" if malformed_count else "")
     return entries
 
 
@@ -429,8 +437,11 @@ def _cleanup_stale_locks() -> int:
     cleared = 0
     locks = paths.locks_dir()
     if not locks.exists():
+        _LOG.debug("locks directory does not exist, skipping cleanup")
         return 0
+    total_locks = 0
     for lock_path in locks.glob("*.lock"):
+        total_locks += 1
         try:
             content = lock_path.read_text(encoding="utf-8")
             pid_str = content.split("\n", 1)[0].strip()
@@ -442,6 +453,8 @@ def _cleanup_stale_locks() -> int:
             if dead or old:
                 lock_path.unlink()
                 cleared += 1
+                reason = "process dead" if dead else "stale (>600s)"
+                _LOG.debug("cleared stale lock %s (%s)", lock_path.name, reason)
         except (ValueError, OSError) as e:
             _LOG.debug("removing stale/malformed lock %s: %s", lock_path.name, e)
             try:
@@ -449,6 +462,8 @@ def _cleanup_stale_locks() -> int:
                 cleared += 1
             except OSError as unlink_err:
                 _LOG.warning("failed to remove lock %s: %s", lock_path.name, unlink_err)
+    if cleared > 0:
+        _LOG.debug("stale locks cleanup: cleared %d of %d locks", cleared, total_locks)
     return cleared
 
 
@@ -457,6 +472,7 @@ def _cleanup_old_logs() -> int:
     deleted = 0
     logs = paths.logs_dir()
     if not logs.exists():
+        _LOG.debug("logs directory does not exist, skipping cleanup")
         return 0
     cutoff = time.time() - LOG_RETENTION_DAYS * 86400
     for log in logs.glob("*.log"):
@@ -464,8 +480,11 @@ def _cleanup_old_logs() -> int:
             if log.stat().st_mtime < cutoff:
                 log.unlink()
                 deleted += 1
-        except OSError:
-            pass
+                _LOG.debug("deleted old log file: %s", log.name)
+        except OSError as e:
+            _LOG.warning("failed to delete old log %s: %s", log.name, e)
+    if deleted > 0:
+        _LOG.debug("old logs cleanup: deleted %d files", deleted)
     return deleted
 
 
@@ -529,6 +548,7 @@ def evict_image_cache_if_over_limit() -> tuple[int, int]:
     """
     img_dir = paths.image_cache_dir()
     if not img_dir.exists():
+        _LOG.debug("image cache directory does not exist")
         return 0, 0
     files = []
     total = 0
@@ -542,7 +562,11 @@ def evict_image_cache_if_over_limit() -> tuple[int, int]:
         except OSError:
             continue
     if total <= IMAGE_CACHE_LIMIT:
+        _LOG.debug("image cache size %.1f MB is within limit %.1f MB",
+                  total / (1024 * 1024), IMAGE_CACHE_LIMIT / (1024 * 1024))
         return 0, 0
+    _LOG.warning("image cache %.1f MB exceeds limit %.1f MB; starting LRU eviction",
+                total / (1024 * 1024), IMAGE_CACHE_LIMIT / (1024 * 1024))
     # Sort oldest first (LRU)
     files.sort(key=lambda x: x[1])
     bytes_freed = 0
@@ -554,8 +578,12 @@ def evict_image_cache_if_over_limit() -> tuple[int, int]:
             f.unlink()
             bytes_freed += size
             files_freed += 1
-        except OSError:
-            pass
+            _LOG.debug("evicted image cache file: %s (%.1f MB)", f.name, size / (1024 * 1024))
+        except OSError as e:
+            _LOG.warning("failed to evict cache file %s: %s", f.name, e)
+    if bytes_freed > 0:
+        _LOG.info("image cache eviction: freed %.1f MB by removing %d files",
+                 bytes_freed / (1024 * 1024), files_freed)
     return bytes_freed, files_freed
 
 
@@ -854,6 +882,7 @@ def _reindex_active_projects() -> None:
     load. ``last_seen`` is bumped by the SessionStart hook, so the active window
     tracks real user activity instead of growing without bound.
     """
+    _LOG.debug("starting periodic reindex cycle")
     cutoff = int(time.time() - PERIODIC_REINDEX_ACTIVE_WINDOW)
     try:
         with db.open_global_readonly() as gconn:
@@ -866,17 +895,21 @@ def _reindex_active_projects() -> None:
         return
 
     if not rows:
+        _LOG.debug("periodic reindex: no active projects within window")
         return
 
     _LOG.info("periodic reindex: %d active project(s) to check", len(rows))
+    reindexed_count = 0
+    skipped_oversized = 0
     for row in rows:
         if row["file_count"] > PERIODIC_REINDEX_MAX_FILES:
-            _LOG.warning(
+            _LOG.debug(
                 "periodic reindex: skipping %s (%d files > %d limit)",
                 row["root"],
                 row["file_count"],
                 PERIODIC_REINDEX_MAX_FILES,
             )
+            skipped_oversized += 1
             continue
         proj = Project(root=Path(row["root"]), hash=row["hash"], marker=row["marker"])
         try:
@@ -890,14 +923,18 @@ def _reindex_active_projects() -> None:
                     summary["errors"],
                     summary["duration_sec"],
                 )
+                reindexed_count += 1
             else:
                 _LOG.debug("periodic reindex: root=%s no changes", row["root"])
         except Exception:  # noqa: BLE001
             _LOG.exception("periodic reindex failed for %s", row["root"])
+    _LOG.debug("periodic reindex cycle complete: %d processed, %d skipped (oversized)",
+              reindexed_count, skipped_oversized)
 
 
 def _process_dirty_entries(entries: list[DirtyQueueEntry]) -> None:
     """Re-index files that were marked dirty by Edit/Write hooks."""
+    _LOG.debug("processing %d dirty queue entries", len(entries))
     # Group by project_hash, carrying the project root/marker from the first
     # entry that records them. Newer entries (see hooks_cli._enqueue_for_reindex)
     # are self-sufficient: they include project_root/project_marker so a project
@@ -907,6 +944,7 @@ def _process_dirty_entries(entries: list[DirtyQueueEntry]) -> None:
         ph = entry.get("project_hash")
         rel = entry.get("path")
         if not ph or not rel:
+            _LOG.debug("skipping malformed queue entry (missing hash or path)")
             continue
         if ph not in by_project:
             by_project[ph] = _ProjectBucket(rels=set(), root=None, marker=None)
@@ -916,6 +954,7 @@ def _process_dirty_entries(entries: list[DirtyQueueEntry]) -> None:
             bucket["root"] = entry["project_root"]
             bucket["marker"] = entry.get("project_marker") or "manual"
 
+    _LOG.debug("grouped into %d projects", len(by_project))
     # Batch-lookup all project hashes in one global.db query instead of
     # opening global.db once per project (N+1 DB opens).
     all_hashes = list(by_project.keys())
@@ -929,6 +968,7 @@ def _process_dirty_entries(entries: list[DirtyQueueEntry]) -> None:
             ):
                 known_projects[row["hash"]] = row
 
+    projects_processed = 0
     for ph, bucket in by_project.items():
         try:
             row = known_projects.get(ph)
@@ -937,6 +977,8 @@ def _process_dirty_entries(entries: list[DirtyQueueEntry]) -> None:
                 project = Project(root=Path(row["root"]), hash=ph, marker=row["marker"])
                 # Known project: incremental re-index (SHA-based skip-unchanged logic).
                 is_first_index = False
+                _LOG.debug("dirty queue: project %s known (root=%s), running incremental index",
+                          ph[:8], row["root"])
             elif bucket["root"]:
                 # Project not yet registered — the first edit landed before the
                 # project was ever indexed. Reconstruct it from the queue entry
@@ -947,7 +989,8 @@ def _process_dirty_entries(entries: list[DirtyQueueEntry]) -> None:
                 )
                 is_first_index = True
                 _LOG.info(
-                    "dirty queue: project %s not yet registered; running first index", ph[:8]
+                    "dirty queue: project %s not yet registered (root=%s); running first index",
+                    ph[:8], bucket["root"]
                 )
             else:
                 # Legacy entry with no project_root recorded — nothing to anchor
@@ -961,6 +1004,7 @@ def _process_dirty_entries(entries: list[DirtyQueueEntry]) -> None:
             t0 = time.time()
             result = parser.index_project(project, full=is_first_index)
             elapsed = time.time() - t0
+            projects_processed += 1
             if result["errors"] > 0:
                 _LOG.warning(
                     "reindexed %d/%d files in project %s after dirty queue drain"
@@ -981,3 +1025,5 @@ def _process_dirty_entries(entries: list[DirtyQueueEntry]) -> None:
                 )
         except Exception:  # noqa: BLE001
             _LOG.exception("failed to reindex project %s from dirty queue", ph)
+    _LOG.debug("finished processing dirty entries: %d/%d projects reindexed",
+              projects_processed, len(by_project))

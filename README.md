@@ -1,8 +1,6 @@
 <p align="center">
-  <img src="assets/logo.png" alt="Token-Goat" width="220">
+  <img src="assets/logo.png" alt="Token-Goat" width="700">
 </p>
-
-# Token-Goat
 
 Cuts the tokens Claude Code and Codex CLI burn on Windows. Install once, then forget it.
 
