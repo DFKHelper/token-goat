@@ -5,6 +5,14 @@ from unittest.mock import MagicMock, patch
 
 from token_goat import gdrive, hooks_cli
 
+
+def _assert_continue(result: dict) -> None:
+    """Assert continue:True, tolerating diagnostic fields added by dispatch."""
+    assert result.get("continue") is True
+
+
+
+
 # ---------------------------------------------------------------------------
 # 10. Non-Drive tool passes through unchanged
 # ---------------------------------------------------------------------------
@@ -16,7 +24,7 @@ class TestPreFetchNonDriveTool:
             "tool_input": {"file_path": "some_file.txt"},
         }
         result = hooks_cli.pre_fetch(payload)
-        assert result == {"continue": True}
+        _assert_continue(result)
         assert "hookSpecificOutput" not in result
 
     def test_bash_tool_passes_through(self, tmp_data_dir):
@@ -25,11 +33,11 @@ class TestPreFetchNonDriveTool:
             "tool_input": {"command": "ls"},
         }
         result = hooks_cli.pre_fetch(payload)
-        assert result == {"continue": True}
+        _assert_continue(result)
 
     def test_empty_payload_passes_through(self, tmp_data_dir):
         result = hooks_cli.pre_fetch({})
-        assert result == {"continue": True}
+        _assert_continue(result)
 
 
 # ---------------------------------------------------------------------------
@@ -45,7 +53,7 @@ class TestPreFetchDriveNoCreds:
         with patch("google.auth.default", side_effect=Exception("no ADC")):
             result = hooks_cli.pre_fetch(payload)
 
-        assert result == {"continue": True}
+        _assert_continue(result)
         assert "hookSpecificOutput" not in result
 
     def test_drive_read_file_no_creds_passes_through(self, tmp_data_dir):
@@ -56,7 +64,7 @@ class TestPreFetchDriveNoCreds:
         with patch("google.auth.default", side_effect=Exception("no ADC")):
             result = hooks_cli.pre_fetch(payload)
 
-        assert result == {"continue": True}
+        _assert_continue(result)
 
 
 # ---------------------------------------------------------------------------
@@ -149,7 +157,7 @@ class TestPreFetchDriveNoFileId:
         with patch("google.auth.default", return_value=(fake_creds, "proj")):
             result = hooks_cli.pre_fetch(payload)
 
-        assert result == {"continue": True}
+        _assert_continue(result)
         assert "hookSpecificOutput" not in result
 
     def test_drive_tool_empty_tool_input_passes_through(self, tmp_data_dir):
@@ -161,7 +169,7 @@ class TestPreFetchDriveNoFileId:
         with patch("google.auth.default", return_value=(fake_creds, "proj")):
             result = hooks_cli.pre_fetch(payload)
 
-        assert result == {"continue": True}
+        _assert_continue(result)
 
 
 # ---------------------------------------------------------------------------
@@ -185,27 +193,27 @@ class TestPreFetchMaliciousFileId:
     def test_backtick_injection_passes_through(self, tmp_data_dir):
         result = self._denied_result_for_id("`evil`", tmp_data_dir)
         # Should NOT deny (no embed into context) — falls through as continue:true
-        assert result == {"continue": True}
+        _assert_continue(result)
 
     def test_command_substitution_passes_through(self, tmp_data_dir):
         result = self._denied_result_for_id("$(rm -rf /)", tmp_data_dir)
-        assert result == {"continue": True}
+        _assert_continue(result)
 
     def test_path_traversal_passes_through(self, tmp_data_dir):
         result = self._denied_result_for_id("../../etc/passwd", tmp_data_dir)
-        assert result == {"continue": True}
+        _assert_continue(result)
 
     def test_null_byte_passes_through(self, tmp_data_dir):
         result = self._denied_result_for_id("abc\x00def", tmp_data_dir)
-        assert result == {"continue": True}
+        _assert_continue(result)
 
     def test_newline_injection_passes_through(self, tmp_data_dir):
         result = self._denied_result_for_id("abc\necho injected", tmp_data_dir)
-        assert result == {"continue": True}
+        _assert_continue(result)
 
     def test_too_long_id_passes_through(self, tmp_data_dir):
         result = self._denied_result_for_id("a" * 200, tmp_data_dir)
-        assert result == {"continue": True}
+        _assert_continue(result)
 
     def test_valid_alphanumeric_id_still_denied(self, tmp_data_dir):
         """A valid file_id should still trigger the deny+redirect response."""
@@ -223,7 +231,7 @@ class TestPreFetchDispatcher:
     def test_dispatch_pre_fetch_non_drive_tool(self, tmp_data_dir):
         payload = {"tool_name": "Write", "tool_input": {"file_path": "x.py"}}
         result = hooks_cli.dispatch("pre-fetch", payload)
-        assert result == {"continue": True}
+        _assert_continue(result)
 
     def test_dispatch_pre_fetch_drive_with_creds_denies(self, tmp_data_dir):
         payload = {

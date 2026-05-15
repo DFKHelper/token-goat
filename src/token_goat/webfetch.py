@@ -3,7 +3,9 @@ from __future__ import annotations
 
 import hashlib
 import ipaddress
+import json
 import logging
+import os
 import socket
 from pathlib import Path
 from urllib.parse import urlparse
@@ -25,6 +27,12 @@ _BLOCKED_HOSTNAMES = frozenset(
     ]
 )
 
+# Set TOKEN_GOAT_WEBFETCH_ALLOW_UNRESOLVED=1 to allow unresolvable hostnames.
+# Default is fail-closed: an unresolvable hostname is treated as blocked.
+_ALLOW_UNRESOLVED = os.environ.get("TOKEN_GOAT_WEBFETCH_ALLOW_UNRESOLVED", "").strip() in (
+    "1", "true", "yes", "on"
+)
+
 
 def _is_ssrf_safe(url: str) -> bool:
     """Return True only if the URL is safe to fetch (not an SSRF risk).
@@ -36,6 +44,8 @@ def _is_ssrf_safe(url: str) -> bool:
         127.x.x.x, 10.x, 172.16-31.x, 192.168.x, 169.254.x (AWS/GCP/Azure metadata),
         ::1, fc00::/7, fe80::/10
     - Bare IP literals for the above ranges
+    - Unresolvable hostnames (fail-closed by default; opt out with
+      TOKEN_GOAT_WEBFETCH_ALLOW_UNRESOLVED=1)
     """
     try:
         parsed = urlparse(url)
@@ -55,13 +65,14 @@ def _is_ssrf_safe(url: str) -> bool:
         return False
 
     # Try resolving the hostname to an IP and checking if it is private/loopback/link-local.
-    # We do a best-effort resolution; if it fails we allow the request (the HTTP client
-    # will fail on its own if unreachable, and we prefer not to silently drop legitimate URLs).
     try:
         addr_info = socket.getaddrinfo(hostname_lower, None, proto=socket.IPPROTO_TCP)
     except OSError:
-        # Cannot resolve — let the HTTP request fail naturally; not a known-bad address.
-        return True
+        if _ALLOW_UNRESOLVED:
+            _LOG.debug("SSRF guard: unresolvable hostname %r allowed (opt-out active)", hostname)
+            return True
+        _LOG.warning("SSRF guard: blocked unresolvable hostname %r", hostname)
+        return False
 
     for _family, _type, _proto, _canonname, sockaddr in addr_info:
         ip_str = sockaddr[0]
@@ -124,6 +135,37 @@ def _suffix_for(url: str, content_type: str = "") -> str:
     return mapping.get(ct, ".bin")
 
 
+def _sidecar_path(cache_path: Path) -> Path:
+    """Path to the JSON metadata sidecar for a cached file."""
+    return cache_path.with_suffix(cache_path.suffix + ".meta")
+
+
+def _read_cache_meta(cache_path: Path) -> dict[str, str]:
+    """Read ETag/Last-Modified metadata for a cached file, or return {}."""
+    sidecar = _sidecar_path(cache_path)
+    if not sidecar.exists():
+        return {}
+    try:
+        return json.loads(sidecar.read_text(encoding="utf-8"))
+    except Exception:  # noqa: BLE001
+        return {}
+
+
+def _write_cache_meta(cache_path: Path, response_headers: httpx.Headers) -> None:
+    """Persist ETag and/or Last-Modified from response headers alongside the cache file."""
+    meta: dict[str, str] = {}
+    if etag := response_headers.get("etag"):
+        meta["etag"] = etag
+    if lm := response_headers.get("last-modified"):
+        meta["last_modified"] = lm
+    if not meta:
+        return
+    try:
+        _sidecar_path(cache_path).write_text(json.dumps(meta), encoding="utf-8")
+    except OSError as exc:
+        _LOG.debug("could not write cache metadata for %s: %s", cache_path.name, exc)
+
+
 def _stream_to_file(response: httpx.Response, dest: Path, max_size_bytes: int) -> None:
     """Write a streaming HTTP response to *dest* atomically, enforcing a size cap.
 
@@ -170,6 +212,22 @@ def _validate_response_url(url: str) -> None:
         raise ValueError(f"URL blocked by SSRF safety check after redirect: {url!r}")
 
 
+def cleanup_stale_downloads() -> int:
+    """Remove any leftover ``.tmp`` partial download files. Returns count removed."""
+    cache_dir = paths.web_cache_dir()
+    if not cache_dir.exists():
+        return 0
+    removed = 0
+    for f in cache_dir.glob("*.tmp"):
+        try:
+            f.unlink(missing_ok=True)
+            removed += 1
+            _LOG.debug("cleaned up partial download: %s", f.name)
+        except OSError as exc:
+            _LOG.debug("could not remove partial download %s: %s", f.name, exc)
+    return removed
+
+
 def fetch_url(
     url: str,
     *,
@@ -180,7 +238,10 @@ def fetch_url(
     """Download a URL. Return the local cached path. Shrink if image and big enough.
 
     Raises ValueError if the URL fails SSRF safety checks (private/loopback IPs,
-    metadata endpoints, non-http/https schemes).
+    metadata endpoints, non-http/https schemes, unresolvable hostnames).
+
+    Sends ETag / If-Modified-Since conditional requests when cache metadata is
+    available; returns the cached file unchanged on HTTP 304 Not Modified.
     """
     if not _is_ssrf_safe(url):
         raise ValueError(f"URL blocked by SSRF safety check: {url!r}")
@@ -189,17 +250,44 @@ def fetch_url(
     cache_dir.mkdir(parents=True, exist_ok=True)
 
     # Pre-check: do we already have it cached?
-    # Need to know suffix first — peek using URL
     pre_suffix = _suffix_for(url)
     candidate = _cache_path_for(url, pre_suffix)
     if candidate.exists():
-        _LOG.info("web cache hit (URL-derived): %s", candidate.name)
-        # If image, ensure shrunken version
-        if shrink_if_image and image_shrink.is_image_path(str(candidate)):
-            shrunken = image_shrink.shrink(candidate)
-            if shrunken is not None:
-                return shrunken
-        return candidate
+        meta = _read_cache_meta(candidate)
+        if meta:
+            # Attempt revalidation with conditional request
+            headers: dict[str, str] = {}
+            if "etag" in meta:
+                headers["If-None-Match"] = meta["etag"]
+            if "last_modified" in meta:
+                headers["If-Modified-Since"] = meta["last_modified"]
+            try:
+                with httpx.Client(timeout=timeout_sec, follow_redirects=True) as client:
+                    r = client.get(url, headers=headers)
+                if r.status_code == 304:
+                    _LOG.info("web cache revalidated (304): %s", candidate.name)
+                    if shrink_if_image and image_shrink.is_image_path(str(candidate)):
+                        shrunken = image_shrink.shrink(candidate)
+                        if shrunken is not None:
+                            return shrunken
+                    return candidate
+                if r.status_code == 200:
+                    # Fresh content — fall through to re-download path below
+                    _LOG.info("web cache stale (200 on revalidation): %s", candidate.name)
+                else:
+                    # Unexpected status — return cached file
+                    _LOG.debug("revalidation returned %s; using cached %s", r.status_code, candidate.name)
+                    return candidate
+            except httpx.RequestError as exc:
+                _LOG.debug("revalidation request failed (%s); using cached %s", exc, candidate.name)
+                return candidate
+        else:
+            _LOG.info("web cache hit (URL-derived): %s", candidate.name)
+            if shrink_if_image and image_shrink.is_image_path(str(candidate)):
+                shrunken = image_shrink.shrink(candidate)
+                if shrunken is not None:
+                    return shrunken
+            return candidate
 
     # Download
     with httpx.Client(timeout=timeout_sec, follow_redirects=True) as client, \
@@ -210,10 +298,10 @@ def fetch_url(
             _LOG.info("web fetch redirected: %s -> %s", url, final_url)
         _validate_response_url(final_url)
         content_type = r.headers.get("content-type", "")
-        # Final suffix (may differ from pre_suffix when URL has no extension)
         suffix = _suffix_for(url, content_type)
         cache_path = _cache_path_for(url, suffix)
         _stream_to_file(r, cache_path, max_size_bytes)
+        _write_cache_meta(cache_path, r.headers)
 
     # Shrink if image
     if shrink_if_image and image_shrink.is_image_path(str(cache_path)):

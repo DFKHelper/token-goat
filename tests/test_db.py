@@ -306,7 +306,7 @@ def test_open_with_rebuild_raises_on_double_failure(tmp_data_dir):
     as a mystery crash to the caller.
     """
     with patch("token_goat.db._connect", side_effect=sqlite3.OperationalError("unable to open")), \
-            pytest.raises(sqlite3.OperationalError):
+            pytest.raises(db.DBCorruptionError):
         db._open_with_rebuild(tmp_data_dir / "no_such.db")
 
 
@@ -318,7 +318,7 @@ def test_open_global_raises_cleanly_on_persistent_connect_failure(tmp_data_dir):
     """open_global() must raise (not crash silently) if DB can't be opened."""
     with (
         patch("token_goat.db._connect", side_effect=sqlite3.OperationalError("unable to open")),
-        pytest.raises(sqlite3.OperationalError),
+        pytest.raises(db.DBCorruptionError),
         db.open_global(),
     ):
         pass
@@ -328,7 +328,7 @@ def test_open_project_raises_cleanly_on_persistent_connect_failure(tmp_data_dir)
     """open_project() must raise (not crash silently) if DB can't be opened."""
     with (
         patch("token_goat.db._connect", side_effect=sqlite3.OperationalError("unable to open")),
-        pytest.raises(sqlite3.OperationalError),
+        pytest.raises(db.DBCorruptionError),
         db.open_project("abc123def456"),
     ):
         pass

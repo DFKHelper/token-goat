@@ -121,21 +121,6 @@ def _extract_module(source_line: str) -> str:
     return source_line.strip()
 
 
-def _kind_str(structure_kind: object) -> str:
-    """Convert StructureKind to our kind string."""
-    return common.kind_str(structure_kind)
-
-
-def _symbol_kind_str(sym_kind: object) -> str:
-    """Convert SymbolKind to our kind string."""
-    return common.sym_kind_str(sym_kind)
-
-
-def _extract_refs(source: bytes) -> list[Ref]:
-    """Extract call-site refs using regex on the source text."""
-    return common.extract_refs_from_source(source, _CALL_RE, _CALL_NOISE)  # type: ignore[return-value]
-
-
 def extract(
     source: bytes,
     rel_path: str,
@@ -196,11 +181,15 @@ def extract(
 
     def _add_symbol(item: object, parent_name: str | None = None) -> None:
         name: str = item.name  # type: ignore[attr-defined]
+        if not name:
+            for child in item.children:  # type: ignore[attr-defined]
+                _add_symbol(child, parent_name=parent_name)
+            return
         span = item.span
         body_span = item.body_span if hasattr(item, "body_span") else None
         line = span.start_line + 1  # convert to 1-indexed
         end_line = span.end_line + 1
-        kind = _kind_str(item.kind)
+        kind = common.kind_str(item.kind)
         sig = common.build_signature(source, span, body_span)
 
         key = (name, line)
@@ -229,7 +218,7 @@ def extract(
         name: str = sym.name  # type: ignore[attr-defined]
         span = sym.span
         line = span.start_line + 1
-        kind = _symbol_kind_str(sym.kind)
+        kind = common.sym_kind_str(sym.kind)
         key = (name, line)
         if key not in seen_names:
             seen_names.add(key)
@@ -299,6 +288,6 @@ def extract(
         imp_exp.append(ImpExp(kind="import", target=module, line=line))
 
     # --- refs via regex ---
-    refs = _extract_refs(source)
+    refs: list[Ref] = common.extract_refs_from_source(source, _CALL_RE, _CALL_NOISE)  # type: ignore[assignment, no-redef]
 
     return symbols, refs, imp_exp, []

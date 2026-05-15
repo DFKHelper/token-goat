@@ -7,8 +7,8 @@ from pathlib import Path
 
 import pytest
 
-from token_goat import read_replacement
 from token_goat import embeddings as emb
+from token_goat import read_replacement
 from token_goat.parser import index_project
 
 FIXTURE_DIR = Path(__file__).parent / "fixtures"
@@ -472,11 +472,12 @@ def test_cli_read_reports_structured_json_error_for_project_not_indexed(
 
 
 def test_cli_deps_reports_dependency_graph(tmp_path, make_project, monkeypatch):
+    from contextlib import contextmanager
+
     from typer.testing import CliRunner
 
     from token_goat import read_commands
     from token_goat.cli import app
-    from contextlib import contextmanager
 
     proj_root = tmp_path / "deps"
     proj_root.mkdir()
@@ -496,26 +497,118 @@ def test_cli_deps_reports_dependency_graph(tmp_path, make_project, monkeypatch):
     monkeypatch.setattr(
         read_commands,
         "_collect_dependency_graph",
-        lambda _conn, _rel: ({"b.ts": {"greet"}}, {"c.ts": {"greet", "router"}}),
+        lambda _conn, _rel: ({"b.ts": {"greet"}}, {"c.ts": {"greet", "router"}}, []),
     )
 
     runner = CliRunner()
     result = runner.invoke(app, ["deps", "a.ts"])
     assert result.exit_code == 0
     assert "Dependency graph for a.ts" in result.output
-    assert "Dependencies:" in result.output
+    assert "Dependencies" in result.output
     assert "b.ts" in result.output
     assert "greet" in result.output
-    assert "Dependents:" in result.output
+    assert "Dependents" in result.output
     assert "c.ts" in result.output
+
+
+def test_cli_deps_json_output(tmp_path, make_project, monkeypatch):
+    """deps --json emits a valid JSON object with 'file', 'dependencies', 'dependents'."""
+    import json as _json
+    from contextlib import contextmanager
+
+    from typer.testing import CliRunner
+
+    from token_goat import read_commands
+    from token_goat.cli import app
+
+    proj_root = tmp_path / "deps_json"
+    proj_root.mkdir()
+    (proj_root / ".git").mkdir()
+    fake_proj = make_project(proj_root)
+
+    @contextmanager
+    def _fake_conn():
+        yield object()
+
+    monkeypatch.setattr(read_commands.db, "open_project", lambda _hash: _fake_conn())
+    monkeypatch.setattr(
+        read_commands,
+        "_resolve_file_target",
+        lambda _file: (fake_proj, "a.ts", fake_proj),
+    )
+    monkeypatch.setattr(
+        read_commands,
+        "_collect_dependency_graph",
+        lambda _conn, _rel: ({"b.ts": {"greet"}}, {"c.ts": {"router"}}, ["UnknownThing"]),
+    )
+
+    runner = CliRunner()
+    result = runner.invoke(app, ["deps", "a.ts", "--json"])
+    assert result.exit_code == 0
+    data = _json.loads(result.output.strip())
+    assert data["file"] == "a.ts"
+    assert "b.ts" in data["dependencies"]
+    assert "greet" in data["dependencies"]["b.ts"]
+    assert "c.ts" in data["dependents"]
+    assert "router" in data["dependents"]["c.ts"]
+    assert data["unresolved_ref_count"] == 1
+    assert "UnknownThing" in data["unresolved_refs"]
+    assert data["dependency_edge_count"] == 1
+    assert data["dependent_edge_count"] == 1
+
+
+def test_cli_deps_transitive_json_output(tmp_path, make_project, monkeypatch):
+    """deps --depth 2 --json emits all_dependencies with depth/via/symbols."""
+    import json as _json
+    from contextlib import contextmanager
+
+    from typer.testing import CliRunner
+
+    from token_goat import read_commands
+    from token_goat.cli import app
+
+    proj_root = tmp_path / "deps_transitive"
+    proj_root.mkdir()
+    (proj_root / ".git").mkdir()
+    fake_proj = make_project(proj_root)
+
+    @contextmanager
+    def _fake_conn():
+        yield object()
+
+    # Depth-1: a.ts → b.ts (greet); depth-2: b.ts → c.ts (helper)
+    def _fake_collect_graph(_conn, _rel):
+        return ({"b.ts": {"greet"}}, {}, [])
+
+    def _fake_collect_transitive(_conn, _start, *, max_depth):
+        return {
+            "b.ts": {"depth": 1, "via": "a.ts", "symbols": {"greet"}},
+            "c.ts": {"depth": 2, "via": "b.ts", "symbols": {"helper"}},
+        }
+
+    monkeypatch.setattr(read_commands.db, "open_project", lambda _hash: _fake_conn())
+    monkeypatch.setattr(read_commands, "_resolve_file_target", lambda _f: (fake_proj, "a.ts", fake_proj))
+    monkeypatch.setattr(read_commands, "_collect_dependency_graph", _fake_collect_graph)
+    monkeypatch.setattr(read_commands, "_collect_transitive_outgoing", _fake_collect_transitive)
+
+    runner = CliRunner()
+    result = runner.invoke(app, ["deps", "a.ts", "--depth", "2", "--json"])
+    assert result.exit_code == 0
+    data = _json.loads(result.output.strip())
+    assert data["depth"] == 2
+    assert "all_dependencies" in data
+    assert data["all_dependencies"]["b.ts"]["depth"] == 1
+    assert data["all_dependencies"]["c.ts"]["depth"] == 2
+    assert data["all_dependencies"]["c.ts"]["via"] == "b.ts"
+    assert "helper" in data["all_dependencies"]["c.ts"]["symbols"]
 
 
 def test_cli_read_reports_index_unavailable(tmp_path, monkeypatch):
     from typer.testing import CliRunner
 
     from token_goat import read_replacement
-    from token_goat.read_replacement import ProjectIndexUnavailable
     from token_goat.cli import app
+    from token_goat.read_replacement import ProjectIndexUnavailable
 
     proj_root = tmp_path / "read_unavailable"
     proj_root.mkdir()
@@ -539,8 +632,8 @@ def test_cli_deps_reports_index_unavailable(tmp_path, monkeypatch):
     from typer.testing import CliRunner
 
     from token_goat import read_replacement
-    from token_goat.read_replacement import ProjectIndexUnavailable
     from token_goat.cli import app
+    from token_goat.read_replacement import ProjectIndexUnavailable
 
     proj_root = tmp_path / "deps_unavailable"
     proj_root.mkdir()
@@ -753,3 +846,131 @@ class TestDepsCommandErrors:
         result = runner.invoke(app, ["deps", "missing.ts"])
         assert result.exit_code == 0
         assert "File not found in any indexed project: missing.ts" in result.output
+
+
+# ---------------------------------------------------------------------------
+# File-resolution cache (item 8) and specificity ranking (item 14)
+# ---------------------------------------------------------------------------
+
+class TestMatchSpecificity:
+    """Unit tests for _match_specificity and _pick_best_match."""
+
+    def test_bare_filename_scores_above_partial_path(self):
+        from token_goat.read_replacement import _match_specificity
+        # "parser.py" matching "src/token_goat/parser.py" vs "vendor/parser.py"
+        score_deep = _match_specificity("parser.py", "src/token_goat/parser.py")
+        score_shallow = _match_specificity("parser.py", "vendor/parser.py")
+        # Both have suffix_len=1 (bare filename), but shallow has fewer components
+        assert score_deep[0] == score_shallow[0] == 1
+        assert score_shallow > score_deep  # neg_path_depth closer to 0
+
+    def test_longer_suffix_wins(self):
+        from token_goat.read_replacement import _match_specificity
+        score_short = _match_specificity("parser.py", "src/token_goat/parser.py")
+        score_long = _match_specificity("token_goat/parser.py", "src/token_goat/parser.py")
+        assert score_long > score_short
+
+    def test_pick_best_match_resolves_unambiguous(self):
+        from token_goat.read_replacement import _pick_best_match
+        candidates = ["src/token_goat/parser.py", "vendor/lib/parser.py"]
+        # "token_goat/parser.py" is a longer suffix of the first but not the second
+        best = _pick_best_match("token_goat/parser.py", candidates)
+        assert best == "src/token_goat/parser.py"
+
+    def test_pick_best_match_returns_none_on_tie(self):
+        from token_goat.read_replacement import _pick_best_match
+        # Two equally shallow bare-filename matches
+        candidates = ["a/foo.py", "b/foo.py"]
+        assert _pick_best_match("foo.py", candidates) is None
+
+    def test_pick_best_match_single_candidate(self):
+        from token_goat.read_replacement import _pick_best_match
+        assert _pick_best_match("foo.py", ["src/foo.py"]) == "src/foo.py"
+
+    def test_pick_best_match_empty(self):
+        from token_goat.read_replacement import _pick_best_match
+        assert _pick_best_match("foo.py", []) is None
+
+
+class TestResolveFileCache:
+    """Tests for _resolve_cache_get/put and invalidate_file_cache."""
+
+    def setup_method(self):
+        from token_goat import read_replacement as rr
+        rr._RESOLVE_CACHE.clear()
+
+    def test_cache_miss_returns_false(self):
+        from token_goat.read_replacement import _resolve_cache_get
+        hit, val = _resolve_cache_get("proj-abc", "src/foo.py")
+        assert not hit
+        assert val is None
+
+    def test_cache_put_and_hit(self):
+        from token_goat.read_replacement import _resolve_cache_get, _resolve_cache_put
+        _resolve_cache_put("proj-abc", "foo.py", "src/foo.py")
+        hit, val = _resolve_cache_get("proj-abc", "foo.py")
+        assert hit
+        assert val == "src/foo.py"
+
+    def test_cache_stores_none_result(self):
+        from token_goat.read_replacement import _resolve_cache_get, _resolve_cache_put
+        _resolve_cache_put("proj-abc", "missing.py", None)
+        hit, val = _resolve_cache_get("proj-abc", "missing.py")
+        assert hit
+        assert val is None
+
+    def test_invalidate_clears_only_that_project(self):
+        from token_goat.read_replacement import (
+            _resolve_cache_get,
+            _resolve_cache_put,
+            invalidate_file_cache,
+        )
+        _resolve_cache_put("proj-A", "foo.py", "src/foo.py")
+        _resolve_cache_put("proj-B", "foo.py", "lib/foo.py")
+        count = invalidate_file_cache("proj-A")
+        assert count == 1
+        hit_a, _ = _resolve_cache_get("proj-A", "foo.py")
+        hit_b, _ = _resolve_cache_get("proj-B", "foo.py")
+        assert not hit_a
+        assert hit_b
+
+    def test_cache_evicts_oldest_when_full(self):
+        from token_goat import read_replacement as rr
+        rr._RESOLVE_CACHE.clear()
+        # Fill beyond MAX to trigger eviction
+        for i in range(rr._RESOLVE_CACHE_MAX):
+            rr._resolve_cache_put("proj", f"file{i}.py", f"src/file{i}.py")
+        assert len(rr._RESOLVE_CACHE) == rr._RESOLVE_CACHE_MAX
+        # Adding one more triggers eviction of _RESOLVE_CACHE_EVICT entries
+        rr._resolve_cache_put("proj", "new.py", "src/new.py")
+        assert len(rr._RESOLVE_CACHE) == rr._RESOLVE_CACHE_MAX - rr._RESOLVE_CACHE_EVICT + 1
+        # Oldest entries were evicted
+        hit, _ = rr._resolve_cache_get("proj", "file0.py")
+        assert not hit
+        # Newest entry is present
+        hit, val = rr._resolve_cache_get("proj", "new.py")
+        assert hit and val == "src/new.py"
+
+    def test_resolve_file_rel_uses_cache(self, tmp_data_dir, make_project, tmp_path):
+        """resolve_file_rel result is cached; second call skips DB entirely."""
+        import shutil
+
+        from token_goat import read_replacement as rr
+        from token_goat.parser import index_project
+
+        rr._RESOLVE_CACHE.clear()
+        proj_root = tmp_path / "cache_test_proj"
+        shutil.copytree(PY_SAMPLE, proj_root)
+        proj = make_project(proj_root)
+        index_project(proj, full=True)
+
+        # First call populates cache
+        rel1 = rr.resolve_file_rel(proj, "app.py")
+        assert rel1 == "app.py"
+        assert (proj.hash, "app.py") in rr._RESOLVE_CACHE
+
+        # Corrupt DB path to ensure second call uses cache (not DB)
+        import unittest.mock as mock
+        with mock.patch.object(rr, "_resolve_file_rel_db", side_effect=RuntimeError("should not be called")):
+            rel2 = rr.resolve_file_rel(proj, "app.py")
+        assert rel2 == "app.py"

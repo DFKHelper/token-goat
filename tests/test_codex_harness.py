@@ -11,6 +11,11 @@ from token_goat import hooks_cli
 PROJECT_ROOT = Path(__file__).parent.parent
 
 
+def _assert_continue(result: dict) -> None:
+    """Assert continue:True, tolerating diagnostic fields added by dispatch."""
+    assert result.get("continue") is True
+
+
 # ---------------------------------------------------------------------------
 # 1. denormalize_response: camelCase → snake_case for harness=codex
 # ---------------------------------------------------------------------------
@@ -67,7 +72,7 @@ def test_denormalize_claude_passthrough():
 def test_denormalize_no_hso():
     response = {"continue": True}
     result = hooks_cli.denormalize_response(response, harness="codex")
-    assert result == {"continue": True}
+    _assert_continue(result)
 
 
 # ---------------------------------------------------------------------------

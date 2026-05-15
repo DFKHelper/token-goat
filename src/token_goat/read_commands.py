@@ -67,39 +67,108 @@ def _emit_ambiguous_file_match(file_part: str, candidates: Sequence[str], *, jso
     )
 
 
-def _collect_dependency_graph(conn: sqlite3.Connection, rel_path: str) -> tuple[dict[str, set[str]], dict[str, set[str]]]:
-    """Return file-level dependency edges for the given file."""
+def _collect_dependency_graph(
+    conn: sqlite3.Connection,
+    rel_path: str,
+) -> tuple[dict[str, set[str]], dict[str, set[str]], list[str]]:
+    """Return file-level dependency edges and unresolved refs for the given file.
+
+    Returns (outgoing, incoming, unresolved_refs):
+      - outgoing: files this file depends on, mapped to referenced symbol names
+      - incoming: files that depend on this file, mapped to symbol names they use
+      - unresolved_refs: ref names in this file that match no indexed symbol
+    """
     outgoing: dict[str, set[str]] = defaultdict(set)
-    referenced_names = [
-        row["symbol_name"]
-        for row in conn.execute(
-            "SELECT DISTINCT symbol_name FROM refs WHERE file_rel = ? AND symbol_name != ''",
-            (rel_path,),
-        ).fetchall()
-    ]
-    for symbol_name in referenced_names:
-        for row in conn.execute(
-            "SELECT DISTINCT file_rel FROM symbols WHERE name = ? AND file_rel != ?",
-            (symbol_name, rel_path),
-        ).fetchall():
-            outgoing[row["file_rel"]].add(symbol_name)
+    for row in conn.execute(
+        """
+        SELECT DISTINCT s.file_rel, r.symbol_name
+          FROM refs r
+          JOIN symbols s ON s.name = r.symbol_name AND s.file_rel != r.file_rel
+         WHERE r.file_rel = ?
+           AND r.symbol_name != ''
+        """,
+        (rel_path,),
+    ).fetchall():
+        outgoing[row["file_rel"]].add(row["symbol_name"])
 
     incoming: dict[str, set[str]] = defaultdict(set)
-    defined_names = [
-        row["name"]
+    for row in conn.execute(
+        """
+        SELECT DISTINCT r.file_rel, s.name AS symbol_name
+          FROM symbols s
+          JOIN refs r ON r.symbol_name = s.name AND r.file_rel != s.file_rel
+         WHERE s.file_rel = ?
+        """,
+        (rel_path,),
+    ).fetchall():
+        incoming[row["file_rel"]].add(row["symbol_name"])
+
+    unresolved: list[str] = [
+        row["symbol_name"]
         for row in conn.execute(
-            "SELECT DISTINCT name FROM symbols WHERE file_rel = ?",
+            """
+            SELECT DISTINCT r.symbol_name
+              FROM refs r
+              LEFT JOIN symbols s ON s.name = r.symbol_name
+             WHERE r.file_rel = ?
+               AND r.symbol_name != ''
+               AND s.name IS NULL
+             ORDER BY r.symbol_name
+            """,
             (rel_path,),
         ).fetchall()
     ]
-    for symbol_name in defined_names:
-        for row in conn.execute(
-            "SELECT DISTINCT file_rel FROM refs WHERE symbol_name = ? AND file_rel != ?",
-            (symbol_name, rel_path),
-        ).fetchall():
-            incoming[row["file_rel"]].add(symbol_name)
 
-    return outgoing, incoming
+    return outgoing, incoming, unresolved
+
+
+def _collect_outgoing_edges(conn: sqlite3.Connection, rel_path: str) -> dict[str, set[str]]:
+    """Return only the outgoing file-level edges for rel_path (no incoming, no unresolved)."""
+    outgoing: dict[str, set[str]] = defaultdict(set)
+    for row in conn.execute(
+        """
+        SELECT DISTINCT s.file_rel, r.symbol_name
+          FROM refs r
+          JOIN symbols s ON s.name = r.symbol_name AND s.file_rel != r.file_rel
+         WHERE r.file_rel = ?
+           AND r.symbol_name != ''
+        """,
+        (rel_path,),
+    ).fetchall():
+        outgoing[row["file_rel"]].add(row["symbol_name"])
+    return outgoing
+
+
+def _collect_transitive_outgoing(
+    conn: sqlite3.Connection,
+    start_rel: str,
+    max_depth: int,
+) -> dict[str, dict]:
+    """BFS over outgoing edges up to max_depth levels.
+
+    Returns a dict keyed by file_rel with entries:
+      {"depth": int, "via": str, "symbols": set[str]}
+    where "via" is the immediate parent in the BFS tree.
+    max_depth=0 means unlimited.
+    """
+    result: dict[str, dict] = {}
+    queue: list[tuple[str, int]] = [(start_rel, 0)]
+    visited: set[str] = {start_rel}
+
+    while queue:
+        current, depth = queue.pop(0)
+        next_depth = depth + 1
+        if max_depth and next_depth > max_depth:
+            continue
+        for dep_file, symbols in _collect_outgoing_edges(conn, current).items():
+            if dep_file not in visited:
+                visited.add(dep_file)
+                result[dep_file] = {"depth": next_depth, "via": current, "symbols": symbols}
+                queue.append((dep_file, next_depth))
+            elif dep_file in result and result[dep_file]["depth"] == next_depth:
+                result[dep_file]["symbols"] |= symbols
+
+    return result
 
 
 def _format_dependency_line(file_rel: str, symbols: set[str]) -> str:
@@ -212,7 +281,11 @@ def _run_read_like_command(
     typer.echo(result["text"])
 
 
-def deps(file: str) -> None:
+def deps(
+    file: str,
+    json_output: bool = typer.Option(False, "--json"),
+    depth: int = typer.Option(1, "--depth", "-d", help="Transitive depth (1=direct, 0=unlimited)"),
+) -> None:
     """Show dependency graph for file."""
     try:
         proj, rel, current_proj = _resolve_file_target(file)
@@ -220,7 +293,7 @@ def deps(file: str) -> None:
         _emit_read_error(
             code=exc.code,
             message=str(exc),
-            json_output=False,
+            json_output=json_output,
             file_part=file,
         )
         return
@@ -230,7 +303,7 @@ def deps(file: str) -> None:
             _emit_read_error(
                 code="no_project",
                 message="No project detected.",
-                json_output=False,
+                json_output=json_output,
                 file_part=file,
             )
         else:
@@ -238,7 +311,7 @@ def deps(file: str) -> None:
             _emit_read_error(
                 code="project_not_indexed" if hint else "file_not_found",
                 message=hint if hint else f"File not found in any indexed project: {file}",
-                json_output=False,
+                json_output=json_output,
                 file_part=file,
                 project_hash=current_proj.hash,
             )
@@ -246,22 +319,73 @@ def deps(file: str) -> None:
 
     assert proj is not None
     with db.open_project(proj.hash) as conn:
-        outgoing, incoming = _collect_dependency_graph(conn, rel)
+        outgoing, incoming, unresolved = _collect_dependency_graph(conn, rel)
+        transitive: dict[str, dict] = {}
+        if depth != 1:
+            transitive = _collect_transitive_outgoing(conn, rel, max_depth=depth)
 
+    dep_edge_count = sum(len(v) for v in outgoing.values())
+    dep_file_count = len(outgoing)
+    dpt_edge_count = sum(len(v) for v in incoming.values())
+    dpt_file_count = len(incoming)
+
+    if json_output:
+        payload: dict[str, object] = {
+            "file": rel,
+            "depth": depth,
+            "dependency_file_count": dep_file_count,
+            "dependency_edge_count": dep_edge_count,
+            "dependent_file_count": dpt_file_count,
+            "dependent_edge_count": dpt_edge_count,
+            "unresolved_ref_count": len(unresolved),
+            "dependencies": {
+                dep: sorted(syms)
+                for dep, syms in sorted(outgoing.items(), key=lambda item: (-len(item[1]), item[0]))
+            },
+            "dependents": {
+                dep: sorted(syms)
+                for dep, syms in sorted(incoming.items(), key=lambda item: (-len(item[1]), item[0]))
+            },
+            "unresolved_refs": unresolved,
+        }
+        if transitive:
+            payload["all_dependencies"] = {
+                f: {"depth": v["depth"], "via": v["via"], "symbols": sorted(v["symbols"])}
+                for f, v in sorted(transitive.items(), key=lambda x: (x[1]["depth"], x[0]))
+            }
+        typer.echo(json.dumps(payload))
+        return
+
+    dep_summary = f"{dep_file_count} file{'s' if dep_file_count != 1 else ''}, {dep_edge_count} edge{'s' if dep_edge_count != 1 else ''}"
+    dpt_summary = f"{dpt_file_count} file{'s' if dpt_file_count != 1 else ''}, {dpt_edge_count} edge{'s' if dpt_edge_count != 1 else ''}"
     typer.echo(f"Dependency graph for {rel}")
-    typer.echo("Dependencies:")
+    typer.echo(f"Dependencies ({dep_summary}):")
     if outgoing:
         for dep_rel, symbols in sorted(outgoing.items(), key=lambda item: (-len(item[1]), item[0])):
             typer.echo(_format_dependency_line(dep_rel, symbols))
     else:
         typer.echo("  (none)")
 
-    typer.echo("Dependents:")
+    if transitive:
+        transitive_only = {f: v for f, v in transitive.items() if f not in outgoing}
+        if transitive_only:
+            typer.echo(f"Transitive dependencies (depth 2–{depth or '∞'}, {len(transitive_only)} more files):")
+            for dep_rel, info in sorted(transitive_only.items(), key=lambda x: (x[1]["depth"], x[0])):
+                indent = "    " * (info["depth"] - 1)
+                via_note = f"  via {info['via']}" if info["via"] != rel else ""
+                typer.echo(f"{indent}{_format_dependency_line(dep_rel, info['symbols'])}{via_note}")
+
+    typer.echo(f"Dependents ({dpt_summary}):")
     if incoming:
         for dep_rel, symbols in sorted(incoming.items(), key=lambda item: (-len(item[1]), item[0])):
             typer.echo(_format_dependency_line(dep_rel, symbols))
     else:
         typer.echo("  (none)")
+
+    if unresolved:
+        noun = "ref" if len(unresolved) == 1 else "refs"
+        typer.echo(f"Unresolved {noun} ({len(unresolved)}): {', '.join(unresolved[:20])}"
+                   + (" ..." if len(unresolved) > 20 else ""))
 
 
 def read(

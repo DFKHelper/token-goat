@@ -7,6 +7,11 @@ from token_goat import compact, config, hooks_cli, session
 # Helpers
 # ---------------------------------------------------------------------------
 
+def _assert_continue(result: dict) -> None:
+    """Assert continue:True, tolerating diagnostic fields added by dispatch."""
+    assert result.get("continue") is True
+
+
 def _populate_session(session_id: str, *, files: int = 3, greps: int = 2, edits: int = 1) -> None:
     """Put enough activity in a session to exceed any reasonable min_events threshold."""
     for i in range(files):
@@ -201,7 +206,7 @@ class TestPreCompactHandler:
         sid = "disabled-session-abc"
         _populate_session(sid, files=5, greps=3, edits=2)
         result = hooks_cli.pre_compact(self._make_payload(sid))
-        assert result == {"continue": True}
+        _assert_continue(result)
         assert "systemMessage" not in result
 
     def test_env_var_disables_handler(self, tmp_data_dir, tmp_path, monkeypatch):
@@ -212,7 +217,7 @@ class TestPreCompactHandler:
         sid = "envdisabled-session-abc"
         _populate_session(sid, files=5, greps=3, edits=2)
         result = hooks_cli.pre_compact(self._make_payload(sid))
-        assert result == {"continue": True}
+        _assert_continue(result)
 
     def test_trigger_not_in_config_skips(self, tmp_data_dir, tmp_path, monkeypatch):
         from token_goat import paths
@@ -225,7 +230,7 @@ class TestPreCompactHandler:
         _populate_session(sid, files=5, greps=3, edits=2)
         # trigger="auto" is not in ["manual"]
         result = hooks_cli.pre_compact(self._make_payload(sid, trigger="auto"))
-        assert result == {"continue": True}
+        _assert_continue(result)
         assert "systemMessage" not in result
 
     def test_below_min_events_skips(self, tmp_data_dir, tmp_path, monkeypatch):
@@ -238,7 +243,7 @@ class TestPreCompactHandler:
         sid = "below-min-session-abc"
         _populate_session(sid, files=2, greps=1, edits=0)  # 3 events < 100
         result = hooks_cli.pre_compact(self._make_payload(sid))
-        assert result == {"continue": True}
+        _assert_continue(result)
         assert "systemMessage" not in result
 
     def test_happy_path_emits_system_message(self, tmp_data_dir, tmp_path, monkeypatch):
@@ -281,7 +286,7 @@ class TestPreCompactHandler:
         monkeypatch.delenv("TOKEN_GOAT_COMPACT_ASSIST", raising=False)
 
         result = hooks_cli.pre_compact({"trigger": "manual"})
-        assert result == {"continue": True}
+        _assert_continue(result)
 
     def test_empty_session_returns_continue(self, tmp_data_dir, tmp_path, monkeypatch):
         from token_goat import paths
@@ -292,7 +297,7 @@ class TestPreCompactHandler:
 
         # Session exists but no activity → manifest is empty string → no systemMessage
         result = hooks_cli.pre_compact(self._make_payload("completely-empty-session-abc"))
-        assert result == {"continue": True}
+        _assert_continue(result)
 
     def test_system_message_respects_token_budget(self, tmp_data_dir, tmp_path, monkeypatch):
         from token_goat import paths
@@ -331,6 +336,7 @@ class TestDispatcherIntegration:
 
     def test_dispatch_pre_compact_returns_continue(self, tmp_data_dir, tmp_path, monkeypatch):
         from token_goat import paths
+
         monkeypatch.setattr(paths, "config_path", lambda: tmp_path / "config.toml")
         monkeypatch.delenv("TOKEN_GOAT_COMPACT_ASSIST", raising=False)
 

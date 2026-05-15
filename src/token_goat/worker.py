@@ -51,7 +51,7 @@ from . import db, parser, paths
 from .project import Project
 
 
-class CleanupStats(TypedDict):
+class CleanupStats(TypedDict, total=False):
     """Result of cleanup_on_startup operation."""
 
     stale_locks_cleared: int
@@ -60,6 +60,7 @@ class CleanupStats(TypedDict):
     image_bytes_evicted: int
     image_files_evicted: int
     stats_rows_pruned: int
+    failures: list[str]  # task names that raised during cleanup
 
 
 class DirtyQueueEntry(TypedDict, total=False):
@@ -423,8 +424,62 @@ def drain_dirty_queue() -> list[DirtyQueueEntry]:
 # Self-healing
 # ---------------------------------------------------------------------------
 
+def _cleanup_stale_locks() -> int:
+    """Remove stale or malformed lockfiles. Returns count cleared."""
+    cleared = 0
+    locks = paths.locks_dir()
+    if not locks.exists():
+        return 0
+    for lock_path in locks.glob("*.lock"):
+        try:
+            content = lock_path.read_text(encoding="utf-8")
+            pid_str = content.split("\n", 1)[0].strip()
+            if not pid_str:
+                raise ValueError("empty PID in lock file")
+            pid = int(pid_str)
+            dead = not psutil.pid_exists(pid)
+            old = time.time() - lock_path.stat().st_mtime > 600
+            if dead or old:
+                lock_path.unlink()
+                cleared += 1
+        except (ValueError, OSError) as e:
+            _LOG.debug("removing stale/malformed lock %s: %s", lock_path.name, e)
+            try:
+                lock_path.unlink()
+                cleared += 1
+            except OSError as unlink_err:
+                _LOG.warning("failed to remove lock %s: %s", lock_path.name, unlink_err)
+    return cleared
+
+
+def _cleanup_old_logs() -> int:
+    """Delete log files older than LOG_RETENTION_DAYS. Returns count deleted."""
+    deleted = 0
+    logs = paths.logs_dir()
+    if not logs.exists():
+        return 0
+    cutoff = time.time() - LOG_RETENTION_DAYS * 86400
+    for log in logs.glob("*.log"):
+        try:
+            if log.stat().st_mtime < cutoff:
+                log.unlink()
+                deleted += 1
+        except OSError:
+            pass
+    return deleted
+
+
+def _prune_stats_table() -> int:
+    """Delete stats rows older than STATS_RETENTION_DAYS. Returns row count pruned."""
+    from . import db as _db  # noqa: PLC0415
+    cutoff_ts = int(time.time() - STATS_RETENTION_DAYS * 86400)
+    with _db.open_global() as conn:
+        cur = conn.execute("DELETE FROM stats WHERE ts < ?", (cutoff_ts,))
+        return cur.rowcount or 0
+
+
 def cleanup_on_startup() -> CleanupStats:
-    """Run all the self-healing tasks. Returns a stats dict."""
+    """Run all self-healing tasks. Returns stats including any per-task failures."""
     stats: CleanupStats = {
         "stale_locks_cleared": 0,
         "stale_index_markers_cleared": 0,
@@ -433,71 +488,37 @@ def cleanup_on_startup() -> CleanupStats:
         "image_files_evicted": 0,
         "stats_rows_pruned": 0,
     }
+    failures: list[str] = []
 
-    # 1. Stale lockfile cleanup
-    locks = paths.locks_dir()
-    if locks.exists():
-        for lock_path in locks.glob("*.lock"):
-            try:
-                content = lock_path.read_text(encoding="utf-8")
-                pid_str = content.split("\n", 1)[0].strip()
-                if not pid_str:
-                    raise ValueError("empty PID in lock file")
-                pid = int(pid_str)
-                dead = not psutil.pid_exists(pid)
-                old = time.time() - lock_path.stat().st_mtime > 600
-                if dead or old:
-                    lock_path.unlink()
-                    stats["stale_locks_cleared"] += 1
-            except (ValueError, OSError) as e:
-                # Malformed lock or unable to read — remove it
-                _LOG.debug("removing stale/malformed lock %s: %s", lock_path.name, e)
-                try:
-                    lock_path.unlink()
-                    stats["stale_locks_cleared"] += 1
-                except OSError as unlink_err:
-                    _LOG.warning("failed to remove lock %s: %s", lock_path.name, unlink_err)
+    for task_name, task_fn, stat_key in [
+        ("stale_locks", _cleanup_stale_locks, "stale_locks_cleared"),
+        ("old_logs", _cleanup_old_logs, "logs_deleted"),
+        ("stats_prune", _prune_stats_table, "stats_rows_pruned"),
+    ]:
+        try:
+            stats[stat_key] = task_fn()  # type: ignore[literal-required]
+        except Exception as exc:  # noqa: BLE001
+            _LOG.exception("cleanup task %s failed", task_name)
+            failures.append(f"{task_name}: {type(exc).__name__}: {exc}")
 
-    # 1b. Stale index-spawn marker cleanup. spawn_index_detached() writes a
-    # `<hash>.indexing` marker and treats a *present, active* marker as "an
-    # index is already running", skipping the spawn. But the marker is only
-    # ever cleared implicitly — via the PID-liveness + TTL check in
-    # _index_spawn_active(). A marker whose indexer finished or crashed without
-    # the PID being recycled lingers on disk indefinitely: harmless to the
-    # spawn guard (it reads as inactive) but it accumulates and shows up in
-    # `doctor`. Reap them the same way stale locks are reaped.
-    stats["stale_index_markers_cleared"] = reap_stale_index_markers()
-
-    # 2. Log rotation: delete logs older than LOG_RETENTION_DAYS
-    logs = paths.logs_dir()
-    if logs.exists():
-        cutoff = time.time() - LOG_RETENTION_DAYS * 86400
-        for log in logs.glob("*.log"):
-            try:
-                if log.stat().st_mtime < cutoff:
-                    log.unlink()
-                    stats["logs_deleted"] += 1
-            except OSError:
-                pass
-
-    # 3. Image cache LRU eviction (size-based)
-    bytes_evicted, files_evicted = evict_image_cache_if_over_limit()
-    stats["image_bytes_evicted"] = bytes_evicted
-    stats["image_files_evicted"] = files_evicted
-
-    # 4. Stats table pruning. read_intercept / tool_use / session_hint events
-    # accumulate one row per tool call, so the table grows unboundedly without
-    # this. Drops rows older than STATS_RETENTION_DAYS from global.db. Recent
-    # data and savings totals are unaffected.
+    # Stale index-spawn markers — already has its own error handling
     try:
-        from . import db as _db  # noqa: PLC0415
-        cutoff_ts = int(time.time() - STATS_RETENTION_DAYS * 86400)
-        with _db.open_global() as conn:
-            cur = conn.execute("DELETE FROM stats WHERE ts < ?", (cutoff_ts,))
-            stats["stats_rows_pruned"] = cur.rowcount or 0
-    except Exception:  # noqa: BLE001
-        _LOG.exception("stats prune failed")
+        stats["stale_index_markers_cleared"] = reap_stale_index_markers()
+    except Exception as exc:  # noqa: BLE001
+        _LOG.exception("cleanup task stale_index_markers failed")
+        failures.append(f"stale_index_markers: {type(exc).__name__}: {exc}")
 
+    # Image LRU eviction — already has its own error handling
+    try:
+        bytes_evicted, files_evicted = evict_image_cache_if_over_limit()
+        stats["image_bytes_evicted"] = bytes_evicted
+        stats["image_files_evicted"] = files_evicted
+    except Exception as exc:  # noqa: BLE001
+        _LOG.exception("cleanup task image_eviction failed")
+        failures.append(f"image_eviction: {type(exc).__name__}: {exc}")
+
+    if failures:
+        stats["failures"] = failures
     return stats
 
 

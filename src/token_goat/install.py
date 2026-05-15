@@ -54,6 +54,52 @@ def token_goat_binary() -> str:
     return "token-goat"
 
 
+def _launcher_bin_dirs() -> set[Path]:
+    """Return bin directories that currently host token-goat launchers."""
+    dirs: set[Path] = set()
+    for binary_name in ("token-goat", "token-goat-hook", "token-goat-worker"):
+        binary = shutil.which(binary_name)
+        if not binary:
+            continue
+        try:
+            dirs.add(Path(binary).resolve().parent)
+        except OSError:
+            dirs.add(Path(binary).parent)
+    return dirs
+
+
+def _remove_legacy_launchers() -> list[str]:
+    """Remove legacy tokenwise launchers that live beside token-goat launchers."""
+    launcher_dirs = _launcher_bin_dirs()
+    if not launcher_dirs:
+        return []
+
+    removed: list[str] = []
+    for binary_name in ("tokenwise", "tokenwise-hook", "tokenwise-worker"):
+        legacy = shutil.which(binary_name)
+        if not legacy:
+            continue
+
+        legacy_path = Path(legacy)
+        try:
+            legacy_dir = legacy_path.resolve().parent
+        except OSError:
+            legacy_dir = legacy_path.parent
+
+        if legacy_dir not in launcher_dirs:
+            continue
+
+        try:
+            legacy_path.unlink()
+            removed.append(str(legacy_path))
+        except FileNotFoundError:
+            continue
+        except OSError as e:
+            _LOG.warning("failed to remove legacy launcher %s: %s", legacy_path, e)
+
+    return removed
+
+
 def token_goat_hook_binary() -> str:
     """Path to the windowless (GUI-subsystem) entry for hooks.
 
@@ -754,6 +800,11 @@ def install_all(install_codex: bool = False) -> dict:
     except Exception as e:  # noqa: BLE001
         result["worker"] = f"FAIL — {e}"
 
+    removed_launchers = _remove_legacy_launchers()
+    result["legacy launchers"] = (
+        "removed — " + ", ".join(removed_launchers) if removed_launchers else "none found"
+    )
+
     if install_codex:
         binary = token_goat_hook_binary()
         try:
@@ -799,6 +850,10 @@ def uninstall_all(purge: bool = False, codex: bool = False) -> dict:
     result["settings.json"] = f"unpatched — {unpatch_settings_json()}"
     result["CLAUDE.md"] = f"unpatched — {unpatch_claude_md()}"
     result["skill"] = f"removed — {remove_skill()}"
+    removed_launchers = _remove_legacy_launchers()
+    result["legacy launchers"] = (
+        "removed — " + ", ".join(removed_launchers) if removed_launchers else "none found"
+    )
 
     if purge:
         target = paths.data_dir()

@@ -12,8 +12,8 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, TypedDict
 
 from . import db, paths
-from .project import Project
 from .paths import is_safe_rel_path as _is_safe_rel_path
+from .project import Project
 
 if TYPE_CHECKING:
     from fastembed import TextEmbedding

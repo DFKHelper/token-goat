@@ -25,7 +25,23 @@ _LOG = logging.getLogger("token_goat.db")
 _INTEGRITY_CHECKED: dict[Path, bool] = {}
 
 
-class VecExtensionUnavailable(Exception):
+class DBError(Exception):
+    """Base class for token-goat database errors."""
+
+
+class DBCorruptionError(DBError):
+    """DB integrity check failed; file quarantined."""
+
+
+class DBBusyError(DBError):
+    """DB locked or busy; caller may retry."""
+
+
+class DBReadOnlyError(DBError):
+    """DB is in read-only / sandbox mode; writes are silently dropped."""
+
+
+class VecExtensionUnavailable(DBError):
     """sqlite-vec couldn't be loaded — embeddings disabled."""
 
 
@@ -357,7 +373,9 @@ def _open_with_rebuild(path: Path, *, load_vec: bool = True) -> sqlite3.Connecti
             return _connect(path, load_vec=load_vec)
         except sqlite3.DatabaseError as exc2:
             _LOG.error("db open failed after quarantine attempt: %s", exc2)
-            raise
+            raise DBCorruptionError(
+                f"DB unrecoverable after quarantine: {path.name}"
+            ) from exc2
 
 
 # ---------------------------------------------------------------------------
@@ -450,6 +468,8 @@ def _connect_readonly(db_path: Path) -> sqlite3.Connection:
         conn = sqlite3.connect(uri_ro, uri=True, isolation_level=None, timeout=10.0)
         conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA busy_timeout = 5000")
+        conn.execute("PRAGMA synchronous = NORMAL")
+        conn.execute("PRAGMA foreign_keys = ON")
         # Force SQLite to actually open the DB file and its WAL sidecars.
         conn.execute("SELECT 1 FROM sqlite_master LIMIT 1").fetchone()
         return conn
@@ -464,6 +484,10 @@ def _connect_readonly(db_path: Path) -> sqlite3.Connection:
         uri_imm = str(db_path.as_uri()) + "?mode=ro&immutable=1"
         conn = sqlite3.connect(uri_imm, uri=True, isolation_level=None, timeout=10.0)
         conn.row_factory = sqlite3.Row
+        with contextlib.suppress(sqlite3.OperationalError):
+            conn.execute("PRAGMA busy_timeout = 5000")
+            conn.execute("PRAGMA synchronous = NORMAL")
+            conn.execute("PRAGMA foreign_keys = ON")
         # Verify the immutable open actually works (same lazy-open reason).
         conn.execute("SELECT 1 FROM sqlite_master LIMIT 1").fetchone()
         return conn
@@ -604,15 +628,12 @@ def file_count(project_hash: str) -> int:
 
 def project_has_files(project_hash: str) -> bool:
     """Return True when the project DB already contains at least one file row."""
-    db_path = paths.project_db_path(project_hash)
-    if not db_path.exists():
-        return False
-    conn = _connect(db_path, load_vec=False)
     try:
-        row = conn.execute("SELECT 1 FROM files LIMIT 1").fetchone()
-        return row is not None
-    finally:
-        conn.close()
+        with open_project_readonly(project_hash) as conn:
+            row = conn.execute("SELECT 1 FROM files LIMIT 1").fetchone()
+            return row is not None
+    except (FileNotFoundError, sqlite3.Error, OSError):
+        return False
 
 
 def touch_project_last_seen(project_hash: str) -> None:
@@ -625,15 +646,11 @@ def touch_project_last_seen(project_hash: str) -> None:
     project "active" forever).
     """
     try:
-        conn = _connect(paths.global_db_path(), load_vec=False)
-        try:
-            _ensure_global_schema(conn)
+        with open_global() as conn:
             conn.execute(
                 "UPDATE projects SET last_seen = ? WHERE hash = ?",
                 (int(time.time()), project_hash),
             )
-        finally:
-            conn.close()
     except sqlite3.OperationalError as exc:
         # Read-only fallback (sandbox) — expected, telemetry is best-effort.
         if "readonly" in str(exc).lower():
@@ -642,6 +659,67 @@ def touch_project_last_seen(project_hash: str) -> None:
             _LOG.error("touch_project_last_seen failed: %s", exc)
     except Exception as exc:  # noqa: BLE001
         _LOG.error("touch_project_last_seen failed: %s", exc)
+
+
+def index_health(project_hash: str) -> dict[str, object]:
+    """Return health and statistics for a project DB.
+
+    Returns a dict with keys:
+        ok (bool), integrity_ok (bool), file_count (int), symbol_count (int),
+        ref_count (int), section_count (int), chunk_count (int),
+        embedding_count (int), db_size_bytes (int), schema_version (str | None),
+        embeddings_disabled (bool)
+    """
+    db_path = paths.project_db_path(project_hash)
+    result: dict[str, object] = {
+        "ok": False,
+        "integrity_ok": False,
+        "file_count": 0,
+        "symbol_count": 0,
+        "ref_count": 0,
+        "section_count": 0,
+        "chunk_count": 0,
+        "embedding_count": 0,
+        "db_size_bytes": 0,
+        "schema_version": None,
+        "embeddings_disabled": False,
+    }
+    if not db_path.exists():
+        return result
+    with contextlib.suppress(OSError):
+        result["db_size_bytes"] = db_path.stat().st_size
+    try:
+        with open_project(project_hash) as conn:
+            integrity_row = conn.execute("PRAGMA integrity_check").fetchone()
+            result["integrity_ok"] = integrity_row is not None and integrity_row[0] == "ok"
+
+            def _count(table: str) -> int:
+                row = conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()  # noqa: S608
+                return int(row[0]) if row else 0
+
+            result["file_count"] = _count("files")
+            result["symbol_count"] = _count("symbols")
+            result["ref_count"] = _count("refs")
+            result["section_count"] = _count("sections")
+            result["chunk_count"] = _count("chunks")
+
+            with contextlib.suppress(sqlite3.OperationalError):
+                result["embedding_count"] = _count("embeddings")
+
+            meta_row = conn.execute(
+                "SELECT value FROM meta WHERE key='schema_version'"
+            ).fetchone()
+            result["schema_version"] = meta_row["value"] if meta_row else None
+
+            disabled_row = conn.execute(
+                "SELECT value FROM meta WHERE key='embeddings_disabled'"
+            ).fetchone()
+            result["embeddings_disabled"] = disabled_row is not None
+
+            result["ok"] = True
+    except (sqlite3.Error, DBError, OSError) as exc:
+        _LOG.warning("index_health failed for %s: %s", project_hash[:8], exc)
+    return result
 
 
 def record_stat(
