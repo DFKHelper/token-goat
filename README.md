@@ -143,4 +143,4 @@ Commercial use is reserved. That means copying or incorporating this codebase in
 
 Copyright (c) 2026 DFK Helper LLC.
 
-Patent Pending — U.S. Provisional Application No. 64/066,067.
+Patent Pending.
