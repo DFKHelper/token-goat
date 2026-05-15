@@ -129,12 +129,15 @@ def pre_read(payload: dict[str, Any]) -> dict[str, Any]:
     if shrink_response:
         return shrink_response
 
+    cache = session.load(session_id) if session_id else None
+
     hint = build_read_hint(
         session_id=session_id,
         file_path=file_path,
         offset=tool_input.get("offset"),
         limit=tool_input.get("limit"),
         cwd=cwd,
+        cache=cache,
     )
     if not hint:
         return {"continue": True}
@@ -156,6 +159,8 @@ def post_read(payload: dict[str, Any]) -> dict[str, Any]:
     if not session_id:
         return {"continue": True}
 
+    cache = session.load(session_id)
+
     tool_name = payload.get("tool_name")
     tool_input = payload.get("tool_input") or {}
 
@@ -164,13 +169,13 @@ def post_read(payload: dict[str, Any]) -> dict[str, Any]:
         if file_path:
             offset = tool_input.get("offset")
             limit = tool_input.get("limit")
-            session.mark_file_read(session_id, file_path, offset, limit)
+            session.mark_file_read(session_id, file_path, offset, limit, cache=cache)
     elif tool_name == "Grep":
         pattern = tool_input.get("pattern")
         path = tool_input.get("path")
         result_count = payload.get("result_count")
         if pattern:
-            session.mark_grep(session_id, pattern, path, result_count)
+            session.mark_grep(session_id, pattern, path, result_count, cache=cache)
     elif tool_name == "Glob":
         pattern = tool_input.get("pattern")
         path = tool_input.get("path")

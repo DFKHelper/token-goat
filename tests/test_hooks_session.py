@@ -105,6 +105,67 @@ class TestDispatcherPostRead:
         assert "x.py" in cache.files
 
 
+class TestLockedSessionCacheDispatch:
+    """Hook-layer regressions for locked session-cache files."""
+
+    def test_dispatch_post_read_read_survives_locked_save(self, tmp_data_dir, monkeypatch):
+        """post-read Read should continue even if the session cache cannot be replaced."""
+        from tokenwise import db
+
+        session_id = "dispatch_lock_read"
+        session.mark_file_read(session_id, "seed.py")
+
+        payload = {
+            "session_id": session_id,
+            "tool_name": "Read",
+            "tool_input": {"file_path": "new.py", "offset": 0, "limit": 50},
+        }
+
+        def boom(self, *args, **kwargs):
+            raise PermissionError("[WinError 32] The process cannot access the file")
+
+        with monkeypatch.context() as m:
+            m.setattr(session.Path, "replace", boom)
+            result = hooks_cli.dispatch("post-read", payload)
+
+        assert result == {"continue": True}
+
+        with db.open_global() as conn:
+            rows = conn.execute(
+                "SELECT detail FROM stats WHERE kind = 'session_cache_unavailable'"
+            ).fetchall()
+        assert any(row["detail"].startswith("save:") for row in rows)
+
+    def test_dispatch_post_read_grep_survives_locked_load(self, tmp_data_dir, monkeypatch):
+        """post-read Grep should continue even if the session cache cannot be read."""
+        from tokenwise import db
+
+        session_id = "dispatch_lock_grep"
+        session.mark_grep(session_id, "seed")
+
+        payload = {
+            "session_id": session_id,
+            "tool_name": "Grep",
+            "tool_input": {"pattern": "needle", "path": "src/"},
+            "result_count": 3,
+        }
+
+        def boom(self, *args, **kwargs):
+            raise PermissionError("[Errno 13] Permission denied")
+
+        with monkeypatch.context() as m:
+            m.setattr(session.Path, "read_text", boom)
+            result = hooks_cli.dispatch("post-read", payload)
+
+        assert result == {"continue": True}
+
+        with db.open_global() as conn:
+            rows = conn.execute(
+                "SELECT detail FROM stats WHERE kind = 'session_cache_unavailable'"
+            ).fetchall()
+        assert any(row["detail"].startswith("load:") for row in rows)
+
+
 class TestCliCommands:
     """CLI command integration (typer-based, direct)."""
 

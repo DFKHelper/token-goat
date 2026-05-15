@@ -174,6 +174,16 @@ def _record_cache_contention(session_id: str, phase: str, exc: OSError) -> None:
         _LOG.debug("failed to record session cache contention", exc_info=True)
 
 
+def _cache_for(session_id: str, cache: SessionCache | None) -> SessionCache:
+    """Return the provided cache after validating that it belongs to session_id."""
+    _validate_session_id(session_id)
+    if cache is not None:
+        if cache.session_id != session_id:
+            raise ValueError("cache.session_id does not match session_id")
+        return cache
+    return load(session_id)
+
+
 def load(session_id: str) -> SessionCache:
     """Load a session cache, or return an empty one."""
     _validate_session_id(session_id)
@@ -237,9 +247,10 @@ def mark_file_read(
     limit: int | None = None,
     *,
     symbol: str | None = None,
+    cache: SessionCache | None = None,
 ) -> SessionCache:
     """Record that a file (or symbol within) was read. Returns the updated cache."""
-    cache = load(session_id)
+    cache = _cache_for(session_id, cache)
     if cache.unavailable:
         return cache
     key = _normalize_path(path)
@@ -265,10 +276,15 @@ def mark_file_read(
 
 
 def mark_grep(
-    session_id: str, pattern: str, path: str | None = None, result_count: int | None = None
+    session_id: str,
+    pattern: str,
+    path: str | None = None,
+    result_count: int | None = None,
+    *,
+    cache: SessionCache | None = None,
 ) -> SessionCache:
     """Record a Grep call. Returns the updated cache."""
-    cache = load(session_id)
+    cache = _cache_for(session_id, cache)
     if cache.unavailable:
         return cache
     now = time.time()
@@ -293,9 +309,11 @@ def _merge_ranges(ranges: list[tuple[int, int]]) -> list[tuple[int, int]]:
     return out
 
 
-def get_file_entry(session_id: str, path: str) -> FileEntry | None:
+def get_file_entry(
+    session_id: str, path: str, *, cache: SessionCache | None = None
+) -> FileEntry | None:
     """Get a file entry by path, or None if not found."""
-    cache = load(session_id)
+    cache = _cache_for(session_id, cache)
     if cache.unavailable:
         return None
     return cache.files.get(_normalize_path(path))
@@ -317,9 +335,11 @@ def reset_session(session_id: str) -> None:
             _LOG.warning("failed to delete session cache %s: %s", p, e)
 
 
-def mark_file_edited(session_id: str, path: str) -> SessionCache:
+def mark_file_edited(
+    session_id: str, path: str, *, cache: SessionCache | None = None
+) -> SessionCache:
     """Record that a file was edited (written/modified) this session."""
-    cache = load(session_id)
+    cache = _cache_for(session_id, cache)
     if cache.unavailable:
         return cache
     key = _normalize_path(path)
