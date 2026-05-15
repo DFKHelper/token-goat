@@ -5,6 +5,7 @@ import logging
 from typing import Any
 
 from . import paths
+from .hooks_common import CONTINUE, get_tool_input
 
 _LOG = logging.getLogger("token_goat.hooks")
 
@@ -76,7 +77,7 @@ def post_edit(payload: dict[str, Any]) -> dict[str, Any]:
     from . import session  # noqa: PLC0415
 
     session_id = payload.get("session_id")
-    tool_input = payload.get("tool_input") or {}
+    tool_input = get_tool_input(payload)
     file_path = tool_input.get("file_path")
 
     if session_id and file_path:
@@ -87,4 +88,4 @@ def post_edit(payload: dict[str, Any]) -> dict[str, Any]:
         _enqueue_for_reindex(file_path, payload.get("cwd"))
         _nudge_worker_if_down()
 
-    return {"continue": True}
+    return CONTINUE()

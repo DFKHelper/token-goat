@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any
 
 from . import session
+from .hooks_common import CONTINUE, get_tool_input
 
 _LOG = logging.getLogger("token_goat.hooks")
 
@@ -14,7 +15,7 @@ def _handle_bash_read_equivalent(payload: dict[str, Any]) -> dict[str, Any] | No
     """Convert Bash read-equivalent commands to Read payload for recursive processing."""
     from . import bash_parser  # noqa: PLC0415
 
-    tool_input = payload.get("tool_input") or {}
+    tool_input = get_tool_input(payload)
     cmd = tool_input.get("command", "")
     intent = bash_parser.parse(cmd)
     if intent.kind != "read" or not intent.target_path:
@@ -115,15 +116,15 @@ def pre_read(payload: dict[str, Any]) -> dict[str, Any]:
         read_payload = _handle_bash_read_equivalent(payload)
         if read_payload:
             return pre_read(read_payload)
-        return {"continue": True}
+        return CONTINUE()
 
     if tool_name != "Read":
-        return {"continue": True}
+        return CONTINUE()
 
-    tool_input = payload.get("tool_input") or {}
+    tool_input = get_tool_input(payload)
     file_path = tool_input.get("file_path")
     if not file_path:
-        return {"continue": True}
+        return CONTINUE()
 
     session_id = payload.get("session_id")
     cwd = payload.get("cwd")
@@ -143,7 +144,7 @@ def pre_read(payload: dict[str, Any]) -> dict[str, Any]:
         cache=cache,
     )
     if not hint:
-        return {"continue": True}
+        return CONTINUE()
 
     if hint.tokens_saved > 0:
         _record_session_hint_impact(file_path, hint)
@@ -161,12 +162,12 @@ def post_read(payload: dict[str, Any]) -> dict[str, Any]:
     """Record Read/Grep calls to session cache."""
     session_id = payload.get("session_id")
     if not session_id:
-        return {"continue": True}
+        return CONTINUE()
 
     cache = session.load(session_id)
 
     tool_name = payload.get("tool_name")
-    tool_input = payload.get("tool_input") or {}
+    tool_input = get_tool_input(payload)
 
     if tool_name == "Read":
         file_path = tool_input.get("file_path")
@@ -185,4 +186,4 @@ def post_read(payload: dict[str, Any]) -> dict[str, Any]:
         path = tool_input.get("path")
         _LOG.debug("post-read: Glob pattern=%s path=%s", pattern, path)
 
-    return {"continue": True}
+    return CONTINUE()
