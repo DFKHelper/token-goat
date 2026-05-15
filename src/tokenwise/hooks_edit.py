@@ -21,9 +21,14 @@ def _nudge_worker_if_down() -> None:
             fresh = False
         if fresh:
             return
+        _LOG.info("worker heartbeat stale — attempting respawn")
         from . import worker  # noqa: PLC0415
 
-        worker.ensure_running()
+        pid = worker.ensure_running()
+        if pid:
+            _LOG.info("worker respawned: pid=%s", pid)
+        else:
+            _LOG.warning("worker nudge: ensure_running returned no pid (already running or failed)")
     except Exception:  # noqa: BLE001
         _LOG.exception("worker nudge failed")
 
