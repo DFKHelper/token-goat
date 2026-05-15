@@ -2,9 +2,16 @@
 from __future__ import annotations
 
 import re
+from typing import TYPE_CHECKING, Any, TypeAlias
+
+if TYPE_CHECKING:
+    from ..parser import Ref
+
+# Canonical kind string (e.g. "function", "class", "method", "const", "var")
+KindStr: TypeAlias = str
 
 # Base mapping shared by most languages (Go, TypeScript, Python)
-_BASE_KIND_STR_MAPPING = {
+_BASE_KIND_STR_MAPPING: dict[str, KindStr] = {
     "Function": "function",
     "Method": "method",
     "Class": "class",
@@ -19,10 +26,10 @@ _BASE_KIND_STR_MAPPING = {
 }
 
 # Python-specific mapping (uses same base plus "Method")
-_PYTHON_KIND_STR_MAPPING = _BASE_KIND_STR_MAPPING
+_PYTHON_KIND_STR_MAPPING: dict[str, KindStr] = _BASE_KIND_STR_MAPPING
 
 # Rust-specific overrides (Impl -> impl, Module -> module, Namespace -> module)
-_RUST_KIND_STR_MAPPING = {
+_RUST_KIND_STR_MAPPING: dict[str, KindStr] = {
     **_BASE_KIND_STR_MAPPING,
     "Impl": "impl",
     "Module": "module",
@@ -30,7 +37,7 @@ _RUST_KIND_STR_MAPPING = {
 }
 
 # Base mapping shared by all languages
-_BASE_SYM_KIND_STR_MAPPING = {
+_BASE_SYM_KIND_STR_MAPPING: dict[str, KindStr] = {
     "Function": "function",
     "Class": "class",
     "Interface": "interface",
@@ -43,7 +50,7 @@ _BASE_SYM_KIND_STR_MAPPING = {
 }
 
 # Rust-specific overrides (Module -> module)
-_RUST_SYM_KIND_STR_MAPPING = {
+_RUST_SYM_KIND_STR_MAPPING: dict[str, KindStr] = {
     **_BASE_SYM_KIND_STR_MAPPING,
     "Module": "module",
 }
@@ -70,8 +77,13 @@ def sym_kind_str(sym_kind: object, language: str = "go") -> str:
     return mapping.get(s, "var")
 
 
-def get_tlp() -> object | None:
-    """Return the tree_sitter_language_pack module, or None if not installed."""
+def get_tlp() -> Any:
+    """Return the tree_sitter_language_pack module, or None if not installed.
+
+    Returns ``Any`` so callers can call methods on the result without casts or
+    ``# type: ignore`` suppressions — the module is fully dynamic and ships no
+    type stubs.
+    """
     try:
         import tree_sitter_language_pack as tlp  # noqa: PLC0415
     except ModuleNotFoundError:
@@ -100,18 +112,17 @@ def extract_refs_from_source(
     source: bytes,
     call_re: re.Pattern[str],
     call_noise: frozenset[str],
-) -> list[object]:
+) -> list[Ref]:
     """Extract call-site refs using regex on the source text.
 
     Shared implementation for all language adapters.  Each adapter supplies its
     own ``call_re`` (identifier pattern) and ``call_noise`` (builtins to skip).
 
-    Returns a list of :class:`~token_goat.parser.Ref` objects.  The return type
-    is ``list[object]`` to avoid a circular import; callers type-narrow as needed.
+    Returns a list of :class:`~token_goat.parser.Ref` objects.
     """
     from ..parser import Ref  # noqa: PLC0415
 
-    refs: list[object] = []
+    refs: list[Ref] = []
     seen: set[tuple[str, int]] = set()
     text = source.decode("utf-8", errors="replace")
     for lineno, line in enumerate(text.splitlines(), 1):
@@ -127,7 +138,7 @@ def extract_refs_from_source(
     return refs
 
 
-def _compute_section_end_lines(sections: list, lines: list[str]) -> None:
+def _compute_section_end_lines(sections: list[Any], lines: list[str]) -> None:
     """Assign end_line to each Section based on the next section of equal or lesser level.
 
     Mutates sections in-place. 'lines' is used only to get the total line count (EOF).

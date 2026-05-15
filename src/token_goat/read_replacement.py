@@ -5,6 +5,7 @@ import logging
 import sqlite3
 from collections.abc import Sequence
 from pathlib import Path
+from typing import Any
 
 from . import db
 from .paths import is_safe_rel_path as _is_safe_rel_path
@@ -319,7 +320,7 @@ def read_symbol(
     symbol: str,
     *,
     context_lines: int = 0,
-) -> dict | None:
+) -> dict[str, Any] | None:
     """Look up symbol in DB, slice the file, return extraction dict.
 
     Returns a dict with keys:
@@ -376,7 +377,7 @@ def read_section(
     heading: str,
     *,
     context_lines: int = 0,
-) -> dict | None:
+) -> dict[str, Any] | None:
     """Same as read_symbol but for markdown/HTML/Liquid section headings.
 
     Returns a dict with keys:

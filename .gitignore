@@ -134,3 +134,7 @@ convert_patent_pdf.py
 *patent*.pdf
 *patent*.md
 patantsub.pdf
+
+# Test/temp artifacts
+.tmp/
+.verify-manual/

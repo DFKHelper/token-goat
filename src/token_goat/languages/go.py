@@ -205,6 +205,6 @@ def extract(source: bytes, rel_path: str) -> tuple[list[Symbol], list[Ref], list
             imp_exp.append(ImpExp(kind="import", target=m.group(1), line=line))
 
     # --- refs ---
-    refs: list[Ref] = common.extract_refs_from_source(source, _CALL_RE, _CALL_NOISE)  # type: ignore[assignment]
+    refs: list[Ref] = common.extract_refs_from_source(source, _CALL_RE, _CALL_NOISE)
 
     return symbols, refs, imp_exp, []

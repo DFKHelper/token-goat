@@ -853,7 +853,7 @@ def get(key: str) -> None:
         typer.echo(f"Unknown config key: {key}", err=True)
         raise typer.Exit(2) from None
 
-    if is_dataclass(value):
+    if is_dataclass(value) and not isinstance(value, type):
         value = asdict(value)
 
     typer.echo(json.dumps(value, ensure_ascii=False, indent=2))
@@ -873,7 +873,7 @@ def set(key: str, value: str) -> None:
         raise typer.Exit(2) from None
 
     config_mod.save(cfg)
-    if is_dataclass(updated):
+    if is_dataclass(updated) and not isinstance(updated, type):
         updated = asdict(updated)
     typer.echo(json.dumps(updated, ensure_ascii=False, indent=2))
 
