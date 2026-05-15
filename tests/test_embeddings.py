@@ -158,7 +158,7 @@ def test_semantic_search_unavailable_when_vec_missing(ts_project):
 # ---------------------------------------------------------------------------
 
 def test_cli_semantic_no_project(tmp_data_dir):
-    """token-goat semantic when no project detected exits 0 with helpful message."""
+    """token-goat semantic when no project detected exits non-zero with helpful message."""
     from typer.testing import CliRunner  # noqa: PLC0415
 
     from token_goat import cli  # noqa: PLC0415
@@ -166,8 +166,8 @@ def test_cli_semantic_no_project(tmp_data_dir):
     runner = CliRunner()
     with patch("token_goat.project.find_project", return_value=None):
         result = runner.invoke(cli.app, ["semantic", "foo bar"], catch_exceptions=False)
-    assert result.exit_code == 0
-    assert "No project detected" in result.output
+    assert result.exit_code != 0
+    assert "project" in result.output.lower()
 
 
 def test_cli_semantic_no_embeddings(ts_project, monkeypatch):
@@ -182,7 +182,7 @@ def test_cli_semantic_no_embeddings(ts_project, monkeypatch):
         runner = CliRunner()
         result = runner.invoke(cli.app, ["semantic", "test query"], catch_exceptions=False)
     assert result.exit_code == 0
-    assert "Embeddings unavailable" in result.output
+    assert "embeddings unavailable" in result.output.lower()
 
 
 def test_cli_index_embeddings_no_project(tmp_data_dir):

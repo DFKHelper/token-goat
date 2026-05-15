@@ -59,6 +59,28 @@ def _write_raw(text: str) -> None:
         stream.flush()  # type: ignore[attr-defined]
 
 
+def _error(msg: str) -> None:
+    """Print a user-facing error message to stderr with a consistent 'Error: ' prefix.
+
+    On a TTY the prefix is rendered in red (ANSI 31); in a pipe or when NO_COLOR
+    is set the message is plain text so it stays grep-friendly and CI-safe.
+    """
+    if sys.stderr.isatty() and not os.environ.get("NO_COLOR"):
+        prefix = "\033[31mError:\033[0m "
+    else:
+        prefix = "Error: "
+    typer.echo(f"{prefix}{msg}", err=True)
+
+
+def _warn(msg: str) -> None:
+    """Print a user-facing warning to stderr with a consistent 'Warning: ' prefix."""
+    if sys.stderr.isatty() and not os.environ.get("NO_COLOR"):
+        prefix = "\033[33mWarning:\033[0m "
+    else:
+        prefix = "Warning: "
+    typer.echo(f"{prefix}{msg}", err=True)
+
+
 app = typer.Typer(name="token-goat", no_args_is_help=True)
 hook_app = typer.Typer(name="hook", no_args_is_help=True)
 config_app = typer.Typer(name="config", no_args_is_help=True)
@@ -118,14 +140,18 @@ def symbol(
             typer.echo(f"{project_prefix}{row['file']}:{row['line']}: {kind_name}{sig_part}")
 
     if all_projects:
-        with _db.open_global() as gconn:
-            rows_raw = gconn.execute(
-                "SELECT sg.project_hash, p.root, sg.name, sg.kind, sg.file_rel, sg.line, sg.signature "
-                "FROM symbols_global sg "
-                "JOIN projects p ON p.hash = sg.project_hash "
-                "WHERE sg.name = ? LIMIT ?",
-                (name, limit),
-            ).fetchall()
+        try:
+            with _db.open_global() as gconn:
+                rows_raw = gconn.execute(
+                    "SELECT sg.project_hash, p.root, sg.name, sg.kind, sg.file_rel, sg.line, sg.signature "
+                    "FROM symbols_global sg "
+                    "JOIN projects p ON p.hash = sg.project_hash "
+                    "WHERE sg.name = ? LIMIT ?",
+                    (name, limit),
+                ).fetchall()
+        except _db.DBError as exc:
+            _error(f"global index unavailable: {exc}. Run `token-goat index` first.")
+            raise typer.Exit(1) from None
         results = [
             {
                 "project": r["root"],
@@ -147,14 +173,18 @@ def symbol(
 
     proj = find_project(Path.cwd())
     if proj is None:
-        typer.echo("no project detected, run from a project directory")
-        return
+        _error("no project detected — run from a project directory")
+        raise typer.Exit(1)
 
-    with _db.open_project(proj.hash) as conn:
-        rows_raw = conn.execute(
-            "SELECT name, kind, file_rel, line, signature FROM symbols WHERE name = ? LIMIT ?",
-            (name, limit),
-        ).fetchall()
+    try:
+        with _db.open_project(proj.hash) as conn:
+            rows_raw = conn.execute(
+                "SELECT name, kind, file_rel, line, signature FROM symbols WHERE name = ? LIMIT ?",
+                (name, limit),
+            ).fetchall()
+    except _db.DBError as exc:
+        _error(f"project index unavailable: {exc}. Run `token-goat index --full` to rebuild.")
+        raise typer.Exit(1) from None
 
     results = [
         {
@@ -191,14 +221,18 @@ def ref(
 
     proj = find_project(Path.cwd())
     if proj is None:
-        typer.echo("no project detected, run from a project directory")
-        return
+        _error("no project detected — run from a project directory")
+        raise typer.Exit(1)
 
-    with _db.open_project(proj.hash) as conn:
-        rows_raw = conn.execute(
-            "SELECT file_rel, line, col, context FROM refs WHERE symbol_name = ? LIMIT ?",
-            (name, limit),
-        ).fetchall()
+    try:
+        with _db.open_project(proj.hash) as conn:
+            rows_raw = conn.execute(
+                "SELECT file_rel, line, col, context FROM refs WHERE symbol_name = ? LIMIT ?",
+                (name, limit),
+            ).fetchall()
+    except _db.DBError as exc:
+        _error(f"project index unavailable: {exc}. Run `token-goat index --full` to rebuild.")
+        raise typer.Exit(1) from None
 
     results = [
         {
@@ -240,14 +274,14 @@ def semantic(
 
     proj = find_project(Path.cwd())
     if proj is None:
-        typer.echo("No project detected.")
-        raise typer.Exit(0)
+        _error("no project detected — run from a project directory")
+        raise typer.Exit(1)
 
     try:
         hits = embeddings.semantic_search(proj, query, k=k)
     except embeddings.EmbeddingsUnavailable as e:
-        typer.echo(
-            f"Embeddings unavailable ({e}). Try `token-goat index --embeddings` first, "
+        _warn(
+            f"embeddings unavailable ({e}). Try `token-goat index --embeddings` first, "
             "or use `token-goat symbol`/`token-goat map` for non-semantic navigation."
         )
         raise typer.Exit(0) from None
@@ -289,11 +323,11 @@ def cmd_map(
 
     proj = find_project(Path.cwd())
     if proj is None:
-        typer.echo(
-            "No project detected (no .git, package.json, etc. found). "
+        _error(
+            "no project detected (no .git, package.json, etc. found). "
             "Run from a project directory."
         )
-        raise typer.Exit(code=0)
+        raise typer.Exit(code=1)
 
     if json_output:
         data = repomap.build_map_json(proj)
@@ -402,10 +436,10 @@ def cmd_gdrive_fetch(
     try:
         path = gdrive.fetch_file(file_id)
     except gdrive.GDriveCredsUnavailable as e:
-        typer.echo(str(e), err=True)
+        _warn(str(e))
         raise typer.Exit(0) from None  # fail-soft: don't break Claude's session
     except Exception as e:  # noqa: BLE001
-        typer.echo(f"Drive fetch failed: {e}", err=True)
+        _warn(f"Drive fetch failed: {e}")
         raise typer.Exit(0) from None
     if json_output:
         typer.echo(json.dumps({"path": str(path), "size": path.stat().st_size}))
@@ -450,14 +484,14 @@ def cmd_gdrive_auth(
         raise typer.Exit(0)
 
     if not client_secrets.exists():
-        typer.echo(f"File not found: {client_secrets}", err=True)
+        _error(f"file not found: {client_secrets}")
         raise typer.Exit(1)
 
     try:
         out_path = gdrive.run_oauth_oob_flow(client_secrets)
         typer.echo(f"Credentials saved to {out_path}. token-goat gdrive-fetch will work.")
     except Exception as e:  # noqa: BLE001
-        typer.echo(f"OAuth flow failed: {e}", err=True)
+        _error(f"OAuth flow failed: {e}")
         raise typer.Exit(1) from None
 
 
@@ -472,7 +506,7 @@ def cmd_fetch_image(
     try:
         path = webfetch.fetch_url(url)
     except Exception as e:  # noqa: BLE001
-        typer.echo(f"WebFetch failed: {e}", err=True)
+        _warn(f"WebFetch failed: {e}")
         raise typer.Exit(0) from None  # fail-soft
     if json_output:
         typer.echo(json.dumps({"path": str(path), "size": path.stat().st_size}))
@@ -503,29 +537,29 @@ def index(
     if root is not None:
         root_path = Path(root).expanduser().resolve()
         if not root_path.is_dir():
-            typer.echo(f"Error: {root_path} is not a directory", err=True)
+            _error(f"{root_path} is not a directory")
             raise typer.Exit(2)
         proj = make_project_at(root_path)
         typer.echo(f"Indexing {root_path} ...")
     elif skills:
         root_path = _paths.claude_skills_dir()
         if not root_path.is_dir():
-            typer.echo(f"Skills directory not found: {root_path}", err=True)
+            _error(f"skills directory not found: {root_path}")
             raise typer.Exit(1)
         proj = make_project_at(root_path)
         typer.echo(f"Indexing skills: {root_path} ...")
     elif plugins:
         root_path = _paths.claude_plugins_dir()
         if not root_path.is_dir():
-            typer.echo(f"Plugins directory not found: {root_path}", err=True)
+            _error(f"plugins directory not found: {root_path}")
             raise typer.Exit(1)
         proj = make_project_at(root_path)
         typer.echo(f"Indexing plugins: {root_path} ...")
     else:
         proj = find_project(Path.cwd())
         if proj is None:
-            typer.echo("no project detected, run from a project directory")
-            return
+            _error("no project detected — run from a project directory")
+            raise typer.Exit(1)
 
     assert proj is not None  # guaranteed: all branches either set proj or return/exit early
 
@@ -620,7 +654,7 @@ def cmd_image_shrink(
     from . import image_shrink  # noqa: PLC0415
 
     if not src.exists():
-        typer.echo(f"File not found: {src}", err=True)
+        _error(f"file not found: {src}")
         raise typer.Exit(1)
     out = image_shrink.shrink(src)
     if out is None:
