@@ -77,39 +77,10 @@ def extract(source: bytes, rel_path: str) -> tuple[list[Symbol], list[Ref], list
     imp_exp: list[ImpExp] = []
     seen_names: set[tuple[str, int]] = set()
 
-    def _add_symbol(item: object, parent_name: str | None = None) -> None:
-        name: str = item.name  # type: ignore[attr-defined]
-        if not name:
-            for child in item.children:  # type: ignore[attr-defined]
-                _add_symbol(child, parent_name=parent_name)
-            return
-        span = item.span
-        body_span = item.body_span if hasattr(item, "body_span") else None
-        line = span.start_line + 1
-        end_line = span.end_line + 1
-        kind = common.kind_str(item.kind)
-        # Use "method" if this is a function inside a class
-        if parent_name is not None and kind == "function":
-            kind = "method"
-        sig = common.build_signature(source, span, body_span)
-
-        key = (name, line)
-        if key not in seen_names:
-            seen_names.add(key)
-            symbols.append(
-                Symbol(
-                    name=name,
-                    kind=kind,
-                    line=line,
-                    end_line=end_line,
-                    signature=sig,
-                    parent_name=parent_name,
-                )
-            )
-
-        for child in item.children:  # type: ignore[attr-defined]
-            _add_symbol(child, parent_name=name)
-
+    # promote_methods=True: function inside a class becomes "method"
+    _add_symbol = common.make_add_symbol(
+        symbols, seen_names, source, language="python", promote_methods=True
+    )
     for item in result.structure:
         _add_symbol(item)
 
