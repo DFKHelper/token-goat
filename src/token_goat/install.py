@@ -144,6 +144,21 @@ def token_goat_worker_binary() -> str:
 
 
 # ---------------------------------------------------------------------------
+# Small result-formatting helpers
+# ---------------------------------------------------------------------------
+
+
+def _ok_fail(ok: bool, detail: str, *, max_detail: int = 200) -> str:
+    """Format a (bool, str) task result as ``"ok — detail"`` or ``"FAIL — detail"``.
+
+    Centralises the repeated pattern in ``install_all`` where every step produces
+    a ``tuple[bool, str]`` and needs the same rendering logic.
+    """
+    prefix = "ok" if ok else "FAIL"
+    return f"{prefix} — {detail[:max_detail]}"
+
+
+# ---------------------------------------------------------------------------
 # Scheduled Tasks (Windows)
 # ---------------------------------------------------------------------------
 
@@ -1251,6 +1266,25 @@ def unpatch_codex_agents_md() -> str:
 # ---------------------------------------------------------------------------
 
 
+def _hooks_contain_token_goat(hooks: dict[str, object]) -> bool:
+    """Return True if any hook entry in *hooks* has a command containing 'token_goat'.
+
+    *hooks* is a dict mapping event names to lists of matcher/hook-list entries,
+    the same shape used by both settings.json and codex config.toml.  Extracted
+    to eliminate the identical nested-loop scan duplicated in
+    ``_check_settings_json`` and ``_check_codex_config``.
+    """
+    for _event, entries in hooks.items():
+        entry_list = entries if isinstance(entries, list) else []
+        for entry in entry_list:
+            if not isinstance(entry, dict):
+                continue
+            for h in (entry.get("hooks", []) or []):
+                if isinstance(h, dict) and "token_goat" in str(h.get("command", "")):
+                    return True
+    return False
+
+
 def _check_settings_json() -> str:
     """Return 'installed' if settings.json has token-goat hooks, otherwise 'not installed'."""
     settings_path = claude_settings_path()
@@ -1262,15 +1296,7 @@ def _check_settings_json() -> str:
         return "error (settings.json malformed)"
     raw_hooks = data.get("hooks", {})
     hooks: dict[str, object] = raw_hooks if isinstance(raw_hooks, dict) else {}
-    for _event, entries in hooks.items():
-        entry_list = entries if isinstance(entries, list) else []
-        for entry in entry_list:
-            if not isinstance(entry, dict):
-                continue
-            for h in (entry.get("hooks", []) or []):
-                if isinstance(h, dict) and "token_goat" in str(h.get("command", "")):
-                    return "installed"
-    return "not installed"
+    return "installed" if _hooks_contain_token_goat(hooks) else "not installed"
 
 
 def _check_claude_md() -> str:
@@ -1333,13 +1359,8 @@ def _check_codex_config() -> str:
         return f"error (codex config malformed: {cfg_path})"
     except OSError as e:
         return f"error reading codex config ({cfg_path}): {e}"
-    hooks = data.get("hooks", {})
-    for _event, entries in hooks.items():
-        for entry in entries:
-            for h in entry.get("hooks", []):
-                if "token_goat" in h.get("command", ""):
-                    return "installed"
-    return "not installed"
+    hooks: dict[str, object] = data.get("hooks", {})
+    return "installed" if _hooks_contain_token_goat(hooks) else "not installed"
 
 
 def check_status() -> dict[str, str]:
@@ -1390,19 +1411,19 @@ def install_all(
 
     if sys.platform == "win32":
         worker_ok, worker_out = install_worker_task()
-        result["task: worker"] = ("ok" if worker_ok else "FAIL") + f" — {worker_out[:200]}"
+        result["task: worker"] = _ok_fail(worker_ok, worker_out)
         update_ok, update_out = install_update_task()
-        result["task: update"] = ("ok" if update_ok else "FAIL") + f" — {update_out[:200]}"
+        result["task: update"] = _ok_fail(update_ok, update_out)
     elif sys.platform == "darwin":
         worker_ok, worker_out = install_mac_autostart()
-        result["autostart: worker"] = ("ok" if worker_ok else "FAIL") + f" — {worker_out[:200]}"
+        result["autostart: worker"] = _ok_fail(worker_ok, worker_out)
         update_ok, update_out = install_linux_update_cron()
-        result["cron: update"] = ("ok" if update_ok else "FAIL") + f" — {update_out[:200]}"
+        result["cron: update"] = _ok_fail(update_ok, update_out)
     else:
         worker_ok, worker_out = install_linux_autostart()
-        result["autostart: worker"] = ("ok" if worker_ok else "FAIL") + f" — {worker_out[:200]}"
+        result["autostart: worker"] = _ok_fail(worker_ok, worker_out)
         update_ok, update_out = install_linux_update_cron()
-        result["cron: update"] = ("ok" if update_ok else "FAIL") + f" — {update_out[:200]}"
+        result["cron: update"] = _ok_fail(update_ok, update_out)
 
     # Spawn the worker right now (fail-soft)
     try:
