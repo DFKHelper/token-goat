@@ -7,9 +7,12 @@ import os
 import signal
 import sys
 import time
+from typing import TYPE_CHECKING
 
 from . import worker as _worker
-from .worker import CleanupStats, DirtyQueueEntry
+
+if TYPE_CHECKING:
+    from .worker import CleanupStats, DirtyQueueEntry
 
 _LOG = logging.getLogger("token_goat.worker")
 

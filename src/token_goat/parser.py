@@ -22,15 +22,18 @@ __all__ = [
 import hashlib
 import logging
 import os
-import sqlite3
 import time
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TypedDict
+from typing import TYPE_CHECKING, TypedDict
 
 from . import db
-from .project import Project
+
+if TYPE_CHECKING:
+    import sqlite3
+
+    from .project import Project
 
 _LOG = logging.getLogger("token_goat.parser")
 
