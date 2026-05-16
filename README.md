@@ -15,19 +15,26 @@
 
 ---
 
+<p align="center">
+  <b>97.4%</b> image compression &nbsp;·&nbsp; <b>85%</b> smaller reads via surgical CLI &nbsp;·&nbsp; <b>zero</b> ongoing maintenance
+</p>
+
+---
+
 ## The problem
 
-Long sessions accumulate waste. Screenshots cross the model at full resolution. The agent re-reads files it parsed earlier in the same conversation. Compactions lose track of which files were edited. Token-Goat intercepts each automatically.
+Long sessions accumulate waste three ways. Screenshots cross the model at full resolution. A single PNG can land at 3.3 MB. The agent re-reads files it already parsed earlier in the same conversation. And when a session compacts, the summary LLM doesn't know which files were edited or which symbols mattered, so it preserves the wrong things.
 
-## What you get
+Each one is preventable. Token-Goat intercepts all three, automatically.
 
-**Large images shrink before the model ever sees them.** A 3.3 MB screenshot from a recent session landed at 84 KB on the way through — a 97.4% cut on a single read. Works on local files, Google Drive, and URLs.
+## What changes
 
-**No more re-reading the same file.** When the agent tries to read a file already pulled into the current session, it gets a short reminder of the prior read and a nudge to grab a narrower slice instead. Long sessions stop replaying themselves.
-
-**Compaction stays useful.** Before Claude Code compacts a long conversation, Token-Goat injects a structured session manifest — which files were edited, which symbols were accessed, which files were read most — so the compaction LLM knows what to preserve. The manifest is typically under 400 tokens.
-
-**Surgical reads from a small CLI.** Pull one function, one Markdown heading, or one semantic match instead of dumping a whole module into context. Targeted reads run about 85% smaller than whole-file reads on the same source.
+| Without Token-Goat | With Token-Goat |
+|--------------------|-----------------|
+| 3.3 MB screenshot lands in model context | 84 KB compressed copy — 97.4% smaller |
+| Agent re-reads files from earlier in the session | "Already read this" reminder with narrow slice suggestion |
+| Compaction forgets which files were edited | Structured session manifest injected before compact |
+| Full file read for one function or section | `token-goat read file::symbol` — about 85% smaller |
 
 > Four hours of use on the author's machine: **59.7 MB** of data that never hit the model, with an estimated **11.5 million tokens** avoided.
 
@@ -44,7 +51,7 @@ uv tool install token-goat
 token-goat install
 ```
 
-That wires up Claude Code. Hooks register, a background worker starts at logon and stays out of the way. No terminal popups, no tray icon, no service to babysit.
+Two commands. Done. Hooks register, a background worker starts at logon and stays out of the way. No terminal popups, no tray icon, no service to babysit.
 
 ### Codex CLI users
 
@@ -69,11 +76,11 @@ The `--codex` flag patches both Claude Code and Codex CLI in one pass.
 
 First `token-goat semantic` call downloads a small embedding model, about 130 MB, into `%LOCALAPPDATA%\dfk-helper\token-goat\models\`. One-time. Offline after that.
 
-## Set and forget
+## Zero maintenance
 
 After `token-goat install`, there is nothing to start, stop, or restart. The worker:
 
-- starts itself at logon via the Windows startup registry (HKCU Run key — no admin rights needed)
+- starts itself at logon via the Windows startup registry (HKCU Run key, no admin rights needed)
 - runs as your user account only, without a console window
 - survives reboots
 - needs zero ongoing attention
@@ -139,7 +146,7 @@ I build systems that run without babysitting, measure their own impact, and fail
 
 ## Disclaimer
 
-Token-Goat runs on your machine and touches your files. The software is provided as-is, without warranty of any kind. DFK Helper LLC is not liable for any damages arising from use. Full terms — including the No Liability clause — are in the LICENSE file.
+Token-Goat runs on your machine and touches your files. The software is provided as-is, without warranty of any kind. DFK Helper LLC is not liable for any damages arising from use. Full terms, including the No Liability clause, are in the LICENSE file.
 
 ## License
 
