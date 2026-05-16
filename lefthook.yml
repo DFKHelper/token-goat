@@ -6,5 +6,7 @@ pre-commit:
 
 pre-push:
   commands:
+    typecheck:
+      run: uv run mypy src
     test:
       run: uv run pytest -q --tb=short
