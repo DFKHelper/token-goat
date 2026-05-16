@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import sys
 import threading
 import time
 from pathlib import Path
@@ -288,7 +289,7 @@ def test_run_daemon_self_registers_autostart(tmp_data_dir, monkeypatch):
 
 
 def test_register_autostart_invokes_install_task(tmp_data_dir, monkeypatch):
-    """_register_autostart() must drive install_worker_task(), fail-soft.
+    """_register_autostart() must drive the platform-appropriate install function, fail-soft.
 
     Uses the real callable captured at import (the autouse fixture stubs the
     one bound on the worker module).
@@ -301,15 +302,21 @@ def test_register_autostart_invokes_install_task(tmp_data_dir, monkeypatch):
         called.set()
         return (True, "spy")
 
-    monkeypatch.setattr(install, "install_worker_task", spy)
+    if sys.platform == "win32":
+        monkeypatch.setattr(install, "install_worker_task", spy)
+    else:
+        monkeypatch.setattr(install, "install_linux_autostart", spy)
     _REAL_REGISTER_AUTOSTART()
-    assert called.is_set(), "_register_autostart did not call install_worker_task()"
+    assert called.is_set(), "_register_autostart did not call the platform autostart function"
 
-    # Fail-soft: a registry error must not propagate out of the worker.
+    # Fail-soft: an error must not propagate out of the worker.
     def boom():
-        raise OSError("registry unavailable")
+        raise OSError("autostart unavailable")
 
-    monkeypatch.setattr(install, "install_worker_task", boom)
+    if sys.platform == "win32":
+        monkeypatch.setattr(install, "install_worker_task", boom)
+    else:
+        monkeypatch.setattr(install, "install_linux_autostart", boom)
     _REAL_REGISTER_AUTOSTART()  # must not raise
     # The atomic claim file must also be released on shutdown.
     assert not worker._worker_claim_path().exists()

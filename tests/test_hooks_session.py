@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import sys
 
 from token_goat import hooks_cli, session
 
@@ -26,10 +27,11 @@ class TestPostReadHookIntegration:
         result = hooks_cli.post_read(payload)
         _assert_continue(result)
 
-        # Verify cache was updated
+        # Verify cache was updated; drive letter is lowercased on Windows, preserved on Linux.
         cache = session.load("hook_s1")
-        assert "c:/foo.py" in cache.files
-        assert cache.files["c:/foo.py"].read_count == 1
+        expected_key = "c:/foo.py" if sys.platform == "win32" else "C:/foo.py"
+        assert expected_key in cache.files
+        assert cache.files[expected_key].read_count == 1
 
     def test_post_read_grep_tool(self, tmp_data_dir):
         """post_read with tool_name=Grep records a GrepEntry."""
