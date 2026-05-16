@@ -28,6 +28,7 @@ import logging
 import os
 import sys
 from pathlib import Path
+from typing import cast
 
 _LOG = logging.getLogger("token_goat.bridges")
 
@@ -49,12 +50,15 @@ def _load_json_config(path: Path) -> dict[str, object]:
             f"config file too large ({size} bytes > {_MAX_CONFIG_BYTES} limit): {path}"
         )
     raw = path.read_text(encoding="utf-8")
-    result = json.loads(raw)
-    if not isinstance(result, dict):
+    data = json.loads(raw)
+    if not isinstance(data, dict):
         raise json.JSONDecodeError(
-            f"expected JSON object, got {type(result).__name__}", raw, 0
+            f"expected JSON object, got {type(data).__name__}", raw, 0
         )
-    return result  # type: ignore[return-value]  # json.loads returns dict[str, Any]; narrowed to dict[str, object]
+    # After the isinstance guard, data is dict[str, Any].  We cast to
+    # dict[str, object] (the return annotation) which is sound: object is the
+    # base of all types, so every value in dict[str, Any] satisfies object.
+    return cast(dict[str, object], data)
 
 
 def _save_json_config(path: Path, cfg: dict[str, object]) -> None:

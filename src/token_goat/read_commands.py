@@ -7,6 +7,7 @@ import sqlite3
 from collections import defaultdict, deque
 from collections.abc import Callable, Sequence
 from pathlib import Path
+from typing import Any
 
 import typer
 
@@ -254,7 +255,7 @@ def _run_read_like_command(
     separator_label: str,
     missing_label: str,
     stat_kind: str,
-    reader: Callable[..., dict | None],
+    reader: Callable[..., Any],
 ) -> None:
     """Unified handler for read/section/deps CLI commands.
 
@@ -270,7 +271,9 @@ def _run_read_like_command(
         separator_label: Display label for the :: separator (e.g., "symbol", "heading").
         missing_label: Label for missing-item error (e.g., "Symbol", "Section").
         stat_kind: Stat kind to record (e.g., "read_replacement", "section_replacement").
-        reader: Callable(project, rel_path, item, context_lines) -> dict|None.
+        reader: Callable(project, rel_path, item, context_lines) -> SymbolResult|SectionResult|None.
+            Must return a TypedDict (dict subclass) or None; typed as Any to allow both
+            SymbolResult and SectionResult without requiring a common supertype.
     """
     if "::" not in target:
         _emit_read_error(

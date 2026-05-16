@@ -30,6 +30,7 @@ import sys
 import threading
 import time
 from dataclasses import asdict, dataclass, field
+from typing import Any
 
 from . import paths
 
@@ -123,7 +124,7 @@ class SessionCache:
         self._json_cache = None
 
     @classmethod
-    def from_dict(cls, d: dict[str, object]) -> SessionCache:
+    def from_dict(cls, d: dict[str, Any]) -> SessionCache:
         """Deserialize from dict (JSON). Tolerates missing or corrupted fields."""
         now = time.time()
 
@@ -147,7 +148,12 @@ class SessionCache:
                 continue
             try:
                 raw_ranges = v.get("line_ranges", [])
-                line_ranges = [tuple(r) for r in raw_ranges if isinstance(r, (list, tuple)) and len(r) == 2]
+                line_ranges: list[tuple[int, int]] = []
+                for r in raw_ranges:
+                    if isinstance(r, (list, tuple)) and len(r) == 2:
+                        start_val, end_val = r
+                        if isinstance(start_val, int) and isinstance(end_val, int):
+                            line_ranges.append((start_val, end_val))
                 # Coerce symbols_read entries to str and silently drop non-strings/non-scalars.
                 # Untrusted JSON could contain nested objects/lists; storing them as-is would
                 # allow arbitrary objects into the session cache and corrupt hint output.
@@ -174,7 +180,18 @@ class SessionCache:
                 skipped_grep_entries += 1
                 continue
             try:
-                greps.append(GrepEntry(**{k: v for k, v in g.items() if k in _GREP_FIELDS}))
+                # Narrow individual fields before constructing GrepEntry so that
+                # unexpected JSON types don't silently become wrong-typed attributes.
+                raw_pattern = g.get("pattern", "")
+                raw_path = g.get("path")
+                raw_ts = g.get("ts", 0.0)
+                raw_result_count = g.get("result_count")
+                greps.append(GrepEntry(
+                    pattern=str(raw_pattern) if isinstance(raw_pattern, (str, int, float)) else "",
+                    path=str(raw_path) if isinstance(raw_path, str) else None,
+                    ts=float(raw_ts) if isinstance(raw_ts, (int, float)) else 0.0,
+                    result_count=int(raw_result_count) if isinstance(raw_result_count, int) and not isinstance(raw_result_count, bool) else None,
+                ))
             except (TypeError, ValueError, KeyError):
                 skipped_grep_entries += 1
                 _LOG.debug("session: skipping corrupted grep entry")
