@@ -26,6 +26,9 @@ _LOG = logging.getLogger("token_goat.repomap")
 
 # Files below this approximate line count are structural noise (empty __init__.py stubs, etc.)
 _MIN_DISPLAY_LINES = 4
+# Maximum symbol names shown per kind group in render_summary output.
+# Keeping this small prevents any one kind from dominating the text budget.
+_MAX_NAMES_PER_KIND = 6
 # POSIX path prefixes excluded from the map — these dirs are test fixtures, not source
 _EXCLUDED_PREFIXES = ("tests/fixtures/",)
 # Bytes-per-line divisor used to estimate line count from file size.
@@ -262,7 +265,7 @@ def render_summary(s: FileSummary) -> str:
         for k, n in s.top_symbols:
             by_kind[k].append(n)
         for kind in sorted(by_kind, key=lambda k: KIND_PRIORITY.get(k, 99)):
-            names = ", ".join(by_kind[kind][:6])
+            names = ", ".join(by_kind[kind][:_MAX_NAMES_PER_KIND])
             lines.append(f"  {kind}: {names}")
     if s.top_sections:
         lines.append(f"  sections: {' > '.join(s.top_sections)}")

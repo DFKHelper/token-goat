@@ -115,6 +115,12 @@ def denormalize_response(response: HookResponse, harness: str = "claude") -> Hoo
 
 _MAX_PAYLOAD_BYTES = 10 * 1024 * 1024  # 10 MB — guard against runaway harness output
 
+# Hook dispatch timing thresholds (milliseconds).
+# Hooks slower than HOOK_SLOW_MS are logged at WARNING level; hooks between
+# HOOK_MODERATE_MS and HOOK_SLOW_MS are logged at DEBUG with a "moderate" tag.
+_HOOK_SLOW_MS = 500
+_HOOK_MODERATE_MS = 100
+
 
 def read_payload(input_file: Path | None = None) -> dict[str, Any]:
     """Read JSON payload from stdin (or a file, for testing).
@@ -323,9 +329,9 @@ def dispatch(event: str, payload: dict[str, Any]) -> HookResponse:
     t0 = time.monotonic()
     result = handler(payload)
     elapsed_ms = (time.monotonic() - t0) * 1000
-    if elapsed_ms >= 500:
+    if elapsed_ms >= _HOOK_SLOW_MS:
         _LOG.warning("hook %s slow: %.1fms (check for blockage or I/O delays)", event, elapsed_ms)
-    elif elapsed_ms >= 100:
+    elif elapsed_ms >= _HOOK_MODERATE_MS:
         _LOG.debug("hook %s completed in %.1fms (moderate)", event, elapsed_ms)
     else:
         _LOG.debug("hook %s completed in %.1fms (fast)", event, elapsed_ms)
