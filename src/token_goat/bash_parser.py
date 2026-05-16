@@ -1,4 +1,23 @@
-"""Detect Read/Grep-equivalent patterns inside Codex's Bash tool calls."""
+"""Detect Read/Grep-equivalent patterns inside Codex's Bash tool calls.
+
+Codex (and other agent harnesses) issue file reads as raw Bash commands rather
+than through a structured Read tool.  This module parses those command strings
+and returns a ``BashIntent`` that callers can treat the same way as a Read,
+Grep, or Glob tool invocation — enabling image-shrink and session-hint logic to
+apply consistently regardless of which harness fired the tool.
+
+Supported patterns
+------------------
+* **Read** — ``cat``, ``head``, ``tail``, ``bat``, ``batcat``, ``less``,
+  ``more``, ``nl``, ``zcat``, ``zless``, ``zmore``.  Scripted readers (``sed``,
+  ``awk``, ``perl``) are also recognized but treated as unknown when invoked
+  with in-place edit flags.
+* **Grep** — ``rg``, ``grep``, ``ag``, ``ack``, ``ripgrep``.
+* **Glob/find** — ``find``, ``fd``, ``fdfind``, ``ls``, ``eza``.
+
+All parsing is best-effort.  Unrecognized or malformed commands are returned as
+``BashIntent(kind="unknown")`` without raising an exception.
+"""
 from __future__ import annotations
 
 import logging
@@ -80,7 +99,15 @@ def parse(command: str) -> BashIntent:
 
 
 def _parse_read(binary: str, args: list[str]) -> BashIntent:
-    """Parse cat/head/tail/bat with their common flags."""
+    """Parse cat/head/tail/bat and scripted readers (sed/awk/perl) for the target path.
+
+    For ``head``/``tail``, recognises ``-n N``, ``-nN``, and ``--lines=N`` to
+    populate *limit*.  For scripted readers (``sed``, ``awk``, ``perl``) the
+    target file is the *last* positional argument rather than the first, because
+    the script expression comes before the filename (e.g. ``sed 's/a/b/' file``).
+    Scripted readers invoked with an in-place flag (``-i``, ``--in-place``) are
+    classified as ``unknown`` because they mutate the file rather than reading it.
+    """
     if binary in SCRIPTED_READ_BINS and any(a == "--in-place" or a.startswith("-i") for a in args):
         return BashIntent(kind="unknown", reason=f"{binary} edits files in place")
 
@@ -129,7 +156,14 @@ def _parse_read(binary: str, args: list[str]) -> BashIntent:
 
 
 def _parse_grep(binary: str, args: list[str]) -> BashIntent:
-    """Extract the pattern from rg/grep arguments."""
+    """Extract the search pattern from rg/grep/ag argument lists.
+
+    Recognises ``-e``/``--regexp``/``--regexp=`` to capture an explicit pattern
+    argument.  Falls through to treating the first non-flag positional argument
+    as the pattern, which is the normal form for ``rg <pattern> [path]`` and
+    ``grep <pattern> [file...]``.  Returns ``BashIntent(kind="unknown")`` when
+    no pattern can be identified (e.g. ``grep -h`` alone).
+    """
     i = 0
     pattern: str | None = None
     while i < len(args):
@@ -155,7 +189,14 @@ def _parse_grep(binary: str, args: list[str]) -> BashIntent:
 
 
 def _parse_glob(binary: str, args: list[str]) -> BashIntent:
-    """Best-effort: pick up the first non-flag argument as the pattern."""
+    """Extract the root path/pattern from find/fd/ls/eza argument lists.
+
+    Uses the first non-flag positional argument as the glob root or name
+    pattern.  For ``find . -name "*.py"`` this yields ``.``; for
+    ``fd -e py src/`` this yields ``src/``.  Returns
+    ``BashIntent(kind="glob")`` with ``pattern=None`` when no positional
+    argument is found (e.g. a bare ``ls`` with only flags).
+    """
     for a in args:
         if not a.startswith("-"):
             return BashIntent(kind="glob", pattern=a)
