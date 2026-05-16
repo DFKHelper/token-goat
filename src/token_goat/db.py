@@ -435,6 +435,7 @@ def _open_with_rebuild(path: Path, *, load_vec: bool = True) -> sqlite3.Connecti
 def open_global() -> Iterator[sqlite3.Connection]:
     """Yield a connection to global.db with schema applied."""
     path = paths.global_db_path()
+    t0 = time.monotonic()
     _LOG.debug("opening global db: %s", path)
     conn = _open_with_rebuild(path)
     try:
@@ -449,9 +450,15 @@ def open_global() -> Iterator[sqlite3.Connection]:
             conn = _open_with_rebuild(path)
         _INTEGRITY_CHECKED[path] = True
         _ensure_global_schema(conn)
+        open_elapsed_ms = (time.monotonic() - t0) * 1000
+        _LOG.debug("global db ready in %.1fms", open_elapsed_ms)
         yield conn
     finally:
-        _LOG.debug("closing global db")
+        elapsed_ms = (time.monotonic() - t0) * 1000
+        if elapsed_ms >= 1000:
+            _LOG.warning("global db session slow: %.1fms total", elapsed_ms)
+        else:
+            _LOG.debug("closing global db (session %.1fms)", elapsed_ms)
         _close_conn(conn)
 
 
@@ -488,6 +495,7 @@ def open_project(project_hash: str) -> Iterator[sqlite3.Connection]:
     """Yield a connection to a per-project DB with schema applied."""
     _validate_project_hash(project_hash)
     path = paths.project_db_path(project_hash)
+    t0 = time.monotonic()
     _LOG.debug("opening project db: %s (hash=%s)", path, project_hash)
     conn = _open_with_rebuild(path)
     try:
@@ -502,9 +510,15 @@ def open_project(project_hash: str) -> Iterator[sqlite3.Connection]:
             conn = _open_with_rebuild(path)
         _INTEGRITY_CHECKED[path] = True
         _ensure_project_schema(conn)
+        open_elapsed_ms = (time.monotonic() - t0) * 1000
+        _LOG.debug("project db ready in %.1fms (hash=%s)", open_elapsed_ms, project_hash[:8])
         yield conn
     finally:
-        _LOG.debug("closing project db: %s", project_hash)
+        elapsed_ms = (time.monotonic() - t0) * 1000
+        if elapsed_ms >= 1000:
+            _LOG.warning("project db session slow: %.1fms total (hash=%s)", elapsed_ms, project_hash[:8])
+        else:
+            _LOG.debug("closing project db: %s (session %.1fms)", project_hash[:8], elapsed_ms)
         _close_conn(conn)
 
 
