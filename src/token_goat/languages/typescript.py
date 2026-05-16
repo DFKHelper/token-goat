@@ -129,6 +129,23 @@ _CALL_RE = re.compile(r"(?<![.\w])([A-Za-z_$][A-Za-z0-9_$]*)\s*\(")
 _FROM_RE = re.compile(r"""from\s+['"]([^'"]+)['"]""")
 _IMPORT_RE = re.compile(r"""^import\s+.*?['"]([^'"]+)['"]""")
 
+# Export name extraction patterns — compiled once at module level so the
+# per-call loop in extract() does not pay re.compile() overhead on every file.
+_EXPORT_NAME_RES: list[re.Pattern[str]] = [
+    re.compile(r"export\s+(?:async\s+)?function\s*\*?\s*([A-Za-z_$][A-Za-z0-9_$]*)"),
+    re.compile(r"export\s+(?:abstract\s+)?class\s+([A-Za-z_$][A-Za-z0-9_$]*)"),
+    re.compile(r"export\s+interface\s+([A-Za-z_$][A-Za-z0-9_$]*)"),
+    re.compile(r"export\s+(?:type\s+)?enum\s+([A-Za-z_$][A-Za-z0-9_$]*)"),
+    re.compile(r"export\s+type\s+([A-Za-z_$][A-Za-z0-9_$]*)"),
+    re.compile(r"export\s+(?:const|let|var)\s+([A-Za-z_$][A-Za-z0-9_$]*)"),
+]
+
+# Compiled pattern for const/let/var export symbol extraction (used inside the
+# export loop — must not be recreated per iteration).
+_EXPORT_CONST_RE = re.compile(
+    r"export\s+(?:const|let|var)\s+([A-Za-z_$][A-Za-z0-9_$]*)"
+)
+
 
 def _extract_module(source_line: str) -> str:
     """Extract the module string from an import/export source text."""
@@ -208,21 +225,13 @@ def extract(
     # --- const/var from exports not captured above ---
     # exports like 'export const router = express()' aren't in structure;
     # also extract clean names for all export ImpExp entries
-    _EXPORT_NAME_RES = [
-        re.compile(r"export\s+(?:async\s+)?function\s*\*?\s*([A-Za-z_$][A-Za-z0-9_$]*)"),
-        re.compile(r"export\s+(?:abstract\s+)?class\s+([A-Za-z_$][A-Za-z0-9_$]*)"),
-        re.compile(r"export\s+interface\s+([A-Za-z_$][A-Za-z0-9_$]*)"),
-        re.compile(r"export\s+(?:type\s+)?enum\s+([A-Za-z_$][A-Za-z0-9_$]*)"),
-        re.compile(r"export\s+type\s+([A-Za-z_$][A-Za-z0-9_$]*)"),
-        re.compile(r"export\s+(?:const|let|var)\s+([A-Za-z_$][A-Za-z0-9_$]*)"),
-    ]
-
     for exp in result.exports:
         name_raw: str = exp.name  # type: ignore[attr-defined]
         span = exp.span
         line = span.start_line + 1
 
-        # Attempt to extract a clean identifier from the statement text
+        # Attempt to extract a clean identifier from the statement text.
+        # _EXPORT_NAME_RES is compiled once at module level.
         export_name: str | None = None
         for pattern in _EXPORT_NAME_RES:
             m = pattern.match(name_raw)
@@ -235,10 +244,9 @@ def extract(
             tokens = name_raw.strip().split()
             export_name = tokens[1] if len(tokens) > 1 else name_raw[:80]
 
-        # For const/let/var exports not already in structure, add a symbol
-        const_m = re.match(
-            r"export\s+(?:const|let|var)\s+([A-Za-z_$][A-Za-z0-9_$]*)", name_raw
-        )
+        # For const/let/var exports not already in structure, add a symbol.
+        # _EXPORT_CONST_RE is compiled once at module level.
+        const_m = _EXPORT_CONST_RE.match(name_raw)
         if const_m:
             cname = const_m.group(1)
             key = (cname, line)
