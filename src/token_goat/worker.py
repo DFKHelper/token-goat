@@ -857,6 +857,8 @@ def _register_autostart() -> None:
 
         if sys.platform == "win32":
             ok, detail = install.install_worker_task()
+        elif sys.platform == "darwin":
+            ok, detail = install.install_mac_autostart()
         else:
             ok, detail = install.install_linux_autostart()
         _LOG.info("autostart self-register: %s", detail if ok else f"failed — {detail}")

@@ -246,7 +246,7 @@ def fetch_url(
     if not _is_ssrf_safe(url):
         raise ValueError(f"URL blocked by SSRF safety check: {url!r}")
 
-    cache_dir = image_shrink.ensure_cache_dir(paths.web_cache_dir())
+    image_shrink.ensure_cache_dir(paths.web_cache_dir())
 
     # Pre-check: do we already have it cached?
     pre_suffix = _suffix_for(url)

@@ -6,8 +6,6 @@ import shutil
 from pathlib import Path
 from unittest.mock import patch
 
-import pytest
-
 from token_goat import db
 from token_goat.parser import index_file, index_project, write_file_index
 

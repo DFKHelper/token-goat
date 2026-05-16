@@ -297,8 +297,23 @@ def doctor(  # noqa: C901
             flag("token-goat-worker", "NOT INSTALLED (run `token-goat install`)", warn=True)
         except Exception as _e:  # noqa: BLE001
             flag("token-goat-worker", f"registry error: {_e}", warn=True)
+    elif _sys.platform == "darwin":
+        from . import install as _install  # noqa: PLC0415
+
+        _plist = _install._launchd_plist_path()
+        if _plist.exists():
+            ok("token-goat-worker", f"LaunchAgent: {_plist}")
+        else:
+            flag("token-goat-worker", "LaunchAgent NOT INSTALLED (run `token-goat install`)", warn=True)
     else:
-        flag("token-goat-worker", "non-Windows: skipped", warn=False)
+        from . import install as _install  # noqa: PLC0415
+
+        if _install._systemd_service_path().exists():
+            ok("token-goat-worker", f"systemd user service: {_install._systemd_service_path()}")
+        elif _install._xdg_autostart_path().exists():
+            ok("token-goat-worker", f"XDG autostart: {_install._xdg_autostart_path()}")
+        else:
+            flag("token-goat-worker", "autostart NOT INSTALLED (run `token-goat install`)", warn=True)
 
     # ------------------------------------------------------------------
     # 12. Recent log

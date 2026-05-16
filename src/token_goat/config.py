@@ -1,6 +1,8 @@
 """Config loader/saver for token-goat. Reads/writes TOML at paths.config_path()."""
 from __future__ import annotations
 
+__all__ = ["CompactAssistConfig", "Config", "CONFIG_SCHEMA_VERSION", "load", "save"]
+
 import logging
 import os
 import threading

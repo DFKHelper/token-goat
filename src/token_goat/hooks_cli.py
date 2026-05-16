@@ -1,6 +1,20 @@
 """Hook dispatcher: reads stdin JSON, routes to handlers, always returns {"continue": true}."""
 from __future__ import annotations
 
+__all__ = [
+    "EVENTS",
+    "HookPayload",
+    "HookResponse",
+    "denormalize_response",
+    "dispatch",
+    "emit",
+    "fail_soft",
+    "normalize_payload",
+    "pre_compact",
+    "read_payload",
+    "safe_run",
+]
+
 import contextlib
 import json
 import logging

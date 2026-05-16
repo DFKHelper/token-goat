@@ -10,7 +10,8 @@ from unittest.mock import MagicMock, patch
 
 from typer.testing import CliRunner
 
-from token_goat import cli, db as _db
+from token_goat import cli
+from token_goat import db as _db
 
 runner = CliRunner()
 
