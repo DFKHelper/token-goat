@@ -88,6 +88,15 @@ def doctor(  # noqa: C901
     import tempfile  # noqa: PLC0415
 
     def _wal_supported() -> bool:
+        """Test whether SQLite WAL journal mode is available on this filesystem.
+
+        Creates a temporary on-disk database (WAL requires a real file — not
+        ``:memory:``), applies ``PRAGMA journal_mode = WAL``, and checks whether
+        SQLite confirmed the switch.  The temp file is cleaned up in a
+        ``finally`` block even if the PRAGMA or ``conn.close()`` raises.
+        Returns ``False`` on any exception (e.g. read-only filesystem, OS
+        restrictions on file-locking) so the doctor check degrades gracefully.
+        """
         # Use mkstemp so the OS-allocated fd is closed before sqlite3 opens the
         # file.  Wrapping everything in try/finally guarantees the temp file is
         # deleted even if the PRAGMA or conn.close() raises, closing the window

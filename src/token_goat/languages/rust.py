@@ -60,6 +60,17 @@ def extract(source: bytes, rel_path: str) -> tuple[list[Symbol], list[Ref], list
 
     # --- structure: functions, structs, enums, traits, impls, methods ---
     def _add_symbol(item: object, parent_name: str | None = None) -> None:
+        """Recursively walk a tree-sitter node and append named Rust symbols to *symbols*.
+
+        Rust-specific behaviour:
+        - ``impl`` blocks are recorded once under the type name, then their
+          children (methods) are recursed with ``parent_name`` set to that type.
+        - Plain ``impl TypeName`` blocks without a trait are still recorded so
+          that symbol lookups on the type name work correctly.
+        - Functions nested inside an ``impl`` block are promoted to
+          ``kind="method"`` for cleaner display in ``token-goat symbol`` output.
+        - Unnamed nodes are transparently descended into (same as common adapter).
+        """
         name: str = item.name  # type: ignore[attr-defined]
         if not name:
             for child in item.children:  # type: ignore[attr-defined]

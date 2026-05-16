@@ -1,3 +1,22 @@
+"""Rich terminal renderer for token-goat stats.
+
+Produces a multi-section ANSI display from a ``StatsData`` payload:
+
+1. **KPI tiles** — three side-by-side cards (data saved, tokens saved, events)
+   with period-over-period deltas and optional mini sparklines.
+2. **By event kind** — colour-barred table showing savings per tool-call type
+   (Read, image_shrink, Grep, etc.).
+3. **Activity heatmap** — GitHub-style 12-week heatmap of daily token savings.
+4. **By day** — tabular daily breakdown (top N rows by bytes).
+5. **By project** — tabular per-project breakdown (top N rows by bytes).
+6. **Insights** — motivational copy loaded from ``stats_messages.json``.
+
+Entry point: :func:`render_stats` — returns a ready-to-print ANSI string.
+
+Layout uses ``_CONTENT_W`` (clamped 80–140 columns) and a shared set of
+column-width constants so all tables are visually aligned.  Colour values
+come from ``ansi.C`` (GitHub dark palette).
+"""
 from __future__ import annotations
 
 import json
@@ -30,6 +49,12 @@ _RULE = _M + fg(*C.TEXT_DIM) + "─" * (_CONTENT_W - len(_M) * 2) + RESET
 
 
 def _load_stats_messages() -> dict[str, Any]:
+    """Load the localised stats copy from the bundled ``stats_messages.json`` file.
+
+    The JSON is co-located with this module (same directory) and contains
+    display strings for the Insights section — taglines, motivational quotes,
+    and milestone messages keyed by usage tier.
+    """
     return json.loads(Path(__file__).with_name("stats_messages.json").read_text(encoding="utf-8"))
 
 
@@ -99,20 +124,34 @@ def _fmt_magnitude(
 
 
 def _fmt_bytes(n: int) -> str:
-    # Color escalates with magnitude: dim → green → teal → blue → purple
+    """Format a byte count as a human-readable ANSI string (B/KB/MB/GB/…).
+
+    Colour escalates with magnitude: dim (B) → muted (KB) → green (MB) → teal (GB) → blue (TB) → purple (PB).
+    Negative values are rendered dim with a leading minus sign.
+    """
     return _fmt_magnitude(n, _BYTE_TIERS)
 
 
 def _fmt_tokens(n: int) -> str:
-    # Color escalates with magnitude: dim → blue → purple → teal → green
+    """Format a token count as a human-readable ANSI string (t/kt/Mt/Gt/Tt).
+
+    Zero renders as ``"0 t"`` (dim).  Colour escalates with magnitude:
+    dim (t) → blue (kt) → purple (Mt) → teal (Gt) → bright-green (Tt).
+    """
     return _fmt_magnitude(n, _TOKEN_TIERS, zero_label="0 t")
 
 
 def _fmt_pct(fraction: float) -> str:
+    """Format a 0–1 fraction as a percentage string, e.g. ``0.372`` → ``"37.2%"``."""
     return f"{fraction * 100:.1f}%"
 
 
 def _fmt_delta(delta: float | None) -> str:
+    """Format a period-over-period delta as a coloured ``↑ N%`` / ``↓ N%`` string.
+
+    Returns an empty string when *delta* is ``None`` (data unavailable).
+    Positive deltas are green with an up-arrow; negative are red with a down-arrow.
+    """
     if delta is None:
         return ""
     up = delta >= 0
@@ -122,6 +161,7 @@ def _fmt_delta(delta: float | None) -> str:
 
 
 def _fmt_date(d: date) -> str:
+    """Format a ``date`` as an ISO-8601 string (``YYYY-MM-DD``)."""
     return d.isoformat()
 
 
@@ -182,6 +222,12 @@ _SPARK = "▁▂▃▄▅▆▇█"
 
 
 def _resample(vals: list[float], length: int) -> list[float]:
+    """Linearly resample *vals* to exactly *length* points.
+
+    Used to stretch or compress sparkline data to a fixed display width.
+    Returns ``[0.0] * length`` for an empty input.  When ``len(vals) == length``
+    the input is returned as-is (no interpolation needed).
+    """
     if not vals:
         return [0.0] * length
     n_vals = len(vals)
@@ -214,6 +260,11 @@ def _render_sparkline(values: list[float], width: int = 8) -> str:
 # ── Section header helper ──────────────────────────────────────────────────────
 
 def _section_header(title: str, subtitle: str = "") -> list[str]:
+    """Return a 3-line section header: blank line, title+subtitle, horizontal rule.
+
+    *subtitle* is rendered in muted colour to the right of *title*.
+    The rule spans the full content width (``_CONTENT_W``).
+    """
     sub = f"  {fg(*C.TEXT_MUTED)}{subtitle}{RESET}" if subtitle else ""
     return [
         "",
@@ -225,6 +276,11 @@ def _section_header(title: str, subtitle: str = "") -> list[str]:
 # ── Table header / row helpers ─────────────────────────────────────────────────
 
 def _table_header(first_col_label: str) -> str:
+    """Return a single-line table header string with dim ANSI-coded column labels.
+
+    Columns are: *first_col_label* (name), savings bar, data saved, tokens saved,
+    share, events — in that order, padded to their respective column widths.
+    """
     return "".join([
         _M,
         pad_r(f"{fg(*C.TEXT_DIM)}{first_col_label}{RESET}", _COL_NAME),
@@ -252,6 +308,19 @@ def _table_row(
     name_prefix: str = "",
     name_color: RGB = C.TEXT_PRIMARY,
 ) -> str:
+    """Render a single data row for the by-kind or by-project tables.
+
+    Args:
+        name:           Row label; truncated with ``…`` if longer than ``_COL_NAME``.
+        fraction:       Bar fill level 0–1 (relative to the maximum in the section).
+        bytes_val:      Bytes saved, formatted by ``_fmt_bytes``.
+        tokens:         Tokens saved, formatted by ``_fmt_tokens``.
+        events:         Raw event count.
+        share:          Fraction of total bytes for this row (used for share-column colour).
+        bytes_mode_only: If ``True``, render the tokens column as ``"—"`` (e.g. image_shrink).
+        name_prefix:    Optional prefix prepended before *name* (e.g. a bullet character).
+        name_color:     RGB colour applied to the name text.
+    """
     prefix_w = vlen(name_prefix)
     max_name = _COL_NAME - prefix_w
     truncated = (name[: max_name - 1] + "…") if len(name) > max_name else name
@@ -285,6 +354,13 @@ def _table_row(
 # ── Section: KPI tiles ─────────────────────────────────────────────────────────
 
 def _render_kpi_section(stats: StatsData) -> list[str]:
+    """Render the three-column KPI tile box (events / data saved / tokens saved).
+
+    Each tile shows the metric value, an optional period-over-period delta
+    (``↑/↓ N%``), and an optional 8-char sparkline when ``totals.sparklines``
+    is populated.  The tile frame uses box-drawing characters so it prints
+    cleanly on any modern terminal.
+    """
     totals = stats.totals
     col_w = (_CONTENT_W - len(_M) * 2) // 3
     inner_w = col_w * 3  # visible width of the three cards combined
@@ -325,6 +401,16 @@ def _render_kpi_section(stats: StatsData) -> list[str]:
 # ── Section: by kind ──────────────────────────────────────────────────────────
 
 def _render_by_kind_section(stats: StatsData) -> list[str]:
+    """Render the "By kind" table: one row per event kind, sorted desc by bytes.
+
+    Bar fill is scaled to the largest positive-bytes kind.  Share percentage
+    uses absolute-value totals so overhead kinds (negative bytes/tokens) reduce
+    the denominator without inflating the dominant kind's share to >100%.
+    Appends a footnote for ``bytes_mode_only`` kinds (e.g. image_shrink) and a
+    second footnote when both ``session_hint`` and ``session_hint_overhead``
+    appear in the same period (explaining the split).
+    Returns ``[]`` when ``stats.by_kind`` is empty.
+    """
     if not stats.by_kind:
         return []
 
@@ -391,6 +477,12 @@ def _hash_color(hash_str: str) -> RGB:
 
 
 def _heat_cell_color(intensity: float) -> RGB:
+    """Map a 0–1 activity intensity to an RGB background colour for heatmap cells.
+
+    Zero (no activity) returns ``C.BG_TILE`` (dark background).
+    Non-zero values are interpolated across a 5-stop green gradient
+    (``GREEN1`` dim → ``GREEN5`` bright) proportional to *intensity*.
+    """
     if intensity <= 0:
         return C.BG_TILE
     stops: list[RGB] = [C.GREEN1, C.GREEN2, C.GREEN3, C.GREEN4, C.GREEN5]
@@ -401,6 +493,18 @@ def _heat_cell_color(intensity: float) -> RGB:
 
 
 def _render_activity_section(stats: StatsData) -> list[str]:
+    """Render the GitHub-style weekly activity heatmap and rhythm summary panel.
+
+    The heatmap is a 7-row (Mon–Sun) × N-week grid anchored to the Monday
+    before ``stats.period_start``.  Weeks are capped by terminal width (each
+    week takes 3 visible chars: 2-char coloured cell + 1 space).  Cell colour
+    intensity is proportional to the day's event count relative to the period
+    maximum.
+
+    A right-side panel shows: top 3 days by events, and a "Rhythm" summary
+    (burst/moderate/steady based on coefficient of variation, plus weekday bias).
+    Returns ``[]`` when ``stats.by_day`` is empty.
+    """
     if not stats.by_day:
         return []
 
@@ -527,6 +631,12 @@ def _render_activity_section(stats: StatsData) -> list[str]:
 # ── Section: by day ───────────────────────────────────────────────────────────
 
 def _render_by_day_section(stats: StatsData) -> list[str]:
+    """Render the "By day (top 7)" table: one row per day, sorted desc by bytes by the caller.
+
+    Share fraction uses tokens when the period total is non-zero, falling back
+    to bytes when all token counts are zero (e.g. an image-only session).
+    Returns ``[]`` when ``stats.by_day`` is empty.
+    """
     if not stats.by_day:
         return []
 
@@ -547,6 +657,14 @@ def _render_by_day_section(stats: StatsData) -> list[str]:
 # ── Section: by project ───────────────────────────────────────────────────────
 
 def _render_by_project_section(stats: StatsData) -> list[str]:
+    """Render the "By project (top 5)" table: one row per project plus a path sub-row.
+
+    Each project bullet is coloured via ``_hash_color`` for visual distinction.
+    The sub-row shows the short project hash and absolute path in dim colour.
+    Share fraction uses tokens when the cross-project total is non-zero, falling
+    back to bytes otherwise.
+    Returns ``[]`` when ``stats.by_project`` is empty.
+    """
     if not stats.by_project:
         return []
 
@@ -576,6 +694,13 @@ def _render_by_project_section(stats: StatsData) -> list[str]:
 # ── Section: insights ─────────────────────────────────────────────────────────
 
 def _render_insights_section(stats: StatsData) -> list[str]:
+    """Render the "Insights" section: three copy-driven observation bullets.
+
+    Bullets cover: (1) biggest saver by bytes with its share percentage,
+    (2) most active day by events, and (3) token leader excluding
+    ``bytes_mode_only`` kinds.  Copy strings come from ``_STATS_MESSAGES``
+    (loaded from ``stats_messages.json``).
+    """
     lines: list[str] = [*_section_header("Insights")]
     bullet = f"{fg(*C.GREEN3)}▸{RESET}"
 

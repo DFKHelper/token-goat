@@ -1,3 +1,15 @@
+"""ANSI 24-bit colour primitives and text-alignment helpers for terminal rendering.
+
+Exports:
+- ``fg`` / ``bg``: Set 24-bit foreground/background colour escape sequences.
+- ``vlen``: Visible (non-ANSI) length of a string.
+- ``pad_r`` / ``pad_l``: Pad ANSI-coded strings to a fixed visible width.
+- ``lerp_rgb``: Linear interpolation between two RGB colours.
+- ``C``: Shared colour palette (GitHub dark-inspired, green accent).
+- ``USE_COLOR``: ``True`` when the terminal supports 24-bit colour and
+  ``NO_COLOR`` is not set.  Callers should check this before building
+  ANSI sequences.
+"""
 from __future__ import annotations
 
 import os

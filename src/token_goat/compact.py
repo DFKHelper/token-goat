@@ -76,6 +76,18 @@ def build_manifest(session_id: str, *, max_tokens: int = 400) -> str:
 
 
 def _render(cache: SessionCache, session_id: str, max_tokens: int) -> str:
+    """Build the Markdown session manifest string from *cache* for the PreCompact hook.
+
+    Priority order:
+    1. **Edited files** — always listed first; the compaction LLM must preserve these.
+    2. **Symbols accessed** — files where specific symbols were read via ``token-goat read``.
+    3. **Key files read** — top files by ``read_count`` (most re-read first).
+
+    If the rendered manifest exceeds *max_tokens*, lines are trimmed from the
+    bottom until the budget is met, preserving the highest-priority sections.
+    Returns an empty string when the cache has no meaningful data (nothing edited,
+    no symbols accessed, no files read).
+    """
     files_with_symbols = [e for e in cache.files.values() if e.symbols_read]
     # Most-frequently-read files, capped at _MAX_FILES_READ, for the "Key Files Read" section.
     top_files_by_read_count = sorted(cache.files.values(), key=lambda e: -e.read_count)[:_MAX_FILES_READ]

@@ -211,6 +211,15 @@ def make_add_symbol(
     from ..parser import Symbol  # noqa: PLC0415
 
     def _add_symbol(item: object, parent_name: str | None = None) -> None:
+        """Recursively walk a tree-sitter node and append named symbols to *symbols*.
+
+        Unnamed nodes (e.g. anonymous scopes, group nodes with no ``name``
+        attribute) are transparently descended into so their named children are
+        still collected.  Duplicate ``(name, line)`` pairs are skipped via
+        *seen_names*.  When *promote_methods* is ``True``, functions nested
+        inside a parent scope are recorded with ``kind="method"`` rather than
+        ``kind="function"``.
+        """
         name: str = item.name  # type: ignore[attr-defined]
         if not name:
             for child in item.children:  # type: ignore[attr-defined]
