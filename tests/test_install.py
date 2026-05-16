@@ -470,3 +470,281 @@ def test_strip_deduplicates_on_reinstall(tmp_path, monkeypatch):
     assert len(tg_commands) == len(set(tg_commands)), (
         f"duplicate token-goat PreToolUse commands after re-install: {tg_commands}"
     )
+
+
+# ---------------------------------------------------------------------------
+# Linux autostart: install_linux_autostart
+# ---------------------------------------------------------------------------
+
+
+def test_install_linux_autostart_windows_skips(monkeypatch):
+    """install_linux_autostart returns success-skipped on Windows."""
+    import sys
+    monkeypatch.setattr(sys, "platform", "win32")
+    ok, out = install.install_linux_autostart()
+    assert ok is True
+    assert "skipped" in out
+
+
+def test_install_linux_autostart_systemd(tmp_path, monkeypatch):
+    """install_linux_autostart writes a systemd unit and calls enable when systemd is available."""
+    import sys
+    monkeypatch.setattr(sys, "platform", "linux")
+    monkeypatch.setattr(Path, "home", staticmethod(lambda: tmp_path))
+    monkeypatch.setattr(install, "_systemd_user_available", lambda: True)
+
+    calls = []
+
+    def fake_run(cmd, **kwargs):
+        calls.append(list(cmd))
+        class R:
+            returncode = 0
+        return R()
+
+    monkeypatch.setattr(install.subprocess, "run", fake_run)
+
+    ok, out = install.install_linux_autostart()
+
+    assert ok is True
+    assert "systemd" in out
+    svc_path = install._systemd_service_path()
+    assert svc_path.exists()
+    content = svc_path.read_text()
+    assert "token_goat" in content or "token-goat" in content
+    assert "WantedBy=default.target" in content
+    # daemon-reload and enable must have been called
+    cmds_flat = [" ".join(c) for c in calls]
+    assert any("daemon-reload" in c for c in cmds_flat)
+    assert any("enable" in c for c in cmds_flat)
+
+
+def test_install_linux_autostart_xdg_fallback(tmp_path, monkeypatch):
+    """install_linux_autostart falls back to XDG autostart when systemd is unavailable."""
+    import sys
+    monkeypatch.setattr(sys, "platform", "linux")
+    monkeypatch.setattr(Path, "home", staticmethod(lambda: tmp_path))
+    monkeypatch.setattr(install, "_systemd_user_available", lambda: False)
+
+    ok, out = install.install_linux_autostart()
+
+    assert ok is True
+    desktop = install._xdg_autostart_path()
+    assert desktop.exists()
+    content = desktop.read_text()
+    assert "[Desktop Entry]" in content
+    assert "Exec=" in content
+
+
+def test_install_linux_autostart_idempotent(tmp_path, monkeypatch):
+    """install_linux_autostart can be called twice without error."""
+    import sys
+    monkeypatch.setattr(sys, "platform", "linux")
+    monkeypatch.setattr(Path, "home", staticmethod(lambda: tmp_path))
+    monkeypatch.setattr(install, "_systemd_user_available", lambda: False)
+
+    install.install_linux_autostart()
+    ok, out = install.install_linux_autostart()
+
+    assert ok is True
+    assert install._xdg_autostart_path().exists()
+
+
+def test_uninstall_linux_autostart_removes_files(tmp_path, monkeypatch):
+    """uninstall_linux_autostart removes service and desktop files."""
+    import sys
+    monkeypatch.setattr(sys, "platform", "linux")
+    monkeypatch.setattr(Path, "home", staticmethod(lambda: tmp_path))
+    monkeypatch.setattr(install, "_systemd_user_available", lambda: False)
+
+    install.install_linux_autostart()
+    assert install._xdg_autostart_path().exists()
+
+    # systemctl won't be available; suppress that failure path
+    monkeypatch.setattr(install.subprocess, "run", lambda *a, **kw: type("R", (), {"returncode": 1})())
+    removed = install.uninstall_linux_autostart()
+
+    assert not install._xdg_autostart_path().exists()
+    assert any(str(install._xdg_autostart_path()) in r for r in removed)
+
+
+def test_uninstall_linux_autostart_windows_noop(monkeypatch):
+    """uninstall_linux_autostart is a no-op on Windows."""
+    import sys
+    monkeypatch.setattr(sys, "platform", "win32")
+    assert install.uninstall_linux_autostart() == []
+
+
+# ---------------------------------------------------------------------------
+# Linux update cron: install_linux_update_cron
+# ---------------------------------------------------------------------------
+
+
+def test_install_linux_update_cron_windows_skips(monkeypatch):
+    import sys
+    monkeypatch.setattr(sys, "platform", "win32")
+    ok, out = install.install_linux_update_cron()
+    assert ok is True
+    assert "skipped" in out
+
+
+def test_install_linux_update_cron_adds_entry(monkeypatch):
+    """install_linux_update_cron writes a cron entry idempotently."""
+    import sys
+    monkeypatch.setattr(sys, "platform", "linux")
+
+    written = {}
+
+    def fake_run(cmd, **kwargs):
+        cmd_str = " ".join(str(c) for c in cmd)
+        class R:
+            returncode = 0
+            stdout = ""
+        if "crontab" in cmd_str and "-l" in cmd_str:
+            R.stdout = ""
+        if "crontab" in cmd_str and kwargs.get("input"):
+            written["crontab"] = kwargs["input"]
+        return R()
+
+    monkeypatch.setattr(install.subprocess, "run", fake_run)
+
+    ok, out = install.install_linux_update_cron()
+
+    assert ok is True
+    assert install.CRON_JOB_MARKER in written["crontab"]
+    assert "uv tool upgrade token-goat" in written["crontab"]
+
+
+def test_install_linux_update_cron_deduplicates(monkeypatch):
+    """install_linux_update_cron does not add duplicate entries."""
+    import sys
+    monkeypatch.setattr(sys, "platform", "linux")
+
+    existing_cron = f"0 3 * * 0 uv tool upgrade token-goat {install.CRON_JOB_MARKER}\n"
+    written = {}
+
+    def fake_run(cmd, **kwargs):
+        cmd_str = " ".join(str(c) for c in cmd)
+        class R:
+            returncode = 0
+            stdout = existing_cron
+        if "crontab" in cmd_str and kwargs.get("input"):
+            written["crontab"] = kwargs["input"]
+        return R()
+
+    monkeypatch.setattr(install.subprocess, "run", fake_run)
+
+    install.install_linux_update_cron()
+
+    cron_out = written.get("crontab", "")
+    assert cron_out.count(install.CRON_JOB_MARKER) == 1
+
+
+def test_uninstall_linux_update_cron_removes_entry(monkeypatch):
+    """uninstall_linux_update_cron strips the marker line from crontab."""
+    import sys
+    monkeypatch.setattr(sys, "platform", "linux")
+
+    existing = (
+        "0 0 * * * /usr/bin/true\n"
+        f"0 3 * * 0 uv tool upgrade token-goat {install.CRON_JOB_MARKER}\n"
+    )
+    written = {}
+
+    def fake_run(cmd, **kwargs):
+        cmd_str = " ".join(str(c) for c in cmd)
+        class R:
+            returncode = 0
+            stdout = existing
+        if "crontab" in cmd_str and kwargs.get("input"):
+            written["crontab"] = kwargs["input"]
+        return R()
+
+    monkeypatch.setattr(install.subprocess, "run", fake_run)
+
+    result = install.uninstall_linux_update_cron()
+
+    assert "removed" in result
+    out = written.get("crontab", "")
+    assert install.CRON_JOB_MARKER not in out
+    assert "/usr/bin/true" in out
+
+
+# ---------------------------------------------------------------------------
+# check_status: platform-appropriate keys
+# ---------------------------------------------------------------------------
+
+
+def test_check_status_windows_keys(monkeypatch):
+    """check_status includes Windows-specific keys on win32."""
+    import sys
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setattr(install, "_check_settings_json", lambda: "ok")
+    monkeypatch.setattr(install, "_check_claude_md", lambda: "ok")
+    monkeypatch.setattr(install, "_check_skill", lambda: "ok")
+    monkeypatch.setattr(install, "_check_worker_task", lambda: "installed")
+    monkeypatch.setattr(install, "_check_update_task", lambda: "installed")
+    monkeypatch.setattr(install, "_check_codex_config", lambda: "ok")
+
+    status = install.check_status()
+
+    assert "worker autostart (HKCU Run)" in status
+    assert "update task (schtasks)" in status
+    assert "worker autostart" not in [k for k in status if "HKCU" not in k]
+
+
+def test_check_status_linux_keys(monkeypatch):
+    """check_status includes Linux-specific keys on non-Windows."""
+    import sys
+    monkeypatch.setattr(sys, "platform", "linux")
+    monkeypatch.setattr(install, "_check_settings_json", lambda: "ok")
+    monkeypatch.setattr(install, "_check_claude_md", lambda: "ok")
+    monkeypatch.setattr(install, "_check_skill", lambda: "ok")
+    monkeypatch.setattr(install, "_check_linux_autostart", lambda: "installed")
+    monkeypatch.setattr(install, "_check_linux_update_cron", lambda: "installed")
+    monkeypatch.setattr(install, "_check_codex_config", lambda: "ok")
+
+    status = install.check_status()
+
+    assert "worker autostart" in status
+    assert "update cron" in status
+    assert "worker autostart (HKCU Run)" not in status
+    assert "update task (schtasks)" not in status
+
+
+# ---------------------------------------------------------------------------
+# install_all: Linux dispatches to linux autostart + cron
+# ---------------------------------------------------------------------------
+
+
+def test_install_all_linux_dispatches(tmp_path, monkeypatch):
+    """install_all on Linux calls install_linux_autostart and install_linux_update_cron."""
+    import sys
+    home = _fake_home(tmp_path)
+    _patch_home(monkeypatch, home)
+    monkeypatch.setattr(sys, "platform", "linux")
+    monkeypatch.setattr(install, "token_goat_binary", lambda: "token-goat")
+
+    linux_autostart_calls = []
+    linux_cron_calls = []
+
+    monkeypatch.setattr(
+        install, "install_linux_autostart",
+        lambda: (linux_autostart_calls.append(1), (True, "autostart ok"))[1],
+    )
+    monkeypatch.setattr(
+        install, "install_linux_update_cron",
+        lambda: (linux_cron_calls.append(1), (True, "cron ok"))[1],
+    )
+
+    with (
+        patch("token_goat.install.paths.ensure_dirs"),
+        patch("token_goat.worker.ensure_running", return_value=99),
+    ):
+        result = install.install_all()
+
+    assert linux_autostart_calls, "install_linux_autostart was not called"
+    assert linux_cron_calls, "install_linux_update_cron was not called"
+    assert "autostart: worker" in result
+    assert "cron: update" in result
+    assert "task: worker" not in result
+    assert "task: update" not in result

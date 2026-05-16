@@ -842,19 +842,23 @@ def ensure_running() -> int | None:
 # ---------------------------------------------------------------------------
 
 def _register_autostart() -> None:
-    """Self-register the worker for at-logon autostart (HKCU Run key).
+    """Self-register the worker for at-logon autostart.
 
-    install_worker_task() otherwise only runs during `token-goat install`; a
-    `uv tool install --reinstall` (or a cleared Run key) leaves the worker with
-    no autostart, so it survives only as long as a hook keeps respawning it.
-    Re-asserting the registration on every startup makes autostart self-healing
-    and keeps the registered command current. Fail-soft: a registry error must
-    never take the worker down. (Lazy import — install.py imports worker.)
+    On Windows: writes the HKCU Run registry key.
+    On Linux: writes the systemd user service (or XDG autostart fallback).
+
+    Called on every daemon startup so autostart stays self-healing after a
+    `uv tool install --reinstall` or a cleared registry/service entry. Fail-soft:
+    an error here must never take the worker down. (Lazy import — install.py
+    imports worker.)
     """
     try:
         from . import install  # noqa: PLC0415
 
-        ok, detail = install.install_worker_task()
+        if sys.platform == "win32":
+            ok, detail = install.install_worker_task()
+        else:
+            ok, detail = install.install_linux_autostart()
         _LOG.info("autostart self-register: %s", detail if ok else f"failed — {detail}")
     except Exception:  # noqa: BLE001
         _LOG.exception("autostart self-register failed")

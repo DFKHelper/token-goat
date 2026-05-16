@@ -3,11 +3,12 @@
 </p>
 
 <p align="center">
-  Cuts the tokens Claude Code and Codex CLI burn on Windows. Install once, then forget it.
+  Cuts the tokens Claude Code and Codex CLI burn. Windows, Linux, and WSL. Install once, then forget it.
 </p>
 
 <p align="center">
   <img src="https://img.shields.io/badge/Windows-10%20%7C%2011-0078d4?logo=windows&logoColor=white" alt="Windows 10 | 11">
+  <img src="https://img.shields.io/badge/Linux-including%20WSL-FCC624?logo=linux&logoColor=black" alt="Linux including WSL">
   <img src="https://img.shields.io/badge/Python-3.11%20%7C%203.12%20%7C%203.13-3776ab?logo=python&logoColor=white" alt="Python 3.11 | 3.12 | 3.13">
   <img src="https://img.shields.io/badge/license-PolyForm%20Noncommercial-lightgrey" alt="PolyForm Noncommercial">
   <img src="https://img.shields.io/badge/requires-uv-6340ac" alt="requires uv">
@@ -44,7 +45,9 @@ Each one is preventable. Token-Goat intercepts all three, automatically.
 
 ## Install
 
-**Requirements:** Windows 10 or 11 · Python 3.11, 3.12, or 3.13 · [uv](https://docs.astral.sh/uv/) (`winget install astral-sh.uv`)
+**Windows requirements:** Windows 10 or 11 · Python 3.11, 3.12, or 3.13 · [uv](https://docs.astral.sh/uv/) (`winget install astral-sh.uv`)
+
+**Linux / WSL requirements:** Python 3.11, 3.12, or 3.13 · [uv](https://docs.astral.sh/uv/) (`curl -LsSf https://astral.sh/uv/install.sh | sh`)
 
 ```
 uv tool install token-goat
@@ -52,6 +55,8 @@ token-goat install
 ```
 
 Two commands. Done. Hooks register, a background worker starts at logon and stays out of the way. No terminal popups, no tray icon, no service to babysit.
+
+On Linux and WSL, the worker registers as a systemd user service when systemd is available. On WSL without systemd, the SessionStart hook ensures the worker is running at the start of every Claude Code session.
 
 ### Codex CLI users
 
@@ -80,14 +85,15 @@ First `token-goat semantic` call downloads a small embedding model, about 130 MB
 
 After `token-goat install`, there is nothing to start, stop, or restart. The worker:
 
-- starts itself at logon via the Windows startup registry (HKCU Run key, no admin rights needed)
-- runs as your user account only, without a console window
-- survives reboots
+- **Windows:** starts at logon via the Windows startup registry (HKCU Run key, no admin rights needed), runs without a console window
+- **Linux with systemd:** registers as a systemd user service (`~/.config/systemd/user/token-goat-worker.service`), starts at login automatically
+- **WSL without systemd:** the SessionStart hook starts the worker at the beginning of every Claude Code session
+- survives reboots on all platforms
 - needs zero ongoing attention
 
 To remove it later, `token-goat uninstall` reverses every change, including the startup entry.
 
-## Windows Defender
+## Windows Defender (Windows only)
 
 Optional speed-up for large repos. Token-goat works fine without it.
 

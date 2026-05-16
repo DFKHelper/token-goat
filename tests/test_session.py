@@ -1,6 +1,7 @@
 """Tests for session-context cache."""
 from __future__ import annotations
 
+import sys
 import time
 
 import pytest
@@ -23,17 +24,17 @@ class TestSessionCacheBasics:
     def test_mark_file_read_and_roundtrip(self, tmp_data_dir):
         """mark_file_read writes to disk, load round-trips correctly."""
         session_id = "test_session_1"
-        returned = session.mark_file_read(session_id, "C:/foo/bar.py", offset=0, limit=100)
+        returned = session.mark_file_read(session_id, "src/foo/bar.py", offset=0, limit=100)
         assert returned.session_id == session_id
-        assert "c:/foo/bar.py" in returned.files
-        entry = returned.files["c:/foo/bar.py"]
+        assert "src/foo/bar.py" in returned.files
+        entry = returned.files["src/foo/bar.py"]
         assert entry.read_count == 1
         assert entry.line_ranges == [(1, 100)]
 
         # Load again and verify persistence
         loaded = session.load(session_id)
-        assert "c:/foo/bar.py" in loaded.files
-        assert loaded.files["c:/foo/bar.py"].read_count == 1
+        assert "src/foo/bar.py" in loaded.files
+        assert loaded.files["src/foo/bar.py"].read_count == 1
 
     def test_reset_session_deletes_file(self, tmp_data_dir):
         """reset_session deletes the cache file; load returns fresh."""
@@ -124,12 +125,14 @@ class TestPathNormalization:
         """Backslashes converted to forward slashes."""
         session.mark_file_read("s9", "C:\\foo\\bar.py")
         cache2 = session.mark_file_read("s9", "C:/foo/bar.py")
-        # Both should reference the same entry
+        # Both should reference the same entry; drive letter is lowercased on Windows only.
         assert len(cache2.files) == 1
-        assert cache2.files["c:/foo/bar.py"].read_count == 2
+        expected_key = "c:/foo/bar.py" if sys.platform == "win32" else "C:/foo/bar.py"
+        assert cache2.files[expected_key].read_count == 2
 
+    @pytest.mark.skipif(sys.platform != "win32", reason="drive-letter lowercasing is Windows-only")
     def test_drive_letter_lowercase(self, tmp_data_dir):
-        """Drive letters normalized to lowercase."""
+        """Drive letters normalized to lowercase (Windows only)."""
         session.mark_file_read("s10", "C:/foo.py")
         cache2 = session.mark_file_read("s10", "c:/foo.py")
         assert len(cache2.files) == 1
@@ -328,8 +331,9 @@ class TestGetFileEntry:
         entry = session.get_file_entry("s_missing", "f.py")
         assert entry is None
 
+    @pytest.mark.skipif(sys.platform != "win32", reason="cross-case Windows path lookup is Windows-only")
     def test_get_file_entry_path_normalization(self, tmp_data_dir):
-        """get_file_entry normalizes path like mark_file_read."""
+        """get_file_entry normalizes path like mark_file_read (Windows drive-letter case)."""
         s_id = "s18"
         session.mark_file_read(s_id, "C:/foo.py")
         entry = session.get_file_entry(s_id, "c:\\foo.py")

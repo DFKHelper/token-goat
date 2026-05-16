@@ -21,9 +21,13 @@ _LOG = logging.getLogger("token_goat.install")
 CLAUDE_MD_BEGIN = "<!-- token-goat-begin -->"
 CLAUDE_MD_END = "<!-- token-goat-end -->"
 
-# Scheduled task names
+# Scheduled task names (Windows)
 TASK_WORKER = "token-goat-worker"
 TASK_UPDATE = "token-goat-update"
+
+# Linux autostart constants
+SYSTEMD_SERVICE_NAME = "token-goat-worker"
+CRON_JOB_MARKER = "# token-goat-autoupdate"
 
 
 def claude_dir() -> Path:
@@ -183,6 +187,9 @@ def install_worker_task() -> tuple[bool, str]:
 def install_update_task() -> tuple[bool, str]:
     """Create the weekly auto-update scheduled task (Sunday 03:00, user scope)."""
     import os
+    import sys
+    if sys.platform != "win32":
+        return True, "non-Windows: skipped"
     if task_exists(TASK_UPDATE):
         _run_schtasks(["/Delete", "/TN", TASK_UPDATE, "/F"])
 
@@ -233,6 +240,241 @@ def uninstall_tasks() -> list[str]:
             removed.append(TASK_UPDATE)
 
     return removed
+
+
+# ---------------------------------------------------------------------------
+# Linux autostart (systemd user service + XDG autostart fallback)
+# ---------------------------------------------------------------------------
+
+
+def _systemd_user_dir() -> Path:
+    """Return ~/.config/systemd/user/"""
+    return Path.home() / ".config" / "systemd" / "user"
+
+
+def _systemd_service_path() -> Path:
+    """Return ~/.config/systemd/user/token-goat-worker.service"""
+    return _systemd_user_dir() / f"{SYSTEMD_SERVICE_NAME}.service"
+
+
+def _xdg_autostart_path() -> Path:
+    """Return ~/.config/autostart/token-goat-worker.desktop"""
+    return Path.home() / ".config" / "autostart" / "token-goat-worker.desktop"
+
+
+def _systemd_user_available() -> bool:
+    """Return True if systemd --user is running and accepting service management."""
+    try:
+        r = subprocess.run(
+            ["systemctl", "--user", "--no-pager", "is-system-running"],
+            capture_output=True,
+            timeout=5,
+        )
+        out = (r.stdout or b"").decode(errors="replace").strip()
+        return out in ("running", "degraded")
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        return False
+
+
+def install_linux_autostart() -> tuple[bool, str]:
+    """Register worker autostart on Linux.
+
+    Tries systemd --user first; falls back to an XDG autostart .desktop file.
+    On WSL without systemd the XDG file is written but won't trigger at logon —
+    the SessionStart watchdog in hooks_cli ensures the worker runs on every
+    Claude Code session regardless.
+    """
+    import sys
+    if sys.platform == "win32":
+        return True, "Windows: skipped"
+
+    cmd_args = paths.python_runner_argv("worker", "--daemon")
+    exec_str = " ".join(cmd_args)
+
+    if _systemd_user_available():
+        svc_dir = _systemd_user_dir()
+        svc_dir.mkdir(parents=True, exist_ok=True)
+        svc_path = _systemd_service_path()
+        svc_path.write_text(
+            "[Unit]\n"
+            "Description=token-goat background worker\n"
+            "After=default.target\n\n"
+            "[Service]\n"
+            "Type=simple\n"
+            f"ExecStart={exec_str}\n"
+            "Restart=on-failure\n"
+            "RestartSec=10\n\n"
+            "[Install]\n"
+            "WantedBy=default.target\n",
+            encoding="utf-8",
+        )
+        try:
+            subprocess.run(
+                ["systemctl", "--user", "daemon-reload"],
+                capture_output=True,
+                timeout=10,
+            )
+            subprocess.run(
+                ["systemctl", "--user", "enable", SYSTEMD_SERVICE_NAME],
+                capture_output=True,
+                timeout=10,
+            )
+            return True, f"systemd user service installed: {svc_path}"
+        except (FileNotFoundError, subprocess.TimeoutExpired) as e:
+            return False, f"systemd enable failed: {e}"
+
+    # Fallback: XDG autostart .desktop file. Works on desktop sessions (GNOME,
+    # KDE, XFCE). On WSL the SessionStart watchdog fills the gap.
+    desktop = _xdg_autostart_path()
+    desktop.parent.mkdir(parents=True, exist_ok=True)
+    desktop.write_text(
+        "[Desktop Entry]\n"
+        "Type=Application\n"
+        "Name=token-goat worker\n"
+        f"Exec={exec_str}\n"
+        "Hidden=false\n"
+        "NoDisplay=true\n"
+        "X-GNOME-Autostart-enabled=true\n",
+        encoding="utf-8",
+    )
+    return True, (
+        f"XDG autostart installed: {desktop} "
+        "(SessionStart watchdog also ensures the worker runs)"
+    )
+
+
+def uninstall_linux_autostart() -> list[str]:
+    """Remove Linux autostart entries. Returns a list of paths removed."""
+    import sys
+    if sys.platform == "win32":
+        return []
+
+    removed: list[str] = []
+
+    svc_path = _systemd_service_path()
+    if svc_path.exists():
+        try:
+            subprocess.run(
+                ["systemctl", "--user", "disable", "--now", SYSTEMD_SERVICE_NAME],
+                capture_output=True,
+                timeout=10,
+            )
+        except (FileNotFoundError, subprocess.TimeoutExpired):
+            pass
+        try:
+            svc_path.unlink()
+            subprocess.run(
+                ["systemctl", "--user", "daemon-reload"],
+                capture_output=True,
+                timeout=10,
+            )
+            removed.append(str(svc_path))
+        except OSError as e:
+            _LOG.warning("failed to remove systemd service: %s", e)
+
+    desktop = _xdg_autostart_path()
+    if desktop.exists():
+        try:
+            desktop.unlink()
+            removed.append(str(desktop))
+        except OSError as e:
+            _LOG.warning("failed to remove XDG autostart: %s", e)
+
+    return removed
+
+
+def install_linux_update_cron() -> tuple[bool, str]:
+    """Add a weekly Sunday 03:00 cron job to auto-update token-goat."""
+    import sys
+    if sys.platform == "win32":
+        return True, "Windows: skipped"
+
+    cron_line = f"0 3 * * 0 uv tool upgrade token-goat {CRON_JOB_MARKER}"
+    try:
+        r = subprocess.run(
+            ["crontab", "-l"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        existing = r.stdout if r.returncode == 0 else ""
+    except (FileNotFoundError, subprocess.TimeoutExpired) as e:
+        return False, f"crontab unavailable: {e}"
+
+    lines = [ln for ln in existing.splitlines() if CRON_JOB_MARKER not in ln]
+    lines.append(cron_line)
+    new_crontab = "\n".join(lines) + "\n"
+
+    try:
+        r2 = subprocess.run(
+            ["crontab", "-"],
+            input=new_crontab,
+            text=True,
+            capture_output=True,
+            timeout=10,
+        )
+        return r2.returncode == 0, f"cron job added: {cron_line}"
+    except (FileNotFoundError, subprocess.TimeoutExpired) as e:
+        return False, f"crontab write failed: {e}"
+
+
+def uninstall_linux_update_cron() -> str:
+    """Remove the token-goat cron job."""
+    import sys
+    if sys.platform == "win32":
+        return "n/a (Windows)"
+
+    try:
+        r = subprocess.run(
+            ["crontab", "-l"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        if r.returncode != 0:
+            return "no crontab found"
+        lines = [ln for ln in r.stdout.splitlines() if CRON_JOB_MARKER not in ln]
+        subprocess.run(
+            ["crontab", "-"],
+            input="\n".join(lines) + "\n",
+            text=True,
+            capture_output=True,
+            timeout=10,
+        )
+        return "cron job removed"
+    except (FileNotFoundError, subprocess.TimeoutExpired) as e:
+        return f"crontab unavailable: {e}"
+
+
+def _check_linux_autostart() -> str:
+    """Return the Linux autostart status string."""
+    import sys
+    if sys.platform == "win32":
+        return "n/a (Windows)"
+    if _systemd_service_path().exists():
+        return "installed (systemd user service)"
+    if _xdg_autostart_path().exists():
+        return "installed (XDG autostart)"
+    return "not installed"
+
+
+def _check_linux_update_cron() -> str:
+    """Return the Linux cron job status string."""
+    import sys
+    if sys.platform == "win32":
+        return "n/a (Windows)"
+    try:
+        r = subprocess.run(
+            ["crontab", "-l"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        if r.returncode != 0:
+            return "not installed (no crontab)"
+        return "installed" if CRON_JOB_MARKER in r.stdout else "not installed"
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        return "n/a (crontab unavailable)"
 
 
 # ---------------------------------------------------------------------------
@@ -859,14 +1101,20 @@ def _check_codex_config() -> str:
 
 def check_status() -> dict[str, str]:
     """Return a dict of integration name -> status string for display before install/uninstall."""
-    return {
+    import sys
+    status: dict[str, str] = {
         "Claude Code hooks (settings.json)": _check_settings_json(),
         "CLAUDE.md block": _check_claude_md(),
         "skill (SKILL.md)": _check_skill(),
-        "worker autostart (HKCU Run)": _check_worker_task(),
-        "update task (schtasks)": _check_update_task(),
-        "Codex hooks (config.toml)": _check_codex_config(),
     }
+    if sys.platform == "win32":
+        status["worker autostart (HKCU Run)"] = _check_worker_task()
+        status["update task (schtasks)"] = _check_update_task()
+    else:
+        status["worker autostart"] = _check_linux_autostart()
+        status["update cron"] = _check_linux_update_cron()
+    status["Codex hooks (config.toml)"] = _check_codex_config()
+    return status
 
 
 # ---------------------------------------------------------------------------
@@ -876,6 +1124,7 @@ def check_status() -> dict[str, str]:
 
 def install_all(install_codex: bool = False) -> dict:
     """Run the full install. Returns a dict of step -> result string."""
+    import sys
     paths.ensure_dirs()
     result: dict[str, str] = {}
 
@@ -888,11 +1137,16 @@ def install_all(install_codex: bool = False) -> dict:
     skill_path = write_skill()
     result["skill"] = f"ok — {skill_path}"
 
-    worker_ok, worker_out = install_worker_task()
-    result["task: worker"] = ("ok" if worker_ok else "FAIL") + f" — {worker_out[:200]}"
-
-    update_ok, update_out = install_update_task()
-    result["task: update"] = ("ok" if update_ok else "FAIL") + f" — {update_out[:200]}"
+    if sys.platform == "win32":
+        worker_ok, worker_out = install_worker_task()
+        result["task: worker"] = ("ok" if worker_ok else "FAIL") + f" — {worker_out[:200]}"
+        update_ok, update_out = install_update_task()
+        result["task: update"] = ("ok" if update_ok else "FAIL") + f" — {update_out[:200]}"
+    else:
+        worker_ok, worker_out = install_linux_autostart()
+        result["autostart: worker"] = ("ok" if worker_ok else "FAIL") + f" — {worker_out[:200]}"
+        update_ok, update_out = install_linux_update_cron()
+        result["cron: update"] = ("ok" if update_ok else "FAIL") + f" — {update_out[:200]}"
 
     # Spawn the worker right now (fail-soft)
     try:
@@ -940,6 +1194,7 @@ def _stop_worker() -> str:
 
 def uninstall_all(purge: bool = False, codex: bool = False) -> dict:
     """Reverse install. With purge=True also deletes the data directory."""
+    import sys
     result: dict[str, str] = {}
 
     try:
@@ -947,8 +1202,13 @@ def uninstall_all(purge: bool = False, codex: bool = False) -> dict:
     except Exception as e:  # noqa: BLE001
         result["worker"] = f"stop failed: {e}"
 
-    removed_tasks = uninstall_tasks()
-    result["tasks"] = f"removed: {removed_tasks}"
+    if sys.platform == "win32":
+        removed_tasks = uninstall_tasks()
+        result["tasks"] = f"removed: {removed_tasks}"
+    else:
+        removed_linux = uninstall_linux_autostart()
+        result["autostart"] = f"removed: {removed_linux}" if removed_linux else "none found"
+        result["cron"] = uninstall_linux_update_cron()
 
     result["settings.json"] = f"unpatched — {unpatch_settings_json()}"
     result["CLAUDE.md"] = f"unpatched — {unpatch_claude_md()}"
