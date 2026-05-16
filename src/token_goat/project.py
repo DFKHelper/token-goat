@@ -52,8 +52,15 @@ def make_project_at(root: Path) -> Project:
 
     Used for indexing arbitrary directories like ~/.claude/skills/ that have no
     .git, pyproject.toml, or other marker files.
+
+    Raises ValueError when *root* does not resolve to an existing directory.
+    This prevents accidental project creation for symlinks-to-files or
+    non-existent paths, which would cause the indexer to crawl nothing useful
+    while silently succeeding.
     """
     canonical = canonicalize(root)
+    if not canonical.is_dir():
+        raise ValueError(f"make_project_at: path is not a directory: {canonical}")
     return Project(root=canonical, hash=project_hash(canonical), marker="manual")
 
 
@@ -83,6 +90,32 @@ def _is_repo_container(path: Path) -> bool:
     return False
 
 
+def _marker_exists(current: Path, marker: str) -> bool:
+    """Return True when *marker* exists under *current* and is not a symlink that
+    escapes the candidate project root.
+
+    A bare ``(current / marker).exists()`` follows symlinks unconditionally.
+    That lets an attacker plant a symlink such as ``mydir/.git -> /etc/passwd``
+    to make find_project treat ``mydir`` as a project and trigger indexing of
+    arbitrary filesystem paths.  We allow symlinks only when they resolve to a
+    path still contained within *current*.
+    """
+    marker_path = current / marker
+    try:
+        if not marker_path.exists():
+            return False
+        # Symlink: verify the resolved target stays inside the candidate root.
+        if marker_path.is_symlink():
+            resolved = marker_path.resolve()
+            try:
+                resolved.relative_to(current.resolve())
+            except ValueError:
+                return False  # symlink escapes the project root — reject
+        return True
+    except OSError:
+        return False
+
+
 def find_project(cwd: Path | str) -> Project | None:
     r"""
     Walk up from cwd looking for a project marker.
@@ -96,7 +129,7 @@ def find_project(cwd: Path | str) -> Project | None:
     p = canonicalize(Path(cwd))
     for current in (p, *p.parents):
         for marker in PROJECT_MARKERS:
-            if (current / marker).exists():
+            if _marker_exists(current, marker):
                 if _is_repo_container(current):
                     break  # not a project — keep walking up
                 return Project(root=current, hash=project_hash(current), marker=marker)
