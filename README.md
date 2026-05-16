@@ -64,6 +64,8 @@ token-goat install
 
 Two commands. Done. Hooks register, a background worker starts at logon and stays out of the way. No terminal popups, no tray icon, no service to babysit.
 
+Two things change how Claude Code sessions behave: hooks fire automatically (image shrink, re-read dedup, compact manifests), and a block written to `~/.claude/CLAUDE.md` plus a registered skill tell the agent to prefer `token-goat read` / `symbol` / `section` over full-file reads. A `Bash(token-goat:*)` allowlist entry in `settings.json` lets the agent run those commands without a per-call approval prompt.
+
 On Linux and WSL, the worker registers as a systemd user service when systemd is available. On WSL without systemd, and on macOS, the SessionStart hook ensures the worker is running at the start of every Claude Code session.
 
 ### Codex CLI users
@@ -80,7 +82,7 @@ The `--codex` flag patches both Claude Code and Codex CLI in one pass.
 token-goat install --opencode
 ```
 
-Patches Claude Code and drops a TypeScript bridge plugin into opencode's plugins directory. Image shrinking, post-edit indexing, and compact assist work. Session hints don't — opencode's plugin API has no way to inject context before a tool read.
+The `--opencode` flag patches Claude Code and drops a TypeScript bridge plugin into opencode's plugins directory — one command, no separate base install. Image shrinking, post-edit indexing, and compact assist work. Session hints don't — opencode's plugin API has no way to inject context before a tool read.
 
 ### openclaw users
 
@@ -88,7 +90,7 @@ Patches Claude Code and drops a TypeScript bridge plugin into opencode's plugins
 token-goat install --openclaw
 ```
 
-Patches Claude Code and drops a TypeScript bridge plugin into `~/.openclaw/plugins/` and registers it in `openclaw.json`. Image shrinking, post-edit indexing, and pre-fetch denial work. Session hints and compact assist don't — no context injection point, no compaction event.
+The `--openclaw` flag patches Claude Code and drops a TypeScript bridge plugin into `~/.openclaw/plugins/` and registers it in `openclaw.json` — one command, no separate base install. Image shrinking, post-edit indexing, and pre-fetch denial work. Session hints and compact assist don't — no context injection point, no compaction event.
 
 ## CLI
 

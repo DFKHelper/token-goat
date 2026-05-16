@@ -256,15 +256,15 @@ def extract_chunks_for_file(
         covered.sort()
         n = len(lines)
         line_no = 1
-        range_cursor = 0  # advance-only index into sorted covered[]; never reset
+        covered_idx = 0  # advance-only index into sorted covered[]; never reset
 
         while line_no <= n:
-            # Advance range_cursor past ranges that end before line_no (no longer relevant).
-            while range_cursor < len(covered) and covered[range_cursor][1] < line_no:
-                range_cursor += 1
+            # Advance covered_idx past ranges that end before line_no (no longer relevant).
+            while covered_idx < len(covered) and covered[covered_idx][1] < line_no:
+                covered_idx += 1
             line_is_covered = (
-                range_cursor < len(covered)
-                and covered[range_cursor][0] <= line_no <= covered[range_cursor][1]
+                covered_idx < len(covered)
+                and covered[covered_idx][0] <= line_no <= covered[covered_idx][1]
             )
 
             if line_is_covered:
@@ -361,11 +361,11 @@ def index_project_embeddings(
                 new_chunks.append((ch, sha))
 
         # Embed + persist in batches
-        n_new_chunks = len(new_chunks)
-        total_batches = (n_new_chunks + batch_size - 1) // batch_size
-        _LOG.info("processing %d new chunks in %d batches (project=%s)", n_new_chunks, total_batches, project.hash[:8])
+        n_pending_embed = len(new_chunks)
+        total_batches = (n_pending_embed + batch_size - 1) // batch_size
+        _LOG.info("processing %d new chunks in %d batches (project=%s)", n_pending_embed, total_batches, project.hash[:8])
         n_stale_deleted = 0
-        for i in range(0, n_new_chunks, batch_size):
+        for i in range(0, n_pending_embed, batch_size):
             batch = new_chunks[i : i + batch_size]
             texts = [ch.text for ch, _ in batch]
             batch_t0 = time.time()
@@ -419,7 +419,7 @@ def index_project_embeddings(
                 embed_rows,
             )
             if progress:
-                progress(i + len(batch), n_new_chunks)
+                progress(i + len(batch), n_pending_embed)
 
         # Persist model metadata
         conn.execute(
@@ -481,17 +481,17 @@ def semantic_search(
     if not query or not query.strip():
         _LOG.debug("semantic_search: empty query; returning no results")
         return []
-    t0 = time.time()
+    t_embed_start = time.time()
     results = embed_texts([query], model_name=model_name)
     if not results:
         raise EmbeddingsUnavailable("embed_texts returned no vectors for query")
     qvec = results[0]
     if not qvec:
         raise EmbeddingsUnavailable("embed_texts returned empty vector for query")
-    embed_elapsed = time.time() - t0
+    embed_elapsed = time.time() - t_embed_start
     _LOG.debug("query embedded in %.3fs: %d dims", embed_elapsed, len(qvec))
 
-    t0 = time.time()
+    t_search_start = time.time()
     with db.open_project(project.hash) as conn:
         if not _check_vec_available(conn):
             raise EmbeddingsUnavailable("sqlite-vec not loaded")
@@ -506,7 +506,7 @@ def semantic_search(
             """,
             (_pack_vec(qvec), k),
         ).fetchall()
-    search_elapsed = time.time() - t0
+    search_elapsed = time.time() - t_search_start
     if rows:
         distances = [r["distance"] for r in rows]
         _LOG.info(

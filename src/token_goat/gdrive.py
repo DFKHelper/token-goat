@@ -14,6 +14,15 @@ _LOG = logging.getLogger("token_goat.gdrive")
 
 _DRIVE_SCOPES = ["https://www.googleapis.com/auth/drive.readonly"]
 
+# OAuth error messages that indicate the refresh token is permanently invalid
+# (revoked or expired grant), as opposed to a transient network failure.
+_PERMANENT_OAUTH_ERROR_KEYWORDS = (
+    "invalid_grant",
+    "token has been expired",
+    "token has been revoked",
+    "unauthorized_client",
+)
+
 
 def _write_creds_secure(path: Path, content: str) -> None:
     """Write OAuth credential JSON to *path* with owner-only permissions (0o600).
@@ -91,9 +100,8 @@ def _try_stored_oauth() -> object | None:
                 # Distinguish permanent failures (revoked/invalid grant) from
                 # transient network errors so we only delete stale creds when
                 # the server definitively rejects them.
-                err_str = str(refresh_err).lower()
-                _permanent_keywords = ("invalid_grant", "token has been expired", "token has been revoked", "unauthorized_client")
-                if any(kw in err_str for kw in _permanent_keywords):
+                refresh_err_lower = str(refresh_err).lower()
+                if any(kw in refresh_err_lower for kw in _PERMANENT_OAUTH_ERROR_KEYWORDS):
                     _LOG.warning(
                         "OAuth refresh token permanently invalid (revoked or expired grant); "
                         "removing stale credentials so re-auth is triggered"
