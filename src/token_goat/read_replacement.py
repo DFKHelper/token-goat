@@ -9,14 +9,14 @@ from pathlib import Path
 from typing import Any
 
 from . import db
-from .parser import MAX_FILE_SIZE
 from .paths import is_safe_rel_path as _is_safe_rel_path
 from .project import Project
 
-# Maximum file size allowed for symbol/section extraction.  Mirrors the
-# indexer's MAX_FILE_SIZE so a file that grew after indexing cannot cause an
-# unbounded in-memory read when the caller requests a slice from it.
-_MAX_READ_BYTES = MAX_FILE_SIZE
+# Maximum file size allowed for symbol/section extraction.  Mirrors parser.MAX_FILE_SIZE
+# (2 MB) so a file that grew after indexing cannot cause an unbounded in-memory read
+# when the caller requests a slice from it.  Defined here as a local constant to avoid
+# importing the heavy parser module (tree-sitter, language grammars) at CLI startup time.
+_MAX_READ_BYTES = 2_000_000  # 2 MB — keep in sync with parser.MAX_FILE_SIZE
 
 _LOG = logging.getLogger("token_goat.read_replacement")
 
