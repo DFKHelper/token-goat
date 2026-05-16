@@ -3,7 +3,7 @@
 </p>
 
 <p align="center">
-  Cuts the tokens Claude Code and Codex CLI burn. Windows, Linux, WSL, and macOS. Install once, then forget it.
+  Cuts the tokens Claude Code, Codex CLI, opencode, and openclaw burn. Windows, Linux, WSL, and macOS. Install once, then forget it.
 </p>
 
 <p align="center">
@@ -74,6 +74,22 @@ token-goat install --codex
 
 The `--codex` flag patches both Claude Code and Codex CLI in one pass.
 
+### opencode users
+
+```
+token-goat install --opencode
+```
+
+Patches Claude Code and drops a TypeScript bridge plugin into opencode's plugins directory. Image shrinking, post-edit indexing, and compact assist work. Session hints don't — opencode's plugin API has no way to inject context before a tool read.
+
+### openclaw users
+
+```
+token-goat install --openclaw
+```
+
+Patches Claude Code and drops a TypeScript bridge plugin into `~/.openclaw/plugins/` and registers it in `openclaw.json`. Image shrinking, post-edit indexing, and pre-fetch denial work. Session hints and compact assist don't — no context injection point, no compaction event.
+
 ## CLI
 
 | Command | What it does |
@@ -136,6 +152,19 @@ Contains the symbol index (`global.db`, per-project `.db` files), session cache,
 | `~/.codex/config.toml` | Hooks block with Codex-specific matchers (`view_image|Bash`, `apply_patch`, `web_search`). Existing hooks preserved. |
 | `~/.codex/AGENTS.md` | A delimited block (`<!-- token-goat-codex-begin -->` … `<!-- token-goat-codex-end -->`) with the same routing guidance, adapted for Codex tool names. |
 
+**With `--opencode`** (opencode plugin)
+
+| Path | What |
+|------|------|
+| `~/.config/opencode/plugins/token-goat.ts` (Linux/macOS) or `%APPDATA%\opencode\plugins\token-goat.ts` (Windows) | TypeScript bridge plugin. Fires on `tool.execute.before`, `tool.execute.after`, and `experimental.session.compacting`. Covers image shrinking, post-edit indexing, and compact assist. |
+
+**With `--openclaw`** (openclaw plugin)
+
+| Path | What |
+|------|------|
+| `~/.openclaw/plugins/token-goat-bridge.ts` | TypeScript bridge plugin. Fires on `before_tool_call` and `after_tool_call`. Covers image shrinking, post-edit indexing, and pre-fetch denial. |
+| `~/.openclaw/openclaw.json` | Plugin entry added under `plugins.entries`. Existing entries preserved. |
+
 ## Zero maintenance
 
 After install, there is nothing to start, stop, or restart. The worker runs at logon on Windows, Linux, and macOS; on WSL without systemd, the SessionStart hook covers it. Survives reboots on every platform. `token-goat uninstall` reverses every change, including the startup entry.
@@ -175,7 +204,7 @@ Add-MpPreference -ExclusionPath "$env:LOCALAPPDATA\dfk-helper\token-goat"
 token-goat uninstall
 ```
 
-Reverses everything in [What gets installed?](#what-gets-installed): the scheduled task or systemd unit, the registry value or `.desktop` or `.plist`, the hook entries in `settings.json`, the `CLAUDE.md` block, the skill directory. Add `--codex` to also strip the Codex integration. Add `--purge` to also delete the data directory (cache, index, models, logs). Nothing else on the system depends on it.
+Reverses everything in [What gets installed?](#what-gets-installed): the scheduled task or systemd unit, the registry value or `.desktop` or `.plist`, the hook entries in `settings.json`, the `CLAUDE.md` block, the skill directory. Add `--codex`, `--opencode`, or `--openclaw` to also strip those integrations. Add `--purge` to also delete the data directory (cache, index, models, logs). Nothing else on the system depends on it.
 
 ## About
 
