@@ -317,9 +317,23 @@ def _render_by_kind_section(stats: StatsData) -> list[str]:
     # Bar scaling uses positive-only gross so the widest positive bar fills to 100%.
     # Share % uses absolute-value totals so overhead kinds (negative bytes/tokens)
     # reduce the denominator and prevent the dominant positive kind from hitting 100%.
-    gross_bytes = max(sum(k.bytes for k in stats.by_kind if k.bytes > 0), 1)
-    share_bytes_denom = max(sum(abs(k.bytes) for k in stats.by_kind), 1)
-    share_tokens_denom = sum(abs(k.tokens) for k in stats.by_kind)
+    # Single pass over by_kind to compute all three aggregates and collect metadata.
+    _gross_bytes_sum = 0
+    _share_bytes_sum = 0
+    _share_tokens_sum = 0
+    _kind_names: set[str] = set()
+    bytes_mode_kinds: list[str] = []
+    for _k in stats.by_kind:
+        if _k.bytes > 0:
+            _gross_bytes_sum += _k.bytes
+        _share_bytes_sum += abs(_k.bytes)
+        _share_tokens_sum += abs(_k.tokens)
+        _kind_names.add(_k.kind)
+        if _k.bytes_mode_only:
+            bytes_mode_kinds.append(_k.kind)
+    gross_bytes = max(_gross_bytes_sum, 1)
+    share_bytes_denom = max(_share_bytes_sum, 1)
+    share_tokens_denom = _share_tokens_sum
 
     for k in stats.by_kind:
         if k.bytes_mode_only or share_tokens_denom == 0:
@@ -332,7 +346,6 @@ def _render_by_kind_section(stats: StatsData) -> list[str]:
             bytes_mode_only=k.bytes_mode_only,
         ))
 
-    bytes_mode_kinds = [k.kind for k in stats.by_kind if k.bytes_mode_only]
     if bytes_mode_kinds:
         names = ", ".join(bytes_mode_kinds)
         msg = (
@@ -341,9 +354,7 @@ def _render_by_kind_section(stats: StatsData) -> list[str]:
         )
         lines.append(msg)
 
-    if any(k.kind == "session_hint" for k in stats.by_kind) and any(
-        k.kind == "session_hint_overhead" for k in stats.by_kind
-    ):
+    if "session_hint" in _kind_names and "session_hint_overhead" in _kind_names:
         lines.append(
             f"{_M}{fg(*C.TEXT_DIM)}i  {_STATS_MESSAGES['sessionHintSplitNote']}{RESET}"
         )

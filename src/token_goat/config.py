@@ -109,8 +109,13 @@ def _validated_triggers(val: object, default: list[str]) -> list[str]:
     if not isinstance(val, list):
         _LOG.warning("config: triggers must be a list; using default %s", default)
         return list(default)
-    valid = [t for t in val if isinstance(t, str) and t in _VALID_TRIGGERS]
-    unknown = [t for t in val if not isinstance(t, str) or t not in _VALID_TRIGGERS]
+    valid: list[str] = []
+    unknown: list[object] = []
+    for t in val:
+        if isinstance(t, str) and t in _VALID_TRIGGERS:
+            valid.append(t)
+        else:
+            unknown.append(t)
     if unknown:
         _LOG.warning("config: unknown trigger values ignored: %s", unknown)
     return valid if valid else list(default)
