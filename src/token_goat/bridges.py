@@ -391,6 +391,37 @@ _OPENCLAW_PLUGIN_ID = "token-goat-bridge"
 _OPENCLAW_FILENAME = "token-goat-bridge.ts"
 
 
+def _openclaw_entries(cfg: dict[str, object]) -> dict[str, object]:
+    """Return the ``plugins.entries`` dict from an openclaw config, creating it if absent.
+
+    The three callers (install, uninstall, check) all traverse the same two-level
+    path ``cfg["plugins"]["entries"]`` with identical isinstance guards.  Extracted
+    here to avoid repeating the traversal in each caller.
+
+    Mutates *cfg* in-place only when the intermediate keys are missing (safe for
+    the install path); for read-only callers (check/uninstall) the dict is already
+    present and is returned as-is.
+    """
+    raw_plugins = cfg.setdefault("plugins", {})
+    plugins: dict[str, object] = raw_plugins if isinstance(raw_plugins, dict) else {}
+    cfg["plugins"] = plugins
+    raw_entries = plugins.setdefault("entries", {})
+    entries: dict[str, object] = raw_entries if isinstance(raw_entries, dict) else {}
+    plugins["entries"] = entries
+    return entries
+
+
+def _openclaw_entries_readonly(cfg: dict[str, object]) -> dict[str, object]:
+    """Return the ``plugins.entries`` dict from an openclaw config without mutating *cfg*.
+
+    Used by read/uninstall paths where creating missing keys would corrupt a
+    config that genuinely has no plugins section yet.
+    """
+    raw_plugins = cfg.get("plugins", {})
+    raw_entries = raw_plugins.get("entries", {}) if isinstance(raw_plugins, dict) else {}
+    return raw_entries if isinstance(raw_entries, dict) else {}
+
+
 def install_openclaw_plugin() -> str:
     """Write the openclaw bridge plugin and register it in openclaw.json. Returns the path."""
     plugins_dir = openclaw_plugins_dir()
@@ -406,12 +437,7 @@ def install_openclaw_plugin() -> str:
         _LOG.debug("openclaw.json read failed, starting fresh: %s", e)
         cfg = {}
 
-    raw_plugins = cfg.setdefault("plugins", {})
-    plugins: dict[str, object] = raw_plugins if isinstance(raw_plugins, dict) else {}
-    cfg["plugins"] = plugins
-    raw_entries = plugins.setdefault("entries", {})
-    entries: dict[str, object] = raw_entries if isinstance(raw_entries, dict) else {}
-    plugins["entries"] = entries
+    entries = _openclaw_entries(cfg)
     entries[_OPENCLAW_PLUGIN_ID] = {"enabled": True, "path": str(plugin_path)}
     _save_json_config(cfg_path, cfg)
 
@@ -432,9 +458,7 @@ def uninstall_openclaw_plugin() -> str:
     if cfg_path.exists():
         try:
             cfg = _load_json_config(cfg_path)
-            raw_plugins = cfg.get("plugins", {})
-            raw_entries = raw_plugins.get("entries", {}) if isinstance(raw_plugins, dict) else {}
-            entries: dict[str, object] = raw_entries if isinstance(raw_entries, dict) else {}
+            entries = _openclaw_entries_readonly(cfg)
             if _OPENCLAW_PLUGIN_ID in entries:
                 del entries[_OPENCLAW_PLUGIN_ID]
                 _save_json_config(cfg_path, cfg)
@@ -464,10 +488,7 @@ def _check_openclaw_plugin() -> str:
     if cfg_path.exists():
         try:
             cfg = _load_json_config(cfg_path)
-            raw_plugins = cfg.get("plugins", {})
-            raw_entries = raw_plugins.get("entries", {}) if isinstance(raw_plugins, dict) else {}
-            entries_check: dict[str, object] = raw_entries if isinstance(raw_entries, dict) else {}
-            registered = _OPENCLAW_PLUGIN_ID in entries_check
+            registered = _OPENCLAW_PLUGIN_ID in _openclaw_entries_readonly(cfg)
         except (json.JSONDecodeError, OSError) as e:
             _LOG.debug("openclaw.json read failed in check: %s", e)
 
