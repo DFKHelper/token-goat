@@ -20,6 +20,15 @@ LARGE_FILE_LINE_THRESHOLD = 500
 MIN_OVERLAP_TO_WARN = 50  # only warn about overlap if >50 lines overlap
 DEFAULT_READ_LIMIT = 2000  # Claude Code's default lines-per-Read
 
+# How many bytes to assume per line when estimating line count from file size.
+# This is intentionally conservative (real code averages 30-50 bytes/line) so
+# we slightly overestimate the line count rather than underestimate it.
+_BYTES_PER_LINE_ESTIMATE = 75
+
+# Maximum number of indexed symbols to fetch per file in one DB query.
+# Enough to fill a useful hint; the full list is available via `token-goat symbol`.
+_MAX_INDEXED_SYMBOLS_FETCHED = 50
+
 
 class ReadHint(str):
     """A pre-read hint string carrying the genuine token saving it represents.
@@ -70,18 +79,23 @@ def _get_indexed_symbols_and_line_count(
 ) -> tuple[list[dict], int | None, bool]:
     """Return symbols AND actual or estimated line count in one query.
 
-    Returns a third flag indicating whether the line count is exact (stored in
-    the files table) versus an estimate derived from file size.
+    Returns a third flag indicating whether the returned line count is exact
+    (read from the ``line_count`` column) or estimated from file size.
+
+    The two-step SELECT handles older DB schemas that pre-date the ``line_count``
+    column: first try the full query; if ``line_count`` is missing, fall back to
+    ``size``-only and mark the schema as lacking the column.
     """
     try:
         with db.open_project(project_hash) as conn:
-            # Fetch file metadata and symbols in one round-trip
+            # Fetch file metadata and symbols in one round-trip.
+            # db_has_line_count_column tracks whether the schema supports line_count.
             try:
                 file_row = conn.execute(
                     "SELECT size, line_count FROM files WHERE rel_path = ?",
                     (file_rel,),
                 ).fetchone()
-                has_exact_line_count = True
+                db_has_line_count_column = True
             except sqlite3.OperationalError as exc:
                 if "line_count" not in str(exc).lower():
                     raise
@@ -89,34 +103,34 @@ def _get_indexed_symbols_and_line_count(
                     "SELECT size FROM files WHERE rel_path = ?",
                     (file_rel,),
                 ).fetchone()
-                has_exact_line_count = False
+                db_has_line_count_column = False
 
             sym_rows = conn.execute(
-                """
+                f"""
                 SELECT kind, name, line, end_line
                 FROM symbols
                 WHERE file_rel = ? AND name IS NOT NULL
                 ORDER BY line
-                LIMIT 50
+                LIMIT {_MAX_INDEXED_SYMBOLS_FETCHED}
                 """,
                 (file_rel,),
             ).fetchall()
 
-            # If DB has file metadata, estimate lines from file size.
-            # Rough estimate: 50-100 bytes per line for code.
+            # Resolve line count: prefer the stored exact value; fall back to a
+            # size-based estimate when the column is absent or NULL.
             if file_row:
-                if has_exact_line_count and file_row["line_count"] is not None:
+                if db_has_line_count_column and file_row["line_count"] is not None:
                     n_lines = int(file_row["line_count"])
-                    exact_line_count = True
+                    line_count_is_exact = True
                 else:
                     size = file_row["size"]
-                    n_lines = max(1, size // 75)  # conservative estimate
-                    exact_line_count = False
+                    n_lines = max(1, size // _BYTES_PER_LINE_ESTIMATE)
+                    line_count_is_exact = False
             else:
                 n_lines = None
-                exact_line_count = False
+                line_count_is_exact = False
 
-            return [dict(r) for r in sym_rows], n_lines, exact_line_count
+            return [dict(r) for r in sym_rows], n_lines, line_count_is_exact
     except Exception:  # noqa: BLE001
         _LOG.exception("failed to load indexed symbols for %s", file_rel)
         return [], None, False
@@ -250,7 +264,7 @@ def _hint_from_index(
         return None
 
     # Fetch symbols; line count comes from file if DB estimate is unreliable
-    symbols, estimated_lines, exact_line_count = _get_indexed_symbols_and_line_count(
+    symbols, estimated_lines, line_count_is_exact = _get_indexed_symbols_and_line_count(
         rel, project.hash
     )
     if not symbols:
@@ -260,7 +274,7 @@ def _hint_from_index(
     n_lines = estimated_lines
     if n_lines is None:
         return None
-    if exact_line_count:
+    if line_count_is_exact:
         if n_lines < LARGE_FILE_LINE_THRESHOLD:
             return None
     elif n_lines < LARGE_FILE_LINE_THRESHOLD:

@@ -17,6 +17,9 @@ _LOG = logging.getLogger("token_goat.compact")
 _MAX_FILES_READ = 10
 _MAX_SYMBOLS_FILES = 8
 _MAX_RANGES_PER_FILE = 4
+# Max symbols listed per file entry in the manifest (separate from _MAX_SYMBOLS_FILES,
+# which caps the number of *files* that show any symbols at all).
+_MAX_SYMBOLS_PER_FILE_ENTRY = 6
 
 
 def _short_path(p: str, max_len: int = 70) -> str:
@@ -100,8 +103,8 @@ def _render(cache: SessionCache, session_id: str, max_tokens: int) -> str:
     if files_with_symbols:
         sections.append("### Symbols Accessed")
         for entry in files_with_symbols[:_MAX_SYMBOLS_FILES]:
-            syms = entry.symbols_read[:6]
-            overflow = len(entry.symbols_read) - 6
+            syms = entry.symbols_read[:_MAX_SYMBOLS_PER_FILE_ENTRY]
+            overflow = len(entry.symbols_read) - _MAX_SYMBOLS_PER_FILE_ENTRY
             sym_str = ", ".join(syms) + (f" +{overflow}" if overflow > 0 else "")
             sections.append(f"- {_short_path(entry.rel_or_abs)} → {sym_str}")
         sections.append("")

@@ -30,6 +30,10 @@ _LOG = logging.getLogger("token_goat.repomap")
 _MIN_DISPLAY_LINES = 4
 # POSIX path prefixes excluded from the map — these dirs are test fixtures, not source
 _EXCLUDED_PREFIXES = ("tests/fixtures/",)
+# Bytes-per-line divisor used to estimate line count from file size.
+# Code files average 30–60 bytes/line; 50 gives a conservative (slightly
+# over-counting) estimate so we include borderline files rather than drop them.
+_BYTES_PER_APPROX_LINE = 50
 
 
 def _is_map_worthy(rel_path: str, approx_lines: int) -> bool:
@@ -236,7 +240,7 @@ def _summarize_file(
 
     # Filter sections to level <= 2 and limit to max_sections
     top_sections = [h for lvl, h in sections if lvl <= 2][:max_sections]
-    approx_lines = max(1, info["size"] // 50)
+    approx_lines = max(1, info["size"] // _BYTES_PER_APPROX_LINE)
     return FileSummary(
         rel_path=rel,
         language=info["language"],
@@ -345,7 +349,7 @@ def _load_and_rank(
         files = {
             rel: info
             for rel, info in files.items()
-            if _is_map_worthy(rel, max(1, info["size"] // 50))
+            if _is_map_worthy(rel, max(1, info["size"] // _BYTES_PER_APPROX_LINE))
         }
         graph = _build_graph(conn, files, name_to_files)
         summary_cache = _load_summary_cache(conn)

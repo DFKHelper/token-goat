@@ -4,7 +4,7 @@ from __future__ import annotations
 import json
 import logging
 import sqlite3
-from collections import defaultdict
+from collections import defaultdict, deque
 from collections.abc import Callable, Sequence
 from pathlib import Path
 
@@ -157,11 +157,12 @@ def _collect_transitive_outgoing(
     max_depth=0 means unlimited.
     """
     result: dict[str, dict] = {}
-    queue: list[tuple[str, int]] = [(start_rel, 0)]
+    # Use a deque for O(1) popleft — list.pop(0) is O(n) and misreads as a stack.
+    bfs_queue: deque[tuple[str, int]] = deque([(start_rel, 0)])
     visited: set[str] = {start_rel}
 
-    while queue:
-        current, depth = queue.pop(0)
+    while bfs_queue:
+        current, depth = bfs_queue.popleft()
         next_depth = depth + 1
         if max_depth and next_depth > max_depth:
             continue
@@ -169,7 +170,7 @@ def _collect_transitive_outgoing(
             if dep_file not in visited:
                 visited.add(dep_file)
                 result[dep_file] = {"depth": next_depth, "via": current, "symbols": symbols}
-                queue.append((dep_file, next_depth))
+                bfs_queue.append((dep_file, next_depth))
             elif dep_file in result and result[dep_file]["depth"] == next_depth:
                 result[dep_file]["symbols"] |= symbols
 
@@ -357,19 +358,19 @@ def deps(
         if depth != 1:
             transitive = _collect_transitive_outgoing(conn, rel, max_depth=depth)
 
-    dep_edge_count = sum(len(v) for v in outgoing.values())
-    dep_file_count = len(outgoing)
-    dpt_edge_count = sum(len(v) for v in incoming.values())
-    dpt_file_count = len(incoming)
+    outgoing_edge_count = sum(len(v) for v in outgoing.values())
+    outgoing_file_count = len(outgoing)
+    incoming_edge_count = sum(len(v) for v in incoming.values())
+    incoming_file_count = len(incoming)
 
     if json_output:
         payload: dict[str, object] = {
             "file": rel,
             "depth": depth,
-            "dependency_file_count": dep_file_count,
-            "dependency_edge_count": dep_edge_count,
-            "dependent_file_count": dpt_file_count,
-            "dependent_edge_count": dpt_edge_count,
+            "dependency_file_count": outgoing_file_count,
+            "dependency_edge_count": outgoing_edge_count,
+            "dependent_file_count": incoming_file_count,
+            "dependent_edge_count": incoming_edge_count,
             "unresolved_ref_count": len(unresolved),
             "dependencies": {
                 dep: sorted(syms)
@@ -389,10 +390,10 @@ def deps(
         typer.echo(json.dumps(payload))
         return
 
-    dep_summary = f"{dep_file_count} file{'s' if dep_file_count != 1 else ''}, {dep_edge_count} edge{'s' if dep_edge_count != 1 else ''}"
-    dpt_summary = f"{dpt_file_count} file{'s' if dpt_file_count != 1 else ''}, {dpt_edge_count} edge{'s' if dpt_edge_count != 1 else ''}"
+    outgoing_summary = f"{outgoing_file_count} file{'s' if outgoing_file_count != 1 else ''}, {outgoing_edge_count} edge{'s' if outgoing_edge_count != 1 else ''}"
+    incoming_summary = f"{incoming_file_count} file{'s' if incoming_file_count != 1 else ''}, {incoming_edge_count} edge{'s' if incoming_edge_count != 1 else ''}"
     typer.echo(f"Dependency graph for {rel}")
-    typer.echo(f"Dependencies ({dep_summary}):")
+    typer.echo(f"Dependencies ({outgoing_summary}):")
     if outgoing:
         for dep_rel, symbols in sorted(outgoing.items(), key=lambda item: (-len(item[1]), item[0])):
             typer.echo(_format_dependency_line(dep_rel, symbols))
@@ -408,7 +409,7 @@ def deps(
                 via_note = f"  via {info['via']}" if info["via"] != rel else ""
                 typer.echo(f"{indent}{_format_dependency_line(dep_rel, info['symbols'])}{via_note}")
 
-    typer.echo(f"Dependents ({dpt_summary}):")
+    typer.echo(f"Dependents ({incoming_summary}):")
     if incoming:
         for dep_rel, symbols in sorted(incoming.items(), key=lambda item: (-len(item[1]), item[0])):
             typer.echo(_format_dependency_line(dep_rel, symbols))
