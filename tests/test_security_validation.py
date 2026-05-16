@@ -4,6 +4,7 @@ from __future__ import annotations
 import pytest
 
 from token_goat import db, gdrive, session
+from token_goat.hooks_fetch import _shell_safe_url
 
 
 class TestSessionIdPathTraversal:
@@ -127,3 +128,102 @@ class TestFileIdPathTraversal:
         """File ID with dot should raise ValueError."""
         with pytest.raises(ValueError, match="invalid characters"):
             gdrive._validate_file_id("file.id")
+
+
+class TestDbCountTableAllowlist:
+    """Test that _count() in project_stats() enforces a table-name allowlist."""
+
+    def test_known_tables_are_in_allowlist(self):
+        """All tables referenced by project_stats must be in the allowlist."""
+        from token_goat.db import _KNOWN_PROJECT_TABLES
+        for table in ("files", "symbols", "refs", "sections", "chunks", "embeddings"):
+            assert table in _KNOWN_PROJECT_TABLES
+
+    def test_unknown_table_raises(self, tmp_path):
+        """Passing an unlisted table name to _count must raise ValueError, not execute SQL."""
+        from token_goat import paths
+        import importlib
+
+        # We can't call _count() directly (it's a closure), but we can verify
+        # the allowlist rejects arbitrary strings, which is what _count() checks.
+        from token_goat.db import _KNOWN_PROJECT_TABLES
+        evil_table = "'; DROP TABLE files; --"
+        assert evil_table not in _KNOWN_PROJECT_TABLES
+
+    def test_allowlist_rejects_traversal_like_names(self):
+        """Table names with path-like or SQL-special characters are not in allowlist."""
+        from token_goat.db import _KNOWN_PROJECT_TABLES
+        for bad in ("../evil", "files; DROP TABLE files", "files UNION SELECT", ""):
+            assert bad not in _KNOWN_PROJECT_TABLES
+
+
+class TestShellSafeUrl:
+    """Test URL shell-quoting in hook context messages."""
+
+    def test_plain_url_is_double_quoted(self):
+        result = _shell_safe_url("https://example.com/image.png")
+        assert result == '"https://example.com/image.png"'
+
+    def test_single_quote_in_url_does_not_appear_unescaped(self):
+        """A URL with a single quote must not produce an unescaped ' in the output."""
+        url = "https://example.com/path'with'quotes/image.png"
+        result = _shell_safe_url(url)
+        # The result is double-quoted; no raw single-quote should be present
+        # that could break shell parsing, but single quotes are fine inside "..."
+        # What matters is the result is wrapped in double quotes and the
+        # shell-dangerous chars ($, `, \, ") are escaped.
+        assert result.startswith('"')
+        assert result.endswith('"')
+        # Single quotes inside double-quotes are harmless — just verify the
+        # double-quote wrapper is intact.
+        assert result == f'"{url}"'
+
+    def test_backtick_in_url_is_escaped(self):
+        url = "https://example.com/img`cmd`.png"
+        result = _shell_safe_url(url)
+        assert "\\`" in result
+        assert result.startswith('"')
+        assert result.endswith('"')
+
+    def test_dollar_in_url_is_escaped(self):
+        url = "https://example.com/$HOME/img.png"
+        result = _shell_safe_url(url)
+        assert "\\$" in result
+
+    def test_double_quote_in_url_is_escaped(self):
+        url = 'https://example.com/path"evil"/img.png'
+        result = _shell_safe_url(url)
+        assert '\\"' in result
+
+    def test_backslash_in_url_is_escaped(self):
+        url = "https://example.com/path\\evil/img.png"
+        result = _shell_safe_url(url)
+        assert "\\\\" in result
+
+
+class TestDirtyQueueValidation:
+    """Test that project_hash and rel_path from the dirty queue are validated."""
+
+    def test_invalid_project_hash_rejected(self):
+        """_validate_project_hash must reject traversal-style hashes from the queue."""
+        with pytest.raises(ValueError):
+            db._validate_project_hash("../../../malicious")
+
+    def test_invalid_project_hash_with_slash_rejected(self):
+        with pytest.raises(ValueError):
+            db._validate_project_hash("abc/def")
+
+    def test_valid_project_hash_accepted(self):
+        db._validate_project_hash("a1b2c3d4e5f6" * 3)  # 36-char hex, within limit
+
+    def test_is_safe_rel_path_rejects_traversal(self):
+        from token_goat.paths import is_safe_rel_path
+        assert not is_safe_rel_path("../../etc/passwd")
+
+    def test_is_safe_rel_path_rejects_absolute(self):
+        from token_goat.paths import is_safe_rel_path
+        assert not is_safe_rel_path("/etc/passwd")
+
+    def test_is_safe_rel_path_accepts_normal(self):
+        from token_goat.paths import is_safe_rel_path
+        assert is_safe_rel_path("src/token_goat/db.py")

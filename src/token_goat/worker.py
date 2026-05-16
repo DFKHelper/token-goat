@@ -952,6 +952,19 @@ def _process_dirty_entries(entries: list[DirtyQueueEntry]) -> None:
         if not ph or not rel:
             _LOG.debug("skipping malformed queue entry (missing hash or path)")
             continue
+        # Validate project_hash and rel_path from the queue before using them in
+        # path operations.  The dirty queue is written by the same process, but a
+        # corrupt or tampered queue file could otherwise direct path construction
+        # outside the expected directories.
+        try:
+            db._validate_project_hash(ph)
+        except ValueError:
+            _LOG.warning("dirty queue: skipping entry with invalid project_hash %r", ph)
+            continue
+        from .paths import is_safe_rel_path  # noqa: PLC0415
+        if not is_safe_rel_path(rel):
+            _LOG.warning("dirty queue: skipping entry with unsafe rel path %r", rel)
+            continue
         if ph not in by_project:
             by_project[ph] = _ProjectBucket(rels=set(), root=None, marker=None)
         bucket = by_project[ph]
