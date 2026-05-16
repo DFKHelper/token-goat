@@ -2,9 +2,13 @@
 from __future__ import annotations
 
 import hashlib
+import logging
 import os
+import time
 from dataclasses import dataclass
 from pathlib import Path
+
+_LOG = logging.getLogger("token_goat.project")
 
 PROJECT_MARKERS = (
     ".git",
@@ -84,8 +88,10 @@ def _is_repo_container(path: Path) -> bool:
                 if entry.is_dir(follow_symlinks=False) and (Path(entry.path) / ".git").exists():
                     nested_repos += 1
                     if nested_repos >= _REPO_CONTAINER_THRESHOLD:
+                        _LOG.debug("repo container detected: %s (>=%d nested .git dirs)", path, _REPO_CONTAINER_THRESHOLD)
                         return True
-    except OSError:
+    except OSError as exc:
+        _LOG.debug("_is_repo_container: scandir failed for %s: %s", path, exc)
         return False
     return False
 
@@ -124,11 +130,22 @@ def find_project(cwd: Path | str) -> Project | None:
 
     Returns None if none found (e.g., user is in C:\Projects\ with 100 sibling dirs).
     """
+    t0 = time.monotonic()
     p = canonicalize(Path(cwd))
+    levels_walked = 0
     for current in (p, *p.parents):
         for marker in PROJECT_MARKERS:
             if _marker_exists(current, marker):
                 if _is_repo_container(current):
+                    _LOG.debug("find_project: skipping container at %s (marker=%s)", current, marker)
                     break  # not a project — keep walking up
+                elapsed = time.monotonic() - t0
+                _LOG.debug(
+                    "find_project: found %s (marker=%s, levels_walked=%d, %.3fs)",
+                    current, marker, levels_walked, elapsed,
+                )
                 return Project(root=current, hash=project_hash(current), marker=marker)
+        levels_walked += 1
+    elapsed = time.monotonic() - t0
+    _LOG.debug("find_project: no project found from %s (levels_walked=%d, %.3fs)", p, levels_walked, elapsed)
     return None

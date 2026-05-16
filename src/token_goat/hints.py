@@ -152,6 +152,7 @@ def build_read_hint(
 ) -> ReadHint | None:
     """Return a ReadHint, or None when no hint is warranted."""
     if not session_id or not file_path:
+        _LOG.debug("build_read_hint: skipped (session_id=%r, file_path=%r)", session_id, file_path)
         return None
 
     # Requested line range (1-indexed inclusive).
@@ -160,13 +161,28 @@ def build_read_hint(
     req_start = safe_offset + 1
     req_end = req_start + (safe_limit or DEFAULT_READ_LIMIT) - 1
 
+    fname = Path(file_path).name
+
     # 1. Check session cache first.
     entry = session.get_file_entry(session_id, file_path, cache=cache)
     if entry is not None:
-        return _hint_from_cache(entry, req_start, req_end, file_path)
+        hint = _hint_from_cache(entry, req_start, req_end, file_path)
+        if hint is not None:
+            _LOG.debug(
+                "build_read_hint: cache hint for %s lines %d-%d (tokens_saved=%d)",
+                fname, req_start, req_end, hint.tokens_saved,
+            )
+        else:
+            _LOG.debug("build_read_hint: no hint (non-overlapping prior read of %s)", fname)
+        return hint
 
     # 2. Not cached — consider "large file with indexed symbols" suggestion.
-    return _hint_from_index(file_path, cwd, req_start, req_end)
+    hint = _hint_from_index(file_path, cwd, req_start, req_end)
+    if hint is not None:
+        _LOG.debug("build_read_hint: index hint for %s (large file suggestion)", fname)
+    else:
+        _LOG.debug("build_read_hint: no hint for %s (not in session cache, not large/indexed)", fname)
+    return hint
 
 
 # ---------------------------------------------------------------------------
@@ -281,11 +297,14 @@ def _hint_from_index(
     req_end: int,
 ) -> ReadHint | None:
     """Build hint when file is large and has indexed symbols but not yet cached."""
+    fname = Path(file_path).name
     if cwd is None:
+        _LOG.debug("_hint_from_index: skipped for %s (no cwd)", fname)
         return None
 
     project = find_project(Path(cwd))
     if project is None:
+        _LOG.debug("_hint_from_index: skipped for %s (no project found in %s)", fname, cwd)
         return None
 
     abs_path = Path(file_path)
@@ -296,16 +315,19 @@ def _hint_from_index(
     try:
         rel = abs_path.relative_to(project.root).as_posix()
     except ValueError:
+        _LOG.debug("_hint_from_index: %s not under project root %s", file_path, project.root)
         return None
 
     symbols, estimated_lines, line_count_is_exact = _get_indexed_symbols_and_line_count(
         rel, project.hash
     )
     if not symbols or estimated_lines is None:
+        _LOG.debug("_hint_from_index: no indexed symbols for %s (symbols=%d, lines=%s)", fname, len(symbols), estimated_lines)
         return None
 
     n_lines = _confirmed_line_count(estimated_lines, line_count_is_exact, abs_path)
     if n_lines is None:
+        _LOG.debug("_hint_from_index: %s below large-file threshold (estimated=%s)", fname, estimated_lines)
         return None
 
     full_tokens = _est_tokens_from_lines(n_lines)
