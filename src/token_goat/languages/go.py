@@ -111,14 +111,8 @@ def _extract_const_var(source: bytes) -> list[Symbol]:
 
 def extract(source: bytes, rel_path: str) -> tuple[list[Symbol], list[Ref], list[ImpExp], list[Section]]:
     """Extract symbols, refs, and imports from a Go file."""
-    text = source.decode("utf-8", errors="replace")
-    tlp, cfg = common.make_process_config(language="go")
-    if tlp is None:
-        return [], [], [], []
-    try:
-        result = tlp.process(text, cfg)
-    except Exception:  # noqa: BLE001
-        _LOG.debug("tree-sitter parse failed for go source: %s", rel_path, exc_info=True)
+    result, _text = common.parse_source(source, "go", rel_path, _LOG)
+    if result is None:
         return [], [], [], []
 
     symbols: list[Symbol] = []
