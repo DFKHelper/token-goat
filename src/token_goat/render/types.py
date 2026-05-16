@@ -8,6 +8,10 @@ from datetime import date
 
 @dataclass
 class Sparklines:
+    """Mini sparkline data: normalized 0.0–1.0 values for a small chart (8+ recent data points).
+
+    Each list represents the same time period (daily, weekly, etc.) for one metric type.
+    """
     events: list[float]
     bytes: list[float]
     tokens: list[float]
@@ -15,6 +19,11 @@ class Sparklines:
 
 @dataclass
 class TotalStats:
+    """Aggregate statistics for a reporting period (events, bytes, tokens, and optional deltas).
+
+    Deltas represent percentage change vs. the equivalent prior period (e.g., 12 means +12%).
+    Sparklines optionally provide 8+ mini-chart data points for visual trend display.
+    """
     events: int
     bytes: int
     tokens: int
@@ -28,6 +37,11 @@ class TotalStats:
 
 @dataclass
 class KindStat:
+    """Statistics for one event kind (e.g., 'Read', 'image_shrink', 'Grep').
+
+    If bytes_mode_only is True, tokens are not reported (render as "—") because they are
+    model-specific and not reliably measurable (used for vision-token kinds like image_shrink).
+    """
     kind: str
     bytes: int
     tokens: int
@@ -39,6 +53,7 @@ class KindStat:
 
 @dataclass
 class DayStat:
+    """Daily statistics: date string (YYYY-MM-DD), bytes processed, tokens saved, event count."""
     date: str  # YYYY-MM-DD
     bytes: int
     tokens: int
@@ -47,6 +62,10 @@ class DayStat:
 
 @dataclass
 class ProjectStat:
+    """Project-level statistics: name, hash (for tree display), absolute path, and metrics.
+
+    The hash is typically a short session or commit ID shown in the tree path line for identification.
+    """
     project: str
     hash: str   # short session/commit id shown in the tree path line
     path: str
@@ -57,6 +76,12 @@ class ProjectStat:
 
 @dataclass
 class StatsData:
+    """Complete stats payload for a reporting period: totals, by-kind, by-day, and by-project breakdowns.
+
+    by_kind: All rows, sorted desc by bytes (no top-N applied; renderer handles display limits).
+    by_day: Caller-filtered top-N rows, sorted desc by bytes.
+    by_project: Caller-filtered top-N rows, sorted desc by bytes.
+    """
     period_start: date
     period_end: date
     totals: TotalStats

@@ -22,7 +22,11 @@ _REPORTED_CONTENTION: set[tuple[str, str]] = set()
 
 @dataclass
 class FileEntry:
-    """Tracks reads of a single file within a session."""
+    """Tracks reads of a single file within a session.
+
+    Used by pre-read hooks to detect redundant reads and emit token-saving hints.
+    Accumulates line ranges and symbol accesses across all reads in the session.
+    """
 
     rel_or_abs: str  # path as Claude requested it (relative or absolute)
     last_read_ts: float  # unix
@@ -33,7 +37,11 @@ class FileEntry:
 
 @dataclass
 class GrepEntry:
-    """Tracks a Grep call (pattern + scope)."""
+    """Tracks a Grep call (pattern + scope).
+
+    Recorded to detect repeated Grep calls with the same pattern in the same session,
+    enabling nudges toward reusing earlier results.
+    """
 
     pattern: str
     path: str | None
@@ -47,7 +55,11 @@ _GREP_FIELDS: frozenset[str] = frozenset(GrepEntry.__dataclass_fields__)  # type
 
 @dataclass
 class SessionCache:
-    """Session context cache keyed by session_id."""
+    """Session context cache keyed by session_id.
+
+    Populated by post-read and post-edit hooks; used by pre-read hooks to emit hints.
+    Persisted as JSON on disk and loaded on every Read/Grep call for fast hint lookup.
+    """
 
     session_id: str
     started_ts: float
