@@ -84,9 +84,9 @@ class Config:
 # Validation helpers
 # ---------------------------------------------------------------------------
 
-def _validated_int(val: Any, default: int, lo: int, hi: int, name: str) -> int:
+def _validated_int(val: object, default: int, lo: int, hi: int, name: str) -> int:
     try:
-        v = int(val)
+        v = int(val)  # type: ignore[call-overload]  # val is unknown external input; TypeError caught below
         if not lo <= v <= hi:
             _LOG.warning("config: %s=%r out of range [%d, %d]; using default %d", name, val, lo, hi, default)
             return default
@@ -96,7 +96,7 @@ def _validated_int(val: Any, default: int, lo: int, hi: int, name: str) -> int:
         return default
 
 
-def _validated_bool(val: Any, default: bool, name: str) -> bool:
+def _validated_bool(val: object, default: bool, name: str) -> bool:
     if isinstance(val, bool):
         return val
     if isinstance(val, int):
@@ -105,7 +105,7 @@ def _validated_bool(val: Any, default: bool, name: str) -> bool:
     return default
 
 
-def _validated_triggers(val: Any, default: list[str]) -> list[str]:
+def _validated_triggers(val: object, default: list[str]) -> list[str]:
     if not isinstance(val, list):
         _LOG.warning("config: triggers must be a list; using default %s", default)
         return list(default)
