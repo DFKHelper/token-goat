@@ -31,7 +31,31 @@ _LIQUID_TAG_IMPORTS: list[tuple[re.Pattern[str], str]] = [
 
 
 def extract(source: bytes, rel_path: str) -> tuple[list[Symbol], list[Ref], list[ImpExp], list[Section]]:
-    """Extract Liquid template symbols, imports, and sections."""
+    """Extract symbols, imports, and sections from a Shopify Liquid template.
+
+    Symbols:
+      - ``liquid_schema``        — the ``name`` field from a ``{% schema %}`` JSON block,
+        recorded as a single symbol spanning the entire schema tag.
+      - ``liquid_section_file``  — the stem of the filename when the file lives under
+        ``sections/`` (e.g. ``sections/header.liquid`` → symbol name ``header``).
+        This lets ``token-goat symbol header`` resolve the file without knowing the path.
+
+    Imports:
+      - ``liquid_include`` — ``{% include 'snippet' %}`` tag targets
+      - ``liquid_section`` — ``{% section 'name' %}`` tag targets
+      - ``liquid_render``  — ``{% render 'snippet' %}`` tag targets
+
+    Sections:
+      - ``<h1>``–``<h4>`` HTML headings found inside the template become
+        :class:`Section` entries (shared logic with ``html.py`` via
+        ``common.extract_html_headings``).  ``end_line`` is computed by
+        ``common._compute_section_end_lines``.
+
+    Liquid tags are matched by regex, not by a Liquid parser, so ``{% raw %}``
+    blocks or comment-escaped tags may produce false positives.  Refs are always
+    empty (Liquid variables have no callable call-sites that map meaningfully to
+    cross-file symbols).
+    """
     try:
         text = source.decode("utf-8", errors="replace")
         symbols: list[Symbol] = []

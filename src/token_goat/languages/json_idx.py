@@ -17,7 +17,26 @@ _TOP_LEVEL_KEY_RE = re.compile(r'^\s*"([^"]+)"\s*:', re.MULTILINE)
 
 
 def extract(source: bytes, rel_path: str) -> tuple[list[Symbol], list[Ref], list[ImpExp], list[Section]]:
-    """Extract JSON top-level keys as symbols."""
+    """Extract top-level keys from a JSON file as indexed symbols.
+
+    Only files at or above ``_MIN_JSON_SIZE`` (50 KB) are indexed.  Small JSON
+    files — package.json, tsconfig.json, simple config blobs — are intentionally
+    skipped because their keys are already known from the filename and indexing
+    them would inflate the symbol table with dozens of near-identical entries
+    across every project (``"name"``, ``"version"``, ``"scripts"`` …).
+
+    For files that meet the size threshold, extraction proceeds in two passes:
+
+    1. **Full JSON parse** — if ``json.loads`` succeeds, keys are taken directly
+       from the parsed dict in insertion order.  Array files get a single
+       ``json_array`` symbol recording the element count.
+    2. **Regex fallback** — if the file is malformed or too large for the JSON
+       parser, ``_TOP_LEVEL_KEY_RE`` extracts quoted keys at column 0, which
+       reliably hits only top-level keys in most real-world JSON.
+
+    Symbols are capped at ``_MAX_SYMBOLS`` (200) per file.  Refs, imports, and
+    sections are always empty for JSON files.
+    """
     if len(source) < _MIN_JSON_SIZE:
         # File too small; skip indexing
         return [], [], [], []

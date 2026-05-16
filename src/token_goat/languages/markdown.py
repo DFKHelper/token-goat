@@ -23,7 +23,27 @@ _YAML_TITLE_RE = re.compile(r"^\s*title\s*:\s*(.+?)\s*$", re.MULTILINE)
 
 
 def extract(source: bytes, rel_path: str) -> tuple[list[Symbol], list[Ref], list[ImpExp], list[Section]]:
-    """Extract Markdown headings and front-matter."""
+    """Extract headings and front-matter from a Markdown file.
+
+    Symbols:
+      - ``md_title``  — ``title:`` value from YAML front-matter (``---`` fences),
+        recorded at line 1.  Only the first front-matter block is inspected.
+      - ``heading``   — every ATX heading (``# H1`` … ``###### H6``).
+        Setext headings (``===`` and ``---`` underlines) are *not* promoted to
+        symbols because their line-number calculation is ambiguous when the
+        underline and text are on separate lines, and they rarely appear in
+        modern documentation.
+
+    Sections:
+      - All ATX headings also become :class:`Section` entries.  ``end_line``
+        is assigned inline (each section closes at the next heading of equal or
+        lesser depth), mirroring the logic in
+        ``common._compute_section_end_lines``.  This duplication is intentional:
+        Markdown sections are computed during a single pass that also builds
+        symbols, so calling the shared helper would require a second loop.
+
+    Refs and imports are always empty for Markdown files.
+    """
     try:
         text = source.decode("utf-8", errors="replace").replace("\r\n", "\n").replace("\r", "\n")
         symbols: list[Symbol] = []
