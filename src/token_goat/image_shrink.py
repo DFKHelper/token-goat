@@ -20,6 +20,17 @@ MAX_LONG_EDGE = 1024
 SIZE_THRESHOLD_BYTES = 100 * 1024  # only shrink if original > 100 KB
 JPEG_QUALITY = 75
 
+# Claude vision API parameters (source: Anthropic docs).
+# Claude downscales images to fit within this many pixels on the long edge
+# before tokenizing; the cost formula is (effective_width × effective_height) / pixels_per_token.
+CLAUDE_MAX_VISION_EDGE_PX = 1568
+CLAUDE_VISION_PIXELS_PER_TOKEN = 750
+
+# Heuristic max long-edge for images that look like screenshots or text
+# (palette/alpha modes at reasonable sizes). Above this threshold the image is
+# treated as a photograph and converted to JPEG rather than kept as PNG.
+_SCREENSHOT_MAX_EDGE_PX = 1500
+
 # Recognized image extensions
 IMAGE_EXTENSIONS = frozenset(
     [".jpg", ".jpeg", ".png", ".webp", ".avif", ".tiff", ".tif", ".bmp", ".gif"]
@@ -61,17 +72,17 @@ def _cache_path_for(src_path: Path) -> Path:
 def vision_tokens(width: int, height: int) -> int:
     """Approximate Claude vision token cost for an image of given dimensions.
 
-    Claude resizes images to fit within 1568 px on the long edge before tokenizing.
-    Token cost ≈ (effective_width × effective_height) / 750.
+    Claude resizes images to fit within CLAUDE_MAX_VISION_EDGE_PX on the long
+    edge before tokenizing. Token cost ≈ (effective_width × effective_height) /
+    CLAUDE_VISION_PIXELS_PER_TOKEN.
     """
     if width <= 0 or height <= 0:
         return 0
-    max_edge = 1568
-    if max(width, height) > max_edge:
-        scale = max_edge / max(width, height)
+    if max(width, height) > CLAUDE_MAX_VISION_EDGE_PX:
+        scale = CLAUDE_MAX_VISION_EDGE_PX / max(width, height)
         width = int(width * scale)
         height = int(height * scale)
-    return max(1, (width * height) // 750)
+    return max(1, (width * height) // CLAUDE_VISION_PIXELS_PER_TOKEN)
 
 
 class ImageStats(TypedDict):
@@ -90,7 +101,7 @@ def _looks_like_screenshot_or_text(img: _PilImage.Image) -> bool:
     """Cheap heuristic: PNG images with palette/alpha modes are probably screenshots."""
     mode = img.mode
     w, h = img.size
-    return mode in ("L", "LA", "P", "RGBA") and max(w, h) <= 1500
+    return mode in ("L", "LA", "P", "RGBA") and max(w, h) <= _SCREENSHOT_MAX_EDGE_PX
 
 
 def should_shrink(src_path: Path) -> bool:
