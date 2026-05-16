@@ -43,16 +43,16 @@ def _fmt_bytes(n: int) -> str:
         a = -n
         color = C.TEXT_DIM
         if a >= 1_000_000_000_000_000:
-            return f"{fg(*color)}−{a / 1_000_000_000_000_000:,.1f} PB{RESET}"
+            return f"{fg(*color)}-{a / 1_000_000_000_000_000:,.1f} PB{RESET}"
         if a >= 1_000_000_000_000:
-            return f"{fg(*color)}−{a / 1_000_000_000_000:,.1f} TB{RESET}"
+            return f"{fg(*color)}-{a / 1_000_000_000_000:,.1f} TB{RESET}"
         if a >= 1_000_000_000:
-            return f"{fg(*color)}−{a / 1_000_000_000:,.1f} GB{RESET}"
+            return f"{fg(*color)}-{a / 1_000_000_000:,.1f} GB{RESET}"
         if a >= 1_000_000:
-            return f"{fg(*color)}−{a / 1_000_000:,.1f} MB{RESET}"
+            return f"{fg(*color)}-{a / 1_000_000:,.1f} MB{RESET}"
         if a >= 1_000:
-            return f"{fg(*color)}−{a / 1_000:,.1f} KB{RESET}"
-        return f"{fg(*color)}−{a} B{RESET}"
+            return f"{fg(*color)}-{a / 1_000:,.1f} KB{RESET}"
+        return f"{fg(*color)}-{a} B{RESET}"
     if n >= 1_000_000_000_000_000:
         return f"{fg(*C.PURPLE)}{n / 1_000_000_000_000_000:,.1f} PB{RESET}"
     if n >= 1_000_000_000_000:
@@ -74,14 +74,14 @@ def _fmt_tokens(n: int) -> str:
         a = -n
         color = C.TEXT_DIM
         if a >= 1_000_000_000_000:
-            return f"{fg(*color)}−{a / 1_000_000_000_000:,.1f} Tt{RESET}"
+            return f"{fg(*color)}-{a / 1_000_000_000_000:,.1f} Tt{RESET}"
         if a >= 1_000_000_000:
-            return f"{fg(*color)}−{a / 1_000_000_000:,.1f} Gt{RESET}"
+            return f"{fg(*color)}-{a / 1_000_000_000:,.1f} Gt{RESET}"
         if a >= 1_000_000:
-            return f"{fg(*color)}−{a / 1_000_000:,.1f} Mt{RESET}"
+            return f"{fg(*color)}-{a / 1_000_000:,.1f} Mt{RESET}"
         if a >= 1_000:
-            return f"{fg(*color)}−{a / 1_000:,.1f} kt{RESET}"
-        return f"{fg(*color)}−{a} t{RESET}"
+            return f"{fg(*color)}-{a / 1_000:,.1f} kt{RESET}"
+        return f"{fg(*color)}-{a} t{RESET}"
     if n >= 1_000_000_000_000:
         return f"{fg(*C.GREEN5)}{n / 1_000_000_000_000:,.1f} Tt{RESET}"
     if n >= 1_000_000_000:

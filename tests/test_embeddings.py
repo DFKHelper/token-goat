@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import hashlib
 import math
-import shutil
 import sqlite3
 import struct
 from collections.abc import Sequence
@@ -21,20 +20,6 @@ from token_goat.embeddings import (
     extract_chunks_for_file,
     is_available,
 )
-from token_goat.parser import index_project
-
-FIXTURE_DIR = Path(__file__).parent / "fixtures"
-TS_SAMPLE = FIXTURE_DIR / "ts_sample"
-
-
-@pytest.fixture
-def ts_project(tmp_path, tmp_data_dir, make_project):
-    """Copy ts_sample fixture to tmp dir, index it, and return a Project."""
-    proj_root = tmp_path / "ts_sample"
-    shutil.copytree(TS_SAMPLE, proj_root)
-    proj = make_project(proj_root)
-    index_project(proj, full=True)
-    return proj
 
 
 # ---------------------------------------------------------------------------

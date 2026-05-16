@@ -11,44 +11,28 @@ from token_goat import embeddings as emb
 from token_goat import read_replacement
 from token_goat.parser import index_project
 
+# Sample fixture directories (for direct use in test methods)
 FIXTURE_DIR = Path(__file__).parent / "fixtures"
-TS_SAMPLE = FIXTURE_DIR / "ts_sample"
 PY_SAMPLE = FIXTURE_DIR / "py_sample"
-MD_SAMPLE = FIXTURE_DIR / "md_sample"
 
-
-# ---------------------------------------------------------------------------
-# Shared fixtures
-# ---------------------------------------------------------------------------
-
+# Re-export shared fixtures from conftest with tuple variant aliases
+# (conftest provides ts_project_tuple, py_project_tuple, md_project_tuple)
 @pytest.fixture
-def ts_project(tmp_path, tmp_data_dir, make_project):
-    """Copy ts_sample to tmp dir, index it, return (proj_root, project)."""
-    proj_root = tmp_path / "ts_sample"
-    shutil.copytree(TS_SAMPLE, proj_root)
-    proj = make_project(proj_root)
-    index_project(proj, full=True)
-    return proj_root, proj
+def ts_project(ts_project_tuple):
+    """Alias ts_project_tuple for backward compatibility in this test file."""
+    return ts_project_tuple
 
 
 @pytest.fixture
-def py_project(tmp_path, tmp_data_dir, make_project):
-    """Copy py_sample to tmp dir, index it, return (proj_root, project)."""
-    proj_root = tmp_path / "py_sample"
-    shutil.copytree(PY_SAMPLE, proj_root)
-    proj = make_project(proj_root)
-    index_project(proj, full=True)
-    return proj_root, proj
+def py_project(py_project_tuple):
+    """Alias py_project_tuple for backward compatibility in this test file."""
+    return py_project_tuple
 
 
 @pytest.fixture
-def md_project(tmp_path, tmp_data_dir, make_project):
-    """Copy md_sample to tmp dir, index it, return (proj_root, project)."""
-    proj_root = tmp_path / "md_sample"
-    shutil.copytree(MD_SAMPLE, proj_root)
-    proj = make_project(proj_root)
-    index_project(proj, full=True)
-    return proj_root, proj
+def md_project(md_project_tuple):
+    """Alias md_project_tuple for backward compatibility in this test file."""
+    return md_project_tuple
 
 
 def _make_ambiguous_project(
