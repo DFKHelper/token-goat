@@ -9,6 +9,7 @@ import re
 import shutil
 import subprocess
 import sys
+import xml.sax.saxutils
 from datetime import datetime
 from pathlib import Path
 
@@ -516,6 +517,19 @@ def _launchd_plist_path() -> Path:
     return Path.home() / "Library" / "LaunchAgents" / f"{LAUNCHD_PLIST_NAME}.plist"
 
 
+def _xml_escape(s: str) -> str:
+    """Escape a string for safe embedding in XML element content.
+
+    Guards against XML injection in the macOS LaunchAgent plist when a
+    command-line argument or file-system path contains ``<``, ``>``, ``&``,
+    ``'``, or ``"``.  Standard library ``xml.sax.saxutils.escape`` covers the
+    mandatory set; the extra ``{'"': "&quot;", "'": "&apos;"}`` mapping extends
+    it to attribute-safe output (not strictly required for element text, but
+    harmless and future-proof).
+    """
+    return xml.sax.saxutils.escape(s, {'"': "&quot;", "'": "&apos;"})
+
+
 def install_mac_autostart() -> tuple[bool, str]:
     """Register worker autostart on macOS via a LaunchAgent plist.
 
@@ -532,7 +546,11 @@ def install_mac_autostart() -> tuple[bool, str]:
     plist_path = _launchd_plist_path()
     plist_path.parent.mkdir(parents=True, exist_ok=True)
 
-    arg_entries = "\n".join(f"        <string>{arg}</string>" for arg in cmd_args)
+    # XML-escape every argument and path to guard against injection when a
+    # homedir or binary path contains characters special to XML (<, >, &, ", ').
+    arg_entries = "\n".join(
+        f"        <string>{_xml_escape(arg)}</string>" for arg in cmd_args
+    )
     log_dir = paths.logs_dir()
     log_dir.mkdir(parents=True, exist_ok=True)
 
@@ -543,7 +561,7 @@ def install_mac_autostart() -> tuple[bool, str]:
         '<plist version="1.0">\n'
         "<dict>\n"
         "    <key>Label</key>\n"
-        f"    <string>{LAUNCHD_PLIST_NAME}</string>\n"
+        f"    <string>{_xml_escape(LAUNCHD_PLIST_NAME)}</string>\n"
         "    <key>ProgramArguments</key>\n"
         "    <array>\n"
         f"{arg_entries}\n"
@@ -553,9 +571,9 @@ def install_mac_autostart() -> tuple[bool, str]:
         "    <key>KeepAlive</key>\n"
         "    <false/>\n"
         "    <key>StandardOutPath</key>\n"
-        f"    <string>{log_dir / 'worker-stdout.log'}</string>\n"
+        f"    <string>{_xml_escape(str(log_dir / 'worker-stdout.log'))}</string>\n"
         "    <key>StandardErrorPath</key>\n"
-        f"    <string>{log_dir / 'worker-stderr.log'}</string>\n"
+        f"    <string>{_xml_escape(str(log_dir / 'worker-stderr.log'))}</string>\n"
         "</dict>\n"
         "</plist>\n"
     )
@@ -760,14 +778,15 @@ def _read_settings_json(settings_path: Path) -> dict | None:
 
 
 def _write_settings_json(settings_path: Path, data: dict) -> None:
-    """Write *data* as indented JSON to *settings_path*.
+    """Write *data* as indented JSON to *settings_path* atomically.
 
-    The directory is created if it does not exist.  Uses indent=2 to match
-    Claude Code's own formatting so the file stays human-readable and produces
-    minimal diffs when re-applied.
+    Uses a temp-file + rename pattern so a crash or kill mid-write never
+    leaves a truncated or empty settings.json behind.  The directory is
+    created if it does not exist.  Uses indent=2 to match Claude Code's own
+    formatting so the file stays human-readable and produces minimal diffs
+    when re-applied.
     """
-    settings_path.parent.mkdir(parents=True, exist_ok=True)
-    settings_path.write_text(json.dumps(data, indent=2), encoding="utf-8")
+    paths.atomic_write_text(settings_path, json.dumps(data, indent=2))
 
 
 def patch_settings_json() -> tuple[bool, str]:

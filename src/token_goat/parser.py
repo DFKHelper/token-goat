@@ -268,9 +268,18 @@ def register_extractor(language: str, factory: Callable[[], Extractor]) -> None:
 
 
 def iter_source_files(project: Project) -> Iterable[Path]:
-    """Yield absolute paths of indexable source files under the project root."""
+    """Yield absolute paths of indexable source files under the project root.
+
+    Symlinks are not followed during the directory walk (``os.walk`` default).
+    Individual file symlinks within the tree are also skipped: a symlink that
+    resolves outside the project root would silently index content from an
+    unrelated part of the filesystem, which is both a data-leak risk and a
+    correctness problem (the cached path won't match the real location).
+    """
     root = project.root
+    resolved_root = root.resolve()
     skipped_dirs = 0
+    skipped_symlinks = 0
     for dirpath, dirs, files in os.walk(root):
         initial_dirs = dirs[:]
         dirs[:] = [d for d in dirs if d not in SKIP_DIRS]
@@ -282,6 +291,17 @@ def iter_source_files(project: Project) -> Iterable[Path]:
             path = base / name
             if path.suffix.lower() not in LANG_BY_EXT:
                 continue
+            # Reject symlinks whose resolved target escapes the project root.
+            # os.walk does not follow symlink *directories* by default, but it
+            # does yield symlink *files*, so we must guard here.
+            if path.is_symlink():
+                try:
+                    resolved = path.resolve()
+                    resolved.relative_to(resolved_root)
+                except (ValueError, OSError):
+                    skipped_symlinks += 1
+                    _LOG.debug("iter_source_files: skipping symlink outside project root: %s", path)
+                    continue
             try:
                 if path.stat().st_size > MAX_FILE_SIZE:
                     continue
@@ -290,6 +310,8 @@ def iter_source_files(project: Project) -> Iterable[Path]:
             yield path
     if skipped_dirs > 0:
         _LOG.debug("file walk excluded %d skip-listed directories", skipped_dirs)
+    if skipped_symlinks > 0:
+        _LOG.debug("file walk skipped %d symlinks pointing outside project root", skipped_symlinks)
 
 
 def _line_count_from_bytes(raw: bytes) -> int:

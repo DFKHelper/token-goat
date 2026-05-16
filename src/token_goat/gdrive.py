@@ -274,7 +274,9 @@ def fetch_file(file_id: str, *, shrink_if_image: bool = True, max_size_bytes: in
         t_write_start = time.monotonic()
         try:
             local_path.parent.mkdir(parents=True, exist_ok=True)
-            local_path.write_bytes(buf.getvalue())
+            # Atomic write: write to a temp file then rename so a killed/crashed
+            # process never leaves a truncated cache file that looks valid.
+            paths.atomic_write_bytes(local_path, buf.getvalue())
             written_bytes = local_path.stat().st_size
             download_elapsed = t_write_start - t_download_start
             write_elapsed = time.monotonic() - t_write_start
