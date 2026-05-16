@@ -419,6 +419,11 @@ def open_global() -> Iterator[sqlite3.Connection]:
             conn.close()
 
 
+# Maximum age (seconds) of a writer lock before it is treated as stale.
+# A lock older than this is assumed to belong to a crashed process even if the
+# PID still exists (e.g. recycled to an unrelated process).
+LOCK_STALE_SECONDS = 600  # 10 minutes
+
 _PROJECT_HASH_RE = re.compile(r"^[a-zA-Z0-9_]+$")
 
 # Allowlist of table names permitted in dynamic COUNT queries.
@@ -581,7 +586,7 @@ def project_writer_lock(project_hash: str, timeout_sec: float = 5.0) -> Iterator
             parts = lock_text.strip().split("\n", 1)
             owner_pid = int(parts[0])
             owner_ts = float(parts[1]) if len(parts) > 1 else 0.0
-            if time.time() - owner_ts > 600:  # 10 min
+            if time.time() - owner_ts > LOCK_STALE_SECONDS:
                 return True
             return not psutil.pid_exists(owner_pid)
         except (ValueError, IndexError):

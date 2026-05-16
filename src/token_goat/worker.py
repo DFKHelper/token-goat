@@ -206,13 +206,19 @@ def _setup_logging() -> None:
 # Liveness
 # ---------------------------------------------------------------------------
 
+HEARTBEAT_GRACE_SECONDS = 5.0
+"""Extra seconds of leniency beyond 2× HEARTBEAT_INTERVAL before a heartbeat is
+considered stale.  Accounts for scheduler jitter and slow disk writes without
+requiring a large primary interval."""
+
+
 def _is_heartbeat_fresh(hb_path: Path) -> bool:
     """Check if heartbeat file exists and is recent (within 2x interval + grace)."""
     if not hb_path.exists():
         return False
     try:
         last = hb_path.stat().st_mtime
-        return time.time() - last <= 2 * HEARTBEAT_INTERVAL + 5
+        return time.time() - last <= 2 * HEARTBEAT_INTERVAL + HEARTBEAT_GRACE_SECONDS
     except OSError:
         return False
 
@@ -467,7 +473,7 @@ def _cleanup_stale_locks() -> int:
                 raise ValueError("empty PID in lock file")
             pid = int(pid_str)
             dead = not psutil.pid_exists(pid)
-            old = now - lock_path.stat().st_mtime > 600
+            old = now - lock_path.stat().st_mtime > db.LOCK_STALE_SECONDS
             if dead or old:
                 lock_path.unlink()
                 cleared += 1

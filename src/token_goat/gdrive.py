@@ -128,6 +128,12 @@ def _validate_file_id(file_id: str) -> None:
 
 _MAX_DOWNLOAD_BYTES = 100 * 1024 * 1024  # 100 MB — same order of magnitude as webfetch cap
 
+# Maximum characters kept in a sanitised local filename derived from the Drive
+# file's display name.  Long names can exceed filesystem path limits; 200 chars
+# gives ample readability headroom while staying well under the 255-byte limit
+# common to most filesystems.
+_MAX_SAFE_FILENAME_CHARS = 200
+
 
 def fetch_file(file_id: str, *, shrink_if_image: bool = True, max_size_bytes: int = _MAX_DOWNLOAD_BYTES) -> Path:
     """Download a Drive file. Return the local cached path.
@@ -177,7 +183,7 @@ def fetch_file(file_id: str, *, shrink_if_image: bool = True, max_size_bytes: in
     if not safe_name:
         safe_name = file_id
     # Truncate to reasonable length to prevent filesystem issues
-    safe_name = safe_name[:200]
+    safe_name = safe_name[:_MAX_SAFE_FILENAME_CHARS]
     local_path = cache_dir / f"{file_id}_{safe_name}"
 
     # Final safety check: ensure the path is still within cache_dir
