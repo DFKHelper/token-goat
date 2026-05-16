@@ -106,7 +106,11 @@ def session_cache_path(session_id: str) -> Path:
 
     Raises ValueError if the resolved path escapes the sessions/ subdirectory,
     which would happen with traversal sequences like ``../../../evil``.
+    Also rejects null bytes, which some filesystems treat as path terminators
+    and which Python's os module passes through on POSIX.
     """
+    if "\x00" in session_id:
+        raise ValueError(f"session_id contains null byte: {session_id!r}")
     base = data_dir() / "sessions"
     candidate = (base / f"{session_id}.json").resolve()
     try:
