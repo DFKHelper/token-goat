@@ -7,6 +7,7 @@ from typing import Any
 from . import session
 from .hooks_common import (
     CONTINUE,
+    HookResponse,
     get_tool_input,
     pre_tool_use_with_context,
     pre_tool_use_with_update,
@@ -16,7 +17,7 @@ from .hooks_common import (
 )
 
 
-def _handle_bash_read_equivalent(payload: dict[str, Any]) -> dict[str, Any] | None:
+def _handle_bash_read_equivalent(payload: dict[str, Any]) -> HookResponse | None:
     """Convert Bash read-equivalent commands to Read payload for recursive processing.
 
     Intercepts Bash tool invocations with read-like commands (cat, head, tail, bat, etc.)
@@ -52,7 +53,7 @@ def _handle_bash_read_equivalent(payload: dict[str, Any]) -> dict[str, Any] | No
 
 def _try_shrink_image(
     file_path: str, tool_input: dict[str, Any]
-) -> dict[str, Any] | None:
+) -> HookResponse | None:
     """Attempt image shrinking and return hook-formatted response if successful.
 
     Compresses image files (PNG, JPEG, WebP, etc.) using cached shrinking, records
@@ -145,7 +146,7 @@ def _record_session_hint_impact(file_path: str, hint: str) -> None:
     )
 
 
-def pre_read(payload: dict[str, Any]) -> dict[str, Any]:
+def pre_read(payload: dict[str, Any]) -> HookResponse:
     """Pre-read hook: image shrinking and session-cache hints.
 
     Dispatches based on tool_name:
@@ -200,7 +201,7 @@ def pre_read(payload: dict[str, Any]) -> dict[str, Any]:
     return pre_tool_use_with_context(str(hint))
 
 
-def post_read(payload: dict[str, Any]) -> dict[str, Any]:
+def post_read(payload: dict[str, Any]) -> HookResponse:
     """Post-read hook: record file/symbol accesses to session cache.
 
     Logs Read, Grep, and Glob operations into the persistent session cache so that

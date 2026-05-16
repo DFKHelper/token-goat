@@ -26,7 +26,7 @@ from pathlib import Path
 from typing import Any, ParamSpec, TypedDict, TypeVar
 
 from . import hooks_edit, hooks_fetch, hooks_read, hooks_session, paths
-from .hooks_common import CONTINUE
+from .hooks_common import CONTINUE, HookResponse
 
 
 class HookPayload(TypedDict, total=False):
@@ -40,22 +40,6 @@ class HookPayload(TypedDict, total=False):
     file_path: str
     file_content: str
     line_number: int
-
-
-# Functional form required because "continue" is a Python keyword.
-HookResponse = TypedDict(
-    "HookResponse",
-    {
-        "continue": bool,
-        "systemMessage": str,
-        "hookSpecificOutput": dict[str, Any],
-        # Diagnostic fields — ignored by the harness, useful for tests/logging.
-        "_tg_elapsed_ms": float,
-        "_tg_handler": str,
-        "_tg_error": str,
-    },
-    total=False,
-)
 
 _LOG = logging.getLogger("token_goat.hooks")
 
@@ -111,7 +95,7 @@ def _translate_hso_to_codex(hso: dict[str, Any]) -> dict[str, Any]:
     return translated
 
 
-def denormalize_response(response: dict[str, Any], harness: str = "claude") -> dict[str, Any]:
+def denormalize_response(response: HookResponse, harness: str = "claude") -> HookResponse:
     """Translate token-goat's internal response format to harness-specific wire format.
 
     Claude: hookSpecificOutput.{additionalContext, updatedInput, permissionDecision, ...}
@@ -186,7 +170,7 @@ def safe_run(event: str, input_file: Path | None = None, harness: str = "claude"
     and we log a one-line diagnostic to stderr so the harness's
     hook-error display has the cause if you go looking for it.
     """
-    result: dict[str, Any] = CONTINUE()
+    result: HookResponse = CONTINUE()
     try:
         raw = read_payload(input_file)
         payload = normalize_payload(raw, harness)
@@ -200,12 +184,12 @@ def safe_run(event: str, input_file: Path | None = None, harness: str = "claude"
             # Attempt to persist to log file even if normal setup failed.
             _setup_logging()
             _LOG.error("%s", msg, exc_info=True)
-        result = CONTINUE()
+        result = CONTINUE()  # type: ignore[assignment]  # BaseException path; always safe
     emit(result)
 
 
 _P = ParamSpec("_P")
-_HookHandler = TypeVar("_HookHandler", bound=Callable[[dict[str, Any]], dict[str, Any]])
+_HookHandler = TypeVar("_HookHandler", bound=Callable[[dict[str, Any]], HookResponse])
 
 
 def fail_soft(handler: _HookHandler) -> _HookHandler:
@@ -222,7 +206,7 @@ def fail_soft(handler: _HookHandler) -> _HookHandler:
     import functools  # noqa: PLC0415
 
     @functools.wraps(handler)
-    def wrapper(payload: dict[str, Any]) -> dict[str, Any]:
+    def wrapper(payload: dict[str, Any]) -> HookResponse:
         try:
             return handler(payload)
         except Exception as exc:  # noqa: BLE001 — fail-soft is the entire point
@@ -240,7 +224,12 @@ def fail_soft(handler: _HookHandler) -> _HookHandler:
                     cwd_tag,
                     err_summary,
                 )
-            return {"continue": True, "_tg_error": err_summary, "_tg_handler": handler_name}
+            err_response: HookResponse = {
+                "continue": True,
+                "_tg_error": err_summary,
+                "_tg_handler": handler_name,
+            }
+            return err_response
 
     return wrapper  # type: ignore[return-value]
 
@@ -254,7 +243,7 @@ post_read = fail_soft(hooks_read.post_read)
 # --- dispatcher entry point used by cli.py ---
 
 @fail_soft
-def pre_compact(payload: dict[str, Any]) -> dict[str, Any]:
+def pre_compact(payload: dict[str, Any]) -> HookResponse:
     """PreCompact hook: inject a session manifest as systemMessage before compaction.
 
     The compaction LLM receives the manifest in its context and includes it in
@@ -293,7 +282,7 @@ def pre_compact(payload: dict[str, Any]) -> dict[str, Any]:
     return {"continue": True, "systemMessage": manifest}
 
 
-EVENTS: dict[str, Callable[[dict[str, Any]], dict[str, Any]]] = {
+EVENTS: dict[str, Callable[[dict[str, Any]], HookResponse]] = {
     "session-start": session_start,
     "pre-read": pre_read,
     "pre-fetch": pre_fetch,
@@ -303,7 +292,7 @@ EVENTS: dict[str, Callable[[dict[str, Any]], dict[str, Any]]] = {
 }
 
 
-def dispatch(event: str, payload: dict[str, Any]) -> dict[str, Any]:
+def dispatch(event: str, payload: dict[str, Any]) -> HookResponse:
     """Dispatch a hook event. Always returns at minimum {'continue': True}."""
     _setup_logging()
     handler = EVENTS.get(event)

@@ -6,6 +6,7 @@ from typing import Any
 
 from .hooks_common import (
     CONTINUE,
+    HookResponse,
 )
 from .hooks_common import (
     LOG as _LOG,
@@ -59,7 +60,7 @@ def _ensure_worker_running() -> None:
         _LOG.exception("watchdog failed")
 
 
-def session_start(payload: dict[str, Any]) -> dict[str, Any]:
+def session_start(payload: dict[str, Any]) -> HookResponse:
     """Reset session cache and ensure worker daemon is running."""
     session_id = payload.get("session_id")
     cwd = payload.get("cwd")

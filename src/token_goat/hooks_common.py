@@ -14,11 +14,23 @@ Centralises the five most-repeated patterns across the hook layer:
   ``{"continue": True, "hookSpecificOutput": {"hookEventName": "PreToolUse",
   "permissionDecision": "deny", ...}}`` shape that every interception response
   uses.  Callers supply only the two strings that differ between them.
+
+TypedDicts
+----------
+This module defines the typed shapes for the three ``hookSpecificOutput``
+variants that token-goat produces, plus the ``ContinueResponse`` used when the
+hook passes through unchanged.  These types are exported for use by the rest of
+the hook layer (``hooks_cli``, ``hooks_read``, ``hooks_fetch``, …) so that
+every response-builder has a precise return type instead of ``dict[str, Any]``.
 """
 from __future__ import annotations
 
 __all__ = [
     "CONTINUE",
+    "HookResponse",
+    "HookSpecificOutputContext",
+    "HookSpecificOutputDeny",
+    "HookSpecificOutputUpdate",
     "LOG",
     "deny_redirect",
     "get_tool_input",
@@ -27,7 +39,60 @@ __all__ = [
 ]
 
 import logging
-from typing import Any
+from typing import Any, TypedDict
+
+# ---------------------------------------------------------------------------
+# Typed shapes for hookSpecificOutput payloads
+# ---------------------------------------------------------------------------
+
+class HookSpecificOutputDeny(TypedDict):
+    """Shape produced by :func:`deny_redirect` — deny a tool call with a redirect hint."""
+
+    hookEventName: str
+    permissionDecision: str
+    permissionDecisionReason: str
+    additionalContext: str
+
+
+class HookSpecificOutputContext(TypedDict):
+    """Shape produced by :func:`pre_tool_use_with_context` — inject an additionalContext hint."""
+
+    hookEventName: str
+    additionalContext: str
+
+
+class HookSpecificOutputUpdate(TypedDict):
+    """Shape produced by :func:`pre_tool_use_with_update` — rewrite tool input and inject a hint."""
+
+    hookEventName: str
+    updatedInput: dict[str, object]
+    additionalContext: str
+
+
+# HookResponse — the top-level response type returned by every hook handler.
+# Defined here (not in hooks_cli) so hook submodules can import it without
+# creating a circular dependency (hooks_cli imports all hook submodules).
+#
+# All fields are optional (total=False) because a handler may return only
+# {"continue": True} or may add systemMessage / hookSpecificOutput / diagnostics.
+# The hookSpecificOutput field accepts any of the three typed sub-shapes
+# (HookSpecificOutputDeny, HookSpecificOutputContext, HookSpecificOutputUpdate)
+# as well as arbitrary dicts for forward compatibility.
+HookResponse = TypedDict(
+    "HookResponse",
+    {
+        "continue": bool,
+        "systemMessage": str,
+        "hookSpecificOutput": dict[str, Any],
+        # Diagnostic fields — ignored by the harness, useful for tests/logging.
+        "_tg_elapsed_ms": float,
+        "_tg_handler": str,
+        "_tg_error": str,
+    },
+    total=False,
+)
+
+__all__ += ["HookResponse"]
 
 # All hook modules share one logger so their output appears together in the log.
 LOG = logging.getLogger("token_goat.hooks")
@@ -35,7 +100,7 @@ LOG = logging.getLogger("token_goat.hooks")
 # The most common hook response: let the harness proceed unchanged.
 # Using a function (not a bare dict) keeps each call site independent — callers
 # that mutate the return value won't corrupt subsequent callers.
-def CONTINUE() -> dict[str, Any]:  # noqa: N802 — intentional SCREAMING_SNAKE alias
+def CONTINUE() -> HookResponse:  # noqa: N802 — intentional SCREAMING_SNAKE alias
     """Return a fresh ``{"continue": True}`` dict.
 
     Named in UPPER_CASE to read like a constant at call sites::
@@ -62,7 +127,7 @@ def get_tool_input(payload: dict[str, Any] | None) -> dict[str, Any]:
     return value if isinstance(value, dict) else {}
 
 
-def deny_redirect(reason: str, context: str) -> dict[str, Any]:
+def deny_redirect(reason: str, context: str) -> HookResponse:
     """Build the canonical interception response that denies a tool call with a redirect hint.
 
     Both :func:`hooks_fetch._intercept_drive_download` and
@@ -76,20 +141,18 @@ def deny_redirect(reason: str, context: str) -> dict[str, Any]:
                  Stored in ``hookSpecificOutput.additionalContext``.
 
     Returns:
-        A fully-formed hook response dict with ``continue: true`` and a deny decision.
+        A fully-typed hook response with ``continue: true`` and a deny decision.
     """
-    return {
-        "continue": True,
-        "hookSpecificOutput": {
-            "hookEventName": "PreToolUse",
-            "permissionDecision": "deny",
-            "permissionDecisionReason": reason,
-            "additionalContext": context,
-        },
-    }
+    hso: dict[str, Any] = HookSpecificOutputDeny(
+        hookEventName="PreToolUse",
+        permissionDecision="deny",
+        permissionDecisionReason=reason,
+        additionalContext=context,
+    )
+    return {"continue": True, "hookSpecificOutput": hso}
 
 
-def pre_tool_use_with_context(additional_context: str) -> dict[str, Any]:
+def pre_tool_use_with_context(additional_context: str) -> HookResponse:
     """Build a PreToolUse response that injects an ``additionalContext`` hint.
 
     Used when the hook wants to leave the tool call unchanged but inject a
@@ -109,18 +172,16 @@ def pre_tool_use_with_context(additional_context: str) -> dict[str, Any]:
         additional_context: The message to inject (Markdown OK).
 
     Returns:
-        A fully-formed hook response dict with ``continue: true`` and the hint.
+        A fully-typed hook response with ``continue: true`` and the hint.
     """
-    return {
-        "continue": True,
-        "hookSpecificOutput": {
-            "hookEventName": "PreToolUse",
-            "additionalContext": additional_context,
-        },
-    }
+    hso: dict[str, Any] = HookSpecificOutputContext(
+        hookEventName="PreToolUse",
+        additionalContext=additional_context,
+    )
+    return {"continue": True, "hookSpecificOutput": hso}
 
 
-def pre_tool_use_with_update(updated_input: dict[str, Any], additional_context: str) -> dict[str, Any]:
+def pre_tool_use_with_update(updated_input: dict[str, Any], additional_context: str) -> HookResponse:
     """Build a PreToolUse response that rewrites the tool input and injects a context hint.
 
     Used when the hook wants to redirect the tool call to a different target
@@ -139,16 +200,15 @@ def pre_tool_use_with_update(updated_input: dict[str, Any], additional_context: 
 
     Args:
         updated_input:      The modified ``tool_input`` dict to hand back to the harness.
+                            Values are typed as ``object`` (arbitrary JSON).
         additional_context: Message explaining the redirect (Markdown OK).
 
     Returns:
-        A fully-formed hook response dict with ``continue: true``, updated input, and the hint.
+        A fully-typed hook response with ``continue: true``, updated input, and the hint.
     """
-    return {
-        "continue": True,
-        "hookSpecificOutput": {
-            "hookEventName": "PreToolUse",
-            "updatedInput": updated_input,
-            "additionalContext": additional_context,
-        },
-    }
+    hso: dict[str, Any] = HookSpecificOutputUpdate(
+        hookEventName="PreToolUse",
+        updatedInput=updated_input,
+        additionalContext=additional_context,
+    )
+    return {"continue": True, "hookSpecificOutput": hso}
