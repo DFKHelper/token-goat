@@ -591,8 +591,10 @@ def index_project(
         "duration_sec": round(elapsed, 2),
     }
 
+    files_per_sec = n_total / elapsed if elapsed > 0 else 0.0
     _LOG.info(
-        "index_project completed: project=%s total_files=%d indexed=%d skipped=%d errors=%d languages=%s duration=%.2fs",
+        "index_project completed: project=%s total_files=%d indexed=%d skipped=%d errors=%d "
+        "languages=%s duration=%.2fs throughput=%.1f files/s",
         project.hash[:8],
         n_total,
         n_indexed,
@@ -600,5 +602,6 @@ def index_project(
         n_errors,
         ",".join(sorted(languages)),
         elapsed,
+        files_per_sec,
     )
     return result

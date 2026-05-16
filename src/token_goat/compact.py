@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import logging
 import operator
+import time
 from datetime import UTC, datetime
 
 from . import session as session_mod
@@ -66,13 +67,28 @@ def build_manifest(session_id: str, *, max_tokens: int = 400) -> str:
 
     Safe to call even when the session cache is empty or missing.
     """
+    t0 = time.monotonic()
+    _LOG.debug("build_manifest: session=%s max_tokens=%d", session_id[:8], max_tokens)
     try:
         cache = session_mod.load(session_id)
     except Exception as e:  # noqa: BLE001
         _LOG.warning("compact: could not load session %s: %s", session_id[:8], e)
         return ""
 
-    return _render(cache, session_id, max_tokens)
+    result = _render(cache, session_id, max_tokens)
+    elapsed = time.monotonic() - t0
+    token_estimate = estimate_tokens(result)
+    _LOG.info(
+        "build_manifest: session=%s edited_files=%d files_read=%d symbols_files=%d "
+        "manifest_tokens=%d elapsed=%.3fs",
+        session_id[:8],
+        len(cache.edited_files),
+        len(cache.files),
+        sum(1 for e in cache.files.values() if e.symbols_read),
+        token_estimate,
+        elapsed,
+    )
+    return result
 
 
 def _render(cache: SessionCache, session_id: str, max_tokens: int) -> str:
