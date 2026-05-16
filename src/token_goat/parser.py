@@ -309,6 +309,7 @@ def iter_source_files(project: Project) -> Iterable[Path]:
     resolved_root = root.resolve()
     skipped_dirs = 0
     skipped_symlinks = 0
+    skipped_oversized = 0
     for dirpath, dirs, files in os.walk(root):
         initial_dirs = dirs[:]
         dirs[:] = [d for d in dirs if d not in SKIP_DIRS]
@@ -337,7 +338,13 @@ def iter_source_files(project: Project) -> Iterable[Path]:
                     _LOG.debug("iter_source_files: skipping symlink outside project root: %s", path)
                     continue
             try:
-                if path.stat().st_size > MAX_FILE_SIZE:
+                file_size = path.stat().st_size
+                if file_size > MAX_FILE_SIZE:
+                    _LOG.debug(
+                        "iter_source_files: skipping oversized file %s (%d bytes > %d limit)",
+                        path.name, file_size, MAX_FILE_SIZE,
+                    )
+                    skipped_oversized += 1
                     continue
             except OSError:
                 continue
@@ -346,6 +353,8 @@ def iter_source_files(project: Project) -> Iterable[Path]:
         _LOG.debug("file walk excluded %d skip-listed directories", skipped_dirs)
     if skipped_symlinks > 0:
         _LOG.debug("file walk skipped %d symlinks pointing outside project root", skipped_symlinks)
+    if skipped_oversized > 0:
+        _LOG.info("file walk skipped %d oversized files (> %d bytes)", skipped_oversized, MAX_FILE_SIZE)
 
 
 def _line_count_from_bytes(raw: bytes) -> int:
@@ -536,6 +545,11 @@ def index_project(
 
     files = list(iter_source_files(project))
     n_total = len(files)
+    if n_total == 0:
+        _LOG.warning(
+            "index_project: no source files found under %s — check project root and SKIP_DIRS",
+            project.root,
+        )
     _LOG.debug("index walk: found %d source files", n_total)
     n_indexed = 0
     n_skipped_unchanged = 0

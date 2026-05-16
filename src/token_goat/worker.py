@@ -591,6 +591,17 @@ def cleanup_on_startup() -> CleanupStats:
 
     if failures:
         stats["failures"] = failures
+    _LOG.info(
+        "startup cleanup complete: locks_cleared=%d index_markers_cleared=%d logs_deleted=%d "
+        "stats_rows_pruned=%d image_bytes_evicted=%d image_files_evicted=%d%s",
+        stats.get("stale_locks_cleared", 0),
+        stats.get("stale_index_markers_cleared", 0),
+        stats.get("logs_deleted", 0),
+        stats.get("stats_rows_pruned", 0),
+        stats.get("image_bytes_evicted", 0),
+        stats.get("image_files_evicted", 0),
+        f" failures={failures}" if failures else "",
+    )
     return stats
 
 
@@ -691,6 +702,7 @@ def spawn_detached() -> int | None:
             creationflags=creationflags,
             start_new_session=(sys.platform != "win32"),
         )
+        _LOG.info("worker spawned: pid=%d cmd=%s", proc.pid, " ".join(cmd))
         return proc.pid
     except (OSError, FileNotFoundError) as e:
         _LOG.error("failed to spawn worker: %s", e)
@@ -1024,6 +1036,11 @@ def _reindex_active_projects() -> None:
                 _LOG.debug("periodic reindex: root=%s no changes", row["root"])
         except Exception:  # noqa: BLE001
             _LOG.exception("periodic reindex failed for %s", row["root"])
+    if skipped_oversized > 0:
+        _LOG.info(
+            "periodic reindex: skipped %d project(s) with > %d files (increase PERIODIC_REINDEX_MAX_FILES to include them)",
+            skipped_oversized, PERIODIC_REINDEX_MAX_FILES,
+        )
     _LOG.debug("periodic reindex cycle complete: %d processed, %d skipped (oversized)",
               reindexed_count, skipped_oversized)
 
