@@ -237,24 +237,19 @@ def _normalize_path(p: str) -> str:
 _SESSION_ID_RE = re.compile(r"^[a-zA-Z0-9_-]+$")
 
 
-def _validate_session_id(session_id: str) -> None:
-    """Validate session_id to prevent path traversal attacks.
+def validate_session_id(session_id: str) -> None:
+    """Validate session_id to prevent path traversal attacks. Raises ValueError on invalid input.
 
-    Session IDs should be alphanumeric, hyphens, and underscores only.
-    Reject anything with path separators or suspicious characters.
+    Session IDs must be non-empty, at most 256 characters, and contain only
+    alphanumeric characters, hyphens, and underscores — no path separators or
+    other suspicious characters that could enable directory traversal.
     """
     if not session_id:
         raise ValueError("session_id cannot be empty")
     if len(session_id) > 256:
         raise ValueError("session_id too long (max 256 chars)")
-    # Allow alphanumeric, hyphen, underscore only
     if not _SESSION_ID_RE.match(session_id):
         raise ValueError(f"session_id contains invalid characters: {session_id!r}")
-
-
-def validate_session_id(session_id: str) -> None:
-    """Public alias for _validate_session_id. Raises ValueError on invalid input."""
-    _validate_session_id(session_id)
 
 
 def _record_cache_contention(session_id: str, phase: str, exc: OSError) -> None:
@@ -282,7 +277,7 @@ def _resolve_cache(session_id: str, cache: SessionCache | None) -> SessionCache:
     (avoids a redundant disk read).  When *cache* is None, load from disk.
     Raises ValueError if *cache* belongs to a different session_id.
     """
-    _validate_session_id(session_id)
+    validate_session_id(session_id)
     if cache is not None:
         if cache.session_id != session_id:
             raise ValueError("cache.session_id does not match session_id")
@@ -300,7 +295,7 @@ def load(session_id: str) -> SessionCache:
     rather than propagating an exception, because a stale hint is always
     preferable to a broken hook invocation.
     """
-    _validate_session_id(session_id)
+    validate_session_id(session_id)
     p = paths.session_cache_path(session_id)
     try:
         if not p.exists():
@@ -372,6 +367,12 @@ def save(cache: SessionCache) -> None:
 
 
 _MAX_PATH_LEN = 4096
+
+# When the Read tool reports no limit (whole-file read), we record a range end
+# that extends far enough to cover any realistic file.  This sentinel is chosen
+# large enough to encompass files that tree-sitter can actually parse (~100 k lines)
+# while remaining clearly artificial so grep/log output stands out.
+_UNKNOWN_END_SENTINEL = 99_999
 
 
 def _sanitize_path(path: str) -> str:
@@ -447,10 +448,10 @@ def mark_file_read(
         if symbol not in entry.symbols_read:
             entry.symbols_read.append(symbol)
     else:
-        safe_offset = max(0, int(offset)) if offset is not None else 0
-        safe_limit = max(0, int(limit)) if limit is not None else 0
-        start = safe_offset + 1  # Read tool's offset is 0-indexed; we store 1-indexed inclusive
-        end = start + safe_limit - 1 if safe_limit else (start + 99999)
+        line_offset = max(0, int(offset)) if offset is not None else 0
+        line_limit = max(0, int(limit)) if limit is not None else 0
+        start = line_offset + 1  # Read tool's offset is 0-indexed; we store 1-indexed inclusive
+        end = start + line_limit - 1 if line_limit else (start + _UNKNOWN_END_SENTINEL)
         entry.line_ranges = _merge_ranges([*entry.line_ranges, (start, end)])
     cache.last_activity_ts = now
     cache._invalidate_json_cache()
@@ -522,7 +523,7 @@ def reset_session(session_id: str) -> None:
     also validates, but an explicit guard here makes the invariant obvious at the
     call site and prevents future callers from bypassing path-level checks).
     """
-    _validate_session_id(session_id)
+    validate_session_id(session_id)
     p = paths.session_cache_path(session_id)
     if p.exists():
         try:

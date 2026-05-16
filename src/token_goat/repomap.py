@@ -226,7 +226,7 @@ def _multigraph_to_weighted_digraph(multigraph: object) -> object:
     return simple_graph
 
 
-def compute_ranks(g: object, *, alpha: float = 0.85) -> dict[str, float]:
+def compute_ranks(graph: object, *, alpha: float = 0.85) -> dict[str, float]:
     """Run PageRank on the multigraph (collapsed to simple graph for nx).
 
     Uses the pure-Python power-iteration implementation to avoid a hard
@@ -238,10 +238,15 @@ def compute_ranks(g: object, *, alpha: float = 0.85) -> dict[str, float]:
     """
     import networkx as nx  # noqa: PLC0415
 
-    if g.number_of_nodes() == 0:
+    if graph.number_of_nodes() == 0:
         return {}
 
-    simple_graph = _multigraph_to_weighted_digraph(g)
+    simple_graph = _multigraph_to_weighted_digraph(graph)
+
+    def _uniform_ranks() -> dict[str, float]:
+        node_count = simple_graph.number_of_nodes()
+        rank = 1.0 / node_count if node_count else 1.0
+        return {node: rank for node in simple_graph.nodes()}
 
     # _pagerank_python is a private networkx symbol — guard the import so a
     # future networkx rename does not crash the entire map command.
@@ -258,9 +263,7 @@ def compute_ranks(g: object, *, alpha: float = 0.85) -> dict[str, float]:
             return nx.pagerank(simple_graph, alpha=alpha, weight="weight")
         except Exception as exc:  # noqa: BLE001
             _LOG.warning("nx.pagerank also failed (%s); using uniform ranks", exc)
-            n = simple_graph.number_of_nodes()
-            uniform = 1.0 / n if n else 1.0
-            return {node: uniform for node in simple_graph.nodes()}
+            return _uniform_ranks()
 
     # Use the pure-Python implementation — avoids requiring scipy.
     try:
@@ -281,14 +284,10 @@ def compute_ranks(g: object, *, alpha: float = 0.85) -> dict[str, float]:
                 "(max_iter=%d, tol=%s); using uniform ranks",
                 _PAGERANK_MAX_ITER_FALLBACK, _PAGERANK_TOL_FALLBACK,
             )
-            n = simple_graph.number_of_nodes()
-            uniform = 1.0 / n if n else 1.0
-            return {node: uniform for node in simple_graph.nodes()}
+            return _uniform_ranks()
     except Exception as exc:  # noqa: BLE001
         _LOG.warning("PageRank raised unexpected error (%s); using uniform ranks", exc)
-        n = simple_graph.number_of_nodes()
-        uniform = 1.0 / n if n else 1.0
-        return {node: uniform for node in simple_graph.nodes()}
+        return _uniform_ranks()
 
 
 def _summarize_file(
@@ -335,7 +334,7 @@ def _summarize_file(
     )
 
 
-def render_summary(s: FileSummary) -> str:
+def render_summary(summary: FileSummary) -> str:
     """Render a single file summary as text.
 
     Groups symbols by kind and emits kinds in priority order.  Uses a two-pass
@@ -344,16 +343,16 @@ def render_summary(s: FileSummary) -> str:
     n = total symbols).  This avoids re-sorting the entire symbol list on every
     call — only the small set of distinct kind strings is sorted.
     """
-    lines = [f"{s.rel_path}  [{s.language}, ~{s.line_count}L, rank={s.rank:.4f}]"]
-    if s.top_symbols:
+    lines = [f"{summary.rel_path}  [{summary.language}, ~{summary.line_count}L, rank={summary.rank:.4f}]"]
+    if summary.top_symbols:
         by_kind: dict[str, list[str]] = {}
-        for k, n in s.top_symbols:
-            by_kind.setdefault(k, []).append(n)
+        for kind, name in summary.top_symbols:
+            by_kind.setdefault(kind, []).append(name)
         for kind in sorted(by_kind, key=lambda k: KIND_PRIORITY.get(k, 99)):
             names = ", ".join(by_kind[kind][:_MAX_NAMES_PER_KIND])
             lines.append(f"  {kind}: {names}")
-    if s.top_sections:
-        lines.append(f"  sections: {' > '.join(s.top_sections)}")
+    if summary.top_sections:
+        lines.append(f"  sections: {' > '.join(summary.top_sections)}")
     return "\n".join(lines)
 
 
