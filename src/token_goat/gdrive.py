@@ -70,7 +70,12 @@ def _try_adc() -> object | None:
 
 
 def _try_stored_oauth() -> object | None:
-    """Try cached OAuth tokens from a previous token-goat gdrive-auth run."""
+    """Try cached OAuth tokens from a previous token-goat gdrive-auth run.
+
+    On a permanent credential failure (revoked token / invalid grant), the stale
+    creds file is deleted so the next call falls through to the OAuth flow rather
+    than silently failing on every request until the user manually removes the file.
+    """
     creds_path = paths.gdrive_creds_path()
     if not creds_path.exists():
         return None
@@ -80,7 +85,27 @@ def _try_stored_oauth() -> object | None:
 
         creds = Credentials.from_authorized_user_file(str(creds_path), scopes=_DRIVE_SCOPES)
         if creds.expired and creds.refresh_token:
-            creds.refresh(Request())
+            try:
+                creds.refresh(Request())
+            except Exception as refresh_err:  # noqa: BLE001
+                # Distinguish permanent failures (revoked/invalid grant) from
+                # transient network errors so we only delete stale creds when
+                # the server definitively rejects them.
+                err_str = str(refresh_err).lower()
+                _permanent_keywords = ("invalid_grant", "token has been expired", "token has been revoked", "unauthorized_client")
+                if any(kw in err_str for kw in _permanent_keywords):
+                    _LOG.warning(
+                        "OAuth refresh token permanently invalid (revoked or expired grant); "
+                        "removing stale credentials so re-auth is triggered"
+                    )
+                    try:
+                        creds_path.unlink(missing_ok=True)
+                    except OSError as unlink_err:
+                        _LOG.debug("could not remove stale creds file: %s", unlink_err)
+                else:
+                    # Transient error (network timeout, DNS failure, etc.) — keep creds
+                    _LOG.warning("OAuth token refresh failed (transient); keeping cached creds")
+                return None
             # Do NOT log creds.to_json() — it contains refresh tokens
             _write_creds_secure(creds_path, creds.to_json())
             _LOG.info("refreshed OAuth credentials")

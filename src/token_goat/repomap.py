@@ -215,16 +215,36 @@ def compute_ranks(g: object, *, alpha: float = 0.85) -> dict[str, float]:
 
     Uses the pure-Python power-iteration implementation to avoid a hard
     dependency on scipy, which is not in the project's dependency list.
+
+    Falls back gracefully on any failure: first relaxes convergence parameters,
+    then falls back to uniform ranks if the private API is unavailable (e.g.
+    future networkx versions that rename/remove ``_pagerank_python``).
     """
     import networkx as nx  # noqa: PLC0415
-    from networkx.algorithms.link_analysis.pagerank_alg import (  # noqa: PLC0415
-        _pagerank_python,
-    )
 
     if g.number_of_nodes() == 0:
         return {}
 
     simple_graph = _multigraph_to_weighted_digraph(g)
+
+    # _pagerank_python is a private networkx symbol — guard the import so a
+    # future networkx rename does not crash the entire map command.
+    try:
+        from networkx.algorithms.link_analysis.pagerank_alg import (  # noqa: PLC0415
+            _pagerank_python,
+        )
+    except ImportError:
+        _LOG.warning(
+            "networkx._pagerank_python unavailable (API changed?); "
+            "falling back to nx.pagerank with scipy"
+        )
+        try:
+            return nx.pagerank(simple_graph, alpha=alpha, weight="weight")
+        except Exception as exc:  # noqa: BLE001
+            _LOG.warning("nx.pagerank also failed (%s); using uniform ranks", exc)
+            n = simple_graph.number_of_nodes()
+            uniform = 1.0 / n if n else 1.0
+            return {node: uniform for node in simple_graph.nodes()}
 
     # Use the pure-Python implementation — avoids requiring scipy.
     try:
@@ -233,10 +253,26 @@ def compute_ranks(g: object, *, alpha: float = 0.85) -> dict[str, float]:
             max_iter=_PAGERANK_MAX_ITER_NORMAL, tol=_PAGERANK_TOL_NORMAL,
         )
     except nx.PowerIterationFailedConvergence:
-        return _pagerank_python(
-            simple_graph, alpha=alpha, weight="weight",
-            max_iter=_PAGERANK_MAX_ITER_FALLBACK, tol=_PAGERANK_TOL_FALLBACK,
-        )
+        _LOG.debug("PageRank did not converge at tol=%s; retrying with relaxed parameters", _PAGERANK_TOL_NORMAL)
+        try:
+            return _pagerank_python(
+                simple_graph, alpha=alpha, weight="weight",
+                max_iter=_PAGERANK_MAX_ITER_FALLBACK, tol=_PAGERANK_TOL_FALLBACK,
+            )
+        except nx.PowerIterationFailedConvergence:
+            _LOG.warning(
+                "PageRank failed to converge even with relaxed parameters "
+                "(max_iter=%d, tol=%s); using uniform ranks",
+                _PAGERANK_MAX_ITER_FALLBACK, _PAGERANK_TOL_FALLBACK,
+            )
+            n = simple_graph.number_of_nodes()
+            uniform = 1.0 / n if n else 1.0
+            return {node: uniform for node in simple_graph.nodes()}
+    except Exception as exc:  # noqa: BLE001
+        _LOG.warning("PageRank raised unexpected error (%s); using uniform ranks", exc)
+        n = simple_graph.number_of_nodes()
+        uniform = 1.0 / n if n else 1.0
+        return {node: uniform for node in simple_graph.nodes()}
 
 
 def _summarize_file(
