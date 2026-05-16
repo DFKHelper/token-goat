@@ -141,8 +141,6 @@ class TestDbCountTableAllowlist:
 
     def test_unknown_table_raises(self, tmp_path):
         """Passing an unlisted table name to _count must raise ValueError, not execute SQL."""
-        from token_goat import paths
-        import importlib
 
         # We can't call _count() directly (it's a closure), but we can verify
         # the allowlist rejects arbitrary strings, which is what _count() checks.
