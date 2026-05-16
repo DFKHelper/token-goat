@@ -9,9 +9,6 @@ from . import common
 
 _LOG = logging.getLogger("token_goat.languages.html")
 
-# Heading tags
-_H_TAG_RE = re.compile(r"<h([1-4])[^>]*>([^<]*)</h\1>", re.IGNORECASE | re.DOTALL)
-
 # id and class attributes
 _ID_RE = re.compile(r'id=["\']([^"\']+)["\']', re.IGNORECASE)
 _CLASS_RE = re.compile(r'class=["\']([^"\']+)["\']', re.IGNORECASE)
@@ -44,13 +41,7 @@ def extract(source: bytes, rel_path: str) -> tuple[list[Symbol], list[Ref], list
         lines = text.split("\n")
 
         # --- Extract headings ---
-        for match in _H_TAG_RE.finditer(text):
-            level = int(match.group(1))
-            heading_text = match.group(2).strip()
-            if heading_text:
-                heading_text = heading_text[:100]
-                line = text[:match.start()].count("\n") + 1
-                sections.append(Section(heading=heading_text, level=level, line=line))
+        common.extract_html_headings(text, sections)
 
         # Compute end_line for sections
         common._compute_section_end_lines(sections, lines)

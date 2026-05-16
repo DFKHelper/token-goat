@@ -865,6 +865,61 @@ def unpatch_settings_json() -> str:
 
 
 # ---------------------------------------------------------------------------
+# Shared markdown-block patching helpers
+# ---------------------------------------------------------------------------
+
+
+def _patch_md_block(md_path: Path, begin_marker: str, end_marker: str, content: str) -> str:
+    """Insert or replace a delimited block in a markdown file idempotently.
+
+    Reads *md_path* (creates it if absent), replaces the region between
+    *begin_marker* and *end_marker* with *content*, and writes the result back.
+    Returns ``str(md_path)``.
+
+    Extracted to eliminate the identical replace-or-append pattern duplicated
+    in ``patch_claude_md`` and ``patch_codex_agents_md``.
+    """
+    md_path.parent.mkdir(parents=True, exist_ok=True)
+    block = f"{begin_marker}\n{content}\n{end_marker}"
+
+    if md_path.exists():
+        existing = md_path.read_text(encoding="utf-8")
+        if begin_marker in existing and end_marker in existing:
+            pattern = re.compile(
+                re.escape(begin_marker) + r".*?" + re.escape(end_marker),
+                re.DOTALL,
+            )
+            updated = pattern.sub(block, existing)
+        else:
+            if not existing.endswith("\n"):
+                existing += "\n"
+            updated = existing + "\n" + block + "\n"
+    else:
+        updated = block + "\n"
+
+    md_path.write_text(updated, encoding="utf-8")
+    return str(md_path)
+
+
+def _unpatch_md_block(md_path: Path, begin_marker: str, end_marker: str, not_found_msg: str) -> str:
+    """Remove the delimited block between *begin_marker* and *end_marker* from *md_path*.
+
+    Returns a status string.  Extracted to eliminate the identical removal
+    pattern duplicated in ``unpatch_claude_md`` and ``unpatch_codex_agents_md``.
+    """
+    if not md_path.exists():
+        return not_found_msg
+    content = md_path.read_text(encoding="utf-8")
+    pattern = re.compile(
+        r"\n*" + re.escape(begin_marker) + r".*?" + re.escape(end_marker) + r"\n*",
+        re.DOTALL,
+    )
+    new = pattern.sub("\n", content).strip()
+    md_path.write_text(new + "\n" if new else "", encoding="utf-8")
+    return str(md_path)
+
+
+# ---------------------------------------------------------------------------
 # CLAUDE.md patching
 # ---------------------------------------------------------------------------
 
@@ -894,49 +949,12 @@ Verify the habit. Run `token-goat stats` and watch event counts climb. Flat coun
 
 def patch_claude_md() -> str:
     """Add or update the token-goat block in ~/.claude/CLAUDE.md, idempotently."""
-    md_path = claude_md_path()
-    md_path.parent.mkdir(parents=True, exist_ok=True)
-    block = f"{CLAUDE_MD_BEGIN}\n{CLAUDE_MD_CONTENT}\n{CLAUDE_MD_END}"
-
-    if md_path.exists():
-        content = md_path.read_text(encoding="utf-8")
-        if CLAUDE_MD_BEGIN in content and CLAUDE_MD_END in content:
-            # Replace existing block in place
-            pattern = re.compile(
-                re.escape(CLAUDE_MD_BEGIN) + r".*?" + re.escape(CLAUDE_MD_END),
-                re.DOTALL,
-            )
-            content = pattern.sub(block, content)
-        else:
-            # Append
-            if not content.endswith("\n"):
-                content += "\n"
-            content += "\n" + block + "\n"
-    else:
-        content = block + "\n"
-
-    md_path.write_text(content, encoding="utf-8")
-    return str(md_path)
+    return _patch_md_block(claude_md_path(), CLAUDE_MD_BEGIN, CLAUDE_MD_END, CLAUDE_MD_CONTENT)
 
 
 def unpatch_claude_md() -> str:
     """Remove the token-goat block from ~/.claude/CLAUDE.md."""
-    md_path = claude_md_path()
-    if not md_path.exists():
-        return "CLAUDE.md not found"
-    content = md_path.read_text(encoding="utf-8")
-    pattern = re.compile(
-        r"\n*"
-        + re.escape(CLAUDE_MD_BEGIN)
-        + r".*?"
-        + re.escape(CLAUDE_MD_END)
-        + r"\n*",
-        re.DOTALL,
-    )
-    new = pattern.sub("\n", content).strip()
-    # Write back with a trailing newline
-    md_path.write_text(new + "\n" if new else "", encoding="utf-8")
-    return str(md_path)
+    return _unpatch_md_block(claude_md_path(), CLAUDE_MD_BEGIN, CLAUDE_MD_END, "CLAUDE.md not found")
 
 
 # ---------------------------------------------------------------------------
@@ -1183,43 +1201,16 @@ Verify the habit. Run `token-goat stats` and watch event counts climb. Flat coun
 
 def patch_codex_agents_md() -> str:
     """Append/replace the delimited token-goat block in ~/.codex/AGENTS.md."""
-    md = codex_agents_path()
-    md.parent.mkdir(parents=True, exist_ok=True)
-
-    block = f"{CODEX_AGENTS_BEGIN}\n{CODEX_AGENTS_MD_CONTENT}\n{CODEX_AGENTS_END}"
-
-    if md.exists():
-        content = md.read_text(encoding="utf-8")
-        if CODEX_AGENTS_BEGIN in content and CODEX_AGENTS_END in content:
-            pattern = re.compile(
-                re.escape(CODEX_AGENTS_BEGIN) + r".*?" + re.escape(CODEX_AGENTS_END),
-                re.DOTALL,
-            )
-            content = pattern.sub(block, content)
-        else:
-            if not content.endswith("\n"):
-                content += "\n"
-            content += "\n" + block + "\n"
-    else:
-        content = block + "\n"
-
-    md.write_text(content, encoding="utf-8")
-    return str(md)
+    return _patch_md_block(
+        codex_agents_path(), CODEX_AGENTS_BEGIN, CODEX_AGENTS_END, CODEX_AGENTS_MD_CONTENT
+    )
 
 
 def unpatch_codex_agents_md() -> str:
     """Remove the token-goat block from ~/.codex/AGENTS.md."""
-    md = codex_agents_path()
-    if not md.exists():
-        return "codex AGENTS.md not found"
-
-    content = md.read_text(encoding="utf-8")
-    pattern = re.compile(
-        r"\n*" + re.escape(CODEX_AGENTS_BEGIN) + r".*?" + re.escape(CODEX_AGENTS_END) + r"\n*",
-        re.DOTALL,
+    return _unpatch_md_block(
+        codex_agents_path(), CODEX_AGENTS_BEGIN, CODEX_AGENTS_END, "codex AGENTS.md not found"
     )
-    md.write_text(pattern.sub("\n", content), encoding="utf-8")
-    return str(md)
 
 
 # ---------------------------------------------------------------------------
