@@ -1178,8 +1178,8 @@ def _check_worker_task() -> str:
         except FileNotFoundError:
             winreg.CloseKey(key)
             return "not installed"
-    except Exception as e:
-        return f"error ({e})"
+    except Exception as e:  # noqa: BLE001
+        return f"error reading HKCU\\Run ({e})"
 
 
 def _check_update_task() -> str:

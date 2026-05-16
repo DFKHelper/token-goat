@@ -130,7 +130,7 @@ def load() -> Config:
             raw = parsed  # type: ignore[assignment]
             _LOG.debug("config loaded from %s", p)
         except Exception as e:  # noqa: BLE001
-            _LOG.warning("config load failed (%s); using defaults", e)
+            _LOG.warning("config load failed for %s (%s); using defaults", p, e)
     else:
         _LOG.debug("config not found; using defaults")
 

@@ -83,6 +83,6 @@ def extract(source: bytes, rel_path: str) -> tuple[list[Symbol], list[Ref], list
             imports.append(ImpExp(kind="html_script", target=src, line=line))
 
         return symbols, [], imports, sections
-    except Exception:
+    except Exception:  # noqa: BLE001
         _LOG.debug("parse failed for html source: %s", rel_path, exc_info=True)
         return [], [], [], []
