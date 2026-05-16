@@ -12,25 +12,6 @@ from token_goat import db
 from token_goat.parser import index_file, index_project, write_file_index
 
 FIXTURE_DIR = Path(__file__).parent / "fixtures"
-TS_SAMPLE = FIXTURE_DIR / "ts_sample"
-PY_SAMPLE = FIXTURE_DIR / "py_sample"
-
-
-@pytest.fixture
-def ts_project(tmp_path, tmp_data_dir, make_project):
-    """Copy ts_sample fixture to tmp dir and return a Project."""
-    proj_root = tmp_path / "ts_sample"
-    shutil.copytree(TS_SAMPLE, proj_root)
-    return make_project(proj_root)
-
-
-@pytest.fixture
-def py_project(tmp_path, tmp_data_dir, make_project):
-    """Copy py_sample fixture to tmp dir and return a Project."""
-    proj_root = tmp_path / "py_sample"
-    shutil.copytree(PY_SAMPLE, proj_root)
-    return make_project(proj_root)
-
 
 # ---------------------------------------------------------------------------
 # Full indexing
