@@ -87,10 +87,14 @@ def _parse_read(binary: str, args: list[str]) -> BashIntent:
     offset: int | None = None
     limit: int | None = None
     paths: list[str] = []
+    # Cache repeated membership tests as locals — avoids re-evaluating the
+    # frozenset lookup and tuple construction on every iteration of the arg loop.
+    is_head_tail = binary in ("head", "tail")
+    is_scripted = binary in SCRIPTED_READ_BINS
     i = 0
     while i < len(args):
         a = args[i]
-        if binary in ("head", "tail"):
+        if is_head_tail:
             if a in ("-n", "--lines"):
                 if i + 1 < len(args):
                     parsed = _try_parse_int(args[i + 1])
@@ -118,8 +122,8 @@ def _parse_read(binary: str, args: list[str]) -> BashIntent:
 
     if not paths:
         return BashIntent(kind="unknown", reason=f"{binary} command is missing a file path")
-    target_path = paths[-1] if binary in SCRIPTED_READ_BINS else paths[0]
-    if binary in SCRIPTED_READ_BINS and len(paths) < 2:
+    target_path = paths[-1] if is_scripted else paths[0]
+    if is_scripted and len(paths) < 2:
         return BashIntent(kind="unknown", reason=f"{binary} command is missing a target file")
     return BashIntent(kind="read", target_path=target_path, offset=offset, limit=limit)
 

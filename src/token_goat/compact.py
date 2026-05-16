@@ -6,6 +6,7 @@ compaction LLM knows what to preserve without reading the full conversation.
 from __future__ import annotations
 
 import logging
+import operator
 from datetime import UTC, datetime
 
 from . import session as session_mod
@@ -94,8 +95,9 @@ def _render(cache: SessionCache, session_id: str, max_tokens: int) -> str:
     # ── 1. Edited files — highest priority ────────────────────────────────────
     if cache.edited_files:
         sections.append("### Files Edited (preserve in summary)")
-        # Sort by edit count descending
-        for path, count in sorted(cache.edited_files.items(), key=lambda x: -x[1]):
+        # Sort by edit count descending — operator.itemgetter avoids lambda
+        # object creation on each sort call and runs at C speed.
+        for path, count in sorted(cache.edited_files.items(), key=operator.itemgetter(1), reverse=True):
             suffix = f"  ×{count}" if count > 1 else ""
             sections.append(f"- {_short_path(path)}{suffix}")
         sections.append("")

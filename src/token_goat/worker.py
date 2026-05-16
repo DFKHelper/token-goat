@@ -456,6 +456,8 @@ def _cleanup_stale_locks() -> int:
         _LOG.debug("locks directory does not exist, skipping cleanup")
         return 0
     total_locks = 0
+    # Cache the current time once before the loop — avoids a syscall per lock file.
+    now = time.time()
     for lock_path in locks.glob("*.lock"):
         total_locks += 1
         try:
@@ -465,7 +467,7 @@ def _cleanup_stale_locks() -> int:
                 raise ValueError("empty PID in lock file")
             pid = int(pid_str)
             dead = not psutil.pid_exists(pid)
-            old = time.time() - lock_path.stat().st_mtime > 600
+            old = now - lock_path.stat().st_mtime > 600
             if dead or old:
                 lock_path.unlink()
                 cleared += 1
@@ -957,6 +959,10 @@ def _reindex_active_projects() -> None:
 def _process_dirty_entries(entries: list[DirtyQueueEntry]) -> None:
     """Re-index files that were marked dirty by Edit/Write hooks."""
     _LOG.debug("processing %d dirty queue entries", len(entries))
+    # Hoist the import outside the per-entry loop — repeated import machinery
+    # lookups inside a tight loop add measurable overhead with large queues.
+    from .paths import is_safe_rel_path  # noqa: PLC0415
+
     # Group by project_hash, carrying the project root/marker from the first
     # entry that records them. Newer entries (see hooks_cli._enqueue_for_reindex)
     # are self-sufficient: they include project_root/project_marker so a project
@@ -977,7 +983,6 @@ def _process_dirty_entries(entries: list[DirtyQueueEntry]) -> None:
         except ValueError:
             _LOG.warning("dirty queue: skipping entry with invalid project_hash %r", ph)
             continue
-        from .paths import is_safe_rel_path  # noqa: PLC0415
         if not is_safe_rel_path(rel):
             _LOG.warning("dirty queue: skipping entry with unsafe rel path %r", rel)
             continue
