@@ -9,10 +9,13 @@ import logging
 import operator
 import time
 from datetime import UTC, datetime
+from typing import TYPE_CHECKING
 
 from . import session as session_mod
 from .repomap import estimate_tokens
-from .session import SessionCache
+
+if TYPE_CHECKING:
+    from .session import SessionCache
 
 _LOG = logging.getLogger("token_goat.compact")
 

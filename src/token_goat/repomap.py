@@ -7,10 +7,12 @@ import sqlite3
 import time
 from collections import defaultdict
 from dataclasses import dataclass
-from typing import Any, TypedDict
+from typing import TYPE_CHECKING, Any, TypedDict
 
 from . import db
-from .project import Project
+
+if TYPE_CHECKING:
+    from .project import Project
 
 
 @dataclass
