@@ -525,7 +525,6 @@ def index_project(
                 stale_list = list(stale)
                 ph = ",".join("?" for _ in stale_list)
                 conn.execute(f"DELETE FROM files WHERE rel_path IN ({ph})", stale_list)  # noqa: S608
-            if stale:
                 _LOG.info(
                     "pruned %d deleted file(s) from index: %s",
                     len(stale),
