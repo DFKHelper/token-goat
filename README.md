@@ -2,13 +2,18 @@
   <img src="assets/logo.png" alt="Token-Goat" width="700">
 </p>
 
-Cuts the tokens Claude Code and Codex CLI burn on Windows. Install once, then forget it.
+<p align="center">
+  Cuts the tokens Claude Code and Codex CLI burn on Windows. Install once, then forget it.
+</p>
 
-## Requirements
+<p align="center">
+  <img src="https://img.shields.io/badge/Windows-10%20%7C%2011-0078d4?logo=windows&logoColor=white" alt="Windows 10 | 11">
+  <img src="https://img.shields.io/badge/Python-3.11%20%7C%203.12%20%7C%203.13-3776ab?logo=python&logoColor=white" alt="Python 3.11 | 3.12 | 3.13">
+  <img src="https://img.shields.io/badge/license-PolyForm%20Noncommercial-lightgrey" alt="PolyForm Noncommercial">
+  <img src="https://img.shields.io/badge/requires-uv-6340ac" alt="requires uv">
+</p>
 
-- Windows 10 or 11
-- Python 3.11, 3.12, or 3.13
-- [uv](https://docs.astral.sh/uv/) (install via `winget install astral-sh.uv` or `pip install uv`)
+---
 
 ## The problem
 
@@ -16,19 +21,23 @@ Long sessions accumulate waste. Screenshots cross the model at full resolution. 
 
 ## What you get
 
-Four wins, all silent, all automatic.
-
-**Large images shrink before the model ever sees them.** When the agent opens a big PNG or JPEG from disk, Google Drive, or a URL, Token-Goat returns a compressed copy. A 3.3 MB screenshot from a recent session landed at 84 KB on the way through — a 97.4% cut on a single read. Drive shrinking requires Google Drive authorization. Token-Goat uses Google Application Default Credentials if available (set up via `gcloud auth application-default login`), or its own OAuth token from a one-time `token-goat gdrive-auth` run. It never touches Claude Code's credentials.
+**Large images shrink before the model ever sees them.** A 3.3 MB screenshot from a recent session landed at 84 KB on the way through — a 97.4% cut on a single read. Works on local files, Google Drive, and URLs.
 
 **No more re-reading the same file.** When the agent tries to read a file already pulled into the current session, it gets a short reminder of the prior read and a nudge to grab a narrower slice instead. Long sessions stop replaying themselves.
 
-**Compaction stays useful.** Before Claude Code compacts a long conversation, Token-Goat injects a structured session manifest — which files were edited, which symbols were accessed, which files were read most — so the compaction LLM knows what to preserve. The manifest is typically under 400 tokens. Sessions that would otherwise lose important context are better positioned to keep it.
+**Compaction stays useful.** Before Claude Code compacts a long conversation, Token-Goat injects a structured session manifest — which files were edited, which symbols were accessed, which files were read most — so the compaction LLM knows what to preserve. The manifest is typically under 400 tokens.
 
 **Surgical reads from a small CLI.** Pull one function, one Markdown heading, or one semantic match instead of dumping a whole module into context. Targeted reads run about 85% smaller than whole-file reads on the same source.
 
-Four hours of use on the author's machine: 59.7 MB of data that never hit the model, with an estimated 11.5 million tokens avoided. Image token savings are estimated using Claude's vision pricing formula (pixel dimensions ÷ 750, capped at 1568 px per side). Text savings use bytes ÷ 4. Both are estimates — treat them as directional.
+> Four hours of use on the author's machine: **59.7 MB** of data that never hit the model, with an estimated **11.5 million tokens** avoided.
+
+<p align="center">
+  <img src="assets/stats.png" alt="token-goat stats" width="800">
+</p>
 
 ## Install
+
+**Requirements:** Windows 10 or 11 · Python 3.11, 3.12, or 3.13 · [uv](https://docs.astral.sh/uv/) (`winget install astral-sh.uv`)
 
 ```
 uv tool install token-goat
@@ -75,7 +84,7 @@ To remove it later, `token-goat uninstall` reverses every change, including the 
 
 Optional speed-up for large repos. Token-goat works fine without it.
 
-Real-time scanning slows indexing. To exclude the token-goat folder, open PowerShell as administrator (right-click PowerShell, "Run as administrator") and run:
+Real-time scanning slows indexing. To exclude the token-goat folder, open PowerShell as administrator and run:
 
 ```powershell
 Add-MpPreference -ExclusionPath "$env:LOCALAPPDATA\dfk-helper\token-goat"
@@ -126,7 +135,7 @@ I've spent months inside Claude Code's hook system, session management, and comp
 
 I build systems that run without babysitting, measure their own impact, and fail quietly. If you're building tooling for developers who work with AI, reach out.
 
-token-goat@dfkhelper.com
+[token-goat@dfkhelper.com](mailto:token-goat@dfkhelper.com)
 
 ## Disclaimer
 

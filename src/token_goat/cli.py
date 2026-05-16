@@ -5,7 +5,6 @@ import contextlib
 import json
 import logging
 import os
-import re
 import sys
 from dataclasses import asdict, is_dataclass
 from pathlib import Path
@@ -26,37 +25,6 @@ from . import config as config_mod
 from . import hooks_cli, read_commands
 
 _LOG = logging.getLogger(__name__)
-
-
-def _write_raw(text: str) -> None:
-    """Write text with truecolor ANSI codes directly, bypassing colorama.
-
-    colorama wraps sys.stdout in a StreamWrapper whose write() either strips
-    all ANSI codes (strip=True, piped output) or converts them via Win32 API
-    (convert=True, TTY).  Neither path handles 24-bit color: the Win32 path
-    iterates semicolon-separated params individually, so fg(31,77,44) becomes
-    ANSI red (SGR 31) instead of RGB(31,77,44).
-
-    Fix: unwrap to the raw TextIOWrapper and write bytes directly, letting
-    Windows Terminal's native VT processor handle the sequences correctly.
-    """
-    if os.environ.get("NO_COLOR") or not sys.stdout.isatty():
-        text = re.sub(r"\x1b\[[0-9;]*m", "", text)
-
-    stream: Any = sys.stdout
-    # colorama.StreamWrapper stores original stream as a name-mangled attr
-    if hasattr(stream, "_StreamWrapper__wrapped"):
-        stream = stream._StreamWrapper__wrapped  # type: ignore[attr-defined]
-    # colorama.AnsiToWin32 stores it as .stream
-    while hasattr(stream, "stream"):
-        stream = stream.stream  # type: ignore[attr-defined]
-    encoded = (text + "\n").encode("utf-8")
-    if hasattr(stream, "buffer"):
-        stream.buffer.write(encoded)  # type: ignore[attr-defined]
-        stream.buffer.flush()  # type: ignore[attr-defined]
-    else:
-        stream.write(text + "\n")  # type: ignore[attr-defined]
-        stream.flush()  # type: ignore[attr-defined]
 
 
 def _error(msg: str) -> None:
@@ -116,6 +84,30 @@ def _emit_json(data: Any, *, indent: int | None = None) -> None:
     """
     typer.echo(json.dumps(data, indent=indent))
     raise typer.Exit(0)
+
+
+def _query_project(proj_hash: str, sql: str, params: tuple) -> list:
+    """Run a SELECT against the project DB, exiting on DBError.
+
+    Centralises the repeated pattern::
+
+        try:
+            with _db.open_project(proj.hash) as conn:
+                rows = conn.execute(sql, params).fetchall()
+        except _db.DBError as exc:
+            _error(f"project index unavailable: {exc}. Run ...")
+            raise typer.Exit(1) from None
+
+    Returns the raw sqlite3.Row list on success.
+    """
+    from . import db as _db  # noqa: PLC0415
+
+    try:
+        with _db.open_project(proj_hash) as conn:
+            return conn.execute(sql, params).fetchall()
+    except _db.DBError as exc:
+        _error(f"project index unavailable: {exc}. Run `token-goat index --full` to rebuild.")
+        raise typer.Exit(1) from None
 
 
 app = typer.Typer(name="token-goat", no_args_is_help=True)
@@ -209,15 +201,11 @@ def symbol(
 
     proj = _require_project()
 
-    try:
-        with _db.open_project(proj.hash) as conn:
-            rows_raw = conn.execute(
-                "SELECT name, kind, file_rel, line, signature FROM symbols WHERE name = ? LIMIT ?",
-                (name, limit),
-            ).fetchall()
-    except _db.DBError as exc:
-        _error(f"project index unavailable: {exc}. Run `token-goat index --full` to rebuild.")
-        raise typer.Exit(1) from None
+    rows_raw = _query_project(
+        proj.hash,
+        "SELECT name, kind, file_rel, line, signature FROM symbols WHERE name = ? LIMIT ?",
+        (name, limit),
+    )
 
     results = [
         {
@@ -249,19 +237,13 @@ def ref(
     limit: int = typer.Option(100, "--limit"),
 ) -> None:
     """Find all references to a symbol."""
-    from . import db as _db  # noqa: PLC0415
-
     proj = _require_project()
 
-    try:
-        with _db.open_project(proj.hash) as conn:
-            rows_raw = conn.execute(
-                "SELECT file_rel, line, col, context FROM refs WHERE symbol_name = ? LIMIT ?",
-                (name, limit),
-            ).fetchall()
-    except _db.DBError as exc:
-        _error(f"project index unavailable: {exc}. Run `token-goat index --full` to rebuild.")
-        raise typer.Exit(1) from None
+    rows_raw = _query_project(
+        proj.hash,
+        "SELECT file_rel, line, col, context FROM refs WHERE symbol_name = ? LIMIT ?",
+        (name, limit),
+    )
 
     results = [
         {
