@@ -488,8 +488,7 @@ def index_project(
     Returns IndexProjectResult with total_files, indexed, skipped_unchanged, errors, languages, duration_sec.
     Calls progress(indexed_so_far, total) every 100 files if progress is supplied.
     """
-    index_mode = "full" if full else "incremental"
-    _LOG.info("index_project started: mode=%s path=%s", index_mode, project.root)
+    _LOG.info("index_project started: mode=%s path=%s", "full" if full else "incremental", project.root)
 
     # Register the project in the global registry up front, before the
     # potentially slow (or hang-prone) file walk. The final registry update
@@ -549,7 +548,8 @@ def index_project(
                     n_errors += 1
                 else:
                     # SHA check guards against same-mtime content changes (copies, touch+overwrite)
-                    if existing_sha is not None and existing_sha.get(fi.rel_path) == fi.content_sha256:
+                    sha_unchanged = existing_sha is not None and existing_sha.get(fi.rel_path) == fi.content_sha256
+                    if sha_unchanged:
                         n_skipped_unchanged += 1
                         _LOG.debug("skipped unchanged (sha): %s", fi.rel_path)
                     else:

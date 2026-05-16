@@ -443,46 +443,47 @@ def _load_and_rank(project: Project) -> _RankedProjectData | None:
     """
     t0 = time.monotonic()
     with db.open_project(project.hash) as conn:
-        files, symbols_by_file, sections_by_file, name_to_files = _load_project_data(conn)
-        if not files:
+        all_files, symbols_by_file, sections_by_file, name_to_files = _load_project_data(conn)
+        if not all_files:
             _LOG.debug("_load_and_rank: no indexed files for project %s", project.root.name)
             return None
-        total_files = len(files)
-        files = {
+        total_file_count = len(all_files)
+        map_worthy_files = {
             rel: info
-            for rel, info in files.items()
+            for rel, info in all_files.items()
             if _is_map_worthy(rel, max(1, info["size"] // _BYTES_PER_APPROX_LINE))
         }
-        filtered_files = len(files)
-        graph = _build_graph(conn, files, name_to_files)
+        graph = _build_graph(conn, map_worthy_files, name_to_files)
         summary_cache = _load_summary_cache(conn)
-        _evict_stale_cache(conn, files)
+        _evict_stale_cache(conn, map_worthy_files)
     t_db = time.monotonic()
 
     ranks = compute_ranks(graph)
     # Fallback: if every node has the same rank (no edges), break ties by file size
-    if not ranks or len(set(ranks.values())) <= 1:
+    all_ranks_equal = not ranks or len(set(ranks.values())) <= 1
+    if all_ranks_equal:
         _LOG.debug(
             "_load_and_rank: PageRank produced uniform scores (no edges or empty); "
             "falling back to file-size ranking for %s (%d files)",
-            project.root.name, len(files),
+            project.root.name, len(map_worthy_files),
         )
-        ranks = {f: float(info["size"]) for f, info in files.items()}
+        ranks = {rel: float(info["size"]) for rel, info in map_worthy_files.items()}
     t_rank = time.monotonic()
 
-    ranked = sorted(files.items(), key=lambda kv: ranks.get(kv[0], 0.0), reverse=True)
+    ranked = sorted(map_worthy_files.items(), key=lambda kv: ranks.get(kv[0], 0.0), reverse=True)
+    filtered_count = total_file_count - len(map_worthy_files)
     _LOG.debug(
         "_load_and_rank: project=%s files=%d/%d (filtered=%d) db=%.3fs pagerank=%.3fs total=%.3fs",
         project.root.name,
-        filtered_files,
-        total_files,
-        total_files - filtered_files,
+        len(map_worthy_files),
+        total_file_count,
+        filtered_count,
         t_db - t0,
         t_rank - t_db,
         t_rank - t0,
     )
     return _RankedProjectData(
-        files=files,
+        files=map_worthy_files,
         symbols_by_file=symbols_by_file,
         sections_by_file=sections_by_file,
         ranked=ranked,
@@ -528,7 +529,7 @@ def build_map(
         if used >= budget_tokens:
             break
 
-        mtime: float = info.get("mtime", 0.0)
+        mtime: float = info["mtime"]
         size: int = info["size"]
         cache_key = (rel, mtime, size)
 

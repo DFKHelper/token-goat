@@ -254,12 +254,13 @@ def fail_soft(handler: _HookHandler) -> _HookHandler:
         try:
             return handler(payload)
         except Exception as exc:  # noqa: BLE001 — fail-soft is the entire point
-            session_id = payload.get("session_id", "") if isinstance(payload, dict) else ""
-            session_tag = f" session={str(session_id)[:16]}" if session_id else ""
+            payload_dict = payload if isinstance(payload, dict) else {}
+            session_id: str = payload_dict.get("session_id", "")
+            cwd: str = payload_dict.get("cwd", "")
+            session_tag = f" session={session_id[:16]}" if session_id else ""
+            cwd_tag = f" cwd={cwd}" if cwd else ""
             handler_name = getattr(handler, "__name__", repr(handler))
             err_summary = f"{type(exc).__name__}: {exc}"
-            cwd = payload.get("cwd", "") if isinstance(payload, dict) else ""
-            cwd_tag = f" cwd={cwd}" if cwd else ""
             with contextlib.suppress(Exception):
                 _LOG.exception(
                     "hook handler crashed: handler=%s%s%s error=%s",
@@ -268,6 +269,7 @@ def fail_soft(handler: _HookHandler) -> _HookHandler:
                     cwd_tag,
                     err_summary,
                 )
+            # Return a safe CONTINUE-shaped response with diagnostic fields attached.
             err_response: HookResponse = {
                 "continue": True,
                 "_tg_error": err_summary,
@@ -355,8 +357,7 @@ def dispatch(event: str, payload: dict[str, Any]) -> HookResponse:
     t0 = time.monotonic()
     result = handler(payload)
     elapsed_ms = (time.monotonic() - t0) * 1000
-    is_slow = elapsed_ms >= _HOOK_SLOW_MS
-    if is_slow:
+    if elapsed_ms >= _HOOK_SLOW_MS:
         _LOG.warning("hook %s slow: %.1fms (check for blockage or I/O delays)", event, elapsed_ms)
     else:
         speed_tag = "moderate" if elapsed_ms >= _HOOK_MODERATE_MS else "fast"
