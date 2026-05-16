@@ -1,0 +1,10 @@
+pre-commit:
+  commands:
+    lint:
+      run: uv run ruff check {staged_files}
+      glob: "*.py"
+
+pre-push:
+  commands:
+    test:
+      run: uv run pytest -q --tb=short

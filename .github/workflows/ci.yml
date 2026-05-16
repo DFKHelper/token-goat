@@ -1,22 +1,24 @@
 name: CI
 on: [push, pull_request]
 jobs:
-  test:
+  lint:
     runs-on: windows-2022
-    strategy:
-      fail-fast: false
-      matrix:
-        python-version: ["3.11", "3.12", "3.13"]
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v3
-      - name: Set up Python ${{ matrix.python-version }}
-        run: uv python install ${{ matrix.python-version }}
-      - name: Install
-        run: uv sync --all-extras
+      - run: uv python install 3.13
+      - run: uv sync --all-extras
       - name: Lint
         run: uv run ruff check
       - name: Type check
         run: uv run mypy src
+
+  test:
+    runs-on: windows-2022
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v3
+      - run: uv python install 3.13
+      - run: uv sync --all-extras
       - name: Test
         run: uv run pytest

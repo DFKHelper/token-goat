@@ -66,6 +66,8 @@ def project_db_path(project_hash: str) -> Path:
     Raises ValueError if the resolved path escapes the projects/ subdirectory,
     which would happen with traversal sequences like ``../../../evil``.
     """
+    if "\x00" in project_hash:
+        raise ValueError(f"project_hash contains null byte: {project_hash!r}")
     base = data_dir() / "projects"
     candidate = (base / f"{project_hash}.db").resolve()
     try:
