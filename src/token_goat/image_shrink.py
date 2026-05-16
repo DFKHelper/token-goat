@@ -1,4 +1,15 @@
-"""Image shrinker: resize + recompress large images to save token budget."""
+"""Image shrinker: resize + recompress large images to save token budget.
+
+Claude charges vision tokens proportional to pixel area, so a 3000×2000 screenshot
+can cost 1 000+ tokens before the model reads a single word.  This module intercepts
+image paths on the pre-read hook, compresses them to fit within MAX_LONG_EDGE pixels
+on the longest axis, and returns the cached output path so the model receives the
+cheaper version transparently.
+
+The cache is content-addressed (SHA-256 of file bytes) so identical images that live
+at different temp paths — a pattern Claude Code uses for prompt-attached images — share
+one cache entry and are never re-compressed.
+"""
 from __future__ import annotations
 
 import contextlib
@@ -18,9 +29,19 @@ from . import paths
 
 _LOG = logging.getLogger("token_goat.image_shrink")
 
-# Behavior tuning
+# Maximum pixel count on the long axis after resizing.  1024 px keeps the image
+# legible for Claude while roughly halving token cost versus the Claude API's own
+# 1568 px ceiling (see CLAUDE_MAX_VISION_EDGE_PX below).
 MAX_LONG_EDGE = 1024
-SIZE_THRESHOLD_BYTES = 100 * 1024  # only shrink if original > 100 KB
+
+# Images smaller than this are already cheap enough to send unmodified.
+# 100 KB is a conservative threshold: most PNGs below this size are small icons
+# or diagrams whose pixel area is already within Claude's efficient range.
+SIZE_THRESHOLD_BYTES = 100 * 1024
+
+# JPEG quality for photographic output.  75 is the standard "high quality"
+# threshold: visually lossless for natural images, typically 5–20× smaller than
+# lossless PNG, and well within what Claude's vision model can read accurately.
 JPEG_QUALITY = 75
 
 # Claude vision API parameters (source: Anthropic docs).
@@ -34,14 +55,19 @@ CLAUDE_VISION_PIXELS_PER_TOKEN = 750
 # treated as a photograph and converted to JPEG rather than kept as PNG.
 _SCREENSHOT_MAX_EDGE_PX = 1500
 
-# Recognized image extensions
+# Recognized image extensions — the pre-read hook uses this list to decide
+# whether to attempt shrinking before the image is read into context.
 IMAGE_EXTENSIONS = frozenset(
     [".jpg", ".jpeg", ".png", ".webp", ".avif", ".tiff", ".tif", ".bmp", ".gif"]
 )
 
 
 def is_image_path(path: str) -> bool:
-    """Does this look like an image path?"""
+    """Return True if *path* has a recognised image extension (case-insensitive).
+
+    Only checks the extension string — does not open the file or verify content.
+    Used as a fast pre-filter before the more expensive stat/PIL operations.
+    """
     return Path(path).suffix.lower() in IMAGE_EXTENSIONS
 
 
@@ -68,7 +94,13 @@ def _cache_key(src_path: Path) -> str:
 
 
 def _cache_path_for(src_path: Path) -> Path:
-    """Cache filename stem: <hash>.shrunk — suffix determined at save time."""
+    """Return the base cache path (stem only) for *src_path*.
+
+    The actual output file is either ``<hash>.shrunk.jpg`` or ``<hash>.shrunk.png``
+    depending on which format was chosen during compression (JPEG for photos,
+    PNG for screenshots with transparency).  Callers probe both suffixes to check
+    for a cache hit before re-compressing.
+    """
     key = _cache_key(src_path)
     return paths.image_cache_dir() / f"{key}.shrunk"
 
@@ -102,7 +134,15 @@ class ImageStats(TypedDict):
 
 
 def _looks_like_screenshot_or_text(img: _PilImage.Image) -> bool:
-    """Cheap heuristic: PNG images with palette/alpha modes are probably screenshots."""
+    """Return True if the image is likely a screenshot, diagram, or UI capture.
+
+    Palette (P), grayscale (L/LA), and RGBA modes with sharp edges compress poorly
+    under JPEG due to ringing artefacts near hard colour boundaries.  PNG is the
+    correct format for these images because it is lossless and handles large flat
+    regions efficiently.  We only apply this heuristic up to _SCREENSHOT_MAX_EDGE_PX:
+    larger images are almost certainly photographs regardless of their mode and
+    are better served by JPEG's superior continuous-tone compression.
+    """
     mode = img.mode
     w, h = img.size
     return mode in ("L", "LA", "P", "RGBA") and max(w, h) <= _SCREENSHOT_MAX_EDGE_PX
@@ -267,7 +307,12 @@ def shrink(src_path: Path) -> Path | None:
 
 
 def ensure_cache_dir(cache_dir: Path) -> Path:
-    """Create cache directory idempotently and return it."""
+    """Create *cache_dir* (and any missing parents) idempotently and return it.
+
+    Idempotent because ``mkdir(exist_ok=True)`` is safe to call on a directory
+    that already exists.  Separated from ``shrink()`` so tests can pre-create the
+    cache directory with known contents without triggering a full shrink cycle.
+    """
     cache_dir.mkdir(parents=True, exist_ok=True)
     return cache_dir
 
