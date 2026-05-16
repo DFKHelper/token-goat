@@ -6,7 +6,7 @@ import sqlite3
 import time
 from collections.abc import Sequence
 from pathlib import Path
-from typing import TypedDict
+from typing import Final, TypedDict
 
 from . import db
 from .paths import is_safe_rel_path as _is_safe_rel_path
@@ -120,10 +120,24 @@ _RESOLVE_CACHE_EVICT = 128
 
 # Sentinel returned by _resolve_cache_lookup when the key is absent from the cache.
 # Distinct from None so callers can tell "not cached yet" apart from "cached as not found".
-_CACHE_MISS = object()
+# Typed as a module-level Final so isinstance checks and `is` comparisons are type-safe.
+class _CacheMissSentinel:
+    """Singleton sentinel type for cache misses; distinct from None (confirmed not found)."""
+    _instance: _CacheMissSentinel | None = None
+
+    def __new__(cls) -> _CacheMissSentinel:
+        if cls._instance is None:
+            cls._instance = super().__new__(cls)
+        return cls._instance
+
+    def __repr__(self) -> str:
+        return "<CACHE_MISS>"
 
 
-def _resolve_cache_lookup(project_hash: str, file_part: str) -> str | None | object:
+_CACHE_MISS: Final[_CacheMissSentinel] = _CacheMissSentinel()
+
+
+def _resolve_cache_lookup(project_hash: str, file_part: str) -> str | None | _CacheMissSentinel:
     """Return the cached rel_path, None (confirmed-not-found), or _CACHE_MISS (absent).
 
     Callers should check ``result is _CACHE_MISS`` to detect a cache miss and
@@ -260,8 +274,8 @@ def resolve_file_rel(project: Project, file_part: str) -> str | None:
 
     # Cache hit — avoids DB round-trips for repeated lookups within same process
     cached = _resolve_cache_lookup(project.hash, file_part)
-    if cached is not _CACHE_MISS:
-        return cached  # type: ignore[return-value]  # str | None, not the sentinel
+    if not isinstance(cached, _CacheMissSentinel):
+        return cached  # str | None — narrowed away from _CacheMissSentinel
 
     result = _resolve_file_rel_db(project, file_part)
     _resolve_cache_put(project.hash, file_part, result)

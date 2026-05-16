@@ -87,13 +87,21 @@ class Config:
 def _validated_int(val: object, default: int, lo: int, hi: int, name: str) -> int:
     """Coerce *val* to an ``int`` within ``[lo, hi]``, returning *default* on failure.
 
-    Accepts any type that ``int()`` can convert.  Out-of-range values and
-    non-convertible types both fall back to *default* with a ``WARNING`` log
-    entry that includes the key name and the bad value, making misconfigured
-    TOML easy to diagnose.
+    Accepts ``int``, ``float``, or ``str`` (any type that ``int()`` can convert
+    without ambiguity). Out-of-range values and non-convertible types both fall
+    back to *default* with a ``WARNING`` log entry that includes the key name
+    and the bad value, making misconfigured TOML easy to diagnose.
     """
+    if not isinstance(val, (int, float, str)):
+        _LOG.warning("config: %s=%r is not an int; using default %d", name, val, default)
+        return default
     try:
-        v = int(val)  # type: ignore[call-overload]  # val is unknown external input; TypeError caught below
+        # bool is a subclass of int; treat it as invalid since TOML true/false
+        # is not a sensible value for an integer config field.
+        if isinstance(val, bool):
+            _LOG.warning("config: %s=%r is not an int; using default %d", name, val, default)
+            return default
+        v = int(val)
         if not lo <= v <= hi:
             _LOG.warning("config: %s=%r out of range [%d, %d]; using default %d", name, val, lo, hi, default)
             return default

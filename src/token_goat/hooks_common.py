@@ -83,7 +83,13 @@ HookResponse = TypedDict(
     {
         "continue": bool,
         "systemMessage": str,
-        "hookSpecificOutput": dict[str, Any],
+        # hookSpecificOutput may be any of the three concrete sub-shapes produced
+        # by this module, or an arbitrary dict for forward compatibility with new
+        # harness-specific keys.  Using a Union here lets mypy verify that all
+        # three builders (deny_redirect, pre_tool_use_with_context,
+        # pre_tool_use_with_update) produce a compatible type without requiring a
+        # cast, while still accepting unknown shapes via the trailing dict[str, Any].
+        "hookSpecificOutput": HookSpecificOutputDeny | HookSpecificOutputContext | HookSpecificOutputUpdate | dict[str, Any],
         # Diagnostic fields — ignored by the harness, useful for tests/logging.
         "_tg_elapsed_ms": float,
         "_tg_handler": str,

@@ -24,7 +24,7 @@ import time
 from collections.abc import Callable
 from datetime import datetime
 from pathlib import Path
-from typing import Any, ParamSpec, TypedDict, TypeVar
+from typing import Any, ParamSpec, TypedDict, TypeVar, cast
 
 from . import hooks_edit, hooks_fetch, hooks_read, hooks_session, paths
 from .hooks_common import CONTINUE, HookResponse
@@ -109,11 +109,15 @@ def _translate_hso_to_codex(hso: dict[str, Any]) -> dict[str, Any]:
     return translated
 
 
-def denormalize_response(response: HookResponse, harness: str = "claude") -> HookResponse:
+def denormalize_response(response: dict[str, Any], harness: str = "claude") -> dict[str, Any]:
     """Translate token-goat's internal response format to harness-specific wire format.
 
     Claude: hookSpecificOutput.{additionalContext, updatedInput, permissionDecision, ...}
     Codex:  hookSpecificOutput.{additional_context, updated_input, permission_decision, ...}
+
+    Accepts ``dict[str, Any]`` (the enriched result from ``dispatch`` which adds
+    ``_tg_elapsed_ms``) rather than the narrower ``HookResponse`` TypedDict, so
+    the diagnostic key is preserved in the output.
     """
     if harness != "codex":
         return response
@@ -210,12 +214,12 @@ def safe_run(event: str, input_file: Path | None = None, harness: str = "claude"
     and we log a one-line diagnostic to stderr so the harness's
     hook-error display has the cause if you go looking for it.
     """
-    result: HookResponse = CONTINUE()
+    result: dict[str, Any] = dict(CONTINUE())
     try:
         raw = read_payload(input_file)
         payload = normalize_payload(raw, harness)
-        result = dispatch(event, payload)
-        result = denormalize_response(result, harness)
+        dispatched = dispatch(event, payload)
+        result = dict(denormalize_response(dispatched, harness))
     except BaseException as exc:  # noqa: BLE001 — bulletproof
         msg = f"token-goat hook {event} failed: {type(exc).__name__}: {exc}"
         with contextlib.suppress(Exception):
@@ -224,12 +228,15 @@ def safe_run(event: str, input_file: Path | None = None, harness: str = "claude"
             # Attempt to persist to log file even if normal setup failed.
             _setup_logging()
             _LOG.error("%s", msg, exc_info=True)
-        result = CONTINUE()  # type: ignore[assignment]  # BaseException path; always safe
+        result = dict(CONTINUE())
     emit(result)
 
 
 _P = ParamSpec("_P")
 _HookHandler = TypeVar("_HookHandler", bound=Callable[[dict[str, Any]], HookResponse])
+
+# Type alias for the wrapped handler signature — avoids repeating the long form.
+_WrappedHandler = Callable[[dict[str, Any]], HookResponse]
 
 
 def fail_soft(handler: _HookHandler) -> _HookHandler:
@@ -277,7 +284,10 @@ def fail_soft(handler: _HookHandler) -> _HookHandler:
             }
             return err_response
 
-    return wrapper  # type: ignore[return-value]
+    # cast is correct here: functools.wraps preserves the signature but Python's
+    # type system cannot express "same callable type with wrapped body", so we
+    # assert the identity to satisfy _HookHandler at call sites.
+    return cast(_HookHandler, wrapper)
 
 session_start = fail_soft(hooks_session.session_start)
 pre_read = fail_soft(hooks_read.pre_read)
@@ -346,16 +356,23 @@ EVENTS: dict[str, Callable[[dict[str, Any]], HookResponse]] = {
 }
 
 
-def dispatch(event: str, payload: dict[str, Any]) -> HookResponse:
-    """Dispatch a hook event. Always returns at minimum {'continue': True}."""
+def dispatch(event: str, payload: dict[str, Any]) -> dict[str, Any]:
+    """Dispatch a hook event. Always returns at minimum {'continue': True}.
+
+    The return type is ``dict[str, Any]`` rather than ``HookResponse`` because
+    this function appends the ``_tg_elapsed_ms`` diagnostic key, which is not
+    part of the ``HookResponse`` TypedDict schema.  Callers that need to pass
+    the result to ``emit()`` can do so directly since ``emit`` accepts
+    ``dict[str, Any]``.
+    """
     _setup_logging()
     handler = EVENTS.get(event)
     if handler is None:
         _LOG.warning("unknown hook event: %s", event)
-        return CONTINUE()
+        return dict(CONTINUE())
     _LOG.debug("hook %s started", event)
     t0 = time.monotonic()
-    result = handler(payload)
+    result: dict[str, Any] = dict(handler(payload))
     elapsed_ms = (time.monotonic() - t0) * 1000
     if elapsed_ms >= _HOOK_SLOW_MS:
         _LOG.warning("hook %s slow: %.1fms (check for blockage or I/O delays)", event, elapsed_ms)
