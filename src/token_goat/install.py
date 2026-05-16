@@ -289,6 +289,7 @@ def install_linux_autostart() -> tuple[bool, str]:
     Claude Code session regardless.
     """
     import sys
+
     if sys.platform == "win32":
         return True, "Windows: skipped"
 
@@ -350,6 +351,7 @@ def install_linux_autostart() -> tuple[bool, str]:
 def uninstall_linux_autostart() -> list[str]:
     """Remove Linux autostart entries. Returns a list of paths removed."""
     import sys
+
     if sys.platform == "win32":
         return []
 
@@ -388,6 +390,7 @@ def uninstall_linux_autostart() -> list[str]:
 def install_linux_update_cron() -> tuple[bool, str]:
     """Add a weekly Sunday 03:00 cron job to auto-update token-goat."""
     import sys
+
     if sys.platform == "win32":
         return True, "Windows: skipped"
 
@@ -423,6 +426,7 @@ def install_linux_update_cron() -> tuple[bool, str]:
 def uninstall_linux_update_cron() -> str:
     """Remove the token-goat cron job."""
     import sys
+
     if sys.platform == "win32":
         return "n/a (Windows)"
 
@@ -467,6 +471,7 @@ def install_mac_autostart() -> tuple[bool, str]:
     the plist already exists.
     """
     import sys
+
     if sys.platform == "win32":
         return True, "Windows: skipped"
 
@@ -526,6 +531,7 @@ def install_mac_autostart() -> tuple[bool, str]:
 def uninstall_mac_autostart() -> list[str]:
     """Remove the macOS LaunchAgent plist. Returns a list of paths removed."""
     import sys
+
     if sys.platform == "win32":
         return []
 
@@ -1338,6 +1344,7 @@ def uninstall_all(
 ) -> dict:
     """Reverse install. With purge=True also deletes the data directory."""
     import sys
+
     result: dict[str, str] = {}
 
     try:
