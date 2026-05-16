@@ -1,11 +1,11 @@
 """Tests for the pre_read hook handler and its dispatcher integration."""
 from __future__ import annotations
 
-import json
 import subprocess
 import sys
 
 from hook_helpers import assert_continue as _assert_continue
+from hook_helpers import run_hook_subprocess as _run_hook_subprocess
 
 from token_goat import hooks_cli, session
 
@@ -229,16 +229,7 @@ class TestDispatcherPreRead:
 
 class TestPreReadCli:
     def _run_hook(self, payload: dict, tmp_data_dir) -> dict:
-        """Run `token-goat hook pre-read` as a subprocess with JSON on stdin."""
-        raw = json.dumps(payload)
-        proc = subprocess.run(
-            [sys.executable, "-m", "token_goat.cli", "hook", "pre-read"],
-            input=raw,
-            capture_output=True,
-            text=True,
-        )
-        assert proc.returncode == 0, f"hook subprocess failed:\nSTDERR: {proc.stderr}"
-        return json.loads(proc.stdout)
+        return _run_hook_subprocess("pre-read", payload)
 
     def test_cli_non_read_tool_no_hint(self, tmp_data_dir):
         payload = {"session_id": "cli1", "tool_name": "Bash", "tool_input": {"command": "ls"}}

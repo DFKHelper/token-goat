@@ -37,60 +37,75 @@ _STATS_MESSAGES = _load_stats_messages()
 
 # ── Formatters ─────────────────────────────────────────────────────────────────
 
-def _fmt_bytes(n: int) -> str:
-    # Color escalates with magnitude: dim → green → teal → blue → purple
+# Each entry: (threshold, divisor, unit_label, positive_color).
+# Tiers are checked from largest to smallest; the last entry has threshold=0
+# and is the base (sub-1000) case.
+_BYTE_TIERS: list[tuple[int, int, str, RGB]] = [
+    (1_000_000_000_000_000, 1_000_000_000_000_000, "PB", C.PURPLE),
+    (1_000_000_000_000,     1_000_000_000_000,     "TB", C.BLUE),
+    (1_000_000_000,         1_000_000_000,         "GB", C.TEAL),
+    (1_000_000,             1_000_000,             "MB", C.GREEN4),
+    (1_000,                 1_000,                 "KB", C.TEXT_MUTED),
+    (0,                     1,                     "B",  C.TEXT_DIM),
+]
+
+_TOKEN_TIERS: list[tuple[int, int, str, RGB]] = [
+    (1_000_000_000_000, 1_000_000_000_000, "Tt", C.GREEN5),
+    (1_000_000_000,     1_000_000_000,     "Gt", C.TEAL),
+    (1_000_000,         1_000_000,         "Mt", C.PURPLE),
+    (1_000,             1_000,             "kt", C.BLUE),
+    (0,                 1,                 "t",  C.TEXT_DIM),
+]
+
+
+def _fmt_magnitude(
+    n: int,
+    tiers: list[tuple[int, int, str, RGB]],
+    *,
+    zero_label: str | None = None,
+) -> str:
+    """Format an integer as a human-readable magnitude string with ANSI color.
+
+    Both byte and token formatters share this structure: negative values are
+    rendered dim with a minus-sign prefix; positive values use escalating colors
+    per tier.  The caller supplies the tier table so the thresholds, divisors,
+    unit labels, and positive colors can differ between bytes and tokens.
+
+    Args:
+        n:          The integer to format.
+        tiers:      List of (threshold, divisor, unit, positive_color) tuples,
+                    sorted largest-threshold-first.  The last entry must have
+                    threshold=0 and acts as the base (sub-1000 or sub-1 k) case.
+        zero_label: If provided, ``n == 0`` returns this string verbatim
+                    (e.g. ``"0 t"`` for tokens).  Bytes have no special zero.
+    """
+    if zero_label is not None and n == 0:
+        return f"{fg(*C.TEXT_DIM)}{zero_label}{RESET}"
     if n < 0:
         a = -n
         color = C.TEXT_DIM
-        if a >= 1_000_000_000_000_000:
-            return f"{fg(*color)}-{a / 1_000_000_000_000_000:,.1f} PB{RESET}"
-        if a >= 1_000_000_000_000:
-            return f"{fg(*color)}-{a / 1_000_000_000_000:,.1f} TB{RESET}"
-        if a >= 1_000_000_000:
-            return f"{fg(*color)}-{a / 1_000_000_000:,.1f} GB{RESET}"
-        if a >= 1_000_000:
-            return f"{fg(*color)}-{a / 1_000_000:,.1f} MB{RESET}"
-        if a >= 1_000:
-            return f"{fg(*color)}-{a / 1_000:,.1f} KB{RESET}"
-        return f"{fg(*color)}-{a} B{RESET}"
-    if n >= 1_000_000_000_000_000:
-        return f"{fg(*C.PURPLE)}{n / 1_000_000_000_000_000:,.1f} PB{RESET}"
-    if n >= 1_000_000_000_000:
-        return f"{fg(*C.BLUE)}{n / 1_000_000_000_000:,.1f} TB{RESET}"
-    if n >= 1_000_000_000:
-        return f"{fg(*C.TEAL)}{n / 1_000_000_000:,.1f} GB{RESET}"
-    if n >= 1_000_000:
-        return f"{fg(*C.GREEN4)}{n / 1_000_000:,.1f} MB{RESET}"
-    if n >= 1_000:
-        return f"{fg(*C.TEXT_MUTED)}{n / 1_000:,.1f} KB{RESET}"
-    return f"{fg(*C.TEXT_DIM)}{n} B{RESET}"
+        for threshold, divisor, unit, _ in tiers:
+            if a >= threshold and threshold > 0:
+                return f"{fg(*color)}-{a / divisor:,.1f} {unit}{RESET}"
+        # base case (threshold == 0)
+        _, _, unit, _ = tiers[-1]
+        return f"{fg(*color)}-{a} {unit}{RESET}"
+    for threshold, divisor, unit, pos_color in tiers:
+        if n >= threshold and threshold > 0:
+            return f"{fg(*pos_color)}{n / divisor:,.1f} {unit}{RESET}"
+    # base case
+    _, _, unit, pos_color = tiers[-1]
+    return f"{fg(*pos_color)}{n} {unit}{RESET}"
+
+
+def _fmt_bytes(n: int) -> str:
+    # Color escalates with magnitude: dim → green → teal → blue → purple
+    return _fmt_magnitude(n, _BYTE_TIERS)
 
 
 def _fmt_tokens(n: int) -> str:
     # Color escalates with magnitude: dim → blue → purple → teal → green
-    if n == 0:
-        return f"{fg(*C.TEXT_DIM)}0 t{RESET}"
-    if n < 0:
-        a = -n
-        color = C.TEXT_DIM
-        if a >= 1_000_000_000_000:
-            return f"{fg(*color)}-{a / 1_000_000_000_000:,.1f} Tt{RESET}"
-        if a >= 1_000_000_000:
-            return f"{fg(*color)}-{a / 1_000_000_000:,.1f} Gt{RESET}"
-        if a >= 1_000_000:
-            return f"{fg(*color)}-{a / 1_000_000:,.1f} Mt{RESET}"
-        if a >= 1_000:
-            return f"{fg(*color)}-{a / 1_000:,.1f} kt{RESET}"
-        return f"{fg(*color)}-{a} t{RESET}"
-    if n >= 1_000_000_000_000:
-        return f"{fg(*C.GREEN5)}{n / 1_000_000_000_000:,.1f} Tt{RESET}"
-    if n >= 1_000_000_000:
-        return f"{fg(*C.TEAL)}{n / 1_000_000_000:,.1f} Gt{RESET}"
-    if n >= 1_000_000:
-        return f"{fg(*C.PURPLE)}{n / 1_000_000:,.1f} Mt{RESET}"
-    if n >= 1_000:
-        return f"{fg(*C.BLUE)}{n / 1_000:,.1f} kt{RESET}"
-    return f"{fg(*C.TEXT_DIM)}{n} t{RESET}"
+    return _fmt_magnitude(n, _TOKEN_TIERS, zero_label="0 t")
 
 
 def _fmt_pct(fraction: float) -> str:

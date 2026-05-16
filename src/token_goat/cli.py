@@ -638,6 +638,8 @@ def doctor(  # noqa: C901
 @app.command("install", rich_help_panel="Install")
 def cmd_install(
     codex: bool = typer.Option(False, "--codex", help="Also install Codex CLI integration"),  # noqa: B008
+    opencode: bool = typer.Option(False, "--opencode", help="Also install opencode plugin bridge"),  # noqa: B008
+    openclaw: bool = typer.Option(False, "--openclaw", help="Also install openclaw plugin bridge"),  # noqa: B008
 ) -> None:
     """One-time setup: scheduled tasks, settings.json, CLAUDE.md, skill, watchdog."""
     from . import install as inst  # noqa: PLC0415
@@ -650,7 +652,7 @@ def cmd_install(
         typer.echo(f"  [{icon}] {integration}: {state}")
     typer.echo("")
 
-    result = inst.install_all(install_codex=codex)
+    result = inst.install_all(install_codex=codex, install_opencode=opencode, install_openclaw=openclaw)
     typer.echo("token-goat install:")
     for step, detail in result.items():
         typer.echo(f"  {step}: {detail}")
@@ -665,11 +667,13 @@ def cmd_install(
 def cmd_uninstall(
     purge: bool = typer.Option(False, "--purge", help=r"Also delete %LOCALAPPDATA%\dfk-helper\token-goat"),  # noqa: B008
     codex: bool = typer.Option(False, "--codex", help="Also remove Codex CLI integration"),  # noqa: B008
+    opencode: bool = typer.Option(False, "--opencode", help="Also remove opencode plugin bridge"),  # noqa: B008
+    openclaw: bool = typer.Option(False, "--openclaw", help="Also remove openclaw plugin bridge"),  # noqa: B008
 ) -> None:
     """Cleanly reverse install."""
     from . import install as inst  # noqa: PLC0415
 
-    result = inst.uninstall_all(purge=purge, codex=codex)
+    result = inst.uninstall_all(purge=purge, codex=codex, opencode=opencode, openclaw=openclaw)
     typer.echo("token-goat uninstall:")
     for step, detail in result.items():
         typer.echo(f"  {step}: {detail}")
