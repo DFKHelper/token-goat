@@ -143,7 +143,7 @@ def deny_redirect(reason: str, context: str) -> HookResponse:
     Returns:
         A fully-typed hook response with ``continue: true`` and a deny decision.
     """
-    hso: dict[str, Any] = HookSpecificOutputDeny(
+    hso = HookSpecificOutputDeny(
         hookEventName="PreToolUse",
         permissionDecision="deny",
         permissionDecisionReason=reason,
@@ -174,14 +174,14 @@ def pre_tool_use_with_context(additional_context: str) -> HookResponse:
     Returns:
         A fully-typed hook response with ``continue: true`` and the hint.
     """
-    hso: dict[str, Any] = HookSpecificOutputContext(
+    hso = HookSpecificOutputContext(
         hookEventName="PreToolUse",
         additionalContext=additional_context,
     )
     return {"continue": True, "hookSpecificOutput": hso}
 
 
-def pre_tool_use_with_update(updated_input: dict[str, Any], additional_context: str) -> HookResponse:
+def pre_tool_use_with_update(updated_input: dict[str, object], additional_context: str) -> HookResponse:
     """Build a PreToolUse response that rewrites the tool input and injects a context hint.
 
     Used when the hook wants to redirect the tool call to a different target
@@ -206,7 +206,7 @@ def pre_tool_use_with_update(updated_input: dict[str, Any], additional_context: 
     Returns:
         A fully-typed hook response with ``continue: true``, updated input, and the hint.
     """
-    hso: dict[str, Any] = HookSpecificOutputUpdate(
+    hso = HookSpecificOutputUpdate(
         hookEventName="PreToolUse",
         updatedInput=updated_input,
         additionalContext=additional_context,

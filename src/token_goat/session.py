@@ -94,7 +94,7 @@ class SessionCache:
     # the cache is loaded, mutated once, and immediately saved.  Not persisted to disk.
     _json_cache: str | None = field(default=None, repr=False, compare=False)
 
-    def to_dict(self) -> dict:
+    def to_dict(self) -> dict[str, object]:
         """Serialize to dict for JSON."""
         return {
             "schema_version": SESSION_SCHEMA_VERSION,
@@ -123,7 +123,7 @@ class SessionCache:
         self._json_cache = None
 
     @classmethod
-    def from_dict(cls, d: dict) -> SessionCache:
+    def from_dict(cls, d: dict[str, object]) -> SessionCache:
         """Deserialize from dict (JSON). Tolerates missing or corrupted fields."""
         now = time.time()
 

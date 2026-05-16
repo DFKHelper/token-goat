@@ -81,7 +81,7 @@ def _line_count(path: Path) -> int | None:
 
 def _get_indexed_symbols_and_line_count(
     file_rel: str, project_hash: str
-) -> tuple[list[dict], int | None, bool]:
+) -> tuple[list[dict[str, object]], int | None, bool]:
     """Return symbols AND actual or estimated line count in one query.
 
     Returns a third flag indicating whether the returned line count is exact
@@ -135,7 +135,7 @@ def _get_indexed_symbols_and_line_count(
                 n_lines = None
                 line_count_is_exact = False
 
-            return [dict(r) for r in sym_rows], n_lines, line_count_is_exact
+            return [dict(r) for r in sym_rows], n_lines, line_count_is_exact  # type: ignore[return-value]
     except Exception:  # noqa: BLE001
         _LOG.exception("failed to load indexed symbols for %s", file_rel)
         return [], None, False

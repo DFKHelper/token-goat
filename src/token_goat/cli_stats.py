@@ -5,7 +5,6 @@ import json
 import os
 import re
 import sys
-from typing import Any
 
 import typer
 
@@ -17,7 +16,7 @@ def _write_raw(text: str) -> None:
     if os.environ.get("NO_COLOR") or not sys.stdout.isatty():
         text = re.sub(r"\x1b\[[0-9;]*m", "", text)
 
-    stream: Any = sys.stdout
+    stream: object = sys.stdout
     if hasattr(stream, "_StreamWrapper__wrapped"):
         stream = stream._StreamWrapper__wrapped  # type: ignore[attr-defined]
     while hasattr(stream, "stream"):
