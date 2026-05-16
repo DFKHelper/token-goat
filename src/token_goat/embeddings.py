@@ -240,29 +240,30 @@ def extract_chunks_for_file(
 
     # 3) Sliding-window fallback for uncovered ranges (code files only)
     if language in _WINDOW_LANGS:
-        # Sort covered ranges to avoid expanding them into a set (O(n) memory)
+        # Sort covered ranges so the advance pointer (range_cursor) never goes backwards.
         covered.sort()
         n = len(lines)
-        i = 1
-        covered_idx = 0
+        line_no = 1
+        range_cursor = 0  # advance-only index into sorted covered[]; never reset
 
-        while i <= n:
-            # Check if current line is covered using binary range logic
-            is_covered = False
-            while covered_idx < len(covered) and covered[covered_idx][1] < i:
-                covered_idx += 1
-            if covered_idx < len(covered) and covered[covered_idx][0] <= i <= covered[covered_idx][1]:
-                is_covered = True
+        while line_no <= n:
+            # Advance range_cursor past ranges that end before line_no (no longer relevant).
+            while range_cursor < len(covered) and covered[range_cursor][1] < line_no:
+                range_cursor += 1
+            line_is_covered = (
+                range_cursor < len(covered)
+                and covered[range_cursor][0] <= line_no <= covered[range_cursor][1]
+            )
 
-            if is_covered:
-                i += 1
+            if line_is_covered:
+                line_no += 1
                 continue
 
-            window_end = min(i + WINDOW_LINES - 1, n)
-            chunk_text = "\n".join(lines[i - 1 : window_end])
+            window_end = min(line_no + WINDOW_LINES - 1, n)
+            chunk_text = "\n".join(lines[line_no - 1 : window_end])
             if MIN_CHUNK_CHARS <= len(chunk_text) <= MAX_CHUNK_CHARS:
-                chunks.append(Chunk(rel_path, i, window_end, chunk_text, "window"))
-            i = window_end + 1
+                chunks.append(Chunk(rel_path, line_no, window_end, chunk_text, "window"))
+            line_no = window_end + 1
 
     return chunks
 

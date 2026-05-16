@@ -241,6 +241,30 @@ def _hint_from_cache(
     return None
 
 
+def _confirmed_line_count(
+    estimated_lines: int,
+    line_count_is_exact: bool,
+    abs_path: Path,
+) -> int | None:
+    """Return a confirmed line count at or above the large-file threshold, or None.
+
+    When the DB already stores an exact count, use it directly.  When the count
+    is only an estimate (size-based), verify against the real file: estimates
+    can be low enough to suppress hints for genuinely large files.  Returns None
+    when the file is clearly below the threshold and no hint is warranted.
+    """
+    if line_count_is_exact:
+        return estimated_lines if estimated_lines >= LARGE_FILE_LINE_THRESHOLD else None
+    # Estimate is below threshold — check the real file before suppressing the hint.
+    if estimated_lines < LARGE_FILE_LINE_THRESHOLD:
+        actual = _line_count(abs_path)
+        if actual is None or actual < LARGE_FILE_LINE_THRESHOLD:
+            return None
+        return actual
+    # Estimate is at or above threshold — trust it without a disk read.
+    return estimated_lines
+
+
 def _hint_from_index(
     file_path: str,
     cwd: str | None,
@@ -265,24 +289,15 @@ def _hint_from_index(
     except ValueError:
         return None
 
-    # Fetch symbols; line count comes from file if DB estimate is unreliable
     symbols, estimated_lines, line_count_is_exact = _get_indexed_symbols_and_line_count(
         rel, project.hash
     )
-    if not symbols:
+    if not symbols or estimated_lines is None:
         return None
 
-    # Use estimated line count from DB if available; fall back to actual read
-    n_lines = estimated_lines
+    n_lines = _confirmed_line_count(estimated_lines, line_count_is_exact, abs_path)
     if n_lines is None:
         return None
-    if line_count_is_exact:
-        if n_lines < LARGE_FILE_LINE_THRESHOLD:
-            return None
-    elif n_lines < LARGE_FILE_LINE_THRESHOLD:
-        n_lines = _line_count(abs_path)
-        if n_lines is None or n_lines < LARGE_FILE_LINE_THRESHOLD:
-            return None
 
     full_tokens = _est_tokens_from_lines(n_lines)
     n_total = len(symbols)

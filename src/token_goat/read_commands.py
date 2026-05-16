@@ -189,6 +189,16 @@ def _collect_transitive_outgoing(
     return result
 
 
+def _edge_summary(file_count: int, edge_count: int) -> str:
+    """Return a human-readable summary of file and edge counts, with correct plurals.
+
+    Example output: '3 files, 7 edges' or '1 file, 1 edge'.
+    """
+    files_noun = "file" if file_count == 1 else "files"
+    edges_noun = "edge" if edge_count == 1 else "edges"
+    return f"{file_count} {files_noun}, {edge_count} {edges_noun}"
+
+
 def _format_dependency_line(file_rel: str, symbols: set[str]) -> str:
     """Format a dependency entry showing a file and symbols referenced from it.
 
@@ -410,8 +420,8 @@ def deps(
         typer.echo(json.dumps(payload))
         return
 
-    outgoing_summary = f"{outgoing_file_count} file{'s' if outgoing_file_count != 1 else ''}, {outgoing_edge_count} edge{'s' if outgoing_edge_count != 1 else ''}"
-    incoming_summary = f"{incoming_file_count} file{'s' if incoming_file_count != 1 else ''}, {incoming_edge_count} edge{'s' if incoming_edge_count != 1 else ''}"
+    outgoing_summary = _edge_summary(outgoing_file_count, outgoing_edge_count)
+    incoming_summary = _edge_summary(incoming_file_count, incoming_edge_count)
     typer.echo(f"Dependency graph for {rel}")
     typer.echo(f"Dependencies ({outgoing_summary}):")
     if outgoing:
