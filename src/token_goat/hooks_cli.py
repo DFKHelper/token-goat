@@ -16,6 +16,7 @@ __all__ = [
 ]
 
 import contextlib
+import functools
 import json
 import logging
 import sys
@@ -229,8 +230,6 @@ def fail_soft(handler: _HookHandler) -> _HookHandler:
 
     Used on all hook dispatchers to ensure harness resilience.
     """
-    import functools  # noqa: PLC0415
-
     @functools.wraps(handler)
     def wrapper(payload: dict[str, Any]) -> HookResponse:
         """Invoke *handler* and return its result, suppressing all exceptions.

@@ -13,6 +13,8 @@ from __future__ import annotations
 
 import json
 import logging
+import os
+import sys
 from pathlib import Path
 
 _LOG = logging.getLogger("token_goat.bridges")
@@ -294,11 +296,7 @@ export default {
 
 def opencode_plugins_dir() -> Path:
     """Return the opencode plugins directory (platform-aware)."""
-    import sys  # noqa: PLC0415
-
     if sys.platform == "win32":
-        import os  # noqa: PLC0415
-
         appdata = Path(os.environ.get("APPDATA", Path.home() / "AppData" / "Roaming"))
         return appdata / "opencode" / "plugins"
     # XDG on Linux and macOS
