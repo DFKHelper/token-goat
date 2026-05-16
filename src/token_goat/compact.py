@@ -64,8 +64,8 @@ def event_count(session_id: str) -> int:
         session_mod.validate_session_id(session_id)
         cache = session_mod.load(session_id)
         return len(cache.files) + len(cache.greps) + len(cache.edited_files)
-    except Exception as e:  # noqa: BLE001
-        _LOG.debug("event_count(%s) failed: %s", session_id[:8] if session_id else "<empty>", e)
+    except Exception as e:  # noqa: BLE001 — session load can fail for many reasons (missing file, corrupt JSON, etc.)
+        _LOG.debug("event_count(%s) failed: %s", session_id[:8] if session_id else "<empty>", e, exc_info=True)
         return 0
 
 
@@ -88,8 +88,8 @@ def build_manifest(session_id: str, *, max_tokens: int = 400) -> str:
     _LOG.debug("build_manifest: session=%s max_tokens=%d", session_id[:8], max_tokens)
     try:
         cache = session_mod.load(session_id)
-    except Exception as e:  # noqa: BLE001
-        _LOG.warning("compact: could not load session %s: %s", session_id[:8], e)
+    except Exception as e:  # noqa: BLE001 — session load can fail for many reasons (missing file, corrupt JSON, etc.)
+        _LOG.warning("compact: could not load session %s: %s", session_id[:8], e, exc_info=True)
         return ""
 
     result, files_with_symbols_count = _render(cache, session_id, max_tokens)
