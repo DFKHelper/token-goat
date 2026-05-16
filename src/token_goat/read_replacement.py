@@ -375,6 +375,44 @@ def find_in_all_projects(file_part: str) -> tuple[Project, str] | None:
     return matches[0] if matches else None
 
 
+def _extract_snippet(
+    lines: list[str],
+    full_bytes: int,
+    row_start: int,
+    row_end: int,
+    context_lines: int,
+) -> tuple[str, int, int, int]:
+    """Slice *lines* to the requested range plus optional context.
+
+    Both ``read_symbol`` and ``read_section`` share the identical logic of
+    clamping start/end, joining the slice, and computing byte statistics.
+    Centralising it here keeps both callers in sync and removes the duplication.
+
+    Parameters
+    ----------
+    lines:
+        All lines of the file (1-indexed in DB; 0-indexed list).
+    full_bytes:
+        Total byte size of the file (for bytes_saved calculation).
+    row_start, row_end:
+        1-based line numbers from the DB row (``row["line"]``, ``row["end_line"]``).
+    context_lines:
+        Extra lines to include before/after the symbol or section.
+
+    Returns
+    -------
+    snippet, snippet_bytes, start, end
+        The extracted text, its byte size, and the clamped 1-based start/end
+        line numbers actually used.
+    """
+    start = max(1, row_start - context_lines)
+    end = min(len(lines), row_end + context_lines)
+    snippet = "\n".join(lines[start - 1 : end])
+    snippet_bytes = len(snippet.encode("utf-8"))
+    return snippet, snippet_bytes, start, end
+
+
+
 def _read_file_lines(abs_path: Path) -> tuple[list[str], int] | None:
     """Read *abs_path*, split into lines, and return (lines, byte_size).
 
@@ -424,7 +462,6 @@ def read_symbol(
         signature, bytes_total, bytes_extracted, bytes_saved
     Returns None if the symbol is not found or the file cannot be read.
     """
-    # Prevent path traversal attacks
     if not _is_safe_rel_path(rel_path):
         _LOG.warning("rejected unsafe rel_path: %s", rel_path)
         return None
@@ -448,17 +485,14 @@ def read_symbol(
     # prefer by kind priority then by earliest line.
     chosen = min(rows, key=lambda r: (_KIND_PRIORITY.get(r["kind"], 9), r["line"]))
 
-    abs_path = project.root / rel_path
-    read_result = _read_file_lines(abs_path)
+    read_result = _read_file_lines(project.root / rel_path)
     if read_result is None:
         return None
     lines, full_bytes = read_result
 
-    start = max(1, chosen["line"] - context_lines)
-    end = min(len(lines), chosen["end_line"] + context_lines)
-    snippet = "\n".join(lines[start - 1 : end])
-    snippet_bytes = len(snippet.encode("utf-8"))
-
+    snippet, snippet_bytes, start, end = _extract_snippet(
+        lines, full_bytes, chosen["line"], chosen["end_line"], context_lines
+    )
     _LOG.debug(
         "read_symbol: %s::%s (%s) lines %d-%d, %d/%d bytes extracted",
         rel_path,
@@ -497,7 +531,6 @@ def read_section(
         bytes_total, bytes_extracted, bytes_saved
     Returns None if the heading is not found or the file cannot be read.
     """
-    # Prevent path traversal attacks
     if not _is_safe_rel_path(rel_path):
         _LOG.warning("rejected unsafe rel_path: %s", rel_path)
         return None
@@ -527,17 +560,14 @@ def read_section(
 
     chosen = rows[0]  # first match by line order
 
-    abs_path = project.root / rel_path
-    read_result = _read_file_lines(abs_path)
+    read_result = _read_file_lines(project.root / rel_path)
     if read_result is None:
         return None
     lines, full_bytes = read_result
 
-    start = max(1, chosen["line"] - context_lines)
-    end = min(len(lines), chosen["end_line"] + context_lines)
-    snippet = "\n".join(lines[start - 1 : end])
-    snippet_bytes = len(snippet.encode("utf-8"))
-
+    snippet, snippet_bytes, start, end = _extract_snippet(
+        lines, full_bytes, chosen["line"], chosen["end_line"], context_lines
+    )
     _LOG.debug(
         "read_section: %s#%s (h%d, %s-match) lines %d-%d, %d/%d bytes extracted",
         rel_path,

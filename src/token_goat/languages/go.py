@@ -32,11 +32,40 @@ _CALL_RE = re.compile(r"(?<![.\w])([A-Za-z_][A-Za-z0-9_]*)\s*\(")
 _GO_IMPORT_RE = re.compile(r'"([^"]+)"')
 
 
+_IDENT_RE = re.compile(r"([A-Za-z_][A-Za-z0-9_]*)\s*(?:=|[A-Za-z_\(])")
+
+
+def _scan_decl_block(lines: list[str], start: int, kind: str) -> tuple[list[Symbol], int]:
+    """Consume lines inside a Go ``const (`` or ``var (`` block starting at *start*.
+
+    *start* is the index of the first line **after** the opening ``(`` line.
+    Returns ``(symbols, next_i)`` where *next_i* is the index of the line
+    after the closing ``)``.  Extracted to eliminate the identical loop body
+    shared by the const and var block cases in ``_extract_const_var``.
+    """
+    symbols: list[Symbol] = []
+    i = start
+    n = len(lines)
+    while i < n:
+        bstripped = lines[i].strip()
+        if bstripped == ")":
+            break
+        if bstripped and not bstripped.startswith("//"):
+            bm = _IDENT_RE.match(bstripped)
+            if bm:
+                name = bm.group(1)
+                symbols.append(Symbol(name=name, kind=kind, line=i + 1, end_line=i + 1, signature=bstripped[:200]))
+        i += 1
+    return symbols, i + 1  # skip past the closing ')'
+
+
 def _extract_const_var(source: bytes) -> list[Symbol]:
     """Extract package-level const and var declarations via regex.
 
     tlp does not surface these via structure/symbols for Go, so we fall back
-    to a regex pass over the raw source.
+    to a regex pass over the raw source.  The single-line and block forms for
+    both ``const`` and ``var`` share the same scanning logic, delegated to
+    ``_scan_decl_block`` for block bodies.
     """
     symbols: list[Symbol] = []
     text = source.decode("utf-8", errors="replace")
@@ -46,65 +75,28 @@ def _extract_const_var(source: bytes) -> list[Symbol]:
     i = 0
     while i < n_lines:
         line = lines[i]
+        # Only process package-level declarations (not indented)
+        if line.startswith((" ", "\t")):
+            i += 1
+            continue
         stripped = line.lstrip()
 
-        # Single-line: const Foo = ...
-        m = re.match(r"^const\s+([A-Za-z_][A-Za-z0-9_]*)\s", stripped)
-        if m and not line.startswith(" ") and not line.startswith("\t"):
-            name = m.group(1)
-            sig = line.rstrip()[:200]
-            symbols.append(Symbol(name=name, kind="const", line=i + 1, end_line=i + 1, signature=sig))
-            i += 1
-            continue
-
-        # Block: const (
-        m = re.match(r"^const\s*\($", stripped)
-        if m and not line.startswith(" ") and not line.startswith("\t"):
-            i += 1
-            while i < n_lines:
-                bline = lines[i]
-                bstripped = bline.strip()
-                if bstripped == ")":
-                    break
-                if bstripped and not bstripped.startswith("//"):
-                    bm = re.match(r"([A-Za-z_][A-Za-z0-9_]*)\s*(?:=|[A-Za-z_\(])", bstripped)
-                    if bm:
-                        name = bm.group(1)
-                        sig = bstripped[:200]
-                        symbols.append(Symbol(name=name, kind="const", line=i + 1, end_line=i + 1, signature=sig))
+        for keyword, kind in (("const", "const"), ("var", "var")):
+            # Single-line: const/var Foo = ...
+            m = re.match(rf"^{keyword}\s+([A-Za-z_][A-Za-z0-9_]*)\s", stripped)
+            if m:
+                symbols.append(Symbol(name=m.group(1), kind=kind, line=i + 1, end_line=i + 1, signature=line.rstrip()[:200]))
                 i += 1
-            i += 1
-            continue
+                break
 
-        # Single-line: var Foo = ...
-        m = re.match(r"^var\s+([A-Za-z_][A-Za-z0-9_]*)\s", stripped)
-        if m and not line.startswith(" ") and not line.startswith("\t"):
-            name = m.group(1)
-            sig = line.rstrip()[:200]
-            symbols.append(Symbol(name=name, kind="var", line=i + 1, end_line=i + 1, signature=sig))
+            # Block: const/var (
+            m = re.match(rf"^{keyword}\s*\($", stripped)
+            if m:
+                block_syms, i = _scan_decl_block(lines, i + 1, kind)
+                symbols.extend(block_syms)
+                break
+        else:
             i += 1
-            continue
-
-        # Block: var (
-        m = re.match(r"^var\s*\($", stripped)
-        if m and not line.startswith(" ") and not line.startswith("\t"):
-            i += 1
-            while i < n_lines:
-                bline = lines[i]
-                bstripped = bline.strip()
-                if bstripped == ")":
-                    break
-                if bstripped and not bstripped.startswith("//"):
-                    bm = re.match(r"([A-Za-z_][A-Za-z0-9_]*)\s*(?:=|[A-Za-z_\(])", bstripped)
-                    if bm:
-                        name = bm.group(1)
-                        sig = bstripped[:200]
-                        symbols.append(Symbol(name=name, kind="var", line=i + 1, end_line=i + 1, signature=sig))
-                i += 1
-            i += 1
-            continue
-
-        i += 1
 
     return symbols
 
