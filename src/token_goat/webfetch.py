@@ -302,13 +302,13 @@ def fetch_url(
 
     image_shrink.ensure_cache_dir(paths.web_cache_dir())
 
-    # Pre-check: do we already have it cached?
-    pre_suffix = _suffix_for(url)
-    candidate = _cache_path_for(url, pre_suffix)
-    if candidate.exists():
-        meta = _read_cache_meta(candidate)
+    # Check if the file is already cached (using the URL-derived suffix as a best-effort guess).
+    url_suffix = _suffix_for(url)
+    cached_path = _cache_path_for(url, url_suffix)
+    if cached_path.exists():
+        meta = _read_cache_meta(cached_path)
         if meta:
-            # Attempt revalidation with conditional request
+            # Attempt conditional revalidation to confirm the cached copy is still fresh.
             headers: dict[str, str] = {}
             if "etag" in meta:
                 headers["If-None-Match"] = meta["etag"]
@@ -318,25 +318,25 @@ def fetch_url(
                 with httpx.Client(timeout=timeout_sec, follow_redirects=True) as client:
                     r = client.get(url, headers=headers)
                 if r.status_code == 304:
-                    _LOG.info("web cache revalidated (304): %s", candidate.name)
+                    _LOG.info("web cache revalidated (304): %s", cached_path.name)
                     if shrink_if_image:
-                        return image_shrink.shrink_if_image(candidate)
-                    return candidate
+                        return image_shrink.shrink_if_image(cached_path)
+                    return cached_path
                 if r.status_code == 200:
-                    # Fresh content — fall through to re-download path below
-                    _LOG.info("web cache stale (200 on revalidation): %s", candidate.name)
+                    # Server returned fresh content — fall through to the download path below.
+                    _LOG.info("web cache stale (200 on revalidation): %s", cached_path.name)
                 else:
-                    # Unexpected status — return cached file
-                    _LOG.debug("revalidation returned %s; using cached %s", r.status_code, candidate.name)
-                    return candidate
+                    # Unexpected status — serve the cached file to avoid breaking the caller.
+                    _LOG.debug("revalidation returned %s; using cached %s", r.status_code, cached_path.name)
+                    return cached_path
             except httpx.RequestError as exc:
-                _LOG.debug("revalidation request failed (%s); using cached %s", exc, candidate.name)
-                return candidate
+                _LOG.debug("revalidation request failed (%s); using cached %s", exc, cached_path.name)
+                return cached_path
         else:
-            _LOG.info("web cache hit (URL-derived): %s", candidate.name)
+            _LOG.info("web cache hit (URL-derived): %s", cached_path.name)
             if shrink_if_image:
-                return image_shrink.shrink_if_image(candidate)
-            return candidate
+                return image_shrink.shrink_if_image(cached_path)
+            return cached_path
 
     # Download
     with httpx.Client(timeout=timeout_sec, follow_redirects=True) as client, \
