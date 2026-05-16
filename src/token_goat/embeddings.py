@@ -342,10 +342,11 @@ def index_project_embeddings(
                 new_chunks.append((ch, sha))
 
         # Embed + persist in batches
-        total_batches = (len(new_chunks) + batch_size - 1) // batch_size
-        _LOG.info("processing %d new chunks in %d batches (project=%s)", len(new_chunks), total_batches, project.hash[:8])
+        n_new_chunks = len(new_chunks)
+        total_batches = (n_new_chunks + batch_size - 1) // batch_size
+        _LOG.info("processing %d new chunks in %d batches (project=%s)", n_new_chunks, total_batches, project.hash[:8])
         n_stale_deleted = 0
-        for i in range(0, len(new_chunks), batch_size):
+        for i in range(0, n_new_chunks, batch_size):
             batch = new_chunks[i : i + batch_size]
             texts = [ch.text for ch, _ in batch]
             batch_t0 = time.time()
@@ -399,7 +400,7 @@ def index_project_embeddings(
                 embed_rows,
             )
             if progress:
-                progress(i + len(batch), len(new_chunks))
+                progress(i + len(batch), n_new_chunks)
 
         # Persist model metadata
         conn.execute(

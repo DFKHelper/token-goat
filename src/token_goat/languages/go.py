@@ -42,8 +42,9 @@ def _extract_const_var(source: bytes) -> list[Symbol]:
     text = source.decode("utf-8", errors="replace")
     lines = text.splitlines()
 
+    n_lines = len(lines)
     i = 0
-    while i < len(lines):
+    while i < n_lines:
         line = lines[i]
         stripped = line.lstrip()
 
@@ -60,7 +61,7 @@ def _extract_const_var(source: bytes) -> list[Symbol]:
         m = re.match(r"^const\s*\($", stripped)
         if m and not line.startswith(" ") and not line.startswith("\t"):
             i += 1
-            while i < len(lines):
+            while i < n_lines:
                 bline = lines[i]
                 bstripped = bline.strip()
                 if bstripped == ")":
@@ -88,7 +89,7 @@ def _extract_const_var(source: bytes) -> list[Symbol]:
         m = re.match(r"^var\s*\($", stripped)
         if m and not line.startswith(" ") and not line.startswith("\t"):
             i += 1
-            while i < len(lines):
+            while i < n_lines:
                 bline = lines[i]
                 bstripped = bline.strip()
                 if bstripped == ")":
