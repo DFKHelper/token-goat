@@ -330,11 +330,20 @@ def _summarize_file(
 
 
 def render_summary(s: FileSummary) -> str:
-    """Render a single file summary as text."""
+    """Render a single file summary as text.
+
+    Groups symbols by kind and emits kinds in priority order.  Uses a two-pass
+    approach: first build a plain dict grouping names by kind (O(n)), then emit
+    the unique kinds sorted by priority (O(k log k) where k = unique kinds, not
+    n = total symbols).  This avoids re-sorting the entire symbol list on every
+    call — only the small set of distinct kind strings is sorted.
+    """
     lines = [f"{s.rel_path}  [{s.language}, ~{s.line_count}L, rank={s.rank:.4f}]"]
     if s.top_symbols:
-        by_kind: dict[str, list[str]] = defaultdict(list)
+        by_kind: dict[str, list[str]] = {}
         for k, n in s.top_symbols:
+            if k not in by_kind:
+                by_kind[k] = []
             by_kind[k].append(n)
         for kind in sorted(by_kind, key=lambda k: KIND_PRIORITY.get(k, 99)):
             names = ", ".join(by_kind[kind][:_MAX_NAMES_PER_KIND])

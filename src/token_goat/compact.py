@@ -78,7 +78,7 @@ def build_manifest(session_id: str, *, max_tokens: int = 400) -> str:
         _LOG.warning("compact: could not load session %s: %s", session_id[:8], e)
         return ""
 
-    result = _render(cache, session_id, max_tokens)
+    result, symbols_files_count = _render(cache, session_id, max_tokens)
     elapsed = time.monotonic() - t0
     token_estimate = estimate_tokens(result)
     _LOG.info(
@@ -87,14 +87,14 @@ def build_manifest(session_id: str, *, max_tokens: int = 400) -> str:
         session_id[:8],
         len(cache.edited_files),
         len(cache.files),
-        sum(1 for e in cache.files.values() if e.symbols_read),
+        symbols_files_count,
         token_estimate,
         elapsed,
     )
     return result
 
 
-def _render(cache: SessionCache, session_id: str, max_tokens: int) -> str:
+def _render(cache: SessionCache, session_id: str, max_tokens: int) -> tuple[str, int]:
     """Build the Markdown session manifest string from *cache* for the PreCompact hook.
 
     Priority order:
@@ -104,12 +104,13 @@ def _render(cache: SessionCache, session_id: str, max_tokens: int) -> str:
 
     If the rendered manifest exceeds *max_tokens*, lines are trimmed from the
     bottom until the budget is met, preserving the highest-priority sections.
-    Returns an empty string when the cache has no meaningful data (nothing edited,
-    no symbols accessed, no files read).
+    Returns a (manifest_string, symbols_files_count) tuple.  The string is empty
+    when the cache has no meaningful data (nothing edited, no symbols accessed,
+    no files read).
     """
     # Return early if there is nothing meaningful to report
     if not cache.edited_files and not cache.files:
-        return ""
+        return "", 0
 
     files_with_symbols = [e for e in cache.files.values() if e.symbols_read]
     # Most-frequently-read files, capped at _MAX_FILES_READ, for the "Key Files Read" section.
@@ -153,12 +154,19 @@ def _render(cache: SessionCache, session_id: str, max_tokens: int) -> str:
         sections.append("")
 
     result = "\n".join(sections).rstrip()
+    n_symbols_files = len(files_with_symbols)
 
     if estimate_tokens(result) <= max_tokens:
-        return result
+        return result, n_symbols_files
 
-    # Trim: drop lines from the bottom until within budget, preserving headers
+    # Trim: drop lines from the bottom until within budget, preserving headers.
+    # Track accumulated character length incrementally to avoid O(n²) re-joins
+    # on each iteration of the trim loop.
     lines = result.splitlines()
-    while estimate_tokens("\n".join(lines)) > max_tokens and len(lines) > 3:
-        lines.pop()
-    return "\n".join(lines)
+    # budget in chars: max_tokens * 3 chars/token (conservative from estimate_tokens)
+    char_budget = max_tokens * 3 - 1
+    total_chars = sum(len(ln) for ln in lines) + len(lines) - 1
+    while total_chars > char_budget and len(lines) > 3:
+        removed = lines.pop()
+        total_chars -= len(removed) + 1  # +1 for the '\n' separator
+    return "\n".join(lines), n_symbols_files

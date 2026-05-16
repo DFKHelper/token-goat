@@ -26,6 +26,12 @@ _LOG = logging.getLogger("token_goat.stats")
 # Cache directory → inferred git root so we don't re-walk on every event.
 _git_root_cache: dict[str, str | None] = {}
 
+# Cache integer timestamp → "YYYY-MM-DD" date string.  Stats rows often share
+# timestamps that truncate to the same day, so this cuts datetime.fromtimestamp
+# + strftime cost from O(rows) to O(unique_days) — typically 1-30 unique values
+# across thousands of rows.
+_ts_to_date_cache: dict[int, str] = {}
+
 
 def _norm_path(p: str) -> str:
     """Normalize to forward slashes with lowercase drive letter."""
@@ -297,12 +303,16 @@ def _accumulate(row: sqlite3.Row, by_kind: dict, by_day: dict) -> None:
     ts = row["tokens_saved"] or 0
     _inc_bucket(by_kind[row["kind"]], bs, ts)
 
-    try:
-        date_str = datetime.fromtimestamp(row["ts"]).strftime("%Y-%m-%d")
-    except (OSError, OverflowError, ValueError):
-        # Malformed or out-of-range timestamp — skip day bucketing for this row.
-        _LOG.debug("skipping day accumulation: invalid ts=%r", row["ts"])
-        return
+    raw_ts = row["ts"]
+    date_str = _ts_to_date_cache.get(raw_ts)
+    if date_str is None:
+        try:
+            date_str = datetime.fromtimestamp(raw_ts).strftime("%Y-%m-%d")
+        except (OSError, OverflowError, ValueError):
+            # Malformed or out-of-range timestamp — skip day bucketing for this row.
+            _LOG.debug("skipping day accumulation: invalid ts=%r", raw_ts)
+            return
+        _ts_to_date_cache[raw_ts] = date_str
     _inc_bucket(by_day[date_str], bs, ts)
 
 

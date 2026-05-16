@@ -317,20 +317,20 @@ class TestRenderManifest:
         )
 
     def test_empty_cache_returns_empty_string(self):
-        result = _render(self._empty_cache(), "test-session-id", 400)
+        result, _ = _render(self._empty_cache(), "test-session-id", 400)
         assert result == ""
 
     def test_edited_files_in_manifest(self):
-        result = _render(self._cache_with_edits(), "aabbccdd1234", 400)
+        result, _ = _render(self._cache_with_edits(), "aabbccdd1234", 400)
         assert "Files Edited" in result
         assert "foo.py" in result or "bar.py" in result
 
     def test_edit_count_suffix(self):
-        result = _render(self._cache_with_edits(), "aabbccdd1234", 400)
+        result, _ = _render(self._cache_with_edits(), "aabbccdd1234", 400)
         assert "×3" in result  # foo.py edited 3 times
 
     def test_key_files_section(self):
-        result = _render(self._cache_with_file_reads(), "aabbccdd1234", 400)
+        result, _ = _render(self._cache_with_file_reads(), "aabbccdd1234", 400)
         assert "Key Files Read" in result
 
     def test_token_budget_trims(self):
@@ -344,13 +344,13 @@ class TestRenderManifest:
             greps=[],
             edited_files=big_edits,
         )
-        result = _render(cache, "aabbccdd1234", max_tokens=30)
+        result, _ = _render(cache, "aabbccdd1234", max_tokens=30)
         # Should still be a string (possibly truncated)
         assert isinstance(result, str)
 
     def test_session_id_truncated_to_8(self):
         """Only the first 8 chars of session_id appear in the manifest."""
-        result = _render(self._cache_with_edits(), "aabbccdd-long-session-id", 400)
+        result, _ = _render(self._cache_with_edits(), "aabbccdd-long-session-id", 400)
         assert "aabbccdd" in result
         assert "long-session-id" not in result
 
