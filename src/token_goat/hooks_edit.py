@@ -1,13 +1,11 @@
 """Edit hook helpers."""
 from __future__ import annotations
 
-import logging
 from typing import Any
 
 from . import paths
 from .hooks_common import CONTINUE, get_tool_input
-
-_LOG = logging.getLogger("token_goat.hooks")
+from .hooks_common import LOG as _LOG
 
 
 def _nudge_worker_if_down() -> None:
@@ -36,10 +34,9 @@ def _nudge_worker_if_down() -> None:
 
 def _enqueue_for_reindex(file_path: str, cwd: str | None) -> None:
     """Resolve *file_path* to (project_hash, rel_path) and append to the dirty queue."""
-    import json  # noqa: PLC0415
-    import time  # noqa: PLC0415
     from pathlib import Path  # noqa: PLC0415
 
+    from . import worker  # noqa: PLC0415
     from .project import find_project  # noqa: PLC0415
 
     abs_path = Path(file_path)
@@ -54,20 +51,13 @@ def _enqueue_for_reindex(file_path: str, cwd: str | None) -> None:
     except ValueError:
         return
 
-    queue_path = paths.dirty_queue_path()
-    queue_path.parent.mkdir(parents=True, exist_ok=True)
-    line = json.dumps(
-        {
-            "path": rel,
-            "project_hash": project.hash,
-            "project_root": project.root.as_posix(),
-            "project_marker": project.marker,
-            "ts": time.time(),
-        }
-    )
     try:
-        with queue_path.open("a", encoding="utf-8") as f:
-            f.write(line + "\n")
+        worker.enqueue_dirty(
+            rel,
+            project.hash,
+            project_root=project.root.as_posix(),
+            project_marker=project.marker,
+        )
     except OSError as e:
         _LOG.warning("failed to enqueue %s for reindex: %s", rel, e)
 

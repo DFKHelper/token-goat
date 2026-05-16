@@ -1,14 +1,12 @@
 """Read hook helpers."""
 from __future__ import annotations
 
-import logging
 from pathlib import Path
 from typing import Any
 
 from . import session
 from .hooks_common import CONTINUE, get_tool_input
-
-_LOG = logging.getLogger("token_goat.hooks")
+from .hooks_common import LOG as _LOG
 
 
 def _handle_bash_read_equivalent(payload: dict[str, Any]) -> dict[str, Any] | None:

@@ -346,10 +346,26 @@ def _try_claim_worker_slot() -> int | None:
 # Dirty queue
 # ---------------------------------------------------------------------------
 
-def enqueue_dirty(rel_path: str, project_hash: str | None = None) -> None:
-    """Append a dirty path to the queue. Used by hooks after Edit/Write."""
+def enqueue_dirty(
+    rel_path: str,
+    project_hash: str | None = None,
+    *,
+    project_root: str | None = None,
+    project_marker: str | None = None,
+) -> None:
+    """Append a dirty path to the queue. Used by hooks after Edit/Write.
+
+    The optional *project_root* and *project_marker* fields are written when
+    the caller has already resolved the project (e.g. the post-edit hook).
+    When omitted the worker resolves the project itself from *project_hash*.
+    """
     paths.dirty_queue_path().parent.mkdir(parents=True, exist_ok=True)
-    line = json.dumps({"path": rel_path, "project_hash": project_hash, "ts": time.time()})
+    entry: dict[str, object] = {"path": rel_path, "project_hash": project_hash, "ts": time.time()}
+    if project_root is not None:
+        entry["project_root"] = project_root
+    if project_marker is not None:
+        entry["project_marker"] = project_marker
+    line = json.dumps(entry)
     with paths.dirty_queue_path().open("a", encoding="utf-8") as f:
         f.write(line + "\n")
 
