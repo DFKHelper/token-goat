@@ -10,7 +10,19 @@ from .hooks_common import LOG as _LOG
 
 
 def _handle_bash_read_equivalent(payload: dict[str, Any]) -> dict[str, Any] | None:
-    """Convert Bash read-equivalent commands to Read payload for recursive processing."""
+    """Convert Bash read-equivalent commands to Read payload for recursive processing.
+
+    Intercepts Bash tool invocations with read-like commands (cat, head, tail, bat, etc.)
+    and synthesizes an equivalent Read tool payload so that image shrinking and session-hint
+    logic apply identically to Bash-based reads as they do to direct Read calls.
+
+    Args:
+        payload: Hook payload dict with tool_name='Bash' and tool_input containing 'command'.
+
+    Returns:
+        A new payload dict with tool_name='Read' and adjusted tool_input (file_path, offset, limit),
+        or None if the command is not recognized as a read-equivalent or parsing fails.
+    """
     from . import bash_parser  # noqa: PLC0415
 
     tool_input = get_tool_input(payload)
@@ -34,7 +46,23 @@ def _handle_bash_read_equivalent(payload: dict[str, Any]) -> dict[str, Any] | No
 def _try_shrink_image(
     file_path: str, tool_input: dict[str, Any]
 ) -> dict[str, Any] | None:
-    """Attempt image shrinking."""
+    """Attempt image shrinking and return hook-formatted response if successful.
+
+    Compresses image files (PNG, JPEG, WebP, etc.) using cached shrinking, records
+    token/byte savings to the stats DB, and returns a hook response that redirects
+    the Read call to the shrunk copy. Non-image files are silently passed through as None.
+
+    Args:
+        file_path: Absolute or relative path to a file being read.
+        tool_input: Read tool input dict (will be copied and file_path updated if
+            shrinking succeeds).
+
+    Returns:
+        A hook response dict with updated file_path pointing to the shrunk image, or None if:
+        - file_path is not an image file
+        - shrinking returns None (already optimal, no temp space, etc.)
+        - shrinking or stats recording raises an exception (logged but not re-raised)
+    """
     from . import db, image_shrink  # noqa: PLC0415
 
     if not image_shrink.is_image_path(file_path):
@@ -79,7 +107,17 @@ def _try_shrink_image(
 
 
 def _record_session_hint_impact(file_path: str, hint: str) -> None:
-    """Record gross session-hint savings plus the injected hint overhead."""
+    """Record net impact of session hints: avoided re-reads minus injection overhead.
+
+    Session hints warn the user about file content already in context, enabling them to
+    skip redundant reads. This function records both the gross tokens/bytes saved
+    (realized when user avoids the re-read) and the injection cost (the hint text itself).
+    Net impact = savings - overhead.
+
+    Args:
+        file_path: Path of the file being read (recorded in stats detail).
+        hint: ReadHint string instance with .tokens_saved attribute set.
+    """
     from . import db  # noqa: PLC0415
     from .hints import CHARS_PER_TOKEN  # noqa: PLC0415
 
@@ -105,7 +143,16 @@ def _record_session_hint_impact(file_path: str, hint: str) -> None:
 
 
 def pre_read(payload: dict[str, Any]) -> dict[str, Any]:
-    """Phase 10: session-cache hints. Phase 12 (image shrink) wires in here too."""
+    """Pre-read hook: image shrinking and session-cache hints.
+
+    Dispatches based on tool_name:
+    - Bash: Convert read-equivalent commands (cat, head, etc.) to Read, then recurse.
+    - Read: Attempt image shrinking, then emit session hints (if cached or large-file candidate).
+    - Other: Pass through unchanged (CONTINUE).
+
+    Returns hook response dict with optional updatedInput (image shrinking) or
+    additionalContext (hint text).
+    """
     from .hints import build_read_hint  # noqa: PLC0415
 
     tool_name = payload.get("tool_name")
@@ -157,7 +204,14 @@ def pre_read(payload: dict[str, Any]) -> dict[str, Any]:
 
 
 def post_read(payload: dict[str, Any]) -> dict[str, Any]:
-    """Record Read/Grep calls to session cache."""
+    """Post-read hook: record file/symbol accesses to session cache.
+
+    Logs Read, Grep, and Glob operations into the persistent session cache so that
+    subsequent reads can detect overlaps and re-read attempts, enabling session hints
+    on follow-up file accesses in the same session.
+
+    Returns CONTINUE() after recording; never modifies tool input/output.
+    """
     session_id = payload.get("session_id")
     if not session_id:
         return CONTINUE()

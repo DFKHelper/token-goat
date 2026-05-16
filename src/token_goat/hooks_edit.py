@@ -9,7 +9,12 @@ from .hooks_common import LOG as _LOG
 
 
 def _nudge_worker_if_down() -> None:
-    """Respawn the worker if its heartbeat has gone stale."""
+    """Respawn the background worker if its heartbeat file is stale.
+
+    The worker daemon updates a heartbeat file every 2 seconds. If the mtime is
+    >65 seconds old, the worker is assumed dead and a respawn is attempted.
+    Failures are logged but not raised (fail-soft hook pattern).
+    """
     import time  # noqa: PLC0415
 
     try:
@@ -33,7 +38,17 @@ def _nudge_worker_if_down() -> None:
 
 
 def _enqueue_for_reindex(file_path: str, cwd: str | None) -> None:
-    """Resolve *file_path* to (project_hash, rel_path) and append to the dirty queue."""
+    """Queue a file for background re-indexing after edit.
+
+    Resolves the file path to an absolute path within a project, then enqueues
+    it to the dirty-file queue (queue/dirty.txt) so the background worker can
+    reindex it on the next cycle. If the file is outside any indexed project,
+    this is silently skipped (no error raised).
+
+    Args:
+        file_path: Absolute or relative path to the edited file.
+        cwd: Current working directory (used to resolve relative paths).
+    """
     from pathlib import Path  # noqa: PLC0415
 
     from . import worker  # noqa: PLC0415
@@ -63,7 +78,15 @@ def _enqueue_for_reindex(file_path: str, cwd: str | None) -> None:
 
 
 def post_edit(payload: dict[str, Any]) -> dict[str, Any]:
-    """Post-edit hook: record edited files + queue them for incremental reindex."""
+    """Post-edit hook: record edited files and queue for incremental re-indexing.
+
+    Two-part hook action:
+    1. Records the edited file to the session cache (for compaction manifest and recovery).
+    2. Enqueues the file to the dirty-queue and nudges the worker daemon if stale.
+
+    The worker then re-indexes only the changed file, avoiding full-project reindexing.
+    Always returns CONTINUE() per fail-soft hook pattern; failures are logged but never raised.
+    """
     from . import session  # noqa: PLC0415
 
     session_id = payload.get("session_id")
