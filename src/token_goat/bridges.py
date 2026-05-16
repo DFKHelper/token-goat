@@ -42,6 +42,15 @@ def _load_json_config(path: Path) -> dict:
         )
     return result
 
+
+def _save_json_config(path: Path, cfg: dict) -> None:
+    """Serialise *cfg* as indented JSON and write atomically to *path*.
+
+    Uses a trailing newline so the file is POSIX-compliant and diff-friendly.
+    The directory must already exist; callers are responsible for mkdir.
+    """
+    path.write_text(json.dumps(cfg, indent=2) + "\n", encoding="utf-8")
+
 # ---------------------------------------------------------------------------
 # TypeScript bridge sources
 # ---------------------------------------------------------------------------
@@ -310,8 +319,33 @@ def openclaw_config_path() -> Path:
 # Opencode install / uninstall / check
 # ---------------------------------------------------------------------------
 
+# Strings that must appear in any token-goat bridge plugin file to confirm it
+# is ours (not a leftover from another tool).  Both opencode and openclaw
+# plugins share the same fingerprint because they are generated from the same
+# template and always contain these markers.
+_PLUGIN_FINGERPRINT: tuple[str, ...] = ("token-goat", "spawnSync")
+
 _OPENCODE_FILENAME = "token-goat.ts"
-_OPENCODE_FINGERPRINT = ("token-goat", "spawnSync")  # strings that must appear in our plugin
+
+
+def _check_plugin_file(plugin_path: Path) -> str:
+    """Return a status string for a simple single-file bridge plugin.
+
+    Returns one of:
+    - ``"not installed"``  — *plugin_path* does not exist
+    - ``"installed"``      — file exists and contains all fingerprint strings
+    - ``"present but not token-goat bridge"`` — file exists but fingerprint missing
+    - ``"error reading plugin file"`` — OSError while reading
+    """
+    if not plugin_path.exists():
+        return "not installed"
+    try:
+        content = plugin_path.read_text(encoding="utf-8")
+        if all(fp in content for fp in _PLUGIN_FINGERPRINT):
+            return "installed"
+        return "present but not token-goat bridge"
+    except OSError:
+        return "error reading plugin file"
 
 
 def install_opencode_plugin() -> str:
@@ -335,16 +369,7 @@ def uninstall_opencode_plugin() -> str:
 
 def _check_opencode_plugin() -> str:
     """Return install status of the opencode bridge plugin."""
-    plugin_path = opencode_plugins_dir() / _OPENCODE_FILENAME
-    if not plugin_path.exists():
-        return "not installed"
-    try:
-        content = plugin_path.read_text(encoding="utf-8")
-        if all(fp in content for fp in _OPENCODE_FINGERPRINT):
-            return "installed"
-        return "present but not token-goat bridge"
-    except OSError:
-        return "error reading plugin file"
+    return _check_plugin_file(opencode_plugins_dir() / _OPENCODE_FILENAME)
 
 
 # ---------------------------------------------------------------------------
@@ -353,7 +378,6 @@ def _check_opencode_plugin() -> str:
 
 _OPENCLAW_PLUGIN_ID = "token-goat-bridge"
 _OPENCLAW_FILENAME = "token-goat-bridge.ts"
-_OPENCLAW_FINGERPRINT = ("token-goat", "spawnSync")
 
 
 def install_openclaw_plugin() -> str:
@@ -374,7 +398,7 @@ def install_openclaw_plugin() -> str:
     plugins = cfg.setdefault("plugins", {})
     entries = plugins.setdefault("entries", {})
     entries[_OPENCLAW_PLUGIN_ID] = {"enabled": True, "path": str(plugin_path)}
-    cfg_path.write_text(json.dumps(cfg, indent=2) + "\n", encoding="utf-8")
+    _save_json_config(cfg_path, cfg)
 
     _LOG.info("openclaw plugin written: %s", plugin_path)
     return str(plugin_path)
@@ -396,7 +420,7 @@ def uninstall_openclaw_plugin() -> str:
             entries = cfg.get("plugins", {}).get("entries", {})
             if _OPENCLAW_PLUGIN_ID in entries:
                 del entries[_OPENCLAW_PLUGIN_ID]
-                cfg_path.write_text(json.dumps(cfg, indent=2) + "\n", encoding="utf-8")
+                _save_json_config(cfg_path, cfg)
                 removed.append("deregistered from openclaw.json")
         except (json.JSONDecodeError, OSError) as e:
             _LOG.warning("openclaw config not updated during uninstall: %s", e)
@@ -405,18 +429,20 @@ def uninstall_openclaw_plugin() -> str:
 
 
 def _check_openclaw_plugin() -> str:
-    """Return install status of the openclaw bridge plugin."""
+    """Return install status of the openclaw bridge plugin.
+
+    Unlike the opencode variant, openclaw plugins must also be registered in
+    ``openclaw.json``, so this check reports both the file and registry state.
+    """
     plugin_path = openclaw_plugins_dir() / _OPENCLAW_FILENAME
     cfg_path = openclaw_config_path()
 
-    file_ok = plugin_path.exists()
-    if file_ok:
-        try:
-            content = plugin_path.read_text(encoding="utf-8")
-            if not all(fp in content for fp in _OPENCLAW_FINGERPRINT):
-                return "present but not token-goat bridge"
-        except OSError:
-            return "error reading plugin file"
+    file_status = _check_plugin_file(plugin_path)
+    if file_status == "present but not token-goat bridge":
+        return file_status
+    if file_status == "error reading plugin file":
+        return file_status
+    file_ok = file_status == "installed"
 
     registered = False
     if cfg_path.exists():

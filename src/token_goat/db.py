@@ -50,6 +50,32 @@ class VecExtensionUnavailable(DBError):
 # Connection management
 # ---------------------------------------------------------------------------
 
+def _apply_connection_pragmas(conn: sqlite3.Connection, *, suppress: bool = False) -> None:
+    """Apply the standard read/write PRAGMA settings to *conn*.
+
+    All three PRAGMAs are required together:
+
+    * ``busy_timeout``   — back off instead of raising immediately when another
+                           writer holds the lock.
+    * ``synchronous``    — NORMAL gives a good safety/performance balance; FULL
+                           is unnecessarily slow for our single-writer pattern.
+    * ``foreign_keys``   — enforce FK constraints so accidental orphan rows are
+                           caught at insert time rather than silently ignored.
+
+    ``suppress=True`` wraps the block in ``contextlib.suppress(sqlite3.OperationalError)``
+    for the immutable-fallback paths where PRAGMAs may not be accepted.
+    """
+    if suppress:
+        with contextlib.suppress(sqlite3.OperationalError):
+            conn.execute("PRAGMA busy_timeout = 5000")
+            conn.execute("PRAGMA synchronous = NORMAL")
+            conn.execute("PRAGMA foreign_keys = ON")
+    else:
+        conn.execute("PRAGMA busy_timeout = 5000")
+        conn.execute("PRAGMA synchronous = NORMAL")
+        conn.execute("PRAGMA foreign_keys = ON")
+
+
 def _connect(db_path: Path, *, load_vec: bool = True) -> sqlite3.Connection:
     """Open a connection with WAL, foreign keys, and (optional) sqlite-vec.
 
@@ -64,9 +90,7 @@ def _connect(db_path: Path, *, load_vec: bool = True) -> sqlite3.Connection:
     conn.row_factory = sqlite3.Row
     try:
         conn.execute("PRAGMA journal_mode = WAL")
-        conn.execute("PRAGMA synchronous = NORMAL")
-        conn.execute("PRAGMA foreign_keys = ON")
-        conn.execute("PRAGMA busy_timeout = 5000")
+        _apply_connection_pragmas(conn)
     except sqlite3.OperationalError as e:
         # INFO (not WARNING): expected in sandboxed contexts like Codex
         # unelevated.  File loggers capture it; lastResort stderr handler
@@ -81,8 +105,7 @@ def _connect(db_path: Path, *, load_vec: bool = True) -> sqlite3.Connection:
         uri = str(db_path.as_uri()) + "?mode=ro&immutable=1"
         conn = sqlite3.connect(uri, uri=True, isolation_level=None, timeout=10.0)
         conn.row_factory = sqlite3.Row
-        with contextlib.suppress(sqlite3.OperationalError):
-            conn.execute("PRAGMA busy_timeout = 5000")
+        _apply_connection_pragmas(conn, suppress=True)
         # Validate the fallback open with a real read; SQLite is otherwise lazy
         # and the failure would surface inside the caller's first query.
         conn.execute("SELECT 1 FROM sqlite_master LIMIT 1").fetchone()
@@ -494,9 +517,7 @@ def _connect_readonly(db_path: Path) -> sqlite3.Connection:
     try:
         conn = sqlite3.connect(uri_ro, uri=True, isolation_level=None, timeout=10.0)
         conn.row_factory = sqlite3.Row
-        conn.execute("PRAGMA busy_timeout = 5000")
-        conn.execute("PRAGMA synchronous = NORMAL")
-        conn.execute("PRAGMA foreign_keys = ON")
+        _apply_connection_pragmas(conn)
         # Force SQLite to actually open the DB file and its WAL sidecars.
         conn.execute("SELECT 1 FROM sqlite_master LIMIT 1").fetchone()
         return conn
@@ -511,10 +532,7 @@ def _connect_readonly(db_path: Path) -> sqlite3.Connection:
         uri_imm = str(db_path.as_uri()) + "?mode=ro&immutable=1"
         conn = sqlite3.connect(uri_imm, uri=True, isolation_level=None, timeout=10.0)
         conn.row_factory = sqlite3.Row
-        with contextlib.suppress(sqlite3.OperationalError):
-            conn.execute("PRAGMA busy_timeout = 5000")
-            conn.execute("PRAGMA synchronous = NORMAL")
-            conn.execute("PRAGMA foreign_keys = ON")
+        _apply_connection_pragmas(conn, suppress=True)
         # Verify the immutable open actually works (same lazy-open reason).
         conn.execute("SELECT 1 FROM sqlite_master LIMIT 1").fetchone()
         return conn
