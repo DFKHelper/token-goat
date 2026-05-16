@@ -6,12 +6,13 @@ import hashlib
 import json
 import logging
 import os
+import sqlite3
 import subprocess
 import sys
 import time
 from datetime import datetime
 from pathlib import Path
-from typing import IO, Any, TypedDict, cast
+from typing import IO, TypedDict, cast
 
 try:
     import psutil
@@ -646,8 +647,8 @@ def spawn_detached() -> int | None:
     # worker that fails before its logging FileHandler is attached — an import
     # error, a crash in _setup_logging — would otherwise die with no trace at
     # all, which is exactly what makes a silent worker death undebuggable.
-    stderr_sink: int | IO[Any] = subprocess.DEVNULL
-    stderr_file: IO[Any] | None = None
+    stderr_sink: int | IO[str] = subprocess.DEVNULL
+    stderr_file: IO[str] | None = None
     try:
         stderr_path = paths.logs_dir() / "worker-stderr.log"
         stderr_path.parent.mkdir(parents=True, exist_ok=True)
@@ -1020,7 +1021,7 @@ def _process_dirty_entries(entries: list[DirtyQueueEntry]) -> None:
     # Batch-lookup all project hashes in one global.db query instead of
     # opening global.db once per project (N+1 DB opens).
     all_hashes = list(by_project.keys())
-    known_projects: dict[str, Any] = {}
+    known_projects: dict[str, sqlite3.Row] = {}
     if all_hashes:
         ph_placeholders = ",".join("?" for _ in all_hashes)
         with db.open_global() as gconn:

@@ -7,7 +7,7 @@ import sqlite3
 import time
 from collections import defaultdict
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, TypedDict
+from typing import TYPE_CHECKING, TypedDict
 
 from . import db
 
@@ -15,14 +15,22 @@ if TYPE_CHECKING:
     from .project import Project
 
 
+class _FileInfo(TypedDict):
+    """Raw file metadata loaded from the DB files table."""
+
+    language: str
+    size: int
+    mtime: float
+
+
 @dataclass
 class _RankedProjectData:
     """Intermediate result from _load_and_rank — all data needed to render the repo map."""
 
-    files: dict[str, dict[str, Any]]
+    files: dict[str, _FileInfo]
     symbols_by_file: dict[str, list[tuple[str, str]]]
     sections_by_file: dict[str, list[tuple[int, str]]]
-    ranked: list[tuple[str, dict[str, Any]]]  # sorted by descending PageRank score
+    ranked: list[tuple[str, _FileInfo]]  # sorted by descending PageRank score
     ranks: dict[str, float]
     summary_cache: dict[tuple[str, float, int], str]  # (rel_path, mtime, size) → rendered text
 
@@ -125,7 +133,7 @@ class FileSummary:
 
 def _load_project_data(
     conn: sqlite3.Connection,
-) -> tuple[dict[str, dict[str, Any]], dict[str, list[tuple[str, str]]], dict[str, list[tuple[int, str]]], dict[str, set[str]]]:
+) -> tuple[dict[str, _FileInfo], dict[str, list[tuple[str, str]]], dict[str, list[tuple[int, str]]], dict[str, set[str]]]:
     """Load all indexed data for a project: files, symbols, sections, and reverse-index.
 
     Returns (files, symbols_by_file, sections_by_file, name_to_files):
@@ -134,7 +142,7 @@ def _load_project_data(
       - sections_by_file: {rel_path: [(level, heading), ...]}
       - name_to_files: {symbol_name: {rel_path, ...}} — all files defining this symbol
     """
-    files: dict[str, dict] = {}
+    files: dict[str, _FileInfo] = {}
     for row in conn.execute("SELECT rel_path, language, size, mtime FROM files"):
         files[row["rel_path"]] = {
             "language": row["language"],
@@ -158,7 +166,7 @@ def _load_project_data(
 
 
 def _build_graph(
-    conn: sqlite3.Connection, files: dict[str, dict[str, Any]], name_to_files: dict[str, set[str]]
+    conn: sqlite3.Connection, files: dict[str, _FileInfo], name_to_files: dict[str, set[str]]
 ) -> object:
     """Build a directed dependency graph: edge from file A to file B if A references a symbol defined in B.
 
@@ -279,7 +287,7 @@ def compute_ranks(g: object, *, alpha: float = 0.85) -> dict[str, float]:
 
 def _summarize_file(
     rel: str,
-    info: dict[str, Any],
+    info: _FileInfo,
     symbols: list[tuple[str, str]],
     sections: list[tuple[int, str]],
     rank: float,
@@ -378,7 +386,7 @@ def _write_summary_cache(
         )
 
 
-def _evict_stale_cache(conn: sqlite3.Connection, current_files: dict[str, Any]) -> None:
+def _evict_stale_cache(conn: sqlite3.Connection, current_files: dict[str, _FileInfo]) -> None:
     """Remove cache entries for files no longer in the files table.
 
     The FOREIGN KEY ON DELETE CASCADE on repomap_cache.rel_path handles

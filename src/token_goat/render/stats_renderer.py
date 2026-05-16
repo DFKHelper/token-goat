@@ -24,10 +24,22 @@ import math
 import shutil
 from datetime import date, timedelta
 from pathlib import Path
-from typing import Any
+from typing import TypedDict
 
 from .ansi import RESET, RGB, C, bg, fg, lerp_rgb, pad_l, pad_r, vlen
 from .types import DayStat, KindStat, StatsData
+
+
+class _InsightsMessages(TypedDict):
+    biggestSaver: str
+    mostActive: str
+    tokenLeader: str
+
+
+class _StatsMessages(TypedDict):
+    bytesModeOnlyNote: str
+    sessionHintSplitNote: str
+    insights: _InsightsMessages
 
 # ── Layout constants ───────────────────────────────────────────────────────────
 
@@ -48,7 +60,7 @@ _BAR_W = max(16, _CONTENT_W - len(_M) * 2 - _COLS_FIXED)
 _RULE = _M + fg(*C.TEXT_DIM) + "─" * (_CONTENT_W - len(_M) * 2) + RESET
 
 
-def _load_stats_messages() -> dict[str, Any]:
+def _load_stats_messages() -> _StatsMessages:
     """Load the localised stats copy from the bundled ``stats_messages.json`` file.
 
     The JSON is co-located with this module (same directory) and contains
