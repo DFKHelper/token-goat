@@ -9,7 +9,7 @@ from collections import defaultdict
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from . import db
 
@@ -121,6 +121,18 @@ def _root_hash(root: str) -> str:
     return hashlib.sha1(root.encode()).hexdigest()
 
 
+def _zero_bucket() -> dict:
+    """Return a fresh zero-valued stats accumulator bucket."""
+    return {"events": 0, "bytes_saved": 0, "tokens_saved": 0}
+
+
+def _inc_bucket(bucket: dict, bytes_saved: int, tokens_saved: int) -> None:
+    """Increment a stats accumulator bucket by the given byte/token counts."""
+    bucket["events"] += 1
+    bucket["bytes_saved"] += bytes_saved
+    bucket["tokens_saved"] += tokens_saved
+
+
 @dataclass
 class StatsSummary:
     """Aggregated statistics across projects and time."""
@@ -158,14 +170,10 @@ def summarize(window_days: int = 30) -> StatsSummary:
     )
     _LOG.debug("summarize started: window=%d days, since_ts=%s", window_days, since_ts)
 
-    by_kind: dict[str, dict] = defaultdict(
-        lambda: {"events": 0, "bytes_saved": 0, "tokens_saved": 0}
-    )
-    by_day: dict[str, dict] = defaultdict(
-        lambda: {"events": 0, "bytes_saved": 0, "tokens_saved": 0}
-    )
+    by_kind: dict[str, dict] = defaultdict(_zero_bucket)
+    by_day: dict[str, dict] = defaultdict(_zero_bucket)
     by_project: dict[str, dict] = defaultdict(
-        lambda: {"events": 0, "bytes_saved": 0, "tokens_saved": 0, "project_root": ""}
+        lambda: {**_zero_bucket(), "project_root": ""}
     )
     total_events = 0
     total_bytes = 0
@@ -179,9 +187,11 @@ def summarize(window_days: int = 30) -> StatsSummary:
             global_rows = list(_read_stats(conn, since_ts))
             for row in global_rows:
                 _accumulate(row, by_kind, by_day)
+                bs = row["bytes_saved"] or 0
+                ts = row["tokens_saved"] or 0
                 total_events += 1
-                total_bytes += row["bytes_saved"] or 0
-                total_tokens += row["tokens_saved"] or 0
+                total_bytes += bs
+                total_tokens += ts
             _LOG.debug("global.db: aggregated %d rows", len(global_rows))
 
             # Pull project list for per-project rollup
@@ -201,13 +211,13 @@ def summarize(window_days: int = 30) -> StatsSummary:
                 rows = list(_read_stats(conn, since_ts))
                 for row in rows:
                     _accumulate(row, by_kind, by_day)
+                    bs = row["bytes_saved"] or 0
+                    ts = row["tokens_saved"] or 0
                     total_events += 1
-                    total_bytes += row["bytes_saved"] or 0
-                    total_tokens += row["tokens_saved"] or 0
+                    total_bytes += bs
+                    total_tokens += ts
                     p = by_project[project_hash]
-                    p["events"] += 1
-                    p["bytes_saved"] += row["bytes_saved"] or 0
-                    p["tokens_saved"] += row["tokens_saved"] or 0
+                    _inc_bucket(p, bs, ts)
                     p["project_root"] = project_root
                 projects_aggregated += 1
                 _LOG.debug("project %s: aggregated %d rows", project_hash[:8], len(rows))
@@ -241,9 +251,7 @@ def summarize(window_days: int = 30) -> StatsSummary:
             or _root_hash(root)
         )
         p = by_project[proj_key]
-        p["events"] += 1
-        p["bytes_saved"] += row["bytes_saved"] or 0
-        p["tokens_saved"] += row["tokens_saved"] or 0
+        _inc_bucket(p, row["bytes_saved"] or 0, row["tokens_saved"] or 0)
         p["project_root"] = root
 
     by_day_list = sorted(
@@ -283,12 +291,9 @@ def summarize(window_days: int = 30) -> StatsSummary:
 
 def _accumulate(row: sqlite3.Row, by_kind: dict, by_day: dict) -> None:
     """Accumulate a stats row into the kind and day dictionaries."""
-    kind = row["kind"]
-    bytes_saved = row["bytes_saved"] or 0
-    tokens_saved = row["tokens_saved"] or 0
-    by_kind[kind]["events"] += 1
-    by_kind[kind]["bytes_saved"] += bytes_saved
-    by_kind[kind]["tokens_saved"] += tokens_saved
+    bs = row["bytes_saved"] or 0
+    ts = row["tokens_saved"] or 0
+    _inc_bucket(by_kind[row["kind"]], bs, ts)
 
     try:
         date_str = datetime.fromtimestamp(row["ts"]).strftime("%Y-%m-%d")
@@ -296,10 +301,7 @@ def _accumulate(row: sqlite3.Row, by_kind: dict, by_day: dict) -> None:
         # Malformed or out-of-range timestamp — skip day bucketing for this row.
         _LOG.debug("skipping day accumulation: invalid ts=%r", row["ts"])
         return
-    d = by_day[date_str]
-    d["events"] += 1
-    d["bytes_saved"] += bytes_saved
-    d["tokens_saved"] += tokens_saved
+    _inc_bucket(by_day[date_str], bs, ts)
 
 
 def _fmt_bytes(n: int) -> str:
@@ -402,6 +404,35 @@ def _to_stats_data(summary: StatsSummary) -> StatsData:
     )
 
 
+def _make_stats_table(label_col: str) -> Any:
+    """Create the standard 5-column stats table used by kind/day/project sections.
+
+    All three legacy-renderer tables share identical structure: a label column,
+    a relative-savings bar column, bytes, tokens, and events. Only the first
+    column name differs, so it is accepted as a parameter.
+
+    The return type is ``Any`` to avoid importing rich at module level (it may
+    be unavailable in some environments); callers are always inside render_text
+    where rich is already imported.
+    """
+    from rich.table import Table  # noqa: PLC0415
+
+    tbl = Table(
+        show_header=True,
+        header_style="bold dim",
+        show_edge=False,
+        box=None,
+        pad_edge=False,
+        padding=(0, 1),
+    )
+    tbl.add_column(label_col, style="white", no_wrap=True, width=18)
+    tbl.add_column("savings (relative)", no_wrap=True, width=28)
+    tbl.add_column("bytes", justify="right", style="bold green", width=10)
+    tbl.add_column("tokens", justify="right", style="bold cyan", width=10)
+    tbl.add_column("events", justify="right", style="dim", width=7)
+    return tbl
+
+
 # Bar character set; finer-grained than █░ for half-block resolution.
 _BAR_FILL = "█"
 _BAR_PARTIAL = "▏▎▍▌▋▊▉"  # 1/8 through 7/8
@@ -474,7 +505,6 @@ def render_text(
     from rich.box import ROUNDED
     from rich.console import Console
     from rich.panel import Panel
-    from rich.table import Table
     from rich.text import Text
 
     buf = io.StringIO()
@@ -533,20 +563,7 @@ def render_text(
         max_bytes = max(
             (summary.by_kind[k]["bytes_saved"] for k in kinds_sorted), default=0
         )
-        tbl = Table(
-            show_header=True,
-            header_style="bold dim",
-            show_lines=False,
-            show_edge=False,
-            box=None,
-            pad_edge=False,
-            padding=(0, 1),
-        )
-        tbl.add_column("kind", style="white", no_wrap=True, width=18)
-        tbl.add_column("savings (relative)", no_wrap=True, width=28)
-        tbl.add_column("bytes", justify="right", style="bold green", width=10)
-        tbl.add_column("tokens", justify="right", style="bold cyan", width=10)
-        tbl.add_column("events", justify="right", style="dim", width=7)
+        tbl = _make_stats_table("kind")
         for kind in kinds_sorted:
             v = summary.by_kind[kind]
             bar, bar_style = _bar_text(v["bytes_saved"], max_bytes)
@@ -605,19 +622,7 @@ def render_text(
         console.print(Text(f"By day (top {top_days}):", style="bold"))
         days = summary.by_day[:top_days]
         max_bytes = max((d["bytes_saved"] for d in days), default=0)
-        tbl = Table(
-            show_header=True,
-            header_style="bold dim",
-            show_edge=False,
-            box=None,
-            pad_edge=False,
-            padding=(0, 1),
-        )
-        tbl.add_column("date", style="white", no_wrap=True, width=18)
-        tbl.add_column("savings (relative)", no_wrap=True, width=28)
-        tbl.add_column("bytes", justify="right", style="bold green", width=10)
-        tbl.add_column("tokens", justify="right", style="bold cyan", width=10)
-        tbl.add_column("events", justify="right", style="dim", width=7)
+        tbl = _make_stats_table("date")
         for d in days:
             bar, bar_style = _bar_text(d["bytes_saved"], max_bytes)
             tbl.add_row(
@@ -635,19 +640,7 @@ def render_text(
         console.print(Text(f"By project (top {top_projects}):", style="bold"))
         projs = summary.by_project[:top_projects]
         max_bytes = max((p["bytes_saved"] for p in projs), default=0)
-        tbl = Table(
-            show_header=True,
-            header_style="bold dim",
-            show_edge=False,
-            box=None,
-            pad_edge=False,
-            padding=(0, 1),
-        )
-        tbl.add_column("project", style="white", no_wrap=True, width=18)
-        tbl.add_column("savings (relative)", no_wrap=True, width=28)
-        tbl.add_column("bytes", justify="right", style="bold green", width=10)
-        tbl.add_column("tokens", justify="right", style="bold cyan", width=10)
-        tbl.add_column("events", justify="right", style="dim", width=7)
+        tbl = _make_stats_table("project")
         for p in projs:
             label = _short_project(p["project_root"])
             bar, bar_style = _bar_text(p["bytes_saved"], max_bytes)

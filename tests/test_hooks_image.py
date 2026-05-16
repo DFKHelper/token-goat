@@ -61,7 +61,7 @@ class TestPreReadHookLargeImage:
         }
         result = hooks_cli.dispatch("pre-read", payload)
 
-        assert result["continue"] is True
+        _assert_continue(result)
         assert "hookSpecificOutput" in result, "Expected hookSpecificOutput for large image"
 
         hso = result["hookSpecificOutput"]
@@ -106,7 +106,7 @@ class TestPreReadHookSmallImage:
         }
         result = hooks_cli.dispatch("pre-read", payload)
 
-        assert result["continue"] is True
+        _assert_continue(result)
         # Small image → falls through to hint logic → no hookSpecificOutput
         # (no session cache hit either, so plain continue:true)
         hso = result.get("hookSpecificOutput", {})
@@ -130,7 +130,7 @@ class TestPreReadHookNonImage:
         }
         result = hooks_cli.dispatch("pre-read", payload)
 
-        assert result["continue"] is True
+        _assert_continue(result)
         hso = result.get("hookSpecificOutput", {})
         assert "updatedInput" not in hso
 
@@ -164,7 +164,7 @@ class TestPreReadHookGarbage:
             "tool_input": {"file_path": str(tmp_path / "ghost.png")},
         }
         result = hooks_cli.dispatch("pre-read", payload)
-        assert result["continue"] is True
+        _assert_continue(result)
         # Non-existent image → should_shrink=False → falls through, no updatedInput
         hso = result.get("hookSpecificOutput", {})
         assert "updatedInput" not in hso
