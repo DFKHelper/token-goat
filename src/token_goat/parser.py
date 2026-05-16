@@ -473,8 +473,8 @@ def index_project(
                             if progress and (i + 1) % 100 == 0:
                                 progress(i + 1, n_total)
                             continue
-                    except OSError:
-                        pass  # stat failed — fall through to full index_file
+                    except OSError as e:
+                        _LOG.debug("mtime check failed for %s (will reindex): %s", rel, e)
 
                 fi = index_file(project, fp)
                 if fi is None:

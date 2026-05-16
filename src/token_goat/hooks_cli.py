@@ -152,8 +152,8 @@ def emit(result: dict[str, Any]) -> None:
         with contextlib.suppress(Exception):
             sys.stdout.buffer.flush()
         return
-    except Exception:  # noqa: BLE001
-        pass
+    except Exception as e:  # noqa: BLE001
+        _LOG.debug("emit: binary write failed, trying text fallback: %s", e)
     # Fallback: text-mode write.
     with contextlib.suppress(Exception):
         sys.stdout.write(payload)

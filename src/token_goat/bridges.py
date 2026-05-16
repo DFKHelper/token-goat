@@ -342,7 +342,8 @@ def install_openclaw_plugin() -> str:
     cfg_path.parent.mkdir(parents=True, exist_ok=True)
     try:
         cfg: dict = json.loads(cfg_path.read_text(encoding="utf-8")) if cfg_path.exists() else {}
-    except (json.JSONDecodeError, OSError):
+    except (json.JSONDecodeError, OSError) as e:
+        _LOG.debug("openclaw.json read failed, starting fresh: %s", e)
         cfg = {}
 
     plugins = cfg.setdefault("plugins", {})
@@ -397,8 +398,8 @@ def _check_openclaw_plugin() -> str:
         try:
             cfg = json.loads(cfg_path.read_text(encoding="utf-8"))
             registered = _OPENCLAW_PLUGIN_ID in cfg.get("plugins", {}).get("entries", {})
-        except (json.JSONDecodeError, OSError):
-            pass
+        except (json.JSONDecodeError, OSError) as e:
+            _LOG.debug("openclaw.json read failed in check: %s", e)
 
     if file_ok and registered:
         return "installed"
