@@ -21,7 +21,7 @@ _YAML_TITLE_RE = re.compile(r"^\s*title\s*:\s*(.+?)\s*$", re.MULTILINE)
 
 def extract(source: bytes, rel_path: str) -> tuple[list[Symbol], list[Ref], list[ImpExp], list[Section]]:
     """Extract Markdown headings and front-matter."""
-    text = source.decode("utf-8", errors="replace")
+    text = source.decode("utf-8", errors="replace").replace("\r\n", "\n").replace("\r", "\n")
     symbols: list[Symbol] = []
     sections: list[Section] = []
 

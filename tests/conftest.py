@@ -190,6 +190,9 @@ def _make_sample_project(tmp_path: Path, tmp_data_dir, make_project, sample_path
     sample_name = sample_path.name
     proj_root = tmp_path / sample_name
     shutil.copytree(sample_path, proj_root)
+    # Create a minimal .git dir so find_project() detects this as a project
+    # when the CLI runs internal find_project(Path.cwd()) after monkeypatch.chdir.
+    (proj_root / ".git").mkdir(exist_ok=True)
     proj = make_project(proj_root)
     if indexed:
         index_project(proj, full=True)
