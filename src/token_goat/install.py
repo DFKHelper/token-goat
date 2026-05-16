@@ -1225,6 +1225,9 @@ def check_status() -> dict[str, str]:
         status["worker autostart"] = _check_linux_autostart()
         status["update cron"] = _check_linux_update_cron()
     status["Codex hooks (config.toml)"] = _check_codex_config()
+    from . import bridges  # noqa: PLC0415
+    status["opencode plugin"] = bridges._check_opencode_plugin()
+    status["openclaw plugin"] = bridges._check_openclaw_plugin()
     return status
 
 
@@ -1233,7 +1236,11 @@ def check_status() -> dict[str, str]:
 # ---------------------------------------------------------------------------
 
 
-def install_all(install_codex: bool = False) -> dict:
+def install_all(
+    install_codex: bool = False,
+    install_opencode: bool = False,
+    install_openclaw: bool = False,
+) -> dict:
     """Run the full install. Returns a dict of step -> result string."""
     import sys
     paths.ensure_dirs()
@@ -1289,6 +1296,21 @@ def install_all(install_codex: bool = False) -> dict:
         except Exception as e:  # noqa: BLE001
             result["codex: AGENTS.md"] = f"FAIL — {e}"
 
+    if install_opencode or install_openclaw:
+        from . import bridges  # noqa: PLC0415
+
+    if install_opencode:
+        try:
+            result["opencode: plugin"] = f"ok — {bridges.install_opencode_plugin()}"
+        except Exception as e:  # noqa: BLE001
+            result["opencode: plugin"] = f"FAIL — {e}"
+
+    if install_openclaw:
+        try:
+            result["openclaw: plugin"] = f"ok — {bridges.install_openclaw_plugin()}"
+        except Exception as e:  # noqa: BLE001
+            result["openclaw: plugin"] = f"FAIL — {e}"
+
     return result
 
 
@@ -1308,7 +1330,12 @@ def _stop_worker() -> str:
     return "stopped"
 
 
-def uninstall_all(purge: bool = False, codex: bool = False) -> dict:
+def uninstall_all(
+    purge: bool = False,
+    codex: bool = False,
+    opencode: bool = False,
+    openclaw: bool = False,
+) -> dict:
     """Reverse install. With purge=True also deletes the data directory."""
     import sys
     result: dict[str, str] = {}
@@ -1349,5 +1376,14 @@ def uninstall_all(purge: bool = False, codex: bool = False) -> dict:
     if codex:
         result["codex: config.toml"] = unpatch_codex_config()
         result["codex: AGENTS.md"] = unpatch_codex_agents_md()
+
+    if opencode or openclaw:
+        from . import bridges  # noqa: PLC0415
+
+    if opencode:
+        result["opencode: plugin"] = bridges.uninstall_opencode_plugin()
+
+    if openclaw:
+        result["openclaw: plugin"] = bridges.uninstall_openclaw_plugin()
 
     return result

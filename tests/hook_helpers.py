@@ -6,9 +6,42 @@ on all Python/pytest configurations.
 
 Usage::
 
-    from hook_helpers import assert_continue, assert_deny
+    from hook_helpers import assert_continue, assert_deny, run_hook_subprocess
 """
 from __future__ import annotations
+
+import json
+import subprocess
+import sys
+
+
+def run_hook_subprocess(event: str, payload: dict, *, timeout: int = 30) -> dict:
+    """Run ``token-goat hook <event>`` as a subprocess, returning the parsed JSON response.
+
+    Sends *payload* as JSON on stdin and asserts the process exits 0.  Shared
+    by ``test_cli_hook_smoke.py`` and ``TestPreReadCli`` so the subprocess
+    invocation is not copy-pasted across test modules.
+
+    Args:
+        event:   Hook event name, e.g. ``"pre-read"`` or ``"session-start"``.
+        payload: Dict that will be JSON-encoded and sent on stdin.
+        timeout: Subprocess timeout in seconds (default 30).
+
+    Returns:
+        Parsed JSON dict from stdout.
+
+    Raises:
+        AssertionError: If the subprocess exits non-zero.
+    """
+    proc = subprocess.run(
+        [sys.executable, "-m", "token_goat.cli", "hook", event],
+        input=json.dumps(payload),
+        capture_output=True,
+        text=True,
+        timeout=timeout,
+    )
+    assert proc.returncode == 0, f"hook {event!r} subprocess failed:\nSTDERR: {proc.stderr}"
+    return json.loads(proc.stdout)
 
 
 def assert_continue(result: dict) -> None:

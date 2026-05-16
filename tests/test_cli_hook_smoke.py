@@ -4,20 +4,9 @@ import subprocess
 import sys
 from pathlib import Path
 
+from hook_helpers import run_hook_subprocess as _run_hook
+
 PROJECT_ROOT = Path(__file__).parent.parent
-
-
-def _run_hook(event: str, payload: dict) -> dict:
-    result = subprocess.run(
-        [sys.executable, "-m", "token_goat", "hook", event],
-        input=json.dumps(payload),
-        capture_output=True,
-        text=True,
-        cwd=PROJECT_ROOT,
-        timeout=30,
-    )
-    assert result.returncode == 0, f"hook {event} failed: {result.stderr}"
-    return json.loads(result.stdout)
 
 
 def test_hook_session_start_smoke(tmp_path):
