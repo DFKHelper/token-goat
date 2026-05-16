@@ -177,34 +177,47 @@ class IndexProjectResult(TypedDict):
 
 
 def _import_typescript() -> Extractor:
+    """Lazily import and return the TypeScript/JavaScript language extractor.
+
+    Deferred to avoid loading tree-sitter grammars at module import time;
+    the grammar binary is only needed when a TypeScript or JavaScript file
+    is actually indexed.  JavaScript reuses this extractor (same registry entry).
+    """
     from .languages import typescript  # noqa: PLC0415
     return typescript.extract
 
 def _import_python() -> Extractor:
+    """Lazily import and return the Python language extractor."""
     from .languages import python  # noqa: PLC0415
     return python.extract
 
 def _import_go() -> Extractor:
+    """Lazily import and return the Go language extractor."""
     from .languages import go  # noqa: PLC0415
     return go.extract
 
 def _import_rust() -> Extractor:
+    """Lazily import and return the Rust language extractor."""
     from .languages import rust  # noqa: PLC0415
     return rust.extract
 
 def _import_liquid() -> Extractor:
+    """Lazily import and return the Liquid template language extractor."""
     from .languages import liquid  # noqa: PLC0415
     return liquid.extract
 
 def _import_markdown() -> Extractor:
+    """Lazily import and return the Markdown section extractor."""
     from .languages import markdown  # noqa: PLC0415
     return markdown.extract
 
 def _import_html() -> Extractor:
+    """Lazily import and return the HTML extractor."""
     from .languages import html  # noqa: PLC0415
     return html.extract
 
 def _import_json() -> Extractor:
+    """Lazily import and return the JSON extractor (``json_idx`` module to avoid shadowing stdlib)."""
     from .languages import json_idx  # noqa: PLC0415
     return json_idx.extract
 

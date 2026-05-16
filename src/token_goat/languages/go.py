@@ -142,6 +142,14 @@ def extract(source: bytes, rel_path: str) -> tuple[list[Symbol], list[Ref], list
 
     # --- imports ---
     def _extract_go_import_target(imp: object) -> str:
+        """Extract the bare import path from a Go ``import`` node.
+
+        Block-level ``import (...)`` nodes are skipped (return ``""``) because
+        the tree-sitter grammar also emits each individual quoted path inside
+        the block, so processing the block header would produce a duplicate.
+        Named imports (``alias "path"``) are normalised to just the path via
+        ``_GO_IMPORT_RE``.
+        """
         src = imp.source.strip()  # type: ignore[attr-defined]
         # Skip the block-level 'import (...)' item — the individual quoted paths are also emitted
         if src.startswith("import ("):

@@ -233,6 +233,12 @@ def fail_soft(handler: _HookHandler) -> _HookHandler:
 
     @functools.wraps(handler)
     def wrapper(payload: dict[str, Any]) -> HookResponse:
+        """Invoke *handler* and return its result, suppressing all exceptions.
+
+        On any unhandled exception: logs the crash at ERROR level (with handler
+        name, session ID, and CWD for triage), then returns a safe
+        ``{"continue": True}`` response so the harness is never blocked.
+        """
         try:
             return handler(payload)
         except Exception as exc:  # noqa: BLE001 — fail-soft is the entire point

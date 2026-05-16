@@ -85,6 +85,13 @@ class Config:
 # ---------------------------------------------------------------------------
 
 def _validated_int(val: object, default: int, lo: int, hi: int, name: str) -> int:
+    """Coerce *val* to an ``int`` within ``[lo, hi]``, returning *default* on failure.
+
+    Accepts any type that ``int()`` can convert.  Out-of-range values and
+    non-convertible types both fall back to *default* with a ``WARNING`` log
+    entry that includes the key name and the bad value, making misconfigured
+    TOML easy to diagnose.
+    """
     try:
         v = int(val)  # type: ignore[call-overload]  # val is unknown external input; TypeError caught below
         if not lo <= v <= hi:
@@ -97,6 +104,13 @@ def _validated_int(val: object, default: int, lo: int, hi: int, name: str) -> in
 
 
 def _validated_bool(val: object, default: bool, name: str) -> bool:
+    """Coerce *val* to a ``bool``, returning *default* on failure.
+
+    Accepts ``bool`` directly or ``int`` (``0`` → ``False``, non-zero → ``True``).
+    Any other type falls back to *default* with a ``WARNING`` log entry.
+    TOML native booleans arrive as Python ``bool``, so the common case hits
+    the first branch with no conversion overhead.
+    """
     if isinstance(val, bool):
         return val
     if isinstance(val, int):
@@ -106,6 +120,13 @@ def _validated_bool(val: object, default: bool, name: str) -> bool:
 
 
 def _validated_triggers(val: object, default: list[str]) -> list[str]:
+    """Validate a list of hook-trigger strings against ``_VALID_TRIGGERS``.
+
+    *val* must be a TOML list of strings; any element not in ``_VALID_TRIGGERS``
+    is silently dropped with a ``WARNING`` log.  If *val* is not a list at all,
+    or if every element is invalid, *default* is returned unchanged.  This
+    prevents a misconfigured ``triggers`` key from disabling all hooks.
+    """
     if not isinstance(val, list):
         _LOG.warning("config: triggers must be a list; using default %s", default)
         return list(default)

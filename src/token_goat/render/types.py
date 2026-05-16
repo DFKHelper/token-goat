@@ -1,3 +1,18 @@
+"""Data-transfer types for the stats renderer.
+
+All types are plain ``dataclasses``.  The rendering pipeline in
+``stats_renderer.py`` consumes a ``StatsData`` object populated by
+``cli_stats.py``.
+
+Dataclasses:
+- ``TotalStats``: Aggregate events/bytes/tokens for a period with optional
+  period-over-period deltas and sparkline data.
+- ``KindStat``: Per-event-kind breakdown (e.g. Read, image_shrink).
+- ``DayStat``: Daily activity row (date string, bytes, tokens, events).
+- ``ProjectStat``: Per-project breakdown row.
+- ``Sparklines``: Normalised 0–1 float lists for the three KPI mini-charts.
+- ``StatsData``: Top-level payload: totals + the three breakdown lists.
+"""
 from __future__ import annotations
 
 __all__ = ["DayStat", "KindStat", "ProjectStat", "Sparklines", "StatsData", "TotalStats"]

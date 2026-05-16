@@ -183,6 +183,17 @@ _BOOTED_FINGERPRINT = _package_fingerprint()
 
 
 def _setup_logging() -> None:
+    """Configure the worker's logger for the current process.
+
+    Attaches a daily rotating ``FileHandler`` (``logs/{YYYY-MM-DD}.log``) and,
+    when running interactively (``stderr.isatty()``), a ``StreamHandler`` for
+    console echo.  The detached daemon must not echo to stderr because that
+    file is the crash sink (``worker-stderr.log``); mixing routine INFO lines
+    with crash tracebacks makes post-mortem diagnosis much harder.
+
+    Idempotent: does nothing if handlers are already attached (guards against
+    double-initialisation when the function is called more than once in tests).
+    """
     paths.ensure_dirs()
     log_path = paths.logs_dir() / f"{datetime.now():%Y-%m-%d}.log"
     if not _LOG.handlers:

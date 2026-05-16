@@ -749,6 +749,12 @@ def index_health(project_hash: str) -> dict[str, object]:
             result["integrity_ok"] = integrity_row is not None and integrity_row[0] == "ok"
 
             def _count(table: str) -> int:
+                """Return the row count for *table* in the current project DB.
+
+                Raises ``ValueError`` for unknown table names (allowlist guard
+                against SQL injection since the name is interpolated directly
+                into the query via ``_KNOWN_PROJECT_TABLES``).
+                """
                 if table not in _KNOWN_PROJECT_TABLES:
                     raise ValueError(f"_count: unknown table name {table!r}")
                 row = conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()  # noqa: S608
