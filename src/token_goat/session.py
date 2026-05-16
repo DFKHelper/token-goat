@@ -109,12 +109,20 @@ class SessionCache:
             try:
                 raw_ranges = v.get("line_ranges", [])
                 line_ranges = [tuple(r) for r in raw_ranges if isinstance(r, (list, tuple)) and len(r) == 2]
+                # Coerce symbols_read entries to str and silently drop non-strings/non-scalars.
+                # Untrusted JSON could contain nested objects/lists; storing them as-is would
+                # allow arbitrary objects into the session cache and corrupt hint output.
+                raw_symbols = v.get("symbols_read", [])
+                symbols_read = [
+                    str(s) for s in raw_symbols
+                    if isinstance(s, (str, int, float)) and not isinstance(s, bool)
+                ]
                 files[k] = FileEntry(
                     rel_or_abs=str(v.get("rel_or_abs", k)),
                     last_read_ts=float(v.get("last_read_ts", now)),
                     read_count=max(0, int(v.get("read_count", 0))),
                     line_ranges=line_ranges,
-                    symbols_read=list(v.get("symbols_read", [])),
+                    symbols_read=symbols_read,
                 )
             except (TypeError, ValueError, KeyError):
                 skipped_file_entries += 1

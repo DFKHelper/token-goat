@@ -140,13 +140,48 @@ def _sidecar_path(cache_path: Path) -> Path:
     return cache_path.with_suffix(cache_path.suffix + ".meta")
 
 
+_MAX_SIDECAR_BYTES = 4096  # ETag + Last-Modified headers never need more than a few hundred bytes
+
+_ALLOWED_META_KEYS = frozenset(["etag", "last_modified"])
+_MAX_META_VALUE_LEN = 512  # per-value cap; ETags are typically <128 chars
+
+
 def _read_cache_meta(cache_path: Path) -> dict[str, str]:
-    """Read ETag/Last-Modified metadata for a cached file, or return {}."""
+    """Read ETag/Last-Modified metadata for a cached file, or return {}.
+
+    Guards against oversized or structurally invalid sidecar files that could
+    arise from a tampered cache directory:
+    - Rejects files larger than 4 KB (no legitimate sidecar needs more).
+    - Validates that the parsed result is a flat dict[str, str].
+    - Only returns keys from the known allowlist (etag, last_modified).
+    - Truncates values that exceed 512 characters.
+    """
     sidecar = _sidecar_path(cache_path)
     if not sidecar.exists():
         return {}
     try:
-        return json.loads(sidecar.read_text(encoding="utf-8"))
+        size = sidecar.stat().st_size
+        if size > _MAX_SIDECAR_BYTES:
+            _LOG.warning(
+                "cache metadata file too large (%d bytes); discarding: %s",
+                size,
+                sidecar.name,
+            )
+            return {}
+        raw = sidecar.read_text(encoding="utf-8")
+        parsed = json.loads(raw)
+        if not isinstance(parsed, dict):
+            _LOG.debug("cache metadata is not a dict; discarding: %s", sidecar.name)
+            return {}
+        result: dict[str, str] = {}
+        for k, v in parsed.items():
+            if k not in _ALLOWED_META_KEYS:
+                continue
+            if not isinstance(v, str):
+                _LOG.debug("cache metadata key %r has non-string value; skipping", k)
+                continue
+            result[k] = v[:_MAX_META_VALUE_LEN]
+        return result
     except Exception as e:  # noqa: BLE001
         _LOG.debug("corrupt cache metadata at %s; discarding: %s", sidecar.name, e)
         return {}

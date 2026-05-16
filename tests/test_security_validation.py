@@ -1,6 +1,10 @@
 """Regression tests for input validation and security vulnerabilities."""
 from __future__ import annotations
 
+import io
+import json
+import sys
+
 import pytest
 
 from token_goat import db, gdrive, session
@@ -529,3 +533,290 @@ class TestSymlinkTraversalPrevention:
         assert not _is_repo_container(container), (
             "symlinks to .git dirs should not trigger repo-container detection"
         )
+
+
+# ---------------------------------------------------------------------------
+# Regression: hooks_cli stdin size cap (iter-34)
+# ---------------------------------------------------------------------------
+
+
+class TestReadPayloadSizeCap:
+    """read_payload must reject stdin and file payloads that exceed 10 MB."""
+
+    def test_stdin_oversized_payload_returns_empty(self, monkeypatch):
+        """A payload larger than _MAX_PAYLOAD_BYTES on stdin must return {}."""
+        from token_goat.hooks_cli import _MAX_PAYLOAD_BYTES, read_payload
+
+        # Build a payload that is exactly one byte over the cap.
+        # We use a JSON string value to keep it syntactically valid up to the limit
+        # (the size check fires before parsing, so this is actually the easiest path).
+        oversized = "x" * (_MAX_PAYLOAD_BYTES + 1)
+        monkeypatch.setattr(sys, "stdin", io.StringIO(oversized))
+        result = read_payload()
+        assert result == {}, (
+            "read_payload must return {} when stdin payload exceeds _MAX_PAYLOAD_BYTES"
+        )
+
+    def test_stdin_at_limit_is_accepted(self, monkeypatch):
+        """A payload exactly at _MAX_PAYLOAD_BYTES on stdin must be processed normally."""
+        from token_goat.hooks_cli import _MAX_PAYLOAD_BYTES, read_payload
+
+        # A minimal JSON dict padded to exactly the cap using a key/value.
+        # We want: {"k": "vvv...vvv"} to hit exactly _MAX_PAYLOAD_BYTES.
+        prefix = '{"k": "'
+        suffix = '"}'
+        value_len = _MAX_PAYLOAD_BYTES - len(prefix) - len(suffix)
+        payload = prefix + "v" * value_len + suffix
+        assert len(payload) == _MAX_PAYLOAD_BYTES
+        monkeypatch.setattr(sys, "stdin", io.StringIO(payload))
+        result = read_payload()
+        assert isinstance(result, dict), (
+            "read_payload must return a dict for a payload exactly at the size cap"
+        )
+        assert "k" in result
+
+    def test_file_oversized_payload_returns_empty(self, tmp_path):
+        """A payload file larger than _MAX_PAYLOAD_BYTES must return {}."""
+        from token_goat.hooks_cli import _MAX_PAYLOAD_BYTES, read_payload
+
+        big_file = tmp_path / "payload.json"
+        big_file.write_bytes(b"x" * (_MAX_PAYLOAD_BYTES + 1))
+        result = read_payload(input_file=big_file)
+        assert result == {}, (
+            "read_payload must return {} when payload file exceeds _MAX_PAYLOAD_BYTES"
+        )
+
+    def test_normal_payload_is_accepted(self, tmp_path):
+        """A normal-sized JSON dict from a file must be returned as-is."""
+        from token_goat.hooks_cli import read_payload
+
+        payload = {"session_id": "abc123", "tool_name": "Read"}
+        p = tmp_path / "payload.json"
+        p.write_text(json.dumps(payload), encoding="utf-8")
+        result = read_payload(input_file=p)
+        assert result == payload
+
+
+# ---------------------------------------------------------------------------
+# Regression: webfetch sidecar meta validation (iter-34)
+# ---------------------------------------------------------------------------
+
+
+class TestReadCacheMeta:
+    """_read_cache_meta must enforce size cap and structural validation."""
+
+    def test_oversized_sidecar_returns_empty(self, tmp_path):
+        """A sidecar file exceeding 4 KB must be discarded and return {}."""
+        from token_goat.webfetch import _MAX_SIDECAR_BYTES, _read_cache_meta
+
+        cache_file = tmp_path / "abc123.png"
+        cache_file.touch()
+        sidecar = tmp_path / "abc123.png.meta"
+        # Write slightly over the limit
+        sidecar.write_bytes(b"x" * (_MAX_SIDECAR_BYTES + 1))
+        result = _read_cache_meta(cache_file)
+        assert result == {}, (
+            "_read_cache_meta must return {} when sidecar exceeds size cap"
+        )
+
+    def test_non_dict_sidecar_returns_empty(self, tmp_path):
+        """A sidecar containing a JSON array (not a dict) must be discarded."""
+        from token_goat.webfetch import _read_cache_meta
+
+        cache_file = tmp_path / "abc123.png"
+        cache_file.touch()
+        sidecar = tmp_path / "abc123.png.meta"
+        sidecar.write_text(json.dumps(["etag", "some-value"]), encoding="utf-8")
+        result = _read_cache_meta(cache_file)
+        assert result == {}, (
+            "_read_cache_meta must return {} for a non-dict sidecar"
+        )
+
+    def test_unknown_keys_are_stripped(self, tmp_path):
+        """Keys not in the allowlist must be stripped from the returned dict."""
+        from token_goat.webfetch import _read_cache_meta
+
+        cache_file = tmp_path / "abc123.png"
+        cache_file.touch()
+        sidecar = tmp_path / "abc123.png.meta"
+        sidecar.write_text(
+            json.dumps({"etag": '"abc"', "x-injected": "evil", "last_modified": "Mon, 01 Jan 2024 00:00:00 GMT"}),
+            encoding="utf-8",
+        )
+        result = _read_cache_meta(cache_file)
+        assert "x-injected" not in result, (
+            "_read_cache_meta must not return unknown keys"
+        )
+        assert result.get("etag") == '"abc"'
+        assert "last_modified" in result
+
+    def test_non_string_values_are_dropped(self, tmp_path):
+        """Non-string values for known keys must be dropped."""
+        from token_goat.webfetch import _read_cache_meta
+
+        cache_file = tmp_path / "abc123.png"
+        cache_file.touch()
+        sidecar = tmp_path / "abc123.png.meta"
+        sidecar.write_text(
+            json.dumps({"etag": 12345, "last_modified": None}),
+            encoding="utf-8",
+        )
+        result = _read_cache_meta(cache_file)
+        assert result == {}, (
+            "_read_cache_meta must drop entries whose values are not strings"
+        )
+
+    def test_oversized_value_is_truncated(self, tmp_path):
+        """Values exceeding _MAX_META_VALUE_LEN must be truncated, not rejected."""
+        from token_goat.webfetch import _MAX_META_VALUE_LEN, _read_cache_meta
+
+        long_etag = "a" * (_MAX_META_VALUE_LEN + 100)
+        cache_file = tmp_path / "abc123.png"
+        cache_file.touch()
+        sidecar = tmp_path / "abc123.png.meta"
+        sidecar.write_text(json.dumps({"etag": long_etag}), encoding="utf-8")
+        result = _read_cache_meta(cache_file)
+        assert "etag" in result
+        assert len(result["etag"]) == _MAX_META_VALUE_LEN, (
+            "_read_cache_meta must truncate oversized values to _MAX_META_VALUE_LEN"
+        )
+
+    def test_valid_meta_roundtrips(self, tmp_path):
+        """A valid etag + last_modified sidecar must be returned unchanged."""
+        from token_goat.webfetch import _read_cache_meta
+
+        meta = {"etag": '"abc123"', "last_modified": "Mon, 01 Jan 2024 00:00:00 GMT"}
+        cache_file = tmp_path / "abc123.png"
+        cache_file.touch()
+        sidecar = tmp_path / "abc123.png.meta"
+        sidecar.write_text(json.dumps(meta), encoding="utf-8")
+        result = _read_cache_meta(cache_file)
+        assert result == meta
+
+
+# ---------------------------------------------------------------------------
+# Regression: session.py symbols_read coercion (iter-34)
+# ---------------------------------------------------------------------------
+
+
+class TestSessionSymbolsReadCoercion:
+    """SessionCache.from_dict must coerce symbols_read to list[str] and reject non-scalars."""
+
+    def test_non_string_symbols_are_dropped(self):
+        """Nested objects and lists in symbols_read must be silently dropped."""
+        from token_goat.session import SessionCache
+
+        raw = {
+            "session_id": "test-session-coerce",
+            "started_ts": 0.0,
+            "last_activity_ts": 0.0,
+            "files": {
+                "src/foo.py": {
+                    "rel_or_abs": "src/foo.py",
+                    "last_read_ts": 0.0,
+                    "read_count": 1,
+                    "line_ranges": [],
+                    # Inject a dict and a list alongside a valid string
+                    "symbols_read": ["valid_symbol", {"inject": "evil"}, [1, 2, 3], None],
+                }
+            },
+            "greps": [],
+            "edited_files": {},
+        }
+        cache = SessionCache.from_dict(raw)
+        entry = cache.files.get("src/foo.py")
+        assert entry is not None
+        assert entry.symbols_read == ["valid_symbol"], (
+            "Only plain string symbols must survive from_dict; dicts, lists, and None must be dropped"
+        )
+
+    def test_numeric_symbols_are_coerced_to_string(self):
+        """Integer and float entries in symbols_read must be coerced to str."""
+        from token_goat.session import SessionCache
+
+        raw = {
+            "session_id": "test-session-coerce-nums",
+            "started_ts": 0.0,
+            "last_activity_ts": 0.0,
+            "files": {
+                "src/bar.py": {
+                    "rel_or_abs": "src/bar.py",
+                    "last_read_ts": 0.0,
+                    "read_count": 1,
+                    "line_ranges": [],
+                    "symbols_read": [42, 3.14, "real_func"],
+                }
+            },
+            "greps": [],
+            "edited_files": {},
+        }
+        cache = SessionCache.from_dict(raw)
+        entry = cache.files.get("src/bar.py")
+        assert entry is not None
+        assert "42" in entry.symbols_read
+        assert "3.14" in entry.symbols_read
+        assert "real_func" in entry.symbols_read
+
+    def test_bool_symbols_are_dropped(self):
+        """Boolean entries in symbols_read must be dropped (booleans are a subclass of int)."""
+        from token_goat.session import SessionCache
+
+        raw = {
+            "session_id": "test-session-coerce-bool",
+            "started_ts": 0.0,
+            "last_activity_ts": 0.0,
+            "files": {
+                "src/baz.py": {
+                    "rel_or_abs": "src/baz.py",
+                    "last_read_ts": 0.0,
+                    "read_count": 1,
+                    "line_ranges": [],
+                    "symbols_read": [True, False, "legit"],
+                }
+            },
+            "greps": [],
+            "edited_files": {},
+        }
+        cache = SessionCache.from_dict(raw)
+        entry = cache.files.get("src/baz.py")
+        assert entry is not None
+        assert "True" not in entry.symbols_read
+        assert "False" not in entry.symbols_read
+        assert "legit" in entry.symbols_read
+
+
+# ---------------------------------------------------------------------------
+# Regression: bridges.py _load_json_config size cap (iter-34)
+# ---------------------------------------------------------------------------
+
+
+class TestLoadJsonConfig:
+    """_load_json_config must enforce size cap and require a top-level dict."""
+
+    def test_oversized_config_raises_value_error(self, tmp_path):
+        """A config file exceeding 1 MB must raise ValueError."""
+        from token_goat.bridges import _MAX_CONFIG_BYTES, _load_json_config
+
+        big = tmp_path / "openclaw.json"
+        big.write_bytes(b"x" * (_MAX_CONFIG_BYTES + 1))
+        with pytest.raises(ValueError, match="too large"):
+            _load_json_config(big)
+
+    def test_non_dict_json_raises_json_decode_error(self, tmp_path):
+        """A config file containing a JSON array must raise JSONDecodeError."""
+        from token_goat.bridges import _load_json_config
+
+        cfg = tmp_path / "openclaw.json"
+        cfg.write_text(json.dumps([1, 2, 3]), encoding="utf-8")
+        with pytest.raises(json.JSONDecodeError):
+            _load_json_config(cfg)
+
+    def test_valid_config_is_returned(self, tmp_path):
+        """A valid JSON object config must be returned as a dict."""
+        from token_goat.bridges import _load_json_config
+
+        payload = {"plugins": {"entries": {}}}
+        cfg = tmp_path / "openclaw.json"
+        cfg.write_text(json.dumps(payload), encoding="utf-8")
+        result = _load_json_config(cfg)
+        assert result == payload
