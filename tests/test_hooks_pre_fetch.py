@@ -3,15 +3,10 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock, patch
 
+from hook_helpers import assert_continue as _assert_continue
+from hook_helpers import assert_deny as _assert_deny
+
 from token_goat import gdrive, hooks_cli
-
-
-def _assert_continue(result: dict) -> None:
-    """Assert continue:True, tolerating diagnostic fields added by dispatch."""
-    assert result.get("continue") is True
-
-
-
 
 # ---------------------------------------------------------------------------
 # 10. Non-Drive tool passes through unchanged
@@ -84,9 +79,8 @@ class TestPreFetchDriveWithCreds:
         with patch("google.auth.default", return_value=(fake_creds, "proj")):
             result = hooks_cli.pre_fetch(payload)
 
-        assert result["continue"] is True
+        _assert_deny(result)
         hso = result.get("hookSpecificOutput", {})
-        assert hso.get("permissionDecision") == "deny"
         assert "token-goat gdrive-fetch testfile123" in hso.get("additionalContext", "")
 
     def test_read_file_tool_with_file_id_gets_denied(self, tmp_data_dir):
@@ -98,9 +92,8 @@ class TestPreFetchDriveWithCreds:
         with patch("google.auth.default", return_value=(fake_creds, "proj")):
             result = hooks_cli.pre_fetch(payload)
 
-        assert result["continue"] is True
+        _assert_deny(result)
         hso = result.get("hookSpecificOutput", {})
-        assert hso.get("permissionDecision") == "deny"
         assert "token-goat gdrive-fetch readfile456" in hso.get("additionalContext", "")
 
     def test_additional_context_mentions_cached_path_hint(self, tmp_data_dir):

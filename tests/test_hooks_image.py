@@ -4,15 +4,13 @@ from __future__ import annotations
 import random
 from pathlib import Path
 
+from hook_helpers import assert_continue as _assert_continue
+
 from token_goat import hooks_cli, image_shrink
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
-
-def _assert_continue(result: dict) -> None:
-    """Assert continue:True, tolerating diagnostic fields added by dispatch."""
-    assert result.get("continue") is True
 
 
 def _make_large_jpeg(tmp_path: Path) -> Path:

@@ -1,6 +1,6 @@
 """Shared constants and micro-helpers used by all hook modules.
 
-Centralises the three most-repeated patterns across the hook layer:
+Centralises the five most-repeated patterns across the hook layer:
 
 * ``CONTINUE`` — the canonical ``{"continue": True}`` response dict.  Using the
   constant instead of an inline literal prevents typos, makes intent explicit,
@@ -17,7 +17,14 @@ Centralises the three most-repeated patterns across the hook layer:
 """
 from __future__ import annotations
 
-__all__ = ["CONTINUE", "LOG", "deny_redirect", "get_tool_input"]
+__all__ = [
+    "CONTINUE",
+    "LOG",
+    "deny_redirect",
+    "get_tool_input",
+    "pre_tool_use_with_context",
+    "pre_tool_use_with_update",
+]
 
 import logging
 from typing import Any
@@ -78,5 +85,70 @@ def deny_redirect(reason: str, context: str) -> dict[str, Any]:
             "permissionDecision": "deny",
             "permissionDecisionReason": reason,
             "additionalContext": context,
+        },
+    }
+
+
+def pre_tool_use_with_context(additional_context: str) -> dict[str, Any]:
+    """Build a PreToolUse response that injects an ``additionalContext`` hint.
+
+    Used when the hook wants to leave the tool call unchanged but inject a
+    message into the agent's context (e.g. session-hint re-read warnings).
+
+    Replaces the repeated inline literal in :func:`hooks_read.pre_read`::
+
+        return {
+            "continue": True,
+            "hookSpecificOutput": {
+                "hookEventName": "PreToolUse",
+                "additionalContext": str(hint),
+            },
+        }
+
+    Args:
+        additional_context: The message to inject (Markdown OK).
+
+    Returns:
+        A fully-formed hook response dict with ``continue: true`` and the hint.
+    """
+    return {
+        "continue": True,
+        "hookSpecificOutput": {
+            "hookEventName": "PreToolUse",
+            "additionalContext": additional_context,
+        },
+    }
+
+
+def pre_tool_use_with_update(updated_input: dict[str, Any], additional_context: str) -> dict[str, Any]:
+    """Build a PreToolUse response that rewrites the tool input and injects a context hint.
+
+    Used when the hook wants to redirect the tool call to a different target
+    (e.g. image shrinking replaces the file path with a shrunken copy).
+
+    Replaces the repeated inline literal in :func:`hooks_read._try_shrink_image`::
+
+        return {
+            "continue": True,
+            "hookSpecificOutput": {
+                "hookEventName": "PreToolUse",
+                "updatedInput": shrink_response,
+                "additionalContext": "...",
+            },
+        }
+
+    Args:
+        updated_input:      The modified ``tool_input`` dict to hand back to the harness.
+        additional_context: Message explaining the redirect (Markdown OK).
+
+    Returns:
+        A fully-formed hook response dict with ``continue: true``, updated input, and the hint.
+    """
+    return {
+        "continue": True,
+        "hookSpecificOutput": {
+            "hookEventName": "PreToolUse",
+            "updatedInput": updated_input,
+            "additionalContext": additional_context,
         },
     }

@@ -5,14 +5,9 @@ import json
 from pathlib import Path
 from unittest.mock import patch
 
+from hook_helpers import assert_continue as _assert_continue
+
 from token_goat import hooks_edit, paths, session
-
-
-def _assert_continue(result: dict) -> None:
-    """Assert continue:True, tolerating diagnostic fields added by dispatch."""
-    assert result.get("continue") is True
-
-
 
 # ---------------------------------------------------------------------------
 # _nudge_worker_if_down

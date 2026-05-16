@@ -1,15 +1,13 @@
 """Tests for compaction assist: manifest generation, config, and pre_compact hook."""
 from __future__ import annotations
 
+from hook_helpers import assert_continue as _assert_continue
+
 from token_goat import compact, config, hooks_cli, session
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
-
-def _assert_continue(result: dict) -> None:
-    """Assert continue:True, tolerating diagnostic fields added by dispatch."""
-    assert result.get("continue") is True
 
 
 def _populate_session(session_id: str, *, files: int = 3, greps: int = 2, edits: int = 1) -> None:
