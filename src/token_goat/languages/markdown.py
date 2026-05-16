@@ -60,6 +60,6 @@ def extract(source: bytes, rel_path: str) -> tuple[list[Symbol], list[Ref], list
             sec.end_line = end_line
 
         return symbols, [], [], sections
-    except Exception:  # noqa: BLE001
-        _LOG.debug("parse failed for markdown source: %s", rel_path, exc_info=True)
+    except (re.error, UnicodeDecodeError, AttributeError, IndexError) as exc:
+        _LOG.debug("parse failed for markdown source %s: %s", rel_path, exc, exc_info=True)
         return [], [], [], []

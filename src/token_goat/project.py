@@ -62,7 +62,10 @@ def make_project_at(root: Path) -> Project:
     non-existent paths, which would cause the indexer to crawl nothing useful
     while silently succeeding.
     """
-    canonical = canonicalize(root)
+    try:
+        canonical = canonicalize(root)
+    except OSError as exc:
+        raise ValueError(f"make_project_at: could not resolve path {root!r}: {exc}") from exc
     if not canonical.is_dir():
         raise ValueError(f"make_project_at: path is not a directory: {canonical}")
     return Project(root=canonical, hash=project_hash(canonical), marker="manual")
@@ -131,7 +134,11 @@ def find_project(cwd: Path | str) -> Project | None:
     Returns None if none found (e.g., user is in C:\Projects\ with 100 sibling dirs).
     """
     t0 = time.monotonic()
-    p = canonicalize(Path(cwd))
+    try:
+        p = canonicalize(Path(cwd))
+    except (OSError, ValueError) as exc:
+        _LOG.debug("find_project: could not canonicalize cwd %r: %s", cwd, exc)
+        return None
     levels_walked = 0
     for current in (p, *p.parents):
         for marker in PROJECT_MARKERS:

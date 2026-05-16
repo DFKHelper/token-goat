@@ -74,7 +74,7 @@ def _setup_logging() -> None:
         paths.roll_log_if_oversized(log_path, paths.LOG_FILE_MAX_BYTES)
         handler: logging.Handler = logging.FileHandler(log_path, encoding="utf-8")
         handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s"))
-    except (OSError, PermissionError):
+    except OSError:
         handler = logging.NullHandler()
     _LOG.addHandler(handler)
     _LOG.setLevel(logging.INFO)

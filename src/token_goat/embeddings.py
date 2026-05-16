@@ -115,7 +115,13 @@ def _get_model(model_name: str = DEFAULT_MODEL) -> TextEmbedding:
         model = TextEmbedding(model_name=model_name, cache_dir=str(paths.models_dir()))
         _MODEL_CACHE[model_name] = model
         return model
-    except Exception as e:  # broad — fastembed can throw many things on bad env
+    except ImportError as e:
+        raise EmbeddingsUnavailable(f"fastembed not installed: {e}") from e
+    except (OSError, RuntimeError, ValueError) as e:
+        _LOG.debug("fastembed model load failed for %r: %s", model_name, e, exc_info=True)
+        raise EmbeddingsUnavailable(f"fastembed model load failed: {e}") from e
+    except Exception as e:  # noqa: BLE001 — fastembed/ONNX can raise many undocumented types
+        _LOG.debug("fastembed unexpected error for %r: %s", model_name, e, exc_info=True)
         raise EmbeddingsUnavailable(f"fastembed unavailable: {e}") from e
 
 
@@ -154,15 +160,26 @@ def embed_texts(
     model = _get_model(model_name)
     expected_dim = DEFAULT_DIM if model_name == DEFAULT_MODEL else None
     vecs: list[list[float]] = []
-    for arr in model.embed(list(texts)):  # type: ignore[union-attr]
-        vec = arr.tolist()
-        if expected_dim is not None and len(vec) != expected_dim:
-            raise EmbeddingsUnavailable(
-                f"Dimension mismatch: model {model_name!r} returned {len(vec)}-dim vector, "
-                f"expected {expected_dim}. The sqlite-vec index uses {expected_dim}-dim embeddings. "
-                "Re-index with a consistent model."
-            )
-        vecs.append(vec)
+    try:
+        for arr in model.embed(list(texts)):  # type: ignore[union-attr]
+            try:
+                vec = arr.tolist()
+            except AttributeError as e:
+                raise EmbeddingsUnavailable(
+                    f"embed() returned non-array object {type(arr).__name__!r}: {e}"
+                ) from e
+            if expected_dim is not None and len(vec) != expected_dim:
+                raise EmbeddingsUnavailable(
+                    f"Dimension mismatch: model {model_name!r} returned {len(vec)}-dim vector, "
+                    f"expected {expected_dim}. The sqlite-vec index uses {expected_dim}-dim embeddings. "
+                    "Re-index with a consistent model."
+                )
+            vecs.append(vec)
+    except EmbeddingsUnavailable:
+        raise
+    except (RuntimeError, ValueError, TypeError) as e:
+        _LOG.debug("embed_texts: embedding iteration failed: %s", e, exc_info=True)
+        raise EmbeddingsUnavailable(f"embed() iteration failed: {e}") from e
     return vecs
 
 

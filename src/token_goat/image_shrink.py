@@ -225,9 +225,13 @@ def shrink(src_path: Path) -> Path | None:
             elapsed,
         )
         return final_path
-    except Exception as e:  # noqa: BLE001
+    except (OSError, MemoryError, ValueError, TypeError) as e:
         elapsed = time.time() - t0
-        _LOG.warning("shrink failed for %s: %s (%.3fs)", src_path, e, elapsed)
+        _LOG.warning("shrink failed for %s: %s (%.3fs)", src_path, e, elapsed, exc_info=True)
+        return None
+    except Exception as e:  # noqa: BLE001 — PIL raises many undocumented exception subclasses
+        elapsed = time.time() - t0
+        _LOG.warning("shrink failed for %s (unexpected %s): %s (%.3fs)", src_path, type(e).__name__, e, elapsed, exc_info=True)
         return None
 
 
@@ -270,8 +274,10 @@ def stats_for(src_path: Path, shrunken_path: Path) -> ImageStats:
                 orig_w, orig_h = img.size
             with Image.open(shrunken_path) as img:
                 out_w, out_h = img.size
-        except Exception as exc:  # noqa: BLE001
+        except (OSError, MemoryError, ValueError) as exc:
             _LOG.debug("gather_stats: could not read image dimensions for %s: %s", src_path.name, exc)
+        except Exception as exc:  # noqa: BLE001 — PIL raises many undocumented exception subclasses
+            _LOG.debug("gather_stats: unexpected error reading dimensions for %s (%s): %s", src_path.name, type(exc).__name__, exc)
 
         return ImageStats(
             src_bytes=src_size,
