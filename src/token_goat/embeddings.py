@@ -304,6 +304,7 @@ def index_project_embeddings(
     n_files = 0
     n_chunks_new = 0
     n_chunks_skipped = 0
+    _LOG.info("starting embedding index for project %s (model=%s)", project.hash[:8], model_name)
 
     with (
         db.project_writer_lock(project.hash, timeout_sec=30.0),
@@ -341,7 +342,8 @@ def index_project_embeddings(
                 new_chunks.append((ch, sha))
 
         # Embed + persist in batches
-        _LOG.debug("processing %d new chunks in batches of %d", len(new_chunks), batch_size)
+        total_batches = (len(new_chunks) + batch_size - 1) // batch_size
+        _LOG.info("processing %d new chunks in %d batches (project=%s)", len(new_chunks), total_batches, project.hash[:8])
         n_stale_deleted = 0
         for i in range(0, len(new_chunks), batch_size):
             batch = new_chunks[i : i + batch_size]
@@ -349,9 +351,10 @@ def index_project_embeddings(
             batch_t0 = time.time()
             vecs = embed_texts(texts, model_name=model_name)
             batch_elapsed = time.time() - batch_t0
-            _LOG.debug("embedded batch %d/%d: %d texts in %.3fs",
-                       i // batch_size + 1, (len(new_chunks) + batch_size - 1) // batch_size,
-                       len(texts), batch_elapsed)
+            batch_num = i // batch_size + 1
+            _LOG.info("embedded batch %d/%d: %d texts in %.3fs (project=%s)",
+                       batch_num, total_batches,
+                       len(texts), batch_elapsed, project.hash[:8])
             # Batch-delete any stale chunks at the same (file, start, end) positions
             # before reinserting.  Doing one DELETE…IN per batch instead of
             # SELECT+DELETE+DELETE per chunk eliminates the N+1 pattern.
@@ -410,8 +413,8 @@ def index_project_embeddings(
 
     duration = time.time() - t0
     _LOG.info(
-        "embeddings complete: files=%d chunks_new=%d chunks_skipped=%d stale_deleted=%d duration=%.2fs",
-        n_files, n_chunks_new, n_chunks_skipped, n_stale_deleted, duration,
+        "embeddings complete: project=%s files=%d chunks_new=%d chunks_skipped=%d stale_deleted=%d duration=%.2fs",
+        project.hash[:8], n_files, n_chunks_new, n_chunks_skipped, n_stale_deleted, duration,
     )
     return EmbeddingsResult(
         files_visited=n_files,
