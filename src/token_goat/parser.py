@@ -57,6 +57,11 @@ LANG_BY_EXT: dict[str, str] = {
     ".json": "json",
 }
 
+# Frozenset of all known extensions (already lowercase).  Used by iter_source_files
+# for a fast O(1) membership test before the LANG_BY_EXT dict lookup, avoiding a
+# .lower() string allocation on every file whose extension is not in the map.
+_KNOWN_EXTENSIONS: frozenset[str] = frozenset(LANG_BY_EXT)
+
 # Directories that should never be indexed
 SKIP_DIRS = {
     "node_modules", ".git", ".next", "dist", "build", ".venv", "venv",
@@ -313,7 +318,12 @@ def iter_source_files(project: Project) -> Iterable[Path]:
             if name in SKIP_DIRS:
                 continue
             path = base / name
-            if path.suffix.lower() not in LANG_BY_EXT:
+            # Fast membership test against the frozenset avoids a .lower()
+            # allocation for each file whose suffix is already lowercase (the
+            # common case on Linux/macOS).  Fall back to lowering only when the
+            # suffix is not found in the fast path (mixed-case extension on Windows).
+            suffix = path.suffix
+            if suffix not in _KNOWN_EXTENSIONS and suffix.lower() not in _KNOWN_EXTENSIONS:
                 continue
             # Reject symlinks whose resolved target escapes the project root.
             # os.walk does not follow symlink *directories* by default, but it
