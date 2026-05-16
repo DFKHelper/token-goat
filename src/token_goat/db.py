@@ -13,11 +13,6 @@ if TYPE_CHECKING:
     from collections.abc import Iterator
     from pathlib import Path
 
-try:
-    import sqlite_vec
-except ModuleNotFoundError:
-    sqlite_vec = None  # type: ignore[assignment]
-
 from . import paths
 
 SCHEMA_VERSION = 2
@@ -133,11 +128,12 @@ def _connect(db_path: Path, *, load_vec: bool = True) -> sqlite3.Connection:
         raise
     if load_vec:
         try:
+            import sqlite_vec  # noqa: PLC0415
             conn.enable_load_extension(True)
             sqlite_vec.load(conn)
             conn.enable_load_extension(False)
             _LOG.debug("sqlite-vec loaded for %s", db_path.name)
-        except (sqlite3.OperationalError, AttributeError) as e:
+        except (sqlite3.OperationalError, AttributeError, ModuleNotFoundError) as e:
             _LOG.warning("sqlite-vec unavailable: %s", e)
     _LOG.debug("connection opened: %s", db_path.name)
     return conn

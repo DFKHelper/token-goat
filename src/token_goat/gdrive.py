@@ -1,6 +1,7 @@
 """Google Drive image fetcher: downloads + shrinks + caches."""
 from __future__ import annotations
 
+import contextlib
 import io
 import logging
 import os
@@ -49,7 +50,6 @@ def _write_creds_secure(path: Path, content: str) -> None:
             raise
         tmp.replace(path)
         # Ensure mode on the destination (replace may inherit umask on some FSes)
-        import contextlib  # noqa: PLC0415
         with contextlib.suppress(OSError):
             os.chmod(path, 0o600)
     else:
