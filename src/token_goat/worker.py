@@ -169,7 +169,8 @@ def _package_fingerprint() -> str | None:
             for st in (py.stat(),)
         ]
         return hashlib.sha1("\n".join(entries).encode("utf-8")).hexdigest()
-    except Exception:  # noqa: BLE001
+    except Exception as e:  # noqa: BLE001
+        _LOG.debug("package fingerprint unavailable (falling back to version-string check): %s", e)
         return None
 
 
@@ -830,9 +831,12 @@ def _reap_hung_worker() -> bool:
         try:
             proc.wait(timeout=3)
         except psutil.TimeoutExpired:
+            _LOG.warning("hung worker pid=%s did not exit after SIGTERM; sending SIGKILL", pid)
             proc.kill()
-    except (psutil.NoSuchProcess, psutil.AccessDenied):
-        pass
+    except psutil.NoSuchProcess:
+        _LOG.debug("hung worker pid=%s already gone by the time we tried to reap it", pid)
+    except psutil.AccessDenied as e:
+        _LOG.warning("reap hung worker pid=%s: access denied — %s", pid, e)
     return True
 
 
@@ -853,7 +857,8 @@ def ensure_running() -> int | None:
     if is_worker_alive():
         try:
             return int(paths.worker_pid_path().read_text(encoding="utf-8").strip())
-        except (OSError, ValueError):
+        except (OSError, ValueError) as e:
+            _LOG.debug("worker is alive but pid file unreadable: %s", e)
             return None
 
     # No *healthy* worker. Reap a hung one if present; otherwise, if a live

@@ -619,12 +619,14 @@ def project_writer_lock(project_hash: str, timeout_sec: float = 5.0) -> Iterator
                     return False
                 # Stale — remove and fall through to create
                 lock_path.unlink(missing_ok=True)
-            except OSError:
+            except OSError as e:
+                _LOG.debug("lock read/remove failed for %s: %s", lock_path.name, e)
                 return False
         try:
             lock_path.write_text(f"{pid}\n{time.time()}", encoding="utf-8")
             return True
-        except OSError:
+        except OSError as e:
+            _LOG.debug("lock write failed for %s: %s", lock_path.name, e)
             return False
 
     acquired = False
@@ -687,7 +689,10 @@ def project_has_files(project_hash: str) -> bool:
         with open_project_readonly(project_hash) as conn:
             row = conn.execute("SELECT 1 FROM files LIMIT 1").fetchone()
             return row is not None
-    except (FileNotFoundError, sqlite3.Error, OSError):
+    except FileNotFoundError:
+        return False  # DB does not exist yet — normal for un-indexed projects
+    except (sqlite3.Error, OSError) as e:
+        _LOG.debug("project_is_indexed(%s…) failed: %s", project_hash[:8], e)
         return False
 
 
