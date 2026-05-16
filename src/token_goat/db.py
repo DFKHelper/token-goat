@@ -50,6 +50,21 @@ class VecExtensionUnavailable(DBError):
 # Connection management
 # ---------------------------------------------------------------------------
 
+def _close_conn(conn: sqlite3.Connection | None) -> None:
+    """Close *conn*, silently suppressing any exception.
+
+    Accepts ``None`` so callers can safely pass a connection variable that may
+    not have been assigned yet (e.g. when ``sqlite3.connect()`` itself raises
+    before the local is bound).  Repeated pattern: every context-manager finally
+    block needs to close the connection without surfacing errors (e.g.
+    already-closed, OS-level errors on Windows when the file is locked).
+    """
+    if conn is None:
+        return
+    with contextlib.suppress(Exception):
+        conn.close()
+
+
 def _apply_connection_pragmas(conn: sqlite3.Connection, *, suppress: bool = False) -> None:
     """Apply the standard read/write PRAGMA settings to *conn*.
 
@@ -100,8 +115,7 @@ def _connect(db_path: Path, *, load_vec: bool = True) -> sqlite3.Connection:
             db_path.name,
             e,
         )
-        with contextlib.suppress(Exception):
-            conn.close()
+        _close_conn(conn)
         uri = str(db_path.as_uri()) + "?mode=ro&immutable=1"
         conn = sqlite3.connect(uri, uri=True, isolation_level=None, timeout=10.0)
         conn.row_factory = sqlite3.Row
@@ -438,8 +452,7 @@ def open_global() -> Iterator[sqlite3.Connection]:
         yield conn
     finally:
         _LOG.debug("closing global db")
-        with contextlib.suppress(Exception):
-            conn.close()
+        _close_conn(conn)
 
 
 # Maximum age (seconds) of a writer lock before it is treated as stale.
@@ -492,8 +505,7 @@ def open_project(project_hash: str) -> Iterator[sqlite3.Connection]:
         yield conn
     finally:
         _LOG.debug("closing project db: %s", project_hash)
-        with contextlib.suppress(Exception):
-            conn.close()
+        _close_conn(conn)
 
 
 # ---------------------------------------------------------------------------
@@ -513,6 +525,7 @@ def _connect_readonly(db_path: Path) -> sqlite3.Connection:
     connect-time so the fallback can take over — otherwise the failure happens
     later inside the caller's query.
     """
+    conn: sqlite3.Connection | None = None
     uri_ro = str(db_path.as_uri()) + "?mode=ro"
     try:
         conn = sqlite3.connect(uri_ro, uri=True, isolation_level=None, timeout=10.0)
@@ -527,8 +540,7 @@ def _connect_readonly(db_path: Path) -> sqlite3.Connection:
             db_path.name,
             exc,
         )
-        with contextlib.suppress(Exception):
-            conn.close()  # type: ignore[possibly-undefined]
+        _close_conn(conn)
         uri_imm = str(db_path.as_uri()) + "?mode=ro&immutable=1"
         conn = sqlite3.connect(uri_imm, uri=True, isolation_level=None, timeout=10.0)
         conn.row_factory = sqlite3.Row
@@ -552,8 +564,7 @@ def open_global_readonly() -> Iterator[sqlite3.Connection]:
     try:
         yield conn
     finally:
-        with contextlib.suppress(Exception):
-            conn.close()
+        _close_conn(conn)
 
 
 @contextlib.contextmanager
@@ -570,8 +581,7 @@ def open_project_readonly(project_hash: str) -> Iterator[sqlite3.Connection]:
     try:
         yield conn
     finally:
-        with contextlib.suppress(Exception):
-            conn.close()
+        _close_conn(conn)
 
 
 # ---------------------------------------------------------------------------

@@ -44,14 +44,8 @@ def _parse_use_target(source_line: str) -> str:
 
 def extract(source: bytes, rel_path: str) -> tuple[list[Symbol], list[Ref], list[ImpExp], list[Section]]:
     """Extract symbols, refs, and imports from a Rust file."""
-    text = source.decode("utf-8", errors="replace")
-    tlp, cfg = common.make_process_config(language="rust")
-    if tlp is None:
-        return [], [], [], []
-    try:
-        result = tlp.process(text, cfg)
-    except Exception:  # noqa: BLE001
-        _LOG.debug("tree-sitter parse failed for rust source: %s", rel_path, exc_info=True)
+    result, _text = common.parse_source(source, "rust", rel_path, _LOG)
+    if result is None:
         return [], [], [], []
 
     symbols: list[Symbol] = []

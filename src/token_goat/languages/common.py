@@ -88,6 +88,61 @@ def get_tlp() -> types.ModuleType | None:
     return tlp
 
 
+def parse_source(
+    source: bytes,
+    language: str,
+    rel_path: str,
+    log: Any,
+    **process_config_kwargs: Any,
+) -> tuple[Any, str] | tuple[None, None]:
+    """Decode *source* and run tree-sitter processing, returning ``(result, text)``.
+
+    Consolidates the repeated preamble found in every tree-sitter language
+    adapter::
+
+        text = source.decode("utf-8", errors="replace")
+        tlp, cfg = common.make_process_config(language=language)
+        if tlp is None:
+            return [], [], [], []
+        try:
+            result = tlp.process(text, cfg)
+        except Exception:
+            _LOG.debug(...)
+            return [], [], [], []
+
+    Returns ``(result, text)`` on success, or ``(None, None)`` when tree-sitter
+    is unavailable or parsing fails.  Callers should guard with::
+
+        result, text = common.parse_source(source, "go", rel_path, _LOG)
+        if result is None:
+            return [], [], [], []
+
+    Parameters
+    ----------
+    source:
+        Raw file bytes to decode and parse.
+    language:
+        Language name forwarded to :func:`make_process_config`.
+    rel_path:
+        Relative file path used in the debug log message on parse failure.
+    log:
+        Logger instance for the calling module.
+    **process_config_kwargs:
+        Extra keyword arguments forwarded to :func:`make_process_config`
+        (e.g. ``exports=True`` for TypeScript).
+    """
+    text = source.decode("utf-8", errors="replace")
+    tlp, cfg = make_process_config(language=language, **process_config_kwargs)
+    if tlp is None:
+        return None, None
+    try:
+        result = tlp.process(text, cfg)
+    except Exception:  # noqa: BLE001
+        log.debug("tree-sitter parse failed for %s source: %s", language, rel_path, exc_info=True)
+        return None, None
+    return result, text
+
+
 def make_process_config(
     language: str,
     structure: bool = True,

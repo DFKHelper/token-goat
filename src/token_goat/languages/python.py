@@ -55,14 +55,8 @@ def _parse_import_source(source_line: str) -> list[str]:
 
 def extract(source: bytes, rel_path: str) -> tuple[list[Symbol], list[Ref], list[ImpExp], list[Section]]:
     """Extract symbols, refs, and imports from a Python file."""
-    text = source.decode("utf-8", errors="replace")
-    tlp, cfg = common.make_process_config(language="python")
-    if tlp is None:
-        return [], [], [], []
-    try:
-        result = tlp.process(text, cfg)
-    except Exception:  # noqa: BLE001
-        _LOG.debug("tree-sitter parse failed for python source: %s", rel_path, exc_info=True)
+    result, _text = common.parse_source(source, "python", rel_path, _LOG)
+    if result is None:
         return [], [], [], []
 
     symbols: list[Symbol] = []
