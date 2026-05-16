@@ -67,6 +67,15 @@ def _extract_const_var(source: bytes) -> list[Symbol]:
     both ``const`` and ``var`` share the same scanning logic, delegated to
     ``_scan_decl_block`` for block bodies.
     """
+    try:
+        return _extract_const_var_inner(source)
+    except (re.error, ValueError, IndexError) as exc:
+        _LOG.debug("_extract_const_var: parse error: %s", exc, exc_info=True)
+        return []
+
+
+def _extract_const_var_inner(source: bytes) -> list[Symbol]:
+    """Inner implementation of _extract_const_var; separated for testable error boundary."""
     symbols: list[Symbol] = []
     text = source.decode("utf-8", errors="replace")
     lines = text.splitlines()
