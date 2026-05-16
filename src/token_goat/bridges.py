@@ -486,10 +486,10 @@ def _check_openclaw_plugin() -> str:
     cfg_path = openclaw_config_path()
 
     file_status = _check_plugin_file(plugin_path)
-    # Pass through error/foreign-file states immediately — no registry check needed.
-    if file_status in ("present but not token-goat bridge", "error reading plugin file"):
+    # Pass through error/foreign-file states immediately — registry check not meaningful.
+    if file_status not in ("not installed", "installed"):
         return file_status
-    file_ok = file_status == "installed"
+    file_installed = file_status == "installed"
 
     registered = False
     if cfg_path.exists():
@@ -499,10 +499,10 @@ def _check_openclaw_plugin() -> str:
         except (json.JSONDecodeError, OSError) as e:
             _LOG.debug("openclaw.json read failed in check: %s", e)
 
-    if file_ok and registered:
+    if file_installed and registered:
         return "installed"
-    if file_ok:
+    if file_installed and not registered:
         return "file present but not registered in openclaw.json"
-    if registered:
+    if registered and not file_installed:
         return "registered in openclaw.json but plugin file missing"
     return "not installed"

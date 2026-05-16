@@ -62,7 +62,8 @@ def _format_ranges(ranges: list[tuple[int, int]]) -> str:
     shown = ranges[:_MAX_RANGES_PER_FILE]
     # Generator expression avoids building an intermediate list just to join.
     parts = ", ".join(str(start) if start == end else f"{start}-{end}" for start, end in shown)
-    overflow_suffix = f" +{total_ranges - _MAX_RANGES_PER_FILE} more" if total_ranges > _MAX_RANGES_PER_FILE else ""
+    hidden_count = total_ranges - _MAX_RANGES_PER_FILE
+    overflow_suffix = f" +{hidden_count} more" if hidden_count > 0 else ""
     return f"  lines {parts}{overflow_suffix}"
 
 
@@ -130,7 +131,9 @@ def _render(cache: SessionCache, session_id: str, max_tokens: int) -> tuple[str,
     when the cache has no meaningful data (nothing edited, no symbols accessed,
     no files read).
     """
-    # Return early if there is nothing meaningful to report
+    # Nothing to report when the session has no file activity at all.
+    # edited_files covers writes; files covers reads/greps — both empty means
+    # the manifest would be just the header, which isn't worth injecting.
     if not cache.edited_files and not cache.files:
         return "", 0
 
@@ -153,9 +156,11 @@ def _render(cache: SessionCache, session_id: str, max_tokens: int) -> tuple[str,
     # ── 1. Edited files — highest priority ────────────────────────────────────
     if cache.edited_files:
         sections.append("### Files Edited (preserve in summary)")
-        # Sort by edit count descending — operator.itemgetter avoids lambda
-        # object creation on each sort call and runs at C speed.
-        for path, count in sorted(cache.edited_files.items(), key=operator.itemgetter(1), reverse=True):
+        # Sort by edit count descending so the most-touched files appear first.
+        # itemgetter(1) selects the count from each (path, count) pair — faster
+        # than a lambda at C speed and avoids per-call closure allocation.
+        _by_edit_count = operator.itemgetter(1)
+        for path, count in sorted(cache.edited_files.items(), key=_by_edit_count, reverse=True):
             suffix = f"  ×{count}" if count > 1 else ""
             sections.append(f"- {_short_path(path)}{suffix}")
         sections.append("")
@@ -180,6 +185,8 @@ def _render(cache: SessionCache, session_id: str, max_tokens: int) -> tuple[str,
         sections.append("")
 
     result = "\n".join(sections).rstrip()
+    # Capture the count now — used in both the fast path (within budget) and
+    # the trim path below.  Naming it here keeps the two return sites consistent.
     files_with_symbols_count = len(files_with_symbols)
 
     if estimate_tokens(result) <= max_tokens:
