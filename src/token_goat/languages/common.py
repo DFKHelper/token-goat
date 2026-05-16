@@ -7,7 +7,7 @@ from collections.abc import Callable
 from typing import TYPE_CHECKING, Any, TypeAlias
 
 if TYPE_CHECKING:
-    from ..parser import Ref
+    from ..parser import ImpExp, Ref, Section, Symbol
 
 # Canonical kind string (e.g. "function", "class", "method", "const", "var")
 KindStr: TypeAlias = str
@@ -94,7 +94,7 @@ def make_process_config(
     imports: bool = True,
     exports: bool = False,
     symbols: bool = True,
-) -> tuple[Any, Any] | tuple[None, None]:
+) -> tuple[types.ModuleType, object] | tuple[None, None]:
     """Create a ProcessConfig for tree-sitter language pack processing.
 
     Extracted common pattern to avoid duplicating the ProcessConfig setup
@@ -179,7 +179,7 @@ def extract_refs_from_source(
 
 
 def make_add_symbol(
-    symbols: list[Any],
+    symbols: list[Symbol],
     seen_names: set[tuple[str, int]],
     source: bytes,
     language: str = "go",
@@ -246,7 +246,7 @@ def make_add_symbol(
 
 
 def add_imports(
-    imp_exp: list[Any],
+    imp_exp: list[ImpExp],
     imports: list[Any],
     extract_targets_fn: Callable[[object], str | list[str]],
 ) -> None:
@@ -278,7 +278,7 @@ def add_imports(
 
 
 def add_symbol_info(
-    symbols: list[Any],
+    symbols: list[Symbol],
     seen_names: set[tuple[str, int]],
     symbol_infos: list[Any],
     language: str = "go",
@@ -321,7 +321,7 @@ def add_symbol_info(
             )
 
 
-def _compute_section_end_lines(sections: list[Any], lines: list[str]) -> None:
+def _compute_section_end_lines(sections: list[Section], lines: list[str]) -> None:
     """Assign end_line to each Section based on the next section of equal or lesser level.
 
     Mutates sections in-place. 'lines' is used only to get the total line count (EOF).
