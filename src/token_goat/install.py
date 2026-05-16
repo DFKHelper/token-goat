@@ -190,8 +190,10 @@ def install_worker_task() -> tuple[bool, str]:
         )
         winreg.SetValueEx(key, TASK_WORKER, 0, winreg.REG_SZ, cmd)
         winreg.CloseKey(key)
+        _LOG.info("HKCU Run key set: key=%s cmd=%s", TASK_WORKER, cmd)
         return True, f"HKCU Run key set: {cmd}"
     except OSError as exc:
+        _LOG.warning("failed to set HKCU Run key %s: %s", TASK_WORKER, exc)
         return False, str(exc)
 
 
@@ -342,19 +344,44 @@ def install_linux_autostart() -> tuple[bool, str]:
             "WantedBy=default.target\n",
             encoding="utf-8",
         )
+        _LOG.info("systemd service file written: %s", svc_path)
         try:
-            subprocess.run(
+            import time as _time  # noqa: PLC0415
+            t0 = _time.monotonic()
+            reload_r = subprocess.run(
                 ["systemctl", "--user", "daemon-reload"],
                 capture_output=True,
                 timeout=10,
             )
-            subprocess.run(
+            reload_ms = (_time.monotonic() - t0) * 1000
+            if reload_r.returncode != 0:
+                _LOG.warning(
+                    "systemctl daemon-reload exited %d (%.0fms): %s",
+                    reload_r.returncode, reload_ms,
+                    (reload_r.stderr or b"").decode(errors="replace").strip(),
+                )
+            else:
+                _LOG.debug("systemctl daemon-reload ok (%.0fms)", reload_ms)
+
+            t1 = _time.monotonic()
+            enable_r = subprocess.run(
                 ["systemctl", "--user", "enable", SYSTEMD_SERVICE_NAME],
                 capture_output=True,
                 timeout=10,
             )
+            enable_ms = (_time.monotonic() - t1) * 1000
+            if enable_r.returncode != 0:
+                _LOG.warning(
+                    "systemctl enable %s exited %d (%.0fms): %s",
+                    SYSTEMD_SERVICE_NAME, enable_r.returncode, enable_ms,
+                    (enable_r.stderr or b"").decode(errors="replace").strip(),
+                )
+            else:
+                _LOG.info("systemctl enable %s ok (%.0fms)", SYSTEMD_SERVICE_NAME, enable_ms)
+
             return True, f"systemd user service installed: {svc_path}"
         except (FileNotFoundError, subprocess.TimeoutExpired) as e:
+            _LOG.warning("systemctl unavailable or timed out: %s", e)
             return False, f"systemd enable failed: {e}"
 
     # Fallback: XDG autostart .desktop file. Works on desktop sessions (GNOME,
@@ -371,6 +398,7 @@ def install_linux_autostart() -> tuple[bool, str]:
         "X-GNOME-Autostart-enabled=true\n",
         encoding="utf-8",
     )
+    _LOG.info("XDG autostart file written: %s", desktop)
     return True, (
         f"XDG autostart installed: {desktop} "
         "(SessionStart watchdog also ensures the worker runs)"

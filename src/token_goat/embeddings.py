@@ -507,8 +507,19 @@ def semantic_search(
             (_pack_vec(qvec), k),
         ).fetchall()
     search_elapsed = time.time() - t0
-    _LOG.info("semantic search completed: query_len=%d k=%d results=%d search_elapsed=%.3fs",
-              len(query), k, len(rows), search_elapsed)
+    if rows:
+        distances = [r["distance"] for r in rows]
+        _LOG.info(
+            "semantic search completed: query_len=%d k=%d results=%d search_elapsed=%.3fs "
+            "embed_elapsed=%.3fs dist_min=%.4f dist_max=%.4f",
+            len(query), k, len(rows), search_elapsed, embed_elapsed,
+            distances[0], distances[-1],
+        )
+    else:
+        _LOG.info(
+            "semantic search completed: query_len=%d k=%d results=0 search_elapsed=%.3fs embed_elapsed=%.3fs",
+            len(query), k, search_elapsed, embed_elapsed,
+        )
 
     return [
         SearchHit(
