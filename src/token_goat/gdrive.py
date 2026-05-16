@@ -34,7 +34,7 @@ def _write_creds_secure(path: Path, content: str) -> None:
         try:
             with os.fdopen(fd, "w", encoding="utf-8") as fh:
                 fh.write(content)
-        except Exception:
+        except OSError:
             tmp.unlink(missing_ok=True)
             raise
         tmp.replace(path)
