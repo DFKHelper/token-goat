@@ -394,7 +394,18 @@ def index_file(project: Project, file_path: Path) -> FileIndex | None:
 
 
 def write_file_index(conn: sqlite3.Connection, fi: FileIndex) -> None:
-    """Replace all rows for this file with the new index."""
+    """Replace all indexed rows for *fi.rel_path* with fresh data from *fi*.
+
+    Uses a DELETE + INSERT strategy rather than UPDATE because the full symbol/ref/section
+    payload changes on every re-index: partial updates would require diffing each list,
+    which is both complex and slower than a bulk replace. The ``files`` table DELETE
+    cascades to all child tables (symbols, refs, imports_exports, sections, chunks) via
+    ``ON DELETE CASCADE``, so child rows are cleaned atomically before re-insertion.
+
+    All child rows are inserted in bulk via ``executemany`` to minimize round-trips.
+    Malformed rows (empty name, empty kind, None target) are filtered at insert time
+    rather than in the extractor so extractors don't need to enforce these invariants.
+    """
     t0 = time.time()
     now = int(time.time())
     # Delete old rows (cascade handles symbols/refs/imports_exports/sections)
@@ -531,7 +542,14 @@ def index_project(
             for i, fp in enumerate(files):
                 rel = fp.relative_to(project.root).as_posix()
 
-                # mtime fast-path: skip file read + SHA entirely when mtime is unchanged
+                # Two-layer incremental check:
+                # 1) mtime fast-path: if the OS-reported mtime matches the cached value we
+                #    skip reading the file entirely (no syscall beyond stat).
+                # 2) SHA fallback: if mtime matches but content differs (e.g. file copied
+                #    from another location with the same mtime, or mtime was touched without
+                #    content changes), the SHA comparison catches it. The SHA is computed
+                #    inside index_file() from the file's bytes, so this check is free once
+                #    the file is already read.
                 if existing_mtime is not None and rel in existing_mtime:
                     try:
                         if fp.stat().st_mtime == existing_mtime[rel]:
@@ -569,6 +587,9 @@ def index_project(
             # In incremental mode existing_sha already holds every rel_path in
             # the DB (loaded earlier for the mtime/SHA skip check), so we reuse
             # that dict instead of issuing a second SELECT against the same DB.
+            # In full mode we didn't load existing_sha, so we query the DB now.
+            # Either way, we end up with the complete set of DB-known paths in
+            # one SELECT call (or zero, if reusing the existing_sha dict).
             if existing_sha is not None:
                 db_rel_paths = set(existing_sha.keys())
             else:

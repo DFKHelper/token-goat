@@ -1,4 +1,33 @@
-"""SQLite + sqlite-vec storage layer. Phase 2."""
+"""SQLite + sqlite-vec storage layer for token-goat's indexed project data.
+
+Two database files are managed here:
+
+- ``global.db`` — project registry, global symbol snapshot, and cumulative stats.
+  Opened with ``open_global()`` / ``open_global_readonly()``.
+- ``projects/{hash}.db`` — per-project files, symbols, refs, sections, chunks,
+  and sqlite-vec embeddings. Opened with ``open_project()`` / ``open_project_readonly()``.
+
+Key design decisions:
+
+**WAL mode + fallback**: All writable connections enable WAL so readers don't block
+writers. On sandboxed systems (e.g. Codex unelevated on Windows) WAL SHM file
+creation fails; ``_connect()`` falls back to ``immutable=1`` URI mode so reads
+still work while writes silently fail (expected in that context).
+
+**Corruption auto-recovery**: ``_repair_if_corrupt()`` runs ``PRAGMA integrity_check``
+once per path per process. A genuine failure triggers ``_rebuild()`` which renames
+the corrupt file to ``*.bad-<ts>`` and opens a fresh (empty) DB. Transient errors
+(locked, busy, I/O) are not treated as corruption — they return True from
+``_integrity_ok()`` so the caller retries normally.
+
+**Read-only openers**: ``open_global_readonly()`` and ``open_project_readonly()``
+skip integrity_check and DDL entirely — used by ``stats.py`` to avoid the multi-
+second overhead of N integrity_checks when only read access is needed.
+
+**File-based writer lock**: ``project_writer_lock()`` uses a PID + timestamp
+lockfile rather than SQLite's ``BEGIN EXCLUSIVE`` so the worker can detect and
+clear stale locks from crashed processes without blocking indefinitely.
+"""
 from __future__ import annotations
 
 __all__ = [
