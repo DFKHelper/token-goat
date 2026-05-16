@@ -69,6 +69,10 @@ class SessionCache:
     # Tracks files edited this session: normalized_path → edit count
     edited_files: dict[str, int] = field(default_factory=dict)
     unavailable: bool = field(default=False, repr=False, compare=False)
+    # Internal: cached JSON string from last serialization — invalidated by any mutation.
+    # Avoids O(N) re-serialization of files/greps dicts on every hook invocation when
+    # the cache is loaded, mutated once, and immediately saved.  Not persisted to disk.
+    _json_cache: str | None = field(default=None, repr=False, compare=False)
 
     def to_dict(self) -> dict:
         """Serialize to dict for JSON."""
@@ -82,6 +86,21 @@ class SessionCache:
             "greps": [asdict(g) for g in self.greps],
             "edited_files": self.edited_files,
         }
+
+    def to_json(self) -> str:
+        """Return a JSON string for this cache, using a cached result when available.
+
+        The ``_json_cache`` is set here and cleared by ``_invalidate_json_cache()``
+        on every mutation.  This avoids re-serializing O(N) files/greps dicts on
+        each ``save()`` call when a hook loads → mutates once → saves.
+        """
+        if self._json_cache is None:
+            self._json_cache = json.dumps(self.to_dict(), ensure_ascii=False)
+        return self._json_cache
+
+    def _invalidate_json_cache(self) -> None:
+        """Invalidate the serialization cache after any mutation."""
+        self._json_cache = None
 
     @classmethod
     def from_dict(cls, d: dict) -> SessionCache:
@@ -286,7 +305,7 @@ def save(cache: SessionCache) -> None:
             try:
                 paths.atomic_write_text(
                     paths.session_cache_path(cache.session_id),
-                    json.dumps(cache.to_dict(), ensure_ascii=False),
+                    cache.to_json(),
                 )
             except OSError as exc:
                 last_exc = exc
@@ -336,6 +355,7 @@ def mark_file_read(
         end = start + safe_limit - 1 if safe_limit else (start + 99999)
         entry.line_ranges = _merge_ranges([*entry.line_ranges, (start, end)])
     cache.last_activity_ts = now
+    cache._invalidate_json_cache()
     save(cache)
     return cache
 
@@ -355,6 +375,7 @@ def mark_grep(
     now = time.time()
     cache.greps.append(GrepEntry(pattern=pattern, path=path, ts=now, result_count=result_count))
     cache.last_activity_ts = now
+    cache._invalidate_json_cache()
     save(cache)
     return cache
 
@@ -410,6 +431,7 @@ def mark_file_edited(
     key = _normalize_path(path)
     cache.edited_files[key] = cache.edited_files.get(key, 0) + 1
     cache.last_activity_ts = time.time()
+    cache._invalidate_json_cache()
     save(cache)
     return cache
 

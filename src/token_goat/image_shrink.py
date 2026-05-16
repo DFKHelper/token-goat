@@ -155,11 +155,16 @@ def shrink(src_path: Path) -> Path | None:
     if not _is_safe_path(src_path):
         _LOG.warning("rejected unsafe path: %s", src_path)
         return None
+    # Guard: extension check first (cheap string op) then size (one stat syscall).
+    # The original code called stat() then repeated is_image_path(); we hoist the
+    # cheap extension test before the syscall so non-image paths skip stat entirely.
+    if not is_image_path(str(src_path)):
+        return None
     try:
         src_size = src_path.stat().st_size
     except OSError:
         return None
-    if not (is_image_path(str(src_path)) and src_size > SIZE_THRESHOLD_BYTES):
+    if src_size <= SIZE_THRESHOLD_BYTES:
         return None
 
     cache_dir = paths.image_cache_dir()
