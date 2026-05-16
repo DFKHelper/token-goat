@@ -43,7 +43,7 @@ def _run_uv(args: list[str], cwd: Path, env: dict | None = None) -> subprocess.C
 
 
 @pytest.fixture
-def indexed_ts_dir(tmp_path, tmp_data_dir, monkeypatch):
+def indexed_ts_dir(tmp_path, tmp_data_dir, make_project, monkeypatch):
     """
     Copy ts_sample to tmp, run `token-goat index` in it.
     Returns the project dir path.
@@ -51,15 +51,12 @@ def indexed_ts_dir(tmp_path, tmp_data_dir, monkeypatch):
     """
     proj_root = tmp_path / "ts_sample"
     shutil.copytree(TS_SAMPLE, proj_root)
+    (proj_root / ".git").mkdir(exist_ok=True)
 
-    # Build canonical project hash
     from token_goat.parser import index_project
-    from token_goat.project import find_project
 
-    # We need token_goat.paths to point to our tmp during index
     monkeypatch.chdir(proj_root)
-    proj = find_project(proj_root)
-    assert proj is not None
+    proj = make_project(proj_root)
     index_project(proj, full=True)
     return proj_root, proj
 
