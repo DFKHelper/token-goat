@@ -4,6 +4,7 @@ from __future__ import annotations
 import contextlib
 import json
 import logging
+import re
 import sys
 import threading
 import time
@@ -182,6 +183,9 @@ def _atomic_write(path: Path, content: str) -> None:
         tmp.unlink(missing_ok=True)
 
 
+_SESSION_ID_RE = re.compile(r"^[a-zA-Z0-9_-]+$")
+
+
 def _validate_session_id(session_id: str) -> None:
     """Validate session_id to prevent path traversal attacks.
 
@@ -193,7 +197,7 @@ def _validate_session_id(session_id: str) -> None:
     if len(session_id) > 256:
         raise ValueError("session_id too long (max 256 chars)")
     # Allow alphanumeric, hyphen, underscore only
-    if not all(c.isalnum() or c in "-_" for c in session_id):
+    if not _SESSION_ID_RE.match(session_id):
         raise ValueError(f"session_id contains invalid characters: {session_id!r}")
 
 

@@ -80,6 +80,45 @@ def _infer_project_root(file_path: str, registered_roots: list[str]) -> str | No
     return None
 
 
+def _infer_project_root_fast(
+    file_path: str,
+    sorted_norm_roots: list[tuple[str, str]],
+) -> str | None:
+    """Fast variant of _infer_project_root for hot loops.
+
+    Accepts *sorted_norm_roots* as a pre-sorted, pre-normalized list of
+    ``(original_root, normalized_root)`` pairs (longest first).  Avoids
+    re-sorting and re-normalizing registered roots on every call — the caller
+    builds this list once before iterating over rows.
+
+    .git walk result is still cached in ``_git_root_cache`` as usual.
+    """
+    parent_dir = str(Path(file_path).parent)
+    if parent_dir not in _git_root_cache:
+        result: str | None = None
+        p = Path(file_path).parent
+        for _ in range(20):
+            if (p / ".git").exists():
+                result = _norm_path(str(p))
+                break
+            up = p.parent
+            if up == p:
+                break
+            p = up
+        _git_root_cache[parent_dir] = result
+
+    git_root = _git_root_cache[parent_dir]
+    if git_root is not None:
+        return git_root
+
+    norm = _norm_path(file_path)
+    for orig_root, root_norm in sorted_norm_roots:
+        if norm.startswith(root_norm + "/") or norm == root_norm:
+            return orig_root
+
+    return None
+
+
 def _root_hash(root: str) -> str:
     """Stable key for a project root that isn't in the projects table."""
     return hashlib.sha1(root.encode()).hexdigest()
@@ -188,18 +227,23 @@ def summarize(window_days: int = 30) -> StatsSummary:
     # Normalized lookup so .git-walk results (always normalized) match DB roots
     # that may use original Windows casing (e.g. "C:/Projects" vs "c:/Projects").
     norm_root_to_hash = {_norm_path(root).rstrip("/"): h for root, h in root_to_hash.items()}
-    registered_roots = list(root_to_hash.keys())
+    # Pre-sort and pre-normalize once; avoids O(R·log R + R) work per row in the hot loop.
+    sorted_norm_roots: list[tuple[str, str]] = sorted(
+        ((root, _norm_path(root).rstrip("/")) for root in root_to_hash),
+        key=lambda t: len(t[1]),
+        reverse=True,
+    )
     for row in global_rows:
         file_path = _extract_file_path(row["kind"], row["detail"])
         if not file_path:
             continue
-        root = _infer_project_root(file_path, registered_roots)
+        root = _infer_project_root_fast(file_path, sorted_norm_roots)
         if root is None:
             continue
-        norm_root = _norm_path(root).rstrip("/")
+        # norm_root is already in norm_root_to_hash; avoid recomputing _norm_path here.
         proj_key = (
             root_to_hash.get(root)
-            or norm_root_to_hash.get(norm_root)
+            or norm_root_to_hash.get(_norm_path(root).rstrip("/"))
             or _root_hash(root)
         )
         p = by_project[proj_key]
