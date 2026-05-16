@@ -262,7 +262,7 @@ def summarize(window_days: int = 30) -> StatsSummary:
             }
             for k, v in by_project.items()
         ],
-        key=lambda p: p["bytes_saved"],
+        key=lambda entry: entry["bytes_saved"],
         reverse=True,
     )
 
@@ -358,7 +358,7 @@ def _to_stats_data(summary: StatsSummary) -> StatsData:
             )
             for k, v in summary.by_kind.items()
         ],
-        key=lambda k: k.bytes,
+        key=lambda stat: stat.bytes,
         reverse=True,
     )
 

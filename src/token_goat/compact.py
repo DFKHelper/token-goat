@@ -104,13 +104,13 @@ def _render(cache: SessionCache, session_id: str, max_tokens: int) -> str:
     Returns an empty string when the cache has no meaningful data (nothing edited,
     no symbols accessed, no files read).
     """
+    # Return early if there is nothing meaningful to report
+    if not cache.edited_files and not cache.files:
+        return ""
+
     files_with_symbols = [e for e in cache.files.values() if e.symbols_read]
     # Most-frequently-read files, capped at _MAX_FILES_READ, for the "Key Files Read" section.
-    top_files_by_read_count = sorted(cache.files.values(), key=lambda e: -e.read_count)[:_MAX_FILES_READ]
-
-    # Return empty if there is nothing meaningful to report
-    if not cache.edited_files and not files_with_symbols and not top_files_by_read_count:
-        return ""
+    top_files = sorted(cache.files.values(), key=lambda e: -e.read_count)[:_MAX_FILES_READ]
 
     now = datetime.now(UTC).strftime("%Y-%m-%d %H:%M UTC")
     sid = session_id[:8]
@@ -141,9 +141,9 @@ def _render(cache: SessionCache, session_id: str, max_tokens: int) -> str:
         sections.append("")
 
     # ── 3. Key files read (top N by read_count) ───────────────────────────────
-    if top_files_by_read_count:
+    if top_files:
         sections.append("### Key Files Read")
-        for entry in top_files_by_read_count:
+        for entry in top_files:
             count_str = f"  ×{entry.read_count}" if entry.read_count > 1 else ""
             ranges_str = _format_ranges(entry.line_ranges)
             sections.append(f"- {_short_path(entry.rel_or_abs)}{count_str}{ranges_str}")
