@@ -526,7 +526,13 @@ def _cleanup_old_logs() -> int:
 
 
 def _prune_stats_table() -> int:
-    """Delete stats rows older than STATS_RETENTION_DAYS. Returns row count pruned."""
+    """Delete granular stats events older than STATS_RETENTION_DAYS from global.db.
+
+    Keeps the stats table bounded so long-running daemons don't accumulate
+    unbounded history.  Aggregate totals shown by ``token-goat stats`` are
+    computed at query time from the rows that remain; events older than the
+    retention window simply roll off.  Returns the number of rows deleted.
+    """
     from . import db as _db  # noqa: PLC0415
     cutoff_ts = int(time.time() - STATS_RETENTION_DAYS * 86400)
     with _db.open_global() as conn:
@@ -535,7 +541,17 @@ def _prune_stats_table() -> int:
 
 
 def cleanup_on_startup() -> CleanupStats:
-    """Run all self-healing tasks. Returns stats including any per-task failures."""
+    """Run all self-healing tasks on daemon startup. Returns a summary with counts and failures.
+
+    Each task is run independently: a failure in one task is caught, recorded in
+    the ``"failures"`` list, and does not prevent remaining tasks from running.
+    Tasks run:
+    * ``_cleanup_stale_locks``   — remove lock files for dead PIDs or old ages.
+    * ``_cleanup_old_logs``      — delete daily log files older than LOG_RETENTION_DAYS.
+    * ``_prune_stats_table``     — drop stats rows beyond STATS_RETENTION_DAYS.
+    * ``reap_stale_index_markers`` — clear ``*.indexing`` markers for finished/crashed spawns.
+    * ``evict_image_cache_if_over_limit`` — LRU-evict images when cache exceeds 500 MB.
+    """
     stats: CleanupStats = {
         "stale_locks_cleared": 0,
         "stale_index_markers_cleared": 0,
@@ -579,9 +595,16 @@ def cleanup_on_startup() -> CleanupStats:
 
 
 def evict_image_cache_if_over_limit() -> tuple[int, int]:
-    """If image cache > IMAGE_CACHE_LIMIT, LRU-evict to IMAGE_CACHE_TARGET.
+    """LRU-evict image cache entries if total size exceeds IMAGE_CACHE_LIMIT (500 MB).
 
-    Returns (bytes_freed, files_freed).
+    Iterates the image cache directory, sorts files by access time (oldest
+    first), and deletes files until the total drops to IMAGE_CACHE_TARGET (80%
+    of the limit).  The two-threshold design avoids thrashing: a single large
+    image push over the limit would otherwise trigger eviction on every daemon
+    cycle.
+
+    Returns ``(bytes_freed, files_freed)``.  Both values are 0 when the cache
+    is within the limit or the cache directory does not exist.
     """
     img_dir = paths.image_cache_dir()
     if not img_dir.exists():
@@ -980,7 +1003,19 @@ def _reindex_active_projects() -> None:
 
 
 def _process_dirty_entries(entries: list[DirtyQueueEntry]) -> None:
-    """Re-index files that were marked dirty by Edit/Write hooks."""
+    """Re-index files that were marked dirty by Edit/Write/MultiEdit hooks.
+
+    Groups queue entries by project hash to avoid opening the project DB once
+    per entry.  For known projects a single incremental ``index_project`` call
+    re-indexes all changed files in the batch.  For projects not yet registered
+    in global.db (first edit before the first full index), the project is
+    reconstructed from the queue-entry metadata and a full index is spawned
+    detached so the operation does not block the main daemon loop.
+
+    Each entry is validated (project_hash format, safe rel-path) before use
+    to guard against a corrupt or tampered queue file directing path
+    construction outside expected directories.
+    """
     _LOG.debug("processing %d dirty queue entries", len(entries))
     # Hoist the import outside the per-entry loop — repeated import machinery
     # lookups inside a tight loop add measurable overhead with large queues.

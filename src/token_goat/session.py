@@ -1,4 +1,25 @@
-"""Session-context cache: tracks files/line ranges/symbols pulled into this session's context."""
+"""Session-context cache: tracks files, line ranges, and symbols read in the current session.
+
+Each Claude Code session gets a ``SessionCache`` JSON file keyed by the
+session ID.  Hooks populate it on every Read, Grep, Glob, and Edit tool call;
+the pre-read hook reads it to emit "you already read lines X-Y of this file"
+nudges that prevent the model from pulling in content it already holds in
+context.
+
+Concurrency model
+-----------------
+Multiple hooks can fire concurrently (one per tool call), so the module uses:
+* An in-process ``threading.Lock`` (``_FILE_LOCK``) to serialise writes from
+  the same process.
+* Atomic rename via ``paths.atomic_write_text()`` to guard against partial
+  writes being observed by a concurrent reader in another process.
+* A short retry loop (3 attempts with exponential back-off) on both load and
+  save to ride out brief contention windows.
+
+When the cache is completely unavailable (e.g. a read-only filesystem) the
+``unavailable`` flag is set and all mutation functions become no-ops, so a
+broken cache never blocks the agent.
+"""
 from __future__ import annotations
 
 import contextlib
@@ -270,7 +291,15 @@ def _resolve_cache(session_id: str, cache: SessionCache | None) -> SessionCache:
 
 
 def load(session_id: str) -> SessionCache:
-    """Load a session cache, or return an empty one."""
+    """Load the on-disk session cache for *session_id*, or create a fresh one.
+
+    Retries the file read up to three times with short sleeps to handle
+    transient races on Windows (another hook may be writing the file).  On
+    persistent failure or a missing file, returns a fresh empty cache.
+    Corrupted JSON is treated the same as a missing file: the cache is reset
+    rather than propagating an exception, because a stale hint is always
+    preferable to a broken hook invocation.
+    """
     _validate_session_id(session_id)
     p = paths.session_cache_path(session_id)
     try:
@@ -382,7 +411,22 @@ def mark_file_read(
     symbol: str | None = None,
     cache: SessionCache | None = None,
 ) -> SessionCache:
-    """Record that a file (or symbol within) was read. Returns the updated cache."""
+    """Record that a file (or a named symbol within it) was read in this session.
+
+    When *symbol* is supplied the read is recorded as a symbol-level access
+    (e.g. ``token-goat read src/foo.py::MyClass``) and no line-range tracking
+    is performed.
+
+    When *symbol* is absent, *offset* and *limit* describe the slice that the
+    Read tool delivered (0-indexed offset, line count).  These are converted to
+    1-indexed inclusive ``(start, end)`` ranges and merged with any previously
+    recorded ranges for the same file so the hint engine can report the total
+    extent already in context.
+
+    The pre-loaded *cache* is accepted as an optimisation: callers that already
+    hold a ``SessionCache`` object can pass it in to skip the load-from-disk
+    round-trip.  The returned cache is always saved to disk before returning.
+    """
     path = _sanitize_path(path)
     if not path:
         return cache or _fresh_cache(session_id)
@@ -435,7 +479,19 @@ def mark_grep(
 
 
 def _merge_ranges(ranges: list[tuple[int, int]]) -> list[tuple[int, int]]:
-    """Coalesce overlapping/adjacent (start, end) ranges."""
+    """Coalesce overlapping and adjacent (start, end) line-range pairs.
+
+    Two ranges are merged when they overlap (start_b <= end_a) or are
+    directly adjacent (start_b == end_a + 1) — reading lines 1-10 then
+    11-20 is equivalent to reading 1-20 and should be tracked as a single
+    span.  Input ranges need not be sorted or deduplicated; the output list
+    is always sorted ascending with no overlaps.
+
+    Example::
+
+        _merge_ranges([(5, 10), (1, 6), (15, 20)])
+        # → [(1, 10), (15, 20)]
+    """
     if not ranges:
         return []
     sorted_r = sorted(ranges)

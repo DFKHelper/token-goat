@@ -1,4 +1,23 @@
-"""WebFetch image downloader: HTTP fetch + shrink + cache."""
+"""WebFetch image downloader: HTTP fetch + shrink + cache.
+
+Provides ``fetch_url()``, which downloads a URL to the local web cache
+directory and returns the local path.  Images are automatically passed through
+``image_shrink.shrink_if_image()`` to reduce token cost before they reach the
+model.
+
+Security hardening
+------------------
+* SSRF guard (``_is_ssrf_safe``): rejects private/loopback/link-local IPs,
+  metadata endpoints (GCP/AWS), non-http/https schemes, and unresolvable
+  hostnames (fail-closed by default; opt out with
+  ``TOKEN_GOAT_WEBFETCH_ALLOW_UNRESOLVED=1``).
+* Post-redirect SSRF check: validates the *final* URL after ``httpx`` follows
+  redirects, closing the open-redirect bypass vector.
+* Streaming with size cap: ``_stream_to_file`` enforces ``max_size_bytes``
+  during download so a large response cannot exhaust disk space.
+* Sidecar metadata validation: ETag/Last-Modified sidecars are size-capped,
+  key-allowlisted, and value-truncated before use.
+"""
 from __future__ import annotations
 
 import hashlib
@@ -115,7 +134,13 @@ def _cache_path_for(url: str, suffix: str) -> Path:
 
 
 def _suffix_for(url: str, content_type: str = "") -> str:
-    """Derive a sensible file suffix from URL extension or content-type."""
+    """Derive a sensible file suffix from the URL path extension or Content-Type header.
+
+    Checks the URL path first (e.g. ``.../photo.webp`` → ``".webp"``) so that
+    the URL's extension takes precedence over a possibly generic Content-Type.
+    Falls back to a MIME-type mapping when the URL has no recognizable extension.
+    Returns ``".bin"`` when neither source yields a known image type.
+    """
     parsed = urlparse(url)
     path = (parsed.path or "").lower()
     for ext in IMAGE_URL_EXTS:
@@ -261,13 +286,25 @@ def _stream_to_file(response: httpx.Response, dest: Path, max_size_bytes: int) -
 
 
 def _validate_response_url(url: str) -> None:
-    """Reject a fetched response URL if it resolves to an SSRF target."""
+    """Raise ValueError if *url* is an SSRF target after following redirects.
+
+    Called with the *final* URL after ``httpx`` has resolved any redirects.
+    An open redirect on a trusted host could otherwise forward the request to
+    a private IP or metadata endpoint that passed the pre-fetch SSRF check.
+    """
     if not _is_ssrf_safe(url):
         raise ValueError(f"URL blocked by SSRF safety check after redirect: {url!r}")
 
 
 def cleanup_stale_downloads() -> int:
-    """Remove any leftover ``.tmp`` partial download files. Returns count removed."""
+    """Remove leftover ``.tmp`` partial-download files from the web cache directory.
+
+    ``_stream_to_file`` writes to a ``<hash>.<ext>.tmp`` sibling before
+    atomically renaming to the final path.  If the process is killed mid-stream
+    the ``.tmp`` file is orphaned.  This function sweeps those files out so
+    stale partials don't accumulate across restarts.  Returns the number of
+    files removed.
+    """
     cache_dir = paths.web_cache_dir()
     if not cache_dir.exists():
         return 0
