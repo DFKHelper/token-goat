@@ -314,16 +314,19 @@ def _render_by_kind_section(stats: StatsData) -> list[str]:
 
     lines: list[str] = [*_section_header("By kind"), _table_header("name")]
 
-    # Denominator uses gross positive totals so overhead kinds (negative bytes/tokens)
-    # don't shrink the net total and cause positive kinds to show share > 100%.
+    # Bar scaling uses positive-only gross so the widest positive bar fills to 100%.
+    # Share % uses absolute-value totals so overhead kinds (negative bytes/tokens)
+    # reduce the denominator and prevent the dominant positive kind from hitting 100%.
     gross_bytes = max(sum(k.bytes for k in stats.by_kind if k.bytes > 0), 1)
     gross_tokens = sum(k.tokens for k in stats.by_kind if k.tokens > 0)
+    share_bytes_denom = max(sum(abs(k.bytes) for k in stats.by_kind), 1)
+    share_tokens_denom = sum(abs(k.tokens) for k in stats.by_kind)
 
     for k in stats.by_kind:
-        if k.bytes_mode_only or gross_tokens == 0:
-            share = k.bytes / gross_bytes
+        if k.bytes_mode_only or share_tokens_denom == 0:
+            share = k.bytes / share_bytes_denom
         else:
-            share = k.tokens / gross_tokens
+            share = k.tokens / share_tokens_denom
         bar_fraction = k.bytes / gross_bytes if k.bytes > 0 else 0.0
         lines.append(_table_row(
             k.kind, bar_fraction, k.bytes, k.tokens, k.events, share,
