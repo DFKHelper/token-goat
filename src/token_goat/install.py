@@ -277,7 +277,7 @@ def uninstall_tasks() -> list[str]:
             removed.append(TASK_WORKER)
         except FileNotFoundError:
             pass  # key didn't exist
-        except Exception as e:
+        except OSError as e:
             _LOG.warning("failed to remove registry autostart entry: %s", e)
 
     # Update task: still a schtasks WEEKLY entry
