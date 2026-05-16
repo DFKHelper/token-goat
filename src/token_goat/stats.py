@@ -45,6 +45,31 @@ def _extract_file_path(kind: str, detail: str | None) -> str | None:
     return detail
 
 
+def _find_git_root(file_path: str) -> str | None:
+    """Walk upward from *file_path* to find the nearest .git directory.
+
+    The result is cached by parent directory so repeated calls for files in
+    the same directory cost only a dict lookup.  Returns the normalized path
+    of the git root, or ``None`` if no .git ancestor was found within 20 hops.
+    """
+    parent_dir = str(Path(file_path).parent)
+    if parent_dir in _git_root_cache:
+        return _git_root_cache[parent_dir]
+
+    p = Path(file_path).parent
+    for _ in range(20):
+        if (p / ".git").exists():
+            _git_root_cache[parent_dir] = _norm_path(str(p))
+            return _git_root_cache[parent_dir]
+        up = p.parent
+        if up == p:
+            break
+        p = up
+
+    _git_root_cache[parent_dir] = None
+    return None
+
+
 def _infer_project_root(file_path: str, registered_roots: list[str]) -> str | None:
     """Return the project root for *file_path*.
 
@@ -53,21 +78,7 @@ def _infer_project_root(file_path: str, registered_roots: list[str]) -> str | No
     parent directory. Falls back to longest-prefix match against registered
     roots for the rare case of non-git projects.
     """
-    parent_dir = str(Path(file_path).parent)
-    if parent_dir not in _git_root_cache:
-        result: str | None = None
-        p = Path(file_path).parent
-        for _ in range(20):
-            if (p / ".git").exists():
-                result = _norm_path(str(p))
-                break
-            up = p.parent
-            if up == p:
-                break
-            p = up
-        _git_root_cache[parent_dir] = result
-
-    git_root = _git_root_cache[parent_dir]
+    git_root = _find_git_root(file_path)
     if git_root is not None:
         return git_root
 
@@ -93,21 +104,7 @@ def _infer_project_root_fast(
 
     .git walk result is still cached in ``_git_root_cache`` as usual.
     """
-    parent_dir = str(Path(file_path).parent)
-    if parent_dir not in _git_root_cache:
-        result: str | None = None
-        p = Path(file_path).parent
-        for _ in range(20):
-            if (p / ".git").exists():
-                result = _norm_path(str(p))
-                break
-            up = p.parent
-            if up == p:
-                break
-            p = up
-        _git_root_cache[parent_dir] = result
-
-    git_root = _git_root_cache[parent_dir]
+    git_root = _find_git_root(file_path)
     if git_root is not None:
         return git_root
 
@@ -140,18 +137,15 @@ class StatsSummary:
 def _read_stats(
     conn: sqlite3.Connection, since_ts: float | None
 ) -> list[sqlite3.Row]:
-    """Fetch stats rows from the given connection."""
-    if since_ts:
-        query = (
-            "SELECT ts, kind, tokens_saved, bytes_saved, detail "
-            "FROM stats WHERE ts >= ? ORDER BY ts"
-        )
-        rows = conn.execute(query, (int(since_ts),)).fetchall()
-    else:
-        rows = conn.execute(
-            "SELECT ts, kind, tokens_saved, bytes_saved, detail FROM stats ORDER BY ts"
-        ).fetchall()
-    return rows
+    """Fetch stats rows from the given connection.
+
+    When *since_ts* is provided only rows at or after that timestamp are
+    returned; passing ``None`` returns the full table.
+    """
+    base = "SELECT ts, kind, tokens_saved, bytes_saved, detail FROM stats"
+    if since_ts is not None:
+        return conn.execute(f"{base} WHERE ts >= ? ORDER BY ts", (int(since_ts),)).fetchall()
+    return conn.execute(f"{base} ORDER BY ts").fetchall()
 
 
 def summarize(window_days: int = 30) -> StatsSummary:
