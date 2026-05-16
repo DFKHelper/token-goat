@@ -1,6 +1,8 @@
 """Doctor CLI helpers."""
 from __future__ import annotations
 
+import contextlib
+import sqlite3
 from datetime import date
 from pathlib import Path
 
@@ -19,7 +21,6 @@ def doctor(  # noqa: C901
     for when the worker is down.
     """
     import importlib
-    import sqlite3
     import subprocess
     import sys
     import time
@@ -87,16 +88,26 @@ def doctor(  # noqa: C901
     import tempfile  # noqa: PLC0415
 
     def _wal_supported() -> bool:
+        # Use mkstemp so the OS-allocated fd is closed before sqlite3 opens the
+        # file.  Wrapping everything in try/finally guarantees the temp file is
+        # deleted even if the PRAGMA or conn.close() raises, closing the window
+        # where an exception would leave a permanent temp file behind.
+        import os  # noqa: PLC0415
+
+        fd, tf_path = tempfile.mkstemp(suffix=".db")
+        os.close(fd)
+        conn: sqlite3.Connection | None = None
         try:
-            with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as tf:
-                tf_path = tf.name
             conn = sqlite3.connect(tf_path, isolation_level=None)
             mode = conn.execute("PRAGMA journal_mode = WAL").fetchone()[0]
-            conn.close()
-            Path(tf_path).unlink(missing_ok=True)
             return mode == "wal"
         except Exception:  # noqa: BLE001
             return False
+        finally:
+            if conn is not None:
+                with contextlib.suppress(Exception):
+                    conn.close()
+            Path(tf_path).unlink(missing_ok=True)
 
     conn_test = sqlite3.connect(":memory:", isolation_level=None)
     if _wal_supported():

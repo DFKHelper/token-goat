@@ -3,6 +3,8 @@ from __future__ import annotations
 
 import io
 import logging
+import os
+import sys
 from pathlib import Path
 
 from . import image_shrink, paths
@@ -10,6 +12,38 @@ from . import image_shrink, paths
 _LOG = logging.getLogger("token_goat.gdrive")
 
 _DRIVE_SCOPES = ["https://www.googleapis.com/auth/drive.readonly"]
+
+
+def _write_creds_secure(path: Path, content: str) -> None:
+    """Write OAuth credential JSON to *path* with owner-only permissions (0o600).
+
+    On POSIX systems this prevents other local users from reading refresh tokens.
+    On Windows, ``os.chmod`` has no meaningful effect (NTFS ACLs control access),
+    so we simply write the file normally — the user's profile directory already
+    provides the required isolation.
+
+    Uses an atomic write-then-rename pattern so a partial write never leaves a
+    truncated credential file behind.
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if sys.platform != "win32":
+        # Write via a low-level fd opened with restrictive mode so the file is
+        # never world-readable, even briefly before a post-write chmod.
+        tmp = path.with_suffix(path.suffix + ".tmp")
+        fd = os.open(str(tmp), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as fh:
+                fh.write(content)
+        except Exception:
+            tmp.unlink(missing_ok=True)
+            raise
+        tmp.replace(path)
+        # Ensure mode on the destination (replace may inherit umask on some FSes)
+        import contextlib  # noqa: PLC0415
+        with contextlib.suppress(OSError):
+            os.chmod(path, 0o600)
+    else:
+        paths.atomic_write_text(path, content)
 
 
 class GDriveCredsUnavailable(Exception):
@@ -47,7 +81,7 @@ def _try_stored_oauth() -> object | None:
         if creds.expired and creds.refresh_token:
             creds.refresh(Request())
             # Do NOT log creds.to_json() — it contains refresh tokens
-            creds_path.write_text(creds.to_json(), encoding="utf-8")
+            _write_creds_secure(creds_path, creds.to_json())
             _LOG.info("refreshed OAuth credentials")
         return creds
     except Exception:  # noqa: BLE001
@@ -187,6 +221,5 @@ def run_oauth_oob_flow(client_secrets_path: Path) -> Path:
         creds = flow.run_console()
 
     out = paths.gdrive_creds_path()
-    out.parent.mkdir(parents=True, exist_ok=True)
-    out.write_text(creds.to_json(), encoding="utf-8")
+    _write_creds_secure(out, creds.to_json())
     return out
