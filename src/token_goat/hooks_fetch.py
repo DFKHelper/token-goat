@@ -3,10 +3,15 @@ from __future__ import annotations
 
 from typing import Any
 
-from .hooks_common import CONTINUE, deny_redirect, get_tool_input
+from .hooks_common import (
+    CONTINUE,
+    HookResponse,
+    deny_redirect,
+    get_tool_input,
+)
 
 
-def _intercept_drive_download(file_id: str) -> dict[str, Any]:
+def _intercept_drive_download(file_id: str) -> HookResponse:
     """Build denial response for Drive download with redirect to token-goat shim."""
     return deny_redirect(
         reason="token-goat redirects Drive image downloads to its shrink+cache shim",
@@ -34,7 +39,7 @@ def _shell_safe_url(url: str) -> str:
     return f'"{url}"'
 
 
-def _intercept_webfetch_image(url: str) -> dict[str, Any]:
+def _intercept_webfetch_image(url: str) -> HookResponse:
     """Build denial response for WebFetch image with redirect to token-goat shim."""
     safe_url = _shell_safe_url(url)
     return deny_redirect(
@@ -47,7 +52,7 @@ def _intercept_webfetch_image(url: str) -> dict[str, Any]:
     )
 
 
-def pre_fetch(payload: dict[str, Any]) -> dict[str, Any]:
+def pre_fetch(payload: dict[str, Any]) -> HookResponse:
     """Deny Drive/WebFetch image tools and redirect to token-goat shims."""
     tool_name = payload.get("tool_name", "")
 

@@ -6,6 +6,7 @@ from typing import Any
 from . import paths
 from .hooks_common import (
     CONTINUE,
+    HookResponse,
     get_tool_input,
 )
 from .hooks_common import (
@@ -82,7 +83,7 @@ def _enqueue_for_reindex(file_path: str, cwd: str | None) -> None:
         _LOG.warning("failed to enqueue %s for reindex: %s", rel, e)
 
 
-def post_edit(payload: dict[str, Any]) -> dict[str, Any]:
+def post_edit(payload: dict[str, Any]) -> HookResponse:
     """Post-edit hook: record edited files and queue for incremental re-indexing.
 
     Two-part hook action:
