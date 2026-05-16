@@ -103,35 +103,35 @@ def doctor(  # noqa: C901
         # where an exception would leave a permanent temp file behind.
         import os  # noqa: PLC0415
 
-        fd, tf_path = tempfile.mkstemp(suffix=".db")
+        fd, tmp_db_path = tempfile.mkstemp(suffix=".db")
         os.close(fd)
-        conn: sqlite3.Connection | None = None
+        wal_conn: sqlite3.Connection | None = None
         try:
-            conn = sqlite3.connect(tf_path, isolation_level=None)
-            mode = conn.execute("PRAGMA journal_mode = WAL").fetchone()[0]
-            return mode == "wal"
+            wal_conn = sqlite3.connect(tmp_db_path, isolation_level=None)
+            actual_mode = wal_conn.execute("PRAGMA journal_mode = WAL").fetchone()[0]
+            return actual_mode == "wal"
         except Exception:  # noqa: BLE001
             return False
         finally:
-            if conn is not None:
-                with contextlib.suppress(Exception):
-                    conn.close()
-            Path(tf_path).unlink(missing_ok=True)
+            with contextlib.suppress(Exception):
+                if wal_conn is not None:
+                    wal_conn.close()
+            Path(tmp_db_path).unlink(missing_ok=True)
 
-    conn_test = sqlite3.connect(":memory:", isolation_level=None)
+    ext_check_conn = sqlite3.connect(":memory:", isolation_level=None)
     if _wal_supported():
         ok("WAL", "yes")
     else:
         flag("WAL", "not supported or errored")
     try:
-        conn_test.enable_load_extension(True)
-        conn_test.enable_load_extension(False)
+        ext_check_conn.enable_load_extension(True)
+        ext_check_conn.enable_load_extension(False)
         ok("extensions", "yes")
         ext_ok = True
     except (AttributeError, sqlite3.OperationalError) as e:
         flag("extensions", f"no — {e}")
         ext_ok = False
-    conn_test.close()
+    ext_check_conn.close()
 
     # ------------------------------------------------------------------
     # 4. sqlite-vec

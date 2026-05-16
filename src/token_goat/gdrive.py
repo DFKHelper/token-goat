@@ -143,21 +143,19 @@ def _validate_file_id(file_id: str) -> None:
     """Validate file_id to prevent path traversal attacks.
 
     Google Drive file IDs are base64url without padding, ~25-40 chars.
-    Reject anything that looks like a path.
+    Reject anything that looks like a path or is otherwise malformed.
     """
-    if not file_id or not isinstance(file_id, str):
-        raise ValueError("file_id cannot be empty")
-    file_id = file_id.strip()
-    if not file_id:
+    if not isinstance(file_id, str) or not file_id.strip():
         raise ValueError("file_id cannot be empty or whitespace-only")
-    if len(file_id) > 128:
-        raise ValueError(f"file_id too long (max 128 chars): {len(file_id)}")
+    stripped = file_id.strip()
+    if len(stripped) > 128:
+        raise ValueError(f"file_id too long (max 128 chars): {len(stripped)}")
     # Reject path-like patterns
-    if "/" in file_id or "\\" in file_id or ".." in file_id:
-        raise ValueError(f"file_id contains invalid characters: {file_id!r}")
+    if "/" in stripped or "\\" in stripped or ".." in stripped:
+        raise ValueError(f"file_id contains invalid characters: {stripped!r}")
     # Allow alphanumeric, hyphen, underscore (base64url alphabet)
-    if not all(c.isalnum() or c in "-_" for c in file_id):
-        raise ValueError(f"file_id contains invalid characters: {file_id!r}")
+    if not all(c.isalnum() or c in "-_" for c in stripped):
+        raise ValueError(f"file_id contains invalid characters: {stripped!r}")
 
 
 _MAX_DOWNLOAD_BYTES = 100 * 1024 * 1024  # 100 MB — same order of magnitude as webfetch cap
@@ -204,17 +202,19 @@ def fetch_file(file_id: str, *, shrink_if_image: bool = True, max_size_bytes: in
 
     # Enforce size cap using Drive-reported size before downloading.
     # This is a best-effort pre-check; the post-download check below is the definitive guard.
-    reported_size_str = meta.get("size", "")
-    if reported_size_str:
+    # Google Workspace files (Docs, Sheets, etc.) omit the "size" field entirely,
+    # so we skip the pre-check when it's absent or non-numeric.
+    reported_size_raw = meta.get("size")
+    if reported_size_raw is not None:
         try:
-            reported_size = int(reported_size_str)
+            reported_size = int(reported_size_raw)
             if reported_size > max_size_bytes:
                 raise RuntimeError(
                     f"Drive file {file_id!r} too large: {reported_size} bytes "
                     f"exceeds limit of {max_size_bytes} bytes"
                 )
         except (ValueError, TypeError):
-            pass  # non-numeric size field (e.g. Google Workspace formats) — proceed
+            pass  # non-numeric size field — proceed to download
 
     # Build a safe local filename — remove path separators and control chars
     # Allow only alphanumeric, dot, hyphen, underscore
@@ -251,7 +251,7 @@ def fetch_file(file_id: str, *, shrink_if_image: bool = True, max_size_bytes: in
         t_download_start = time.monotonic()
         try:
             while not done:
-                _status, done = downloader.next_chunk()
+                _chunk_status, done = downloader.next_chunk()
                 # Check accumulated size after each chunk to avoid holding the full
                 # file in memory before detecting an oversize condition.
                 if buf.tell() > max_size_bytes:

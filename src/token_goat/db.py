@@ -444,6 +444,31 @@ def _open_with_rebuild(path: Path, *, load_vec: bool = True) -> sqlite3.Connecti
             ) from exc2
 
 
+def _repair_if_corrupt(conn: sqlite3.Connection, path: Path) -> sqlite3.Connection:
+    """Run an integrity check; if it fails, quarantine *path* and open a fresh connection.
+
+    Only runs once per path per process lifetime (results cached in
+    ``_INTEGRITY_CHECKED``).  Returns the original *conn* when the check passes
+    or is already cached; returns a new connection when the file was quarantined.
+    The old connection is closed before quarantine so Windows file locks don't
+    block the rename.
+    """
+    if path in _INTEGRITY_CHECKED:
+        return conn
+    if _integrity_ok(conn):
+        _INTEGRITY_CHECKED[path] = True
+        return conn
+    # Integrity check failed — quarantine and reopen.
+    _LOG.info("integrity check failed for %s; quarantining and rebuilding", path.name)
+    conn.close()
+    # Whether quarantine succeeds or fails, reopen: if quarantine failed (Windows
+    # lock), we reopen the original and proceed rather than crashing.
+    _rebuild(path)
+    new_conn = _open_with_rebuild(path)
+    _INTEGRITY_CHECKED[path] = True
+    return new_conn
+
+
 # ---------------------------------------------------------------------------
 # Public context managers
 # ---------------------------------------------------------------------------
@@ -456,16 +481,7 @@ def open_global() -> Iterator[sqlite3.Connection]:
     _LOG.debug("opening global db: %s", path)
     conn = _open_with_rebuild(path)
     try:
-        # Only check integrity once per file per session to avoid repeated PRAGMA checks
-        if path not in _INTEGRITY_CHECKED and not _integrity_ok(conn):
-            _LOG.info("integrity check failed; quarantining and rebuilding")
-            conn.close()
-            # Try quarantine; whether it succeeds or fails, just reopen the
-            # (possibly-new) file. If quarantine failed (Windows lock), we
-            # reopen the original and proceed; better than crashing.
-            _rebuild(path)
-            conn = _open_with_rebuild(path)
-        _INTEGRITY_CHECKED[path] = True
+        conn = _repair_if_corrupt(conn, path)
         _ensure_global_schema(conn)
         open_elapsed_ms = (time.monotonic() - t0) * 1000
         _LOG.debug("global db ready in %.1fms", open_elapsed_ms)
@@ -516,16 +532,7 @@ def open_project(project_hash: str) -> Iterator[sqlite3.Connection]:
     _LOG.debug("opening project db: %s (hash=%s)", path, project_hash)
     conn = _open_with_rebuild(path)
     try:
-        # Only check integrity once per file per session to avoid repeated PRAGMA checks
-        if path not in _INTEGRITY_CHECKED and not _integrity_ok(conn):
-            _LOG.info("integrity check failed for project %s; quarantining and rebuilding", project_hash)
-            conn.close()
-            # Try quarantine; whether it succeeds or fails, just reopen the
-            # (possibly-new) file. If quarantine failed (Windows lock), we
-            # reopen the original and proceed; better than crashing.
-            _rebuild(path)
-            conn = _open_with_rebuild(path)
-        _INTEGRITY_CHECKED[path] = True
+        conn = _repair_if_corrupt(conn, path)
         _ensure_project_schema(conn)
         open_elapsed_ms = (time.monotonic() - t0) * 1000
         _LOG.debug("project db ready in %.1fms (hash=%s)", open_elapsed_ms, project_hash[:8])
@@ -654,9 +661,11 @@ def project_writer_lock(project_hash: str, timeout_sec: float = 5.0) -> Iterator
             parts = lock_text.strip().split("\n", 1)
             owner_pid = int(parts[0])
             owner_ts = float(parts[1]) if len(parts) > 1 else 0.0
-            if time.time() - owner_ts > LOCK_STALE_SECONDS:
+            lock_age_seconds = time.time() - owner_ts
+            if lock_age_seconds > LOCK_STALE_SECONDS:
                 return True
-            return not psutil.pid_exists(owner_pid)
+            owner_is_alive = psutil.pid_exists(owner_pid)
+            return not owner_is_alive
         except (ValueError, IndexError):
             return True  # malformed → treat as stale
 
