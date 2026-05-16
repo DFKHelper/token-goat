@@ -76,22 +76,29 @@ def _escape_like_pattern(value: str) -> str:
 # Keyed on project_hash so invalidation per project is O(n) on cache size.
 # AmbiguousFileMatch results are never cached — callers see the exception each time.
 # Max 512 entries; evict oldest 128 when full (simple FIFO — LRU not needed here).
+#
+# Cache values are `str` (a resolved rel_path) or `None` (confirmed not found in
+# this project's DB).  We need a third state — "not yet cached" — that is distinct
+# from both of those.  _CACHE_MISS is that sentinel.
 
 _RESOLVE_CACHE: dict[tuple[str, str], str | None] = {}
 _RESOLVE_CACHE_MAX = 512
 _RESOLVE_CACHE_EVICT = 128
 
+# Sentinel returned by _resolve_cache_lookup when the key is absent from the cache.
+# Distinct from None so callers can tell "not cached yet" apart from "cached as not found".
+_CACHE_MISS = object()
 
-def _resolve_cache_get(project_hash: str, file_part: str) -> tuple[bool, str | None]:
-    """Check the file-resolution cache.
 
-    Returns (found, value) where found=True if cached (value is rel_path or None for "not found");
-    found=False if not in cache (caller should query the DB).
+def _resolve_cache_lookup(project_hash: str, file_part: str) -> str | None | object:
+    """Return the cached rel_path, None (confirmed-not-found), or _CACHE_MISS (absent).
+
+    Callers should check ``result is _CACHE_MISS`` to detect a cache miss and
+    fall through to the DB query.  Any other return value (str or None) is a
+    cache hit and should be returned directly.
     """
     key = (project_hash, file_part)
-    if key in _RESOLVE_CACHE:
-        return True, _RESOLVE_CACHE[key]
-    return False, None
+    return _RESOLVE_CACHE.get(key, _CACHE_MISS)
 
 
 def _resolve_cache_put(project_hash: str, file_part: str, rel_path: str | None) -> None:
@@ -211,9 +218,9 @@ def resolve_file_rel(project: Project, file_part: str) -> str | None:
         return None
 
     # Cache hit — avoids DB round-trips for repeated lookups within same process
-    hit, cached = _resolve_cache_get(project.hash, file_part)
-    if hit:
-        return cached
+    cached = _resolve_cache_lookup(project.hash, file_part)
+    if cached is not _CACHE_MISS:
+        return cached  # type: ignore[return-value]  # str | None, not the sentinel
 
     result = _resolve_file_rel_db(project, file_part)
     _resolve_cache_put(project.hash, file_part, result)
@@ -237,10 +244,10 @@ def _resolve_file_rel_db(project: Project, file_part: str) -> str | None:
             return row["rel_path"]
 
         # 2. Absolute path — make it relative to project root
-        p = Path(file_part)
-        if p.is_absolute():
+        abs_path = Path(file_part)
+        if abs_path.is_absolute():
             try:
-                rel = p.resolve().relative_to(project.root.resolve()).as_posix()
+                rel = abs_path.resolve().relative_to(project.root.resolve()).as_posix()
                 row = conn.execute(
                     "SELECT rel_path FROM files WHERE rel_path = ?", (rel,)
                 ).fetchone()
@@ -311,15 +318,19 @@ def find_in_all_projects(file_part: str) -> tuple[Project, str] | None:
         return None
 
     matches: list[tuple[Project, str]] = []
-    ambiguous_candidates: list[str] = []
+    # Formatted as "{project_hash_prefix}:{rel_path}" for error messages.
+    # Collects both within-project ambiguities (from AmbiguousFileMatch) and
+    # cross-project ambiguities (multiple projects each returning a distinct match).
+    cross_project_candidates: list[str] = []
     project_errors: list[str] = []
     for row in rows:
         proj = Project(root=Path(row["root"]), hash=row["hash"], marker=row["marker"])
         try:
             rel = resolve_file_rel(proj, file_part)
         except AmbiguousFileMatch as exc:
-            ambiguous_candidates.extend(
-                f"{proj.hash[:8]}:{candidate}" for candidate in exc.candidates
+            # Multiple files within this single project matched — record all of them.
+            cross_project_candidates.extend(
+                f"{proj.hash[:8]}:{rel_path}" for rel_path in exc.candidates
             )
             continue
         except (FileNotFoundError, OSError, sqlite3.Error, ValueError) as exc:
@@ -337,7 +348,7 @@ def find_in_all_projects(file_part: str) -> tuple[Project, str] | None:
     # Combine unambiguous-but-multiple matches with any per-project ambiguous candidates,
     # deduplicate, and raise so the caller can surface all possibilities.
     all_candidates = [f"{proj.hash[:8]}:{rel}" for proj, rel in matches]
-    all_candidates.extend(ambiguous_candidates)
+    all_candidates.extend(cross_project_candidates)
     if len(all_candidates) > 1:
         all_candidates = sorted(dict.fromkeys(all_candidates))
         _LOG.debug(

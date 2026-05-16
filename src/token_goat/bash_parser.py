@@ -88,13 +88,13 @@ def _parse_read(binary: str, args: list[str]) -> BashIntent:
     limit: int | None = None
     paths: list[str] = []
     # Cache repeated membership tests as locals — avoids re-evaluating the
-    # frozenset lookup and tuple construction on every iteration of the arg loop.
-    is_head_tail = binary in ("head", "tail")
+    # frozenset lookup on every iteration of the arg loop.
+    accepts_line_count_flag = binary in ("head", "tail")  # only head/tail use -n/--lines
     is_scripted = binary in SCRIPTED_READ_BINS
     i = 0
     while i < len(args):
         a = args[i]
-        if is_head_tail:
+        if accepts_line_count_flag:
             if a in ("-n", "--lines"):
                 if i + 1 < len(args):
                     parsed = _try_parse_int(args[i + 1])
