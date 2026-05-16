@@ -290,7 +290,12 @@ def _accumulate(row: sqlite3.Row, by_kind: dict, by_day: dict) -> None:
     by_kind[kind]["bytes_saved"] += bytes_saved
     by_kind[kind]["tokens_saved"] += tokens_saved
 
-    date_str = datetime.fromtimestamp(row["ts"]).strftime("%Y-%m-%d")
+    try:
+        date_str = datetime.fromtimestamp(row["ts"]).strftime("%Y-%m-%d")
+    except (OSError, OverflowError, ValueError):
+        # Malformed or out-of-range timestamp — skip day bucketing for this row.
+        _LOG.debug("skipping day accumulation: invalid ts=%r", row["ts"])
+        return
     d = by_day[date_str]
     d["events"] += 1
     d["bytes_saved"] += bytes_saved
