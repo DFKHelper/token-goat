@@ -64,8 +64,8 @@ def build_manifest(session_id: str, *, max_tokens: int = 400) -> str:
     """
     try:
         cache = session_mod.load(session_id)
-    except Exception:  # noqa: BLE001
-        _LOG.warning("compact: could not load session %s", session_id[:8])
+    except Exception as e:  # noqa: BLE001
+        _LOG.warning("compact: could not load session %s: %s", session_id[:8], e)
         return ""
 
     return _render(cache, session_id, max_tokens)
