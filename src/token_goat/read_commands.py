@@ -149,12 +149,24 @@ def _collect_transitive_outgoing(
     start_rel: str,
     max_depth: int,
 ) -> dict[str, dict]:
-    """BFS over outgoing edges up to max_depth levels.
+    """BFS over outgoing dependency edges up to max_depth levels.
 
-    Returns a dict keyed by file_rel with entries:
-      {"depth": int, "via": str, "symbols": set[str]}
-    where "via" is the immediate parent in the BFS tree.
-    max_depth=0 means unlimited.
+    Computes transitive dependencies: all files that start_rel depends on,
+    directly or indirectly, up to the specified depth limit. Uses breadth-first
+    search to discover dependencies in order of distance from the root.
+
+    Args:
+        conn: Database connection to query symbol references and definitions.
+        start_rel: Repository-relative path of the starting file (project root-relative).
+        max_depth: Maximum traversal depth (0 = unlimited, 1 = direct dependencies only).
+
+    Returns:
+        Dict keyed by file_rel (dependency path) with entries:
+          {"depth": int, "via": str, "symbols": set[str]}
+        where:
+          - depth: Distance from start_rel (1=direct dependency, 2=indirect, etc.)
+          - via: Immediate parent file in the BFS tree (for path reconstruction)
+          - symbols: Set of symbol names referenced from start_rel to this file
     """
     result: dict[str, dict] = {}
     # Use a deque for O(1) popleft — list.pop(0) is O(n) and misreads as a stack.
@@ -178,10 +190,18 @@ def _collect_transitive_outgoing(
 
 
 def _format_dependency_line(file_rel: str, symbols: set[str]) -> str:
-    """Format a dependency entry showing a file and the symbols it uses from that file.
+    """Format a dependency entry showing a file and symbols referenced from it.
 
-    Returns a line like "  - path/to/file.py (2 symbols: funcA, funcB)".
-    Used by the deps command for human-readable output.
+    Produces indented, comma-separated output for human readability in CLI output.
+    Example: "  - path/to/file.py (2 symbols: funcA, funcB)"
+
+    Args:
+        file_rel: Repository-relative path of the dependency file.
+        symbols: Set of symbol names (functions, classes, etc.) referenced from the file.
+
+    Returns:
+        Indented text line with file path and symbol count/list, or just file path
+        if no symbols are provided.
     """
     symbol_list = ", ".join(sorted(symbols))
     count = len(symbols)
