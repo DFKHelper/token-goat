@@ -251,7 +251,10 @@ def get_extractor(language: str) -> Extractor | None:
     factory = _EXTRACTOR_REGISTRY.get(language)
     if factory is None:
         return None
+    t0 = time.time()
     extractor = factory()
+    elapsed = time.time() - t0
+    _LOG.debug("extractor loaded: language=%s elapsed=%.3fs", language, elapsed)
     _EXTRACTOR_CACHE[language] = extractor
     return extractor
 
@@ -374,6 +377,7 @@ def index_file(project: Project, file_path: Path) -> FileIndex | None:
 
 def write_file_index(conn: sqlite3.Connection, fi: FileIndex) -> None:
     """Replace all rows for this file with the new index."""
+    t0 = time.time()
     now = int(time.time())
     # Delete old rows (cascade handles symbols/refs/imports_exports/sections)
     conn.execute("DELETE FROM files WHERE rel_path = ?", (fi.rel_path,))
@@ -436,6 +440,17 @@ def write_file_index(conn: sqlite3.Connection, fi: FileIndex) -> None:
             "INSERT INTO sections (file_rel, heading, level, line, end_line) "
             "VALUES (?, ?, ?, ?, ?)",
             sec_rows,
+        )
+    elapsed = time.time() - t0
+    if elapsed >= 0.5:
+        _LOG.warning(
+            "write_file_index slow: %s symbols=%d refs=%d sections=%d elapsed=%.3fs",
+            fi.rel_path, len(fi.symbols), len(fi.refs), len(fi.sections), elapsed,
+        )
+    else:
+        _LOG.debug(
+            "write_file_index: %s symbols=%d refs=%d sections=%d elapsed=%.3fs",
+            fi.rel_path, len(fi.symbols), len(fi.refs), len(fi.sections), elapsed,
         )
 
 

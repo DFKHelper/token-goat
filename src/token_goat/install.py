@@ -103,11 +103,14 @@ def _remove_legacy_launchers() -> list[str]:
         try:
             legacy_path.unlink()
             removed.append(str(legacy_path))
+            _LOG.info("removed legacy launcher: %s", legacy_path)
         except FileNotFoundError:
             continue
         except OSError as e:
             _LOG.warning("failed to remove legacy launcher %s: %s", legacy_path, e)
 
+    if removed:
+        _LOG.info("legacy launchers removed: %d (%s)", len(removed), ", ".join(removed))
     return removed
 
 
@@ -244,7 +247,14 @@ def install_update_task() -> tuple[bool, str]:
     ]
     if username:
         args += ["/RU", username]
+    import time as _time  # noqa: PLC0415
+    t0 = _time.monotonic()
     code, out = _run_schtasks(args)
+    elapsed_ms = (_time.monotonic() - t0) * 1000
+    if code == 0:
+        _LOG.info("update task registered: task=%s user=%r (%.0fms)", TASK_UPDATE, username or "<current>", elapsed_ms)
+    else:
+        _LOG.warning("update task registration failed: task=%s code=%d (%.0fms): %s", TASK_UPDATE, code, elapsed_ms, out.strip())
     return code == 0, out
 
 
@@ -474,8 +484,17 @@ def install_linux_update_cron() -> tuple[bool, str]:
             capture_output=True,
             timeout=10,
         )
+        if r2.returncode == 0:
+            _LOG.info("cron job installed: %s", cron_line)
+        else:
+            _LOG.warning(
+                "crontab write exited %d: %s",
+                r2.returncode,
+                (r2.stderr or "").strip(),
+            )
         return r2.returncode == 0, f"cron job added: {cron_line}"
     except (FileNotFoundError, subprocess.TimeoutExpired) as e:
+        _LOG.warning("crontab write failed: %s", e)
         return False, f"crontab write failed: {e}"
 
 

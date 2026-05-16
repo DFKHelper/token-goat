@@ -103,6 +103,7 @@ _MODEL_CACHE: dict[str, TextEmbedding] = {}  # singleton per model name
 def _get_model(model_name: str = DEFAULT_MODEL) -> TextEmbedding:
     """Lazily import + load fastembed. Raises EmbeddingsUnavailable on any failure."""
     if model_name in _MODEL_CACHE:
+        _LOG.debug("fastembed model cache hit: %s", model_name)
         return _MODEL_CACHE[model_name]
     try:
         # Point fastembed at our model cache dir
@@ -112,7 +113,10 @@ def _get_model(model_name: str = DEFAULT_MODEL) -> TextEmbedding:
         _LOG.info(
             "loading fastembed model %s (cache=%s)", model_name, paths.models_dir()
         )
+        t0 = time.monotonic()
         model = TextEmbedding(model_name=model_name, cache_dir=str(paths.models_dir()))
+        elapsed = time.monotonic() - t0
+        _LOG.info("fastembed model loaded: %s in %.2fs", model_name, elapsed)
         _MODEL_CACHE[model_name] = model
         return model
     except ImportError as e:
@@ -157,9 +161,11 @@ def embed_texts(
     """
     if not texts:
         return []
+    n = len(texts)
     model = _get_model(model_name)
     expected_dim = DEFAULT_DIM if model_name == DEFAULT_MODEL else None
     vecs: list[list[float]] = []
+    t0 = time.monotonic()
     try:
         for arr in model.embed(list(texts)):  # type: ignore[union-attr]
             try:
@@ -180,6 +186,9 @@ def embed_texts(
     except (RuntimeError, ValueError, TypeError) as e:
         _LOG.debug("embed_texts: embedding iteration failed: %s", e, exc_info=True)
         raise EmbeddingsUnavailable(f"embed() iteration failed: {e}") from e
+    elapsed = time.monotonic() - t0
+    throughput = n / elapsed if elapsed > 0 else 0.0
+    _LOG.debug("embed_texts: n=%d elapsed=%.3fs throughput=%.1f texts/s", n, elapsed, throughput)
     return vecs
 
 
@@ -294,6 +303,14 @@ def extract_chunks_for_file(
                 chunks.append(Chunk(rel_path, line_no, window_end, chunk_text, "window"))
             line_no = window_end + 1
 
+    _LOG.debug(
+        "extract_chunks_for_file: %s -> %d chunks (sym=%d sec=%d win=%d)",
+        rel_path,
+        len(chunks),
+        sum(1 for c in chunks if c.kind not in ("section", "window")),
+        sum(1 for c in chunks if c.kind == "section"),
+        sum(1 for c in chunks if c.kind == "window"),
+    )
     return chunks
 
 
