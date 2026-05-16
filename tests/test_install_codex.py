@@ -4,22 +4,10 @@ from __future__ import annotations
 from pathlib import Path
 from unittest.mock import patch
 
+from conftest import fake_home as _fake_home
+from conftest import patch_home as _patch_home
+
 from token_goat import install
-
-# ---------------------------------------------------------------------------
-# Helpers (mirrors test_install.py pattern)
-# ---------------------------------------------------------------------------
-
-
-def _fake_home(tmp_path: Path) -> Path:
-    home = tmp_path / "home"
-    home.mkdir(parents=True, exist_ok=True)
-    return home
-
-
-def _patch_home(monkeypatch, home: Path) -> None:
-    monkeypatch.setattr(Path, "home", staticmethod(lambda: home))
-
 
 # ---------------------------------------------------------------------------
 # 1. patch_codex_config on missing file → creates valid TOML with our hooks

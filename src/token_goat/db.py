@@ -201,6 +201,16 @@ def _is_transient_db_error(error: sqlite3.DatabaseError) -> bool:
     return "locked" in msg or "busy" in msg or "i/o" in msg
 
 
+def _is_readonly_or_transient(error: sqlite3.OperationalError) -> bool:
+    """Return True when *error* is a read-only sandbox or transient lock/busy condition.
+
+    Both ``touch_project_last_seen`` and ``record_stat`` treat these identically:
+    log at DEBUG and silently drop the write, because telemetry is best-effort and
+    sandbox environments (Codex unelevated) are expected to be read-only.
+    """
+    return _is_transient_db_error(error) or "readonly" in str(error).lower()
+
+
 def _integrity_ok(conn: sqlite3.Connection) -> bool:
     """Return True if the DB is verifiably healthy.
 
@@ -825,7 +835,7 @@ def touch_project_last_seen(project_hash: str) -> None:
             )
     except sqlite3.OperationalError as exc:
         # Read-only fallback (sandbox) — expected, telemetry is best-effort.
-        if _is_transient_db_error(exc) or "readonly" in str(exc).lower():
+        if _is_readonly_or_transient(exc):
             _LOG.debug("touch_project_last_seen skipped (read-only or transient): %s", exc)
         else:
             _LOG.error("touch_project_last_seen failed: %s", exc)
@@ -924,7 +934,7 @@ def record_stat(
         # "attempt to write a readonly database" is expected in sandboxed
         # contexts (Codex unelevated) where _connect() falls back to immutable
         # mode.  Drop to debug — telemetry is best-effort.
-        if _is_transient_db_error(exc) or "readonly" in str(exc).lower():
+        if _is_readonly_or_transient(exc):
             _LOG.debug("record_stat skipped (read-only or transient): %s", exc)
         else:
             _LOG.error("record_stat failed: %s", exc)
