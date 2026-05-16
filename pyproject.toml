@@ -1,6 +1,6 @@
 [project]
 name = "token-goat"
-version = "0.3.1"
+version = "0.3.2"
 description = "Hook-based token optimizer for Claude Code on Windows, macOS, Linux, and WSL. Image shrink, re-read dedup, and compaction assist — automatic."
 readme = "README.md"
 requires-python = ">=3.11,<3.15"
