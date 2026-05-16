@@ -263,8 +263,8 @@ def stats_for(src_path: Path, shrunken_path: Path) -> ImageStats:
                 orig_w, orig_h = img.size
             with Image.open(shrunken_path) as img:
                 out_w, out_h = img.size
-        except Exception:  # noqa: BLE001
-            pass
+        except Exception as exc:  # noqa: BLE001
+            _LOG.debug("gather_stats: could not read image dimensions for %s: %s", src_path.name, exc)
 
         return ImageStats(
             src_bytes=src_size,

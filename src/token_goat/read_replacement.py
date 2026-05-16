@@ -297,12 +297,17 @@ def find_in_all_projects(file_part: str) -> tuple[Project, str] | None:
             rows = gconn.execute("SELECT hash, root, marker FROM projects").fetchall()
     except FileNotFoundError:
         return None
-    except Exception as exc:  # noqa: BLE001 — any DB failure is non-fatal for cross-project lookup
+    except (OSError, sqlite3.Error) as exc:
         _LOG.warning("find_in_all_projects: global DB unavailable: %s", exc)
-        if isinstance(exc, (OSError, sqlite3.Error)):
-            raise ProjectIndexUnavailable(
-                "Project index database is unavailable. Run `token-goat index --full` again."
-            ) from exc
+        raise ProjectIndexUnavailable(
+            "Project index database is unavailable. Run `token-goat index --full` again."
+        ) from exc
+    except Exception as exc:  # noqa: BLE001 — unexpected error; fail-soft for cross-project lookup
+        _LOG.warning(
+            "find_in_all_projects: unexpected error opening global DB (%s: %s); skipping cross-project lookup",
+            type(exc).__name__,
+            exc,
+        )
         return None
 
     matches: list[tuple[Project, str]] = []
