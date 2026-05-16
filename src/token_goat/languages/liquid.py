@@ -22,8 +22,12 @@ _SCHEMA_RE = re.compile(
     re.IGNORECASE | re.DOTALL,
 )
 
-# HTML headings
-_H_TAG_RE = re.compile(r"<h([1-4])[^>]*>([^<]*)</h\1>", re.IGNORECASE | re.DOTALL)
+# Liquid tag regex → ImpExp kind triples (include/section/render all share the same structure)
+_LIQUID_TAG_IMPORTS: list[tuple[re.Pattern[str], str]] = [
+    (_INCLUDE_RE, "liquid_include"),
+    (_SECTION_RE, "liquid_section"),
+    (_RENDER_RE, "liquid_render"),
+]
 
 
 def extract(source: bytes, rel_path: str) -> tuple[list[Symbol], list[Ref], list[ImpExp], list[Section]]:
@@ -37,20 +41,11 @@ def extract(source: bytes, rel_path: str) -> tuple[list[Symbol], list[Ref], list
         lines = text.split("\n")
 
         # --- Extract includes/sections/renders ---
-        for match in _INCLUDE_RE.finditer(text):
-            target = match.group(1)
-            line = text[:match.start()].count("\n") + 1
-            imports.append(ImpExp(kind="liquid_include", target=target, line=line))
-
-        for match in _SECTION_RE.finditer(text):
-            target = match.group(1)
-            line = text[:match.start()].count("\n") + 1
-            imports.append(ImpExp(kind="liquid_section", target=target, line=line))
-
-        for match in _RENDER_RE.finditer(text):
-            target = match.group(1)
-            line = text[:match.start()].count("\n") + 1
-            imports.append(ImpExp(kind="liquid_render", target=target, line=line))
+        for pattern, kind in _LIQUID_TAG_IMPORTS:
+            for match in pattern.finditer(text):
+                target = match.group(1)
+                line = text[:match.start()].count("\n") + 1
+                imports.append(ImpExp(kind=kind, target=target, line=line))
 
         # --- Extract schema block ---
         for match in _SCHEMA_RE.finditer(text):
@@ -74,13 +69,7 @@ def extract(source: bytes, rel_path: str) -> tuple[list[Symbol], list[Ref], list
             symbols.append(Symbol(name=section_name, kind="liquid_section_file", line=1))
 
         # --- Extract HTML headings within Liquid ---
-        for match in _H_TAG_RE.finditer(text):
-            level = int(match.group(1))
-            heading_text = match.group(2).strip()
-            if heading_text:
-                heading_text = heading_text[:100]
-                line = text[:match.start()].count("\n") + 1
-                sections.append(Section(heading=heading_text, level=level, line=line))
+        common.extract_html_headings(text, sections)
 
         # Compute end_line for sections
         common._compute_section_end_lines(sections, lines)

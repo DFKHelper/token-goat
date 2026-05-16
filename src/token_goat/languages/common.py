@@ -398,3 +398,25 @@ def _compute_section_end_lines(sections: list[Section], lines: list[str]) -> Non
                 end_line = sections[j].line - 1
                 break
         sec.end_line = end_line
+
+
+# Shared HTML heading regex used by both html.py and liquid.py
+_H_TAG_RE = re.compile(r"<h([1-4])[^>]*>([^<]*)</h\1>", re.IGNORECASE | re.DOTALL)
+
+
+def extract_html_headings(text: str, sections: list[Section]) -> None:
+    """Append HTML heading Sections parsed from *text* into *sections*.
+
+    Handles ``<h1>``–``<h4>`` tags.  Caller is responsible for calling
+    ``_compute_section_end_lines`` afterwards.  Extracted to eliminate the
+    identical loop duplicated in ``html.py`` and ``liquid.py``.
+    """
+    from ..parser import Section as _Section  # noqa: PLC0415
+
+    for match in _H_TAG_RE.finditer(text):
+        level = int(match.group(1))
+        heading_text = match.group(2).strip()
+        if heading_text:
+            heading_text = heading_text[:100]
+            line = text[: match.start()].count("\n") + 1
+            sections.append(_Section(heading=heading_text, level=level, line=line))
