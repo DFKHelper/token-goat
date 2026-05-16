@@ -357,7 +357,11 @@ def index_file(project: Project, file_path: Path) -> FileIndex | None:
     except OSError as e:
         _LOG.warning("read failed: %s: %s", file_path, e)
         return None
-    rel = file_path.relative_to(project.root).as_posix()
+    try:
+        rel = file_path.relative_to(project.root).as_posix()
+    except ValueError as e:
+        _LOG.warning("index_file: path not under project root (skipping): %s: %s", file_path, e)
+        return None
     language = LANG_BY_EXT[file_path.suffix.lower()]
     line_count = _line_count_from_bytes(raw)
     extractor = get_extractor(language)

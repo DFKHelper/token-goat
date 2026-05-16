@@ -428,8 +428,8 @@ def find_in_all_projects(file_part: str) -> tuple[Project, str] | None:
 def _extract_snippet(
     lines: list[str],
     full_bytes: int,
-    row_start: int,
-    row_end: int,
+    row_start: int | None,
+    row_end: int | None,
     context_lines: int,
 ) -> tuple[str, int, int, int]:
     """Slice *lines* to the requested range plus optional context.
@@ -446,6 +446,8 @@ def _extract_snippet(
         Total byte size of the file (for bytes_saved calculation).
     row_start, row_end:
         1-based line numbers from the DB row (``row["line"]``, ``row["end_line"]``).
+        Either may be None when the DB row has a NULL value; both default to 1 so
+        callers get an empty-but-valid result rather than a TypeError.
     context_lines:
         Extra lines to include before/after the symbol or section.
 
@@ -455,8 +457,10 @@ def _extract_snippet(
         The extracted text, its byte size, and the clamped 1-based start/end
         line numbers actually used.
     """
-    start = max(1, row_start - context_lines)
-    end = min(len(lines), row_end + context_lines)
+    safe_start = int(row_start) if row_start is not None else 1
+    safe_end = int(row_end) if row_end is not None else safe_start
+    start = max(1, safe_start - context_lines)
+    end = min(len(lines), safe_end + context_lines)
     snippet = "\n".join(lines[start - 1 : end])
     snippet_bytes = len(snippet.encode("utf-8"))
     return snippet, snippet_bytes, start, end
@@ -542,8 +546,10 @@ def read_symbol(
         return None
     lines, full_bytes = read_result
 
+    sym_line: int = int(chosen["line"]) if chosen["line"] is not None else 1
+    sym_end_line: int | None = int(chosen["end_line"]) if chosen["end_line"] is not None else None
     snippet, snippet_bytes, start, end = _extract_snippet(
-        lines, full_bytes, chosen["line"], chosen["end_line"], context_lines
+        lines, full_bytes, sym_line, sym_end_line, context_lines
     )
     elapsed = time.monotonic() - t0
     _LOG.debug(
@@ -621,8 +627,10 @@ def read_section(
         return None
     lines, full_bytes = read_result
 
+    sec_line: int = int(chosen["line"]) if chosen["line"] is not None else 1
+    sec_end_line: int | None = int(chosen["end_line"]) if chosen["end_line"] is not None else None
     snippet, snippet_bytes, start, end = _extract_snippet(
-        lines, full_bytes, chosen["line"], chosen["end_line"], context_lines
+        lines, full_bytes, sec_line, sec_end_line, context_lines
     )
     elapsed = time.monotonic() - t0
     _LOG.debug(

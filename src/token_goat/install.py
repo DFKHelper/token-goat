@@ -809,7 +809,11 @@ def _read_settings_json(settings_path: Path) -> dict[str, object] | None:
     """
     if not settings_path.exists():
         return None
-    data = json.loads(settings_path.read_text(encoding="utf-8"))
+    try:
+        raw = settings_path.read_text(encoding="utf-8")
+    except OSError as e:
+        raise OSError(f"could not read settings.json: {e}") from e
+    data = json.loads(raw)
     if not isinstance(data, dict):
         raise json.JSONDecodeError(
             f"settings.json must be a JSON object, got {type(data).__name__}",
