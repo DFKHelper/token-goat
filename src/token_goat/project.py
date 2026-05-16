@@ -104,15 +104,13 @@ def _marker_exists(current: Path, marker: str) -> bool:
     try:
         if not marker_path.exists():
             return False
+        if not marker_path.is_symlink():
+            return True
         # Symlink: verify the resolved target stays inside the candidate root.
-        if marker_path.is_symlink():
-            resolved = marker_path.resolve()
-            try:
-                resolved.relative_to(current.resolve())
-            except ValueError:
-                return False  # symlink escapes the project root — reject
+        resolved = marker_path.resolve()
+        resolved.relative_to(current.resolve())  # raises ValueError if it escapes
         return True
-    except OSError:
+    except (OSError, ValueError):
         return False
 
 

@@ -437,9 +437,8 @@ def _check_openclaw_plugin() -> str:
     cfg_path = openclaw_config_path()
 
     file_status = _check_plugin_file(plugin_path)
-    if file_status == "present but not token-goat bridge":
-        return file_status
-    if file_status == "error reading plugin file":
+    # Pass through error/foreign-file states immediately — no registry check needed.
+    if file_status in ("present but not token-goat bridge", "error reading plugin file"):
         return file_status
     file_ok = file_status == "installed"
 
