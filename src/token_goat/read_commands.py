@@ -43,7 +43,11 @@ def _emit_read_error(
     candidates: Sequence[str] = (),
     **details: object,
 ) -> None:
-    """Emit a structured read error in either text or JSON form."""
+    """Emit a structured read error in either text or JSON form.
+
+    In JSON mode, outputs {"ok": False, "error": {...}} with code, message, and optional
+    candidates/details. In text mode, outputs the message to stderr with candidates indented below.
+    """
     if json_output:
         error: dict[str, object] = {"code": code, "message": message}
         if candidates:
