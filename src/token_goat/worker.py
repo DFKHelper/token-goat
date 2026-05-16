@@ -485,12 +485,12 @@ def _cleanup_stale_locks() -> int:
             if not pid_str:
                 raise ValueError("empty PID in lock file")
             pid = int(pid_str)
-            dead = not psutil.pid_exists(pid)
-            old = now - lock_path.stat().st_mtime > db.LOCK_STALE_SECONDS
-            if dead or old:
+            process_is_dead = not psutil.pid_exists(pid)
+            lock_is_stale = now - lock_path.stat().st_mtime > db.LOCK_STALE_SECONDS
+            if process_is_dead or lock_is_stale:
                 lock_path.unlink()
                 cleared += 1
-                reason = "process dead" if dead else "stale (>600s)"
+                reason = "process dead" if process_is_dead else "stale (>600s)"
                 _LOG.debug("cleared stale lock %s (%s)", lock_path.name, reason)
         except (ValueError, OSError) as e:
             _LOG.debug("removing stale/malformed lock %s: %s", lock_path.name, e)

@@ -45,12 +45,12 @@ def _format_ranges(ranges: list[tuple[int, int]]) -> str:
     """Render line ranges compactly, e.g. 'lines 1-50, 100-200'."""
     if not ranges:
         return ""
-    n = len(ranges)
+    total_ranges = len(ranges)
     shown = ranges[:_MAX_RANGES_PER_FILE]
     # Generator expression avoids building an intermediate list just to join.
-    parts = ", ".join(str(s) if s == e else f"{s}-{e}" for s, e in shown)
-    extra = f" +{n - _MAX_RANGES_PER_FILE} more" if n > _MAX_RANGES_PER_FILE else ""
-    return f"  lines {parts}{extra}"
+    parts = ", ".join(str(start) if start == end else f"{start}-{end}" for start, end in shown)
+    overflow_suffix = f" +{total_ranges - _MAX_RANGES_PER_FILE} more" if total_ranges > _MAX_RANGES_PER_FILE else ""
+    return f"  lines {parts}{overflow_suffix}"
 
 
 def event_count(session_id: str) -> int:
@@ -87,7 +87,7 @@ def build_manifest(session_id: str, *, max_tokens: int = 400) -> str:
         _LOG.warning("compact: could not load session %s: %s", session_id[:8], e)
         return ""
 
-    result, symbols_files_count = _render(cache, session_id, max_tokens)
+    result, files_with_symbols_count = _render(cache, session_id, max_tokens)
     elapsed = time.monotonic() - t0
     token_estimate = estimate_tokens(result)
     _LOG.info(
@@ -96,7 +96,7 @@ def build_manifest(session_id: str, *, max_tokens: int = 400) -> str:
         session_id[:8],
         len(cache.edited_files),
         len(cache.files),
-        symbols_files_count,
+        files_with_symbols_count,
         token_estimate,
         elapsed,
     )
@@ -167,10 +167,10 @@ def _render(cache: SessionCache, session_id: str, max_tokens: int) -> tuple[str,
         sections.append("")
 
     result = "\n".join(sections).rstrip()
-    n_symbols_files = len(files_with_symbols)
+    files_with_symbols_count = len(files_with_symbols)
 
     if estimate_tokens(result) <= max_tokens:
-        return result, n_symbols_files
+        return result, files_with_symbols_count
 
     # Trim: drop lines from the bottom until within budget, preserving headers.
     # Track accumulated character length incrementally to avoid O(n²) re-joins
@@ -182,4 +182,4 @@ def _render(cache: SessionCache, session_id: str, max_tokens: int) -> tuple[str,
     while total_chars > char_budget and len(lines) > 3:
         removed = lines.pop()
         total_chars -= len(removed) + 1  # +1 for the '\n' separator
-    return "\n".join(lines), n_symbols_files
+    return "\n".join(lines), files_with_symbols_count

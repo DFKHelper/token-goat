@@ -86,11 +86,10 @@ def normalize_payload(payload: dict[str, Any], harness: str = "claude") -> dict[
     Codex sends snake_case keys for some fields and uses 'turn_id'; Claude uses
     camelCase. token-goat handlers work with the Claude shape internally.
     Most fields (session_id, cwd, tool_name, tool_input) are already identical
-    between the two harnesses — nothing needs renaming in the input direction.
+    between the two harnesses — nothing needs remapping in the inbound direction.
+    Output normalization (camelCase → snake_case) is handled by denormalize_response.
     """
-    if harness == "codex":
-        # turn_id is Codex-only — keep it in payload; no other remapping needed.
-        return payload
+    # Both harnesses share the same inbound field names; no transformation needed.
     return payload
 
 
@@ -356,11 +355,11 @@ def dispatch(event: str, payload: dict[str, Any]) -> HookResponse:
     t0 = time.monotonic()
     result = handler(payload)
     elapsed_ms = (time.monotonic() - t0) * 1000
-    if elapsed_ms >= _HOOK_SLOW_MS:
+    is_slow = elapsed_ms >= _HOOK_SLOW_MS
+    if is_slow:
         _LOG.warning("hook %s slow: %.1fms (check for blockage or I/O delays)", event, elapsed_ms)
-    elif elapsed_ms >= _HOOK_MODERATE_MS:
-        _LOG.debug("hook %s completed in %.1fms (moderate)", event, elapsed_ms)
     else:
-        _LOG.debug("hook %s completed in %.1fms (fast)", event, elapsed_ms)
+        speed_tag = "moderate" if elapsed_ms >= _HOOK_MODERATE_MS else "fast"
+        _LOG.debug("hook %s completed in %.1fms (%s)", event, elapsed_ms, speed_tag)
     result["_tg_elapsed_ms"] = round(elapsed_ms, 2)
     return result
