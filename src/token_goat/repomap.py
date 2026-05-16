@@ -223,11 +223,14 @@ def _summarize_file(
         symbols,
         key=lambda ks: (KIND_PRIORITY.get(ks[0], 99), ks[1]),
     )
-    # Build top_symbols with single pass; duplicates are rare, so use linear check
+    # Build top_symbols with a set for O(1) duplicate detection
     top_symbols: list[tuple[str, str]] = []
+    seen: set[tuple[str, str]] = set()
     for kind, name in sorted_syms:
-        if (kind, name) not in top_symbols:  # Single check per item (faster for small lists)
-            top_symbols.append((kind, name))
+        entry = (kind, name)
+        if entry not in seen:
+            seen.add(entry)
+            top_symbols.append(entry)
             if len(top_symbols) >= max_symbols:
                 break
 

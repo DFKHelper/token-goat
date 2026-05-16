@@ -4,6 +4,7 @@ from __future__ import annotations
 import contextlib
 import logging
 import os
+import re
 import sqlite3
 import time
 from collections.abc import Iterator
@@ -418,6 +419,9 @@ def open_global() -> Iterator[sqlite3.Connection]:
             conn.close()
 
 
+_PROJECT_HASH_RE = re.compile(r"^[a-zA-Z0-9_]+$")
+
+
 def _validate_project_hash(project_hash: str) -> None:
     """Validate project_hash to prevent path traversal attacks.
 
@@ -427,7 +431,7 @@ def _validate_project_hash(project_hash: str) -> None:
         raise ValueError("project_hash cannot be empty")
     if len(project_hash) > 128:
         raise ValueError(f"project_hash too long (max 128 chars): {len(project_hash)}")
-    if not all(c.isalnum() or c == "_" for c in project_hash):
+    if not _PROJECT_HASH_RE.match(project_hash):
         raise ValueError(f"project_hash must be alphanumeric or underscore: {project_hash!r}")
 
 
