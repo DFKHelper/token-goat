@@ -6,7 +6,7 @@ import sqlite3
 import time
 from collections.abc import Sequence
 from pathlib import Path
-from typing import Any
+from typing import TypedDict
 
 from . import db
 from .paths import is_safe_rel_path as _is_safe_rel_path
@@ -19,6 +19,36 @@ from .project import Project
 _MAX_READ_BYTES = 2_000_000  # 2 MB — keep in sync with parser.MAX_FILE_SIZE
 
 _LOG = logging.getLogger("token_goat.read_replacement")
+
+
+class SymbolResult(TypedDict):
+    """Return value of :func:`read_symbol`."""
+
+    file: str
+    symbol: str
+    kind: str
+    start_line: int
+    end_line: int
+    text: str
+    signature: str | None
+    bytes_total: int
+    bytes_extracted: int
+    bytes_saved: int
+
+
+class SectionResult(TypedDict):
+    """Return value of :func:`read_section`."""
+
+    file: str
+    heading: str
+    level: int
+    start_line: int
+    end_line: int
+    text: str
+    bytes_total: int
+    bytes_extracted: int
+    bytes_saved: int
+
 
 # Lower value = higher priority when multiple symbols share the same name
 _KIND_PRIORITY: dict[str, int] = {
@@ -461,10 +491,10 @@ def read_symbol(
     symbol: str,
     *,
     context_lines: int = 0,
-) -> dict[str, Any] | None:
+) -> SymbolResult | None:
     """Look up symbol in DB, slice the file, return extraction dict.
 
-    Returns a dict with keys:
+    Returns a SymbolResult with keys:
         file, symbol, kind, start_line, end_line, text,
         signature, bytes_total, bytes_extracted, bytes_saved
     Returns None if the symbol is not found or the file cannot be read.
@@ -514,18 +544,18 @@ def read_symbol(
         100.0 * max(0, full_bytes - snippet_bytes) / full_bytes if full_bytes else 0.0,
         elapsed,
     )
-    return {
-        "file": rel_path,
-        "symbol": chosen["name"],
-        "kind": chosen["kind"],
-        "start_line": start,
-        "end_line": end,
-        "text": snippet,
-        "signature": chosen["signature"],
-        "bytes_total": full_bytes,
-        "bytes_extracted": snippet_bytes,
-        "bytes_saved": max(0, full_bytes - snippet_bytes),
-    }
+    return SymbolResult(
+        file=rel_path,
+        symbol=chosen["name"],
+        kind=chosen["kind"],
+        start_line=start,
+        end_line=end,
+        text=snippet,
+        signature=chosen["signature"],
+        bytes_total=full_bytes,
+        bytes_extracted=snippet_bytes,
+        bytes_saved=max(0, full_bytes - snippet_bytes),
+    )
 
 
 def read_section(
@@ -534,10 +564,10 @@ def read_section(
     heading: str,
     *,
     context_lines: int = 0,
-) -> dict[str, Any] | None:
+) -> SectionResult | None:
     """Same as read_symbol but for markdown/HTML/Liquid section headings.
 
-    Returns a dict with keys:
+    Returns a SectionResult with keys:
         file, heading, level, start_line, end_line, text,
         bytes_total, bytes_extracted, bytes_saved
     Returns None if the heading is not found or the file cannot be read.
@@ -594,14 +624,14 @@ def read_section(
         100.0 * max(0, full_bytes - snippet_bytes) / full_bytes if full_bytes else 0.0,
         elapsed,
     )
-    return {
-        "file": rel_path,
-        "heading": chosen["heading"],
-        "level": chosen["level"],
-        "start_line": start,
-        "end_line": end,
-        "text": snippet,
-        "bytes_total": full_bytes,
-        "bytes_extracted": snippet_bytes,
-        "bytes_saved": max(0, full_bytes - snippet_bytes),
-    }
+    return SectionResult(
+        file=rel_path,
+        heading=chosen["heading"],
+        level=chosen["level"],
+        start_line=start,
+        end_line=end,
+        text=snippet,
+        bytes_total=full_bytes,
+        bytes_extracted=snippet_bytes,
+        bytes_saved=max(0, full_bytes - snippet_bytes),
+    )

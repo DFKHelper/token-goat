@@ -8,7 +8,10 @@ import os
 import sys
 from dataclasses import asdict, is_dataclass
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from .project import Project
 
 # Force UTF-8 on stdout/stderr (Windows defaults to cp1252 which can't encode
 # the punctuation we use in maps, hints, and stats: → ›  etc.).
@@ -51,7 +54,7 @@ def _warn(msg: str) -> None:
 
 def _require_project(
     msg: str = "no project detected — run from a project directory",
-) -> Any:
+) -> Project:
     """Return the current project or exit with code 1.
 
     Centralises the repeated pattern::
@@ -86,7 +89,7 @@ def _emit_json(data: Any, *, indent: int | None = None) -> None:
     raise typer.Exit(0)
 
 
-def _query_project(proj_hash: str, sql: str, params: tuple) -> list:
+def _query_project(proj_hash: str, sql: str, params: tuple[object, ...]) -> list[Any]:
     """Run a SELECT against the project DB, exiting on DBError.
 
     Centralises the repeated pattern::
@@ -548,7 +551,7 @@ def index(
     """Rebuild project/global indices."""
     from . import paths as _paths  # noqa: PLC0415
     from .parser import index_project  # noqa: PLC0415
-    from .project import Project, find_project, make_project_at  # noqa: PLC0415
+    from .project import find_project, make_project_at  # noqa: PLC0415
 
     proj: Project | None = None
     if root is not None:
