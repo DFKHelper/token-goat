@@ -27,7 +27,27 @@ _ABI_EXPORT_RE = re.compile(
 
 
 def _is_abi_file(source: bytes, rel_path: str, threshold: int = _ABI_SIZE_THRESHOLD) -> bool:
-    """Return True if this file should be treated as a generated ABI file."""
+    """Return True if this file should be treated as a generated ABI file.
+
+    ABI files are large auto-generated TypeScript constants that encode Solidity
+    contract interfaces.  Full tree-sitter parsing of these files is slow and
+    produces thousands of near-useless symbols; the fast path in
+    :func:`_extract_abi` handles them with a single regex pass instead.
+
+    Three independent heuristics are checked in order (short-circuit on first
+    match so we avoid reading the file content when the name already tells us):
+
+    1. **Size gate** — files smaller than *threshold* bytes are never ABI mode,
+       regardless of name or content.  This prevents mis-classifying tiny hand-
+       written files that happen to share a name pattern.
+    2. **Filename heuristic** — ``*abi.ts``, ``*abi.d.ts``, ``*.abi.ts``, or
+       files inside an ``abi/`` directory are almost certainly generated.
+    3. **Content heuristics** (read only when size + name both pass):
+       - First 2 KB contains ``// generated`` / ``// auto-generated`` comment.
+       - First 8 KB contains ``as const`` plus more than five ``"inputs":`` /
+         ``"outputs":`` keys, which is the structural fingerprint of an ABI
+         constant array.
+    """
     if len(source) < threshold:
         return False
 

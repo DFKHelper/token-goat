@@ -31,7 +31,25 @@ def _is_noise(name: str) -> bool:
 
 
 def extract(source: bytes, rel_path: str) -> tuple[list[Symbol], list[Ref], list[ImpExp], list[Section]]:
-    """Extract HTML headings, ids, classes, links, scripts."""
+    """Extract symbols, imports, and sections from an HTML file.
+
+    Symbols:
+      - ``html_id``  — ``id="..."`` attribute values (noise-filtered)
+      - ``html_class`` — individual class tokens from ``class="..."`` attributes (noise-filtered)
+
+    Imports:
+      - ``html_link``   — ``href`` values from ``<link>`` tags (CSS, canonical, etc.)
+      - ``html_script`` — ``src`` values from ``<script>`` tags
+
+    Sections:
+      - ``<h1>``–``<h4>`` headings become :class:`Section` entries with computed
+        ``end_line`` (each heading closes at the next heading of equal or lesser depth).
+
+    The noise filter (``_is_noise``) suppresses generic ids/classes like
+    ``container``, ``wrapper``, ``row``, ``col`` that appear in virtually every
+    HTML file and produce more noise than signal in symbol indexes.  HTML does
+    not expose callable refs, so the refs list is always empty.
+    """
     try:
         text = source.decode("utf-8", errors="replace")
         symbols: list[Symbol] = []

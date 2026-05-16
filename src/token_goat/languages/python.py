@@ -33,9 +33,18 @@ _CALL_NOISE = frozenset([
 _CALL_RE = re.compile(r"(?<![.\w])([A-Za-z_][A-Za-z0-9_]*)\s*\(")
 
 
-
 def _parse_import_source(source_line: str) -> list[str]:
-    """Return list of import targets from an import statement source line."""
+    """Return qualified import targets from one Python import statement source line.
+
+    Handles both statement forms and expands multi-target imports into separate
+    target strings so each name gets its own :class:`~token_goat.parser.ImpExp` row:
+
+    - ``from foo.bar import A, B as C`` → ``["foo.bar.A", "foo.bar.B"]``
+      (``as`` aliases are stripped; ``*`` is excluded)
+    - ``import os, pathlib.Path as P`` → ``["os", "pathlib.Path"]``
+    - Parenthesized ``from x import (A, B)`` is handled by stripping ``()``.
+    - Unrecognised lines fall back to returning the raw stripped line.
+    """
     line = source_line.strip()
     m = re.match(r"^from\s+(\S+)\s+import\s+(.+)$", line)
     if m:
@@ -54,7 +63,24 @@ def _parse_import_source(source_line: str) -> list[str]:
 
 
 def extract(source: bytes, rel_path: str) -> tuple[list[Symbol], list[Ref], list[ImpExp], list[Section]]:
-    """Extract symbols, refs, and imports from a Python file."""
+    """Extract symbols, refs, and imports from a Python source file.
+
+    Symbols are collected in two passes:
+    1. **Structure walk** via tree-sitter — discovers functions, classes, and
+       methods (functions nested inside a class are promoted to ``kind="method"``
+       via ``promote_methods=True`` in :func:`~common.make_add_symbol`).
+    2. **SymbolInfo pass** — catches module-level variables and constants that
+       the structure walk may miss (e.g. ``MY_CONST = 42``).
+
+    Imports are expanded per-name via :func:`_parse_import_source`, so a single
+    ``from os.path import join, exists`` statement produces two :class:`ImpExp`
+    rows (``os.path.join`` and ``os.path.exists``).
+
+    Refs are extracted by regex (``_CALL_RE``) over the raw source text.
+    Common builtins and keywords in ``_CALL_NOISE`` are excluded to keep the
+    ref list focused on project-internal call sites.  Sections are always empty
+    for Python files (use :mod:`token_goat.languages.markdown` for prose).
+    """
     result, _text = common.parse_source(source, "python", rel_path, _LOG)
     if result is None:
         return [], [], [], []
