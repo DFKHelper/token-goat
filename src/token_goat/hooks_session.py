@@ -24,11 +24,33 @@ def _reset_session_cache(session_id: str | None) -> None:
 
 
 def _detect(payload: dict[str, Any]) -> Project | None:
-    """Detect the current project from cwd. Returns None if not in a project root."""
+    """Detect the current project from cwd. Returns None if not in a project root.
+
+    Validates *cwd* before handing it to ``find_project``.  The ``cwd`` field
+    comes from the harness payload (external input), so a malformed value — an
+    empty string, a non-directory path, or an excessively long value — is
+    rejected here rather than letting ``find_project`` walk arbitrary filesystem
+    locations.  The length cap (4096 chars) matches PATH_MAX on Linux and is
+    well above any real working directory path on Windows (32 767 chars is the
+    theoretical Windows maximum, but practical paths are far shorter; we cap at
+    4096 to match POSIX expectations and avoid allocating large Path objects from
+    untrusted input).
+    """
     cwd = payload.get("cwd")
-    if not cwd:
+    if not cwd or not isinstance(cwd, str):
         return None
-    return find_project(Path(cwd))
+    if len(cwd) > 4096:
+        _LOG.warning("session-start: cwd too long (%d chars); ignoring", len(cwd))
+        return None
+    cwd_path = Path(cwd)
+    try:
+        if not cwd_path.is_dir():
+            _LOG.warning("session-start: cwd %r is not an existing directory; ignoring", cwd)
+            return None
+    except (OSError, ValueError) as exc:
+        _LOG.warning("session-start: could not stat cwd %r: %s; ignoring", cwd, exc)
+        return None
+    return find_project(cwd_path)
 
 
 def _auto_index_if_needed(proj: Project) -> None:

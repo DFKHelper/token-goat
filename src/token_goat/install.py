@@ -194,16 +194,42 @@ def install_worker_task() -> tuple[bool, str]:
         return False, str(exc)
 
 
+_USERNAME_RE = re.compile(r'^[A-Za-z0-9_.\-\\@]{1,128}$')
+
+
+def _safe_username() -> str:
+    """Return the current Windows username if it matches a safe pattern, else empty string.
+
+    USERNAME is pulled from the environment and validated before being passed to
+    schtasks /RU.  An attacker who can tamper with the environment could otherwise
+    inject unexpected argument values.  We use a strict allowlist (alphanumeric
+    plus ``_ . - \\ @``) that covers all realistic Windows usernames including
+    domain accounts (``DOMAIN\\user``) and UPN-style accounts (``user@domain``).
+    Any value that does not match is silently dropped — schtasks runs without /RU
+    in that case, which defaults to the current user, which is the desired behaviour.
+    """
+    import os
+    username = (os.environ.get("USERNAME") or os.environ.get("USER") or "").strip()
+    if not username:
+        return ""
+    if not _USERNAME_RE.match(username):
+        _LOG.warning(
+            "install_update_task: USERNAME %r failed safety check; omitting /RU argument",
+            username,
+        )
+        return ""
+    return username
+
+
 def install_update_task() -> tuple[bool, str]:
     """Create the weekly auto-update scheduled task (Sunday 03:00, user scope)."""
-    import os
     import sys
     if sys.platform != "win32":
         return True, "non-Windows: skipped"
     if task_exists(TASK_UPDATE):
         _run_schtasks(["/Delete", "/TN", TASK_UPDATE, "/F"])
 
-    username = os.environ.get("USERNAME") or os.environ.get("USER") or ""
+    username = _safe_username()
     args = [
         "/Create",
         "/TN", TASK_UPDATE,
