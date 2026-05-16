@@ -76,10 +76,11 @@ def build_manifest(session_id: str, *, max_tokens: int = 400) -> str:
 
 def _render(cache: SessionCache, session_id: str, max_tokens: int) -> str:
     files_with_symbols = [e for e in cache.files.values() if e.symbols_read]
-    readable = sorted(cache.files.values(), key=lambda e: -e.read_count)[:_MAX_FILES_READ]
+    # Most-frequently-read files, capped at _MAX_FILES_READ, for the "Key Files Read" section.
+    top_files_by_read_count = sorted(cache.files.values(), key=lambda e: -e.read_count)[:_MAX_FILES_READ]
 
     # Return empty if there is nothing meaningful to report
-    if not cache.edited_files and not files_with_symbols and not readable:
+    if not cache.edited_files and not files_with_symbols and not top_files_by_read_count:
         return ""
 
     now = datetime.now(UTC).strftime("%Y-%m-%d %H:%M UTC")
@@ -110,9 +111,9 @@ def _render(cache: SessionCache, session_id: str, max_tokens: int) -> str:
         sections.append("")
 
     # ── 3. Key files read (top N by read_count) ───────────────────────────────
-    if readable:
+    if top_files_by_read_count:
         sections.append("### Key Files Read")
-        for entry in readable:
+        for entry in top_files_by_read_count:
             count_str = f"  ×{entry.read_count}" if entry.read_count > 1 else ""
             ranges_str = _format_ranges(entry.line_ranges)
             sections.append(f"- {_short_path(entry.rel_or_abs)}{count_str}{ranges_str}")

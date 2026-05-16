@@ -201,8 +201,13 @@ def _record_cache_contention(session_id: str, phase: str, exc: OSError) -> None:
         _LOG.debug("failed to record session cache contention", exc_info=True)
 
 
-def _cache_for(session_id: str, cache: SessionCache | None) -> SessionCache:
-    """Return the provided cache after validating that it belongs to session_id."""
+def _resolve_cache(session_id: str, cache: SessionCache | None) -> SessionCache:
+    """Validate session_id and return the given cache, or load one from disk.
+
+    When *cache* is already loaded for this session, return it directly
+    (avoids a redundant disk read).  When *cache* is None, load from disk.
+    Raises ValueError if *cache* belongs to a different session_id.
+    """
     _validate_session_id(session_id)
     if cache is not None:
         if cache.session_id != session_id:
@@ -288,7 +293,7 @@ def mark_file_read(
     cache: SessionCache | None = None,
 ) -> SessionCache:
     """Record that a file (or symbol within) was read. Returns the updated cache."""
-    cache = _cache_for(session_id, cache)
+    cache = _resolve_cache(session_id, cache)
     if cache.unavailable:
         return cache
     key = _normalize_path(path)
@@ -324,7 +329,7 @@ def mark_grep(
     cache: SessionCache | None = None,
 ) -> SessionCache:
     """Record a Grep call. Returns the updated cache."""
-    cache = _cache_for(session_id, cache)
+    cache = _resolve_cache(session_id, cache)
     if cache.unavailable:
         return cache
     now = time.time()
@@ -353,7 +358,7 @@ def get_file_entry(
     session_id: str, path: str, *, cache: SessionCache | None = None
 ) -> FileEntry | None:
     """Get a file entry by path, or None if not found."""
-    cache = _cache_for(session_id, cache)
+    cache = _resolve_cache(session_id, cache)
     if cache.unavailable:
         return None
     return cache.files.get(_normalize_path(path))
@@ -379,7 +384,7 @@ def mark_file_edited(
     session_id: str, path: str, *, cache: SessionCache | None = None
 ) -> SessionCache:
     """Record that a file was edited (written/modified) this session."""
-    cache = _cache_for(session_id, cache)
+    cache = _resolve_cache(session_id, cache)
     if cache.unavailable:
         return cache
     key = _normalize_path(path)
