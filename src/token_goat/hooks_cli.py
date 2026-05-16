@@ -44,6 +44,11 @@ class HookPayload(TypedDict, total=False):
 
 _LOG = logging.getLogger("token_goat.hooks")
 
+# Cached log-path date string — invalidated when the calendar date rolls over.
+# Avoids a datetime.now() call on every hook dispatch (hooks fire on every
+# Read/Write/Edit/Bash tool use; the date string changes at most once a day).
+_log_date_cached: str = ""
+
 
 def _setup_logging() -> None:
     """Idempotent: daily-rotated log file in logs/.
@@ -51,12 +56,21 @@ def _setup_logging() -> None:
     In sandboxed environments (e.g. Codex unelevated) the log directory may be
     read-only or inaccessible.  Fall back to a NullHandler so the hook still
     runs and returns ``{"continue": true}`` instead of failing on logger setup.
+
+    The log-path date string is cached in ``_log_date_cached`` and only
+    recomputed when the calendar date actually changes, avoiding a
+    ``datetime.now()`` call on every hook dispatch.
     """
-    if _LOG.handlers:
+    global _log_date_cached  # noqa: PLW0603
+    today = datetime.now().strftime("%Y-%m-%d")
+    if _LOG.handlers and today == _log_date_cached:
         return
+    # Either first call or the day has rolled over — (re-)attach the handler.
+    _LOG.handlers.clear()
+    _log_date_cached = today
     try:
         paths.ensure_dirs()
-        log_path = paths.logs_dir() / f"{datetime.now():%Y-%m-%d}.log"
+        log_path = paths.logs_dir() / f"{today}.log"
         paths.roll_log_if_oversized(log_path, paths.LOG_FILE_MAX_BYTES)
         handler: logging.Handler = logging.FileHandler(log_path, encoding="utf-8")
         handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s"))

@@ -192,9 +192,11 @@ def _hint_from_cache(
             0,
         )
 
-    # Compute overlap against all cached ranges.
+    # Compute overlap against all cached ranges in a single pass.
+    # Also track last_cached_end here to avoid a second generator scan later.
     overlap_lines = 0
     exact_match = False
+    last_cached_end = 0
     for cached_start, cached_end in entry.line_ranges:
         overlap_start = max(cached_start, req_start)
         overlap_end = min(cached_end, req_end)
@@ -202,6 +204,8 @@ def _hint_from_cache(
             overlap_lines += overlap_end - overlap_start + 1
         if cached_start <= req_start and cached_end >= req_end:
             exact_match = True
+        if cached_end > last_cached_end:
+            last_cached_end = cached_end
 
     cached_summary = ", ".join(f"{s}-{e}" for s, e in entry.line_ranges[:3])
     extra = f" (+{len(entry.line_ranges) - 3} more ranges)" if len(entry.line_ranges) > 3 else ""
@@ -224,7 +228,7 @@ def _hint_from_cache(
         # Suggest starting the next Read just past the last cached line.
         # The Read tool's `offset` is 0-indexed (lines skipped before reading),
         # so passing `last_cached_end` as offset resumes at line last_cached_end+1.
-        last_cached_end = max(e for _, e in entry.line_ranges)
+        # last_cached_end was already computed above during the overlap scan.
         resume_offset = last_cached_end
         return ReadHint(
             f"Note: `{fname}` was previously read this session at lines {cached_summary}{extra}. "
