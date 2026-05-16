@@ -5,6 +5,7 @@ import io
 import logging
 import os
 import sys
+import time
 from pathlib import Path
 
 from . import image_shrink, paths
@@ -143,6 +144,8 @@ def fetch_file(file_id: str, *, shrink_if_image: bool = True, max_size_bytes: in
     file exceeds *max_size_bytes* (default 100 MB) to prevent unbounded RAM use.
     """
     _validate_file_id(file_id)
+    t_fetch_start = time.monotonic()
+    _LOG.debug("gdrive fetch_file: file_id=%s shrink=%s max_bytes=%d", file_id, shrink_if_image, max_size_bytes)
     creds = get_credentials()
 
     from googleapiclient.discovery import build  # noqa: PLC0415
@@ -153,10 +156,13 @@ def fetch_file(file_id: str, *, shrink_if_image: bool = True, max_size_bytes: in
     service = build("drive", "v3", credentials=creds, cache_discovery=False)
 
     # Get metadata first
+    t_meta_start = time.monotonic()
     try:
         meta = service.files().get(fileId=file_id, fields="id, name, mimeType, size").execute()
     except Exception as e:  # noqa: BLE001 — Google API can raise many undocumented exceptions
         raise RuntimeError(f"Failed to fetch Drive file metadata for {file_id}: {e}") from e
+    _LOG.debug("gdrive metadata fetched: file_id=%s name=%r mime=%s elapsed=%.3fs",
+               file_id, meta.get("name", ""), meta.get("mimeType", ""), time.monotonic() - t_meta_start)
 
     if not isinstance(meta, dict):
         raise RuntimeError(f"Expected dict metadata from Drive API, got {type(meta).__name__}")
@@ -193,7 +199,9 @@ def fetch_file(file_id: str, *, shrink_if_image: bool = True, max_size_bytes: in
         raise RuntimeError(f"Computed path escapes cache directory: {local_path}") from None
 
     if local_path.exists():
-        _LOG.info("gdrive cache hit: %s", local_path.name)
+        cached_size = local_path.stat().st_size
+        _LOG.info("gdrive cache hit: file_id=%s name=%s size=%d elapsed=%.3fs",
+                  file_id, local_path.name, cached_size, time.monotonic() - t_fetch_start)
     else:
         # Google Workspace formats can't be downloaded directly — export as PDF
         if mime.startswith("application/vnd.google-apps"):
@@ -207,6 +215,7 @@ def fetch_file(file_id: str, *, shrink_if_image: bool = True, max_size_bytes: in
         buf = io.BytesIO()
         downloader = MediaIoBaseDownload(buf, request)
         done = False
+        t_download_start = time.monotonic()
         try:
             while not done:
                 _status, done = downloader.next_chunk()
@@ -229,10 +238,17 @@ def fetch_file(file_id: str, *, shrink_if_image: bool = True, max_size_bytes: in
                 f"exceeds limit of {max_size_bytes} bytes"
             )
 
+        t_write_start = time.monotonic()
         try:
             local_path.parent.mkdir(parents=True, exist_ok=True)
             local_path.write_bytes(buf.getvalue())
-            _LOG.info("gdrive downloaded: %s → %s (%d bytes)", file_id, local_path.name, local_path.stat().st_size)
+            written_bytes = local_path.stat().st_size
+            download_elapsed = t_write_start - t_download_start
+            write_elapsed = time.monotonic() - t_write_start
+            _LOG.info(
+                "gdrive downloaded: file_id=%s name=%s bytes=%d download_elapsed=%.3fs write_elapsed=%.3fs",
+                file_id, local_path.name, written_bytes, download_elapsed, write_elapsed,
+            )
         except OSError as e:
             raise RuntimeError(f"Failed to write downloaded file to {local_path}: {e}") from e
 

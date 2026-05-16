@@ -98,7 +98,12 @@ def _resolve_cache_lookup(project_hash: str, file_part: str) -> str | None | obj
     cache hit and should be returned directly.
     """
     key = (project_hash, file_part)
-    return _RESOLVE_CACHE.get(key, _CACHE_MISS)
+    result = _RESOLVE_CACHE.get(key, _CACHE_MISS)
+    if result is _CACHE_MISS:
+        _LOG.debug("resolve_cache miss: project=%s file=%r cache_size=%d", project_hash[:8], file_part, len(_RESOLVE_CACHE))
+    else:
+        _LOG.debug("resolve_cache hit: project=%s file=%r -> %r cache_size=%d", project_hash[:8], file_part, result, len(_RESOLVE_CACHE))
+    return result
 
 
 def _resolve_cache_put(project_hash: str, file_part: str, rel_path: str | None) -> None:
@@ -110,13 +115,16 @@ def _resolve_cache_put(project_hash: str, file_part: str, rel_path: str | None) 
     key = (project_hash, file_part)
     if key in _RESOLVE_CACHE:
         _RESOLVE_CACHE[key] = rel_path
+        _LOG.debug("resolve_cache update: project=%s file=%r -> %r", project_hash[:8], file_part, rel_path)
         return
     if len(_RESOLVE_CACHE) >= _RESOLVE_CACHE_MAX:
         # Evict oldest entries (dict preserves insertion order in Python 3.7+)
         evict_keys = list(_RESOLVE_CACHE.keys())[:_RESOLVE_CACHE_EVICT]
         for k in evict_keys:
             del _RESOLVE_CACHE[k]
+        _LOG.debug("resolve_cache evicted %d entries (project=%s)", _RESOLVE_CACHE_EVICT, project_hash[:8])
     _RESOLVE_CACHE[key] = rel_path
+    _LOG.debug("resolve_cache store: project=%s file=%r -> %r cache_size=%d", project_hash[:8], file_part, rel_path, len(_RESOLVE_CACHE))
 
 
 def invalidate_file_cache(project_hash: str) -> int:
