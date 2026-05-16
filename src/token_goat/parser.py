@@ -511,7 +511,13 @@ def index_project(
             # symbol/read/map would surface dead paths. FK ON DELETE CASCADE
             # cleans up symbols/refs/sections/chunks for the removed file.
             on_disk = {fp.relative_to(project.root).as_posix() for fp in files}
-            db_rel_paths = {r["rel_path"] for r in conn.execute("SELECT rel_path FROM files")}
+            # In incremental mode existing_sha already holds every rel_path in
+            # the DB (loaded earlier for the mtime/SHA skip check), so we reuse
+            # that dict instead of issuing a second SELECT against the same DB.
+            if existing_sha is not None:
+                db_rel_paths = set(existing_sha.keys())
+            else:
+                db_rel_paths = {r["rel_path"] for r in conn.execute("SELECT rel_path FROM files")}
             stale = db_rel_paths - on_disk
             if stale:
                 # Single DELETE … IN (…) instead of one DELETE per file — O(1)
