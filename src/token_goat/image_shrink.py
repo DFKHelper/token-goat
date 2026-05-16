@@ -61,7 +61,8 @@ def _cache_key(src_path: Path) -> str:
             for chunk in iter(lambda: f.read(1 << 20), b""):
                 h.update(chunk)
         return h.hexdigest()
-    except OSError:
+    except OSError as exc:
+        _LOG.debug("_cache_key: could not read %s for content hash, falling back to path hash: %s", src_path.name, exc)
         return hashlib.sha256(str(src_path).encode()).hexdigest()
 
 
@@ -113,7 +114,8 @@ def should_shrink(src_path: Path) -> bool:
             return False
         st = src_path.stat()  # single syscall: raises FileNotFoundError if absent
         return stat.S_ISREG(st.st_mode) and st.st_size > SIZE_THRESHOLD_BYTES
-    except OSError:
+    except OSError as exc:
+        _LOG.debug("should_shrink: stat failed for %s: %s", src_path, exc)
         return False
 
 
@@ -212,16 +214,16 @@ def shrink(src_path: Path) -> Path | None:
 
         out_size = final_path.stat().st_size
         savings_pct = 100.0 * (1.0 - out_size / src_size) if src_size > 0 else 0.0
+        elapsed = time.time() - t0
         _LOG.info(
-            "image shrink: %s | %d → %d bytes (%.1f%% reduction, %s)",
+            "shrink: %s -> %s | %d -> %d bytes (%.1f%% reduction, %.3fs)",
             src_path.name,
+            final_path.suffix,
             src_size,
             out_size,
             savings_pct,
-            final_path.suffix,
+            elapsed,
         )
-        elapsed = time.time() - t0
-        _LOG.info("shrink completed: %s → %s (%.3fs, %.1f%% size reduction)", src_path.name, final_path.name, elapsed, 100.0 * (1.0 - out_size / src_size) if src_size > 0 else 0)
         return final_path
     except Exception as e:  # noqa: BLE001
         elapsed = time.time() - t0

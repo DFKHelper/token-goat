@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import logging
 import sqlite3
+import time
 from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
@@ -327,6 +328,7 @@ def find_in_all_projects(file_part: str) -> tuple[Project, str] | None:
         )
         return None
 
+    _LOG.debug("find_in_all_projects: searching %d indexed project(s) for %r", len(rows), file_part)
     matches: list[tuple[Project, str]] = []
     # Formatted as "{project_hash_prefix}:{rel_path}" for error messages.
     # Collects both within-project ambiguities (from AmbiguousFileMatch) and
@@ -354,6 +356,8 @@ def find_in_all_projects(file_part: str) -> tuple[Project, str] | None:
         if rel is not None:
             matches.append((proj, rel))
     if len(matches) == 1:
+        proj, rel = matches[0]
+        _LOG.debug("find_in_all_projects: found %r in project %s", rel, proj.hash[:8])
         return matches[0]
     # Combine unambiguous-but-multiple matches with any per-project ambiguous candidates,
     # deduplicate, and raise so the caller can surface all possibilities.
@@ -372,6 +376,8 @@ def find_in_all_projects(file_part: str) -> tuple[Project, str] | None:
             "Project index database is unavailable for one or more indexed projects. "
             "Run `token-goat index --full` again."
         )
+    if not matches:
+        _LOG.debug("find_in_all_projects: no match found for %r across %d project(s)", file_part, len(rows))
     return matches[0] if matches else None
 
 
@@ -444,6 +450,7 @@ def _read_file_lines(abs_path: Path) -> tuple[list[str], int] | None:
         return None
     lines = full_text.splitlines()
     if not lines:
+        _LOG.debug("_read_file_lines: empty file (no lines): %s", abs_path)
         return None
     return lines, len(full_text.encode("utf-8"))
 
@@ -462,6 +469,7 @@ def read_symbol(
         signature, bytes_total, bytes_extracted, bytes_saved
     Returns None if the symbol is not found or the file cannot be read.
     """
+    t0 = time.monotonic()
     if not _is_safe_rel_path(rel_path):
         _LOG.warning("rejected unsafe rel_path: %s", rel_path)
         return None
@@ -493,8 +501,9 @@ def read_symbol(
     snippet, snippet_bytes, start, end = _extract_snippet(
         lines, full_bytes, chosen["line"], chosen["end_line"], context_lines
     )
+    elapsed = time.monotonic() - t0
     _LOG.debug(
-        "read_symbol: %s::%s (%s) lines %d-%d, %d/%d bytes extracted",
+        "read_symbol: %s::%s (%s) lines %d-%d, %d/%d bytes extracted (%.1f%% saved, %.3fs)",
         rel_path,
         chosen["name"],
         chosen["kind"],
@@ -502,6 +511,8 @@ def read_symbol(
         end,
         snippet_bytes,
         full_bytes,
+        100.0 * max(0, full_bytes - snippet_bytes) / full_bytes if full_bytes else 0.0,
+        elapsed,
     )
     return {
         "file": rel_path,
@@ -531,6 +542,7 @@ def read_section(
         bytes_total, bytes_extracted, bytes_saved
     Returns None if the heading is not found or the file cannot be read.
     """
+    t0 = time.monotonic()
     if not _is_safe_rel_path(rel_path):
         _LOG.warning("rejected unsafe rel_path: %s", rel_path)
         return None
@@ -568,8 +580,9 @@ def read_section(
     snippet, snippet_bytes, start, end = _extract_snippet(
         lines, full_bytes, chosen["line"], chosen["end_line"], context_lines
     )
+    elapsed = time.monotonic() - t0
     _LOG.debug(
-        "read_section: %s#%s (h%d, %s-match) lines %d-%d, %d/%d bytes extracted",
+        "read_section: %s#%s (h%d, %s-match) lines %d-%d, %d/%d bytes extracted (%.1f%% saved, %.3fs)",
         rel_path,
         chosen["heading"],
         chosen["level"],
@@ -578,6 +591,8 @@ def read_section(
         end,
         snippet_bytes,
         full_bytes,
+        100.0 * max(0, full_bytes - snippet_bytes) / full_bytes if full_bytes else 0.0,
+        elapsed,
     )
     return {
         "file": rel_path,

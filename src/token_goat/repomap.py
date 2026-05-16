@@ -427,25 +427,46 @@ def _load_and_rank(project: Project) -> _RankedProjectData | None:
     skip re-computing unchanged file summaries; callers that need structured
     data (``build_map_json``) bypass it and recompute ``FileSummary`` objects.
     """
+    t0 = time.monotonic()
     with db.open_project(project.hash) as conn:
         files, symbols_by_file, sections_by_file, name_to_files = _load_project_data(conn)
         if not files:
+            _LOG.debug("_load_and_rank: no indexed files for project %s", project.root.name)
             return None
+        total_files = len(files)
         files = {
             rel: info
             for rel, info in files.items()
             if _is_map_worthy(rel, max(1, info["size"] // _BYTES_PER_APPROX_LINE))
         }
+        filtered_files = len(files)
         graph = _build_graph(conn, files, name_to_files)
         summary_cache = _load_summary_cache(conn)
         _evict_stale_cache(conn, files)
+    t_db = time.monotonic()
 
     ranks = compute_ranks(graph)
     # Fallback: if every node has the same rank (no edges), break ties by file size
     if not ranks or len(set(ranks.values())) <= 1:
+        _LOG.debug(
+            "_load_and_rank: PageRank produced uniform scores (no edges or empty); "
+            "falling back to file-size ranking for %s (%d files)",
+            project.root.name, len(files),
+        )
         ranks = {f: float(info["size"]) for f, info in files.items()}
+    t_rank = time.monotonic()
 
     ranked = sorted(files.items(), key=lambda kv: ranks.get(kv[0], 0.0), reverse=True)
+    _LOG.debug(
+        "_load_and_rank: project=%s files=%d/%d (filtered=%d) db=%.3fs pagerank=%.3fs total=%.3fs",
+        project.root.name,
+        filtered_files,
+        total_files,
+        total_files - filtered_files,
+        t_db - t0,
+        t_rank - t_db,
+        t_rank - t0,
+    )
     return _RankedProjectData(
         files=files,
         symbols_by_file=symbols_by_file,
@@ -559,6 +580,7 @@ def build_map_json(project: Project) -> list[FileMapItem]:
     cache stores rendered strings, not the intermediate ``FileSummary`` data
     needed here (symbols list, sections list, etc.).
     """
+    t0 = time.monotonic()
     data = _load_and_rank(project)
     if data is None:
         return []
@@ -581,4 +603,6 @@ def build_map_json(project: Project) -> list[FileMapItem]:
                 approx_lines=summary.line_count,
             )
         )
+    elapsed = time.monotonic() - t0
+    _LOG.debug("build_map_json: project=%s files=%d dur=%.3fs", project.root.name, len(out), elapsed)
     return out
