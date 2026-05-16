@@ -257,8 +257,11 @@ def register_extractor(language: str, factory: Callable[[], Extractor]) -> None:
 def iter_source_files(project: Project) -> Iterable[Path]:
     """Yield absolute paths of indexable source files under the project root."""
     root = project.root
+    skipped_dirs = 0
     for dirpath, dirs, files in os.walk(root):
+        initial_dirs = dirs[:]
         dirs[:] = [d for d in dirs if d not in SKIP_DIRS]
+        skipped_dirs += len(initial_dirs) - len(dirs)
         base = Path(dirpath)
         for name in files:
             if name in SKIP_DIRS:
@@ -272,6 +275,8 @@ def iter_source_files(project: Project) -> Iterable[Path]:
             except OSError:
                 continue
             yield path
+    if skipped_dirs > 0:
+        _LOG.debug("file walk excluded %d skip-listed directories", skipped_dirs)
 
 
 def _line_count_from_bytes(raw: bytes) -> int:
@@ -568,7 +573,8 @@ def index_project(
     }
 
     _LOG.info(
-        "index_project completed: indexed=%d skipped=%d errors=%d languages=%s duration=%.2fs",
+        "index_project completed: total_files=%d indexed=%d skipped=%d errors=%d languages=%s duration=%.2fs",
+        n_total,
         n_indexed,
         n_skipped_unchanged,
         n_errors,

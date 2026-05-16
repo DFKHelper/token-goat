@@ -342,6 +342,7 @@ def index_project_embeddings(
 
         # Embed + persist in batches
         _LOG.debug("processing %d new chunks in batches of %d", len(new_chunks), batch_size)
+        n_stale_deleted = 0
         for i in range(0, len(new_chunks), batch_size):
             batch = new_chunks[i : i + batch_size]
             texts = [ch.text for ch, _ in batch]
@@ -369,6 +370,8 @@ def index_project_embeddings(
                 id_ph = ",".join("?" for _ in stale_ids)
                 conn.execute(f"DELETE FROM embeddings WHERE chunk_id IN ({id_ph})", stale_ids)  # noqa: S608
                 conn.execute(f"DELETE FROM chunks WHERE id IN ({id_ph})", stale_ids)  # noqa: S608
+                n_stale_deleted += len(stale_ids)
+                _LOG.debug("cleaned %d stale chunks for re-embed", len(stale_ids))
 
             embed_rows: list[tuple[int, bytes]] = []
             for (ch, sha), vec in zip(batch, vecs, strict=True):
@@ -405,11 +408,16 @@ def index_project_embeddings(
             ("embedding_dim", str(DEFAULT_DIM)),
         )
 
+    duration = time.time() - t0
+    _LOG.info(
+        "embeddings complete: files=%d chunks_new=%d chunks_skipped=%d stale_deleted=%d duration=%.2fs",
+        n_files, n_chunks_new, n_chunks_skipped, n_stale_deleted, duration,
+    )
     return EmbeddingsResult(
         files_visited=n_files,
         chunks_embedded=n_chunks_new,
         chunks_skipped_unchanged=n_chunks_skipped,
-        duration_sec=round(time.time() - t0, 2),
+        duration_sec=round(duration, 2),
         model=model_name,
     )
 

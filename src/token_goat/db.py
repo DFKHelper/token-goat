@@ -607,11 +607,20 @@ def project_writer_lock(project_hash: str, timeout_sec: float = 5.0) -> Iterator
     acquired = False
     t0 = time.monotonic()
     waited = False
+    holder_pid = None
     while True:
         if _try_acquire():
             acquired = True
             break
         waited = True
+        # Capture lock holder info for diagnostics
+        if holder_pid is None:
+            try:
+                lock_text = lock_path.read_text(encoding="utf-8")
+                parts = lock_text.strip().split("\n", 1)
+                holder_pid = int(parts[0])
+            except (OSError, ValueError, IndexError):
+                holder_pid = -1
         if time.monotonic() >= deadline:
             break
         time.sleep(0.1)
@@ -619,11 +628,11 @@ def project_writer_lock(project_hash: str, timeout_sec: float = 5.0) -> Iterator
     if not acquired:
         raise TimeoutError(
             f"could not acquire writer lock for project {project_hash[:8]} "
-            f"within {timeout_sec}s"
+            f"within {timeout_sec}s (held by pid={holder_pid})"
         )
     elapsed = time.monotonic() - t0
     if waited:
-        _LOG.info("writer lock acquired for project %s after %.3fs (contention)", project_hash[:8], elapsed)
+        _LOG.info("writer lock acquired for project %s after %.3fs (held by pid=%s)", project_hash[:8], elapsed, holder_pid)
     else:
         _LOG.debug("writer lock acquired for project %s (no contention)", project_hash[:8])
     try:

@@ -85,8 +85,10 @@ class SessionCache:
             raise ValueError(f"session_id missing or invalid: {session_id!r}")
 
         files: dict[str, FileEntry] = {}
+        skipped_file_entries = 0
         for k, v in d.get("files", {}).items():
             if not isinstance(v, dict):
+                skipped_file_entries += 1
                 continue
             try:
                 raw_ranges = v.get("line_ranges", [])
@@ -99,17 +101,24 @@ class SessionCache:
                     symbols_read=list(v.get("symbols_read", [])),
                 )
             except (TypeError, ValueError, KeyError):
+                skipped_file_entries += 1
                 _LOG.debug("session: skipping corrupted file entry for key %r", k)
 
         greps: list[GrepEntry] = []
+        skipped_grep_entries = 0
         _grep_fields = {f.name for f in GrepEntry.__dataclass_fields__.values()}  # type: ignore[attr-defined]
         for g in d.get("greps", []):
             if not isinstance(g, dict):
+                skipped_grep_entries += 1
                 continue
             try:
                 greps.append(GrepEntry(**{k: v for k, v in g.items() if k in _grep_fields}))
             except (TypeError, ValueError, KeyError):
+                skipped_grep_entries += 1
                 _LOG.debug("session: skipping corrupted grep entry")
+
+        if skipped_file_entries > 0 or skipped_grep_entries > 0:
+            _LOG.info("session cache: recovered with %d corrupted file entries, %d corrupted grep entries", skipped_file_entries, skipped_grep_entries)
 
         edited_files: dict[str, int] = {}
         for k, v in d.get("edited_files", {}).items():
