@@ -126,11 +126,15 @@ def _validate_file_id(file_id: str) -> None:
         raise ValueError(f"file_id contains invalid characters: {file_id!r}")
 
 
-def fetch_file(file_id: str, *, shrink_if_image: bool = True) -> Path:
+_MAX_DOWNLOAD_BYTES = 100 * 1024 * 1024  # 100 MB — same order of magnitude as webfetch cap
+
+
+def fetch_file(file_id: str, *, shrink_if_image: bool = True, max_size_bytes: int = _MAX_DOWNLOAD_BYTES) -> Path:
     """Download a Drive file. Return the local cached path.
 
     Shrinks if it's an image and large enough. Raises GDriveCredsUnavailable if
-    credentials aren't set up. Raises RuntimeError on download failure.
+    credentials aren't set up. Raises RuntimeError on download failure or if the
+    file exceeds *max_size_bytes* (default 100 MB) to prevent unbounded RAM use.
     """
     _validate_file_id(file_id)
     creds = get_credentials()
@@ -152,6 +156,20 @@ def fetch_file(file_id: str, *, shrink_if_image: bool = True) -> Path:
         raise RuntimeError(f"Expected dict metadata from Drive API, got {type(meta).__name__}")
     name: str = meta.get("name", file_id)
     mime: str = meta.get("mimeType", "")
+
+    # Enforce size cap using Drive-reported size before downloading.
+    # This is a best-effort pre-check; the post-download check below is the definitive guard.
+    reported_size_str = meta.get("size", "")
+    if reported_size_str:
+        try:
+            reported_size = int(reported_size_str)
+            if reported_size > max_size_bytes:
+                raise RuntimeError(
+                    f"Drive file {file_id!r} too large: {reported_size} bytes "
+                    f"exceeds limit of {max_size_bytes} bytes"
+                )
+        except (ValueError, TypeError):
+            pass  # non-numeric size field (e.g. Google Workspace formats) — proceed
 
     # Build a safe local filename — remove path separators and control chars
     # Allow only alphanumeric, dot, hyphen, underscore
@@ -186,8 +204,24 @@ def fetch_file(file_id: str, *, shrink_if_image: bool = True) -> Path:
         try:
             while not done:
                 _status, done = downloader.next_chunk()
+                # Check accumulated size after each chunk to avoid holding the full
+                # file in memory before detecting an oversize condition.
+                if buf.tell() > max_size_bytes:
+                    raise RuntimeError(
+                        f"Drive file {file_id!r} too large during download: "
+                        f"{buf.tell()} bytes exceeds limit of {max_size_bytes} bytes"
+                    )
+        except RuntimeError:
+            raise
         except Exception as e:  # noqa: BLE001 — Google API can raise many undocumented exceptions
             raise RuntimeError(f"Download failed for {file_id}: {e}") from e
+
+        downloaded_bytes = buf.tell()
+        if downloaded_bytes > max_size_bytes:
+            raise RuntimeError(
+                f"Drive file {file_id!r} too large: {downloaded_bytes} bytes "
+                f"exceeds limit of {max_size_bytes} bytes"
+            )
 
         try:
             local_path.parent.mkdir(parents=True, exist_ok=True)

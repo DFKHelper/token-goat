@@ -113,18 +113,38 @@ def denormalize_response(response: HookResponse, harness: str = "claude") -> Hoo
     return result
 
 
+_MAX_PAYLOAD_BYTES = 10 * 1024 * 1024  # 10 MB — guard against runaway harness output
+
+
 def read_payload(input_file: Path | None = None) -> dict[str, Any]:
     """Read JSON payload from stdin (or a file, for testing).
 
     Always returns a dict. Coerces non-dict JSON (``null``, lists, scalars)
     to ``{}`` so handlers can safely call ``payload.get(...)``.
     Catches JSON decode errors and returns empty dict instead of crashing.
+
+    Enforces a 10 MB size cap on the raw input to prevent a malicious or
+    runaway harness from causing an OOM condition by sending an unbounded payload.
     """
     try:
         if input_file is not None:
-            data = json.loads(input_file.read_text(encoding="utf-8"))
+            raw = input_file.read_text(encoding="utf-8")
+            if len(raw.encode("utf-8")) > _MAX_PAYLOAD_BYTES:
+                _LOG.warning(
+                    "hook payload from file too large (%d bytes > %d limit); ignoring",
+                    len(raw.encode("utf-8")),
+                    _MAX_PAYLOAD_BYTES,
+                )
+                return {}
+            data = json.loads(raw)
         else:
-            raw = sys.stdin.read()
+            raw = sys.stdin.read(_MAX_PAYLOAD_BYTES + 1)
+            if len(raw) > _MAX_PAYLOAD_BYTES:
+                _LOG.warning(
+                    "hook payload from stdin too large (> %d bytes); ignoring",
+                    _MAX_PAYLOAD_BYTES,
+                )
+                return {}
             if not raw.strip():
                 return {}
             data = json.loads(raw)

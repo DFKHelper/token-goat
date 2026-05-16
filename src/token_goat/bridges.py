@@ -17,6 +17,31 @@ from pathlib import Path
 
 _LOG = logging.getLogger("token_goat.bridges")
 
+# Maximum size for user-controlled config files (openclaw.json, etc.).
+# Prevents OOM from a maliciously large or corrupted config file.
+_MAX_CONFIG_BYTES = 1 * 1024 * 1024  # 1 MB
+
+
+def _load_json_config(path: Path) -> dict:
+    """Read and parse a JSON config file with a size cap.
+
+    Raises OSError if the file cannot be read, json.JSONDecodeError if the
+    content is not valid JSON, and ValueError if the file exceeds 1 MB (guard
+    against a maliciously large config consuming unbounded memory).
+    """
+    size = path.stat().st_size
+    if size > _MAX_CONFIG_BYTES:
+        raise ValueError(
+            f"config file too large ({size} bytes > {_MAX_CONFIG_BYTES} limit): {path}"
+        )
+    raw = path.read_text(encoding="utf-8")
+    result = json.loads(raw)
+    if not isinstance(result, dict):
+        raise json.JSONDecodeError(
+            f"expected JSON object, got {type(result).__name__}", raw, 0
+        )
+    return result
+
 # ---------------------------------------------------------------------------
 # TypeScript bridge sources
 # ---------------------------------------------------------------------------
@@ -341,7 +366,7 @@ def install_openclaw_plugin() -> str:
     cfg_path = openclaw_config_path()
     cfg_path.parent.mkdir(parents=True, exist_ok=True)
     try:
-        cfg: dict = json.loads(cfg_path.read_text(encoding="utf-8")) if cfg_path.exists() else {}
+        cfg: dict = _load_json_config(cfg_path) if cfg_path.exists() else {}
     except (json.JSONDecodeError, OSError) as e:
         _LOG.debug("openclaw.json read failed, starting fresh: %s", e)
         cfg = {}
@@ -367,7 +392,7 @@ def uninstall_openclaw_plugin() -> str:
     cfg_path = openclaw_config_path()
     if cfg_path.exists():
         try:
-            cfg = json.loads(cfg_path.read_text(encoding="utf-8"))
+            cfg = _load_json_config(cfg_path)
             entries = cfg.get("plugins", {}).get("entries", {})
             if _OPENCLAW_PLUGIN_ID in entries:
                 del entries[_OPENCLAW_PLUGIN_ID]
@@ -396,7 +421,7 @@ def _check_openclaw_plugin() -> str:
     registered = False
     if cfg_path.exists():
         try:
-            cfg = json.loads(cfg_path.read_text(encoding="utf-8"))
+            cfg = _load_json_config(cfg_path)
             registered = _OPENCLAW_PLUGIN_ID in cfg.get("plugins", {}).get("entries", {})
         except (json.JSONDecodeError, OSError) as e:
             _LOG.debug("openclaw.json read failed in check: %s", e)
