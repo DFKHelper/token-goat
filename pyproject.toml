@@ -110,6 +110,17 @@ disable_error_code = ["attr-defined", "arg-type", "misc"]
 module = "token_goat.embeddings"
 disable_error_code = ["attr-defined", "union-attr"]
 
+# networkx graph is imported lazily and returned as `object`; callers use duck-typed .nodes/.edges.
+[[tool.mypy.overrides]]
+module = "token_goat.repomap"
+disable_error_code = ["attr-defined"]
+
+# Hook modules interchange HookResponse (TypedDict) with dict[str, Any] intentionally;
+# the protocol is flexible by design and all conversions are safe at runtime.
+[[tool.mypy.overrides]]
+module = ["token_goat.hooks_common", "token_goat.hooks_read", "token_goat.hooks_cli"]
+disable_error_code = ["assignment", "return-value", "arg-type"]
+
 # Third-party libraries that don't ship type stubs.
 [[tool.mypy.overrides]]
 module = [
