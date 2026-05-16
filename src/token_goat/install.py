@@ -4,9 +4,11 @@ from __future__ import annotations
 import contextlib
 import json
 import logging
+import os
 import re
 import shutil
 import subprocess
+import sys
 from datetime import datetime
 from pathlib import Path
 
@@ -173,7 +175,6 @@ def install_worker_task() -> tuple[bool, str]:
     a user-writable directory is a textbook payload-drop signature; pythonw
     invoking a module is not).
     """
-    import sys
     cmd = paths.python_runner_command("worker", "--daemon")
 
     if sys.platform != "win32":
@@ -208,7 +209,6 @@ def _safe_username() -> str:
     Any value that does not match is silently dropped — schtasks runs without /RU
     in that case, which defaults to the current user, which is the desired behaviour.
     """
-    import os
     username = (os.environ.get("USERNAME") or os.environ.get("USER") or "").strip()
     if not username:
         return ""
@@ -223,7 +223,6 @@ def _safe_username() -> str:
 
 def install_update_task() -> tuple[bool, str]:
     """Create the weekly auto-update scheduled task (Sunday 03:00, user scope)."""
-    import sys
     if sys.platform != "win32":
         return True, "non-Windows: skipped"
     if task_exists(TASK_UPDATE):
@@ -248,7 +247,6 @@ def install_update_task() -> tuple[bool, str]:
 
 def uninstall_tasks() -> list[str]:
     """Remove worker Run key + update scheduled task. Returns list of names removed."""
-    import sys
     removed = []
 
     # Worker: HKCU Run registry key
@@ -320,7 +318,6 @@ def install_linux_autostart() -> tuple[bool, str]:
     the SessionStart watchdog in hooks_cli ensures the worker runs on every
     Claude Code session regardless.
     """
-    import sys
 
     if sys.platform == "win32":
         return True, "Windows: skipped"
@@ -382,7 +379,6 @@ def install_linux_autostart() -> tuple[bool, str]:
 
 def uninstall_linux_autostart() -> list[str]:
     """Remove Linux autostart entries. Returns a list of paths removed."""
-    import sys
 
     if sys.platform == "win32":
         return []
@@ -421,7 +417,6 @@ def uninstall_linux_autostart() -> list[str]:
 
 def install_linux_update_cron() -> tuple[bool, str]:
     """Add a weekly Sunday 03:00 cron job to auto-update token-goat."""
-    import sys
 
     if sys.platform == "win32":
         return True, "Windows: skipped"
@@ -457,7 +452,6 @@ def install_linux_update_cron() -> tuple[bool, str]:
 
 def uninstall_linux_update_cron() -> str:
     """Remove the token-goat cron job."""
-    import sys
 
     if sys.platform == "win32":
         return "n/a (Windows)"
@@ -502,7 +496,6 @@ def install_mac_autostart() -> tuple[bool, str]:
     LaunchAgents run in user scope.  Idempotent: unloads before re-loading if
     the plist already exists.
     """
-    import sys
 
     if sys.platform == "win32":
         return True, "Windows: skipped"
@@ -562,7 +555,6 @@ def install_mac_autostart() -> tuple[bool, str]:
 
 def uninstall_mac_autostart() -> list[str]:
     """Remove the macOS LaunchAgent plist. Returns a list of paths removed."""
-    import sys
 
     if sys.platform == "win32":
         return []
@@ -586,7 +578,6 @@ def uninstall_mac_autostart() -> list[str]:
 
 def _check_mac_autostart() -> str:
     """Return the macOS LaunchAgent status string."""
-    import sys
     if sys.platform == "win32":
         return "n/a (Windows)"
     return "installed" if _launchd_plist_path().exists() else "not installed"
@@ -594,7 +585,6 @@ def _check_mac_autostart() -> str:
 
 def _check_linux_autostart() -> str:
     """Return the Linux autostart status string."""
-    import sys
     if sys.platform == "win32":
         return "n/a (Windows)"
     if _systemd_service_path().exists():
@@ -606,7 +596,6 @@ def _check_linux_autostart() -> str:
 
 def _check_linux_update_cron() -> str:
     """Return the Linux cron job status string."""
-    import sys
     if sys.platform == "win32":
         return "n/a (Windows)"
     try:
@@ -1221,7 +1210,6 @@ def _check_skill() -> str:
 
 def _check_worker_task() -> str:
     """Return 'installed' if the HKCU Run key for the worker exists."""
-    import sys
     if sys.platform != "win32":
         return "n/a (non-Windows)"
     try:
@@ -1272,7 +1260,6 @@ def _check_codex_config() -> str:
 
 def check_status() -> dict[str, str]:
     """Return a dict of integration name -> status string for display before install/uninstall."""
-    import sys
     status: dict[str, str] = {
         "Claude Code hooks (settings.json)": _check_settings_json(),
         "CLAUDE.md block": _check_claude_md(),
@@ -1305,7 +1292,6 @@ def install_all(
     install_openclaw: bool = False,
 ) -> dict:
     """Run the full install. Returns a dict of step -> result string."""
-    import sys
     paths.ensure_dirs()
     result: dict[str, str] = {}
 
@@ -1400,7 +1386,6 @@ def uninstall_all(
     openclaw: bool = False,
 ) -> dict:
     """Reverse install. With purge=True also deletes the data directory."""
-    import sys
 
     result: dict[str, str] = {}
 
