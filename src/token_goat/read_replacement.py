@@ -329,16 +329,18 @@ def find_in_all_projects(file_part: str) -> tuple[Project, str] | None:
             matches.append((proj, rel))
     if len(matches) == 1:
         return matches[0]
-    candidates = [f"{proj.hash[:8]}:{rel}" for proj, rel in matches]
-    candidates.extend(ambiguous_candidates)
-    if len(candidates) > 1:
-        candidates = sorted(dict.fromkeys(candidates))
+    # Combine unambiguous-but-multiple matches with any per-project ambiguous candidates,
+    # deduplicate, and raise so the caller can surface all possibilities.
+    all_candidates = [f"{proj.hash[:8]}:{rel}" for proj, rel in matches]
+    all_candidates.extend(ambiguous_candidates)
+    if len(all_candidates) > 1:
+        all_candidates = sorted(dict.fromkeys(all_candidates))
         _LOG.debug(
             "ambiguous cross-project file match for %s: %s",
             file_part,
-            ", ".join(candidates),
+            ", ".join(all_candidates),
         )
-        raise AmbiguousFileMatch(file_part, candidates)
+        raise AmbiguousFileMatch(file_part, all_candidates)
     if project_errors:
         raise ProjectIndexUnavailable(
             "Project index database is unavailable for one or more indexed projects. "
@@ -471,8 +473,8 @@ def read_section(
                 "WHERE file_rel = ? AND lower(heading) = lower(?) AND end_line IS NOT NULL ORDER BY line",
                 (rel_path, heading),
             ).fetchall()
-            if not rows:
-                return None
+        if not rows:
+            return None
 
     chosen = rows[0]  # first match by line order
 
