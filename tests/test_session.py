@@ -1,6 +1,7 @@
 """Tests for session-context cache."""
 from __future__ import annotations
 
+import pathlib
 import sys
 import time
 
@@ -196,7 +197,7 @@ class TestUnavailableCacheAccess:
             raise PermissionError("[Errno 13] Permission denied")
 
         with monkeypatch.context() as m:
-            m.setattr(session.Path, "read_text", boom)
+            m.setattr(pathlib.Path, "read_text", boom)
             cache = session.mark_file_read(session_id, "new.py")
             assert cache.unavailable is True
 
@@ -224,7 +225,7 @@ class TestUnavailableCacheAccess:
             raise PermissionError("[WinError 32] The process cannot access the file")
 
         with monkeypatch.context() as m:
-            m.setattr(session.Path, "replace", boom)
+            m.setattr(pathlib.Path, "replace", boom)
             cache = session.mark_file_read(session_id, "new.py", offset=0, limit=10)
             assert cache.unavailable is False
             assert "new.py" in cache.files
