@@ -28,7 +28,18 @@ if TYPE_CHECKING:
 
 
 class _FileInfo(TypedDict):
-    """Raw file metadata loaded from the DB files table."""
+    """Raw file metadata loaded from the ``files`` table of a project DB.
+
+    Attributes:
+        language: Detected language name as stored by the indexer (e.g. ``"python"``,
+            ``"typescript"``).
+        size: File size in bytes at the time of last indexing.  Used to estimate
+            line count (size // _BYTES_PER_APPROX_LINE) and as a tie-breaker rank
+            when all PageRank scores are identical (no cross-file edges).
+        mtime: Modification time (Unix timestamp) at last indexing.  Together with
+            *size*, this forms the cache key for pre-rendered summary strings stored
+            in the ``repomap_cache`` table.
+    """
 
     language: str
     size: int
@@ -37,18 +48,51 @@ class _FileInfo(TypedDict):
 
 @dataclass
 class _RankedProjectData:
-    """Intermediate result from _load_and_rank — all data needed to render the repo map."""
+    """Intermediate result from ``_load_and_rank`` — all data needed to render the repo map.
+
+    Attributes:
+        files: Map-worthy files only (fixtures and trivially small files excluded).
+            Key is the repository-relative POSIX path; value is ``_FileInfo``.
+        symbols_by_file: ``{rel_path: [(kind, name), ...]}`` — all indexed symbols
+            for each file, used to build ``FileSummary.top_symbols``.
+        sections_by_file: ``{rel_path: [(level, heading), ...]}`` — document headings
+            for markdown/HTML/Liquid files, used to build ``FileSummary.top_sections``.
+        ranked: All map-worthy files sorted by descending PageRank score (or file size
+            as a fallback when the graph has no edges).  Callers iterate this list
+            to fill the token budget from most- to least-important files.
+        ranks: Raw PageRank scores keyed by rel_path.  Kept separate from ``ranked``
+            so ``_summarize_file`` can look up any file's score by path without
+            scanning the sorted list.
+        summary_cache: Pre-rendered text strings keyed on ``(rel_path, mtime, size)``.
+            A cache hit means the file has not changed since the last ``build_map``
+            call and its summary can be reused without re-invoking ``_summarize_file``
+            + ``render_summary``.
+    """
 
     files: dict[str, _FileInfo]
     symbols_by_file: dict[str, list[tuple[str, str]]]
     sections_by_file: dict[str, list[tuple[int, str]]]
-    ranked: list[tuple[str, _FileInfo]]  # sorted by descending PageRank score
+    ranked: list[tuple[str, _FileInfo]]
     ranks: dict[str, float]
     summary_cache: dict[tuple[str, float, int], str]  # (rel_path, mtime, size) → rendered text
 
 
 class FileMapItem(TypedDict):
-    """Structured representation of a file in the repo map."""
+    """Structured representation of a single file in the repo map (JSON output form).
+
+    Attributes:
+        path: Repository-relative POSIX path (e.g. ``"src/token_goat/db.py"``).
+        language: Detected language (e.g. ``"python"``, ``"typescript"``).
+        rank: PageRank score.  Higher means more cross-referenced by other files.
+            Values are not normalized to a fixed range — compare relative magnitudes.
+        symbols: Top symbols as ``[{"kind": "function", "name": "load"}, ...]``,
+            ordered by ``KIND_PRIORITY``.  Maximum 8 entries per file.
+        sections: Top-level and second-level headings for doc files.  Empty list
+            for code files that have no extracted sections.
+        approx_lines: Estimated line count derived from ``size // _BYTES_PER_APPROX_LINE``.
+            Intentionally approximate — callers should not rely on exact values.
+    """
+
     path: str
     language: str
     rank: float
@@ -221,10 +265,15 @@ def _build_graph(
 
 
 def _multigraph_to_weighted_digraph(multigraph: object) -> object:
-    """Convert a multigraph (multiple edges allowed between same nodes) to a simple DiGraph.
+    """Collapse a multigraph to a simple weighted DiGraph for PageRank input.
 
-    Aggregates parallel edges: if A->B appears N times, result has single edge with weight=N.
-    Used before PageRank since PageRank requires a simple graph.
+    The dependency graph is built as a ``MultiDiGraph`` because the same pair of
+    files (A → B) can share multiple edges when A references several different
+    symbols defined in B.  NetworkX's PageRank algorithm requires a simple graph
+    (at most one edge per pair), so those parallel edges are collapsed into a
+    single edge whose ``weight`` equals the edge count.  A higher weight means
+    A depends more heavily on B — the more symbols A imports from B, the more
+    PageRank "votes" B receives, reflecting its true structural importance.
     """
     from collections import Counter  # noqa: PLC0415
 
@@ -603,11 +652,17 @@ def build_map(
 
 
 def build_map_json(project: Project) -> list[FileMapItem]:
-    """Same data as build_map but as structured list of dicts (for tools).
+    """Return the full ranked file list as structured dicts rather than formatted text.
+
+    Intended for programmatic consumers (the ``token-goat map --json`` CLI flag,
+    MCP tool calls) that need to inspect individual fields rather than display a
+    pre-rendered string.  The list is ordered by descending PageRank score, same
+    as ``build_map``, but there is no token-budget truncation — all map-worthy
+    files are returned regardless of count.
 
     Always recomputes ``FileSummary`` objects for structured output — the text
     cache stores rendered strings, not the intermediate ``FileSummary`` data
-    needed here (symbols list, sections list, etc.).
+    (symbols list, sections list, etc.) needed here.
     """
     t0 = time.monotonic()
     data = _load_and_rank(project)

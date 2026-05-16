@@ -30,26 +30,51 @@ _LOG = logging.getLogger("token_goat.bash_parser")
 
 @dataclass
 class BashIntent:
-    """A high-level interpretation of a Bash command line."""
+    """A high-level interpretation of a Bash command line.
 
-    kind: str  # 'read' | 'grep' | 'glob' | 'unknown'
-    target_path: str | None = None  # for 'read'
-    pattern: str | None = None  # for 'grep' and 'glob'
+    Attributes:
+        kind: One of ``'read'`` (file read), ``'grep'`` (pattern search),
+            ``'glob'`` (directory listing / find), or ``'unknown'`` (unrecognised
+            or ambiguous command that should be passed through unchanged).
+        target_path: Resolved file path for ``kind='read'`` commands.  ``None``
+            for grep/glob/unknown.
+        pattern: Search pattern for ``kind='grep'`` or root/name pattern for
+            ``kind='glob'``.  ``None`` for read/unknown.
+        offset: Line offset for ``kind='read'`` (from ``tail -n +N`` style args).
+            Currently always ``None`` — reserved for future tail-offset parsing.
+        limit: Line count for ``kind='read'`` (from ``head -n N`` / ``tail -n N``).
+            ``None`` means the whole file.
+        reason: Human-readable explanation for ``kind='unknown'``, used for debug
+            logging when the hook skips processing.
+    """
+
+    kind: str
+    target_path: str | None = None
+    pattern: str | None = None
     offset: int | None = None
     limit: int | None = None
     reason: str | None = None
 
 
-# Read tools we recognize: cat, head, tail, less, bat, batcat, more, nl, zcat,
-# zless, zmore, sed, awk, perl. Scripted readers usually put the file path
-# after the script.
+# Commands whose primary effect is reading a file into stdout without modifying it.
+# ``sed``, ``awk``, and ``perl`` are included because agents often use them as
+# read-only viewers (e.g. ``sed -n '10,20p' file``); they are separated into
+# SCRIPTED_READ_BINS so in-place edit flags (``-i``) can be detected and the
+# command reclassified as ``unknown`` rather than wrongly treated as a read.
 READ_BINS = frozenset(
     ["cat", "head", "tail", "bat", "batcat", "less", "more", "nl", "zcat", "zless", "zmore", "sed", "awk", "perl"]
 )
+
+# Subset of READ_BINS where the target file comes *last* (after the script expression)
+# and where an in-place edit flag changes the operation from read to write.
 SCRIPTED_READ_BINS = frozenset(["sed", "awk", "perl"])
-# Grep tools
+
+# Pattern-search tools.  All of these put the search pattern as the first
+# non-flag positional argument, making extraction straightforward.
 GREP_BINS = frozenset(["rg", "grep", "ag", "ack", "ripgrep"])
-# Glob/find tools
+
+# Directory enumeration and file-discovery tools.  Treated as ``glob`` because
+# their output is a list of paths, analogous to the Glob tool.
 GLOB_BINS = frozenset(["find", "fd", "fdfind", "ls", "eza"])
 
 
@@ -67,8 +92,15 @@ def _try_parse_int(value: str) -> int | None:
 def parse(command: str) -> BashIntent:
     """Best-effort parse of a single Bash command line.
 
-    Handles simple commands. For complex pipes (e.g. ``cat foo | grep bar``),
-    prefers the leading command. For sudo / env prefixes, strips them.
+    Only the first pipeline segment (before any ``|``) is analysed.  This is
+    intentional: for ``cat foo | grep bar`` the relevant operation for token-goat
+    is the *read* of ``foo``, not the grep that filters it — the pre-read hook
+    should fire on the read, and the grep hook on any standalone ``grep`` command.
+    Analysing the whole pipeline would produce a misleading ``kind='grep'`` for
+    what is fundamentally a file read.
+
+    Prefix tokens that change resource use but not semantics (``sudo``, ``time``,
+    ``nice``, ``exec``, shell variable assignments) are stripped before dispatch.
     """
     # Only look at the first pipeline segment (before any |)
     command = command.split("|")[0].strip()

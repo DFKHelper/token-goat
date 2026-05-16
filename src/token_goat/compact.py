@@ -55,7 +55,20 @@ def _short_path(p: str, max_len: int = 70) -> str:
 
 
 def _format_ranges(ranges: list[tuple[int, int]]) -> str:
-    """Render line ranges compactly, e.g. 'lines 1-50, 100-200'."""
+    """Render merged line ranges compactly for inclusion in the manifest.
+
+    Examples::
+
+        _format_ranges([(1, 50)])          # →  "  lines 1-50"
+        _format_ranges([(1, 1)])           # →  "  lines 1"      (single line)
+        _format_ranges([(1, 50), (100, 200), (300, 400), (500, 600), (700, 800)])
+        # →  "  lines 1-50, 100-200, 300-400, 400-500 +1 more"
+
+    Single-line ranges (start == end) are formatted without a dash to keep the
+    output readable.  Ranges beyond _MAX_RANGES_PER_FILE are summarised as
+    "+N more" so the manifest line stays short enough to fit within the token
+    budget even for files read in many separate slices.
+    """
     if not ranges:
         return ""
     total_ranges = len(ranges)
