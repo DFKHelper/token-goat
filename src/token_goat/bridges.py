@@ -344,7 +344,8 @@ def _check_plugin_file(plugin_path: Path) -> str:
         if all(fp in content for fp in _PLUGIN_FINGERPRINT):
             return "installed"
         return "present but not token-goat bridge"
-    except OSError:
+    except OSError as e:
+        _LOG.warning("opencode plugin status check failed reading %s: %s", plugin_path, e)
         return "error reading plugin file"
 
 
