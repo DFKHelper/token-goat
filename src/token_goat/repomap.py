@@ -9,8 +9,6 @@ from collections import defaultdict
 from dataclasses import dataclass
 from typing import TypedDict
 
-import networkx as nx
-
 from . import db
 from .project import Project
 
@@ -136,12 +134,14 @@ def _load_project_data(
 
 def _build_graph(
     conn: sqlite3.Connection, files: dict, name_to_files: dict
-) -> nx.MultiDiGraph:
+) -> object:
     """Build a directed dependency graph: edge from file A to file B if A references a symbol defined in B.
 
     Nodes are all indexed files; edges represent cross-file symbol references (calls, attribute access, etc.).
     May have multiple edges between same pair (A references multiple symbols from B).
     """
+    import networkx as nx  # noqa: PLC0415
+
     graph = nx.MultiDiGraph()
 
     # Add all files as nodes
@@ -163,12 +163,14 @@ def _build_graph(
     return graph
 
 
-def _multigraph_to_weighted_digraph(multigraph: nx.MultiDiGraph) -> nx.DiGraph:
+def _multigraph_to_weighted_digraph(multigraph: object) -> object:
     """Convert a multigraph (multiple edges allowed between same nodes) to a simple DiGraph.
 
     Aggregates parallel edges: if A->B appears N times, result has single edge with weight=N.
     Used before PageRank since PageRank requires a simple graph.
     """
+    import networkx as nx  # noqa: PLC0415
+
     simple_graph = nx.DiGraph()
 
     # Add all nodes
@@ -185,22 +187,23 @@ def _multigraph_to_weighted_digraph(multigraph: nx.MultiDiGraph) -> nx.DiGraph:
     return simple_graph
 
 
-def compute_ranks(g: nx.MultiDiGraph, *, alpha: float = 0.85) -> dict[str, float]:
+def compute_ranks(g: object, *, alpha: float = 0.85) -> dict[str, float]:
     """Run PageRank on the multigraph (collapsed to simple graph for nx).
 
     Uses the pure-Python power-iteration implementation to avoid a hard
     dependency on scipy, which is not in the project's dependency list.
     """
+    import networkx as nx  # noqa: PLC0415
+    from networkx.algorithms.link_analysis.pagerank_alg import (  # noqa: PLC0415
+        _pagerank_python,
+    )
+
     if g.number_of_nodes() == 0:
         return {}
 
     simple_graph = _multigraph_to_weighted_digraph(g)
 
     # Use the pure-Python implementation — avoids requiring scipy.
-    from networkx.algorithms.link_analysis.pagerank_alg import (  # noqa: PLC0415
-        _pagerank_python,
-    )
-
     try:
         return _pagerank_python(simple_graph, alpha=alpha, weight="weight", max_iter=200, tol=1e-6)
     except nx.PowerIterationFailedConvergence:

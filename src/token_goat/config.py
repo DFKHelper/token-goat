@@ -9,8 +9,6 @@ import tomllib
 from dataclasses import dataclass, field
 from typing import Any, TypedDict
 
-import tomli_w
-
 from . import paths
 
 _LOG = logging.getLogger("token_goat.config")
@@ -169,6 +167,8 @@ def load() -> Config:
 
 def save(config: Config) -> None:
     """Persist config to TOML atomically, creating parent dirs as needed."""
+    import tomli_w  # noqa: PLC0415
+
     p = paths.config_path()
     p.parent.mkdir(parents=True, exist_ok=True)
     ca = config.compact_assist
