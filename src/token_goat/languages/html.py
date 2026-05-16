@@ -30,6 +30,33 @@ def _is_noise(name: str) -> bool:
     return name.lower() in _NOISE_IDS_CLASSES
 
 
+def _build_line_index(text: str) -> list[int]:
+    """Return a list of character offsets for the start of each line (0-indexed).
+
+    ``line_index[i]`` is the character position of the first character of line
+    ``i+1`` (1-indexed).  A binary search on this list converts any character
+    offset to a 1-indexed line number in O(log n) instead of the O(n) slice-
+    and-count pattern ``text[:pos].count("\\n") + 1``.
+    """
+    offsets = [0]
+    for i, ch in enumerate(text):
+        if ch == "\n":
+            offsets.append(i + 1)
+    return offsets
+
+
+def _offset_to_line(line_index: list[int], offset: int) -> int:
+    """Convert a character offset to a 1-indexed line number using binary search."""
+    lo, hi = 0, len(line_index) - 1
+    while lo < hi:
+        mid = (lo + hi + 1) // 2
+        if line_index[mid] <= offset:
+            lo = mid
+        else:
+            hi = mid - 1
+    return lo + 1
+
+
 def extract(source: bytes, rel_path: str) -> tuple[list[Symbol], list[Ref], list[ImpExp], list[Section]]:
     """Extract symbols, imports, and sections from an HTML file.
 
@@ -58,6 +85,10 @@ def extract(source: bytes, rel_path: str) -> tuple[list[Symbol], list[Ref], list
 
         lines = text.split("\n")
 
+        # Build a line-start offset index once; reuse it for all O(log n) lookups
+        # instead of the O(n) slice-and-count pattern per match.
+        line_index = _build_line_index(text)
+
         # --- Extract headings ---
         common.extract_html_headings(text, sections)
 
@@ -68,27 +99,28 @@ def extract(source: bytes, rel_path: str) -> tuple[list[Symbol], list[Ref], list
         for match in _ID_RE.finditer(text):
             id_val = match.group(1)
             if not _is_noise(id_val):
-                line = text[:match.start()].count("\n") + 1
+                line = _offset_to_line(line_index, match.start())
                 symbols.append(Symbol(name=id_val, kind="html_id", line=line))
 
         # --- Extract class attributes (with noise filter) ---
         for match in _CLASS_RE.finditer(text):
             class_val = match.group(1)
-            for cls in class_val.split():
-                if not _is_noise(cls):
-                    line = text[:match.start()].count("\n") + 1
-                    symbols.append(Symbol(name=cls, kind="html_class", line=line))
+            if any(not _is_noise(cls) for cls in class_val.split()):
+                line = _offset_to_line(line_index, match.start())
+                for cls in class_val.split():
+                    if not _is_noise(cls):
+                        symbols.append(Symbol(name=cls, kind="html_class", line=line))
 
         # --- Extract link href ---
         for match in _LINK_RE.finditer(text):
             href = match.group(1)
-            line = text[:match.start()].count("\n") + 1
+            line = _offset_to_line(line_index, match.start())
             imports.append(ImpExp(kind="html_link", target=href, line=line))
 
         # --- Extract script src ---
         for match in _SCRIPT_RE.finditer(text):
             src = match.group(1)
-            line = text[:match.start()].count("\n") + 1
+            line = _offset_to_line(line_index, match.start())
             imports.append(ImpExp(kind="html_script", target=src, line=line))
 
         return symbols, [], imports, sections

@@ -32,6 +32,11 @@ _CALL_NOISE = frozenset([
 # Regex: identifier NOT preceded by . that is immediately followed by (
 _CALL_RE = re.compile(r"(?<![.\w])([A-Za-z_][A-Za-z0-9_]*)\s*\(")
 
+# Import parsing patterns — compiled once at module level so _parse_import_source
+# (called once per import line during indexing) does not pay re.compile() overhead.
+_FROM_IMPORT_RE = re.compile(r"^from\s+(\S+)\s+import\s+(.+)$")
+_PLAIN_IMPORT_RE = re.compile(r"^import\s+(.+)$")
+
 
 def _parse_import_source(source_line: str) -> list[str]:
     """Return qualified import targets from one Python import statement source line.
@@ -46,7 +51,7 @@ def _parse_import_source(source_line: str) -> list[str]:
     - Unrecognised lines fall back to returning the raw stripped line.
     """
     line = source_line.strip()
-    m = re.match(r"^from\s+(\S+)\s+import\s+(.+)$", line)
+    m = _FROM_IMPORT_RE.match(line)
     if m:
         module = m.group(1)
         names_raw = m.group(2)
@@ -54,7 +59,7 @@ def _parse_import_source(source_line: str) -> list[str]:
         names_raw = names_raw.strip("()")
         names = [n.strip().split(" as ")[0].strip() for n in names_raw.split(",")]
         return [f"{module}.{n}" for n in names if n and n != "*"]
-    m = re.match(r"^import\s+(.+)$", line)
+    m = _PLAIN_IMPORT_RE.match(line)
     if m:
         names_raw = m.group(1)
         names = [n.strip().split(" as ")[0].strip() for n in names_raw.split(",")]
