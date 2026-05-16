@@ -421,6 +421,13 @@ def open_global() -> Iterator[sqlite3.Connection]:
 
 _PROJECT_HASH_RE = re.compile(r"^[a-zA-Z0-9_]+$")
 
+# Allowlist of table names permitted in dynamic COUNT queries.
+# Using an allowlist instead of relying solely on call-site literals prevents
+# SQL injection if _count() is ever called with externally-derived input.
+_KNOWN_PROJECT_TABLES = frozenset(
+    ["files", "symbols", "refs", "sections", "chunks", "embeddings"]
+)
+
 
 def _validate_project_hash(project_hash: str) -> None:
     """Validate project_hash to prevent path traversal attacks.
@@ -709,6 +716,8 @@ def index_health(project_hash: str) -> dict[str, object]:
             result["integrity_ok"] = integrity_row is not None and integrity_row[0] == "ok"
 
             def _count(table: str) -> int:
+                if table not in _KNOWN_PROJECT_TABLES:
+                    raise ValueError(f"_count: unknown table name {table!r}")
                 row = conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()  # noqa: S608
                 return int(row[0]) if row else 0
 

@@ -18,13 +18,30 @@ def _intercept_drive_download(file_id: str) -> dict[str, Any]:
     )
 
 
+def _shell_safe_url(url: str) -> str:
+    """Return a shell-safe representation of a URL for embedding in a suggested command.
+
+    The suggestion is single-quote delimited, so any single-quote in the URL
+    would break out of the quoting.  We use the standard POSIX workaround:
+    end the single-quoted segment, emit the literal quote as $'\\'' or a
+    double-quoted single char, then resume. For simplicity we just double-quote
+    wrap the whole URL instead, escaping only the characters that matter inside
+    double quotes: backslash, dollar, backtick, and double-quote.
+    """
+    # Characters that need escaping inside a double-quoted shell string
+    for ch in ("\\", "$", "`", '"'):
+        url = url.replace(ch, f"\\{ch}")
+    return f'"{url}"'
+
+
 def _intercept_webfetch_image(url: str) -> dict[str, Any]:
     """Build denial response for WebFetch image with redirect to token-goat shim."""
+    safe_url = _shell_safe_url(url)
     return deny_redirect(
         reason="token-goat redirects image URLs to its shrink+cache shim",
         context=(
             f"token-goat intercepted a WebFetch to an image URL to save tokens. "
-            f"Run this Bash instead: `token-goat fetch-image '{url}'` — "
+            f"Run this Bash instead: `token-goat fetch-image {safe_url}` — "
             f"it downloads, shrinks, caches, and returns a local path you can then Read."
         ),
     )
