@@ -1,15 +1,10 @@
 """Tests for the WebFetch intercept in pre_fetch hook — Phase 14."""
 from __future__ import annotations
 
+from hook_helpers import assert_continue as _assert_continue
+from hook_helpers import assert_deny as _assert_deny
+
 from token_goat import hooks_cli
-
-
-def _assert_continue(result: dict) -> None:
-    """Assert continue:True, tolerating diagnostic fields added by dispatch."""
-    assert result.get("continue") is True
-
-
-
 
 # ---------------------------------------------------------------------------
 # 10. pre_fetch with WebFetch on image URL → deny + additionalContext
@@ -23,9 +18,7 @@ class TestPreFetchWebFetchImageUrl:
         }
         result = hooks_cli.pre_fetch(payload)
 
-        assert result["continue"] is True
-        hso = result.get("hookSpecificOutput", {})
-        assert hso.get("permissionDecision") == "deny"
+        _assert_deny(result)
 
     def test_additional_context_mentions_fetch_image(self, tmp_data_dir):
         url = "https://cdn.example.com/banner.png"

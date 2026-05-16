@@ -6,14 +6,11 @@ import subprocess
 import sys
 from pathlib import Path
 
+from hook_helpers import assert_continue as _assert_continue
+
 from token_goat import hooks_cli
 
 PROJECT_ROOT = Path(__file__).parent.parent
-
-
-def _assert_continue(result: dict) -> None:
-    """Assert continue:True, tolerating diagnostic fields added by dispatch."""
-    assert result.get("continue") is True
 
 
 # ---------------------------------------------------------------------------

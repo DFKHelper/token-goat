@@ -6,6 +6,11 @@ from unittest.mock import patch
 
 import pytest
 
+# ---------------------------------------------------------------------------
+# Shared hook-response assertions — see tests/hook_helpers.py
+# ---------------------------------------------------------------------------
+# assert_continue and assert_deny live in hook_helpers.py (importable module).
+# Test files import them directly: from hook_helpers import assert_continue
 import token_goat.paths as paths
 from token_goat.parser import index_project
 from token_goat.project import Project, canonicalize, project_hash

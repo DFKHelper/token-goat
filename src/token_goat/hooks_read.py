@@ -5,7 +5,12 @@ from pathlib import Path
 from typing import Any
 
 from . import session
-from .hooks_common import CONTINUE, get_tool_input
+from .hooks_common import (
+    CONTINUE,
+    get_tool_input,
+    pre_tool_use_with_context,
+    pre_tool_use_with_update,
+)
 from .hooks_common import LOG as _LOG
 
 
@@ -88,19 +93,15 @@ def _try_shrink_image(
 
         shrink_response = dict(tool_input)
         shrink_response["file_path"] = str(shrunken)
-        return {
-            "continue": True,
-            "hookSpecificOutput": {
-                "hookEventName": "PreToolUse",
-                "updatedInput": shrink_response,
-                "additionalContext": (
-                    f"Note: image auto-shrunk by token-goat "
-                    f"({img_stats['src_bytes']:,} → {img_stats['out_bytes']:,} bytes, "
-                    f"~{img_stats['bytes_saved']:,} bytes saved). "
-                    f"Original: {file_path}"
-                ),
-            },
-        }
+        return pre_tool_use_with_update(
+            shrink_response,
+            (
+                f"Note: image auto-shrunk by token-goat "
+                f"({img_stats['src_bytes']:,} → {img_stats['out_bytes']:,} bytes, "
+                f"~{img_stats['bytes_saved']:,} bytes saved). "
+                f"Original: {file_path}"
+            ),
+        )
     except Exception:  # noqa: BLE001
         _LOG.exception("image-shrink failed during pre-read")
         return None
@@ -194,13 +195,7 @@ def pre_read(payload: dict[str, Any]) -> dict[str, Any]:
     if hint.tokens_saved > 0:
         _record_session_hint_impact(file_path, hint)
 
-    return {
-        "continue": True,
-        "hookSpecificOutput": {
-            "hookEventName": "PreToolUse",
-            "additionalContext": str(hint),
-        },
-    }
+    return pre_tool_use_with_context(str(hint))
 
 
 def post_read(payload: dict[str, Any]) -> dict[str, Any]:
