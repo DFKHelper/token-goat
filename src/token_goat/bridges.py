@@ -44,7 +44,10 @@ def _load_json_config(path: Path) -> dict[str, object]:
     content is not valid JSON, and ValueError if the file exceeds 1 MB (guard
     against a maliciously large config consuming unbounded memory).
     """
-    size = path.stat().st_size
+    try:
+        size = path.stat().st_size
+    except OSError as e:
+        raise OSError(f"could not stat config file {path}: {e}") from e
     if size > _MAX_CONFIG_BYTES:
         raise ValueError(
             f"config file too large ({size} bytes > {_MAX_CONFIG_BYTES} limit): {path}"

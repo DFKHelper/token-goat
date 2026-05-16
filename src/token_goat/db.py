@@ -601,20 +601,27 @@ def _connect_readonly(db_path: Path) -> sqlite3.Connection:
         # Force SQLite to actually open the DB file and its WAL sidecars.
         conn.execute("SELECT 1 FROM sqlite_master LIMIT 1").fetchone()
         return conn
-    except sqlite3.OperationalError as exc:
+    except (sqlite3.OperationalError, sqlite3.DatabaseError) as exc:
         _LOG.info(
             "WAL read-only open failed for %s (%s) — retrying in immutable mode",
             db_path.name,
             exc,
         )
         _close_conn(conn)
+        conn = None
         uri_imm = str(db_path.as_uri()) + "?mode=ro&immutable=1"
-        conn = sqlite3.connect(uri_imm, uri=True, isolation_level=None, timeout=10.0)
-        conn.row_factory = sqlite3.Row
-        _apply_connection_pragmas(conn, suppress=True)
-        # Verify the immutable open actually works (same lazy-open reason).
-        conn.execute("SELECT 1 FROM sqlite_master LIMIT 1").fetchone()
-        return conn
+        try:
+            conn = sqlite3.connect(uri_imm, uri=True, isolation_level=None, timeout=10.0)
+            conn.row_factory = sqlite3.Row
+            _apply_connection_pragmas(conn, suppress=True)
+            # Verify the immutable open actually works (same lazy-open reason).
+            conn.execute("SELECT 1 FROM sqlite_master LIMIT 1").fetchone()
+            return conn
+        except sqlite3.DatabaseError as exc2:
+            _close_conn(conn)
+            raise DBBusyError(
+                f"read-only connection failed for {db_path.name}: {exc2}"
+            ) from exc2
 
 
 @contextlib.contextmanager

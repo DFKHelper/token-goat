@@ -313,8 +313,9 @@ def pre_compact(payload: dict[str, Any]) -> HookResponse:
     if not cfg.enabled:
         return CONTINUE()
 
-    trigger = payload.get("trigger", "manual")
-    if trigger not in cfg.triggers:
+    trigger_raw = payload.get("trigger", "manual")
+    trigger = str(trigger_raw) if trigger_raw is not None else "manual"
+    if not cfg.triggers or trigger not in cfg.triggers:
         _LOG.info("pre-compact: skipping (trigger=%s not in %s)", trigger, cfg.triggers)
         return CONTINUE()
 
