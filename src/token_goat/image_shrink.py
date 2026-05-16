@@ -5,8 +5,9 @@ import contextlib
 import hashlib
 import logging
 import stat
+import types
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, TypedDict
+from typing import TYPE_CHECKING, TypedDict
 
 if TYPE_CHECKING:
     from PIL import Image as _PilImage
@@ -129,7 +130,7 @@ def _is_safe_path(path: Path) -> bool:
         return False
 
 
-def _ensure_rgb(img: _PilImage.Image, Image_module: Any) -> _PilImage.Image:  # noqa: N803
+def _ensure_rgb(img: _PilImage.Image, Image_module: types.ModuleType) -> _PilImage.Image:  # noqa: N803
     """Flatten any non-RGB image to an RGB canvas (white background).
 
     Handles alpha channels by compositing over white before discarding the

@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import re
+import types
+from collections.abc import Callable
 from typing import TYPE_CHECKING, Any, TypeAlias
 
 if TYPE_CHECKING:
@@ -77,13 +79,8 @@ def sym_kind_str(sym_kind: object, language: str = "go") -> str:
     return mapping.get(s, "var")
 
 
-def get_tlp() -> Any:
-    """Return the tree_sitter_language_pack module, or None if not installed.
-
-    Returns ``Any`` so callers can call methods on the result without casts or
-    ``# type: ignore`` suppressions — the module is fully dynamic and ships no
-    type stubs.
-    """
+def get_tlp() -> types.ModuleType | None:
+    """Return the tree_sitter_language_pack module, or None if not installed."""
     try:
         import tree_sitter_language_pack as tlp  # noqa: PLC0415
     except ModuleNotFoundError:
@@ -188,7 +185,7 @@ def make_add_symbol(
     language: str = "go",
     *,
     promote_methods: bool = False,
-) -> Any:
+) -> Callable[..., None]:
     """Return a recursive ``_add_symbol(item, parent_name)`` closure.
 
     Extracted from the four language adapters (go, typescript, python, rust) to
@@ -251,7 +248,7 @@ def make_add_symbol(
 def add_imports(
     imp_exp: list[Any],
     imports: list[Any],
-    extract_targets_fn: Any,
+    extract_targets_fn: Callable[[object], str | list[str]],
 ) -> None:
     """Add imports to the imp_exp list using a caller-supplied extraction function.
 
