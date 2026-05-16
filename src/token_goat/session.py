@@ -9,7 +9,6 @@ import sys
 import threading
 import time
 from dataclasses import asdict, dataclass, field
-from pathlib import Path
 
 from . import paths
 
@@ -194,10 +193,20 @@ def _fresh_cache(session_id: str, *, unavailable: bool = False) -> SessionCache:
 
 
 def _normalize_path(p: str) -> str:
-    """Normalize a path for use as a cache key. Forward slashes; lowercase drive on Windows."""
-    s = str(Path(p))
-    s = s.replace("\\", "/")
-    if sys.platform == "win32" and len(s) >= 2 and s[1] == ":":
+    """Normalize a path for use as a cache key. Forward slashes; lowercase drive on Windows.
+
+    Avoids constructing a Path object when the string contains no backslashes,
+    which is the common case for absolute POSIX paths and already-normalized keys.
+    The Path() round-trip was only needed to collapse mixed separators; a plain
+    str.replace is sufficient and avoids the allocation on the hot pre-read path.
+    """
+    # Fast path: no backslashes — skip the Path allocation entirely.
+    if "\\" not in p:
+        if sys.platform == "win32" and len(p) >= 2 and p[1] == ":" and p[0].isupper():
+            return p[0].lower() + p[1:]
+        return p
+    s = p.replace("\\", "/")
+    if sys.platform == "win32" and len(s) >= 2 and s[1] == ":" and s[0].isupper():
         s = s[0].lower() + s[1:]
     return s
 

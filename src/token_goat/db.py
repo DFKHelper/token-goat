@@ -435,7 +435,7 @@ def _open_with_rebuild(path: Path, *, load_vec: bool = True) -> sqlite3.Connecti
 def open_global() -> Iterator[sqlite3.Connection]:
     """Yield a connection to global.db with schema applied."""
     path = paths.global_db_path()
-    _LOG.info("opening global db: %s", path)
+    _LOG.debug("opening global db: %s", path)
     conn = _open_with_rebuild(path)
     try:
         # Only check integrity once per file per session to avoid repeated PRAGMA checks
@@ -488,7 +488,7 @@ def open_project(project_hash: str) -> Iterator[sqlite3.Connection]:
     """Yield a connection to a per-project DB with schema applied."""
     _validate_project_hash(project_hash)
     path = paths.project_db_path(project_hash)
-    _LOG.info("opening project db: %s (hash=%s)", path, project_hash)
+    _LOG.debug("opening project db: %s (hash=%s)", path, project_hash)
     conn = _open_with_rebuild(path)
     try:
         # Only check integrity once per file per session to avoid repeated PRAGMA checks
