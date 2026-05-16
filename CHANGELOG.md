@@ -4,6 +4,42 @@ All notable changes to Token-Goat are documented in this file. Format follows Ke
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-05-16
+
+### Added
+
+- **Linux and WSL support.** The worker now registers as a `systemd --user` service (`~/.config/systemd/user/token-goat-worker.service`) when systemd is available, with an XDG autostart `.desktop` fallback elsewhere. On WSL without systemd, the SessionStart hook starts the worker at the beginning of every Claude Code session. Data directory: `~/.local/share/token-goat/`. The install/uninstall flow, doctor checks, weekly auto-update (via `crontab`), and hook entry-point are platform-aware end-to-end.
+- **macOS support** (untested). The worker registers as a LaunchAgent at `~/Library/LaunchAgents/com.dfkhelper.token-goat-worker.plist`, loaded via `launchctl`. Data directory: `~/Library/Application Support/dfk-helper/token-goat/`. Weekly auto-update uses the same crontab path as Linux.
+- **PyPI Trusted Publishing.** A `Publish to PyPI` GitHub Actions workflow builds and publishes on GitHub Release via OIDC, replacing long-lived API tokens stored as repo secrets. PyPI's docs explicitly call out the security and usability advantages of OIDC-based publishing.
+- **README `What gets installed?` and `Security, privacy, and uninstall` sections** enumerating every file, hook, autostart entry, scheduled task, and data path the installer writes — and how each is reversed.
+- README badges for PyPI version and CI status (in addition to the existing Python version and license badges).
+- Lefthook git hooks for local lint / type-check / test parity with CI.
+- PyPI project URLs, classifiers, and keywords surfaced in `pyproject.toml`.
+
+### Changed
+
+- Data directory namespace renamed from `DFK Helper LLC` to `dfk-helper` for cross-platform path hygiene (matches the platformdirs convention on every OS). A reinstall will recreate the index at the new path; the old directory can be removed by hand.
+- Author / namespace migrated to `DFK Helper LLC` across the project (replaces a personal username in metadata and packaging fields).
+- CI slimmed to Python 3.13 on Windows for `ruff`, `mypy`, and `pytest`. The package itself still declares support for 3.11–3.13.
+- README rewritten with a before/after comparison table and stat callouts.
+
+### Fixed
+
+- Python 3.13 changed how `stat()` reports paths that contain a null byte; existing tests and a defensive check in `paths.py` were updated to accommodate the new error type.
+- Three Windows-runner CI test failures resolved.
+- Ruff caught a handful of orphaned imports left over from the iteration sweeps — all removed.
+- `token-goat stats` no longer charges suggestion-only hints with an overhead "saving" they did not earn.
+- `token-goat stats` bar-scale and share-% now use separate denominators so a single dominant kind no longer flattens the rest of the chart.
+
+### Security
+
+- Continued hardening of input validation in `paths.py` (`is_safe_rel_path`, hash-traversal guards in `project_db_path` and `session_cache_path`) so no rel-path can escape the data directory under any caller.
+
+### Removed
+
+- Legacy `tokenwise` launcher binaries (`tokenwise`, `tokenwise-hook`, `tokenwise-worker`) are now removed during install and uninstall when they sit alongside the current `token-goat` launchers.
+- Provisional application number stripped from the patent notice.
+
 ## [0.2.3] - 2026-05-14
 
 ### Changed
