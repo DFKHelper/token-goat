@@ -111,7 +111,7 @@ def fetch_file(file_id: str, *, shrink_if_image: bool = True) -> Path:
     # Get metadata first
     try:
         meta = service.files().get(fileId=file_id, fields="id, name, mimeType, size").execute()
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001 — Google API can raise many undocumented exceptions
         raise RuntimeError(f"Failed to fetch Drive file metadata for {file_id}: {e}") from e
 
     if not isinstance(meta, dict):
@@ -152,7 +152,7 @@ def fetch_file(file_id: str, *, shrink_if_image: bool = True) -> Path:
         try:
             while not done:
                 _status, done = downloader.next_chunk()
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 — Google API can raise many undocumented exceptions
             raise RuntimeError(f"Download failed for {file_id}: {e}") from e
 
         try:

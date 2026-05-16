@@ -147,7 +147,8 @@ def _read_cache_meta(cache_path: Path) -> dict[str, str]:
         return {}
     try:
         return json.loads(sidecar.read_text(encoding="utf-8"))
-    except Exception:  # noqa: BLE001
+    except Exception as e:  # noqa: BLE001
+        _LOG.debug("corrupt cache metadata at %s; discarding: %s", sidecar.name, e)
         return {}
 
 
