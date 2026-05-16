@@ -5,25 +5,11 @@ import json
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+from conftest import fake_home as _fake_home
+from conftest import patch_home as _patch_home
+
 import token_goat.install as install_mod
 from token_goat import install
-
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
-
-def _fake_home(tmp_path: Path) -> Path:
-    """Return a fake home directory rooted at tmp_path/home."""
-    home = tmp_path / "home"
-    home.mkdir(parents=True, exist_ok=True)
-    return home
-
-
-def _patch_home(monkeypatch, home: Path):
-    """Monkeypatch Path.home() to return *home* and re-derive token_goat.install functions."""
-    monkeypatch.setattr(Path, "home", staticmethod(lambda: home))
-
 
 # ---------------------------------------------------------------------------
 # 1. patch_settings_json — missing file creates valid JSON with our hooks

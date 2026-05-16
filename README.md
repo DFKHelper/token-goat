@@ -30,6 +30,8 @@
 
 ## The problem
 
+Claude reads `auth.py`. Then reads it again. Then a third time after compaction wipes the session. You pay for every token.
+
 Long sessions accumulate waste three ways. Screenshots cross the model at full resolution. A single PNG can land at 3.3 MB. The agent re-reads files it already parsed earlier in the same conversation. And when a session compacts, the summary LLM doesn't know which files were edited or which symbols mattered, so it preserves the wrong things.
 
 Each one is preventable. Token-Goat intercepts all three, automatically.
@@ -48,6 +50,8 @@ Each one is preventable. Token-Goat intercepts all three, automatically.
 <p align="center">
   <img src="assets/stats.png" alt="token-goat stats" width="800">
 </p>
+
+On a per-token API plan, 100K wasted tokens per session runs about $0.30. Five sessions a week is ~$450/year. Token-goat is free.
 
 ## Install
 

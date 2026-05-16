@@ -6,14 +6,31 @@ from unittest.mock import patch
 
 import pytest
 
+import token_goat.paths as paths
+from token_goat.parser import index_project
+from token_goat.project import Project, canonicalize, project_hash
+
+# ---------------------------------------------------------------------------
+# Home-directory helpers (used by test_install.py and test_install_codex.py)
+# ---------------------------------------------------------------------------
+
+
+def fake_home(tmp_path: Path) -> Path:
+    """Return a fake home directory rooted at tmp_path/home."""
+    home = tmp_path / "home"
+    home.mkdir(parents=True, exist_ok=True)
+    return home
+
+
+def patch_home(monkeypatch, home: Path) -> None:
+    """Monkeypatch Path.home() to return *home*."""
+    monkeypatch.setattr(Path, "home", staticmethod(lambda: home))
+
 # ---------------------------------------------------------------------------
 # Shared hook-response assertions — see tests/hook_helpers.py
 # ---------------------------------------------------------------------------
 # assert_continue and assert_deny live in hook_helpers.py (importable module).
 # Test files import them directly: from hook_helpers import assert_continue
-import token_goat.paths as paths
-from token_goat.parser import index_project
-from token_goat.project import Project, canonicalize, project_hash
 
 # Sample fixture directories - centralized to avoid duplication across test files
 FIXTURE_DIR = Path(__file__).parent / "fixtures"
@@ -277,26 +294,3 @@ def md_project(tmp_path, tmp_data_dir, make_project):
     return proj
 
 
-# CLI fixtures (sets cwd to project root for CLI tests)
-@pytest.fixture
-def indexed_ts_cli(ts_project, monkeypatch):
-    """Return (proj_root, proj) with cwd set to proj_root (for CLI tests)."""
-    proj_root, proj = ts_project
-    monkeypatch.chdir(proj_root)
-    return proj_root, proj
-
-
-@pytest.fixture
-def indexed_md_cli(md_project, monkeypatch):
-    """Return (proj_root, proj) with cwd set to proj_root (for CLI tests)."""
-    proj_root, proj = md_project
-    monkeypatch.chdir(proj_root)
-    return proj_root, proj
-
-
-@pytest.fixture
-def indexed_py_cli(py_project, monkeypatch):
-    """Return (proj_root, proj) with cwd set to proj_root (for CLI tests)."""
-    proj_root, proj = py_project
-    monkeypatch.chdir(proj_root)
-    return proj_root, proj
