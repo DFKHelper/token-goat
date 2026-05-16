@@ -137,8 +137,16 @@ def extract(
     abi_threshold = _ABI_SIZE_THRESHOLD
     abi_max = _ABI_MAX_SYMBOLS
     if meta:
-        abi_threshold = int(meta.get("abi_size_threshold", abi_threshold))
-        abi_max = int(meta.get("abi_max_symbols_per_file", abi_max))
+        try:
+            abi_threshold = int(meta.get("abi_size_threshold", abi_threshold))
+            abi_max = int(meta.get("abi_max_symbols_per_file", abi_max))
+        except (TypeError, ValueError):
+            _LOG.debug(
+                "invalid ABI meta values (abi_size_threshold=%r, abi_max_symbols_per_file=%r); "
+                "using defaults",
+                meta.get("abi_size_threshold"),
+                meta.get("abi_max_symbols_per_file"),
+            )
 
     # ABI fast path: skip expensive structure walk for huge generated type files
     if len(source) >= abi_threshold and _is_abi_file(source, rel_path, threshold=abi_threshold):
