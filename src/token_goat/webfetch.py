@@ -188,12 +188,18 @@ def _read_cache_meta(cache_path: Path) -> dict[str, str]:
 
 
 def _write_cache_meta(cache_path: Path, response_headers: httpx.Headers) -> None:
-    """Persist ETag and/or Last-Modified from response headers alongside the cache file."""
+    """Persist ETag and/or Last-Modified from response headers alongside the cache file.
+
+    Header values from untrusted servers are truncated to ``_MAX_META_VALUE_LEN``
+    (512 chars) before being written.  Without this cap a server could send an
+    arbitrarily large ETag value that escapes the 4 KB read-time guard — since the
+    read guard only applies when loading cached metadata, not when persisting it.
+    """
     meta: dict[str, str] = {}
     if etag := response_headers.get("etag"):
-        meta["etag"] = etag
+        meta["etag"] = etag[:_MAX_META_VALUE_LEN]
     if lm := response_headers.get("last-modified"):
-        meta["last_modified"] = lm
+        meta["last_modified"] = lm[:_MAX_META_VALUE_LEN]
     if not meta:
         return
     try:
