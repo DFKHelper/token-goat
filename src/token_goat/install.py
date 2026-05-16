@@ -184,7 +184,7 @@ def install_worker_task() -> tuple[bool, str]:
         winreg.SetValueEx(key, TASK_WORKER, 0, winreg.REG_SZ, cmd)
         winreg.CloseKey(key)
         return True, f"HKCU Run key set: {cmd}"
-    except Exception as exc:
+    except OSError as exc:
         return False, str(exc)
 
 
@@ -1202,8 +1202,10 @@ def _check_codex_config() -> str:
         return "not installed (codex config absent)"
     try:
         data = tomllib.loads(cfg_path.read_text(encoding="utf-8"))
-    except Exception:  # noqa: BLE001
-        return "error (codex config malformed)"
+    except tomllib.TOMLDecodeError:
+        return f"error (codex config malformed: {cfg_path})"
+    except OSError as e:
+        return f"error reading codex config ({cfg_path}): {e}"
     hooks = data.get("hooks", {})
     for _event, entries in hooks.items():
         for entry in entries:
@@ -1330,8 +1332,8 @@ def _stop_worker() -> str:
         pid = int(pid_path.read_text(encoding="utf-8").strip())
         if psutil.pid_exists(pid):
             psutil.Process(pid).terminate()
-    except Exception as e:  # noqa: BLE001
-        _LOG.warning("failed to terminate worker process: %s", e)
+    except (ValueError, OSError, psutil.NoSuchProcess, psutil.AccessDenied) as e:
+        _LOG.warning("failed to terminate worker process (pid_path=%s): %s", pid_path, e)
     pid_path.unlink(missing_ok=True)
     return "stopped"
 
