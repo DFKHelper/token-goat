@@ -7,11 +7,16 @@
 </p>
 
 <p align="center">
+  <a href="https://pypi.org/project/token-goat/"><img src="https://img.shields.io/pypi/v/token-goat?label=PyPI&logo=pypi&logoColor=white" alt="PyPI version"></a>
+  <a href="https://github.com/DFKHelper/token-goat/actions/workflows/ci.yml"><img src="https://github.com/DFKHelper/token-goat/actions/workflows/ci.yml/badge.svg" alt="CI status"></a>
+  <a href="https://pypi.org/project/token-goat/"><img src="https://img.shields.io/pypi/pyversions/token-goat?logo=python&logoColor=white" alt="Python 3.11 | 3.12 | 3.13"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-PolyForm%20Noncommercial-lightgrey" alt="PolyForm Noncommercial"></a>
+</p>
+
+<p align="center">
   <img src="https://img.shields.io/badge/Windows-10%20%7C%2011-0078d4?logo=windows&logoColor=white" alt="Windows 10 | 11">
   <img src="https://img.shields.io/badge/Linux-including%20WSL-FCC624?logo=linux&logoColor=black" alt="Linux including WSL">
   <img src="https://img.shields.io/badge/macOS-untested-lightgrey?logo=apple&logoColor=white" alt="macOS (untested)">
-  <img src="https://img.shields.io/badge/Python-3.11%20%7C%203.12%20%7C%203.13-3776ab?logo=python&logoColor=white" alt="Python 3.11 | 3.12 | 3.13">
-  <img src="https://img.shields.io/badge/license-PolyForm%20Noncommercial-lightgrey" alt="PolyForm Noncommercial">
   <img src="https://img.shields.io/badge/requires-uv-6340ac" alt="requires uv">
 </p>
 
@@ -84,32 +89,56 @@ The `--codex` flag patches both Claude Code and Codex CLI in one pass.
 
 First `token-goat semantic` call downloads a small embedding model, about 130 MB, into the token-goat data directory. One-time. Offline after that.
 
+## What gets installed?
+
+`token-goat install` writes the following on your machine — nothing else, anywhere. Every entry is reversed by `token-goat uninstall`. Run `token-goat doctor` at any time to see which of these are currently present.
+
+**Claude Code integration** (`~/.claude/`)
+
+| Path | What |
+|------|------|
+| `~/.claude/settings.json` | Hook entries for `SessionStart`, `PreToolUse` (Read, Drive/WebFetch), `PostToolUse` (Edit/Write/MultiEdit, Read/Grep/Glob), and `PreCompact`. Plus a `Bash(token-goat:*)` permission allowlist entry. Existing hooks are preserved; a timestamped `.bak` is written before any change. |
+| `~/.claude/CLAUDE.md` | A delimited block (`<!-- token-goat-begin -->` … `<!-- token-goat-end -->`) telling the agent to prefer `token-goat read` / `symbol` / `section` over `Read` / `Grep`. Any existing content is preserved. |
+| `~/.claude/skills/token-goat/SKILL.md` | The token-goat skill — the same routing guidance in skill form. |
+
+**Worker autostart** (one of the following, picked by platform)
+
+| Platform | Entry |
+|---------|------|
+| Windows | `HKCU\Software\Microsoft\Windows\CurrentVersion\Run\token-goat-worker`. No admin rights required. |
+| Linux (with `systemd --user`) | `~/.config/systemd/user/token-goat-worker.service`, enabled. |
+| Linux (no systemd, incl. WSL) | `~/.config/autostart/token-goat-worker.desktop`. On WSL without systemd, the SessionStart hook also starts the worker on every Claude Code session. |
+| macOS (untested) | `~/Library/LaunchAgents/com.dfkhelper.token-goat-worker.plist`, loaded via `launchctl`. |
+
+The autostart command is `pythonw -m token_goat.cli worker --daemon` from Token-Goat's `uv tool` venv. No PyInstaller-style launcher `.exe` is dropped; AV/EDR products do not behavior-flag this invocation pattern.
+
+**Weekly auto-update** (Sunday 03:00 local time, runs `uv tool upgrade token-goat`)
+
+| Platform | Entry |
+|---------|------|
+| Windows | Scheduled task `token-goat-update` (`schtasks`). |
+| Linux / macOS | A `crontab` line tagged with `# token-goat-autoupdate`. |
+
+**Data directory** (created on first run)
+
+| Platform | Path |
+|---------|------|
+| Windows | `%LOCALAPPDATA%\dfk-helper\token-goat\` |
+| Linux / WSL | `~/.local/share/token-goat/` |
+| macOS | `~/Library/Application Support/dfk-helper/token-goat/` |
+
+Contains the symbol index (`global.db`, per-project `.db` files), session cache, shrunken-image cache, embedding model (~130 MB, downloaded on the first `semantic` call), logs, locks, and the dirty-file queue. Nothing outside this directory and `~/.claude/` is written.
+
+**With `--codex`** (Codex CLI integration)
+
+| Path | What |
+|------|------|
+| `~/.codex/config.toml` | Hooks block with Codex-specific matchers (`view_image|Bash`, `apply_patch`, `web_search`). Existing hooks preserved. |
+| `~/.codex/AGENTS.md` | A delimited block (`<!-- token-goat-codex-begin -->` … `<!-- token-goat-codex-end -->`) with the same routing guidance, adapted for Codex tool names. |
+
 ## Zero maintenance
 
-After `token-goat install`, there is nothing to start, stop, or restart. The worker:
-
-- **Windows:** starts at logon via the Windows startup registry (HKCU Run key, no admin rights needed), runs without a console window
-- **Linux with systemd:** registers as a systemd user service (`~/.config/systemd/user/token-goat-worker.service`), starts at login automatically
-- **WSL without systemd:** the SessionStart hook starts the worker at the beginning of every Claude Code session
-- **macOS (untested):** the SessionStart hook starts the worker at the start of every Claude Code session
-- survives reboots on all platforms
-- needs zero ongoing attention
-
-To remove it later, `token-goat uninstall` reverses every change, including the startup entry.
-
-## Windows Defender (Windows only)
-
-Optional speed-up for large repos. Token-goat works fine without it.
-
-Real-time scanning slows indexing. To exclude the token-goat folder, open PowerShell as administrator and run:
-
-```powershell
-Add-MpPreference -ExclusionPath "$env:LOCALAPPDATA\dfk-helper\token-goat"
-```
-
-If you see `0x800106ba`, the prompt is not elevated. Reopen as administrator.
-
-On enterprise-managed Windows (domain-joined or Intune-managed), Defender exclusions may be locked by Group Policy. The command will fail even with admin rights. That is expected and harmless.
+After install, there is nothing to start, stop, or restart. The worker runs at logon on Windows, Linux, and macOS; on WSL without systemd, the SessionStart hook covers it. Survives reboots on every platform. `token-goat uninstall` reverses every change, including the startup entry.
 
 ## Verify
 
@@ -120,23 +149,33 @@ token-goat stats
 
 `doctor` confirms the install is healthy. `stats` shows cumulative savings.
 
-## Uninstall
+## Security, privacy, and uninstall
+
+**No telemetry. No analytics. No background reporting or silent outbound connections.**
+
+Outbound network is reserved to three explicit cases:
+
+- First `token-goat semantic` call downloads the embedding model (~130 MB) into the data directory. Offline after that.
+- Google Drive API calls, only if you already authorized Drive in Claude Code. Token-goat never prompts for its own auth.
+- Explicit, user-triggered URL fetches via `token-goat fetch-image <url>`.
+
+**Security reports.** See [SECURITY.md](SECURITY.md). Email `token-goat@dfkhelper.com`; do not file as a GitHub issue. Reports are acknowledged within 7 days; coordinated disclosure with a 90-day default window.
+
+**Windows Defender (optional, Windows only).** Real-time scanning slows indexing. To exclude the data folder, open PowerShell as administrator:
+
+```powershell
+Add-MpPreference -ExclusionPath "$env:LOCALAPPDATA\dfk-helper\token-goat"
+```
+
+`0x800106ba` means the prompt is not elevated; reopen as administrator. On enterprise-managed Windows (domain-joined / Intune), Defender exclusions may be locked by Group Policy. The command will fail; that is expected and harmless.
+
+**Uninstall.**
 
 ```
 token-goat uninstall
 ```
 
-## Privacy
-
-No telemetry. No analytics. No background reporting or silent outbound connections.
-
-Outbound network only in three explicitly disclosed cases:
-
-- First `token-goat semantic` call downloads the embedding model. After that, semantic search runs offline.
-- Google Drive API calls, only if you already authorized Drive in Claude Code. Token-goat never prompts for its own auth.
-- Explicit, user-triggered URL fetches via `token-goat fetch-image <url>`.
-
-All caches and the index live in the token-goat data directory: `%LOCALAPPDATA%\dfk-helper\token-goat\` on Windows, `~/.local/share/token-goat/` on Linux and WSL, `~/Library/Application Support/dfk-helper/token-goat/` on macOS. Delete the folder any time. Nothing else on the system depends on it.
+Reverses everything in [What gets installed?](#what-gets-installed): the scheduled task or systemd unit, the registry value or `.desktop` or `.plist`, the hook entries in `settings.json`, the `CLAUDE.md` block, the skill directory. Add `--codex` to also strip the Codex integration. Add `--purge` to also delete the data directory (cache, index, models, logs). Nothing else on the system depends on it.
 
 ## About
 
