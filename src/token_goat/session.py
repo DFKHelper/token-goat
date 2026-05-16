@@ -231,6 +231,11 @@ def _validate_session_id(session_id: str) -> None:
         raise ValueError(f"session_id contains invalid characters: {session_id!r}")
 
 
+def validate_session_id(session_id: str) -> None:
+    """Public alias for _validate_session_id. Raises ValueError on invalid input."""
+    _validate_session_id(session_id)
+
+
 def _record_cache_contention(session_id: str, phase: str, exc: OSError) -> None:
     """Record a best-effort telemetry row when the session cache is locked."""
     key = (session_id, phase)
@@ -337,6 +342,37 @@ def save(cache: SessionCache) -> None:
         _record_cache_contention(cache.session_id, "save", last_exc)
 
 
+_MAX_PATH_LEN = 4096
+
+
+def _sanitize_path(path: str) -> str:
+    """Reject or normalise a file path before storing in the session cache.
+
+    Absolute paths (used legitimately by Claude's Read tool) are allowed
+    through.  Relative paths with ``..`` traversal components are rejected;
+    the original value is returned unchanged so callers can log it, but a
+    warning is emitted.  Null bytes are always stripped.
+    """
+    if not path:
+        return path
+    # Strip null bytes — never valid in a path
+    path = path.replace("\x00", "")
+    if len(path) > _MAX_PATH_LEN:
+        _LOG.warning("mark_file: path exceeds max length (%d), truncating", _MAX_PATH_LEN)
+        path = path[:_MAX_PATH_LEN]
+    normalized = path.replace("\\", "/")
+    # Relative paths must not contain traversal components
+    is_absolute = normalized.startswith("/") or (
+        len(normalized) >= 2 and normalized[1] == ":" and normalized[0].isalpha()
+    )
+    if not is_absolute:
+        parts = normalized.split("/")
+        if ".." in parts:
+            _LOG.warning("mark_file: rejected traversal path: %r", path)
+            return ""
+    return path
+
+
 def mark_file_read(
     session_id: str,
     path: str,
@@ -347,6 +383,9 @@ def mark_file_read(
     cache: SessionCache | None = None,
 ) -> SessionCache:
     """Record that a file (or symbol within) was read. Returns the updated cache."""
+    path = _sanitize_path(path)
+    if not path:
+        return cache or _fresh_cache(session_id)
     cache = _resolve_cache(session_id, cache)
     if cache.unavailable:
         return cache
@@ -440,6 +479,9 @@ def mark_file_edited(
     session_id: str, path: str, *, cache: SessionCache | None = None
 ) -> SessionCache:
     """Record that a file was edited (written/modified) this session."""
+    path = _sanitize_path(path)
+    if not path:
+        return cache or _fresh_cache(session_id)
     cache = _resolve_cache(session_id, cache)
     if cache.unavailable:
         return cache
