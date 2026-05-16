@@ -73,7 +73,9 @@ def _is_map_worthy(rel_path: str, approx_lines: int) -> bool:
     Excludes test fixture stubs (which distort PageRank by accumulating refs
     from all parser tests) and trivially small files (empty __init__.py, etc.).
     """
-    posix = rel_path.replace("\\", "/")
+    # rel_path is already POSIX (stored as POSIX in the DB); only normalise
+    # when backslashes are present (Windows edge case).
+    posix = rel_path.replace("\\", "/") if "\\" in rel_path else rel_path
     if any(posix.startswith(p) for p in _EXCLUDED_PREFIXES):
         return False
     return approx_lines >= _MIN_DISPLAY_LINES
@@ -202,6 +204,8 @@ def _multigraph_to_weighted_digraph(multigraph: object) -> object:
     Aggregates parallel edges: if A->B appears N times, result has single edge with weight=N.
     Used before PageRank since PageRank requires a simple graph.
     """
+    from collections import Counter  # noqa: PLC0415
+
     import networkx as nx  # noqa: PLC0415
 
     simple_graph = nx.DiGraph()
@@ -210,12 +214,14 @@ def _multigraph_to_weighted_digraph(multigraph: object) -> object:
     for node in multigraph.nodes:
         simple_graph.add_node(node)
 
-    # Aggregate parallel edges into weights
-    for source, target in multigraph.edges():
-        if simple_graph.has_edge(source, target):
-            simple_graph[source][target]["weight"] += 1.0
-        else:
-            simple_graph.add_edge(source, target, weight=1.0)
+    # Count parallel edges in a single pass, then add them all at once.
+    # This avoids a has_edge() + dict-lookup conditional on every edge,
+    # replacing O(E) graph attribute writes with one Counter pass + one
+    # add_edges_from call.
+    edge_weights: Counter[tuple[object, object]] = Counter(multigraph.edges())
+    simple_graph.add_edges_from(
+        (src, dst, {"weight": float(w)}) for (src, dst), w in edge_weights.items()
+    )
 
     return simple_graph
 
@@ -342,9 +348,7 @@ def render_summary(s: FileSummary) -> str:
     if s.top_symbols:
         by_kind: dict[str, list[str]] = {}
         for k, n in s.top_symbols:
-            if k not in by_kind:
-                by_kind[k] = []
-            by_kind[k].append(n)
+            by_kind.setdefault(k, []).append(n)
         for kind in sorted(by_kind, key=lambda k: KIND_PRIORITY.get(k, 99)):
             names = ", ".join(by_kind[kind][:_MAX_NAMES_PER_KIND])
             lines.append(f"  {kind}: {names}")

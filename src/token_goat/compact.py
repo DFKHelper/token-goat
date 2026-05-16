@@ -5,6 +5,7 @@ compaction LLM knows what to preserve without reading the full conversation.
 """
 from __future__ import annotations
 
+import itertools
 import logging
 import operator
 import time
@@ -44,10 +45,12 @@ def _format_ranges(ranges: list[tuple[int, int]]) -> str:
     """Render line ranges compactly, e.g. 'lines 1-50, 100-200'."""
     if not ranges:
         return ""
+    n = len(ranges)
     shown = ranges[:_MAX_RANGES_PER_FILE]
-    parts = [str(s) if s == e else f"{s}-{e}" for s, e in shown]
-    extra = f" +{len(ranges) - _MAX_RANGES_PER_FILE} more" if len(ranges) > _MAX_RANGES_PER_FILE else ""
-    return f"  lines {', '.join(parts)}{extra}"
+    # Generator expression avoids building an intermediate list just to join.
+    parts = ", ".join(str(s) if s == e else f"{s}-{e}" for s, e in shown)
+    extra = f" +{n - _MAX_RANGES_PER_FILE} more" if n > _MAX_RANGES_PER_FILE else ""
+    return f"  lines {parts}{extra}"
 
 
 def event_count(session_id: str) -> int:
@@ -118,7 +121,11 @@ def _render(cache: SessionCache, session_id: str, max_tokens: int) -> tuple[str,
     if not cache.edited_files and not cache.files:
         return "", 0
 
-    files_with_symbols = [e for e in cache.files.values() if e.symbols_read]
+    # Use a generator so we only materialise up to _MAX_SYMBOLS_FILES entries
+    # instead of scanning every file entry when only the first few are needed.
+    files_with_symbols = list(
+        itertools.islice((e for e in cache.files.values() if e.symbols_read), _MAX_SYMBOLS_FILES)
+    )
     # Most-frequently-read files, capped at _MAX_FILES_READ, for the "Key Files Read" section.
     top_files = sorted(cache.files.values(), key=lambda e: -e.read_count)[:_MAX_FILES_READ]
 
@@ -143,7 +150,7 @@ def _render(cache: SessionCache, session_id: str, max_tokens: int) -> tuple[str,
     # ── 2. Symbols accessed via token-goat read / symbol ────────────────────────
     if files_with_symbols:
         sections.append("### Symbols Accessed")
-        for entry in files_with_symbols[:_MAX_SYMBOLS_FILES]:
+        for entry in files_with_symbols:
             syms = entry.symbols_read[:_MAX_SYMBOLS_PER_FILE_ENTRY]
             overflow = len(entry.symbols_read) - _MAX_SYMBOLS_PER_FILE_ENTRY
             sym_str = ", ".join(syms) + (f" +{overflow}" if overflow > 0 else "")
