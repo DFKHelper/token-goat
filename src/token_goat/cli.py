@@ -163,6 +163,7 @@ def symbol(
     use_tty_color = sys.stdout.isatty() and not as_json
 
     def _fmt_plain(rows: list[dict]) -> None:
+        """Print symbol rows as plain text, optionally with ANSI colour when stdout is a TTY."""
         for row in rows:
             project_prefix = f"[{row.get('project', '')}] " if "project" in row else ""
             sig_part = f"  {row['signature']}" if row.get("signature") else ""
@@ -580,6 +581,7 @@ def index(
     assert proj is not None  # guaranteed: all branches either set proj or return/exit early
 
     def _progress(done: int, total: int) -> None:
+        """Emit an indexing progress line to stderr."""
         typer.echo(f"  {done}/{total} files processed...", err=True)
 
     summary = index_project(proj, full=full, progress=_progress)
@@ -846,6 +848,11 @@ def compact_hint(
 
 
 def _config_get_value(config: Any, key: str) -> Any:
+    """Retrieve a nested config attribute by dotted key (e.g. ``"compact_assist.enabled"``).
+
+    Walks the dataclass hierarchy attribute-by-attribute and returns the leaf
+    value.  Raises ``KeyError`` if any component of *key* is absent.
+    """
     target: Any = config
     parts = [part for part in key.split(".") if part]
     if not parts:
@@ -858,6 +865,17 @@ def _config_get_value(config: Any, key: str) -> Any:
 
 
 def _coerce_config_value(current: Any, raw_value: str) -> Any:
+    """Coerce *raw_value* (a CLI string) to the same type as *current*.
+
+    Dispatch table:
+    - dataclass → parsed from JSON object
+    - bool      → accepts ``1/true/yes/on`` or ``0/false/no/off``
+    - int       → ``int(raw_value)``
+    - list      → JSON array literal or comma-separated string
+    - str       → returned as-is (stripped)
+
+    Raises ``ValueError`` for invalid inputs.
+    """
     raw_value = raw_value.strip()
 
     if is_dataclass(current):
@@ -891,6 +909,13 @@ def _coerce_config_value(current: Any, raw_value: str) -> Any:
 
 
 def _config_set_value(config: config_mod.Config, key: str, raw_value: str) -> Any:
+    """Set a nested config attribute by dotted key, coercing *raw_value* to the right type.
+
+    Navigates the dataclass hierarchy to the parent of the leaf attribute, calls
+    :func:`_coerce_config_value` to convert the string, then uses ``setattr`` to
+    mutate *config* in place.  Returns the coerced value so callers can echo it.
+    Raises ``KeyError`` if any path component is missing.
+    """
     parts = [part for part in key.split(".") if part]
     if not parts:
         raise KeyError(key)
@@ -921,6 +946,7 @@ def config_list(
 
     # Flatten a dataclass to dotted-key -> value pairs
     def _flatten(obj: Any, prefix: str = "") -> list[tuple[str, Any]]:
+        """Recursively expand a dataclass into ``(dotted_key, value)`` pairs."""
         from dataclasses import fields as _fields  # noqa: PLC0415
         pairs: list[tuple[str, Any]] = []
         for f in _fields(obj):
