@@ -1,7 +1,7 @@
 [project]
 name = "token-goat"
 version = "0.3.0"
-description = "Hook-based token optimizer for Claude Code on Windows. Image shrink, re-read dedup, and compaction assist — automatic."
+description = "Hook-based token optimizer for Claude Code on Windows, Linux, and WSL. Image shrink, re-read dedup, and compaction assist — automatic."
 readme = "README.md"
 requires-python = ">=3.11,<3.15"
 authors = [{ name = "DFK Helper LLC" }]
@@ -14,10 +14,13 @@ keywords = [
     "context-window",
     "hooks",
     "windows",
+    "linux",
+    "wsl",
     "ai-tools",
 ]
 classifiers = [
     "Operating System :: Microsoft :: Windows",
+    "Operating System :: POSIX :: Linux",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
@@ -26,10 +29,6 @@ classifiers = [
     "Topic :: Utilities",
     "Environment :: Plugins",
 ]
-
-[project.urls]
-Source = "https://github.com/DFKHelper/token-goat"
-Changelog = "https://github.com/DFKHelper/token-goat/blob/main/CHANGELOG.md"
 dependencies = [
     "typer>=0.12.0",
     "tree-sitter>=0.23,<0.24",
@@ -47,6 +46,10 @@ dependencies = [
     "rich>=14.0.0",
     "tree-sitter-language-pack>=0.7,<2.0",
 ]
+
+[project.urls]
+Source = "https://github.com/DFKHelper/token-goat"
+Changelog = "https://github.com/DFKHelper/token-goat/blob/main/CHANGELOG.md"
 
 [project.scripts]
 token-goat = "token_goat.cli:main"
