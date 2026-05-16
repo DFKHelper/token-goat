@@ -21,16 +21,18 @@ import logging
 import os
 import sqlite3
 import time
-from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, TypedDict
 
 from . import db, paths
 from .paths import is_safe_rel_path as _is_safe_rel_path
-from .project import Project
 
 if TYPE_CHECKING:
+    from collections.abc import Callable, Sequence
+
     from fastembed import TextEmbedding
+
+    from .project import Project
 
 
 class EmbeddingsResult(TypedDict):

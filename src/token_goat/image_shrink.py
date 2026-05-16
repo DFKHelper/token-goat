@@ -6,11 +6,12 @@ import hashlib
 import logging
 import stat
 import time
-import types
 from pathlib import Path
 from typing import TYPE_CHECKING, TypedDict
 
 if TYPE_CHECKING:
+    import types
+
     from PIL import Image as _PilImage
 
 from . import paths
