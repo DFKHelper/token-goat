@@ -41,6 +41,10 @@ class GrepEntry:
     result_count: int | None = None  # if known
 
 
+# Computed once at import time — GrepEntry fields never change at runtime.
+_GREP_FIELDS: frozenset[str] = frozenset(GrepEntry.__dataclass_fields__)  # type: ignore[attr-defined]
+
+
 @dataclass
 class SessionCache:
     """Session context cache keyed by session_id."""
@@ -106,13 +110,12 @@ class SessionCache:
 
         greps: list[GrepEntry] = []
         skipped_grep_entries = 0
-        _grep_fields = {f.name for f in GrepEntry.__dataclass_fields__.values()}  # type: ignore[attr-defined]
         for g in d.get("greps", []):
             if not isinstance(g, dict):
                 skipped_grep_entries += 1
                 continue
             try:
-                greps.append(GrepEntry(**{k: v for k, v in g.items() if k in _grep_fields}))
+                greps.append(GrepEntry(**{k: v for k, v in g.items() if k in _GREP_FIELDS}))
             except (TypeError, ValueError, KeyError):
                 skipped_grep_entries += 1
                 _LOG.debug("session: skipping corrupted grep entry")

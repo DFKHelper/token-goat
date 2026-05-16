@@ -118,10 +118,14 @@ def invalidate_file_cache(project_hash: str) -> int:
     Called by the post-edit hook after a file is reindexed so the next lookup
     gets a fresh result from the DB.
     """
-    stale = [k for k in _RESOLVE_CACHE if k[0] == project_hash]
-    for k in stale:
-        del _RESOLVE_CACHE[k]
-    return len(stale)
+    # Rebuild in-place, keeping only entries that belong to other projects.
+    # Snapshot items first, then clear and repopulate to avoid a separate
+    # list-of-stale-keys pass followed by individual deletes.
+    kept = {k: v for k, v in _RESOLVE_CACHE.items() if k[0] != project_hash}
+    evicted = len(_RESOLVE_CACHE) - len(kept)
+    _RESOLVE_CACHE.clear()
+    _RESOLVE_CACHE.update(kept)
+    return evicted
 
 
 # ---------------------------------------------------------------------------
