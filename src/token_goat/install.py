@@ -6,6 +6,7 @@ import json
 import logging
 import os
 import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -336,7 +337,12 @@ def install_linux_autostart() -> tuple[bool, str]:
         return True, "Windows: skipped"
 
     cmd_args = paths.python_runner_argv("worker", "--daemon")
-    exec_str = " ".join(cmd_args)
+    # Shell-quote every argument so paths containing spaces (e.g. a home
+    # directory like "/home/user name/...") are correctly represented in the
+    # systemd unit file's ExecStart= directive and in the XDG .desktop Exec=
+    # field.  Both formats accept POSIX shell quoting, and shlex.quote wraps
+    # any argument that needs it in single-quotes.
+    exec_str = " ".join(shlex.quote(a) for a in cmd_args)
 
     if _systemd_user_available():
         svc_dir = _systemd_user_dir()

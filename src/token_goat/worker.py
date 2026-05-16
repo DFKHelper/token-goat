@@ -768,6 +768,32 @@ def spawn_index_detached(project_root: str, project_hash: str) -> int | None:
     """
     from . import paths  # noqa: PLC0415
 
+    # Validate project_root before using it as cwd in Popen.  project_root can
+    # originate from the dirty queue (an external file), so we must confirm it
+    # is an absolute path that points to an existing directory before handing it
+    # to the OS.  A relative path, a non-directory, or a path constructed from
+    # tampered queue data must never become the cwd for a subprocess spawn.
+    root_path = Path(project_root)
+    if not root_path.is_absolute():
+        _LOG.warning(
+            "spawn_index_detached: rejecting non-absolute project_root %r for %s",
+            project_root, project_hash[:8],
+        )
+        return None
+    try:
+        if not root_path.is_dir():
+            _LOG.warning(
+                "spawn_index_detached: project_root %r is not a directory for %s; skipping",
+                project_root, project_hash[:8],
+            )
+            return None
+    except OSError as exc:
+        _LOG.warning(
+            "spawn_index_detached: could not stat project_root %r for %s: %s",
+            project_root, project_hash[:8], exc,
+        )
+        return None
+
     marker = paths.locks_dir() / f"{project_hash}.indexing"
     if _index_spawn_active(marker):
         _LOG.info(
@@ -1082,8 +1108,29 @@ def _process_dirty_entries(entries: list[DirtyQueueEntry]) -> None:
                 # project was ever indexed. Reconstruct it from the queue entry
                 # and run a full index so the edit is not lost.
                 # index_project self-registers the project up front.
+                # Validate bucket["root"] before using it as a Path: it comes
+                # from the dirty queue (an external file) so it must be an
+                # absolute path to an existing directory.
+                raw_root = bucket["root"]
+                root_candidate = Path(raw_root)
+                if not root_candidate.is_absolute():
+                    _LOG.warning(
+                        "dirty queue: project %s root %r is not absolute; dropping",
+                        ph[:8], raw_root,
+                    )
+                    continue
+                try:
+                    root_is_dir = root_candidate.is_dir()
+                except OSError:
+                    root_is_dir = False
+                if not root_is_dir:
+                    _LOG.warning(
+                        "dirty queue: project %s root %r is not an existing directory; dropping",
+                        ph[:8], raw_root,
+                    )
+                    continue
                 project = Project(
-                    root=Path(bucket["root"]), hash=ph, marker=bucket["marker"] or "manual"
+                    root=root_candidate, hash=ph, marker=bucket["marker"] or "manual"
                 )
                 is_first_index = True
                 _LOG.info(
