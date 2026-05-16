@@ -70,6 +70,11 @@ _LOG = logging.getLogger("token_goat.db")
 # Cache integrity check results per DB file to avoid repeated PRAGMA checks
 _INTEGRITY_CHECKED: dict[Path, bool] = {}
 
+# Cache which project DB paths have already had their schema migrated (line_count
+# column check).  Avoids running PRAGMA table_info(files) on every open() call
+# once the migration has been confirmed.  Keyed on absolute Path.
+_SCHEMA_MIGRATED: dict[Path, bool] = {}
+
 
 class DBError(Exception):
     """Base class for token-goat database errors."""
@@ -233,6 +238,9 @@ def _rebuild(db_path: Path) -> bool:
     try:
         db_path.rename(bad)
         _LOG.warning("quarantined corrupt db: %s -> %s", db_path, bad)
+        # Invalidate per-path caches so the rebuilt DB gets fresh checks.
+        _INTEGRITY_CHECKED.pop(db_path, None)
+        _SCHEMA_MIGRATED.pop(db_path, None)
         return True
     except OSError as e:
         _LOG.error("failed to quarantine %s: %s (continuing with existing DB)", db_path, e)
@@ -416,21 +424,30 @@ def _ensure_global_schema(conn: sqlite3.Connection) -> None:
             raise
 
 
-def _ensure_project_schema(conn: sqlite3.Connection) -> None:
+def _ensure_project_schema(conn: sqlite3.Connection, *, db_path: Path | None = None) -> None:
     """Create or verify the per-project tables including the sqlite-vec embeddings table.
 
     If the sqlite-vec extension is unavailable the embeddings table creation is
     skipped and a ``embeddings_disabled`` flag is written to the meta table so
     callers can degrade gracefully.  Safe to call on read-only connections.
+
+    *db_path* is used to cache the ``line_count`` migration check so that
+    ``PRAGMA table_info(files)`` runs at most once per DB path per process
+    lifetime.  When ``db_path`` is None the check is always performed (safe
+    but slightly slower — only happens for callers that don't pass the path).
     """
     try:
         conn.executescript(_PROJECT_TABLES)
-        columns = {
-            row["name"]
-            for row in conn.execute("PRAGMA table_info(files)").fetchall()
-        }
-        if "line_count" not in columns:
-            conn.execute("ALTER TABLE files ADD COLUMN line_count INTEGER")
+        # Check for the line_count migration at most once per path per process.
+        if db_path is None or db_path not in _SCHEMA_MIGRATED:
+            columns = {
+                row["name"]
+                for row in conn.execute("PRAGMA table_info(files)").fetchall()
+            }
+            if "line_count" not in columns:
+                conn.execute("ALTER TABLE files ADD COLUMN line_count INTEGER")
+            if db_path is not None:
+                _SCHEMA_MIGRATED[db_path] = True
         conn.execute(
             "INSERT OR REPLACE INTO meta (key, value) VALUES ('schema_version', ?)",
             (str(SCHEMA_VERSION),),
@@ -562,7 +579,7 @@ def open_project(project_hash: str) -> Iterator[sqlite3.Connection]:
     conn = _open_with_rebuild(path)
     try:
         conn = _repair_if_corrupt(conn, path)
-        _ensure_project_schema(conn)
+        _ensure_project_schema(conn, db_path=path)
         open_elapsed_ms = (time.monotonic() - t0) * 1000
         _LOG.debug("project db ready in %.1fms (hash=%s)", open_elapsed_ms, project_hash[:8])
         yield conn

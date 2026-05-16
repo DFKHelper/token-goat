@@ -161,6 +161,8 @@ def build_read_hint(
     req_start = safe_offset + 1
     req_end = req_start + (safe_limit or DEFAULT_READ_LIMIT) - 1
 
+    # Compute fname once; it is used in multiple debug log calls below and
+    # forwarded to _hint_from_cache / _hint_from_index which also need it.
     fname = Path(file_path).name
 
     # 1. Check session cache first.
@@ -177,7 +179,7 @@ def build_read_hint(
         return hint
 
     # 2. Not cached — consider "large file with indexed symbols" suggestion.
-    hint = _hint_from_index(file_path, cwd, req_start, req_end)
+    hint = _hint_from_index(file_path, cwd, req_start, req_end, fname=fname)
     if hint is not None:
         _LOG.debug("build_read_hint: index hint for %s (large file suggestion)", fname)
     else:
@@ -295,9 +297,14 @@ def _hint_from_index(
     cwd: str | None,
     req_start: int,
     req_end: int,
+    *,
+    fname: str | None = None,
 ) -> ReadHint | None:
     """Build hint when file is large and has indexed symbols but not yet cached."""
-    fname = Path(file_path).name
+    # Accept a pre-computed fname to avoid a redundant Path allocation on the
+    # hot pre-read path; fall back to computing it here for direct callers.
+    if fname is None:
+        fname = Path(file_path).name
     if cwd is None:
         _LOG.debug("_hint_from_index: skipped for %s (no cwd)", fname)
         return None
@@ -343,7 +350,7 @@ def _hint_from_index(
     # conversation, so it carries one example command rather than enumerating
     # every indexed symbol (`token-goat symbol`/`map` cover that on demand).
     return ReadHint(
-        f"`{Path(file_path).name}` is {n_lines} lines (~{full_tokens} tokens to read fully). "
+        f"`{fname}` is {n_lines} lines (~{full_tokens} tokens to read fully). "
         f"token-goat has {n_total} symbol(s) indexed here — e.g. "
         f"`token-goat read \"{rel}::{first_sym_name}\"` extracts just one (~85% fewer tokens). "
         f"Use a full Read if you need the surrounding context.",

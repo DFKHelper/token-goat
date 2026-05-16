@@ -252,12 +252,14 @@ def summarize(window_days: int = 30) -> StatsSummary:
         root = _infer_project_root_fast(file_path, sorted_norm_roots)
         if root is None:
             continue
-        # norm_root is already in norm_root_to_hash; avoid recomputing _norm_path here.
-        proj_key = (
-            root_to_hash.get(root)
-            or norm_root_to_hash.get(_norm_path(root).rstrip("/"))
-            or _root_hash(root)
-        )
+        # _infer_project_root_fast returns either a git-walk result (always
+        # normalized) or an original root string from root_to_hash.  Try the
+        # direct lookup first (O(1)); if it misses, normalize once and try
+        # norm_root_to_hash; fall back to a synthetic hash for unregistered roots.
+        proj_key = root_to_hash.get(root)
+        if proj_key is None:
+            norm_root = _norm_path(root).rstrip("/")
+            proj_key = norm_root_to_hash.get(norm_root) or _root_hash(root)
         p = by_project[proj_key]
         _inc_bucket(p, row["bytes_saved"] or 0, row["tokens_saved"] or 0)
         p["project_root"] = root

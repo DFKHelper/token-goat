@@ -225,11 +225,17 @@ def _pick_best_match(file_part: str, candidates: list[str]) -> str | None:
         return None
     if len(candidates) == 1:
         return candidates[0]
-    scored = sorted(candidates, key=lambda r: _match_specificity(file_part, r), reverse=True)
-    best_score = _match_specificity(file_part, scored[0])
-    if _match_specificity(file_part, scored[1]) == best_score:
+    # Score every candidate once upfront, then sort by score descending.
+    # This avoids calling _match_specificity a second time for the tie-break
+    # comparison (was 3 calls for 2 candidates; now exactly n calls).
+    scored = sorted(
+        ((r, _match_specificity(file_part, r)) for r in candidates),
+        key=lambda t: t[1],
+        reverse=True,
+    )
+    if scored[1][1] == scored[0][1]:
         return None  # tie → still ambiguous
-    return scored[0]
+    return scored[0][0]
 
 
 def _is_absolute(file_part: str) -> bool:

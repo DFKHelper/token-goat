@@ -18,6 +18,7 @@ import sqlite3
 import time
 from collections import defaultdict
 from dataclasses import dataclass
+from functools import lru_cache
 from typing import TYPE_CHECKING, TypedDict
 
 from . import db
@@ -78,16 +79,26 @@ _PAGERANK_TOL_NORMAL = 1e-6
 _PAGERANK_TOL_FALLBACK = 1e-4
 
 
+@lru_cache(maxsize=2048)
+def _is_excluded_path(rel_path: str) -> bool:
+    """Return True if rel_path is under an excluded prefix.
+
+    Cached with lru_cache so repeated calls across build_map invocations for
+    the same file pay only a dict lookup.  The result depends only on rel_path
+    and the module-level _EXCLUDED_PREFIXES constant, both of which are stable
+    within a process lifetime.
+    """
+    posix = rel_path.replace("\\", "/") if "\\" in rel_path else rel_path
+    return any(posix.startswith(p) for p in _EXCLUDED_PREFIXES)
+
+
 def _is_map_worthy(rel_path: str, approx_lines: int) -> bool:
     """Return True if this file should appear in the repo map.
 
     Excludes test fixture stubs (which distort PageRank by accumulating refs
     from all parser tests) and trivially small files (empty __init__.py, etc.).
     """
-    # rel_path is already POSIX (stored as POSIX in the DB); only normalise
-    # when backslashes are present (Windows edge case).
-    posix = rel_path.replace("\\", "/") if "\\" in rel_path else rel_path
-    if any(posix.startswith(p) for p in _EXCLUDED_PREFIXES):
+    if _is_excluded_path(rel_path):
         return False
     return approx_lines >= _MIN_DISPLAY_LINES
 
@@ -359,7 +370,10 @@ def render_summary(summary: FileSummary) -> str:
         by_kind: dict[str, list[str]] = {}
         for kind, name in summary.top_symbols:
             by_kind.setdefault(kind, []).append(name)
-        for kind in sorted(by_kind, key=lambda k: KIND_PRIORITY.get(k, 99)):
+        # Bind KIND_PRIORITY.get locally so the sort key avoids a global +
+        # attribute lookup on every comparison (typically k=3-6 unique kinds).
+        _kp_get = KIND_PRIORITY.get
+        for kind in sorted(by_kind, key=lambda k: _kp_get(k, 99)):
             names = ", ".join(by_kind[kind][:_MAX_NAMES_PER_KIND])
             lines.append(f"  {kind}: {names}")
     if summary.top_sections:
