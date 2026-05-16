@@ -415,6 +415,12 @@ def read_symbol(
             (rel_path, symbol),
         ).fetchall()
         if not rows:
+            _LOG.debug(
+                "symbol not found: project=%s file=%s symbol=%s",
+                project.hash[:8],
+                rel_path,
+                symbol,
+            )
             return None
 
     # If multiple matches (e.g., a top-level function and a method of the same name),
@@ -432,6 +438,16 @@ def read_symbol(
     snippet = "\n".join(lines[start - 1 : end])
     snippet_bytes = len(snippet.encode("utf-8"))
 
+    _LOG.debug(
+        "read_symbol: %s::%s (%s) lines %d-%d, %d/%d bytes extracted",
+        rel_path,
+        chosen["name"],
+        chosen["kind"],
+        start,
+        end,
+        snippet_bytes,
+        full_bytes,
+    )
     return {
         "file": rel_path,
         "symbol": chosen["name"],
@@ -471,6 +487,7 @@ def read_section(
             "WHERE file_rel = ? AND heading = ? AND end_line IS NOT NULL ORDER BY line",
             (rel_path, heading),
         ).fetchall()
+        case_sensitive_match = len(rows) > 0
         if not rows:
             # Fallback: case-insensitive match
             rows = conn.execute(
@@ -479,6 +496,12 @@ def read_section(
                 (rel_path, heading),
             ).fetchall()
         if not rows:
+            _LOG.debug(
+                "section not found: project=%s file=%s heading=%s",
+                project.hash[:8],
+                rel_path,
+                heading,
+            )
             return None
 
     chosen = rows[0]  # first match by line order
@@ -494,6 +517,17 @@ def read_section(
     snippet = "\n".join(lines[start - 1 : end])
     snippet_bytes = len(snippet.encode("utf-8"))
 
+    _LOG.debug(
+        "read_section: %s#%s (h%d, %s-match) lines %d-%d, %d/%d bytes extracted",
+        rel_path,
+        chosen["heading"],
+        chosen["level"],
+        "exact" if case_sensitive_match else "case-insensitive",
+        start,
+        end,
+        snippet_bytes,
+        full_bytes,
+    )
     return {
         "file": rel_path,
         "heading": chosen["heading"],

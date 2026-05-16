@@ -381,6 +381,7 @@ def build_map(
     ``_summarize_file`` + ``render_summary`` cost.  New rendered strings are
     written back to the cache at the end of the call.
     """
+    t0 = time.monotonic()
     result = _load_and_rank(project)
     if result is None:
         return (
@@ -394,6 +395,8 @@ def build_map(
     out = [header]
     used = estimate_tokens(header)
     included = 0
+    cache_hits = 0
+    cache_misses = 0
 
     # Collect new summaries that need to be written back to the cache
     cache_writes: list[tuple[str, float, int, str]] = []
@@ -410,7 +413,9 @@ def build_map(
         if cached_text is not None:
             # Cache hit: reuse rendered text, skip _summarize_file entirely
             rendered = cached_text
+            cache_hits += 1
         else:
+            cache_misses += 1
             summary = _summarize_file(
                 rel,
                 info,
@@ -440,9 +445,21 @@ def build_map(
         try:
             with db.open_project(project.hash) as conn:
                 _write_summary_cache(conn, cache_writes)
+            _LOG.debug("repomap_cache: wrote %d new entries", len(cache_writes))
         except Exception:  # noqa: BLE001
-            _LOG.debug("repomap_cache write failed (non-fatal)", exc_info=True)
+            _LOG.debug("repomap_cache write failed (non-fatal): %s", exc_info=True)
 
+    elapsed = time.monotonic() - t0
+    _LOG.debug(
+        "repomap: built map for %s: %d files included (budget ~%d tokens), "
+        "cache hits=%d misses=%d, dur=%.3fs",
+        project.root.name,
+        included,
+        budget_tokens,
+        cache_hits,
+        cache_misses,
+        elapsed,
+    )
     return "".join(out)
 
 

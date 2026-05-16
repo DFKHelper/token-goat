@@ -202,7 +202,9 @@ def _stream_to_file(response: httpx.Response, dest: Path, max_size_bytes: int) -
             tmp.unlink(missing_ok=True)
             raise _oversize_error
         tmp.replace(dest)
-    except Exception:
+        _LOG.debug("webfetch: streamed %d bytes to %s", written, dest.name)
+    except Exception as e:
+        _LOG.warning("webfetch: stream write failed after %d bytes: %s", written, e)
         tmp.unlink(missing_ok=True)
         raise
 
