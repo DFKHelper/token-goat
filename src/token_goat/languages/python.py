@@ -61,8 +61,8 @@ def extract(source: bytes, rel_path: str) -> tuple[list[Symbol], list[Ref], list
         return [], [], [], []
     try:
         result = tlp.process(text, cfg)
-    except Exception:
-        _LOG.debug("tree-sitter parse failed for python source", exc_info=True)
+    except Exception:  # noqa: BLE001
+        _LOG.debug("tree-sitter parse failed for python source: %s", rel_path, exc_info=True)
         return [], [], [], []
 
     symbols: list[Symbol] = []

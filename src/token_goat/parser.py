@@ -302,7 +302,7 @@ def index_file(project: Project, file_path: Path) -> FileIndex | None:
         return None
     try:
         symbols, refs, imp_exp, sections = extractor(raw, rel)
-    except Exception:
+    except Exception:  # noqa: BLE001
         _LOG.exception("extractor crashed on %s", rel)
         return None
 

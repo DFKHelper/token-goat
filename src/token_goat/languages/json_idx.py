@@ -70,5 +70,5 @@ def _safe_repr(obj: object, max_len: int = 100) -> str:
         if len(s) > max_len:
             s = s[:max_len] + "..."
         return s
-    except Exception:
+    except Exception:  # noqa: BLE001
         return str(type(obj).__name__)
