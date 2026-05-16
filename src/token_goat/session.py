@@ -151,36 +151,6 @@ def _normalize_path(p: str) -> str:
     return s
 
 
-def _rename_with_retry(src: Path, dest: Path) -> None:
-    """Rename *src* to *dest*, retrying on PermissionError (Windows file-lock race).
-
-    Windows briefly holds an exclusive lock on a file that was just opened by
-    another process, so a rename that races with a concurrent reader can raise
-    PermissionError. Three attempts with short back-off cover the common case
-    without meaningfully delaying the caller.
-    """
-    last_exc: PermissionError | None = None
-    for delay in (0.0, 0.05, 0.15):
-        if delay:
-            time.sleep(delay)
-        try:
-            src.replace(dest)
-            return
-        except PermissionError as exc:
-            last_exc = exc
-    if last_exc is not None:
-        raise last_exc
-
-
-def _atomic_write(path: Path, content: str) -> None:
-    """Write to a temp file, then rename. Avoids partial writes if killed mid-flight."""
-    tmp = path.with_name(f"{path.name}.{threading.get_ident()}.{time.monotonic_ns()}.tmp")
-    path.parent.mkdir(parents=True, exist_ok=True)
-    try:
-        tmp.write_text(content, encoding="utf-8")
-        _rename_with_retry(tmp, path)
-    finally:
-        tmp.unlink(missing_ok=True)
 
 
 _SESSION_ID_RE = re.compile(r"^[a-zA-Z0-9_-]+$")
@@ -277,7 +247,7 @@ def save(cache: SessionCache) -> None:
             time.sleep(delay)
         with _FILE_LOCK:
             try:
-                _atomic_write(
+                paths.atomic_write_text(
                     paths.session_cache_path(cache.session_id),
                     json.dumps(cache.to_dict(), ensure_ascii=False),
                 )

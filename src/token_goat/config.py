@@ -5,8 +5,6 @@ __all__ = ["CompactAssistConfig", "Config", "CONFIG_SCHEMA_VERSION", "load", "sa
 
 import logging
 import os
-import threading
-import time
 import tomllib
 from dataclasses import dataclass, field
 from typing import Any, TypedDict
@@ -121,23 +119,6 @@ def _validated_triggers(val: Any, default: list[str]) -> list[str]:
 
 
 # ---------------------------------------------------------------------------
-# Atomic write
-# ---------------------------------------------------------------------------
-
-def _atomic_write(path: paths.Path, content: bytes) -> None:
-    """Write *content* to *path* atomically via a temp file + rename.
-
-    Uses a per-thread unique stem to avoid collisions when multiple processes
-    write concurrently (each will win the rename race independently).
-    """
-    tmp = path.with_suffix(f".tmp-{threading.get_ident()}-{time.monotonic_ns()}")
-    tmp.write_bytes(content)
-    # On Windows, Path.rename() raises if the destination exists — use os.replace
-    # which is atomic on POSIX and as close as Windows gets.
-    os.replace(tmp, path)
-
-
-# ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
 
@@ -201,6 +182,6 @@ def save(config: Config) -> None:
         },
     }
     try:
-        _atomic_write(p, tomli_w.dumps(data).encode("utf-8"))  # type: ignore[arg-type]
+        paths.atomic_write_bytes(p, tomli_w.dumps(data).encode("utf-8"))  # type: ignore[arg-type]
     except Exception as e:  # noqa: BLE001
         _LOG.warning("config save failed: %s", e)

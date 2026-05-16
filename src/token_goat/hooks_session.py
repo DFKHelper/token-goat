@@ -1,14 +1,12 @@
 """Session hook helpers."""
 from __future__ import annotations
 
-import logging
 from pathlib import Path
 from typing import Any
 
 from .hooks_common import CONTINUE
+from .hooks_common import LOG as _LOG
 from .project import Project, find_project
-
-_LOG = logging.getLogger("token_goat.hooks")
 
 
 def _reset_session_cache(session_id: str | None) -> None:

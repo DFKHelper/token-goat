@@ -2,6 +2,8 @@
 import contextlib
 import os
 import sys
+import threading
+import time
 from pathlib import Path
 
 import platformdirs
@@ -219,3 +221,58 @@ def ensure_dirs() -> None:
     ]
     for d in dirs:
         d.mkdir(parents=True, exist_ok=True)
+
+
+def _rename_with_retry(src: Path, dest: Path) -> None:
+    """Rename *src* to *dest*, retrying on PermissionError (Windows file-lock race).
+
+    Windows briefly holds an exclusive lock on a file that was just opened by
+    another process, so a rename that races with a concurrent reader can raise
+    PermissionError.  Three attempts with short back-off cover the common case
+    without meaningfully delaying the caller.
+    """
+    last_exc: PermissionError | None = None
+    for delay in (0.0, 0.05, 0.15):
+        if delay:
+            time.sleep(delay)
+        try:
+            src.replace(dest)
+            return
+        except PermissionError as exc:
+            last_exc = exc
+    if last_exc is not None:
+        raise last_exc
+
+
+def atomic_write_text(path: Path, content: str) -> None:
+    """Write *content* to *path* atomically via a temp file + rename.
+
+    Avoids partial writes if the process is killed mid-flight.  Creates parent
+    directories as needed.  On Windows, uses retry logic to handle the brief
+    exclusive lock another process may hold immediately after opening the file.
+
+    This is the canonical implementation shared by :mod:`session` and
+    :mod:`config` — both previously carried their own private copies.
+    """
+    tmp = path.with_name(f"{path.name}.{threading.get_ident()}.{time.monotonic_ns()}.tmp")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        tmp.write_text(content, encoding="utf-8")
+        _rename_with_retry(tmp, path)
+    finally:
+        tmp.unlink(missing_ok=True)
+
+
+def atomic_write_bytes(path: Path, content: bytes) -> None:
+    """Write *content* (bytes) to *path* atomically via a temp file + rename.
+
+    Equivalent to :func:`atomic_write_text` for binary content.  Creates parent
+    directories as needed.  Uses the same retry-on-PermissionError strategy.
+    """
+    tmp = path.with_name(f"{path.name}.{threading.get_ident()}.{time.monotonic_ns()}.tmp")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        tmp.write_bytes(content)
+        _rename_with_retry(tmp, path)
+    finally:
+        tmp.unlink(missing_ok=True)
