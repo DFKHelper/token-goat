@@ -152,7 +152,12 @@ def symbol(
     as_json: bool = typer.Option(False, "--json"),
     limit: int = typer.Option(50, "--limit"),
 ) -> None:
-    """Find symbol definition across codebase."""
+    """Find a symbol definition by name (function, class, method, type, constant, etc.).
+
+    Searches the indexed project for functions, classes, methods, variables, types, and
+    other named definitions matching the given name. Use ``--all-projects`` to search
+    across all indexed projects (useful for skills and plugins). Use ``--limit`` to
+    control max results (default 50)."""
     from . import db as _db  # noqa: PLC0415
 
     use_tty_color = sys.stdout.isatty() and not as_json
@@ -236,7 +241,11 @@ def ref(
     as_json: bool = typer.Option(False, "--json"),
     limit: int = typer.Option(100, "--limit"),
 ) -> None:
-    """Find all references to a symbol."""
+    """Find all code references to a symbol by name.
+
+    Locates every place in the codebase where the given symbol is referenced
+    (called, imported, assigned, etc.). Results include file path, line number,
+    column, and surrounding context. Use ``--limit`` to cap results (default 100)."""
     proj = _require_project()
 
     rows_raw = _query_project(
@@ -347,7 +356,11 @@ def deps(
     json_output: bool = typer.Option(False, "--json"),
     depth: int = typer.Option(1, "--depth", "-d", help="Transitive depth (1=direct, 0=unlimited)"),
 ) -> None:
-    """Show dependency graph for file."""
+    """Show the dependency graph (imports and references) for a file.
+
+    Lists all modules and symbols that the given file imports, depends on, or
+    references. Use ``--depth`` to control transitive depth (1=direct imports,
+    0=unlimited recursion)."""
     read_commands.deps(file, json_output=json_output, depth=depth)
 
 
@@ -611,6 +624,12 @@ def doctor(  # noqa: C901
         False, "--fix", help="Clear stale index-spawn markers that doctor flags."
     ),
 ) -> None:
+    """Diagnose the health of the token-goat installation and indices.
+
+    Runs checks on Python version, dependencies, database integrity, hook registration,
+    worker status, and project indices. Use ``--fix`` to clear stale ``.indexing``
+    spawn markers (same reaping the background worker does on startup).
+    """
     from . import cli_doctor  # noqa: PLC0415
 
     cli_doctor.doctor(fix=fix)
