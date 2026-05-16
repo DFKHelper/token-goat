@@ -169,13 +169,14 @@ _SPARK = "▁▂▃▄▅▆▇█"
 def _resample(vals: list[float], length: int) -> list[float]:
     if not vals:
         return [0.0] * length
-    if len(vals) == length:
+    n_vals = len(vals)
+    if n_vals == length:
         return list(vals)
     result = []
     for i in range(length):
-        src = (i / (length - 1 or 1)) * (len(vals) - 1)
+        src = (i / (length - 1 or 1)) * (n_vals - 1)
         lo = math.floor(src)
-        hi = min(len(vals) - 1, lo + 1)
+        hi = min(n_vals - 1, lo + 1)
         t = src - lo
         result.append(vals[lo] * (1 - t) + vals[hi] * t)
     return result
@@ -439,8 +440,9 @@ def _render_activity_section(stats: StatsData) -> list[str]:
             d.events for d in active_days
             if date.fromisoformat(d.date).weekday() < 5  # Mon–Fri
         )
-        mean = total_ev / (len(active_days) or 1)
-        variance = sum((d.events - mean) ** 2 for d in active_days) / (len(active_days) or 1)
+        n_active = len(active_days)
+        mean = total_ev / (n_active or 1)
+        variance = sum((d.events - mean) ** 2 for d in active_days) / (n_active or 1)
         cv = math.sqrt(variance) / (mean or 1)
 
         rhythm = (
@@ -459,9 +461,9 @@ def _render_activity_section(stats: StatsData) -> list[str]:
 
         panel_lines.append(f"{fg(*C.TEXT_MUTED)}{rhythm}{RESET}")
         panel_lines.append(f"{fg(*C.TEXT_MUTED)}{weekday_bias}{RESET}")
-        plural = "" if len(active_days) == 1 else "s"
+        plural = "" if n_active == 1 else "s"
         day_msg = (
-            f"{fg(*C.TEXT_MUTED)}{len(active_days)} active day{plural} of "
+            f"{fg(*C.TEXT_MUTED)}{n_active} active day{plural} of "
             f"{total_period_days}{RESET}"
         )
         panel_lines.append(day_msg)
@@ -469,7 +471,7 @@ def _render_activity_section(stats: StatsData) -> list[str]:
     # Visible width of grid rows: M + "Mon " + n_weeks × 2 cells + (n_weeks-1) spaces
     grid_vis_w = len(_M) + 4 + n_weeks * 2 + (n_weeks - 1)
 
-    active_count = len(active_days)
+    active_count = len(active_days)  # also cached as n_active inside the if-block above
     plural = "" if active_count == 1 else "s"
     subtitle = (
         f"·  {_fmt_date(period_start)} → {_fmt_date(period_end)}"
