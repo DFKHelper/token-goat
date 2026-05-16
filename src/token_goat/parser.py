@@ -1,6 +1,24 @@
 """Tree-sitter orchestration: walks a project, dispatches to per-language extractors, writes to DB."""
 from __future__ import annotations
 
+__all__ = [
+    "LANG_BY_EXT",
+    "SKIP_DIRS",
+    "Extractor",
+    "FileIndex",
+    "ImpExp",
+    "IndexProjectResult",
+    "Ref",
+    "Section",
+    "Symbol",
+    "get_extractor",
+    "index_file",
+    "index_project",
+    "iter_source_files",
+    "register_extractor",
+    "write_file_index",
+]
+
 import hashlib
 import logging
 import os

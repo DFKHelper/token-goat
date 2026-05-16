@@ -11,6 +11,18 @@ openclaw  — openclawlab plugin system; hooks via before_tool_call / after_tool
 """
 from __future__ import annotations
 
+__all__ = [
+    "OPENCODE_PLUGIN_TS",
+    "OPENCLAW_PLUGIN_TS",
+    "install_openclaw_plugin",
+    "install_opencode_plugin",
+    "openclaw_config_path",
+    "openclaw_plugins_dir",
+    "opencode_plugins_dir",
+    "uninstall_openclaw_plugin",
+    "uninstall_opencode_plugin",
+]
+
 import json
 import logging
 import os

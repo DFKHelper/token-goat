@@ -5,6 +5,11 @@ compaction LLM knows what to preserve without reading the full conversation.
 """
 from __future__ import annotations
 
+__all__ = [
+    "build_manifest",
+    "event_count",
+]
+
 import itertools
 import logging
 import operator
