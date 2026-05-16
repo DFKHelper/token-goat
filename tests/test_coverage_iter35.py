@@ -32,10 +32,11 @@ from token_goat.hooks_common import (
 from token_goat.languages.go import _extract_const_var
 from token_goat.languages.python import _parse_import_source
 from token_goat.read_replacement import (
+    _CACHE_MISS,
     ProjectIndexUnavailable,
     _match_specificity,
     _pick_best_match,
-    _resolve_cache_get,
+    _resolve_cache_lookup,
     _resolve_cache_put,
     find_in_all_projects,
     invalidate_file_cache,
@@ -536,46 +537,41 @@ def clear_resolve_cache():
 class TestResolveCacheHelpers:
     """Tests for read_replacement resolve cache internals."""
 
-    def test_cache_miss_returns_false(self):
-        found, value = _resolve_cache_get("hash1", "foo.py")
-        assert found is False
-        assert value is None
+    def test_cache_miss_returns_sentinel(self):
+        result = _resolve_cache_lookup("hash1", "foo.py")
+        assert result is _CACHE_MISS
 
-    def test_cache_hit_returns_true(self):
+    def test_cache_hit_returns_rel_path(self):
         _resolve_cache_put("hash1", "foo.py", "src/foo.py")
-        found, value = _resolve_cache_get("hash1", "foo.py")
-        assert found is True
-        assert value == "src/foo.py"
+        result = _resolve_cache_lookup("hash1", "foo.py")
+        assert result is not _CACHE_MISS
+        assert result == "src/foo.py"
 
     def test_cache_stores_none_for_not_found(self):
         _resolve_cache_put("hash1", "missing.py", None)
-        found, value = _resolve_cache_get("hash1", "missing.py")
-        assert found is True
-        assert value is None
+        result = _resolve_cache_lookup("hash1", "missing.py")
+        assert result is not _CACHE_MISS
+        assert result is None
 
     def test_invalidate_removes_project_entries(self):
         _resolve_cache_put("hash1", "a.py", "src/a.py")
         _resolve_cache_put("hash2", "b.py", "src/b.py")
         evicted = invalidate_file_cache("hash1")
         assert evicted == 1
-        found, _ = _resolve_cache_get("hash1", "a.py")
-        assert found is False
+        assert _resolve_cache_lookup("hash1", "a.py") is _CACHE_MISS
         # hash2 entry survives
-        found2, _ = _resolve_cache_get("hash2", "b.py")
-        assert found2 is True
+        assert _resolve_cache_lookup("hash2", "b.py") is not _CACHE_MISS
 
     def test_invalidate_other_project_untouched(self):
         _resolve_cache_put("hashA", "x.py", "x.py")
         invalidate_file_cache("hashB")
-        found, _ = _resolve_cache_get("hashA", "x.py")
-        assert found is True
+        assert _resolve_cache_lookup("hashA", "x.py") is not _CACHE_MISS
 
     def test_update_existing_key(self):
         """Putting a new value for an existing key updates in place."""
         _resolve_cache_put("hash1", "f.py", "old/f.py")
         _resolve_cache_put("hash1", "f.py", "new/f.py")
-        _, value = _resolve_cache_get("hash1", "f.py")
-        assert value == "new/f.py"
+        assert _resolve_cache_lookup("hash1", "f.py") == "new/f.py"
 
     def test_eviction_when_full(self):
         """Cache evicts oldest entries when full."""

@@ -877,35 +877,43 @@ class TestMatchSpecificity:
 
 
 class TestResolveFileCache:
-    """Tests for _resolve_cache_get/put and invalidate_file_cache."""
+    """Tests for _resolve_cache_lookup/put and invalidate_file_cache."""
 
     def setup_method(self):
         from token_goat import read_replacement as rr
         rr._RESOLVE_CACHE.clear()
 
-    def test_cache_miss_returns_false(self):
-        from token_goat.read_replacement import _resolve_cache_get
-        hit, val = _resolve_cache_get("proj-abc", "src/foo.py")
-        assert not hit
-        assert val is None
+    def test_cache_miss_returns_sentinel(self):
+        from token_goat.read_replacement import _CACHE_MISS, _resolve_cache_lookup
+        result = _resolve_cache_lookup("proj-abc", "src/foo.py")
+        assert result is _CACHE_MISS
 
     def test_cache_put_and_hit(self):
-        from token_goat.read_replacement import _resolve_cache_get, _resolve_cache_put
+        from token_goat.read_replacement import (
+            _CACHE_MISS,
+            _resolve_cache_lookup,
+            _resolve_cache_put,
+        )
         _resolve_cache_put("proj-abc", "foo.py", "src/foo.py")
-        hit, val = _resolve_cache_get("proj-abc", "foo.py")
-        assert hit
-        assert val == "src/foo.py"
+        result = _resolve_cache_lookup("proj-abc", "foo.py")
+        assert result is not _CACHE_MISS
+        assert result == "src/foo.py"
 
     def test_cache_stores_none_result(self):
-        from token_goat.read_replacement import _resolve_cache_get, _resolve_cache_put
+        from token_goat.read_replacement import (
+            _CACHE_MISS,
+            _resolve_cache_lookup,
+            _resolve_cache_put,
+        )
         _resolve_cache_put("proj-abc", "missing.py", None)
-        hit, val = _resolve_cache_get("proj-abc", "missing.py")
-        assert hit
-        assert val is None
+        result = _resolve_cache_lookup("proj-abc", "missing.py")
+        assert result is not _CACHE_MISS
+        assert result is None
 
     def test_invalidate_clears_only_that_project(self):
         from token_goat.read_replacement import (
-            _resolve_cache_get,
+            _CACHE_MISS,
+            _resolve_cache_lookup,
             _resolve_cache_put,
             invalidate_file_cache,
         )
@@ -913,10 +921,8 @@ class TestResolveFileCache:
         _resolve_cache_put("proj-B", "foo.py", "lib/foo.py")
         count = invalidate_file_cache("proj-A")
         assert count == 1
-        hit_a, _ = _resolve_cache_get("proj-A", "foo.py")
-        hit_b, _ = _resolve_cache_get("proj-B", "foo.py")
-        assert not hit_a
-        assert hit_b
+        assert _resolve_cache_lookup("proj-A", "foo.py") is _CACHE_MISS
+        assert _resolve_cache_lookup("proj-B", "foo.py") is not _CACHE_MISS
 
     def test_cache_evicts_oldest_when_full(self):
         from token_goat import read_replacement as rr
@@ -929,11 +935,9 @@ class TestResolveFileCache:
         rr._resolve_cache_put("proj", "new.py", "src/new.py")
         assert len(rr._RESOLVE_CACHE) == rr._RESOLVE_CACHE_MAX - rr._RESOLVE_CACHE_EVICT + 1
         # Oldest entries were evicted
-        hit, _ = rr._resolve_cache_get("proj", "file0.py")
-        assert not hit
+        assert rr._resolve_cache_lookup("proj", "file0.py") is rr._CACHE_MISS
         # Newest entry is present
-        hit, val = rr._resolve_cache_get("proj", "new.py")
-        assert hit and val == "src/new.py"
+        assert rr._resolve_cache_lookup("proj", "new.py") == "src/new.py"
 
     def test_resolve_file_rel_uses_cache(self, tmp_data_dir, make_project, tmp_path):
         """resolve_file_rel result is cached; second call skips DB entirely."""

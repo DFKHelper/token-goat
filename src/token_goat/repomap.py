@@ -13,6 +13,18 @@ from . import db
 from .project import Project
 
 
+@dataclass
+class _RankedProjectData:
+    """Intermediate result from _load_and_rank — all data needed to render the repo map."""
+
+    files: dict[str, dict[str, Any]]
+    symbols_by_file: dict[str, list[tuple[str, str]]]
+    sections_by_file: dict[str, list[tuple[int, str]]]
+    ranked: list[tuple[str, dict[str, Any]]]  # sorted by descending PageRank score
+    ranks: dict[str, float]
+    summary_cache: dict[tuple[str, float, int], str]  # (rel_path, mtime, size) → rendered text
+
+
 class FileMapItem(TypedDict):
     """Structured representation of a file in the repo map."""
     path: str
@@ -35,6 +47,14 @@ _EXCLUDED_PREFIXES = ("tests/fixtures/",)
 # Code files average 30–60 bytes/line; 50 gives a conservative (slightly
 # over-counting) estimate so we include borderline files rather than drop them.
 _BYTES_PER_APPROX_LINE = 50
+
+# PageRank power-iteration parameters.
+# First attempt uses tight tolerance for accuracy; on convergence failure a
+# second pass relaxes both to give a usable (approximate) result.
+_PAGERANK_MAX_ITER_NORMAL = 200
+_PAGERANK_MAX_ITER_FALLBACK = 500
+_PAGERANK_TOL_NORMAL = 1e-6
+_PAGERANK_TOL_FALLBACK = 1e-4
 
 
 def _is_map_worthy(rel_path: str, approx_lines: int) -> bool:
@@ -208,9 +228,15 @@ def compute_ranks(g: object, *, alpha: float = 0.85) -> dict[str, float]:
 
     # Use the pure-Python implementation — avoids requiring scipy.
     try:
-        return _pagerank_python(simple_graph, alpha=alpha, weight="weight", max_iter=200, tol=1e-6)
+        return _pagerank_python(
+            simple_graph, alpha=alpha, weight="weight",
+            max_iter=_PAGERANK_MAX_ITER_NORMAL, tol=_PAGERANK_TOL_NORMAL,
+        )
     except nx.PowerIterationFailedConvergence:
-        return _pagerank_python(simple_graph, alpha=alpha, weight="weight", max_iter=500, tol=1e-4)
+        return _pagerank_python(
+            simple_graph, alpha=alpha, weight="weight",
+            max_iter=_PAGERANK_MAX_ITER_FALLBACK, tol=_PAGERANK_TOL_FALLBACK,
+        )
 
 
 def _summarize_file(
@@ -335,13 +361,11 @@ def _evict_stale_cache(conn: sqlite3.Connection, current_files: dict[str, Any]) 
         pass  # Table absent — nothing to evict.
 
 
-def _load_and_rank(
-    project: Project,
-) -> tuple[dict[str, dict[str, Any]], dict[str, list[tuple[str, str]]], dict[str, list[tuple[int, str]]], list[tuple[str, dict[str, Any]]], dict[str, float], dict[tuple[str, float, int], str]] | None:
+def _load_and_rank(project: Project) -> _RankedProjectData | None:
     """Load project data, filter, compute PageRank, and return sorted ranking.
 
-    Returns ``(files, symbols_by_file, sections_by_file, ranked, ranks, summary_cache)``
-    or ``None`` when there are no indexed files (callers handle the empty case).
+    Returns a ``_RankedProjectData`` struct or ``None`` when there are no
+    indexed files (callers handle the empty case).
 
     ``summary_cache`` maps ``(rel_path, mtime, size)`` to pre-rendered summary
     text strings.  Callers that produce text output (``build_map``) use it to
@@ -367,7 +391,14 @@ def _load_and_rank(
         ranks = {f: float(info["size"]) for f, info in files.items()}
 
     ranked = sorted(files.items(), key=lambda kv: ranks.get(kv[0], 0.0), reverse=True)
-    return files, symbols_by_file, sections_by_file, ranked, ranks, summary_cache
+    return _RankedProjectData(
+        files=files,
+        symbols_by_file=symbols_by_file,
+        sections_by_file=sections_by_file,
+        ranked=ranked,
+        ranks=ranks,
+        summary_cache=summary_cache,
+    )
 
 
 def build_map(
@@ -385,16 +416,15 @@ def build_map(
     written back to the cache at the end of the call.
     """
     t0 = time.monotonic()
-    result = _load_and_rank(project)
-    if result is None:
+    data = _load_and_rank(project)
+    if data is None:
         return (
             f"# {project.root.name}\n\n"
             "(no files indexed — run `token-goat index --full`)\n"
         )
-    files, symbols_by_file, sections_by_file, ranked, ranks, summary_cache = result
 
-    lang_set = sorted({info["language"] for info in files.values()})
-    header = f"# {project.root.name}\n  files={len(files)} languages={','.join(lang_set)}\n\n"
+    lang_set = sorted({info["language"] for info in data.files.values()})
+    header = f"# {project.root.name}\n  files={len(data.files)} languages={','.join(lang_set)}\n\n"
     out = [header]
     used = estimate_tokens(header)
     included = 0
@@ -404,7 +434,7 @@ def build_map(
     # Collect new summaries that need to be written back to the cache
     cache_writes: list[tuple[str, float, int, str]] = []
 
-    for rel, info in ranked:
+    for rel, info in data.ranked:
         if used >= budget_tokens:
             break
 
@@ -412,7 +442,7 @@ def build_map(
         size: int = info["size"]
         cache_key = (rel, mtime, size)
 
-        cached_text = summary_cache.get(cache_key)
+        cached_text = data.summary_cache.get(cache_key)
         if cached_text is not None:
             # Cache hit: reuse rendered text, skip _summarize_file entirely
             rendered = cached_text
@@ -422,9 +452,9 @@ def build_map(
             summary = _summarize_file(
                 rel,
                 info,
-                symbols_by_file.get(rel, []),
-                sections_by_file.get(rel, []),
-                ranks.get(rel, 0.0),
+                data.symbols_by_file.get(rel, []),
+                data.sections_by_file.get(rel, []),
+                data.ranks.get(rel, 0.0),
             )
             rendered = render_summary(summary) + "\n"
             cache_writes.append((rel, mtime, size, rendered))
@@ -436,8 +466,8 @@ def build_map(
         used += rendered_tokens
         included += 1
 
-    if include_unranked_tail and included < len(ranked):
-        omitted = len(ranked) - included
+    if include_unranked_tail and included < len(data.ranked):
+        omitted = len(data.ranked) - included
         out.append(
             f"\n... and {omitted} more files "
             f"(truncated to fit budget of ~{budget_tokens} tokens)\n"
@@ -450,14 +480,15 @@ def build_map(
                 _write_summary_cache(conn, cache_writes)
             _LOG.debug("repomap_cache: wrote %d new entries", len(cache_writes))
         except Exception:  # noqa: BLE001
-            _LOG.debug("repomap_cache write failed (non-fatal): %s", exc_info=True)
+            _LOG.debug("repomap_cache write failed (non-fatal)", exc_info=True)
 
     elapsed = time.monotonic() - t0
     _LOG.debug(
-        "repomap: built map for %s: %d files included (budget ~%d tokens), "
+        "repomap: built map for %s: %d/%d files included (budget ~%d tokens), "
         "cache hits=%d misses=%d, dur=%.3fs",
         project.root.name,
         included,
+        len(data.files),
         budget_tokens,
         cache_hits,
         cache_misses,
@@ -473,18 +504,17 @@ def build_map_json(project: Project) -> list[FileMapItem]:
     cache stores rendered strings, not the intermediate ``FileSummary`` data
     needed here (symbols list, sections list, etc.).
     """
-    result = _load_and_rank(project)
-    if result is None:
+    data = _load_and_rank(project)
+    if data is None:
         return []
-    files, symbols_by_file, sections_by_file, ranked, ranks, _summary_cache = result
     out = []
-    for rel, info in ranked:
+    for rel, info in data.ranked:
         summary = _summarize_file(
             rel,
             info,
-            symbols_by_file.get(rel, []),
-            sections_by_file.get(rel, []),
-            ranks.get(rel, 0.0),
+            data.symbols_by_file.get(rel, []),
+            data.sections_by_file.get(rel, []),
+            data.ranks.get(rel, 0.0),
         )
         out.append(
             FileMapItem(
