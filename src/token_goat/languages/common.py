@@ -16,10 +16,11 @@ __all__ = [
     "sym_kind_str",
 ]
 
+import logging
 import re
 import types
 from collections.abc import Callable
-from typing import TYPE_CHECKING, Any, TypeAlias
+from typing import TYPE_CHECKING, TypeAlias
 
 if TYPE_CHECKING:
     from ..parser import ImpExp, Ref, Section, Symbol
@@ -107,9 +108,9 @@ def parse_source(
     source: bytes,
     language: str,
     rel_path: str,
-    log: Any,
-    **process_config_kwargs: Any,
-) -> tuple[Any, str] | tuple[None, None]:
+    log: logging.Logger,
+    **process_config_kwargs: bool,
+) -> tuple[object, str] | tuple[None, None]:
     """Decode *source* and run tree-sitter processing, returning ``(result, text)``.
 
     Consolidates the repeated preamble found in every tree-sitter language
@@ -326,7 +327,7 @@ def make_add_symbol(
 
 def add_imports(
     imp_exp: list[ImpExp],
-    imports: list[Any],
+    imports: list[object],
     extract_targets_fn: Callable[[object], str | list[str]],
 ) -> None:
     """Add imports to the imp_exp list using a caller-supplied extraction function.
@@ -359,7 +360,7 @@ def add_imports(
 def add_symbol_info(
     symbols: list[Symbol],
     seen_names: set[tuple[str, int]],
-    symbol_infos: list[Any],
+    symbol_infos: list[object],
     language: str = "go",
 ) -> None:
     """Add symbols from result.symbols (SymbolInfo) to the symbol list.

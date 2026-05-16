@@ -682,7 +682,7 @@ def _check_linux_update_cron() -> str:
 # ---------------------------------------------------------------------------
 
 
-def _hooks_block(binary: str | None = None) -> dict:
+def _hooks_block(binary: str | None = None) -> dict[str, list[dict[str, object]]]:
     """Build the hooks structure token-goat wants to install.
 
     The ``binary`` parameter is kept for backwards compatibility but unused;
@@ -762,20 +762,22 @@ def _hooks_block(binary: str | None = None) -> dict:
     }
 
 
-def _strip_token_goat_entries(entries: list[dict]) -> list[dict]:
+def _strip_token_goat_entries(entries: list[dict[str, object]]) -> list[dict[str, object]]:
     """Remove hook entries belonging to token-goat (for idempotent re-install)."""
-    kept = []
+    kept: list[dict[str, object]] = []
     for entry in entries:
+        raw_hooks = entry.get("hooks", [])
+        hook_list: list[dict[str, object]] = raw_hooks if isinstance(raw_hooks, list) else []
         surviving_hooks = [
-            h for h in entry.get("hooks", [])
-            if "token_goat" not in h.get("command", "")
+            h for h in hook_list
+            if isinstance(h, dict) and "token_goat" not in str(h.get("command", ""))
         ]
         if surviving_hooks:
             kept.append({"matcher": entry.get("matcher", "*"), "hooks": surviving_hooks})
     return kept
 
 
-def _read_settings_json(settings_path: Path) -> dict | None:
+def _read_settings_json(settings_path: Path) -> dict[str, object] | None:
     """Parse *settings_path* as JSON and return the dict.
 
     Returns ``None`` when the file does not exist (caller should start from
@@ -796,7 +798,7 @@ def _read_settings_json(settings_path: Path) -> dict | None:
     return data
 
 
-def _write_settings_json(settings_path: Path, data: dict) -> None:
+def _write_settings_json(settings_path: Path, data: dict[str, object]) -> None:
     """Write *data* as indented JSON to *settings_path* atomically.
 
     Uses a temp-file + rename pattern so a crash or kill mid-write never
@@ -831,7 +833,8 @@ def patch_settings_json() -> tuple[bool, str]:
         )
         shutil.copy2(settings_path, backup)
 
-    existing_hooks = current.get("hooks", {})
+    raw_hooks = current.get("hooks", {})
+    existing_hooks: dict[str, list[dict[str, object]]] = raw_hooks if isinstance(raw_hooks, dict) else {}
     for event, entries in our_hooks.items():
         existing_entries = existing_hooks.get(event, [])
         # Strip any prior token-goat entries, then append fresh ones
@@ -840,8 +843,10 @@ def patch_settings_json() -> tuple[bool, str]:
     current["hooks"] = existing_hooks
 
     # Permission allowlist
-    perms = current.get("permissions", {})
-    allowed = list(perms.get("allow", []))
+    raw_perms = current.get("permissions", {})
+    perms: dict[str, object] = raw_perms if isinstance(raw_perms, dict) else {}
+    raw_allowed = perms.get("allow", [])
+    allowed: list[str] = list(raw_allowed) if isinstance(raw_allowed, list) else []
     if "Bash(token-goat:*)" not in allowed:
         allowed.append("Bash(token-goat:*)")
     perms["allow"] = allowed
@@ -861,7 +866,8 @@ def unpatch_settings_json() -> str:
     except json.JSONDecodeError:
         return "settings.json malformed; not modifying"
 
-    hooks = current.get("hooks", {})
+    raw_hooks = current.get("hooks", {})
+    hooks: dict[str, list[dict[str, object]]] = raw_hooks if isinstance(raw_hooks, dict) else {}
     for event in list(hooks.keys()):
         cleaned = _strip_token_goat_entries(hooks.get(event, []))
         if cleaned:
@@ -870,8 +876,10 @@ def unpatch_settings_json() -> str:
             del hooks[event]
     current["hooks"] = hooks
 
-    perms = current.get("permissions", {})
-    allowed = [a for a in perms.get("allow", []) if a != "Bash(token-goat:*)"]
+    raw_perms = current.get("permissions", {})
+    perms: dict[str, object] = raw_perms if isinstance(raw_perms, dict) else {}
+    raw_allowed = perms.get("allow", [])
+    allowed = [a for a in (raw_allowed if isinstance(raw_allowed, list) else []) if a != "Bash(token-goat:*)"]
     perms["allow"] = allowed
     # Drop permissions key entirely if it has no meaningful content left
     if not perms.get("allow") and not perms.get("deny") and not perms.get("ask"):
@@ -1064,7 +1072,7 @@ def codex_agents_path() -> Path:
     return codex_dir() / "AGENTS.md"
 
 
-def _codex_hooks_block(binary: str | None = None) -> dict:
+def _codex_hooks_block(binary: str | None = None) -> dict[str, list[dict[str, object]]]:
     """The hooks structure for Codex's config.toml.
 
     The ``binary`` parameter is kept for backwards compatibility but unused.
@@ -1142,7 +1150,7 @@ def _codex_hooks_block(binary: str | None = None) -> dict:
     }
 
 
-def _strip_codex_token_goat_entries(entries: list[dict]) -> list[dict]:
+def _strip_codex_token_goat_entries(entries: list[dict[str, object]]) -> list[dict[str, object]]:
     """Remove hook entries whose command string contains 'token-goat'."""
     return _strip_token_goat_entries(entries)
 
@@ -1246,11 +1254,15 @@ def _check_settings_json() -> str:
         data = _read_settings_json(settings_path) or {}
     except json.JSONDecodeError:
         return "error (settings.json malformed)"
-    hooks = data.get("hooks", {})
+    raw_hooks = data.get("hooks", {})
+    hooks: dict[str, object] = raw_hooks if isinstance(raw_hooks, dict) else {}
     for _event, entries in hooks.items():
-        for entry in entries:
-            for h in entry.get("hooks", []):
-                if "token_goat" in h.get("command", ""):
+        entry_list = entries if isinstance(entries, list) else []
+        for entry in entry_list:
+            if not isinstance(entry, dict):
+                continue
+            for h in (entry.get("hooks", []) or []):
+                if isinstance(h, dict) and "token_goat" in str(h.get("command", "")):
                     return "installed"
     return "not installed"
 
@@ -1356,7 +1368,7 @@ def install_all(
     install_codex: bool = False,
     install_opencode: bool = False,
     install_openclaw: bool = False,
-) -> dict:
+) -> dict[str, str]:
     """Run the full install. Returns a dict of step -> result string."""
     paths.ensure_dirs()
     result: dict[str, str] = {}
@@ -1450,7 +1462,7 @@ def uninstall_all(
     codex: bool = False,
     opencode: bool = False,
     openclaw: bool = False,
-) -> dict:
+) -> dict[str, str]:
     """Reverse install. With purge=True also deletes the data directory."""
 
     result: dict[str, str] = {}
