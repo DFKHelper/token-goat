@@ -48,6 +48,11 @@ class ReadHint(str):
     tokens_saved: int
 
     def __new__(cls, text: str, tokens_saved: int = 0) -> ReadHint:
+        """Construct a ReadHint string with an attached *tokens_saved* annotation.
+
+        ``str.__new__`` requires the string value to be passed at construction
+        time; ``tokens_saved`` is attached as a plain attribute afterwards.
+        """
         obj = super().__new__(cls, text)
         obj.tokens_saved = tokens_saved
         return obj

@@ -366,6 +366,7 @@ def _render_kpi_section(stats: StatsData) -> list[str]:
     inner_w = col_w * 3  # visible width of the three cards combined
 
     def card(label: str, value: str, delta: str, spark: str | None) -> tuple[str, str, str]:
+        """Return three padded rows (label, value+delta, sparkline) for one metric card."""
         return (
             pad_r(f"{fg(*C.TEXT_MUTED)}{label}{RESET}", col_w),
             pad_r(f"{fg(*C.TEXT_BRIGHT)}{value}{RESET}{delta}", col_w),
@@ -384,6 +385,7 @@ def _render_kpi_section(stats: StatsData) -> list[str]:
     frame_bar = "─" * (inner_w + 2)  # +2 for single-space padding on each side
 
     def framed(content: str) -> str:
+        """Wrap *content* with left/right box-drawing border characters."""
         return f"{_M}{border}│{RESET} {content} {border}│{RESET}"
 
     lines = [
@@ -705,6 +707,7 @@ def _render_insights_section(stats: StatsData) -> list[str]:
     bullet = f"{fg(*C.GREEN3)}▸{RESET}"
 
     def dim(s: str) -> str:
+        """Wrap *s* in the muted-text ANSI colour for de-emphasised inline text."""
         return f"{fg(*C.TEXT_MUTED)}{s}{RESET}"
 
     # Biggest saver by bytes

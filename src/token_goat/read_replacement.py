@@ -46,6 +46,7 @@ class ProjectIndexUnavailable(ReadLookupError):
     code = "project_index_unavailable"
 
     def __init__(self, detail: str) -> None:
+        """Store *detail* as an attribute and forward it as the exception message."""
         self.detail = detail
         super().__init__(detail)
 
@@ -56,6 +57,7 @@ class AmbiguousFileMatch(ReadLookupError):
     code = "ambiguous_file"
 
     def __init__(self, file_part: str, candidates: Sequence[str]) -> None:
+        """Record *file_part* and *candidates*, then forward a human-readable message."""
         self.file_part = file_part
         self.candidates = tuple(candidates)
         super().__init__(f"ambiguous file match for {file_part}: {', '.join(self.candidates)}")
