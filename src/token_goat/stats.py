@@ -9,11 +9,13 @@ from collections import defaultdict
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 from . import db
 
 if TYPE_CHECKING:
+    from rich.table import Table as RichTable
+
     from .render.types import StatsData
 
 # Kinds that track bytes but not (reliable) token counts.
@@ -404,16 +406,15 @@ def _to_stats_data(summary: StatsSummary) -> StatsData:
     )
 
 
-def _make_stats_table(label_col: str) -> Any:
+def _make_stats_table(label_col: str) -> RichTable:
     """Create the standard 5-column stats table used by kind/day/project sections.
 
     All three legacy-renderer tables share identical structure: a label column,
     a relative-savings bar column, bytes, tokens, and events. Only the first
     column name differs, so it is accepted as a parameter.
 
-    The return type is ``Any`` to avoid importing rich at module level (it may
-    be unavailable in some environments); callers are always inside render_text
-    where rich is already imported.
+    ``rich`` is imported lazily inside this function so it is not required at
+    module import time (environments without rich skip the renderer entirely).
     """
     from rich.table import Table  # noqa: PLC0415
 
