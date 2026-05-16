@@ -716,10 +716,19 @@ def _read_settings_json(settings_path: Path) -> dict | None:
     Returns ``None`` when the file does not exist (caller should start from
     ``{}``).  Raises ``json.JSONDecodeError`` on malformed content so callers
     can surface an actionable error message rather than silently overwriting.
+    Raises ``json.JSONDecodeError`` when the top-level value is not a JSON object
+    (e.g. a bare array or string) — settings.json must always be an object.
     """
     if not settings_path.exists():
         return None
-    return json.loads(settings_path.read_text(encoding="utf-8"))
+    data = json.loads(settings_path.read_text(encoding="utf-8"))
+    if not isinstance(data, dict):
+        raise json.JSONDecodeError(
+            f"settings.json must be a JSON object, got {type(data).__name__}",
+            str(data),
+            0,
+        )
+    return data
 
 
 def _write_settings_json(settings_path: Path, data: dict) -> None:
