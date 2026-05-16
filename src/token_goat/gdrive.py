@@ -104,8 +104,7 @@ def fetch_file(file_id: str, *, shrink_if_image: bool = True) -> Path:
     from googleapiclient.discovery import build  # noqa: PLC0415
     from googleapiclient.http import MediaIoBaseDownload  # noqa: PLC0415
 
-    cache_dir = paths.gdrive_cache_dir()
-    cache_dir.mkdir(parents=True, exist_ok=True)
+    cache_dir = image_shrink.ensure_cache_dir(paths.gdrive_cache_dir())
 
     service = build("drive", "v3", credentials=creds, cache_discovery=False)
 
@@ -164,10 +163,8 @@ def fetch_file(file_id: str, *, shrink_if_image: bool = True) -> Path:
             raise RuntimeError(f"Failed to write downloaded file to {local_path}: {e}") from e
 
     # Shrink if image
-    if shrink_if_image and image_shrink.is_image_path(str(local_path)):
-        shrunken = image_shrink.shrink(local_path)
-        if shrunken is not None:
-            return shrunken
+    if shrink_if_image:
+        return image_shrink.shrink_if_image(local_path)
 
     return local_path
 

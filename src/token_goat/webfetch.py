@@ -246,8 +246,7 @@ def fetch_url(
     if not _is_ssrf_safe(url):
         raise ValueError(f"URL blocked by SSRF safety check: {url!r}")
 
-    cache_dir = paths.web_cache_dir()
-    cache_dir.mkdir(parents=True, exist_ok=True)
+    cache_dir = image_shrink.ensure_cache_dir(paths.web_cache_dir())
 
     # Pre-check: do we already have it cached?
     pre_suffix = _suffix_for(url)
@@ -266,10 +265,8 @@ def fetch_url(
                     r = client.get(url, headers=headers)
                 if r.status_code == 304:
                     _LOG.info("web cache revalidated (304): %s", candidate.name)
-                    if shrink_if_image and image_shrink.is_image_path(str(candidate)):
-                        shrunken = image_shrink.shrink(candidate)
-                        if shrunken is not None:
-                            return shrunken
+                    if shrink_if_image:
+                        return image_shrink.shrink_if_image(candidate)
                     return candidate
                 if r.status_code == 200:
                     # Fresh content — fall through to re-download path below
@@ -283,10 +280,8 @@ def fetch_url(
                 return candidate
         else:
             _LOG.info("web cache hit (URL-derived): %s", candidate.name)
-            if shrink_if_image and image_shrink.is_image_path(str(candidate)):
-                shrunken = image_shrink.shrink(candidate)
-                if shrunken is not None:
-                    return shrunken
+            if shrink_if_image:
+                return image_shrink.shrink_if_image(candidate)
             return candidate
 
     # Download
@@ -304,9 +299,7 @@ def fetch_url(
         _write_cache_meta(cache_path, r.headers)
 
     # Shrink if image
-    if shrink_if_image and image_shrink.is_image_path(str(cache_path)):
-        shrunken = image_shrink.shrink(cache_path)
-        if shrunken is not None:
-            return shrunken
+    if shrink_if_image:
+        return image_shrink.shrink_if_image(cache_path)
 
     return cache_path

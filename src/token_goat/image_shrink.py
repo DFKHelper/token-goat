@@ -206,6 +206,25 @@ def shrink(src_path: Path) -> Path | None:
         return None
 
 
+def ensure_cache_dir(cache_dir: Path) -> Path:
+    """Create cache directory idempotently and return it."""
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    return cache_dir
+
+
+def shrink_if_image(path: Path) -> Path:
+    """Shrink *path* if it is a large image; return the (possibly shrunken) path.
+
+    Centralises the "maybe shrink" pattern used by both gdrive.py and
+    webfetch.py so neither module needs to repeat the is_image_path guard.
+    """
+    if is_image_path(str(path)):
+        shrunken = shrink(path)
+        if shrunken is not None:
+            return shrunken
+    return path
+
+
 def stats_for(src_path: Path, shrunken_path: Path) -> ImageStats:
     """Return savings stats for telemetry."""
     _empty = ImageStats(
