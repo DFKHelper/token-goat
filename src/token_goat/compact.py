@@ -53,10 +53,11 @@ def _format_ranges(ranges: list[tuple[int, int]]) -> str:
 def event_count(session_id: str) -> int:
     """Count tracked events (reads + greps + edits) for a session."""
     try:
+        session_mod.validate_session_id(session_id)
         cache = session_mod.load(session_id)
         return len(cache.files) + len(cache.greps) + len(cache.edited_files)
     except Exception as e:  # noqa: BLE001
-        _LOG.debug("event_count(%s) failed: %s", session_id[:8], e)
+        _LOG.debug("event_count(%s) failed: %s", session_id[:8] if session_id else "<empty>", e)
         return 0
 
 
@@ -71,6 +72,11 @@ def build_manifest(session_id: str, *, max_tokens: int = 400) -> str:
     Safe to call even when the session cache is empty or missing.
     """
     t0 = time.monotonic()
+    try:
+        session_mod.validate_session_id(session_id)
+    except ValueError as exc:
+        _LOG.warning("build_manifest: invalid session_id: %s", exc)
+        return ""
     _LOG.debug("build_manifest: session=%s max_tokens=%d", session_id[:8], max_tokens)
     try:
         cache = session_mod.load(session_id)

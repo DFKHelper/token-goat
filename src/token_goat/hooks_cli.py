@@ -311,6 +311,14 @@ def pre_compact(payload: dict[str, Any]) -> HookResponse:
     if not session_id:
         return CONTINUE()
 
+    from . import session as session_mod  # noqa: PLC0415
+
+    try:
+        session_mod.validate_session_id(session_id)
+    except ValueError as exc:
+        _LOG.warning("pre-compact: invalid session_id rejected: %s", exc)
+        return CONTINUE()
+
     n_events = compact_mod.event_count(session_id)
     if n_events < cfg.min_events:
         _LOG.info("pre-compact: skipping manifest (events=%d < min=%d)", n_events, cfg.min_events)
