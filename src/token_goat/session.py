@@ -296,6 +296,7 @@ def load(session_id: str) -> SessionCache:
     preferable to a broken hook invocation.
     """
     validate_session_id(session_id)
+    t0 = time.monotonic()
     p = paths.session_cache_path(session_id)
     try:
         if not p.exists():
@@ -321,7 +322,11 @@ def load(session_id: str) -> SessionCache:
             _LOG.warning("session cache corrupted (%s); resetting", e)
             return _fresh_cache(session_id)
         cache.unavailable = False
-        _LOG.info("session opened: %s (resuming, %d files tracked)", session_id[:16], len(cache.files))
+        elapsed_ms = (time.monotonic() - t0) * 1000
+        _LOG.info(
+            "session opened: %s (resuming, %d files tracked, %d edited, %.1fms)",
+            session_id[:16], len(cache.files), len(cache.edited_files), elapsed_ms,
+        )
         return cache
 
     if read_error is not None:
@@ -335,6 +340,7 @@ def save(cache: SessionCache) -> None:
     if cache.unavailable:
         _LOG.debug("session save skipped (cache unavailable): %s", cache.session_id[:16])
         return
+    t0 = time.monotonic()
     last_exc: OSError | None = None
     for delay in (0.0, 0.05, 0.15):
         if delay:
@@ -348,12 +354,17 @@ def save(cache: SessionCache) -> None:
             except OSError as exc:
                 last_exc = exc
                 continue
-        _LOG.debug(
-            "session saved: %s (%d files, %d greps)",
-            cache.session_id[:16],
-            len(cache.files),
-            len(cache.greps),
-        )
+        elapsed_ms = (time.monotonic() - t0) * 1000
+        if elapsed_ms >= 100:
+            _LOG.warning(
+                "session save slow: %s (%d files, %d greps) %.1fms",
+                cache.session_id[:16], len(cache.files), len(cache.greps), elapsed_ms,
+            )
+        else:
+            _LOG.debug(
+                "session saved: %s (%d files, %d greps) %.1fms",
+                cache.session_id[:16], len(cache.files), len(cache.greps), elapsed_ms,
+            )
         return
     if last_exc is not None:
         _LOG.warning(
@@ -568,11 +579,17 @@ def cleanup_stale(max_age_hours: float = 24.0) -> int:
     if not sessions_dir.exists():
         return 0
     cutoff = time.time() - max_age_hours * 3600
+    examined = 0
     for f in sessions_dir.glob("*.json"):
+        examined += 1
         try:
             if f.stat().st_mtime < cutoff:
                 f.unlink()
                 removed += 1
         except OSError as e:
             _LOG.debug("cleanup_stale: could not remove %s: %s", f.name, e)
+    _LOG.info(
+        "cleanup_stale: examined=%d removed=%d (max_age_hours=%.1f)",
+        examined, removed, max_age_hours,
+    )
     return removed
