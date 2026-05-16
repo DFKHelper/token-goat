@@ -3,12 +3,13 @@
 </p>
 
 <p align="center">
-  Cuts the tokens Claude Code and Codex CLI burn. Windows, Linux, and WSL. Install once, then forget it.
+  Cuts the tokens Claude Code and Codex CLI burn. Windows, Linux, WSL, and macOS. Install once, then forget it.
 </p>
 
 <p align="center">
   <img src="https://img.shields.io/badge/Windows-10%20%7C%2011-0078d4?logo=windows&logoColor=white" alt="Windows 10 | 11">
   <img src="https://img.shields.io/badge/Linux-including%20WSL-FCC624?logo=linux&logoColor=black" alt="Linux including WSL">
+  <img src="https://img.shields.io/badge/macOS-untested-lightgrey?logo=apple&logoColor=white" alt="macOS (untested)">
   <img src="https://img.shields.io/badge/Python-3.11%20%7C%203.12%20%7C%203.13-3776ab?logo=python&logoColor=white" alt="Python 3.11 | 3.12 | 3.13">
   <img src="https://img.shields.io/badge/license-PolyForm%20Noncommercial-lightgrey" alt="PolyForm Noncommercial">
   <img src="https://img.shields.io/badge/requires-uv-6340ac" alt="requires uv">
@@ -49,6 +50,8 @@ Each one is preventable. Token-Goat intercepts all three, automatically.
 
 **Linux / WSL requirements:** Python 3.11, 3.12, or 3.13 · [uv](https://docs.astral.sh/uv/) (`curl -LsSf https://astral.sh/uv/install.sh | sh`)
 
+**macOS requirements (untested):** Python 3.11, 3.12, or 3.13 · [uv](https://docs.astral.sh/uv/) (`curl -LsSf https://astral.sh/uv/install.sh | sh`)
+
 ```
 uv tool install token-goat
 token-goat install
@@ -56,7 +59,7 @@ token-goat install
 
 Two commands. Done. Hooks register, a background worker starts at logon and stays out of the way. No terminal popups, no tray icon, no service to babysit.
 
-On Linux and WSL, the worker registers as a systemd user service when systemd is available. On WSL without systemd, the SessionStart hook ensures the worker is running at the start of every Claude Code session.
+On Linux and WSL, the worker registers as a systemd user service when systemd is available. On WSL without systemd, and on macOS, the SessionStart hook ensures the worker is running at the start of every Claude Code session.
 
 ### Codex CLI users
 
@@ -79,7 +82,7 @@ The `--codex` flag patches both Claude Code and Codex CLI in one pass.
 | `token-goat compact-hint --session-id <id>` | Inspect the compaction manifest for a session |
 | `token-goat doctor` | Confirm everything is wired correctly |
 
-First `token-goat semantic` call downloads a small embedding model, about 130 MB, into `%LOCALAPPDATA%\dfk-helper\token-goat\models\`. One-time. Offline after that.
+First `token-goat semantic` call downloads a small embedding model, about 130 MB, into the token-goat data directory. One-time. Offline after that.
 
 ## Zero maintenance
 
@@ -88,6 +91,7 @@ After `token-goat install`, there is nothing to start, stop, or restart. The wor
 - **Windows:** starts at logon via the Windows startup registry (HKCU Run key, no admin rights needed), runs without a console window
 - **Linux with systemd:** registers as a systemd user service (`~/.config/systemd/user/token-goat-worker.service`), starts at login automatically
 - **WSL without systemd:** the SessionStart hook starts the worker at the beginning of every Claude Code session
+- **macOS (untested):** the SessionStart hook starts the worker at the start of every Claude Code session
 - survives reboots on all platforms
 - needs zero ongoing attention
 
@@ -132,7 +136,7 @@ Outbound network only in three explicitly disclosed cases:
 - Google Drive API calls, only if you already authorized Drive in Claude Code. Token-goat never prompts for its own auth.
 - Explicit, user-triggered URL fetches via `token-goat fetch-image <url>`.
 
-All caches and the index live in `%LOCALAPPDATA%\dfk-helper\token-goat\`. Delete the folder any time. Nothing else on the system depends on it.
+All caches and the index live in the token-goat data directory: `%LOCALAPPDATA%\dfk-helper\token-goat\` on Windows, `~/.local/share/token-goat/` on Linux and WSL, `~/Library/Application Support/dfk-helper/token-goat/` on macOS. Delete the folder any time. Nothing else on the system depends on it.
 
 ## About
 
