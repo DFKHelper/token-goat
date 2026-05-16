@@ -455,6 +455,10 @@ def _ensure_project_schema(conn: sqlite3.Connection, *, db_path: Path | None = N
                 for row in conn.execute("PRAGMA table_info(files)").fetchall()
             }
             if "line_count" not in columns:
+                _LOG.info(
+                    "schema migration: adding line_count column to files table%s",
+                    f" ({db_path.name})" if db_path else "",
+                )
                 conn.execute("ALTER TABLE files ADD COLUMN line_count INTEGER")
             if db_path is not None:
                 _SCHEMA_MIGRATED[db_path] = True
@@ -491,6 +495,7 @@ def _open_with_rebuild(path: Path, *, load_vec: bool = True) -> sqlite3.Connecti
     except sqlite3.DatabaseError as exc:
         _LOG.warning("db open failed: %s — attempting quarantine and rebuild", exc)
         _rebuild(path)
+        _LOG.info("retrying db open after quarantine: %s", path.name)
         try:
             return _connect(path, load_vec=load_vec)
         except sqlite3.DatabaseError as exc2:
@@ -739,7 +744,9 @@ def project_writer_lock(project_hash: str, timeout_sec: float = 5.0) -> Iterator
                 text = lock_path.read_text(encoding="utf-8")
                 if not _stale(text):
                     return False
-                # Stale — remove and fall through to create
+                # Stale — log at info (clearing another PID's lock is notable) and remove
+                _LOG.info("clearing stale writer lock for project %s (lock content: %s)",
+                          project_hash[:8], text.strip()[:60])
                 lock_path.unlink(missing_ok=True)
             except OSError as e:
                 _LOG.debug("lock read/remove failed for %s: %s", lock_path.name, e)

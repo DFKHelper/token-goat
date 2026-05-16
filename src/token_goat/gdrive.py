@@ -94,6 +94,7 @@ def _try_stored_oauth() -> object | None:
 
         creds = Credentials.from_authorized_user_file(str(creds_path), scopes=_DRIVE_SCOPES)
         if creds.expired and creds.refresh_token:
+            t_refresh = time.monotonic()
             try:
                 creds.refresh(Request())
             except Exception as refresh_err:  # noqa: BLE001
@@ -112,11 +113,14 @@ def _try_stored_oauth() -> object | None:
                         _LOG.debug("could not remove stale creds file: %s", unlink_err)
                 else:
                     # Transient error (network timeout, DNS failure, etc.) — keep creds
-                    _LOG.warning("OAuth token refresh failed (transient); keeping cached creds")
+                    _LOG.warning(
+                        "OAuth token refresh failed after %.3fs (transient); keeping cached creds",
+                        time.monotonic() - t_refresh,
+                    )
                 return None
             # Do NOT log creds.to_json() — it contains refresh tokens
             _write_creds_secure(creds_path, creds.to_json())
-            _LOG.info("refreshed OAuth credentials")
+            _LOG.info("OAuth credentials refreshed in %.3fs", time.monotonic() - t_refresh)
         return creds
     except Exception:  # noqa: BLE001
         # Do NOT log the exception message if it contains credentials
@@ -128,9 +132,11 @@ def get_credentials() -> object:
     """Try ADC then stored OAuth. Raise GDriveCredsUnavailable if neither works."""
     creds = _try_adc()
     if creds is not None:
+        _LOG.debug("using Application Default Credentials (ADC) for Drive access")
         return creds
     creds = _try_stored_oauth()
     if creds is not None:
+        _LOG.debug("using stored OAuth credentials for Drive access")
         return creds
     raise GDriveCredsUnavailable(
         "No Google Drive credentials. Run `token-goat gdrive-auth` once, "
@@ -289,8 +295,17 @@ def fetch_file(file_id: str, *, shrink_if_image: bool = True, max_size_bytes: in
 
     # Shrink if image
     if shrink_if_image:
-        return image_shrink.shrink_if_image(local_path)
+        result_path = image_shrink.shrink_if_image(local_path)
+        _LOG.debug(
+            "gdrive fetch_file complete: file_id=%s total_elapsed=%.3fs path=%s",
+            file_id, time.monotonic() - t_fetch_start, result_path.name,
+        )
+        return result_path
 
+    _LOG.debug(
+        "gdrive fetch_file complete: file_id=%s total_elapsed=%.3fs path=%s",
+        file_id, time.monotonic() - t_fetch_start, local_path.name,
+    )
     return local_path
 
 
