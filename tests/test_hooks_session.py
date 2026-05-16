@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import pathlib
 import sys
 
 from hook_helpers import assert_continue as _assert_continue
@@ -156,7 +157,7 @@ class TestLockedSessionCacheDispatch:
             raise PermissionError("[WinError 32] The process cannot access the file")
 
         with monkeypatch.context() as m:
-            m.setattr(session.Path, "replace", boom)
+            m.setattr(pathlib.Path, "replace", boom)
             result = hooks_cli.dispatch("post-read", payload)
 
         _assert_continue(result)
@@ -185,7 +186,7 @@ class TestLockedSessionCacheDispatch:
             raise PermissionError("[Errno 13] Permission denied")
 
         with monkeypatch.context() as m:
-            m.setattr(session.Path, "read_text", boom)
+            m.setattr(pathlib.Path, "read_text", boom)
             result = hooks_cli.dispatch("post-read", payload)
 
         _assert_continue(result)
