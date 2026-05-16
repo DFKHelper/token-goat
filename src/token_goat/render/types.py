@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+__all__ = ["DayStat", "KindStat", "ProjectStat", "Sparklines", "StatsData", "TotalStats"]
+
 from dataclasses import dataclass
 from datetime import date
 

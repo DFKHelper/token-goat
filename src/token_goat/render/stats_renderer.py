@@ -318,7 +318,6 @@ def _render_by_kind_section(stats: StatsData) -> list[str]:
     # Share % uses absolute-value totals so overhead kinds (negative bytes/tokens)
     # reduce the denominator and prevent the dominant positive kind from hitting 100%.
     gross_bytes = max(sum(k.bytes for k in stats.by_kind if k.bytes > 0), 1)
-    gross_tokens = sum(k.tokens for k in stats.by_kind if k.tokens > 0)
     share_bytes_denom = max(sum(abs(k.bytes) for k in stats.by_kind), 1)
     share_tokens_denom = sum(abs(k.tokens) for k in stats.by_kind)
 

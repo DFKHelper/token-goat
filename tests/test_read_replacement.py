@@ -970,6 +970,7 @@ class TestSectionEdgeCases:
     def test_section_top_level_heading(self, indexed_md_cli):
         """token-goat section retrieves a top-level (H1) heading."""
         from typer.testing import CliRunner
+
         from token_goat.cli import app
 
         runner = CliRunner()
@@ -980,6 +981,7 @@ class TestSectionEdgeCases:
     def test_section_nested_h3_heading(self, indexed_md_cli):
         """token-goat section can retrieve a level-3 (###) heading."""
         from typer.testing import CliRunner
+
         from token_goat.cli import app
 
         runner = CliRunner()
@@ -990,6 +992,7 @@ class TestSectionEdgeCases:
     def test_section_results_heading(self, indexed_md_cli):
         """Retrieving the last section in a file (Results) works correctly."""
         from typer.testing import CliRunner
+
         from token_goat.cli import app
 
         runner = CliRunner()
@@ -1000,6 +1003,7 @@ class TestSectionEdgeCases:
     def test_section_json_contains_level(self, indexed_md_cli):
         """--json output includes a 'level' field for the heading depth."""
         from typer.testing import CliRunner
+
         from token_goat.cli import app
 
         runner = CliRunner()
@@ -1012,6 +1016,7 @@ class TestSectionEdgeCases:
     def test_section_missing_separator_exits_2(self, indexed_md_cli):
         """token-goat section without '::' separator must exit 2."""
         from typer.testing import CliRunner
+
         from token_goat.cli import app
 
         runner = CliRunner()
@@ -1021,6 +1026,7 @@ class TestSectionEdgeCases:
     def test_section_nonexistent_heading_text_output(self, indexed_md_cli):
         """Missing heading in text mode exits 0 with a message on stdout or stderr."""
         from typer.testing import CliRunner
+
         from token_goat.cli import app
 
         runner = CliRunner()
@@ -1071,7 +1077,9 @@ class TestDepsDepthTextOutput:
     def test_deps_depth_1_no_transitive_section(self, tmp_path, tmp_data_dir, make_project, monkeypatch):
         """With --depth 1 (default), no 'Transitive dependencies' header appears."""
         from contextlib import contextmanager
+
         from typer.testing import CliRunner
+
         from token_goat import read_commands
         from token_goat.cli import app
 
@@ -1096,7 +1104,9 @@ class TestDepsDepthTextOutput:
     def test_deps_depth_2_shows_transitive_section(self, tmp_path, tmp_data_dir, make_project, monkeypatch):
         """With --depth 2, text output contains 'Transitive dependencies' section."""
         from contextlib import contextmanager
+
         from typer.testing import CliRunner
+
         from token_goat import read_commands
         from token_goat.cli import app
 
@@ -1128,7 +1138,9 @@ class TestDepsDepthTextOutput:
     def test_deps_depth_0_unlimited_header_uses_infinity_symbol(self, tmp_path, tmp_data_dir, make_project, monkeypatch):
         """--depth 0 text output header shows '∞' to indicate unlimited depth."""
         from contextlib import contextmanager
+
         from typer.testing import CliRunner
+
         from token_goat import read_commands
         from token_goat.cli import app
 
@@ -1160,7 +1172,9 @@ class TestDepsDepthTextOutput:
     def test_deps_depth_2_text_shows_via_annotation(self, tmp_path, tmp_data_dir, make_project, monkeypatch):
         """Transitive deps text output annotates depth-2 entries with 'via <parent>'."""
         from contextlib import contextmanager
+
         from typer.testing import CliRunner
+
         from token_goat import read_commands
         from token_goat.cli import app
 
@@ -1203,7 +1217,6 @@ class TestCollectTransitiveOutgoing:
 
     def _make_minimal_project(self, tmp_path, make_project):
         """Create a minimal project (needed for the conn object)."""
-        from token_goat import db
         from token_goat.parser import index_project
 
         proj_root = tmp_path / "bfs_unit"

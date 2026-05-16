@@ -6,7 +6,6 @@ import math
 import sqlite3
 import struct
 from collections.abc import Sequence
-from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -20,7 +19,6 @@ from token_goat.embeddings import (
     extract_chunks_for_file,
     is_available,
 )
-
 
 # ---------------------------------------------------------------------------
 # Unit tests (no model download needed)

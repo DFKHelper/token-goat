@@ -575,6 +575,116 @@ def test_uninstall_linux_autostart_windows_noop(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
+# macOS autostart: install_mac_autostart / uninstall_mac_autostart
+# ---------------------------------------------------------------------------
+
+
+def test_install_mac_autostart_windows_skips(monkeypatch):
+    """install_mac_autostart returns success-skipped on Windows."""
+    import sys
+    monkeypatch.setattr(sys, "platform", "win32")
+    ok, out = install.install_mac_autostart()
+    assert ok is True
+    assert "skipped" in out
+
+
+def test_install_mac_autostart_writes_plist(tmp_path, monkeypatch):
+    """install_mac_autostart writes a valid LaunchAgent plist and calls launchctl."""
+    import sys
+    monkeypatch.setattr(sys, "platform", "darwin")
+    monkeypatch.setattr(Path, "home", staticmethod(lambda: tmp_path))
+
+    # stub paths.logs_dir() to point into tmp_path
+    import token_goat.paths as tg_paths
+    monkeypatch.setattr(tg_paths, "logs_dir", lambda: tmp_path / "logs")
+
+    calls = []
+
+    def fake_run(cmd, **kwargs):
+        calls.append(list(cmd))
+        class R:
+            returncode = 0
+            stderr = b""
+        return R()
+
+    monkeypatch.setattr(install.subprocess, "run", fake_run)
+
+    ok, out = install.install_mac_autostart()
+
+    assert ok is True
+    assert "LaunchAgent" in out
+    plist_path = install._launchd_plist_path()
+    assert plist_path.exists()
+    content = plist_path.read_text()
+    assert install.LAUNCHD_PLIST_NAME in content
+    assert "RunAtLoad" in content
+    assert "token_goat" in content or "token-goat" in content
+    # launchctl load must have been called
+    cmds_flat = [" ".join(c) for c in calls]
+    assert any("launchctl" in c and "load" in c for c in cmds_flat)
+
+
+def test_install_mac_autostart_idempotent(tmp_path, monkeypatch):
+    """install_mac_autostart can be called twice without error."""
+    import sys
+    monkeypatch.setattr(sys, "platform", "darwin")
+    monkeypatch.setattr(Path, "home", staticmethod(lambda: tmp_path))
+
+    import token_goat.paths as tg_paths
+    monkeypatch.setattr(tg_paths, "logs_dir", lambda: tmp_path / "logs")
+    monkeypatch.setattr(install.subprocess, "run", lambda *a, **kw: type("R", (), {"returncode": 0, "stderr": b""})())
+
+    install.install_mac_autostart()
+    ok, out = install.install_mac_autostart()
+
+    assert ok is True
+    assert install._launchd_plist_path().exists()
+
+
+def test_uninstall_mac_autostart_removes_plist(tmp_path, monkeypatch):
+    """uninstall_mac_autostart removes the plist and calls launchctl unload."""
+    import sys
+    monkeypatch.setattr(sys, "platform", "darwin")
+    monkeypatch.setattr(Path, "home", staticmethod(lambda: tmp_path))
+
+    import token_goat.paths as tg_paths
+    monkeypatch.setattr(tg_paths, "logs_dir", lambda: tmp_path / "logs")
+    monkeypatch.setattr(install.subprocess, "run", lambda *a, **kw: type("R", (), {"returncode": 0, "stderr": b""})())
+
+    install.install_mac_autostart()
+    plist_path = install._launchd_plist_path()
+    assert plist_path.exists()
+
+    removed = install.uninstall_mac_autostart()
+
+    assert not plist_path.exists()
+    assert any(str(plist_path) in r for r in removed)
+
+
+def test_uninstall_mac_autostart_windows_noop(monkeypatch):
+    """uninstall_mac_autostart is a no-op on Windows."""
+    import sys
+    monkeypatch.setattr(sys, "platform", "win32")
+    assert install.uninstall_mac_autostart() == []
+
+
+def test_check_mac_autostart_reports_status(tmp_path, monkeypatch):
+    """_check_mac_autostart returns 'not installed' then 'installed' after plist written."""
+    import sys
+    monkeypatch.setattr(sys, "platform", "darwin")
+    monkeypatch.setattr(Path, "home", staticmethod(lambda: tmp_path))
+
+    assert install._check_mac_autostart() == "not installed"
+
+    import token_goat.paths as tg_paths
+    monkeypatch.setattr(tg_paths, "logs_dir", lambda: tmp_path / "logs")
+    monkeypatch.setattr(install.subprocess, "run", lambda *a, **kw: type("R", (), {"returncode": 0, "stderr": b""})())
+    install.install_mac_autostart()
+
+    assert install._check_mac_autostart() == "installed"
+
+
+# ---------------------------------------------------------------------------
 # Linux update cron: install_linux_update_cron
 # ---------------------------------------------------------------------------
 

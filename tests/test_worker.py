@@ -304,6 +304,8 @@ def test_register_autostart_invokes_install_task(tmp_data_dir, monkeypatch):
 
     if sys.platform == "win32":
         monkeypatch.setattr(install, "install_worker_task", spy)
+    elif sys.platform == "darwin":
+        monkeypatch.setattr(install, "install_mac_autostart", spy)
     else:
         monkeypatch.setattr(install, "install_linux_autostart", spy)
     _REAL_REGISTER_AUTOSTART()
@@ -315,6 +317,8 @@ def test_register_autostart_invokes_install_task(tmp_data_dir, monkeypatch):
 
     if sys.platform == "win32":
         monkeypatch.setattr(install, "install_worker_task", boom)
+    elif sys.platform == "darwin":
+        monkeypatch.setattr(install, "install_mac_autostart", boom)
     else:
         monkeypatch.setattr(install, "install_linux_autostart", boom)
     _REAL_REGISTER_AUTOSTART()  # must not raise

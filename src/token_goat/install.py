@@ -1,6 +1,7 @@
 """install + uninstall: scheduled tasks, settings.json, CLAUDE.md, skill, permission allowlist."""
 from __future__ import annotations
 
+import contextlib
 import json
 import logging
 import re
@@ -28,6 +29,9 @@ TASK_UPDATE = "token-goat-update"
 # Linux autostart constants
 SYSTEMD_SERVICE_NAME = "token-goat-worker"
 CRON_JOB_MARKER = "# token-goat-autoupdate"
+
+# macOS autostart constants
+LAUNCHD_PLIST_NAME = "com.dfkhelper.token-goat-worker"
 
 
 def claude_dir() -> Path:
@@ -353,14 +357,12 @@ def uninstall_linux_autostart() -> list[str]:
 
     svc_path = _systemd_service_path()
     if svc_path.exists():
-        try:
+        with contextlib.suppress(FileNotFoundError, subprocess.TimeoutExpired):
             subprocess.run(
                 ["systemctl", "--user", "disable", "--now", SYSTEMD_SERVICE_NAME],
                 capture_output=True,
                 timeout=10,
             )
-        except (FileNotFoundError, subprocess.TimeoutExpired):
-            pass
         try:
             svc_path.unlink()
             subprocess.run(
@@ -444,6 +446,112 @@ def uninstall_linux_update_cron() -> str:
         return "cron job removed"
     except (FileNotFoundError, subprocess.TimeoutExpired) as e:
         return f"crontab unavailable: {e}"
+
+
+# ---------------------------------------------------------------------------
+# macOS autostart (launchd user agent)
+# ---------------------------------------------------------------------------
+
+
+def _launchd_plist_path() -> Path:
+    """Return ~/Library/LaunchAgents/com.dfkhelper.token-goat-worker.plist"""
+    return Path.home() / "Library" / "LaunchAgents" / f"{LAUNCHD_PLIST_NAME}.plist"
+
+
+def install_mac_autostart() -> tuple[bool, str]:
+    """Register worker autostart on macOS via a LaunchAgent plist.
+
+    Writes ~/Library/LaunchAgents/com.dfkhelper.token-goat-worker.plist and
+    calls `launchctl load` to activate it immediately.  No admin required —
+    LaunchAgents run in user scope.  Idempotent: unloads before re-loading if
+    the plist already exists.
+    """
+    import sys
+    if sys.platform == "win32":
+        return True, "Windows: skipped"
+
+    cmd_args = paths.python_runner_argv("worker", "--daemon")
+    plist_path = _launchd_plist_path()
+    plist_path.parent.mkdir(parents=True, exist_ok=True)
+
+    arg_entries = "\n".join(f"        <string>{arg}</string>" for arg in cmd_args)
+    log_dir = paths.logs_dir()
+    log_dir.mkdir(parents=True, exist_ok=True)
+
+    plist_xml = (
+        '<?xml version="1.0" encoding="UTF-8"?>\n'
+        '<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"'
+        ' "http://www.apple.com/DTDs/PropertyList-1.0.dtd">\n'
+        '<plist version="1.0">\n'
+        "<dict>\n"
+        "    <key>Label</key>\n"
+        f"    <string>{LAUNCHD_PLIST_NAME}</string>\n"
+        "    <key>ProgramArguments</key>\n"
+        "    <array>\n"
+        f"{arg_entries}\n"
+        "    </array>\n"
+        "    <key>RunAtLoad</key>\n"
+        "    <true/>\n"
+        "    <key>KeepAlive</key>\n"
+        "    <false/>\n"
+        "    <key>StandardOutPath</key>\n"
+        f"    <string>{log_dir / 'worker-stdout.log'}</string>\n"
+        "    <key>StandardErrorPath</key>\n"
+        f"    <string>{log_dir / 'worker-stderr.log'}</string>\n"
+        "</dict>\n"
+        "</plist>\n"
+    )
+    plist_path.write_text(plist_xml, encoding="utf-8")
+
+    # Unload first (idempotent — ignore errors if not loaded yet)
+    subprocess.run(
+        ["launchctl", "unload", str(plist_path)],
+        capture_output=True,
+        timeout=10,
+    )
+    try:
+        r = subprocess.run(
+            ["launchctl", "load", str(plist_path)],
+            capture_output=True,
+            timeout=10,
+        )
+        if r.returncode != 0:
+            err = (r.stderr or b"").decode(errors="replace").strip()
+            return False, f"launchctl load failed: {err}"
+        return True, f"LaunchAgent installed: {plist_path}"
+    except (FileNotFoundError, subprocess.TimeoutExpired) as e:
+        return False, f"launchctl unavailable: {e}"
+
+
+def uninstall_mac_autostart() -> list[str]:
+    """Remove the macOS LaunchAgent plist. Returns a list of paths removed."""
+    import sys
+    if sys.platform == "win32":
+        return []
+
+    removed: list[str] = []
+    plist_path = _launchd_plist_path()
+    if plist_path.exists():
+        with contextlib.suppress(FileNotFoundError, subprocess.TimeoutExpired):
+            subprocess.run(
+                ["launchctl", "unload", str(plist_path)],
+                capture_output=True,
+                timeout=10,
+            )
+        try:
+            plist_path.unlink()
+            removed.append(str(plist_path))
+        except OSError as e:
+            _LOG.warning("failed to remove LaunchAgent plist: %s", e)
+    return removed
+
+
+def _check_mac_autostart() -> str:
+    """Return the macOS LaunchAgent status string."""
+    import sys
+    if sys.platform == "win32":
+        return "n/a (Windows)"
+    return "installed" if _launchd_plist_path().exists() else "not installed"
 
 
 def _check_linux_autostart() -> str:
@@ -1110,6 +1218,9 @@ def check_status() -> dict[str, str]:
     if sys.platform == "win32":
         status["worker autostart (HKCU Run)"] = _check_worker_task()
         status["update task (schtasks)"] = _check_update_task()
+    elif sys.platform == "darwin":
+        status["worker autostart (LaunchAgent)"] = _check_mac_autostart()
+        status["update cron"] = _check_linux_update_cron()
     else:
         status["worker autostart"] = _check_linux_autostart()
         status["update cron"] = _check_linux_update_cron()
@@ -1142,6 +1253,11 @@ def install_all(install_codex: bool = False) -> dict:
         result["task: worker"] = ("ok" if worker_ok else "FAIL") + f" — {worker_out[:200]}"
         update_ok, update_out = install_update_task()
         result["task: update"] = ("ok" if update_ok else "FAIL") + f" — {update_out[:200]}"
+    elif sys.platform == "darwin":
+        worker_ok, worker_out = install_mac_autostart()
+        result["autostart: worker"] = ("ok" if worker_ok else "FAIL") + f" — {worker_out[:200]}"
+        update_ok, update_out = install_linux_update_cron()
+        result["cron: update"] = ("ok" if update_ok else "FAIL") + f" — {update_out[:200]}"
     else:
         worker_ok, worker_out = install_linux_autostart()
         result["autostart: worker"] = ("ok" if worker_ok else "FAIL") + f" — {worker_out[:200]}"
@@ -1205,6 +1321,10 @@ def uninstall_all(purge: bool = False, codex: bool = False) -> dict:
     if sys.platform == "win32":
         removed_tasks = uninstall_tasks()
         result["tasks"] = f"removed: {removed_tasks}"
+    elif sys.platform == "darwin":
+        removed_mac = uninstall_mac_autostart()
+        result["autostart"] = f"removed: {removed_mac}" if removed_mac else "none found"
+        result["cron"] = uninstall_linux_update_cron()
     else:
         removed_linux = uninstall_linux_autostart()
         result["autostart"] = f"removed: {removed_linux}" if removed_linux else "none found"
