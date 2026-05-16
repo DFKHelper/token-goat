@@ -1,6 +1,20 @@
 """Semantic search using fastembed (ONNX, no external service) + sqlite-vec storage."""
 from __future__ import annotations
 
+__all__ = [
+    "DEFAULT_DIM",
+    "DEFAULT_MODEL",
+    "Chunk",
+    "EmbeddingsResult",
+    "EmbeddingsUnavailable",
+    "SearchHit",
+    "embed_texts",
+    "extract_chunks_for_file",
+    "index_project_embeddings",
+    "is_available",
+    "semantic_search",
+]
+
 import array
 import hashlib
 import logging

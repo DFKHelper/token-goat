@@ -1,6 +1,21 @@
 """Shared utilities for language-specific symbol extractors."""
 from __future__ import annotations
 
+__all__ = [
+    "KindStr",
+    "add_imports",
+    "add_symbol_info",
+    "build_signature",
+    "extract_html_headings",
+    "extract_refs_from_source",
+    "get_tlp",
+    "kind_str",
+    "make_add_symbol",
+    "make_process_config",
+    "parse_source",
+    "sym_kind_str",
+]
+
 import re
 import types
 from collections.abc import Callable

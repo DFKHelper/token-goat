@@ -1,17 +1,35 @@
 """SQLite + sqlite-vec storage layer. Phase 2."""
 from __future__ import annotations
 
+__all__ = [
+    "EMBED_DIM",
+    "LOCK_STALE_SECONDS",
+    "SCHEMA_VERSION",
+    "DBBusyError",
+    "DBCorruptionError",
+    "DBError",
+    "DBReadOnlyError",
+    "VecExtensionUnavailable",
+    "file_count",
+    "index_health",
+    "open_global",
+    "open_global_readonly",
+    "open_project",
+    "open_project_readonly",
+    "project_has_files",
+    "project_writer_lock",
+    "record_stat",
+    "touch_project_last_seen",
+]
+
 import contextlib
 import logging
 import os
 import re
 import sqlite3
 import time
-from typing import TYPE_CHECKING
-
-if TYPE_CHECKING:
-    from collections.abc import Iterator
-    from pathlib import Path
+from collections.abc import Iterator
+from pathlib import Path
 
 from . import paths
 
