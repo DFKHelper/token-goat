@@ -108,7 +108,14 @@ def _looks_like_screenshot_or_text(img: _PilImage.Image) -> bool:
 
 
 def should_shrink(src_path: Path) -> bool:
-    """Threshold check: is this image worth shrinking?"""
+    """Return True if this image is large enough to be worth compressing.
+
+    Uses a single ``stat()`` call to check size. Skips non-regular files
+    (directories, device nodes, etc.) by checking the S_ISREG flag, so
+    callers don't need to guard against special filesystem entries.
+    Returns False on any OS error rather than raising so callers can treat
+    the answer as a conservative hint, not a guarantee.
+    """
     try:
         if not is_image_path(str(src_path)):
             return False
@@ -151,7 +158,25 @@ def _ensure_rgb(img: _PilImage.Image, Image_module: types.ModuleType) -> _PilIma
 
 
 def shrink(src_path: Path) -> Path | None:
-    """Shrink the image and return the path to the cached shrunken version. None on failure."""
+    """Compress and cache a large image; return the cached output path, or None on failure.
+
+    Processing pipeline:
+    1. Safety and threshold checks (path traversal guard, extension, size).
+    2. Content-addressed cache lookup: if a .jpg or .png with the same SHA256 content
+       hash already exists in the image cache, return it immediately without re-processing.
+    3. Open with PIL, applying EXIF orientation so the image isn't rotated after resize.
+    4. Resize to fit within MAX_LONG_EDGE on the longest axis (Lanczos resampling).
+    5. Format selection:
+       - Screenshots and text images (palette/alpha modes, reasonable size) → PNG with alpha
+         preserved when the mode is RGBA or LA, to avoid aliasing on sharp edges.
+       - Everything else (photographs, large PNGs, RGB images) → JPEG at JPEG_QUALITY,
+         which gives the best compression for continuous-tone images. Non-RGB modes
+         are composited over a white background by _ensure_rgb() before JPEG save.
+    6. Log size reduction percentage for telemetry.
+
+    Returns None (never raises) on any PIL, OS, or memory error. Callers treat None
+    as "use original path".
+    """
     t0 = time.time()
     # Validate input path for safety
     if not _is_safe_path(src_path):
@@ -188,7 +213,8 @@ def shrink(src_path: Path) -> Path | None:
         # Image. Annotate broadly so reassignment doesn't trip the type checker.
         img: Image.Image
         with Image.open(src_path) as img:
-            # Preserve EXIF orientation
+            # Preserve EXIF orientation — some cameras embed rotation metadata
+            # rather than rotating pixels; ignoring this produces upside-down output.
             with contextlib.suppress(Exception):
                 img = ImageOps.exif_transpose(img)
 
@@ -200,7 +226,11 @@ def shrink(src_path: Path) -> Path | None:
                 new_size = (int(w * scale), int(h * scale))
                 img = img.resize(new_size, Image.Resampling.LANCZOS)
 
-            # Choose output format
+            # Choose output format based on image characteristics.
+            # Screenshots with transparency keep PNG so sharp UI edges aren't
+            # compressed into JPEG blur artifacts. Photographs and other images
+            # are always saved as JPEG because JPEG achieves far higher compression
+            # ratios on continuous-tone content (typically 5–20× smaller than PNG).
             is_screenshot = _looks_like_screenshot_or_text(img)
             if is_screenshot and img.mode in ("RGBA", "LA"):
                 # Keep PNG with alpha for screenshots
@@ -255,7 +285,13 @@ def shrink_if_image(path: Path) -> Path:
 
 
 def stats_for(src_path: Path, shrunken_path: Path) -> ImageStats:
-    """Return savings stats for telemetry."""
+    """Compute compression telemetry for a source/shrunken image pair.
+
+    Reads file sizes via stat and image dimensions via PIL. Both dimension
+    reads are best-effort: if PIL is not installed or either file is unreadable,
+    the width/height fields are 0 and only byte savings are reported.
+    Returns an all-zero ImageStats on any OS error rather than raising.
+    """
     _empty = ImageStats(
         src_bytes=0, out_bytes=0, bytes_saved=0,
         orig_width=0, orig_height=0, out_width=0, out_height=0,

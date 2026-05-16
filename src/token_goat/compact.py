@@ -34,7 +34,15 @@ _MAX_SYMBOLS_PER_FILE_ENTRY = 6
 
 
 def _short_path(p: str, max_len: int = 70) -> str:
-    """Return a compact representation of a file path."""
+    """Return a compact display representation of a file path.
+
+    Normalises backslashes to forward slashes, then strips the leading
+    absolute-path component up to a recognised project-layout directory
+    (``/src/``, ``/tests/``, ``/docs/``) so the manifest stays readable on
+    both Windows and POSIX without leaking the user's home directory prefix.
+    Falls back to tail-truncation with an ellipsis if the path is still over
+    *max_len* after stripping (e.g. deeply nested monorepo paths).
+    """
     p = p.replace("\\", "/")
     # Strip common prefixes to keep paths short
     for prefix in ("/src/", "/tests/", "/docs/"):
@@ -177,14 +185,18 @@ def _render(cache: SessionCache, session_id: str, max_tokens: int) -> tuple[str,
     if estimate_tokens(result) <= max_tokens:
         return result, files_with_symbols_count
 
-    # Trim: drop lines from the bottom until within budget, preserving headers.
-    # Track accumulated character length incrementally to avoid O(n²) re-joins
-    # on each iteration of the trim loop.
+    # Trim: drop lines from the bottom until within budget, preserving the header.
+    # Strategy: work in character space (1 token ≈ 3 chars per estimate_tokens),
+    # tracking running length incrementally to avoid the O(n²) cost of re-joining
+    # the full string on every iteration of the trim loop.  We keep at least 3
+    # lines (the "## Token-Goat Session Manifest", session line, and blank), so
+    # the output is always a valid Markdown fragment even when heavily truncated.
     lines = result.splitlines()
-    # budget in chars: max_tokens * 3 chars/token (conservative from estimate_tokens)
+    # Budget in chars: max_tokens * 3 chars/token (conservative, matches estimate_tokens logic).
     char_budget = max_tokens * 3 - 1
+    # Total chars = sum of line lengths + (n-1) newline separators
     total_chars = sum(len(ln) for ln in lines) + len(lines) - 1
     while total_chars > char_budget and len(lines) > 3:
         removed = lines.pop()
-        total_chars -= len(removed) + 1  # +1 for the '\n' separator
+        total_chars -= len(removed) + 1  # +1 accounts for the '\n' separator removed with the line
     return "\n".join(lines), files_with_symbols_count

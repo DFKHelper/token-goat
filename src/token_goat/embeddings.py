@@ -243,7 +243,34 @@ def extract_chunks_for_file(
     conn: sqlite3.Connection,
     rel_path: str,
 ) -> list[Chunk]:
-    """Build chunks for one file from its indexed symbols/sections + windowed fallback."""
+    """Build embeddable chunks for a single file using a three-pass strategy.
+
+    Pass 1 — Symbol-based chunks: each function, class, method, etc. that has a
+    known ``end_line`` becomes one chunk. This gives semantically coherent units
+    that map cleanly to what a developer would call "a function" or "a class".
+
+    Pass 2 — Section-based chunks: headings from markdown/HTML/Liquid files are
+    chunked with their body text. This makes documentation sections searchable
+    alongside code.
+
+    Pass 3 — Sliding-window fallback (code files only): any lines not yet covered
+    by a symbol or section are emitted in WINDOW_LINES-sized non-overlapping
+    windows. This catches module-level code (imports, constants, type aliases,
+    inline comments) that the parser doesn't assign to a named symbol.
+
+    Chunks outside the [MIN_CHUNK_CHARS, MAX_CHUNK_CHARS] range are discarded:
+    too-short chunks produce noisy low-signal embeddings; too-long chunks exceed
+    what the embedding model handles well and often span unrelated concepts.
+
+    Args:
+        project: Project metadata — root path used to resolve the absolute file path.
+        conn: Open project DB connection — used to fetch pre-indexed symbol/section rows.
+        rel_path: Repository-relative POSIX path of the file to chunk.
+
+    Returns:
+        List of Chunk objects ready for embedding. Empty list if the file cannot
+        be read, is empty, or contains an unsafe path.
+    """
     # Prevent path traversal attacks
     if not _is_safe_rel_path(rel_path):
         _LOG.warning("rejected unsafe rel_path: %s", rel_path)
@@ -291,6 +318,17 @@ def extract_chunks_for_file(
         covered.append((start, end))
 
     # 3) Sliding-window fallback for uncovered ranges (code files only)
+    #
+    # The goal is to embed code that wasn't captured by symbol or section
+    # extraction: top-level statements, module-level constants, inline type
+    # aliases, long comments, etc.  We slide a WINDOW_LINES-sized window over
+    # the file, emitting one chunk per uncovered gap.
+    #
+    # Covered-range membership check uses a sorted list + advance-only pointer
+    # (covered_idx) instead of a set or interval tree. Because both covered[]
+    # and line_no always advance, covered_idx never needs to reset, making the
+    # inner loop O(C + L) where C = len(covered) and L = len(lines), rather
+    # than O(L * C) for a naïve "is line_no in any range?" scan.
     if language in _WINDOW_LANGS:
         # Sort covered ranges so the advance pointer (range_cursor) never goes backwards.
         covered.sort()
@@ -302,6 +340,8 @@ def extract_chunks_for_file(
             # Advance covered_idx past ranges that end before line_no (no longer relevant).
             while covered_idx < len(covered) and covered[covered_idx][1] < line_no:
                 covered_idx += 1
+            # line_no is covered if the next (or current) range starts at or before it
+            # and ends at or after it.
             line_is_covered = (
                 covered_idx < len(covered)
                 and covered[covered_idx][0] <= line_no <= covered[covered_idx][1]
@@ -311,6 +351,10 @@ def extract_chunks_for_file(
                 line_no += 1
                 continue
 
+            # Emit one window chunk starting at line_no, jumping forward by the
+            # full window size so windows don't overlap (non-overlapping is intentional:
+            # overlapping windows would produce near-duplicate embeddings that inflate
+            # the index without improving recall).
             window_end = min(line_no + WINDOW_LINES - 1, n)
             chunk_text = "\n".join(lines[line_no - 1 : window_end])
             if MIN_CHUNK_CHARS <= len(chunk_text) <= MAX_CHUNK_CHARS:
