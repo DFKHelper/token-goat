@@ -420,8 +420,8 @@ def _ensure_global_schema(conn: sqlite3.Connection) -> None:
         # proceed against the existing tables.
         if "readonly" in str(e).lower():
             _LOG.debug("global schema ensure skipped (read-only connection): %s", e)
-        else:
-            raise
+            return
+        raise
 
 
 def _ensure_project_schema(conn: sqlite3.Connection, *, db_path: Path | None = None) -> None:
@@ -456,7 +456,7 @@ def _ensure_project_schema(conn: sqlite3.Connection, *, db_path: Path | None = N
         if "readonly" in str(e).lower():
             _LOG.debug("project schema ensure skipped (read-only connection): %s", e)
             return
-        raise
+        raise  # not a readonly situation — propagate to surface the real error
     # Try to create the sqlite-vec virtual table.
     try:
         conn.executescript(_EMBEDDINGS_DDL)
@@ -825,8 +825,8 @@ def touch_project_last_seen(project_hash: str) -> None:
             )
     except sqlite3.OperationalError as exc:
         # Read-only fallback (sandbox) — expected, telemetry is best-effort.
-        if "readonly" in str(exc).lower():
-            _LOG.debug("touch_project_last_seen skipped (read-only fallback)")
+        if _is_transient_db_error(exc) or "readonly" in str(exc).lower():
+            _LOG.debug("touch_project_last_seen skipped (read-only or transient): %s", exc)
         else:
             _LOG.error("touch_project_last_seen failed: %s", exc)
     except Exception as exc:  # noqa: BLE001
@@ -924,8 +924,8 @@ def record_stat(
         # "attempt to write a readonly database" is expected in sandboxed
         # contexts (Codex unelevated) where _connect() falls back to immutable
         # mode.  Drop to debug — telemetry is best-effort.
-        if "readonly" in str(exc).lower():
-            _LOG.debug("record_stat skipped (read-only fallback): %s", exc)
+        if _is_transient_db_error(exc) or "readonly" in str(exc).lower():
+            _LOG.debug("record_stat skipped (read-only or transient): %s", exc)
         else:
             _LOG.error("record_stat failed: %s", exc)
     except Exception as exc:  # noqa: BLE001

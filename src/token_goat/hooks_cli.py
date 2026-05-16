@@ -153,15 +153,20 @@ def read_payload(input_file: Path | None = None) -> dict[str, Any]:
     try:
         if input_file is not None:
             raw = input_file.read_text(encoding="utf-8")
-            if len(raw.encode("utf-8")) > _MAX_PAYLOAD_BYTES:
+            # Encode to UTF-8 once and reuse the bytes object for both the size
+            # check and the warning log so we don't encode twice.
+            raw_bytes = raw.encode("utf-8")
+            if len(raw_bytes) > _MAX_PAYLOAD_BYTES:
                 _LOG.warning(
                     "hook payload from file too large (%d bytes > %d limit); ignoring",
-                    len(raw.encode("utf-8")),
+                    len(raw_bytes),
                     _MAX_PAYLOAD_BYTES,
                 )
                 return {}
             data = json.loads(raw)
         else:
+            # Read one byte past the limit so we can detect oversized payloads
+            # without reading the entire stream into memory when it's huge.
             raw = sys.stdin.read(_MAX_PAYLOAD_BYTES + 1)
             if len(raw) > _MAX_PAYLOAD_BYTES:
                 _LOG.warning(

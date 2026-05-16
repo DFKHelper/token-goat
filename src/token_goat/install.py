@@ -1405,13 +1405,13 @@ def install_all(
     result: dict[str, str] = {}
 
     settings_ok, settings_detail = patch_settings_json()
-    result["settings.json"] = ("ok" if settings_ok else "FAIL") + f" — {settings_detail}"
+    result["settings.json"] = _ok_fail(settings_ok, settings_detail)
 
     md_out = patch_claude_md()
-    result["CLAUDE.md"] = f"ok — {md_out}"
+    result["CLAUDE.md"] = _ok_fail(True, md_out)
 
     skill_path = write_skill()
-    result["skill"] = f"ok — {skill_path}"
+    result["skill"] = _ok_fail(True, skill_path)
 
     if sys.platform == "win32":
         worker_ok, worker_out = install_worker_task()
@@ -1421,13 +1421,13 @@ def install_all(
     elif sys.platform == "darwin":
         worker_ok, worker_out = install_mac_autostart()
         result["autostart: worker"] = _ok_fail(worker_ok, worker_out)
-        update_ok, update_out = install_linux_update_cron()
-        result["cron: update"] = _ok_fail(update_ok, update_out)
+        cron_ok, cron_out = install_linux_update_cron()
+        result["cron: update"] = _ok_fail(cron_ok, cron_out)
     else:
         worker_ok, worker_out = install_linux_autostart()
         result["autostart: worker"] = _ok_fail(worker_ok, worker_out)
-        update_ok, update_out = install_linux_update_cron()
-        result["cron: update"] = _ok_fail(update_ok, update_out)
+        cron_ok, cron_out = install_linux_update_cron()
+        result["cron: update"] = _ok_fail(cron_ok, cron_out)
 
     # Spawn the worker right now (fail-soft)
     try:
@@ -1515,9 +1515,9 @@ def uninstall_all(
         result["autostart"] = f"removed: {removed_linux}" if removed_linux else "none found"
         result["cron"] = uninstall_linux_update_cron()
 
-    result["settings.json"] = f"unpatched — {unpatch_settings_json()}"
-    result["CLAUDE.md"] = f"unpatched — {unpatch_claude_md()}"
-    result["skill"] = f"removed — {remove_skill()}"
+    result["settings.json"] = _ok_fail(True, f"unpatched — {unpatch_settings_json()}")
+    result["CLAUDE.md"] = _ok_fail(True, f"unpatched — {unpatch_claude_md()}")
+    result["skill"] = _ok_fail(True, f"removed — {remove_skill()}")
     removed_launchers = _remove_legacy_launchers()
     result["legacy launchers"] = (
         "removed — " + ", ".join(removed_launchers) if removed_launchers else "none found"
