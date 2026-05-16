@@ -150,8 +150,10 @@ def build_read_hint(
         return None
 
     # Requested line range (1-indexed inclusive).
-    req_start = (offset or 0) + 1
-    req_end = req_start + (limit or DEFAULT_READ_LIMIT) - 1
+    safe_offset = max(0, int(offset)) if offset is not None else 0
+    safe_limit = max(0, int(limit)) if limit is not None else 0
+    req_start = safe_offset + 1
+    req_end = req_start + (safe_limit or DEFAULT_READ_LIMIT) - 1
 
     # 1. Check session cache first.
     entry = session.get_file_entry(session_id, file_path, cache=cache)

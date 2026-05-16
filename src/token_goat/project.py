@@ -74,7 +74,7 @@ def _is_repo_container(path: Path) -> bool:
     try:
         with os.scandir(path) as it:
             for entry in it:
-                if entry.is_dir() and (Path(entry.path) / ".git").exists():
+                if entry.is_dir(follow_symlinks=False) and (Path(entry.path) / ".git").exists():
                     nested_repos += 1
                     if nested_repos >= _REPO_CONTAINER_THRESHOLD:
                         return True

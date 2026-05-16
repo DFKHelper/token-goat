@@ -395,3 +395,137 @@ class TestGdriveCredsSecureWrite:
         nested = tmp_path / "a" / "b" / "creds.json"
         _write_creds_secure(nested, '{"token": "x"}')
         assert nested.exists()
+
+
+class TestOffsetLimitBoundsChecks:
+    """Regression tests: negative or non-integer offset/limit must not cause
+    arithmetic anomalies in session range tracking or hint generation."""
+
+    def test_negative_offset_clamped_to_zero_in_session(self, tmp_data_dir):
+        """A negative offset from an untrusted hook payload must not produce a
+        start line < 1 (which would corrupt the range-merge logic)."""
+        sid = "aabbccdd1122"
+        cache = session.mark_file_read(sid, "foo.py", offset=-10, limit=50)
+        entry = cache.files[session._normalize_path("foo.py")]
+        start, end = entry.line_ranges[0]
+        assert start >= 1, f"start must be >= 1, got {start}"
+
+    def test_negative_limit_treated_as_unlimited_in_session(self, tmp_data_dir):
+        """A negative limit must not produce a range end smaller than start."""
+        sid = "aabbccdd1133"
+        cache = session.mark_file_read(sid, "bar.py", offset=0, limit=-5)
+        entry = cache.files[session._normalize_path("bar.py")]
+        start, end = entry.line_ranges[0]
+        assert end >= start, f"end ({end}) must be >= start ({start})"
+
+    def test_negative_offset_clamped_in_hints(self):
+        """build_read_hint must not raise or produce req_start < 1 with negative offset."""
+        from token_goat.hints import build_read_hint
+
+        # With no session data and a negative offset, the function should return
+        # None (no hint) without raising — the clamping must happen before arithmetic.
+        result = build_read_hint(
+            session_id=None,
+            file_path="nonexistent.py",
+            offset=-999,
+            limit=100,
+            cwd=None,
+        )
+        # None is the correct result when session_id is absent; the key check is
+        # that no exception is raised by the negative-offset arithmetic.
+        assert result is None
+
+    def test_huge_limit_does_not_raise(self, tmp_data_dir):
+        """An extreme limit value must be accepted without OverflowError."""
+        sid = "aabbccdd1144"
+        # 2**31 - 1 is a plausible attacker-supplied value
+        cache = session.mark_file_read(sid, "big.py", offset=0, limit=2**31 - 1)
+        entry = cache.files[session._normalize_path("big.py")]
+        start, end = entry.line_ranges[0]
+        assert end >= start
+
+
+class TestLogInjectionPrevention:
+    """Regression tests: newlines in user-controlled strings must not be passed
+    verbatim to the logger (which would forge additional log records)."""
+
+    def test_glob_pattern_newline_stripped_before_logging(self, caplog):
+        """A Glob pattern containing a newline must not appear as a raw newline
+        in the log output produced by post_read."""
+        import logging
+
+        from token_goat.hooks_read import post_read
+
+        payload = {
+            "session_id": None,
+            "tool_name": "Glob",
+            "tool_input": {
+                "pattern": "**/*.py\nINJECTED FAKE LOG RECORD",
+                "path": "/some/path",
+            },
+        }
+        with caplog.at_level(logging.DEBUG, logger="token_goat.hooks_read"):
+            post_read(payload)
+
+        for record in caplog.records:
+            assert "\n" not in record.getMessage(), (
+                "raw newline found in log message — log injection not sanitized"
+            )
+
+    def test_glob_path_newline_stripped_before_logging(self, caplog):
+        """A Glob path containing a newline must not appear as a raw newline
+        in the log output produced by post_read."""
+        import logging
+
+        from token_goat.hooks_read import post_read
+
+        payload = {
+            "session_id": None,
+            "tool_name": "Glob",
+            "tool_input": {
+                "pattern": "**/*.ts",
+                "path": "/real/path\nFAKE: injected record at level CRITICAL",
+            },
+        }
+        with caplog.at_level(logging.DEBUG, logger="token_goat.hooks_read"):
+            post_read(payload)
+
+        for record in caplog.records:
+            assert "\n" not in record.getMessage(), (
+                "raw newline in path not sanitized before logging"
+            )
+
+
+class TestSymlinkTraversalPrevention:
+    """Regression tests: symlinks to directories containing .git must not be
+    counted as nested repos in the container-detection heuristic."""
+
+    def test_symlink_to_git_dir_not_counted(self, tmp_path):
+        """A symlink pointing at a directory that has .git should not increment
+        the nested-repo counter — only real (non-symlink) subdirs count."""
+        import os
+
+        from token_goat.project import _is_repo_container
+
+        # Create a real repo directory outside the scanned path.
+        real_repo = tmp_path / "real_repo"
+        real_repo.mkdir()
+        (real_repo / ".git").mkdir()
+
+        # Create the directory we will scan.
+        container = tmp_path / "container"
+        container.mkdir()
+
+        # Place symlinks pointing at the real repo — these should NOT be counted.
+        for i in range(5):
+            link = container / f"link{i}"
+            try:
+                os.symlink(real_repo, link)
+            except (OSError, NotImplementedError):
+                pytest.skip("symlinks not supported on this platform")
+
+        # With only symlinks (no real subdirs with .git), the container must
+        # not be detected as a repo container.
+        assert not _is_repo_container(container), (
+            "symlinks to .git dirs should not trigger repo-container detection"
+        )
