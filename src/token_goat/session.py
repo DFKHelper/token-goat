@@ -305,8 +305,10 @@ def mark_file_read(
         if symbol not in entry.symbols_read:
             entry.symbols_read.append(symbol)
     else:
-        start = (offset or 0) + 1  # Read tool's offset is 0-indexed; we store 1-indexed inclusive
-        end = start + (limit or 2000) - 1 if limit else (start + 99999)
+        safe_offset = max(0, int(offset)) if offset is not None else 0
+        safe_limit = max(0, int(limit)) if limit is not None else 0
+        start = safe_offset + 1  # Read tool's offset is 0-indexed; we store 1-indexed inclusive
+        end = start + safe_limit - 1 if safe_limit else (start + 99999)
         entry.line_ranges = _merge_ranges([*entry.line_ranges, (start, end)])
     cache.last_activity_ts = now
     save(cache)

@@ -234,6 +234,10 @@ def post_read(payload: dict[str, Any]) -> HookResponse:
     elif tool_name == "Glob":
         pattern = tool_input.get("pattern")
         path = tool_input.get("path")
-        _LOG.debug("post-read: Glob pattern=%s path=%s", pattern, path)
+        # Sanitize user-controlled strings before logging to prevent log injection
+        # via embedded newlines that would forge additional log records.
+        safe_pattern = str(pattern).replace("\n", "\\n").replace("\r", "\\r") if pattern is not None else None
+        safe_path = str(path).replace("\n", "\\n").replace("\r", "\\r") if path is not None else None
+        _LOG.debug("post-read: Glob pattern=%s path=%s", safe_pattern, safe_path)
 
     return CONTINUE()
