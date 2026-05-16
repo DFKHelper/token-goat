@@ -4,8 +4,12 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from .hooks_common import CONTINUE
-from .hooks_common import LOG as _LOG
+from .hooks_common import (
+    CONTINUE,
+)
+from .hooks_common import (
+    LOG as _LOG,
+)
 from .project import Project, find_project
 
 

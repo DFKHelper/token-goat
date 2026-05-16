@@ -10,8 +10,10 @@ from .hooks_common import (
     get_tool_input,
     pre_tool_use_with_context,
     pre_tool_use_with_update,
+)  # noqa: E402
+from .hooks_common import (
+    LOG as _LOG,
 )
-from .hooks_common import LOG as _LOG
 
 
 def _handle_bash_read_equivalent(payload: dict[str, Any]) -> dict[str, Any] | None:
