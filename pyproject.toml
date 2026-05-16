@@ -92,7 +92,7 @@ ignore = ["E501"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["tests"]
-addopts = "-ra --strict-markers"
+addopts = "-rfe --strict-markers"
 
 [tool.mypy]
 python_version = "3.11"

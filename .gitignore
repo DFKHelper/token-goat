@@ -146,3 +146,4 @@ CLAUDE.md
 # Test/temp artifacts
 .tmp/
 .verify-manual/
+.improve-state-*.json

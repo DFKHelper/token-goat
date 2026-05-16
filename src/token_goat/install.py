@@ -108,26 +108,32 @@ def _remove_legacy_launchers() -> list[str]:
     return removed
 
 
+def _resolve_binary(name: str) -> str:
+    """Return *name* from PATH if found, otherwise fall back to ``token_goat_binary()``.
+
+    Used for the windowless GUI-subsystem variants (``token-goat-hook``,
+    ``token-goat-worker``) which share the same fall-back logic: if the
+    specialised entry point is not on PATH, the standard ``token-goat``
+    binary is used instead.
+    """
+    binary = shutil.which(name)
+    return binary if binary else token_goat_binary()
+
+
 def token_goat_hook_binary() -> str:
     """Path to the windowless (GUI-subsystem) entry for hooks.
 
-    On Windows, this is `token-goat-hook.exe` from pyproject `[project.gui-scripts]`.
-    It runs the same code as `token-goat` but with the Windows GUI subsystem so no
+    On Windows, this is ``token-goat-hook.exe`` from pyproject ``[project.gui-scripts]``.
+    It runs the same code as ``token-goat`` but with the Windows GUI subsystem so no
     console window is allocated when Claude Code spawns it for every hook call.
-    Falls back to `token-goat` if the windowless variant isn't installed.
+    Falls back to ``token-goat`` if the windowless variant isn't installed.
     """
-    binary = shutil.which("token-goat-hook")
-    if binary:
-        return binary
-    return token_goat_binary()
+    return _resolve_binary("token-goat-hook")
 
 
 def token_goat_worker_binary() -> str:
-    """Windowless entry for the background worker. Falls back to token-goat."""
-    binary = shutil.which("token-goat-worker")
-    if binary:
-        return binary
-    return token_goat_binary()
+    """Windowless entry for the background worker. Falls back to ``token-goat``."""
+    return _resolve_binary("token-goat-worker")
 
 
 # ---------------------------------------------------------------------------
@@ -689,6 +695,29 @@ def _strip_token_goat_entries(entries: list[dict]) -> list[dict]:
     return kept
 
 
+def _read_settings_json(settings_path: Path) -> dict | None:
+    """Parse *settings_path* as JSON and return the dict.
+
+    Returns ``None`` when the file does not exist (caller should start from
+    ``{}``).  Raises ``json.JSONDecodeError`` on malformed content so callers
+    can surface an actionable error message rather than silently overwriting.
+    """
+    if not settings_path.exists():
+        return None
+    return json.loads(settings_path.read_text(encoding="utf-8"))
+
+
+def _write_settings_json(settings_path: Path, data: dict) -> None:
+    """Write *data* as indented JSON to *settings_path*.
+
+    The directory is created if it does not exist.  Uses indent=2 to match
+    Claude Code's own formatting so the file stays human-readable and produces
+    minimal diffs when re-applied.
+    """
+    settings_path.parent.mkdir(parents=True, exist_ok=True)
+    settings_path.write_text(json.dumps(data, indent=2), encoding="utf-8")
+
+
 def patch_settings_json() -> tuple[bool, str]:
     """Add token-goat hooks to ~/.claude/settings.json idempotently. Preserves other hooks."""
     settings_path = claude_settings_path()
@@ -696,7 +725,7 @@ def patch_settings_json() -> tuple[bool, str]:
 
     if settings_path.exists():
         try:
-            current = json.loads(settings_path.read_text(encoding="utf-8"))
+            current = _read_settings_json(settings_path) or {}
         except json.JSONDecodeError:
             return False, "settings.json is malformed JSON"
     else:
@@ -728,7 +757,7 @@ def patch_settings_json() -> tuple[bool, str]:
     perms["allow"] = allowed
     current["permissions"] = perms
 
-    settings_path.write_text(json.dumps(current, indent=2), encoding="utf-8")
+    _write_settings_json(settings_path, current)
     return True, str(settings_path)
 
 
@@ -738,7 +767,7 @@ def unpatch_settings_json() -> str:
     if not settings_path.exists():
         return "settings.json not found (nothing to do)"
     try:
-        current = json.loads(settings_path.read_text(encoding="utf-8"))
+        current = _read_settings_json(settings_path) or {}
     except json.JSONDecodeError:
         return "settings.json malformed; not modifying"
 
@@ -760,7 +789,7 @@ def unpatch_settings_json() -> str:
     else:
         current["permissions"] = perms
 
-    settings_path.write_text(json.dumps(current, indent=2), encoding="utf-8")
+    _write_settings_json(settings_path, current)
     return str(settings_path)
 
 
@@ -1133,7 +1162,7 @@ def _check_settings_json() -> str:
     if not settings_path.exists():
         return "not installed (settings.json absent)"
     try:
-        data = json.loads(settings_path.read_text(encoding="utf-8"))
+        data = _read_settings_json(settings_path) or {}
     except json.JSONDecodeError:
         return "error (settings.json malformed)"
     hooks = data.get("hooks", {})
