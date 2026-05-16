@@ -4,8 +4,13 @@ from __future__ import annotations
 from typing import Any
 
 from . import paths
-from .hooks_common import CONTINUE, get_tool_input
-from .hooks_common import LOG as _LOG
+from .hooks_common import (
+    CONTINUE,
+    get_tool_input,
+)
+from .hooks_common import (
+    LOG as _LOG,
+)
 
 
 def _nudge_worker_if_down() -> None:
