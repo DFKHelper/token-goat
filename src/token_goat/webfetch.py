@@ -42,7 +42,10 @@ IMAGE_URL_EXTS = (".jpg", ".jpeg", ".png", ".webp", ".avif", ".gif", ".bmp", ".t
 _BLOCKED_HOSTNAMES = frozenset(
     [
         "localhost",
+        "ip6-localhost",    # common /etc/hosts alias for ::1
+        "ip6-loopback",     # common /etc/hosts alias for ::1
         "metadata.google.internal",  # GCP metadata endpoint
+        "169.254.169.254",  # AWS/Azure/GCP instance metadata (bare IP literal)
     ]
 )
 
@@ -99,6 +102,14 @@ def _is_ssrf_safe(url: str) -> bool:
             ip = ipaddress.ip_address(ip_str)
         except ValueError:
             continue
+
+        # Unwrap IPv4-mapped IPv6 addresses (::ffff:192.168.x.x, ::ffff:10.x.x.x, etc.)
+        # so the private/loopback checks below apply to the embedded IPv4 address.
+        # Without this an attacker can bypass SSRF guards by sending an IPv6 literal
+        # that maps to a private IPv4 range.
+        if isinstance(ip, ipaddress.IPv6Address) and ip.ipv4_mapped is not None:
+            ip = ip.ipv4_mapped
+
         if ip.is_loopback or ip.is_private or ip.is_link_local or ip.is_reserved:
             _LOG.warning(
                 "SSRF guard: blocked %r (resolves to %s which is private/loopback/link-local)",
