@@ -35,7 +35,7 @@ class TestPreReadHandlerDirect:
             "cwd": str(tmp_path),
         }
         result = hooks_cli.pre_read(payload)
-        assert result["continue"] is True
+        _assert_continue(result)
         assert "hookSpecificOutput" not in result
 
     def test_cached_file_produces_hint(self, tmp_data_dir):
@@ -51,7 +51,7 @@ class TestPreReadHandlerDirect:
             "cwd": "C:/proj",
         }
         result = hooks_cli.pre_read(payload)
-        assert result["continue"] is True
+        _assert_continue(result)
         assert "hookSpecificOutput" in result
         ctx = result["hookSpecificOutput"]
         assert ctx["hookEventName"] == "PreToolUse"
@@ -217,7 +217,7 @@ class TestDispatcherPreRead:
             "tool_input": {"file_path": path, "offset": 0, "limit": 500},
         }
         result = hooks_cli.dispatch("pre-read", payload)
-        assert result["continue"] is True
+        _assert_continue(result)
         assert "hookSpecificOutput" in result
         assert "additionalContext" in result["hookSpecificOutput"]
 
@@ -234,7 +234,7 @@ class TestPreReadCli:
     def test_cli_non_read_tool_no_hint(self, tmp_data_dir):
         payload = {"session_id": "cli1", "tool_name": "Bash", "tool_input": {"command": "ls"}}
         result = self._run_hook(payload, tmp_data_dir)
-        assert result["continue"] is True
+        _assert_continue(result)
         assert "hookSpecificOutput" not in result
 
     def test_cli_garbage_payload_continue(self, tmp_data_dir):
@@ -275,7 +275,7 @@ class TestRealWorldSpike:
         }
         result = hooks_cli.dispatch("pre-read", payload)
 
-        assert result["continue"] is True
+        _assert_continue(result)
         assert "hookSpecificOutput" in result
         hint = result["hookSpecificOutput"]["additionalContext"]
         assert "already read" in hint

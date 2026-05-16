@@ -551,6 +551,21 @@ def _connect_readonly(db_path: Path) -> sqlite3.Connection:
 
 
 @contextlib.contextmanager
+def _open_readonly_ctx(path: Path) -> Iterator[sqlite3.Connection]:
+    """Shared context manager: connect *path* read-only, yield, close on exit.
+
+    Extracted to eliminate the identical try/finally pattern duplicated across
+    open_global_readonly() and open_project_readonly(). Callers are responsible
+    for existence checks (and their distinct error messages) before calling this.
+    """
+    conn = _connect_readonly(path)
+    try:
+        yield conn
+    finally:
+        _close_conn(conn)
+
+
+@contextlib.contextmanager
 def open_global_readonly() -> Iterator[sqlite3.Connection]:
     """Read-only connection to global.db, skipping integrity_check and schema DDL.
 
@@ -560,11 +575,8 @@ def open_global_readonly() -> Iterator[sqlite3.Connection]:
     path = paths.global_db_path()
     if not path.exists():
         raise FileNotFoundError(f"global.db not found: {path}")
-    conn = _connect_readonly(path)
-    try:
+    with _open_readonly_ctx(path) as conn:
         yield conn
-    finally:
-        _close_conn(conn)
 
 
 @contextlib.contextmanager
@@ -577,11 +589,8 @@ def open_project_readonly(project_hash: str) -> Iterator[sqlite3.Connection]:
     path = paths.project_db_path(project_hash)
     if not path.exists():
         raise FileNotFoundError(f"project db not found: {path}")
-    conn = _connect_readonly(path)
-    try:
+    with _open_readonly_ctx(path) as conn:
         yield conn
-    finally:
-        _close_conn(conn)
 
 
 # ---------------------------------------------------------------------------
