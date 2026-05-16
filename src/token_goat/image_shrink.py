@@ -5,6 +5,7 @@ import contextlib
 import hashlib
 import logging
 import stat
+import time
 import types
 from pathlib import Path
 from typing import TYPE_CHECKING, TypedDict
@@ -149,6 +150,7 @@ def _ensure_rgb(img: _PilImage.Image, Image_module: types.ModuleType) -> _PilIma
 
 def shrink(src_path: Path) -> Path | None:
     """Shrink the image and return the path to the cached shrunken version. None on failure."""
+    t0 = time.time()
     # Validate input path for safety
     if not _is_safe_path(src_path):
         _LOG.warning("rejected unsafe path: %s", src_path)
@@ -168,7 +170,8 @@ def shrink(src_path: Path) -> Path | None:
     for suffix in (".jpg", ".png"):
         candidate = stem.with_suffix(suffix)
         if candidate.exists():
-            _LOG.debug("image cache hit: %s -> %s", src_path.name, candidate.name)
+            elapsed = time.time() - t0
+            _LOG.debug("image cache hit: %s -> %s (%.3fs)", src_path.name, candidate.name, elapsed)
             return candidate
 
     try:
@@ -212,9 +215,12 @@ def shrink(src_path: Path) -> Path | None:
             savings_pct,
             final_path.suffix,
         )
+        elapsed = time.time() - t0
+        _LOG.info("shrink completed: %s → %s (%.3fs, %.1f%% size reduction)", src_path.name, final_path.name, elapsed, 100.0 * (1.0 - out_size / src_size) if src_size > 0 else 0)
         return final_path
     except Exception as e:  # noqa: BLE001
-        _LOG.warning("shrink failed for %s: %s", src_path, e)
+        elapsed = time.time() - t0
+        _LOG.warning("shrink failed for %s: %s (%.3fs)", src_path, e, elapsed)
         return None
 
 

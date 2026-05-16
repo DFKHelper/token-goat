@@ -573,7 +573,8 @@ def index_project(
     }
 
     _LOG.info(
-        "index_project completed: total_files=%d indexed=%d skipped=%d errors=%d languages=%s duration=%.2fs",
+        "index_project completed: project=%s total_files=%d indexed=%d skipped=%d errors=%d languages=%s duration=%.2fs",
+        project.hash[:8],
         n_total,
         n_indexed,
         n_skipped_unchanged,
