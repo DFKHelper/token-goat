@@ -7,7 +7,7 @@ import sqlite3
 import time
 from collections import defaultdict
 from dataclasses import dataclass
-from typing import TypedDict
+from typing import Any, TypedDict
 
 from . import db
 from .project import Project
@@ -100,7 +100,7 @@ class FileSummary:
 
 def _load_project_data(
     conn: sqlite3.Connection,
-) -> tuple[dict, dict, dict, dict]:
+) -> tuple[dict[str, dict[str, Any]], dict[str, list[tuple[str, str]]], dict[str, list[tuple[int, str]]], dict[str, set[str]]]:
     """Load all indexed data for a project: files, symbols, sections, and reverse-index.
 
     Returns (files, symbols_by_file, sections_by_file, name_to_files):
@@ -133,7 +133,7 @@ def _load_project_data(
 
 
 def _build_graph(
-    conn: sqlite3.Connection, files: dict, name_to_files: dict
+    conn: sqlite3.Connection, files: dict[str, dict[str, Any]], name_to_files: dict[str, set[str]]
 ) -> object:
     """Build a directed dependency graph: edge from file A to file B if A references a symbol defined in B.
 
@@ -212,7 +212,7 @@ def compute_ranks(g: object, *, alpha: float = 0.85) -> dict[str, float]:
 
 def _summarize_file(
     rel: str,
-    info: dict,
+    info: dict[str, Any],
     symbols: list[tuple[str, str]],
     sections: list[tuple[int, str]],
     rank: float,
@@ -311,7 +311,7 @@ def _write_summary_cache(
         )
 
 
-def _evict_stale_cache(conn: sqlite3.Connection, current_files: dict) -> None:
+def _evict_stale_cache(conn: sqlite3.Connection, current_files: dict[str, Any]) -> None:
     """Remove cache entries for files no longer in the files table.
 
     The FOREIGN KEY ON DELETE CASCADE on repomap_cache.rel_path handles
@@ -334,7 +334,7 @@ def _evict_stale_cache(conn: sqlite3.Connection, current_files: dict) -> None:
 
 def _load_and_rank(
     project: Project,
-) -> tuple[dict, dict, dict, list[tuple[str, dict]], dict[str, float], dict] | None:
+) -> tuple[dict[str, dict[str, Any]], dict[str, list[tuple[str, str]]], dict[str, list[tuple[int, str]]], list[tuple[str, dict[str, Any]]], dict[str, float], dict[tuple[str, float, int], str]] | None:
     """Load project data, filter, compute PageRank, and return sorted ranking.
 
     Returns ``(files, symbols_by_file, sections_by_file, ranked, ranks, summary_cache)``
