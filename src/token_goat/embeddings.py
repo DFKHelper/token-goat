@@ -146,11 +146,23 @@ def embed_texts(
 
     Raises:
         EmbeddingsUnavailable: If fastembed is not installed or model cannot be loaded.
+        ValueError: If the model returns vectors with unexpected dimensions (dimension
+            mismatch would silently corrupt the sqlite-vec index otherwise).
     """
+    if not texts:
+        return []
     model = _get_model(model_name)
+    expected_dim = DEFAULT_DIM if model_name == DEFAULT_MODEL else None
     vecs: list[list[float]] = []
     for arr in model.embed(list(texts)):  # type: ignore[union-attr]
-        vecs.append(arr.tolist())
+        vec = arr.tolist()
+        if expected_dim is not None and len(vec) != expected_dim:
+            raise EmbeddingsUnavailable(
+                f"Dimension mismatch: model {model_name!r} returned {len(vec)}-dim vector, "
+                f"expected {expected_dim}. The sqlite-vec index uses {expected_dim}-dim embeddings. "
+                "Re-index with a consistent model."
+            )
+        vecs.append(vec)
     return vecs
 
 
@@ -466,8 +478,16 @@ def semantic_search(
     """
     if not is_available():
         raise EmbeddingsUnavailable("fastembed not installed")
+    if not query or not query.strip():
+        _LOG.debug("semantic_search: empty query; returning no results")
+        return []
     t0 = time.time()
-    qvec = embed_texts([query], model_name=model_name)[0]
+    results = embed_texts([query], model_name=model_name)
+    if not results:
+        raise EmbeddingsUnavailable("embed_texts returned no vectors for query")
+    qvec = results[0]
+    if not qvec:
+        raise EmbeddingsUnavailable("embed_texts returned empty vector for query")
     embed_elapsed = time.time() - t0
     _LOG.debug("query embedded in %.3fs: %d dims", embed_elapsed, len(qvec))
 

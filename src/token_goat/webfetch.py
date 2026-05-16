@@ -219,7 +219,12 @@ def _stream_to_file(response: httpx.Response, dest: Path, max_size_bytes: int) -
     Raises ``RuntimeError`` if the ``Content-Length`` header or accumulated byte
     count exceeds *max_size_bytes*.
     """
-    content_length = int(response.headers.get("content-length", "0"))
+    raw_cl = response.headers.get("content-length", "0")
+    try:
+        content_length = int(raw_cl)
+    except (ValueError, TypeError):
+        _LOG.debug("webfetch: non-integer Content-Length %r; skipping pre-check", raw_cl)
+        content_length = 0
     if content_length > max_size_bytes:
         raise RuntimeError(f"file too large: {content_length} bytes > {max_size_bytes}")
 
@@ -244,6 +249,11 @@ def _stream_to_file(response: httpx.Response, dest: Path, max_size_bytes: int) -
             raise _oversize_error
         tmp.replace(dest)
         _LOG.debug("webfetch: streamed %d bytes to %s", written, dest.name)
+    except RuntimeError:
+        # RuntimeError is either _oversize_error (already handled above) or
+        # raised by the caller — don't double-log it, just clean up and re-raise.
+        tmp.unlink(missing_ok=True)
+        raise
     except Exception as e:
         _LOG.warning("webfetch: stream write failed after %d bytes: %s", written, e)
         tmp.unlink(missing_ok=True)
