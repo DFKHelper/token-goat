@@ -234,12 +234,29 @@ def safe_run(event: str, input_file: Path | None = None, harness: Harness = "cla
     emit(result)
 
 
-
 _P = ParamSpec("_P")
 _HookHandler = TypeVar("_HookHandler", bound=Callable[[HookPayload], HookResponse])
 
 # Type alias for the wrapped handler signature — avoids repeating the long form.
 _WrappedHandler = Callable[[HookPayload], HookResponse]
+
+
+def _build_handler_log_tags(payload: HookPayload) -> tuple[str, str]:
+    """Extract sanitized session and cwd log tags from a hook payload.
+
+    Sanitizes both strings against log injection (embedded newlines could forge
+    fake log entries) and returns them as ``(" session=<id>", " cwd=<path>")``
+    prefix strings — empty string when the field is absent.  The leading space
+    means callers can concatenate them directly without a join.
+    """
+    payload_dict = payload if isinstance(payload, dict) else {}
+    session_id: str = payload_dict.get("session_id", "")
+    cwd: str = payload_dict.get("cwd", "")
+    safe_session = sanitize_log_str(session_id[:16]) if session_id else ""
+    safe_cwd = sanitize_log_str(cwd) if cwd else ""
+    session_tag = f" session={safe_session}" if safe_session else ""
+    cwd_tag = f" cwd={safe_cwd}" if safe_cwd else ""
+    return session_tag, cwd_tag
 
 
 def fail_soft(handler: _HookHandler) -> _HookHandler:
@@ -264,17 +281,9 @@ def fail_soft(handler: _HookHandler) -> _HookHandler:
         try:
             return handler(payload)
         except Exception as exc:  # noqa: BLE001 — fail-soft is the entire point
-            payload_dict = payload if isinstance(payload, dict) else {}
-            session_id: str = payload_dict.get("session_id", "")
-            cwd: str = payload_dict.get("cwd", "")
-            # Sanitize user-controlled strings before logging to prevent log injection
-            # (embedded newlines in session_id or cwd could forge fake log entries).
-            safe_session = sanitize_log_str(session_id[:16]) if session_id else ""
-            safe_cwd = sanitize_log_str(cwd) if cwd else ""
-            session_tag = f" session={safe_session}" if safe_session else ""
-            cwd_tag = f" cwd={safe_cwd}" if safe_cwd else ""
             handler_name = getattr(handler, "__name__", repr(handler))
             err_summary = f"{type(exc).__name__}: {exc}"
+            session_tag, cwd_tag = _build_handler_log_tags(payload)
             with contextlib.suppress(Exception):
                 _LOG.exception(
                     "hook handler crashed: handler=%s%s%s error=%s",
