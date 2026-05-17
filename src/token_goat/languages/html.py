@@ -64,11 +64,8 @@ def extract(source: bytes, rel_path: str) -> tuple[list[Symbol], list[Ref], list
         # instead of the O(n) slice-and-count pattern per match.
         line_index = common.build_line_index(text)
 
-        # --- Extract headings ---
-        common.extract_html_headings(text, sections)
-
-        # Compute end_line for sections
-        common._compute_section_end_lines(sections, lines)
+        # --- Extract headings and compute end_line for each section ---
+        common.extract_and_finalize_html_sections(text, sections, lines)
 
         # --- Extract id attributes (with noise filter) ---
         for match in _ID_RE.finditer(text):
