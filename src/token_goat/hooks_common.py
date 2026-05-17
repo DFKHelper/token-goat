@@ -99,8 +99,6 @@ HookResponse = TypedDict(
     total=False,
 )
 
-__all__ += ["HookResponse"]
-
 # All hook modules share one logger so their output appears together in the log.
 LOG = logging.getLogger("token_goat.hooks")
 
