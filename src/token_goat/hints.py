@@ -10,6 +10,8 @@ from . import db, session
 from .hooks_common import sanitize_log_str, validate_cwd
 from .project import find_project
 
+__all__ = ["ReadHint", "build_read_hint"]
+
 _LOG = logging.getLogger("token_goat.hints")
 
 # Max length for a file path embedded in an LLM-context hint string.

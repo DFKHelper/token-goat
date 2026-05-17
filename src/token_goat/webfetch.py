@@ -36,6 +36,8 @@ if TYPE_CHECKING:
 from . import image_shrink, paths
 from .hooks_common import sanitize_log_str
 
+__all__ = ["is_image_url", "is_image_content_type", "cleanup_stale_downloads", "fetch_url"]
+
 _LOG = logging.getLogger("token_goat.webfetch")
 
 
