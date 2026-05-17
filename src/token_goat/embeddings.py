@@ -479,6 +479,7 @@ def index_project_embeddings(
 ) -> EmbeddingsResult:
     """Compute embeddings for all chunks in a project. Idempotent on chunk SHA256."""
     if not is_available():
+        _LOG.debug("embeddings unavailable: fastembed not installed")
         raise EmbeddingsUnavailable("fastembed not installed")
 
     t0 = time.time()
@@ -626,6 +627,7 @@ def semantic_search(
                                 project has no indexed chunks.
     """
     if not is_available():
+        _LOG.debug("embeddings unavailable: fastembed not installed")
         raise EmbeddingsUnavailable("fastembed not installed")
     if not query or not query.strip():
         _LOG.debug("semantic_search: empty query; returning no results")
