@@ -298,6 +298,8 @@ def _build_graph(
     try:
         ref_rows = conn.execute("SELECT symbol_name, file_rel FROM refs").fetchall()
     except sqlite3.OperationalError as exc:
+        # refs table is absent on a freshly-initialised project DB (schema migrates lazily).
+        # Return a nodes-only graph so PageRank still ranks files by degree rather than failing.
         _LOG.warning("repomap: failed to read refs table (graph will have no edges): %s", exc)
         return graph
 

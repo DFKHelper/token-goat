@@ -705,6 +705,9 @@ def _detach_creationflags() -> int:
     ``subprocess.Popen`` does not accept non-zero creationflags on POSIX).
     """
     if sys.platform == "win32":
+        # DETACHED_PROCESS=0x8 prevents the child from inheriting the parent's
+        # console; CREATE_NEW_PROCESS_GROUP=0x200 lets it handle Ctrl+C independently;
+        # CREATE_NO_WINDOW=0x8000000 suppresses any console window allocation.
         return 0x00000008 | 0x00000200 | 0x08000000
     return 0
 
