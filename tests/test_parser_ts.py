@@ -151,3 +151,76 @@ def test_js_extension_accepted():
     symbols, refs, imp_exp, _ = extract(source, "util.js")
     names = {s.name for s in symbols}
     assert "foo" in names
+
+
+# ---------------------------------------------------------------------------
+# Precision: TypeScript decorator lines must be included in the symbol's start_line.
+# Mirrors the Python adapter's _extend_starts_for_decorators post-pass.
+# ---------------------------------------------------------------------------
+
+
+def test_single_decorator_extends_class_start_line():
+    """``@Injectable()``-decorated class: start_line must point at the decorator."""
+    src = b"@Injectable()\nexport class Foo {\n  x = 1;\n}\n"
+    symbols, _, _, _ = extract(src, "deco_single.ts")
+    foo = next(s for s in symbols if s.name == "Foo")
+    assert foo.line == 1, f"expected line 1 (decorator), got {foo.line}"
+
+
+def test_multiline_decorator_extends_class_start_line():
+    """``@Component({ … })`` spanning multiple lines: start_line at the @ line."""
+    src = (
+        b"@Component({\n"
+        b"  selector: 'x-foo',\n"
+        b"  template: '<div></div>',\n"
+        b"})\n"
+        b"export class Foo {}\n"
+    )
+    symbols, _, _, _ = extract(src, "deco_multiline.ts")
+    foo = next(s for s in symbols if s.name == "Foo")
+    assert foo.line == 1, f"expected line 1 (@Component), got {foo.line}"
+
+
+def test_stacked_decorators_extend_start_line():
+    """Multiple stacked TS decorators: start_line is the topmost @ line."""
+    src = (
+        b"@First\n"
+        b"@Second('arg')\n"
+        b"@Third\n"
+        b"export class Foo {}\n"
+    )
+    symbols, _, _, _ = extract(src, "deco_stacked.ts")
+    foo = next(s for s in symbols if s.name == "Foo")
+    assert foo.line == 1
+
+
+def test_method_decorator_extends_start_line():
+    """A decorated method inside a class also gets start_line moved up."""
+    src = (
+        b"export class C {\n"
+        b"  @log\n"
+        b"  hello(): string {\n"
+        b"    return 'hi';\n"
+        b"  }\n"
+        b"}\n"
+    )
+    symbols, _, _, _ = extract(src, "deco_method.ts")
+    hello = next(s for s in symbols if s.name == "hello")
+    # @log is on line 2; the method def is on line 3 — start should be 2.
+    assert hello.line == 2
+
+
+def test_undecorated_class_unchanged():
+    """No decorator → start_line is the `class` line as before."""
+    src = b"export class Plain {\n  x = 1;\n}\n"
+    symbols, _, _, _ = extract(src, "plain.ts")
+    plain = next(s for s in symbols if s.name == "Plain")
+    assert plain.line == 1
+
+
+def test_comment_above_class_is_not_treated_as_decorator():
+    """Only ``@`` lines (and their argument continuations) are pulled in."""
+    src = b"// docs above\nexport class Foo {}\n"
+    symbols, _, _, _ = extract(src, "comment.ts")
+    foo = next(s for s in symbols if s.name == "Foo")
+    assert foo.line == 2  # the // comment must stay outside

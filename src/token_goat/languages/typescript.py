@@ -13,6 +13,116 @@ from . import common
 _LOG = logging.getLogger("token_goat.languages.typescript")
 
 
+# Matches a TypeScript decorator line: optional indent, then ``@Name`` where Name
+# is a (possibly dotted) identifier.  ``@Component({…})`` and ``@Inject(TOKEN)``
+# share the same prefix, so we anchor on ``@<ident>`` and rely on the multi-line
+# logic below to follow the parenthesized argument list when present.
+_TS_DECORATOR_LINE_RE = re.compile(r"^\s*@[A-Za-z_$][A-Za-z0-9_$.]*")
+
+
+def _decorator_block_start(text_lines: list[str], def_line_1based: int) -> int:
+    """Walk *def_line_1based* upward over a contiguous decorator block.
+
+    TypeScript decorators may stretch across several source lines when their
+    argument list contains object/array literals — for example:
+
+        @Component({
+            selector: 'x-foo',
+            template: '<div></div>',
+        })
+        export class Foo {}
+
+    A naive "previous line starts with @" check would only catch the final
+    ``})`` line and stop short.  Instead we walk upward while tracking
+    bracket balance: a line with more closers than openers ``)`` / ``}`` /
+    ``]`` (negative cumulative balance) means we are still inside a
+    multi-line construct whose opening token lives further up.  We keep
+    walking until we hit either:
+
+      1. A line that starts with ``@`` (a decorator) — claim it and reset
+         the bracket counters since the decorator's own openers balance
+         everything we've counted below it.
+      2. A line with non-negative balance that is not a decorator and is
+         not blank-after-decorator-seen — stop and return.
+
+    Returns the 1-based start line that includes every preceding decorator,
+    or *def_line_1based* itself when no decorators precede the definition.
+    """
+    n = len(text_lines)
+    if def_line_1based <= 1 or def_line_1based > n:
+        return def_line_1based
+
+    new_start = def_line_1based
+    i = def_line_1based - 2  # 0-based index of the line directly above the def
+    # Cumulative balance counters across all lines walked since the most
+    # recently seen decorator.  Negative = unclosed brackets above us.
+    balance_paren = 0
+    balance_brace = 0
+    balance_bracket = 0
+    saw_decorator = False
+    while i >= 0:
+        line = text_lines[i]
+        if _TS_DECORATOR_LINE_RE.match(line):
+            new_start = i + 1  # 1-based
+            saw_decorator = True
+            # Reset balance: the decorator's own openers on this line account
+            # for every closer we counted below.
+            balance_paren = 0
+            balance_brace = 0
+            balance_bracket = 0
+            i -= 1
+            continue
+        # Tolerate blank lines between stacked decorators, but only after we
+        # have already locked onto a decorator block above.  A blank line
+        # before any decorator means we crossed a real boundary.
+        if saw_decorator and not line.strip():
+            i -= 1
+            continue
+        # Strip line comments before counting brackets so ``// foo (bar)``
+        # does not pollute the balance.
+        sanitized = line.split("//", 1)[0]
+        balance_paren += sanitized.count(")") - sanitized.count("(")
+        balance_brace += sanitized.count("}") - sanitized.count("{")
+        balance_bracket += sanitized.count("]") - sanitized.count("[")
+        if balance_paren > 0 or balance_brace > 0 or balance_bracket > 0:
+            # We're inside an unclosed decorator-arg literal — keep walking
+            # so we can reach the ``@Name(`` line that opened it.
+            i -= 1
+            continue
+        # Balance is non-negative and the line is not a decorator (or blank
+        # gap).  We've left the decorator block.
+        break
+    return new_start
+
+
+def _extend_starts_for_decorators(symbols: list[Symbol], source: bytes) -> None:
+    """Mirror of the Python adapter's decorator post-pass for TypeScript.
+
+    Tree-sitter reports the ``class``/``function``/method line as the symbol
+    start, dropping any preceding decorators (``@Component``, ``@Injectable``,
+    ``@deprecated``, parameter-property decorators on methods, etc.).  Without
+    this pass an agent asking ``token-goat read "file.ts::Foo"`` for a
+    decorated class loses the decorator's configuration object — exactly the
+    metadata that explains how the class is wired into the application.
+
+    Only ``class``, ``interface``, ``function``, and ``method`` kinds are
+    walked back; const/var/type/enum exports cannot be decorated.
+    """
+    try:
+        text_lines = source.decode("utf-8", errors="replace").splitlines()
+    except (UnicodeDecodeError, AttributeError):
+        return
+    if not text_lines:
+        return
+    eligible = {"class", "interface", "function", "method"}
+    for sym in symbols:
+        if sym.kind not in eligible:
+            continue
+        new_start = _decorator_block_start(text_lines, sym.line)
+        if new_start != sym.line:
+            sym.line = new_start
+
+
 # ---------------------------------------------------------------------------
 # ABI special-case config (tunable via caller meta, not exposed in CLI yet)
 # ---------------------------------------------------------------------------
@@ -301,5 +411,10 @@ def extract(
 
     # --- refs via regex ---
     refs: list[Ref] = common.extract_refs_from_source(source, _CALL_RE, _CALL_NOISE)  # type: ignore[no-redef]
+
+    # --- post-pass: extend start_line over preceding decorator lines ---
+    # WHY post-pass: tree-sitter's structure walk reports `class`/`function` as
+    # the start, missing any `@Component({...})` / `@Injectable()` lines above.
+    _extend_starts_for_decorators(symbols, source)
 
     return symbols, refs, imp_exp, []
