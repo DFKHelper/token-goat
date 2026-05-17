@@ -10,6 +10,7 @@ __all__ = [
     "event_count",
 ]
 
+import heapq
 import logging
 import time
 from datetime import UTC, datetime
@@ -172,7 +173,9 @@ def _render(cache: SessionCache, session_id: str, max_tokens: int) -> tuple[str,
         islice((e for e in cache.files.values() if e.symbols_read), _MAX_SYMBOLS_FILES)
     )
     # Most-frequently-read files, capped at _MAX_FILES_READ, for the "Key Files Read" section.
-    top_files = sorted(cache.files.values(), key=lambda e: -e.read_count)[:_MAX_FILES_READ]
+    # heapq.nlargest is O(n log k) instead of O(n log n) full sort — material when a
+    # long session has hundreds of file entries but we only need the top 10.
+    top_files = heapq.nlargest(_MAX_FILES_READ, cache.files.values(), key=lambda e: e.read_count)
 
     now = datetime.now(UTC).strftime("%Y-%m-%d %H:%M UTC")
     sid = session_id[:8]

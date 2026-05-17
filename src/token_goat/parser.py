@@ -465,52 +465,51 @@ def write_file_index(conn: sqlite3.Connection, fi: FileIndex) -> None:
             now,
         ),
     )
-    # Batch insert symbols (filter malformed rows)
-    symbol_rows = [
-        (sym.name, sym.kind, fi.rel_path, sym.line, sym.col, sym.end_line, sym.signature)
-        for sym in fi.symbols if sym.name and sym.kind
-    ]
-    if symbol_rows:
+    # Batch insert symbols (filter malformed rows).
+    # Generator expressions avoid allocating an intermediate list — executemany
+    # accepts any iterable.  The guard `if fi.symbols` short-circuits so no
+    # generator object is created for the common empty case.
+    if fi.symbols:
         conn.executemany(
             "INSERT INTO symbols (name, kind, file_rel, line, col, end_line, signature, parent_id) "
             "VALUES (?, ?, ?, ?, ?, ?, ?, NULL)",
-            symbol_rows,
+            (
+                (sym.name, sym.kind, fi.rel_path, sym.line, sym.col, sym.end_line, sym.signature)
+                for sym in fi.symbols if sym.name and sym.kind
+            ),
         )
 
     # Batch insert refs (filter empty names)
-    ref_rows = [
-        (ref.name, fi.rel_path, ref.line, ref.col, ref.context)
-        for ref in fi.refs if ref.name
-    ]
-    if ref_rows:
+    if fi.refs:
         conn.executemany(
             "INSERT INTO refs (symbol_name, file_rel, line, col, context) "
             "VALUES (?, ?, ?, ?, ?)",
-            ref_rows,
+            (
+                (ref.name, fi.rel_path, ref.line, ref.col, ref.context)
+                for ref in fi.refs if ref.name
+            ),
         )
 
     # Batch insert imports/exports (filter invalid rows)
-    ie_rows = [
-        (fi.rel_path, ie.kind, ie.target, ie.line)
-        for ie in fi.imports_exports if ie.kind and ie.target is not None
-    ]
-    if ie_rows:
+    if fi.imports_exports:
         conn.executemany(
             "INSERT INTO imports_exports (file_rel, kind, target, line) "
             "VALUES (?, ?, ?, ?)",
-            ie_rows,
+            (
+                (fi.rel_path, ie.kind, ie.target, ie.line)
+                for ie in fi.imports_exports if ie.kind and ie.target is not None
+            ),
         )
 
     # Batch insert sections (filter empty headings)
-    sec_rows = [
-        (fi.rel_path, sec.heading, sec.level, sec.line, sec.end_line)
-        for sec in fi.sections if sec.heading
-    ]
-    if sec_rows:
+    if fi.sections:
         conn.executemany(
             "INSERT INTO sections (file_rel, heading, level, line, end_line) "
             "VALUES (?, ?, ?, ?, ?)",
-            sec_rows,
+            (
+                (fi.rel_path, sec.heading, sec.level, sec.line, sec.end_line)
+                for sec in fi.sections if sec.heading
+            ),
         )
     elapsed = time.time() - t0
     if elapsed >= 0.5:

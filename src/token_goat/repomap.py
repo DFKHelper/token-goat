@@ -576,8 +576,12 @@ def _load_and_rank(project: Project) -> _RankedProjectData | None:
     t_db = time.monotonic()
 
     ranks = compute_ranks(graph)
-    # Fallback: if every node has the same rank (no edges), break ties by file size
-    all_ranks_equal = not ranks or len(set(ranks.values())) <= 1
+    # Fallback: if every node has the same rank (no edges), break ties by file size.
+    # Short-circuit with min/max comparison instead of building a full set of float
+    # values — O(n) single pass vs O(n) set build + O(1) len check, but avoids
+    # allocating a set of N floats (one per indexed file).
+    _rank_values = ranks.values()
+    all_ranks_equal = not ranks or (min(_rank_values) == max(_rank_values))
     if all_ranks_equal:
         _LOG.debug(
             "_load_and_rank: PageRank produced uniform scores (no edges or empty); "
