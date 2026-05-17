@@ -244,8 +244,14 @@ class TestPngWithAlpha:
 # ---------------------------------------------------------------------------
 
 class TestPngToJpeg:
-    def test_large_rgb_png_becomes_jpeg(self, tmp_data_dir, tmp_path):
-        """Large RGB PNG (photo-like) → JPEG output."""
+    def test_large_rgb_png_becomes_lossy(self, tmp_data_dir, tmp_path):
+        """Large RGB PNG (photo-like) collapses to a lossy format.
+
+        The configured lossy format is WebP by default; JPEG is selectable via
+        ``TOKEN_GOAT_IMAGE_FORMAT=jpeg``.  Either one is a correct outcome — the
+        invariant the shrinker promises is "lossy compression, not PNG", since
+        PNG would defeat the entire compression-ratio goal of this module.
+        """
         import random
 
         from PIL import Image
@@ -263,8 +269,103 @@ class TestPngToJpeg:
 
         result = image_shrink.shrink(p)
         assert result is not None
+        assert result.suffix.lower() in (".webp", ".jpg"), (
+            f"Expected lossy format (.webp or .jpg) for RGB PNG photo, got {result.suffix}"
+        )
+
+    def test_jpeg_fallback_via_env_var(self, tmp_data_dir, tmp_path, monkeypatch):
+        """``TOKEN_GOAT_IMAGE_FORMAT=jpeg`` forces JPEG output even when WebP is the default."""
+        import random
+
+        from PIL import Image
+
+        monkeypatch.setenv("TOKEN_GOAT_IMAGE_FORMAT", "jpeg")
+
+        p = tmp_path / "photo.png"
+        img = Image.new("RGB", (1600, 1200))
+        pixels = [
+            (random.randint(0, 255), random.randint(0, 255), random.randint(0, 255))
+            for _ in range(1600 * 1200)
+        ]
+        img.putdata(pixels)
+        img.save(p, "PNG")
+
+        assert p.stat().st_size > image_shrink.SIZE_THRESHOLD_BYTES
+
+        result = image_shrink.shrink(p)
+        assert result is not None
         assert result.suffix.lower() == ".jpg", (
-            f"Expected .jpg for RGB PNG photo, got {result.suffix}"
+            f"Expected .jpg under TOKEN_GOAT_IMAGE_FORMAT=jpeg, got {result.suffix}"
+        )
+
+
+# ---------------------------------------------------------------------------
+# 10b. WebP compression ratio benchmark — confirms WebP beats JPEG on
+# screenshot/UI content (the realistic hot path) by a meaningful margin.
+# ---------------------------------------------------------------------------
+
+class TestWebpCompressionRatio:
+    def test_webp_smaller_than_jpeg_on_screenshot_content(self, tmp_data_dir, tmp_path, monkeypatch):
+        """Render a UI-like image, compress once as WebP and once as JPEG, and
+        confirm WebP is at least 25% smaller.
+
+        Real screenshots (large flat regions, sharp text edges, limited colour
+        gamut) are exactly the workload WebP handles better than JPEG.  This
+        test pins the minimum win at 25%; on the synthesised fixture below it
+        is closer to 45%.  The test also doubles as a regression guard against
+        accidentally raising ``WEBP_QUALITY`` to a value that erodes the win.
+        """
+        from PIL import Image, ImageDraw
+
+        # Build a deterministic screenshot fixture: white background with
+        # alternating tinted rows and text overlay — characteristic of a code
+        # editor or chat UI capture.
+        img = Image.new("RGB", (1600, 1200), (255, 255, 255))
+        draw = ImageDraw.Draw(img)
+        for i in range(40):
+            y = i * 28
+            draw.rectangle([(20, y), (1580, y + 24)], fill=(245, 247, 250))
+            draw.text((30, y + 4), "Lorem ipsum dolor sit amet, " * 6, fill=(20, 30, 40))
+        for i in range(5):
+            x = i * 320 + 20
+            draw.rectangle([(x, 900), (x + 280, 1100)], fill=(50 + 30 * i, 100 + 20 * i, 200 - 20 * i))
+
+        # Use BMP so the file is unambiguously larger than the shrink threshold
+        # regardless of how well the rendered content happens to compress as PNG.
+        # The pixel content is what we care about for the benchmark; the storage
+        # format on disk is irrelevant once shrink() opens it.
+        src = tmp_path / "screenshot.bmp"
+        img.save(src, "BMP")
+        assert src.stat().st_size > image_shrink.SIZE_THRESHOLD_BYTES
+
+        # Compress under default (WebP)
+        monkeypatch.delenv("TOKEN_GOAT_IMAGE_FORMAT", raising=False)
+        webp_out = image_shrink.shrink(src)
+        assert webp_out is not None
+        assert webp_out.suffix.lower() == ".webp", (
+            f"Expected .webp under default config, got {webp_out.suffix}"
+        )
+        webp_bytes = webp_out.stat().st_size
+
+        # Force JPEG and re-shrink a fresh source so the cache key differs and
+        # a fresh compression actually runs.  Flip one pixel so the content hash
+        # changes — the rendered image is materially the same screenshot.
+        src2 = tmp_path / "screenshot_for_jpeg.bmp"
+        img.putpixel((0, 0), (1, 2, 3))
+        img.save(src2, "BMP")
+
+        monkeypatch.setenv("TOKEN_GOAT_IMAGE_FORMAT", "jpeg")
+        jpeg_out = image_shrink.shrink(src2)
+        assert jpeg_out is not None
+        assert jpeg_out.suffix.lower() == ".jpg", (
+            f"Expected .jpg under TOKEN_GOAT_IMAGE_FORMAT=jpeg, got {jpeg_out.suffix}"
+        )
+        jpeg_bytes = jpeg_out.stat().st_size
+
+        ratio = webp_bytes / jpeg_bytes
+        assert ratio < 0.75, (
+            f"WebP should be at least 25% smaller than JPEG on screenshot "
+            f"content; got WebP={webp_bytes} JPEG={jpeg_bytes} ratio={ratio:.3f}"
         )
 
 

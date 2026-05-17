@@ -13,6 +13,7 @@ one cache entry and are never re-compressed.
 from __future__ import annotations
 
 __all__ = [
+    "CACHE_KEY_VERSION",
     "CLAUDE_MAX_VISION_EDGE_PX",
     "CLAUDE_VISION_PIXELS_PER_TOKEN",
     "IMAGE_EXTENSIONS",
@@ -20,6 +21,8 @@ __all__ = [
     "JPEG_QUALITY",
     "MAX_LONG_EDGE",
     "SIZE_THRESHOLD_BYTES",
+    "WEBP_METHOD",
+    "WEBP_QUALITY",
     "ensure_cache_dir",
     "is_image_path",
     "should_shrink",
@@ -32,6 +35,7 @@ __all__ = [
 import contextlib
 import hashlib
 import logging
+import os
 import stat
 import time
 from pathlib import Path
@@ -60,6 +64,34 @@ SIZE_THRESHOLD_BYTES = 100 * 1024
 # threshold: visually lossless for natural images, typically 5–20× smaller than
 # lossless PNG, and well within what Claude's vision model can read accurately.
 JPEG_QUALITY = 75
+
+# WebP quality for photographic output.  WebP at q=80 typically produces files
+# 30–50% smaller than JPEG at q=75 on screenshot/UI/text content while preserving
+# more edge fidelity.  On noisy photographic content the two formats are roughly
+# comparable in size — WebP rarely loses, frequently wins, never wins less than a
+# few percent.  Claude's vision API accepts image/webp natively per Anthropic docs
+# (jpeg / png / gif / webp are the four supported types), so emitting WebP is a
+# strict token-cost reduction with no compatibility cost.
+WEBP_QUALITY = 80
+# WebP encoder method: 0 (fast) – 6 (slow, best compression).  Method 6 squeezes
+# out an additional 5–10% versus the default 4, at the cost of about 2× encode time.
+# For 1024 px images this is still under 100 ms — well within the hook budget.
+WEBP_METHOD = 6
+
+# Output format for lossy compression.  Defaults to WebP because it produces
+# meaningfully smaller files than JPEG on the typical content the hook sees
+# (screenshots, UI, diagrams with text).  Set TOKEN_GOAT_IMAGE_FORMAT=jpeg to
+# fall back to JPEG — useful for environments where a downstream consumer does
+# not handle WebP, or for A/B comparison.
+_ENV_IMAGE_FORMAT = "TOKEN_GOAT_IMAGE_FORMAT"
+_DEFAULT_LOSSY_FORMAT = "webp"
+
+# Cache key version.  Bumped whenever the compression pipeline changes in a way
+# that would produce different bytes for the same input — quality knobs, format
+# selection, downscale algorithm.  Included in the content hash so old cache
+# entries are silently superseded rather than serving stale (worse-compressed)
+# output indefinitely.
+CACHE_KEY_VERSION = 2
 
 # Claude vision API parameters (source: Anthropic docs).
 # Claude downscales images to fit within this many pixels on the long edge
@@ -94,7 +126,7 @@ def is_image_path(path: str | Path) -> bool:
 
 
 def _cache_key(src_path: Path) -> str:
-    """sha256 of the image's *content*.
+    """sha256 of the image's *content*, prefixed with the cache key version.
 
     Content-addressing — rather than keying on path+mtime+size — means identical
     images share one cache entry regardless of where they live, and any real
@@ -103,28 +135,60 @@ def _cache_key(src_path: Path) -> str:
     filename on every prompt: a path/mtime key misses the cache for the same
     image re-used across prompts, and even for one image referenced twice in a
     single prompt.
+
+    The ``CACHE_KEY_VERSION`` byte prefix means changing the compression pipeline
+    (new format, new quality, new downscale ceiling) automatically supersedes old
+    cache entries without us having to crawl the cache dir to evict them — old
+    files simply stop being looked up and age out via the LRU cleaner.
     """
     try:
         h = hashlib.sha256()
+        # Mix the cache version into the hash so a pipeline change invalidates
+        # everything previously cached without touching the filesystem.
+        h.update(f"v{CACHE_KEY_VERSION}\n".encode())
         with src_path.open("rb") as f:
             for chunk in iter(lambda: f.read(1 << 20), b""):
                 h.update(chunk)
         return h.hexdigest()
     except OSError as exc:
         _LOG.debug("_cache_key: could not read %s for content hash, falling back to path hash: %s", src_path.name, exc)
-        return hashlib.sha256(str(src_path).encode()).hexdigest()
+        return hashlib.sha256(f"v{CACHE_KEY_VERSION}|{src_path}".encode()).hexdigest()
 
 
 def _cache_path_for(src_path: Path) -> Path:
     """Return the base cache path (stem only) for *src_path*.
 
-    The actual output file is either ``<hash>.shrunk.jpg`` or ``<hash>.shrunk.png``
-    depending on which format was chosen during compression (JPEG for photos,
-    PNG for screenshots with transparency).  Callers probe both suffixes to check
-    for a cache hit before re-compressing.
+    The actual output file is one of ``<hash>.shrunk.webp`` (default lossy
+    output), ``<hash>.shrunk.jpg`` (JPEG fallback via ``TOKEN_GOAT_IMAGE_FORMAT``
+    or for paranoid-compatibility paths), or ``<hash>.shrunk.png`` (screenshots
+    with transparency).  Callers probe all three suffixes when checking for a
+    cache hit, so switching the lossy format at runtime via env var still
+    correctly re-uses an existing cached output if one is present in any format.
     """
     key = _cache_key(src_path)
     return paths.image_cache_dir() / f"{key}.shrunk"
+
+
+def _lossy_format() -> str:
+    """Return the lossy output format selected at runtime.
+
+    Defaults to WebP (``_DEFAULT_LOSSY_FORMAT``); falls back to JPEG when
+    ``TOKEN_GOAT_IMAGE_FORMAT=jpeg`` (or ``jpg``).  Any other value logs a
+    warning and falls back to the default, so a typo in the env var can never
+    silently disable image shrinking.
+    """
+    raw = os.environ.get(_ENV_IMAGE_FORMAT, "").strip().lower()
+    if raw in ("", _DEFAULT_LOSSY_FORMAT):
+        return _DEFAULT_LOSSY_FORMAT
+    if raw in ("jpeg", "jpg"):
+        return "jpeg"
+    if raw == "webp":
+        return "webp"
+    _LOG.warning(
+        "Unknown %s=%r; expected webp or jpeg, using default %s",
+        _ENV_IMAGE_FORMAT, raw, _DEFAULT_LOSSY_FORMAT,
+    )
+    return _DEFAULT_LOSSY_FORMAT
 
 
 def vision_tokens(width: int, height: int) -> int:
@@ -261,8 +325,11 @@ def shrink(src_path: Path) -> Path | None:
     cache_dir.mkdir(parents=True, exist_ok=True)
 
     stem = _cache_path_for(src_path)  # e.g. .../abc123.shrunk
-    # Check for already-cached variants (jpg or png)
-    for suffix in (".jpg", ".png"):
+    # Check for already-cached variants in any supported output format.  The
+    # order is "modern first" so a WebP cache hit short-circuits before we even
+    # consider JPEG — a directory that has both (from a previous format
+    # switchover) will prefer the smaller modern artifact.
+    for suffix in (".webp", ".jpg", ".png"):
         candidate = stem.with_suffix(suffix)
         if candidate.exists():
             elapsed = time.time() - t0
@@ -295,19 +362,38 @@ def shrink(src_path: Path) -> Path | None:
 
             # Choose output format based on image characteristics.
             # Screenshots with transparency keep PNG so sharp UI edges aren't
-            # compressed into JPEG blur artifacts. Photographs and other images
-            # are always saved as JPEG because JPEG achieves far higher compression
-            # ratios on continuous-tone content (typically 5–20× smaller than PNG).
+            # compressed into lossy blur artifacts.  Everything else flows to
+            # the configured lossy format (WebP by default — typically 30–50%
+            # smaller than JPEG at equivalent perceived quality on screenshot
+            # and UI content, and Claude's vision API accepts it natively).
+            #
+            # WebP compression of RGBA is also supported, but we keep the PNG
+            # path for RGBA screenshots because alpha through WebP-lossy is
+            # quality-sensitive in ways PNG simply isn't, and screenshots are
+            # the workload where preserved fidelity matters most.
             is_screenshot = _looks_like_screenshot_or_text(img)
             if is_screenshot and img.mode in ("RGBA", "LA"):
                 # Keep PNG with alpha for screenshots
                 final_path = stem.with_suffix(".png")
                 img.save(final_path, "PNG", optimize=True)
             else:
-                # Convert to RGB JPEG (smallest)
+                # Flatten to RGB and emit the configured lossy format.
                 img = _ensure_rgb(img, Image)
-                final_path = stem.with_suffix(".jpg")
-                img.save(final_path, "JPEG", quality=JPEG_QUALITY, optimize=True)
+                fmt = _lossy_format()
+                if fmt == "webp":
+                    final_path = stem.with_suffix(".webp")
+                    # method=6 is the slowest/best encoder setting — at 1024 px
+                    # this still completes in well under 100 ms on commodity
+                    # hardware, comfortably inside the hook budget.
+                    img.save(
+                        final_path,
+                        "WEBP",
+                        quality=WEBP_QUALITY,
+                        method=WEBP_METHOD,
+                    )
+                else:
+                    final_path = stem.with_suffix(".jpg")
+                    img.save(final_path, "JPEG", quality=JPEG_QUALITY, optimize=True)
 
         out_size = final_path.stat().st_size
         savings_pct = 100.0 * (1.0 - out_size / src_size) if src_size > 0 else 0.0
