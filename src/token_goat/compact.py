@@ -19,6 +19,7 @@ from operator import itemgetter
 from typing import TYPE_CHECKING
 
 from . import session as session_mod
+from .hooks_common import sanitize_log_str
 from .repomap import estimate_tokens
 
 if TYPE_CHECKING:
@@ -50,13 +51,19 @@ def _count_suffix(n: int) -> str:
 def _short_path(p: str, max_len: int = 70) -> str:
     """Return a compact display representation of a file path.
 
-    Normalises backslashes to forward slashes, then strips the leading
+    Normalises backslashes to forward slashes, strips the leading
     absolute-path component up to a recognised project-layout directory
     (``/src/``, ``/tests/``, ``/docs/``) so the manifest stays readable on
-    both Windows and POSIX without leaking the user's home directory prefix.
+    both Windows and POSIX without leaking the user's home directory prefix,
+    and sanitizes embedded newlines/CRs to prevent log/manifest injection.
     Falls back to tail-truncation with an ellipsis if the path is still over
     *max_len* after stripping (e.g. deeply nested monorepo paths).
     """
+    # Sanitize before any further processing: paths come from harness payloads
+    # and session cache entries written by hooks, both of which accept arbitrary
+    # attacker-controlled strings.  Embedded newlines would break the manifest
+    # structure and could inject fake manifest sections into the LLM context.
+    p = sanitize_log_str(p, max_len=max_len * 2)
     p = p.replace("\\", "/")
     # Strip common prefixes to keep paths short
     for prefix in ("/src/", "/tests/", "/docs/"):
@@ -237,7 +244,7 @@ def _render(cache: SessionCache, session_id: str, max_tokens: int) -> tuple[str,
     if files_with_symbols:
         sections.append("### Symbols Accessed")
         for entry in files_with_symbols:
-            syms = entry.symbols_read[:_MAX_SYMBOLS_PER_FILE_ENTRY]
+            syms = [sanitize_log_str(s, max_len=80) for s in entry.symbols_read[:_MAX_SYMBOLS_PER_FILE_ENTRY]]
             overflow = len(entry.symbols_read) - _MAX_SYMBOLS_PER_FILE_ENTRY
             sym_str = ", ".join(syms) + (f" +{overflow}" if overflow > 0 else "")
             sections.append(f"- {_short_path(entry.rel_or_abs)} → {sym_str}")
