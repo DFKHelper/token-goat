@@ -844,3 +844,183 @@ def test_install_all_linux_dispatches(tmp_path, monkeypatch):
     assert "cron: update" in result
     assert "task: worker" not in result
     assert "task: update" not in result
+
+
+# ---------------------------------------------------------------------------
+# plan_install — dry-run preview, must not touch disk or registry
+# ---------------------------------------------------------------------------
+
+
+def test_plan_install_makes_no_changes(tmp_path, monkeypatch):
+    """plan_install() is read-only: no files created, no registry / cron / systemd calls."""
+    import sys as _sys
+
+    home = _fake_home(tmp_path)
+    _patch_home(monkeypatch, home)
+
+    # Force Linux branch so we exercise the systemd/XDG path; that branch makes
+    # the most subprocess calls and is the easiest to assert against.
+    monkeypatch.setattr(install, "_systemd_user_available", lambda: False)
+    monkeypatch.setattr(install, "_check_linux_update_cron", lambda: "not installed")
+    monkeypatch.setattr(_sys, "platform", "linux")
+
+    # If plan_install accidentally calls a real mutation, we want a loud crash.
+    def _explode(*a, **kw):
+        raise AssertionError("plan_install must not call install_* / patch_*")
+
+    monkeypatch.setattr(install, "install_linux_autostart", _explode)
+    monkeypatch.setattr(install, "install_linux_update_cron", _explode)
+    monkeypatch.setattr(install, "patch_settings_json", _explode)
+    monkeypatch.setattr(install, "patch_claude_md", _explode)
+    monkeypatch.setattr(install, "write_skill", _explode)
+
+    plan = install.plan_install()
+
+    # Nothing was written to ~/.claude/
+    assert not (home / ".claude" / "settings.json").exists()
+    assert not (home / ".claude" / "CLAUDE.md").exists()
+    assert not (home / ".claude" / "skills" / "token-goat" / "SKILL.md").exists()
+
+    # Plan must mention each core component
+    components = {row["component"] for row in plan}
+    assert "settings.json" in components
+    assert "CLAUDE.md" in components
+    assert "skill" in components
+    assert "worker autostart" in components
+
+
+def test_plan_install_picks_systemd_when_available(tmp_path, monkeypatch):
+    """Linux branch: when systemd --user is up, plan recommends a systemd unit."""
+    import sys as _sys
+
+    home = _fake_home(tmp_path)
+    _patch_home(monkeypatch, home)
+    monkeypatch.setattr(install, "_systemd_user_available", lambda: True)
+    monkeypatch.setattr(install, "_check_linux_update_cron", lambda: "not installed")
+    monkeypatch.setattr(_sys, "platform", "linux")
+
+    plan = install.plan_install()
+    autostart = next(r for r in plan if r["component"] == "worker autostart")
+    assert "systemd" in autostart["detail"].lower()
+    assert autostart["target"].endswith("token-goat-worker.service")
+
+
+def test_plan_install_falls_back_to_xdg_without_systemd(tmp_path, monkeypatch):
+    """Linux branch: when systemd --user is down, plan recommends the XDG fallback."""
+    import sys as _sys
+
+    home = _fake_home(tmp_path)
+    _patch_home(monkeypatch, home)
+    monkeypatch.setattr(install, "_systemd_user_available", lambda: False)
+    monkeypatch.setattr(install, "_check_linux_update_cron", lambda: "not installed")
+    monkeypatch.setattr(_sys, "platform", "linux")
+
+    plan = install.plan_install()
+    autostart = next(r for r in plan if r["component"] == "worker autostart")
+    assert autostart["target"].endswith(".desktop")
+    assert "xdg" in autostart["detail"].lower() or "autostart" in autostart["detail"].lower()
+
+
+def test_plan_install_detects_existing_settings(tmp_path, monkeypatch):
+    """When settings.json already has token-goat hooks, plan should report 'update'."""
+    import sys as _sys
+
+    home = _fake_home(tmp_path)
+    _patch_home(monkeypatch, home)
+    monkeypatch.setattr(install, "_systemd_user_available", lambda: False)
+    monkeypatch.setattr(install, "_check_linux_update_cron", lambda: "not installed")
+    monkeypatch.setattr(_sys, "platform", "linux")
+    monkeypatch.setattr(install, "token_goat_binary", lambda: "token-goat")
+
+    # Pre-populate settings.json with token-goat hooks
+    install.patch_settings_json()
+
+    plan = install.plan_install()
+    settings_row = next(r for r in plan if r["component"] == "settings.json")
+    assert settings_row["action"] == "update"
+    assert "existing token-goat hook entries" in settings_row["detail"]
+
+
+def test_plan_install_optional_codex_only_when_flagged(tmp_path, monkeypatch):
+    """Codex rows appear only when install_codex=True."""
+    import sys as _sys
+
+    home = _fake_home(tmp_path)
+    _patch_home(monkeypatch, home)
+    monkeypatch.setattr(install, "_systemd_user_available", lambda: False)
+    monkeypatch.setattr(install, "_check_linux_update_cron", lambda: "not installed")
+    monkeypatch.setattr(_sys, "platform", "linux")
+
+    plan_off = install.plan_install(install_codex=False)
+    plan_on = install.plan_install(install_codex=True)
+    components_off = {r["component"] for r in plan_off}
+    components_on = {r["component"] for r in plan_on}
+    assert "codex: config.toml" not in components_off
+    assert "codex: AGENTS.md" not in components_off
+    assert "codex: config.toml" in components_on
+    assert "codex: AGENTS.md" in components_on
+
+
+# ---------------------------------------------------------------------------
+# verify_install — post-install structured self-check
+# ---------------------------------------------------------------------------
+
+
+def test_verify_install_clean_state_all_missing(tmp_path, monkeypatch):
+    """On a freshly faked home with nothing installed, every component reports 'missing'."""
+    import sys as _sys
+
+    home = _fake_home(tmp_path)
+    _patch_home(monkeypatch, home)
+    monkeypatch.setattr(_sys, "platform", "linux")
+
+    report = install.verify_install()
+    actions_by_component = {r["component"]: r["action"] for r in report}
+    assert actions_by_component["settings.json"] == "missing"
+    assert actions_by_component["CLAUDE.md"] == "missing"
+    assert actions_by_component["skill"] == "missing"
+    assert actions_by_component["worker autostart"] == "missing"
+
+
+def test_verify_install_after_install_reports_ok(tmp_path, monkeypatch, tmp_data_dir):
+    """After an end-to-end install on Linux+systemd, verify reports ok for landed pieces."""
+    import sys as _sys
+
+    home = _fake_home(tmp_path)
+    _patch_home(monkeypatch, home)
+    monkeypatch.setattr(_sys, "platform", "linux")
+    monkeypatch.setattr(install, "_systemd_user_available", lambda: True)
+    # Avoid real subprocess calls during systemd setup
+    monkeypatch.setattr(install.subprocess, "run", lambda *a, **kw: MagicMock(returncode=0, stdout=b"", stderr=b""))
+
+    # Run only the subset of install steps that produce on-disk artefacts we can verify
+    install.patch_settings_json()
+    install.patch_claude_md()
+    install.write_skill()
+    install.install_linux_autostart()
+
+    report = install.verify_install()
+    actions_by_component = {r["component"]: r["action"] for r in report}
+    assert actions_by_component["settings.json"] == "ok"
+    assert actions_by_component["CLAUDE.md"] == "ok"
+    assert actions_by_component["skill"] == "ok"
+    assert actions_by_component["worker autostart"] == "ok"
+
+
+def test_verify_install_idempotent_count_stable(tmp_path, monkeypatch):
+    """patch_settings_json twice → verify_install reports the same hook-entry count.
+
+    Guards against the 'each install doubles the hook entries' bug.
+    """
+    home = _fake_home(tmp_path)
+    _patch_home(monkeypatch, home)
+    monkeypatch.setattr(install, "token_goat_binary", lambda: "token-goat")
+
+    install.patch_settings_json()
+    count_first = install._settings_json_token_goat_count()
+    install.patch_settings_json()
+    count_second = install._settings_json_token_goat_count()
+    install.patch_settings_json()
+    count_third = install._settings_json_token_goat_count()
+    assert count_first == count_second == count_third
+    assert count_first > 0

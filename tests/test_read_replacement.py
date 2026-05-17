@@ -862,11 +862,10 @@ class TestNotIndexedHint:
         from token_goat import db
         from token_goat.read_commands import _not_indexed_hint
 
-        monkeypatch.setattr(
-            db,
-            "project_has_files",
-            lambda _: (_ for _ in ()).throw(OSError("db gone")),
-        )
+        def _boom(_project_hash):
+            raise OSError("db gone")
+
+        monkeypatch.setattr(db, "project_has_files", _boom)
         hint = _not_indexed_hint("deadbeef1234567890ab")
         assert hint is not None
         assert "unable to check whether this project is indexed" in hint
