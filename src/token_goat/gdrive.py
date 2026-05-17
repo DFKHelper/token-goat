@@ -3,8 +3,11 @@ from __future__ import annotations
 
 __all__ = [
     "GDriveCredsUnavailable",
+    "TEXT_EXTENSIONS",
+    "extract_section_index",
     "fetch_file",
     "get_credentials",
+    "is_text_path",
     "run_oauth_oob_flow",
 ]
 
@@ -446,3 +449,144 @@ def run_oauth_oob_flow(client_secrets_path: Path) -> Path:
             "Check directory permissions."
         ) from exc
     return out
+
+
+# ---------------------------------------------------------------------------
+# Section-index extraction for Drive markdown / text docs.
+#
+# WHY: A 200 KB markdown spec pulled from Drive consumes ~50k tokens of context
+# even when the agent only needs one section. By exposing the document's
+# heading structure first, the agent can request a single section (via
+# ``token-goat section <local-path>::<heading>``) and pay <1 KB instead.
+# ---------------------------------------------------------------------------
+
+# File extensions we treat as markdown-extractable text.  Extending this list
+# (e.g. to ``.rst``) requires adding a matching language extractor.
+TEXT_EXTENSIONS: tuple[str, ...] = (".md", ".markdown", ".mdown", ".mkd", ".mkdn", ".txt")
+
+# Maximum bytes we will load into memory for section-index extraction. Matches
+# parser.MAX_FILE_SIZE so the behaviour is consistent with the local-file path
+# and prevents OOM on a pathological Drive doc.
+_MAX_SECTION_INDEX_BYTES = 2_000_000
+
+
+def is_text_path(path: Path) -> bool:
+    """Return True if *path* has an extension we know how to extract sections from.
+
+    Used by the pre-fetch hook to decide whether to suggest the
+    ``gdrive-sections`` shim instead of ``gdrive-fetch`` for Drive text docs.
+    The check is extension-only (no content sniff) because the hook fires
+    *before* the file is downloaded — we only have the Drive ``name`` field.
+    """
+    return path.suffix.lower() in TEXT_EXTENSIONS
+
+
+def extract_section_index(local_path: Path) -> dict[str, object]:
+    """Build a compact section-index summary for a markdown/text file.
+
+    Returns a dict with::
+
+        {
+            "path": "<absolute path>",
+            "size_bytes": N,
+            "line_count": L,
+            "sections": [
+                {"heading": str, "level": int, "line": int, "end_line": int|None,
+                 "approx_bytes": int},
+                ...
+            ],
+            "extractor_available": bool,
+        }
+
+    The ``approx_bytes`` field lets the agent gauge how expensive each section
+    would be to extract relative to the whole document.  When extraction fails
+    (file too large, parser error, non-markdown extension) ``sections`` is an
+    empty list and ``extractor_available`` is ``False``; the caller can still
+    show the agent the total size and fall back to ``gdrive-fetch``.
+
+    Never raises for malformed content — fail-soft, returns the best-available
+    metadata so the hook hint always has something useful to emit.
+    """
+    result: dict[str, object] = {
+        "path": str(local_path),
+        "size_bytes": 0,
+        "line_count": 0,
+        "sections": [],
+        "extractor_available": False,
+    }
+    try:
+        size = local_path.stat().st_size
+        result["size_bytes"] = size
+    except OSError as exc:
+        _LOG.debug("extract_section_index: stat failed for %s: %s", local_path, exc)
+        return result
+
+    if size > _MAX_SECTION_INDEX_BYTES:
+        _LOG.info(
+            "extract_section_index: %s too large (%d > %d bytes), skipping parse",
+            sanitize_log_str(local_path.name), size, _MAX_SECTION_INDEX_BYTES,
+        )
+        return result
+
+    if not is_text_path(local_path):
+        return result
+
+    try:
+        raw = local_path.read_bytes()
+    except OSError as exc:
+        _LOG.debug("extract_section_index: read failed for %s: %s", local_path, exc)
+        return result
+
+    # Compute line offsets so we can attribute byte ranges to each section.
+    # Splitting once is cheaper than re-scanning the text per-section.
+    try:
+        text = raw.decode("utf-8", errors="replace").replace("\r\n", "\n").replace("\r", "\n")
+    except (UnicodeError, AttributeError) as exc:
+        _LOG.debug("extract_section_index: decode failed for %s: %s", local_path, exc)
+        return result
+
+    lines = text.split("\n")
+    line_count = len(lines)
+    result["line_count"] = line_count
+
+    # Build cumulative byte offsets so section approx_bytes is O(1) per section.
+    # Index i = byte offset of the *start* of line (i+1).  +1 per line for the
+    # newline that ``str.split`` consumed.
+    offsets: list[int] = [0]
+    for ln in lines:
+        offsets.append(offsets[-1] + len(ln.encode("utf-8")) + 1)
+
+    # Import lazily so the extractor cost is only paid when actually invoked.
+    try:
+        from .languages.markdown import extract as md_extract  # noqa: PLC0415
+    except ImportError as exc:
+        _LOG.debug("extract_section_index: markdown extractor unavailable: %s", exc)
+        return result
+
+    try:
+        _symbols, _refs, _imps, sections = md_extract(raw, local_path.name)
+    except Exception as exc:  # noqa: BLE001 — parser must never break the hook flow
+        _LOG.debug("extract_section_index: parse failed for %s: %s", local_path, exc)
+        return result
+
+    out_sections: list[dict[str, object]] = []
+    for sec in sections:
+        start_line = max(1, min(sec.line, line_count))
+        end_line: int | None = sec.end_line
+        if end_line is None:
+            byte_end = offsets[-1]
+        else:
+            end_line_clamped = max(start_line, min(end_line, line_count))
+            byte_end = offsets[end_line_clamped]
+        approx_bytes = max(0, byte_end - offsets[start_line - 1])
+        out_sections.append({
+            "heading": sec.heading,
+            "level": sec.level,
+            "line": sec.line,
+            "end_line": sec.end_line,
+            "approx_bytes": approx_bytes,
+        })
+
+    result["sections"] = out_sections
+    result["extractor_available"] = True
+    return result
