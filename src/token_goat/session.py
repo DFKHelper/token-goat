@@ -730,6 +730,14 @@ def mark_grep(
     # payload could inflate the session JSON file on every Grep call.
     safe_pattern = pattern[:_MAX_GREP_PATTERN_LEN] if len(pattern) > _MAX_GREP_PATTERN_LEN else pattern
     cache.greps.append(GrepEntry(pattern=safe_pattern, path=path, ts=now, result_count=result_count))
+    _LOG.debug(
+        "mark_grep: pattern=%r path=%r results=%s (session=%s total_greps=%d)",
+        sanitize_log_str(safe_pattern[:60], max_len=_MAX_LOG_STR),
+        path,
+        result_count,
+        session_id[:16],
+        len(cache.greps),
+    )
     cache.last_activity_ts = now
     cache._invalidate_json_cache()
     save(cache)

@@ -557,7 +557,7 @@ def index_project(
             "index_project: no source files found under %s — check project root and SKIP_DIRS",
             project.root,
         )
-    _LOG.debug("index walk: found %d source files", n_total)
+    _LOG.debug("index walk: found %d source files (mode=%s)", n_total, "full" if full else "incremental")
     n_indexed = 0
     n_skipped_unchanged = 0
     n_errors = 0
