@@ -435,6 +435,34 @@ def _load_existing_chunk_hashes(conn: sqlite3.Connection) -> dict[tuple[str, int
     return existing
 
 
+def _insert_chunks_and_collect_embed_rows(
+    conn: sqlite3.Connection,
+    batch: list[tuple[Chunk, str]],
+    vecs: list[list[float]],
+) -> list[tuple[int, bytes]]:
+    """Insert chunk rows and return (chunk_id, packed_vec) pairs ready for bulk embedding insert.
+
+    For each (chunk, sha256) / vector triple: inserts a row into ``chunks`` and
+    pairs the new ``lastrowid`` with the packed vector bytes.  The caller is
+    responsible for running :func:`_delete_stale_chunks` *before* this function
+    so the UNIQUE constraint on (file_rel, start_line, end_line) is satisfied.
+
+    Returns a list of (chunk_id, embedding_bytes) suitable for ``executemany``
+    into the ``embeddings`` table.
+    """
+    embed_rows: list[tuple[int, bytes]] = []
+    for (ch, sha), vec in zip(batch, vecs, strict=True):
+        cur = conn.execute(
+            "INSERT INTO chunks"
+            " (file_rel, start_line, end_line, content_sha256, kind, text)"
+            " VALUES (?, ?, ?, ?, ?, ?)",
+            (ch.file_rel, ch.start_line, ch.end_line, sha, ch.kind, ch.text),
+        )
+        chunk_id: int = cur.lastrowid  # type: ignore[assignment]  # INSERT always sets lastrowid
+        embed_rows.append((chunk_id, _pack_vec(vec)))
+    return embed_rows
+
+
 def _delete_stale_chunks(
     conn: sqlite3.Connection,
     batch_keys: list[tuple[str, int, int]],
@@ -550,24 +578,8 @@ def index_project_embeddings(
             batch_keys = [(ch.file_rel, ch.start_line, ch.end_line) for ch, _ in batch]
             n_stale_deleted += _delete_stale_chunks(conn, batch_keys)
 
-            embed_rows: list[tuple[int, bytes]] = []
-            for (ch, sha), vec in zip(batch, vecs, strict=True):
-                cur = conn.execute(
-                    "INSERT INTO chunks"
-                    " (file_rel, start_line, end_line, content_sha256, kind, text)"
-                    " VALUES (?, ?, ?, ?, ?, ?)",
-                    (
-                        ch.file_rel,
-                        ch.start_line,
-                        ch.end_line,
-                        sha,
-                        ch.kind,
-                        ch.text,
-                    ),
-                )
-                chunk_id: int = cur.lastrowid  # type: ignore[assignment]  # INSERT always sets lastrowid
-                embed_rows.append((chunk_id, _pack_vec(vec)))
-                n_chunks_new += 1
+            embed_rows = _insert_chunks_and_collect_embed_rows(conn, batch, vecs)
+            n_chunks_new += len(embed_rows)
             conn.executemany(
                 "INSERT INTO embeddings (chunk_id, embedding) VALUES (?, ?)",
                 embed_rows,
