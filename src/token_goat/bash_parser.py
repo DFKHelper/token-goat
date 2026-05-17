@@ -28,6 +28,18 @@ from typing import Literal
 
 _LOG = logging.getLogger("token_goat.bash_parser")
 
+# Hard cap on the raw command string before shlex.split to prevent a crafted
+# multi-megabyte payload from causing linear memory allocation in the tokenizer.
+# 64 KiB is far larger than any legitimate single-line shell command that an
+# agent would issue; anything beyond this is anomalous and rejected early.
+_MAX_COMMAND_BYTES: int = 65_536  # 64 KiB
+
+# Hard cap on the extracted target_path.  Real file-system paths are bounded
+# by PATH_MAX (~4096 bytes on Linux, 32767 on Windows); 8 KiB leaves headroom
+# while still preventing an unbounded heap allocation in the synthesized Read
+# payload that bash_parser feeds into hooks_read.
+_MAX_PATH_BYTES: int = 8_192  # 8 KiB
+
 #: All valid values for :attr:`BashIntent.kind`.
 BashIntentKind = Literal["read", "grep", "glob", "unknown"]
 
@@ -105,14 +117,32 @@ def parse(command: str) -> BashIntent:
 
     Prefix tokens that change resource use but not semantics (``sudo``, ``time``,
     ``nice``, ``exec``, shell variable assignments) are stripped before dispatch.
+
+    Rejects commands exceeding ``_MAX_COMMAND_BYTES`` (64 KiB) early, before
+    any memory-allocating parse step, to defend against crafted payloads that
+    would cause linear memory use in ``shlex.split``.
     """
+    # Reject oversized commands before any memory-allocating work.
+    # encode() length is an upper bound on byte count; len() would undercount
+    # for non-ASCII content but is cheaper and sufficient here — a 64 KiB
+    # char-count cap is still far beyond any legitimate shell command.
+    if len(command) > _MAX_COMMAND_BYTES:
+        _LOG.warning(
+            "bash_parser: command too long (%d chars > %d limit); rejecting",
+            len(command),
+            _MAX_COMMAND_BYTES,
+        )
+        return BashIntent(kind="unknown", reason="command too long")
+
     # Only look at the first pipeline segment (before any |)
     command = command.split("|")[0].strip()
 
     try:
         tokens = shlex.split(command, posix=True)
     except ValueError as e:
-        _LOG.debug("bash_parser: shlex.split failed: %s", e)
+        # str(e) may echo back characters from the command; sanitise before logging.
+        safe_err = str(e).replace("\n", "\\n").replace("\r", "\\r")[:200]
+        _LOG.debug("bash_parser: shlex.split failed: %s", safe_err)
         return BashIntent(kind="unknown", reason="invalid shell quoting")
 
     # Strip common prefixes like sudo, time, nice, exec and env VAR=val assignments
@@ -190,6 +220,16 @@ def _parse_read(binary: str, args: list[str]) -> BashIntent:
     if is_scripted and len(positional_args) < 2:
         return BashIntent(kind="unknown", reason=f"{binary} command is missing a target file")
     target_path = positional_args[-1] if is_scripted else positional_args[0]
+    # Reject paths that exceed the filesystem-safe ceiling.  Real paths are
+    # bounded by PATH_MAX; anything beyond _MAX_PATH_BYTES is anomalous and
+    # must not be forwarded to the synthesised Read payload.
+    if len(target_path) > _MAX_PATH_BYTES:
+        _LOG.warning(
+            "bash_parser: target_path too long (%d chars > %d limit); rejecting",
+            len(target_path),
+            _MAX_PATH_BYTES,
+        )
+        return BashIntent(kind="unknown", reason="target path too long")
     return BashIntent(kind="read", target_path=target_path, offset=offset, limit=limit)
 
 
