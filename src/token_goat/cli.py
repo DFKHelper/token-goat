@@ -230,6 +230,31 @@ app.add_typer(hook_app, hidden=True)
 app.add_typer(config_app, rich_help_panel="Config")
 
 
+def _version_callback(value: bool) -> None:
+    if value:
+        from . import __version__  # noqa: PLC0415
+
+        typer.echo(f"token-goat {__version__}")
+        raise typer.Exit()
+
+
+@app.callback()
+def _root(
+    version: bool = typer.Option(  # noqa: B008
+        False,
+        "--version",
+        "-V",
+        help="Show the installed token-goat version and exit.",
+        callback=_version_callback,
+        is_eager=True,
+    ),
+) -> None:
+    """token-goat — hook-based token optimizer for Claude Code and Codex CLI."""
+    # The callback is required to register --version on the root command; the
+    # body is intentionally empty so the no_args_is_help behaviour still fires.
+    _ = version
+
+
 def main() -> None:
     """Process entry point. Wraps ``app()`` so hook subcommands NEVER propagate
     a non-zero exit even when click/typer itself rejects unknown arguments.

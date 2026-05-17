@@ -30,3 +30,22 @@ def test_hook_help_runs():
     result = runner.invoke(cli.app, ["hook", "--help"])
     assert result.exit_code == 0
     assert "session-start" in result.stdout or "session_start" in result.stdout
+
+
+def test_cli_version_flag():
+    """`token-goat --version` prints the package version and exits 0.
+
+    SECURITY.md instructs reporters to run this command, so it must work.
+    """
+    result = runner.invoke(cli.app, ["--version"])
+    assert result.exit_code == 0
+    assert "token-goat" in result.stdout
+    # Version string starts with a digit (semver) — guards against a placeholder.
+    assert any(ch.isdigit() for ch in result.stdout)
+
+
+def test_cli_version_short_flag():
+    """`-V` is accepted as a short alias for --version."""
+    result = runner.invoke(cli.app, ["-V"])
+    assert result.exit_code == 0
+    assert "token-goat" in result.stdout
