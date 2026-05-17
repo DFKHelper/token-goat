@@ -178,7 +178,15 @@ def build_manifest(session_id: str, *, max_tokens: int = 400) -> str:
 
     Safe to call even when the session cache is empty or missing.
     """
-    max_tokens = max(1, min(max_tokens, _MAX_MANIFEST_TOKENS_CAP))
+    clamped = max(1, min(max_tokens, _MAX_MANIFEST_TOKENS_CAP))
+    if clamped != max_tokens:
+        _LOG.warning(
+            "build_manifest: max_tokens=%d out of range [1, %d], clamped to %d",
+            max_tokens,
+            _MAX_MANIFEST_TOKENS_CAP,
+            clamped,
+        )
+    max_tokens = clamped
     t0 = time.monotonic()
     _LOG.debug("build_manifest: session=%s max_tokens=%d", session_id[:8], max_tokens)
     cache = _load_session_cache(session_id, "build_manifest")

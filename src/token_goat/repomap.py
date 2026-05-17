@@ -659,6 +659,7 @@ def _get_rendered_summary(
     if cached_text is not None:
         return cached_text, True
 
+    _LOG.debug("repomap summary cache miss: %s (mtime=%.3f size=%d)", rel, mtime, size)
     summary = _summarize_file(
         rel,
         info,

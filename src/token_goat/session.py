@@ -548,9 +548,11 @@ def _prepare_path_mutation(
     """
     path = _sanitize_path(path)
     if not path:
+        _LOG.debug("_prepare_path_mutation: empty path after sanitize (session=%s)", session_id[:16])
         return None
     cache = _resolve_cache(session_id, cache)
     if cache.unavailable:
+        _LOG.debug("_prepare_path_mutation: session unavailable, skipping mutation (session=%s)", session_id[:16])
         return None
     return cache, _normalize_path(path)
 
