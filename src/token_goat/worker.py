@@ -185,7 +185,8 @@ def _package_fingerprint() -> str | None:
                 for st in (py.stat(),)
             ).encode("utf-8")
         ).hexdigest()
-    except Exception as e:  # noqa: BLE001
+    except (OSError, ValueError) as e:
+        # OSError: rglob/stat filesystem errors; ValueError: relative_to() path escapes pkg_dir.
         _LOG.debug("package fingerprint unavailable (falling back to version-string check): %s", e)
         return None
 

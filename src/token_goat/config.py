@@ -163,7 +163,7 @@ def load() -> Config:
             parsed: dict[str, Any] = tomllib.loads(p.read_text(encoding="utf-8"))
             raw = cast("_ConfigToml", parsed)
             _LOG.info("config loaded from file: %s", p)
-        except Exception as e:  # noqa: BLE001
+        except (OSError, tomllib.TOMLDecodeError) as e:
             _LOG.warning("config load failed for %s (%s); using defaults", p, e)
     else:
         _LOG.info("config file not found at %s; using all defaults", p)
@@ -228,5 +228,5 @@ def save(config: Config) -> None:
     }
     try:
         paths.atomic_write_bytes(p, tomli_w.dumps(cast(dict[str, Any], data)).encode("utf-8"))
-    except Exception as e:  # noqa: BLE001
+    except OSError as e:
         _LOG.warning("config save failed: %s", e)

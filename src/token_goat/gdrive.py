@@ -403,7 +403,8 @@ def run_oauth_oob_flow(client_secrets_path: Path) -> Path:
     # Try local server first (loopback), fall back to console
     try:
         creds = flow.run_local_server(port=0, open_browser=True)
-    except Exception:  # noqa: BLE001
+    except Exception as e:  # noqa: BLE001
+        _LOG.debug("OAuth local-server flow failed (%s: %s); falling back to console", type(e).__name__, e)
         creds = flow.run_console()
 
     out = paths.gdrive_creds_path()
