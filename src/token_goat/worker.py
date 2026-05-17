@@ -1038,7 +1038,7 @@ def _register_autostart() -> None:
             ok, detail = install.install_mac_autostart()
         else:
             ok, detail = install.install_linux_autostart()
-        _LOG.info("autostart self-register: %s", detail if ok else f"failed — {detail}")
+        _LOG.info("autostart self-register: %s", detail if ok else ("failed — " + detail))
     except Exception:  # noqa: BLE001
         _LOG.exception("autostart self-register failed")
 
