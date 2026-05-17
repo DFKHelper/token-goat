@@ -7,6 +7,7 @@ from .hooks_common import (
     CONTINUE,
     HookPayload,
     HookResponse,
+    get_session_context,
     sanitize_log_str,
     sanitize_opt,
 )
@@ -91,8 +92,7 @@ def _ensure_worker_running() -> None:
 
 def session_start(payload: HookPayload) -> HookResponse:
     """Reset session cache and ensure worker daemon is running."""
-    session_id = payload.get("session_id")
-    cwd = payload.get("cwd")
+    session_id, cwd = get_session_context(payload)
     _LOG.info("session-start: session_id=%s cwd=%s", sanitize_opt(session_id), sanitize_opt(cwd))
 
     _reset_session_cache(session_id)

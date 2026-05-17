@@ -9,6 +9,7 @@ from .hooks_common import (
     CONTINUE,
     HookPayload,
     HookResponse,
+    get_session_context,
     get_tool_input,
     pre_tool_use_with_context,
     pre_tool_use_with_update,
@@ -187,8 +188,7 @@ def pre_read(payload: HookPayload) -> HookResponse:
         _LOG.debug("pre-read: no file_path in tool_input; skipping")
         return CONTINUE()
 
-    session_id = payload.get("session_id")
-    cwd = payload.get("cwd")
+    session_id, cwd = get_session_context(payload)
 
     shrink_response = _try_shrink_image(file_path, tool_input)
     if shrink_response:
@@ -233,7 +233,7 @@ def post_read(payload: HookPayload) -> HookResponse:
 
     Returns CONTINUE() after recording; never modifies tool input/output.
     """
-    session_id = payload.get("session_id")
+    session_id, _cwd = get_session_context(payload)
     if not session_id:
         return CONTINUE()
 

@@ -34,6 +34,7 @@ __all__ = [
     "HookSpecificOutputUpdate",
     "LOG",
     "deny_redirect",
+    "get_session_context",
     "get_tool_input",
     "pre_tool_use_with_context",
     "pre_tool_use_with_update",
@@ -144,6 +145,20 @@ def CONTINUE() -> HookResponse:  # noqa: N802 — intentional SCREAMING_SNAKE al
     and cannot accidentally mutate a shared singleton.
     """
     return {"continue": True}
+
+
+def get_session_context(payload: HookPayload) -> tuple[str | None, str | None]:
+    """Return ``(session_id, cwd)`` from a hook payload, or ``(None, None)`` for missing keys.
+
+    Eliminates the repeated pair::
+
+        session_id = payload.get("session_id")
+        cwd = payload.get("cwd")
+
+    across hook handler bodies.  Both fields are optional in the harness protocol
+    (``HookPayload`` uses ``total=False``), so either or both may be absent.
+    """
+    return payload.get("session_id"), payload.get("cwd")  # type: ignore[return-value]
 
 
 def get_tool_input(payload: HookPayload | None) -> dict[str, Any]:
