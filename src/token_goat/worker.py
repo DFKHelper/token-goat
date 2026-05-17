@@ -683,57 +683,168 @@ def cleanup_on_startup() -> CleanupStats:
     return stats
 
 
+# Stale eviction lock age.  An eviction pass over a 500 MB cache (thousands of
+# small files) finishes in well under 60 s on any commodity disk; if a lockfile
+# is older than this, the previous evictor crashed or its host process was killed
+# and we should reclaim the lock rather than skip the pass.
+_EVICTION_LOCK_STALE_SECONDS = 120.0
+
+
+def _eviction_lock_is_stale(lock_path: Path, now: float | None = None) -> bool:
+    """Return True if *lock_path* is older than ``_EVICTION_LOCK_STALE_SECONDS``."""
+    try:
+        age = (now if now is not None else time.time()) - lock_path.stat().st_mtime
+    except OSError:
+        # Lockfile vanished between our check and stat — treat as not-stale; the
+        # caller's O_CREAT|O_EXCL retry will resolve the race correctly.
+        return False
+    return age > _EVICTION_LOCK_STALE_SECONDS
+
+
+def _acquire_eviction_lock(lock_path: Path) -> int | None:
+    """Atomically claim the eviction lock.
+
+    Uses ``os.open(O_CREAT | O_EXCL)`` so two evictors racing for the lock
+    cannot both succeed — the loser gets ``FileExistsError`` and bails.  If
+    the existing lockfile is stale (older than ``_EVICTION_LOCK_STALE_SECONDS``),
+    we unlink it and retry once: this matches the existing project-writer-lock
+    pattern in ``db.py`` and keeps a crashed evictor from blocking the cache
+    forever.
+
+    Returns the file descriptor of the held lock on success, or ``None`` if
+    another evictor is currently running.  The fd is intentionally returned
+    rather than closed here so the caller can keep it open for the duration of
+    the eviction pass — closing+unlinking together at the end is what makes
+    the lock release atomic from a watcher's perspective.
+    """
+    flags = os.O_CREAT | os.O_EXCL | os.O_WRONLY
+    try:
+        fd = os.open(str(lock_path), flags, 0o644)
+    except FileExistsError:
+        if _eviction_lock_is_stale(lock_path):
+            _LOG.info("clearing stale image-cache eviction lock at %s", lock_path)
+            with contextlib.suppress(OSError):
+                lock_path.unlink()
+            try:
+                fd = os.open(str(lock_path), flags, 0o644)
+            except FileExistsError:
+                # Another evictor grabbed it in the gap — that's fine, they win.
+                return None
+        else:
+            return None
+    # Best-effort PID stamp so cli_doctor can identify the holder; not required
+    # for correctness.
+    with contextlib.suppress(OSError):
+        os.write(fd, f"{os.getpid()}\n{time.time()}\n".encode())
+    return fd
+
+
 def evict_image_cache_if_over_limit() -> tuple[int, int]:
-    """LRU-evict image cache entries if total size exceeds IMAGE_CACHE_LIMIT (500 MB).
+    """LRU-evict image cache entries if total size exceeds IMAGE_CACHE_LIMIT.
 
-    Iterates the image cache directory, sorts files by access time (oldest
-    first), and deletes files until the total drops to IMAGE_CACHE_TARGET (80%
-    of the limit).  The two-threshold design avoids thrashing: a single large
-    image push over the limit would otherwise trigger eviction on every daemon
-    cycle.
+    Threshold and target
+    --------------------
+    Eviction runs only when the on-disk total exceeds ``IMAGE_CACHE_LIMIT``
+    (500 MB) and deletes files until the total drops to ``IMAGE_CACHE_TARGET``
+    (80% of the limit, i.e. 400 MB).  The two-threshold design avoids thrashing:
+    if the target equalled the limit we would evict one file, then immediately
+    hit the limit again on the next write and re-evict.  An 80% target gives
+    each maintenance cycle a 100 MB headroom before the next pass is needed.
 
-    Returns ``(bytes_freed, files_freed)``.  Both values are 0 when the cache
-    is within the limit or the cache directory does not exist.
+    Trigger frequency
+    -----------------
+    Called once per maintenance cycle from ``cleanup_on_startup`` and the
+    periodic worker loop (``MAINTENANCE_INTERVAL`` = 5 min).  *Not* called on
+    every cache write — pushing the eviction onto a periodic schedule means
+    interactive image shrinks never block on a directory scan.
+
+    LRU ordering
+    ------------
+    Files are sorted by ``st_mtime`` ascending.  Because the cache is
+    content-addressed and written exactly once per entry, mtime would normally
+    equal creation time and the policy would degrade to FIFO.  To make it a
+    true LRU, ``image_shrink.shrink`` bumps mtime on every cache hit via
+    ``os.utime``.  This is the most portable per-hit signal available — Windows
+    atime is unreliable (often disabled at the volume level via
+    ``NtfsDisableLastAccessUpdate``), and atime on Linux is frequently mounted
+    with ``noatime``/``relatime`` so it doesn't reliably update on read.
+
+    Race safety
+    -----------
+    Multiple agents on the same machine can hit cache shrink simultaneously,
+    and a long-running maintenance cycle could overlap a worker restart's
+    startup sweep.  Eviction takes an ``O_CREAT | O_EXCL`` lockfile in
+    ``paths.locks_dir()``; concurrent evictors return ``(0, 0)`` rather than
+    double-scanning and racing on ``unlink()`` (which would log a "failed to
+    evict" warning for every file the winner already deleted).  Stale locks
+    older than ``_EVICTION_LOCK_STALE_SECONDS`` (120 s — well above any
+    realistic pass time on a 500 MB cache) are automatically reclaimed so a
+    crashed evictor cannot wedge the cache permanently.
+
+    Returns
+    -------
+    ``(bytes_freed, files_freed)``.  Both values are 0 when the cache is within
+    the limit, the cache directory does not exist, or another evictor is
+    currently holding the lock.
     """
     img_dir = paths.image_cache_dir()
     if not img_dir.exists():
         _LOG.debug("image cache directory does not exist")
         return 0, 0
-    cache_entries: list[tuple[Path, float, int]] = []  # (path, mtime, size_bytes)
-    total_bytes = 0
-    for f in img_dir.iterdir():
-        if not f.is_file():
-            continue
-        try:
-            st = f.stat()
-            cache_entries.append((f, st.st_mtime, st.st_size))
-            total_bytes += st.st_size
-        except OSError:
-            continue
-    if total_bytes <= IMAGE_CACHE_LIMIT:
-        _LOG.debug("image cache size %.1f MB is within limit %.1f MB",
-                  total_bytes / (1024 * 1024), IMAGE_CACHE_LIMIT / (1024 * 1024))
+
+    lock_path = paths.locks_dir() / "image_cache_eviction.lock"
+    # Ensure the locks directory exists; paths.ensure_dirs() handles this at
+    # startup but defending here keeps the function callable from tests and
+    # one-shot CLI invocations that bypass the normal startup path.
+    with contextlib.suppress(OSError):
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+    lock_fd = _acquire_eviction_lock(lock_path)
+    if lock_fd is None:
+        _LOG.debug("image cache eviction already in progress; skipping this pass")
         return 0, 0
-    _LOG.warning("image cache %.1f MB exceeds limit %.1f MB; starting LRU eviction",
-                total_bytes / (1024 * 1024), IMAGE_CACHE_LIMIT / (1024 * 1024))
-    # Sort oldest-accessed first so the least-recently-used files are evicted first.
-    cache_entries.sort(key=operator.itemgetter(1))
-    bytes_freed = 0
-    files_freed = 0
-    for f, _, size in cache_entries:
-        if total_bytes - bytes_freed <= IMAGE_CACHE_TARGET:
-            break
-        try:
-            f.unlink()
-            bytes_freed += size
-            files_freed += 1
-            _LOG.debug("evicted image cache file: %s (%.1f MB)", f.name, size / (1024 * 1024))
-        except OSError as e:
-            _LOG.warning("failed to evict cache file %s: %s", f.name, e)
-    if bytes_freed > 0:
-        _LOG.info("image cache eviction: freed %.1f MB by removing %d files",
-                 bytes_freed / (1024 * 1024), files_freed)
-    return bytes_freed, files_freed
+
+    try:
+        cache_entries: list[tuple[Path, float, int]] = []  # (path, mtime, size_bytes)
+        total_bytes = 0
+        for f in img_dir.iterdir():
+            if not f.is_file():
+                continue
+            try:
+                st = f.stat()
+                cache_entries.append((f, st.st_mtime, st.st_size))
+                total_bytes += st.st_size
+            except OSError:
+                continue
+        if total_bytes <= IMAGE_CACHE_LIMIT:
+            _LOG.debug("image cache size %.1f MB is within limit %.1f MB",
+                      total_bytes / (1024 * 1024), IMAGE_CACHE_LIMIT / (1024 * 1024))
+            return 0, 0
+        _LOG.warning("image cache %.1f MB exceeds limit %.1f MB; starting LRU eviction",
+                    total_bytes / (1024 * 1024), IMAGE_CACHE_LIMIT / (1024 * 1024))
+        # Sort oldest-accessed first so the least-recently-used files are evicted first.
+        cache_entries.sort(key=operator.itemgetter(1))
+        bytes_freed = 0
+        files_freed = 0
+        for f, _, size in cache_entries:
+            if total_bytes - bytes_freed <= IMAGE_CACHE_TARGET:
+                break
+            try:
+                f.unlink()
+                bytes_freed += size
+                files_freed += 1
+                _LOG.debug("evicted image cache file: %s (%.1f MB)", f.name, size / (1024 * 1024))
+            except OSError as e:
+                _LOG.warning("failed to evict cache file %s: %s", f.name, e)
+        if bytes_freed > 0:
+            _LOG.info("image cache eviction: freed %.1f MB by removing %d files",
+                     bytes_freed / (1024 * 1024), files_freed)
+        return bytes_freed, files_freed
+    finally:
+        # Close the fd first, then unlink — releasing the lock atomically.
+        with contextlib.suppress(OSError):
+            os.close(lock_fd)
+        with contextlib.suppress(OSError):
+            lock_path.unlink()
 
 
 # ---------------------------------------------------------------------------

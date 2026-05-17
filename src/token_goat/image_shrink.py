@@ -334,6 +334,18 @@ def shrink(src_path: Path) -> Path | None:
         if candidate.exists():
             elapsed = time.time() - t0
             _LOG.debug("image cache hit: %s -> %s (%.3fs)", src_path.name, candidate.name, elapsed)
+            # Bump mtime so the LRU evictor in worker.evict_image_cache_if_over_limit
+            # treats a frequently-hit cache entry as recently-used.  Without this,
+            # the cache is content-addressed and *never modified after creation*,
+            # so st_mtime equals creation time — the eviction sort would degenerate
+            # to FIFO and discard hot entries first.  Windows atime is unreliable
+            # (often disabled at the volume level), so bumping mtime is the most
+            # portable per-hit "touch" signal available.  Failure to bump is
+            # benign — we keep returning the cache hit; the cache just loses a
+            # little LRU fidelity for this entry until it's hit again.
+            with contextlib.suppress(OSError):
+                now = time.time()
+                os.utime(candidate, (now, now))
             return candidate
 
     try:

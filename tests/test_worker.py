@@ -687,12 +687,13 @@ def test_spawn_index_detached_writes_marker(tmp_data_dir):
     """First spawn for a project Popens an index and records a spawn marker."""
     fake_proc = MagicMock()
     fake_proc.pid = 55501
+    h = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 
     with patch("token_goat.worker.subprocess.Popen", return_value=fake_proc):
-        pid = worker.spawn_index_detached("C:/proj", "hashAAA")
+        pid = worker.spawn_index_detached(str(tmp_data_dir), h)
 
     assert pid == 55501
-    marker = paths.locks_dir() / "hashAAA.indexing"
+    marker = paths.locks_dir() / f"{h}.indexing"
     assert marker.exists()
     recorded_pid, _ts = marker.read_text(encoding="utf-8").split("\n", 1)
     assert recorded_pid == "55501"
@@ -719,7 +720,8 @@ def test_spawn_index_detached_skips_when_already_running(tmp_data_dir):
 
 def test_spawn_index_detached_respawns_when_marker_stale(tmp_data_dir):
     """A stale marker (timestamp older than the TTL) must not block a new spawn."""
-    marker = paths.locks_dir() / "hashCCC.indexing"
+    h = "cccccccccccccccccccccccccccccccccccccccc"
+    marker = paths.locks_dir() / f"{h}.indexing"
     marker.parent.mkdir(parents=True, exist_ok=True)
     stale_ts = time.time() - (worker.INDEX_SPAWN_TTL + 60)
     marker.write_text(f"{os.getpid()}\n{stale_ts}", encoding="utf-8")
@@ -727,7 +729,7 @@ def test_spawn_index_detached_respawns_when_marker_stale(tmp_data_dir):
     fake_proc = MagicMock()
     fake_proc.pid = 55503
     with patch("token_goat.worker.subprocess.Popen", return_value=fake_proc) as mock_popen:
-        pid = worker.spawn_index_detached("C:/proj", "hashCCC")
+        pid = worker.spawn_index_detached(str(tmp_data_dir), h)
 
     assert pid == 55503
     mock_popen.assert_called_once()
@@ -735,7 +737,8 @@ def test_spawn_index_detached_respawns_when_marker_stale(tmp_data_dir):
 
 def test_spawn_index_detached_respawns_when_pid_dead(tmp_data_dir):
     """A marker whose PID is no longer alive must not block a new spawn."""
-    marker = paths.locks_dir() / "hashDDD.indexing"
+    h = "dddddddddddddddddddddddddddddddddddddddd"
+    marker = paths.locks_dir() / f"{h}.indexing"
     marker.parent.mkdir(parents=True, exist_ok=True)
     # PID 1 with a port-style high number that is almost certainly not alive;
     # use a fresh timestamp so only the dead-PID condition is under test.
@@ -745,7 +748,7 @@ def test_spawn_index_detached_respawns_when_pid_dead(tmp_data_dir):
     fake_proc = MagicMock()
     fake_proc.pid = 55504
     with patch("token_goat.worker.subprocess.Popen", return_value=fake_proc) as mock_popen:
-        pid = worker.spawn_index_detached("C:/proj", "hashDDD")
+        pid = worker.spawn_index_detached(str(tmp_data_dir), h)
 
     assert pid == 55504
     mock_popen.assert_called_once()
@@ -1098,7 +1101,7 @@ class TestReindexActiveProjects:
         from token_goat import db as _db
 
         def _boom(*a, **kw):
-            raise RuntimeError("DB gone")
+            raise _db.DBError("DB gone")
 
         monkeypatch.setattr(_db, "open_global_readonly", _boom)
         # Should not raise — error is caught and logged
@@ -1575,3 +1578,193 @@ def test_parse_and_group_entries_coalesces_distinct_files_independently():
         })
     by_project = worker._parse_and_group_entries(entries)
     assert by_project[ph]["rels"] == {"src/a.py", "src/b.py", "src/c.py"}
+
+
+# ---------------------------------------------------------------------------
+# Image cache eviction: LRU ordering, target invariant, lock-mutex behavior
+# ---------------------------------------------------------------------------
+
+class TestImageCacheEviction:
+    """Regression coverage for the image cache LRU eviction policy.
+
+    Covers:
+        - target invariant (eviction drives total to <= IMAGE_CACHE_TARGET, not just LIMIT)
+        - LRU order (oldest mtime is evicted first)
+        - cache-hit mtime bump in image_shrink turns FIFO into real LRU
+        - lockfile mutex prevents concurrent evictions from racing
+        - stale lock is auto-reclaimed
+    """
+
+    def _set_small_limits(self, monkeypatch, limit_bytes: int = 1000) -> tuple[int, int]:
+        target_bytes = int(limit_bytes * 0.8)
+        monkeypatch.setattr(worker, "IMAGE_CACHE_LIMIT", limit_bytes)
+        monkeypatch.setattr(worker, "IMAGE_CACHE_TARGET", target_bytes)
+        return limit_bytes, target_bytes
+
+    def test_eviction_drives_to_target_not_just_limit(self, tmp_data_dir, monkeypatch):
+        """After eviction the remaining total must be <= TARGET (80% of LIMIT),
+        not merely <= LIMIT — that's the anti-thrash invariant."""
+        paths.ensure_dirs()
+        img_dir = paths.image_cache_dir()
+        _, target = self._set_small_limits(monkeypatch, limit_bytes=1000)
+
+        # 12 files at 100 bytes = 1200 bytes total (20% over LIMIT)
+        for i in range(12):
+            f = img_dir / f"img_{i:02d}.webp"
+            f.write_bytes(b"x" * 100)
+            ts = time.time() - (12 - i) * 5  # stagger mtimes
+            os.utime(f, (ts, ts))
+
+        worker.evict_image_cache_if_over_limit()
+        remaining = sum(f.stat().st_size for f in img_dir.iterdir() if f.is_file())
+        assert remaining <= target, (
+            f"eviction left {remaining} bytes; expected <= TARGET ({target})"
+        )
+
+    def test_eviction_oldest_mtime_evicted_first(self, tmp_data_dir, monkeypatch):
+        """The file with the oldest mtime must be deleted before any newer file."""
+        paths.ensure_dirs()
+        img_dir = paths.image_cache_dir()
+        self._set_small_limits(monkeypatch, limit_bytes=500)
+
+        # 6 files × 100 bytes = 600 bytes; need to evict at least ~200 bytes to reach 400.
+        for i in range(6):
+            f = img_dir / f"img_{i:02d}.webp"
+            f.write_bytes(b"x" * 100)
+            ts = time.time() - (6 - i) * 10  # i=0 oldest, i=5 newest
+            os.utime(f, (ts, ts))
+
+        worker.evict_image_cache_if_over_limit()
+        remaining_names = {f.name for f in img_dir.iterdir() if f.is_file()}
+        # img_00 (oldest) must be gone; img_05 (newest) must survive.
+        assert "img_00.webp" not in remaining_names, "oldest file should have been evicted first"
+        assert "img_05.webp" in remaining_names, "newest file should have survived"
+
+    def test_cache_hit_bumps_mtime_for_true_lru(self, tmp_data_dir):
+        """image_shrink.shrink's cache-hit path must bump mtime so a frequently-hit
+        old entry doesn't get FIFO-evicted by the worker.
+
+        This is the load-bearing regression test for the LRU-vs-FIFO bug fix:
+        without the os.utime call in shrink(), a content-addressed cache that's
+        written exactly once per entry has st_mtime == creation time, and the
+        eviction sort degrades into FIFO regardless of access pattern.
+        """
+        from token_goat import image_shrink
+        paths.ensure_dirs()
+
+        # Plant a fake cache entry where the source's content hash will map.
+        # We bypass actual PIL by writing the cache file directly, then call
+        # shrink() with a "source" that has the right size + extension to
+        # trigger the cache lookup but a synthetic content hash check.
+        src = tmp_data_dir / "source.png"
+        # Make src large enough to clear SIZE_THRESHOLD_BYTES so shrink doesn't
+        # short-circuit on the size check.
+        src.write_bytes(b"X" * (image_shrink.SIZE_THRESHOLD_BYTES + 1))
+
+        # Plant the cache file at the path shrink() will compute for this source.
+        stem = image_shrink._cache_path_for(src)
+        cache_file = stem.with_suffix(".webp")
+        cache_file.parent.mkdir(parents=True, exist_ok=True)
+        cache_file.write_bytes(b"cached-output")
+
+        # Backdate mtime so we can detect a bump.
+        old_ts = time.time() - 3600  # 1 hour ago
+        os.utime(cache_file, (old_ts, old_ts))
+        assert cache_file.stat().st_mtime == old_ts
+
+        # Cache hit should bump mtime.
+        result = image_shrink.shrink(src)
+        assert result == cache_file
+        new_mtime = cache_file.stat().st_mtime
+        assert new_mtime > old_ts + 60, (
+            f"cache hit should bump mtime to ~now; got {new_mtime} vs old {old_ts}"
+        )
+
+    def test_concurrent_eviction_lock_mutex(self, tmp_data_dir, monkeypatch):
+        """If one evictor holds the lockfile, a second concurrent call must skip
+        cleanly with (0, 0) — not race and double-delete."""
+        paths.ensure_dirs()
+        img_dir = paths.image_cache_dir()
+        self._set_small_limits(monkeypatch, limit_bytes=500)
+
+        for i in range(6):
+            f = img_dir / f"img_{i:02d}.webp"
+            f.write_bytes(b"x" * 100)
+            ts = time.time() - (6 - i) * 10
+            os.utime(f, (ts, ts))
+
+        # Pre-create a fresh lockfile to simulate "another evictor is running".
+        lock_path = paths.locks_dir() / "image_cache_eviction.lock"
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+        lock_path.write_text(f"{os.getpid()}\n{time.time()}\n", encoding="utf-8")
+
+        # This invocation should see the lock and bail out with (0, 0).
+        result = worker.evict_image_cache_if_over_limit()
+        assert result == (0, 0), "lock-held eviction must skip, not race"
+        # Cache must be untouched (nobody won the race).
+        remaining = sum(f.stat().st_size for f in img_dir.iterdir() if f.is_file())
+        assert remaining == 600, "no files should have been evicted while lock was held"
+
+        # Cleanup so this test doesn't leak the synthetic lock.
+        lock_path.unlink()
+
+    def test_stale_eviction_lock_is_reclaimed(self, tmp_data_dir, monkeypatch):
+        """A lockfile older than the stale threshold must be auto-cleared so a
+        crashed evictor cannot wedge the cache indefinitely."""
+        paths.ensure_dirs()
+        img_dir = paths.image_cache_dir()
+        _, target = self._set_small_limits(monkeypatch, limit_bytes=500)
+
+        for i in range(6):
+            f = img_dir / f"img_{i:02d}.webp"
+            f.write_bytes(b"x" * 100)
+            ts = time.time() - (6 - i) * 10
+            os.utime(f, (ts, ts))
+
+        # Plant a stale lockfile — mtime older than _EVICTION_LOCK_STALE_SECONDS.
+        lock_path = paths.locks_dir() / "image_cache_eviction.lock"
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+        lock_path.write_text("99999999\nold\n", encoding="utf-8")
+        stale_ts = time.time() - (worker._EVICTION_LOCK_STALE_SECONDS + 60)
+        os.utime(lock_path, (stale_ts, stale_ts))
+
+        bytes_freed, files_freed = worker.evict_image_cache_if_over_limit()
+        assert bytes_freed > 0 and files_freed > 0, (
+            "stale lock should have been reclaimed and eviction allowed to run"
+        )
+        remaining = sum(f.stat().st_size for f in img_dir.iterdir() if f.is_file())
+        assert remaining <= target
+
+    def test_eviction_releases_lock_on_exit(self, tmp_data_dir, monkeypatch):
+        """The lockfile must be unlinked after a successful eviction pass so the
+        next maintenance cycle can run."""
+        paths.ensure_dirs()
+        img_dir = paths.image_cache_dir()
+        self._set_small_limits(monkeypatch, limit_bytes=500)
+
+        for i in range(6):
+            f = img_dir / f"img_{i:02d}.webp"
+            f.write_bytes(b"x" * 100)
+            ts = time.time() - (6 - i) * 10
+            os.utime(f, (ts, ts))
+
+        worker.evict_image_cache_if_over_limit()
+        lock_path = paths.locks_dir() / "image_cache_eviction.lock"
+        assert not lock_path.exists(), "lockfile should be released after eviction completes"
+
+    def test_eviction_releases_lock_on_below_limit_path(self, tmp_data_dir, monkeypatch):
+        """The lockfile must also be released when eviction finds the cache is
+        already below the limit (the early-return branch must hit finally:)."""
+        paths.ensure_dirs()
+        img_dir = paths.image_cache_dir()
+        # Set a huge limit so even some sample files stay under it.
+        monkeypatch.setattr(worker, "IMAGE_CACHE_LIMIT", 10 * 1024 * 1024)
+
+        (img_dir / "tiny.webp").write_bytes(b"x" * 100)
+
+        result = worker.evict_image_cache_if_over_limit()
+        assert result == (0, 0)
+        lock_path = paths.locks_dir() / "image_cache_eviction.lock"
+        assert not lock_path.exists(), (
+            "lockfile must be released even when cache is under the limit"
+        )
