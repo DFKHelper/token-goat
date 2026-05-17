@@ -21,7 +21,7 @@ from collections import Counter, defaultdict
 from collections.abc import Iterable
 from dataclasses import dataclass
 from functools import lru_cache
-from typing import TYPE_CHECKING, Protocol, TypedDict
+from typing import TYPE_CHECKING, Final, Protocol, TypedDict
 
 from . import db
 
@@ -131,24 +131,24 @@ class FileMapItem(TypedDict):
 _LOG = logging.getLogger("token_goat.repomap")
 
 # Files below this approximate line count are structural noise (empty __init__.py stubs, etc.)
-_MIN_DISPLAY_LINES = 4
+_MIN_DISPLAY_LINES: Final[int] = 4
 # Maximum symbol names shown per kind group in render_summary output.
 # Keeping this small prevents any one kind from dominating the text budget.
-_MAX_NAMES_PER_KIND = 6
+_MAX_NAMES_PER_KIND: Final[int] = 6
 # POSIX path prefixes excluded from the map — these dirs are test fixtures, not source
-_EXCLUDED_PREFIXES = ("tests/fixtures/",)
+_EXCLUDED_PREFIXES: Final[tuple[str, ...]] = ("tests/fixtures/",)
 # Bytes-per-line divisor used to estimate line count from file size.
 # Code files average 30–60 bytes/line; 50 gives a conservative (slightly
 # over-counting) estimate so we include borderline files rather than drop them.
-_BYTES_PER_APPROX_LINE = 50
+_BYTES_PER_APPROX_LINE: Final[int] = 50
 
 # PageRank power-iteration parameters.
 # First attempt uses tight tolerance for accuracy; on convergence failure a
 # second pass relaxes both to give a usable (approximate) result.
-_PAGERANK_MAX_ITER_NORMAL = 200
-_PAGERANK_MAX_ITER_FALLBACK = 500
-_PAGERANK_TOL_NORMAL = 1e-6
-_PAGERANK_TOL_FALLBACK = 1e-4
+_PAGERANK_MAX_ITER_NORMAL: Final[int] = 200
+_PAGERANK_MAX_ITER_FALLBACK: Final[int] = 500
+_PAGERANK_TOL_NORMAL: Final[float] = 1e-6
+_PAGERANK_TOL_FALLBACK: Final[float] = 1e-4
 
 
 @lru_cache(maxsize=2048)

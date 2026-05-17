@@ -7,18 +7,18 @@ import logging
 import os
 import tomllib
 from dataclasses import dataclass, field
-from typing import Any, TypedDict, cast
+from typing import Any, Final, TypedDict, cast
 
 from . import paths
 
 _LOG = logging.getLogger("token_goat.config")
 
-_ENV_COMPACT_ASSIST = "TOKEN_GOAT_COMPACT_ASSIST"  # set to "0"/"false"/"no"/"off" to disable
-_ENV_COMPACT_ASSIST_LEGACY = "TOKENWISE_COMPACT_ASSIST"  # backward-compat alias
+_ENV_COMPACT_ASSIST: Final[str] = "TOKEN_GOAT_COMPACT_ASSIST"  # set to "0"/"false"/"no"/"off" to disable
+_ENV_COMPACT_ASSIST_LEGACY: Final[str] = "TOKENWISE_COMPACT_ASSIST"  # backward-compat alias
 
-CONFIG_SCHEMA_VERSION = 1
+CONFIG_SCHEMA_VERSION: Final[int] = 1
 
-_VALID_TRIGGERS = frozenset(["manual", "auto"])
+_VALID_TRIGGERS: Final[frozenset[str]] = frozenset(["manual", "auto"])
 
 
 class _CompactAssistToml(TypedDict, total=False):

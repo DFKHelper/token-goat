@@ -59,11 +59,12 @@ import sqlite3
 import time
 from collections.abc import Callable, Iterator
 from pathlib import Path
+from typing import Final
 
 from . import paths
 
-SCHEMA_VERSION = 2
-EMBED_DIM = 384  # BAAI/bge-small-en-v1.5
+SCHEMA_VERSION: Final[int] = 2
+EMBED_DIM: Final[int] = 384  # BAAI/bge-small-en-v1.5
 
 _LOG = logging.getLogger("token_goat.db")
 
@@ -611,7 +612,7 @@ def open_global() -> Iterator[sqlite3.Connection]:
 # PID still exists (e.g. recycled to an unrelated process). 10 minutes is chosen
 # to be longer than the slowest realistic full reindex (large monorepos with
 # embeddings), so a legitimately running worker is never falsely evicted.
-LOCK_STALE_SECONDS = 600  # 10 minutes
+LOCK_STALE_SECONDS: Final[int] = 600  # 10 minutes
 
 # Project hashes are SHA-1 hex digests (40 lowercase hex chars).  The previous
 # pattern accepted uppercase letters and underscores which can never appear in a

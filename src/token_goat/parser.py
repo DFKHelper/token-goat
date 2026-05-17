@@ -26,7 +26,7 @@ import time
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING, TypedDict
+from typing import TYPE_CHECKING, Final, TypedDict
 
 from . import db
 
@@ -63,15 +63,15 @@ LANG_BY_EXT: dict[str, str] = {
 _KNOWN_EXTENSIONS: frozenset[str] = frozenset(LANG_BY_EXT)
 
 # Directories that should never be indexed
-SKIP_DIRS = {
+SKIP_DIRS: Final[frozenset[str]] = frozenset({
     "node_modules", ".git", ".next", "dist", "build", ".venv", "venv",
     "__pycache__", ".pytest_cache", ".ruff_cache", ".mypy_cache",
     "target", "out", "coverage", ".turbo", ".vercel", ".svelte-kit",
     ".cache", ".idea", ".vscode", ".DS_Store", ".angular",
-}
+})
 
 # Skip files larger than this (bytes) — usually generated artifacts
-MAX_FILE_SIZE = 2_000_000  # 2 MB
+MAX_FILE_SIZE: Final[int] = 2_000_000  # 2 MB
 
 
 @dataclass
