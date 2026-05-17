@@ -362,7 +362,11 @@ def _multigraph_to_weighted_digraph(multigraph: _NxGraph) -> _NxGraph:
     # This avoids a has_edge() + dict-lookup conditional on every edge,
     # replacing O(E) graph attribute writes with one Counter pass + one
     # add_edges_from call.
-    edge_weights: Counter[tuple[object, object]] = Counter(multigraph.edges)
+    # multigraph.edges yields (src, dst, key) 3-tuples for MultiDiGraph; strip the
+    # edge key so the Counter is keyed on (src, dst) pairs only.
+    edge_weights: Counter[tuple[object, object]] = Counter(
+        (src, dst) for src, dst, *_ in multigraph.edges
+    )
     simple_graph.add_edges_from(
         (src, dst, {"weight": float(w)}) for (src, dst), w in edge_weights.items()
     )
