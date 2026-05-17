@@ -387,18 +387,19 @@ def dispatch(event: str, payload: dict[str, Any]) -> dict[str, Any]:
     ``dict[str, Any]``.
     """
     _setup_logging()
+    safe_event = sanitize_log_str(event, max_len=64)
     handler = EVENTS.get(event)
     if handler is None:
-        _LOG.warning("unknown hook event: %s", event)
+        _LOG.warning("unknown hook event: %s", safe_event)
         return dict(CONTINUE())
-    _LOG.debug("hook %s started", event)
+    _LOG.debug("hook %s started", safe_event)
     t0 = time.monotonic()
     result: dict[str, Any] = dict(handler(payload))
     elapsed_ms = (time.monotonic() - t0) * 1000
     if elapsed_ms >= _HOOK_SLOW_MS:
-        _LOG.warning("hook %s slow: %.1fms (check for blockage or I/O delays)", event, elapsed_ms)
+        _LOG.warning("hook %s slow: %.1fms (check for blockage or I/O delays)", safe_event, elapsed_ms)
     else:
         speed_tag = "moderate" if elapsed_ms >= _HOOK_MODERATE_MS else "fast"
-        _LOG.debug("hook %s completed in %.1fms (%s)", event, elapsed_ms, speed_tag)
+        _LOG.debug("hook %s completed in %.1fms (%s)", safe_event, elapsed_ms, speed_tag)
     result["_tg_elapsed_ms"] = round(elapsed_ms, 2)
     return result

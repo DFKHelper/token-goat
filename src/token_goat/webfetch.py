@@ -32,8 +32,21 @@ from urllib.parse import urlparse
 import httpx
 
 from . import image_shrink, paths
+from .hooks_common import sanitize_log_str
 
 _LOG = logging.getLogger("token_goat.webfetch")
+
+
+def _sanitize_header_value(value: str, max_len: int = 512) -> str:
+    """Strip CRLF from an HTTP header value and truncate to *max_len*.
+
+    Stored ETag / Last-Modified values come from untrusted server responses.
+    Without stripping ``\\r`` / ``\\n`` a malicious server can inject arbitrary
+    headers into the next conditional request by returning a crafted ETag such
+    as ``abc\\r\\nX-Injected: evil``.
+    """
+    sanitized = value.replace("\r", "").replace("\n", "")
+    return sanitized[:max_len]
 
 # Common image extensions to detect from URL
 IMAGE_URL_EXTS = (".jpg", ".jpeg", ".png", ".webp", ".avif", ".gif", ".bmp", ".tiff", ".tif")
@@ -216,7 +229,10 @@ def _read_cache_meta(cache_path: Path) -> dict[str, str]:
             if not isinstance(v, str):
                 _LOG.debug("cache metadata key %r has non-string value; skipping", k)
                 continue
-            result[k] = v[:_MAX_META_VALUE_LEN]
+            # Defense-in-depth: strip CRLF even if the write path already did so.
+            # These values flow directly into HTTP request headers; any embedded
+            # \r\n would allow header injection on the next conditional GET.
+            result[k] = _sanitize_header_value(v, _MAX_META_VALUE_LEN)
         return result
     except Exception as e:  # noqa: BLE001
         _LOG.debug("corrupt cache metadata at %s; discarding: %s", sidecar.name, e)
@@ -233,9 +249,9 @@ def _write_cache_meta(cache_path: Path, response_headers: httpx.Headers) -> None
     """
     meta: dict[str, str] = {}
     if etag := response_headers.get("etag"):
-        meta["etag"] = etag[:_MAX_META_VALUE_LEN]
+        meta["etag"] = _sanitize_header_value(etag, _MAX_META_VALUE_LEN)
     if lm := response_headers.get("last-modified"):
-        meta["last_modified"] = lm[:_MAX_META_VALUE_LEN]
+        meta["last_modified"] = _sanitize_header_value(lm, _MAX_META_VALUE_LEN)
     if not meta:
         return
     try:
@@ -371,15 +387,16 @@ def fetch_url(
                 # ::1 on a conditional GET just as easily as on a fresh fetch.
                 final_url = str(r.url)
                 if final_url != url:
-                    _LOG.info("web revalidation redirected: %s -> %s", url, final_url)
+                    _LOG.info("web revalidation redirected: %s -> %s",
+                              sanitize_log_str(url), sanitize_log_str(final_url))
                 try:
                     _validate_response_url(final_url)
                 except ValueError:
                     _LOG.warning(
                         "revalidation redirect blocked by SSRF guard (%s -> %s); "
                         "using cached file",
-                        url,
-                        final_url,
+                        sanitize_log_str(url),
+                        sanitize_log_str(final_url),
                     )
                     return cached_path
                 if r.status_code == 304:
@@ -410,7 +427,8 @@ def fetch_url(
             r.raise_for_status()
             final_url = str(r.url)
             if final_url != url:
-                _LOG.info("web fetch redirected: %s -> %s", url, final_url)
+                _LOG.info("web fetch redirected: %s -> %s",
+                          sanitize_log_str(url), sanitize_log_str(final_url))
             _validate_response_url(final_url)
             content_type = r.headers.get("content-type", "")
             suffix = _suffix_for(url, content_type)
