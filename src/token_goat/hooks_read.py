@@ -136,19 +136,20 @@ def _record_session_hint_impact(file_path: str, hint: str) -> None:
     realized_bytes = realized_tokens * 4  # project convention: ~4 bytes/token
     injection_bytes = len(hint)
 
+    safe_path = sanitize_log_str(file_path, max_len=512)
     db.record_stat(
         None,
         "session_hint",
         bytes_saved=realized_bytes,
         tokens_saved=realized_tokens,
-        detail=file_path,
+        detail=safe_path,
     )
     db.record_stat(
         None,
         "session_hint_overhead",
         bytes_saved=-injection_bytes,
         tokens_saved=-injection_cost_tokens,
-        detail=file_path,
+        detail=safe_path,
     )
 
 

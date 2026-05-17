@@ -957,6 +957,10 @@ def index_health(project_hash: str) -> dict[str, object]:
     return result
 
 
+_MAX_STAT_KIND_LEN: int = 64
+_MAX_STAT_DETAIL_LEN: int = 512
+
+
 def record_stat(
     project_hash: str | None,
     kind: str,
@@ -964,8 +968,21 @@ def record_stat(
     bytes_saved: int = 0,
     detail: str | None = None,
 ) -> None:
-    """Append a row to the stats table of the appropriate DB."""
+    """Append a row to the stats table of the appropriate DB.
+
+    *kind* is truncated to ``_MAX_STAT_KIND_LEN`` (64) characters and *detail*
+    to ``_MAX_STAT_DETAIL_LEN`` (512) characters before the INSERT.  Both fields
+    can originate from external hook payloads (file paths, symbol names) so
+    bounding them prevents unbounded DB growth from adversarial or pathologically
+    long inputs.
+    """
     ts = int(time.time())
+    # Truncate caller-supplied strings to prevent unbounded DB row growth from
+    # hook payloads containing very long file paths or symbol names.
+    if len(kind) > _MAX_STAT_KIND_LEN:
+        kind = kind[:_MAX_STAT_KIND_LEN]
+    if detail is not None and len(detail) > _MAX_STAT_DETAIL_LEN:
+        detail = detail[:_MAX_STAT_DETAIL_LEN]
     sql = "INSERT INTO stats (ts, kind, tokens_saved, bytes_saved, detail) VALUES (?, ?, ?, ?, ?)"
     params = (ts, kind, tokens_saved, bytes_saved, detail)
     try:
