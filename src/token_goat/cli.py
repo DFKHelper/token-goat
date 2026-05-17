@@ -5,6 +5,7 @@ import contextlib
 import json
 import logging
 import os
+import sqlite3
 import sys
 from dataclasses import asdict, is_dataclass
 from pathlib import Path
@@ -89,7 +90,7 @@ def _emit_json(data: Any, *, indent: int | None = None) -> None:
     raise typer.Exit(0)
 
 
-def _query_project(proj_hash: str, sql: str, params: tuple[object, ...]) -> list[Any]:
+def _query_project(proj_hash: str, sql: str, params: tuple[object, ...]) -> list[sqlite3.Row]:
     """Run a SELECT against the project DB, exiting on DBError.
 
     Centralises the repeated pattern::
@@ -886,13 +887,13 @@ def compact_hint(
     typer.echo(f"({len(manifest)} chars, ~{len(manifest) // 4} tokens)")
 
 
-def _config_get_value(config: Any, key: str) -> Any:
+def _config_get_value(config: object, key: str) -> object:
     """Retrieve a nested config attribute by dotted key (e.g. ``"compact_assist.enabled"``).
 
     Walks the dataclass hierarchy attribute-by-attribute and returns the leaf
     value.  Raises ``KeyError`` if any component of *key* is absent.
     """
-    target: Any = config
+    target: object = config
     parts = [part for part in key.split(".") if part]
     if not parts:
         raise KeyError(key)
@@ -903,7 +904,7 @@ def _config_get_value(config: Any, key: str) -> Any:
     return target
 
 
-def _coerce_config_value(current: Any, raw_value: str) -> Any:
+def _coerce_config_value(current: object, raw_value: str) -> object:
     """Coerce *raw_value* (a CLI string) to the same type as *current*.
 
     Dispatch table:
@@ -947,7 +948,7 @@ def _coerce_config_value(current: Any, raw_value: str) -> Any:
     return raw_value
 
 
-def _config_set_value(config: config_mod.Config, key: str, raw_value: str) -> Any:
+def _config_set_value(config: config_mod.Config, key: str, raw_value: str) -> object:
     """Set a nested config attribute by dotted key, coercing *raw_value* to the right type.
 
     Navigates the dataclass hierarchy to the parent of the leaf attribute, calls
@@ -959,7 +960,7 @@ def _config_set_value(config: config_mod.Config, key: str, raw_value: str) -> An
     if not parts:
         raise KeyError(key)
 
-    target: Any = config
+    target: object = config
     for part in parts[:-1]:
         if not hasattr(target, part):
             raise KeyError(key)
@@ -984,10 +985,10 @@ def config_list(
     current = config_mod.load()
 
     # Flatten a dataclass to dotted-key -> value pairs
-    def _flatten(obj: Any, prefix: str = "") -> list[tuple[str, Any]]:
+    def _flatten(obj: Any, prefix: str = "") -> list[tuple[str, object]]:
         """Recursively expand a dataclass into ``(dotted_key, value)`` pairs."""
         from dataclasses import fields as _fields  # noqa: PLC0415
-        pairs: list[tuple[str, Any]] = []
+        pairs: list[tuple[str, object]] = []
         for f in _fields(obj):
             key = f"{prefix}{f.name}" if not prefix else f"{prefix}.{f.name}"
             val = getattr(obj, f.name)

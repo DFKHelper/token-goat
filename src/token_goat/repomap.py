@@ -18,9 +18,10 @@ import logging
 import sqlite3
 import time
 from collections import Counter, defaultdict
+from collections.abc import Iterable
 from dataclasses import dataclass
 from functools import lru_cache
-from typing import TYPE_CHECKING, Any, Protocol, TypedDict
+from typing import TYPE_CHECKING, Protocol, TypedDict
 
 from . import db
 
@@ -41,15 +42,17 @@ class _NxGraph(Protocol):
 
     def add_node(self, node: str) -> None: ...
     def add_edge(self, u: str, v: str) -> None: ...
-    def add_edges_from(self, ebunch: Any) -> None: ...
+    def add_edges_from(
+        self, ebunch: Iterable[tuple[str, str] | tuple[str, str, dict[str, float]]]
+    ) -> None: ...
     def number_of_nodes(self) -> int: ...
     def number_of_edges(self) -> int: ...
 
     @property
-    def nodes(self) -> Any: ...
+    def nodes(self) -> Iterable[str]: ...
 
     @property
-    def edges(self) -> Any: ...
+    def edges(self) -> Iterable[tuple[str, str]]: ...
 
 
 class _FileInfo(TypedDict):
@@ -343,7 +346,7 @@ def _multigraph_to_weighted_digraph(multigraph: _NxGraph) -> _NxGraph:
     # This avoids a has_edge() + dict-lookup conditional on every edge,
     # replacing O(E) graph attribute writes with one Counter pass + one
     # add_edges_from call.
-    edge_weights: Counter[tuple[object, object]] = Counter(multigraph.edges())
+    edge_weights: Counter[tuple[object, object]] = Counter(multigraph.edges)
     simple_graph.add_edges_from(
         (src, dst, {"weight": float(w)}) for (src, dst), w in edge_weights.items()
     )
@@ -371,7 +374,7 @@ def compute_ranks(graph: _NxGraph, *, alpha: float = 0.85) -> dict[str, float]:
     def _uniform_ranks() -> dict[str, float]:
         node_count = simple_graph.number_of_nodes()
         rank = 1.0 / node_count if node_count else 1.0
-        return {node: rank for node in simple_graph.nodes()}
+        return {node: rank for node in simple_graph.nodes}
 
     # _pagerank_python is a private networkx symbol — guard the import so a
     # future networkx rename does not crash the entire map command.
