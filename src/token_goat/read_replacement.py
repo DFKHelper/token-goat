@@ -634,6 +634,65 @@ def _read_file_lines(abs_path: Path) -> tuple[list[str], int] | None:
     return lines, len(full_text.encode("utf-8"))
 
 
+def _split_qualified_symbol(symbol: str) -> tuple[str | None, str]:
+    """Split a possibly-qualified symbol into ``(qualifier, leaf_name)``.
+
+    Supports the natural ``Class.method`` notation agents already use when
+    referring to a method by its enclosing scope. Multi-level qualifiers
+    (``Outer.Inner.method``) are collapsed so the immediate enclosing scope
+    is the qualifier and everything to its left is dropped — only the
+    immediate parent is checked because the indexer stores at most one
+    enclosing scope per symbol.
+
+    Returns ``(None, symbol)`` for a bare name with no ``.`` separator.
+    """
+    if "." not in symbol:
+        return None, symbol
+    qualifier, _, leaf = symbol.rpartition(".")
+    # Strip nested qualifiers: only the immediate parent matters for filtering.
+    _, _, immediate = qualifier.rpartition(".")
+    return immediate or None, leaf
+
+
+# Kinds that can act as a method's enclosing scope for qualified lookups.
+# ``module`` is excluded — modules are not symbols, they are files.
+_QUALIFIER_KINDS: frozenset[str] = frozenset(
+    {"class", "interface", "struct", "trait", "enum", "impl", "type"}
+)
+
+
+def _filter_by_qualifier(
+    conn: sqlite3.Connection,
+    rel_path: str,
+    rows: list[sqlite3.Row],
+    qualifier: str,
+) -> list[sqlite3.Row]:
+    """Restrict *rows* to symbols enclosed by a class/interface named *qualifier*.
+
+    For each candidate row we look up class/interface/struct/trait symbols in
+    the same file whose ``[line, end_line]`` range contains the candidate's
+    ``line`` and whose ``name == qualifier``.  Rows with no matching enclosing
+    scope are dropped.  When the filter would remove every row, the caller
+    can fall back to the unfiltered list (best-effort lookup); returning an
+    empty list here means "no qualified match" and is the signal to fall back.
+    """
+    enclosing = conn.execute(
+        "SELECT name, line, end_line FROM symbols "
+        "WHERE file_rel = ? AND name = ? AND end_line IS NOT NULL "
+        f"AND kind IN ({','.join('?' * len(_QUALIFIER_KINDS))})",
+        (rel_path, qualifier, *_QUALIFIER_KINDS),
+    ).fetchall()
+    if not enclosing:
+        return []
+    spans = [(int(e["line"]), int(e["end_line"])) for e in enclosing]
+    kept: list[sqlite3.Row] = []
+    for r in rows:
+        r_line = int(r["line"])
+        if any(s <= r_line <= e for s, e in spans):
+            kept.append(r)
+    return kept
+
+
 def read_symbol(
     project: Project,
     rel_path: str,
@@ -647,8 +706,17 @@ def read_symbol(
         file, symbol, kind, start_line, end_line, text,
         signature, bytes_total, bytes_extracted, bytes_saved
     Returns None if the symbol is not found or the file cannot be read.
+
+    The ``symbol`` argument accepts a qualified name like ``Class.method``;
+    the qualifier (immediate enclosing class/interface/struct/trait) is used
+    to disambiguate when several files or scopes define a method with the
+    same leaf name.  If no qualified match is found, the lookup falls back
+    to the unqualified leaf name so this stays a soft constraint.
     """
     t0 = time.monotonic()
+    qualifier, leaf = _split_qualified_symbol(symbol)
+    # Validate against the leaf — qualified names are slightly longer than
+    # the leaf alone but the same per-component limit must hold.
     if not _validate_lookup_args("read_symbol", rel_path, symbol):
         return None
 
@@ -657,8 +725,18 @@ def read_symbol(
             rows = conn.execute(
                 "SELECT name, kind, line, end_line, signature FROM symbols "
                 "WHERE file_rel = ? AND name = ? AND end_line IS NOT NULL ORDER BY line",
-                (rel_path, symbol),
+                (rel_path, leaf),
             ).fetchall()
+            if qualifier and rows:
+                qualified = _filter_by_qualifier(conn, rel_path, rows, qualifier)
+                if qualified:
+                    rows = qualified
+                else:
+                    _LOG.debug(
+                        "read_symbol: qualifier %r did not narrow %d candidates for %r in %s; "
+                        "falling back to unqualified lookup",
+                        qualifier, len(rows), leaf, rel_path,
+                    )
     except (sqlite3.OperationalError, sqlite3.DatabaseError) as exc:
         _LOG.warning(
             "read_symbol: DB error for project=%s file=%s symbol=%s: %s",
@@ -732,6 +810,29 @@ def read_symbol(
     )
 
 
+def _parse_section_ordinal(heading: str) -> tuple[str, int | None]:
+    """Split a heading like ``Methodology#2`` into ``("Methodology", 2)``.
+
+    The ``#N`` suffix is a 1-based ordinal selecting which occurrence to
+    return when a document contains multiple headings with the same text
+    (e.g. several ``## Example`` blocks).  Returns ``(heading, None)`` when
+    no ordinal suffix is present, or when the suffix is malformed (so a
+    real heading containing ``#`` is not mistaken for an ordinal).
+    """
+    if "#" not in heading:
+        return heading, None
+    base, _, ordinal_str = heading.rpartition("#")
+    if not base or not ordinal_str:
+        return heading, None
+    try:
+        ordinal = int(ordinal_str)
+    except ValueError:
+        return heading, None
+    if ordinal < 1:
+        return heading, None
+    return base, ordinal
+
+
 def read_section(
     project: Project,
     rel_path: str,
@@ -745,9 +846,16 @@ def read_section(
         file, heading, level, start_line, end_line, text,
         bytes_total, bytes_extracted, bytes_saved
     Returns None if the heading is not found or the file cannot be read.
+
+    Supports an ordinal suffix ``Heading#N`` (1-based) to select the Nth
+    occurrence when several sections share the same heading text within a
+    file.  Without an ordinal, the first occurrence by line order is chosen
+    and a warning is logged when there were other candidates so the caller
+    knows to add ``#2`` / ``#3`` for the others.
     """
     t0 = time.monotonic()
-    if not _validate_lookup_args("read_section", rel_path, heading):
+    base_heading, ordinal = _parse_section_ordinal(heading)
+    if not _validate_lookup_args("read_section", rel_path, base_heading):
         return None
 
     try:
@@ -755,7 +863,7 @@ def read_section(
             rows = conn.execute(
                 "SELECT heading, level, line, end_line FROM sections "
                 "WHERE file_rel = ? AND heading = ? AND end_line IS NOT NULL ORDER BY line",
-                (rel_path, heading),
+                (rel_path, base_heading),
             ).fetchall()
             case_sensitive_match = len(rows) > 0
             if not rows:
@@ -763,7 +871,7 @@ def read_section(
                 rows = conn.execute(
                     "SELECT heading, level, line, end_line FROM sections "
                     "WHERE file_rel = ? AND lower(heading) = lower(?) AND end_line IS NOT NULL ORDER BY line",
-                    (rel_path, heading),
+                    (rel_path, base_heading),
                 ).fetchall()
     except (sqlite3.OperationalError, sqlite3.DatabaseError) as exc:
         _LOG.warning(
@@ -783,7 +891,30 @@ def read_section(
         )
         return None
 
-    chosen = rows[0]  # first match by line order
+    # Apply ordinal selection if the caller asked for a specific occurrence.
+    if ordinal is not None:
+        if ordinal > len(rows):
+            _LOG.info(
+                "read_section: ordinal %d requested for %r in %s but only %d match(es) exist; "
+                "no section returned",
+                ordinal, base_heading, rel_path, len(rows),
+            )
+            return None
+        chosen = rows[ordinal - 1]
+    elif len(rows) > 1:
+        # Multiple sections share this name and the caller did NOT specify an ordinal.
+        # Pick the first (stable: ORDER BY line) and surface a hint so the caller can
+        # disambiguate next time by adding ``#2``, ``#3``, etc.
+        other_lines = ", ".join(str(int(r["line"])) for r in rows[1:])
+        _LOG.warning(
+            "read_section: %d sections in %s share heading %r; returning the first "
+            "(line %d). To select another, use %r#2, %r#3, … (other matches at lines: %s)",
+            len(rows), rel_path, base_heading, int(rows[0]["line"]),
+            base_heading, base_heading, other_lines,
+        )
+        chosen = rows[0]
+    else:
+        chosen = rows[0]  # single match — straightforward
 
     read_result = _read_file_lines(project.root / rel_path)
     if read_result is None:

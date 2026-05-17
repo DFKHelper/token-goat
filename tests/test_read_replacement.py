@@ -247,6 +247,160 @@ def test_read_section_result_fields(md_project):
 
 
 # ---------------------------------------------------------------------------
+# Qualified Class.method symbol lookup (read_symbol "file::Class.method")
+# ---------------------------------------------------------------------------
+
+
+def _make_method_collision_project(tmp_path, make_project):
+    """Project with a free function and a class method that share a name."""
+    proj_root = tmp_path / "method_collision"
+    proj_root.mkdir()
+    (proj_root / ".git").mkdir()
+    (proj_root / "app.py").write_text(
+        # NOTE: keep both `hello` symbols on distinct line ranges so the
+        # qualifier-by-line-containment filter has something to discriminate.
+        "def hello() -> str:\n"
+        "    return 'free'\n"
+        "\n"
+        "\n"
+        "class Greeter:\n"
+        "    def hello(self) -> str:\n"
+        "        return 'method'\n",
+        encoding="utf-8",
+    )
+    proj = make_project(proj_root)
+    index_project(proj, full=True)
+    return proj_root, proj
+
+
+def test_read_symbol_qualified_picks_method(tmp_path, tmp_data_dir, make_project):
+    """``Class.method`` lookup returns the method, not the free function."""
+    _, proj = _make_method_collision_project(tmp_path, make_project)
+    result = read_replacement.read_symbol(proj, "app.py", "Greeter.hello")
+    assert result is not None
+    assert result["kind"] == "method"
+    # The method body is on lines 6-7 of the fixture; the free function is at 1-2.
+    assert result["start_line"] >= 6
+    assert "method" in result["text"]
+
+
+def test_read_symbol_unqualified_falls_back_to_priority(
+    tmp_path, tmp_data_dir, make_project,
+):
+    """Bare ``hello`` still picks by kind priority (function over method)."""
+    _, proj = _make_method_collision_project(tmp_path, make_project)
+    result = read_replacement.read_symbol(proj, "app.py", "hello")
+    assert result is not None
+    # Free function ranks higher than method in _KIND_PRIORITY.
+    assert result["kind"] == "function"
+    assert "free" in result["text"]
+
+
+def test_read_symbol_qualified_wrong_class_falls_back(
+    tmp_path, tmp_data_dir, make_project,
+):
+    """When the qualifier does not match any class, fall back to unqualified."""
+    _, proj = _make_method_collision_project(tmp_path, make_project)
+    # ``Nope`` is not a class in the file — fall back to bare ``hello`` lookup.
+    result = read_replacement.read_symbol(proj, "app.py", "Nope.hello")
+    assert result is not None
+    # Falls back to the kind-priority winner from unqualified lookup.
+    assert result["kind"] == "function"
+
+
+def test_split_qualified_symbol_handles_bare_name():
+    """``_split_qualified_symbol`` returns (None, name) for unqualified input."""
+    qualifier, leaf = read_replacement._split_qualified_symbol("hello")
+    assert qualifier is None
+    assert leaf == "hello"
+
+
+def test_split_qualified_symbol_handles_nested_qualifier():
+    """``A.B.method`` collapses to immediate parent ``B`` + leaf ``method``."""
+    qualifier, leaf = read_replacement._split_qualified_symbol("Outer.Inner.method")
+    assert qualifier == "Inner"
+    assert leaf == "method"
+
+
+# ---------------------------------------------------------------------------
+# Section ordinal disambiguation (Heading#N)
+# ---------------------------------------------------------------------------
+
+
+def _make_duplicate_section_project(tmp_path, make_project):
+    """Doc with two ``## Example`` headings to exercise ordinal selection."""
+    proj_root = tmp_path / "dup_sections"
+    proj_root.mkdir()
+    (proj_root / ".git").mkdir()
+    (proj_root / "doc.md").write_text(
+        "# Top\n"
+        "\n"
+        "## Example\n"
+        "\n"
+        "first example body\n"
+        "\n"
+        "## Other\n"
+        "\n"
+        "filler\n"
+        "\n"
+        "## Example\n"
+        "\n"
+        "second example body\n",
+        encoding="utf-8",
+    )
+    proj = make_project(proj_root)
+    index_project(proj, full=True)
+    return proj_root, proj
+
+
+def test_read_section_duplicate_returns_first_with_warning(
+    tmp_path, tmp_data_dir, make_project, caplog,
+):
+    """Unqualified duplicate heading lookup picks the first by line order."""
+    import logging as _logging
+    _, proj = _make_duplicate_section_project(tmp_path, make_project)
+    with caplog.at_level(_logging.WARNING, logger="token_goat.read_replacement"):
+        result = read_replacement.read_section(proj, "doc.md", "Example")
+    assert result is not None
+    assert "first example body" in result["text"]
+    # A warning must explain how to pick the second occurrence.
+    assert any("share heading" in r.getMessage() for r in caplog.records)
+
+
+def test_read_section_ordinal_picks_nth(tmp_path, tmp_data_dir, make_project):
+    """``Heading#2`` returns the second occurrence."""
+    _, proj = _make_duplicate_section_project(tmp_path, make_project)
+    result = read_replacement.read_section(proj, "doc.md", "Example#2")
+    assert result is not None
+    assert "second example body" in result["text"]
+
+
+def test_read_section_ordinal_out_of_range_returns_none(
+    tmp_path, tmp_data_dir, make_project,
+):
+    """``Heading#99`` for a doc with two matches returns None (not the first)."""
+    _, proj = _make_duplicate_section_project(tmp_path, make_project)
+    result = read_replacement.read_section(proj, "doc.md", "Example#99")
+    assert result is None
+
+
+def test_parse_section_ordinal_rejects_zero_and_negatives():
+    """Ordinal ``0`` and negatives are treated as no-ordinal (heading kept whole)."""
+    assert read_replacement._parse_section_ordinal("Example#0") == ("Example#0", None)
+    assert read_replacement._parse_section_ordinal("Example#-1") == ("Example#-1", None)
+
+
+def test_parse_section_ordinal_rejects_nondigit_suffix():
+    """``Foo#bar`` is a real heading, not an ordinal — leave it alone."""
+    assert read_replacement._parse_section_ordinal("Foo#bar") == ("Foo#bar", None)
+
+
+def test_parse_section_ordinal_empty_base_is_left_intact():
+    """``#42`` has no base name and must not be split (no implicit heading)."""
+    assert read_replacement._parse_section_ordinal("#42") == ("#42", None)
+
+
+# ---------------------------------------------------------------------------
 # CLI tests via typer.testing.CliRunner
 # ---------------------------------------------------------------------------
 
