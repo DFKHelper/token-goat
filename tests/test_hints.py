@@ -803,6 +803,90 @@ class TestEditedFileTimestamp:
         entry = reloaded.files[_normalize_path(path)]
         assert entry.last_edit_ts > 0.0
 
+class TestSurgicalReadSuppression:
+    """Narrow re-reads with explicit limit should not trigger the dedup nag.
+
+    When the agent supplies an explicit ``limit`` (i.e., they picked a small,
+    deliberate window — not the implicit DEFAULT_READ_LIMIT fallback) and the
+    requested span is at or below ``_NARROW_EXPLICIT_READ_LINES``, the
+    exact-match hint is suppressed. Rationale documented next to the constant
+    in ``hints.py``.
+
+    Regression guard: the prior implementation would emit a "use a different
+    offset/limit" nag even when the agent already used a narrow explicit
+    offset/limit — punishing the surgical behaviour we want to encourage.
+    """
+
+    def test_narrow_explicit_reread_is_suppressed(self, tmp_data_dir):
+        sid, path = "s_surgical", "C:/proj/surgical.py"
+        # Prior broad read caches lines 1-1000.
+        _mark(tmp_data_dir, sid, path, offset=0, limit=1000)
+
+        # Agent now does a surgical 30-line re-read inside the cached range.
+        hint = build_read_hint(
+            session_id=sid, file_path=path, offset=499, limit=30, cwd=None,
+        )
+        assert hint is None, (
+            "Narrow explicit re-read should be suppressed (surgical intent), "
+            f"got: {hint!r}"
+        )
+
+    def test_wide_explicit_reread_still_warns(self, tmp_data_dir):
+        """A wide explicit limit is not surgical — keep the nag."""
+        sid, path = "s_wide", "C:/proj/wide.py"
+        _mark(tmp_data_dir, sid, path, offset=0, limit=1000)
+
+        # 500 lines is well above _NARROW_EXPLICIT_READ_LINES (50).
+        hint = build_read_hint(
+            session_id=sid, file_path=path, offset=0, limit=500, cwd=None,
+        )
+        assert hint is not None
+        assert "already read" in hint
+
+    def test_narrow_implicit_reread_still_warns(self, tmp_data_dir):
+        """No explicit limit → not surgical intent. Default-limit re-reads
+        of cached content still get the dedup hint."""
+        sid, path = "s_implicit", "C:/proj/implicit.py"
+        _mark(tmp_data_dir, sid, path, offset=0, limit=2000)
+
+        # limit=None means "use the default" — Claude Code would read up to
+        # 2000 lines, fully inside the cached range, so the agent isn't being
+        # deliberately narrow even though we happen to compute a small span.
+        hint = build_read_hint(
+            session_id=sid, file_path=path, offset=0, limit=None, cwd=None,
+        )
+        assert hint is not None
+        assert "already read" in hint
+
+    def test_at_threshold_explicit_reread_is_suppressed(self, tmp_data_dir):
+        """Exactly _NARROW_EXPLICIT_READ_LINES with explicit limit → suppressed."""
+        from token_goat.hints import _NARROW_EXPLICIT_READ_LINES
+
+        sid, path = "s_thresh", "C:/proj/thresh.py"
+        _mark(tmp_data_dir, sid, path, offset=0, limit=500)
+
+        hint = build_read_hint(
+            session_id=sid, file_path=path,
+            offset=10, limit=_NARROW_EXPLICIT_READ_LINES, cwd=None,
+        )
+        assert hint is None
+
+    def test_just_above_threshold_explicit_reread_still_warns(self, tmp_data_dir):
+        """One line over the threshold → nag returns. Boundary regression guard."""
+        from token_goat.hints import _NARROW_EXPLICIT_READ_LINES
+
+        sid, path = "s_just_over", "C:/proj/just_over.py"
+        _mark(tmp_data_dir, sid, path, offset=0, limit=500)
+
+        hint = build_read_hint(
+            session_id=sid, file_path=path,
+            offset=10, limit=_NARROW_EXPLICIT_READ_LINES + 1, cwd=None,
+        )
+        assert hint is not None
+        assert "already read" in hint
+
+
+class TestLegacySessionJsonFromOlderVersion:
     def test_legacy_session_json_without_last_edit_ts_loads_clean(self, tmp_data_dir):
         """Session JSON written by older token-goat versions (no last_edit_ts) loads."""
         import json
