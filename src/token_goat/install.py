@@ -11,6 +11,7 @@ import shlex
 import shutil
 import subprocess
 import sys
+import time
 from datetime import datetime
 from pathlib import Path
 
@@ -263,10 +264,9 @@ def install_update_task() -> tuple[bool, str]:
     ]
     if username:
         args += ["/RU", username]
-    import time as _time  # noqa: PLC0415
-    t0 = _time.monotonic()
+    t0 = time.monotonic()
     code, out = _run_schtasks(args)
-    elapsed_ms = (_time.monotonic() - t0) * 1000
+    elapsed_ms = (time.monotonic() - t0) * 1000
     if code == 0:
         _LOG.info("update task registered: task=%s user=%r (%.0fms)", TASK_UPDATE, username or "<current>", elapsed_ms)
     else:
@@ -378,14 +378,13 @@ def install_linux_autostart() -> tuple[bool, str]:
         )
         _LOG.info("systemd service file written: %s", svc_path)
         try:
-            import time as _time  # noqa: PLC0415
-            t0 = _time.monotonic()
+            t0 = time.monotonic()
             reload_r = subprocess.run(
                 ["systemctl", "--user", "daemon-reload"],
                 capture_output=True,
                 timeout=10,
             )
-            reload_ms = (_time.monotonic() - t0) * 1000
+            reload_ms = (time.monotonic() - t0) * 1000
             if reload_r.returncode != 0:
                 _LOG.warning(
                     "systemctl daemon-reload exited %d (%.0fms): %s",
@@ -395,13 +394,13 @@ def install_linux_autostart() -> tuple[bool, str]:
             else:
                 _LOG.debug("systemctl daemon-reload ok (%.0fms)", reload_ms)
 
-            t1 = _time.monotonic()
+            t1 = time.monotonic()
             enable_r = subprocess.run(
                 ["systemctl", "--user", "enable", SYSTEMD_SERVICE_NAME],
                 capture_output=True,
                 timeout=10,
             )
-            enable_ms = (_time.monotonic() - t1) * 1000
+            enable_ms = (time.monotonic() - t1) * 1000
             if enable_r.returncode != 0:
                 _LOG.warning(
                     "systemctl enable %s exited %d (%.0fms): %s",
@@ -1427,9 +1426,7 @@ def install_all(
     install_openclaw: bool = False,
 ) -> dict[str, str]:
     """Run the full install. Returns a dict of step -> result string."""
-    import time as _time  # noqa: PLC0415
-
-    t0 = _time.monotonic()
+    t0 = time.monotonic()
     _LOG.info(
         "install_all: starting (platform=%s codex=%s opencode=%s openclaw=%s)",
         sys.platform,
@@ -1506,7 +1503,7 @@ def install_all(
             result["openclaw: plugin"] = f"FAIL — {e}"
 
     failures = [k for k, v in result.items() if v.startswith("FAIL")]
-    elapsed_ms = (_time.monotonic() - t0) * 1000
+    elapsed_ms = (time.monotonic() - t0) * 1000
     _LOG.info(
         "install_all: complete in %.0fms — %d steps, %d failure(s)%s",
         elapsed_ms,
