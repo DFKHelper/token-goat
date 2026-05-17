@@ -48,6 +48,26 @@ def _sanitize_header_value(value: str, max_len: int = 512) -> str:
     sanitized = value.replace("\r", "").replace("\n", "")
     return sanitized[:max_len]
 
+
+_MAX_URL_IN_ERROR = 200  # chars kept in RuntimeError messages; prevents unbounded error strings
+
+
+def _truncate_url(url: str, max_len: int = _MAX_URL_IN_ERROR) -> str:
+    """Truncate *url* for safe inclusion in error/log messages.
+
+    URLs come from harness payloads and can be arbitrarily long.  Without a
+    cap, a harness that supplies a megabyte-sized URL would produce an equally
+    large RuntimeError string that could flood structured logs, exhaust string
+    formatters, or carry attacker-controlled text deep into error-handling code.
+    Truncation also strips any embedded newlines that could inject fake log
+    lines when the error is eventually logged.
+    """
+    sanitized = url.replace("\r", "").replace("\n", "")
+    if len(sanitized) > max_len:
+        return sanitized[:max_len] + "…"
+    return sanitized
+
+
 # Common image extensions to detect from URL
 IMAGE_URL_EXTS = (".jpg", ".jpeg", ".png", ".webp", ".avif", ".gif", ".bmp", ".tiff", ".tif")
 
@@ -327,7 +347,7 @@ def _validate_response_url(url: str) -> None:
     a private IP or metadata endpoint that passed the pre-fetch SSRF check.
     """
     if not _is_ssrf_safe(url):
-        raise ValueError(f"URL blocked by SSRF safety check after redirect: {url!r}")
+        raise ValueError(f"URL blocked by SSRF safety check after redirect: {_truncate_url(url)!r}")
 
 
 def cleanup_stale_downloads() -> int:
@@ -369,7 +389,7 @@ def fetch_url(
     available; returns the cached file unchanged on HTTP 304 Not Modified.
     """
     if not _is_ssrf_safe(url):
-        raise ValueError(f"URL blocked by SSRF safety check: {url!r}")
+        raise ValueError(f"URL blocked by SSRF safety check: {_truncate_url(url)!r}")
 
     image_shrink.ensure_cache_dir(paths.web_cache_dir())
 
@@ -448,15 +468,15 @@ def fetch_url(
         raise
     except httpx.HTTPStatusError as exc:
         raise RuntimeError(
-            f"HTTP {exc.response.status_code} fetching {url!r}: {exc.response.reason_phrase}"
+            f"HTTP {exc.response.status_code} fetching {_truncate_url(url)!r}: {exc.response.reason_phrase}"
         ) from exc
     except httpx.TimeoutException as exc:
         raise RuntimeError(
-            f"Request timed out after {timeout_sec}s fetching {url!r}"
+            f"Request timed out after {timeout_sec}s fetching {_truncate_url(url)!r}"
         ) from exc
     except httpx.RequestError as exc:
         raise RuntimeError(
-            f"Network error fetching {url!r}: {type(exc).__name__}: {exc}"
+            f"Network error fetching {_truncate_url(url)!r}: {type(exc).__name__}: {exc}"
         ) from exc
 
     # Shrink if image
