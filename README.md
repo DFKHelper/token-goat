@@ -176,16 +176,20 @@ The `--openclaw` flag patches Claude Code and drops a TypeScript bridge plugin i
 
 | Command | What it does |
 |---------|-------------|
-| `token-goat symbol <name>` | Jump to a symbol definition |
-| `token-goat read "file::symbol"` | Pull one function or class, not the whole file |
-| `token-goat section "doc.md::Heading"` | Pull one Markdown section by heading |
-| `token-goat semantic "<query>"` | Find code by meaning, not by filename |
-| `token-goat map` | Get a compact orientation of the repo |
-| `token-goat stats` | See how many tokens you have saved |
+| `token-goat symbol <name>` | Jump to a symbol definition. Add `--all-projects` to search across every indexed repo. |
+| `token-goat read "file::symbol"` | Pull one function or class, not the whole file. Supports qualified lookups: `read "file.py::Class.method"`. |
+| `token-goat section "doc.md::Heading"` | Pull one Markdown section by heading. Disambiguate duplicates with `"doc.md::Heading#2"`. |
+| `token-goat semantic "<query>"` | Find code by meaning, not by filename. Tune with `--max-distance <float>` or `--no-rerank`. |
+| `token-goat map` | Get a compact orientation of the repo. Add `--compact` to fit a 300-token budget. |
+| `token-goat gdrive-sections <file-id>` | List the heading outline of a Google Doc without fetching the body. |
+| `token-goat stats` | See how many tokens you have saved. Shows a per-source breakdown (image / hint / read / compact). |
 | `token-goat compact-hint --session-id <id>` | Inspect the compaction manifest for a session |
+| `token-goat install` | Wire up hooks and autostart. `--dry-run` previews the changes, `--verify` audits an existing install. |
 | `token-goat doctor` | Confirm everything is wired correctly |
 
 First `token-goat semantic` call downloads a small embedding model, about 130 MB, into the token-goat data directory. One-time. Offline after that.
+
+Missed lookups print a "Did you mean…?" list of close matches so a typo costs one extra glance, not a re-read.
 
 ## What gets installed?
 
