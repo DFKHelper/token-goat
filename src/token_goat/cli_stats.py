@@ -5,6 +5,7 @@ import json
 import os
 import sys
 from re import sub as re_sub
+from typing import Any
 
 import typer
 
@@ -12,22 +13,28 @@ from . import stats as stats_mod
 
 
 def _write_raw(text: str) -> None:
-    """Write text with truecolor ANSI codes directly, bypassing colorama."""
+    """Write text with truecolor ANSI codes directly, bypassing colorama.
+
+    Uses ``Any`` for the stream variable because we progressively unwrap
+    colorama/Typer ``StreamWrapper`` objects at runtime via ``hasattr`` probes.
+    The attribute accesses are guarded by ``hasattr`` so they are safe; we
+    cannot express this precisely in mypy's type system without ``Any``.
+    """
     if os.environ.get("NO_COLOR") or not sys.stdout.isatty():
         text = re_sub(r"\x1b\[[0-9;]*m", "", text)
 
-    stream: object = sys.stdout
+    stream: Any = sys.stdout
     if hasattr(stream, "_StreamWrapper__wrapped"):
-        stream = stream._StreamWrapper__wrapped  # type: ignore[attr-defined]
+        stream = stream._StreamWrapper__wrapped
     while hasattr(stream, "stream"):
-        stream = stream.stream  # type: ignore[attr-defined]
+        stream = stream.stream
     encoded = (text + "\n").encode("utf-8")
     if hasattr(stream, "buffer"):
-        stream.buffer.write(encoded)  # type: ignore[attr-defined]
-        stream.buffer.flush()  # type: ignore[attr-defined]
+        stream.buffer.write(encoded)
+        stream.buffer.flush()
     else:
-        stream.write(text + "\n")  # type: ignore[attr-defined]
-        stream.flush()  # type: ignore[attr-defined]
+        stream.write(text + "\n")
+        stream.flush()
 
 
 def stats(

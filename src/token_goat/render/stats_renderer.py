@@ -24,7 +24,7 @@ import math
 import shutil
 from datetime import date, timedelta
 from pathlib import Path
-from typing import TypedDict
+from typing import TypedDict, cast
 
 from .ansi import RESET, RGB, C, bg, fg, lerp_rgb, pad_l, pad_r, vlen
 from .types import DayStat, KindStat, StatsData
@@ -67,7 +67,10 @@ def _load_stats_messages() -> _StatsMessages:
     display strings for the Insights section — taglines, motivational quotes,
     and milestone messages keyed by usage tier.
     """
-    return json.loads(Path(__file__).with_name("stats_messages.json").read_text(encoding="utf-8"))
+    return cast(
+        _StatsMessages,
+        json.loads(Path(__file__).with_name("stats_messages.json").read_text(encoding="utf-8")),
+    )
 
 
 _STATS_MESSAGES = _load_stats_messages()

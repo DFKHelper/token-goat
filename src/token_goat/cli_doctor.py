@@ -108,7 +108,7 @@ def doctor(  # noqa: C901
         wal_conn: sqlite3.Connection | None = None
         try:
             wal_conn = sqlite3.connect(tmp_db_path, isolation_level=None)
-            actual_mode = wal_conn.execute("PRAGMA journal_mode = WAL").fetchone()[0]
+            actual_mode: str = wal_conn.execute("PRAGMA journal_mode = WAL").fetchone()[0]
             return actual_mode == "wal"
         except Exception:  # noqa: BLE001
             return False
@@ -302,7 +302,7 @@ def doctor(  # noqa: C901
 
     if _sys.platform == "win32":
         try:
-            import winreg  # type: ignore[import]
+            import winreg
 
             _rk = winreg.OpenKey(
                 winreg.HKEY_CURRENT_USER,
