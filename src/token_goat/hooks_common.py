@@ -37,6 +37,7 @@ __all__ = [
     "pre_tool_use_with_context",
     "pre_tool_use_with_update",
     "sanitize_log_str",
+    "sanitize_opt",
 ]
 
 import logging
@@ -197,6 +198,29 @@ def sanitize_log_str(value: str, max_len: int = 200) -> str:
     if len(sanitized) > max_len:
         sanitized = sanitized[:max_len] + "…"
     return sanitized
+
+
+def sanitize_opt(value: object) -> str:
+    """Sanitize an optional log value: convert to str, strip injections, return "" for falsy.
+
+    Eliminates the repeated ``sanitize_log_str(str(x or ""))`` pattern across hook
+    modules.  Calling ``sanitize_opt(x)`` is equivalent to::
+
+        sanitize_log_str(str(x)) if x else ""
+
+    Unlike a bare ``sanitize_log_str(str(x or ""))``, this helper also handles the
+    case where *x* is ``0`` or ``False`` (falsy non-None values) — they are treated
+    the same as ``None`` and return ``""``, which is correct for session IDs and paths.
+
+    Args:
+        value: Any value from a hook payload (session_id, cwd, tool_name, …).
+
+    Returns:
+        A sanitized string safe for use in log messages, or ``""`` if *value* is falsy.
+    """
+    if not value:
+        return ""
+    return sanitize_log_str(str(value))
 
 
 def pre_tool_use_with_update(updated_input: dict[str, object], additional_context: str) -> HookResponse:

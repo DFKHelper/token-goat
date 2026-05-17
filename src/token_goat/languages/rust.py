@@ -55,69 +55,12 @@ def extract(source: bytes, rel_path: str) -> tuple[list[Symbol], list[Ref], list
     seen_names: set[tuple[str, int]] = set()
 
     # --- structure: functions, structs, enums, traits, impls, methods ---
-
-    def _get_children(item: object) -> list[object]:
-        """Return the children list of a tree-sitter node, or [] if absent."""
-        try:
-            return item.children  # type: ignore[attr-defined]
-        except AttributeError:
-            return []
-
-    def _record_symbol(name: str, kind: str, line: int, end_line: int, sig: str | None, parent_name: str | None) -> None:
-        """Append a symbol to *symbols* if the (name, line) key is not yet seen."""
-        key = (name, line)
-        if key not in seen_names:
-            seen_names.add(key)
-            symbols.append(Symbol(name=name, kind=kind, line=line, end_line=end_line, signature=sig, parent_name=parent_name))
-
-    def _handle_impl(item: object, name: str, line: int, end_line: int, sig: str | None, parent_name: str | None) -> None:
-        """Record an impl block and recurse into its methods with the type as parent."""
-        _record_symbol(name, "impl", line, end_line, sig, parent_name)
-        for child in _get_children(item):
-            _add_symbol(child, parent_name=name)
-
-    def _add_symbol(item: object, parent_name: str | None = None) -> None:
-        """Recursively walk a tree-sitter node and append named Rust symbols to *symbols*.
-
-        Rust-specific behaviour:
-        - ``impl`` blocks are recorded once under the type name, then their
-          children (methods) are recursed with ``parent_name`` set to that type.
-        - Plain ``impl TypeName`` blocks without a trait are still recorded so
-          that symbol lookups on the type name work correctly.
-        - Functions nested inside an ``impl`` block are promoted to
-          ``kind="method"`` for cleaner display in ``token-goat symbol`` output.
-        - Unnamed nodes are transparently descended into (same as common adapter).
-        """
-        try:
-            name: str = item.name  # type: ignore[attr-defined]
-        except AttributeError:
-            return
-        if not name:
-            for child in _get_children(item):
-                _add_symbol(child, parent_name=parent_name)
-            return
-        try:
-            span = item.span
-            body_span = item.body_span if hasattr(item, "body_span") else None
-            line = span.start_line + 1
-            end_line = span.end_line + 1
-            kind = common.kind_str(item.kind, language="rust")
-        except AttributeError as exc:
-            _LOG.debug("rust._add_symbol: skipping malformed node %r: %s", name, exc)
-            return
-
-        sig = common.build_signature(source, span, body_span)
-
-        if kind == "impl":
-            _handle_impl(item, name, line, end_line, sig, parent_name)
-            return
-
-        # Functions inside an impl block are methods.
-        effective_kind = "method" if parent_name is not None and kind == "function" else kind
-        _record_symbol(name, effective_kind, line, end_line, sig, parent_name)
-        for child in _get_children(item):
-            _add_symbol(child, parent_name=name)
-
+    # promote_methods=True: functions nested inside an impl block (parent_name set)
+    # are recorded with kind="method". common.kind_str("Impl", language="rust")
+    # returns "impl" so impl blocks are recorded correctly without special-casing here.
+    _add_symbol = common.make_add_symbol(
+        symbols, seen_names, source, language="rust", promote_methods=True
+    )
     for item in result.structure:
         _add_symbol(item)
 
