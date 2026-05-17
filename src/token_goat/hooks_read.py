@@ -92,7 +92,9 @@ def _try_shrink_image(
             "image_shrink",
             bytes_saved=img_stats["bytes_saved"],
             tokens_saved=tokens_saved,
-            detail=f"{file_path} -> {shrunken.name}",
+            # Sanitize file_path before storing: it comes from the harness payload
+            # and could contain newlines that corrupt multi-line DB detail queries.
+            detail=f"{sanitize_log_str(file_path)} -> {shrunken.name}",
         )
 
         shrink_response = dict(tool_input)

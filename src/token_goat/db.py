@@ -592,7 +592,12 @@ def open_global() -> Iterator[sqlite3.Connection]:
 # embeddings), so a legitimately running worker is never falsely evicted.
 LOCK_STALE_SECONDS = 600  # 10 minutes
 
-_PROJECT_HASH_RE = re.compile(r"^[a-zA-Z0-9_]+$")
+# Project hashes are SHA-1 hex digests (40 lowercase hex chars).  The previous
+# pattern accepted uppercase letters and underscores which can never appear in a
+# real SHA-1 output and widened the allowlist unnecessarily.  Tightening to
+# lowercase hex prevents any non-hash value from passing validation while
+# remaining compatible with every hash produced by project.py.
+_PROJECT_HASH_RE = re.compile(r"^[0-9a-f]+$")
 
 # Allowlist of table names permitted in dynamic COUNT queries.
 # Using an allowlist instead of relying solely on call-site literals prevents
