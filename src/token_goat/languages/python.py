@@ -16,6 +16,59 @@ _LOG = logging.getLogger("token_goat.languages.python")
 # Noise filter for call-site refs
 # ---------------------------------------------------------------------------
 
+# Matches a decorator line (possibly indented) at the start of trimmed content.
+# Used by _extend_starts_for_decorators below to walk start_line backward when
+# tree-sitter reports the `def`/`class` line as the start of a decorated symbol.
+_DECORATOR_LINE_RE = re.compile(r"^\s*@[A-Za-z_]")
+
+
+def _extend_starts_for_decorators(symbols: list[Symbol], source: bytes) -> None:
+    """Walk each function/class/method symbol's start_line back over leading decorators.
+
+    Tree-sitter reports the `def`/`class` line as the symbol start, which excludes
+    any preceding ``@decorator`` lines.  An agent asking for the function body via
+    ``token-goat read "file.py::func"`` loses crucial information when decorators
+    are stripped (``@property``, ``@cache``, ``@app.route("/path")``, ``@pytest.fixture``
+    all change the meaning of the function).
+
+    This pass scans backward from ``symbol.line - 1`` while the line above is a
+    decorator line (or a blank line directly between decorators is tolerated, as
+    is sometimes seen with grouped decorators).  Mutates symbols in-place.
+
+    Only applied to ``function``, ``method``, and ``class`` kinds — decorators
+    never appear on ``var`` / ``const`` symbols.
+    """
+    try:
+        text_lines = source.decode("utf-8", errors="replace").splitlines()
+    except (UnicodeDecodeError, AttributeError):
+        return
+    n_lines = len(text_lines)
+    for sym in symbols:
+        if sym.kind not in ("function", "method", "class"):
+            continue
+        if sym.line <= 1 or sym.line > n_lines:
+            continue
+        new_start = sym.line
+        # Walk upward over consecutive decorator lines (allow at most one blank
+        # line gap between decorators, but never cross a non-decorator code line).
+        i = sym.line - 2  # 0-based index of the line directly above sym.line
+        saw_decorator = False
+        while i >= 0:
+            line = text_lines[i]
+            if _DECORATOR_LINE_RE.match(line):
+                new_start = i + 1  # 1-based line number
+                saw_decorator = True
+                i -= 1
+                continue
+            if saw_decorator and not line.strip():
+                # blank gap between decorators — keep looking one line further
+                i -= 1
+                continue
+            break
+        if new_start != sym.line:
+            sym.line = new_start
+
+
 _CALL_NOISE = frozenset([
     # Python builtins
     "print", "len", "range", "str", "int", "float", "bool", "list",
@@ -105,5 +158,10 @@ def extract(source: bytes, rel_path: str) -> tuple[list[Symbol], list[Ref], list
         result.imports,  # type: ignore[attr-defined]
         lambda imp: _parse_import_source(imp.source),  # type: ignore[attr-defined]
     )
+
+    # --- post-pass: extend start_line over preceding decorator lines ---
+    # WHY post-pass: tree-sitter's structure walk reports the `def`/`class` line
+    # as the start, missing decorators that materially affect the symbol.
+    _extend_starts_for_decorators(symbols, source)
 
     return symbols, refs, imp_exp, []

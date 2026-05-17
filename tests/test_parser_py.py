@@ -131,3 +131,93 @@ def test_invalid_source_returns_empty():
     result = extract(b"\xff\xfe garbage \x00\x01", "bad.py")
     for lst in result:
         assert isinstance(lst, list)
+
+
+# ---------------------------------------------------------------------------
+# Precision: decorator lines must be included in the symbol's start_line.
+# ---------------------------------------------------------------------------
+
+
+def test_single_decorator_extends_start_line():
+    """``@cache``-decorated function: start_line must point at the decorator, not `def`."""
+    src = b"@cache\ndef fn():\n    return 1\n"
+    symbols, _, _, _ = extract(src, "deco_single.py")
+    fn = next(s for s in symbols if s.name == "fn")
+    assert fn.line == 1, f"expected line 1 (decorator), got {fn.line}"
+
+
+def test_multiple_decorators_extend_start_line():
+    """Multiple stacked decorators: start_line must point at the topmost one."""
+    src = (
+        b"@first\n"
+        b"@second(arg)\n"
+        b'@third("string")\n'
+        b"def fn():\n"
+        b"    return 1\n"
+    )
+    symbols, _, _, _ = extract(src, "deco_multi.py")
+    fn = next(s for s in symbols if s.name == "fn")
+    assert fn.line == 1
+
+
+def test_class_decorator_extends_start_line():
+    """A decorated class also gets its start_line moved to the @ line."""
+    src = b"@dataclass\nclass Foo:\n    x: int\n"
+    symbols, _, _, _ = extract(src, "deco_class.py")
+    foo = next(s for s in symbols if s.name == "Foo")
+    assert foo.line == 1
+
+
+def test_method_decorator_extends_start_line():
+    """A decorated method inside a class also gets start_line moved up."""
+    src = (
+        b"class C:\n"
+        b"    @property\n"
+        b"    def name(self):\n"
+        b"        return self._n\n"
+    )
+    symbols, _, _, _ = extract(src, "deco_method.py")
+    name = next(s for s in symbols if s.name == "name")
+    # @property is on line 2; def is on line 3 — start should be 2.
+    assert name.line == 2
+
+
+def test_undecorated_function_unchanged():
+    """No decorator → start_line is the `def` line as before."""
+    src = b"def plain():\n    return 1\n"
+    symbols, _, _, _ = extract(src, "plain.py")
+    plain = next(s for s in symbols if s.name == "plain")
+    assert plain.line == 1  # already line 1; nothing to change
+
+
+def test_comment_above_def_is_not_treated_as_decorator():
+    """Only lines starting with ``@`` are pulled in; comments stay outside."""
+    src = b"# This is a comment about fn\ndef fn():\n    return 1\n"
+    symbols, _, _, _ = extract(src, "comment.py")
+    fn = next(s for s in symbols if s.name == "fn")
+    # Comment must NOT be pulled in — start_line stays at the def line (2).
+    assert fn.line == 2
+
+
+def test_blank_gap_between_decorators_tolerated():
+    """A blank line between stacked decorators is allowed; start still climbs."""
+    src = (
+        b"@first\n"
+        b"\n"
+        b"@second\n"
+        b"def fn():\n"
+        b"    return 1\n"
+    )
+    symbols, _, _, _ = extract(src, "deco_gap.py")
+    fn = next(s for s in symbols if s.name == "fn")
+    assert fn.line == 1
+
+
+def test_no_decorator_extension_for_const_var():
+    """``@`` heuristic only applies to function/method/class kinds."""
+    src = b"# top comment\nMY_CONST = 42\n"
+    symbols, _, _, _ = extract(src, "const.py")
+    mc = [s for s in symbols if s.name == "MY_CONST"]
+    if mc:
+        # Whatever line it reports, it must not be the comment line.
+        assert mc[0].line == 2
