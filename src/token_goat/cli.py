@@ -605,7 +605,7 @@ def deps(
 
 @app.command(rich_help_panel="Core")
 def read(
-    target: str = typer.Argument(..., help="<file>::<symbol> — e.g., 'parser.py::index_project'"),
+    target: str = typer.Argument(..., help="<file>::<symbol> — e.g., 'parser.py::index_project' or 'auth.py::Session.refresh' for a qualified method."),
     session_id: str | None = typer.Option(None, "--session-id", "-s"),
     json_output: bool = typer.Option(False, "--json"),
     context_lines: int = typer.Option(0, "--context", "-c", help="Extra lines before/after"),
@@ -626,7 +626,7 @@ def read(
 
 @app.command(rich_help_panel="Core")
 def section(
-    target: str = typer.Argument(..., help="<file>::<heading> — e.g., 'README.md::Install'"),
+    target: str = typer.Argument(..., help="<file>::<heading> — e.g., 'README.md::Install'. Append #N to disambiguate duplicate headings, e.g. 'doc.md::Setup#2'."),
     session_id: str | None = typer.Option(None, "--session-id", "-s"),
     json_output: bool = typer.Option(False, "--json"),
     context_lines: int = typer.Option(0, "--context", "-c", help="Extra lines before/after"),
