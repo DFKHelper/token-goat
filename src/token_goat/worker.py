@@ -347,7 +347,10 @@ def _try_claim_worker_slot() -> int | None:
         try:
             fd = os.open(str(claim_path), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
             create_time = _proc_create_time(os.getpid()) or time.time()
-            # Single write — keeps the empty-claim window microscopic.
+            # Write pid+create_time in a single os.write call.  The file is
+            # empty between O_EXCL create and this write; _worker_claim_is_stale
+            # treats an empty/malformed claim as NOT stale specifically to make
+            # that window safe — a concurrent reader cannot reclaim it mid-write.
             os.write(fd, f"{os.getpid()}\n{create_time}".encode())
             return fd
         except FileExistsError:
@@ -420,9 +423,12 @@ def drain_dirty_queue() -> list[DirtyQueueEntry]:
         except OSError as e:
             _LOG.warning("failed to recover abandoned .draining queue file: %s", e)
 
-    # Atomically claim the live queue. The brief append in enqueue_dirty may
-    # still hold dirty.txt open on Windows; retry the rename a few times, then
-    # leave the queue for the next poll rather than risk a partial read.
+    # Atomically claim the live queue. On POSIX, os.replace() is atomic even
+    # across open writers (they keep appending to the old inode; the rename just
+    # redirects the name).  On Windows, a concurrent enqueue_dirty that has
+    # dirty.txt open for append will cause os.replace() to fail with
+    # ERROR_SHARING_VIOLATION; retry a few times, then defer to the next poll
+    # rather than risk a partial read.
     if p.exists():
         claimed = False
         for _ in range(5):

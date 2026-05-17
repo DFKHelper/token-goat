@@ -67,12 +67,17 @@ EMBED_DIM = 384  # BAAI/bge-small-en-v1.5
 
 _LOG = logging.getLogger("token_goat.db")
 
-# Cache integrity check results per DB file to avoid repeated PRAGMA checks
+# Cache integrity check results per DB file to avoid repeated PRAGMA checks.
+# Keys are absolute Path objects; values are always True (only passing checks
+# are cached — a corrupt DB is quarantined and the key is evicted by _rebuild()
+# so the replacement file gets a fresh check on its first open).
 _INTEGRITY_CHECKED: dict[Path, bool] = {}
 
 # Cache which project DB paths have already had their schema migrated (line_count
 # column check).  Avoids running PRAGMA table_info(files) on every open() call
 # once the migration has been confirmed.  Keyed on absolute Path.
+# _rebuild() also evicts entries from this dict so a freshly quarantined+reopened
+# DB always re-runs the migration check rather than assuming it is already done.
 _SCHEMA_MIGRATED: dict[Path, bool] = {}
 
 
@@ -220,6 +225,11 @@ def _integrity_ok(conn: sqlite3.Connection) -> bool:
     Windows caused false positives when the worker held the file open during
     indexing. token-goat then tried to quarantine a perfectly healthy DB,
     failed with WinError 5, and surfaced "Exit code: 1" to the agent.
+
+    Counterintuitively, we return True (healthy) even when the PRAGMA raises.
+    The reasoning: if we cannot run the check, we have no evidence of corruption,
+    only evidence of a transient or access problem. Quarantining on uncertainty
+    destroys data; the caller will surface the real error when it next queries.
     """
     try:
         row = conn.execute("PRAGMA integrity_check").fetchone()
@@ -462,6 +472,11 @@ def _ensure_project_schema(conn: sqlite3.Connection, *, db_path: Path | None = N
                 conn.execute("ALTER TABLE files ADD COLUMN line_count INTEGER")
             if db_path is not None:
                 _SCHEMA_MIGRATED[db_path] = True
+        # INSERT OR REPLACE (not INSERT OR IGNORE) so the version row is
+        # always current after a schema upgrade. The global schema uses plain
+        # INSERT (first-write-wins) because global.db has no migrations yet;
+        # per-project DBs use OR REPLACE to overwrite the version from any
+        # older schema written by a previous token-goat release.
         conn.execute(
             "INSERT OR REPLACE INTO meta (key, value) VALUES ('schema_version', ?)",
             (str(SCHEMA_VERSION),),

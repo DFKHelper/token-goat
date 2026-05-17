@@ -30,6 +30,11 @@ _git_root_cache: dict[str, str | None] = {}
 # timestamps that truncate to the same day, so this cuts datetime.fromtimestamp
 # + strftime cost from O(rows) to O(unique_days) — typically 1-30 unique values
 # across thousands of rows.
+# Note: this cache is process-lifetime and never evicted. With STATS_RETENTION_DAYS
+# = 90 and at most one unique-second per row, the dict tops out at ~7.8 M entries in
+# the absolute worst case (every row a unique second for 90 days of dense logging).
+# In practice it stays well under 10 k entries.  If retention or event rates ever
+# grow dramatically, add an LRU cap here.
 _ts_to_date_cache: dict[int, str] = {}
 
 
@@ -235,6 +240,10 @@ def summarize(window_days: int = 30) -> StatsSummary:
     # Attribute global.db events (session hints, image shrink, etc.) to projects
     # by matching each event's file path against registered roots, then falling
     # back to a .git walk for projects opened from a parent directory.
+    #
+    # This second pass runs AFTER the per-project loop so that by_project already
+    # has entries for all known hashes.  Global events for an unregistered root
+    # land in a synthetic bucket keyed by _root_hash(root) rather than being lost.
     root_to_hash = {root: h for h, root in projects}
     # Normalized lookup so .git-walk results (always normalized) match DB roots
     # that may use original Windows casing (e.g. "C:/Projects" vs "c:/Projects").
@@ -300,7 +309,12 @@ def summarize(window_days: int = 30) -> StatsSummary:
 
 
 def _accumulate(row: sqlite3.Row, by_kind: dict, by_day: dict) -> None:
-    """Accumulate a stats row into the kind and day dictionaries."""
+    """Accumulate a stats row into the kind and day dictionaries.
+
+    The kind bucket is always incremented even when day bucketing fails (bad
+    timestamp).  This is intentional: a corrupt timestamp should not erase the
+    event from by_kind totals; it just cannot be placed on the calendar.
+    """
     bs = row["bytes_saved"] or 0
     ts = row["tokens_saved"] or 0
     _inc_bucket(by_kind[row["kind"]], bs, ts)
@@ -312,6 +326,7 @@ def _accumulate(row: sqlite3.Row, by_kind: dict, by_day: dict) -> None:
             date_str = datetime.fromtimestamp(raw_ts).strftime("%Y-%m-%d")
         except (OSError, OverflowError, ValueError):
             # Malformed or out-of-range timestamp — skip day bucketing for this row.
+            # The event is still counted in by_kind (see note above).
             _LOG.debug("skipping day accumulation: invalid ts=%r", raw_ts)
             return
         _ts_to_date_cache[raw_ts] = date_str
