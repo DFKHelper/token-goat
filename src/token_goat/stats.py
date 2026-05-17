@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import operator
 import re
 import sqlite3
 import time
@@ -327,7 +328,7 @@ def summarize(window_days: int = 30) -> StatsSummary:
             )
             for k, v in by_day.items()
         ],
-        key=lambda d: d["date"],
+        key=operator.itemgetter("date"),
         reverse=True,
     )
     by_project_list: list[_ProjectRow] = sorted(
@@ -341,7 +342,7 @@ def summarize(window_days: int = 30) -> StatsSummary:
             )
             for k, v in by_project.items()
         ],
-        key=lambda entry: entry["bytes_saved"],
+        key=operator.itemgetter("bytes_saved"),
         reverse=True,
     )
 
@@ -436,6 +437,7 @@ def _to_stats_data(summary: StatsSummary) -> StatsData:
     else:
         period_start = today
 
+    _get_bytes = operator.attrgetter("bytes")
     by_kind = sorted(
         [
             KindStat(
@@ -447,7 +449,7 @@ def _to_stats_data(summary: StatsSummary) -> StatsData:
             )
             for k, v in summary.by_kind.items()
         ],
-        key=lambda stat: stat.bytes,
+        key=_get_bytes,
         reverse=True,
     )
 
@@ -461,7 +463,7 @@ def _to_stats_data(summary: StatsSummary) -> StatsData:
             )
             for d in summary.by_day
         ],
-        key=lambda d: d.bytes,
+        key=_get_bytes,
         reverse=True,
     )[:7]
 

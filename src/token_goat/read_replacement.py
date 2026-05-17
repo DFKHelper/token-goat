@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import logging
+import operator
 import sqlite3
 import time
 from collections.abc import Sequence
@@ -316,7 +317,7 @@ def _pick_best_match(file_part: str, candidates: list[str]) -> str | None:
     # comparison (was 3 calls for 2 candidates; now exactly n calls).
     scored = sorted(
         ((r, _match_specificity(file_part, r)) for r in candidates),
-        key=lambda t: t[1],
+        key=operator.itemgetter(1),
         reverse=True,
     )
     if scored[1][1] == scored[0][1]:
@@ -659,7 +660,9 @@ def read_symbol(
 
     # If multiple matches (e.g., a top-level function and a method of the same name),
     # prefer by kind priority then by earliest line.
-    chosen = min(rows, key=lambda r: (_KIND_PRIORITY.get(r["kind"], 9), r["line"]))
+    # Pre-bind _KIND_PRIORITY.get to avoid repeated global + attribute lookup in min().
+    _kp_get = _KIND_PRIORITY.get
+    chosen = min(rows, key=lambda r: (_kp_get(r["kind"], 9), r["line"]))
 
     read_result = _read_file_lines(project.root / rel_path)
     if read_result is None:
