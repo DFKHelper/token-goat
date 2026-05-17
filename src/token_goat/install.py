@@ -15,8 +15,35 @@ import time
 from collections.abc import Callable
 from datetime import datetime
 from pathlib import Path
+from typing import TypedDict, cast
 
 from . import paths
+
+
+class _HookCommandEntry(TypedDict):
+    """A single hook command definition in Claude Code / Codex settings.
+
+    Represents one entry in the ``hooks`` list of a matcher block::
+
+        {"type": "command", "command": "token-goat hook pre-read", "timeout": 5000}
+    """
+
+    type: str
+    command: str
+    timeout: int
+
+
+class _HookMatcherEntry(TypedDict):
+    """A single matcher block: one event-pattern → list of hook commands.
+
+    Represents one entry in the per-event list inside the top-level hooks dict::
+
+        {"matcher": "Read", "hooks": [{"type": "command", ...}]}
+    """
+
+    matcher: str
+    hooks: list[_HookCommandEntry]
+
 
 # Markers for idempotent Codex AGENTS.md patching
 CODEX_AGENTS_BEGIN = "<!-- token-goat-codex-begin -->"
@@ -729,7 +756,7 @@ def _check_linux_update_cron() -> str:
 # ---------------------------------------------------------------------------
 
 
-def _hooks_block(binary: str | None = None) -> dict[str, list[dict[str, object]]]:
+def _hooks_block(binary: str | None = None) -> dict[str, list[_HookMatcherEntry]]:
     """Build the hooks structure token-goat wants to install.
 
     The ``binary`` parameter is kept for backwards compatibility but unused;
@@ -893,7 +920,7 @@ def patch_settings_json() -> tuple[bool, str]:
         # Strip any prior token-goat entries, then append fresh ones
         kept = _strip_token_goat_entries(existing_entries)
         stripped_count = len(existing_entries) - len(kept)
-        existing_hooks[event] = kept + entries
+        existing_hooks[event] = kept + cast(list[dict[str, object]], entries)
         if stripped_count:
             hooks_replaced.append(f"{event}(replaced {stripped_count})")
         else:
@@ -1151,7 +1178,7 @@ def codex_agents_path() -> Path:
     return codex_dir() / "AGENTS.md"
 
 
-def _codex_hooks_block(binary: str | None = None) -> dict[str, list[dict[str, object]]]:
+def _codex_hooks_block(binary: str | None = None) -> dict[str, list[_HookMatcherEntry]]:
     """The hooks structure for Codex's config.toml.
 
     The ``binary`` parameter is kept for backwards compatibility but unused.
@@ -1250,7 +1277,7 @@ def patch_codex_config(binary: str) -> str:
     for event, entries in our_hooks.items():
         existing_entries = existing_hooks.get(event, [])
         kept = _strip_codex_token_goat_entries(existing_entries)
-        existing_hooks[event] = kept + entries
+        existing_hooks[event] = kept + cast(list[dict[str, object]], entries)
     existing["hooks"] = existing_hooks
 
     # Atomic write: a crash mid-write must never leave a truncated config.toml behind.
