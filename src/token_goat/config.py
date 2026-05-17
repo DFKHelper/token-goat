@@ -7,7 +7,7 @@ import logging
 import os
 import tomllib
 from dataclasses import dataclass, field
-from typing import Any, TypedDict
+from typing import Any, TypedDict, cast
 
 from . import paths
 
@@ -157,11 +157,11 @@ def _validated_triggers(val: object, default: list[str]) -> list[str]:
 def load() -> Config:
     """Load config from TOML. Returns defaults if file is absent or unreadable."""
     p = paths.config_path()
-    raw: _ConfigToml = {}  # type: ignore[typeddict-item]
+    raw: _ConfigToml = cast("_ConfigToml", {})
     if p.exists():
         try:
             parsed: dict[str, Any] = tomllib.loads(p.read_text(encoding="utf-8"))
-            raw = parsed  # type: ignore[assignment]
+            raw = cast("_ConfigToml", parsed)
             _LOG.info("config loaded from file: %s", p)
         except Exception as e:  # noqa: BLE001
             _LOG.warning("config load failed for %s (%s); using defaults", p, e)
@@ -176,7 +176,7 @@ def load() -> Config:
             CONFIG_SCHEMA_VERSION,
         )
 
-    ca_raw: _CompactAssistToml = raw.get("compact_assist", {})  # type: ignore[typeddict-item]
+    ca_raw: _CompactAssistToml = cast("_CompactAssistToml", raw.get("compact_assist", {}))
     ca = CompactAssistConfig(
         enabled=_validated_bool(ca_raw.get("enabled", True), True, "compact_assist.enabled"),
         triggers=_validated_triggers(ca_raw.get("triggers", ["manual", "auto"]), ["manual", "auto"]),
@@ -227,6 +227,6 @@ def save(config: Config) -> None:
         },
     }
     try:
-        paths.atomic_write_bytes(p, tomli_w.dumps(data).encode("utf-8"))  # type: ignore[arg-type]
+        paths.atomic_write_bytes(p, tomli_w.dumps(cast(dict[str, Any], data)).encode("utf-8"))
     except Exception as e:  # noqa: BLE001
         _LOG.warning("config save failed: %s", e)
