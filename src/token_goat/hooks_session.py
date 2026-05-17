@@ -7,6 +7,7 @@ from typing import Any
 from .hooks_common import (
     CONTINUE,
     HookResponse,
+    sanitize_log_str,
 )
 from .hooks_common import (
     LOG as _LOG,
@@ -45,10 +46,10 @@ def _detect(payload: dict[str, Any]) -> Project | None:
     cwd_path = Path(cwd)
     try:
         if not cwd_path.is_dir():
-            _LOG.warning("session-start: cwd %r is not an existing directory; ignoring", cwd)
+            _LOG.warning("session-start: cwd %r is not an existing directory; ignoring", sanitize_log_str(cwd))
             return None
     except (OSError, ValueError) as exc:
-        _LOG.warning("session-start: could not stat cwd %r: %s; ignoring", cwd, exc)
+        _LOG.warning("session-start: could not stat cwd %r: %s; ignoring", sanitize_log_str(cwd), exc)
         return None
     return find_project(cwd_path)
 
@@ -86,7 +87,7 @@ def session_start(payload: dict[str, Any]) -> HookResponse:
     """Reset session cache and ensure worker daemon is running."""
     session_id = payload.get("session_id")
     cwd = payload.get("cwd")
-    _LOG.info("session-start: session_id=%s cwd=%s", session_id, cwd)
+    _LOG.info("session-start: session_id=%s cwd=%s", sanitize_log_str(str(session_id or "")), sanitize_log_str(str(cwd or "")))
 
     _reset_session_cache(session_id)
 

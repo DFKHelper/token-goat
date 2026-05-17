@@ -39,7 +39,7 @@ def _handle_bash_read_equivalent(payload: dict[str, Any]) -> HookResponse | None
     intent = bash_parser.parse(cmd)
     if intent.kind != "read" or not intent.target_path:
         if intent.reason:
-            _LOG.info("bash read near-miss: %s", intent.reason)
+            _LOG.info("bash read near-miss: %s", sanitize_log_str(intent.reason))
         return None
 
     read_payload = dict(payload)
