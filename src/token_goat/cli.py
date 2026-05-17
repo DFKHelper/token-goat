@@ -162,7 +162,7 @@ def _project_close_symbol_matches(proj_hash: str, name: str) -> list[str]:
                 "SELECT DISTINCT name FROM symbols WHERE name IS NOT NULL LIMIT ?",
                 (_SYMBOL_DIDYOUMEAN_POOL,),
             ).fetchall()
-    except (_db.DBError, sqlite3.OperationalError, sqlite3.DatabaseError) as exc:
+    except (_db.DBError, sqlite3.OperationalError, sqlite3.DatabaseError, FileNotFoundError) as exc:
         _LOG.debug("close-symbol-match query failed for project %s: %s", proj_hash[:8], exc)
         return []
     names = [r["name"] for r in rows if r["name"]]
@@ -189,7 +189,7 @@ def _global_close_symbol_matches(name: str) -> list[str]:
                 "SELECT DISTINCT name FROM symbols_global WHERE name IS NOT NULL LIMIT ?",
                 (_SYMBOL_DIDYOUMEAN_POOL,),
             ).fetchall()
-    except (_db.DBError, sqlite3.OperationalError, sqlite3.DatabaseError) as exc:
+    except (_db.DBError, sqlite3.OperationalError, sqlite3.DatabaseError, FileNotFoundError) as exc:
         _LOG.debug("close-symbol-match query failed for global index: %s", exc)
         return []
     names = [r["name"] for r in rows if r["name"]]
