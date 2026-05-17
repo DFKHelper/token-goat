@@ -124,7 +124,7 @@ def _close_conn(conn: sqlite3.Connection | None) -> None:
 def _apply_connection_pragmas(conn: sqlite3.Connection, *, suppress: bool = False) -> None:
     """Apply the standard read/write PRAGMA settings to *conn*.
 
-    All three PRAGMAs are required together:
+    PRAGMAs applied:
 
     * ``busy_timeout``   — back off instead of raising immediately when another
                            writer holds the lock.
@@ -132,6 +132,15 @@ def _apply_connection_pragmas(conn: sqlite3.Connection, *, suppress: bool = Fals
                            is unnecessarily slow for our single-writer pattern.
     * ``foreign_keys``   — enforce FK constraints so accidental orphan rows are
                            caught at insert time rather than silently ignored.
+    * ``cache_size``     — 64 MB page cache (negative value = KB).  Default is
+                           only 2 MB; larger cache cuts repeated disk reads for
+                           read-heavy symbol/embedding lookups.
+    * ``temp_store``     — keep temp tables and sort buffers in memory rather
+                           than on disk; important for ORDER BY / GROUP BY over
+                           embedding results.
+    * ``mmap_size``      — map up to 128 MB of the DB file into the process
+                           address space so sequential scans avoid system-call
+                           overhead on hot pages.
 
     ``suppress=True`` wraps the block in ``contextlib.suppress(sqlite3.OperationalError)``
     for the immutable-fallback paths where PRAGMAs may not be accepted.
@@ -140,6 +149,9 @@ def _apply_connection_pragmas(conn: sqlite3.Connection, *, suppress: bool = Fals
         conn.execute("PRAGMA busy_timeout = 5000")
         conn.execute("PRAGMA synchronous = NORMAL")
         conn.execute("PRAGMA foreign_keys = ON")
+        conn.execute("PRAGMA cache_size = -65536")   # 64 MB (value in KB when negative)
+        conn.execute("PRAGMA temp_store = MEMORY")
+        conn.execute("PRAGMA mmap_size = 134217728")  # 128 MB
 
     if suppress:
         with contextlib.suppress(sqlite3.OperationalError):
