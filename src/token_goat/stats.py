@@ -8,6 +8,7 @@ import sqlite3
 import time
 from collections import defaultdict
 from dataclasses import dataclass
+from dataclasses import field as dataclass_field
 from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING, TypedDict
@@ -23,8 +24,63 @@ if TYPE_CHECKING:
 # Kinds that track bytes but not (reliable) token counts.
 BYTES_MODE_ONLY_KINDS: frozenset[str] = frozenset({"webfetch_image", "gdrive_image"})
 
+# User-facing "source" buckets exposed in the stats summary.  These collapse the
+# raw event kinds (10+ over the lifetime of the project) into the four mechanisms
+# the user understands from the README: image-shrink, hint, surgical-read,
+# compact-assist.  An "other" bucket catches anything new the indexer records
+# before the mapping below is updated — that way unknown kinds still appear in
+# totals; they just are not attributed to a known source.
+SOURCE_IMAGE = "image"
+SOURCE_HINT = "hint"
+SOURCE_READ = "read"
+SOURCE_COMPACT = "compact"
+SOURCE_OTHER = "other"
 
-__all__ = ["StatsSummary", "summarize", "render_text"]
+# Map each raw event kind → user-facing source bucket.  Unknown kinds fall
+# through to SOURCE_OTHER inside kind_to_source().  Keep this list aligned with
+# the kinds passed to db.record_stat() across the codebase.
+_KIND_TO_SOURCE: dict[str, str] = {
+    # image-shrink family
+    "image_shrink": SOURCE_IMAGE,
+    "webfetch_image": SOURCE_IMAGE,
+    "gdrive_image": SOURCE_IMAGE,
+    # hint family (both gross savings and overhead live here so the source
+    # bucket reflects the net contribution of the hint mechanism)
+    "session_hint": SOURCE_HINT,
+    "session_hint_overhead": SOURCE_HINT,
+    # surgical read family
+    "read_replacement": SOURCE_READ,
+    "section_replacement": SOURCE_READ,
+    "symbol_read": SOURCE_READ,
+    "section_read": SOURCE_READ,
+    # compaction assist family
+    "compact_manifest": SOURCE_COMPACT,
+    "compact_assist": SOURCE_COMPACT,
+}
+
+
+def kind_to_source(kind: str) -> str:
+    """Map a raw stats event *kind* to a user-facing source bucket.
+
+    Returns one of ``SOURCE_IMAGE``, ``SOURCE_HINT``, ``SOURCE_READ``,
+    ``SOURCE_COMPACT``, or ``SOURCE_OTHER`` for unknown kinds.  Used by
+    :func:`summarize` to populate ``StatsSummary.by_source``.
+    """
+    return _KIND_TO_SOURCE.get(kind, SOURCE_OTHER)
+
+
+__all__ = [
+    "BYTES_MODE_ONLY_KINDS",
+    "SOURCE_COMPACT",
+    "SOURCE_HINT",
+    "SOURCE_IMAGE",
+    "SOURCE_OTHER",
+    "SOURCE_READ",
+    "StatsSummary",
+    "kind_to_source",
+    "render_text",
+    "summarize",
+]
 
 
 class _StatsBucket(TypedDict):
@@ -191,7 +247,15 @@ class _ProjectRow(TypedDict):
 
 @dataclass
 class StatsSummary:
-    """Aggregated statistics across projects and time."""
+    """Aggregated statistics across projects and time.
+
+    ``by_source`` collapses the raw event kinds into the four user-facing
+    sources (image / hint / read / compact) plus an ``other`` catch-all.  It is
+    derived from ``by_kind`` at summary time using :func:`kind_to_source`, so
+    callers can render either view without re-walking the DB.  The field is
+    defaulted to an empty dict so callers that construct ``StatsSummary``
+    directly (older tests, in-memory cached summaries) still work unmodified.
+    """
 
     total_events: int
     total_bytes_saved: int
@@ -200,6 +264,10 @@ class StatsSummary:
     by_day: list[_DayRow]  # newest first: {date, events, bytes_saved, tokens_saved}
     by_project: list[_ProjectRow]  # {project_hash, project_root, events, bytes_saved, tokens_saved}
     window_days: int
+    # source -> {events, bytes_saved, tokens_saved}.  Populated by summarize().
+    # Defaulted so older code paths that construct StatsSummary directly (tests,
+    # in-memory cached summaries) still work without modification.
+    by_source: dict[str, _StatsBucket] = dataclass_field(default_factory=dict)
 
 
 def _read_stats(
@@ -342,6 +410,17 @@ def summarize(window_days: int = 30) -> StatsSummary:
         reverse=True,
     )
 
+    # Roll up by_kind into the four user-facing source buckets so the
+    # renderer / JSON consumers can show "image vs hint vs read vs compact"
+    # without re-walking the DB.  Unknown kinds land in SOURCE_OTHER so newly
+    # added event types don't disappear silently from the user-facing total.
+    by_source: dict[str, _StatsBucket] = defaultdict(_zero_bucket)
+    for kind_name, bucket in by_kind.items():
+        src_bucket = by_source[kind_to_source(kind_name)]
+        src_bucket["events"] += bucket["events"]
+        src_bucket["bytes_saved"] += bucket["bytes_saved"]
+        src_bucket["tokens_saved"] += bucket["tokens_saved"]
+
     elapsed = time.time() - t0
     _LOG.info("summarize completed: events=%d bytes=%.0f tokens=%d projects_read=%d elapsed=%.3fs",
               total_events, total_bytes, total_tokens, projects_aggregated, elapsed)
@@ -354,6 +433,7 @@ def summarize(window_days: int = 30) -> StatsSummary:
         by_day=by_day_list,
         by_project=by_project_list,
         window_days=window_days,
+        by_source=dict(by_source),
     )
 
 
@@ -685,6 +765,34 @@ def render_text(
                     style="dim italic",
                 )
             )
+
+    # ---- By source (image / hint / read / compact) ----
+    # This view answers the user's most useful question: which of the four
+    # mechanisms is contributing most to my savings?  Raw kinds are too
+    # granular (image_shrink vs gdrive_image vs webfetch_image all roll up to
+    # "image"; session_hint and session_hint_overhead net into "hint").
+    if summary.by_source:
+        console.print()
+        console.print(Text("By source:", style="bold"))
+        src = summary.by_source
+        sources_sorted = sorted(
+            src,
+            key=lambda s: src[s]["bytes_saved"],
+            reverse=True,
+        )
+        max_bytes = max((src[s]["bytes_saved"] for s in sources_sorted), default=0)
+        tbl = _make_stats_table("source")
+        for source in sources_sorted:
+            v = src[source]
+            bar, bar_style = _bar_text(v["bytes_saved"], max_bytes)
+            tbl.add_row(
+                source,
+                Text(bar, style=bar_style),
+                _fmt_bytes(v["bytes_saved"]),
+                _fmt_tokens(v["tokens_saved"]),
+                f"{v['events']} ev",
+            )
+        console.print(tbl)
 
     # ---- Activity sparkline (last 7 days, oldest -> newest) ----
     if summary.by_day:

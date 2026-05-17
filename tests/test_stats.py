@@ -139,22 +139,22 @@ class TestStatsAggregation:
         with db.open_global() as conn:
             conn.execute(
                 "INSERT INTO projects (hash, root, marker, first_seen, last_seen, file_count) VALUES (?, ?, ?, ?, ?, ?)",
-                ("proj1111111111", "/home/user/proj1", ".git", int(time.time()), int(time.time()), 0),
+                ("1111111111111111111111111111111111111111", "/home/user/proj1", ".git", int(time.time()), int(time.time()), 0),
             )
             conn.execute(
                 "INSERT INTO projects (hash, root, marker, first_seen, last_seen, file_count) VALUES (?, ?, ?, ?, ?, ?)",
-                ("proj2222222222", "/home/user/proj2", ".git", int(time.time()), int(time.time()), 0),
+                ("2222222222222222222222222222222222222222", "/home/user/proj2", ".git", int(time.time()), int(time.time()), 0),
             )
 
-        db.record_stat("proj1111111111", "image_shrink", bytes_saved=1000, tokens_saved=250)
-        db.record_stat("proj2222222222", "image_shrink", bytes_saved=5000, tokens_saved=1250)
+        db.record_stat("1111111111111111111111111111111111111111", "image_shrink", bytes_saved=1000, tokens_saved=250)
+        db.record_stat("2222222222222222222222222222222222222222", "image_shrink", bytes_saved=5000, tokens_saved=1250)
 
         summary = stats.summarize(window_days=30)
         assert len(summary.by_project) == 2
         # Proj2 has more bytes, should be first
-        assert summary.by_project[0]["project_hash"] == "proj2222222222"
+        assert summary.by_project[0]["project_hash"] == "2222222222222222222222222222222222222222"
         assert summary.by_project[0]["bytes_saved"] == 5000
-        assert summary.by_project[1]["project_hash"] == "proj1111111111"
+        assert summary.by_project[1]["project_hash"] == "1111111111111111111111111111111111111111"
         assert summary.by_project[1]["bytes_saved"] == 1000
 
 
@@ -488,7 +488,7 @@ class TestPathProjectAttribution:
             conn.execute(
                 "INSERT INTO projects (hash, root, marker, first_seen, last_seen, file_count)"
                 " VALUES (?, ?, ?, ?, ?, ?)",
-                ("parenthash1234", parent_root, "none",
+                ("333333333333333333333333333333333333abcd", parent_root, "none",
                  int(time.time()), int(time.time()), 0),
             )
 
@@ -742,3 +742,206 @@ class TestRenderTextFallback:
 
         # Headline numbers must appear somewhere in the rich output
         assert "5" in output  # total_events
+
+
+# ---------------------------------------------------------------------------
+# Per-source aggregation — image / hint / read / compact rollup
+# ---------------------------------------------------------------------------
+
+
+class TestKindToSource:
+    """kind_to_source() maps every raw stat kind to a user-facing bucket."""
+
+    def test_image_family_kinds_map_to_image(self):
+        from token_goat.stats import SOURCE_IMAGE, kind_to_source
+        assert kind_to_source("image_shrink") == SOURCE_IMAGE
+        assert kind_to_source("webfetch_image") == SOURCE_IMAGE
+        assert kind_to_source("gdrive_image") == SOURCE_IMAGE
+
+    def test_hint_family_kinds_map_to_hint(self):
+        from token_goat.stats import SOURCE_HINT, kind_to_source
+        # Both the gross-savings and the overhead row collapse into the same
+        # source bucket so the user sees a net number for the hint mechanism.
+        assert kind_to_source("session_hint") == SOURCE_HINT
+        assert kind_to_source("session_hint_overhead") == SOURCE_HINT
+
+    def test_read_family_kinds_map_to_read(self):
+        from token_goat.stats import SOURCE_READ, kind_to_source
+        assert kind_to_source("read_replacement") == SOURCE_READ
+        assert kind_to_source("section_replacement") == SOURCE_READ
+        assert kind_to_source("symbol_read") == SOURCE_READ
+        assert kind_to_source("section_read") == SOURCE_READ
+
+    def test_compact_family_kinds_map_to_compact(self):
+        from token_goat.stats import SOURCE_COMPACT, kind_to_source
+        assert kind_to_source("compact_manifest") == SOURCE_COMPACT
+        assert kind_to_source("compact_assist") == SOURCE_COMPACT
+
+    def test_unknown_kind_maps_to_other(self):
+        """An unrecognized kind must still appear in stats, just under 'other'.
+
+        This is the key invariant: a future event kind added by the indexer
+        before this mapping is updated must NOT silently disappear from the
+        user-facing totals.
+        """
+        from token_goat.stats import SOURCE_OTHER, kind_to_source
+        assert kind_to_source("some_new_kind_added_later") == SOURCE_OTHER
+        assert kind_to_source("") == SOURCE_OTHER
+
+
+class TestBySourceAggregation:
+    """summarize() rolls by_kind into the four user-facing source buckets."""
+
+    def test_by_source_sums_image_family(self, tmp_data_dir):
+        """Multiple image kinds collapse into a single 'image' source row."""
+        from token_goat import db, stats
+
+        db.record_stat(None, "image_shrink", bytes_saved=1000, tokens_saved=250)
+        db.record_stat(None, "webfetch_image", bytes_saved=2000, tokens_saved=0)
+        db.record_stat(None, "gdrive_image", bytes_saved=500, tokens_saved=0)
+
+        summary = stats.summarize(window_days=30)
+        assert stats.SOURCE_IMAGE in summary.by_source
+        img = summary.by_source[stats.SOURCE_IMAGE]
+        assert img["events"] == 3
+        assert img["bytes_saved"] == 3500
+        assert img["tokens_saved"] == 250
+
+    def test_by_source_nets_hint_and_overhead(self, tmp_data_dir):
+        """The hint overhead row reduces the 'hint' source token total —
+        the user sees a net number for the mechanism, not two confusing rows.
+        """
+        from token_goat import db, stats
+
+        db.record_stat(None, "session_hint", bytes_saved=4000, tokens_saved=1000)
+        db.record_stat(None, "session_hint_overhead", bytes_saved=-500, tokens_saved=-125)
+
+        summary = stats.summarize(window_days=30)
+        hint = summary.by_source[stats.SOURCE_HINT]
+        assert hint["events"] == 2
+        assert hint["bytes_saved"] == 3500   # 4000 - 500
+        assert hint["tokens_saved"] == 875   # 1000 - 125
+
+    def test_by_source_keeps_unknown_kinds_under_other(self, tmp_data_dir):
+        """A made-up kind must still contribute to totals, under 'other'."""
+        from token_goat import db, stats
+
+        db.record_stat(None, "experimental_future_kind",
+                       bytes_saved=777, tokens_saved=42)
+
+        summary = stats.summarize(window_days=30)
+        other = summary.by_source[stats.SOURCE_OTHER]
+        assert other["events"] == 1
+        assert other["bytes_saved"] == 777
+        assert other["tokens_saved"] == 42
+
+    def test_by_source_total_equals_by_kind_total(self, tmp_data_dir):
+        """Invariant: rolling by_kind up into sources must not lose or duplicate
+        any row.  Sum of by_source values == sum of by_kind values."""
+        from token_goat import db, stats
+
+        db.record_stat(None, "image_shrink", bytes_saved=1000, tokens_saved=250)
+        db.record_stat(None, "session_hint", bytes_saved=4000, tokens_saved=1000)
+        db.record_stat(None, "session_hint_overhead", bytes_saved=-500, tokens_saved=-125)
+        db.record_stat(None, "read_replacement", bytes_saved=2000, tokens_saved=500)
+        db.record_stat(None, "compact_manifest", bytes_saved=800, tokens_saved=200)
+
+        summary = stats.summarize(window_days=30)
+        kind_sum_bytes = sum(v["bytes_saved"] for v in summary.by_kind.values())
+        src_sum_bytes = sum(v["bytes_saved"] for v in summary.by_source.values())
+        kind_sum_tokens = sum(v["tokens_saved"] for v in summary.by_kind.values())
+        src_sum_tokens = sum(v["tokens_saved"] for v in summary.by_source.values())
+        kind_sum_events = sum(v["events"] for v in summary.by_kind.values())
+        src_sum_events = sum(v["events"] for v in summary.by_source.values())
+
+        assert kind_sum_bytes == src_sum_bytes
+        assert kind_sum_tokens == src_sum_tokens
+        assert kind_sum_events == src_sum_events
+        # And those equal the top-line totals.
+        assert summary.total_bytes_saved == src_sum_bytes
+        assert summary.total_tokens_saved == src_sum_tokens
+
+    def test_by_source_empty_when_no_stats(self, tmp_data_dir):
+        """No recorded events → empty by_source dict (not missing, not raised)."""
+        from token_goat import stats
+        summary = stats.summarize(window_days=30)
+        assert summary.by_source == {}
+
+
+class TestStatsSummaryBackwardCompat:
+    """Old callers that build StatsSummary without by_source still work."""
+
+    def test_construct_without_by_source(self):
+        """StatsSummary must construct with the pre-by_source positional args
+        — guards against breaking older renderers or cached summaries."""
+        from token_goat.stats import StatsSummary
+
+        # Same positional+keyword form used by TestRenderTextFallback above.
+        s = StatsSummary(
+            total_events=5,
+            total_bytes_saved=1024,
+            total_tokens_saved=300,
+            by_kind={"image_shrink": {"events": 5, "bytes_saved": 1024, "tokens_saved": 300}},
+            by_day=[],
+            by_project=[],
+            window_days=30,
+        )
+        # The new field defaults to empty dict, not None — so renderers that
+        # iterate over .items() do not need to special-case None.
+        assert s.by_source == {}
+        assert isinstance(s.by_source, dict)
+
+    def test_legacy_db_rows_still_load(self, tmp_data_dir):
+        """Stats rows inserted before the by_source feature shipped (i.e. plain
+        rows with no extra columns) must still aggregate cleanly.
+
+        Regression test: simulates the on-disk shape of a stats row from any
+        prior version — column set has not changed, only the in-memory rollup
+        is new.  This asserts the per-source rollup does not assume any new
+        column or detail format.
+        """
+        from token_goat import db, stats
+
+        # Insert via the raw column tuple to mirror what an old binary wrote.
+        with db.open_global() as conn:
+            conn.execute(
+                "INSERT INTO stats (ts, kind, tokens_saved, bytes_saved, detail)"
+                " VALUES (?, ?, ?, ?, ?)",
+                (int(time.time()), "image_shrink", 250, 1000, None),
+            )
+            conn.execute(
+                "INSERT INTO stats (ts, kind, tokens_saved, bytes_saved, detail)"
+                " VALUES (?, ?, ?, ?, ?)",
+                (int(time.time()), "read_replacement", 125, 500, None),
+            )
+
+        summary = stats.summarize(window_days=30)
+        assert summary.total_events == 2
+        # And the source rollup picks them up correctly.
+        assert summary.by_source[stats.SOURCE_IMAGE]["bytes_saved"] == 1000
+        assert summary.by_source[stats.SOURCE_READ]["bytes_saved"] == 500
+
+
+class TestRenderBySource:
+    """render_text fallback path includes the new By-source table."""
+
+    def test_render_text_includes_by_source_section(self, tmp_data_dir):
+        """When the fallback rich renderer fires, By source: appears with rows."""
+        from unittest.mock import patch
+
+        from token_goat import db, stats
+
+        db.record_stat(None, "image_shrink", bytes_saved=1000, tokens_saved=250)
+        db.record_stat(None, "read_replacement", bytes_saved=500, tokens_saved=125)
+
+        summary = stats.summarize(window_days=30)
+        with patch(
+            "token_goat.render.stats_renderer.render_stats",
+            side_effect=RuntimeError("force fallback"),
+        ):
+            text = stats.render_text(summary)
+
+        assert "By source" in text
+        # Both buckets should appear in the rendered table.
+        assert "image" in text
+        assert "read" in text

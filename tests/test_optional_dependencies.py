@@ -20,10 +20,12 @@ def _missing_import(name: str):
 
 
 def test_db_import_survives_missing_sqlite_vec(monkeypatch):
+    # db.py imports sqlite_vec lazily inside _connect(), so the module reloads
+    # cleanly with sqlite_vec absent.  The reload itself is the success
+    # criterion — any ModuleNotFoundError would propagate out of importlib.
     with monkeypatch.context() as m:
         m.setattr(builtins, "__import__", _missing_import("sqlite_vec"))
-        reloaded = importlib.reload(db)
-        assert reloaded.sqlite_vec is None
+        importlib.reload(db)
     importlib.reload(db)
 
 

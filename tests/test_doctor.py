@@ -95,10 +95,14 @@ class TestDoctorBranches:
         return runner.invoke(cli.app, args)
 
     def test_token_goat_version_unknown_on_import_error(self, tmp_data_dir):
-        """When importlib.metadata.version raises, version is shown as 'unknown'."""
+        """When the package metadata isn't found, version is shown as 'unknown'."""
         import importlib.metadata
         from unittest.mock import patch
-        with patch.object(importlib.metadata, "version", side_effect=Exception("not found")):
+        with patch.object(
+            importlib.metadata,
+            "version",
+            side_effect=importlib.metadata.PackageNotFoundError("token-goat"),
+        ):
             result = runner.invoke(cli.app, ["doctor"])
         assert result.exit_code == 0
         assert "unknown" in result.stdout
@@ -107,7 +111,7 @@ class TestDoctorBranches:
         """When uv is not on PATH, doctor shows a WARN for it."""
         import subprocess as sp
         from unittest.mock import patch
-        with patch.object(sp, "run", side_effect=Exception("uv not found")):
+        with patch.object(sp, "run", side_effect=FileNotFoundError("uv not found")):
             result = runner.invoke(cli.app, ["doctor"])
         assert result.exit_code == 0
         assert "[WARN]" in result.stdout or "WARN" in result.stdout

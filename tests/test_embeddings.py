@@ -47,7 +47,7 @@ def test_pack_vec_round_trips():
 
 def test_check_vec_available_true(tmp_data_dir):
     """_check_vec_available returns True when sqlite-vec is loaded."""
-    with db.open_project("test_hash_checkavail") as conn:
+    with db.open_project("e0bedded0e0bedded0e0bedded0e0bedded00001") as conn:
         assert _check_vec_available(conn) is True
 
 
