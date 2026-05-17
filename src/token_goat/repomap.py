@@ -16,7 +16,7 @@ import contextlib
 import logging
 import sqlite3
 import time
-from collections import defaultdict
+from collections import Counter, defaultdict
 from dataclasses import dataclass
 from functools import lru_cache
 from typing import TYPE_CHECKING, Any, Protocol, TypedDict
@@ -322,8 +322,6 @@ def _multigraph_to_weighted_digraph(multigraph: _NxGraph) -> _NxGraph:
     A depends more heavily on B — the more symbols A imports from B, the more
     PageRank "votes" B receives, reflecting its true structural importance.
     """
-    from collections import Counter  # noqa: PLC0415
-
     import networkx as nx  # noqa: PLC0415
 
     simple_graph = nx.DiGraph()
