@@ -25,6 +25,8 @@ from __future__ import annotations
 
 __all__ = ["session_start"]
 
+from typing import TYPE_CHECKING
+
 from .hooks_common import (
     CONTINUE,
     HookPayload,
@@ -36,7 +38,12 @@ from .hooks_common import (
 from .hooks_common import (
     LOG as _LOG,
 )
-from .project import Project, find_project
+
+if TYPE_CHECKING:
+    # ``project`` pulls in ``hashlib`` (~6 ms cold) plus the marker regexes,
+    # which are only needed when ``session-start`` actually fires.  The other
+    # five hook events never touch this module's helpers, so defer the import.
+    from .project import Project
 
 
 def _reset_session_cache(session_id: str | None) -> None:
@@ -60,6 +67,8 @@ def _detect(payload: HookPayload) -> Project | None:
     cwd_path = validate_cwd(payload.get("cwd"), caller="session-start")
     if cwd_path is None:
         return None
+    from .project import find_project  # noqa: PLC0415
+
     return find_project(cwd_path)
 
 

@@ -35,7 +35,6 @@ __all__ = ["post_read", "pre_read"]
 
 from pathlib import Path
 
-from . import session
 from .hooks_common import (
     CONTINUE,
     HookPayload,
@@ -230,6 +229,8 @@ def pre_read(payload: HookPayload) -> HookResponse:
         _LOG.debug("pre-read: no session_id; skipping hint for %s", sanitize_log_str(file_path))
         return CONTINUE()
 
+    from . import session  # noqa: PLC0415
+
     cache = session.load(session_id)
 
     hint = build_read_hint(
@@ -268,6 +269,8 @@ def post_read(payload: HookPayload) -> HookResponse:
     session_id, _cwd = get_session_context(payload)
     if not session_id:
         return CONTINUE()
+
+    from . import session  # noqa: PLC0415
 
     cache = session.load(session_id)
 
