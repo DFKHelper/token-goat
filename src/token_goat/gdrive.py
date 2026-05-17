@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Protocol
 
 from . import image_shrink, paths
+from .hooks_common import sanitize_log_str
 
 _LOG = logging.getLogger("token_goat.gdrive")
 
@@ -223,7 +224,10 @@ def fetch_file(file_id: str, *, shrink_if_image: bool = True, max_size_bytes: in
     except Exception as e:  # noqa: BLE001 — Google API can raise many undocumented exceptions
         raise RuntimeError(f"Failed to fetch Drive file metadata for {file_id}: {e}") from e
     _LOG.debug("gdrive metadata fetched: file_id=%s name=%r mime=%s elapsed=%.3fs",
-               file_id, meta.get("name", ""), meta.get("mimeType", ""), time.monotonic() - t_meta_start)
+               file_id,
+               sanitize_log_str(str(meta.get("name", ""))),
+               sanitize_log_str(str(meta.get("mimeType", ""))),
+               time.monotonic() - t_meta_start)
 
     if not isinstance(meta, dict):
         raise RuntimeError(f"Expected dict metadata from Drive API, got {type(meta).__name__}")
@@ -264,7 +268,7 @@ def fetch_file(file_id: str, *, shrink_if_image: bool = True, max_size_bytes: in
     if local_path.exists():
         cached_size = local_path.stat().st_size
         _LOG.info("gdrive cache hit: file_id=%s name=%s size=%d elapsed=%.3fs",
-                  file_id, local_path.name, cached_size, time.monotonic() - t_fetch_start)
+                  file_id, sanitize_log_str(local_path.name), cached_size, time.monotonic() - t_fetch_start)
     else:
         # Google Workspace formats can't be downloaded directly — export as PDF
         if mime.startswith("application/vnd.google-apps"):
@@ -312,7 +316,7 @@ def fetch_file(file_id: str, *, shrink_if_image: bool = True, max_size_bytes: in
             write_elapsed = time.monotonic() - t_write_start
             _LOG.info(
                 "gdrive downloaded: file_id=%s name=%s bytes=%d download_elapsed=%.3fs write_elapsed=%.3fs",
-                file_id, local_path.name, written_bytes, download_elapsed, write_elapsed,
+                file_id, sanitize_log_str(local_path.name), written_bytes, download_elapsed, write_elapsed,
             )
         except OSError as e:
             raise RuntimeError(f"Failed to write downloaded file to {local_path}: {e}") from e
@@ -322,13 +326,13 @@ def fetch_file(file_id: str, *, shrink_if_image: bool = True, max_size_bytes: in
         result_path = image_shrink.shrink_if_image(local_path)
         _LOG.debug(
             "gdrive fetch_file complete: file_id=%s total_elapsed=%.3fs path=%s",
-            file_id, time.monotonic() - t_fetch_start, result_path.name,
+            file_id, time.monotonic() - t_fetch_start, sanitize_log_str(result_path.name),
         )
         return result_path
 
     _LOG.debug(
         "gdrive fetch_file complete: file_id=%s total_elapsed=%.3fs path=%s",
-        file_id, time.monotonic() - t_fetch_start, local_path.name,
+        file_id, time.monotonic() - t_fetch_start, sanitize_log_str(local_path.name),
     )
     return local_path
 
