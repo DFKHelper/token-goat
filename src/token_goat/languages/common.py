@@ -7,6 +7,7 @@ __all__ = [
     "add_symbol_info",
     "build_line_index",
     "build_signature",
+    "collect_symbols_and_refs",
     "extract_and_finalize_html_sections",
     "extract_html_headings",
     "extract_refs_from_source",
@@ -442,6 +443,82 @@ def add_symbol_info(
         "add_symbol_info (%s): added %d symbol(s) from %d candidates (%d duplicate(s) skipped)",
         language, added, len(symbol_infos), skipped,
     )
+
+
+def collect_symbols_and_refs(
+    source: bytes,
+    language: str,
+    rel_path: str,
+    log: logging.Logger,
+    call_re: re.Pattern[str],
+    call_noise: frozenset[str],
+    *,
+    promote_methods: bool = False,
+    **process_config_kwargs: bool,
+) -> tuple[list[Symbol], list[ImpExp], set[tuple[str, int]], list[Ref], object] | None:
+    """Run the standard symbol-extraction pipeline shared by most language adapters.
+
+    Consolidates the five repeated steps found in python, go, and rust adapters:
+
+    1. ``parse_source`` (tree-sitter decode + process; return None on failure)
+    2. Initialise ``symbols``, ``imp_exp``, and ``seen_names`` collections.
+    3. Walk ``result.structure`` via ``make_add_symbol``.
+    4. Add ``result.symbols`` (SymbolInfo) via ``add_symbol_info``.
+    5. Extract call-site refs via ``extract_refs_from_source``.
+
+    Returns ``(symbols, imp_exp, seen_names, refs, result)`` so callers can
+    append their own language-specific symbols (e.g. Go const/var) and handle
+    imports with a per-language extraction function before returning.
+
+    Returns ``None`` when tree-sitter is unavailable or parsing fails, so
+    callers can fall through to ``return [], [], [], []`` directly::
+
+        collected = common.collect_symbols_and_refs(source, "go", rel_path, _LOG,
+                                                    _CALL_RE, _CALL_NOISE)
+        if collected is None:
+            return [], [], [], []
+        symbols, imp_exp, seen_names, refs, result = collected
+
+    Parameters
+    ----------
+    source:
+        Raw file bytes.
+    language:
+        Language name forwarded to ``parse_source`` and ``make_add_symbol``.
+    rel_path:
+        Relative file path used in debug log messages.
+    log:
+        Logger instance from the calling module.
+    call_re:
+        Compiled regex for call-site extraction (language-specific).
+    call_noise:
+        Frozenset of names to exclude from refs (language-specific builtins).
+    promote_methods:
+        Forwarded to ``make_add_symbol``; True for Python and Rust.
+    **process_config_kwargs:
+        Extra keyword arguments forwarded to ``parse_source`` / ``make_process_config``
+        (e.g. ``exports=True`` for TypeScript).
+    """
+
+    result, _text = parse_source(source, language, rel_path, log, **process_config_kwargs)
+    if result is None:
+        return None
+
+    symbols: list[Symbol] = []
+    imp_exp: list[ImpExp] = []
+    seen_names: set[tuple[str, int]] = set()
+
+    _add_symbol = make_add_symbol(
+        symbols, seen_names, source, language=language, promote_methods=promote_methods
+    )
+    for item in result.structure:  # type: ignore[attr-defined]
+        _add_symbol(item)
+
+    add_symbol_info(symbols, seen_names, result.symbols, language=language)  # type: ignore[attr-defined]
+
+    refs: list[Ref] = extract_refs_from_source(source, call_re, call_noise)
+
+    return symbols, imp_exp, seen_names, refs, result
 
 
 def build_line_index(text: str) -> list[int]:

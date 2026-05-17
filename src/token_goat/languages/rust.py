@@ -46,36 +46,22 @@ def _parse_use_target(source_line: str) -> str:
 
 def extract(source: bytes, rel_path: str) -> tuple[list[Symbol], list[Ref], list[ImpExp], list[Section]]:
     """Extract symbols, refs, and imports from a Rust file."""
-    result, _text = common.parse_source(source, "rust", rel_path, _LOG)
-    if result is None:
-        return [], [], [], []
-
-    symbols: list[Symbol] = []
-    imp_exp: list[ImpExp] = []
-    seen_names: set[tuple[str, int]] = set()
-
-    # --- structure: functions, structs, enums, traits, impls, methods ---
     # promote_methods=True: functions nested inside an impl block (parent_name set)
     # are recorded with kind="method". common.kind_str("Impl", language="rust")
     # returns "impl" so impl blocks are recorded correctly without special-casing here.
-    _add_symbol = common.make_add_symbol(
-        symbols, seen_names, source, language="rust", promote_methods=True
+    collected = common.collect_symbols_and_refs(
+        source, "rust", rel_path, _LOG, _CALL_RE, _CALL_NOISE, promote_methods=True
     )
-    for item in result.structure:
-        _add_symbol(item)
-
-    # --- symbols from SymbolInfo (const, static, module-level items) ---
-    common.add_symbol_info(symbols, seen_names, result.symbols, language="rust")
+    if collected is None:
+        return [], [], [], []
+    symbols, imp_exp, _seen_names, refs, result = collected
 
     # --- imports (use declarations) ---
     common.add_imports(
         imp_exp,
-        result.imports,
+        result.imports,  # type: ignore[attr-defined]
         lambda imp: _parse_use_target(imp.source),  # type: ignore[attr-defined]
     )
-
-    # --- refs ---
-    refs: list[Ref] = common.extract_refs_from_source(source, _CALL_RE, _CALL_NOISE)
 
     _LOG.debug(
         "rust extract: %s → symbols=%d refs=%d imports=%d",
