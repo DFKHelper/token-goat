@@ -580,6 +580,25 @@ def mark_file_read(
     entry.read_count += 1
     entry.last_read_ts = now
     if symbol:
+        # Sanitize the symbol name before storing: it comes from harness tool_input
+        # which is attacker-controlled.  Embedded newlines would split hint lines into
+        # fake entries in LLM context; extreme lengths inflate the session JSON on disk.
+        # sanitize_log_str strips \n/\r and caps length in one pass.
+        symbol = sanitize_log_str(symbol, max_len=_MAX_SYMBOL_LEN)
+        if not symbol:
+            _LOG.debug("mark_file_read: symbol sanitized to empty string; skipping")
+            save(cache)
+            return cache
+        # Cap the number of symbols tracked per file to prevent unbounded growth.
+        if len(entry.symbols_read) >= _MAX_SYMBOLS_PER_FILE:
+            _LOG.debug(
+                "mark_file_read: symbols_read cap (%d) reached for %s; discarding %r",
+                _MAX_SYMBOLS_PER_FILE,
+                key,
+                symbol,
+            )
+            save(cache)
+            return cache
         # Direct list membership check — symbols_read is typically <10 entries so
         # the O(n) scan is cheaper than building a frozenset just to do one lookup.
         # _symbols_set() is retained for callers that do repeated lookups, but the
@@ -631,6 +650,17 @@ def mark_file_read(
 # blocks regex-bomb-sized strings from a malformed harness payload inflating every
 # session JSON write.
 _MAX_GREP_PATTERN_LEN = 1024
+
+# Maximum length of a symbol name stored in the session cache.  Symbol names come from
+# harness tool_input (via ``token-goat read file::symbol``) and are later embedded in
+# hint strings and the compaction manifest.  Embedded newlines would split hint lines
+# into fake entries in LLM context; extreme lengths inflate the session JSON on disk.
+_MAX_SYMBOL_LEN = 256
+
+# Maximum number of symbol names tracked per file entry.  An adversarial or misbehaving
+# harness could call ``token-goat read file::sym`` in a tight loop; without a cap the
+# symbols_read list grows without bound, bloating session JSON and manifest output.
+_MAX_SYMBOLS_PER_FILE = 50
 
 def mark_grep(
     session_id: str,

@@ -34,6 +34,13 @@ _MAX_RANGES_PER_FILE = 4
 # which caps the number of *files* that show any symbols at all).
 _MAX_SYMBOLS_PER_FILE_ENTRY = 6
 
+# Hard ceiling on the max_tokens parameter accepted by build_manifest.
+# The config layer sets a sensible default (400) but build_manifest is also part of
+# the public API.  Without a cap, a caller could pass an arbitrarily large value,
+# causing the manifest construction pass to allocate and render all sections before
+# the trim loop brings it back down — a pointless memory/CPU spike with no benefit.
+_MAX_MANIFEST_TOKENS_CAP = 4_000
+
 # Key for sorting edited_files dict items by edit count (the second element of each pair).
 # Defined at module level so it is created once rather than re-created on every manifest build.
 _BY_EDIT_COUNT = itemgetter(1)
@@ -166,8 +173,12 @@ def build_manifest(session_id: str, *, max_tokens: int = 400) -> str:
     - Symbols accessed via token-goat read/symbol commands
     - Key files read, deduped and sorted by access frequency
 
+    *max_tokens* is clamped to [1, _MAX_MANIFEST_TOKENS_CAP] to prevent a caller
+    from triggering unbounded manifest construction via an extreme value.
+
     Safe to call even when the session cache is empty or missing.
     """
+    max_tokens = max(1, min(max_tokens, _MAX_MANIFEST_TOKENS_CAP))
     t0 = time.monotonic()
     _LOG.debug("build_manifest: session=%s max_tokens=%d", session_id[:8], max_tokens)
     cache = _load_session_cache(session_id, "build_manifest")
