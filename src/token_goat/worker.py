@@ -52,6 +52,7 @@ except ModuleNotFoundError:
     psutil = _PsutilShim()  # type: ignore[assignment]
 
 from . import db, parser, paths
+from .hooks_common import sanitize_log_str
 from .project import Project
 
 
@@ -116,6 +117,12 @@ IMAGE_CACHE_TARGET = int(IMAGE_CACHE_LIMIT * 0.8)  # evict to 80%
 
 # Log retention (days)
 LOG_RETENTION_DAYS = 7
+
+# Maximum length of a project_marker value read from the dirty queue.
+# project_marker comes from an external file (dirty.txt) and is stored in
+# Project.marker and emitted in log messages.  Capping it prevents a crafted
+# queue entry from inflating log lines or the projects table with garbage data.
+_MAX_QUEUE_MARKER_LEN = 64
 
 # Size cap for the worker-stderr.log crash sink. spawn_detached appends to this
 # file on every worker spawn (one per SessionStart hook); the daily-log
@@ -1148,7 +1155,11 @@ def _parse_and_group_entries(entries: list[DirtyQueueEntry]) -> dict[str, _Proje
         # projects not yet registered in global.db.
         if bucket["root"] is None and entry.get("project_root"):
             bucket["root"] = entry["project_root"]
-            bucket["marker"] = entry.get("project_marker") or "manual"
+            # Sanitize the marker: it comes from an external queue file and is later
+            # stored in the projects table and emitted in log messages.  Strip
+            # newlines/CRs and cap length to prevent log injection or oversized DB rows.
+            raw_marker = entry.get("project_marker") or "manual"
+            bucket["marker"] = sanitize_log_str(str(raw_marker), max_len=_MAX_QUEUE_MARKER_LEN) or "manual"
     return by_project
 
 
