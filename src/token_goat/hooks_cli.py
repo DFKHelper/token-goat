@@ -25,7 +25,7 @@ import time
 from collections.abc import Callable
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Literal, ParamSpec, TypeVar, cast
+from typing import Literal, ParamSpec, TypeVar, cast
 
 from . import hooks_edit, hooks_fetch, hooks_read, hooks_session, paths
 from .hooks_common import CONTINUE, HookPayload, HookResponse, sanitize_log_str
@@ -97,7 +97,7 @@ _HSO_CAMEL_TO_SNAKE: dict[str, str] = {
 }
 
 
-def _translate_hso_to_codex(hso: dict[str, Any]) -> dict[str, Any]:
+def _translate_hso_to_codex(hso: dict[str, object]) -> dict[str, object]:
     """Convert camelCase hookSpecificOutput keys to snake_case for Codex wire format."""
     translated = dict(hso)
     for camel_key, snake_key in _HSO_CAMEL_TO_SNAKE.items():
@@ -106,13 +106,13 @@ def _translate_hso_to_codex(hso: dict[str, Any]) -> dict[str, Any]:
     return translated
 
 
-def denormalize_response(response: dict[str, Any], harness: Harness = "claude") -> dict[str, Any]:
+def denormalize_response(response: dict[str, object], harness: Harness = "claude") -> dict[str, object]:
     """Translate token-goat's internal response format to harness-specific wire format.
 
     Claude: hookSpecificOutput.{additionalContext, updatedInput, permissionDecision, ...}
     Codex:  hookSpecificOutput.{additional_context, updated_input, permission_decision, ...}
 
-    Accepts ``dict[str, Any]`` (the enriched result from ``dispatch`` which adds
+    Accepts ``dict[str, object]`` (the enriched result from ``dispatch`` which adds
     ``_tg_elapsed_ms``) rather than the narrower ``HookResponse`` TypedDict, so
     the diagnostic key is preserved in the output.
     """
@@ -183,7 +183,7 @@ def read_payload(input_file: Path | None = None) -> HookPayload:
     return cast("HookPayload", data) if isinstance(data, dict) else HookPayload()
 
 
-def emit(result: dict[str, Any]) -> None:
+def emit(result: dict[str, object]) -> None:
     """Write the hook result to stdout as JSON, swallowing every output error.
 
     Forces UTF-8 on stdout (Windows defaults to cp1252 which can't encode → and
@@ -216,7 +216,7 @@ def safe_run(event: str, input_file: Path | None = None, harness: Harness = "cla
     and we log a one-line diagnostic to stderr so the harness's
     hook-error display has the cause if you go looking for it.
     """
-    result: dict[str, Any] = dict(CONTINUE())
+    result: dict[str, object] = dict(CONTINUE())
     try:
         raw = read_payload(input_file)
         payload = normalize_payload(raw, harness)
@@ -373,14 +373,14 @@ EVENTS: dict[str, Callable[[HookPayload], HookResponse]] = {
 }
 
 
-def dispatch(event: str, payload: HookPayload) -> dict[str, Any]:
+def dispatch(event: str, payload: HookPayload) -> dict[str, object]:
     """Dispatch a hook event. Always returns at minimum {'continue': True}.
 
-    The return type is ``dict[str, Any]`` rather than ``HookResponse`` because
+    The return type is ``dict[str, object]`` rather than ``HookResponse`` because
     this function appends the ``_tg_elapsed_ms`` diagnostic key, which is not
     part of the ``HookResponse`` TypedDict schema.  Callers that need to pass
     the result to ``emit()`` can do so directly since ``emit`` accepts
-    ``dict[str, Any]``.
+    ``dict[str, object]``.
     """
     _setup_logging()
     safe_event = sanitize_log_str(event, max_len=64)
@@ -390,7 +390,7 @@ def dispatch(event: str, payload: HookPayload) -> dict[str, Any]:
         return dict(CONTINUE())
     _LOG.debug("hook %s started", safe_event)
     t0 = time.monotonic()
-    result: dict[str, Any] = dict(handler(payload))
+    result: dict[str, object] = dict(handler(payload))
     elapsed_ms = (time.monotonic() - t0) * 1000
     if elapsed_ms >= _HOOK_SLOW_MS:
         _LOG.warning("hook %s slow: %.1fms (check for blockage or I/O delays)", safe_event, elapsed_ms)

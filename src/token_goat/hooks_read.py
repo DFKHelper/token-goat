@@ -34,12 +34,8 @@ from __future__ import annotations
 __all__ = ["post_read", "pre_read"]
 
 from pathlib import Path
-from typing import TYPE_CHECKING
 
 from . import session
-
-if TYPE_CHECKING:
-    from typing import Any
 from .hooks_common import (
     CONTINUE,
     HookPayload,
@@ -91,7 +87,7 @@ def _handle_bash_read_equivalent(payload: HookPayload) -> HookPayload | None:
 
 
 def _try_shrink_image(
-    file_path: str, tool_input: dict[str, Any]
+    file_path: str, tool_input: dict[str, object]
 ) -> HookResponse | None:
     """Attempt image shrinking and return hook-formatted response if successful.
 
