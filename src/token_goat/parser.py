@@ -69,14 +69,52 @@ _KNOWN_EXTENSIONS: frozenset[str] = frozenset(LANG_BY_EXT)
 
 # Directories that should never be indexed
 SKIP_DIRS: Final[frozenset[str]] = frozenset({
-    "node_modules", ".git", ".next", "dist", "build", ".venv", "venv",
+    "node_modules", ".git", ".hg", ".svn", ".bzr",
+    ".next", "dist", "build", ".venv", "venv", "env",
     "__pycache__", ".pytest_cache", ".ruff_cache", ".mypy_cache",
     "target", "out", "coverage", ".turbo", ".vercel", ".svelte-kit",
     ".cache", ".idea", ".vscode", ".DS_Store", ".angular",
+    ".nuxt", ".tox", ".eggs", "htmlcov", "bower_components", "vendor",
 })
+
+# Exact basenames (lowercase) that should never be indexed. These are generated
+# lockfiles or OS metadata that match an extension in LANG_BY_EXT (e.g.
+# ``package-lock.json`` has the indexed ``.json`` extension) but carry no
+# semantic content the LLM would care about — a 100k-line lockfile blows up
+# the symbol table and pollutes search results.
+SKIP_FILE_BASENAMES: Final[frozenset[str]] = frozenset({
+    "package-lock.json", "yarn.lock", "pnpm-lock.yaml", "npm-shrinkwrap.json",
+    "poetry.lock", "uv.lock", "pdm.lock", "pipfile.lock",
+    "cargo.lock", "composer.lock", "gemfile.lock",
+    ".ds_store", "thumbs.db", "desktop.ini",
+})
+
+# File-suffix markers that indicate a generated/minified artifact. Checked
+# against the lowercased basename — matches ``app.min.js``, ``style.min.css``,
+# ``app.js.map``, ``vendor.bundle.js``. Bundled/minified files have valid
+# extensions (``.js``, ``.css``) so the extension check alone won't skip them.
+SKIP_FILE_SUFFIXES: Final[tuple[str, ...]] = (
+    ".min.js", ".min.css", ".min.mjs",
+    ".bundle.js", ".bundle.mjs",
+    ".js.map", ".mjs.map", ".css.map", ".ts.map",
+    "-lock.json",  # catches package-lock.json variants and similar
+)
 
 # Skip files larger than this (bytes) — usually generated artifacts
 MAX_FILE_SIZE: Final[int] = 2_000_000  # 2 MB
+
+
+def _is_generated_filename(name: str) -> bool:
+    """Return True when *name* (a file basename) is a known generated/lock artifact.
+
+    Combines the exact-basename and suffix-pattern checks into a single helper so
+    ``iter_source_files`` can short-circuit before paying for ``stat()`` or symlink
+    resolution.  Matching is case-insensitive (Windows-friendly).
+    """
+    lower = name.lower()
+    if lower in SKIP_FILE_BASENAMES:
+        return True
+    return any(lower.endswith(suf) for suf in SKIP_FILE_SUFFIXES)
 
 
 @dataclass
@@ -397,6 +435,7 @@ def iter_source_files(project: Project) -> Iterable[Path]:
     skipped_dirs = 0
     skipped_symlinks = 0
     skipped_oversized = 0
+    skipped_generated = 0
     for dirpath, dirs, files in os.walk(root):
         initial_dirs = dirs[:]
         dirs[:] = [d for d in dirs if d not in SKIP_DIRS]
@@ -404,6 +443,14 @@ def iter_source_files(project: Project) -> Iterable[Path]:
         base = Path(dirpath)
         for name in files:
             if name in SKIP_DIRS:
+                continue
+            # Skip generated/lockfile artifacts (package-lock.json, *.min.js, etc.)
+            # before the extension check — these have valid extensions in
+            # LANG_BY_EXT (``.json``, ``.js``) so the suffix gate alone would
+            # let them through, polluting the symbol table with hundreds of
+            # auto-generated identifiers per file.
+            if _is_generated_filename(name):
+                skipped_generated += 1
                 continue
             path = base / name
             # Fast membership test against the frozenset avoids a .lower()
@@ -442,6 +489,8 @@ def iter_source_files(project: Project) -> Iterable[Path]:
         _LOG.debug("file walk skipped %d symlinks pointing outside project root", skipped_symlinks)
     if skipped_oversized > 0:
         _LOG.info("file walk skipped %d oversized files (> %d bytes)", skipped_oversized, MAX_FILE_SIZE)
+    if skipped_generated > 0:
+        _LOG.debug("file walk skipped %d generated/lockfile artifacts", skipped_generated)
 
 
 def _line_count_from_bytes(raw: bytes) -> int:
