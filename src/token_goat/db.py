@@ -57,7 +57,7 @@ import os
 import re
 import sqlite3
 import time
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from pathlib import Path
 
 from . import paths
@@ -216,6 +216,26 @@ def _is_readonly_or_transient(error: sqlite3.OperationalError) -> bool:
     """
     lowered = str(error).lower()
     return "locked" in lowered or "busy" in lowered or "i/o" in lowered or "readonly" in lowered
+
+
+def _best_effort_write(fn: Callable[[], None], label: str) -> None:
+    """Execute *fn* as a best-effort DB write, swallowing expected sandbox errors.
+
+    On read-only (sandboxed) connections an ``OperationalError`` whose message
+    contains "readonly", "locked", "busy", or "i/o" is downgraded to DEBUG and
+    silently dropped — telemetry writes are best-effort.  Any other error is
+    logged at ERROR so real failures surface.  Used by ``touch_project_last_seen``
+    and ``record_stat`` to avoid duplicating the identical three-clause handler.
+    """
+    try:
+        fn()
+    except sqlite3.OperationalError as exc:
+        if _is_readonly_or_transient(exc):
+            _LOG.debug("%s skipped (read-only or transient): %s", label, exc)
+        else:
+            _LOG.error("%s failed: %s", label, exc)
+    except Exception as exc:  # noqa: BLE001
+        _LOG.error("%s failed: %s", label, exc)
 
 
 def _integrity_ok(conn: sqlite3.Connection) -> bool:
@@ -879,20 +899,14 @@ def touch_project_last_seen(project_hash: str) -> None:
     worker's own background reindex cadence (which would otherwise keep every
     project "active" forever).
     """
-    try:
+    def _do() -> None:
         with open_global() as conn:
             conn.execute(
                 "UPDATE projects SET last_seen = ? WHERE hash = ?",
                 (int(time.time()), project_hash),
             )
-    except sqlite3.OperationalError as exc:
-        # Read-only fallback (sandbox) — expected, telemetry is best-effort.
-        if _is_readonly_or_transient(exc):
-            _LOG.debug("touch_project_last_seen skipped (read-only or transient): %s", exc)
-        else:
-            _LOG.error("touch_project_last_seen failed: %s", exc)
-    except Exception as exc:  # noqa: BLE001
-        _LOG.error("touch_project_last_seen failed: %s", exc)
+
+    _best_effort_write(_do, "touch_project_last_seen")
 
 
 def index_health(project_hash: str) -> dict[str, object]:
@@ -985,20 +999,12 @@ def record_stat(
         detail = detail[:_MAX_STAT_DETAIL_LEN]
     sql = "INSERT INTO stats (ts, kind, tokens_saved, bytes_saved, detail) VALUES (?, ?, ?, ?, ?)"
     params = (ts, kind, tokens_saved, bytes_saved, detail)
-    try:
+    def _do() -> None:
         if project_hash is not None:
             with open_project(project_hash) as conn:
                 conn.execute(sql, params)
         else:
             with open_global() as conn:
                 conn.execute(sql, params)
-    except sqlite3.OperationalError as exc:
-        # "attempt to write a readonly database" is expected in sandboxed
-        # contexts (Codex unelevated) where _connect() falls back to immutable
-        # mode.  Drop to debug — telemetry is best-effort.
-        if _is_readonly_or_transient(exc):
-            _LOG.debug("record_stat skipped (read-only or transient): %s", exc)
-        else:
-            _LOG.error("record_stat failed: %s", exc)
-    except Exception as exc:  # noqa: BLE001
-        _LOG.error("record_stat failed: %s", exc)
+
+    _best_effort_write(_do, "record_stat")
