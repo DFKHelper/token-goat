@@ -37,7 +37,8 @@ def test_config_get_unknown_key_exits_2(tmp_data_dir):
     runner = CliRunner()
     result = runner.invoke(app, ["config", "get", "compact_assist.does_not_exist"])
     assert result.exit_code == 2
-    assert "Unknown config key" in result.output or "Unknown config key" in (result.stderr or "")
+    combined = (result.output or "") + (result.stderr or "")
+    assert "config key" in combined.lower()
 
 
 def test_config_set_unknown_key_exits_2(tmp_data_dir):

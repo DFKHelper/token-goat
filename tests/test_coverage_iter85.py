@@ -17,7 +17,8 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from token_goat import worker
-from token_goat.languages.html import _build_line_index, _offset_to_line
+from token_goat.languages.common import build_line_index as _build_line_index
+from token_goat.languages.common import offset_to_line as _offset_to_line
 from token_goat.languages.python import _FROM_IMPORT_RE, _PLAIN_IMPORT_RE
 from token_goat.languages.typescript import _EXPORT_CONST_RE
 from token_goat.worker import DirtyQueueEntry, _process_dirty_entries

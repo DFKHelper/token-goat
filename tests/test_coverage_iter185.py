@@ -305,7 +305,7 @@ class TestTypescriptParseFailureLog:
     """On tree-sitter parse failure the log message must include the exception text."""
 
     def test_log_contains_exception_message(self, caplog):
-        """When tlp.process() raises, the DEBUG log must contain the exception string."""
+        """When tlp.process() raises, the WARNING log must contain the exception string."""
 
         from token_goat.languages import typescript
 
@@ -317,17 +317,17 @@ class TestTypescriptParseFailureLog:
 
         with patch.object(
             typescript.common, "make_process_config", return_value=(fake_tlp, fake_cfg)
-        ), caplog.at_level(logging.DEBUG, logger="token_goat.languages.typescript"):
+        ), caplog.at_level(logging.WARNING, logger="token_goat.languages.typescript"):
             result = typescript.extract(b"const x = 1;", "test.ts")
 
         assert result == ([], [], [], [])
-        debug_msgs = [r.message for r in caplog.records if r.levelno == logging.DEBUG]
-        assert any("fake parse error XYZ" in m for m in debug_msgs), (
-            f"Exception text not found in log messages: {debug_msgs}"
+        warn_msgs = [r.message for r in caplog.records if r.levelno == logging.WARNING]
+        assert any("fake parse error XYZ" in m for m in warn_msgs), (
+            f"Exception text not found in log messages: {warn_msgs}"
         )
 
     def test_log_contains_rel_path(self, caplog):
-        """The DEBUG log must include the rel_path so the failing file is identifiable."""
+        """The WARNING log must include the rel_path so the failing file is identifiable."""
 
         from token_goat.languages import typescript
 
@@ -337,12 +337,12 @@ class TestTypescriptParseFailureLog:
 
         with patch.object(
             typescript.common, "make_process_config", return_value=(fake_tlp, fake_cfg)
-        ), caplog.at_level(logging.DEBUG, logger="token_goat.languages.typescript"):
+        ), caplog.at_level(logging.WARNING, logger="token_goat.languages.typescript"):
             typescript.extract(b"export default {};", "src/components/Button.tsx")
 
-        debug_msgs = [r.message for r in caplog.records if r.levelno == logging.DEBUG]
-        assert any("Button.tsx" in m for m in debug_msgs), (
-            f"rel_path not found in log messages: {debug_msgs}"
+        warn_msgs = [r.message for r in caplog.records if r.levelno == logging.WARNING]
+        assert any("Button.tsx" in m for m in warn_msgs), (
+            f"rel_path not found in log messages: {warn_msgs}"
         )
 
 

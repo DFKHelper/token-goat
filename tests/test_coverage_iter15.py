@@ -113,19 +113,19 @@ class TestValidateProjectHash:
             db._validate_project_hash("a" * 129)
 
     def test_path_separator_raises(self):
-        with pytest.raises(ValueError, match="alphanumeric"):
+        with pytest.raises(ValueError, match="lowercase hex"):
             db._validate_project_hash("abc/def")
 
     def test_dot_raises(self):
-        with pytest.raises(ValueError, match="alphanumeric"):
+        with pytest.raises(ValueError, match="lowercase hex"):
             db._validate_project_hash("abc.def")
 
     def test_hyphen_raises(self):
-        with pytest.raises(ValueError, match="alphanumeric"):
+        with pytest.raises(ValueError, match="lowercase hex"):
             db._validate_project_hash("abc-def")
 
     def test_valid_hash_accepted(self):
-        db._validate_project_hash("abc123DEF456_789")  # must not raise
+        db._validate_project_hash("abc123def456")  # must not raise — valid lowercase hex
 
     def test_exactly_128_chars_accepted(self):
         db._validate_project_hash("a" * 128)  # boundary — must not raise
@@ -141,11 +141,11 @@ class TestReadonlyOpeners:
             pass
 
     def test_open_project_readonly_raises_when_missing(self, tmp_data_dir):
-        with pytest.raises(FileNotFoundError, match="project db not found"), db.open_project_readonly("abc123def456"):
+        with pytest.raises(FileNotFoundError, match="project db not found"), db.open_project_readonly("abc123def456abc1"):
             pass
 
     def test_open_project_readonly_validates_hash(self, tmp_data_dir):
-        with pytest.raises(ValueError, match="alphanumeric"), db.open_project_readonly("bad/hash"):
+        with pytest.raises(ValueError, match="lowercase hex"), db.open_project_readonly("bad/hash"):
             pass
 
 
@@ -173,12 +173,12 @@ class TestEnsureGlobalSchemaReadonly:
 
 class TestIndexHealth:
     def test_returns_not_ok_for_nonexistent_project(self, tmp_data_dir):
-        result = db.index_health("nonexistent0001")
+        result = db.index_health("ab" * 20)  # valid hex, no DB on disk
         assert result["ok"] is False
         assert result["file_count"] == 0
 
     def test_returns_ok_for_fresh_project(self, tmp_data_dir):
-        h = "healthtest0001"
+        h = "1ea1" * 10  # 40-char valid lowercase hex
         with db.open_project(h):
             pass
         result = db.index_health(h)
@@ -195,16 +195,16 @@ class TestIndexHealth:
 
 class TestProjectHasFilesAndCount:
     def test_project_has_files_false_when_no_db(self, tmp_data_dir):
-        assert db.project_has_files("neverindexed01") is False
+        assert db.project_has_files("cafe" * 10) is False  # valid hex, never indexed
 
     def test_project_has_files_false_when_empty(self, tmp_data_dir):
-        h = "emptyproj0001"
+        h = "dead" * 10  # 40-char valid lowercase hex
         with db.open_project(h):
             pass
         assert db.project_has_files(h) is False
 
     def test_file_count_zero_for_empty_project(self, tmp_data_dir):
-        h = "fcount0001"
+        h = "face" * 10  # 40-char valid lowercase hex
         with db.open_project(h):
             pass
         assert db.file_count(h) == 0
@@ -244,7 +244,7 @@ class TestWriterLockDeadPid:
         """A lock with a PID that doesn't exist (but fresh timestamp) is treated as stale."""
         import token_goat.paths as paths
 
-        h = "lock_dead_pid0001"
+        h = "b0d1" * 10  # 40-char valid lowercase hex
         lock_path = paths.locks_dir() / f"{h}.lock"
         lock_path.parent.mkdir(parents=True, exist_ok=True)
         # PID 99999999 almost certainly doesn't exist; timestamp is fresh
@@ -263,7 +263,7 @@ class TestWriterLockMalformed:
     def test_malformed_lock_treated_as_stale(self, tmp_data_dir):
         import token_goat.paths as paths
 
-        h = "lock_malform0001"
+        h = "badf" * 10  # 40-char valid lowercase hex
         lock_path = paths.locks_dir() / f"{h}.lock"
         lock_path.parent.mkdir(parents=True, exist_ok=True)
         lock_path.write_text("NOT_A_PID", encoding="utf-8")

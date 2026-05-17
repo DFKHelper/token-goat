@@ -551,7 +551,7 @@ class TestGoRegexPatterns:
 
     def test_call_re_matches_bare_function_call(self):
         """_CALL_RE must match a bare (unqualified) function call identifier."""
-        from token_goat.languages.go import _CALL_RE
+        from token_goat.languages.common import CALL_RE as _CALL_RE
 
         # Bare call — not preceded by '.' or word char
         line = "result := doSomething(arg)"
@@ -560,7 +560,7 @@ class TestGoRegexPatterns:
 
     def test_call_re_excludes_qualified_method_call(self):
         """_CALL_RE negative lookbehind must exclude 'pkg.Method' style calls."""
-        from token_goat.languages.go import _CALL_RE
+        from token_goat.languages.common import CALL_RE as _CALL_RE
 
         # fmt.Println — 'Println' is preceded by '.' so it must not match
         line = "result := fmt.Println(x)"
@@ -571,7 +571,7 @@ class TestGoRegexPatterns:
 
     def test_call_re_does_not_match_receiver_object(self):
         """The object before '.' must not be returned as a match."""
-        from token_goat.languages.go import _CALL_RE
+        from token_goat.languages.common import CALL_RE as _CALL_RE
 
         line = "foo.Bar()"
         matches = _CALL_RE.findall(line)

@@ -70,7 +70,7 @@ class TestFileCountErrorPaths:
         """Sanity check: file_count returns actual row count when DB is healthy."""
         from token_goat import db
 
-        h = "testcountabc01"
+        h = "1e5c" * 10  # 40-char valid lowercase hex
         with db.open_project(h) as conn:
             conn.execute(
                 "INSERT INTO files(rel_path, language, size, line_count, mtime, content_sha256, indexed_at)"

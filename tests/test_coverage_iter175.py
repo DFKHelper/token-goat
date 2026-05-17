@@ -337,36 +337,36 @@ class TestStripAnsi:
     """_strip_ansi must remove ANSI/VT escape sequences from strings."""
 
     def test_basic_color_code_stripped(self):
-        from token_goat.render.stats_renderer import _strip_ansi
+        from token_goat.render.ansi import strip_ansi as _strip_ansi
 
         assert _strip_ansi("\x1b[31mred text\x1b[0m") == "red text"
 
     def test_bold_code_stripped(self):
-        from token_goat.render.stats_renderer import _strip_ansi
+        from token_goat.render.ansi import strip_ansi as _strip_ansi
 
         assert _strip_ansi("\x1b[1mbold\x1b[0m") == "bold"
 
     def test_cursor_control_stripped(self):
         """CSI cursor-move sequences must also be stripped."""
-        from token_goat.render.stats_renderer import _strip_ansi
+        from token_goat.render.ansi import strip_ansi as _strip_ansi
 
         result = _strip_ansi("\x1b[2J\x1b[Hclean")
         assert "\x1b" not in result
         assert "clean" in result
 
     def test_plain_string_unchanged(self):
-        from token_goat.render.stats_renderer import _strip_ansi
+        from token_goat.render.ansi import strip_ansi as _strip_ansi
 
         assert _strip_ansi("/home/user/projects/token-goat") == "/home/user/projects/token-goat"
 
     def test_empty_string(self):
-        from token_goat.render.stats_renderer import _strip_ansi
+        from token_goat.render.ansi import strip_ansi as _strip_ansi
 
         assert _strip_ansi("") == ""
 
     def test_project_path_with_injected_esc(self):
         """A project root path containing ESC bytes must be fully sanitized."""
-        from token_goat.render.stats_renderer import _strip_ansi
+        from token_goat.render.ansi import strip_ansi as _strip_ansi
 
         injected = "/home/user/proj\x1b[1;32m"
         result = _strip_ansi(injected)

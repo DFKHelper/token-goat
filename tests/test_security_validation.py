@@ -8,7 +8,7 @@ import sys
 import pytest
 
 from token_goat import db, gdrive, session
-from token_goat.hooks_fetch import _shell_safe_url
+from token_goat.hooks_fetch import _sanitize_url_for_embed as _shell_safe_url
 
 
 class TestSessionIdPathTraversal:

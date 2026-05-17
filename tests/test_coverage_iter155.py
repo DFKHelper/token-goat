@@ -338,7 +338,7 @@ class TestRustAddSymbolAttributeErrorGuard:
         """A node with .name but no .span is skipped and logged at DEBUG."""
         node = SimpleNamespace(name="my_struct", kind="Struct")  # no .span
 
-        with caplog.at_level(logging.DEBUG, logger="token_goat.languages.rust"):
+        with caplog.at_level(logging.DEBUG, logger="token_goat.languages.common"):
             symbols, _, _, _ = self._call_extract_with_mocked_result([node])
 
         assert symbols == []

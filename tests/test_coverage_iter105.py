@@ -91,7 +91,7 @@ class TestWebfetchRevalidationSSRF:
         revalidation_resp = _make_non_streaming_response(304, url=url)
         client = _make_client_with_get(revalidation_resp)
 
-        with patch("token_goat.webfetch.httpx.Client", return_value=client):
+        with patch("httpx.Client", return_value=client):
             result = webfetch.fetch_url(url, shrink_if_image=False)
 
         assert result.exists()
@@ -106,7 +106,7 @@ class TestWebfetchRevalidationSSRF:
         revalidation_resp = _make_non_streaming_response(304, url="http://127.0.0.1/secret.png")
         client = _make_client_with_get(revalidation_resp)
 
-        with patch("token_goat.webfetch.httpx.Client", return_value=client):
+        with patch("httpx.Client", return_value=client):
             result = webfetch.fetch_url(url, shrink_if_image=False)
 
         # Must return the cached file — not raise, not fetch from 127.0.0.1
@@ -124,7 +124,7 @@ class TestWebfetchRevalidationSSRF:
         )
         client = _make_client_with_get(revalidation_resp)
 
-        with patch("token_goat.webfetch.httpx.Client", return_value=client):
+        with patch("httpx.Client", return_value=client):
             result = webfetch.fetch_url(url, shrink_if_image=False)
 
         assert result.exists()
@@ -139,7 +139,7 @@ class TestWebfetchRevalidationSSRF:
         revalidation_resp = _make_non_streaming_response(200, url="http://10.0.0.1/bad.png")
         client = _make_client_with_get(revalidation_resp)
 
-        with patch("token_goat.webfetch.httpx.Client", return_value=client):
+        with patch("httpx.Client", return_value=client):
             # The revalidation redirect is blocked; cached file is served
             result = webfetch.fetch_url(url, shrink_if_image=False)
 
