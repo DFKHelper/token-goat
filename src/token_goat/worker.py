@@ -90,8 +90,15 @@ _LOG = logging.getLogger("token_goat.worker")
 
 # Heartbeat interval (seconds)
 HEARTBEAT_INTERVAL = 30.0
-# Dirty queue poll interval
+# Dirty queue poll interval — baseline cadence when the worker is actively draining work.
 POLL_INTERVAL = 2.0
+# Maximum poll interval (seconds) when the dirty queue has been empty for a long stretch.
+# Capped so a freshly enqueued edit still reaches the indexer within this window — long enough
+# to meaningfully cut idle wakeups, short enough that interactive feedback stays snappy.
+POLL_INTERVAL_MAX = 10.0
+# Number of consecutive empty drains before adaptive back-off kicks in. Below this threshold
+# the worker stays at POLL_INTERVAL so a single brief lull doesn't slow the next edit's drain.
+IDLE_BACKOFF_AFTER_EMPTY_DRAINS = 5
 # Periodic maintenance interval (cleanup tasks)
 MAINTENANCE_INTERVAL = 300.0  # 5 min
 # How often to incrementally re-index active projects.
@@ -414,6 +421,25 @@ def enqueue_dirty(
     line = json.dumps(entry)
     with paths.dirty_queue_path().open("a", encoding="utf-8") as f:
         f.write(line + "\n")
+
+
+def adaptive_poll_interval(consecutive_empty_drains: int) -> float:
+    """Return the sleep interval for the daemon main loop given how long it has been idle.
+
+    Stays at :data:`POLL_INTERVAL` until the queue has been empty for
+    :data:`IDLE_BACKOFF_AFTER_EMPTY_DRAINS` consecutive drain cycles, then grows linearly
+    with the number of additional empty drains, capped at :data:`POLL_INTERVAL_MAX`.
+
+    The linear ramp (rather than exponential) keeps the worst-case latency between an edit
+    and its reindex bounded and predictable, while still cutting idle wakeups noticeably for
+    a worker that is genuinely idle for minutes at a time. Resets to :data:`POLL_INTERVAL`
+    on the very next non-empty drain (caller is responsible for tracking the counter).
+    """
+    if consecutive_empty_drains < IDLE_BACKOFF_AFTER_EMPTY_DRAINS:
+        return POLL_INTERVAL
+    # +1 so the first eligible drain steps strictly above POLL_INTERVAL.
+    extra = consecutive_empty_drains - IDLE_BACKOFF_AFTER_EMPTY_DRAINS + 1
+    return min(POLL_INTERVAL_MAX, POLL_INTERVAL + extra * POLL_INTERVAL)
 
 
 def drain_dirty_queue() -> list[DirtyQueueEntry]:
