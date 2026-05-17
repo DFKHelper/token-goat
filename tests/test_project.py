@@ -172,3 +172,164 @@ def test_find_project_accepts_symlink_marker_within_root(tmp_path):
     assert proj is not None
     assert proj.root == canonicalize(project_dir)
     assert proj.marker == ".git"
+
+
+# ---------------------------------------------------------------------------
+# Cross-shell drive-letter prefix normalisation
+#
+# A project at C:\Projects\foo is accessed from multiple shells under different
+# literal path strings:
+#
+#   cmd / PowerShell:     C:\Projects\foo  or  C:/Projects/foo
+#   Git Bash (MSYS):      /c/Projects/foo
+#   Cygwin:               /cygdrive/c/Projects/foo
+#   WSL / Linux mount:    /mnt/c/Projects/foo
+#
+# All five must canonicalize to the same path so project_hash() yields one
+# SHA1.  Without this, switching between PowerShell and Git Bash on the same
+# project would fragment the index across multiple per-project DB files.
+#
+# These tests run on every platform because the normalisation is a pure
+# string transform — no filesystem operations are needed.
+# ---------------------------------------------------------------------------
+
+
+from pathlib import Path  # noqa: E402  (imported locally to keep added block self-contained)
+
+from token_goat.project import _normalize_shell_drive_prefix  # noqa: E402
+
+
+def test_normalize_shell_prefix_wsl_mount():
+    """/mnt/c/Projects/foo (WSL) -> c:/Projects/foo."""
+    assert _normalize_shell_drive_prefix("/mnt/c/Projects/foo") == "c:/Projects/foo"
+
+
+def test_normalize_shell_prefix_wsl_uppercase_drive():
+    """/mnt/C/Projects/foo -> c:/Projects/foo (drive letter lowercased)."""
+    assert _normalize_shell_drive_prefix("/mnt/C/Projects/foo") == "c:/Projects/foo"
+
+
+def test_normalize_shell_prefix_cygwin():
+    """/cygdrive/c/Projects/foo -> c:/Projects/foo."""
+    assert _normalize_shell_drive_prefix("/cygdrive/c/Projects/foo") == "c:/Projects/foo"
+
+
+def test_normalize_shell_prefix_msys_git_bash():
+    """/c/Projects/foo (Git Bash MSYS) -> c:/Projects/foo."""
+    assert _normalize_shell_drive_prefix("/c/Projects/foo") == "c:/Projects/foo"
+
+
+def test_normalize_shell_prefix_alternate_drive_letter():
+    """Drive letters other than 'c' are also handled."""
+    assert _normalize_shell_drive_prefix("/mnt/d/Code/proj") == "d:/Code/proj"
+    assert _normalize_shell_drive_prefix("/e/Code/proj") == "e:/Code/proj"
+    assert _normalize_shell_drive_prefix("/cygdrive/z/Code/proj") == "z:/Code/proj"
+
+
+def test_normalize_shell_prefix_leaves_posix_paths_alone():
+    """Real POSIX paths (no drive-letter ambiguity) pass through unchanged."""
+    assert _normalize_shell_drive_prefix("/usr/local/bin") == "/usr/local/bin"
+    assert _normalize_shell_drive_prefix("/home/user/proj") == "/home/user/proj"
+    assert _normalize_shell_drive_prefix("/var/log/app") == "/var/log/app"
+
+
+def test_normalize_shell_prefix_leaves_already_canonical_alone():
+    """A path that already has a c:/ prefix is left alone."""
+    assert _normalize_shell_drive_prefix("c:/Projects/foo") == "c:/Projects/foo"
+    assert _normalize_shell_drive_prefix("C:/Projects/foo") == "C:/Projects/foo"
+
+
+def test_normalize_shell_prefix_handles_multi_segment_msys():
+    """MSYS only strips the *first* single-letter segment, not later ones."""
+    # /c/foo/d -> c:/foo/d  (drive letter is the leading single-letter segment)
+    assert _normalize_shell_drive_prefix("/c/foo/d") == "c:/foo/d"
+
+
+def test_normalize_shell_prefix_no_match_for_multi_letter_top_level():
+    """A multi-letter top-level directory like /usr/ is not mistaken for a drive."""
+    # /us/foo would only match if the regex were too greedy — verify it doesn't.
+    assert _normalize_shell_drive_prefix("/us/foo") == "/us/foo"
+    assert _normalize_shell_drive_prefix("/home/foo") == "/home/foo"
+
+
+def test_normalize_shell_prefix_empty_and_root():
+    """Edge cases: empty string and bare root pass through."""
+    assert _normalize_shell_drive_prefix("") == ""
+    assert _normalize_shell_drive_prefix("/") == "/"
+    # /c/ with no trailing component still matches and yields c:/ — that's the
+    # bare-drive form, which is fine.
+    assert _normalize_shell_drive_prefix("/c/") == "c:/"
+
+
+def test_canonicalize_cross_shell_paths_produce_same_hash():
+    """All Windows-drive shell representations canonicalize to the same hash.
+
+    This is the linchpin test for cross-platform consistency.  Without
+    _normalize_shell_drive_prefix, the same project accessed from PowerShell,
+    Git Bash, Cygwin, and WSL would produce four different SHA1 hashes and
+    fragment the index into four separate per-project DB files.
+    """
+    forms = [
+        "C:/Projects/foo",
+        "c:/Projects/foo",
+        "/c/Projects/foo",
+        "/mnt/c/Projects/foo",
+        "/cygdrive/c/Projects/foo",
+    ]
+    hashes = {project_hash(canonicalize(Path(f))) for f in forms}
+    assert len(hashes) == 1, (
+        f"Expected one hash across all shell forms, got {len(hashes)}: {hashes}"
+    )
+
+
+def test_canonicalize_backslash_and_forward_slash_match_on_windows():
+    """C:\\Projects\\foo and C:/Projects/foo canonicalize identically."""
+    a = canonicalize(Path("C:/Projects/foo"))
+    b = canonicalize(Path("C:\\Projects\\foo"))
+    # On non-Windows, Path("C:\\Projects\\foo") is a literal POSIX filename
+    # (backslashes are not separators), so the two will not match. Skip there.
+    if sys.platform != "win32":
+        pytest.skip("Backslash is not a separator on non-Windows")
+    assert a == b
+
+
+def test_canonicalize_drive_case_collapsed():
+    """C:/foo and c:/foo canonicalize identically (drive letter lowercased)."""
+    a = canonicalize(Path("C:/Projects/foo"))
+    b = canonicalize(Path("c:/Projects/foo"))
+    assert a == b
+    assert project_hash(a) == project_hash(b)
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows-only: pre-resolve MSYS conversion")
+def test_canonicalize_msys_path_on_windows_does_not_double_drive():
+    """On Windows, /c/Projects/foo must NOT resolve to C:\\c\\Projects\\foo.
+
+    Path.resolve() on Windows treats a leading slash as relative-to-current-drive,
+    so /c/Projects/foo would naïvely become C:/c/Projects/foo (an extra "c"
+    directory).  The pre-resolve normalisation step converts /c/... to c:/...
+    *before* resolve sees it, avoiding the double-drive trap.
+    """
+    c = canonicalize(Path("/c/Projects/foo"))
+    s = c.as_posix()
+    # Must be exactly c:/Projects/foo, never c:/c/Projects/foo.
+    assert s == "c:/Projects/foo", f"MSYS path mis-resolved on Windows: {s}"
+
+
+def test_canonicalize_real_tmp_path_idempotent_after_normalization(tmp_path):
+    """Round-tripping a real directory through canonicalize is idempotent
+    even after the new shell-prefix step."""
+    a = canonicalize(tmp_path)
+    b = canonicalize(a)
+    c = canonicalize(b)
+    assert a == b == c
+    assert project_hash(a) == project_hash(b) == project_hash(c)
+
+
+def test_project_hash_stable_across_shell_forms_on_real_dir(tmp_path):
+    """A real directory hashed via its native Path equals the hash from the
+    canonicalize() output — i.e. the hash is stable through one extra
+    normalisation pass."""
+    h_direct = project_hash(canonicalize(tmp_path))
+    h_via_str = project_hash(canonicalize(Path(str(tmp_path))))
+    assert h_direct == h_via_str
