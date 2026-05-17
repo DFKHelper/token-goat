@@ -582,7 +582,7 @@ def render_text(
         from .render.stats_renderer import render_stats
         return render_stats(_to_stats_data(summary))
     except Exception as exc:  # noqa: BLE001
-        _LOG.debug("new renderer failed (%s: %s), falling back to rich", type(exc).__name__, exc, exc_info=True)
+        _LOG.warning("new renderer failed (%s: %s), falling back to rich", type(exc).__name__, exc, exc_info=True)
 
     try:
         import io
