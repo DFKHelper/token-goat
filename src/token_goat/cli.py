@@ -224,7 +224,11 @@ def _query_project(proj_hash: str, sql: str, params: tuple[object, ...]) -> list
 
 app = typer.Typer(name="token-goat", no_args_is_help=True)
 hook_app = typer.Typer(name="hook", no_args_is_help=True)
-config_app = typer.Typer(name="config", no_args_is_help=True)
+config_app = typer.Typer(
+    name="config",
+    no_args_is_help=True,
+    help="Inspect and edit token-goat's config.toml (compact_assist, paths, hint thresholds).",
+)
 
 app.add_typer(hook_app, hidden=True)
 app.add_typer(config_app, rich_help_panel="Config")
