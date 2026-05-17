@@ -340,14 +340,8 @@ def fetch_file(file_id: str, *, shrink_if_image: bool = True, max_size_bytes: in
     _LOG.debug("gdrive fetch_file: file_id=%s shrink=%s max_bytes=%d", file_id, shrink_if_image, max_size_bytes)
     creds = get_credentials()
 
-    try:
-        from googleapiclient.discovery import build  # noqa: PLC0415
-        from googleapiclient.http import MediaIoBaseDownload  # noqa: PLC0415
-    except ImportError as exc:
-        raise RuntimeError(
-            "google-api-python-client is not installed. "
-            "Install it with: pip install google-api-python-client"
-        ) from exc
+    from googleapiclient.discovery import build  # noqa: PLC0415
+    from googleapiclient.http import MediaIoBaseDownload  # noqa: PLC0415
 
     cache_dir = image_shrink.ensure_cache_dir(paths.gdrive_cache_dir())
     service = build("drive", "v3", credentials=creds, cache_discovery=False)
@@ -417,13 +411,7 @@ def run_oauth_oob_flow(client_secrets_path: Path) -> Path:
             "Download it from Google Cloud Console → APIs & Services → Credentials."
         )
 
-    try:
-        from google_auth_oauthlib.flow import InstalledAppFlow  # noqa: PLC0415
-    except ImportError as exc:
-        raise RuntimeError(
-            "google-auth-oauthlib is not installed. "
-            "Install it with: pip install google-auth-oauthlib"
-        ) from exc
+    from google_auth_oauthlib.flow import InstalledAppFlow  # noqa: PLC0415
 
     try:
         flow = InstalledAppFlow.from_client_secrets_file(
