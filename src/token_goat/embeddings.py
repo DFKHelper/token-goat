@@ -530,13 +530,9 @@ def index_project_embeddings(
                 progress(i + len(batch), n_pending_embed)
 
         # Persist model metadata
-        conn.execute(
+        conn.executemany(
             "INSERT OR REPLACE INTO meta(key, value) VALUES (?, ?)",
-            ("embedding_model", model_name),
-        )
-        conn.execute(
-            "INSERT OR REPLACE INTO meta(key, value) VALUES (?, ?)",
-            ("embedding_dim", str(DEFAULT_DIM)),
+            [("embedding_model", model_name), ("embedding_dim", str(DEFAULT_DIM))],
         )
 
     duration = time.time() - t0
