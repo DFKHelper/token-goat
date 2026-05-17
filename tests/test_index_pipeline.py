@@ -152,6 +152,70 @@ def test_iter_source_files_prunes_ignored_directories(tmp_path):
     assert "node_modules/pkg/skip.py" not in rel_paths
 
 
+def test_iter_source_files_skips_generated_lockfiles_and_minified(tmp_path):
+    """Lockfiles and minified bundles have indexable extensions but should be skipped.
+
+    ``package-lock.json`` is ``.json``; ``app.min.js`` is ``.js``. Without the
+    generated-filename gate, the walker would happily ingest 100k-line lockfiles
+    and pollute the symbol table with auto-generated identifiers.
+    """
+    from token_goat import parser
+    from token_goat.project import make_project_at
+
+    proj_root = tmp_path / "gen_root"
+    proj_root.mkdir()
+    (proj_root / "src").mkdir()
+
+    # Files that SHOULD be indexed
+    (proj_root / "src" / "app.py").write_text("def hello(): pass\n", encoding="utf-8")
+    (proj_root / "src" / "config.json").write_text('{"k": 1}\n', encoding="utf-8")
+    (proj_root / "src" / "real.js").write_text("function f() {}\n", encoding="utf-8")
+
+    # Files that should NOT be indexed
+    (proj_root / "package-lock.json").write_text('{"lock": true}\n', encoding="utf-8")
+    (proj_root / "uv.lock").write_text("# uv lock\n", encoding="utf-8")
+    (proj_root / "yarn.lock").write_text("# yarn lock\n", encoding="utf-8")
+    (proj_root / "src" / "app.min.js").write_text("var a=1;\n", encoding="utf-8")
+    (proj_root / "src" / "style.min.css").write_text("a{x:1}\n", encoding="utf-8")
+    (proj_root / "src" / "app.js.map").write_text('{"version":3}\n', encoding="utf-8")
+    (proj_root / "src" / "vendor.bundle.js").write_text("var v=1;\n", encoding="utf-8")
+    # OS metadata
+    (proj_root / "Thumbs.db").write_text("garbage", encoding="utf-8")
+
+    proj = make_project_at(proj_root)
+    rel_paths = {p.relative_to(proj.root).as_posix() for p in parser.iter_source_files(proj)}
+
+    # Real source files survive
+    assert "src/app.py" in rel_paths
+    assert "src/config.json" in rel_paths
+    assert "src/real.js" in rel_paths
+    # Generated artifacts are skipped
+    assert "package-lock.json" not in rel_paths
+    assert "uv.lock" not in rel_paths
+    assert "yarn.lock" not in rel_paths
+    assert "src/app.min.js" not in rel_paths
+    assert "src/style.min.css" not in rel_paths
+    assert "src/app.js.map" not in rel_paths
+    assert "src/vendor.bundle.js" not in rel_paths
+    assert "Thumbs.db" not in rel_paths
+
+
+def test_is_generated_filename_case_insensitive():
+    """Case-insensitive matching prevents Windows-case-mangled lockfiles slipping through."""
+    from token_goat.parser import _is_generated_filename
+
+    assert _is_generated_filename("package-lock.json")
+    assert _is_generated_filename("Package-Lock.JSON")
+    assert _is_generated_filename("UV.LOCK")
+    assert _is_generated_filename("app.MIN.JS")
+    assert _is_generated_filename("Thumbs.db")
+    # Negatives: real source files
+    assert not _is_generated_filename("app.js")
+    assert not _is_generated_filename("package.json")
+    assert not _is_generated_filename("main.py")
+    assert not _is_generated_filename("README.md")
+
+
 # ---------------------------------------------------------------------------
 # Incremental indexing
 # ---------------------------------------------------------------------------
