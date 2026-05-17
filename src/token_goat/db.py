@@ -280,7 +280,7 @@ def _rebuild(db_path: Path) -> bool:
     bad = db_path.with_suffix(db_path.suffix + f".bad-{int(time.time())}")
     try:
         db_path.rename(bad)
-        _LOG.warning("quarantined corrupt db: %s -> %s", db_path, bad)
+        _LOG.error("quarantined corrupt db: %s -> %s", db_path, bad)
         # Invalidate per-path caches so the rebuilt DB gets fresh checks.
         _INTEGRITY_CHECKED.pop(db_path, None)
         _SCHEMA_MIGRATED.pop(db_path, None)
@@ -572,7 +572,7 @@ def _repair_if_corrupt(conn: sqlite3.Connection, path: Path) -> sqlite3.Connecti
         _INTEGRITY_CHECKED[path] = True
         return conn
     # Integrity check failed — quarantine and reopen.
-    _LOG.info("integrity check failed for %s; quarantining and rebuilding", path.name)
+    _LOG.error("db integrity check failed, quarantining %s", path)
     conn.close()
     # Whether quarantine succeeds or fails, reopen: if quarantine failed (Windows
     # lock), we reopen the original and proceed rather than crashing.
