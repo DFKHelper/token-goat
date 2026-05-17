@@ -31,7 +31,6 @@ __all__ = [
     "worker_pid_path",
 ]
 
-import contextlib
 import logging
 import os
 import sys
@@ -275,12 +274,21 @@ def roll_log_if_oversized(path: Path, max_bytes: int) -> None:
     worker's 7-day retention sweep reaps it too.
     """
     try:
-        if path.stat().st_size <= max_bytes:
+        size = path.stat().st_size
+        if size <= max_bytes:
             return
     except OSError:
         return
-    with contextlib.suppress(OSError):
-        os.replace(path, path.with_suffix(".prev.log"))
+    dest = path.with_suffix(".prev.log")
+    try:
+        os.replace(path, dest)
+        print(
+            f"token-goat: rolled oversized log {path.name} -> {dest.name} "
+            f"({size} bytes > {max_bytes} limit)",
+            file=sys.stderr,
+        )
+    except OSError:
+        pass
 
 
 def locks_dir() -> Path:
