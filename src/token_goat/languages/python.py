@@ -57,12 +57,12 @@ def _parse_import_source(source_line: str) -> list[str]:
         names_raw = m.group(2)
         # Handle parenthesized imports — strip them
         names_raw = names_raw.strip("()")
-        names = [n.strip().split(" as ")[0].strip() for n in names_raw.split(",")]
+        names = [n.strip().partition(" as ")[0] for n in names_raw.split(",")]
         return [f"{module}.{n}" for n in names if n and n != "*"]
     m = _PLAIN_IMPORT_RE.match(line)
     if m:
         names_raw = m.group(1)
-        names = [n.strip().split(" as ")[0].strip() for n in names_raw.split(",")]
+        names = [n.strip().partition(" as ")[0] for n in names_raw.split(",")]
         return [n for n in names if n]
     return [line]
 

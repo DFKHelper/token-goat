@@ -165,10 +165,11 @@ def _extract_module(source_line: str) -> str:
     m = _FROM_RE.search(source_line)
     if m:
         return m.group(1)
-    m = _IMPORT_RE.match(source_line.strip())
+    stripped = source_line.strip()
+    m = _IMPORT_RE.match(stripped)
     if m:
         return m.group(1)
-    return source_line.strip()
+    return stripped
 
 
 def extract(
@@ -282,7 +283,7 @@ def extract(
                 )
 
         # Record as ImpExp
-        kind_str = str(exp.kind).split(".")[-1].lower()
+        kind_str = str(exp.kind).rpartition(".")[-1].lower()
         ie_kind = "reexport" if kind_str == "reexport" else "export"
         imp_exp.append(ImpExp(kind=ie_kind, target=export_name, line=line))
 

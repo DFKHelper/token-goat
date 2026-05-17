@@ -84,7 +84,7 @@ def kind_str(structure_kind: object, language: str = "go") -> str:
     Supports language-specific overrides for Impl, Module, Namespace mappings.
     Python, Go, TypeScript use base mapping; Rust has overrides.
     """
-    s = str(structure_kind).split(".")[-1]
+    s = str(structure_kind).rpartition(".")[-1]
     mapping = _RUST_KIND_STR_MAPPING if language == "rust" else _BASE_KIND_STR_MAPPING
     return mapping.get(s, "var")
 
@@ -94,7 +94,7 @@ def sym_kind_str(sym_kind: object, language: str = "go") -> str:
 
     Supports language-specific overrides for Module mappings.
     """
-    s = str(sym_kind).split(".")[-1]
+    s = str(sym_kind).rpartition(".")[-1]
     mapping = _RUST_SYM_KIND_STR_MAPPING if language == "rust" else _BASE_SYM_KIND_STR_MAPPING
     return mapping.get(s, "var")
 
