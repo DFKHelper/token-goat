@@ -255,7 +255,7 @@ class TestConfigLoad:
         assert cfg.compact_assist.enabled is True
         assert "manual" in cfg.compact_assist.triggers
         assert "auto" in cfg.compact_assist.triggers
-        assert cfg.compact_assist.min_events == 5
+        assert cfg.compact_assist.min_events == 3
         assert cfg.compact_assist.max_manifest_tokens == 400
 
     def test_env_var_disables_compact_assist(self, tmp_path, monkeypatch):

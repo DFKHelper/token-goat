@@ -660,7 +660,7 @@ class TestConfigLoad:
 
         assert isinstance(cfg, config.Config)
         assert cfg.compact_assist.enabled is True
-        assert cfg.compact_assist.min_events == 5
+        assert cfg.compact_assist.min_events == 3
 
     def test_returns_default_on_oserror(self, tmp_path):
         """An OSError while reading the file falls back to defaults."""

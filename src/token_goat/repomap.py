@@ -236,10 +236,18 @@ _KIND_TAG: Final[dict[str, str]] = {
 
 # Budget below which build_map switches to "compact" mode automatically:
 # header + one line per file (no symbol detail). Empirically the symbol-detail
-# format averages ~25-40 tokens/file; below ~200 tokens of budget we can fit
+# format averages ~25-40 tokens/file; below this threshold we can fit
 # 5x more files by dropping symbol lines entirely, which is more useful for
 # orientation than 1-2 fully-detailed entries.
-_AUTO_COMPACT_BUDGET: Final[int] = 200
+#
+# Tuning note (iter 17): raised from 200 → 300. With a 250-token budget — a
+# common ask for inline orientation snippets — the old threshold dropped the
+# caller into detailed mode, which fits only ~6-10 entries. Compact mode at
+# the same budget fits ~30-50 entries (one short line per file at ~5-8
+# tokens/file) which is far more useful for "where does X live" navigation.
+# Calls with --budget=300+ still get detailed mode automatically, and
+# `--compact` / no flag overrides still work unchanged.
+_AUTO_COMPACT_BUDGET: Final[int] = 300
 
 
 @dataclass

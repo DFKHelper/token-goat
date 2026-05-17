@@ -209,7 +209,7 @@ class TestConfigLoad:
         with patch.object(config_mod.paths, "config_path", return_value=fake_path):
             cfg = config_mod.load()
         assert cfg.compact_assist.enabled is True
-        assert cfg.compact_assist.min_events == 5
+        assert cfg.compact_assist.min_events == 3
         assert cfg.compact_assist.max_manifest_tokens == 400
 
     def test_returns_default_on_oserror(self, tmp_path):
@@ -221,7 +221,7 @@ class TestConfigLoad:
         ):
             cfg = config_mod.load()
         assert cfg.compact_assist.enabled is True
-        assert cfg.compact_assist.min_events == 5
+        assert cfg.compact_assist.min_events == 3
 
     def test_returns_default_on_malformed_toml(self, tmp_path):
         p = tmp_path / "config.toml"

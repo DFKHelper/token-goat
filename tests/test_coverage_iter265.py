@@ -276,7 +276,7 @@ class TestConfigLoad:
             mock_paths.config_path.return_value = nonexistent
             cfg = config_mod.load()
         assert cfg.compact_assist.enabled is True
-        assert cfg.compact_assist.min_events == 5
+        assert cfg.compact_assist.min_events == 3
 
     def test_compact_assist_section_loaded(self, tmp_path):
         from token_goat import config as config_mod
