@@ -2,12 +2,10 @@
 from __future__ import annotations
 
 import contextlib
-import html
 import json
 import logging
 import os
 import re
-import shlex
 import shutil
 import subprocess
 import sys
@@ -395,6 +393,8 @@ def install_linux_autostart() -> tuple[bool, str]:
     if sys.platform == "win32":
         return True, "Windows: skipped"
 
+    import shlex  # noqa: PLC0415
+
     cmd_args = paths.python_runner_argv("worker", "--daemon")
     # Shell-quote every argument so paths containing spaces (e.g. a home
     # directory like "/home/user name/...") are correctly represented in the
@@ -611,6 +611,7 @@ def _xml_escape(s: str) -> str:
     the mandatory set, then normalises Python's ``&#x27;`` back to the
     XML-standard ``&apos;`` so output is attribute-safe and XML-spec-clean.
     """
+    import html  # noqa: PLC0415
     return html.escape(s, quote=True).replace("&#x27;", "&apos;")
 
 
