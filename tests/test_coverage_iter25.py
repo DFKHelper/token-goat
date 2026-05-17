@@ -251,12 +251,11 @@ class TestLiquidExtractor:
         schema_syms = [s for s in symbols if s.kind == "liquid_schema"]
         assert schema_syms == []
 
-    def test_h5_heading_not_extracted(self):
-        """The Liquid extractor only captures h1-h4; h5 is not extracted."""
+    def test_h5_heading_extracted_as_section(self):
+        """The Liquid extractor captures h1-h6 (h5 inclusive)."""
         source = b"<h5>Deep Heading</h5>"
         _, _, _, sections = liquid_extract(source, "templates/page.liquid")
-        assert all(s.level <= 4 for s in sections)
-        assert not any("Deep Heading" in s.heading for s in sections)
+        assert any(s.heading == "Deep Heading" and s.level == 5 for s in sections)
 
     def test_empty_source_returns_empty_lists(self):
         """Empty Liquid source returns four empty lists without raising."""

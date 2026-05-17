@@ -7,7 +7,6 @@ from pathlib import Path
 
 import pytest
 
-from token_goat import embeddings as emb
 from token_goat import read_replacement
 from token_goat.parser import index_project
 from token_goat.read_commands import _FileTarget
