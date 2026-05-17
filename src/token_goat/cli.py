@@ -389,6 +389,12 @@ def semantic(
 def cmd_map(
     budget: int = typer.Option(4000, "--budget", "-b", help="Approximate token budget"),
     json_output: bool = typer.Option(False, "--json", help="Output structured JSON"),
+    compact: bool = typer.Option(
+        False,
+        "--compact",
+        help="One line per file (no symbol detail). "
+             "Auto-engages below ~200 token budget. Use to force on a larger budget.",
+    ),
 ) -> None:
     """Generate a PageRank-ranked, token-budgeted overview of the current project."""
     from . import repomap  # noqa: PLC0415
@@ -398,7 +404,10 @@ def cmd_map(
         "Run from a project directory."
     )
 
-    _LOG.info("map start: project=%s budget=%d json=%s", proj.root.name, budget, json_output)
+    _LOG.info(
+        "map start: project=%s budget=%d json=%s compact=%s",
+        proj.root.name, budget, json_output, compact,
+    )
     t0 = time.monotonic()
     try:
         if json_output:
@@ -407,7 +416,13 @@ def cmd_map(
             _LOG.info("map complete: project=%s files=%d dur=%.3fs", proj.root.name, len(data), elapsed)
             typer.echo(json.dumps(data, indent=2))
             return
-        text = repomap.build_map(proj, budget_tokens=budget)
+        # Pass compact=True only if the user opted in; None lets build_map
+        # auto-engage the compact path when the budget is below the threshold.
+        text = repomap.build_map(
+            proj,
+            budget_tokens=budget,
+            compact=True if compact else None,
+        )
         elapsed = time.monotonic() - t0
         _LOG.info("map complete: project=%s dur=%.3fs", proj.root.name, elapsed)
         typer.echo(text)
