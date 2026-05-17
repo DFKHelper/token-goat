@@ -51,8 +51,10 @@ CLAUDE_MAX_VISION_EDGE_PX = 1568
 CLAUDE_VISION_PIXELS_PER_TOKEN = 750
 
 # Heuristic max long-edge for images that look like screenshots or text
-# (palette/alpha modes at reasonable sizes). Above this threshold the image is
-# treated as a photograph and converted to JPEG rather than kept as PNG.
+# (palette/alpha modes at reasonable sizes). Set just below CLAUDE_MAX_VISION_EDGE_PX
+# (1568): an image this large and still in palette/alpha mode is almost certainly a
+# photograph mislabelled by its encoder, not a UI screenshot — JPEG will compress it
+# far better than PNG regardless of its palette.
 _SCREENSHOT_MAX_EDGE_PX = 1500
 
 # Recognized image extensions — the pre-read hook uses this list to decide
