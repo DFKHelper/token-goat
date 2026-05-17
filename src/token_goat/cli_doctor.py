@@ -328,10 +328,12 @@ def doctor(  # noqa: C901
     else:
         from . import install as _install  # noqa: PLC0415
 
-        if _install._systemd_service_path().exists():
-            ok("token-goat-worker", f"systemd user service: {_install._systemd_service_path()}")
-        elif _install._xdg_autostart_path().exists():
-            ok("token-goat-worker", f"XDG autostart: {_install._xdg_autostart_path()}")
+        _systemd = _install._systemd_service_path()
+        _xdg = _install._xdg_autostart_path()
+        if _systemd.exists():
+            ok("token-goat-worker", f"systemd user service: {_systemd}")
+        elif _xdg.exists():
+            ok("token-goat-worker", f"XDG autostart: {_xdg}")
         else:
             flag("token-goat-worker", "autostart NOT INSTALLED (run `token-goat install`)", warn=True)
 

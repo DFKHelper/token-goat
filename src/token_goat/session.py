@@ -155,32 +155,11 @@ class SessionCache:
             if not isinstance(v, dict):
                 skipped_file_entries += 1
                 continue
-            try:
-                raw_ranges = v.get("line_ranges", [])
-                line_ranges: list[tuple[int, int]] = []
-                for r in raw_ranges:
-                    if isinstance(r, (list, tuple)) and len(r) == 2:
-                        start_val, end_val = r
-                        if isinstance(start_val, int) and isinstance(end_val, int):
-                            line_ranges.append((start_val, end_val))
-                # Coerce symbols_read entries to str and silently drop non-strings/non-scalars.
-                # Untrusted JSON could contain nested objects/lists; storing them as-is would
-                # allow arbitrary objects into the session cache and corrupt hint output.
-                raw_symbols = v.get("symbols_read", [])
-                symbols_read = [
-                    str(s) for s in raw_symbols
-                    if isinstance(s, (str, int, float)) and not isinstance(s, bool)
-                ]
-                files[k] = FileEntry(
-                    rel_or_abs=str(v.get("rel_or_abs", k)),
-                    last_read_ts=float(v.get("last_read_ts", now)),
-                    read_count=max(0, int(v.get("read_count", 0))),
-                    line_ranges=line_ranges,
-                    symbols_read=symbols_read,
-                )
-            except (TypeError, ValueError, KeyError):
+            entry = _parse_file_entry(k, v, now)
+            if entry is None:
                 skipped_file_entries += 1
-                _LOG.debug("session: skipping corrupted file entry for key %r", k)
+            else:
+                files[k] = entry
 
         greps: list[GrepEntry] = []
         skipped_grep_entries = 0
@@ -188,25 +167,18 @@ class SessionCache:
             if not isinstance(g, dict):
                 skipped_grep_entries += 1
                 continue
-            try:
-                # Narrow individual fields before constructing GrepEntry so that
-                # unexpected JSON types don't silently become wrong-typed attributes.
-                raw_pattern = g.get("pattern", "")
-                raw_path = g.get("path")
-                raw_ts = g.get("ts", 0.0)
-                raw_result_count = g.get("result_count")
-                greps.append(GrepEntry(
-                    pattern=str(raw_pattern) if isinstance(raw_pattern, (str, int, float)) else "",
-                    path=str(raw_path) if isinstance(raw_path, str) else None,
-                    ts=float(raw_ts) if isinstance(raw_ts, (int, float)) else 0.0,
-                    result_count=int(raw_result_count) if isinstance(raw_result_count, int) and not isinstance(raw_result_count, bool) else None,
-                ))
-            except (TypeError, ValueError, KeyError):
+            grep_entry = _parse_grep_entry(g)
+            if grep_entry is None:
                 skipped_grep_entries += 1
-                _LOG.debug("session: skipping corrupted grep entry")
+            else:
+                greps.append(grep_entry)
 
         if skipped_file_entries > 0 or skipped_grep_entries > 0:
-            _LOG.info("session cache: recovered with %d corrupted file entries, %d corrupted grep entries", skipped_file_entries, skipped_grep_entries)
+            _LOG.info(
+                "session cache: recovered with %d corrupted file entries, %d corrupted grep entries",
+                skipped_file_entries,
+                skipped_grep_entries,
+            )
 
         edited_files: dict[str, int] = {}
         for k, v in d.get("edited_files", {}).items():
@@ -221,6 +193,70 @@ class SessionCache:
             greps=greps,
             edited_files=edited_files,
         )
+
+
+def _parse_file_entry(key: str, v: dict[str, Any], now: float) -> FileEntry | None:
+    """Deserialize one file-entry dict from JSON, returning None on any parse error.
+
+    Coerces ``line_ranges`` to ``list[tuple[int, int]]`` (dropping malformed pairs)
+    and ``symbols_read`` to ``list[str]`` (dropping non-scalar entries).  The coercions
+    are intentionally strict to prevent untrusted JSON from injecting arbitrary objects
+    into the session cache and corrupting hint output.
+    """
+    try:
+        raw_ranges = v.get("line_ranges", [])
+        line_ranges: list[tuple[int, int]] = []
+        for r in raw_ranges:
+            if isinstance(r, (list, tuple)) and len(r) == 2:
+                start_val, end_val = r
+                if isinstance(start_val, int) and isinstance(end_val, int):
+                    line_ranges.append((start_val, end_val))
+
+        # Coerce symbols_read entries to str and silently drop non-scalars.
+        # Untrusted JSON could contain nested objects/lists; storing them as-is
+        # would allow arbitrary objects into the cache and corrupt hint output.
+        raw_symbols = v.get("symbols_read", [])
+        symbols_read = [
+            str(s) for s in raw_symbols
+            if isinstance(s, (str, int, float)) and not isinstance(s, bool)
+        ]
+
+        return FileEntry(
+            rel_or_abs=str(v.get("rel_or_abs", key)),
+            last_read_ts=float(v.get("last_read_ts", now)),
+            read_count=max(0, int(v.get("read_count", 0))),
+            line_ranges=line_ranges,
+            symbols_read=symbols_read,
+        )
+    except (TypeError, ValueError, KeyError):
+        _LOG.debug("session: skipping corrupted file entry for key %r", key)
+        return None
+
+
+def _parse_grep_entry(g: dict[str, Any]) -> GrepEntry | None:
+    """Deserialize one grep-entry dict from JSON, returning None on any parse error.
+
+    Narrows each field to the expected type before constructing ``GrepEntry`` so
+    that unexpected JSON types don't silently become wrong-typed attributes.
+    """
+    try:
+        raw_pattern = g.get("pattern", "")
+        raw_path = g.get("path")
+        raw_ts = g.get("ts", 0.0)
+        raw_result_count = g.get("result_count")
+        return GrepEntry(
+            pattern=str(raw_pattern) if isinstance(raw_pattern, (str, int, float)) else "",
+            path=str(raw_path) if isinstance(raw_path, str) else None,
+            ts=float(raw_ts) if isinstance(raw_ts, (int, float)) else 0.0,
+            result_count=(
+                int(raw_result_count)
+                if isinstance(raw_result_count, int) and not isinstance(raw_result_count, bool)
+                else None
+            ),
+        )
+    except (TypeError, ValueError, KeyError):
+        _LOG.debug("session: skipping corrupted grep entry")
+        return None
 
 
 class _FileEntryDict(TypedDict):
