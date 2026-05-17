@@ -520,6 +520,10 @@ def save(cache: SessionCache) -> None:
         _record_cache_contention(cache.session_id, "save", last_exc)
 
 
+# POSIX PATH_MAX on Linux; also the practical ceiling on Windows (MAX_PATH is 260,
+# but the extended-length prefix \\?\ raises the limit to ~32 k — 4096 is a
+# reasonable middle ground that fits any realistic path while bounding session-JSON
+# size and log line length.
 _MAX_PATH_LEN = 4096
 
 # When the Read tool reports no limit (whole-file read), we record a range end

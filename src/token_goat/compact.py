@@ -27,8 +27,18 @@ if TYPE_CHECKING:
 
 _LOG = logging.getLogger("token_goat.compact")
 
+# Maximum files listed in the "files read" section of the manifest.  The compaction
+# LLM needs the most-accessed files to know what context mattered, but listing every
+# file read in a long session would blow the token budget.  10 covers the handful of
+# core files a typical feature or bug-fix session touches.
 _MAX_FILES_READ: Final[int] = 10
+# Maximum files that show per-symbol detail in the manifest.  Fewer than _MAX_FILES_READ
+# because symbol lists are verbose (one line each); limiting to 8 keeps the symbols
+# section from dominating a 400-token budget and crowding out the edited-files section.
 _MAX_SYMBOLS_FILES: Final[int] = 8
+# Maximum line-ranges shown per file.  Ranges help the compaction LLM understand *which
+# parts* of a file were read, but beyond 4 ranges the list becomes noise — if a file
+# was read in 5+ disjoint slices the whole-file summary conveys more than a range list.
 _MAX_RANGES_PER_FILE: Final[int] = 4
 # Max symbols listed per file entry in the manifest (separate from _MAX_SYMBOLS_FILES,
 # which caps the number of *files* that show any symbols at all).
