@@ -175,8 +175,10 @@ def _render(cache: SessionCache, session_id: str, max_tokens: int) -> tuple[str,
     # the manifest would be just the header, which isn't worth injecting.
     if not cache.edited_files and not cache.files:
         _LOG.info(
-            "_render: manifest suppressed for session=%s (no file activity tracked)",
+            "_render: manifest suppressed for session=%s "
+            "(no file activity tracked: edited=0 files_read=0 greps=%d)",
             session_id[:8],
+            len(cache.greps),
         )
         return "", 0
 
