@@ -173,7 +173,16 @@ def _connect(db_path: Path, *, load_vec: bool = True) -> sqlite3.Connection:
     conn = sqlite3.connect(str(db_path), isolation_level=None, timeout=10.0)
     conn.row_factory = sqlite3.Row
     try:
-        conn.execute("PRAGMA journal_mode = WAL")
+        row = conn.execute("PRAGMA journal_mode = WAL").fetchone()
+        actual_mode = row[0] if row else "unknown"
+        if actual_mode != "wal":
+            _LOG.debug(
+                "journal_mode for %s: requested WAL but got %r (network/FAT volume?)",
+                db_path.name,
+                actual_mode,
+            )
+        else:
+            _LOG.debug("journal_mode for %s: WAL confirmed", db_path.name)
         _apply_connection_pragmas(conn)
     except sqlite3.OperationalError as e:
         # INFO (not WARNING): expected in sandboxed contexts like Codex
