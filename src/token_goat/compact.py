@@ -160,6 +160,10 @@ def _render(cache: SessionCache, session_id: str, max_tokens: int) -> tuple[str,
     # edited_files covers writes; files covers reads/greps — both empty means
     # the manifest would be just the header, which isn't worth injecting.
     if not cache.edited_files and not cache.files:
+        _LOG.info(
+            "_render: manifest suppressed for session=%s (no file activity tracked)",
+            session_id[:8],
+        )
         return "", 0
 
     # Use a generator so we only materialise up to _MAX_SYMBOLS_FILES entries
@@ -214,8 +218,16 @@ def _render(cache: SessionCache, session_id: str, max_tokens: int) -> tuple[str,
     # the trim path below.  Naming it here keeps the two return sites consistent.
     files_with_symbols_count = len(files_with_symbols)
 
-    if estimate_tokens(result) <= max_tokens:
+    token_count = estimate_tokens(result)
+    if token_count <= max_tokens:
         return result, files_with_symbols_count
+
+    _LOG.info(
+        "_render: manifest over budget (%d tokens > %d limit) for session=%s — trimming",
+        token_count,
+        max_tokens,
+        session_id[:8],
+    )
 
     # Trim: drop lines from the bottom until within budget, preserving the header.
     # Strategy: work in character space (1 token ≈ 3 chars per estimate_tokens),

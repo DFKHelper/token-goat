@@ -333,8 +333,16 @@ def _hint_from_index(
     symbols, estimated_lines, line_count_is_exact = _get_indexed_symbols_and_line_count(
         rel, project.hash
     )
-    if not symbols or estimated_lines is None:
-        _LOG.debug("_hint_from_index: no indexed symbols for %s (symbols=%d, lines=%s)", fname, len(symbols), estimated_lines)
+    if estimated_lines is None:
+        _LOG.debug("_hint_from_index: %s not in project index (no file row)", fname)
+        return None
+    if not symbols:
+        _LOG.info(
+            "_hint_from_index: %s is in the index but has no symbols "
+            "(estimated %s lines) — no surgical-read hint possible",
+            rel,
+            estimated_lines,
+        )
         return None
 
     n_lines = _confirmed_line_count(estimated_lines, line_count_is_exact, abs_path)

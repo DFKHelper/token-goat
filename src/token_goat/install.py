@@ -859,24 +859,40 @@ def patch_settings_json() -> tuple[bool, str]:
 
     raw_hooks = current.get("hooks", {})
     existing_hooks: dict[str, list[dict[str, object]]] = raw_hooks if isinstance(raw_hooks, dict) else {}
+    hooks_added: list[str] = []
+    hooks_replaced: list[str] = []
     for event, entries in our_hooks.items():
         existing_entries = existing_hooks.get(event, [])
         # Strip any prior token-goat entries, then append fresh ones
         kept = _strip_token_goat_entries(existing_entries)
+        stripped_count = len(existing_entries) - len(kept)
         existing_hooks[event] = kept + entries
+        if stripped_count:
+            hooks_replaced.append(f"{event}(replaced {stripped_count})")
+        else:
+            hooks_added.append(event)
     current["hooks"] = existing_hooks
+    if hooks_replaced:
+        _LOG.info("patch_settings_json: replaced existing entries for: %s", ", ".join(hooks_replaced))
+    if hooks_added:
+        _LOG.info("patch_settings_json: added new hook entries for: %s", ", ".join(hooks_added))
 
     # Permission allowlist
     raw_perms = current.get("permissions", {})
     perms: dict[str, object] = raw_perms if isinstance(raw_perms, dict) else {}
     raw_allowed = perms.get("allow", [])
     allowed: list[str] = list(raw_allowed) if isinstance(raw_allowed, list) else []
-    if "Bash(token-goat:*)" not in allowed:
+    perm_added = "Bash(token-goat:*)" not in allowed
+    if perm_added:
         allowed.append("Bash(token-goat:*)")
+        _LOG.info("patch_settings_json: added permission Bash(token-goat:*)")
+    else:
+        _LOG.debug("patch_settings_json: permission Bash(token-goat:*) already present")
     perms["allow"] = allowed
     current["permissions"] = perms
 
     _write_settings_json(settings_path, current)
+    _LOG.info("patch_settings_json: wrote %s", settings_path)
     return True, str(settings_path)
 
 
@@ -1003,7 +1019,12 @@ Verify the habit. Run `token-goat stats` and watch event counts climb. Flat coun
 
 def patch_claude_md() -> str:
     """Add or update the token-goat block in ~/.claude/CLAUDE.md, idempotently."""
-    return _patch_md_block(claude_md_path(), CLAUDE_MD_BEGIN, CLAUDE_MD_END, CLAUDE_MD_CONTENT)
+    md_path = claude_md_path()
+    existed = md_path.exists()
+    result = _patch_md_block(md_path, CLAUDE_MD_BEGIN, CLAUDE_MD_END, CLAUDE_MD_CONTENT)
+    action = "updated" if existed else "created"
+    _LOG.info("patch_claude_md: %s %s", action, md_path)
+    return result
 
 
 def unpatch_claude_md() -> str:
@@ -1067,6 +1088,7 @@ def write_skill() -> str:
     sd.mkdir(parents=True, exist_ok=True)
     skill_path = sd / "SKILL.md"
     skill_path.write_text(SKILL_MD_CONTENT, encoding="utf-8")
+    _LOG.info("skill written: %s (%d bytes)", skill_path, len(SKILL_MD_CONTENT.encode()))
     return str(skill_path)
 
 
@@ -1405,6 +1427,16 @@ def install_all(
     install_openclaw: bool = False,
 ) -> dict[str, str]:
     """Run the full install. Returns a dict of step -> result string."""
+    import time as _time  # noqa: PLC0415
+
+    t0 = _time.monotonic()
+    _LOG.info(
+        "install_all: starting (platform=%s codex=%s opencode=%s openclaw=%s)",
+        sys.platform,
+        install_codex,
+        install_opencode,
+        install_openclaw,
+    )
     paths.ensure_dirs()
     result: dict[str, str] = {}
 
@@ -1473,6 +1505,15 @@ def install_all(
         except Exception as e:  # noqa: BLE001
             result["openclaw: plugin"] = f"FAIL — {e}"
 
+    failures = [k for k, v in result.items() if v.startswith("FAIL")]
+    elapsed_ms = (_time.monotonic() - t0) * 1000
+    _LOG.info(
+        "install_all: complete in %.0fms — %d steps, %d failure(s)%s",
+        elapsed_ms,
+        len(result),
+        len(failures),
+        f": {failures}" if failures else "",
+    )
     return result
 
 

@@ -162,11 +162,11 @@ def load() -> Config:
         try:
             parsed: dict[str, Any] = tomllib.loads(p.read_text(encoding="utf-8"))
             raw = parsed  # type: ignore[assignment]
-            _LOG.debug("config loaded from %s", p)
+            _LOG.info("config loaded from file: %s", p)
         except Exception as e:  # noqa: BLE001
             _LOG.warning("config load failed for %s (%s); using defaults", p, e)
     else:
-        _LOG.debug("config not found; using defaults")
+        _LOG.info("config file not found at %s; using all defaults", p)
 
     schema_v = raw.get("schema_version", 0)
     if schema_v and int(schema_v) > CONFIG_SCHEMA_VERSION:
@@ -193,9 +193,20 @@ def load() -> Config:
         or os.environ.get(_ENV_COMPACT_ASSIST_LEGACY, "")
     ).strip().lower()
     if env_val in ("0", "false", "no", "off"):
-        _LOG.debug("%s=%s; compact_assist disabled", _ENV_COMPACT_ASSIST, env_val)
+        _LOG.info(
+            "compact_assist disabled by environment variable (%s=%s)",
+            _ENV_COMPACT_ASSIST,
+            env_val,
+        )
         ca.enabled = False
 
+    _LOG.debug(
+        "config resolved: compact_assist enabled=%s triggers=%s min_events=%d max_tokens=%d",
+        ca.enabled,
+        ca.triggers,
+        ca.min_events,
+        ca.max_manifest_tokens,
+    )
     return Config(compact_assist=ca)
 
 
