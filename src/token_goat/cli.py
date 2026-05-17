@@ -345,13 +345,16 @@ def cmd_map(
         "Run from a project directory."
     )
 
-    if json_output:
-        data = repomap.build_map_json(proj)
-        typer.echo(json.dumps(data, indent=2))
-        return
-
-    text = repomap.build_map(proj, budget_tokens=budget)
-    typer.echo(text)
+    try:
+        if json_output:
+            data = repomap.build_map_json(proj)
+            typer.echo(json.dumps(data, indent=2))
+            return
+        text = repomap.build_map(proj, budget_tokens=budget)
+        typer.echo(text)
+    except Exception as exc:  # noqa: BLE001
+        _error(f"failed to build repo map: {exc}. Try `token-goat index --full` to rebuild the index.")
+        raise typer.Exit(1) from None
 
 
 @app.command(rich_help_panel="Core")
@@ -587,7 +590,11 @@ def index(
         """Emit an indexing progress line to stderr."""
         typer.echo(f"  {done}/{total} files processed...", err=True)
 
-    summary = index_project(proj, full=full, progress=_progress)
+    try:
+        summary = index_project(proj, full=full, progress=_progress)
+    except Exception as exc:  # noqa: BLE001
+        _error(f"indexing failed: {exc}")
+        raise typer.Exit(1) from None
 
     langs = ", ".join(summary["languages"]) if summary["languages"] else "none"
     typer.echo(
