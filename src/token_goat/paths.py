@@ -313,7 +313,7 @@ def atomic_write_text(path: Path, content: str) -> None:
         try:
             with os.fdopen(fd, "w", encoding="utf-8") as fh:
                 fh.write(content)
-        except Exception:
+        except Exception:  # noqa: BLE001 — any write error: clean up tmp then re-raise
             tmp.unlink(missing_ok=True)
             raise
         _rename_with_retry(tmp, path)
@@ -339,7 +339,7 @@ def atomic_write_bytes(path: Path, content: bytes) -> None:
         try:
             with os.fdopen(fd, "wb") as fh:
                 fh.write(content)
-        except Exception:
+        except Exception:  # noqa: BLE001 — any write error: clean up tmp then re-raise
             tmp.unlink(missing_ok=True)
             raise
         _rename_with_retry(tmp, path)

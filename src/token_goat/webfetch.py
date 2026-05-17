@@ -340,7 +340,7 @@ def _stream_to_file(response: httpx.Response, dest: Path, max_size_bytes: int) -
         # raised by the caller — don't double-log it, just clean up and re-raise.
         tmp.unlink(missing_ok=True)
         raise
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001 — log the partial-write detail then re-raise
         _LOG.warning("webfetch: stream write failed after %d bytes: %s", written, e)
         tmp.unlink(missing_ok=True)
         raise
