@@ -125,9 +125,18 @@ def _default_data_dir() -> Path:
     return result
 
 
+# Module-level cache for the data directory.  _default_data_dir() reads
+# os.environ and constructs a Path on every call; since the data directory
+# never changes within a process lifetime it is safe — and measurably faster
+# on the hot hook path — to compute it once and reuse the result.
+# Initialised at import time so every subsequent call is a single attribute
+# lookup instead of an env-var read + string manipulation + Path allocation.
+_DATA_DIR_CACHE: Path = _default_data_dir()
+
+
 def data_dir() -> Path:
     """Get token-goat data directory."""
-    return _default_data_dir()
+    return _DATA_DIR_CACHE
 
 
 def global_db_path() -> Path:
