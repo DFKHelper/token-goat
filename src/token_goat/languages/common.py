@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 __all__ = [
+    "AddSymbolFn",
     "KindStr",
     "add_imports",
     "add_symbol_info",
@@ -24,12 +25,24 @@ import logging
 import re
 import types
 from collections.abc import Callable
-from typing import TYPE_CHECKING, TypeAlias
+from typing import TYPE_CHECKING, Protocol, TypeAlias
 
 if TYPE_CHECKING:
     from ..parser import ImpExp, Ref, Section, Symbol
 
 _LOG = logging.getLogger("token_goat.languages.common")
+
+
+class AddSymbolFn(Protocol):
+    """Protocol for the recursive ``_add_symbol`` closure returned by :func:`make_add_symbol`.
+
+    Defines the exact callable signature — ``(item, parent_name=None) -> None`` —
+    so that callers get precise type checking instead of the looser
+    ``Callable[..., None]``.
+    """
+
+    def __call__(self, item: object, parent_name: str | None = None) -> None: ...
+
 
 # Canonical kind string (e.g. "function", "class", "method", "const", "var")
 KindStr: TypeAlias = str
@@ -266,7 +279,7 @@ def make_add_symbol(
     language: str = "go",
     *,
     promote_methods: bool = False,
-) -> Callable[..., None]:
+) -> AddSymbolFn:
     """Return a recursive ``_add_symbol(item, parent_name)`` closure.
 
     Extracted from the four language adapters (go, typescript, python, rust) to
