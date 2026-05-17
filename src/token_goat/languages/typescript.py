@@ -232,8 +232,8 @@ def extract(
         return [], [], [], []
     try:
         result = tlp.process(text, cfg)
-    except Exception:  # noqa: BLE001
-        _LOG.debug("tree-sitter parse failed for typescript source: %s", rel_path, exc_info=True)
+    except Exception as exc:  # noqa: BLE001
+        _LOG.debug("tree-sitter parse failed for typescript source: %s: %s", rel_path, exc, exc_info=True)
         return [], [], [], []
 
     symbols: list[Symbol] = []

@@ -104,6 +104,6 @@ def extract(source: bytes, rel_path: str) -> tuple[list[Symbol], list[Ref], list
         common._compute_section_end_lines(sections, lines)
 
         return symbols, [], imports, sections
-    except Exception:  # noqa: BLE001
-        _LOG.debug("parse failed for liquid source: %s", rel_path, exc_info=True)
+    except Exception as exc:  # noqa: BLE001
+        _LOG.debug("parse failed for liquid source: %s: %s", rel_path, exc, exc_info=True)
         return [], [], [], []

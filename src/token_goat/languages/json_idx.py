@@ -92,6 +92,6 @@ def _safe_repr(obj: object, max_len: int = 100) -> str:
         if len(s) > max_len:
             s = s[:max_len] + "..."
         return s
-    except Exception as exc:  # noqa: BLE001
+    except (TypeError, ValueError, OverflowError) as exc:
         _LOG.debug("_safe_repr: json.dumps failed for %s: %s", type(obj).__name__, exc)
         return str(type(obj).__name__)
