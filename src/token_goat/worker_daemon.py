@@ -92,13 +92,15 @@ def run_daemon(stop_event=None) -> None:
                 t_maint = time.time()
                 try:
                     s = cleanup_on_startup()
+                except Exception:  # noqa: BLE001
+                    maint_elapsed = time.time() - t_maint
+                    _LOG.exception("periodic maintenance failed after %.2fs", maint_elapsed)
+                else:
                     maint_elapsed = time.time() - t_maint
                     if any(s.values()):
                         _LOG.info("periodic maintenance completed in %.2fs: %s", maint_elapsed, s)
                     else:
                         _LOG.debug("periodic maintenance completed in %.2fs (no actions needed)", maint_elapsed)
-                except Exception:  # noqa: BLE001
-                    _LOG.exception("periodic maintenance failed after %.2fs", time.time() - t_maint)
                 last_maintenance = now
 
             if now - last_periodic_reindex >= _worker.PERIODIC_REINDEX_INTERVAL:
@@ -106,9 +108,10 @@ def run_daemon(stop_event=None) -> None:
                 t_reindex = time.time()
                 try:
                     _reindex_active_projects()
-                    _LOG.info("periodic reindex cycle completed in %.2fs", time.time() - t_reindex)
                 except Exception:  # noqa: BLE001
                     _LOG.exception("periodic reindex cycle failed after %.2fs", time.time() - t_reindex)
+                else:
+                    _LOG.info("periodic reindex cycle completed in %.2fs", time.time() - t_reindex)
                 last_periodic_reindex = now
 
             if now - last_version_check >= _worker.VERSION_CHECK_INTERVAL:
