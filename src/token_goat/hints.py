@@ -189,7 +189,41 @@ def build_read_hint(
     cwd: str | None,
     cache: session.SessionCache | None = None,
 ) -> ReadHint | None:
-    """Return a ReadHint, or None when no hint is warranted."""
+    """Return a ReadHint, or None when no hint is warranted.
+
+    Never raises: any unexpected exception is caught and logged so the
+    pre-read hook always continues regardless of hint-generation failures.
+    """
+    try:
+        return _build_read_hint_inner(
+            session_id=session_id,
+            file_path=file_path,
+            offset=offset,
+            limit=limit,
+            cwd=cwd,
+            cache=cache,
+        )
+    except Exception as exc:  # noqa: BLE001
+        _LOG.warning(
+            "build_read_hint: unexpected error for %r (session=%s): %s",
+            file_path,
+            (session_id or "")[:16],
+            exc,
+            exc_info=True,
+        )
+        return None
+
+
+def _build_read_hint_inner(
+    *,
+    session_id: str | None,
+    file_path: str,
+    offset: int | None,
+    limit: int | None,
+    cwd: str | None,
+    cache: session.SessionCache | None = None,
+) -> ReadHint | None:
+    """Inner implementation of build_read_hint; may raise."""
     if not session_id or not file_path:
         _LOG.debug("build_read_hint: skipped (session_id=%r, file_path=%r)", session_id, file_path)
         return None

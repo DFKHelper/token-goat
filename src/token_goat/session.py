@@ -486,12 +486,14 @@ def save(cache: SessionCache) -> None:
         return
     if last_exc is not None:
         _LOG.warning(
-            "session save failed after retries: %s (session=%s, files=%d, greps=%d)",
+            "session save failed after retries: %s (session=%s, files=%d, greps=%d) — "
+            "marking cache unavailable to skip future save attempts",
             last_exc,
             cache.session_id[:16],
             len(cache.files),
             len(cache.greps),
         )
+        cache.unavailable = True
         _record_cache_contention(cache.session_id, "save", last_exc)
 
 
