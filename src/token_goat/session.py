@@ -39,6 +39,12 @@ _LOG = logging.getLogger("token_goat.session")
 
 SESSION_SCHEMA_VERSION = 1
 _FILE_LOCK = threading.Lock()  # in-process; multi-process safe enough via atomic write
+# Tracks (session_id, phase) pairs that have already logged a telemetry row for
+# cache contention.  Prevents flooding global.db with one stats row per hook call
+# when the session file becomes persistently unavailable (e.g. full disk).
+# This dedup is per-process only — a fresh hook process (each tool call spawns one)
+# starts with an empty set, so a single row per (session_id, phase) per process is
+# recorded rather than strictly one row per session lifetime.
 _REPORTED_CONTENTION: set[tuple[str, str]] = set()
 
 
@@ -403,6 +409,9 @@ _MAX_PATH_LEN = 4096
 # that extends far enough to cover any realistic file.  This sentinel is chosen
 # large enough to encompass files that tree-sitter can actually parse (~100 k lines)
 # while remaining clearly artificial so grep/log output stands out.
+# It must be ≥ any real end-line we might store; if it were too small, two reads
+# of the same file could appear as non-overlapping ranges and fail to merge,
+# causing the hint engine to incorrectly suggest the file has uncovered lines.
 _UNKNOWN_END_SENTINEL = 99_999
 
 

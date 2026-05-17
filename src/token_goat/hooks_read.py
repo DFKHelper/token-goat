@@ -165,6 +165,11 @@ def pre_read(payload: dict[str, Any]) -> HookResponse:
     if tool_name == "Bash":
         read_payload = _handle_bash_read_equivalent(payload)
         if read_payload:
+            # Recurse once with a synthesized Read payload so image-shrink and
+            # session-hint logic runs identically to a native Read call.
+            # Depth is bounded at 1: _handle_bash_read_equivalent returns None
+            # for any payload whose tool_name is not 'Bash', so the recursive
+            # call always reaches the tool_name != "Read" branch at worst.
             return pre_read(read_payload)
         return CONTINUE()
 
