@@ -38,11 +38,19 @@ def test_safe_run_emits_continue_on_dispatch_exception(tmp_path, capsys):
 
 
 def test_safe_run_emits_continue_on_base_exception(capsys):
-    """BaseException in dispatch must still call emit with continue=true."""
+    """Non-control-signal BaseException in dispatch must still emit continue=true.
+
+    ``safe_run`` deliberately re-raises ``KeyboardInterrupt`` and ``SystemExit``
+    so process-control signals propagate; this test exercises the broad
+    fail-soft path for every other BaseException subclass.
+    """
+    class _CustomBaseExc(BaseException):
+        pass
+
     with (
         patch("token_goat.hooks_cli.read_payload", return_value={}),
         patch("token_goat.hooks_cli.normalize_payload", return_value={}),
-        patch("token_goat.hooks_cli.dispatch", side_effect=KeyboardInterrupt()),
+        patch("token_goat.hooks_cli.dispatch", side_effect=_CustomBaseExc("boom")),
         patch("token_goat.hooks_cli.emit") as mock_emit,
     ):
         safe_run("session-start")
