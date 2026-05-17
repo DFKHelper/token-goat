@@ -1,10 +1,9 @@
 """Fetch hook helpers."""
 from __future__ import annotations
 
-from typing import Any
-
 from .hooks_common import (
     CONTINUE,
+    HookPayload,
     HookResponse,
     deny_redirect,
     get_tool_input,
@@ -89,7 +88,7 @@ def _intercept_webfetch_image(url: str) -> HookResponse:
     )
 
 
-def pre_fetch(payload: dict[str, Any]) -> HookResponse:
+def pre_fetch(payload: HookPayload) -> HookResponse:
     """Deny Drive/WebFetch image tools and redirect to token-goat shims."""
     tool_name = payload.get("tool_name", "")
 

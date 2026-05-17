@@ -2,10 +2,10 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any
 
 from .hooks_common import (
     CONTINUE,
+    HookPayload,
     HookResponse,
     sanitize_log_str,
     sanitize_opt,
@@ -25,7 +25,7 @@ def _reset_session_cache(session_id: str | None) -> None:
     session.reset_session(session_id)
 
 
-def _detect(payload: dict[str, Any]) -> Project | None:
+def _detect(payload: HookPayload) -> Project | None:
     """Detect the current project from cwd. Returns None if not in a project root.
 
     Validates *cwd* before handing it to ``find_project``.  The ``cwd`` field
@@ -89,7 +89,7 @@ def _ensure_worker_running() -> None:
         _LOG.exception("watchdog failed")
 
 
-def session_start(payload: dict[str, Any]) -> HookResponse:
+def session_start(payload: HookPayload) -> HookResponse:
     """Reset session cache and ensure worker daemon is running."""
     session_id = payload.get("session_id")
     cwd = payload.get("cwd")

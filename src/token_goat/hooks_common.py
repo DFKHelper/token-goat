@@ -27,6 +27,7 @@ from __future__ import annotations
 
 __all__ = [
     "CONTINUE",
+    "HookPayload",
     "HookResponse",
     "HookSpecificOutputContext",
     "HookSpecificOutputDeny",
@@ -42,6 +43,32 @@ __all__ = [
 
 import logging
 from typing import Any, TypedDict
+
+# ---------------------------------------------------------------------------
+# Typed shape for inbound hook payloads
+# ---------------------------------------------------------------------------
+
+class HookPayload(TypedDict, total=False):
+    """Typed shape for the JSON object received on stdin by every hook handler.
+
+    All fields are optional (``total=False``) because the harness may omit any
+    field, and hooks must degrade gracefully when fields are absent.  The subset
+    of fields here covers all keys accessed by the token-goat hook layer; unknown
+    harness-specific keys are accepted at runtime (TypedDict does not reject
+    extra keys).
+    """
+
+    session_id: str
+    cwd: str
+    turn_id: str
+    tool_name: str
+    tool_input: dict[str, Any]
+    file_path: str
+    file_content: str
+    line_number: int
+    result_count: int
+    trigger: str
+
 
 # ---------------------------------------------------------------------------
 # Typed shapes for hookSpecificOutput payloads
@@ -119,7 +146,7 @@ def CONTINUE() -> HookResponse:  # noqa: N802 — intentional SCREAMING_SNAKE al
     return {"continue": True}
 
 
-def get_tool_input(payload: dict[str, Any] | None) -> dict[str, Any]:
+def get_tool_input(payload: HookPayload | None) -> dict[str, Any]:
     """Return ``payload["tool_input"]`` as a dict, defaulting to ``{}``.
 
     Handles three degenerate cases without extra ``if`` chains at every call site:
