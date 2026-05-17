@@ -1,6 +1,7 @@
 """Command helpers for the read/section/deps CLI path."""
 from __future__ import annotations
 
+import difflib
 import json
 import logging
 import sqlite3
@@ -68,6 +69,60 @@ def _not_indexed_hint(project_hash: str) -> str | None:
             "run `token-goat index --full` again or check the logs.)"
         )
     return None
+
+
+# Max number of "did you mean…?" suggestions to surface on a missed lookup.
+# 5 is the difflib default ceiling; more becomes noise and competes with the
+# error message for the agent's attention.
+_DIDYOUMEAN_LIMIT = 5
+# difflib similarity cutoff. 0.6 is difflib's default; lowering would surface
+# more candidates but also more noise. The aim is to cover near-typos and
+# case mismatches, not arbitrary substring containment.
+_DIDYOUMEAN_CUTOFF = 0.6
+
+
+def _close_symbol_matches(project: Project, rel_path: str, symbol: str) -> list[str]:
+    """Return up to :data:`_DIDYOUMEAN_LIMIT` symbol names from ``rel_path`` that are
+    close lexical matches for ``symbol``.
+
+    Used to produce "did you mean…?" suggestions when ``token-goat read`` fails
+    to find a symbol in an otherwise-resolved file. Returning even one good
+    candidate keeps the agent on the surgical-read path instead of falling
+    back to ``Read full-file``.
+
+    Returns an empty list on any DB error so the miss message still emits.
+    """
+    try:
+        with db.open_project_readonly(project.hash) as conn:
+            rows = conn.execute(
+                "SELECT DISTINCT name FROM symbols WHERE file_rel = ? AND name IS NOT NULL",
+                (rel_path,),
+            ).fetchall()
+    except (sqlite3.OperationalError, sqlite3.DatabaseError) as exc:
+        _LOG.debug("close-match query failed for symbol in %s: %s", rel_path, exc)
+        return []
+    names = [r["name"] for r in rows if r["name"]]
+    return difflib.get_close_matches(symbol, names, n=_DIDYOUMEAN_LIMIT, cutoff=_DIDYOUMEAN_CUTOFF)
+
+
+def _close_section_matches(project: Project, rel_path: str, heading: str) -> list[str]:
+    """Return up to :data:`_DIDYOUMEAN_LIMIT` section headings from ``rel_path``
+    that are close lexical matches for ``heading``.
+
+    The mirror of :func:`_close_symbol_matches` for ``token-goat section``.
+    Returns an empty list on any DB error.
+    """
+    try:
+        with db.open_project_readonly(project.hash) as conn:
+            rows = conn.execute(
+                "SELECT DISTINCT heading FROM sections WHERE file_rel = ? AND heading IS NOT NULL",
+                (rel_path,),
+            ).fetchall()
+    except (sqlite3.OperationalError, sqlite3.DatabaseError) as exc:
+        _LOG.debug("close-match query failed for section in %s: %s", rel_path, exc)
+        return []
+    headings = [r["heading"] for r in rows if r["heading"]]
+    return difflib.get_close_matches(heading, headings, n=_DIDYOUMEAN_LIMIT, cutoff=_DIDYOUMEAN_CUTOFF)
 
 
 def _emit_read_error(
@@ -400,10 +455,24 @@ def _run_read_like_command(
     result = reader(file_target.project, file_target.rel_path, item_part, context_lines=context_lines)
     if result is None:
         _label_lower = missing_label.lower()
+        # Suggest close matches from the same file so the agent has an
+        # immediate next step instead of falling back to a full-file Read.
+        # The label tells us which table to consult: "Symbol" -> symbols,
+        # "Section" -> sections.
+        if _label_lower == "symbol":
+            suggestions = _close_symbol_matches(file_target.project, file_target.rel_path, item_part)
+        elif _label_lower == "section":
+            suggestions = _close_section_matches(file_target.project, file_target.rel_path, item_part)
+        else:
+            suggestions = []
+        base_message = f"{missing_label} not found: {item_part} (in {file_target.rel_path})"
+        if suggestions and not json_output:
+            base_message = base_message + "\nDid you mean:"
         _emit_read_error(
             code=f"{_label_lower}_not_found",
-            message=f"{missing_label} not found: {item_part} (in {file_target.rel_path})",
+            message=base_message,
             json_output=json_output,
+            candidates=suggestions,
             file_part=file_part,
             rel_path=file_target.rel_path,
             item=item_part,

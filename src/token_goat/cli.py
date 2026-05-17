@@ -131,6 +131,73 @@ def _validate_session_id(session_id: str) -> None:
         raise typer.Exit(1) from exc
 
 
+# Close-match thresholds for "did you mean…?" suggestions on a symbol miss.
+# 5 caps suggestion count (difflib default); 0.6 is difflib's default cutoff.
+# Centralised here so the symbol/read/section paths stay consistent.
+_SYMBOL_DIDYOUMEAN_LIMIT = 5
+_SYMBOL_DIDYOUMEAN_CUTOFF = 0.6
+# Hard ceiling on rows pulled into Python for fuzzy matching. Without this the
+# global index (potentially hundreds of thousands of symbols across many
+# projects) could push memory pressure on a casual `token-goat symbol` miss.
+_SYMBOL_DIDYOUMEAN_POOL = 50_000
+
+
+def _project_close_symbol_matches(proj_hash: str, name: str) -> list[str]:
+    """Return up to :data:`_SYMBOL_DIDYOUMEAN_LIMIT` distinct symbol names from this
+    project that are close lexical matches for ``name``.
+
+    Surfaced as a "Did you mean:" hint on a single-project symbol miss so the
+    agent has an actionable next step instead of falling back to ``Read``.
+
+    Returns an empty list on any DB error so the miss path still emits its
+    headline message.
+    """
+    from difflib import get_close_matches  # noqa: PLC0415
+
+    from . import db as _db  # noqa: PLC0415
+
+    try:
+        with _db.open_project_readonly(proj_hash) as conn:
+            rows = conn.execute(
+                "SELECT DISTINCT name FROM symbols WHERE name IS NOT NULL LIMIT ?",
+                (_SYMBOL_DIDYOUMEAN_POOL,),
+            ).fetchall()
+    except (_db.DBError, sqlite3.OperationalError, sqlite3.DatabaseError) as exc:
+        _LOG.debug("close-symbol-match query failed for project %s: %s", proj_hash[:8], exc)
+        return []
+    names = [r["name"] for r in rows if r["name"]]
+    return get_close_matches(
+        name, names, n=_SYMBOL_DIDYOUMEAN_LIMIT, cutoff=_SYMBOL_DIDYOUMEAN_CUTOFF,
+    )
+
+
+def _global_close_symbol_matches(name: str) -> list[str]:
+    """Return up to :data:`_SYMBOL_DIDYOUMEAN_LIMIT` close matches for ``name``
+    across the global symbol index.
+
+    Mirrors :func:`_project_close_symbol_matches` but queries ``symbols_global``
+    so ``token-goat symbol foo --all-projects`` can suggest names from any
+    indexed project (skills, plugins, sibling repos).
+    """
+    from difflib import get_close_matches  # noqa: PLC0415
+
+    from . import db as _db  # noqa: PLC0415
+
+    try:
+        with _db.open_global_readonly() as gconn:
+            rows = gconn.execute(
+                "SELECT DISTINCT name FROM symbols_global WHERE name IS NOT NULL LIMIT ?",
+                (_SYMBOL_DIDYOUMEAN_POOL,),
+            ).fetchall()
+    except (_db.DBError, sqlite3.OperationalError, sqlite3.DatabaseError) as exc:
+        _LOG.debug("close-symbol-match query failed for global index: %s", exc)
+        return []
+    names = [r["name"] for r in rows if r["name"]]
+    return get_close_matches(
+        name, names, n=_SYMBOL_DIDYOUMEAN_LIMIT, cutoff=_SYMBOL_DIDYOUMEAN_CUTOFF,
+    )
+
+
 def _query_project(proj_hash: str, sql: str, params: tuple[object, ...]) -> list[sqlite3.Row]:
     """Run a SELECT against the project DB, exiting on DBError.
 
@@ -218,7 +285,11 @@ def symbol(
                 sig_part = f"\033[2m{sig_part}\033[0m"
             typer.echo(f"{project_prefix}{row['file']}:{row['line']}: {kind_name}{sig_part}")
 
-    def _emit_results(results: list[dict], not_found_extra: str | None = None) -> None:
+    def _emit_results(
+        results: list[dict],
+        not_found_extra: str | None = None,
+        close_matches: list[str] | None = None,
+    ) -> None:
         """Emit symbol results as JSON or plain text; print a not-found message when empty.
 
         Extracted to remove the identical ``if as_json / elif results / else`` block that
@@ -228,15 +299,26 @@ def symbol(
             results:         List of symbol dicts to emit.
             not_found_extra: When given, shown as a hint in the empty case (single-project
                              branch passes the indexed-file hint here; global branch passes None).
+            close_matches:   Optional list of close-match symbol names to surface as
+                             "Did you mean:" suggestions when no results are returned.
+                             Skipped silently for JSON output (callers can request the
+                             same data themselves) — text mode is where agents get stuck.
         """
         if as_json:
             typer.echo(json.dumps(results))
         elif results:
             _fmt_plain(results)
-        elif not_found_extra:
-            typer.echo(not_found_extra)
         else:
-            typer.echo(f"No matches for {name!r}")
+            # Empty results path: pick the appropriate headline (project hint
+            # if not yet indexed, plain "no matches" otherwise), then append
+            # close-match suggestions when we have any. Surfacing suggestions
+            # alongside the not-indexed hint is intentionally suppressed —
+            # close matches in a half-indexed project would be misleading.
+            typer.echo(not_found_extra if not_found_extra else f"No matches for {name!r}")
+            if close_matches and not not_found_extra:
+                typer.echo("Did you mean:")
+                for candidate in close_matches:
+                    typer.echo(f"  - {candidate}")
 
     if all_projects:
         try:
@@ -262,7 +344,14 @@ def symbol(
             }
             for r in rows_raw
         ]
-        _emit_results(results)
+        # On a global miss, query distinct symbol names across all projects and
+        # surface up to 5 close matches. This is the most impactful suggestion
+        # path: agents searching with --all-projects often misspell a symbol
+        # from a different repo, and without a hint the only fallback is Read.
+        close: list[str] = []
+        if not results:
+            close = _global_close_symbol_matches(name)
+        _emit_results(results, close_matches=close)
         return
 
     proj = _require_project()
@@ -287,7 +376,18 @@ def symbol(
     from . import read_commands  # noqa: PLC0415
 
     hint = read_commands._not_indexed_hint(proj.hash)
-    _emit_results(results, not_found_extra=hint or f"No matches for {name!r}")
+    # When the project is indexed but the name missed, suggest close-match
+    # symbol names from the same project's symbols table.
+    # Only pass ``not_found_extra`` when we have a real hint to display — the
+    # default "No matches for X" line is added by ``_emit_results`` itself,
+    # and routing it through ``not_found_extra`` would silently suppress the
+    # close-match suggestions below.
+    close = [] if results or hint else _project_close_symbol_matches(proj.hash, name)
+    _emit_results(
+        results,
+        not_found_extra=hint,
+        close_matches=close,
+    )
 
 
 @app.command(rich_help_panel="Core")
