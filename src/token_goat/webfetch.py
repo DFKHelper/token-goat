@@ -52,6 +52,7 @@ def _sanitize_header_value(value: str, max_len: int = 512) -> str:
 
 
 _MAX_URL_IN_ERROR = 200  # chars kept in RuntimeError messages; prevents unbounded error strings
+_MAX_URL_LEN = 8192  # hard cap on URL length; urlparse + string ops on a 100 MB URL burn CPU/RAM
 
 
 def _truncate_url(url: str, max_len: int = _MAX_URL_IN_ERROR) -> str:
@@ -178,7 +179,15 @@ def _is_ssrf_safe(url: str) -> bool:
 
 
 def is_image_url(url: str) -> bool:
-    """Quick heuristic: URL ends with an image extension (case-insensitive, ignoring query)."""
+    """Quick heuristic: URL ends with an image extension (case-insensitive, ignoring query).
+
+    Rejects URLs longer than ``_MAX_URL_LEN`` before calling ``urlparse``.  A
+    crafted megabyte-scale URL would otherwise cause ``urlparse`` and the
+    subsequent ``.lower()`` / ``.endswith()`` calls to burn CPU and memory
+    before any downstream size check fires.
+    """
+    if len(url) > _MAX_URL_LEN:
+        return False
     try:
         parsed = urlparse(url)
     except ValueError:
@@ -397,6 +406,8 @@ def fetch_url(
     """
     import httpx  # noqa: PLC0415 — deferred to avoid startup cost on every hook fire
 
+    if len(url) > _MAX_URL_LEN:
+        raise ValueError(f"URL too long ({len(url)} chars, max {_MAX_URL_LEN})")
     if not _is_ssrf_safe(url):
         raise ValueError(f"URL blocked by SSRF safety check: {_truncate_url(url)!r}")
 
