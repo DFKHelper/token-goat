@@ -51,7 +51,7 @@ def doctor(  # noqa: C901
         import importlib.metadata
 
         cc_ver = importlib.metadata.version("token-goat")
-    except Exception:  # noqa: BLE001
+    except importlib.metadata.PackageNotFoundError:
         cc_ver = "unknown"
     ok("token-goat", cc_ver)
     try:
@@ -59,7 +59,7 @@ def doctor(  # noqa: C901
             ["uv", "--version"], capture_output=True, text=True, timeout=5
         )
         ok("uv", uv_out.stdout.strip() or "installed")
-    except Exception:  # noqa: BLE001
+    except (FileNotFoundError, OSError, subprocess.TimeoutExpired):
         flag("uv", "not found", warn=True)
 
     # ------------------------------------------------------------------
@@ -110,7 +110,7 @@ def doctor(  # noqa: C901
             wal_conn = sqlite3.connect(tmp_db_path, isolation_level=None)
             actual_mode: str = wal_conn.execute("PRAGMA journal_mode = WAL").fetchone()[0]
             return actual_mode == "wal"
-        except Exception:  # noqa: BLE001
+        except (sqlite3.Error, OSError):
             return False
         finally:
             with contextlib.suppress(Exception):
