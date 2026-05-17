@@ -164,10 +164,39 @@ def doctor(  # noqa: C901
     # ------------------------------------------------------------------
     # 6. Pillow
     # ------------------------------------------------------------------
+    # Probe codec availability, not just import — image_shrink defaults to
+    # WebP encoding (~39% smaller than JPEG on screenshots), so missing
+    # libwebp on Linux source builds silently breaks the shrink pipeline.
     try:
         import PIL  # noqa: PLC0415
+        from PIL import Image, features  # noqa: PLC0415
 
         ok("Pillow", PIL.__version__)
+        codec_status = []
+        for codec, label in (("webp", "WebP"), ("jpg", "JPEG"), ("zlib", "PNG")):
+            if features.check(codec):
+                codec_status.append(f"{label}=ok")
+            else:
+                codec_status.append(f"{label}=MISSING")
+        # Smoke-test actual encode for the default lossy format so a half-broken
+        # libwebp (loadable but encode-broken) surfaces here.
+        try:
+            import io  # noqa: PLC0415
+
+            buf = io.BytesIO()
+            Image.new("RGB", (4, 4), (200, 100, 50)).save(buf, "WEBP", quality=80)
+            codec_status.append("WebP-encode=ok")
+        except Exception as exc:  # noqa: BLE001
+            codec_status.append(f"WebP-encode=FAIL ({type(exc).__name__})")
+        joined = ", ".join(codec_status)
+        if "MISSING" in joined or "FAIL" in joined:
+            flag(
+                "Pillow codecs",
+                f"{joined} — see README 'Image support' for platform install hints",
+                warn=True,
+            )
+        else:
+            ok("Pillow codecs", joined)
     except ImportError as e:
         flag("Pillow", f"not importable — {e}")
 
