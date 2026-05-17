@@ -8,6 +8,7 @@ import sys
 import threading
 import time
 from pathlib import Path
+from typing import Literal
 
 _LOG = logging.getLogger("token_goat.paths")
 
@@ -348,7 +349,7 @@ def _open_restricted(tmp: Path) -> int:
     return os.open(str(tmp), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
 
 
-def _atomic_write_core(path: Path, content: str | bytes, mode: str) -> None:
+def _atomic_write_core(path: Path, content: str | bytes, mode: Literal["w", "wb"]) -> None:
     """Write *content* to *path* atomically via a temp file + rename.
 
     Shared implementation for :func:`atomic_write_text` and :func:`atomic_write_bytes`.
