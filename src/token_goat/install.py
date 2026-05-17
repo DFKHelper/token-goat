@@ -12,6 +12,7 @@ import shutil
 import subprocess
 import sys
 import time
+from collections.abc import Callable
 from datetime import datetime
 from pathlib import Path
 
@@ -159,7 +160,7 @@ def _ok_fail(ok: bool, detail: str, *, max_detail: int = 200) -> str:
     return f"{prefix} — {detail[:max_detail]}"
 
 
-def _run_step(result: dict[str, str], key: str, fn: object) -> None:
+def _run_step(result: dict[str, str], key: str, fn: Callable[[], object]) -> None:
     """Run *fn* and record ``"ok — <return value>"`` or ``"FAIL — <exc>"`` in *result[key]*.
 
     Eliminates the repeated ``try: result[key] = f"ok — {fn()}"; except Exception as e:
@@ -167,7 +168,7 @@ def _run_step(result: dict[str, str], key: str, fn: object) -> None:
     in :func:`install_all` (codex, opencode, openclaw patches).
     """
     try:
-        detail = fn()  # type: ignore[operator]
+        detail = fn()
         result[key] = f"ok — {detail}"
         _LOG.info("install step ok: %s — %s", key, str(detail)[:200])
     except Exception as e:  # noqa: BLE001

@@ -80,7 +80,9 @@ def _coerce_line(val: object, default: int) -> int:
     helper centralises the ``int(x) if x is not None else default`` idiom used
     when extracting line numbers from query results.
     """
-    return int(val) if val is not None else default  # type: ignore[call-overload]
+    if isinstance(val, int):
+        return val
+    return default
 
 
 def _coerce_end_line(val: object) -> int | None:
@@ -91,7 +93,7 @@ def _coerce_end_line(val: object) -> int | None:
     ``read_section`` contain the identical ``int(x) if x is not None else None``
     expression; this helper eliminates that duplication.
     """
-    return int(val) if val is not None else None  # type: ignore[call-overload]
+    return val if isinstance(val, int) else None
 
 
 def _validate_lookup_args(caller: str, rel_path: str, name: str) -> bool:
