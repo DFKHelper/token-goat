@@ -158,7 +158,13 @@ def get_session_context(payload: HookPayload) -> tuple[str | None, str | None]:
     across hook handler bodies.  Both fields are optional in the harness protocol
     (``HookPayload`` uses ``total=False``), so either or both may be absent.
     """
-    return payload.get("session_id"), payload.get("cwd")  # type: ignore[return-value]
+    session_id: str | None = payload.get("session_id")  # type: ignore[assignment]
+    cwd: str | None = payload.get("cwd")  # type: ignore[assignment]
+    if session_id is None:
+        LOG.debug("get_session_context: session_id absent from payload (tool=%s)", sanitize_opt(payload.get("tool_name")))
+    if cwd is None:
+        LOG.debug("get_session_context: cwd absent from payload (tool=%s)", sanitize_opt(payload.get("tool_name")))
+    return session_id, cwd
 
 
 def get_tool_input(payload: HookPayload | None) -> dict[str, Any]:
