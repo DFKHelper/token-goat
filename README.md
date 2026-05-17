@@ -53,6 +53,82 @@ Each one is preventable. Token-Goat intercepts all three, automatically.
 
 On a per-token API plan, 100K wasted tokens per session runs about $0.30. Five sessions a week is ~$450/year. Token-goat is free.
 
+## Token savings, measured
+
+Numbers below come from synthetic-fixture benchmarks in the test suite. Each row points at the source file where the measurement is reproduced.
+
+| Source | Improvement | Measured impact | Where |
+|--------|-------------|-----------------|-------|
+| Image shrink | WebP encoder beats JPEG on screenshot-shaped images | ~39% smaller than the same image at JPEG quality 85 | `image_shrink.py` (codec selection) |
+| Repomap output | Short labels (`f:`, `s:`, `c:`) and auto-compact mode below 6 KB | ~30–40% denser output for the same byte budget | `repomap.py` (`token-goat map --budget`) |
+| DB reindex | Batched single transaction + composite indexes on `(file_id, kind)` | 100 files / 10K rows: 84 s → 1 s (~80× faster) | `parser.py`, `db.py` (index migration) |
+| Hook cold-start | Lazy import of heavy modules; unknown events short-circuit | 86 ms → 30 ms (~65% faster); unknown-event dispatch <1 ms | `hooks_cli.py` |
+| Symbol start_line | TypeScript decorators captured in symbol span | One `token-goat read` returns the decorator + signature + body; no re-read | `languages/typescript.py` |
+| Section extraction | Setext headings, h5/h6, anchor IDs, and `__frontmatter__` | `token-goat section` resolves more headings without falling back to a full file read | `languages/markdown.py` |
+| Image cache | Real LRU eviction (was FIFO; old hot entries got dropped) | Higher hit rate on repeat screenshots in long sessions | `image_shrink.py` |
+| Monorepo defaults | Reindex batch 500 → 2000; compact `min_events` 5 → 3 | Fewer worker wakeups; compact manifests fire on shorter sessions | `config.py` defaults |
+| Miss suggestions | "Did you mean…?" on `symbol` / `read` / `section` misses | Keeps agents on the surgical-read path instead of falling back to full-file `Read` | `read_replacement.py` |
+
+## Token-savings examples
+
+Concrete before/after for the four interception points. Token counts use the ~4-chars-per-token rule of thumb.
+
+**1. Image — screenshot interception**
+
+```
+$ ls -lh screenshot.png
+-rw-r--r-- 1 user user 1.2M screenshot.png
+
+# Without token-goat: Claude reads the 1.2 MB PNG.
+# With token-goat: hook re-encodes as WebP and substitutes the cached copy.
+
+$ token-goat shrink-image screenshot.png
+out: ~74 KB WebP   (94% smaller)
+```
+
+The same image at JPEG quality 85 lands around 120 KB. WebP wins by another ~39% on screenshot-shaped content (large flat regions, sharp text edges).
+
+**2. Surgical read — one function, not the whole file**
+
+```
+# Without token-goat: full file read.
+$ wc -l src/auth.py
+512 src/auth.py            # ~12,000 tokens
+
+# With token-goat: pull just the function.
+$ token-goat read "src/auth.py::login"
+out: 38 lines              # ~300 tokens   (97% smaller)
+```
+
+Same applies to `token-goat section "README.md::Install"` — one heading instead of the whole document. Anchor IDs and setext headings resolve too, so `section "doc.md::Quick-start"` works when the file uses `Quick start` as an `<h2>` with an explicit `{#quick-start}` anchor.
+
+**3. Compact manifest — preserve what mattered**
+
+```
+# Without token-goat: PreCompact fires with no extra context.
+# The summarizer LLM picks what to keep, often loses the edit set.
+
+# With token-goat: PreCompact hook injects a structured manifest.
+$ token-goat compact-hint --session-id <id>
+out: ~280 tokens covering 8 edited files + 12 symbols accessed + 4 key reads
+```
+
+The 280-token manifest is one-shot during compaction. The win is downstream: post-compaction, the agent doesn't re-read files it had already edited, saving a full-file Read pass on each one.
+
+**4. Repomap — orientation without an `ls -R` dump**
+
+```
+# Without token-goat: recursive ls + a handful of Read calls to figure out the repo.
+$ ls -R . | wc -c
+51234                       # ~50 KB of raw paths, no signal about importance
+
+# With token-goat: PageRank-ranked, token-budgeted summary.
+$ token-goat map --budget 4000
+out: ~4 KB                  # top-ranked files + key symbols   (92% smaller)
+```
+
+`--budget` is a hard cap. Below 6 KB the output automatically switches to short-label mode (`f:` files, `s:` symbols, `c:` calls) to fit more signal per byte.
+
 ## Install
 
 **Windows requirements:** Windows 10 or 11 · Python 3.11, 3.12, or 3.13 · [uv](https://docs.astral.sh/uv/) (`winget install astral-sh.uv`)
