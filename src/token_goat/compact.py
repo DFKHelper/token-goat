@@ -15,7 +15,7 @@ import logging
 import time
 from datetime import UTC, datetime
 from itertools import islice
-from operator import itemgetter
+from operator import attrgetter, itemgetter
 from typing import TYPE_CHECKING
 
 from . import session as session_mod
@@ -37,6 +37,11 @@ _MAX_SYMBOLS_PER_FILE_ENTRY = 6
 # Key for sorting edited_files dict items by edit count (the second element of each pair).
 # Defined at module level so it is created once rather than re-created on every manifest build.
 _BY_EDIT_COUNT = itemgetter(1)
+
+# Attribute-based key for heapq.nlargest over FileEntry objects.
+# attrgetter is faster than a lambda for attribute access: it avoids the
+# CALL_FUNCTION bytecode overhead of a Python lambda on every comparison.
+_BY_READ_COUNT = attrgetter("read_count")
 
 
 def _count_suffix(n: int) -> str:
@@ -222,7 +227,7 @@ def _render(cache: SessionCache, session_id: str, max_tokens: int) -> tuple[str,
     # long session has hundreds of file entries but we only need the top 10.
     # The heap keeps only k items in memory, so this is also more memory-efficient
     # than sorting the full list when sessions accumulate many hundreds of file reads.
-    top_files = heapq.nlargest(_MAX_FILES_READ, cache.files.values(), key=lambda e: e.read_count)
+    top_files = heapq.nlargest(_MAX_FILES_READ, cache.files.values(), key=_BY_READ_COUNT)
 
     now = datetime.now(UTC).strftime("%Y-%m-%d %H:%M UTC")
     sid = session_id[:8]

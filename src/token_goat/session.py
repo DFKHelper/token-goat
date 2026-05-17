@@ -32,6 +32,7 @@ import sys
 import threading
 import time
 from dataclasses import asdict, dataclass, field
+from operator import attrgetter
 from typing import Any, TypedDict, cast
 
 from . import paths
@@ -81,6 +82,10 @@ class GrepEntry:
 
 # Computed once at import time — GrepEntry fields never change at runtime.
 _GREP_FIELDS: frozenset[str] = frozenset(GrepEntry.__dataclass_fields__)  # type: ignore[attr-defined]
+
+# attrgetter key for sorting FileEntry objects by last_read_ts.
+# Defined at module level to avoid allocating a new lambda on every list_touched() call.
+_BY_LAST_READ_TS = attrgetter("last_read_ts")
 
 
 @dataclass
@@ -654,6 +659,10 @@ def _merge_ranges(ranges: list[tuple[int, int]]) -> list[tuple[int, int]]:
     """
     if not ranges:
         return []
+    # Fast path: a single range is already sorted and merged by definition.
+    # This is the common case early in a session before many reads accumulate.
+    if len(ranges) == 1:
+        return list(ranges)
     sorted_r = sorted(ranges)
     out: list[tuple[int, int]] = [sorted_r[0]]
     for start, end in sorted_r[1:]:
@@ -702,6 +711,7 @@ def mark_file_edited(
     if cache.unavailable:
         return cache
     key = _normalize_path(path)
+    now = time.time()
     prev_count = cache.edited_files.get(key, 0)
     cache.edited_files[key] = prev_count + 1
     _LOG.debug(
@@ -710,7 +720,7 @@ def mark_file_edited(
         prev_count + 1,
         len(cache.edited_files),
     )
-    cache.last_activity_ts = time.time()
+    cache.last_activity_ts = now
     cache._invalidate_json_cache()
     save(cache)
     return cache
@@ -724,7 +734,7 @@ def list_edited(session_id: str) -> dict[str, int]:
 def list_touched(session_id: str) -> list[FileEntry]:
     """List all files touched in a session, sorted by last read time (newest first)."""
     cache = load(session_id)
-    return sorted(cache.files.values(), key=lambda e: e.last_read_ts, reverse=True)
+    return sorted(cache.files.values(), key=_BY_LAST_READ_TS, reverse=True)
 
 
 def cleanup_stale(max_age_hours: float = 24.0) -> int:
