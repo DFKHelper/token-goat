@@ -73,7 +73,7 @@ def _setup_logging() -> None:
     _LOG.setLevel(logging.INFO)
 
 
-def normalize_payload(payload: dict[str, Any], harness: Harness = "claude") -> dict[str, Any]:
+def normalize_payload(payload: HookPayload, harness: Harness = "claude") -> HookPayload:
     """Translate harness-specific payloads to token-goat's internal format.
 
     Codex sends snake_case keys for some fields and uses 'turn_id'; Claude uses
@@ -137,7 +137,7 @@ _HOOK_SLOW_MS = 500
 _HOOK_MODERATE_MS = 100
 
 
-def read_payload(input_file: Path | None = None) -> dict[str, Any]:
+def read_payload(input_file: Path | None = None) -> HookPayload:
     """Read JSON payload from stdin (or a file, for testing).
 
     Always returns a dict. Coerces non-dict JSON (``null``, lists, scalars)
@@ -180,7 +180,7 @@ def read_payload(input_file: Path | None = None) -> dict[str, Any]:
     except OSError as e:
         _LOG.warning("failed to read payload from file: %s", e)
         return {}
-    return data if isinstance(data, dict) else {}
+    return cast("HookPayload", data) if isinstance(data, dict) else HookPayload()
 
 
 def emit(result: dict[str, Any]) -> None:
@@ -373,7 +373,7 @@ EVENTS: dict[str, Callable[[HookPayload], HookResponse]] = {
 }
 
 
-def dispatch(event: str, payload: dict[str, Any]) -> dict[str, Any]:
+def dispatch(event: str, payload: HookPayload) -> dict[str, Any]:
     """Dispatch a hook event. Always returns at minimum {'continue': True}.
 
     The return type is ``dict[str, Any]`` rather than ``HookResponse`` because
@@ -390,7 +390,7 @@ def dispatch(event: str, payload: dict[str, Any]) -> dict[str, Any]:
         return dict(CONTINUE())
     _LOG.debug("hook %s started", safe_event)
     t0 = time.monotonic()
-    result: dict[str, Any] = dict(handler(cast(HookPayload, payload)))
+    result: dict[str, Any] = dict(handler(payload))
     elapsed_ms = (time.monotonic() - t0) * 1000
     if elapsed_ms >= _HOOK_SLOW_MS:
         _LOG.warning("hook %s slow: %.1fms (check for blockage or I/O delays)", safe_event, elapsed_ms)
