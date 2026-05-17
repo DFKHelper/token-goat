@@ -77,7 +77,7 @@ def _require_project(
     return proj
 
 
-def _emit_json(data: Any, *, indent: int | None = None) -> None:
+def _emit_json(data: object, *, indent: int | None = None) -> None:
     """Echo ``data`` as JSON and raise ``typer.Exit(0)``.
 
     Centralises the repeated ``if json_output: typer.echo(json.dumps(...)); return``
