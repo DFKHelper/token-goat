@@ -81,9 +81,12 @@ IMAGE_EXTENSIONS = frozenset(
 )
 
 
-def is_image_path(path: str) -> bool:
+def is_image_path(path: str | Path) -> bool:
     """Return True if *path* has a recognised image extension (case-insensitive).
 
+    Accepts either a string or a :class:`~pathlib.Path` so callers that already
+    hold a ``Path`` object do not pay for a redundant ``str()`` round-trip
+    followed by a fresh ``Path()`` construction inside this function.
     Only checks the extension string — does not open the file or verify content.
     Used as a fast pre-filter before the more expensive stat/PIL operations.
     """
@@ -177,7 +180,7 @@ def should_shrink(src_path: Path) -> bool:
     the answer as a conservative hint, not a guarantee.
     """
     try:
-        if not is_image_path(str(src_path)):
+        if not is_image_path(src_path):
             return False
         st = src_path.stat()  # single syscall: raises FileNotFoundError if absent
         return stat.S_ISREG(st.st_mode) and st.st_size > SIZE_THRESHOLD_BYTES
@@ -245,7 +248,7 @@ def shrink(src_path: Path) -> Path | None:
     # Guard: extension check first (cheap string op) then size (one stat syscall).
     # The original code called stat() then repeated is_image_path(); we hoist the
     # cheap extension test before the syscall so non-image paths skip stat entirely.
-    if not is_image_path(str(src_path)):
+    if not is_image_path(src_path):
         return None
     try:
         src_size = src_path.stat().st_size
@@ -358,7 +361,7 @@ def shrink_if_image(path: Path) -> Path:
     """
     if path is None:
         raise TypeError("shrink_if_image: path must not be None")
-    if is_image_path(str(path)):
+    if is_image_path(path):
         shrunken = shrink(path)
         if shrunken is not None:
             return shrunken
