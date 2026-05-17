@@ -496,7 +496,7 @@ def _short_project(root: str) -> str:
 
 def _to_stats_data(summary: StatsSummary) -> StatsData:
     """Convert StatsSummary to the render layer's StatsData."""
-    from .render.types import DayStat, KindStat, ProjectStat, StatsData, TotalStats
+    from .render.types import DayStat, KindStat, ProjectStat, SourceStat, StatsData, TotalStats
 
     today = date.today()
     if summary.window_days > 0:
@@ -555,6 +555,23 @@ def _to_stats_data(summary: StatsSummary) -> StatsData:
         for p in summary.by_project
     ][:5]
 
+    # Per-source rollup mirrors the legacy renderer's "By source" panel.
+    # Empty when older summaries (pre by_source rollup) are passed in, which
+    # the renderer interprets as "skip the section" — backward-compatible.
+    by_source = sorted(
+        [
+            SourceStat(
+                source=src,
+                bytes=v["bytes_saved"],
+                tokens=v["tokens_saved"],
+                events=v["events"],
+            )
+            for src, v in (summary.by_source or {}).items()
+        ],
+        key=_get_bytes,
+        reverse=True,
+    )
+
     return StatsData(
         period_start=period_start,
         period_end=today,
@@ -566,6 +583,7 @@ def _to_stats_data(summary: StatsSummary) -> StatsData:
         by_kind=by_kind,
         by_day=by_day,
         by_project=by_project,
+        by_source=by_source,
     )
 
 
