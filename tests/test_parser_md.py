@@ -401,3 +401,203 @@ def test_no_frontmatter_means_no_synthetic_section():
     src = b"# Title\n\nbody\n"
     _, _, _, sections = extract(src, "no-fm.md")
     assert not any(s.heading == "__frontmatter__" for s in sections)
+
+
+# ---------------------------------------------------------------------------
+# GitHub-flavored Markdown <details><summary>…</summary>…</details> blocks
+# ---------------------------------------------------------------------------
+
+
+def test_details_block_with_summary_extracted():
+    """`<details><summary>Title</summary>body</details>` is a section named "Title"."""
+    src = (
+        b"# Real Heading\n"
+        b"\n"
+        b"<details>\n"
+        b"<summary>Click to expand</summary>\n"
+        b"\n"
+        b"Hidden body content.\n"
+        b"\n"
+        b"</details>\n"
+        b"\n"
+        b"## After\n"
+    )
+    _, _, _, sections = extract(src, "details.md")
+    headings = {s.heading for s in sections}
+    assert "Click to expand" in headings
+    detail = next(s for s in sections if s.heading == "Click to expand")
+    # level=99 sentinel keeps it out of ATX/Setext hierarchy.
+    assert detail.level == 99
+    # Block starts on line 3 (the `<details>` opener).
+    assert detail.line == 3
+    # end_line must cover through the `</details>` closer on line 8.
+    assert detail.end_line is not None and detail.end_line >= 8
+
+
+def test_details_block_heading_symbol_created():
+    """Detail summaries must be findable via `token-goat symbol <summary>`."""
+    src = b"<details><summary>Findable Title</summary>body</details>\n"
+    symbols, _, _, _ = extract(src, "ds.md")
+    names = {s.name for s in symbols if s.kind == "heading"}
+    assert "Findable Title" in names
+
+
+def test_details_block_without_summary_uses_synthetic_name():
+    """`<details>` with no `<summary>` produces a `__details__` section."""
+    src = (
+        b"<details>\n"
+        b"No summary here.\n"
+        b"</details>\n"
+    )
+    _, _, _, sections = extract(src, "ds-nosum.md")
+    headings = {s.heading for s in sections}
+    assert "__details__" in headings
+
+
+def test_details_block_strips_inline_markup_from_summary():
+    """Inline HTML inside `<summary>` (e.g. <b>, <i>) must be stripped from the name."""
+    src = (
+        b"<details>\n"
+        b"<summary><b>Bold</b> and <i>italic</i> text</summary>\n"
+        b"body\n"
+        b"</details>\n"
+    )
+    _, _, _, sections = extract(src, "ds-markup.md")
+    headings = {s.heading for s in sections}
+    # The visible label is "Bold and italic text", not "<b>Bold</b>…".
+    assert "Bold and italic text" in headings
+
+
+def test_nested_details_emits_outer_only():
+    """A nested `<details>` inside another must not corrupt the outer's end_line.
+
+    Only the outer block is surfaced; otherwise the inner block's range would
+    overlap with the outer's and confuse section-end-line consumers.
+    """
+    src = (
+        b"<details>\n"
+        b"<summary>Outer</summary>\n"
+        b"\n"
+        b"<details>\n"
+        b"<summary>Inner</summary>\n"
+        b"inner body\n"
+        b"</details>\n"
+        b"\n"
+        b"</details>\n"
+    )
+    _, _, _, sections = extract(src, "ds-nested.md")
+    headings = {s.heading for s in sections}
+    assert "Outer" in headings
+    # Inner is intentionally not emitted as a separate section.
+    assert "Inner" not in headings
+    outer = next(s for s in sections if s.heading == "Outer")
+    # Outer must extend through the *outer* closing </details> on line 9.
+    assert outer.end_line is not None and outer.end_line >= 9
+
+
+def test_details_inside_fenced_code_block_skipped():
+    """A literal `<details>` example inside a ``` fence is documentation, not a section."""
+    src = (
+        b"# Real\n"
+        b"\n"
+        b"```html\n"
+        b"<details>\n"
+        b"<summary>Fake</summary>\n"
+        b"example body\n"
+        b"</details>\n"
+        b"```\n"
+        b"\n"
+        b"## After\n"
+    )
+    _, _, _, sections = extract(src, "ds-fenced.md")
+    headings = {s.heading for s in sections}
+    assert "Fake" not in headings
+    assert "Real" in headings
+    assert "After" in headings
+
+
+def test_details_open_tag_with_attributes_handled():
+    """`<details open class="foo">` must still be recognized as an opener."""
+    src = (
+        b'<details open class="foo">\n'
+        b"<summary>Attr Title</summary>\n"
+        b"body\n"
+        b"</details>\n"
+    )
+    _, _, _, sections = extract(src, "ds-attr.md")
+    headings = {s.heading for s in sections}
+    assert "Attr Title" in headings
+
+
+def test_details_summary_with_attributes_handled():
+    """`<summary class="foo">Title</summary>` must be parsed."""
+    src = (
+        b"<details>\n"
+        b'<summary class="bold">Has Attrs</summary>\n'
+        b"body\n"
+        b"</details>\n"
+    )
+    _, _, _, sections = extract(src, "ds-sattr.md")
+    headings = {s.heading for s in sections}
+    assert "Has Attrs" in headings
+
+
+def test_details_inline_one_liner():
+    """One-line `<details><summary>X</summary>body</details>` must be recognized."""
+    src = b"<details><summary>Inline</summary>body</details>\n"
+    _, _, _, sections = extract(src, "ds-inline.md")
+    headings = {s.heading for s in sections}
+    assert "Inline" in headings
+    inline = next(s for s in sections if s.heading == "Inline")
+    # Single-line block: start and end line are both 1.
+    assert inline.line == 1
+    assert inline.end_line == 1
+
+
+def test_details_does_not_break_surrounding_headings():
+    """ATX headings before/after a `<details>` block must still parse normally."""
+    src = (
+        b"# Before\n"
+        b"\n"
+        b"<details>\n"
+        b"<summary>Mid</summary>\n"
+        b"body\n"
+        b"</details>\n"
+        b"\n"
+        b"## After\n"
+        b"\n"
+        b"after body\n"
+    )
+    _, _, _, sections = extract(src, "ds-sandwich.md")
+    headings = {s.heading for s in sections}
+    assert "Before" in headings
+    assert "After" in headings
+    assert "Mid" in headings
+
+
+def test_stray_close_details_is_ignored():
+    """A bare `</details>` with no opener must not crash and not produce a section."""
+    src = (
+        b"# Real\n"
+        b"</details>\n"
+        b"\n"
+        b"text\n"
+    )
+    # Must not raise; result should contain Real and no synthetic details section.
+    _, _, _, sections = extract(src, "ds-stray.md")
+    headings = {s.heading for s in sections}
+    assert "Real" in headings
+    assert "__details__" not in headings
+
+
+def test_details_with_empty_summary_falls_back_to_synthetic():
+    """`<summary></summary>` (or whitespace only) falls back to `__details__`."""
+    src = (
+        b"<details>\n"
+        b"<summary>   </summary>\n"
+        b"body\n"
+        b"</details>\n"
+    )
+    _, _, _, sections = extract(src, "ds-empty-sum.md")
+    headings = {s.heading for s in sections}
+    assert "__details__" in headings

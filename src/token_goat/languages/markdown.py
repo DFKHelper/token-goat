@@ -52,6 +52,36 @@ _FENCE_RE = re.compile(r"^ {0,3}(```|~~~)")
 # the front-matter without dragging in the rest of the document.
 FRONTMATTER_HEADING: str = "__frontmatter__"
 
+# GitHub-flavored Markdown <details><summary>…</summary>…</details> blocks are
+# user-visible collapsible sections.  We expose them as Sections so a caller
+# can target one by its summary text via `token-goat section path::Title`.
+# WHY level=99: <details> blocks aren't part of the ATX/Setext heading
+# hierarchy.  Treating them as level=99 keeps them out of the
+# parent/child end_line computation for real headings (no real heading is
+# level 99) while still letting them appear in section listings.
+#
+# WHY a permissive regex: the summary tag may carry attributes (e.g.
+# `<summary class="…">Title</summary>`), be on a separate line from the
+# `<details>` opener, or be omitted entirely.  We anchor on `<details`
+# (with optional attributes) and search ahead a small bounded window for
+# the optional `<summary>`.
+_DETAILS_OPEN_RE = re.compile(r"<details\b[^>]*>", re.IGNORECASE)
+_DETAILS_CLOSE_RE = re.compile(r"</details\s*>", re.IGNORECASE)
+_SUMMARY_RE = re.compile(
+    r"<summary\b[^>]*>(?P<text>.*?)</summary\s*>",
+    re.IGNORECASE | re.DOTALL,
+)
+
+# Fallback synthetic heading when a `<details>` block has no `<summary>`.
+# WHY a fixed sentinel rather than skipping: even an unsummarized collapsible
+# block is a discrete chunk of content that users may want to jump to via
+# `token-goat section path::__details__`.  Multiple unsummarized blocks each
+# get this same name; callers can disambiguate by line if needed.
+DETAILS_NO_SUMMARY: str = "__details__"
+
+# Level assigned to <details> sections — see comment block above.
+DETAILS_LEVEL: int = 99
+
 
 def _compute_fenced_line_set(lines: list[str]) -> frozenset[int]:
     """Return the set of 1-based line numbers that fall inside a fenced code block.
@@ -171,6 +201,101 @@ def _find_setext_headings(
         if not text:
             continue
         results.append((text_lineno, level, text))
+    return results
+
+
+def _strip_inline_markup(text: str) -> str:
+    """Remove inline HTML tags / extra whitespace from a `<summary>` body.
+
+    A summary like ``<summary><b>Click <i>me</i></b></summary>`` should be
+    indexed as ``Click me`` — the user thinks of the visible label, not the
+    surrounding presentational markup.  WHY a regex strip rather than a real
+    HTML parser: this runs per-file during indexing on every commit; pulling
+    in BeautifulSoup or html.parser for one tag class is disproportionate.
+    The contained markup is by GFM convention limited to phrasing-level
+    tags (``<b>``, ``<i>``, ``<code>``, ``<a>``).
+    """
+    no_tags = re.sub(r"<[^>]+>", "", text)
+    # Collapse whitespace runs and strip — summaries often span multiple lines.
+    return re.sub(r"\s+", " ", no_tags).strip()
+
+
+def _find_details_blocks(
+    text: str,
+    fenced_lines: frozenset[int],
+) -> list[tuple[int, int, str]]:
+    """Scan *text* for `<details>…</details>` blocks.
+
+    Returns a list of ``(start_line, end_line, summary_text)`` tuples for each
+    well-formed `<details>` block found outside fenced code regions.
+
+    Properly handles nested `<details>` by depth-tracking: an inner block
+    closes on its own ``</details>``, leaving the outer block open until its
+    own closer.
+
+    The first ``<summary>` … `</summary>`` *inside the block* is used as the
+    section name.  If the block has no `<summary>`, the synthetic name
+    :data:`DETAILS_NO_SUMMARY` is used.
+
+    WHY skip blocks inside fenced code: a literal `<details>` inside a
+    ``` ``` ``` block is documentation about the tag, not a real collapsible
+    section to index.  We use the same fenced-line set used for ATX/Setext
+    heading skips so the policy is consistent.
+    """
+    results: list[tuple[int, int, str]] = []
+    # Find all open / close positions in document order.
+    opens = [(m.start(), m.end()) for m in _DETAILS_OPEN_RE.finditer(text)]
+    closes = [(m.start(), m.end()) for m in _DETAILS_CLOSE_RE.finditer(text)]
+    if not opens or not closes:
+        return results
+
+    # Merge into a single sorted timeline of (offset, kind, end_offset).
+    # kind: 0 = open, 1 = close.  Stable sort by offset; opens come first if
+    # they share an offset (impossible for distinct tags, but defensive).
+    events: list[tuple[int, int, int]] = []
+    for s, e in opens:
+        events.append((s, 0, e))
+    for s, e in closes:
+        events.append((s, 1, e))
+    events.sort(key=lambda ev: (ev[0], ev[1]))
+
+    # Stack of currently-open block start offsets.
+    open_stack: list[int] = []
+    for offset, kind, end in events:
+        line = text[:offset].count("\n") + 1
+        # Skip events inside fenced code blocks — those are literal example
+        # tags, not document structure.
+        if line in fenced_lines:
+            continue
+        if kind == 0:  # open
+            open_stack.append(offset)
+        else:  # close
+            if not open_stack:
+                # Stray </details> with no matching opener; ignore.
+                continue
+            block_start = open_stack.pop()
+            # Only emit the *outermost* block.  WHY: a nested layout like
+            # ``<details><summary>A</summary><details><summary>B</summary>…``
+            # otherwise emits both A and B as siblings, but B's content range
+            # falls inside A's, which corrupts end_line for A.  We surface
+            # the outer-most details block and let the user drill in via a
+            # narrower query if needed.  This matches user mental-model of
+            # collapsible groups: they expand the outer, then the inner.
+            if open_stack:
+                continue
+            block_end_offset = end
+            start_line = text[:block_start].count("\n") + 1
+            end_line = text[:block_end_offset].count("\n") + 1
+            # Look for the first <summary>…</summary> *inside* this block.
+            inner = text[block_start:block_end_offset]
+            sm = _SUMMARY_RE.search(inner)
+            if sm:
+                summary = _strip_inline_markup(sm.group("text"))
+                if not summary:
+                    summary = DETAILS_NO_SUMMARY
+            else:
+                summary = DETAILS_NO_SUMMARY
+            results.append((start_line, end_line, summary))
     return results
 
 
@@ -299,6 +424,29 @@ def extract(source: bytes, rel_path: str) -> tuple[list[Symbol], list[Ref], list
             sections.append(Section(heading=s_text, level=s_level, line=s_line))
             symbols.append(Symbol(name=s_text, kind="heading", line=s_line))
 
+        # --- Extract <details><summary>…</summary>…</details> blocks ---
+        # WHY before the body end_line pass: detail-block sections carry their
+        # own pre-computed end_line and must be excluded from the standard
+        # heading-hierarchy boundary algorithm (level=99 is a sentinel, not a
+        # real heading level).  We collect them separately and stitch them
+        # back in after the body pass.
+        details_sections: list[Section] = []
+        for d_start, d_end, d_summary in _find_details_blocks(text, fenced_lines):
+            details_sections.append(
+                Section(
+                    heading=d_summary,
+                    level=DETAILS_LEVEL,
+                    line=d_start,
+                    end_line=d_end,
+                )
+            )
+            # Also surface the summary as a heading-like symbol so
+            # `token-goat symbol <summary>` finds it.  WHY kind="heading":
+            # consumers already filter symbols by kind="heading" for section
+            # navigation; a new kind would require client changes.
+            if d_summary != DETAILS_NO_SUMMARY:
+                symbols.append(Symbol(name=d_summary, kind="heading", line=d_start))
+
         # Sort sections by line so _compute_section_end_lines walks them in
         # document order.  Without this, an interleaved setext+atx file would
         # produce wrong end_lines because the algorithm assumes sorted input.
@@ -314,7 +462,10 @@ def extract(source: bytes, rel_path: str) -> tuple[list[Symbol], list[Ref], list
         # Trim trailing blank lines from each body section's end_line so
         # extracted snippets don't carry padding tokens before the next heading.
         _trim_trailing_blanks(body_sections, lines)
-        sections = sorted(fm_sections + body_sections, key=lambda sec: sec.line)
+        sections = sorted(
+            fm_sections + body_sections + details_sections,
+            key=lambda sec: sec.line,
+        )
 
         return symbols, [], [], sections
     except (re.error, UnicodeDecodeError, AttributeError, IndexError, OverflowError) as exc:
