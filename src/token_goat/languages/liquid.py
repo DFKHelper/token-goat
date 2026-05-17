@@ -89,7 +89,7 @@ def extract(source: bytes, rel_path: str) -> tuple[list[Symbol], list[Ref], list
                         Symbol(name=name, kind="liquid_schema", line=line, end_line=end_line)
                     )
             except json.JSONDecodeError as exc:
-                _LOG.debug("invalid JSON in {% schema %} block in %s: %s", rel_path, exc)
+                _LOG.debug("invalid JSON in schema block in %s: %s", rel_path, exc)
 
         # --- Section-file symbol (if file is in sections/ directory) ---
         rel_posix = rel_path.replace("\\", "/")
