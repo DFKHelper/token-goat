@@ -20,6 +20,7 @@ __all__ = [
 ]
 
 import hashlib
+import heapq
 import logging
 import os
 import time
@@ -647,7 +648,7 @@ def index_project(
                 _LOG.info(
                     "pruned %d deleted file(s) from index: %s",
                     len(stale),
-                    ", ".join(sorted(stale)[:5]),
+                    ", ".join(heapq.nsmallest(5, stale)),
                 )
 
             # Update project meta
