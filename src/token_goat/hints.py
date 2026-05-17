@@ -168,7 +168,7 @@ def build_read_hint(
     # 1. Check session cache first.
     entry = session.get_file_entry(session_id, file_path, cache=cache)
     if entry is not None:
-        hint = _hint_from_cache(entry, req_start, req_end, file_path)
+        hint = _hint_from_cache(entry, req_start, req_end, file_path, fname=fname)
         if hint is not None:
             _LOG.debug(
                 "build_read_hint: cache hint for %s lines %d-%d (tokens_saved=%d)",
@@ -197,9 +197,14 @@ def _hint_from_cache(
     req_start: int,
     req_end: int,
     file_path: str,
+    *,
+    fname: str | None = None,
 ) -> ReadHint | None:
     """Build hint when the file was already accessed this session."""
-    fname = Path(file_path).name
+    # Accept pre-computed fname from build_read_hint to avoid a redundant
+    # Path allocation on the hot pre-read path (one Path per hook call saved).
+    if fname is None:
+        fname = Path(file_path).name
 
     # Case: file accessed only via token-goat read <file>::<symbol>.
     # A suggestion, not a realized saving → tokens_saved=0.

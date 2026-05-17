@@ -571,6 +571,9 @@ def index_project(
     n_skipped_unchanged = 0
     n_errors = 0
     languages: set[str] = set()
+    # Collect rel_paths seen in this walk so the end-of-loop stale-file prune
+    # can reuse them without a second O(n) relative_to() pass over all files.
+    on_disk: set[str] = set()
     t0 = time.time()
 
     with db.project_writer_lock(project.hash, timeout_sec=30.0):
@@ -588,6 +591,7 @@ def index_project(
 
             for i, fp in enumerate(files):
                 rel = fp.relative_to(project.root).as_posix()
+                on_disk.add(rel)
 
                 # Two-layer incremental check:
                 # 1) mtime fast-path: if the OS-reported mtime matches the cached value we
@@ -630,7 +634,8 @@ def index_project(
             # Without this, deleted/renamed files linger forever — token-goat
             # symbol/read/map would surface dead paths. FK ON DELETE CASCADE
             # cleans up symbols/refs/sections/chunks for the removed file.
-            on_disk = {fp.relative_to(project.root).as_posix() for fp in files}
+            # on_disk was populated incrementally during the main loop above,
+            # so no second O(n) relative_to() pass is needed here.
             # In incremental mode existing_sha already holds every rel_path in
             # the DB (loaded earlier for the mtime/SHA skip check), so we reuse
             # that dict instead of issuing a second SELECT against the same DB.

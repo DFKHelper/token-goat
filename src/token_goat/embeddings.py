@@ -363,14 +363,22 @@ def extract_chunks_for_file(
                 chunks.append(Chunk(rel_path, line_no, window_end, chunk_text, "window"))
             line_no = window_end + 1
 
-    _LOG.debug(
-        "extract_chunks_for_file: %s -> %d chunks (sym=%d sec=%d win=%d)",
-        rel_path,
-        len(chunks),
-        sum(1 for c in chunks if c.kind not in ("section", "window")),
-        sum(1 for c in chunks if c.kind == "section"),
-        sum(1 for c in chunks if c.kind == "window"),
-    )
+    if _LOG.isEnabledFor(logging.DEBUG):
+        # Single O(n) pass instead of three separate generator scans.
+        # The isEnabledFor guard avoids the loop entirely when DEBUG is off,
+        # which is the common case in production (INFO level).
+        n_sym = n_sec = n_win = 0
+        for c in chunks:
+            if c.kind == "section":
+                n_sec += 1
+            elif c.kind == "window":
+                n_win += 1
+            else:
+                n_sym += 1
+        _LOG.debug(
+            "extract_chunks_for_file: %s -> %d chunks (sym=%d sec=%d win=%d)",
+            rel_path, len(chunks), n_sym, n_sec, n_win,
+        )
     return chunks
 
 
@@ -440,14 +448,16 @@ def index_project_embeddings(
         file_rows = conn.execute("SELECT rel_path FROM files").fetchall()
         n_files = len(file_rows)
 
-        # Build full list of chunks that need (re)embedding
+        # Build full list of chunks that need (re)embedding.
+        # Bind sha256 locally to avoid a module-level attribute lookup + dict
+        # lookup through the hashlib namespace on every iteration — measurable
+        # at scale when processing thousands of chunks per project.
+        _sha256 = hashlib.sha256
         new_chunks: list[tuple[Chunk, str]] = []  # (chunk, sha256)
         for fi_row in file_rows:
             rel = fi_row["rel_path"]
             for ch in extract_chunks_for_file(project, conn, rel):
-                sha = hashlib.sha256(
-                    ch.text.encode("utf-8", errors="replace")
-                ).hexdigest()
+                sha = _sha256(ch.text.encode("utf-8", errors="replace")).hexdigest()
                 key = (ch.file_rel, ch.start_line, ch.end_line)
                 if existing.get(key) == sha:
                     n_chunks_skipped += 1
