@@ -256,7 +256,13 @@ def post_read(payload: HookPayload) -> HookResponse:
     elif tool_name == "Grep":
         pattern = tool_input.get("pattern")
         path = tool_input.get("path")
-        result_count = payload.get("result_count")
+        raw_result_count = payload.get("result_count")
+        # Validate result_count: it arrives as raw Any from the harness payload.
+        # Accept only plain ints (not bool subclass); clamp to [0, _MAX_RESULT_COUNT]
+        # so a crafted payload cannot store an absurd integer in the session JSON.
+        result_count: int | None = None
+        if isinstance(raw_result_count, int) and not isinstance(raw_result_count, bool):
+            result_count = max(0, min(raw_result_count, session._MAX_RESULT_COUNT))
         if pattern:
             session.mark_grep(session_id, pattern, path, result_count, cache=cache)
             _LOG.debug(
