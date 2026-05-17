@@ -5,6 +5,7 @@ import logging
 import sqlite3
 import time
 from collections.abc import Sequence
+from itertools import islice
 from pathlib import Path
 from typing import Final, TypedDict
 
@@ -165,8 +166,11 @@ def _resolve_cache_put(project_hash: str, file_part: str, rel_path: str | None) 
         _LOG.debug("resolve_cache update: project=%s file=%r -> %r", project_hash[:8], file_part, rel_path)
         return
     if len(_RESOLVE_CACHE) >= _RESOLVE_CACHE_MAX:
-        # Evict oldest entries (dict preserves insertion order in Python 3.7+)
-        evict_keys = list(_RESOLVE_CACHE.keys())[:_RESOLVE_CACHE_EVICT]
+        # Evict oldest entries (dict preserves insertion order in Python 3.7+).
+        # islice over the keys view avoids materialising the full key list (512
+        # entries) just to slice the first 128.  list() is still needed because
+        # we cannot delete from a dict while iterating its keys view.
+        evict_keys = list(islice(_RESOLVE_CACHE.keys(), _RESOLVE_CACHE_EVICT))
         for k in evict_keys:
             del _RESOLVE_CACHE[k]
         _LOG.debug("resolve_cache evicted %d entries (project=%s)", _RESOLVE_CACHE_EVICT, project_hash[:8])
@@ -427,7 +431,10 @@ def find_in_all_projects(file_part: str) -> tuple[Project, str] | None:
     all_candidates = [f"{proj.hash[:8]}:{rel}" for proj, rel in matches]
     all_candidates.extend(cross_project_candidates)
     if len(all_candidates) > 1:
-        all_candidates = sorted(dict.fromkeys(all_candidates))
+        # sorted(set(...)) deduplicates without allocating a temporary dict —
+        # dict.fromkeys preserves insertion order, but sorted() discards it anyway,
+        # so a set is the right dedup structure here.
+        all_candidates = sorted(set(all_candidates))
         _LOG.debug(
             "ambiguous cross-project file match for %s: %s",
             file_part,

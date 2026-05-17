@@ -166,12 +166,17 @@ def _package_fingerprint() -> str | None:
     """
     try:
         pkg_dir = Path(__file__).parent
-        entries = [
-            f"{py.relative_to(pkg_dir).as_posix()}:{st.st_size}:{st.st_mtime_ns}"
-            for py in sorted(pkg_dir.rglob("*.py"))
-            for st in (py.stat(),)
-        ]
-        return hashlib.sha1("\n".join(entries).encode("utf-8")).hexdigest()
+        # Generator expression fed directly into "\n".join — avoids building an
+        # intermediate list of N formatted strings before hashing.  The nested
+        # `for st in (py.stat(),)` captures the stat() result exactly once per
+        # file, the same technique used in the original list comprehension.
+        return hashlib.sha1(
+            "\n".join(
+                f"{py.relative_to(pkg_dir).as_posix()}:{st.st_size}:{st.st_mtime_ns}"
+                for py in sorted(pkg_dir.rglob("*.py"))
+                for st in (py.stat(),)
+            ).encode("utf-8")
+        ).hexdigest()
     except Exception as e:  # noqa: BLE001
         _LOG.debug("package fingerprint unavailable (falling back to version-string check): %s", e)
         return None
