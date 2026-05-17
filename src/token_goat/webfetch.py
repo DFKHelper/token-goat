@@ -365,6 +365,23 @@ def fetch_url(
             try:
                 with httpx.Client(timeout=timeout_sec, follow_redirects=True) as client:
                     r = client.get(url, headers=headers)
+                # Post-redirect SSRF check: the revalidation response may have
+                # followed redirects to a private/metadata endpoint.  An open
+                # redirect on a trusted origin could point back to 169.254.x or
+                # ::1 on a conditional GET just as easily as on a fresh fetch.
+                final_url = str(r.url)
+                if final_url != url:
+                    _LOG.info("web revalidation redirected: %s -> %s", url, final_url)
+                try:
+                    _validate_response_url(final_url)
+                except ValueError:
+                    _LOG.warning(
+                        "revalidation redirect blocked by SSRF guard (%s -> %s); "
+                        "using cached file",
+                        url,
+                        final_url,
+                    )
+                    return cached_path
                 if r.status_code == 304:
                     _LOG.info("web cache revalidated (304): %s", cached_path.name)
                     if shrink_if_image:

@@ -948,7 +948,9 @@ def _patch_md_block(md_path: Path, begin_marker: str, end_marker: str, content: 
     else:
         updated = block + "\n"
 
-    md_path.write_text(updated, encoding="utf-8")
+    # Atomic write: a crash mid-write must never leave a truncated CLAUDE.md or
+    # AGENTS.md behind.  Use the same temp-file + rename pattern as settings.json.
+    paths.atomic_write_text(md_path, updated)
     return str(md_path)
 
 
@@ -966,7 +968,8 @@ def _unpatch_md_block(md_path: Path, begin_marker: str, end_marker: str, not_fou
         re.DOTALL,
     )
     new = pattern.sub("\n", content).strip()
-    md_path.write_text(new + "\n" if new else "", encoding="utf-8")
+    # Atomic write: a crash mid-write must never leave a truncated markdown file behind.
+    paths.atomic_write_text(md_path, new + "\n" if new else "")
     return str(md_path)
 
 
@@ -1198,7 +1201,8 @@ def patch_codex_config(binary: str) -> str:
         existing_hooks[event] = kept + entries
     existing["hooks"] = existing_hooks
 
-    cfg_path.write_text(tomli_w.dumps(existing), encoding="utf-8")
+    # Atomic write: a crash mid-write must never leave a truncated config.toml behind.
+    paths.atomic_write_text(cfg_path, tomli_w.dumps(existing))
     return str(cfg_path)
 
 
@@ -1222,7 +1226,8 @@ def unpatch_codex_config() -> str:
             del hooks[event]
     existing["hooks"] = hooks
 
-    cfg_path.write_text(tomli_w.dumps(existing), encoding="utf-8")
+    # Atomic write: a crash mid-write must never leave a truncated config.toml behind.
+    paths.atomic_write_text(cfg_path, tomli_w.dumps(existing))
     return str(cfg_path)
 
 

@@ -629,6 +629,19 @@ def cleanup_stale(max_age_hours: float = 24.0) -> int:
     examined = 0
     for f in sessions_dir.glob("*.json"):
         examined += 1
+        # Validate that the filename matches the session-ID pattern before
+        # touching it.  The sessions directory is user-writable; a planted file
+        # with a crafted name (including symlinks) could otherwise be caught by
+        # the glob and unlinked.  We also skip symlinks explicitly: unlinking a
+        # symlink removes the link itself, not the target, which is safe, but
+        # there is no legitimate reason for a session cache entry to be a symlink.
+        stem = f.stem  # filename without .json suffix
+        if not _SESSION_ID_RE.match(stem):
+            _LOG.debug("cleanup_stale: skipping non-session-ID filename %r", f.name)
+            continue
+        if f.is_symlink():
+            _LOG.warning("cleanup_stale: skipping symlink in sessions dir: %s", f.name)
+            continue
         try:
             if f.stat().st_mtime < cutoff:
                 f.unlink()
