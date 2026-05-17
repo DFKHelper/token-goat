@@ -10,11 +10,11 @@ __all__ = [
     "event_count",
 ]
 
-import itertools
 import logging
-import operator
 import time
 from datetime import UTC, datetime
+from itertools import islice
+from operator import itemgetter
 from typing import TYPE_CHECKING
 
 from . import session as session_mod
@@ -169,7 +169,7 @@ def _render(cache: SessionCache, session_id: str, max_tokens: int) -> tuple[str,
     # Use a generator so we only materialise up to _MAX_SYMBOLS_FILES entries
     # instead of scanning every file entry when only the first few are needed.
     files_with_symbols = list(
-        itertools.islice((e for e in cache.files.values() if e.symbols_read), _MAX_SYMBOLS_FILES)
+        islice((e for e in cache.files.values() if e.symbols_read), _MAX_SYMBOLS_FILES)
     )
     # Most-frequently-read files, capped at _MAX_FILES_READ, for the "Key Files Read" section.
     top_files = sorted(cache.files.values(), key=lambda e: -e.read_count)[:_MAX_FILES_READ]
@@ -188,7 +188,7 @@ def _render(cache: SessionCache, session_id: str, max_tokens: int) -> tuple[str,
         # Sort by edit count descending so the most-touched files appear first.
         # itemgetter(1) selects the count from each (path, count) pair — faster
         # than a lambda at C speed and avoids per-call closure allocation.
-        _by_edit_count = operator.itemgetter(1)
+        _by_edit_count = itemgetter(1)
         for path, count in sorted(cache.edited_files.items(), key=_by_edit_count, reverse=True):
             suffix = f"  ×{count}" if count > 1 else ""
             sections.append(f"- {_short_path(path)}{suffix}")

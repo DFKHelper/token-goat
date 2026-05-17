@@ -13,8 +13,8 @@ Exports:
 from __future__ import annotations
 
 import os
-import re
 import sys
+from re import sub as re_sub
 
 # Requires a terminal with COLORTERM=truecolor (Windows Terminal, iTerm2,
 # Alacritty, kitty, WezTerm, and most modern terminal emulators).
@@ -39,7 +39,7 @@ def bg(r: int, g: int, b: int) -> str:
 
 def vlen(s: str) -> int:
     """Visible length of a string, stripping all ANSI escape sequences."""
-    return len(re.sub(r"\x1b\[[0-9;]*m", "", s))
+    return len(re_sub(r"\x1b\[[0-9;]*m", "", s))
 
 
 def pad_r(s: str, w: int) -> str:
