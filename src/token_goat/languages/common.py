@@ -7,6 +7,7 @@ __all__ = [
     "add_symbol_info",
     "build_line_index",
     "build_signature",
+    "extract_and_finalize_html_sections",
     "extract_html_headings",
     "extract_refs_from_source",
     "get_tlp",
@@ -500,6 +501,26 @@ def _compute_section_end_lines(sections: list[Section], lines: list[str]) -> Non
 
 # Shared HTML heading regex used by both html.py and liquid.py
 _H_TAG_RE = re.compile(r"<h([1-4])[^>]*>([^<]*)</h\1>", re.IGNORECASE | re.DOTALL)
+
+
+def extract_and_finalize_html_sections(
+    text: str,
+    sections: list[Section],
+    lines: list[str],
+) -> None:
+    """Extract HTML headings from *text* and assign end_line to each Section.
+
+    Combines the two calls that appear identically in ``html.py`` and
+    ``liquid.py``::
+
+        common.extract_html_headings(text, sections)
+        common._compute_section_end_lines(sections, lines)
+
+    Callers that need only the headings step (without end_line assignment) can
+    still call :func:`extract_html_headings` directly.
+    """
+    extract_html_headings(text, sections)
+    _compute_section_end_lines(sections, lines)
 
 
 def extract_html_headings(text: str, sections: list[Section]) -> None:

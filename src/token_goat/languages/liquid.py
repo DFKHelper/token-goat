@@ -96,11 +96,8 @@ def extract(source: bytes, rel_path: str) -> tuple[list[Symbol], list[Ref], list
             section_name = Path(rel_path).stem
             symbols.append(Symbol(name=section_name, kind="liquid_section_file", line=1))
 
-        # --- Extract HTML headings within Liquid ---
-        common.extract_html_headings(text, sections)
-
-        # Compute end_line for sections
-        common._compute_section_end_lines(sections, lines)
+        # --- Extract HTML headings within Liquid and compute end_line ---
+        common.extract_and_finalize_html_sections(text, sections, lines)
 
         return symbols, [], imports, sections
     except Exception as exc:  # noqa: BLE001
