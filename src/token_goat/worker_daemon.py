@@ -88,6 +88,11 @@ def _detect_upgrade() -> bool:
     captured at daemon boot.  Returns False when either snapshot is unavailable
     (fresh install with no prior boot record) so the daemon does not restart
     unnecessarily on the very first run.
+
+    Returning True signals the caller loop to break and set restart_for_upgrade;
+    the daemon exits cleanly and the autostart mechanism (registry key on Windows,
+    systemd unit on Linux) relaunches it so the new code loads without any
+    in-process restart attempt.
     """
     current_version = _worker._installed_version()
     current_fp = _worker._package_fingerprint()
