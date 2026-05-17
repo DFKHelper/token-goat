@@ -90,6 +90,24 @@ def _emit_json(data: object, *, indent: int | None = None) -> None:
     raise typer.Exit(0)
 
 
+def _emit_path_result(path: Path, json_output: bool) -> None:
+    """Echo a local file path result, either as JSON or plain text.
+
+    Both ``cmd_gdrive_fetch`` and ``cmd_fetch_image`` return a single path with an
+    optional size field — identical output shape — so they share this helper instead
+    of duplicating the three-line ``if json_output / else`` block.
+
+    Args:
+        path:        Local filesystem path to emit.
+        json_output: When True, emit ``{"path": "...", "size": N}`` as JSON.
+                     When False, emit the bare path string.
+    """
+    if json_output:
+        typer.echo(json.dumps({"path": str(path), "size": path.stat().st_size}))
+    else:
+        typer.echo(str(path))
+
+
 def _query_project(proj_hash: str, sql: str, params: tuple[object, ...]) -> list[sqlite3.Row]:
     """Run a SELECT against the project DB, exiting on DBError.
 
@@ -177,6 +195,26 @@ def symbol(
                 sig_part = f"\033[2m{sig_part}\033[0m"
             typer.echo(f"{project_prefix}{row['file']}:{row['line']}: {kind_name}{sig_part}")
 
+    def _emit_results(results: list[dict], not_found_extra: str | None = None) -> None:
+        """Emit symbol results as JSON or plain text; print a not-found message when empty.
+
+        Extracted to remove the identical ``if as_json / elif results / else`` block that
+        appeared in both the ``--all-projects`` and single-project branches of this command.
+
+        Args:
+            results:         List of symbol dicts to emit.
+            not_found_extra: When given, shown as a hint in the empty case (single-project
+                             branch passes the indexed-file hint here; global branch passes None).
+        """
+        if as_json:
+            typer.echo(json.dumps(results))
+        elif results:
+            _fmt_plain(results)
+        elif not_found_extra:
+            typer.echo(not_found_extra)
+        else:
+            typer.echo(f"No matches for {name!r}")
+
     if all_projects:
         try:
             with _db.open_global() as gconn:
@@ -201,12 +239,7 @@ def symbol(
             }
             for r in rows_raw
         ]
-        if as_json:
-            typer.echo(json.dumps(results))
-        elif results:
-            _fmt_plain(results)
-        else:
-            typer.echo(f"No matches for {name!r}")
+        _emit_results(results)
         return
 
     proj = _require_project()
@@ -228,18 +261,10 @@ def symbol(
         for r in rows_raw
     ]
 
-    if as_json:
-        typer.echo(json.dumps(results))
-    elif results:
-        _fmt_plain(results)
-    else:
-        from . import read_commands  # noqa: PLC0415
+    from . import read_commands  # noqa: PLC0415
 
-        hint = read_commands._not_indexed_hint(proj.hash)
-        if hint:
-            typer.echo(hint)
-        else:
-            typer.echo(f"No matches for {name!r}")
+    hint = read_commands._not_indexed_hint(proj.hash)
+    _emit_results(results, not_found_extra=hint or f"No matches for {name!r}")
 
 
 @app.command(rich_help_panel="Core")
@@ -475,10 +500,7 @@ def cmd_gdrive_fetch(
     except Exception as e:  # noqa: BLE001
         _warn(f"Drive fetch failed: {e}")
         raise typer.Exit(0) from None
-    if json_output:
-        typer.echo(json.dumps({"path": str(path), "size": path.stat().st_size}))
-    else:
-        typer.echo(str(path))
+    _emit_path_result(path, json_output)
 
 
 @app.command("gdrive-auth", hidden=True)
@@ -542,10 +564,7 @@ def cmd_fetch_image(
     except (ValueError, RuntimeError, OSError) as e:
         _warn(f"WebFetch failed: {e}")
         raise typer.Exit(0) from None  # fail-soft
-    if json_output:
-        typer.echo(json.dumps({"path": str(path), "size": path.stat().st_size}))
-    else:
-        typer.echo(str(path))
+    _emit_path_result(path, json_output)
 
 
 @app.command(hidden=True)
