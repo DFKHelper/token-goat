@@ -73,7 +73,7 @@ def _coerce_line(val: object, default: int) -> int:
     helper centralises the ``int(x) if x is not None else default`` idiom used
     when extracting line numbers from query results.
     """
-    return int(val) if val is not None else default  # type: ignore[arg-type]
+    return int(val) if val is not None else default  # type: ignore[call-overload]
 
 
 class ReadLookupError(ValueError):

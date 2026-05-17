@@ -32,7 +32,7 @@ import sys
 import threading
 import time
 from dataclasses import asdict, dataclass, field
-from typing import Any, TypedDict
+from typing import Any, TypedDict, cast
 
 from . import paths
 from .hooks_common import sanitize_log_str
@@ -112,8 +112,8 @@ class SessionCache:
             session_id=self.session_id,
             started_ts=self.started_ts,
             last_activity_ts=self.last_activity_ts,
-            files={k: asdict(v) for k, v in self.files.items()},
-            greps=[asdict(g) for g in self.greps],
+            files={k: cast("_FileEntryDict", asdict(v)) for k, v in self.files.items()},
+            greps=[cast("_GrepEntryDict", asdict(g)) for g in self.greps],
             edited_files=self.edited_files,
         )
 
@@ -223,6 +223,25 @@ class SessionCache:
         )
 
 
+class _FileEntryDict(TypedDict):
+    """Wire format of a single FileEntry as it appears in the session JSON."""
+
+    rel_or_abs: str
+    last_read_ts: float
+    read_count: int
+    line_ranges: list[list[int]]
+    symbols_read: list[str]
+
+
+class _GrepEntryDict(TypedDict, total=False):
+    """Wire format of a single GrepEntry as it appears in the session JSON."""
+
+    pattern: str
+    path: str | None
+    ts: float
+    result_count: int | None
+
+
 class _SessionDict(TypedDict):
     """Wire format of a serialized SessionCache (written to / read from JSON on disk)."""
 
@@ -231,8 +250,8 @@ class _SessionDict(TypedDict):
     session_id: str
     started_ts: float
     last_activity_ts: float
-    files: dict[str, Any]
-    greps: list[Any]
+    files: dict[str, _FileEntryDict]
+    greps: list[_GrepEntryDict]
     edited_files: dict[str, int]
 
 
