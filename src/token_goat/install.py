@@ -1565,12 +1565,15 @@ def install_all(
 
     settings_ok, settings_detail = patch_settings_json()
     result["settings.json"] = _ok_fail(settings_ok, settings_detail)
+    _LOG.info("install step: settings.json — %s", _ok_fail(settings_ok, settings_detail))
 
     md_out = patch_claude_md()
     result["CLAUDE.md"] = _ok_fail(True, md_out)
+    _LOG.info("install step: CLAUDE.md — %s", _ok_fail(True, md_out))
 
     skill_path = write_skill()
     result["skill"] = _ok_fail(True, skill_path)
+    _LOG.info("install step: skill — %s", _ok_fail(True, skill_path))
 
     _install_platform_autostart(result)
 
@@ -1579,9 +1582,12 @@ def install_all(
         from . import worker  # noqa: PLC0415
 
         pid = worker.ensure_running()
-        result["worker"] = f"spawned, pid={pid}" if pid else "spawn failed"
+        worker_status = f"spawned, pid={pid}" if pid else "spawn failed"
+        result["worker"] = worker_status
+        _LOG.info("install step: worker — %s", worker_status)
     except Exception as e:  # noqa: BLE001
         result["worker"] = f"FAIL — {e}"
+        _LOG.warning("install step: worker — FAIL: %s", e)
 
     removed_launchers = _remove_legacy_launchers()
     result["legacy launchers"] = (

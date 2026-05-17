@@ -330,6 +330,12 @@ def _build_graph(
             if definition_file != referencing_file and definition_file in files:
                 graph.add_edge(referencing_file, definition_file)
 
+    _LOG.debug(
+        "_build_graph: nodes=%d edges=%d refs_processed=%d",
+        graph.number_of_nodes(),
+        graph.number_of_edges(),
+        len(ref_rows),
+    )
     return graph
 
 
