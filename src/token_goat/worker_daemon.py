@@ -1,4 +1,18 @@
-"""Worker daemon runtime and maintenance helpers."""
+"""Worker daemon runtime and maintenance helpers.
+
+The worker runs as a *separate process* rather than a background thread in the
+hook process for two reasons:
+
+1. **Hook latency** — every tool call (Read, Write, Bash, …) spawns a fresh
+   hook process.  A heavy background thread inside that process would add
+   startup cost to every hook invocation.  A long-lived separate process pays
+   the startup cost once and then idles between dirty-queue drains.
+
+2. **Lifetime independence** — hook processes are short-lived (one per tool
+   call).  Dirty-queue processing, periodic reindexing, and maintenance tasks
+   can outlast any individual hook.  A separate daemon process survives hook
+   process exits without needing to transfer work across process boundaries.
+"""
 from __future__ import annotations
 
 import contextlib
