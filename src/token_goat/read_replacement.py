@@ -669,6 +669,17 @@ def read_symbol(
     # Pre-bind _KIND_PRIORITY.get to avoid repeated global + attribute lookup in min().
     _kp_get = _KIND_PRIORITY.get
     chosen = min(rows, key=lambda r: (_kp_get(r["kind"], 9), r["line"]))
+    if len(rows) > 1:
+        _LOG.debug(
+            "read_symbol: %d candidates for %r; chose kind=%r line=%d (rejected: %s)",
+            len(rows),
+            symbol,
+            chosen["kind"],
+            chosen["line"],
+            ", ".join(
+                f"{r['kind']}@{r['line']}" for r in rows if r is not chosen
+            ),
+        )
 
     read_result = _read_file_lines(project.root / rel_path)
     if read_result is None:
