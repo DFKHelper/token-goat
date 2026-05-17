@@ -77,3 +77,25 @@ def test_social_render_import():
     assert "icon" in targets
     render_imp = next(i for i in imports if i.target == "icon")
     assert render_imp.kind == "liquid_render"
+
+
+def test_liquid_h5_h6_headings_extracted():
+    """Liquid templates with `<h5>`/`<h6>` must also yield Section entries."""
+    src = (
+        b"{% comment %}intro{% endcomment %}\n"
+        b"<h5>Deep Liquid 5</h5>\n"
+        b"<h6>Deepest Liquid 6</h6>\n"
+    )
+    _, _, _, sections = extract(src, "sections/deep.liquid")
+    headings = {s.heading for s in sections}
+    assert "Deep Liquid 5" in headings
+    assert "Deepest Liquid 6" in headings
+
+
+def test_liquid_heading_with_anchor_id():
+    """Anchor-id-aware extraction works in Liquid templates too."""
+    src = b'<h2 id="install-section">Install Section</h2>\n'
+    _, _, _, sections = extract(src, "sections/anchor.liquid")
+    headings = {s.heading for s in sections}
+    assert "Install Section" in headings
+    assert "install-section" in headings

@@ -46,8 +46,11 @@ def extract(source: bytes, rel_path: str) -> tuple[list[Symbol], list[Ref], list
       - ``html_script`` — ``src`` values from ``<script>`` tags
 
     Sections:
-      - ``<h1>``–``<h4>`` headings become :class:`Section` entries with computed
+      - ``<h1>``–``<h6>`` headings become :class:`Section` entries with computed
         ``end_line`` (each heading closes at the next heading of equal or lesser depth).
+      - When a heading has an ``id="..."`` attribute, an additional anchor-keyed
+        :class:`Section` covering the same span is emitted so the heading can be
+        looked up by either text or anchor id.
 
     The noise filter (``_is_noise``) suppresses generic ids/classes like
     ``container``, ``wrapper``, ``row``, ``col`` that appear in virtually every

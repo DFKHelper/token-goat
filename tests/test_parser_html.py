@@ -83,3 +83,58 @@ def test_noise_filter_skips_common_ids(html_extracted):
     # Common classes like "container", "main" should be filtered
     assert "container" not in names
     assert "main" not in names
+
+
+# ---------------------------------------------------------------------------
+# H1-H6 coverage and anchor-id-aware heading sections
+# ---------------------------------------------------------------------------
+
+
+def test_h5_and_h6_headings_extracted():
+    """`<h5>` and `<h6>` were dropped under the prior `[1-4]` cap."""
+    src = (
+        b"<html><body>\n"
+        b"<h5>Deep Heading 5</h5>\n"
+        b"<h6>Deepest Heading 6</h6>\n"
+        b"</body></html>\n"
+    )
+    _, _, _, sections = extract(src, "deep.html")
+    headings = {s.heading for s in sections}
+    assert "Deep Heading 5" in headings
+    assert "Deepest Heading 6" in headings
+    h5 = next(s for s in sections if s.heading == "Deep Heading 5")
+    h6 = next(s for s in sections if s.heading == "Deepest Heading 6")
+    assert h5.level == 5
+    assert h6.level == 6
+
+
+def test_heading_with_anchor_id_extracted_under_both_keys():
+    """`<h2 id="install">Install</h2>` is reachable by text *and* by anchor id."""
+    src = (
+        b"<html><body>\n"
+        b'<h2 id="install">Install</h2>\n'
+        b"<p>Run pip.</p>\n"
+        b"</body></html>\n"
+    )
+    _, _, _, sections = extract(src, "anchor.html")
+    headings = {s.heading for s in sections}
+    assert "Install" in headings
+    assert "install" in headings
+
+
+def test_heading_with_inline_tags_strips_them():
+    """`<h2><a href="...">Title</a></h2>` must yield heading text "Title"."""
+    src = (
+        b"<html><body>\n"
+        b'<h2><a href="#x">My Title</a></h2>\n'
+        b"</body></html>\n"
+    )
+    _, _, _, sections = extract(src, "inner.html")
+    assert any(s.heading == "My Title" for s in sections)
+
+
+def test_heading_spanning_multiple_lines_collapsed():
+    """A heading whose inner text spans multiple lines must be a single space-joined token."""
+    src = b"<html><body>\n<h2>\n  Wrapped\n  Title\n</h2>\n</body></html>\n"
+    _, _, _, sections = extract(src, "wrap.html")
+    assert any(s.heading == "Wrapped Title" for s in sections)

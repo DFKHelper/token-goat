@@ -599,8 +599,29 @@ def _compute_section_end_lines(sections: list[Section], lines: list[str]) -> Non
         sec.end_line = end_line
 
 
-# Shared HTML heading regex used by both html.py and liquid.py
-_H_TAG_RE = re.compile(r"<h([1-4])[^>]*>([^<]*)</h\1>", re.IGNORECASE | re.DOTALL)
+# Shared HTML heading regex used by both html.py and liquid.py.
+#
+# WHY [1-6] (not [1-4]): HTML headings legally span h1-h6.  Prior versions
+# capped at h4 which silently dropped h5/h6 from doc-style HTML (e.g. deeply
+# nested API references and TOCs).  WHY DOTALL: heading content may legitimately
+# span lines (`<h2>\n  Long Heading\n</h2>`).  WHY capture the full attribute
+# string: callers (see :func:`extract_html_headings`) may want the heading's
+# `id` for anchor-aware lookup; we expose the whole opening-tag attribute
+# blob and let the caller pull `id` out with a separate regex.
+_H_TAG_RE = re.compile(r"<h([1-6])([^>]*)>(.*?)</h\1>", re.IGNORECASE | re.DOTALL)
+
+# id="..."` attribute inside an HTML opening tag, used to extract heading
+# anchor ids so a caller can resolve `token-goat section path::foo` by heading
+# id in addition to heading text.
+_HEADING_ID_RE = re.compile(r"""\bid\s*=\s*["']([^"']+)["']""", re.IGNORECASE)
+
+# Strip inline HTML tags from heading inner text so `<h2><a>Title</a></h2>`
+# yields "Title" rather than "<a>Title</a>".  WHY non-greedy: nested tags
+# (e.g. `<h2><span><b>X</b></span></h2>`) must be removed one tag at a time.
+_INLINE_TAG_RE = re.compile(r"<[^>]+>")
+# Collapse runs of whitespace (including newlines from DOTALL captures) to a
+# single space so headings rendered across multiple lines compare cleanly.
+_WS_RUN_RE = re.compile(r"\s+")
 
 
 def extract_and_finalize_html_sections(
@@ -626,19 +647,45 @@ def extract_and_finalize_html_sections(
 def extract_html_headings(text: str, sections: list[Section]) -> None:
     """Append HTML heading Sections parsed from *text* into *sections*.
 
-    Handles ``<h1>``–``<h4>`` tags.  Caller is responsible for calling
-    ``_compute_section_end_lines`` afterwards.  Extracted to eliminate the
-    identical loop duplicated in ``html.py`` and ``liquid.py``.
+    Handles ``<h1>``–``<h6>`` tags (the full HTML heading range).  Caller is
+    responsible for calling ``_compute_section_end_lines`` afterwards.
+
+    When a heading has an ``id`` attribute (e.g. ``<h2 id="install">Install</h2>``),
+    we emit **two** sections covering the same span:
+
+    1. The text content (``"Install"``) — matches a user query like
+       ``token-goat section page.html::Install``.
+    2. The anchor id (``"install"``) — matches anchor-href-style lookups like
+       ``token-goat section page.html::install``.
+
+    Both share the same line/level/end_line so retrieval returns the same span
+    regardless of which key the caller used.  Inline HTML tags inside the
+    heading (``<a>``, ``<span>``, etc.) are stripped before recording.
     """
     from ..parser import Section as _Section  # noqa: PLC0415
 
     before = len(sections)
     for match in _H_TAG_RE.finditer(text):
         level = int(match.group(1))
-        heading_text = match.group(2).strip()
-        if heading_text:
-            heading_text = heading_text[:100]
-            line = text[: match.start()].count("\n") + 1
-            sections.append(_Section(heading=heading_text, level=level, line=line))
+        attrs = match.group(2)
+        raw_inner = match.group(3)
+        # Strip inline tags and collapse whitespace runs (including newlines
+        # captured under DOTALL).
+        inner = _INLINE_TAG_RE.sub("", raw_inner)
+        heading_text = _WS_RUN_RE.sub(" ", inner).strip()
+        if not heading_text:
+            continue
+        heading_text = heading_text[:100]
+        line = text[: match.start()].count("\n") + 1
+        sections.append(_Section(heading=heading_text, level=level, line=line))
+        id_match = _HEADING_ID_RE.search(attrs or "")
+        if id_match:
+            anchor = id_match.group(1).strip()[:100]
+            # WHY append a second Section: this is the cheapest way to make
+            # `token-goat section path::install` work without changing the DB
+            # schema or the caller-side resolver.  end_line is recomputed for
+            # both by `_compute_section_end_lines` so the span is identical.
+            if anchor and anchor != heading_text:
+                sections.append(_Section(heading=anchor, level=level, line=line))
     added = len(sections) - before
     _LOG.debug("extract_html_headings: added %d section(s)", added)
