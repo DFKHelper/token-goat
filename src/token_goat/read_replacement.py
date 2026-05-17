@@ -19,6 +19,13 @@ from .project import Project
 # importing the heavy parser module (tree-sitter, language grammars) at CLI startup time.
 _MAX_READ_BYTES = 2_000_000  # 2 MB — keep in sync with parser.MAX_FILE_SIZE
 
+# Maximum length accepted for symbol names and section headings supplied by the
+# caller (CLI args or harness payload).  Real identifiers are bounded by language
+# specs (Python/JS: ~256 chars; Go: no explicit limit but convention is short);
+# anything beyond 1 KiB is anomalous and must not be forwarded to a DB query or
+# log message as an unbounded heap allocation.
+_MAX_SYMBOL_LEN: int = 1_024  # 1 KiB
+
 _LOG = logging.getLogger("token_goat.read_replacement")
 
 
@@ -573,6 +580,13 @@ def read_symbol(
     if not _is_safe_rel_path(rel_path):
         _LOG.warning("rejected unsafe rel_path: %s", rel_path)
         return None
+    if len(symbol) > _MAX_SYMBOL_LEN:
+        _LOG.warning(
+            "read_symbol: symbol name too long (%d chars > %d limit); rejecting",
+            len(symbol),
+            _MAX_SYMBOL_LEN,
+        )
+        return None
 
     try:
         with db.open_project(project.hash) as conn:
@@ -657,6 +671,13 @@ def read_section(
     t0 = time.monotonic()
     if not _is_safe_rel_path(rel_path):
         _LOG.warning("rejected unsafe rel_path: %s", rel_path)
+        return None
+    if len(heading) > _MAX_SYMBOL_LEN:
+        _LOG.warning(
+            "read_section: heading too long (%d chars > %d limit); rejecting",
+            len(heading),
+            _MAX_SYMBOL_LEN,
+        )
         return None
 
     try:
