@@ -25,15 +25,19 @@ from __future__ import annotations
 __all__ = [
     "FileEntry",
     "GrepEntry",
+    "RESULT_CACHE_MAX",
+    "ResultCacheEntry",
     "SESSION_SCHEMA_VERSION",
     "SessionCache",
     "get_file_entry",
+    "get_result_cache",
     "list_edited",
     "list_touched",
     "load",
     "mark_file_edited",
     "mark_file_read",
     "mark_grep",
+    "put_result_cache",
     "reset_session",
     "save",
     "validate_session_id",
@@ -49,6 +53,7 @@ import sys
 import threading
 import time
 from dataclasses import asdict, dataclass, field
+from itertools import islice
 from operator import attrgetter
 from typing import Any, TypedDict, cast
 
@@ -105,9 +110,39 @@ class GrepEntry:
     result_count: int | None = None  # if known
 
 
+@dataclass
+class ResultCacheEntry:
+    """A cached read_symbol/read_section result, keyed elsewhere by (rel_path, item).
+
+    Stores the JSON-serializable result dict alongside the file SHA at the time
+    of computation.  The SHA is used as a cheap invalidation signal: when a file
+    is re-indexed because the post-edit hook fired, its SHA changes and the next
+    lookup recomputes rather than returning stale text.
+
+    ``ts`` is the unix timestamp when the entry was stored, used both for FIFO
+    eviction order tracking and for diagnostic logging — it is *not* a TTL.
+    """
+
+    file_sha: str  # hex SHA-1 of the file contents at cache time; empty when unknown
+    kind: str  # "symbol" or "section" — disambiguates the two read-replacement paths
+    result: dict[str, Any]  # the SymbolResult/SectionResult dict (JSON-serializable)
+    ts: float  # unix timestamp at insertion (for FIFO ordering + observability)
+
+
 # attrgetter key for sorting FileEntry objects by last_read_ts.
 # Defined at module level to avoid allocating a new lambda on every list_touched() call.
 _BY_LAST_READ_TS = attrgetter("last_read_ts")
+
+# Cap for the in-session result cache.  100 entries is enough to cover a typical
+# multi-hour Claude Code session — agents rarely re-ask for more than a few
+# dozen distinct (file, symbol) slices.  When the cap is hit we evict the oldest
+# entries (FIFO via dict insertion order) so a long-running session does not
+# bloat session JSON without bound.
+RESULT_CACHE_MAX = 100
+# Number of entries to evict at once when the cap is hit.  Batch eviction
+# (25 at a time) amortises the dict-rewrite cost across many cache inserts
+# rather than reshuffling on every single insertion above the cap.
+_RESULT_CACHE_EVICT = 25
 
 
 @dataclass
@@ -125,6 +160,13 @@ class SessionCache:
     greps: list[GrepEntry] = field(default_factory=list)
     # Tracks files edited this session: normalized_path → edit count
     edited_files: dict[str, int] = field(default_factory=dict)
+    # In-session cache of read_symbol/read_section results.  Keyed by a string
+    # built from ``_result_cache_key(rel_path, item, kind)`` so the same item
+    # cannot collide across the two read flavours.  FIFO-evicted at RESULT_CACHE_MAX.
+    # Persisted to disk so subsequent hook invocations (each a separate process)
+    # can hit the cache too — without persistence the cache is useless across the
+    # one-hook-per-tool-call process model that Claude Code uses on Windows.
+    result_cache: dict[str, ResultCacheEntry] = field(default_factory=dict)
     unavailable: bool = field(default=False, repr=False, compare=False)
     # Internal: cached JSON string from last serialization — invalidated by any mutation.
     # Avoids O(N) re-serialization of files/greps dicts on every hook invocation when
@@ -142,6 +184,10 @@ class SessionCache:
             files={k: cast("_FileEntryDict", asdict(v)) for k, v in self.files.items()},
             greps=[cast("_GrepEntryDict", asdict(g)) for g in self.greps],
             edited_files=self.edited_files,
+            result_cache={
+                k: cast("_ResultCacheEntryDict", asdict(v))
+                for k, v in self.result_cache.items()
+            },
         )
 
     def to_json(self) -> str:
@@ -216,6 +262,14 @@ class SessionCache:
             with contextlib.suppress(TypeError, ValueError):
                 edited_files[k] = max(0, int(v))
 
+        result_cache: dict[str, ResultCacheEntry] = {}
+        for k, v in d.get("result_cache", {}).items():
+            if not isinstance(v, dict) or not isinstance(k, str):
+                continue
+            rc_entry = _parse_result_cache_entry(v)
+            if rc_entry is not None:
+                result_cache[k] = rc_entry
+
         return cls(
             session_id=session_id,
             started_ts=float(d.get("started_ts", now)),
@@ -223,6 +277,7 @@ class SessionCache:
             files=files,
             greps=greps,
             edited_files=edited_files,
+            result_cache=result_cache,
         )
 
 
@@ -309,6 +364,43 @@ def _parse_grep_entry(g: dict[str, Any]) -> GrepEntry | None:
         return None
 
 
+def _parse_result_cache_entry(v: dict[str, Any]) -> ResultCacheEntry | None:
+    """Deserialize one result-cache entry from JSON, returning None on any parse error.
+
+    The ``result`` field is stored as a plain dict; we accept any dict but reject
+    non-dicts to prevent untrusted JSON from injecting arbitrary objects.  Empty
+    or malformed entries are dropped silently — a stale cache miss is harmless
+    (the slow path recomputes), while a corrupted entry could crash the hot path.
+    """
+    try:
+        raw_sha = v.get("file_sha", "")
+        raw_kind = v.get("kind", "")
+        raw_result = v.get("result", {})
+        raw_ts = v.get("ts", 0.0)
+        if not isinstance(raw_result, dict):
+            return None
+        if not isinstance(raw_kind, str) or raw_kind not in ("symbol", "section"):
+            return None
+        return ResultCacheEntry(
+            file_sha=str(raw_sha) if isinstance(raw_sha, (str, int, float)) else "",
+            kind=raw_kind,
+            result=dict(raw_result),  # shallow copy — JSON values are immutable scalars/dicts
+            ts=float(raw_ts) if isinstance(raw_ts, (int, float)) else 0.0,
+        )
+    except (TypeError, ValueError, KeyError) as exc:
+        _LOG.debug("session: skipping corrupted result cache entry: %s", exc)
+        return None
+
+
+class _ResultCacheEntryDict(TypedDict, total=False):
+    """Wire format of a single ResultCacheEntry as it appears in the session JSON."""
+
+    file_sha: str
+    kind: str
+    result: dict[str, Any]
+    ts: float
+
+
 class _FileEntryDict(TypedDict, total=False):
     """Wire format of a single FileEntry as it appears in the session JSON.
 
@@ -333,8 +425,14 @@ class _GrepEntryDict(TypedDict, total=False):
     result_count: int | None
 
 
-class _SessionDict(TypedDict):
-    """Wire format of a serialized SessionCache (written to / read from JSON on disk)."""
+class _SessionDict(TypedDict, total=False):
+    """Wire format of a serialized SessionCache (written to / read from JSON on disk).
+
+    ``result_cache`` is optional (``total=False``) for backwards compat with
+    session caches written by token-goat versions that predate the field.  All
+    other fields are still effectively required because :meth:`SessionCache.from_dict`
+    supplies a default for each one.
+    """
 
     schema_version: int
     created_by: str
@@ -344,6 +442,7 @@ class _SessionDict(TypedDict):
     files: dict[str, _FileEntryDict]
     greps: list[_GrepEntryDict]
     edited_files: dict[str, int]
+    result_cache: dict[str, _ResultCacheEntryDict]
 
 
 def _fresh_cache(session_id: str, *, unavailable: bool = False) -> SessionCache:
@@ -919,6 +1018,116 @@ def list_touched(session_id: str) -> list[FileEntry]:
     """List all files touched in a session, sorted by last read time (newest first)."""
     cache = load(session_id)
     return sorted(cache.files.values(), key=_BY_LAST_READ_TS, reverse=True)
+
+
+def _result_cache_key(rel_path: str, item: str, kind: str) -> str:
+    """Build the dict key for the in-session result cache.
+
+    Combines normalized path, item name (symbol or section heading), and kind
+    so that ``read_symbol("foo.py", "bar")`` and ``read_section("foo.py", "bar")``
+    do not collide.  Path is normalized so backslash/forward-slash and drive-letter
+    case differences map to the same cache entry on Windows.
+    """
+    return f"{kind}\x1f{_normalize_path(rel_path)}\x1f{item}"
+
+
+def get_result_cache(
+    session_id: str,
+    rel_path: str,
+    item: str,
+    kind: str,
+    file_sha: str,
+    *,
+    cache: SessionCache | None = None,
+) -> dict[str, Any] | None:
+    """Return a cached result dict when one exists for this (rel_path, item, kind, sha).
+
+    Returns None on cache miss, on SHA mismatch (file changed since cache write),
+    or when the session cache is unavailable.  ``file_sha`` is the SHA of the file's
+    current contents on disk; when it differs from the stored SHA the entry is
+    considered stale and dropped so the next call recomputes.
+
+    Returns a fresh shallow copy of the result dict so callers can mutate it
+    without leaking changes back into the cache.
+    """
+    try:
+        validate_session_id(session_id)
+    except ValueError:
+        return None
+    cache = _resolve_cache(session_id, cache)
+    if cache.unavailable:
+        return None
+    key = _result_cache_key(rel_path, item, kind)
+    entry = cache.result_cache.get(key)
+    if entry is None:
+        return None
+    if entry.file_sha != file_sha:
+        # SHA mismatch — the file changed since we cached this slice; drop the
+        # stale entry so we do not keep checking it on every lookup and so the
+        # next put_result_cache call can re-insert the fresh value.
+        _LOG.debug(
+            "result_cache: stale entry for %s (sha %s != %s); dropping",
+            key, entry.file_sha[:8], file_sha[:8],
+        )
+        del cache.result_cache[key]
+        cache._invalidate_json_cache()
+        save(cache)
+        return None
+    _LOG.debug("result_cache: hit for %s (kind=%s sha=%s)", key, kind, file_sha[:8])
+    return dict(entry.result)
+
+
+def put_result_cache(
+    session_id: str,
+    rel_path: str,
+    item: str,
+    kind: str,
+    file_sha: str,
+    result: dict[str, Any],
+    *,
+    cache: SessionCache | None = None,
+) -> None:
+    """Store *result* in the in-session cache under (rel_path, item, kind).
+
+    Enforces the RESULT_CACHE_MAX cap by evicting the oldest _RESULT_CACHE_EVICT
+    entries (FIFO via dict insertion order) when the cap is reached.  Updating
+    an existing key preserves its insertion position so the new value does not
+    jump to the front of the eviction queue — this matches the "first inserted,
+    first evicted" semantics callers expect.
+    """
+    try:
+        validate_session_id(session_id)
+    except ValueError:
+        return
+    cache = _resolve_cache(session_id, cache)
+    if cache.unavailable:
+        return
+    if kind not in ("symbol", "section"):
+        _LOG.debug("put_result_cache: rejecting unknown kind %r", kind)
+        return
+    key = _result_cache_key(rel_path, item, kind)
+    # Evict oldest entries when at capacity — but only on a fresh insertion.
+    # Updates to an existing key reuse the slot and never trigger eviction.
+    if key not in cache.result_cache and len(cache.result_cache) >= RESULT_CACHE_MAX:
+        evict_keys = list(islice(cache.result_cache.keys(), _RESULT_CACHE_EVICT))
+        for k in evict_keys:
+            del cache.result_cache[k]
+        _LOG.debug(
+            "result_cache: evicted %d entries (cap=%d) for session=%s",
+            _RESULT_CACHE_EVICT, RESULT_CACHE_MAX, session_id[:16],
+        )
+    cache.result_cache[key] = ResultCacheEntry(
+        file_sha=file_sha,
+        kind=kind,
+        result=dict(result),  # shallow copy — defensive against caller mutating after store
+        ts=time.time(),
+    )
+    cache._invalidate_json_cache()
+    save(cache)
+    _LOG.debug(
+        "result_cache: stored %s (kind=%s sha=%s size=%d)",
+        key, kind, file_sha[:8], len(cache.result_cache),
+    )
 
 
 def cleanup_stale(max_age_hours: float = 24.0) -> int:
