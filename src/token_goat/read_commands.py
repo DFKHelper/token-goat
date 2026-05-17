@@ -16,6 +16,17 @@ from .project import Project, find_project
 
 _LOG = logging.getLogger("token_goat.read_commands")
 
+# Module-level key functions avoid allocating a new lambda object on every sort call.
+# Sorting dep maps is on the hot path when rendering large dependency graphs.
+def _key_dep_by_size(item: tuple[str, set[str]]) -> tuple[int, str]:
+    """Sort dependency items by descending symbol count, then name."""
+    return (-len(item[1]), item[0])
+
+
+def _key_transitive_by_depth(item: tuple[str, _DepNode]) -> tuple[int, str]:
+    """Sort transitive dependency items by depth, then name."""
+    return (item[1]["depth"], item[0])
+
 # Precise type alias for the ``reader`` parameter of :func:`_run_read_like_command`.
 # ``Callable[..., X]`` accepts any argument shape (including keyword-only
 # ``context_lines``) while still constraining the return to a known union.
@@ -462,18 +473,18 @@ def deps(
             "unresolved_ref_count": len(unresolved),
             "dependencies": {
                 dep: sorted(syms)
-                for dep, syms in sorted(outgoing.items(), key=lambda item: (-len(item[1]), item[0]))
+                for dep, syms in sorted(outgoing.items(), key=_key_dep_by_size)
             },
             "dependents": {
                 dep: sorted(syms)
-                for dep, syms in sorted(incoming.items(), key=lambda item: (-len(item[1]), item[0]))
+                for dep, syms in sorted(incoming.items(), key=_key_dep_by_size)
             },
             "unresolved_refs": unresolved,
         }
         if transitive:
             payload["all_dependencies"] = {
                 f: {"depth": v["depth"], "via": v["via"], "symbols": sorted(v["symbols"])}
-                for f, v in sorted(transitive.items(), key=lambda x: (x[1]["depth"], x[0]))
+                for f, v in sorted(transitive.items(), key=_key_transitive_by_depth)
             }
         typer.echo(json.dumps(payload))
         return
@@ -483,7 +494,7 @@ def deps(
     typer.echo(f"Dependency graph for {rel}")
     typer.echo(f"Dependencies ({outgoing_summary}):")
     if outgoing:
-        for dep_rel, symbols in sorted(outgoing.items(), key=lambda item: (-len(item[1]), item[0])):
+        for dep_rel, symbols in sorted(outgoing.items(), key=_key_dep_by_size):
             typer.echo(_format_dependency_line(dep_rel, symbols))
     else:
         typer.echo("  (none)")
@@ -492,14 +503,14 @@ def deps(
         transitive_only = {f: v for f, v in transitive.items() if f not in outgoing}
         if transitive_only:
             typer.echo(f"Transitive dependencies (depth 2–{depth or '∞'}, {len(transitive_only)} more files):")
-            for dep_rel, info in sorted(transitive_only.items(), key=lambda x: (x[1]["depth"], x[0])):
+            for dep_rel, info in sorted(transitive_only.items(), key=_key_transitive_by_depth):
                 indent = "    " * (info["depth"] - 1)
                 via_note = f"  via {info['via']}" if info["via"] != rel else ""
                 typer.echo(f"{indent}{_format_dependency_line(dep_rel, info['symbols'])}{via_note}")
 
     typer.echo(f"Dependents ({incoming_summary}):")
     if incoming:
-        for dep_rel, symbols in sorted(incoming.items(), key=lambda item: (-len(item[1]), item[0])):
+        for dep_rel, symbols in sorted(incoming.items(), key=_key_dep_by_size):
             typer.echo(_format_dependency_line(dep_rel, symbols))
     else:
         typer.echo("  (none)")

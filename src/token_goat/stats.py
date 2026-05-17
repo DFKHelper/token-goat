@@ -647,13 +647,14 @@ def render_text(
     if summary.by_kind:
         console.print()
         console.print(Text("By kind:", style="bold"))
+        by_kind = summary.by_kind
         kinds_sorted = sorted(
-            summary.by_kind,
-            key=lambda k: summary.by_kind[k]["bytes_saved"],
+            by_kind,
+            key=lambda k: by_kind[k]["bytes_saved"],
             reverse=True,
         )
         max_bytes = max(
-            (summary.by_kind[k]["bytes_saved"] for k in kinds_sorted), default=0
+            (by_kind[k]["bytes_saved"] for k in kinds_sorted), default=0
         )
         tbl = _make_stats_table("kind")
         for kind in kinds_sorted:
