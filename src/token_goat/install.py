@@ -951,11 +951,12 @@ def _patch_md_block(md_path: Path, begin_marker: str, end_marker: str, content: 
     if md_path.exists():
         existing = md_path.read_text(encoding="utf-8")
         if begin_marker in existing and end_marker in existing:
-            pattern = re.compile(
+            updated = re.sub(
                 re.escape(begin_marker) + r".*?" + re.escape(end_marker),
-                re.DOTALL,
+                block,
+                existing,
+                flags=re.DOTALL,
             )
-            updated = pattern.sub(block, existing)
         else:
             if not existing.endswith("\n"):
                 existing += "\n"
@@ -978,11 +979,12 @@ def _unpatch_md_block(md_path: Path, begin_marker: str, end_marker: str, not_fou
     if not md_path.exists():
         return not_found_msg
     content = md_path.read_text(encoding="utf-8")
-    pattern = re.compile(
+    new = re.sub(
         r"\n*" + re.escape(begin_marker) + r".*?" + re.escape(end_marker) + r"\n*",
-        re.DOTALL,
-    )
-    new = pattern.sub("\n", content).strip()
+        "\n",
+        content,
+        flags=re.DOTALL,
+    ).strip()
     # Atomic write: a crash mid-write must never leave a truncated markdown file behind.
     paths.atomic_write_text(md_path, new + "\n" if new else "")
     return str(md_path)

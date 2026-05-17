@@ -228,8 +228,9 @@ def _hint_from_cache(
     # Case: file accessed only via token-goat read <file>::<symbol>.
     # A suggestion, not a realized saving → tokens_saved=0.
     if entry.symbols_read and not entry.line_ranges:
+        n_syms = len(entry.symbols_read)
         sym_list = ", ".join(f"`{s}`" for s in entry.symbols_read[:3])
-        more = f" and {len(entry.symbols_read) - 3} more" if len(entry.symbols_read) > 3 else ""
+        more = f" and {n_syms - 3} more" if n_syms > 3 else ""
         return ReadHint(
             f"Note: `{fname}` was already accessed this session via "
             f"`token-goat read` for symbol(s): {sym_list}{more}. "

@@ -531,11 +531,11 @@ def mark_file_read(
     entry.read_count += 1
     entry.last_read_ts = now
     if symbol:
-        # O(1) set check avoids O(n) list scan on every symbol-level read.
-        # symbols_read is a short list (typically <10 entries) but the check
-        # fires on every pre-read hook call so eliminating the linear scan
-        # matters on sessions that repeatedly probe the same symbols.
-        already_known = symbol in _symbols_set(entry)
+        # Direct list membership check — symbols_read is typically <10 entries so
+        # the O(n) scan is cheaper than building a frozenset just to do one lookup.
+        # _symbols_set() is retained for callers that do repeated lookups, but the
+        # single-lookup case here avoids the frozenset allocation entirely.
+        already_known = symbol in entry.symbols_read
         if not already_known:
             entry.symbols_read.append(symbol)
             _LOG.debug(
@@ -552,7 +552,7 @@ def mark_file_read(
         start = line_offset + 1  # Read tool's offset is 0-indexed; we store 1-indexed inclusive
         end = start + line_limit - 1 if line_limit else (start + _UNKNOWN_END_SENTINEL)
         prev_range_count = len(entry.line_ranges)
-        entry.line_ranges = _merge_ranges([*entry.line_ranges, (start, end)])
+        entry.line_ranges = _merge_ranges(entry.line_ranges + [(start, end)])
         new_range_count = len(entry.line_ranges)
         if new_range_count < prev_range_count + 1:
             _LOG.debug(
