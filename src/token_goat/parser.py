@@ -278,7 +278,23 @@ def get_extractor(language: str) -> Extractor | None:
     if factory is None:
         return None
     t0 = time.time()
-    extractor = factory()
+    try:
+        extractor = factory()
+    except ImportError as exc:
+        _LOG.error(
+            "get_extractor: failed to import %s language module (missing grammar binary?): %s",
+            language,
+            exc,
+        )
+        return None
+    except Exception as exc:  # noqa: BLE001 — language module __init__ can raise many things
+        _LOG.error(
+            "get_extractor: unexpected error loading %s extractor (%s): %s",
+            language,
+            type(exc).__name__,
+            exc,
+        )
+        return None
     elapsed = time.time() - t0
     _LOG.debug("extractor loaded: language=%s elapsed=%.3fs", language, elapsed)
     _EXTRACTOR_CACHE[language] = extractor

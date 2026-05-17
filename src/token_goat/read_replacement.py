@@ -528,20 +528,30 @@ def read_symbol(
         _LOG.warning("rejected unsafe rel_path: %s", rel_path)
         return None
 
-    with db.open_project(project.hash) as conn:
-        rows = conn.execute(
-            "SELECT name, kind, line, end_line, signature FROM symbols "
-            "WHERE file_rel = ? AND name = ? AND end_line IS NOT NULL ORDER BY line",
-            (rel_path, symbol),
-        ).fetchall()
-        if not rows:
-            _LOG.debug(
-                "symbol not found: project=%s file=%s symbol=%s",
-                project.hash[:8],
-                rel_path,
-                symbol,
-            )
-            return None
+    try:
+        with db.open_project(project.hash) as conn:
+            rows = conn.execute(
+                "SELECT name, kind, line, end_line, signature FROM symbols "
+                "WHERE file_rel = ? AND name = ? AND end_line IS NOT NULL ORDER BY line",
+                (rel_path, symbol),
+            ).fetchall()
+    except (sqlite3.OperationalError, sqlite3.DatabaseError) as exc:
+        _LOG.warning(
+            "read_symbol: DB error for project=%s file=%s symbol=%s: %s",
+            project.hash[:8],
+            rel_path,
+            symbol,
+            exc,
+        )
+        return None
+    if not rows:
+        _LOG.debug(
+            "symbol not found: project=%s file=%s symbol=%s",
+            project.hash[:8],
+            rel_path,
+            symbol,
+        )
+        return None
 
     # If multiple matches (e.g., a top-level function and a method of the same name),
     # prefer by kind priority then by earliest line.
@@ -603,28 +613,38 @@ def read_section(
         _LOG.warning("rejected unsafe rel_path: %s", rel_path)
         return None
 
-    with db.open_project(project.hash) as conn:
-        rows = conn.execute(
-            "SELECT heading, level, line, end_line FROM sections "
-            "WHERE file_rel = ? AND heading = ? AND end_line IS NOT NULL ORDER BY line",
-            (rel_path, heading),
-        ).fetchall()
-        case_sensitive_match = len(rows) > 0
-        if not rows:
-            # Fallback: case-insensitive match
+    try:
+        with db.open_project(project.hash) as conn:
             rows = conn.execute(
                 "SELECT heading, level, line, end_line FROM sections "
-                "WHERE file_rel = ? AND lower(heading) = lower(?) AND end_line IS NOT NULL ORDER BY line",
+                "WHERE file_rel = ? AND heading = ? AND end_line IS NOT NULL ORDER BY line",
                 (rel_path, heading),
             ).fetchall()
-        if not rows:
-            _LOG.debug(
-                "section not found: project=%s file=%s heading=%s",
-                project.hash[:8],
-                rel_path,
-                heading,
-            )
-            return None
+            case_sensitive_match = len(rows) > 0
+            if not rows:
+                # Fallback: case-insensitive match
+                rows = conn.execute(
+                    "SELECT heading, level, line, end_line FROM sections "
+                    "WHERE file_rel = ? AND lower(heading) = lower(?) AND end_line IS NOT NULL ORDER BY line",
+                    (rel_path, heading),
+                ).fetchall()
+    except (sqlite3.OperationalError, sqlite3.DatabaseError) as exc:
+        _LOG.warning(
+            "read_section: DB error for project=%s file=%s heading=%s: %s",
+            project.hash[:8],
+            rel_path,
+            heading,
+            exc,
+        )
+        return None
+    if not rows:
+        _LOG.debug(
+            "section not found: project=%s file=%s heading=%s",
+            project.hash[:8],
+            rel_path,
+            heading,
+        )
+        return None
 
     chosen = rows[0]  # first match by line order
 

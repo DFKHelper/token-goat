@@ -387,18 +387,35 @@ def fetch_url(
             return cached_path
 
     # Download
-    with httpx.Client(timeout=timeout_sec, follow_redirects=True) as client, \
-            client.stream("GET", url) as r:
-        r.raise_for_status()
-        final_url = str(r.url)
-        if final_url != url:
-            _LOG.info("web fetch redirected: %s -> %s", url, final_url)
-        _validate_response_url(final_url)
-        content_type = r.headers.get("content-type", "")
-        suffix = _suffix_for(url, content_type)
-        cache_path = _cache_path_for(url, suffix)
-        _stream_to_file(r, cache_path, max_size_bytes)
-        _write_cache_meta(cache_path, r.headers)
+    try:
+        with httpx.Client(timeout=timeout_sec, follow_redirects=True) as client, \
+                client.stream("GET", url) as r:
+            r.raise_for_status()
+            final_url = str(r.url)
+            if final_url != url:
+                _LOG.info("web fetch redirected: %s -> %s", url, final_url)
+            _validate_response_url(final_url)
+            content_type = r.headers.get("content-type", "")
+            suffix = _suffix_for(url, content_type)
+            cache_path = _cache_path_for(url, suffix)
+            _stream_to_file(r, cache_path, max_size_bytes)
+            _write_cache_meta(cache_path, r.headers)
+    except (ValueError, RuntimeError):
+        # ValueError: SSRF check failed after redirect (_validate_response_url)
+        # RuntimeError: size cap exceeded (_stream_to_file)
+        raise
+    except httpx.HTTPStatusError as exc:
+        raise RuntimeError(
+            f"HTTP {exc.response.status_code} fetching {url!r}: {exc.response.reason_phrase}"
+        ) from exc
+    except httpx.TimeoutException as exc:
+        raise RuntimeError(
+            f"Request timed out after {timeout_sec}s fetching {url!r}"
+        ) from exc
+    except httpx.RequestError as exc:
+        raise RuntimeError(
+            f"Network error fetching {url!r}: {type(exc).__name__}: {exc}"
+        ) from exc
 
     # Shrink if image
     if shrink_if_image:
