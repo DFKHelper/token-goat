@@ -1,6 +1,19 @@
 """Read-replacement: return just a symbol's source instead of the whole file."""
 from __future__ import annotations
 
+__all__ = [
+    "AmbiguousFileMatch",
+    "ProjectIndexUnavailable",
+    "ReadLookupError",
+    "SectionResult",
+    "SymbolResult",
+    "find_in_all_projects",
+    "invalidate_file_cache",
+    "read_section",
+    "read_symbol",
+    "resolve_file_rel",
+]
+
 import logging
 import operator
 import sqlite3

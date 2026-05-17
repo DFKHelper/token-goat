@@ -1,6 +1,13 @@
 """Google Drive image fetcher: downloads + shrinks + caches."""
 from __future__ import annotations
 
+__all__ = [
+    "GDriveCredsUnavailable",
+    "fetch_file",
+    "get_credentials",
+    "run_oauth_oob_flow",
+]
+
 import contextlib
 import io
 import logging

@@ -1,6 +1,8 @@
 """Shopify Liquid template extractor — includes, sections, renders, schema, HTML headings."""
 from __future__ import annotations
 
+__all__ = ["extract"]
+
 import json
 import logging
 import re

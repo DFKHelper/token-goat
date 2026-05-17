@@ -1,6 +1,8 @@
 """JSON extractor — top-level keys for objects, array-of-N for arrays."""
 from __future__ import annotations
 
+__all__ = ["extract"]
+
 import json
 import logging
 import re

@@ -1,6 +1,8 @@
 """HTML extractor — headings, id/class attributes, link/script imports."""
 from __future__ import annotations
 
+__all__ = ["extract"]
+
 import logging
 import re
 

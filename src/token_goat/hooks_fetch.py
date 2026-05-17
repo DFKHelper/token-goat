@@ -7,6 +7,8 @@ denies the direct download, and redirects the model to ``token-goat gdrive-fetch
 """
 from __future__ import annotations
 
+__all__ = ["pre_fetch"]
+
 from .hooks_common import (
     CONTINUE,
     HookPayload,

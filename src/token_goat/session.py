@@ -22,6 +22,23 @@ broken cache never blocks the agent.
 """
 from __future__ import annotations
 
+__all__ = [
+    "FileEntry",
+    "GrepEntry",
+    "SESSION_SCHEMA_VERSION",
+    "SessionCache",
+    "get_file_entry",
+    "list_edited",
+    "list_touched",
+    "load",
+    "mark_file_edited",
+    "mark_file_read",
+    "mark_grep",
+    "reset_session",
+    "save",
+    "validate_session_id",
+]
+
 import contextlib
 import json
 import logging

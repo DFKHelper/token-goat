@@ -23,6 +23,8 @@ being passed to ``find_project``.
 """
 from __future__ import annotations
 
+__all__ = ["session_start"]
+
 from .hooks_common import (
     CONTINUE,
     HookPayload,

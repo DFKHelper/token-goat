@@ -18,6 +18,8 @@ CONTINUE so a broken index pipeline cannot interrupt the agent.
 """
 from __future__ import annotations
 
+__all__ = ["post_edit"]
+
 from . import paths
 from .hooks_common import (
     CONTINUE,
