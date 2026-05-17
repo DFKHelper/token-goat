@@ -423,3 +423,169 @@ class TestFetchImageCli:
         assert result.exit_code == 0, f"Expected exit 0, got {result.exit_code}"
         # output contains the error message (typer CliRunner merges stderr into output by default)
         assert "WebFetch failed" in (result.output or "")
+
+
+# ---------------------------------------------------------------------------
+# 12. fetch_url: content-hash dedup across URLs
+# ---------------------------------------------------------------------------
+
+class TestFetchUrlContentDedup:
+    """Two different URLs serving identical bytes should share the shrunk artifact.
+
+    Real-world driver: an agent in a long session fetches the same screenshot
+    pasted into a Slack thread *and* attached to a GitHub PR comment.  The URLs
+    differ; the bytes are byte-identical.  Without content-hash dedup we run the
+    full image-shrink pipeline on the second URL even though the same SHA was
+    just shrunk seconds ago.
+    """
+
+    def test_index_records_content_sha_after_download(self, tmp_data_dir):
+        """A successful fetch writes a by_content/<sha>.idx pointer to the cache file."""
+        import hashlib
+
+        body = _make_png_bytes()
+        url = "https://example.com/a.png"
+
+        resp = _mock_http_response(body, "image/png")
+        client = _mock_client(resp)
+
+        with patch("httpx.Client", return_value=client):
+            webfetch.fetch_url(url, shrink_if_image=False)
+
+        content_sha = hashlib.sha256(body).hexdigest()
+        idx = webfetch._content_index_path(content_sha)
+        assert idx.exists(), "content index pointer was not written"
+
+    def test_meta_records_content_sha256(self, tmp_data_dir):
+        """The URL-keyed sidecar carries the content_sha256 for later dedup."""
+        import hashlib
+
+        body = _make_png_bytes()
+        url = "https://example.com/meta-sha.png"
+
+        resp = _mock_http_response(body, "image/png")
+        client = _mock_client(resp)
+
+        with patch("httpx.Client", return_value=client):
+            result = webfetch.fetch_url(url, shrink_if_image=False)
+
+        meta = webfetch._read_cache_meta(result)
+        assert meta.get("content_sha256") == hashlib.sha256(body).hexdigest()
+
+    def test_second_url_same_bytes_skips_shrink_pipeline(self, tmp_data_dir):
+        """A second URL serving identical bytes returns the prior shrunk artifact directly.
+
+        The dedup short-circuit must fire *after* the second download (we still
+        have to receive the bytes to know they match), but *before* the second
+        image_shrink invocation.  We verify by asserting that the second call
+        returns the same Path the first call produced AND that shrink runs at
+        most once.
+        """
+        body = _make_large_png_bytes()
+
+        from token_goat import image_shrink as _is
+        if len(body) <= _is.SIZE_THRESHOLD_BYTES:
+            pytest.skip("Could not synthesize large enough PNG body")
+
+        url_a = "https://example.com/slack-screenshot.png"
+        url_b = "https://example.com/github-pr-comment.png"
+
+        # Each fetch returns its own response; both have identical bodies.
+        resp_a = _mock_http_response(body, "image/png")
+        resp_b = _mock_http_response(body, "image/png")
+
+        call_count = {"shrink": 0}
+        real_shrink = _is.shrink_if_image
+
+        def counting_shrink(path):
+            call_count["shrink"] += 1
+            return real_shrink(path)
+
+        with patch("httpx.Client", side_effect=[_mock_client(resp_a), _mock_client(resp_b)]), \
+                patch.object(_is, "shrink_if_image", side_effect=counting_shrink):
+            result_a = webfetch.fetch_url(url_a, shrink_if_image=True)
+            result_b = webfetch.fetch_url(url_b, shrink_if_image=True)
+
+        # Dedup hit means the second URL returns the same shrunk artifact path.
+        assert result_a == result_b
+        # First call shrinks; second call short-circuits via the content index.
+        assert call_count["shrink"] == 1, (
+            f"shrink_if_image should run exactly once across two URLs with identical bytes; "
+            f"ran {call_count['shrink']} times"
+        )
+
+    def test_shrunk_pointer_skips_image_shrink_on_url_cache_hit(self, tmp_data_dir):
+        """A repeat fetch of the *same* URL with a recorded shrunk_path skips shrink."""
+        body = _make_large_png_bytes()
+
+        from token_goat import image_shrink as _is
+        if len(body) <= _is.SIZE_THRESHOLD_BYTES:
+            pytest.skip("Could not synthesize large enough PNG body")
+
+        url = "https://example.com/repeat.png"
+        resp = _mock_http_response(body, "image/png")
+
+        # First fetch performs the actual download + shrink.
+        with patch("httpx.Client", return_value=_mock_client(resp)):
+            first = webfetch.fetch_url(url, shrink_if_image=True)
+
+        # Second fetch should hit the URL cache; with the shrunk_path pointer
+        # set, it must not invoke image_shrink at all.
+        with patch.object(_is, "shrink_if_image") as mock_shrink, \
+                patch("httpx.Client") as mock_cls:
+            second = webfetch.fetch_url(url, shrink_if_image=True)
+
+        assert first == second
+        mock_shrink.assert_not_called()
+        # No HTTP request was made either — pointer hit beats revalidation.
+        mock_cls.assert_not_called()
+
+    def test_stale_pointer_falls_back_gracefully(self, tmp_data_dir):
+        """A vanished shrunk artifact must not break the cache; we re-shrink."""
+        body = _make_large_png_bytes()
+
+        from token_goat import image_shrink as _is
+        if len(body) <= _is.SIZE_THRESHOLD_BYTES:
+            pytest.skip("Could not synthesize large enough PNG body")
+
+        url = "https://example.com/stale.png"
+        resp_a = _mock_http_response(body, "image/png")
+
+        with patch("httpx.Client", return_value=_mock_client(resp_a)):
+            first = webfetch.fetch_url(url, shrink_if_image=True)
+
+        # Simulate the shrunk artifact being evicted by the LRU sweeper.
+        if first.exists():
+            first.unlink()
+
+        # The next fetch should detect the missing pointer target and re-shrink
+        # rather than returning a path-to-nothing.
+        resp_b = _mock_http_response(body, "image/png")
+        with patch("httpx.Client", return_value=_mock_client(resp_b)):
+            second = webfetch.fetch_url(url, shrink_if_image=True)
+
+        assert second.exists(), "stale-pointer fallback returned a non-existent path"
+
+    def test_corrupt_content_index_is_discarded(self, tmp_data_dir):
+        """A malformed index file is treated as a miss, not an exception."""
+        sha = "0" * 64
+        idx = webfetch._content_index_path(sha)
+        idx.parent.mkdir(parents=True, exist_ok=True)
+        idx.write_text("{not valid json", encoding="utf-8")
+
+        assert webfetch._read_content_index(sha) is None
+
+    def test_content_index_pointer_to_missing_file_cleaned_up(self, tmp_data_dir):
+        """A pointer whose target was deleted is removed on lookup."""
+        sha = "1" * 64
+        idx = webfetch._content_index_path(sha)
+        idx.parent.mkdir(parents=True, exist_ok=True)
+        idx.write_text('{"cache_path": "C:/does/not/exist.png"}', encoding="utf-8")
+
+        assert webfetch._read_content_index(sha) is None
+        assert not idx.exists(), "stale pointer should be deleted on lookup"
+
+    def test_hash_file_sha256_unreadable_returns_none(self, tmp_data_dir, tmp_path):
+        """An unreadable file yields None (caller treats as 'no dedup possible')."""
+        nonexistent = tmp_path / "ghost.png"
+        assert webfetch._hash_file_sha256(nonexistent) is None

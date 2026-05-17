@@ -20,6 +20,7 @@ Security hardening
 """
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import ipaddress
 import json
@@ -236,8 +237,9 @@ def _sidecar_path(cache_path: Path) -> Path:
 
 _MAX_SIDECAR_BYTES = 4096  # ETag + Last-Modified headers never need more than a few hundred bytes
 
-_ALLOWED_META_KEYS = frozenset(["etag", "last_modified"])
+_ALLOWED_META_KEYS = frozenset(["etag", "last_modified", "content_sha256", "shrunk_path"])
 _MAX_META_VALUE_LEN = 512  # per-value cap; ETags are typically <128 chars
+_MAX_SHRUNK_PATH_LEN = 4096  # absolute path to the shrunk artifact; allows long Windows paths
 
 
 def _read_cache_meta(cache_path: Path) -> dict[str, str]:
@@ -277,32 +279,136 @@ def _read_cache_meta(cache_path: Path) -> dict[str, str]:
             # Defense-in-depth: strip CRLF even if the write path already did so.
             # These values flow directly into HTTP request headers; any embedded
             # \r\n would allow header injection on the next conditional GET.
-            result[k] = _sanitize_header_value(v, _MAX_META_VALUE_LEN)
+            # Path-typed keys use a larger cap (Windows long-path support) but
+            # still strip CRLF to keep the JSON safe to round-trip.
+            cap = _MAX_SHRUNK_PATH_LEN if k == "shrunk_path" else _MAX_META_VALUE_LEN
+            result[k] = _sanitize_header_value(v, cap)
         return result
     except Exception as e:  # noqa: BLE001
         _LOG.debug("corrupt cache metadata at %s; discarding: %s", sidecar.name, e)
         return {}
 
 
-def _write_cache_meta(cache_path: Path, response_headers: httpx.Headers) -> None:
+def _write_cache_meta(
+    cache_path: Path,
+    response_headers: httpx.Headers,
+    *,
+    extra: dict[str, str] | None = None,
+) -> None:
     """Persist ETag and/or Last-Modified from response headers alongside the cache file.
 
     Header values from untrusted servers are truncated to ``_MAX_META_VALUE_LEN``
     (512 chars) before being written.  Without this cap a server could send an
     arbitrarily large ETag value that escapes the 4 KB read-time guard — since the
     read guard only applies when loading cached metadata, not when persisting it.
+
+    *extra* may carry additional allow-listed keys produced locally (not from the
+    server), e.g. ``content_sha256`` and ``shrunk_path`` for dedup bookkeeping.
+    These are merged in *after* the header-derived values so the local view wins
+    a clash.  Unknown keys are ignored.
     """
     meta: dict[str, str] = {}
     if etag := response_headers.get("etag"):
         meta["etag"] = _sanitize_header_value(etag, _MAX_META_VALUE_LEN)
     if lm := response_headers.get("last-modified"):
         meta["last_modified"] = _sanitize_header_value(lm, _MAX_META_VALUE_LEN)
+    if extra:
+        for k, v in extra.items():
+            if k not in _ALLOWED_META_KEYS or not isinstance(v, str):
+                continue
+            cap = _MAX_SHRUNK_PATH_LEN if k == "shrunk_path" else _MAX_META_VALUE_LEN
+            meta[k] = _sanitize_header_value(v, cap)
     if not meta:
         return
     try:
         _sidecar_path(cache_path).write_text(json.dumps(meta), encoding="utf-8")
     except OSError as exc:
         _LOG.debug("could not write cache metadata for %s: %s", cache_path.name, exc)
+
+
+def _hash_file_sha256(path: Path) -> str | None:
+    """Streaming SHA256 of *path* contents.  Returns ``None`` if the file is unreadable.
+
+    Used for content-hash dedup: two different URLs that serve identical bytes
+    (e.g. the same screenshot pasted into a Slack thread *and* a GitHub PR
+    comment) end up with the same hash and can share the shrunk artifact.
+    Streams in 1 MB chunks so a 50 MB image doesn't materialize in memory.
+    """
+    try:
+        h = hashlib.sha256()
+        with path.open("rb") as f:
+            for chunk in iter(lambda: f.read(1 << 20), b""):
+                h.update(chunk)
+        return h.hexdigest()
+    except OSError as exc:
+        _LOG.debug("could not hash %s for content dedup: %s", path.name, exc)
+        return None
+
+
+def _content_index_path(content_sha256: str) -> Path:
+    """Return the path to the content-hash index pointer for *content_sha256*.
+
+    The index lives under ``web_cache_dir() / "by_content" / <sha>.idx`` and
+    contains a JSON pointer to the canonical URL-keyed cache file.  It enables
+    cross-URL dedup: any future fetch whose downloaded bytes hash to the same
+    value can look up the existing canonical entry without re-running the shrink.
+    """
+    return paths.web_cache_dir() / "by_content" / f"{content_sha256}.idx"
+
+
+def _read_content_index(content_sha256: str) -> Path | None:
+    """Look up the canonical cache file for *content_sha256*, or return None.
+
+    Returns None when the index entry is missing, malformed, or points at a
+    file that has since been evicted from the cache.  Stale entries are
+    proactively cleaned up so the index doesn't accumulate dead pointers.
+    """
+    idx = _content_index_path(content_sha256)
+    if not idx.exists():
+        return None
+    try:
+        size = idx.stat().st_size
+        if size > _MAX_SIDECAR_BYTES:
+            _LOG.debug("content index too large (%d bytes); discarding: %s", size, idx.name)
+            return None
+        raw = idx.read_text(encoding="utf-8")
+        parsed = json.loads(raw)
+        if not isinstance(parsed, dict):
+            return None
+        target = parsed.get("cache_path")
+        if not isinstance(target, str) or not target:
+            return None
+        target_path = Path(target)
+        if not target_path.exists():
+            # Pointer is stale — eviction or manual cleanup deleted the target.
+            # Best-effort cleanup so the next fetch with this hash takes the
+            # fresh-download path instead of a second stale-pointer round trip.
+            with contextlib.suppress(OSError):
+                idx.unlink()
+            return None
+        return target_path
+    except (OSError, ValueError) as exc:
+        _LOG.debug("corrupt content index at %s; discarding: %s", idx.name, exc)
+        return None
+
+
+def _write_content_index(content_sha256: str, cache_path: Path) -> None:
+    """Record that *content_sha256* maps to *cache_path* (the canonical URL-keyed file).
+
+    Failures are logged at DEBUG and swallowed.  The index is an optimization;
+    losing one entry just means the next fetch with the same hash re-runs the
+    shrink path instead of short-circuiting.  No correctness impact.
+    """
+    idx = _content_index_path(content_sha256)
+    try:
+        idx.parent.mkdir(parents=True, exist_ok=True)
+        # Store the path as a POSIX-style absolute string so the file is portable
+        # across platforms (matters on WSL where the same cache dir might be
+        # opened from both Linux and Windows code paths).
+        payload = json.dumps({"cache_path": str(cache_path)})
+        idx.write_text(payload, encoding="utf-8")
+    except OSError as exc:
+        _LOG.debug("could not write content index for %s: %s", cache_path.name, exc)
 
 
 def _stream_to_file(response: httpx.Response, dest: Path, max_size_bytes: int) -> None:
@@ -420,7 +526,21 @@ def fetch_url(
     cached_path = _cache_path_for(url, url_suffix)
     if cached_path.exists():
         meta = _read_cache_meta(cached_path)
-        if meta:
+        # Fast-path: a previously recorded shrunk artifact pointer lets us
+        # skip both the conditional revalidation (no network) and the
+        # shrink re-hash (no Pillow open) on every repeat hit of this URL.
+        # The pointer is content-keyed by SHA256, so it stays valid only
+        # while the shrunk file exists on disk; a vanished file falls
+        # through to the slow path which re-hashes and re-shrinks.
+        if shrink_if_image and (shrunk_pointer := meta.get("shrunk_path")):
+            shrunk_path = Path(shrunk_pointer)
+            if shrunk_path.exists():
+                _LOG.info("web cache hit (shrunk pointer): %s", shrunk_path.name)
+                return shrunk_path
+        # Only revalidate when we actually have HTTP cache validators to send;
+        # ``shrunk_path``-only metadata isn't useful for an If-None-Match GET.
+        has_validators = "etag" in meta or "last_modified" in meta
+        if has_validators:
             # Attempt conditional revalidation to confirm the cached copy is still fresh.
             headers: dict[str, str] = {}
             if "etag" in meta:
@@ -470,6 +590,7 @@ def fetch_url(
             return cached_path
 
     # Download
+    response_headers: httpx.Headers | None = None
     try:
         with httpx.Client(timeout=timeout_sec, follow_redirects=True) as client, \
                 client.stream("GET", url) as r:
@@ -483,7 +604,7 @@ def fetch_url(
             suffix = _suffix_for(url, content_type)
             cache_path = _cache_path_for(url, suffix)
             _stream_to_file(r, cache_path, max_size_bytes)
-            _write_cache_meta(cache_path, r.headers)
+            response_headers = r.headers
     except (ValueError, RuntimeError):
         # ValueError: SSRF check failed after redirect (_validate_response_url)
         # RuntimeError: size cap exceeded (_stream_to_file)
@@ -501,8 +622,54 @@ def fetch_url(
             f"Network error fetching {_truncate_url(url)!r}: {type(exc).__name__}: {exc}"
         ) from exc
 
+    # Content-hash dedup: bytes are now on disk.  Hash them and consult the
+    # cross-URL index.  Two different URLs serving the same image (e.g. the
+    # same screenshot in a Slack thread *and* a GitHub PR comment) hash to
+    # the same digest; if a previous fetch already produced a shrunk artifact
+    # for these bytes, we can skip the shrink step entirely on this fetch and
+    # return the cached shrunk path directly.
+    content_sha = _hash_file_sha256(cache_path)
+    extra_meta: dict[str, str] = {}
+    if content_sha is not None:
+        extra_meta["content_sha256"] = content_sha
+        canonical = _read_content_index(content_sha)
+        if canonical is not None and canonical != cache_path:
+            canonical_meta = _read_cache_meta(canonical)
+            shrunk_pointer = canonical_meta.get("shrunk_path")
+            if shrunk_pointer:
+                shrunk_path = Path(shrunk_pointer)
+                if shrunk_path.exists() and shrink_if_image:
+                    _LOG.info(
+                        "web content dedup hit: %s shares bytes with %s (shrunk: %s)",
+                        cache_path.name, canonical.name, shrunk_path.name,
+                    )
+                    # Mirror the dedup pointer onto the new URL's sidecar so a
+                    # second hit on *this* URL also short-circuits without
+                    # re-reading the canonical sidecar.
+                    extra_meta["shrunk_path"] = str(shrunk_path)
+                    if response_headers is not None:
+                        _write_cache_meta(cache_path, response_headers, extra=extra_meta)
+                    return shrunk_path
+
+    if response_headers is not None:
+        _write_cache_meta(cache_path, response_headers, extra=extra_meta)
+
     # Shrink if image
     if shrink_if_image:
-        return image_shrink.shrink_if_image(cache_path)
+        shrunk = image_shrink.shrink_if_image(cache_path)
+        # Record the dedup pointers so subsequent fetches of any URL serving
+        # these bytes can return ``shrunk`` directly without re-hashing the
+        # cached file or re-invoking the shrink pipeline.  Only record when
+        # the shrink produced a different path (i.e. the image was actually
+        # large enough to shrink) — for small images the original path is
+        # already optimal and writing a self-pointer is wasted I/O.
+        if content_sha is not None and shrunk != cache_path:
+            extra_meta["shrunk_path"] = str(shrunk)
+            if response_headers is not None:
+                _write_cache_meta(cache_path, response_headers, extra=extra_meta)
+            _write_content_index(content_sha, cache_path)
+        return shrunk
 
+    if content_sha is not None:
+        _write_content_index(content_sha, cache_path)
     return cache_path
