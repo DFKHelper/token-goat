@@ -272,12 +272,33 @@ def _rename_with_retry(src: Path, dest: Path) -> None:
         raise last_exc
 
 
+def _open_restricted(tmp: Path) -> int:
+    """Open *tmp* for writing with owner-only permissions (0o600) on POSIX.
+
+    On POSIX, ``Path.write_text/write_bytes`` honours the process umask, which
+    means the temp file may be world-readable (e.g. 0o644 with the common 0o022
+    umask) for the brief window between creation and rename.  Session caches,
+    config files, and CLAUDE.md written by token-goat should not be visible to
+    other local users even transiently.
+
+    On Windows ``os.open`` with ``O_CREAT`` still works but ``os.chmod`` has no
+    meaningful effect (NTFS ACLs govern access), so we fall back to a plain open
+    there — the user-profile location already provides the needed isolation.
+    """
+    if sys.platform == "win32":
+        return os.open(str(tmp), os.O_WRONLY | os.O_CREAT | os.O_TRUNC)
+    return os.open(str(tmp), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+
+
 def atomic_write_text(path: Path, content: str) -> None:
     """Write *content* to *path* atomically via a temp file + rename.
 
     Avoids partial writes if the process is killed mid-flight.  Creates parent
     directories as needed.  On Windows, uses retry logic to handle the brief
     exclusive lock another process may hold immediately after opening the file.
+
+    On POSIX the temp file is created with owner-only permissions (0o600) so
+    it is never world-readable even during the brief window before the rename.
 
     This is the canonical implementation shared by :mod:`session` and
     :mod:`config` — both previously carried their own private copies.
@@ -288,7 +309,13 @@ def atomic_write_text(path: Path, content: str) -> None:
     tmp = path.with_name(f"{path.name}.{threading.get_ident()}.{time.monotonic_ns()}.tmp")
     path.parent.mkdir(parents=True, exist_ok=True)
     try:
-        tmp.write_text(content, encoding="utf-8")
+        fd = _open_restricted(tmp)
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as fh:
+                fh.write(content)
+        except Exception:
+            tmp.unlink(missing_ok=True)
+            raise
         _rename_with_retry(tmp, path)
     finally:
         tmp.unlink(missing_ok=True)
@@ -299,13 +326,22 @@ def atomic_write_bytes(path: Path, content: bytes) -> None:
 
     Equivalent to :func:`atomic_write_text` for binary content.  Creates parent
     directories as needed.  Uses the same retry-on-PermissionError strategy.
+
+    On POSIX the temp file is created with owner-only permissions (0o600) so
+    it is never world-readable even during the brief window before the rename.
     """
     # Same two-component naming as atomic_write_text: thread ID + monotonic_ns
     # prevent collisions between concurrent writers and rapid sequential calls.
     tmp = path.with_name(f"{path.name}.{threading.get_ident()}.{time.monotonic_ns()}.tmp")
     path.parent.mkdir(parents=True, exist_ok=True)
     try:
-        tmp.write_bytes(content)
+        fd = _open_restricted(tmp)
+        try:
+            with os.fdopen(fd, "wb") as fh:
+                fh.write(content)
+        except Exception:
+            tmp.unlink(missing_ok=True)
+            raise
         _rename_with_retry(tmp, path)
     finally:
         tmp.unlink(missing_ok=True)
