@@ -549,7 +549,7 @@ def cmd_map(
         False,
         "--compact",
         help="One line per file (no symbol detail). "
-             "Auto-engages below ~200 token budget. Use to force on a larger budget.",
+             "Auto-engages below ~300 token budget. Use to force on a larger budget.",
     ),
 ) -> None:
     """Generate a PageRank-ranked, token-budgeted overview of the current project."""
