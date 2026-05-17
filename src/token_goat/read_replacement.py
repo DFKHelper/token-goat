@@ -341,7 +341,7 @@ def _resolve_file_rel_db(project: Project, file_part: str) -> str | None:
             "SELECT rel_path FROM files WHERE rel_path LIKE ? ESCAPE '\\'",
             (f"%{_escape_like_pattern(file_part)}",),
         ).fetchall()
-        if len(rows) == 0:
+        if not rows:
             return None
         if len(rows) == 1:
             return rows[0]["rel_path"]
@@ -493,6 +493,16 @@ def _extract_snippet(
 
 
 
+def _pct_saved(snippet_bytes: int, full_bytes: int) -> float:
+    """Return the percentage of bytes saved by extracting *snippet_bytes* from *full_bytes*.
+
+    Returns 0.0 when *full_bytes* is zero to avoid division by zero.
+    """
+    if not full_bytes:
+        return 0.0
+    return 100.0 * max(0, full_bytes - snippet_bytes) / full_bytes
+
+
 def _read_file_lines(abs_path: Path) -> tuple[list[str], int] | None:
     """Read *abs_path*, split into lines, and return (lines, byte_size).
 
@@ -597,7 +607,7 @@ def read_symbol(
         end,
         snippet_bytes,
         full_bytes,
-        100.0 * max(0, full_bytes - snippet_bytes) / full_bytes if full_bytes else 0.0,
+        _pct_saved(snippet_bytes, full_bytes),
         elapsed,
     )
     return SymbolResult(
@@ -698,7 +708,7 @@ def read_section(
         end,
         snippet_bytes,
         full_bytes,
-        100.0 * max(0, full_bytes - snippet_bytes) / full_bytes if full_bytes else 0.0,
+        _pct_saved(snippet_bytes, full_bytes),
         elapsed,
     )
     return SectionResult(

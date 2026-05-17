@@ -49,14 +49,14 @@ def _scan_decl_block(lines: list[str], start: int, kind: str) -> tuple[list[Symb
     i = start
     n = len(lines)
     while i < n:
-        bstripped = lines[i].strip()
-        if bstripped == ")":
+        line_stripped = lines[i].strip()
+        if line_stripped == ")":
             break
-        if bstripped and not bstripped.startswith("//"):
-            bm = _IDENT_RE.match(bstripped)
-            if bm:
-                name = bm.group(1)
-                symbols.append(Symbol(name=name, kind=kind, line=i + 1, end_line=i + 1, signature=bstripped[:200]))
+        if line_stripped and not line_stripped.startswith("//"):
+            ident_match = _IDENT_RE.match(line_stripped)
+            if ident_match:
+                name = ident_match.group(1)
+                symbols.append(Symbol(name=name, kind=kind, line=i + 1, end_line=i + 1, signature=line_stripped[:200]))
         i += 1
     return symbols, i + 1  # skip past the closing ')'
 
