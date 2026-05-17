@@ -164,6 +164,30 @@ def parse(command: str) -> BashIntent:
     return BashIntent(kind="unknown")
 
 
+def _parse_line_count_flag(args: list[str], i: int) -> tuple[int | None, int]:
+    """Parse a line-count flag at position *i* and return ``(value, tokens_consumed)``.
+
+    Recognises three forms used by ``head`` and ``tail``:
+    - ``-n N`` / ``--lines N`` — two-token form; returns ``(N, 2)`` when the next
+      token exists and parses as an integer, else ``(None, 2)`` (still skips the
+      next token to avoid treating it as a positional argument).
+    - ``-nN`` (compact form, e.g. ``-n10``) — single-token; returns ``(N, 1)``.
+    - ``--lines=N`` — single-token with ``=``; returns ``(N, 1)``.
+
+    Returns ``(None, 0)`` when the token at *i* is not a line-count flag, so the
+    caller can fall through to the generic flag / positional-argument handling.
+    """
+    a = args[i]
+    if a in ("-n", "--lines"):
+        value = _try_parse_int(args[i + 1]) if i + 1 < len(args) else None
+        return value, 2
+    if a.startswith("-n") and len(a) > 2:
+        return _try_parse_int(a[2:]), 1
+    if a.startswith("--lines="):
+        return _try_parse_int(a.split("=", 1)[1]), 1
+    return None, 0
+
+
 def _parse_read(binary: str, args: list[str]) -> BashIntent:
     """Parse cat/head/tail/bat and scripted readers (sed/awk/perl) for the target path.
 
@@ -178,34 +202,20 @@ def _parse_read(binary: str, args: list[str]) -> BashIntent:
     if is_scripted and any(a == "--in-place" or a.startswith("-i") for a in args):
         return BashIntent(kind="unknown", reason=f"{binary} edits files in place")
 
-    offset: int | None = None
-    limit: int | None = None
-    positional_args: list[str] = []
     # Only head and tail support -n/--lines; pre-compute to avoid a frozenset
     # lookup on every iteration of the arg loop.
     is_line_count_binary = binary in ("head", "tail")
+    limit: int | None = None
+    positional_args: list[str] = []
     i = 0
     while i < len(args):
         a = args[i]
         if is_line_count_binary:
-            if a in ("-n", "--lines"):
-                if i + 1 < len(args):
-                    n = _try_parse_int(args[i + 1])
-                    if n is not None:
-                        limit = n
-                    i += 2
-                    continue
-            elif a.startswith("-n") and len(a) > 2:
-                n = _try_parse_int(a[2:])
-                if n is not None:
-                    limit = n
-                i += 1
-                continue
-            elif a.startswith("--lines="):
-                n = _try_parse_int(a.split("=", 1)[1])
-                if n is not None:
-                    limit = n
-                i += 1
+            value, consumed = _parse_line_count_flag(args, i)
+            if consumed:
+                if value is not None:
+                    limit = value
+                i += consumed
                 continue
         if a.startswith("-"):
             i += 1
@@ -230,7 +240,7 @@ def _parse_read(binary: str, args: list[str]) -> BashIntent:
             _MAX_PATH_BYTES,
         )
         return BashIntent(kind="unknown", reason="target path too long")
-    return BashIntent(kind="read", target_path=target_path, offset=offset, limit=limit)
+    return BashIntent(kind="read", target_path=target_path, offset=None, limit=limit)
 
 
 def _parse_grep(binary: str, args: list[str]) -> BashIntent:
