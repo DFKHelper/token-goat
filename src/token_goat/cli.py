@@ -25,7 +25,7 @@ with contextlib.suppress(AttributeError, OSError):
 import typer
 
 from . import config as config_mod
-from . import hooks_cli, read_commands
+from . import hooks_cli
 
 _LOG = logging.getLogger(__name__)
 
@@ -232,6 +232,8 @@ def symbol(
     elif results:
         _fmt_plain(results)
     else:
+        from . import read_commands  # noqa: PLC0415
+
         hint = read_commands._not_indexed_hint(proj.hash)
         if hint:
             typer.echo(hint)
@@ -279,6 +281,8 @@ def ref(
                 ctx = f"\033[2m{ctx}\033[0m"
             typer.echo(f"{row['file']}:{row['line']}: ref {name!r}{ctx}")
     else:
+        from . import read_commands  # noqa: PLC0415
+
         hint = read_commands._not_indexed_hint(proj.hash)
         if hint:
             typer.echo(hint)
@@ -368,6 +372,8 @@ def deps(
     Lists all modules and symbols that the given file imports, depends on, or
     references. Use ``--depth`` to control transitive depth (1=direct imports,
     0=unlimited recursion)."""
+    from . import read_commands  # noqa: PLC0415
+
     read_commands.deps(file, json_output=json_output, depth=depth)
 
 
@@ -379,6 +385,8 @@ def read(
     context_lines: int = typer.Option(0, "--context", "-c", help="Extra lines before/after"),
 ) -> None:
     """Read just <symbol> from <file>, not the whole file."""
+    from . import read_commands  # noqa: PLC0415
+
     read_commands.read(
         target=target,
         session_id=session_id,
@@ -395,6 +403,8 @@ def section(
     context_lines: int = typer.Option(0, "--context", "-c", help="Extra lines before/after"),
 ) -> None:
     """Extract just <heading> section from <file>, not the whole file."""
+    from . import read_commands  # noqa: PLC0415
+
     read_commands.section(
         target=target,
         session_id=session_id,
