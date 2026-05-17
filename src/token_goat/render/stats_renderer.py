@@ -303,6 +303,31 @@ def _render_sparkline(values: list[float], width: int = 8) -> str:
     return "".join(chars) + RESET
 
 
+# ── Shared share-fraction helper ─────────────────────────────────────────────
+
+
+def _token_or_byte_share(
+    item_tokens: int,
+    item_bytes: int,
+    total_tokens: int,
+    total_bytes: int,
+) -> float:
+    """Return the share fraction for one item relative to period totals.
+
+    Prefers the token denominator when the period has any token savings, falling
+    back to bytes when all token counts are zero (e.g. an image-only session).
+    Returns 0.0 when both denominators are zero.
+
+    Extracted to eliminate the identical 6-line if/elif/else block that appeared
+    in ``_render_by_day_section`` and ``_render_by_project_section``.
+    """
+    if total_tokens > 0:
+        return item_tokens / total_tokens
+    if total_bytes > 0:
+        return item_bytes / total_bytes
+    return 0.0
+
+
 # ── Section header helper ──────────────────────────────────────────────────────
 
 def _section_header(title: str, subtitle: str = "") -> list[str]:
@@ -691,12 +716,7 @@ def _render_by_day_section(stats: StatsData) -> list[str]:
     lines: list[str] = [*_section_header("By day (top 7)"), _table_header("date")]
 
     for d in stats.by_day:
-        if stats.totals.tokens > 0:
-            share = d.tokens / stats.totals.tokens
-        elif stats.totals.bytes > 0:
-            share = d.bytes / stats.totals.bytes
-        else:
-            share = 0.0
+        share = _token_or_byte_share(d.tokens, d.bytes, stats.totals.tokens, stats.totals.bytes)
         lines.append(_table_row(d.date, share, d.bytes, d.tokens, d.events, share))
 
     return lines
@@ -722,12 +742,7 @@ def _render_by_project_section(stats: StatsData) -> list[str]:
     lines: list[str] = [*_section_header("By project (top 5)"), _table_header("project")]
 
     for p in stats.by_project:
-        if project_total_tokens > 0:
-            share = p.tokens / project_total_tokens
-        elif project_total_bytes > 0:
-            share = p.bytes / project_total_bytes
-        else:
-            share = 0.0
+        share = _token_or_byte_share(p.tokens, p.bytes, project_total_tokens, project_total_bytes)
         color = _hash_color(p.hash)
         lines.append(_table_row(
             p.project, share, p.bytes, p.tokens, p.events, share,
