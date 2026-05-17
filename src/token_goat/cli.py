@@ -412,6 +412,14 @@ def read(
 ) -> None:
     """Read just <symbol> from <file>, not the whole file."""
     from . import read_commands  # noqa: PLC0415
+    from . import session as session_mod  # noqa: PLC0415
+
+    if session_id:
+        try:
+            session_mod.validate_session_id(session_id)
+        except ValueError as exc:
+            typer.echo(f"Error: invalid session ID: {exc}", err=True)
+            raise typer.Exit(1) from exc
 
     read_commands.read(
         target=target,
@@ -430,6 +438,14 @@ def section(
 ) -> None:
     """Extract just <heading> section from <file>, not the whole file."""
     from . import read_commands  # noqa: PLC0415
+    from . import session as session_mod  # noqa: PLC0415
+
+    if session_id:
+        try:
+            session_mod.validate_session_id(session_id)
+        except ValueError as exc:
+            typer.echo(f"Error: invalid session ID: {exc}", err=True)
+            raise typer.Exit(1) from exc
 
     read_commands.section(
         target=target,
@@ -446,6 +462,12 @@ def session_touched(
 ) -> None:
     """List files already read in the given Claude session."""
     from . import session as session_mod  # noqa: PLC0415
+
+    try:
+        session_mod.validate_session_id(session_id)
+    except ValueError as exc:
+        typer.echo(f"Error: invalid session ID: {exc}", err=True)
+        raise typer.Exit(1) from exc
 
     entries = session_mod.list_touched(session_id)
     if json_output:
@@ -479,6 +501,12 @@ def session_mark(
 ) -> None:
     """Manually mark a file/range as read for the given session. (Mostly used by hooks.)"""
     from . import session as session_mod  # noqa: PLC0415
+
+    try:
+        session_mod.validate_session_id(session_id)
+    except ValueError as exc:
+        typer.echo(f"Error: invalid session ID: {exc}", err=True)
+        raise typer.Exit(1) from exc
 
     session_mod.mark_file_read(session_id, file_path, offset or None, limit or None)
     typer.echo("ok")
@@ -862,6 +890,13 @@ def compact_hint(
     """
     from . import compact as compact_mod  # noqa: PLC0415
     from . import config as config_mod  # noqa: PLC0415
+    from . import session as session_mod  # noqa: PLC0415
+
+    try:
+        session_mod.validate_session_id(session_id)
+    except ValueError as exc:
+        typer.echo(f"Error: invalid session ID: {exc}", err=True)
+        raise typer.Exit(1) from exc
 
     cfg = config_mod.load().compact_assist
 
