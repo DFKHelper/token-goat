@@ -399,3 +399,108 @@ class TestSessionIdValidation:
     def test_reset_session_accepts_valid_id(self, tmp_data_dir):
         """reset_session with a valid ID must not raise even if file doesn't exist."""
         session.reset_session("valid-session-id")  # no error
+
+
+class TestResultCache:
+    """In-session result cache for read_symbol/read_section."""
+
+    def test_put_then_get_returns_same_result(self, tmp_data_dir):
+        """A stored result is returned by the next get with the same SHA."""
+        sid = "rc_session_1"
+        result = {"file": "foo.py", "symbol": "bar", "text": "def bar(): pass", "bytes_total": 100}
+        session.put_result_cache(sid, "foo.py", "bar", "symbol", "abc123sha", result)
+        got = session.get_result_cache(sid, "foo.py", "bar", "symbol", "abc123sha")
+        assert got is not None
+        assert got["text"] == "def bar(): pass"
+        assert got["symbol"] == "bar"
+
+    def test_sha_mismatch_returns_none(self, tmp_data_dir):
+        """SHA mismatch (file changed) invalidates the cached entry."""
+        sid = "rc_session_2"
+        result = {"file": "foo.py", "symbol": "bar", "text": "old"}
+        session.put_result_cache(sid, "foo.py", "bar", "symbol", "sha_old", result)
+        # Same key, different SHA → miss
+        assert session.get_result_cache(sid, "foo.py", "bar", "symbol", "sha_new") is None
+        # And the stale entry should have been evicted from the cache
+        cache = session.load(sid)
+        assert all("symbol" not in k or "bar" not in k for k in cache.result_cache)
+
+    def test_different_kinds_do_not_collide(self, tmp_data_dir):
+        """A symbol and a section sharing a (file, name) live in different slots."""
+        sid = "rc_session_3"
+        sym_result = {"text": "function body"}
+        sec_result = {"text": "section body"}
+        session.put_result_cache(sid, "f.md", "Intro", "symbol", "sha1", sym_result)
+        session.put_result_cache(sid, "f.md", "Intro", "section", "sha1", sec_result)
+        assert session.get_result_cache(sid, "f.md", "Intro", "symbol", "sha1")["text"] == "function body"
+        assert session.get_result_cache(sid, "f.md", "Intro", "section", "sha1")["text"] == "section body"
+
+    def test_capacity_evicts_oldest_fifo(self, tmp_data_dir):
+        """Filling past RESULT_CACHE_MAX evicts oldest entries in insertion order."""
+        sid = "rc_session_4"
+        # Fill to cap + 5
+        for i in range(session.RESULT_CACHE_MAX + 5):
+            session.put_result_cache(
+                sid, f"f{i}.py", "x", "symbol", "sha", {"text": f"r{i}"}
+            )
+        cache = session.load(sid)
+        # Should be at most RESULT_CACHE_MAX entries
+        assert len(cache.result_cache) <= session.RESULT_CACHE_MAX
+        # The very first insertion (f0.py) must have been evicted
+        assert session.get_result_cache(sid, "f0.py", "x", "symbol", "sha") is None
+        # The newest insertion must still be there
+        last_idx = session.RESULT_CACHE_MAX + 4
+        got = session.get_result_cache(sid, f"f{last_idx}.py", "x", "symbol", "sha")
+        assert got is not None
+        assert got["text"] == f"r{last_idx}"
+
+    def test_update_existing_key_does_not_evict(self, tmp_data_dir):
+        """Re-storing an existing key updates value without triggering FIFO eviction."""
+        sid = "rc_session_5"
+        # Fill exactly to cap
+        for i in range(session.RESULT_CACHE_MAX):
+            session.put_result_cache(
+                sid, f"f{i}.py", "x", "symbol", "sha", {"text": f"r{i}"}
+            )
+        # Update an existing entry (should be a no-op for eviction)
+        session.put_result_cache(sid, "f0.py", "x", "symbol", "sha", {"text": "updated"})
+        # f0 must still be present with updated text — it was not evicted
+        got = session.get_result_cache(sid, "f0.py", "x", "symbol", "sha")
+        assert got is not None
+        assert got["text"] == "updated"
+
+    def test_roundtrip_persists_across_loads(self, tmp_data_dir):
+        """A stored result survives a load() round-trip."""
+        sid = "rc_session_6"
+        session.put_result_cache(sid, "src/foo.py", "bar", "symbol", "sha9", {"text": "T"})
+        # Force a fresh load from disk
+        loaded = session.load(sid)
+        assert any("bar" in k for k in loaded.result_cache)
+        got = session.get_result_cache(sid, "src/foo.py", "bar", "symbol", "sha9")
+        assert got is not None
+        assert got["text"] == "T"
+
+    def test_invalid_session_id_is_a_noop(self, tmp_data_dir):
+        """An invalid session_id never raises; put is a no-op and get returns None."""
+        # Empty session ID should be silently ignored — never crash the read path
+        session.put_result_cache("", "f.py", "x", "symbol", "sha", {"text": "z"})
+        assert session.get_result_cache("", "f.py", "x", "symbol", "sha") is None
+
+    def test_unknown_kind_rejected(self, tmp_data_dir):
+        """Unknown kinds are rejected by put and never appear in the cache."""
+        sid = "rc_session_7"
+        session.put_result_cache(sid, "f.py", "x", "weird", "sha", {"text": "z"})
+        cache = session.load(sid)
+        assert cache.result_cache == {}
+
+    def test_get_returns_copy_not_reference(self, tmp_data_dir):
+        """Mutating the returned dict must not affect the stored entry."""
+        sid = "rc_session_8"
+        session.put_result_cache(sid, "f.py", "x", "symbol", "sha", {"text": "original"})
+        got = session.get_result_cache(sid, "f.py", "x", "symbol", "sha")
+        assert got is not None
+        got["text"] = "MUTATED"
+        # Second fetch must still see the original
+        again = session.get_result_cache(sid, "f.py", "x", "symbol", "sha")
+        assert again is not None
+        assert again["text"] == "original"

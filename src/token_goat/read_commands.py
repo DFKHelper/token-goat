@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import difflib
+import hashlib
 import json
 import logging
 import sqlite3
@@ -69,6 +70,38 @@ def _not_indexed_hint(project_hash: str) -> str | None:
             "run `token-goat index --full` again or check the logs.)"
         )
     return None
+
+
+# Maximum bytes hashed when computing a file-content SHA for the in-session
+# result cache.  Mirrors the 2 MB cap enforced by read_replacement._MAX_READ_BYTES
+# so the SHA is computed over exactly the contents that read_symbol/read_section
+# would extract from.  A file larger than this is skipped by the readers anyway,
+# so we never need to hash beyond the cap.
+_SHA_MAX_BYTES = 2_000_000
+
+
+def _file_sha1(abs_path: Path) -> str:
+    """Return the hex SHA-1 of the file's contents, or empty string on any I/O error.
+
+    Used as a cheap invalidation token for the in-session result cache: when
+    the SHA differs from the one stored at cache-write time, the cached slice
+    is treated as stale and recomputed.  An empty string is returned on
+    ``OSError`` so a missing or unreadable file simply skips the cache rather
+    than crashing the read path.
+
+    The SHA is computed over up to ``_SHA_MAX_BYTES`` (2 MB) — files larger than
+    that are rejected by the readers anyway, so hashing past the cap would
+    waste I/O.  SHA-1 is used because we only need collision resistance against
+    accidental same-length edits, not cryptographic strength; SHA-1 is roughly
+    2× faster than SHA-256 on the typical 5–50 KB source file.
+    """
+    try:
+        with abs_path.open("rb") as fh:
+            data = fh.read(_SHA_MAX_BYTES)
+    except OSError as exc:
+        _LOG.debug("_file_sha1: cannot read %s: %s", abs_path, exc)
+        return ""
+    return hashlib.sha1(data, usedforsecurity=False).hexdigest()
 
 
 # Max number of "did you mean…?" suggestions to surface on a missed lookup.
@@ -452,6 +485,40 @@ def _run_read_like_command(
         raise typer.Exit(0)
 
     assert file_target.project is not None  # guaranteed once rel_path is resolved
+
+    # In-session result cache (per Claude session).  Cache hit on
+    # (rel_path, item, kind, file_sha) avoids the DB round-trip and file read.
+    # context_lines is folded into the cache key because two reads with different
+    # context windows must not share a cached slice — they extract different text.
+    cache_kind = "section" if separator_label == "heading" else "symbol"
+    cache_item_key = f"{item_part}\x1ec={context_lines}"
+    cached_result: dict | None = None
+    file_sha = ""
+    if session_id:
+        abs_path = file_target.project.root / file_target.rel_path
+        file_sha = _file_sha1(abs_path)
+        if file_sha:
+            cached_result = session.get_result_cache(
+                session_id,
+                file_target.rel_path,
+                cache_item_key,
+                cache_kind,
+                file_sha,
+            )
+    if cached_result is not None and session_id:
+        _LOG.debug(
+            "%s cache hit: %s::%s (kind=%s)",
+            stat_kind, file_target.rel_path, item_part, cache_kind,
+        )
+        # Still mark the read so dedup hints see this access.  No stat is recorded
+        # for a cache hit — we already counted the savings on the original call.
+        session.mark_file_read(session_id, file_target.rel_path, symbol=item_part)
+        if json_output:
+            typer.echo(json.dumps(cached_result, indent=2))
+        else:
+            typer.echo(cached_result["text"])
+        return
+
     result = reader(file_target.project, file_target.rel_path, item_part, context_lines=context_lines)
     if result is None:
         _label_lower = missing_label.lower()
@@ -482,6 +549,19 @@ def _run_read_like_command(
 
     if session_id:
         session.mark_file_read(session_id, file_target.rel_path, symbol=item_part)
+        # Store the freshly-computed result for future same-session lookups.
+        # ``file_sha`` was computed up front above (when session_id was provided);
+        # if it is empty here, the file could not be read for hashing, so we
+        # skip caching rather than store an entry that would never invalidate.
+        if file_sha:
+            session.put_result_cache(
+                session_id,
+                file_target.rel_path,
+                cache_item_key,
+                cache_kind,
+                file_sha,
+                dict(result),
+            )
 
     bytes_saved = result.get("bytes_saved", 0)
     tokens_saved = bytes_saved // 4

@@ -1586,3 +1586,83 @@ class TestSurgicalReadSuggestionsOnMiss:
         combined = result.output + (result.stderr or "")
         assert "No matches for" in combined
         assert "Did you mean" not in combined
+
+
+# ---------------------------------------------------------------------------
+# In-session result cache integration (read_commands -> session)
+# ---------------------------------------------------------------------------
+
+
+class TestInSessionResultCache:
+    """Verify the CLI populates and serves from the per-session result cache."""
+
+    def test_second_read_hits_cache(self, indexed_ts_cli):
+        """A second `read --session-id` for the same target uses the cached slice."""
+        from typer.testing import CliRunner
+
+        from token_goat import session
+        from token_goat.cli import app
+
+        runner = CliRunner()
+        sid = "rc_cli_session_1"
+        # First call populates cache
+        result1 = runner.invoke(app, ["read", "--session-id", sid, "index.ts::greet"])
+        assert result1.exit_code == 0
+        # The session cache should now contain exactly one result-cache entry
+        cache = session.load(sid)
+        assert len(cache.result_cache) == 1
+        # Second call must also succeed and return identical text
+        result2 = runner.invoke(app, ["read", "--session-id", sid, "index.ts::greet"])
+        assert result2.exit_code == 0
+        assert result1.output == result2.output
+
+    def test_file_edit_invalidates_cache(self, indexed_ts_cli):
+        """Editing the file changes its SHA; the next read recomputes."""
+        from typer.testing import CliRunner
+
+        from token_goat import session
+        from token_goat.cli import app
+
+        proj_root, _proj = indexed_ts_cli
+        runner = CliRunner()
+        sid = "rc_cli_session_2"
+        # Prime the cache
+        result1 = runner.invoke(app, ["read", "--session-id", sid, "index.ts::greet"])
+        assert result1.exit_code == 0
+        cache = session.load(sid)
+        assert len(cache.result_cache) == 1
+        original_sha = next(iter(cache.result_cache.values())).file_sha
+
+        # Modify the indexed file on disk — SHA changes
+        index_ts = proj_root / "index.ts"
+        index_ts.write_text(
+            index_ts.read_text(encoding="utf-8") + "\n// trailing comment\n",
+            encoding="utf-8",
+        )
+        # Next read recomputes; old entry should be invalidated and replaced
+        result2 = runner.invoke(app, ["read", "--session-id", sid, "index.ts::greet"])
+        assert result2.exit_code == 0
+        cache_after = session.load(sid)
+        # The cache should hold at most one entry for this (file, item, kind);
+        # its SHA must reflect the new file contents.
+        new_entries = [
+            e for e in cache_after.result_cache.values()
+            if e.kind == "symbol"
+        ]
+        assert new_entries, "expected a refreshed cache entry after the edit"
+        assert all(e.file_sha != original_sha for e in new_entries)
+
+    def test_no_session_id_skips_cache(self, indexed_ts_cli):
+        """Without --session-id the cache is never consulted or populated."""
+        from typer.testing import CliRunner
+
+        from token_goat import session
+        from token_goat.cli import app
+
+        runner = CliRunner()
+        result = runner.invoke(app, ["read", "index.ts::greet"])
+        assert result.exit_code == 0
+        # No session writes should have occurred
+        # (load any session_id; none should reference index.ts in result_cache)
+        cache = session.load("rc_cli_session_unused")
+        assert cache.result_cache == {}
