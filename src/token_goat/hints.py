@@ -7,9 +7,29 @@ from pathlib import Path
 from typing import TypedDict
 
 from . import db, session
+from .hooks_common import sanitize_log_str
 from .project import find_project
 
 _LOG = logging.getLogger("token_goat.hints")
+
+# Max length for a file path embedded in an LLM-context hint string.
+# Paths longer than this are tail-truncated; embedded newlines/CRs are always
+# stripped because they would split a single hint line into fake separate entries
+# when the hint is injected as ``additionalContext`` in the PreToolUse response.
+_MAX_HINT_PATH_LEN = 300
+
+
+def _sanitize_hint_path(p: str) -> str:
+    """Strip newlines/CRs and cap length for a path embedded in an LLM hint string.
+
+    Hint strings are injected verbatim into ``additionalContext`` which the LLM
+    sees as plain text.  An attacker-controlled path containing ``\\n`` or ``\\r``
+    (written into the session JSON by a previous hook invocation) could split a
+    single hint into what looks like multiple separate hint entries, injecting
+    fake "Note:" lines into the model's context.  This helper neutralises that
+    vector before any path reaches a hint f-string.
+    """
+    return sanitize_log_str(p, max_len=_MAX_HINT_PATH_LEN)
 
 
 class _SymbolRow(TypedDict):
@@ -182,7 +202,11 @@ def build_read_hint(
 
     # Compute fname once; it is used in multiple debug log calls below and
     # forwarded to _hint_from_cache / _hint_from_index which also need it.
-    fname = Path(file_path).name
+    # Both are sanitized here so every downstream hint f-string is safe: a path
+    # with embedded newlines read from a crafted session JSON would otherwise
+    # split a hint line into fake separate "Note:" entries in the LLM's context.
+    fname = _sanitize_hint_path(Path(file_path).name)
+    file_path = _sanitize_hint_path(file_path)
 
     # 1. Check session cache first.
     entry = session.get_file_entry(session_id, file_path, cache=cache)
@@ -222,8 +246,10 @@ def _hint_from_cache(
     """Build hint when the file was already accessed this session."""
     # Accept pre-computed fname from build_read_hint to avoid a redundant
     # Path allocation on the hot pre-read path (one Path per hook call saved).
+    # Sanitize here too for direct callers that bypass build_read_hint.
     if fname is None:
-        fname = Path(file_path).name
+        fname = _sanitize_hint_path(Path(file_path).name)
+    file_path = _sanitize_hint_path(file_path)
 
     # Case: file accessed only via token-goat read <file>::<symbol>.
     # A suggestion, not a realized saving → tokens_saved=0.
@@ -328,8 +354,9 @@ def _hint_from_index(
     """Build hint when file is large and has indexed symbols but not yet cached."""
     # Accept a pre-computed fname to avoid a redundant Path allocation on the
     # hot pre-read path; fall back to computing it here for direct callers.
+    # Sanitize here too for direct callers that bypass build_read_hint.
     if fname is None:
-        fname = Path(file_path).name
+        fname = _sanitize_hint_path(Path(file_path).name)
     if cwd is None:
         _LOG.debug("_hint_from_index: skipped for %s (no cwd)", fname)
         return None
@@ -373,7 +400,9 @@ def _hint_from_index(
 
     full_tokens = _est_tokens_from_lines(n_lines)
     n_total = len(symbols)
-    first_sym_name = symbols[0]["name"]
+    # Sanitize symbol names: they come from source-file content stored in the DB
+    # and could contain embedded newlines if the parser extracted a multi-line token.
+    first_sym_name = _sanitize_hint_path(symbols[0]["name"])
 
     # A *suggestion*, not a realized saving. tokens_saved=0: if the agent acts
     # on it, `token-goat read` records the real `read_replacement` stat — counting

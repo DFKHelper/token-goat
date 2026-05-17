@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import json
 import math
+import re
 import shutil
 from datetime import date, timedelta
 from pathlib import Path
@@ -28,6 +29,23 @@ from typing import TypedDict, cast
 
 from .ansi import RESET, RGB, C, bg, fg, lerp_rgb, pad_l, pad_r, vlen
 from .types import DayStat, KindStat, StatsData
+
+# Regex to strip ANSI/VT escape sequences from strings before they are
+# interpolated into ANSI-prefixed terminal output lines.  A project root path
+# stored in the stats DB could contain embedded ESC bytes that, if left intact,
+# would inject rogue colour codes or cursor-control sequences into the terminal.
+_ANSI_ESCAPE_RE = re.compile(r"\x1b(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])")
+
+
+def _strip_ansi(s: str) -> str:
+    """Remove ANSI/VT escape sequences from *s*.
+
+    Project root paths are stored in the stats DB from harness payloads and
+    could theoretically contain embedded ESC bytes.  Stripping them before
+    interpolation into ANSI-prefixed f-strings prevents rogue colour or
+    cursor-control injection into the terminal output.
+    """
+    return _ANSI_ESCAPE_RE.sub("", s)
 
 
 class _InsightsMessages(TypedDict):
@@ -703,7 +721,7 @@ def _render_by_project_section(stats: StatsData) -> list[str]:
             name_prefix=f"{fg(*color)}●{RESET} ",
             name_color=C.TEXT_PRIMARY,
         ))
-        lines.append(f"{_M}  {fg(*C.TEXT_DIM)}└─ {p.hash}  {p.path}{RESET}")
+        lines.append(f"{_M}  {fg(*C.TEXT_DIM)}└─ {p.hash}  {_strip_ansi(p.path)}{RESET}")
 
     return lines
 

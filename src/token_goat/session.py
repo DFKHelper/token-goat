@@ -623,6 +623,8 @@ def mark_file_read(
     return cache
 
 
+_MAX_GREP_PATTERN_LEN = 1024  # cap before storing to prevent session-file bloat
+
 def mark_grep(
     session_id: str,
     pattern: str,
@@ -636,7 +638,10 @@ def mark_grep(
     if cache.unavailable:
         return cache
     now = time.time()
-    cache.greps.append(GrepEntry(pattern=pattern, path=path, ts=now, result_count=result_count))
+    # Cap pattern length before storage: an unbounded pattern from a harness
+    # payload could inflate the session JSON file on every Grep call.
+    safe_pattern = pattern[:_MAX_GREP_PATTERN_LEN] if len(pattern) > _MAX_GREP_PATTERN_LEN else pattern
+    cache.greps.append(GrepEntry(pattern=safe_pattern, path=path, ts=now, result_count=result_count))
     cache.last_activity_ts = now
     cache._invalidate_json_cache()
     save(cache)
