@@ -395,14 +395,7 @@ def fetch_url(
     Sends ETag / If-Modified-Since conditional requests when cache metadata is
     available; returns the cached file unchanged on HTTP 304 Not Modified.
     """
-    try:
-        import httpx  # noqa: PLC0415 — deferred to avoid 110 ms startup cost on every hook fire
-    except ModuleNotFoundError as exc:
-        _LOG.error(
-            "httpx is not installed; web fetch is unavailable — install token-goat[web] to enable it: %s",
-            exc,
-        )
-        raise
+    import httpx  # noqa: PLC0415 — deferred to avoid startup cost on every hook fire
 
     if not _is_ssrf_safe(url):
         raise ValueError(f"URL blocked by SSRF safety check: {_truncate_url(url)!r}")
