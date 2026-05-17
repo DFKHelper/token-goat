@@ -32,6 +32,7 @@ import sys
 import threading
 import time
 from dataclasses import asdict, dataclass, field
+from dataclasses import fields as dataclass_fields
 from operator import attrgetter
 from typing import Any, TypedDict, cast
 
@@ -81,7 +82,7 @@ class GrepEntry:
 
 
 # Computed once at import time — GrepEntry fields never change at runtime.
-_GREP_FIELDS: frozenset[str] = frozenset(GrepEntry.__dataclass_fields__)  # type: ignore[attr-defined]
+_GREP_FIELDS: frozenset[str] = frozenset(f.name for f in dataclass_fields(GrepEntry))
 
 # attrgetter key for sorting FileEntry objects by last_read_ts.
 # Defined at module level to avoid allocating a new lambda on every list_touched() call.

@@ -359,9 +359,12 @@ def _atomic_write_core(path: Path, content: str | bytes, mode: str) -> None:
     try:
         fd = _open_restricted(tmp)
         try:
-            kwargs = {"encoding": "utf-8"} if "b" not in mode else {}
-            with os.fdopen(fd, mode, **kwargs) as fh:
-                fh.write(content)  # type: ignore[arg-type]
+            if isinstance(content, bytes):
+                with os.fdopen(fd, "wb") as fh:
+                    fh.write(content)
+            else:
+                with os.fdopen(fd, "w", encoding="utf-8") as fh:
+                    fh.write(content)
         except Exception as _write_err:  # noqa: BLE001 — any write error: clean up tmp then re-raise
             tmp.unlink(missing_ok=True)
             _LOG.warning("atomic write failed for %s: %s", path.name, _write_err)
