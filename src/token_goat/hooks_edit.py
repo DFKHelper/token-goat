@@ -20,7 +20,6 @@ from __future__ import annotations
 
 __all__ = ["post_edit"]
 
-from . import paths
 from .hooks_common import (
     CONTINUE,
     HookPayload,
@@ -43,6 +42,8 @@ def _nudge_worker_if_down() -> None:
     Failures are logged but not raised (fail-soft hook pattern).
     """
     import time  # noqa: PLC0415
+
+    from . import paths  # noqa: PLC0415
 
     try:
         hb_path = paths.worker_heartbeat_path()

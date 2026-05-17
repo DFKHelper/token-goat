@@ -27,7 +27,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Literal, ParamSpec, TypeVar, cast
 
-from . import hooks_edit, hooks_fetch, hooks_read, hooks_session, paths
+from . import paths
 from .hooks_common import CONTINUE, HookPayload, HookResponse, sanitize_log_str
 
 #: Valid harness identifiers used by :func:`normalize_payload`, :func:`denormalize_response`,
@@ -309,11 +309,62 @@ def fail_soft(handler: _HookHandler) -> _HookHandler:
     # assert the identity to satisfy _HookHandler at call sites.
     return cast(_HookHandler, wrapper)
 
-session_start = fail_soft(hooks_session.session_start)
-pre_read = fail_soft(hooks_read.pre_read)
-pre_fetch = fail_soft(hooks_fetch.pre_fetch)
-post_edit = fail_soft(hooks_edit.post_edit)
-post_read = fail_soft(hooks_read.post_read)
+# Hook submodules are imported on first dispatch, not at module load time.
+# Each event needs only one submodule, so a Bash tool call that triggers
+# ``pre-read`` should never pay the import cost of ``hooks_session`` or
+# ``hooks_fetch``.  ``_HANDLER_LOOKUP`` maps event names to
+# ``(submodule_name, attribute_name)`` pairs; ``_resolve_handler`` imports the
+# submodule on demand and wraps the bare handler in ``fail_soft``.  The wrapped
+# handler is cached so the import is paid at most once per process.
+_HANDLER_LOOKUP: dict[str, tuple[str, str]] = {
+    "session-start": ("hooks_session", "session_start"),
+    "pre-read": ("hooks_read", "pre_read"),
+    "pre-fetch": ("hooks_fetch", "pre_fetch"),
+    "post-edit": ("hooks_edit", "post_edit"),
+    "post-read": ("hooks_read", "post_read"),
+}
+
+_HANDLER_CACHE: dict[str, Callable[[HookPayload], HookResponse]] = {}
+
+
+def _resolve_handler(event: str) -> Callable[[HookPayload], HookResponse] | None:
+    """Return the ``fail_soft``-wrapped handler for *event*, importing it lazily."""
+    cached = _HANDLER_CACHE.get(event)
+    if cached is not None:
+        return cached
+    lookup = _HANDLER_LOOKUP.get(event)
+    if lookup is None:
+        return None
+    submodule_name, attr_name = lookup
+    import importlib  # noqa: PLC0415
+
+    submodule = importlib.import_module(f".{submodule_name}", package=__package__)
+    bare_handler = cast(Callable[[HookPayload], HookResponse], getattr(submodule, attr_name))
+    wrapped = fail_soft(bare_handler)
+    _HANDLER_CACHE[event] = wrapped
+    return wrapped
+
+
+def __getattr__(name: str) -> object:
+    """Module-level lazy attribute access for backwards-compatible exports.
+
+    Existing code (and tests) import ``hooks_cli.session_start``,
+    ``hooks_cli.pre_read``, etc. directly.  Lazy-resolve those names through
+    ``_resolve_handler`` so the relevant submodule is imported only when the
+    attribute is first accessed — the dispatcher path itself never reads them.
+    """
+    event_map = {
+        "session_start": "session-start",
+        "pre_read": "pre-read",
+        "pre_fetch": "pre-fetch",
+        "post_edit": "post-edit",
+        "post_read": "post-read",
+    }
+    if name in event_map:
+        handler = _resolve_handler(event_map[name])
+        if handler is not None:
+            return handler
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
 # --- dispatcher entry point used by cli.py ---
@@ -368,12 +419,33 @@ def pre_compact(payload: HookPayload) -> HookResponse:
     return {"continue": True, "systemMessage": manifest}
 
 
+def _make_lazy_proxy(event: str) -> Callable[[HookPayload], HookResponse]:
+    """Return a tiny proxy that resolves and calls the real handler lazily.
+
+    Storing these proxies in ``EVENTS`` (a plain dict) keeps the public
+    ``hooks_cli.EVENTS`` interface compatible with ``mock.patch.dict`` and any
+    ``EVENTS[event]`` lookup, while still deferring the submodule import until
+    the *first call* of that proxy.  After the first call the resolved
+    ``fail_soft``-wrapped handler is cached in ``_HANDLER_CACHE`` so subsequent
+    dispatches incur only a dict lookup plus a function call.
+    """
+    def _proxy(payload: HookPayload) -> HookResponse:
+        handler = _resolve_handler(event)
+        if handler is None:
+            return CONTINUE()
+        return handler(payload)
+    _proxy.__name__ = f"_lazy_{event.replace('-', '_')}"
+    return _proxy
+
+
+# ``EVENTS`` is a plain dict for backwards compatibility (mock.patch.dict, in
+# tests).  Each value is a lazy proxy that imports its submodule on first call.
 EVENTS: dict[str, Callable[[HookPayload], HookResponse]] = {
-    "session-start": session_start,
-    "pre-read": pre_read,
-    "pre-fetch": pre_fetch,
-    "post-edit": post_edit,
-    "post-read": post_read,
+    "session-start": _make_lazy_proxy("session-start"),
+    "pre-read": _make_lazy_proxy("pre-read"),
+    "pre-fetch": _make_lazy_proxy("pre-fetch"),
+    "post-edit": _make_lazy_proxy("post-edit"),
+    "post-read": _make_lazy_proxy("post-read"),
     "pre-compact": pre_compact,
 }
 

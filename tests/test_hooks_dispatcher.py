@@ -454,3 +454,86 @@ class TestSetupLogging:
                 log.removeHandler(h)
             for h in saved:
                 log.addHandler(h)
+
+
+def test_unknown_event_dispatch_is_fast():
+    """Unknown-event dispatch must not trigger any hook-submodule imports.
+
+    The dispatcher fires on every Read/Write/Edit/Bash tool call.  An unknown
+    event (or a no-op early-return path) should pay only the cost of a dict
+    lookup, a log call, and the timing wrapper — well under 10 ms.
+
+    Catches regressions where someone re-eagerly imports ``hooks_session``,
+    ``hooks_read``, ``hooks_fetch``, or ``hooks_edit`` at module top-level,
+    which would force every dispatch to load ``project``, ``session``,
+    ``hashlib``, and ``dataclasses`` even when those handlers never run.
+    """
+    import time
+
+    # Warm any one-time costs (logger setup, etc.).
+    hooks_cli.dispatch("unknown-event-warm", {})
+
+    samples_ms = []
+    for _ in range(20):
+        t0 = time.monotonic()
+        hooks_cli.dispatch("unknown-event", {})
+        samples_ms.append((time.monotonic() - t0) * 1000)
+    median = sorted(samples_ms)[len(samples_ms) // 2]
+    # 10 ms ceiling: a no-op event has nothing to do, so anything slower
+    # signals accidental work being done in the hot path.
+    assert median < 10.0, f"unknown-event dispatch took {median:.2f} ms (median); expected < 10"
+
+
+def test_hook_submodules_not_imported_at_dispatcher_import():
+    """Importing ``hooks_cli`` must not eagerly load any per-event handler module.
+
+    The dispatcher fires on every tool call, so its module-load cost is paid
+    on every cold start.  Eagerly importing ``hooks_session`` (which pulls in
+    ``project`` and ``hashlib``) or ``hooks_read`` (which pulls in ``session``
+    and ``dataclasses``) regresses startup latency by 10-15 ms per tool call.
+
+    The test runs in a subprocess with a fresh interpreter so import-cache
+    pollution from earlier tests does not mask a regression.
+    """
+    import subprocess
+    import sys
+
+    script = (
+        "import sys\n"
+        "import token_goat.hooks_cli  # noqa\n"
+        "loaded = sorted(m for m in sys.modules if m.startswith('token_goat.'))\n"
+        "print('\\n'.join(loaded))\n"
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", script],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    loaded = set(result.stdout.split())
+    forbidden = {
+        "token_goat.hooks_session",
+        "token_goat.hooks_read",
+        "token_goat.hooks_fetch",
+        "token_goat.hooks_edit",
+        "token_goat.session",
+        "token_goat.project",
+    }
+    eagerly_loaded = loaded & forbidden
+    assert not eagerly_loaded, (
+        f"hooks_cli eagerly imported {eagerly_loaded}; "
+        "all per-event handler modules must be lazy-loaded on first dispatch"
+    )
+
+
+def test_handler_lookup_caches_after_first_dispatch():
+    """Second dispatch of the same event must hit the cache, not re-import."""
+    # Clear cache to start fresh.
+    hooks_cli._HANDLER_CACHE.clear()
+    assert "pre-read" not in hooks_cli._HANDLER_CACHE
+    hooks_cli.dispatch("pre-read", {"tool_name": "Other"})
+    assert "pre-read" in hooks_cli._HANDLER_CACHE
+    cached_handler = hooks_cli._HANDLER_CACHE["pre-read"]
+    hooks_cli.dispatch("pre-read", {"tool_name": "Other"})
+    # Same object: no re-wrapping, no re-import.
+    assert hooks_cli._HANDLER_CACHE["pre-read"] is cached_handler
