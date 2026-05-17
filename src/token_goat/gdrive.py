@@ -193,6 +193,97 @@ _MAX_DOWNLOAD_BYTES = 100 * 1024 * 1024  # 100 MB — same order of magnitude as
 _MAX_SAFE_FILENAME_CHARS = 200
 
 
+def _build_local_cache_path(file_id: str, name: str, cache_dir: Path) -> Path:
+    """Derive a safe, cache-dir-bounded local path for a Drive file.
+
+    Strips path separators and control characters from the Drive display name,
+    truncates to filesystem-safe length, and verifies the resulting path does
+    not escape the cache directory.
+    """
+    # Allow only alphanumeric, dot, hyphen, underscore — everything else is stripped.
+    safe_name = "".join(c for c in name if c.isalnum() or c in "._-")
+    if not safe_name:
+        safe_name = file_id
+    safe_name = safe_name[:_MAX_SAFE_FILENAME_CHARS]
+    local_path = cache_dir / f"{file_id}_{safe_name}"
+    try:
+        local_path.resolve().relative_to(cache_dir.resolve())
+    except ValueError:
+        raise RuntimeError(f"Computed path escapes cache directory: {local_path}") from None
+    return local_path
+
+
+def _download_to_cache(
+    file_id: str,
+    mime: str,
+    local_path: Path,
+    service: object,
+    max_size_bytes: int,
+    MediaIoBaseDownload: type,  # type: ignore[valid-type]
+) -> Path:
+    """Download a Drive file into the local cache and return the final local path.
+
+    Handles Google Workspace files (exported as PDF) and binary files (downloaded
+    directly).  Enforces *max_size_bytes* per-chunk during streaming and again
+    after the download completes.  Uses an atomic write so a crash never leaves a
+    truncated cache entry.
+
+    Returns the (possibly adjusted) *local_path* — it gains a ``.pdf`` suffix for
+    Workspace exports that had no extension.
+    """
+    # Google Workspace formats can't be downloaded directly — export as PDF.
+    if mime.startswith("application/vnd.google-apps"):
+        request = service.files().export_media(fileId=file_id, mimeType="application/pdf")  # type: ignore[attr-defined]
+        if not local_path.suffix:
+            local_path = local_path.with_suffix(".pdf")
+    else:
+        request = service.files().get_media(fileId=file_id)  # type: ignore[attr-defined]
+
+    buf = io.BytesIO()
+    downloader = MediaIoBaseDownload(buf, request)
+    done = False
+    t_download_start = time.monotonic()
+    try:
+        while not done:
+            _chunk_status, done = downloader.next_chunk()
+            # Check accumulated size after each chunk to avoid holding the full
+            # file in memory before detecting an oversize condition.
+            if buf.tell() > max_size_bytes:
+                raise RuntimeError(
+                    f"Drive file {file_id!r} too large during download: "
+                    f"{buf.tell()} bytes exceeds limit of {max_size_bytes} bytes"
+                )
+    except RuntimeError:
+        raise
+    except Exception as e:  # noqa: BLE001 — Google API can raise many undocumented exceptions
+        raise RuntimeError(f"Download failed for {file_id}: {e}") from e
+
+    downloaded_bytes = buf.tell()
+    if downloaded_bytes > max_size_bytes:
+        raise RuntimeError(
+            f"Drive file {file_id!r} too large: {downloaded_bytes} bytes "
+            f"exceeds limit of {max_size_bytes} bytes"
+        )
+
+    t_write_start = time.monotonic()
+    download_elapsed = t_write_start - t_download_start
+    try:
+        local_path.parent.mkdir(parents=True, exist_ok=True)
+        # Atomic write: write to a temp file then rename so a killed/crashed
+        # process never leaves a truncated cache file that looks valid.
+        paths.atomic_write_bytes(local_path, buf.getvalue())
+        written_bytes = local_path.stat().st_size
+        write_elapsed = time.monotonic() - t_write_start
+        _LOG.info(
+            "gdrive downloaded: file_id=%s name=%s bytes=%d download_elapsed=%.3fs write_elapsed=%.3fs",
+            file_id, sanitize_log_str(local_path.name), written_bytes, download_elapsed, write_elapsed,
+        )
+    except OSError as e:
+        raise RuntimeError(f"Failed to write downloaded file to {local_path}: {e}") from e
+
+    return local_path
+
+
 def fetch_file(file_id: str, *, shrink_if_image: bool = True, max_size_bytes: int = _MAX_DOWNLOAD_BYTES) -> Path:
     """Download a Drive file. Return the local cached path.
 
@@ -215,10 +306,8 @@ def fetch_file(file_id: str, *, shrink_if_image: bool = True, max_size_bytes: in
         ) from exc
 
     cache_dir = image_shrink.ensure_cache_dir(paths.gdrive_cache_dir())
-
     service = build("drive", "v3", credentials=creds, cache_discovery=False)
 
-    # Get metadata first
     t_meta_start = time.monotonic()
     try:
         meta = service.files().get(fileId=file_id, fields="id, name, mimeType, size").execute()
@@ -250,91 +339,21 @@ def fetch_file(file_id: str, *, shrink_if_image: bool = True, max_size_bytes: in
         except (ValueError, TypeError):
             pass  # non-numeric size field — proceed to download
 
-    # Build a safe local filename — remove path separators and control chars
-    # Allow only alphanumeric, dot, hyphen, underscore
-    safe_name = "".join(c for c in name if c.isalnum() or c in "._-")
-    if not safe_name:
-        safe_name = file_id
-    # Truncate to reasonable length to prevent filesystem issues
-    safe_name = safe_name[:_MAX_SAFE_FILENAME_CHARS]
-    local_path = cache_dir / f"{file_id}_{safe_name}"
-
-    # Final safety check: ensure the path is still within cache_dir
-    try:
-        local_path.resolve().relative_to(cache_dir.resolve())
-    except ValueError:
-        raise RuntimeError(f"Computed path escapes cache directory: {local_path}") from None
+    local_path = _build_local_cache_path(file_id, name, cache_dir)
 
     if local_path.exists():
         cached_size = local_path.stat().st_size
         _LOG.info("gdrive cache hit: file_id=%s name=%s size=%d elapsed=%.3fs",
                   file_id, sanitize_log_str(local_path.name), cached_size, time.monotonic() - t_fetch_start)
     else:
-        # Google Workspace formats can't be downloaded directly — export as PDF
-        if mime.startswith("application/vnd.google-apps"):
-            export_mime = "application/pdf"
-            request = service.files().export_media(fileId=file_id, mimeType=export_mime)
-            if not local_path.suffix:
-                local_path = local_path.with_suffix(".pdf")
-        else:
-            request = service.files().get_media(fileId=file_id)
+        local_path = _download_to_cache(file_id, mime, local_path, service, max_size_bytes, MediaIoBaseDownload)
 
-        buf = io.BytesIO()
-        downloader = MediaIoBaseDownload(buf, request)
-        done = False
-        t_download_start = time.monotonic()
-        try:
-            while not done:
-                _chunk_status, done = downloader.next_chunk()
-                # Check accumulated size after each chunk to avoid holding the full
-                # file in memory before detecting an oversize condition.
-                if buf.tell() > max_size_bytes:
-                    raise RuntimeError(
-                        f"Drive file {file_id!r} too large during download: "
-                        f"{buf.tell()} bytes exceeds limit of {max_size_bytes} bytes"
-                    )
-        except RuntimeError:
-            raise
-        except Exception as e:  # noqa: BLE001 — Google API can raise many undocumented exceptions
-            raise RuntimeError(f"Download failed for {file_id}: {e}") from e
-
-        downloaded_bytes = buf.tell()
-        if downloaded_bytes > max_size_bytes:
-            raise RuntimeError(
-                f"Drive file {file_id!r} too large: {downloaded_bytes} bytes "
-                f"exceeds limit of {max_size_bytes} bytes"
-            )
-
-        t_write_start = time.monotonic()
-        download_elapsed = t_write_start - t_download_start
-        try:
-            local_path.parent.mkdir(parents=True, exist_ok=True)
-            # Atomic write: write to a temp file then rename so a killed/crashed
-            # process never leaves a truncated cache file that looks valid.
-            paths.atomic_write_bytes(local_path, buf.getvalue())
-            written_bytes = local_path.stat().st_size
-            write_elapsed = time.monotonic() - t_write_start
-            _LOG.info(
-                "gdrive downloaded: file_id=%s name=%s bytes=%d download_elapsed=%.3fs write_elapsed=%.3fs",
-                file_id, sanitize_log_str(local_path.name), written_bytes, download_elapsed, write_elapsed,
-            )
-        except OSError as e:
-            raise RuntimeError(f"Failed to write downloaded file to {local_path}: {e}") from e
-
-    # Shrink if image
-    if shrink_if_image:
-        result_path = image_shrink.shrink_if_image(local_path)
-        _LOG.debug(
-            "gdrive fetch_file complete: file_id=%s total_elapsed=%.3fs path=%s",
-            file_id, time.monotonic() - t_fetch_start, sanitize_log_str(result_path.name),
-        )
-        return result_path
-
+    result_path = image_shrink.shrink_if_image(local_path) if shrink_if_image else local_path
     _LOG.debug(
         "gdrive fetch_file complete: file_id=%s total_elapsed=%.3fs path=%s",
-        file_id, time.monotonic() - t_fetch_start, sanitize_log_str(local_path.name),
+        file_id, time.monotonic() - t_fetch_start, sanitize_log_str(result_path.name),
     )
-    return local_path
+    return result_path
 
 
 def run_oauth_oob_flow(client_secrets_path: Path) -> Path:

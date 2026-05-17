@@ -298,13 +298,12 @@ def shrink(src_path: Path) -> Path | None:
             elapsed,
         )
         return final_path
-    except (OSError, MemoryError, ValueError, TypeError) as e:
-        elapsed = time.time() - t0
-        _LOG.warning("shrink failed for %s: %s (%.3fs)", src_path, e, elapsed, exc_info=True)
-        return None
     except Exception as e:  # noqa: BLE001 — PIL raises many undocumented exception subclasses
         elapsed = time.time() - t0
-        _LOG.warning("shrink failed for %s (unexpected %s): %s (%.3fs)", src_path, type(e).__name__, e, elapsed, exc_info=True)
+        _LOG.warning(
+            "shrink failed for %s (%s): %s (%.3fs)",
+            src_path, type(e).__name__, e, elapsed, exc_info=True,
+        )
         return None
 
 
