@@ -2,11 +2,14 @@
 from __future__ import annotations
 
 import contextlib
+import logging
 import os
 import sys
 import threading
 import time
 from pathlib import Path
+
+_LOG = logging.getLogger("token_goat.paths")
 
 # Size cap for a structured daily log file. The daily logs are date-named and
 # age out via the worker's 7-day retention sweep, so they are already bounded
@@ -72,11 +75,9 @@ def _safe_env_dir(value: str) -> Path | None:
         return None
     # Reject relative paths: ``Path("../../tmp")`` is relative, ``Path("/tmp")`` is not.
     if not p.is_absolute():
-        import logging  # noqa: PLC0415
-        logging.getLogger("token_goat.paths").warning(
-            "env dir override rejected (not absolute): %r", stripped
-        )
+        _LOG.warning("env dir override rejected (not absolute): %r", stripped)
         return None
+    _LOG.debug("env dir accepted: %r", stripped)
     return p
 
 
@@ -101,14 +102,27 @@ def _default_data_dir() -> Path:
     if sys.platform == "win32":
         raw = os.environ.get("LOCALAPPDATA", "")
         base_path = _safe_env_dir(raw) if raw else None
-        base = str(base_path) if base_path is not None else os.path.expanduser("~")
-        return Path(base) / "dfk-helper" / "token-goat"
+        if base_path is not None:
+            result = base_path / "dfk-helper" / "token-goat"
+            _LOG.debug("data dir resolved via LOCALAPPDATA: %s", result)
+        else:
+            result = Path(os.path.expanduser("~")) / "dfk-helper" / "token-goat"
+            _LOG.debug("data dir resolved via home fallback (LOCALAPPDATA absent/invalid): %s", result)
+        return result
     if sys.platform == "darwin":
-        return Path.home() / "Library" / "Application Support" / "token-goat"
+        result = Path.home() / "Library" / "Application Support" / "token-goat"
+        _LOG.debug("data dir resolved via macOS default: %s", result)
+        return result
     # Linux / BSD / WSL — honour XDG_DATA_HOME
     xdg = os.environ.get("XDG_DATA_HOME", "")
     base_dir = _safe_env_dir(xdg) if xdg else None
-    return (base_dir if base_dir is not None else Path.home() / ".local" / "share") / "token-goat"
+    if base_dir is not None:
+        result = base_dir / "token-goat"
+        _LOG.debug("data dir resolved via XDG_DATA_HOME: %s", result)
+    else:
+        result = Path.home() / ".local" / "share" / "token-goat"
+        _LOG.debug("data dir resolved via XDG fallback (~/.local/share): %s", result)
+    return result
 
 
 def data_dir() -> Path:
@@ -348,8 +362,9 @@ def _atomic_write_core(path: Path, content: str | bytes, mode: str) -> None:
             kwargs = {"encoding": "utf-8"} if "b" not in mode else {}
             with os.fdopen(fd, mode, **kwargs) as fh:
                 fh.write(content)  # type: ignore[arg-type]
-        except Exception:  # noqa: BLE001 — any write error: clean up tmp then re-raise
+        except Exception as _write_err:  # noqa: BLE001 — any write error: clean up tmp then re-raise
             tmp.unlink(missing_ok=True)
+            _LOG.warning("atomic write failed for %s: %s", path.name, _write_err)
             raise
         _rename_with_retry(tmp, path)
     finally:

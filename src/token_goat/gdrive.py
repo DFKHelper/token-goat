@@ -250,6 +250,7 @@ def _validate_mime_type(mime: str, file_id: str) -> str:
     if not _MIME_TYPE_RE.match(mime):
         _LOG.warning("gdrive: mimeType %r for file %s failed validation; treating as octet-stream", mime, file_id)
         return "application/octet-stream"
+    _LOG.debug("gdrive: mimeType accepted: %s for file %s", sanitize_log_str(mime), file_id)
     return mime
 
 
