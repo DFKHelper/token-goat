@@ -7,7 +7,7 @@ import sqlite3
 from collections import defaultdict, deque
 from collections.abc import Callable, Sequence
 from pathlib import Path
-from typing import TypedDict
+from typing import NamedTuple, TypedDict
 
 import typer
 
@@ -294,27 +294,38 @@ def _format_dependency_line(file_rel: str, symbols: set[str]) -> str:
     return f"  - {file_rel} ({count} {noun})"
 
 
-def _resolve_file_target(file_part: str) -> tuple[Project | None, str | None, Project | None]:
+class _FileTarget(NamedTuple):
+    """Result of resolving a file-name pattern to a concrete project-relative path.
+
+    Attributes:
+        project: The project that owns the resolved file, or ``None`` if not found.
+        rel_path: Project-relative path of the resolved file, or ``None`` if not found.
+        current_project: The project rooted at the shell's cwd (may differ from
+            ``project`` when the cross-project fallback matched a foreign project).
+            Callers compare ``project != current_project`` to detect cross-project hits
+            and emit an appropriate hint.
+    """
+
+    project: Project | None
+    rel_path: str | None
+    current_project: Project | None
+
+
+def _resolve_file_target(file_part: str) -> _FileTarget:
     """Resolve a file name pattern to a concrete project-relative path.
 
     First attempts resolution in the current project; if not found, searches across
-    all indexed projects. Returns (project, rel_path, current_project). rel_path is
-    None if file not found; project is the one owning that file (or None if not found
-    in any project).
-
-    The cross-project fallback exists so that ``token-goat read`` and
-    ``token-goat section`` can reach files in ~/.claude/skills/ or other
+    all indexed projects via the cross-project fallback so that ``token-goat read``
+    and ``token-goat section`` can reach files in ~/.claude/skills/ or other
     marker-free directories indexed with ``token-goat index --root``, regardless
-    of which project the shell's cwd belongs to.  ``current_proj`` is preserved
-    as the third return value so callers can tell whether the file came from a
-    foreign project (``proj != current_proj``) and emit an appropriate hint.
+    of which project the shell's cwd belongs to.
     """
     proj = find_project(Path.cwd())
     if proj is not None:
         rel = read_replacement.resolve_file_rel(proj, file_part)
         if rel is not None:
             _LOG.debug("resolved %r -> %s (current project %s)", file_part, rel, proj.hash[:8])
-            return proj, rel, proj
+            return _FileTarget(project=proj, rel_path=rel, current_project=proj)
         _LOG.debug("file %r not found in current project %s; trying cross-project fallback", file_part, proj.hash[:8])
     else:
         _LOG.debug("no current project detected for cwd; trying cross-project fallback for %r", file_part)
@@ -322,9 +333,9 @@ def _resolve_file_target(file_part: str) -> tuple[Project | None, str | None, Pr
     cross = read_replacement.find_in_all_projects(file_part)
     if cross is not None:
         _LOG.info("cross-project fallback: resolved %r -> %s (project %s)", file_part, cross[1], cross[0].hash[:8])
-        return cross[0], cross[1], proj
+        return _FileTarget(project=cross[0], rel_path=cross[1], current_project=proj)
     _LOG.debug("file %r not found in any indexed project", file_part)
-    return None, None, proj
+    return _FileTarget(project=None, rel_path=None, current_project=proj)
 
 
 def _run_read_like_command(
@@ -368,7 +379,7 @@ def _run_read_like_command(
     file_part, _, item_part = target.partition("::")
 
     try:
-        proj, rel, current_proj = _resolve_file_target(file_part)
+        file_target = _resolve_file_target(file_part)
     except read_replacement.ProjectIndexUnavailable as exc:
         _emit_read_error(
             code=exc.code,
@@ -381,40 +392,40 @@ def _run_read_like_command(
         _emit_ambiguous_file_match(file_part, exc.candidates, json_output=json_output)
         raise typer.Exit(0) from None
 
-    if rel is None:
-        _emit_file_not_found_error(file_part, current_proj, json_output=json_output)
+    if file_target.rel_path is None:
+        _emit_file_not_found_error(file_part, file_target.current_project, json_output=json_output)
         raise typer.Exit(0)
 
-    assert proj is not None  # guaranteed once rel is resolved
-    result = reader(proj, rel, item_part, context_lines=context_lines)
+    assert file_target.project is not None  # guaranteed once rel_path is resolved
+    result = reader(file_target.project, file_target.rel_path, item_part, context_lines=context_lines)
     if result is None:
         _label_lower = missing_label.lower()
         _emit_read_error(
             code=f"{_label_lower}_not_found",
-            message=f"{missing_label} not found: {item_part} (in {rel})",
+            message=f"{missing_label} not found: {item_part} (in {file_target.rel_path})",
             json_output=json_output,
             file_part=file_part,
-            rel_path=rel,
+            rel_path=file_target.rel_path,
             item=item_part,
             item_kind=_label_lower,
         )
         raise typer.Exit(0)
 
     if session_id:
-        session.mark_file_read(session_id, rel, symbol=item_part)
+        session.mark_file_read(session_id, file_target.rel_path, symbol=item_part)
 
     bytes_saved = result.get("bytes_saved", 0)
     tokens_saved = bytes_saved // 4
     _LOG.debug(
         "%s served: %s::%s bytes_saved=%d tokens_saved=%d",
-        stat_kind, rel, item_part, bytes_saved, tokens_saved,
+        stat_kind, file_target.rel_path, item_part, bytes_saved, tokens_saved,
     )
     db.record_stat(
-        proj.hash,
+        file_target.project.hash,
         stat_kind,
         tokens_saved=tokens_saved,
         bytes_saved=bytes_saved,
-        detail=f"{rel}::{item_part}",
+        detail=f"{file_target.rel_path}::{item_part}",
     )
 
     if json_output:
@@ -430,7 +441,7 @@ def deps(
 ) -> None:
     """Show dependency graph for file."""
     try:
-        proj, rel, current_proj = _resolve_file_target(file)
+        file_target = _resolve_file_target(file)
     except read_replacement.ProjectIndexUnavailable as exc:
         _emit_read_error(
             code=exc.code,
@@ -440,16 +451,16 @@ def deps(
         )
         return
 
-    if rel is None:
-        _emit_file_not_found_error(file, current_proj, json_output=json_output)
+    if file_target.rel_path is None:
+        _emit_file_not_found_error(file, file_target.current_project, json_output=json_output)
         return
 
-    assert proj is not None
-    with db.open_project(proj.hash) as conn:
-        outgoing, incoming, unresolved = _collect_dependency_graph(conn, rel)
+    assert file_target.project is not None
+    with db.open_project(file_target.project.hash) as conn:
+        outgoing, incoming, unresolved = _collect_dependency_graph(conn, file_target.rel_path)
         transitive: dict[str, _DepNode] = {}
         if depth != 1:
-            transitive = _collect_transitive_outgoing(conn, rel, max_depth=depth)
+            transitive = _collect_transitive_outgoing(conn, file_target.rel_path, max_depth=depth)
 
     outgoing_edge_count = sum(len(v) for v in outgoing.values())
     outgoing_file_count = len(outgoing)
@@ -457,14 +468,14 @@ def deps(
     incoming_file_count = len(incoming)
     _LOG.debug(
         "deps graph for %s: out=%d files/%d edges in=%d files/%d edges unresolved=%d transitive=%d",
-        rel, outgoing_file_count, outgoing_edge_count,
+        file_target.rel_path, outgoing_file_count, outgoing_edge_count,
         incoming_file_count, incoming_edge_count,
         len(unresolved), len(transitive),
     )
 
     if json_output:
         payload: dict[str, object] = {
-            "file": rel,
+            "file": file_target.rel_path,
             "depth": depth,
             "dependency_file_count": outgoing_file_count,
             "dependency_edge_count": outgoing_edge_count,
@@ -491,7 +502,7 @@ def deps(
 
     outgoing_summary = _edge_summary(outgoing_file_count, outgoing_edge_count)
     incoming_summary = _edge_summary(incoming_file_count, incoming_edge_count)
-    typer.echo(f"Dependency graph for {rel}")
+    typer.echo(f"Dependency graph for {file_target.rel_path}")
     typer.echo(f"Dependencies ({outgoing_summary}):")
     if outgoing:
         for dep_rel, symbols in sorted(outgoing.items(), key=_key_dep_by_size):
@@ -505,7 +516,7 @@ def deps(
             typer.echo(f"Transitive dependencies (depth 2–{depth or '∞'}, {len(transitive_only)} more files):")
             for dep_rel, info in sorted(transitive_only.items(), key=_key_transitive_by_depth):
                 indent = "    " * (info["depth"] - 1)
-                via_note = f"  via {info['via']}" if info["via"] != rel else ""
+                via_note = f"  via {info['via']}" if info["via"] != file_target.rel_path else ""
                 typer.echo(f"{indent}{_format_dependency_line(dep_rel, info['symbols'])}{via_note}")
 
     typer.echo(f"Dependents ({incoming_summary}):")
