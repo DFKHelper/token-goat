@@ -637,10 +637,15 @@ def install_mac_autostart() -> tuple[bool, str]:
     plist_path.write_text(plist_xml, encoding="utf-8")
 
     # Unload first (idempotent — ignore errors if not loaded yet)
-    subprocess.run(
+    unload_r = subprocess.run(
         ["launchctl", "unload", str(plist_path)],
         capture_output=True,
         timeout=10,
+    )
+    _LOG.debug(
+        "launchctl unload %s: exit=%d",
+        LAUNCHD_PLIST_NAME,
+        unload_r.returncode,
     )
     try:
         r = subprocess.run(
@@ -650,9 +655,12 @@ def install_mac_autostart() -> tuple[bool, str]:
         )
         if r.returncode != 0:
             err = (r.stderr or b"").decode(errors="replace").strip()
+            _LOG.warning("launchctl load %s failed (exit=%d): %s", LAUNCHD_PLIST_NAME, r.returncode, err)
             return False, f"launchctl load failed: {err}"
+        _LOG.info("LaunchAgent installed and loaded: %s", plist_path)
         return True, f"LaunchAgent installed: {plist_path}"
     except (FileNotFoundError, subprocess.TimeoutExpired) as e:
+        _LOG.warning("launchctl unavailable for %s: %s", LAUNCHD_PLIST_NAME, e)
         return False, f"launchctl unavailable: {e}"
 
 
@@ -674,6 +682,7 @@ def uninstall_mac_autostart() -> list[str]:
         try:
             plist_path.unlink()
             removed.append(str(plist_path))
+            _LOG.info("removed LaunchAgent plist: %s", plist_path)
         except OSError as e:
             _LOG.warning("failed to remove LaunchAgent plist: %s", e)
     return removed
@@ -946,6 +955,7 @@ def unpatch_settings_json() -> str:
         current["permissions"] = perms
 
     _write_settings_json(settings_path, current)
+    _LOG.info("unpatch_settings_json: wrote %s", settings_path)
     return str(settings_path)
 
 
