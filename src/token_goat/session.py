@@ -32,7 +32,6 @@ import sys
 import threading
 import time
 from dataclasses import asdict, dataclass, field
-from dataclasses import fields as dataclass_fields
 from operator import attrgetter
 from typing import Any, TypedDict, cast
 
@@ -80,9 +79,6 @@ class GrepEntry:
     ts: float
     result_count: int | None = None  # if known
 
-
-# Computed once at import time — GrepEntry fields never change at runtime.
-_GREP_FIELDS: frozenset[str] = frozenset(f.name for f in dataclass_fields(GrepEntry))
 
 # attrgetter key for sorting FileEntry objects by last_read_ts.
 # Defined at module level to avoid allocating a new lambda on every list_touched() call.
@@ -324,6 +320,12 @@ def _fresh_cache(session_id: str, *, unavailable: bool = False) -> SessionCache:
 def _normalize_path(p: str) -> str:
     """Normalize a path for use as a cache key. Forward slashes; lowercase drive on Windows.
 
+    Drive letters must be lowercased because the harness and the hook dispatcher
+    can spawn separate processes that observe the same path with different cases
+    (e.g. ``C:\\foo`` vs ``c:\\foo``).  Without normalization, post-read hooks
+    writing ``C:\\`` and pre-read hooks reading ``c:\\`` miss the cache entirely,
+    making hint deduplication ineffective for the most common Windows paths.
+
     Avoids constructing a Path object when the string contains no backslashes,
     which is the common case for absolute POSIX paths and already-normalized keys.
     The Path() round-trip was only needed to collapse mixed separators; a plain
@@ -455,6 +457,10 @@ def save(cache: SessionCache) -> None:
     for delay in (0.0, 0.05, 0.15):
         if delay:
             time.sleep(delay)
+        # _FILE_LOCK is acquired inside the retry loop, not outside, so that a
+        # sibling thread waiting to retry does not hold the lock while sleeping.
+        # Cross-process safety comes from atomic_write_text (write-to-temp +
+        # rename), so the lock only needs to serialize same-process writers.
         with _FILE_LOCK:
             try:
                 paths.atomic_write_text(
