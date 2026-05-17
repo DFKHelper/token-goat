@@ -1,48 +1,13 @@
 """Tests for image-shrink integration in the pre_read hook — Phase 12."""
 from __future__ import annotations
 
-import random
 from pathlib import Path
 
 from hook_helpers import assert_continue as _assert_continue
+from hook_helpers import make_large_jpeg as _make_large_jpeg
+from hook_helpers import make_small_jpeg as _make_small_jpeg
 
 from token_goat import hooks_cli, image_shrink
-
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
-
-def _make_large_jpeg(tmp_path: Path) -> Path:
-    """Synthesize a >100 KB JPEG for hook tests."""
-    from PIL import Image
-
-    p = tmp_path / "hook_test_large.jpg"
-    img = Image.new("RGB", (1600, 1200))
-    pixels = [
-        (random.randint(0, 255), random.randint(0, 255), random.randint(0, 255))
-        for _ in range(1600 * 1200)
-    ]
-    img.putdata(pixels)
-    img.save(p, "JPEG", quality=95)
-
-    # Fall back to BMP-renamed-to-jpg if JPEG compression got too small
-    if p.stat().st_size <= image_shrink.SIZE_THRESHOLD_BYTES:
-        img.save(p.with_suffix(".bmp"), "BMP")
-        p.with_suffix(".bmp").rename(p)
-
-    return p
-
-
-def _make_small_jpeg(tmp_path: Path) -> Path:
-    """Synthesize a tiny JPEG below threshold."""
-    from PIL import Image
-
-    p = tmp_path / "hook_test_small.jpg"
-    img = Image.new("RGB", (32, 32), (100, 150, 200))
-    img.save(p, "JPEG")
-    return p
-
 
 # ---------------------------------------------------------------------------
 # 11. Large image → hook returns updatedInput with shrunken path

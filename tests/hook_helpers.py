@@ -7,12 +7,96 @@ on all Python/pytest configurations.
 Usage::
 
     from hook_helpers import assert_continue, assert_deny, run_hook_subprocess
+    from hook_helpers import make_image, make_large_jpeg, make_small_jpeg
 """
 from __future__ import annotations
 
 import json
+import random
 import subprocess
 import sys
+from pathlib import Path
+
+
+def make_image(path: Path, width: int, height: int, mode: str = "RGB") -> Path:
+    """Create a synthetic image at *path* using Pillow.
+
+    Shared by ``test_image_shrink.py`` and ``test_hooks_image.py`` so the
+    pixel-generation logic is not duplicated across both modules.
+
+    Args:
+        path:   Destination file path. The suffix determines the format hint
+                used by the caller; this function saves RGB as JPEG and RGBA
+                as PNG regardless of the extension.
+        width:  Image width in pixels.
+        height: Image height in pixels.
+        mode:   Pillow color mode — ``"RGB"`` or ``"RGBA"``.
+
+    Returns:
+        *path* (unchanged) after the file has been written.
+    """
+    from PIL import Image
+
+    img = Image.new(mode, (width, height))
+    if mode == "RGB":
+        pixels = [
+            (random.randint(0, 255), random.randint(0, 255), random.randint(0, 255))
+            for _ in range(width * height)
+        ]
+        img.putdata(pixels)
+    elif mode == "RGBA":
+        pixels = [
+            (random.randint(0, 255), random.randint(0, 255), random.randint(0, 255), 200)
+            for _ in range(width * height)
+        ]
+        img.putdata(pixels)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if mode == "RGB":
+        img.save(path, "JPEG", quality=95)
+    else:
+        img.save(path, "PNG")
+    return path
+
+
+def make_large_jpeg(tmp_path: Path, *, name: str = "large.jpg") -> Path:
+    """Return a path to a synthetic >100 KB JPEG in *tmp_path*.
+
+    Creates a 1600×1200 image filled with random pixel data.  If JPEG
+    compression somehow produces a file under the threshold (unlikely but
+    possible on some environments), falls back to BMP so the size guarantee
+    always holds.
+
+    Shared by ``test_image_shrink.py`` and ``test_hooks_image.py``.
+    """
+    from token_goat import image_shrink
+
+    p = tmp_path / name
+    make_image(p, 1600, 1200, mode="RGB")
+    if p.stat().st_size <= image_shrink.SIZE_THRESHOLD_BYTES:
+        # BMP is uncompressed — guaranteed to be large enough.
+        bmp = p.with_suffix(".bmp")
+        from PIL import Image
+        img = Image.new("RGB", (1600, 1200))
+        img.putdata([
+            (random.randint(0, 255), random.randint(0, 255), random.randint(0, 255))
+            for _ in range(1600 * 1200)
+        ])
+        img.save(bmp, "BMP")
+        bmp.rename(p)
+    return p
+
+
+def make_small_jpeg(tmp_path: Path, *, name: str = "small.jpg") -> Path:
+    """Return a path to a synthetic sub-threshold JPEG in *tmp_path*.
+
+    Creates a 50×50 image; the resulting JPEG is well under
+    ``image_shrink.SIZE_THRESHOLD_BYTES``.
+
+    Shared by ``test_image_shrink.py`` and ``test_hooks_image.py``.
+    """
+    p = tmp_path / name
+    make_image(p, 50, 50, mode="RGB")
+    return p
 
 
 def run_hook_subprocess(event: str, payload: dict, *, timeout: int = 30) -> dict:
