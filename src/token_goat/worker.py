@@ -5,6 +5,7 @@ import contextlib
 import hashlib
 import json
 import logging
+import operator
 import os
 import sqlite3
 import subprocess
@@ -674,7 +675,7 @@ def evict_image_cache_if_over_limit() -> tuple[int, int]:
     _LOG.warning("image cache %.1f MB exceeds limit %.1f MB; starting LRU eviction",
                 total_bytes / (1024 * 1024), IMAGE_CACHE_LIMIT / (1024 * 1024))
     # Sort oldest-accessed first so the least-recently-used files are evicted first.
-    cache_entries.sort(key=lambda entry: entry[1])
+    cache_entries.sort(key=operator.itemgetter(1))
     bytes_freed = 0
     files_freed = 0
     for f, _, size in cache_entries:

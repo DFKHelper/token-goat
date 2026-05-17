@@ -438,10 +438,13 @@ def _summarize_file(
     # For a file with 200 symbols and max_symbols=8 this is O(N log 8) vs O(N log N),
     # typically 3-5x faster.  The key tuple is (priority, name) so the order matches
     # the previous sorted() output exactly.
+    # Pre-bind KIND_PRIORITY.get to a local to avoid a global lookup + attribute
+    # access on every comparison inside nsmallest (called once per symbol).
+    _kp_get_sym = KIND_PRIORITY.get
     top_n = heapq.nsmallest(
         max_symbols * 4,  # over-fetch to have room to deduplicate duplicates
         symbols,
-        key=lambda ks: (KIND_PRIORITY.get(ks[0], 99), ks[1]),
+        key=lambda ks: (_kp_get_sym(ks[0], 99), ks[1]),
     )
     # Build top_symbols with a set for O(1) duplicate detection
     top_symbols: list[tuple[str, str]] = []
@@ -606,7 +609,9 @@ def _load_and_rank(project: Project) -> _RankedProjectData | None:
         ranks = {rel: float(info["size"]) for rel, info in map_worthy_files.items()}
     t_rank = time.monotonic()
 
-    ranked = sorted(map_worthy_files.items(), key=lambda kv: ranks.get(kv[0], 0.0), reverse=True)
+    # Pre-bind ranks.get to avoid attribute lookup on every sort comparison.
+    _ranks_get = ranks.get
+    ranked = sorted(map_worthy_files.items(), key=lambda kv: _ranks_get(kv[0], 0.0), reverse=True)
     filtered_count = total_file_count - len(map_worthy_files)
     _LOG.debug(
         "_load_and_rank: project=%s files=%d/%d (filtered=%d) db=%.3fs pagerank=%.3fs total=%.3fs",
