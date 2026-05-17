@@ -237,14 +237,38 @@ def pre_tool_use_with_context(additional_context: str) -> HookResponse:
     return {"continue": True, "hookSpecificOutput": hso}
 
 
+# Unicode bidirectional control characters that can cause log viewers to
+# display misleading text by overriding rendering direction.  A malicious
+# filename containing U+202E (RIGHT-TO-LEFT OVERRIDE) could make "evil.exe"
+# appear as "exe.live" in a terminal or log viewer.  Strip them all.
+_BIDI_CONTROLS = (
+    "‎",  # LEFT-TO-RIGHT MARK
+    "‏",  # RIGHT-TO-LEFT MARK
+    "‪",  # LEFT-TO-RIGHT EMBEDDING
+    "‫",  # RIGHT-TO-LEFT EMBEDDING
+    "‬",  # POP DIRECTIONAL FORMATTING
+    "‭",  # LEFT-TO-RIGHT OVERRIDE
+    "‮",  # RIGHT-TO-LEFT OVERRIDE
+    "⁦",  # LEFT-TO-RIGHT ISOLATE
+    "⁧",  # RIGHT-TO-LEFT ISOLATE
+    "⁨",  # FIRST STRONG ISOLATE
+    "⁩",  # POP DIRECTIONAL ISOLATE
+)
+
+
 def sanitize_log_str(value: str, max_len: int = 200) -> str:
     """Sanitize a user-controlled string before embedding it in a log message.
 
     Strips embedded newlines and carriage returns that could inject fake log
-    entries into the log file, and truncates to *max_len* to prevent log
-    flooding.  The returned string is safe to pass to any %-style log call.
+    entries into the log file.  Also removes Unicode bidirectional control
+    characters (U+200E/F, U+202A-E, U+2066-2069) that can cause log viewers
+    and terminals to display misleading text by overriding rendering direction.
+    Truncates to *max_len* to prevent log flooding.  The returned string is
+    safe to pass to any %-style log call.
     """
     sanitized = value.replace("\n", "\\n").replace("\r", "\\r")
+    for ch in _BIDI_CONTROLS:
+        sanitized = sanitized.replace(ch, "")
     if len(sanitized) > max_len:
         sanitized = sanitized[:max_len] + "…"
     return sanitized
