@@ -344,14 +344,41 @@ def semantic(
     query: str = typer.Argument(...),
     k: int = typer.Option(5, "-k", help="Top-k results"),
     json_output: bool = typer.Option(False, "--json"),
+    max_distance: float = typer.Option(
+        -1.0,
+        "--max-distance",
+        help=(
+            "Effective-distance threshold; results above this are filtered out. "
+            "Negative value (default) uses the built-in threshold; pass a large "
+            "number (e.g. 99) to disable filtering."
+        ),
+    ),
+    no_rerank: bool = typer.Option(
+        False,
+        "--no-rerank",
+        help="Disable verbatim-token boost and generated-path demotion.",
+    ),
 ) -> None:
     """Semantic search using local embeddings (fastembed + sqlite-vec)."""
     from . import embeddings  # noqa: PLC0415
 
     proj = _require_project()
 
+    # Negative sentinel means "use library default".  Anything >= 0 is treated
+    # as an explicit threshold; pass a large value to effectively disable.
+    threshold: float | None = (
+        embeddings.DEFAULT_DISTANCE_THRESHOLD if max_distance < 0 else max_distance
+    )
+
     try:
-        hits = embeddings.semantic_search(proj, query, k=k)
+        hits = embeddings.semantic_search(
+            proj,
+            query,
+            k=k,
+            max_distance=threshold,
+            boost_verbatim=not no_rerank,
+            demote_generated=not no_rerank,
+        )
     except embeddings.EmbeddingsUnavailable as e:
         _warn(
             f"embeddings unavailable ({e}). Try `token-goat index --embeddings` first, "

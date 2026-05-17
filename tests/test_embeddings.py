@@ -245,8 +245,13 @@ def test_cli_semantic_with_stub_embeddings(ts_project, monkeypatch):
     emb.index_project_embeddings(ts_project)
 
     monkeypatch.chdir(ts_project.root)
+    # The stub model produces ~uniform cosine distances (~1.28) for any
+    # non-exact text, which sits above the production threshold of 1.2.
+    # Pass a generous threshold so this test exercises CLI output, not the
+    # threshold filter (covered separately).
     result = CliRunner().invoke(
-        cli.app, ["semantic", "user service greeting", "-k", "3"],
+        cli.app, ["semantic", "user service greeting", "-k", "3",
+                  "--max-distance", "99"],
         catch_exceptions=False,
     )
     assert result.exit_code == 0
@@ -297,12 +302,192 @@ def test_cli_semantic_with_embeddings(ts_project, monkeypatch):
 
     monkeypatch.chdir(ts_project.root)
     runner = CliRunner()
+    # See test_cli_semantic_with_stub_embeddings for why we relax the threshold.
     result = runner.invoke(
         cli.app,
-        ["semantic", "hello name greeting", "-k", "3"],
+        ["semantic", "hello name greeting", "-k", "3",
+         "--max-distance", "99"],
         catch_exceptions=False,
     )
     assert result.exit_code == 0
     # Should print file:line-line (kind, d=...) format
     assert "index.ts" in result.output
     assert "d=" in result.output
+
+
+# ---------------------------------------------------------------------------
+# Re-rank helpers: pure-function unit tests (no DB, no model)
+# ---------------------------------------------------------------------------
+
+def test_is_generated_path_segment_match():
+    """_is_generated_path matches whole POSIX segments, not substrings."""
+    assert emb._is_generated_path("node_modules/foo/bar.js") is True
+    assert emb._is_generated_path("a/dist/x.js") is True
+    assert emb._is_generated_path("src/__pycache__/x.pyc") is True
+    assert emb._is_generated_path("a/.venv/lib/x.py") is True
+    # Windows-style paths in stored rel_paths must also match.
+    assert emb._is_generated_path("a\\node_modules\\b.js") is True
+    # Substring of a generated segment must NOT trigger (e.g. ``my_dist.py``).
+    assert emb._is_generated_path("src/my_dist.py") is False
+    assert emb._is_generated_path("src/distributed/x.py") is False
+    assert emb._is_generated_path("") is False
+
+
+def test_extract_query_tokens_splits_case_and_drops_short():
+    """Camel/Pascal/snake tokens split; tokens < _MIN_TOKEN_LEN dropped."""
+    toks = emb._extract_query_tokens("RateLimiter retry of N items")
+    assert "rate" in toks
+    assert "limiter" in toks
+    assert "ratelimiter" in toks
+    assert "retry" in toks
+    # "of" / "n" should be dropped (under 3 chars).
+    assert "of" not in toks
+    assert "n" not in toks
+
+
+def test_extract_query_tokens_empty():
+    """Empty / whitespace queries produce an empty token set."""
+    assert emb._extract_query_tokens("") == frozenset()
+    assert emb._extract_query_tokens("a b c") == frozenset()  # all under min len
+
+
+def test_verbatim_boost_caps_at_max():
+    """A chunk containing every token must not exceed _MAX_VERBATIM_BOOST."""
+    tokens = frozenset({"alpha", "beta", "gamma", "delta", "epsilon", "zeta"})
+    text = " ".join(tokens)
+    boost = emb._verbatim_boost(text, tokens)
+    assert boost == pytest.approx(emb._MAX_VERBATIM_BOOST)
+    assert boost > 0
+
+
+def test_verbatim_boost_zero_when_no_overlap():
+    """Disjoint tokens and text -> no boost."""
+    assert emb._verbatim_boost("nothing relevant here", frozenset({"foo", "bar"})) == 0.0
+
+
+def _row(file_rel: str, text: str, distance: float, *, start: int = 1, end: int = 5,
+         kind: str = "function") -> dict:
+    """Mimic the dict-like rows returned by sqlite3.Row for the re-ranker tests."""
+    return {
+        "file_rel": file_rel,
+        "start_line": start,
+        "end_line": end,
+        "kind": kind,
+        "text": text,
+        "distance": distance,
+    }
+
+
+def test_rerank_demotes_generated_paths():
+    """A real-source hit at the same raw distance must outrank a node_modules hit."""
+    rows = [
+        _row("node_modules/lib/index.js", "fn doStuff() {}", 0.10),
+        _row("src/app.ts", "fn doStuff() {}", 0.12),
+    ]
+    hits = emb._rerank_hits(
+        rows, "doStuff", k=5,
+        max_distance=None, boost_verbatim=False, demote_generated=True,
+    )
+    assert [h.file_rel for h in hits] == ["src/app.ts", "node_modules/lib/index.js"]
+    # The generated path's effective distance should be raw + penalty.
+    gen_hit = next(h for h in hits if "node_modules" in h.file_rel)
+    assert gen_hit.distance == pytest.approx(0.10 + emb._GENERATED_PATH_PENALTY)
+
+
+def test_rerank_verbatim_boost_lifts_exact_match():
+    """A chunk containing exact query tokens beats a higher-scoring paraphrase."""
+    rows = [
+        _row("src/a.py", "def throttle_helper(): pass", 0.30),       # closer raw match
+        _row("src/b.py", "class RateLimiter: ...",     0.40),        # contains the verbatim token
+    ]
+    hits = emb._rerank_hits(
+        rows, "RateLimiter", k=5,
+        max_distance=None, boost_verbatim=True, demote_generated=False,
+    )
+    # b.py contains "ratelimiter", "rate", "limiter" — boost should overtake the
+    # 0.10 raw gap.
+    assert hits[0].file_rel == "src/b.py"
+    assert hits[1].file_rel == "src/a.py"
+
+
+def test_rerank_threshold_filters_low_confidence():
+    """max_distance drops hits whose effective distance is above the threshold."""
+    rows = [
+        _row("src/a.py", "good match", 0.20),
+        _row("src/b.py", "marginal",   0.80),
+        _row("src/c.py", "noise",      1.50),
+    ]
+    hits = emb._rerank_hits(
+        rows, "good", k=5,
+        max_distance=1.0, boost_verbatim=False, demote_generated=False,
+    )
+    files = [h.file_rel for h in hits]
+    assert "src/a.py" in files
+    assert "src/b.py" in files
+    assert "src/c.py" not in files  # 1.50 > 1.0 threshold
+
+
+def test_rerank_threshold_none_disables_filter():
+    """max_distance=None means: keep everything (subject to k limit)."""
+    rows = [_row(f"src/{i}.py", "x", float(i)) for i in range(5)]
+    hits = emb._rerank_hits(
+        rows, "x", k=10,
+        max_distance=None, boost_verbatim=False, demote_generated=False,
+    )
+    assert len(hits) == 5
+
+
+def test_rerank_truncates_to_k():
+    """Even with no filtering, output is capped at k entries, sorted ascending."""
+    rows = [_row(f"src/{i}.py", "x", float(i) * 0.1) for i in range(10)]
+    hits = emb._rerank_hits(
+        rows, "x", k=3,
+        max_distance=None, boost_verbatim=False, demote_generated=False,
+    )
+    assert len(hits) == 3
+    # Ascending by effective distance.
+    assert hits == sorted(hits, key=lambda h: h.distance)
+
+
+def test_semantic_search_threshold_drops_noise(ts_project, monkeypatch):
+    """End-to-end: a tight threshold removes low-confidence hits from the result list."""
+    monkeypatch.setattr(emb, "embed_texts", _stub_embed)
+    emb.index_project_embeddings(ts_project)
+
+    # Pick a real chunk and query with its exact text — top hit will be ~0,
+    # other hits will be unrelated and (in the stub) sit near distance ~1.
+    with db.open_project(ts_project.hash) as conn:
+        row = conn.execute(
+            "SELECT text, file_rel FROM chunks LIMIT 1"
+        ).fetchone()
+
+    # Loose threshold — keep all candidates (subject to k).
+    loose = emb.semantic_search(ts_project, row["text"], k=5, max_distance=None)
+    # Tight threshold — only the near-exact match should pass.
+    tight = emb.semantic_search(ts_project, row["text"], k=5, max_distance=0.05)
+    assert tight, "exact-match query must still return its top hit"
+    assert tight[0].file_rel == row["file_rel"]
+    assert tight[0].distance < 0.05
+    assert len(tight) <= len(loose)
+
+
+def test_cli_semantic_max_distance_flag(ts_project, monkeypatch):
+    """--max-distance is parsed and applied; a tiny value collapses results."""
+    from typer.testing import CliRunner  # noqa: PLC0415
+
+    from token_goat import cli  # noqa: PLC0415
+
+    monkeypatch.setattr(emb, "embed_texts", _stub_embed)
+    emb.index_project_embeddings(ts_project)
+
+    monkeypatch.chdir(ts_project.root)
+    runner = CliRunner()
+    result = runner.invoke(
+        cli.app,
+        ["semantic", "nonsense gibberish xyzzy", "-k", "5",
+         "--max-distance", "0.001"],
+        catch_exceptions=False,
+    )
+    # With a near-zero threshold, the gibberish query should leave no survivors.
+    assert result.exit_code == 0
+    assert "(no results)" in result.output
