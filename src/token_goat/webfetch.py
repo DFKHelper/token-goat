@@ -27,9 +27,11 @@ import logging
 import os
 import socket
 from pathlib import Path
+from typing import TYPE_CHECKING
 from urllib.parse import urlparse
 
-import httpx
+if TYPE_CHECKING:
+    import httpx
 
 from . import image_shrink, paths
 from .hooks_common import sanitize_log_str
@@ -388,6 +390,8 @@ def fetch_url(
     Sends ETag / If-Modified-Since conditional requests when cache metadata is
     available; returns the cached file unchanged on HTTP 304 Not Modified.
     """
+    import httpx  # noqa: PLC0415 — deferred to avoid 110 ms startup cost on every hook fire
+
     if not _is_ssrf_safe(url):
         raise ValueError(f"URL blocked by SSRF safety check: {_truncate_url(url)!r}")
 
