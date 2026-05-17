@@ -55,6 +55,27 @@ def extract(source: bytes, rel_path: str) -> tuple[list[Symbol], list[Ref], list
     seen_names: set[tuple[str, int]] = set()
 
     # --- structure: functions, structs, enums, traits, impls, methods ---
+
+    def _get_children(item: object) -> list[object]:
+        """Return the children list of a tree-sitter node, or [] if absent."""
+        try:
+            return item.children  # type: ignore[attr-defined]
+        except AttributeError:
+            return []
+
+    def _record_symbol(name: str, kind: str, line: int, end_line: int, sig: str | None, parent_name: str | None) -> None:
+        """Append a symbol to *symbols* if the (name, line) key is not yet seen."""
+        key = (name, line)
+        if key not in seen_names:
+            seen_names.add(key)
+            symbols.append(Symbol(name=name, kind=kind, line=line, end_line=end_line, signature=sig, parent_name=parent_name))
+
+    def _handle_impl(item: object, name: str, line: int, end_line: int, sig: str | None, parent_name: str | None) -> None:
+        """Record an impl block and recurse into its methods with the type as parent."""
+        _record_symbol(name, "impl", line, end_line, sig, parent_name)
+        for child in _get_children(item):
+            _add_symbol(child, parent_name=name)
+
     def _add_symbol(item: object, parent_name: str | None = None) -> None:
         """Recursively walk a tree-sitter node and append named Rust symbols to *symbols*.
 
@@ -72,11 +93,7 @@ def extract(source: bytes, rel_path: str) -> tuple[list[Symbol], list[Ref], list
         except AttributeError:
             return
         if not name:
-            try:
-                children = item.children  # type: ignore[attr-defined]
-            except AttributeError:
-                return
-            for child in children:
+            for child in _get_children(item):
                 _add_symbol(child, parent_name=parent_name)
             return
         try:
@@ -89,58 +106,16 @@ def extract(source: bytes, rel_path: str) -> tuple[list[Symbol], list[Ref], list
             _LOG.debug("rust._add_symbol: skipping malformed node %r: %s", name, exc)
             return
 
-        # Children of an impl block are methods
-        effective_kind = kind
-        if parent_name is not None and kind == "function":
-            effective_kind = "method"
-
         sig = common.build_signature(source, span, body_span)
 
-        # For impl blocks, record as "impl" only if it has a trait (Display, etc.)
-        # For plain `impl TypeName`, record as impl with the type as name
         if kind == "impl":
-            # name is the type being impl'd — record it so symbol lookups work
-            key = (name, line)
-            if key not in seen_names:
-                seen_names.add(key)
-                symbols.append(
-                    Symbol(
-                        name=name,
-                        kind="impl",
-                        line=line,
-                        end_line=end_line,
-                        signature=sig,
-                        parent_name=parent_name,
-                    )
-                )
-            # Recurse into children (the methods)
-            try:
-                children = item.children  # type: ignore[attr-defined]
-            except AttributeError:
-                return
-            for child in children:
-                _add_symbol(child, parent_name=name)
+            _handle_impl(item, name, line, end_line, sig, parent_name)
             return
 
-        key = (name, line)
-        if key not in seen_names:
-            seen_names.add(key)
-            symbols.append(
-                Symbol(
-                    name=name,
-                    kind=effective_kind,
-                    line=line,
-                    end_line=end_line,
-                    signature=sig,
-                    parent_name=parent_name,
-                )
-            )
-
-        try:
-            children = item.children  # type: ignore[attr-defined]
-        except AttributeError:
-            return
-        for child in children:
+        # Functions inside an impl block are methods.
+        effective_kind = "method" if parent_name is not None and kind == "function" else kind
+        _record_symbol(name, effective_kind, line, end_line, sig, parent_name)
+        for child in _get_children(item):
             _add_symbol(child, parent_name=name)
 
     for item in result.structure:

@@ -162,6 +162,11 @@ def _inc_bucket(bucket: _StatsBucket, bytes_saved: int, tokens_saved: int) -> No
     bucket["tokens_saved"] += tokens_saved
 
 
+def _row_byte_token(row: sqlite3.Row) -> tuple[int, int]:
+    """Extract (bytes_saved, tokens_saved) from a stats row, defaulting NULLs to 0."""
+    return row["bytes_saved"] or 0, row["tokens_saved"] or 0
+
+
 class _ProjectBucket(_StatsBucket):
     """Stats bucket extended with a project_root label."""
 
@@ -241,8 +246,7 @@ def summarize(window_days: int = 30) -> StatsSummary:
             global_rows = list(_read_stats(conn, since_ts))
             for row in global_rows:
                 _accumulate(row, by_kind, by_day)
-                bs = row["bytes_saved"] or 0
-                ts = row["tokens_saved"] or 0
+                bs, ts = _row_byte_token(row)
                 total_events += 1
                 total_bytes += bs
                 total_tokens += ts
@@ -265,8 +269,7 @@ def summarize(window_days: int = 30) -> StatsSummary:
                 rows = list(_read_stats(conn, since_ts))
                 for row in rows:
                     _accumulate(row, by_kind, by_day)
-                    bs = row["bytes_saved"] or 0
-                    ts = row["tokens_saved"] or 0
+                    bs, ts = _row_byte_token(row)
                     total_events += 1
                     total_bytes += bs
                     total_tokens += ts
@@ -311,7 +314,7 @@ def summarize(window_days: int = 30) -> StatsSummary:
             norm_root = _norm_path(root).rstrip("/")
             proj_key = norm_root_to_hash.get(norm_root) or _root_hash(root)
         p = by_project[proj_key]
-        _inc_bucket(p, row["bytes_saved"] or 0, row["tokens_saved"] or 0)
+        _inc_bucket(p, *_row_byte_token(row))
         p["project_root"] = root
 
     by_day_list: list[_DayRow] = sorted(
@@ -364,8 +367,7 @@ def _accumulate(row: sqlite3.Row, by_kind: dict[str, _StatsBucket], by_day: dict
     timestamp).  This is intentional: a corrupt timestamp should not erase the
     event from by_kind totals; it just cannot be placed on the calendar.
     """
-    bs = row["bytes_saved"] or 0
-    ts = row["tokens_saved"] or 0
+    bs, ts = _row_byte_token(row)
     _inc_bucket(by_kind[row["kind"]], bs, ts)
 
     raw_ts = row["ts"]
@@ -740,7 +742,7 @@ def render_text(
                 f"{p['events']} ev",
             )
         console.print(tbl)
-        # Hash + full path under each row, dimmed.
+        # Hash + full path below each project row, dimmed.
         # Strip ANSI escapes from project_root before passing to Rich Text():
         # Rich neutralises its own markup but forwards raw ESC bytes to the
         # terminal, so a crafted root path could inject colour/cursor sequences.
