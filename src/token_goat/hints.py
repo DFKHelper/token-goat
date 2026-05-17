@@ -47,8 +47,15 @@ TOKENS_PER_LINE = AVG_CHARS_PER_LINE / CHARS_PER_TOKEN  # ≈17.1
 
 # Thresholds
 LARGE_FILE_LINE_THRESHOLD = 500
-MIN_OVERLAP_TO_WARN = 50  # only warn about overlap if >50 lines overlap
-DEFAULT_READ_LIMIT = 2000  # Claude Code's default lines-per-Read
+# Minimum overlap required before emitting a partial-overlap warning.
+# Below ~50 lines the hint text itself (~25 tokens) costs almost as much as
+# the saving it advertises, making the nudge net-negative.  50 lines ≈ 850
+# tokens saved — comfortably above the ~25-token hint cost.
+MIN_OVERLAP_TO_WARN = 50
+# Claude Code's default lines-per-Read when the caller omits a limit.
+# Used to compute the end of the requested range so overlap detection works
+# even when the agent issues a bare Read without an explicit line count.
+DEFAULT_READ_LIMIT = 2000
 
 # How many bytes to assume per line when estimating line count from file size.
 # This is intentionally conservative (real code averages 30-50 bytes/line) so
