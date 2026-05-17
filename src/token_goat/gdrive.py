@@ -141,9 +141,10 @@ def _try_stored_oauth() -> _GoogleCredentials | None:
             _write_creds_secure(creds_path, creds.to_json())
             _LOG.info("OAuth credentials refreshed in %.3fs", time.monotonic() - t_refresh)
         return creds
-    except Exception:  # noqa: BLE001
-        # Do NOT log the exception message if it contains credentials
-        _LOG.warning("stored OAuth invalid or refresh failed")
+    except Exception as exc:  # noqa: BLE001
+        # Do NOT log exc directly — the message may contain credential material.
+        # Log the exception type so the failure mode is diagnosable without leaking secrets.
+        _LOG.warning("stored OAuth invalid or refresh failed (%s)", type(exc).__name__)
         return None
 
 
