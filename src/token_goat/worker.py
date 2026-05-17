@@ -111,9 +111,13 @@ PERIODIC_REINDEX_ACTIVE_WINDOW = 7 * 24 * 3600.0  # 7 days
 # remaining window, so historical totals beyond this window simply roll off.
 STATS_RETENTION_DAYS = 90
 
-# Image cache eviction threshold (bytes)
+# Image cache eviction threshold.  500 MB is large enough to hold thousands of
+# compressed screenshots without meaningfully impacting disk usage on a typical
+# dev machine, yet small enough that the eviction scan stays fast.  The 80%
+# target avoids thrashing: if the limit were the target we would evict one file,
+# then immediately hit the limit again on the next write.
 IMAGE_CACHE_LIMIT = 500 * 1024 * 1024  # 500 MB
-IMAGE_CACHE_TARGET = int(IMAGE_CACHE_LIMIT * 0.8)  # evict to 80%
+IMAGE_CACHE_TARGET = int(IMAGE_CACHE_LIMIT * 0.8)  # evict to 80% to avoid thrash
 
 # Log retention (days)
 LOG_RETENTION_DAYS = 7
