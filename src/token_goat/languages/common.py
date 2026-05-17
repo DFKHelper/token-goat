@@ -221,6 +221,8 @@ def build_signature(source: bytes, item_span: object, body_span: object | None) 
             text = text[:200]
         return text or None
     except (IndexError, AttributeError):
+        # AttributeError: span objects are duck-typed C extension structs; .start_byte /
+        # .end_byte may be absent on unexpected node shapes from newer tree-sitter grammars.
         return None
 
 
@@ -299,6 +301,8 @@ def make_add_symbol(
         try:
             name: str = item.name  # type: ignore[attr-defined]
         except AttributeError:
+            # Language adapter nodes are duck-typed objects from C extensions; .name is
+            # not guaranteed on every node variant — absent means this node has no symbol.
             return
         if not name:
             try:
@@ -315,6 +319,8 @@ def make_add_symbol(
             end_line = span.end_line + 1
             kind = kind_str(item.kind, language=language)
         except AttributeError as exc:
+            # .span / .kind may be missing on partial parse results (e.g. error-recovery
+            # nodes emitted by tree-sitter when the source contains syntax errors).
             _LOG.debug("make_add_symbol: skipping malformed node %r: %s", name, exc)
             return
         if promote_methods and parent_name is not None and kind == "function":

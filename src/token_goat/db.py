@@ -610,14 +610,15 @@ _KNOWN_PROJECT_TABLES = frozenset(
 def _validate_project_hash(project_hash: str) -> None:
     """Validate project_hash to prevent path traversal attacks.
 
-    Project hashes should be alphanumeric + underscore (no separators or path components).
+    Hashes are SHA-1 hex digests (lowercase [0-9a-f]+), so any value containing
+    uppercase letters, underscores, or path separators is provably not a real hash.
     """
     if not project_hash:
         raise ValueError("project_hash cannot be empty")
     if len(project_hash) > 128:
         raise ValueError(f"project_hash too long (max 128 chars): {len(project_hash)}")
     if not _PROJECT_HASH_RE.match(project_hash):
-        raise ValueError(f"project_hash must be alphanumeric or underscore: {project_hash!r}")
+        raise ValueError(f"project_hash must be lowercase hex (SHA-1 digest): {project_hash!r}")
 
 
 @contextlib.contextmanager
