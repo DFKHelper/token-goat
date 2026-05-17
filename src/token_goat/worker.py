@@ -118,6 +118,10 @@ IMAGE_CACHE_TARGET = int(IMAGE_CACHE_LIMIT * 0.8)  # evict to 80%
 # Log retention (days)
 LOG_RETENTION_DAYS = 7
 
+# Seconds in one day — used to convert *_RETENTION_DAYS constants to a cutoff
+# timestamp without scattering the literal 86400 across multiple functions.
+_SECS_PER_DAY = 86_400
+
 # Maximum length of a project_marker value read from the dirty queue.
 # project_marker comes from an external file (dirty.txt) and is stored in
 # Project.marker and emitted in log messages.  Capping it prevents a crafted
@@ -539,7 +543,7 @@ def _cleanup_old_logs() -> int:
     if not logs.exists():
         _LOG.debug("logs directory does not exist, skipping cleanup")
         return 0
-    cutoff = time.time() - LOG_RETENTION_DAYS * 86400
+    cutoff = time.time() - LOG_RETENTION_DAYS * _SECS_PER_DAY
     for log in logs.glob("*.log"):
         try:
             if log.stat().st_mtime < cutoff:
@@ -566,7 +570,7 @@ def _prune_stats_table() -> int:
     continue with the remaining tasks.
     """
     from . import db as _db  # noqa: PLC0415
-    cutoff_ts = int(time.time() - STATS_RETENTION_DAYS * 86400)
+    cutoff_ts = int(time.time() - STATS_RETENTION_DAYS * _SECS_PER_DAY)
     try:
         with _db.open_global() as conn:
             cur = conn.execute("DELETE FROM stats WHERE ts < ?", (cutoff_ts,))
