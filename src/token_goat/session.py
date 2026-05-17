@@ -501,14 +501,43 @@ def mark_file_read(
         # symbols_read is a short list (typically <10 entries) but the check
         # fires on every pre-read hook call so eliminating the linear scan
         # matters on sessions that repeatedly probe the same symbols.
-        if symbol not in _symbols_set(entry):
+        already_known = symbol in _symbols_set(entry)
+        if not already_known:
             entry.symbols_read.append(symbol)
+            _LOG.debug(
+                "mark_file_read: symbol recorded %r in %s (total symbols=%d)",
+                symbol,
+                key,
+                len(entry.symbols_read),
+            )
+        else:
+            _LOG.debug("mark_file_read: symbol %r already tracked in %s", symbol, key)
     else:
         line_offset = max(0, int(offset)) if offset is not None else 0
         line_limit = max(0, int(limit)) if limit is not None else 0
         start = line_offset + 1  # Read tool's offset is 0-indexed; we store 1-indexed inclusive
         end = start + line_limit - 1 if line_limit else (start + _UNKNOWN_END_SENTINEL)
+        prev_range_count = len(entry.line_ranges)
         entry.line_ranges = _merge_ranges([*entry.line_ranges, (start, end)])
+        new_range_count = len(entry.line_ranges)
+        if new_range_count < prev_range_count + 1:
+            _LOG.debug(
+                "mark_file_read: ranges merged for %s: added (%d-%d), "
+                "consolidated %d→%d ranges",
+                key,
+                start,
+                end,
+                prev_range_count,
+                new_range_count,
+            )
+        else:
+            _LOG.debug(
+                "mark_file_read: range (%d-%d) appended for %s (total ranges=%d)",
+                start,
+                end,
+                key,
+                new_range_count,
+            )
     cache.last_activity_ts = now
     cache._invalidate_json_cache()
     save(cache)
@@ -599,7 +628,14 @@ def mark_file_edited(
     if cache.unavailable:
         return cache
     key = _normalize_path(path)
-    cache.edited_files[key] = cache.edited_files.get(key, 0) + 1
+    prev_count = cache.edited_files.get(key, 0)
+    cache.edited_files[key] = prev_count + 1
+    _LOG.debug(
+        "mark_file_edited: %s (edit #%d this session, total edited files=%d)",
+        key,
+        prev_count + 1,
+        len(cache.edited_files),
+    )
     cache.last_activity_ts = time.time()
     cache._invalidate_json_cache()
     save(cache)

@@ -187,6 +187,19 @@ def invalidate_file_cache(project_hash: str) -> int:
     evicted = len(_RESOLVE_CACHE) - len(kept)
     _RESOLVE_CACHE.clear()
     _RESOLVE_CACHE.update(kept)
+    if evicted:
+        _LOG.debug(
+            "invalidate_file_cache: evicted %d resolution(s) for project=%s (cache_size now=%d)",
+            evicted,
+            project_hash[:8],
+            len(_RESOLVE_CACHE),
+        )
+    else:
+        _LOG.debug(
+            "invalidate_file_cache: no cached entries for project=%s (cache_size=%d)",
+            project_hash[:8],
+            len(_RESOLVE_CACHE),
+        )
     return evicted
 
 
@@ -659,12 +672,21 @@ def read_section(
         lines, full_bytes, sec_line, sec_end_line, context_lines
     )
     elapsed = time.monotonic() - t0
+    match_kind = "exact" if case_sensitive_match else "case-insensitive"
+    if not case_sensitive_match:
+        _LOG.info(
+            "read_section: heading %r not found by exact match in %s — "
+            "fell back to case-insensitive match → %r",
+            heading,
+            rel_path,
+            chosen["heading"],
+        )
     _LOG.debug(
         "read_section: %s#%s (h%d, %s-match) lines %d-%d, %d/%d bytes extracted (%.1f%% saved, %.3fs)",
         rel_path,
         chosen["heading"],
         chosen["level"],
-        "exact" if case_sensitive_match else "case-insensitive",
+        match_kind,
         start,
         end,
         snippet_bytes,
