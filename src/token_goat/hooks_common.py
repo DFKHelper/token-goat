@@ -210,7 +210,9 @@ def sanitize_opt(value: object) -> str:
 
     Unlike a bare ``sanitize_log_str(str(x or ""))``, this helper also handles the
     case where *x* is ``0`` or ``False`` (falsy non-None values) — they are treated
-    the same as ``None`` and return ``""``, which is correct for session IDs and paths.
+    the same as ``None`` and return ``""``.  Hook payload fields for session IDs,
+    paths, and tool names are always strings; a numeric or boolean value means the
+    field was absent or malformed, so collapsing it to ``""`` is correct.
 
     Args:
         value: Any value from a hook payload (session_id, cwd, tool_name, …).

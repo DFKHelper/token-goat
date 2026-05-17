@@ -623,7 +623,10 @@ def mark_file_read(
     return cache
 
 
-_MAX_GREP_PATTERN_LEN = 1024  # cap before storing to prevent session-file bloat
+# 1024 is well above any realistic grep pattern (~200 chars max in practice) but still
+# blocks regex-bomb-sized strings from a malformed harness payload inflating every
+# session JSON write.
+_MAX_GREP_PATTERN_LEN = 1024
 
 def mark_grep(
     session_id: str,
@@ -667,6 +670,8 @@ def _merge_ranges(ranges: list[tuple[int, int]]) -> list[tuple[int, int]]:
     # Fast path: a single range is already sorted and merged by definition.
     # This is the common case early in a session before many reads accumulate.
     if len(ranges) == 1:
+        # A single range has no peer to overlap or be adjacent to, so it is
+        # trivially sorted and merged.  Wrapping in list() gives a fresh copy.
         return list(ranges)
     sorted_r = sorted(ranges)
     out: list[tuple[int, int]] = [sorted_r[0]]
