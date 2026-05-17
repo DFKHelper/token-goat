@@ -116,7 +116,7 @@ def _validate_session_id(session_id: str) -> None:
         try:
             session_mod.validate_session_id(session_id)
         except ValueError as exc:
-            typer.echo(f"Error: invalid session ID: {exc}", err=True)
+            _error(f"invalid session ID: {exc}")
             raise typer.Exit(1) from exc
 
     All five session-aware commands use this instead of duplicating that block.
@@ -126,7 +126,7 @@ def _validate_session_id(session_id: str) -> None:
     try:
         session_mod.validate_session_id(session_id)
     except ValueError as exc:
-        typer.echo(f"Error: invalid session ID: {exc}", err=True)
+        _error(f"invalid session ID: {exc}")
         raise typer.Exit(1) from exc
 
 
@@ -1087,7 +1087,7 @@ def get(key: str) -> None:
     try:
         value = _config_get_value(cfg, key)
     except KeyError:
-        typer.echo(f"Unknown config key: {key}", err=True)
+        _error(f"unknown config key: {key}")
         raise typer.Exit(2) from None
 
     if is_dataclass(value) and not isinstance(value, type):
@@ -1103,10 +1103,10 @@ def set(key: str, value: str) -> None:
     try:
         updated = _config_set_value(cfg, key, value)
     except KeyError:
-        typer.echo(f"Unknown config key: {key}", err=True)
+        _error(f"unknown config key: {key}")
         raise typer.Exit(2) from None
     except (json.JSONDecodeError, TypeError, ValueError) as exc:
-        typer.echo(f"Invalid value for {key}: {exc}", err=True)
+        _error(f"invalid value for {key}: {exc}")
         raise typer.Exit(2) from None
 
     config_mod.save(cfg)
