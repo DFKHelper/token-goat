@@ -258,7 +258,11 @@ def shrink(src_path: Path) -> Path | None:
         with Image.open(src_path) as img:
             # Preserve EXIF orientation — some cameras embed rotation metadata
             # rather than rotating pixels; ignoring this produces upside-down output.
-            with contextlib.suppress(Exception):
+            # Suppress only the documented failure modes of exif_transpose:
+            # OSError / ValueError from malformed EXIF bytes, AttributeError if the
+            # image has no EXIF segment, and ZeroDivisionError from certain corrupt
+            # rational tags.  We do NOT suppress MemoryError or BaseException here.
+            with contextlib.suppress(OSError, ValueError, AttributeError, ZeroDivisionError):
                 img = ImageOps.exif_transpose(img)
 
             # Resize if needed

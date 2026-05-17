@@ -296,16 +296,27 @@ def make_add_symbol(
         inside a parent scope are recorded with ``kind="method"`` rather than
         ``kind="function"``.
         """
-        name: str = item.name  # type: ignore[attr-defined]
+        try:
+            name: str = item.name  # type: ignore[attr-defined]
+        except AttributeError:
+            return
         if not name:
-            for child in item.children:  # type: ignore[attr-defined]
+            try:
+                children = item.children  # type: ignore[attr-defined]
+            except AttributeError:
+                return
+            for child in children:
                 _add_symbol(child, parent_name=parent_name)
             return
-        span = item.span
-        body_span = item.body_span if hasattr(item, "body_span") else None
-        line = span.start_line + 1
-        end_line = span.end_line + 1
-        kind = kind_str(item.kind, language=language)
+        try:
+            span = item.span
+            body_span = item.body_span if hasattr(item, "body_span") else None
+            line = span.start_line + 1
+            end_line = span.end_line + 1
+            kind = kind_str(item.kind, language=language)
+        except AttributeError as exc:
+            _LOG.debug("make_add_symbol: skipping malformed node %r: %s", name, exc)
+            return
         if promote_methods and parent_name is not None and kind == "function":
             kind = "method"
         sig = build_signature(source, span, body_span)
@@ -324,7 +335,11 @@ def make_add_symbol(
                 )
             )
 
-        for child in item.children:  # type: ignore[attr-defined]
+        try:
+            children = item.children  # type: ignore[attr-defined]
+        except AttributeError:
+            return
+        for child in children:
             _add_symbol(child, parent_name=name)
 
     return _add_symbol
@@ -353,10 +368,14 @@ def add_imports(
     from ..parser import ImpExp  # noqa: PLC0415
 
     for imp in imports:
-        targets = extract_targets_fn(imp)
-        if isinstance(targets, str):
-            targets = [targets] if targets else []
-        line = imp.span.start_line + 1
+        try:
+            targets = extract_targets_fn(imp)
+            if isinstance(targets, str):
+                targets = [targets] if targets else []
+            line = imp.span.start_line + 1  # type: ignore[union-attr]
+        except AttributeError as exc:
+            _LOG.debug("add_imports: skipping malformed import node: %s", exc)
+            continue
         for target in targets:
             if target:
                 imp_exp.append(ImpExp(kind="import", target=target, line=line))
@@ -388,10 +407,14 @@ def add_symbol_info(
 
     before = len(symbols)
     for sym in symbol_infos:
-        name: str = sym.name  # type: ignore[attr-defined]
-        span = sym.span
-        line = span.start_line + 1
-        kind = sym_kind_str(sym.kind, language=language)
+        try:
+            name: str = sym.name  # type: ignore[attr-defined]
+            span = sym.span
+            line = span.start_line + 1
+            kind = sym_kind_str(sym.kind, language=language)
+        except AttributeError as exc:
+            _LOG.debug("add_symbol_info (%s): skipping malformed SymbolInfo: %s", language, exc)
+            continue
         key = (name, line)
         if key not in seen_names:
             seen_names.add(key)

@@ -72,6 +72,8 @@ def extract(source: bytes, rel_path: str) -> tuple[list[Symbol], list[Ref], list
         common._compute_section_end_lines(sections, lines)
 
         return symbols, [], [], sections
-    except (re.error, UnicodeDecodeError, AttributeError, IndexError) as exc:
+    except (re.error, UnicodeDecodeError, AttributeError, IndexError, OverflowError) as exc:
+        # OverflowError: text.count("\n") on a pathologically large file can overflow on
+        # some Python builds; treat it the same as any other parse failure.
         _LOG.debug("parse failed for markdown source %s: %s", rel_path, exc, exc_info=True)
         return [], [], [], []

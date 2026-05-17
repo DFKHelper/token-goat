@@ -67,16 +67,27 @@ def extract(source: bytes, rel_path: str) -> tuple[list[Symbol], list[Ref], list
           ``kind="method"`` for cleaner display in ``token-goat symbol`` output.
         - Unnamed nodes are transparently descended into (same as common adapter).
         """
-        name: str = item.name  # type: ignore[attr-defined]
+        try:
+            name: str = item.name  # type: ignore[attr-defined]
+        except AttributeError:
+            return
         if not name:
-            for child in item.children:  # type: ignore[attr-defined]
+            try:
+                children = item.children  # type: ignore[attr-defined]
+            except AttributeError:
+                return
+            for child in children:
                 _add_symbol(child, parent_name=parent_name)
             return
-        span = item.span
-        body_span = item.body_span if hasattr(item, "body_span") else None
-        line = span.start_line + 1
-        end_line = span.end_line + 1
-        kind = common.kind_str(item.kind, language="rust")
+        try:
+            span = item.span
+            body_span = item.body_span if hasattr(item, "body_span") else None
+            line = span.start_line + 1
+            end_line = span.end_line + 1
+            kind = common.kind_str(item.kind, language="rust")
+        except AttributeError as exc:
+            _LOG.debug("rust._add_symbol: skipping malformed node %r: %s", name, exc)
+            return
 
         # Children of an impl block are methods
         effective_kind = kind
@@ -103,7 +114,11 @@ def extract(source: bytes, rel_path: str) -> tuple[list[Symbol], list[Ref], list
                     )
                 )
             # Recurse into children (the methods)
-            for child in item.children:  # type: ignore[attr-defined]
+            try:
+                children = item.children  # type: ignore[attr-defined]
+            except AttributeError:
+                return
+            for child in children:
                 _add_symbol(child, parent_name=name)
             return
 
@@ -121,7 +136,11 @@ def extract(source: bytes, rel_path: str) -> tuple[list[Symbol], list[Ref], list
                 )
             )
 
-        for child in item.children:  # type: ignore[attr-defined]
+        try:
+            children = item.children  # type: ignore[attr-defined]
+        except AttributeError:
+            return
+        for child in children:
             _add_symbol(child, parent_name=name)
 
     for item in result.structure:
