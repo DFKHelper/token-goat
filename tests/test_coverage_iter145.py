@@ -280,7 +280,7 @@ class TestJsonIdxLogging:
         # of it is fine but json.dumps(..., default=str) raises — patch dumps.
         with (
             caplog.at_level(logging.DEBUG, logger="token_goat.languages.json_idx"),
-            patch("token_goat.languages.json_idx.json.dumps", side_effect=RuntimeError("boom")),
+            patch("token_goat.languages.json_idx.json.dumps", side_effect=TypeError("boom")),
         ):
             result = _safe_repr({"x": 1})
 
@@ -494,7 +494,7 @@ class TestMaxSymbolLen:
             read_symbol(proj, "src/foo.py", oversized)
 
         warn_msgs = [r.message for r in caplog.records if r.levelno == logging.WARNING]
-        assert any("symbol name too long" in m for m in warn_msgs)
+        assert any("name/heading too long" in m for m in warn_msgs)
 
     def test_read_symbol_exactly_at_limit_is_not_rejected_by_cap(self, tmp_path):
         """A symbol name exactly at _MAX_SYMBOL_LEN must not be rejected by the length cap.
