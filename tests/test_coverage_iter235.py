@@ -50,10 +50,10 @@ class TestValidateSessionId:
 
     def test_too_long_rejected(self):
         with pytest.raises(ValueError, match="too long"):
-            validate_session_id("a" * 257)
+            validate_session_id("a" * 129)
 
-    def test_exactly_256_chars_passes(self):
-        validate_session_id("a" * 256)
+    def test_exactly_128_chars_passes(self):
+        validate_session_id("a" * 128)
 
     def test_path_traversal_dotdot_slash_rejected(self):
         with pytest.raises(ValueError, match="invalid characters"):
