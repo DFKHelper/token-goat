@@ -1,4 +1,21 @@
-"""Edit hook helpers."""
+"""Post-edit hook handler: session recording and incremental re-indexing.
+
+``post_edit`` runs after every Write, Edit, and MultiEdit tool call.  It does
+two things:
+
+1. **Session recording** — marks the edited file in the per-session JSON cache
+   so the compaction manifest knows which files changed, and so post-compact
+   recovery can highlight them.
+
+2. **Incremental re-indexing** — resolves the file to a project, appends its
+   relative path to ``queue/dirty.txt``, and nudges the background worker if its
+   heartbeat file is stale (>65 s old).  The worker drains the queue every 2 s,
+   SHA-checks each file, and re-runs tree-sitter extraction only for changed
+   files — avoiding a full-project walk on every keystroke.
+
+Failures at any step are logged but never raised; the hook always returns
+CONTINUE so a broken index pipeline cannot interrupt the agent.
+"""
 from __future__ import annotations
 
 from . import paths
