@@ -1,6 +1,15 @@
 """Project marker detection + path canonicalization."""
 from __future__ import annotations
 
+__all__ = [
+    "Project",
+    "PROJECT_MARKERS",
+    "canonicalize",
+    "find_project",
+    "make_project_at",
+    "project_hash",
+]
+
 import hashlib
 import logging
 import os

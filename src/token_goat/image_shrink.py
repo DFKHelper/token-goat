@@ -12,6 +12,23 @@ one cache entry and are never re-compressed.
 """
 from __future__ import annotations
 
+__all__ = [
+    "CLAUDE_MAX_VISION_EDGE_PX",
+    "CLAUDE_VISION_PIXELS_PER_TOKEN",
+    "IMAGE_EXTENSIONS",
+    "ImageStats",
+    "JPEG_QUALITY",
+    "MAX_LONG_EDGE",
+    "SIZE_THRESHOLD_BYTES",
+    "ensure_cache_dir",
+    "is_image_path",
+    "should_shrink",
+    "shrink",
+    "shrink_if_image",
+    "stats_for",
+    "vision_tokens",
+]
+
 import contextlib
 import hashlib
 import logging
