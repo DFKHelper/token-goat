@@ -540,12 +540,22 @@ def _prune_stats_table() -> int:
     unbounded history.  Aggregate totals shown by ``token-goat stats`` are
     computed at query time from the rows that remain; events older than the
     retention window simply roll off.  Returns the number of rows deleted.
+
+    Raises ``db.DBError`` or ``sqlite3.DatabaseError`` on DB failure so the
+    caller (``cleanup_on_startup``) can record the failure in its summary and
+    continue with the remaining tasks.
     """
     from . import db as _db  # noqa: PLC0415
     cutoff_ts = int(time.time() - STATS_RETENTION_DAYS * 86400)
-    with _db.open_global() as conn:
-        cur = conn.execute("DELETE FROM stats WHERE ts < ?", (cutoff_ts,))
-        return cur.rowcount or 0
+    try:
+        with _db.open_global() as conn:
+            cur = conn.execute("DELETE FROM stats WHERE ts < ?", (cutoff_ts,))
+            pruned = cur.rowcount or 0
+            _LOG.debug("stats prune: deleted %d rows older than %d days", pruned, STATS_RETENTION_DAYS)
+            return pruned
+    except (_db.DBError, sqlite3.DatabaseError, OSError) as exc:
+        _LOG.warning("stats prune failed (global.db unavailable): %s", exc)
+        raise
 
 
 def cleanup_on_startup() -> CleanupStats:
@@ -1116,12 +1126,23 @@ def _process_dirty_entries(entries: list[DirtyQueueEntry]) -> None:
     known_projects: dict[str, sqlite3.Row] = {}
     if all_hashes:
         ph_placeholders = ",".join("?" for _ in all_hashes)
-        with db.open_global() as gconn:
-            for row in gconn.execute(
-                f"SELECT hash, root, marker FROM projects WHERE hash IN ({ph_placeholders})",  # noqa: S608
-                all_hashes,
-            ):
-                known_projects[row["hash"]] = row
+        try:
+            with db.open_global() as gconn:
+                for row in gconn.execute(
+                    f"SELECT hash, root, marker FROM projects WHERE hash IN ({ph_placeholders})",  # noqa: S608
+                    all_hashes,
+                ):
+                    known_projects[row["hash"]] = row
+        except (db.DBError, sqlite3.DatabaseError, OSError) as exc:
+            # global.db unavailable — fall back to queue-entry metadata only.
+            # Projects whose root was recorded in the queue can still be indexed
+            # via the bucket["root"] path below; only hashes that relied on DB
+            # lookup for their root will be skipped this cycle.
+            _LOG.warning(
+                "dirty queue: global.db lookup failed for %d project(s): %s — "
+                "will fall back to queue-entry metadata where available",
+                len(all_hashes), exc,
+            )
 
     projects_processed = 0
     for ph, bucket in by_project.items():

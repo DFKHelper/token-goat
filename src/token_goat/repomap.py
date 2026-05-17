@@ -233,31 +233,46 @@ def _load_project_data(
       - symbols_by_file: {rel_path: [(kind, name), ...]}
       - sections_by_file: {rel_path: [(level, heading), ...]}
       - name_to_files: {symbol_name: {rel_path, ...}} — all files defining this symbol
+
+    Each table is queried independently so a missing or corrupt auxiliary table
+    (symbols, sections, refs) degrades gracefully: the map still renders using
+    whatever data is available rather than raising an unhandled OperationalError.
     """
     files: dict[str, _FileInfo] = {}
-    for row in conn.execute("SELECT rel_path, language, size, mtime FROM files"):
-        files[row["rel_path"]] = {
-            "language": row["language"],
-            "size": row["size"],
-            "mtime": row["mtime"],
-        }
+    try:
+        for row in conn.execute("SELECT rel_path, language, size, mtime FROM files"):
+            files[row["rel_path"]] = {
+                "language": row["language"],
+                "size": row["size"],
+                "mtime": row["mtime"],
+            }
+    except sqlite3.OperationalError as exc:
+        # files table missing or schema mismatch — nothing to map.
+        _LOG.error("repomap: failed to read files table: %s", exc)
+        return {}, defaultdict(list), defaultdict(list), defaultdict(set)
 
     symbols_by_file: dict[str, list[tuple[str, str]]] = defaultdict(list)
     name_to_files: dict[str, set[str]] = defaultdict(set)
-    for row in conn.execute("SELECT name, kind, file_rel FROM symbols"):
-        symbols_by_file[row["file_rel"]].append((row["kind"], row["name"]))
-        name_to_files[row["name"]].add(row["file_rel"])
+    try:
+        for row in conn.execute("SELECT name, kind, file_rel FROM symbols"):
+            symbols_by_file[row["file_rel"]].append((row["kind"], row["name"]))
+            name_to_files[row["name"]].add(row["file_rel"])
+    except sqlite3.OperationalError as exc:
+        _LOG.warning("repomap: failed to read symbols table (map will have no symbols): %s", exc)
 
     sections_by_file: dict[str, list[tuple[int, str]]] = defaultdict(list)
-    for row in conn.execute(
-        # ORDER BY file_rel removed: results land in a defaultdict keyed by
-        # file_rel, so DB-level grouping by file is wasted sort work — O(S log S)
-        # over all sections with no benefit.  level, line ordering is kept so
-        # headings within each file appear in document order (top-level first,
-        # then by position), which _summarize_file relies on for top_sections.
-        "SELECT file_rel, heading, level FROM sections ORDER BY level, line"
-    ):
-        sections_by_file[row["file_rel"]].append((row["level"], row["heading"]))
+    try:
+        for row in conn.execute(
+            # ORDER BY file_rel removed: results land in a defaultdict keyed by
+            # file_rel, so DB-level grouping by file is wasted sort work — O(S log S)
+            # over all sections with no benefit.  level, line ordering is kept so
+            # headings within each file appear in document order (top-level first,
+            # then by position), which _summarize_file relies on for top_sections.
+            "SELECT file_rel, heading, level FROM sections ORDER BY level, line"
+        ):
+            sections_by_file[row["file_rel"]].append((row["level"], row["heading"]))
+    except sqlite3.OperationalError as exc:
+        _LOG.warning("repomap: failed to read sections table (map will have no sections): %s", exc)
 
     return files, symbols_by_file, sections_by_file, name_to_files
 
@@ -537,20 +552,27 @@ def _load_and_rank(project: Project) -> _RankedProjectData | None:
     data (``build_map_json``) bypass it and recompute ``FileSummary`` objects.
     """
     t0 = time.monotonic()
-    with db.open_project(project.hash) as conn:
-        all_files, symbols_by_file, sections_by_file, name_to_files = _load_project_data(conn)
-        if not all_files:
-            _LOG.debug("_load_and_rank: no indexed files for project %s", project.root.name)
-            return None
-        total_file_count = len(all_files)
-        map_worthy_files = {
-            rel: info
-            for rel, info in all_files.items()
-            if _is_map_worthy(rel, max(1, info["size"] // _BYTES_PER_APPROX_LINE))
-        }
-        graph = _build_graph(conn, map_worthy_files, name_to_files)
-        summary_cache = _load_summary_cache(conn)
-        _evict_stale_cache(conn, map_worthy_files)
+    try:
+        with db.open_project(project.hash) as conn:
+            all_files, symbols_by_file, sections_by_file, name_to_files = _load_project_data(conn)
+            if not all_files:
+                _LOG.debug("_load_and_rank: no indexed files for project %s", project.root.name)
+                return None
+            total_file_count = len(all_files)
+            map_worthy_files = {
+                rel: info
+                for rel, info in all_files.items()
+                if _is_map_worthy(rel, max(1, info["size"] // _BYTES_PER_APPROX_LINE))
+            }
+            graph = _build_graph(conn, map_worthy_files, name_to_files)
+            summary_cache = _load_summary_cache(conn)
+            _evict_stale_cache(conn, map_worthy_files)
+    except Exception as exc:  # noqa: BLE001
+        _LOG.error(
+            "_load_and_rank: failed to load project data for %s: %s",
+            project.root.name, exc, exc_info=True,
+        )
+        return None
     t_db = time.monotonic()
 
     ranks = compute_ranks(graph)

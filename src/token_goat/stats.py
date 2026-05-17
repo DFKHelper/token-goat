@@ -415,7 +415,14 @@ def _to_stats_data(summary: StatsSummary) -> StatsData:
     if summary.window_days > 0:
         period_start = today - timedelta(days=summary.window_days)
     elif summary.by_day:
-        period_start = date.fromisoformat(summary.by_day[-1]["date"])  # by_day newest-first
+        # by_day is newest-first; the last element is the oldest day in the window.
+        # fromisoformat raises ValueError on a malformed date string — fall back to
+        # today rather than crashing the renderer on a single bad DB row.
+        try:
+            period_start = date.fromisoformat(summary.by_day[-1]["date"])
+        except (ValueError, KeyError) as exc:
+            _LOG.warning("could not parse period_start from by_day[-1]: %r (%s)", summary.by_day[-1], exc)
+            period_start = today
     else:
         period_start = today
 
