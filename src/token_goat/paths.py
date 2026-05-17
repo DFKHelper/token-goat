@@ -334,6 +334,11 @@ def _atomic_write_core(path: Path, content: str | bytes, mode: str) -> None:
     Two-component temp name: thread ID prevents collisions when multiple threads
     write the same path concurrently; monotonic_ns prevents collisions across rapid
     sequential calls in the same thread where the thread ID alone would repeat.
+
+    Rename-over rather than writing in place: on POSIX, os.rename() is atomic at the
+    filesystem level, so readers always see either the old complete file or the new
+    complete file — a mid-write crash or kill cannot leave a partially-written file.
+    On Windows, _rename_with_retry handles the brief exclusive-lock window.
     """
     tmp = path.with_name(f"{path.name}.{threading.get_ident()}.{time.monotonic_ns()}.tmp")
     path.parent.mkdir(parents=True, exist_ok=True)
