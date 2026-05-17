@@ -1,4 +1,14 @@
-"""PageRank-based repo map: token-budgeted overview of a project."""
+"""PageRank-based repo map: token-budgeted overview of a project.
+
+PageRank is used as the ranking strategy because it captures *architectural
+centrality*: a file that is imported or referenced by many other files receives
+a high score, just as a web page linked by many pages does.  Pure reference
+counts would also work, but PageRank dampens the influence of files that are
+only referenced by other peripheral files, so core modules (db.py, paths.py)
+rank above leaf utilities even when those utilities have the same raw import
+count.  The damping factor (0.85, networkx default) is the standard Wikipedia-
+era value and needs no tuning for typical codebases.
+"""
 from __future__ import annotations
 
 __all__ = [

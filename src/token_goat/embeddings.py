@@ -45,6 +45,11 @@ class EmbeddingsResult(TypedDict):
 
 _LOG = logging.getLogger("token_goat.embeddings")
 
+# BAAI/bge-small-en-v1.5 is the smallest model in the BGE family that still
+# scores well on code-retrieval benchmarks.  At ~130 MB it downloads once and
+# fits comfortably in memory during background indexing.  The 384-dimensional
+# output is the native dimension for this checkpoint — do not change DEFAULT_DIM
+# without re-creating all vec0 tables (schema stores dim at creation time).
 DEFAULT_MODEL = "BAAI/bge-small-en-v1.5"
 DEFAULT_DIM = 384
 
