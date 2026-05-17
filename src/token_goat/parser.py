@@ -394,6 +394,13 @@ def index_file(project: Project, file_path: Path) -> FileIndex | None:
         _LOG.exception("extractor crashed on %s", rel)
         return None
 
+    if not symbols and language not in ("markdown", "html", "json"):
+        _LOG.debug(
+            "index_file: 0 symbols extracted from %s (language=%s, %d bytes) "
+            "— parser may not cover this file's constructs",
+            rel, language, len(raw),
+        )
+
     try:
         stat = file_path.stat()
     except OSError as e:
