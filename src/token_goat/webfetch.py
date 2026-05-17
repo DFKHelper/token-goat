@@ -73,6 +73,17 @@ def _truncate_url(url: str, max_len: int = _MAX_URL_IN_ERROR) -> str:
 # Common image extensions to detect from URL
 IMAGE_URL_EXTS = (".jpg", ".jpeg", ".png", ".webp", ".avif", ".gif", ".bmp", ".tiff", ".tif")
 
+# MIME type → file extension mapping used by _suffix_for(); built once at module load.
+_CONTENT_TYPE_EXT: dict[str, str] = {
+    "image/jpeg": ".jpg",
+    "image/png": ".png",
+    "image/webp": ".webp",
+    "image/avif": ".avif",
+    "image/gif": ".gif",
+    "image/bmp": ".bmp",
+    "image/tiff": ".tiff",
+}
+
 # Hostnames that must never be fetched (SSRF protection)
 _BLOCKED_HOSTNAMES = frozenset(
     [
@@ -201,16 +212,7 @@ def _suffix_for(url: str, content_type: str = "") -> str:
             return ext
     # Map content-type
     ct = content_type.lower().split(";")[0].strip()
-    mapping = {
-        "image/jpeg": ".jpg",
-        "image/png": ".png",
-        "image/webp": ".webp",
-        "image/avif": ".avif",
-        "image/gif": ".gif",
-        "image/bmp": ".bmp",
-        "image/tiff": ".tiff",
-    }
-    return mapping.get(ct, ".bin")
+    return _CONTENT_TYPE_EXT.get(ct, ".bin")
 
 
 def _sidecar_path(cache_path: Path) -> Path:
