@@ -66,6 +66,16 @@ _KIND_PRIORITY: dict[str, int] = {
 }
 
 
+def _coerce_line(val: object, default: int) -> int:
+    """Return *val* as int, or *default* when *val* is None.
+
+    DB row columns retrieved via sqlite3.Row are typed as ``object``; this
+    helper centralises the ``int(x) if x is not None else default`` idiom used
+    when extracting line numbers from query results.
+    """
+    return int(val) if val is not None else default  # type: ignore[arg-type]
+
+
 class ReadLookupError(ValueError):
     """Structured read-resolution failure."""
 
@@ -592,7 +602,7 @@ def read_symbol(
         return None
     lines, full_bytes = read_result
 
-    sym_line: int = int(chosen["line"]) if chosen["line"] is not None else 1
+    sym_line: int = _coerce_line(chosen["line"], 1)
     sym_end_line: int | None = int(chosen["end_line"]) if chosen["end_line"] is not None else None
     snippet, snippet_bytes, start, end = _extract_snippet(
         lines, full_bytes, sym_line, sym_end_line, context_lines
@@ -683,7 +693,7 @@ def read_section(
         return None
     lines, full_bytes = read_result
 
-    sec_line: int = int(chosen["line"]) if chosen["line"] is not None else 1
+    sec_line: int = _coerce_line(chosen["line"], 1)
     sec_end_line: int | None = int(chosen["end_line"]) if chosen["end_line"] is not None else None
     snippet, snippet_bytes, start, end = _extract_snippet(
         lines, full_bytes, sec_line, sec_end_line, context_lines
