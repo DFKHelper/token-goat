@@ -4,11 +4,21 @@ from __future__ import annotations
 import logging
 import sqlite3
 from pathlib import Path
+from typing import TypedDict
 
 from . import db, session
 from .project import find_project
 
 _LOG = logging.getLogger("token_goat.hints")
+
+
+class _SymbolRow(TypedDict):
+    """Shape of one row returned by the symbols SELECT in _get_indexed_symbols_and_line_count."""
+
+    kind: str
+    name: str
+    line: int
+    end_line: int
 
 # Token estimator: ~3.5 chars/token, ~60 chars/line code → ~17 tokens/line average
 CHARS_PER_TOKEN = 3.5
@@ -81,7 +91,7 @@ def _line_count(path: Path) -> int | None:
 
 def _get_indexed_symbols_and_line_count(
     file_rel: str, project_hash: str
-) -> tuple[list[dict[str, object]], int | None, bool]:
+) -> tuple[list[_SymbolRow], int | None, bool]:
     """Return symbols AND actual or estimated line count in one query.
 
     Returns a third flag indicating whether the returned line count is exact
@@ -135,7 +145,16 @@ def _get_indexed_symbols_and_line_count(
                 n_lines = None
                 line_count_is_exact = False
 
-            return [dict(r) for r in sym_rows], n_lines, line_count_is_exact  # type: ignore[return-value]
+            sym_dicts: list[_SymbolRow] = [
+                _SymbolRow(
+                    kind=str(r["kind"]),
+                    name=str(r["name"]),
+                    line=int(r["line"]),
+                    end_line=int(r["end_line"]),
+                )
+                for r in sym_rows
+            ]
+            return sym_dicts, n_lines, line_count_is_exact
     except Exception:  # noqa: BLE001
         _LOG.exception("failed to load indexed symbols for %s", file_rel)
         return [], None, False
@@ -352,7 +371,7 @@ def _hint_from_index(
 
     full_tokens = _est_tokens_from_lines(n_lines)
     n_total = len(symbols)
-    first_sym_name = symbols[0].get("name", "")
+    first_sym_name = symbols[0]["name"]
 
     # A *suggestion*, not a realized saving. tokens_saved=0: if the agent acts
     # on it, `token-goat read` records the real `read_replacement` stat — counting

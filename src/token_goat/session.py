@@ -30,7 +30,7 @@ import sys
 import threading
 import time
 from dataclasses import asdict, dataclass, field
-from typing import Any
+from typing import Any, TypedDict
 
 from . import paths
 from .hooks_common import sanitize_log_str
@@ -102,18 +102,18 @@ class SessionCache:
     # the cache is loaded, mutated once, and immediately saved.  Not persisted to disk.
     _json_cache: str | None = field(default=None, repr=False, compare=False)
 
-    def to_dict(self) -> dict[str, object]:
+    def to_dict(self) -> _SessionDict:
         """Serialize to dict for JSON."""
-        return {
-            "schema_version": SESSION_SCHEMA_VERSION,
-            "created_by": "token-goat",
-            "session_id": self.session_id,
-            "started_ts": self.started_ts,
-            "last_activity_ts": self.last_activity_ts,
-            "files": {k: asdict(v) for k, v in self.files.items()},
-            "greps": [asdict(g) for g in self.greps],
-            "edited_files": self.edited_files,
-        }
+        return _SessionDict(
+            schema_version=SESSION_SCHEMA_VERSION,
+            created_by="token-goat",
+            session_id=self.session_id,
+            started_ts=self.started_ts,
+            last_activity_ts=self.last_activity_ts,
+            files={k: asdict(v) for k, v in self.files.items()},
+            greps=[asdict(g) for g in self.greps],
+            edited_files=self.edited_files,
+        )
 
     def to_json(self) -> str:
         """Return a JSON string for this cache, using a cached result when available.
@@ -219,6 +219,19 @@ class SessionCache:
             greps=greps,
             edited_files=edited_files,
         )
+
+
+class _SessionDict(TypedDict):
+    """Wire format of a serialized SessionCache (written to / read from JSON on disk)."""
+
+    schema_version: int
+    created_by: str
+    session_id: str
+    started_ts: float
+    last_activity_ts: float
+    files: dict[str, Any]
+    greps: list[Any]
+    edited_files: dict[str, int]
 
 
 def _fresh_cache(session_id: str, *, unavailable: bool = False) -> SessionCache:
