@@ -266,12 +266,18 @@ def _hint_from_cache(
             0,
         )
 
+    # Hoist entry.line_ranges to a local to avoid repeated attribute lookups
+    # on this hot pre-read path (one hook call per Read tool invocation).
+    # n_ranges caches len() so it is not recomputed for the summary/extra strings.
+    line_ranges = entry.line_ranges
+    n_ranges = len(line_ranges)
+
     # Compute overlap against all cached ranges in a single pass.
     # Also track last_cached_end here to avoid a second generator scan later.
     overlap_lines = 0
     exact_match = False
     last_cached_end = 0
-    for cached_start, cached_end in entry.line_ranges:
+    for cached_start, cached_end in line_ranges:
         overlap_start = max(cached_start, req_start)
         overlap_end = min(cached_end, req_end)
         if overlap_end >= overlap_start:
@@ -281,8 +287,8 @@ def _hint_from_cache(
         if cached_end > last_cached_end:
             last_cached_end = cached_end
 
-    cached_summary = ", ".join(f"{s}-{e}" for s, e in entry.line_ranges[:3])
-    extra = f" (+{len(entry.line_ranges) - 3} more ranges)" if len(entry.line_ranges) > 3 else ""
+    cached_summary = ", ".join(f"{s}-{e}" for s, e in line_ranges[:3])
+    extra = f" (+{n_ranges - 3} more ranges)" if n_ranges > 3 else ""
 
     # Exact re-read of already-cached lines — the full request is avoidable.
     if exact_match:
