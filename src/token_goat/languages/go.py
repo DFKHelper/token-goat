@@ -33,8 +33,16 @@ _CALL_RE = re.compile(r"(?<![.\w])([A-Za-z_][A-Za-z0-9_]*)\s*\(")
 # Regex to extract quoted import path from a Go import line
 _GO_IMPORT_RE = re.compile(r'"([^"]+)"')
 
-
 _IDENT_RE = re.compile(r"([A-Za-z_][A-Za-z0-9_]*)\s*(?:=|[A-Za-z_\(])")
+
+# Patterns for package-level const/var declarations — hoisted to module level so
+# _extract_const_var_inner (called once per Go file) does not recompile them on
+# every source line.  Four patterns cover the two keywords × two forms (single-line
+# and block-opening).
+_CONST_SINGLE_RE = re.compile(r"^const\s+([A-Za-z_][A-Za-z0-9_]*)\s")
+_CONST_BLOCK_RE = re.compile(r"^const\s*\($")
+_VAR_SINGLE_RE = re.compile(r"^var\s+([A-Za-z_][A-Za-z0-9_]*)\s")
+_VAR_BLOCK_RE = re.compile(r"^var\s*\($")
 
 
 def _scan_decl_block(lines: list[str], start: int, kind: str) -> tuple[list[Symbol], int]:
@@ -92,17 +100,19 @@ def _extract_const_var_inner(source: bytes) -> list[Symbol]:
             continue
         stripped = line.lstrip()
 
-        for keyword, kind in (("const", "const"), ("var", "var")):
+        for single_re, block_re, kind in (
+            (_CONST_SINGLE_RE, _CONST_BLOCK_RE, "const"),
+            (_VAR_SINGLE_RE, _VAR_BLOCK_RE, "var"),
+        ):
             # Single-line: const/var Foo = ...
-            m = re.match(rf"^{keyword}\s+([A-Za-z_][A-Za-z0-9_]*)\s", stripped)
+            m = single_re.match(stripped)
             if m:
                 symbols.append(Symbol(name=m.group(1), kind=kind, line=i + 1, end_line=i + 1, signature=line.rstrip()[:200]))
                 i += 1
                 break
 
             # Block: const/var (
-            m = re.match(rf"^{keyword}\s*\($", stripped)
-            if m:
+            if block_re.match(stripped):
                 block_syms, i = _scan_decl_block(lines, i + 1, kind)
                 symbols.extend(block_syms)
                 break
