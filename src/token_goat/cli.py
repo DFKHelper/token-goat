@@ -7,6 +7,7 @@ import logging
 import os
 import sqlite3
 import sys
+import time
 from dataclasses import asdict, is_dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, cast, get_args
@@ -399,12 +400,18 @@ def cmd_map(
         "Run from a project directory."
     )
 
+    _LOG.info("map start: project=%s budget=%d json=%s", proj.root.name, budget, json_output)
+    t0 = time.monotonic()
     try:
         if json_output:
             data = repomap.build_map_json(proj)
+            elapsed = time.monotonic() - t0
+            _LOG.info("map complete: project=%s files=%d dur=%.3fs", proj.root.name, len(data), elapsed)
             typer.echo(json.dumps(data, indent=2))
             return
         text = repomap.build_map(proj, budget_tokens=budget)
+        elapsed = time.monotonic() - t0
+        _LOG.info("map complete: project=%s dur=%.3fs", proj.root.name, elapsed)
         typer.echo(text)
     except Exception as exc:  # noqa: BLE001
         _error(f"failed to build repo map: {exc}. Try `token-goat index --full` to rebuild the index.")
@@ -654,6 +661,7 @@ def index(
         """Emit an indexing progress line to stderr."""
         typer.echo(f"  {done}/{total} files processed...", err=True)
 
+    _LOG.info("index start: project=%s mode=%s", proj.root.name, "full" if full else "incremental")
     try:
         summary = index_project(proj, full=full, progress=_progress)
     except Exception as exc:  # noqa: BLE001
@@ -661,6 +669,14 @@ def index(
         raise typer.Exit(1) from None
 
     langs = ", ".join(summary["languages"]) if summary["languages"] else "none"
+    _LOG.info(
+        "index complete: project=%s files=%d indexed=%d errors=%d dur=%.2fs",
+        proj.root.name,
+        summary["total_files"],
+        summary["indexed"],
+        summary["errors"],
+        summary["duration_sec"],
+    )
     typer.echo(
         f"Indexed {summary['total_files']} files "
         f"({summary['indexed']} indexed, "
