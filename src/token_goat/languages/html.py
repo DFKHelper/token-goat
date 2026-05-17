@@ -32,13 +32,6 @@ def _is_noise(name: str) -> bool:
     return name.lower() in _NOISE_IDS_CLASSES
 
 
-# Private aliases kept for backward compatibility — liquid.py imports these names
-# from html.py.  The canonical implementations now live in common.build_line_index
-# and common.offset_to_line.
-_build_line_index = common.build_line_index
-_offset_to_line = common.offset_to_line
-
-
 def extract(source: bytes, rel_path: str) -> tuple[list[Symbol], list[Ref], list[ImpExp], list[Section]]:
     """Extract symbols, imports, and sections from an HTML file.
 
@@ -69,7 +62,7 @@ def extract(source: bytes, rel_path: str) -> tuple[list[Symbol], list[Ref], list
 
         # Build a line-start offset index once; reuse it for all O(log n) lookups
         # instead of the O(n) slice-and-count pattern per match.
-        line_index = _build_line_index(text)
+        line_index = common.build_line_index(text)
 
         # --- Extract headings ---
         common.extract_html_headings(text, sections)
@@ -81,14 +74,14 @@ def extract(source: bytes, rel_path: str) -> tuple[list[Symbol], list[Ref], list
         for match in _ID_RE.finditer(text):
             id_val = match.group(1)
             if not _is_noise(id_val):
-                line = _offset_to_line(line_index, match.start())
+                line = common.offset_to_line(line_index, match.start())
                 symbols.append(Symbol(name=id_val, kind="html_id", line=line))
 
         # --- Extract class attributes (with noise filter) ---
         for match in _CLASS_RE.finditer(text):
             class_val = match.group(1)
             if any(not _is_noise(cls) for cls in class_val.split()):
-                line = _offset_to_line(line_index, match.start())
+                line = common.offset_to_line(line_index, match.start())
                 for cls in class_val.split():
                     if not _is_noise(cls):
                         symbols.append(Symbol(name=cls, kind="html_class", line=line))
@@ -96,13 +89,13 @@ def extract(source: bytes, rel_path: str) -> tuple[list[Symbol], list[Ref], list
         # --- Extract link href ---
         for match in _LINK_RE.finditer(text):
             href = match.group(1)
-            line = _offset_to_line(line_index, match.start())
+            line = common.offset_to_line(line_index, match.start())
             imports.append(ImpExp(kind="html_link", target=href, line=line))
 
         # --- Extract script src ---
         for match in _SCRIPT_RE.finditer(text):
             src = match.group(1)
-            line = _offset_to_line(line_index, match.start())
+            line = common.offset_to_line(line_index, match.start())
             imports.append(ImpExp(kind="html_script", target=src, line=line))
 
         return symbols, [], imports, sections
