@@ -80,6 +80,13 @@ def extract(source: bytes, rel_path: str) -> tuple[list[Symbol], list[Ref], list
     ``from os.path import join, exists`` statement produces two :class:`ImpExp`
     rows (``os.path.join`` and ``os.path.exists``).
 
+    WHY regex instead of tree-sitter children for imports: tlp surfaces each
+    import statement as a single ``.source`` text string, not as separate child
+    nodes for the module name and each imported name.  ``from foo import A, B``
+    and ``import os, sys`` both arrive as one opaque string, so regex
+    post-processing in :func:`_parse_import_source` is the only way to split
+    multi-name imports into individual per-name :class:`ImpExp` rows.
+
     Refs are extracted by regex (``_CALL_RE``) over the raw source text.
     Common builtins and keywords in ``_CALL_NOISE`` are excluded to keep the
     ref list focused on project-internal call sites.  Sections are always empty

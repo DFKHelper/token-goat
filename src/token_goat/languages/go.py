@@ -69,10 +69,16 @@ def _scan_decl_block(lines: list[str], start: int, kind: str) -> tuple[list[Symb
 def _extract_const_var(source: bytes) -> list[Symbol]:
     """Extract package-level const and var declarations via regex.
 
-    tlp does not surface these via structure/symbols for Go, so we fall back
-    to a regex pass over the raw source.  The single-line and block forms for
-    both ``const`` and ``var`` share the same scanning logic, delegated to
-    ``_scan_decl_block`` for block bodies.
+    WHY a separate regex pass: tlp's structure/symbols walk for Go focuses on
+    named entities — functions, types, and interfaces — and does not emit
+    ``const_declaration`` or ``var_declaration`` nodes.  iota-based const groups
+    make this especially awkward for tree-sitter alone because the effective value
+    of each constant depends on its ordinal position within the block, not just its
+    own syntax node.  A line-by-line regex scan is simpler, predictable, and
+    produces the same symbol name regardless of iota semantics.
+
+    The single-line and block forms for both ``const`` and ``var`` share the same
+    scanning logic, delegated to ``_scan_decl_block`` for block bodies.
     """
     try:
         return _extract_const_var_inner(source)
