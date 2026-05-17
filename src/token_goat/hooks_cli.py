@@ -351,12 +351,13 @@ def pre_compact(payload: HookPayload) -> HookResponse:
         _LOG.warning("pre-compact: invalid session_id rejected: %s", exc)
         return CONTINUE()
 
-    n_events = compact_mod.event_count(session_id)
+    manifest, n_events = compact_mod.build_manifest_with_count(
+        session_id, max_tokens=cfg.max_manifest_tokens
+    )
     if n_events < cfg.min_events:
         _LOG.info("pre-compact: skipping manifest (events=%d < min=%d)", n_events, cfg.min_events)
         return CONTINUE()
 
-    manifest = compact_mod.build_manifest(session_id, max_tokens=cfg.max_manifest_tokens)
     if not manifest:
         return CONTINUE()
 

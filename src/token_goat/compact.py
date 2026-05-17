@@ -7,6 +7,7 @@ from __future__ import annotations
 
 __all__ = [
     "build_manifest",
+    "build_manifest_with_count",
     "event_count",
 ]
 
@@ -175,18 +176,15 @@ def event_count(session_id: str) -> int:
     return len(cache.files) + len(cache.greps) + len(cache.edited_files)
 
 
-def build_manifest(session_id: str, *, max_tokens: int = 400) -> str:
-    """Build a compact session manifest from the session cache.
+def _build_manifest_from_cache(
+    cache: SessionCache,
+    session_id: str,
+    max_tokens: int,
+) -> str:
+    """Render the manifest from an already-loaded *cache*.
 
-    Returns structured text under *max_tokens* tokens that summarises:
-    - Files edited this session (most important: must survive compaction)
-    - Symbols accessed via token-goat read/symbol commands
-    - Key files read, deduped and sorted by access frequency
-
-    *max_tokens* is clamped to [1, _MAX_MANIFEST_TOKENS_CAP] to prevent a caller
-    from triggering unbounded manifest construction via an extreme value.
-
-    Safe to call even when the session cache is empty or missing.
+    Separated from :func:`build_manifest` so :func:`build_manifest_with_count`
+    can share the render + log path without a second disk load.
     """
     clamped = max(1, min(max_tokens, _MAX_MANIFEST_TOKENS_CAP))
     if clamped != max_tokens:
@@ -198,11 +196,6 @@ def build_manifest(session_id: str, *, max_tokens: int = 400) -> str:
         )
     max_tokens = clamped
     t0 = time.monotonic()
-    _LOG.debug("build_manifest: session=%s max_tokens=%d", session_id[:8], max_tokens)
-    cache = _load_session_cache(session_id, "build_manifest")
-    if cache is None:
-        return ""
-
     result, files_with_symbols_count = _render(cache, session_id, max_tokens)
     elapsed = time.monotonic() - t0
     token_estimate = estimate_tokens(result)
@@ -217,6 +210,50 @@ def build_manifest(session_id: str, *, max_tokens: int = 400) -> str:
         elapsed,
     )
     return result
+
+
+def build_manifest(session_id: str, *, max_tokens: int = 400) -> str:
+    """Build a compact session manifest from the session cache.
+
+    Returns structured text under *max_tokens* tokens that summarises:
+    - Files edited this session (most important: must survive compaction)
+    - Symbols accessed via token-goat read/symbol commands
+    - Key files read, deduped and sorted by access frequency
+
+    *max_tokens* is clamped to [1, _MAX_MANIFEST_TOKENS_CAP] to prevent a caller
+    from triggering unbounded manifest construction via an extreme value.
+
+    Safe to call even when the session cache is empty or missing.
+    """
+    _LOG.debug("build_manifest: session=%s max_tokens=%d", session_id[:8], max_tokens)
+    cache = _load_session_cache(session_id, "build_manifest")
+    if cache is None:
+        return ""
+    return _build_manifest_from_cache(cache, session_id, max_tokens)
+
+
+def build_manifest_with_count(
+    session_id: str,
+    *,
+    max_tokens: int = 400,
+) -> tuple[str, int]:
+    """Load the session cache once and return ``(manifest, event_count)``.
+
+    Callers that need both values (e.g. the PreCompact hook, which checks the
+    event count before deciding whether to inject the manifest) should prefer
+    this function over calling :func:`event_count` and :func:`build_manifest`
+    separately — the separate calls each deserialize the session JSON from disk,
+    paying the I/O and parse cost twice for every compaction trigger.
+
+    Returns ``("", 0)`` when the session cache is missing or unreadable.
+    """
+    _LOG.debug("build_manifest_with_count: session=%s max_tokens=%d", session_id[:8], max_tokens)
+    cache = _load_session_cache(session_id, "build_manifest_with_count")
+    if cache is None:
+        return "", 0
+    n_events = len(cache.files) + len(cache.greps) + len(cache.edited_files)
+    manifest = _build_manifest_from_cache(cache, session_id, max_tokens)
+    return manifest, n_events
 
 
 def _render(cache: SessionCache, session_id: str, max_tokens: int) -> tuple[str, int]:
