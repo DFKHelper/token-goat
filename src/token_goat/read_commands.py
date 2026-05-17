@@ -377,14 +377,15 @@ def _run_read_like_command(
     assert proj is not None  # guaranteed once rel is resolved
     result = reader(proj, rel, item_part, context_lines=context_lines)
     if result is None:
+        _label_lower = missing_label.lower()
         _emit_read_error(
-            code=f"{missing_label.lower()}_not_found",
+            code=f"{_label_lower}_not_found",
             message=f"{missing_label} not found: {item_part} (in {rel})",
             json_output=json_output,
             file_part=file_part,
             rel_path=rel,
             item=item_part,
-            item_kind=missing_label.lower(),
+            item_kind=_label_lower,
         )
         raise typer.Exit(0)
 
