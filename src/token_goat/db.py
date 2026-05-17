@@ -197,8 +197,8 @@ def _connect(db_path: Path, *, load_vec: bool = True) -> sqlite3.Connection:
 
 def _is_transient_db_error(error: sqlite3.DatabaseError) -> bool:
     """Check if a DatabaseError is transient (not evidence of corruption)."""
-    msg = str(error).lower()
-    return "locked" in msg or "busy" in msg or "i/o" in msg
+    lowered = str(error).lower()
+    return "locked" in lowered or "busy" in lowered or "i/o" in lowered
 
 
 def _is_readonly_or_transient(error: sqlite3.OperationalError) -> bool:
@@ -544,15 +544,14 @@ def open_global() -> Iterator[sqlite3.Connection]:
     try:
         conn = _repair_if_corrupt(conn, path)
         _ensure_global_schema(conn)
-        open_elapsed_ms = (time.monotonic() - t0) * 1000
-        _LOG.debug("global db ready in %.1fms", open_elapsed_ms)
+        _LOG.debug("global db ready in %.1fms", (time.monotonic() - t0) * 1000)
         yield conn
     finally:
-        elapsed_ms = (time.monotonic() - t0) * 1000
-        if elapsed_ms >= 1000:
-            _LOG.warning("global db session slow: %.1fms total", elapsed_ms)
+        session_ms = (time.monotonic() - t0) * 1000
+        if session_ms >= 1000:
+            _LOG.warning("global db session slow: %.1fms total", session_ms)
         else:
-            _LOG.debug("closing global db (session %.1fms)", elapsed_ms)
+            _LOG.debug("closing global db (session %.1fms)", session_ms)
         _close_conn(conn)
 
 
@@ -595,15 +594,14 @@ def open_project(project_hash: str) -> Iterator[sqlite3.Connection]:
     try:
         conn = _repair_if_corrupt(conn, path)
         _ensure_project_schema(conn, db_path=path)
-        open_elapsed_ms = (time.monotonic() - t0) * 1000
-        _LOG.debug("project db ready in %.1fms (hash=%s)", open_elapsed_ms, project_hash[:8])
+        _LOG.debug("project db ready in %.1fms (hash=%s)", (time.monotonic() - t0) * 1000, project_hash[:8])
         yield conn
     finally:
-        elapsed_ms = (time.monotonic() - t0) * 1000
-        if elapsed_ms >= 1000:
-            _LOG.warning("project db session slow: %.1fms total (hash=%s)", elapsed_ms, project_hash[:8])
+        session_ms = (time.monotonic() - t0) * 1000
+        if session_ms >= 1000:
+            _LOG.warning("project db session slow: %.1fms total (hash=%s)", session_ms, project_hash[:8])
         else:
-            _LOG.debug("closing project db: %s (session %.1fms)", project_hash[:8], elapsed_ms)
+            _LOG.debug("closing project db: %s (session %.1fms)", project_hash[:8], session_ms)
         _close_conn(conn)
 
 
@@ -729,11 +727,9 @@ def project_writer_lock(project_hash: str, timeout_sec: float = 5.0) -> Iterator
             parts = lock_text.strip().split("\n", 1)
             owner_pid = int(parts[0])
             owner_ts = float(parts[1]) if len(parts) > 1 else 0.0
-            lock_age_seconds = time.time() - owner_ts
-            if lock_age_seconds > LOCK_STALE_SECONDS:
+            if time.time() - owner_ts > LOCK_STALE_SECONDS:
                 return True
-            owner_is_alive = psutil.pid_exists(owner_pid)
-            return not owner_is_alive
+            return not psutil.pid_exists(owner_pid)
         except (ValueError, IndexError):
             return True  # malformed → treat as stale
 

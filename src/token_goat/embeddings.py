@@ -449,15 +449,15 @@ def index_project_embeddings(
         n_files = len(file_rows)
 
         # Build full list of chunks that need (re)embedding.
-        # Bind sha256 locally to avoid a module-level attribute lookup + dict
+        # Bind sha256_fn locally to avoid a module-level attribute lookup + dict
         # lookup through the hashlib namespace on every iteration — measurable
         # at scale when processing thousands of chunks per project.
-        _sha256 = hashlib.sha256
-        new_chunks: list[tuple[Chunk, str]] = []  # (chunk, sha256)
+        sha256_fn = hashlib.sha256
+        new_chunks: list[tuple[Chunk, str]] = []  # (chunk, content_sha256)
         for fi_row in file_rows:
             rel = fi_row["rel_path"]
             for ch in extract_chunks_for_file(project, conn, rel):
-                sha = _sha256(ch.text.encode("utf-8", errors="replace")).hexdigest()
+                sha = sha256_fn(ch.text.encode("utf-8", errors="replace")).hexdigest()
                 key = (ch.file_rel, ch.start_line, ch.end_line)
                 if existing.get(key) == sha:
                     n_chunks_skipped += 1
@@ -485,18 +485,18 @@ def index_project_embeddings(
             batch_keys = [
                 (ch.file_rel, ch.start_line, ch.end_line) for ch, _ in batch
             ]
-            placeholders = ",".join("(?,?,?)" for _ in batch_keys)
+            batch_key_placeholders = ",".join("(?,?,?)" for _ in batch_keys)
             stale_ids = [
                 row["id"]
                 for row in conn.execute(
-                    f"SELECT id FROM chunks WHERE (file_rel, start_line, end_line) IN ({placeholders})",  # noqa: S608
+                    f"SELECT id FROM chunks WHERE (file_rel, start_line, end_line) IN ({batch_key_placeholders})",  # noqa: S608
                     [v for key in batch_keys for v in key],
                 ).fetchall()
             ]
             if stale_ids:
-                id_ph = ",".join("?" for _ in stale_ids)
-                conn.execute(f"DELETE FROM embeddings WHERE chunk_id IN ({id_ph})", stale_ids)  # noqa: S608
-                conn.execute(f"DELETE FROM chunks WHERE id IN ({id_ph})", stale_ids)  # noqa: S608
+                stale_id_placeholders = ",".join("?" for _ in stale_ids)
+                conn.execute(f"DELETE FROM embeddings WHERE chunk_id IN ({stale_id_placeholders})", stale_ids)  # noqa: S608
+                conn.execute(f"DELETE FROM chunks WHERE id IN ({stale_id_placeholders})", stale_ids)  # noqa: S608
                 n_stale_deleted += len(stale_ids)
                 _LOG.debug("cleaned %d stale chunks for re-embed", len(stale_ids))
 

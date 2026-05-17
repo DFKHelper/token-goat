@@ -487,12 +487,12 @@ def _cleanup_stale_locks() -> int:
             if not pid_str:
                 raise ValueError("empty PID in lock file")
             pid = int(pid_str)
-            process_is_dead = not psutil.pid_exists(pid)
+            owner_is_dead = not psutil.pid_exists(pid)
             lock_is_stale = now - lock_path.stat().st_mtime > db.LOCK_STALE_SECONDS
-            if process_is_dead or lock_is_stale:
+            if owner_is_dead or lock_is_stale:
                 lock_path.unlink()
                 cleared += 1
-                reason = "process dead" if process_is_dead else "stale (>600s)"
+                reason = "owner dead" if owner_is_dead else "stale (>600s)"
                 _LOG.debug("cleared stale lock %s (%s)", lock_path.name, reason)
         except (ValueError, OSError) as e:
             _LOG.debug("removing stale/malformed lock %s: %s", lock_path.name, e)
@@ -629,29 +629,29 @@ def evict_image_cache_if_over_limit() -> tuple[int, int]:
     if not img_dir.exists():
         _LOG.debug("image cache directory does not exist")
         return 0, 0
-    files = []
-    total = 0
+    cache_entries: list[tuple[Path, float, int]] = []  # (path, mtime, size_bytes)
+    total_bytes = 0
     for f in img_dir.iterdir():
         if not f.is_file():
             continue
         try:
             st = f.stat()
-            files.append((f, st.st_mtime, st.st_size))
-            total += st.st_size
+            cache_entries.append((f, st.st_mtime, st.st_size))
+            total_bytes += st.st_size
         except OSError:
             continue
-    if total <= IMAGE_CACHE_LIMIT:
+    if total_bytes <= IMAGE_CACHE_LIMIT:
         _LOG.debug("image cache size %.1f MB is within limit %.1f MB",
-                  total / (1024 * 1024), IMAGE_CACHE_LIMIT / (1024 * 1024))
+                  total_bytes / (1024 * 1024), IMAGE_CACHE_LIMIT / (1024 * 1024))
         return 0, 0
     _LOG.warning("image cache %.1f MB exceeds limit %.1f MB; starting LRU eviction",
-                total / (1024 * 1024), IMAGE_CACHE_LIMIT / (1024 * 1024))
-    # Sort oldest first (LRU)
-    files.sort(key=lambda x: x[1])
+                total_bytes / (1024 * 1024), IMAGE_CACHE_LIMIT / (1024 * 1024))
+    # Sort oldest-accessed first so the least-recently-used files are evicted first.
+    cache_entries.sort(key=lambda entry: entry[1])
     bytes_freed = 0
     files_freed = 0
-    for f, _, size in files:
-        if total - bytes_freed <= IMAGE_CACHE_TARGET:
+    for f, _, size in cache_entries:
+        if total_bytes - bytes_freed <= IMAGE_CACHE_TARGET:
             break
         try:
             f.unlink()
