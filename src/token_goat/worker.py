@@ -424,7 +424,8 @@ def drain_dirty_queue() -> list[DirtyQueueEntry]:
         try:
             raw_lines.extend(draining.read_text(encoding="utf-8").splitlines())
             draining.unlink()
-            _LOG.debug("recovered %d entries from abandoned .draining file", len(raw_lines))
+            _LOG.info("recovered %d entries from abandoned .draining file: %s",
+                      len(raw_lines), draining.name)
         except OSError as e:
             _LOG.warning("failed to recover abandoned .draining queue file: %s", e)
 
@@ -1050,8 +1051,9 @@ def _reindex_active_projects() -> None:
     skipped_oversized = 0
     for row in rows:
         if row["file_count"] > PERIODIC_REINDEX_MAX_FILES:
-            _LOG.debug(
-                "periodic reindex: skipping %s (%d files > %d limit)",
+            _LOG.info(
+                "periodic reindex: skipping %s — %d files exceeds limit of %d "
+                "(set PERIODIC_REINDEX_MAX_FILES higher to include it)",
                 row["root"],
                 row["file_count"],
                 PERIODIC_REINDEX_MAX_FILES,

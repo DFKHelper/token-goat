@@ -470,6 +470,19 @@ def index_project_embeddings(
 
         # Embed + persist in batches
         n_pending_embed = len(new_chunks)
+        if n_pending_embed == 0:
+            duration = time.time() - t0
+            _LOG.info(
+                "embeddings up-to-date: project=%s files=%d chunks_skipped=%d duration=%.2fs",
+                project.hash[:8], n_files, n_chunks_skipped, duration,
+            )
+            return EmbeddingsResult(
+                files_visited=n_files,
+                chunks_embedded=0,
+                chunks_skipped_unchanged=n_chunks_skipped,
+                duration_sec=round(duration, 2),
+                model=model_name,
+            )
         total_batches = (n_pending_embed + batch_size - 1) // batch_size
         _LOG.info("processing %d new chunks in %d batches (project=%s)", n_pending_embed, total_batches, project.hash[:8])
         n_stale_deleted = 0

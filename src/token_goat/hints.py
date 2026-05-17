@@ -358,9 +358,10 @@ def _hint_from_index(
     if not symbols:
         _LOG.info(
             "_hint_from_index: %s is in the index but has no symbols "
-            "(estimated %s lines) — no surgical-read hint possible",
+            "(estimated %s lines, project=%s) — no surgical-read hint possible",
             rel,
             estimated_lines,
+            project.hash[:8],
         )
         return None
 
