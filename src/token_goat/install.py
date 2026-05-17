@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import contextlib
+import html
 import json
 import logging
 import os
@@ -10,7 +11,6 @@ import shlex
 import shutil
 import subprocess
 import sys
-import xml.sax.saxutils
 from datetime import datetime
 from pathlib import Path
 
@@ -562,12 +562,11 @@ def _xml_escape(s: str) -> str:
 
     Guards against XML injection in the macOS LaunchAgent plist when a
     command-line argument or file-system path contains ``<``, ``>``, ``&``,
-    ``'``, or ``"``.  Standard library ``xml.sax.saxutils.escape`` covers the
-    mandatory set; the extra ``{'"': "&quot;", "'": "&apos;"}`` mapping extends
-    it to attribute-safe output (not strictly required for element text, but
-    harmless and future-proof).
+    ``'``, or ``"``.  Uses ``html.escape`` (stdlib) with ``quote=True`` for
+    the mandatory set, then normalises Python's ``&#x27;`` back to the
+    XML-standard ``&apos;`` so output is attribute-safe and XML-spec-clean.
     """
-    return xml.sax.saxutils.escape(s, {'"': "&quot;", "'": "&apos;"})
+    return html.escape(s, quote=True).replace("&#x27;", "&apos;")
 
 
 def install_mac_autostart() -> tuple[bool, str]:

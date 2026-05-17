@@ -1186,15 +1186,6 @@ wheels = [
 ]
 
 [[package]]
-name = "platformdirs"
-version = "4.9.6"
-source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/9f/4a/0883b8e3802965322523f0b200ecf33d31f10991d0401162f4b23c698b42/platformdirs-4.9.6.tar.gz", hash = "sha256:3bfa75b0ad0db84096ae777218481852c0ebc6c727b3168c1b9e0118e458cf0a", size = 29400, upload-time = "2026-04-09T00:04:10.812Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/75/a6/a0a304dc33b49145b21f4808d763822111e67d1c3a32b524a1baf947b6e1/platformdirs-4.9.6-py3-none-any.whl", hash = "sha256:e61adb1d5e5cb3441b4b7710bea7e4c12250ca49439228cc1021c00dcfac0917", size = 21348, upload-time = "2026-04-09T00:04:09.463Z" },
-]
-
-[[package]]
 name = "pluggy"
 version = "1.6.0"
 source = { registry = "https://pypi.org/simple" }
@@ -1537,7 +1528,6 @@ dependencies = [
     { name = "httpx" },
     { name = "networkx" },
     { name = "pillow" },
-    { name = "platformdirs" },
     { name = "psutil" },
     { name = "rich" },
     { name = "sqlite-vec" },
@@ -1559,26 +1549,25 @@ dev = [
 
 [package.metadata]
 requires-dist = [
-    { name = "fastembed", specifier = ">=0.3.0" },
-    { name = "google-api-python-client", specifier = ">=2.100.0" },
-    { name = "google-auth", specifier = ">=2.30.0" },
-    { name = "google-auth-oauthlib", specifier = ">=1.2.0" },
-    { name = "httpx", specifier = ">=0.27.0" },
+    { name = "fastembed", specifier = ">=0.3.0,<1.0" },
+    { name = "google-api-python-client", specifier = ">=2.100.0,<3.0" },
+    { name = "google-auth", specifier = ">=2.30.0,<3.0" },
+    { name = "google-auth-oauthlib", specifier = ">=1.2.0,<2.0" },
+    { name = "httpx", specifier = ">=0.27.0,<1.0" },
     { name = "hypothesis", marker = "extra == 'dev'", specifier = ">=6.100.0" },
     { name = "mypy", marker = "extra == 'dev'", specifier = ">=1.10.0" },
-    { name = "networkx", specifier = ">=3.0" },
-    { name = "pillow", specifier = ">=10.4.0" },
-    { name = "platformdirs", specifier = ">=4.0.0" },
-    { name = "psutil", specifier = ">=6.0.0" },
+    { name = "networkx", specifier = ">=3.0,<4.0" },
+    { name = "pillow", specifier = ">=10.4.0,<13.0" },
+    { name = "psutil", specifier = ">=6.0.0,<8.0" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.0.0" },
     { name = "pytest-cov", marker = "extra == 'dev'", specifier = ">=5.0.0" },
-    { name = "rich", specifier = ">=14.0.0" },
+    { name = "rich", specifier = ">=14.0.0,<16.0" },
     { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.6.0" },
-    { name = "sqlite-vec", specifier = ">=0.1.5" },
-    { name = "tomli-w", specifier = ">=1.0.0" },
+    { name = "sqlite-vec", specifier = ">=0.1.5,<1.0" },
+    { name = "tomli-w", specifier = ">=1.0.0,<2.0" },
     { name = "tree-sitter", specifier = ">=0.23,<0.24" },
     { name = "tree-sitter-language-pack", specifier = ">=0.7,<2.0" },
-    { name = "typer", specifier = ">=0.12.0" },
+    { name = "typer", specifier = ">=0.12.0,<1.0" },
     { name = "types-psutil", marker = "extra == 'dev'", specifier = ">=6.0.0" },
 ]
 provides-extras = ["dev"]
