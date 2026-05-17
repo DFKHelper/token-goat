@@ -392,7 +392,9 @@ def _resolve_cache(session_id: str, cache: SessionCache | None) -> SessionCache:
     validate_session_id(session_id)
     if cache is not None:
         if cache.session_id != session_id:
-            raise ValueError("cache.session_id does not match session_id")
+            raise ValueError(
+                f"cache.session_id {cache.session_id!r} does not match session_id {session_id!r}"
+            )
         return cache
     return load(session_id)
 

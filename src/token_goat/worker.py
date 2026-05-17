@@ -515,7 +515,7 @@ def _cleanup_stale_locks() -> int:
             content = lock_path.read_text(encoding="utf-8")
             pid_str = content.split("\n", 1)[0].strip()
             if not pid_str:
-                raise ValueError("empty PID in lock file")
+                raise ValueError(f"empty PID in lock file {lock_path.name!r}")
             pid = int(pid_str)
             owner_is_dead = not psutil.pid_exists(pid)
             lock_is_stale = now - lock_path.stat().st_mtime > db.LOCK_STALE_SECONDS
