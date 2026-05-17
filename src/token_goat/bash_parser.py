@@ -26,6 +26,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
 
+__all__ = ["BashIntent", "parse"]
+
 _LOG = logging.getLogger("token_goat.bash_parser")
 
 # Hard cap on the raw command string before shlex.split to prevent a crafted

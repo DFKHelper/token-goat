@@ -24,6 +24,9 @@ if TYPE_CHECKING:
 BYTES_MODE_ONLY_KINDS: frozenset[str] = frozenset({"webfetch_image", "gdrive_image"})
 
 
+__all__ = ["StatsSummary", "summarize", "render_text"]
+
+
 class _StatsBucket(TypedDict):
     """Mutable accumulator for a single stats aggregation bucket (kind, day, or project)."""
 
