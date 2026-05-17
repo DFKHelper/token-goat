@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import logging
 import sqlite3
+import time
 from pathlib import Path
 from typing import TypedDict
 
@@ -58,6 +59,15 @@ MIN_OVERLAP_TO_WARN = 50
 # Used to compute the end of the requested range so overlap detection works
 # even when the agent issues a bare Read without an explicit line count.
 DEFAULT_READ_LIMIT = 2000
+
+# How old a cached read may be before the dedup hint is suppressed.
+# Rationale: in long conversations the model's actual context window evicts
+# content well before the session JSON does.  Claiming "you already read X
+# at turn 3" at turn 200 is a false positive — the lines have likely fallen
+# out of context, so a re-read is legitimate.  30 minutes is conservative;
+# many sessions run longer, but at the median this is well past the typical
+# context-relevance window for any single file.
+STALE_READ_AGE_SECONDS = 30 * 60
 
 # How many bytes to assume per line when estimating line count from file size.
 # This is intentionally conservative (real code averages 30-50 bytes/line) so
@@ -293,6 +303,38 @@ def _hint_from_cache(
     if fname is None:
         fname = _sanitize_hint_path(Path(file_path).name)
     file_path = _sanitize_hint_path(file_path)
+
+    # Suppress the line-range dedup hint when the cached ranges are no longer
+    # trustworthy:
+    #
+    # 1. **Edited after last read.** A single Write/Edit/MultiEdit shifts every
+    #    line number after the insertion/deletion point.  Telling the model
+    #    "you already read lines 100-200" when those lines now contain
+    #    different code is worse than no hint — it actively misleads.  We
+    #    leave the symbol-only case below intact: symbols_read carries names,
+    #    not line numbers, so it survives an edit.
+    #
+    # 2. **Read is stale.** If the last read was a long time ago, the content
+    #    has likely scrolled out of the model's actual context window even
+    #    though the session JSON still tracks it.  Re-reading is legitimate.
+    edited_after_read = entry.last_edit_ts > entry.last_read_ts
+    read_is_stale = (time.time() - entry.last_read_ts) > STALE_READ_AGE_SECONDS
+    if (edited_after_read or read_is_stale) and entry.line_ranges:
+        _LOG.debug(
+            "_hint_from_cache: suppressing line-range hint for %s "
+            "(edited_after_read=%s, read_is_stale=%s)",
+            fname, edited_after_read, read_is_stale,
+        )
+        # Fall through to symbol-only path below if symbols are present and
+        # line_ranges happens to be empty (won't be on this branch); otherwise
+        # return None — no actionable hint when the cache cannot be trusted.
+        if not entry.symbols_read:
+            return None
+        # Symbols are still meaningful (names don't shift on edit), but the
+        # combined symbols+ranges entry shouldn't emit either hint variant:
+        # the symbol hint below assumes "no line_ranges" so we'd lie about the
+        # access pattern. Suppress entirely.
+        return None
 
     # Case: file accessed only via token-goat read <file>::<symbol>.
     # A suggestion, not a realized saving → tokens_saved=0.
