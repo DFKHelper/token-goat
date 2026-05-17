@@ -26,9 +26,6 @@ _CALL_NOISE = frozenset([
     "f32", "f64", "bool", "char", "str",
 ])
 
-# Regex: identifier NOT preceded by . or -> that is immediately followed by (
-_CALL_RE = re.compile(r"(?<![.\w])([A-Za-z_][A-Za-z0-9_]*)\s*\(")
-
 # Regex to extract target path from a `use ...;` line
 _USE_PATH_RE = re.compile(r"^use\s+([^;{]+)")
 
@@ -50,7 +47,7 @@ def extract(source: bytes, rel_path: str) -> tuple[list[Symbol], list[Ref], list
     # are recorded with kind="method". common.kind_str("Impl", language="rust")
     # returns "impl" so impl blocks are recorded correctly without special-casing here.
     collected = common.collect_symbols_and_refs(
-        source, "rust", rel_path, _LOG, _CALL_RE, _CALL_NOISE, promote_methods=True
+        source, "rust", rel_path, _LOG, common.CALL_RE, _CALL_NOISE, promote_methods=True
     )
     if collected is None:
         return [], [], [], []

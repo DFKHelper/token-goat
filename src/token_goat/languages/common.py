@@ -3,6 +3,7 @@ from __future__ import annotations
 
 __all__ = [
     "AddSymbolFn",
+    "CALL_RE",
     "KindStr",
     "add_imports",
     "add_symbol_info",
@@ -31,6 +32,12 @@ if TYPE_CHECKING:
     from ..parser import ImpExp, Ref, Section, Symbol
 
 _LOG = logging.getLogger("token_goat.languages.common")
+
+# Shared call-site ref pattern for languages whose identifiers follow
+# [A-Za-z_][A-Za-z0-9_]* (Python, Go, Rust).  TypeScript/JS extends this with
+# '$' and defines its own local variant.  Compiled once here so each adapter
+# avoids a redundant re.compile() call at import time.
+CALL_RE = re.compile(r"(?<![.\w])([A-Za-z_][A-Za-z0-9_]*)\s*\(")
 
 
 class AddSymbolFn(Protocol):

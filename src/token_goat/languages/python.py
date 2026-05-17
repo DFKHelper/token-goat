@@ -29,9 +29,6 @@ _CALL_NOISE = frozenset([
     "wraps",
 ])
 
-# Regex: identifier NOT preceded by . that is immediately followed by (
-_CALL_RE = re.compile(r"(?<![.\w])([A-Za-z_][A-Za-z0-9_]*)\s*\(")
-
 # Import parsing patterns — compiled once at module level so _parse_import_source
 # (called once per import line during indexing) does not pay re.compile() overhead.
 _FROM_IMPORT_RE = re.compile(r"^from\s+(\S+)\s+import\s+(.+)$")
@@ -87,7 +84,7 @@ def extract(source: bytes, rel_path: str) -> tuple[list[Symbol], list[Ref], list
     for Python files (use :mod:`token_goat.languages.markdown` for prose).
     """
     collected = common.collect_symbols_and_refs(
-        source, "python", rel_path, _LOG, _CALL_RE, _CALL_NOISE, promote_methods=True
+        source, "python", rel_path, _LOG, common.CALL_RE, _CALL_NOISE, promote_methods=True
     )
     if collected is None:
         return [], [], [], []
