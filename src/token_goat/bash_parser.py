@@ -144,50 +144,52 @@ def _parse_read(binary: str, args: list[str]) -> BashIntent:
     Scripted readers invoked with an in-place flag (``-i``, ``--in-place``) are
     classified as ``unknown`` because they mutate the file rather than reading it.
     """
-    if binary in SCRIPTED_READ_BINS and any(a == "--in-place" or a.startswith("-i") for a in args):
+    is_scripted = binary in SCRIPTED_READ_BINS
+    if is_scripted and any(a == "--in-place" or a.startswith("-i") for a in args):
         return BashIntent(kind="unknown", reason=f"{binary} edits files in place")
 
     offset: int | None = None
     limit: int | None = None
-    paths: list[str] = []
-    # Cache repeated membership tests as locals — avoids re-evaluating the
-    # frozenset lookup on every iteration of the arg loop.
-    accepts_line_count_flag = binary in ("head", "tail")  # only head/tail use -n/--lines
-    is_scripted = binary in SCRIPTED_READ_BINS
+    positional_args: list[str] = []
+    # Only head and tail support -n/--lines; pre-compute to avoid a frozenset
+    # lookup on every iteration of the arg loop.
+    is_line_count_binary = binary in ("head", "tail")
     i = 0
     while i < len(args):
         a = args[i]
-        if accepts_line_count_flag:
+        if is_line_count_binary:
             if a in ("-n", "--lines"):
                 if i + 1 < len(args):
-                    parsed = _try_parse_int(args[i + 1])
-                    if parsed is not None:
-                        limit = parsed
+                    n = _try_parse_int(args[i + 1])
+                    if n is not None:
+                        limit = n
                     i += 2
                     continue
             elif a.startswith("-n") and len(a) > 2:
-                parsed = _try_parse_int(a[2:])
-                if parsed is not None:
-                    limit = parsed
+                n = _try_parse_int(a[2:])
+                if n is not None:
+                    limit = n
                 i += 1
                 continue
             elif a.startswith("--lines="):
-                parsed = _try_parse_int(a.split("=", 1)[1])
-                if parsed is not None:
-                    limit = parsed
+                n = _try_parse_int(a.split("=", 1)[1])
+                if n is not None:
+                    limit = n
                 i += 1
                 continue
         if a.startswith("-"):
             i += 1
             continue
-        paths.append(a)
+        positional_args.append(a)
         i += 1
 
-    if not paths:
+    if not positional_args:
         return BashIntent(kind="unknown", reason=f"{binary} command is missing a file path")
-    target_path = paths[-1] if is_scripted else paths[0]
-    if is_scripted and len(paths) < 2:
+    # Scripted readers (sed/awk/perl) put the script expression first and the
+    # target file last, so they need at least two positional args.
+    if is_scripted and len(positional_args) < 2:
         return BashIntent(kind="unknown", reason=f"{binary} command is missing a target file")
+    target_path = positional_args[-1] if is_scripted else positional_args[0]
     return BashIntent(kind="read", target_path=target_path, offset=offset, limit=limit)
 
 
