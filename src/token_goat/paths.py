@@ -318,7 +318,7 @@ def _rename_with_retry(src: Path, dest: Path) -> None:
         except PermissionError as exc:
             last_exc = exc
     if last_exc is not None:
-        raise last_exc
+        raise last_exc from None
 
 
 def _open_restricted(tmp: Path) -> int:
