@@ -250,7 +250,12 @@ def _load_project_data(
 
     sections_by_file: dict[str, list[tuple[int, str]]] = defaultdict(list)
     for row in conn.execute(
-        "SELECT file_rel, heading, level FROM sections ORDER BY file_rel, level, line"
+        # ORDER BY file_rel removed: results land in a defaultdict keyed by
+        # file_rel, so DB-level grouping by file is wasted sort work — O(S log S)
+        # over all sections with no benefit.  level, line ordering is kept so
+        # headings within each file appear in document order (top-level first,
+        # then by position), which _summarize_file relies on for top_sections.
+        "SELECT file_rel, heading, level FROM sections ORDER BY level, line"
     ):
         sections_by_file[row["file_rel"]].append((row["level"], row["heading"]))
 
@@ -279,7 +284,10 @@ def _build_graph(
         referencing_file = row["file_rel"]
         if referencing_file not in files:
             continue
-        definition_files = name_to_files.get(referenced_symbol, set())
+        # Use an empty tuple as the miss-default instead of set() to avoid
+        # allocating a new empty set object on every cache miss.  A tuple is
+        # iterable (the only operation performed below) and does not allocate.
+        definition_files = name_to_files.get(referenced_symbol) or ()
 
         for definition_file in definition_files:
             if definition_file != referencing_file and definition_file in files:

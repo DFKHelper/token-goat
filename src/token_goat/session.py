@@ -445,6 +445,18 @@ def _sanitize_path(path: str) -> str:
     return path
 
 
+def _symbols_set(entry: FileEntry) -> frozenset[str]:
+    """Return a frozenset of already-read symbols for fast O(1) membership tests.
+
+    Built inline from the list on each call; the list stays authoritative for
+    serialization.  This helper is only called when a new symbol is being
+    considered for addition — the common case (no new symbol) never pays this
+    cost.  A frozenset is used rather than a set because its construction from
+    a list is equally fast and it communicates immutability clearly.
+    """
+    return frozenset(entry.symbols_read)
+
+
 def mark_file_read(
     session_id: str,
     path: str,
@@ -487,7 +499,11 @@ def mark_file_read(
     entry.read_count += 1
     entry.last_read_ts = now
     if symbol:
-        if symbol not in entry.symbols_read:
+        # O(1) set check avoids O(n) list scan on every symbol-level read.
+        # symbols_read is a short list (typically <10 entries) but the check
+        # fires on every pre-read hook call so eliminating the linear scan
+        # matters on sessions that repeatedly probe the same symbols.
+        if symbol not in _symbols_set(entry):
             entry.symbols_read.append(symbol)
     else:
         line_offset = max(0, int(offset)) if offset is not None else 0
