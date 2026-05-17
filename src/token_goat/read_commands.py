@@ -7,7 +7,7 @@ import sqlite3
 from collections import defaultdict, deque
 from collections.abc import Callable, Sequence
 from pathlib import Path
-from typing import Any
+from typing import Any, TypedDict
 
 import typer
 
@@ -15,6 +15,18 @@ from . import db, read_replacement, session
 from .project import Project, find_project
 
 _LOG = logging.getLogger("token_goat.read_commands")
+
+
+class _DepNode(TypedDict):
+    """One node in the transitive dependency BFS result.
+
+    Produced by :func:`_collect_transitive_outgoing` and consumed by
+    :func:`deps` for both JSON serialisation and text rendering.
+    """
+
+    depth: int
+    via: str
+    symbols: set[str]
 
 
 def _not_indexed_hint(project_hash: str) -> str | None:
@@ -187,7 +199,7 @@ def _collect_transitive_outgoing(
     conn: sqlite3.Connection,
     start_rel: str,
     max_depth: int,
-) -> dict[str, dict]:
+) -> dict[str, _DepNode]:
     """BFS over outgoing dependency edges up to max_depth levels.
 
     Computes transitive dependencies: all files that start_rel depends on,
@@ -207,7 +219,7 @@ def _collect_transitive_outgoing(
           - via: Immediate parent file in the BFS tree (for path reconstruction)
           - symbols: Set of symbol names referenced from start_rel to this file
     """
-    result: dict[str, dict] = {}
+    result: dict[str, _DepNode] = {}
     # Use a deque for O(1) popleft — list.pop(0) is O(n) and misreads as a stack.
     bfs_queue: deque[tuple[str, int]] = deque([(start_rel, 0)])
     visited: set[str] = {start_rel}
@@ -220,7 +232,7 @@ def _collect_transitive_outgoing(
         for dep_file, symbols in _collect_outgoing_edges(conn, current).items():
             if dep_file not in visited:
                 visited.add(dep_file)
-                result[dep_file] = {"depth": next_depth, "via": current, "symbols": symbols}
+                result[dep_file] = _DepNode(depth=next_depth, via=current, symbols=symbols)
                 bfs_queue.append((dep_file, next_depth))
             elif dep_file in result and result[dep_file]["depth"] == next_depth:
                 result[dep_file]["symbols"] |= symbols
@@ -412,7 +424,7 @@ def deps(
     assert proj is not None
     with db.open_project(proj.hash) as conn:
         outgoing, incoming, unresolved = _collect_dependency_graph(conn, rel)
-        transitive: dict[str, dict] = {}
+        transitive: dict[str, _DepNode] = {}
         if depth != 1:
             transitive = _collect_transitive_outgoing(conn, rel, max_depth=depth)
 
