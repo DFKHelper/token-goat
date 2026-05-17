@@ -202,64 +202,39 @@ class IndexProjectResult(TypedDict):
     duration_sec: float
 
 
-def _import_typescript() -> Extractor:
-    """Lazily import and return the TypeScript/JavaScript language extractor.
+def _language_importer(module_name: str, attr: str = "extract") -> Callable[[], Extractor]:
+    """Return a zero-arg factory that lazily imports ``languages.<module_name>.<attr>``.
 
-    Deferred to avoid loading tree-sitter grammars at module import time;
-    the grammar binary is only needed when a TypeScript or JavaScript file
-    is actually indexed.  JavaScript reuses this extractor (same registry entry).
+    All language extractors follow the same pattern: a ``languages/`` submodule
+    whose ``extract`` function matches the ``Extractor`` signature.  This factory
+    eliminates eight nearly-identical ``_import_*`` helpers, each differing only
+    in the module name.  Grammars are still loaded lazily — the import happens
+    inside the returned callable, not at module load time.
+
+    ``module_name`` is the submodule under ``token_goat.languages`` (e.g.
+    ``"typescript"``, ``"json_idx"``).  ``attr`` selects the callable to return
+    (default ``"extract"``).
     """
-    from .languages import typescript  # noqa: PLC0415
-    return typescript.extract
-
-def _import_python() -> Extractor:
-    """Lazily import and return the Python language extractor."""
-    from .languages import python  # noqa: PLC0415
-    return python.extract
-
-def _import_go() -> Extractor:
-    """Lazily import and return the Go language extractor."""
-    from .languages import go  # noqa: PLC0415
-    return go.extract
-
-def _import_rust() -> Extractor:
-    """Lazily import and return the Rust language extractor."""
-    from .languages import rust  # noqa: PLC0415
-    return rust.extract
-
-def _import_liquid() -> Extractor:
-    """Lazily import and return the Liquid template language extractor."""
-    from .languages import liquid  # noqa: PLC0415
-    return liquid.extract
-
-def _import_markdown() -> Extractor:
-    """Lazily import and return the Markdown section extractor."""
-    from .languages import markdown  # noqa: PLC0415
-    return markdown.extract
-
-def _import_html() -> Extractor:
-    """Lazily import and return the HTML extractor."""
-    from .languages import html  # noqa: PLC0415
-    return html.extract
-
-def _import_json() -> Extractor:
-    """Lazily import and return the JSON extractor (``json_idx`` module to avoid shadowing stdlib)."""
-    from .languages import json_idx  # noqa: PLC0415
-    return json_idx.extract
+    def _factory() -> Extractor:
+        import importlib  # noqa: PLC0415
+        mod = importlib.import_module(f".languages.{module_name}", package=__name__.rsplit(".", 1)[0])
+        return getattr(mod, attr)  # type: ignore[return-value]
+    return _factory
 
 
 # Registry: language key → zero-arg factory that imports and returns the extractor.
 # Extend here when adding a new language; no other code needs to change.
+# javascript reuses the typescript extractor (same tree-sitter grammar/rules).
 _EXTRACTOR_REGISTRY: dict[str, Callable[[], Extractor]] = {
-    "typescript": _import_typescript,
-    "javascript": _import_typescript,
-    "python": _import_python,
-    "go": _import_go,
-    "rust": _import_rust,
-    "liquid": _import_liquid,
-    "markdown": _import_markdown,
-    "html": _import_html,
-    "json": _import_json,
+    "typescript": _language_importer("typescript"),
+    "javascript": _language_importer("typescript"),
+    "python":     _language_importer("python"),
+    "go":         _language_importer("go"),
+    "rust":       _language_importer("rust"),
+    "liquid":     _language_importer("liquid"),
+    "markdown":   _language_importer("markdown"),
+    "html":       _language_importer("html"),
+    "json":       _language_importer("json_idx"),
 }
 
 # Cache resolved extractors so each language module is imported at most once.
