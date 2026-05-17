@@ -13,11 +13,57 @@ __all__ = [
 import hashlib
 import logging
 import os
+import re
 import time
 from dataclasses import dataclass
 from pathlib import Path
 
 from .hooks_common import sanitize_log_str
+
+# Cross-shell Windows-drive prefixes that resolve to the same NTFS location.
+#
+# When a project at ``C:\Projects\foo`` is accessed from different shells, the
+# *literal* path string varies even though the underlying directory is one and
+# the same:
+#
+#   * cmd.exe / PowerShell: ``C:\Projects\foo``         (native, backslash)
+#   * Git Bash (MSYS):      ``/c/Projects/foo``         (drive as top-level)
+#   * Cygwin:               ``/cygdrive/c/Projects/foo``
+#   * WSL / Linux mount:    ``/mnt/c/Projects/foo``
+#
+# Without normalisation, ``project_hash`` would return four different SHA1
+# digests for the same directory, causing the index, session cache, and stats
+# to fragment across shells.  The regexes below convert each MSYS / WSL /
+# Cygwin form to the canonical ``c:/<rest>`` form *before* hashing, so the
+# resulting hash is shell-independent.
+#
+# A real Linux user with a literal top-level ``/c/`` directory would collide
+# with the Git Bash MSYS interpretation; ``/c/`` collisions are vanishingly
+# rare in practice and the cost of getting one is a shared hash, which the
+# user can resolve by renaming the directory.
+_WSL_PREFIX_RE = re.compile(r"^/mnt/([a-zA-Z])/(.*)$")
+_CYGWIN_PREFIX_RE = re.compile(r"^/cygdrive/([a-zA-Z])/(.*)$")
+_MSYS_PREFIX_RE = re.compile(r"^/([a-zA-Z])/(.*)$")
+
+
+def _normalize_shell_drive_prefix(posix_str: str) -> str:
+    """Map WSL / Cygwin / MSYS Windows-drive prefixes to canonical ``c:/`` form.
+
+    Called from :func:`canonicalize` after ``.resolve()`` + ``.as_posix()``.
+    Strictly a string transform — it does not touch the filesystem and never
+    raises.  Unrecognised paths (e.g. ``/usr/local/bin``, ``/home/user/foo``)
+    are returned unchanged.
+    """
+    m = _WSL_PREFIX_RE.match(posix_str)
+    if m:
+        return f"{m.group(1).lower()}:/{m.group(2)}"
+    m = _CYGWIN_PREFIX_RE.match(posix_str)
+    if m:
+        return f"{m.group(1).lower()}:/{m.group(2)}"
+    m = _MSYS_PREFIX_RE.match(posix_str)
+    if m:
+        return f"{m.group(1).lower()}:/{m.group(2)}"
+    return posix_str
 
 _LOG = logging.getLogger("token_goat.project")
 
@@ -50,14 +96,40 @@ class Project:
 def canonicalize(path: Path) -> Path:
     """Resolve symlinks, normalize, lowercase the Windows drive letter.
 
-    The drive-letter lowercase step is required because Windows treats ``C:\\``
-    and ``c:\\`` as the same path, but Python's Path.resolve() preserves the
-    original case.  Without normalising here, the same project opened from two
-    shells with different drive-letter capitalisation would produce two different
-    hashes and two separate DB files.
+    Returns a path string that is identical regardless of which shell or
+    operating-system view accessed the same underlying directory:
+
+    * ``C:\\Projects\\foo`` (cmd.exe, PowerShell)
+    * ``c:\\Projects\\foo`` (lowercased drive letter)
+    * ``C:/Projects/foo``   (forward slashes on Windows)
+    * ``/c/Projects/foo``   (Git Bash MSYS)
+    * ``/cygdrive/c/Projects/foo`` (Cygwin)
+    * ``/mnt/c/Projects/foo`` (WSL / Linux mount)
+
+    All six canonicalize to ``Path("c:/Projects/foo")`` so that
+    :func:`project_hash` produces a single, stable SHA1 across shells.  Without
+    this step, switching from PowerShell to Git Bash to WSL on the same project
+    would fragment the index, session cache, and stats across three different
+    project hashes.
+
+    Symlinks are resolved via ``Path.resolve()`` — two paths that point at the
+    same target via different symlink chains still hash identically.
     """
+    # Pre-resolve normalisation: if the input is a raw MSYS / WSL / Cygwin
+    # string like ``/c/Projects/foo``, ``Path.resolve()`` on Windows would
+    # misinterpret it as a relative-to-current-drive path (e.g.
+    # ``C:\c\Projects\foo``) instead of the intended ``C:\Projects\foo``.
+    # Convert the prefix *before* resolve to avoid that misinterpretation.
+    pre = _normalize_shell_drive_prefix(str(path).replace("\\", "/"))
+    if pre != str(path).replace("\\", "/"):
+        path = Path(pre)
     resolved = path.resolve()
     s = resolved.as_posix()
+    # Map WSL / Cygwin / MSYS drive prefixes to canonical ``c:/`` form, so the
+    # drive-letter lowercase step below sees the same shape regardless of
+    # which shell originated the path. (Resolve under WSL keeps ``/mnt/c/...``
+    # as-is, so this is where WSL paths get normalised.)
+    s = _normalize_shell_drive_prefix(s)
     # Lowercase drive letter on Windows (e.g. "C:/foo" → "c:/foo")
     if len(s) >= 2 and s[1] == ":":
         s = s[0].lower() + s[1:]
