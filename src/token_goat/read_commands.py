@@ -7,7 +7,7 @@ import sqlite3
 from collections import defaultdict, deque
 from collections.abc import Callable, Sequence
 from pathlib import Path
-from typing import Any, TypedDict
+from typing import TypedDict
 
 import typer
 
@@ -15,6 +15,17 @@ from . import db, read_replacement, session
 from .project import Project, find_project
 
 _LOG = logging.getLogger("token_goat.read_commands")
+
+# Precise type alias for the ``reader`` parameter of :func:`_run_read_like_command`.
+# ``Callable[..., X]`` accepts any argument shape (including keyword-only
+# ``context_lines``) while still constraining the return to a known union.
+# Both :func:`~read_replacement.read_symbol` (returns ``SymbolResult | None``)
+# and :func:`~read_replacement.read_section` (returns ``SectionResult | None``)
+# satisfy this alias because their return types are subtypes of the union.
+_ReaderCallable = Callable[
+    ...,
+    read_replacement.SymbolResult | read_replacement.SectionResult | None,
+]
 
 
 class _DepNode(TypedDict):
@@ -314,7 +325,7 @@ def _run_read_like_command(
     separator_label: str,
     missing_label: str,
     stat_kind: str,
-    reader: Callable[..., Any],
+    reader: _ReaderCallable,
 ) -> None:
     """Unified handler for read/section/deps CLI commands.
 
@@ -330,9 +341,9 @@ def _run_read_like_command(
         separator_label: Display label for the :: separator (e.g., "symbol", "heading").
         missing_label: Label for missing-item error (e.g., "Symbol", "Section").
         stat_kind: Stat kind to record (e.g., "read_replacement", "section_replacement").
-        reader: Callable(project, rel_path, item, context_lines) -> SymbolResult|SectionResult|None.
-            Must return a TypedDict (dict subclass) or None; typed as Any to allow both
-            SymbolResult and SectionResult without requiring a common supertype.
+        reader: Callable matching :class:`_ReaderCallable` — takes ``(project, rel_path,
+            item, *, context_lines)`` and returns a ``SymbolResult``, ``SectionResult``,
+            or ``None``.
     """
     if "::" not in target:
         _emit_read_error(

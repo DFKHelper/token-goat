@@ -191,7 +191,7 @@ def make_process_config(
 
     Returns
     -------
-    tuple[Any, Any] | tuple[None, None]
+    tuple[types.ModuleType, object] | tuple[None, None]
         A tuple of (tlp_module, ProcessConfig) if tree-sitter is available,
         or (None, None) if not.
     """
