@@ -65,7 +65,7 @@ def _setup_logging() -> None:
         paths.ensure_dirs()
         log_path = paths.logs_dir() / f"{today}.log"
         paths.roll_log_if_oversized(log_path, paths.LOG_FILE_MAX_BYTES)
-        handler: logging.Handler = logging.FileHandler(log_path, encoding="utf-8")
+        handler: logging.Handler = paths.open_log_file(log_path)
         handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s"))
     except OSError:
         handler = logging.NullHandler()

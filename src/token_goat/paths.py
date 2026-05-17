@@ -23,6 +23,7 @@ __all__ = [
     "project_db_path",
     "python_runner_argv",
     "python_runner_command",
+    "open_log_file",
     "roll_log_if_oversized",
     "session_cache_path",
     "web_cache_dir",
@@ -390,6 +391,33 @@ def _open_restricted(tmp: Path) -> int:
     if sys.platform == "win32":
         return os.open(str(tmp), os.O_WRONLY | os.O_CREAT | os.O_TRUNC)
     return os.open(str(tmp), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+
+
+def open_log_file(path: Path) -> logging.FileHandler:
+    """Return a ``logging.FileHandler`` for *path* with owner-only permissions.
+
+    ``logging.FileHandler`` opens its file with the process umask applied, which
+    typically yields 0o644 (world-readable).  Log files contain session IDs and
+    local file paths that should not be visible to other local users.  On POSIX
+    this function opens the file descriptor with 0o600 before handing it to
+    ``FileHandler`` via the ``delay=False`` + ``stream`` path, ensuring the file
+    is never world-readable even transiently.  On Windows the ACL on the user-
+    profile directory provides equivalent isolation, so we fall back to a normal
+    ``FileHandler``.
+
+    The returned handler writes UTF-8 text in append mode.
+    """
+    if sys.platform == "win32":
+        return logging.FileHandler(str(path), encoding="utf-8")
+
+    # On POSIX: open the fd with 0o600 then wrap it so FileHandler appends to
+    # the same fd without re-opening (and potentially re-creating) the file.
+    flags = os.O_WRONLY | os.O_CREAT | os.O_APPEND
+    fd = os.open(str(path), flags, 0o600)
+    stream = os.fdopen(fd, "a", encoding="utf-8")
+    handler = logging.StreamHandler(stream)  # type: ignore[arg-type]
+    handler.baseFilename = str(path)  # type: ignore[attr-defined]
+    return handler  # type: ignore[return-value]
 
 
 def _atomic_write_core(path: Path, content: str | bytes, mode: Literal["w", "wb"]) -> None:
