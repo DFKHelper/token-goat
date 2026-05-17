@@ -233,7 +233,10 @@ def extract(
     try:
         result = tlp.process(text, cfg)
     except Exception as exc:  # noqa: BLE001
-        _LOG.debug("tree-sitter parse failed for typescript source: %s: %s", rel_path, exc, exc_info=True)
+        _LOG.warning(
+            "tree-sitter parse failed for %s (typescript): %s — file will be indexed without symbols",
+            rel_path, exc,
+        )
         return [], [], [], []
 
     symbols: list[Symbol] = []

@@ -173,8 +173,11 @@ def parse_source(
         return None, None
     try:
         result = tlp.process(text, cfg)
-    except Exception:  # noqa: BLE001
-        log.debug("tree-sitter parse failed for %s source: %s", language, rel_path, exc_info=True)
+    except Exception as exc:  # noqa: BLE001
+        log.warning(
+            "tree-sitter parse failed for %s (%s): %s — file will be indexed without symbols",
+            rel_path, language, exc,
+        )
         return None, None
     return result, text
 
