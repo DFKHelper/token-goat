@@ -1060,11 +1060,14 @@ token-goat is installed. Before you call Read or Grep on a source file, check fo
 |------|---------|----------|
 | Find a function, class, or type | `token-goat symbol getUser` | `Grep "getUser"` (10 to 50x more tokens) |
 | Read one function or method body | `token-goat read "src/auth.py::login"` | `Read src/auth.py` (about 85% more tokens) |
+| Read one method on a class | `token-goat read "src/auth.py::Session.refresh"` | `Read src/auth.py` |
 | Read one section of a doc | `token-goat section "README.md::Install"` | `Read README.md` |
+| Disambiguate a duplicate heading | `token-goat section "doc.md::Setup#2"` | `Read doc.md` |
 | Find code by meaning, not name | `token-goat semantic "rate limit retry"` | Several rounds of `Grep` |
-| Get oriented in an unfamiliar repo | `token-goat map --budget 4000` | Recursive `ls` plus multiple `Read` calls |
+| Get oriented in an unfamiliar repo | `token-goat map --compact` | Recursive `ls` plus multiple `Read` calls |
+| Outline a long Google Doc | `token-goat gdrive-sections <file-id>` | Fetching the whole doc |
 
-Add `--all-projects` to `token-goat symbol` for cross-repo lookups.
+Modifiers worth knowing: `symbol --all-projects` (cross-repo); `map --compact` (300-token budget); `semantic --max-distance 1.0` or `--no-rerank` to widen / tighten results. A miss prints "Did you mean…?" suggestions — try one before falling back to `Read`.
 
 Read is the right call when:
 - The file is under about 200 lines and you need the whole thing.
@@ -1121,12 +1124,15 @@ Before reaching for Read or Grep on a code file, check this table.
 |------|---------|----------|
 | Find a function, class, or type | `token-goat symbol getUser` | `Grep "getUser"` (10 to 50x more tokens) |
 | Read one function or method body | `token-goat read "src/auth.py::login"` | `Read src/auth.py` (about 85% more tokens) |
+| Read one method on a class | `token-goat read "src/auth.py::Session.refresh"` | `Read src/auth.py` |
 | Read one section of a doc | `token-goat section "README.md::Install"` | `Read README.md` |
+| Disambiguate a duplicate heading | `token-goat section "doc.md::Setup#2"` | `Read doc.md` |
 | Find code by meaning, not name | `token-goat semantic "rate limit retry"` | Several rounds of `Grep` |
-| Get oriented in an unfamiliar repo | `token-goat map --budget 4000` | Recursive `ls` plus multiple `Read` calls |
+| Get oriented in an unfamiliar repo | `token-goat map --compact` | Recursive `ls` plus multiple `Read` calls |
+| Outline a long Google Doc | `token-goat gdrive-sections <file-id>` | Fetching the whole doc |
 | See what you have already touched | `token-goat session-touched` | Re-reading and hoping you remember |
 
-Add `--all-projects` to `token-goat symbol` to search every indexed repo at once.
+Modifiers worth knowing: `symbol --all-projects` searches every indexed repo at once; `map --compact` fits a 300-token budget; `semantic --max-distance 1.0` widens or `--no-rerank` tightens semantic results. A miss prints "Did you mean…?" suggestions — try one of those before falling back to `Read`.
 
 ## When Read is the right call
 
@@ -1320,11 +1326,14 @@ token-goat is installed. Before you run `rg`, `grep`, `cat`, `head`, `bat`, or a
 |------|---------|----------|
 | Find a function, class, or type | `token-goat symbol getUser` | `rg "getUser"` (10 to 50x more tokens) |
 | Read one function or method body | `token-goat read "src/auth.py::login"` | `cat src/auth.py` (about 85% more tokens) |
+| Read one method on a class | `token-goat read "src/auth.py::Session.refresh"` | `cat src/auth.py` |
 | Read one section of a doc | `token-goat section "README.md::Install"` | `cat README.md` |
+| Disambiguate a duplicate heading | `token-goat section "doc.md::Setup#2"` | `cat doc.md` |
 | Find code by meaning, not name | `token-goat semantic "rate limit retry"` | Several rounds of `rg` |
-| Get oriented in an unfamiliar repo | `token-goat map --budget 4000` | `ls -R` plus multiple `cat` calls |
+| Get oriented in an unfamiliar repo | `token-goat map --compact` | `ls -R` plus multiple `cat` calls |
+| Outline a long Google Doc | `token-goat gdrive-sections <file-id>` | Fetching the whole doc |
 
-Add `--all-projects` to `token-goat symbol` for cross-repo lookups.
+Modifiers worth knowing: `symbol --all-projects` (cross-repo); `map --compact` (300-token budget); `semantic --max-distance 1.0` or `--no-rerank` to widen / tighten results. A miss prints "Did you mean…?" suggestions — try one before falling back to a Bash read.
 
 Plain Bash reads are the right call when:
 - The file is under about 200 lines and you need the whole thing.
