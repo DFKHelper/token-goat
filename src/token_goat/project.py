@@ -8,6 +8,8 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
+from .hooks_common import sanitize_log_str
+
 _LOG = logging.getLogger("token_goat.project")
 
 PROJECT_MARKERS = (
@@ -80,7 +82,13 @@ def make_project_at(root: Path) -> Project:
         raise ValueError(f"make_project_at: could not resolve path {root!r}: {exc}") from exc
     if not canonical.is_dir():
         raise ValueError(f"make_project_at: path is not a directory: {canonical}")
-    return Project(root=canonical, hash=project_hash(canonical), marker="manual")
+    ph = project_hash(canonical)
+    _LOG.debug(
+        "make_project_at: created manual project (root=%s hash=%s)",
+        sanitize_log_str(canonical.as_posix()),
+        ph[:8],
+    )
+    return Project(root=canonical, hash=ph, marker="manual")
 
 
 def _is_repo_container(path: Path) -> bool:

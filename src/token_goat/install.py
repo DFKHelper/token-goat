@@ -1462,6 +1462,7 @@ def _install_platform_autostart(result: dict[str, str]) -> None:
     Extracted from ``install_all`` to eliminate the identical win32/darwin/else
     dispatch that also appears in ``uninstall_all``.
     """
+    _LOG.debug("_install_platform_autostart: platform=%s", sys.platform)
     if sys.platform == "win32":
         worker_ok, worker_out = install_worker_task()
         result["task: worker"] = _ok_fail(worker_ok, worker_out)
@@ -1484,6 +1485,7 @@ def _uninstall_platform_autostart(result: dict[str, str]) -> None:
 
     Mutates *result* in-place.  Mirror of ``_install_platform_autostart``.
     """
+    _LOG.debug("_uninstall_platform_autostart: platform=%s", sys.platform)
     if sys.platform == "win32":
         removed_tasks = uninstall_tasks()
         result["tasks"] = f"removed: {removed_tasks}"
@@ -1593,7 +1595,15 @@ def uninstall_all(
     openclaw: bool = False,
 ) -> dict[str, str]:
     """Reverse install. With purge=True also deletes the data directory."""
-
+    t0 = time.monotonic()
+    _LOG.info(
+        "uninstall_all: starting (platform=%s purge=%s codex=%s opencode=%s openclaw=%s)",
+        sys.platform,
+        purge,
+        codex,
+        opencode,
+        openclaw,
+    )
     result: dict[str, str] = {}
 
     try:
@@ -1632,4 +1642,13 @@ def uninstall_all(
     if openclaw:
         result["openclaw: plugin"] = bridges.uninstall_openclaw_plugin()
 
+    failures = [k for k, v in result.items() if v.startswith("FAIL")]
+    elapsed_ms = (time.monotonic() - t0) * 1000
+    _LOG.info(
+        "uninstall_all: complete in %.0fms — %d steps, %d failure(s)%s",
+        elapsed_ms,
+        len(result),
+        len(failures),
+        f": {failures}" if failures else "",
+    )
     return result
