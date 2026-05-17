@@ -1427,7 +1427,10 @@ def _winreg_run_value_exists(value_name: str) -> bool | None:
                 return True
             except FileNotFoundError:
                 return False
-    except Exception:  # noqa: BLE001
+    except ImportError:
+        # winreg is only available on Windows; on other platforms return None (unreadable)
+        return None
+    except OSError:
         return None
 
 

@@ -1073,7 +1073,7 @@ def _reindex_active_projects() -> None:
                 "SELECT hash, root, marker, file_count FROM projects WHERE last_seen >= ?",
                 (cutoff,),
             ).fetchall()
-    except Exception:  # noqa: BLE001
+    except (db.DBError, sqlite3.DatabaseError, OSError):
         _LOG.exception("could not query active projects for reindex")
         return
 
