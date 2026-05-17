@@ -494,3 +494,135 @@ def test_pipe_with_head_offset():
     assert intent.target_path == "foo.py"
     assert intent.offset == 1
     assert intent.limit == 30
+
+
+# ---------------------------------------------------------------------------
+# 25. PowerShell pipeline filter detection (iter 27)
+# ---------------------------------------------------------------------------
+
+
+def test_powershell_pipe_select_string_positional():
+    # ``Get-Content foo | Select-String 'pat'`` — equivalent to ``grep pat foo``.
+    # Source path is captured; filtered=True so dedup logic treats it as a
+    # partial read, and the search pattern is recorded.
+    intent = parse("Get-Content foo.txt | Select-String 'mypat'")
+    assert intent.kind == "read"
+    assert intent.target_path == "foo.txt"
+    assert intent.filtered is True
+    assert intent.filter_pattern == "mypat"
+
+
+def test_powershell_pipe_select_string_pattern_flag():
+    intent = parse("Get-Content foo.txt | Select-String -Pattern 'foo bar'")
+    assert intent.kind == "read"
+    assert intent.target_path == "foo.txt"
+    assert intent.filtered is True
+    assert intent.filter_pattern == "foo bar"
+
+
+def test_powershell_pipe_sls_alias():
+    # ``sls`` is the PowerShell alias for Select-String.
+    intent = parse("gc foo.txt | sls 'needle'")
+    assert intent.kind == "read"
+    assert intent.target_path == "foo.txt"
+    assert intent.filtered is True
+    assert intent.filter_pattern == "needle"
+
+
+def test_powershell_pipe_where_object_match():
+    # ``Where-Object { $_ -match 'pat' }`` filters by regex; capture the pattern.
+    intent = parse("Get-Content foo.txt | Where-Object { $_ -match 'needle' }")
+    assert intent.kind == "read"
+    assert intent.target_path == "foo.txt"
+    assert intent.filtered is True
+    assert intent.filter_pattern == "needle"
+
+
+def test_powershell_pipe_where_alias_question_mark():
+    # ``?`` is the canonical alias for Where-Object.
+    intent = parse("gc foo.txt | ? { $_ -match 'pat' }")
+    assert intent.kind == "read"
+    assert intent.target_path == "foo.txt"
+    assert intent.filtered is True
+    assert intent.filter_pattern == "pat"
+
+
+def test_powershell_pipe_select_object_first():
+    # ``Select-Object -First N`` is head-N for a pipeline.  No upstream filter
+    # so this stays an *unfiltered* head read: offset=1, limit=N, filtered=False.
+    intent = parse("Get-Content foo.txt | Select-Object -First 10")
+    assert intent.kind == "read"
+    assert intent.target_path == "foo.txt"
+    assert intent.offset == 1
+    assert intent.limit == 10
+    assert intent.filtered is False
+
+
+def test_powershell_pipe_select_first_alias():
+    # ``select`` is the PowerShell alias for Select-Object.
+    intent = parse("gc foo.txt | select -First 5")
+    assert intent.kind == "read"
+    assert intent.target_path == "foo.txt"
+    assert intent.offset == 1
+    assert intent.limit == 5
+
+
+def test_powershell_pipe_select_last():
+    # ``Select-Object -Last N`` is tail-N — limit only, no offset.
+    intent = parse("Get-Content foo.txt | Select-Object -Last 3")
+    assert intent.kind == "read"
+    assert intent.target_path == "foo.txt"
+    assert intent.offset is None
+    assert intent.limit == 3
+
+
+def test_powershell_pipe_out_string_passthrough():
+    # ``Out-String`` is a formatting stage; the source Get-Content is still a
+    # full read (no filter, no limit narrowing).
+    intent = parse("Get-Content foo.txt | Out-String -Width 200")
+    assert intent.kind == "read"
+    assert intent.target_path == "foo.txt"
+    assert intent.filtered is False
+    assert intent.limit is None
+
+
+def test_powershell_pipe_combined_filter_and_limit():
+    # ``gc foo | ? { $_ -match 'foo' } | select -First 5`` — both filter and
+    # limit; filtered=True takes precedence, limit/offset recorded.
+    intent = parse("gc foo.txt | ? { $_ -match 'foo' } | select -First 5")
+    assert intent.kind == "read"
+    assert intent.target_path == "foo.txt"
+    assert intent.filtered is True
+    assert intent.filter_pattern == "foo"
+    assert intent.offset == 1
+    assert intent.limit == 5
+
+
+def test_powershell_pipe_does_not_override_source_totalcount():
+    # When Get-Content already specifies -TotalCount, a downstream
+    # Select-Object -First should not widen or override the slice.
+    intent = parse("Get-Content foo.txt -TotalCount 20 | Select-Object -First 5")
+    assert intent.kind == "read"
+    assert intent.target_path == "foo.txt"
+    # Source flag wins: offset=1, limit=20 (the upstream slice is the tighter
+    # bound on what was actually read off disk).
+    assert intent.offset == 1
+    assert intent.limit == 20
+
+
+def test_powershell_pipe_unfiltered_passthrough_keeps_full_read():
+    # Bare Get-Content with no tail must remain an unfiltered full read.
+    intent = parse("Get-Content foo.txt")
+    assert intent.kind == "read"
+    assert intent.filtered is False
+    assert intent.filter_pattern is None
+
+
+def test_bash_pipe_unchanged_no_filtered_flag():
+    # Backward compat: bash-style ``cat foo | grep bar`` pipelines retain
+    # their historical whole-file-read semantics and never set filtered=True.
+    intent = parse("cat foo.txt | grep bar")
+    assert intent.kind == "read"
+    assert intent.target_path == "foo.txt"
+    assert intent.filtered is False
+    assert intent.filter_pattern is None
