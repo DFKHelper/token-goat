@@ -633,6 +633,39 @@ def _load_and_rank(project: Project) -> _RankedProjectData | None:
     )
 
 
+def _get_rendered_summary(
+    rel: str,
+    info: _FileInfo,
+    data: _RankedProjectData,
+    cache_writes: list[tuple[str, float, int, str]],
+) -> tuple[str, bool]:
+    """Return the rendered text for one file and whether it was a cache hit.
+
+    Checks ``data.summary_cache`` for a pre-rendered string keyed on
+    ``(rel_path, mtime, size)``.  On a miss, calls ``_summarize_file`` +
+    ``render_summary`` and appends the result to *cache_writes* for
+    persistence at the end of the ``build_map`` call.
+
+    Returns ``(rendered_text, is_cache_hit)``.
+    """
+    mtime: float = info["mtime"]
+    size: int = info["size"]
+    cached_text = data.summary_cache.get((rel, mtime, size))
+    if cached_text is not None:
+        return cached_text, True
+
+    summary = _summarize_file(
+        rel,
+        info,
+        data.symbols_by_file.get(rel, []),
+        data.sections_by_file.get(rel, []),
+        data.ranks.get(rel, 0.0),
+    )
+    rendered = render_summary(summary) + "\n"
+    cache_writes.append((rel, mtime, size, rendered))
+    return rendered, False
+
+
 def build_map(
     project: Project,
     *,
@@ -670,26 +703,11 @@ def build_map(
         if used >= budget_tokens:
             break
 
-        mtime: float = info["mtime"]
-        size: int = info["size"]
-        cache_key = (rel, mtime, size)
-
-        cached_text = data.summary_cache.get(cache_key)
-        if cached_text is not None:
-            # Cache hit: reuse rendered text, skip _summarize_file entirely
-            rendered = cached_text
+        rendered, is_hit = _get_rendered_summary(rel, info, data, cache_writes)
+        if is_hit:
             cache_hits += 1
         else:
             cache_misses += 1
-            summary = _summarize_file(
-                rel,
-                info,
-                data.symbols_by_file.get(rel, []),
-                data.sections_by_file.get(rel, []),
-                data.ranks.get(rel, 0.0),
-            )
-            rendered = render_summary(summary) + "\n"
-            cache_writes.append((rel, mtime, size, rendered))
 
         rendered_tokens = estimate_tokens(rendered)
         if used + rendered_tokens > budget_tokens:
