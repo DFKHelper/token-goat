@@ -12,27 +12,12 @@ from unittest.mock import patch
 
 import pytest
 
-from token_goat.hooks_common import sanitize_log_str
+from token_goat.hooks_common import _BIDI_CONTROLS, sanitize_log_str
 from token_goat.session import validate_session_id
 
 # ---------------------------------------------------------------------------
 # 1. sanitize_log_str — Unicode bidi control characters
 # ---------------------------------------------------------------------------
-
-# Unicode bidi characters defined in hooks_common._BIDI_CONTROLS
-_BIDI_CHARS = [
-    "‎",  # LEFT-TO-RIGHT MARK
-    "‏",  # RIGHT-TO-LEFT MARK
-    "‪",  # LEFT-TO-RIGHT EMBEDDING
-    "‫",  # RIGHT-TO-LEFT EMBEDDING
-    "‬",  # POP DIRECTIONAL FORMATTING
-    "‭",  # LEFT-TO-RIGHT OVERRIDE
-    "‮",  # RIGHT-TO-LEFT OVERRIDE
-    "⁦",  # LEFT-TO-RIGHT ISOLATE
-    "⁧",  # RIGHT-TO-LEFT ISOLATE
-    "⁨",  # FIRST STRONG ISOLATE
-    "⁩",  # POP DIRECTIONAL ISOLATE
-]
 
 
 class TestSanitizeLogStrBidi:
@@ -62,9 +47,9 @@ class TestSanitizeLogStrBidi:
         assert result == "helloworld"
 
     def test_all_bidi_chars_stripped(self):
-        injected = "start" + "".join(_BIDI_CHARS) + "end"
+        injected = "start" + "".join(_BIDI_CONTROLS) + "end"
         result = sanitize_log_str(injected)
-        for ch in _BIDI_CHARS:
+        for ch in _BIDI_CONTROLS:
             assert ch not in result
         assert result == "startend"
 
