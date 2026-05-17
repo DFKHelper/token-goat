@@ -32,9 +32,12 @@ CONTINUE; never modifies tool output.
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING
 
 from . import session
+
+if TYPE_CHECKING:
+    from typing import Any
 from .hooks_common import (
     CONTINUE,
     HookPayload,

@@ -9,9 +9,11 @@ import sqlite3
 import sys
 from dataclasses import asdict, is_dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, cast, get_args
+from typing import TYPE_CHECKING, cast, get_args
 
 if TYPE_CHECKING:
+    from typing import Any
+
     from .project import Project
 
 # Force UTF-8 on stdout/stderr (Windows defaults to cp1252 which can't encode
