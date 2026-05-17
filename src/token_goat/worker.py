@@ -1086,29 +1086,21 @@ def _reindex_active_projects() -> None:
               reindexed_count, skipped_oversized)
 
 
-def _process_dirty_entries(entries: list[DirtyQueueEntry]) -> None:
-    """Re-index files that were marked dirty by Edit/Write/MultiEdit hooks.
-
-    Groups queue entries by project hash to avoid opening the project DB once
-    per entry.  For known projects a single incremental ``index_project`` call
-    re-indexes all changed files in the batch.  For projects not yet registered
-    in global.db (first edit before the first full index), the project is
-    reconstructed from the queue-entry metadata and a full index is spawned
-    detached so the operation does not block the main daemon loop.
+def _parse_and_group_entries(entries: list[DirtyQueueEntry]) -> dict[str, _ProjectBucket]:
+    """Validate and group raw queue entries by project hash.
 
     Each entry is validated (project_hash format, safe rel-path) before use
     to guard against a corrupt or tampered queue file directing path
     construction outside expected directories.
+
+    Returns a mapping of project_hash → bucket containing the set of dirty
+    rel-paths and the project root/marker harvested from the first entry that
+    recorded them.
     """
-    _LOG.debug("processing %d dirty queue entries", len(entries))
     # Hoist the import outside the per-entry loop — repeated import machinery
     # lookups inside a tight loop add measurable overhead with large queues.
     from .paths import is_safe_rel_path  # noqa: PLC0415
 
-    # Group by project_hash, carrying the project root/marker from the first
-    # entry that records them. Newer entries (see hooks_cli._enqueue_for_reindex)
-    # are self-sufficient: they include project_root/project_marker so a project
-    # whose hash is not yet in global.db can still be reconstructed and indexed.
     by_project: dict[str, _ProjectBucket] = {}
     for entry in entries:
         ph = entry.get("project_hash")
@@ -1116,10 +1108,6 @@ def _process_dirty_entries(entries: list[DirtyQueueEntry]) -> None:
         if not ph or not rel:
             _LOG.debug("skipping malformed queue entry (missing hash or path)")
             continue
-        # Validate project_hash and rel_path from the queue before using them in
-        # path operations.  The dirty queue is written by the same process, but a
-        # corrupt or tampered queue file could otherwise direct path construction
-        # outside the expected directories.
         try:
             db._validate_project_hash(ph)
         except ValueError:
@@ -1132,88 +1120,122 @@ def _process_dirty_entries(entries: list[DirtyQueueEntry]) -> None:
             by_project[ph] = _ProjectBucket(rels=set(), root=None, marker=None)
         bucket = by_project[ph]
         bucket["rels"].add(rel)
+        # Carry the project root/marker from the first entry that records them
+        # (see hooks_cli._enqueue_for_reindex).  These allow reconstruction of
+        # projects not yet registered in global.db.
         if bucket["root"] is None and entry.get("project_root"):
             bucket["root"] = entry["project_root"]
             bucket["marker"] = entry.get("project_marker") or "manual"
+    return by_project
 
-    _LOG.debug("grouped into %d projects", len(by_project))
-    # Batch-lookup all project hashes in one global.db query instead of
-    # opening global.db once per project (N+1 DB opens).
-    all_hashes = list(by_project.keys())
-    known_projects: dict[str, sqlite3.Row] = {}
-    if all_hashes:
-        ph_placeholders = ",".join("?" for _ in all_hashes)
-        try:
-            with db.open_global() as gconn:
+
+def _lookup_known_projects(hashes: list[str]) -> dict[str, sqlite3.Row]:
+    """Batch-fetch project rows from global.db for the given hashes.
+
+    Returns a mapping of hash → Row for every hash present in the DB.
+    On any DB error, logs a warning and returns an empty dict so callers
+    fall back to queue-entry metadata where available.
+    """
+    if not hashes:
+        return {}
+    ph_placeholders = ",".join("?" for _ in hashes)
+    try:
+        with db.open_global() as gconn:
+            return {
+                row["hash"]: row
                 for row in gconn.execute(
                     f"SELECT hash, root, marker FROM projects WHERE hash IN ({ph_placeholders})",  # noqa: S608
-                    all_hashes,
-                ):
-                    known_projects[row["hash"]] = row
-        except (db.DBError, sqlite3.DatabaseError, OSError) as exc:
-            # global.db unavailable — fall back to queue-entry metadata only.
-            # Projects whose root was recorded in the queue can still be indexed
-            # via the bucket["root"] path below; only hashes that relied on DB
-            # lookup for their root will be skipped this cycle.
+                    hashes,
+                )
+            }
+    except (db.DBError, sqlite3.DatabaseError, OSError) as exc:
+        _LOG.warning(
+            "dirty queue: global.db lookup failed for %d project(s): %s — "
+            "will fall back to queue-entry metadata where available",
+            len(hashes), exc,
+        )
+        return {}
+
+
+def _resolve_project_from_bucket(
+    ph: str, bucket: _ProjectBucket, known_row: sqlite3.Row | None
+) -> tuple[Project, bool] | None:
+    """Resolve a Project and first-index flag from a dirty-queue bucket.
+
+    Returns ``(project, is_first_index)`` on success, or ``None`` if the
+    project cannot be reconstructed (missing or invalid root).
+
+    Three cases:
+    - ``known_row`` present → project already registered; use DB root, incremental index.
+    - ``bucket["root"]`` present → first edit before first full index; validate the
+      root from the queue entry and run a full index.
+    - Neither → legacy entry with no root recorded; drop with a warning.
+    """
+    if known_row:
+        project = Project(root=Path(known_row["root"]), hash=ph, marker=known_row["marker"])
+        _LOG.debug(
+            "dirty queue: project %s known (root=%s), running incremental index",
+            ph[:8], known_row["root"],
+        )
+        return project, False
+
+    if bucket["root"]:
+        raw_root = bucket["root"]
+        root_candidate = Path(raw_root)
+        if not root_candidate.is_absolute():
             _LOG.warning(
-                "dirty queue: global.db lookup failed for %d project(s): %s — "
-                "will fall back to queue-entry metadata where available",
-                len(all_hashes), exc,
+                "dirty queue: project %s root %r is not absolute; dropping",
+                ph[:8], raw_root,
             )
+            return None
+        try:
+            root_is_dir = root_candidate.is_dir()
+        except OSError:
+            root_is_dir = False
+        if not root_is_dir:
+            _LOG.warning(
+                "dirty queue: project %s root %r is not an existing directory; dropping",
+                ph[:8], raw_root,
+            )
+            return None
+        project = Project(root=root_candidate, hash=ph, marker=bucket["marker"] or "manual")
+        _LOG.info(
+            "dirty queue: project %s not yet registered (root=%s); running first index",
+            ph[:8], bucket["root"],
+        )
+        return project, True
+
+    # Legacy entry: no root recorded — nothing to anchor the reconstruction to.
+    _LOG.warning(
+        "dirty queue refers to unknown project hash %s with no root; dropping", ph
+    )
+    return None
+
+
+def _process_dirty_entries(entries: list[DirtyQueueEntry]) -> None:
+    """Re-index files that were marked dirty by Edit/Write/MultiEdit hooks.
+
+    Groups queue entries by project hash to avoid opening the project DB once
+    per entry.  For known projects a single incremental ``index_project`` call
+    re-indexes all changed files in the batch.  For projects not yet registered
+    in global.db (first edit before the first full index), the project is
+    reconstructed from the queue-entry metadata and a full index is run so the
+    edit is not lost.
+    """
+    _LOG.debug("processing %d dirty queue entries", len(entries))
+
+    by_project = _parse_and_group_entries(entries)
+    _LOG.debug("grouped into %d projects", len(by_project))
+
+    known_projects = _lookup_known_projects(list(by_project.keys()))
 
     projects_processed = 0
     for ph, bucket in by_project.items():
         try:
-            row = known_projects.get(ph)
-
-            if row:
-                project = Project(root=Path(row["root"]), hash=ph, marker=row["marker"])
-                # Known project: incremental re-index (SHA-based skip-unchanged logic).
-                is_first_index = False
-                _LOG.debug("dirty queue: project %s known (root=%s), running incremental index",
-                          ph[:8], row["root"])
-            elif bucket["root"]:
-                # Project not yet registered — the first edit landed before the
-                # project was ever indexed. Reconstruct it from the queue entry
-                # and run a full index so the edit is not lost.
-                # index_project self-registers the project up front.
-                # Validate bucket["root"] before using it as a Path: it comes
-                # from the dirty queue (an external file) so it must be an
-                # absolute path to an existing directory.
-                raw_root = bucket["root"]
-                root_candidate = Path(raw_root)
-                if not root_candidate.is_absolute():
-                    _LOG.warning(
-                        "dirty queue: project %s root %r is not absolute; dropping",
-                        ph[:8], raw_root,
-                    )
-                    continue
-                try:
-                    root_is_dir = root_candidate.is_dir()
-                except OSError:
-                    root_is_dir = False
-                if not root_is_dir:
-                    _LOG.warning(
-                        "dirty queue: project %s root %r is not an existing directory; dropping",
-                        ph[:8], raw_root,
-                    )
-                    continue
-                project = Project(
-                    root=root_candidate, hash=ph, marker=bucket["marker"] or "manual"
-                )
-                is_first_index = True
-                _LOG.info(
-                    "dirty queue: project %s not yet registered (root=%s); running first index",
-                    ph[:8], bucket["root"]
-                )
-            else:
-                # Legacy entry with no project_root recorded — nothing to anchor
-                # the reconstruction to. This only happens for entries enqueued
-                # before the self-sufficient format; drop with an explicit log.
-                _LOG.warning(
-                    "dirty queue refers to unknown project hash %s with no root; dropping", ph
-                )
+            resolved = _resolve_project_from_bucket(ph, bucket, known_projects.get(ph))
+            if resolved is None:
                 continue
+            project, is_first_index = resolved
 
             t0 = time.time()
             result = parser.index_project(project, full=is_first_index)
@@ -1223,21 +1245,16 @@ def _process_dirty_entries(entries: list[DirtyQueueEntry]) -> None:
                 _LOG.warning(
                     "reindexed %d/%d files in project %s after dirty queue drain"
                     " (errors=%d dur=%.2fs)",
-                    result["indexed"],
-                    result["total_files"],
-                    ph[:8],
-                    result["errors"],
-                    elapsed,
+                    result["indexed"], result["total_files"], ph[:8], result["errors"], elapsed,
                 )
             else:
                 _LOG.info(
                     "reindexed %d/%d files in project %s after dirty queue drain (dur=%.2fs)",
-                    result["indexed"],
-                    result["total_files"],
-                    ph[:8],
-                    elapsed,
+                    result["indexed"], result["total_files"], ph[:8], elapsed,
                 )
         except Exception:  # noqa: BLE001
             _LOG.exception("failed to reindex project %s from dirty queue", ph)
-    _LOG.debug("finished processing dirty entries: %d/%d projects reindexed",
-              projects_processed, len(by_project))
+    _LOG.debug(
+        "finished processing dirty entries: %d/%d projects reindexed",
+        projects_processed, len(by_project),
+    )
