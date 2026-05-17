@@ -414,7 +414,9 @@ def _load_existing_chunk_hashes(conn: sqlite3.Connection) -> dict[tuple[str, int
     """Return a mapping of (file_rel, start_line, end_line) -> content_sha256 for all indexed chunks.
 
     Used by :func:`index_project_embeddings` to skip re-embedding chunks whose
-    content hasn't changed since the last index run.
+    content hasn't changed since the last index run.  Must be called before the
+    file-scan loop starts so the snapshot reflects the pre-run DB state; calling
+    it mid-loop would cause already-inserted chunks to appear as pre-existing.
     """
     existing: dict[tuple[str, int, int], str] = {}
     for row in conn.execute(
@@ -432,6 +434,9 @@ def _delete_stale_chunks(
 
     Issues one SELECT…IN to find chunk IDs, then two DELETE…IN statements (one for
     embeddings, one for chunks) — avoiding the N+1 pattern of per-chunk operations.
+    Must run before the corresponding INSERT in the same batch: the chunks table has
+    a UNIQUE constraint on (file_rel, start_line, end_line), so inserting a moved or
+    rehashed chunk at an existing position would raise a conflict without this cleanup.
 
     Returns the number of chunk rows deleted (0 if none were stale).
     """
