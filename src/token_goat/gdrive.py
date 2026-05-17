@@ -238,10 +238,9 @@ def fetch_file(file_id: str, *, shrink_if_image: bool = True, max_size_bytes: in
     # This is a best-effort pre-check; the post-download check below is the definitive guard.
     # Google Workspace files (Docs, Sheets, etc.) omit the "size" field entirely,
     # so we skip the pre-check when it's absent or non-numeric.
-    reported_size_raw = meta.get("size")
-    if reported_size_raw is not None:
+    if meta.get("size") is not None:
         try:
-            reported_size = int(reported_size_raw)
+            reported_size = int(meta["size"])
             if reported_size > max_size_bytes:
                 raise RuntimeError(
                     f"Drive file {file_id!r} too large: {reported_size} bytes "
@@ -306,13 +305,13 @@ def fetch_file(file_id: str, *, shrink_if_image: bool = True, max_size_bytes: in
             )
 
         t_write_start = time.monotonic()
+        download_elapsed = t_write_start - t_download_start
         try:
             local_path.parent.mkdir(parents=True, exist_ok=True)
             # Atomic write: write to a temp file then rename so a killed/crashed
             # process never leaves a truncated cache file that looks valid.
             paths.atomic_write_bytes(local_path, buf.getvalue())
             written_bytes = local_path.stat().st_size
-            download_elapsed = t_write_start - t_download_start
             write_elapsed = time.monotonic() - t_write_start
             _LOG.info(
                 "gdrive downloaded: file_id=%s name=%s bytes=%d download_elapsed=%.3fs write_elapsed=%.3fs",

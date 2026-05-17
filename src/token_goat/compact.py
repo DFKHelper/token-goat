@@ -33,6 +33,10 @@ _MAX_RANGES_PER_FILE = 4
 # which caps the number of *files* that show any symbols at all).
 _MAX_SYMBOLS_PER_FILE_ENTRY = 6
 
+# Key for sorting edited_files dict items by edit count (the second element of each pair).
+# Defined at module level so it is created once rather than re-created on every manifest build.
+_BY_EDIT_COUNT = itemgetter(1)
+
 
 def _short_path(p: str, max_len: int = 70) -> str:
     """Return a compact display representation of a file path.
@@ -172,6 +176,7 @@ def _render(cache: SessionCache, session_id: str, max_tokens: int) -> tuple[str,
     files_with_symbols = list(
         islice((e for e in cache.files.values() if e.symbols_read), _MAX_SYMBOLS_FILES)
     )
+    files_with_symbols_count = len(files_with_symbols)
     # Most-frequently-read files, capped at _MAX_FILES_READ, for the "Key Files Read" section.
     # heapq.nlargest is O(n log k) instead of O(n log n) full sort — material when a
     # long session has hundreds of file entries but we only need the top 10.
@@ -189,10 +194,7 @@ def _render(cache: SessionCache, session_id: str, max_tokens: int) -> tuple[str,
     if cache.edited_files:
         sections.append("### Files Edited (preserve in summary)")
         # Sort by edit count descending so the most-touched files appear first.
-        # itemgetter(1) selects the count from each (path, count) pair — faster
-        # than a lambda at C speed and avoids per-call closure allocation.
-        _by_edit_count = itemgetter(1)
-        for path, count in sorted(cache.edited_files.items(), key=_by_edit_count, reverse=True):
+        for path, count in sorted(cache.edited_files.items(), key=_BY_EDIT_COUNT, reverse=True):
             suffix = f"  ×{count}" if count > 1 else ""
             sections.append(f"- {_short_path(path)}{suffix}")
         sections.append("")
@@ -217,10 +219,6 @@ def _render(cache: SessionCache, session_id: str, max_tokens: int) -> tuple[str,
         sections.append("")
 
     result = "\n".join(sections).rstrip()
-    # Capture the count now — used in both the fast path (within budget) and
-    # the trim path below.  Naming it here keeps the two return sites consistent.
-    files_with_symbols_count = len(files_with_symbols)
-
     token_count = estimate_tokens(result)
     if token_count <= max_tokens:
         return result, files_with_symbols_count
