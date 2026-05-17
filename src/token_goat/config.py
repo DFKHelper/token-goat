@@ -169,7 +169,11 @@ def load() -> Config:
         _LOG.info("config file not found at %s; using all defaults", p)
 
     schema_v = raw.get("schema_version", 0)
-    if schema_v and int(schema_v) > CONFIG_SCHEMA_VERSION:
+    try:
+        schema_v_int = int(schema_v) if schema_v else 0
+    except (TypeError, ValueError):
+        schema_v_int = 0
+    if schema_v_int > CONFIG_SCHEMA_VERSION:
         _LOG.warning(
             "config schema_version %s > current %s; some keys may be ignored",
             schema_v,
