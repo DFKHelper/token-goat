@@ -5,6 +5,7 @@ import logging
 import re
 
 from ..parser import ImpExp, Ref, Section, Symbol
+from . import common
 
 _LOG = logging.getLogger("token_goat.languages.markdown")
 
@@ -36,11 +37,8 @@ def extract(source: bytes, rel_path: str) -> tuple[list[Symbol], list[Ref], list
 
     Sections:
       - All ATX headings also become :class:`Section` entries.  ``end_line``
-        is assigned inline (each section closes at the next heading of equal or
-        lesser depth), mirroring the logic in
-        ``common._compute_section_end_lines``.  This duplication is intentional:
-        Markdown sections are computed during a single pass that also builds
-        symbols, so calling the shared helper would require a second loop.
+        is assigned by :func:`common._compute_section_end_lines` after the ATX
+        heading pass completes.
 
     Refs and imports are always empty for Markdown files.
     """
@@ -71,13 +69,7 @@ def extract(source: bytes, rel_path: str) -> tuple[list[Symbol], list[Ref], list
             )
 
         # --- Compute end_line for sections ---
-        for i, sec in enumerate(sections):
-            end_line = len(lines)
-            for j in range(i + 1, len(sections)):
-                if sections[j].level <= sec.level:
-                    end_line = sections[j].line - 1
-                    break
-            sec.end_line = end_line
+        common._compute_section_end_lines(sections, lines)
 
         return symbols, [], [], sections
     except (re.error, UnicodeDecodeError, AttributeError, IndexError) as exc:

@@ -30,31 +30,11 @@ def _is_noise(name: str) -> bool:
     return name.lower() in _NOISE_IDS_CLASSES
 
 
-def _build_line_index(text: str) -> list[int]:
-    """Return a list of character offsets for the start of each line (0-indexed).
-
-    ``line_index[i]`` is the character position of the first character of line
-    ``i+1`` (1-indexed).  A binary search on this list converts any character
-    offset to a 1-indexed line number in O(log n) instead of the O(n) slice-
-    and-count pattern ``text[:pos].count("\\n") + 1``.
-    """
-    offsets = [0]
-    for i, ch in enumerate(text):
-        if ch == "\n":
-            offsets.append(i + 1)
-    return offsets
-
-
-def _offset_to_line(line_index: list[int], offset: int) -> int:
-    """Convert a character offset to a 1-indexed line number using binary search."""
-    lo, hi = 0, len(line_index) - 1
-    while lo < hi:
-        mid = (lo + hi + 1) // 2
-        if line_index[mid] <= offset:
-            lo = mid
-        else:
-            hi = mid - 1
-    return lo + 1
+# Private aliases kept for backward compatibility — liquid.py imports these names
+# from html.py.  The canonical implementations now live in common.build_line_index
+# and common.offset_to_line.
+_build_line_index = common.build_line_index
+_offset_to_line = common.offset_to_line
 
 
 def extract(source: bytes, rel_path: str) -> tuple[list[Symbol], list[Ref], list[ImpExp], list[Section]]:
