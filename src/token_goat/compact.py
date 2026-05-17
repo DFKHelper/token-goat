@@ -16,7 +16,7 @@ import time
 from datetime import UTC, datetime
 from itertools import islice
 from operator import attrgetter, itemgetter
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Final
 
 from . import session as session_mod
 from .hooks_common import sanitize_log_str
@@ -27,19 +27,19 @@ if TYPE_CHECKING:
 
 _LOG = logging.getLogger("token_goat.compact")
 
-_MAX_FILES_READ = 10
-_MAX_SYMBOLS_FILES = 8
-_MAX_RANGES_PER_FILE = 4
+_MAX_FILES_READ: Final[int] = 10
+_MAX_SYMBOLS_FILES: Final[int] = 8
+_MAX_RANGES_PER_FILE: Final[int] = 4
 # Max symbols listed per file entry in the manifest (separate from _MAX_SYMBOLS_FILES,
 # which caps the number of *files* that show any symbols at all).
-_MAX_SYMBOLS_PER_FILE_ENTRY = 6
+_MAX_SYMBOLS_PER_FILE_ENTRY: Final[int] = 6
 
 # Hard ceiling on the max_tokens parameter accepted by build_manifest.
 # The config layer sets a sensible default (400) but build_manifest is also part of
 # the public API.  Without a cap, a caller could pass an arbitrarily large value,
 # causing the manifest construction pass to allocate and render all sections before
 # the trim loop brings it back down — a pointless memory/CPU spike with no benefit.
-_MAX_MANIFEST_TOKENS_CAP = 4_000
+_MAX_MANIFEST_TOKENS_CAP: Final[int] = 4_000
 
 # Key for sorting edited_files dict items by edit count (the second element of each pair).
 # Defined at module level so it is created once rather than re-created on every manifest build.
