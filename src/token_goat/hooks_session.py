@@ -8,6 +8,7 @@ from .hooks_common import (
     CONTINUE,
     HookResponse,
     sanitize_log_str,
+    sanitize_opt,
 )
 from .hooks_common import (
     LOG as _LOG,
@@ -92,7 +93,7 @@ def session_start(payload: dict[str, Any]) -> HookResponse:
     """Reset session cache and ensure worker daemon is running."""
     session_id = payload.get("session_id")
     cwd = payload.get("cwd")
-    _LOG.info("session-start: session_id=%s cwd=%s", sanitize_log_str(str(session_id or "")), sanitize_log_str(str(cwd or "")))
+    _LOG.info("session-start: session_id=%s cwd=%s", sanitize_opt(session_id), sanitize_opt(cwd))
 
     _reset_session_cache(session_id)
 

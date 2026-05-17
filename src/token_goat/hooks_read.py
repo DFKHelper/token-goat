@@ -12,6 +12,7 @@ from .hooks_common import (
     pre_tool_use_with_context,
     pre_tool_use_with_update,
     sanitize_log_str,
+    sanitize_opt,
 )
 from .hooks_common import (
     LOG as _LOG,
@@ -176,7 +177,7 @@ def pre_read(payload: dict[str, Any]) -> HookResponse:
         return CONTINUE()
 
     if tool_name != "Read":
-        _LOG.debug("pre-read: skipping non-Read tool %s", sanitize_log_str(str(tool_name or "")))
+        _LOG.debug("pre-read: skipping non-Read tool %s", sanitize_opt(tool_name))
         return CONTINUE()
 
     tool_input = get_tool_input(payload)
@@ -258,15 +259,13 @@ def post_read(payload: dict[str, Any]) -> HookResponse:
             session.mark_grep(session_id, pattern, path, result_count, cache=cache)
             _LOG.debug(
                 "post-read: recorded Grep pattern=%s path=%s result_count=%s",
-                sanitize_log_str(str(pattern)), sanitize_log_str(str(path or "")), result_count,
+                sanitize_opt(pattern), sanitize_opt(path), result_count,
             )
     elif tool_name == "Glob":
         pattern = tool_input.get("pattern")
         path = tool_input.get("path")
         # Sanitize user-controlled strings before logging to prevent log injection
         # via embedded newlines that would forge additional log records.
-        safe_pattern = sanitize_log_str(str(pattern)) if pattern is not None else None
-        safe_path = sanitize_log_str(str(path)) if path is not None else None
-        _LOG.debug("post-read: Glob pattern=%s path=%s", safe_pattern, safe_path)
+        _LOG.debug("post-read: Glob pattern=%s path=%s", sanitize_opt(pattern), sanitize_opt(path))
 
     return CONTINUE()
