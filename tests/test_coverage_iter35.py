@@ -143,18 +143,21 @@ class TestRenderSummary:
         assert "src/foo.py" in rendered
         assert "python" in rendered
         assert "~100L" in rendered
-        assert "0.5000" in rendered
+        # Dense format: rank rendered as "r=0.500" (3 decimals, short label)
+        assert "0.500" in rendered
 
     def test_symbols_grouped_by_kind(self):
         s = self._make(top_symbols=[("function", "foo"), ("function", "bar"), ("class", "Cls")])
         rendered = render_summary(s)
-        assert "class: Cls" in rendered
-        assert "function: foo, bar" in rendered
+        # Dense format: short kind tags + comma-only separator
+        assert "cls:Cls" in rendered
+        assert "fn:foo,bar" in rendered
 
     def test_sections_line_present(self):
         s = self._make(top_sections=["Intro", "Usage"])
         rendered = render_summary(s)
-        assert "sections: Intro > Usage" in rendered
+        # Dense format: short label "sec:" + ">" separator without spaces
+        assert "sec:Intro>Usage" in rendered
 
     def test_no_symbols_no_extra_lines(self):
         s = self._make()
@@ -166,8 +169,9 @@ class TestRenderSummary:
         """class appears before function in rendered output."""
         s = self._make(top_symbols=[("function", "fn"), ("class", "Cls")])
         rendered = render_summary(s)
-        class_pos = rendered.index("class:")
-        func_pos = rendered.index("function:")
+        # Use the new short tags
+        class_pos = rendered.index("cls:")
+        func_pos = rendered.index("fn:")
         assert class_pos < func_pos
 
 

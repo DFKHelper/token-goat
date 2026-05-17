@@ -214,6 +214,33 @@ KIND_PRIORITY: dict[str, int] = {
     "abi_export": 5,
 }
 
+# Short tags emitted in the dense text format instead of full kind names.
+# Each tag is 1-3 chars, saving ~5-8 chars per emitted line compared to the
+# verbose form ("function: " → "fn:"). Falls back to the raw kind for any kind
+# not listed here so adding a new language adapter does not silently drop info.
+_KIND_TAG: Final[dict[str, str]] = {
+    "class": "cls",
+    "interface": "iface",
+    "trait": "trait",
+    "type": "ty",
+    "enum": "enum",
+    "function": "fn",
+    "method": "m",
+    "const": "k",
+    "var": "v",
+    "import": "imp",
+    "heading": "h",
+    "liquid_schema": "lqs",
+    "abi_export": "abi",
+}
+
+# Budget below which build_map switches to "compact" mode automatically:
+# header + one line per file (no symbol detail). Empirically the symbol-detail
+# format averages ~25-40 tokens/file; below ~200 tokens of budget we can fit
+# 5x more files by dropping symbol lines entirely, which is more useful for
+# orientation than 1-2 fully-detailed entries.
+_AUTO_COMPACT_BUDGET: Final[int] = 200
+
 
 @dataclass
 class FileSummary:
@@ -490,7 +517,7 @@ def _summarize_file(
     )
 
 
-def render_summary(summary: FileSummary) -> str:
+def render_summary(summary: FileSummary, *, compact: bool = False) -> str:
     """Render a single file summary as text.
 
     Groups symbols by kind and emits kinds in priority order.  Uses a two-pass
@@ -498,8 +525,27 @@ def render_summary(summary: FileSummary) -> str:
     the unique kinds sorted by priority (O(k log k) where k = unique kinds, not
     n = total symbols).  This avoids re-sorting the entire symbol list on every
     call — only the small set of distinct kind strings is sorted.
+
+    When ``compact`` is True the symbol/section detail lines are dropped and
+    only the path/lang/lines/rank header line is emitted — useful when the
+    caller has a tight token budget and wants orientation over depth.
+
+    Density choices:
+      - Single space between path and metadata bracket (was double).
+      - ``r=`` instead of ``rank=`` and 3 decimals instead of 4
+        (saves ~3 chars/line; rank is an ordering signal, not a precise score).
+      - Single-char ``,`` separator inside the bracket instead of ``, ``.
+      - Short kind tags (``fn``, ``cls``) from ``_KIND_TAG`` instead of full names.
+      - Single space between symbol names instead of ``, `` (saves 1 char per
+        symbol; comma is unambiguous because identifiers cannot contain ``,``).
     """
-    lines = [f"{summary.rel_path}  [{summary.language}, ~{summary.line_count}L, rank={summary.rank:.4f}]"]
+    head = (
+        f"{summary.rel_path} [{summary.language},~{summary.line_count}L,"
+        f"r={summary.rank:.3f}]"
+    )
+    if compact:
+        return head
+    lines = [head]
     if summary.top_symbols:
         by_kind: dict[str, list[str]] = {}
         for kind, name in summary.top_symbols:
@@ -508,10 +554,11 @@ def render_summary(summary: FileSummary) -> str:
         # attribute lookup on every comparison (typically k=3-6 unique kinds).
         _kp_get = KIND_PRIORITY.get
         for kind in sorted(by_kind, key=lambda k: _kp_get(k, 99)):
-            names = ", ".join(by_kind[kind][:_MAX_NAMES_PER_KIND])
-            lines.append(f"  {kind}: {names}")
+            tag = _KIND_TAG.get(kind, kind)
+            names = ",".join(by_kind[kind][:_MAX_NAMES_PER_KIND])
+            lines.append(f" {tag}:{names}")
     if summary.top_sections:
-        lines.append(f"  sections: {' > '.join(summary.top_sections)}")
+        lines.append(f" sec:{'>'.join(summary.top_sections)}")
     return "\n".join(lines)
 
 
@@ -658,6 +705,8 @@ def _get_rendered_summary(
     info: _FileInfo,
     data: _RankedProjectData,
     cache_writes: list[tuple[str, float, int, str]],
+    *,
+    compact: bool = False,
 ) -> tuple[str, bool]:
     """Return the rendered text for one file and whether it was a cache hit.
 
@@ -671,13 +720,19 @@ def _get_rendered_summary(
     shape used as the cache key so the caller can bulk-insert without re-deriving
     the key components.
 
+    Compact-mode renders are not cached: they are cheap to recompute
+    (single-line, no symbol grouping) and the cache key would need an extra
+    dimension to disambiguate compact vs. full strings.  Skipping the cache
+    here keeps the schema simple and the compact path zero-allocation on hit.
+
     Returns ``(rendered_text, is_cache_hit)``.
     """
     mtime: float = info["mtime"]
     size: int = info["size"]
-    cached_text = data.summary_cache.get((rel, mtime, size))
-    if cached_text is not None:
-        return cached_text, True
+    if not compact:
+        cached_text = data.summary_cache.get((rel, mtime, size))
+        if cached_text is not None:
+            return cached_text, True
 
     _LOG.debug("repomap summary cache miss: %s (mtime=%.3f size=%d)", rel, mtime, size)
     summary = _summarize_file(
@@ -687,8 +742,9 @@ def _get_rendered_summary(
         data.sections_by_file.get(rel, []),
         data.ranks.get(rel, 0.0),
     )
-    rendered = render_summary(summary) + "\n"
-    cache_writes.append((rel, mtime, size, rendered))
+    rendered = render_summary(summary, compact=compact) + "\n"
+    if not compact:
+        cache_writes.append((rel, mtime, size, rendered))
     return rendered, False
 
 
@@ -697,6 +753,7 @@ def build_map(
     *,
     budget_tokens: int = 4000,
     include_unranked_tail: bool = True,
+    compact: bool | None = None,
 ) -> str:
     """Build the repo map text under the token budget.
 
@@ -705,6 +762,15 @@ def build_map(
     since the last run.  Only files that are new or modified incur the full
     ``_summarize_file`` + ``render_summary`` cost.  New rendered strings are
     written back to the cache at the end of the call.
+
+    ``compact`` controls per-file detail:
+      - ``None`` (default): auto-engage compact mode when
+        ``budget_tokens < _AUTO_COMPACT_BUDGET``, so a tight budget produces
+        a list of more files (one line each) rather than 1-2 fully-detailed
+        entries.  Above the threshold the full symbol/section detail is shown.
+      - ``True``: always one line per file.
+      - ``False``: always show full symbol detail (caller takes responsibility
+        for budget — useful when piping into a downstream summarizer).
     """
     t0 = time.monotonic()
     data = _load_and_rank(project)
@@ -714,8 +780,17 @@ def build_map(
             "(no files indexed — run `token-goat index --full`)\n"
         )
 
+    # Resolve compact mode: explicit caller wins, else auto-engage on tight budget.
+    use_compact = compact if compact is not None else budget_tokens < _AUTO_COMPACT_BUDGET
+
     lang_set = sorted({info["language"] for info in data.files.values()})
-    header = f"# {project.root.name}\n  files={len(data.files)} languages={','.join(lang_set)}\n\n"
+    # Tightened header: drop the "files=" / "languages=" labels (positionally
+    # obvious — a number followed by a comma-list) and use a single space rather
+    # than the previous two-space indent.  Saves ~6 tokens per call.
+    header = (
+        f"# {project.root.name} "
+        f"({len(data.files)}f,{','.join(lang_set)})\n"
+    )
     out = [header]
     used = estimate_tokens(header)
     included = 0
@@ -729,7 +804,9 @@ def build_map(
         if used >= budget_tokens:
             break
 
-        rendered, is_hit = _get_rendered_summary(rel, info, data, cache_writes)
+        rendered, is_hit = _get_rendered_summary(
+            rel, info, data, cache_writes, compact=use_compact,
+        )
         if is_hit:
             cache_hits += 1
         else:
@@ -744,10 +821,9 @@ def build_map(
 
     if include_unranked_tail and included < len(data.ranked):
         omitted = len(data.ranked) - included
-        out.append(
-            f"\n... and {omitted} more files "
-            f"(truncated to fit budget of ~{budget_tokens} tokens)\n"
-        )
+        # Compressed tail marker: "+N more (budget B)" is ~half the chars of the
+        # previous full sentence and conveys identical information.
+        out.append(f"+{omitted} more (budget {budget_tokens}t)\n")
 
     # Persist new cache entries (best-effort; failure must not affect output)
     if cache_writes:

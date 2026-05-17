@@ -88,7 +88,9 @@ def test_build_map_no_edges_fallback(ts_project):
 def test_build_map_header(ts_project):
     text = repomap.build_map(ts_project, budget_tokens=4000)
     assert "ts_sample" in text
-    assert "files=1" in text
+    # New dense header: "# ts_sample (1f,typescript)"
+    # Old header was "files=1 languages=...", new collapses both into "(Nf,...)"
+    assert "1f" in text
 
 
 # ---------------------------------------------------------------------------
@@ -395,3 +397,192 @@ def test_write_summary_cache_graceful_on_missing_table():
     con.row_factory = _sqlite3.Row
     # Should not raise even though the table is absent
     repomap._write_summary_cache(con, [("src/a.py", 1.0, 100, "rendered\n")])
+
+
+# ---------------------------------------------------------------------------
+# 23. Density: render_summary tighter format
+# ---------------------------------------------------------------------------
+
+def _make_summary(
+    *,
+    rel_path: str = "src/foo.py",
+    language: str = "python",
+    rank: float = 0.1234,
+    symbols: list[tuple[str, str]] | None = None,
+    sections: list[str] | None = None,
+    line_count: int = 100,
+) -> repomap.FileSummary:
+    return repomap.FileSummary(
+        rel_path=rel_path,
+        language=language,
+        rank=rank,
+        top_symbols=symbols if symbols is not None else [],
+        top_sections=sections if sections is not None else [],
+        line_count=line_count,
+    )
+
+
+def test_render_summary_uses_short_rank_label():
+    """Dense format uses 'r=' instead of 'rank=' to save tokens."""
+    s = _make_summary(rank=0.5)
+    text = repomap.render_summary(s)
+    assert "r=" in text
+    assert "rank=" not in text
+
+
+def test_render_summary_uses_short_kind_tags():
+    """Dense format uses 'fn:' / 'cls:' tags instead of 'function: ' / 'class: '."""
+    s = _make_summary(symbols=[("function", "do_thing"), ("class", "Widget")])
+    text = repomap.render_summary(s)
+    assert "fn:" in text
+    assert "cls:" in text
+    # Old verbose labels must be gone
+    assert "function: " not in text
+    assert "class: " not in text
+
+
+def test_render_summary_compact_mode_drops_symbol_lines():
+    """compact=True produces a single line with no symbol detail."""
+    s = _make_summary(
+        symbols=[("function", "a"), ("class", "B")],
+        sections=["Intro"],
+    )
+    full = repomap.render_summary(s, compact=False)
+    compact = repomap.render_summary(s, compact=True)
+    # Compact must be a single line (the head)
+    assert "\n" not in compact
+    # Full must include symbol detail; compact must not
+    assert "fn:" in full
+    assert "fn:" not in compact
+    assert "sec:" not in compact
+    # Compact is strictly shorter than full when symbols exist
+    assert len(compact) < len(full)
+
+
+def test_render_summary_compact_is_much_smaller():
+    """compact mode should be at least 40% shorter than full when symbols are present."""
+    s = _make_summary(
+        symbols=[
+            ("function", "alpha"), ("function", "beta"), ("function", "gamma"),
+            ("class", "Foo"), ("class", "Bar"),
+        ],
+        sections=["A", "B"],
+    )
+    full = repomap.render_summary(s, compact=False)
+    compact = repomap.render_summary(s, compact=True)
+    # On a typical multi-symbol file, compact should save substantial chars.
+    assert len(compact) <= len(full) * 0.6
+
+
+def test_build_map_header_density(ts_project):
+    """Header line should be under ~50 chars for a small project."""
+    text = repomap.build_map(ts_project, budget_tokens=4000)
+    # First line is the header; assert it's compact (project + "(1f,lang)")
+    header_line = text.splitlines()[0]
+    assert len(header_line) < 50, f"header too long ({len(header_line)} chars): {header_line!r}"
+
+
+def test_build_map_auto_compact_engages_at_low_budget(ts_project):
+    """A very small budget must auto-engage compact mode (no 'fn:' detail line)."""
+    tight = repomap.build_map(ts_project, budget_tokens=80)
+    full = repomap.build_map(ts_project, budget_tokens=4000)
+    # The tight output should not include any per-kind detail line.
+    # Verify by checking the tight output has no leading-space lines (compact
+    # head lines start at column 0).
+    for line in tight.splitlines():
+        # Detail lines in the new format start with a single space; header
+        # and per-file head lines do not.
+        if line.startswith(" "):
+            raise AssertionError(
+                f"auto-compact failed — detail line present at low budget: {line!r}"
+            )
+    # Full should include at least one detail line (starts with space).
+    assert any(line.startswith(" ") for line in full.splitlines()), \
+        "full mode should emit at least one detail line for ts_sample"
+
+
+def test_build_map_explicit_compact_flag(ts_project):
+    """compact=True must always produce single-line entries even at high budget."""
+    text = repomap.build_map(ts_project, budget_tokens=10000, compact=True)
+    for line in text.splitlines():
+        # No detail lines (which would start with a leading space).
+        assert not line.startswith(" "), \
+            f"compact=True produced a detail line: {line!r}"
+
+
+def test_build_map_compact_fits_more_files_per_token(tmp_path, tmp_data_dir, make_project):
+    """At a fixed tight budget, compact mode must include strictly more files than full mode.
+
+    This is the core density win: dropping symbol detail at low budgets lets
+    callers orient across more of the codebase using the same token spend.
+    """
+    from token_goat.parser import index_project
+
+    # Build a small synthetic project with several distinct files so the
+    # ranking has multiple candidates within the budget.
+    proj_root = tmp_path / "density_sample"
+    src = proj_root / "src"
+    src.mkdir(parents=True)
+    # _is_map_worthy filters by approx_lines = size // 50 >= 4, so each file
+    # needs >= 200 bytes. Pad each file with a docstring to clear that bar.
+    pad = "# padding line to clear _MIN_DISPLAY_LINES threshold for the map\n" * 6
+    for i in range(6):
+        (src / f"mod_{i}.py").write_text(
+            f"{pad}"
+            f"def fn_{i}_a():\n    pass\n\n"
+            f"def fn_{i}_b():\n    pass\n\n"
+            f"class Cls_{i}:\n    pass\n",
+        )
+    proj = make_project(proj_root)
+    index_project(proj, full=True)
+
+    # Use a budget too tight to fit all 6 files with symbol detail but loose
+    # enough that compact mode (1 line/file) can fit them.
+    budget = 120
+    full_text = repomap.build_map(proj, budget_tokens=budget, compact=False)
+    compact_text = repomap.build_map(proj, budget_tokens=budget, compact=True)
+
+    def _count_file_entries(text: str) -> int:
+        # File entry head lines contain the language/rank bracket; count them.
+        return sum(1 for line in text.splitlines() if "[python," in line)
+
+    full_files = _count_file_entries(full_text)
+    compact_files = _count_file_entries(compact_text)
+    assert compact_files > full_files, (
+        f"compact ({compact_files} files) should fit more files than "
+        f"full ({full_files}) at budget {budget}"
+    )
+
+
+def test_build_map_density_chars_per_file_bound(tmp_path, tmp_data_dir, make_project):
+    """Compact mode produces at most ~80 chars per file entry on a small project.
+
+    This guards against future format regressions that re-add verbose labels.
+    """
+    from token_goat.parser import index_project
+
+    proj_root = tmp_path / "density_bound"
+    src = proj_root / "src"
+    src.mkdir(parents=True)
+    pad = "# padding line to clear _MIN_DISPLAY_LINES threshold for the map\n" * 6
+    for i in range(5):
+        (src / f"a_{i}.py").write_text(
+            f"{pad}"
+            f"def fn_{i}():\n    pass\n\n"
+            f"class C_{i}:\n    pass\n\n"
+            f"class D_{i}:\n    pass\n",
+        )
+    proj = make_project(proj_root)
+    index_project(proj, full=True)
+
+    text = repomap.build_map(proj, budget_tokens=10000, compact=True)
+    # Skip header (first line) and any tail marker — measure per-file lines.
+    file_lines = [
+        line for line in text.splitlines()
+        if "[python," in line
+    ]
+    assert file_lines, "expected at least one file line in compact output"
+    for line in file_lines:
+        assert len(line) <= 80, (
+            f"compact file line exceeds 80 chars ({len(line)}): {line!r}"
+        )
