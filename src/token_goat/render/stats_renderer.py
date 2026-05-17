@@ -19,6 +19,7 @@ come from ``ansi.C`` (GitHub dark palette).
 """
 from __future__ import annotations
 
+import heapq
 import json
 import logging
 import math
@@ -586,7 +587,7 @@ def _render_activity_section(stats: StatsData) -> list[str]:
 
     total_period_days = (period_end - period_start).days + 1
     active_days = [d for d in sorted_days if d.events > 0]
-    top_days = sorted(active_days, key=_key_day_events, reverse=True)[:3]
+    top_days = heapq.nlargest(3, active_days, key=_key_day_events)
 
     # Build right panel lines
     panel_lines: list[str] = []
