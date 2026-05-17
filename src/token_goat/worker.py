@@ -781,12 +781,16 @@ def reap_stale_index_markers() -> int:
     cleared = 0
     for marker in locks.glob("*.indexing"):
         if _index_spawn_active(marker):
+            _LOG.debug("index marker %s is still active; skipping", marker.name)
             continue
         try:
             marker.unlink()
             cleared += 1
+            _LOG.debug("reaped stale index marker: %s", marker.name)
         except OSError as e:
             _LOG.warning("failed to remove stale index marker %s: %s", marker.name, e)
+    if cleared:
+        _LOG.info("reaped %d stale index marker(s)", cleared)
     return cleared
 
 
@@ -868,6 +872,7 @@ def spawn_index_detached(project_root: str, project_hash: str) -> int | None:
     with contextlib.suppress(OSError):
         marker.parent.mkdir(parents=True, exist_ok=True)
         marker.write_text(f"{proc.pid}\n{time.time()}", encoding="utf-8")
+    _LOG.info("auto-index spawned for %s (root=%s, pid=%d)", project_hash[:8], project_root, proc.pid)
     return proc.pid
 
 

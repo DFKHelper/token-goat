@@ -279,11 +279,17 @@ def _resolve_file_target(file_part: str) -> tuple[Project | None, str | None, Pr
     if proj is not None:
         rel = read_replacement.resolve_file_rel(proj, file_part)
         if rel is not None:
+            _LOG.debug("resolved %r -> %s (current project %s)", file_part, rel, proj.hash[:8])
             return proj, rel, proj
+        _LOG.debug("file %r not found in current project %s; trying cross-project fallback", file_part, proj.hash[:8])
+    else:
+        _LOG.debug("no current project detected for cwd; trying cross-project fallback for %r", file_part)
 
     cross = read_replacement.find_in_all_projects(file_part)
     if cross is not None:
+        _LOG.info("cross-project fallback: resolved %r -> %s (project %s)", file_part, cross[1], cross[0].hash[:8])
         return cross[0], cross[1], proj
+    _LOG.debug("file %r not found in any indexed project", file_part)
     return None, None, proj
 
 
@@ -364,6 +370,10 @@ def _run_read_like_command(
 
     bytes_saved = result.get("bytes_saved", 0)
     tokens_saved = bytes_saved // 4
+    _LOG.debug(
+        "%s served: %s::%s bytes_saved=%d tokens_saved=%d",
+        stat_kind, rel, item_part, bytes_saved, tokens_saved,
+    )
     db.record_stat(
         proj.hash,
         stat_kind,
@@ -410,6 +420,12 @@ def deps(
     outgoing_file_count = len(outgoing)
     incoming_edge_count = sum(len(v) for v in incoming.values())
     incoming_file_count = len(incoming)
+    _LOG.debug(
+        "deps graph for %s: out=%d files/%d edges in=%d files/%d edges unresolved=%d transitive=%d",
+        rel, outgoing_file_count, outgoing_edge_count,
+        incoming_file_count, incoming_edge_count,
+        len(unresolved), len(transitive),
+    )
 
     if json_output:
         payload: dict[str, object] = {

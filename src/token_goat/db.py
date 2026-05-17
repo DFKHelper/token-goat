@@ -477,6 +477,16 @@ def _ensure_project_schema(conn: sqlite3.Connection, *, db_path: Path | None = N
         # INSERT (first-write-wins) because global.db has no migrations yet;
         # per-project DBs use OR REPLACE to overwrite the version from any
         # older schema written by a previous token-goat release.
+        existing_ver = conn.execute(
+            "SELECT value FROM meta WHERE key='schema_version'"
+        ).fetchone()
+        if existing_ver is not None and existing_ver[0] != str(SCHEMA_VERSION):
+            _LOG.info(
+                "schema upgrade: %s -> %s%s",
+                existing_ver[0],
+                SCHEMA_VERSION,
+                f" ({db_path.name})" if db_path else "",
+            )
         conn.execute(
             "INSERT OR REPLACE INTO meta (key, value) VALUES ('schema_version', ?)",
             (str(SCHEMA_VERSION),),
@@ -773,11 +783,13 @@ def project_writer_lock(project_hash: str, timeout_sec: float = 5.0) -> Iterator
     t0 = time.monotonic()
     waited = False
     holder_pid = None
+    retries = 0
     while True:
         if _try_acquire():
             acquired = True
             break
         waited = True
+        retries += 1
         # Capture lock holder info for diagnostics
         if holder_pid is None:
             try:
@@ -797,7 +809,10 @@ def project_writer_lock(project_hash: str, timeout_sec: float = 5.0) -> Iterator
         )
     elapsed = time.monotonic() - t0
     if waited:
-        _LOG.info("writer lock acquired for project %s after %.3fs (held by pid=%s)", project_hash[:8], elapsed, holder_pid)
+        _LOG.info(
+            "writer lock acquired for project %s after %.3fs (retries=%d, held by pid=%s)",
+            project_hash[:8], elapsed, retries, holder_pid,
+        )
     else:
         _LOG.debug("writer lock acquired for project %s (no contention)", project_hash[:8])
     try:

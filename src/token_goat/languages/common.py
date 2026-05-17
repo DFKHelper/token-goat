@@ -27,6 +27,8 @@ from typing import TYPE_CHECKING, TypeAlias
 if TYPE_CHECKING:
     from ..parser import ImpExp, Ref, Section, Symbol
 
+_LOG = logging.getLogger("token_goat.languages.common")
+
 # Canonical kind string (e.g. "function", "class", "method", "const", "var")
 KindStr: TypeAlias = str
 
@@ -152,6 +154,7 @@ def parse_source(
     text = source.decode("utf-8", errors="replace")
     tlp, cfg = make_process_config(language=language, **process_config_kwargs)
     if tlp is None:
+        _LOG.debug("tree-sitter language pack unavailable; skipping parse for %s", rel_path)
         return None, None
     try:
         result = tlp.process(text, cfg)
@@ -383,6 +386,7 @@ def add_symbol_info(
     """
     from ..parser import Symbol  # noqa: PLC0415
 
+    before = len(symbols)
     for sym in symbol_infos:
         name: str = sym.name  # type: ignore[attr-defined]
         span = sym.span
@@ -401,6 +405,12 @@ def add_symbol_info(
                     parent_name=None,
                 )
             )
+    added = len(symbols) - before
+    skipped = len(symbol_infos) - added
+    _LOG.debug(
+        "add_symbol_info (%s): added %d symbol(s) from %d candidates (%d duplicate(s) skipped)",
+        language, added, len(symbol_infos), skipped,
+    )
 
 
 def build_line_index(text: str) -> list[int]:
@@ -471,6 +481,7 @@ def extract_html_headings(text: str, sections: list[Section]) -> None:
     """
     from ..parser import Section as _Section  # noqa: PLC0415
 
+    before = len(sections)
     for match in _H_TAG_RE.finditer(text):
         level = int(match.group(1))
         heading_text = match.group(2).strip()
@@ -478,3 +489,5 @@ def extract_html_headings(text: str, sections: list[Section]) -> None:
             heading_text = heading_text[:100]
             line = text[: match.start()].count("\n") + 1
             sections.append(_Section(heading=heading_text, level=level, line=line))
+    added = len(sections) - before
+    _LOG.debug("extract_html_headings: added %d section(s)", added)
