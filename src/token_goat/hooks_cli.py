@@ -222,6 +222,10 @@ def safe_run(event: str, input_file: Path | None = None, harness: Harness = "cla
         payload = normalize_payload(raw, harness)
         dispatched = dispatch(event, payload)
         result = dict(denormalize_response(dispatched, harness))
+    except (KeyboardInterrupt, SystemExit):
+        # Process-control signals must propagate so the harness can terminate
+        # cleanly (e.g. Ctrl+C, or sys.exit() from an internal subprocess).
+        raise
     except BaseException as exc:  # noqa: BLE001 — bulletproof
         msg = f"token-goat hook {event} failed: {type(exc).__name__}: {exc}"
         with contextlib.suppress(Exception):
