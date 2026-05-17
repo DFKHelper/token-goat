@@ -4,6 +4,24 @@ All notable changes to Token-Goat are documented in this file. Format follows Ke
 
 ## [Unreleased]
 
+## [0.5.1] - 2026-05-17
+
+### Added
+
+- **`token-goat --version` / `-V` flag.** Prints the installed version and exits. Required by SECURITY.md, which instructs vulnerability reporters to include this command's output; the flag did not previously exist and the command errored out, blocking the reporting flow.
+- **`config` sub-Typer help string.** `token-goat --help` previously rendered the Config panel with an empty description; the group is now self-describing.
+
+### Changed
+
+- **Shipped routing tables refreshed for 0.5.0 features.** The blocks `token-goat install` writes to `~/.claude/CLAUDE.md`, the token-goat skill, and `~/.codex/AGENTS.md` now mention qualified `Class.method` reads, `Heading#N` section ordinals, `map --compact`, `gdrive-sections`, `--all-projects`, `semantic --max-distance` / `--no-rerank`, and the "Did you mean?" miss suggestion. Agents installed against 0.5.0 had no way to discover these from the shipped guidance.
+- **`token-goat gdrive-sections` is no longer hidden in `--help`.** The 0.5.0 routing tables advertise it as a user-facing command; an agent verifying via `--help` would have concluded it did not exist.
+- **`read` / `section` argument help now documents `Class.method` and `Heading#N` syntax** inline so the qualified-lookup and ordinal-disambiguation forms are discoverable from `--help` alone.
+- **PyPI description tightened** to mention the surgical-read CLI (`symbol` / `read` / `section` / `semantic` / `map`), not only the automatic hook features.
+
+### Fixed
+
+- **`map --compact` help text said the threshold was ~200 tokens; the code constant is 300** (`repomap._AUTO_COMPACT_BUDGET`). Iteration 17 raised the threshold but missed the help string. Help now matches code.
+
 ## [0.5.0] - 2026-05-17
 
 ### Added
