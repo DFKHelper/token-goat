@@ -326,3 +326,146 @@ class TestGdriveFetchCli:
         data = json.loads(result.output)
         assert "path" in data
         assert "size" in data
+
+
+# ---------------------------------------------------------------------------
+# Section-index extraction (drive markdown docs)
+# ---------------------------------------------------------------------------
+
+class TestIsTextPath:
+    def test_markdown_extensions_recognised(self, tmp_path):
+        assert gdrive.is_text_path(tmp_path / "spec.md")
+        assert gdrive.is_text_path(tmp_path / "README.MD")
+        assert gdrive.is_text_path(tmp_path / "notes.markdown")
+        assert gdrive.is_text_path(tmp_path / "notes.txt")
+
+    def test_non_text_extensions_rejected(self, tmp_path):
+        assert not gdrive.is_text_path(tmp_path / "image.png")
+        assert not gdrive.is_text_path(tmp_path / "binary")
+        assert not gdrive.is_text_path(tmp_path / "doc.pdf")
+
+
+class TestExtractSectionIndex:
+    def test_markdown_with_headings(self, tmp_path):
+        md = tmp_path / "spec.md"
+        md.write_text(
+            "# Title\n\nIntro text.\n\n## Install\n\nRun the thing.\n\n"
+            "## Usage\n\nCall the API.\n\n### Advanced\n\nDeeper stuff.\n",
+            encoding="utf-8",
+        )
+        idx = gdrive.extract_section_index(md)
+        assert idx["extractor_available"] is True
+        assert idx["size_bytes"] > 0
+        headings = [s["heading"] for s in idx["sections"]]  # type: ignore[index]
+        assert "Title" in headings
+        assert "Install" in headings
+        assert "Usage" in headings
+        assert "Advanced" in headings
+        # Each section should carry a positive approx_bytes
+        for sec in idx["sections"]:  # type: ignore[union-attr]
+            assert sec["approx_bytes"] >= 0
+            assert sec["line"] >= 1
+
+    def test_non_markdown_extension_returns_empty_sections(self, tmp_path):
+        p = tmp_path / "image.png"
+        p.write_bytes(b"\x89PNG\x00fake")
+        idx = gdrive.extract_section_index(p)
+        assert idx["extractor_available"] is False
+        assert idx["sections"] == []
+        assert idx["size_bytes"] > 0
+
+    def test_missing_file_returns_zero_size(self, tmp_path):
+        idx = gdrive.extract_section_index(tmp_path / "nope.md")
+        assert idx["extractor_available"] is False
+        assert idx["size_bytes"] == 0
+
+    def test_oversized_file_skips_parse(self, tmp_path, monkeypatch):
+        # Force the max-bytes threshold low so we don't have to write 2 MB.
+        monkeypatch.setattr(gdrive, "_MAX_SECTION_INDEX_BYTES", 100)
+        p = tmp_path / "huge.md"
+        p.write_text("# Heading\n" + ("filler line\n" * 50), encoding="utf-8")
+        idx = gdrive.extract_section_index(p)
+        assert idx["extractor_available"] is False
+        assert idx["sections"] == []
+        assert idx["size_bytes"] > 100
+
+
+class TestGdriveSectionsCli:
+    def test_emits_section_index_for_markdown(self, tmp_data_dir, tmp_path):
+        from typer.testing import CliRunner  # noqa: PLC0415
+
+        from token_goat.cli import app  # noqa: PLC0415
+
+        md = tmp_path / "spec.md"
+        md.write_text("# Title\n\nbody\n\n## Install\n\nsteps\n", encoding="utf-8")
+
+        runner = CliRunner()
+        with patch.object(gdrive, "fetch_file", return_value=md):
+            result = runner.invoke(app, ["gdrive-sections", "fake_id"])
+
+        assert result.exit_code == 0
+        assert str(md) in result.output
+        assert "Title" in result.output
+        assert "Install" in result.output
+        assert "size=" in result.output
+
+    def test_json_output(self, tmp_data_dir, tmp_path):
+        from typer.testing import CliRunner  # noqa: PLC0415
+
+        from token_goat.cli import app  # noqa: PLC0415
+
+        md = tmp_path / "spec.md"
+        md.write_text("# A\n\n## B\n", encoding="utf-8")
+
+        runner = CliRunner()
+        with patch.object(gdrive, "fetch_file", return_value=md):
+            result = runner.invoke(app, ["gdrive-sections", "fake_id", "--json"])
+
+        assert result.exit_code == 0
+        data = json.loads(result.output)
+        assert data["extractor_available"] is True
+        assert any(s["heading"] == "A" for s in data["sections"])
+        assert any(s["heading"] == "B" for s in data["sections"])
+
+    def test_truncates_when_too_many_sections(self, tmp_data_dir, tmp_path):
+        from typer.testing import CliRunner  # noqa: PLC0415
+
+        from token_goat.cli import app  # noqa: PLC0415
+
+        # 5 headings, --max-sections 3 → result lists 3 + truncated marker.
+        md = tmp_path / "spec.md"
+        md.write_text("# A\n## B\n## C\n## D\n## E\n", encoding="utf-8")
+
+        runner = CliRunner()
+        with patch.object(gdrive, "fetch_file", return_value=md):
+            result = runner.invoke(app, ["gdrive-sections", "fake_id", "--max-sections", "3"])
+
+        assert result.exit_code == 0
+        assert "truncated at 3" in result.output
+
+    def test_no_creds_exits_zero_fail_soft(self, tmp_data_dir):
+        from typer.testing import CliRunner  # noqa: PLC0415
+
+        from token_goat.cli import app  # noqa: PLC0415
+
+        runner = CliRunner()
+        with patch("google.auth.default", side_effect=Exception("no ADC")):
+            result = runner.invoke(app, ["gdrive-sections", "fake_id_for_test"])
+
+        assert result.exit_code == 0
+        assert "No Google Drive credentials" in result.output
+
+    def test_non_markdown_file_falls_back_gracefully(self, tmp_data_dir, tmp_path):
+        from typer.testing import CliRunner  # noqa: PLC0415
+
+        from token_goat.cli import app  # noqa: PLC0415
+
+        binary = tmp_path / "image.png"
+        binary.write_bytes(b"\x89PNGfake")
+
+        runner = CliRunner()
+        with patch.object(gdrive, "fetch_file", return_value=binary):
+            result = runner.invoke(app, ["gdrive-sections", "fake_id"])
+
+        assert result.exit_code == 0
+        assert "no section index available" in result.output

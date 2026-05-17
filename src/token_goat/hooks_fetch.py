@@ -60,12 +60,35 @@ def _sanitize_url_for_embed(url: str) -> str | None:
     return f'"{cleaned}"'
 
 
-def _intercept_drive_download(file_id: str) -> HookResponse:
-    """Build denial response for Drive download with redirect to token-goat shim."""
+def _intercept_drive_download(file_id: str, *, hint_filename: str | None = None) -> HookResponse:
+    """Build denial response for Drive download with redirect to token-goat shim.
+
+    When *hint_filename* is supplied and looks like a markdown/text doc, the
+    redirect points the agent at ``gdrive-sections`` first.  That call returns
+    the heading structure (typically 50–200 tokens) instead of the full body
+    (often 10k–50k tokens), letting the agent request a single section via
+    ``token-goat section`` afterwards.  For binary / unknown types the original
+    ``gdrive-fetch`` flow is suggested.
+    """
+    sections_hint = ""
+    if hint_filename:
+        # Local import to avoid pulling google client deps when the hook fires
+        # for a tool call that has no filename (the common case).
+        from pathlib import Path  # noqa: PLC0415
+
+        from . import gdrive  # noqa: PLC0415
+
+        if gdrive.is_text_path(Path(hint_filename)):
+            sections_hint = (
+                f"For markdown/text docs prefer: `token-goat gdrive-sections {file_id}` first — "
+                f"it returns the heading index (tens of tokens) so you can fetch just one section "
+                f"via `token-goat section <local-path>::<heading>` instead of the whole doc. "
+            )
     return deny_redirect(
         reason="token-goat redirects Drive image downloads to its shrink+cache shim",
         context=(
             f"token-goat intercepted a Drive download to save tokens. "
+            f"{sections_hint}"
             f"Run this Bash instead: `token-goat gdrive-fetch {file_id}` — "
             f"it returns a local cached path you can then Read (images are auto-shrunk)."
         ),
@@ -124,7 +147,15 @@ def pre_fetch(payload: HookPayload) -> HookResponse:
         except gdrive.GDriveCredsUnavailable:
             return CONTINUE()
 
-        return _intercept_drive_download(file_id)
+        # The Drive MCP sometimes includes a `name` / `filename` hint in the tool
+        # input. When present, use it to pick the right shim (sections vs fetch).
+        hint_filename = tool_input.get("name") or tool_input.get("filename") or tool_input.get("file_name")
+        if hint_filename and not isinstance(hint_filename, str):
+            hint_filename = None
+        # Cap length to avoid embedding crafted long filenames in the hint text.
+        if isinstance(hint_filename, str) and len(hint_filename) > 256:
+            hint_filename = None
+        return _intercept_drive_download(file_id, hint_filename=hint_filename)
 
     if tool_name == "WebFetch":
         tool_input = get_tool_input(payload)

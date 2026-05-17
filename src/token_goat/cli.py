@@ -684,6 +684,78 @@ def cmd_gdrive_fetch(
     _emit_path_result(path, json_output)
 
 
+@app.command("gdrive-sections", hidden=True)
+def cmd_gdrive_sections(
+    file_id: str = typer.Argument(...),
+    json_output: bool = typer.Option(False, "--json"),
+    max_sections: int = typer.Option(
+        80, "--max-sections",
+        help="Maximum number of sections to list (rest are summarised). Keeps the hint compact.",
+    ),
+) -> None:
+    """Download a Drive markdown/text doc and emit its section index (not the body).
+
+    Lets the agent see the document's heading structure for ~50–200 tokens
+    instead of pulling the whole file (which can run to 50k+ tokens). The agent
+    can then request a single section via ``token-goat section <path>::<heading>``.
+
+    Always exits 0 (fail-soft) so a Drive outage or auth issue never derails the
+    agent — the worst case is the agent falls back to ``gdrive-fetch``.
+    """
+    from . import gdrive  # noqa: PLC0415
+
+    try:
+        # Image-shrink is disabled because if the agent asked for sections, it
+        # expects text content; we still pass through the cached binary path
+        # untouched if the file happens to be non-text.
+        local_path = gdrive.fetch_file(file_id, shrink_if_image=False)
+    except gdrive.GDriveCredsUnavailable as e:
+        _warn(str(e))
+        raise typer.Exit(0) from None
+    except Exception as e:  # noqa: BLE001
+        _warn(f"Drive fetch failed: {e}")
+        raise typer.Exit(0) from None
+
+    index = gdrive.extract_section_index(local_path)
+
+    # Cap the section list so an enormous doc (hundreds of headings) doesn't
+    # itself become the token sink we are trying to avoid.
+    sections = cast(list[dict[str, object]], index.get("sections", []))
+    truncated = False
+    if len(sections) > max_sections:
+        sections = sections[:max_sections]
+        truncated = True
+        index["sections"] = sections
+        index["truncated"] = True
+        index["truncated_at"] = max_sections
+
+    if json_output:
+        _emit_json(index)
+        return
+
+    # Plain-text output: path on line 1, then a compact heading list.
+    typer.echo(str(index.get("path", local_path)))
+    size_bytes = cast(int, index.get("size_bytes", 0))
+    line_count = cast(int, index.get("line_count", 0))
+    typer.echo(f"size={size_bytes}B lines={line_count} sections={len(sections)}")
+    if not index.get("extractor_available", False):
+        typer.echo(
+            "(no section index available — file is not a recognised markdown/text type "
+            "or is too large to parse; use `token-goat gdrive-fetch` instead)"
+        )
+        return
+    for sec in sections:
+        prefix = "#" * cast(int, sec.get("level", 1))
+        heading = cast(str, sec.get("heading", ""))
+        line = cast(int, sec.get("line", 0))
+        end_line = sec.get("end_line")
+        approx = cast(int, sec.get("approx_bytes", 0))
+        end_str = "" if end_line is None else f"-{end_line}"
+        typer.echo(f"L{line}{end_str} ~{approx}B {prefix} {heading}")
+    if truncated:
+        typer.echo(f"(... truncated at {max_sections} sections)")
+
+
 @app.command("gdrive-auth", hidden=True)
 def cmd_gdrive_auth(
     client_secrets: Path | None = typer.Option(None, "--client-secrets", help="Path to OAuth client_secrets.json"),  # noqa: B008
