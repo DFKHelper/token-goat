@@ -387,7 +387,7 @@ def install_linux_autostart() -> tuple[bool, str]:
             "Type=simple\n"
             f"ExecStart={exec_str}\n"
             "Restart=on-failure\n"
-            "RestartSec=10\n\n"
+            "RestartSec=10\n\n"  # 10 s back-off prevents a crash loop from burning CPU
             "[Install]\n"
             "WantedBy=default.target\n",
             encoding="utf-8",
@@ -504,6 +504,8 @@ def install_linux_update_cron() -> tuple[bool, str]:
             text=True,
             timeout=10,
         )
+        # crontab -l exits 1 with no output on a fresh system that has no crontab yet;
+        # treat that as an empty crontab rather than an error.
         existing = r.stdout if r.returncode == 0 else ""
     except (FileNotFoundError, subprocess.TimeoutExpired) as e:
         return False, f"crontab unavailable: {e}"

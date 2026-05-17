@@ -74,6 +74,9 @@ def _truncate_url(url: str, max_len: int = _MAX_URL_IN_ERROR) -> str:
 IMAGE_URL_EXTS = (".jpg", ".jpeg", ".png", ".webp", ".avif", ".gif", ".bmp", ".tiff", ".tif")
 
 # MIME type → file extension mapping used by _suffix_for(); built once at module load.
+# Only raster formats that Pillow can decompress and recompress are listed.  SVG is
+# deliberately absent (it's XML, not a raster bitmap) and PDF is absent (document, not
+# an image the model views inline).  Falls back to ".bin" for anything not listed here.
 _CONTENT_TYPE_EXT: dict[str, str] = {
     "image/jpeg": ".jpg",
     "image/png": ".png",
