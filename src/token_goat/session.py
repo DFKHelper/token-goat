@@ -526,6 +526,35 @@ def _sanitize_path(path: str) -> str:
     return path
 
 
+def _prepare_path_mutation(
+    session_id: str,
+    path: str,
+    cache: SessionCache | None,
+) -> tuple[SessionCache, str] | None:
+    """Validate *path*, resolve the session cache, and return ``(cache, key)``.
+
+    Shared prologue for :func:`mark_file_read` and :func:`mark_file_edited` —
+    both functions perform the same four-step guard before doing their own work:
+
+    1. Sanitize and reject empty paths.
+    2. Resolve or load the session cache.
+    3. Return early when the cache is marked unavailable.
+    4. Normalize the path to a cache key.
+
+    Returns ``None`` when the caller should bail out immediately (empty path or
+    unavailable cache), or ``(cache, normalized_key)`` when it is safe to proceed.
+    The caller is responsible for persisting the cache via :func:`save` after
+    mutating it.
+    """
+    path = _sanitize_path(path)
+    if not path:
+        return None
+    cache = _resolve_cache(session_id, cache)
+    if cache.unavailable:
+        return None
+    return cache, _normalize_path(path)
+
+
 def _symbols_set(entry: FileEntry) -> frozenset[str]:
     """Return a frozenset of already-read symbols for fast O(1) membership tests.
 
@@ -563,13 +592,10 @@ def mark_file_read(
     hold a ``SessionCache`` object can pass it in to skip the load-from-disk
     round-trip.  The returned cache is always saved to disk before returning.
     """
-    path = _sanitize_path(path)
-    if not path:
+    prep = _prepare_path_mutation(session_id, path, cache)
+    if prep is None:
         return cache or _fresh_cache(session_id)
-    cache = _resolve_cache(session_id, cache)
-    if cache.unavailable:
-        return cache
-    key = _normalize_path(path)
+    cache, key = prep
     entry = cache.files.get(key)
     now = time.time()
     if entry is None:
@@ -748,13 +774,10 @@ def mark_file_edited(
     session_id: str, path: str, *, cache: SessionCache | None = None
 ) -> SessionCache:
     """Record that a file was edited (written/modified) this session."""
-    path = _sanitize_path(path)
-    if not path:
+    prep = _prepare_path_mutation(session_id, path, cache)
+    if prep is None:
         return cache or _fresh_cache(session_id)
-    cache = _resolve_cache(session_id, cache)
-    if cache.unavailable:
-        return cache
-    key = _normalize_path(path)
+    cache, key = prep
     now = time.time()
     prev_count = cache.edited_files.get(key, 0)
     cache.edited_files[key] = prev_count + 1

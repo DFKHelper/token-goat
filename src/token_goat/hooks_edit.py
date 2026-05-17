@@ -6,6 +6,7 @@ from .hooks_common import (
     CONTINUE,
     HookPayload,
     HookResponse,
+    get_session_context,
     get_tool_input,
     sanitize_log_str,
 )
@@ -99,7 +100,7 @@ def post_edit(payload: HookPayload) -> HookResponse:
     """
     from . import session  # noqa: PLC0415
 
-    session_id = payload.get("session_id")
+    session_id, cwd = get_session_context(payload)
     tool_input = get_tool_input(payload)
     file_path = tool_input.get("file_path")
 
@@ -109,7 +110,7 @@ def post_edit(payload: HookPayload) -> HookResponse:
 
     if file_path:
         _LOG.debug("post-edit: enqueuing %s for reindex", sanitize_log_str(file_path))
-        _enqueue_for_reindex(file_path, payload.get("cwd"))
+        _enqueue_for_reindex(file_path, cwd)
         _nudge_worker_if_down()
     else:
         _LOG.debug("post-edit: no file_path in payload; nothing to enqueue")
