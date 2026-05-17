@@ -271,6 +271,13 @@ def _rebuild(db_path: Path) -> bool:
 # Schema helpers
 # ---------------------------------------------------------------------------
 
+
+def _get_meta(conn: sqlite3.Connection, key: str) -> str | None:
+    """Return the value for *key* from the meta table, or None if absent."""
+    row = conn.execute("SELECT value FROM meta WHERE key = ?", (key,)).fetchone()
+    return row[0] if row is not None else None
+
+
 _GLOBAL_TABLES = """
 CREATE TABLE IF NOT EXISTS projects (
     hash       TEXT    PRIMARY KEY,
@@ -428,8 +435,7 @@ def _ensure_global_schema(conn: sqlite3.Connection) -> None:
     """
     try:
         conn.executescript(_GLOBAL_TABLES)
-        row = conn.execute("SELECT value FROM meta WHERE key='schema_version'").fetchone()
-        if row is None:
+        if _get_meta(conn, "schema_version") is None:
             conn.execute(
                 "INSERT INTO meta (key, value) VALUES ('schema_version', ?)",
                 (str(SCHEMA_VERSION),),
@@ -438,7 +444,7 @@ def _ensure_global_schema(conn: sqlite3.Connection) -> None:
         # Read-only fallback connection (sandbox) cannot run DDL. The schema
         # already exists from prior writable opens — read-only callers can
         # proceed against the existing tables.
-        if "readonly" in str(e).lower():
+        if _is_readonly_or_transient(e):
             _LOG.debug("global schema ensure skipped (read-only connection): %s", e)
             return
         raise
@@ -477,13 +483,11 @@ def _ensure_project_schema(conn: sqlite3.Connection, *, db_path: Path | None = N
         # INSERT (first-write-wins) because global.db has no migrations yet;
         # per-project DBs use OR REPLACE to overwrite the version from any
         # older schema written by a previous token-goat release.
-        existing_ver = conn.execute(
-            "SELECT value FROM meta WHERE key='schema_version'"
-        ).fetchone()
-        if existing_ver is not None and existing_ver[0] != str(SCHEMA_VERSION):
+        existing_ver = _get_meta(conn, "schema_version")
+        if existing_ver is not None and existing_ver != str(SCHEMA_VERSION):
             _LOG.info(
                 "schema upgrade: %s -> %s%s",
-                existing_ver[0],
+                existing_ver,
                 SCHEMA_VERSION,
                 f" ({db_path.name})" if db_path else "",
             )
@@ -492,7 +496,7 @@ def _ensure_project_schema(conn: sqlite3.Connection, *, db_path: Path | None = N
             (str(SCHEMA_VERSION),),
         )
     except sqlite3.OperationalError as e:
-        if "readonly" in str(e).lower():
+        if _is_readonly_or_transient(e):
             _LOG.debug("project schema ensure skipped (read-only connection): %s", e)
             return
         raise  # not a readonly situation — propagate to surface the real error
@@ -934,15 +938,8 @@ def index_health(project_hash: str) -> dict[str, object]:
             with contextlib.suppress(sqlite3.OperationalError):
                 result["embedding_count"] = _count("embeddings")
 
-            meta_row = conn.execute(
-                "SELECT value FROM meta WHERE key='schema_version'"
-            ).fetchone()
-            result["schema_version"] = meta_row["value"] if meta_row else None
-
-            disabled_row = conn.execute(
-                "SELECT value FROM meta WHERE key='embeddings_disabled'"
-            ).fetchone()
-            result["embeddings_disabled"] = disabled_row is not None
+            result["schema_version"] = _get_meta(conn, "schema_version")
+            result["embeddings_disabled"] = _get_meta(conn, "embeddings_disabled") is not None
 
             result["ok"] = True
     except (sqlite3.Error, DBError, OSError) as exc:
