@@ -203,8 +203,14 @@ def fetch_file(file_id: str, *, shrink_if_image: bool = True, max_size_bytes: in
     _LOG.debug("gdrive fetch_file: file_id=%s shrink=%s max_bytes=%d", file_id, shrink_if_image, max_size_bytes)
     creds = get_credentials()
 
-    from googleapiclient.discovery import build  # noqa: PLC0415
-    from googleapiclient.http import MediaIoBaseDownload  # noqa: PLC0415
+    try:
+        from googleapiclient.discovery import build  # noqa: PLC0415
+        from googleapiclient.http import MediaIoBaseDownload  # noqa: PLC0415
+    except ImportError as exc:
+        raise RuntimeError(
+            "google-api-python-client is not installed. "
+            "Install it with: pip install google-api-python-client"
+        ) from exc
 
     cache_dir = image_shrink.ensure_cache_dir(paths.gdrive_cache_dir())
 
@@ -331,13 +337,37 @@ def run_oauth_oob_flow(client_secrets_path: Path) -> Path:
     """Interactive: opens browser, user grants access, pastes code. Saves creds JSON.
 
     Returns the path to the saved credentials file.
-    """
-    from google_auth_oauthlib.flow import InstalledAppFlow  # noqa: PLC0415
 
-    flow = InstalledAppFlow.from_client_secrets_file(
-        str(client_secrets_path),
-        scopes=_DRIVE_SCOPES,
-    )
+    Raises ``FileNotFoundError`` if *client_secrets_path* does not exist.
+    Raises ``OSError`` if the credentials file cannot be written after a successful
+    auth flow (e.g. permission denied on the token storage directory).
+    Raises ``RuntimeError`` if the OAuth flow itself fails (e.g. user cancels,
+    invalid client secrets format).
+    """
+    if not client_secrets_path.exists():
+        raise FileNotFoundError(
+            f"Client secrets file not found: {client_secrets_path}. "
+            "Download it from Google Cloud Console → APIs & Services → Credentials."
+        )
+
+    try:
+        from google_auth_oauthlib.flow import InstalledAppFlow  # noqa: PLC0415
+    except ImportError as exc:
+        raise RuntimeError(
+            "google-auth-oauthlib is not installed. "
+            "Install it with: pip install google-auth-oauthlib"
+        ) from exc
+
+    try:
+        flow = InstalledAppFlow.from_client_secrets_file(
+            str(client_secrets_path),
+            scopes=_DRIVE_SCOPES,
+        )
+    except (ValueError, KeyError) as exc:
+        raise RuntimeError(
+            f"Invalid client secrets file {client_secrets_path}: {exc}"
+        ) from exc
+
     # Try local server first (loopback), fall back to console
     try:
         creds = flow.run_local_server(port=0, open_browser=True)
@@ -345,5 +375,11 @@ def run_oauth_oob_flow(client_secrets_path: Path) -> Path:
         creds = flow.run_console()
 
     out = paths.gdrive_creds_path()
-    _write_creds_secure(out, creds.to_json())
+    try:
+        _write_creds_secure(out, creds.to_json())
+    except OSError as exc:
+        raise OSError(
+            f"OAuth flow succeeded but credentials could not be saved to {out}: {exc}. "
+            "Check directory permissions."
+        ) from exc
     return out

@@ -312,8 +312,16 @@ def ensure_cache_dir(cache_dir: Path) -> Path:
     Idempotent because ``mkdir(exist_ok=True)`` is safe to call on a directory
     that already exists.  Separated from ``shrink()`` so tests can pre-create the
     cache directory with known contents without triggering a full shrink cycle.
+
+    Raises ``OSError`` with additional path context if the directory cannot be
+    created (e.g. permission denied, disk full).
     """
-    cache_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        cache_dir.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        raise OSError(
+            f"image_shrink: cannot create cache directory {cache_dir}: {exc}"
+        ) from exc
     return cache_dir
 
 
@@ -322,7 +330,12 @@ def shrink_if_image(path: Path) -> Path:
 
     Centralises the "maybe shrink" pattern used by both gdrive.py and
     webfetch.py so neither module needs to repeat the is_image_path guard.
+
+    Raises ``TypeError`` if *path* is None so callers get a meaningful message
+    instead of an ``AttributeError`` deep inside ``is_image_path``.
     """
+    if path is None:
+        raise TypeError("shrink_if_image: path must not be None")
     if is_image_path(str(path)):
         shrunken = shrink(path)
         if shrunken is not None:

@@ -68,11 +68,23 @@ def _format_ranges(ranges: list[tuple[int, int]]) -> str:
     output readable.  Ranges beyond _MAX_RANGES_PER_FILE are summarised as
     "+N more" so the manifest line stays short enough to fit within the token
     budget even for files read in many separate slices.
+
+    Silently skips any malformed entries (non-sequence or wrong length) that
+    could arise from a corrupt or downgrade-migrated session JSON file.
     """
     if not ranges:
         return ""
-    total_ranges = len(ranges)
-    shown = ranges[:_MAX_RANGES_PER_FILE]
+    valid: list[tuple[int, int]] = []
+    for entry in ranges:
+        try:
+            start, end = entry
+            valid.append((int(start), int(end)))
+        except (TypeError, ValueError):
+            _LOG.debug("_format_ranges: skipping malformed range entry: %r", entry)
+    if not valid:
+        return ""
+    total_ranges = len(valid)
+    shown = valid[:_MAX_RANGES_PER_FILE]
     # Generator expression avoids building an intermediate list just to join.
     parts = ", ".join(str(start) if start == end else f"{start}-{end}" for start, end in shown)
     hidden_count = total_ranges - _MAX_RANGES_PER_FILE
