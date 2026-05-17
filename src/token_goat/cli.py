@@ -980,6 +980,26 @@ def cmd_install(
     for step, detail in result.items():
         typer.echo(f"  {step}: {detail}")
     typer.echo("")
+
+    # Re-probe codecs so we can print a loud, actionable warning. install_all
+    # already ran the same probe and stored a one-line summary in result, but
+    # the structured report carries platform-specific install hints that a
+    # one-line dict entry can't convey.
+    codec_report = inst.probe_image_codecs()
+    if not codec_report["ok"]:
+        typer.echo("!" * 72)
+        typer.echo("WARNING — image codecs incomplete; WebP shrink will be degraded or broken.")
+        typer.echo(f"  detected: {codec_report['summary']}")
+        if codec_report["missing"]:
+            typer.echo(f"  missing:  {', '.join(codec_report['missing'])}")
+        typer.echo("")
+        typer.echo("To fix (part of the install — do not skip):")
+        for line in codec_report["hint"].splitlines():
+            typer.echo(f"  {line}")
+        typer.echo("")
+        typer.echo("After fixing, re-run: token-goat doctor")
+        typer.echo("!" * 72)
+        typer.echo("")
     if verify:
         typer.echo("Verifying install:")
         for row in inst.verify_install():
