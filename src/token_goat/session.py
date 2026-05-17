@@ -263,8 +263,12 @@ def _parse_grep_entry(g: dict[str, Any]) -> GrepEntry | None:
                 else None
             ),
         )
-    except (TypeError, ValueError, KeyError):
-        _LOG.debug("session: skipping corrupted grep entry")
+    except (TypeError, ValueError, KeyError) as exc:
+        _LOG.debug(
+            "session: skipping corrupted grep entry (%s): %s",
+            exc,
+            sanitize_log_str(repr(g)[:120]),
+        )
         return None
 
 

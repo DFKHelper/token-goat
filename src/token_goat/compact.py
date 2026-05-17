@@ -227,7 +227,17 @@ def _render(cache: SessionCache, session_id: str, max_tokens: int) -> tuple[str,
     # long session has hundreds of file entries but we only need the top 10.
     # The heap keeps only k items in memory, so this is also more memory-efficient
     # than sorting the full list when sessions accumulate many hundreds of file reads.
+    total_files_read = len(cache.files)
     top_files = heapq.nlargest(_MAX_FILES_READ, cache.files.values(), key=_BY_READ_COUNT)
+    _LOG.debug(
+        "_render: selected top %d/%d files by read_count (cap=%d); "
+        "files_with_symbols=%d edited=%d",
+        len(top_files),
+        total_files_read,
+        _MAX_FILES_READ,
+        files_with_symbols_count,
+        len(cache.edited_files),
+    )
 
     now = datetime.now(UTC).strftime("%Y-%m-%d %H:%M UTC")
     sid = session_id[:8]

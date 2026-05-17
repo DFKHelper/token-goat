@@ -77,4 +77,11 @@ def extract(source: bytes, rel_path: str) -> tuple[list[Symbol], list[Ref], list
     # --- refs ---
     refs: list[Ref] = common.extract_refs_from_source(source, _CALL_RE, _CALL_NOISE)
 
+    _LOG.debug(
+        "rust extract: %s → symbols=%d refs=%d imports=%d",
+        rel_path,
+        len(symbols),
+        len(refs),
+        len(imp_exp),
+    )
     return symbols, refs, imp_exp, []
