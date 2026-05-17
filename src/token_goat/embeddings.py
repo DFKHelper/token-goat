@@ -25,7 +25,6 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, TypedDict
 
 from . import db, paths
-from .paths import is_safe_rel_path as _is_safe_rel_path
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Sequence
@@ -278,7 +277,7 @@ def extract_chunks_for_file(
         be read, is empty, or contains an unsafe path.
     """
     # Prevent path traversal attacks
-    if not _is_safe_rel_path(rel_path):
+    if not paths.is_safe_rel_path(rel_path):
         _LOG.warning("rejected unsafe rel_path: %s", rel_path)
         return []
     abs_path = project.root / rel_path
