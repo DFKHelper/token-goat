@@ -295,7 +295,13 @@ def _build_graph(
         graph.add_node(file_path)
 
     # Add edges from references to their definitions
-    for row in conn.execute("SELECT symbol_name, file_rel FROM refs"):
+    try:
+        ref_rows = conn.execute("SELECT symbol_name, file_rel FROM refs").fetchall()
+    except sqlite3.OperationalError as exc:
+        _LOG.warning("repomap: failed to read refs table (graph will have no edges): %s", exc)
+        return graph
+
+    for row in ref_rows:
         referenced_symbol = row["symbol_name"]
         referencing_file = row["file_rel"]
         if referencing_file not in files:
@@ -494,9 +500,9 @@ def _load_summary_cache(conn: sqlite3.Connection) -> dict[tuple[str, float, int]
             "SELECT rel_path, mtime, size, summary_text FROM repomap_cache"
         ):
             cache[(row["rel_path"], row["mtime"], row["size"])] = row["summary_text"]
-    except sqlite3.OperationalError:
+    except sqlite3.OperationalError as exc:
         # Table may not exist yet in older DBs — treat as empty cache.
-        pass
+        _LOG.debug("repomap_cache table unavailable (older schema?): %s", exc)
     return cache
 
 
@@ -540,8 +546,8 @@ def _evict_stale_cache(conn: sqlite3.Connection, current_files: dict[str, _FileI
             f"DELETE FROM repomap_cache WHERE rel_path NOT IN ({ph})",  # noqa: S608
             list(current_files.keys()),
         )
-    except sqlite3.OperationalError:
-        pass  # Table absent — nothing to evict.
+    except sqlite3.OperationalError as exc:
+        _LOG.debug("repomap_cache eviction skipped (table absent or schema mismatch): %s", exc)
 
 
 def _load_and_rank(project: Project) -> _RankedProjectData | None:

@@ -573,15 +573,19 @@ def render_text(
     try:
         from .render.stats_renderer import render_stats
         return render_stats(_to_stats_data(summary))
-    except Exception:  # noqa: BLE001
-        _LOG.debug("new renderer failed, falling back to rich", exc_info=True)
+    except Exception as exc:  # noqa: BLE001
+        _LOG.debug("new renderer failed (%s: %s), falling back to rich", type(exc).__name__, exc, exc_info=True)
 
-    import io
+    try:
+        import io
 
-    from rich.box import ROUNDED
-    from rich.console import Console
-    from rich.panel import Panel
-    from rich.text import Text
+        from rich.box import ROUNDED
+        from rich.console import Console
+        from rich.panel import Panel
+        from rich.text import Text
+    except ImportError as exc:
+        _LOG.error("rich is not installed; cannot render stats: %s", exc)
+        return f"(stats render unavailable: {exc})"
 
     buf = io.StringIO()
     console = Console(
