@@ -11,7 +11,8 @@ from .hooks_common import (
     get_tool_input,
     pre_tool_use_with_context,
     pre_tool_use_with_update,
-)  # noqa: E402
+    sanitize_log_str,
+)
 from .hooks_common import (
     LOG as _LOG,
 )
@@ -236,8 +237,8 @@ def post_read(payload: dict[str, Any]) -> HookResponse:
         path = tool_input.get("path")
         # Sanitize user-controlled strings before logging to prevent log injection
         # via embedded newlines that would forge additional log records.
-        safe_pattern = str(pattern).replace("\n", "\\n").replace("\r", "\\r") if pattern is not None else None
-        safe_path = str(path).replace("\n", "\\n").replace("\r", "\\r") if path is not None else None
+        safe_pattern = sanitize_log_str(str(pattern)) if pattern is not None else None
+        safe_path = sanitize_log_str(str(path)) if path is not None else None
         _LOG.debug("post-read: Glob pattern=%s path=%s", safe_pattern, safe_path)
 
     return CONTINUE()

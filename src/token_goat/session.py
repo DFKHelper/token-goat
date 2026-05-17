@@ -33,6 +33,7 @@ from dataclasses import asdict, dataclass, field
 from typing import Any
 
 from . import paths
+from .hooks_common import sanitize_log_str
 
 _LOG = logging.getLogger("token_goat.session")
 
@@ -132,7 +133,7 @@ class SessionCache:
         if schema_v and int(schema_v) > SESSION_SCHEMA_VERSION:
             _LOG.warning(
                 "session schema_version %s > current %s; some fields may be ignored",
-                _sanitize_log_str(str(schema_v)),
+                sanitize_log_str(str(schema_v), max_len=_MAX_LOG_STR),
                 SESSION_SCHEMA_VERSION,
             )
 
@@ -254,18 +255,6 @@ def _normalize_path(p: str) -> str:
 _SESSION_ID_RE = re.compile(r"^[a-zA-Z0-9_-]+$")
 
 _MAX_LOG_STR = 120  # truncation limit for user-controlled values embedded in log messages
-
-
-def _sanitize_log_str(value: str, max_len: int = _MAX_LOG_STR) -> str:
-    """Sanitize a user-controlled string before embedding it in a log message.
-
-    Strips embedded newlines and carriage returns that could inject fake log
-    entries into the log file, and truncates to *max_len* to prevent flooding.
-    """
-    sanitized = value.replace("\n", "\\n").replace("\r", "\\r")
-    if len(sanitized) > max_len:
-        sanitized = sanitized[:max_len] + "…"
-    return sanitized
 
 
 def validate_session_id(session_id: str) -> None:

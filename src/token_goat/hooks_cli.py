@@ -28,7 +28,7 @@ from pathlib import Path
 from typing import Any, Literal, ParamSpec, TypedDict, TypeVar, cast
 
 from . import hooks_edit, hooks_fetch, hooks_read, hooks_session, paths
-from .hooks_common import CONTINUE, HookResponse
+from .hooks_common import CONTINUE, HookResponse, sanitize_log_str
 
 #: Valid harness identifiers used by :func:`normalize_payload`, :func:`denormalize_response`,
 #: and :func:`safe_run`.  Defined as a ``Literal`` so callers get a type error on
@@ -247,18 +247,6 @@ def safe_run(event: str, input_file: Path | None = None, harness: Harness = "cla
     emit(result)
 
 
-def _sanitize_log_str(value: str, max_len: int = 200) -> str:
-    """Sanitize a user-controlled string before embedding it in a log message.
-
-    Strips embedded newlines and carriage returns that could inject fake log
-    entries into the log file, and truncates to *max_len* to prevent log
-    flooding.  The returned string is safe to pass to any %-style log call.
-    """
-    sanitized = value.replace("\n", "\\n").replace("\r", "\\r")
-    if len(sanitized) > max_len:
-        sanitized = sanitized[:max_len] + "…"
-    return sanitized
-
 
 _P = ParamSpec("_P")
 _HookHandler = TypeVar("_HookHandler", bound=Callable[[dict[str, Any]], HookResponse])
@@ -294,8 +282,8 @@ def fail_soft(handler: _HookHandler) -> _HookHandler:
             cwd: str = payload_dict.get("cwd", "")
             # Sanitize user-controlled strings before logging to prevent log injection
             # (embedded newlines in session_id or cwd could forge fake log entries).
-            safe_session = _sanitize_log_str(session_id[:16]) if session_id else ""
-            safe_cwd = _sanitize_log_str(cwd) if cwd else ""
+            safe_session = sanitize_log_str(session_id[:16]) if session_id else ""
+            safe_cwd = sanitize_log_str(cwd) if cwd else ""
             session_tag = f" session={safe_session}" if safe_session else ""
             cwd_tag = f" cwd={safe_cwd}" if safe_cwd else ""
             handler_name = getattr(handler, "__name__", repr(handler))
@@ -348,7 +336,7 @@ def pre_compact(payload: dict[str, Any]) -> HookResponse:
     trigger_raw = payload.get("trigger", "manual")
     trigger = str(trigger_raw) if trigger_raw is not None else "manual"
     if not cfg.triggers or trigger not in cfg.triggers:
-        _LOG.info("pre-compact: skipping (trigger=%s not in %s)", _sanitize_log_str(trigger), cfg.triggers)
+        _LOG.info("pre-compact: skipping (trigger=%s not in %s)", sanitize_log_str(trigger), cfg.triggers)
         return CONTINUE()
 
     session_id = payload.get("session_id")
@@ -374,7 +362,7 @@ def pre_compact(payload: dict[str, Any]) -> HookResponse:
 
     _LOG.info(
         "pre-compact: injecting manifest (%d chars, trigger=%s, events=%d)",
-        len(manifest), _sanitize_log_str(trigger), n_events,
+        len(manifest), sanitize_log_str(trigger), n_events,
     )
     return {"continue": True, "systemMessage": manifest}
 

@@ -36,6 +36,7 @@ __all__ = [
     "get_tool_input",
     "pre_tool_use_with_context",
     "pre_tool_use_with_update",
+    "sanitize_log_str",
 ]
 
 import logging
@@ -185,6 +186,19 @@ def pre_tool_use_with_context(additional_context: str) -> HookResponse:
         additionalContext=additional_context,
     )
     return {"continue": True, "hookSpecificOutput": hso}
+
+
+def sanitize_log_str(value: str, max_len: int = 200) -> str:
+    """Sanitize a user-controlled string before embedding it in a log message.
+
+    Strips embedded newlines and carriage returns that could inject fake log
+    entries into the log file, and truncates to *max_len* to prevent log
+    flooding.  The returned string is safe to pass to any %-style log call.
+    """
+    sanitized = value.replace("\n", "\\n").replace("\r", "\\r")
+    if len(sanitized) > max_len:
+        sanitized = sanitized[:max_len] + "…"
+    return sanitized
 
 
 def pre_tool_use_with_update(updated_input: dict[str, object], additional_context: str) -> HookResponse:
