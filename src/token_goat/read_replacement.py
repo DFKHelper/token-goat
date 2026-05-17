@@ -59,7 +59,13 @@ class SectionResult(TypedDict):
     bytes_saved: int
 
 
-# Lower value = higher priority when multiple symbols share the same name
+# Lower value = higher priority when multiple symbols share the same name.
+# The ordering reflects "most likely what the user meant" when names collide:
+# a top-level class/interface is more structural than a free function, which
+# is more likely to be the target than a method of the same name nested inside
+# some unrelated class.  Variables and constants lose to everything else because
+# they are rarely the object of a surgical read; headings rank alongside type/enum
+# since they serve the same structural role in prose files.
 _KIND_PRIORITY: dict[str, int] = {
     "class": 0,
     "interface": 1,
