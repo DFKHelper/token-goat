@@ -661,6 +661,7 @@ def read_symbol(
 
     read_result = _read_file_lines(project.root / rel_path)
     if read_result is None:
+        _LOG.debug("read_symbol: cannot read file %s in project %s", rel_path, project.hash[:8])
         return None
     lines, full_bytes = read_result
 
@@ -751,6 +752,7 @@ def read_section(
 
     read_result = _read_file_lines(project.root / rel_path)
     if read_result is None:
+        _LOG.debug("read_section: cannot read file %s in project %s", rel_path, project.hash[:8])
         return None
     lines, full_bytes = read_result
 

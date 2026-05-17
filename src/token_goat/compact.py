@@ -285,7 +285,15 @@ def _render(cache: SessionCache, session_id: str, max_tokens: int) -> tuple[str,
     char_budget = max_tokens * 3 - 1
     # Total chars = sum of line lengths + (n-1) newline separators
     total_chars = sum(len(ln) for ln in lines) + len(lines) - 1
+    lines_before = len(lines)
     while total_chars > char_budget and len(lines) > 3:
         removed = lines.pop()
         total_chars -= len(removed) + 1  # +1 accounts for the '\n' separator removed with the line
-    return "\n".join(lines), files_with_symbols_count
+    trimmed_result = "\n".join(lines)
+    _LOG.debug(
+        "_render: trimmed %d line(s) for session=%s; final ~%d tokens",
+        lines_before - len(lines),
+        session_id[:8],
+        estimate_tokens(trimmed_result),
+    )
+    return trimmed_result, files_with_symbols_count
