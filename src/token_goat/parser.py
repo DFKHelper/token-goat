@@ -216,6 +216,9 @@ def _language_importer(module_name: str, attr: str = "extract") -> Callable[[], 
     (default ``"extract"``).
     """
     def _factory() -> Extractor:
+        # Import deferred to first call so tree-sitter grammars (each ~1 MB of C extension)
+        # are not loaded at module import time — only the languages actually needed for a
+        # given project ever get loaded.
         import importlib  # noqa: PLC0415
         # rsplit strips the submodule name ("parser") leaving the package root ("token_goat"),
         # so the relative import ".languages.X" resolves correctly however the module is invoked.
