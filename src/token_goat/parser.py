@@ -15,6 +15,8 @@ __all__ = [
     "index_file",
     "index_project",
     "iter_source_files",
+    "parser_cache_clear",
+    "parser_cache_stats",
     "register_extractor",
     "write_file_index",
 ]
@@ -25,7 +27,9 @@ import heapq
 import logging
 import os
 import sqlite3
+import threading
 import time
+from collections import OrderedDict
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -246,6 +250,92 @@ _EXTRACTOR_REGISTRY: dict[str, Callable[[], Extractor]] = {
 # Cache resolved extractors so each language module is imported at most once.
 _EXTRACTOR_CACHE: dict[str, Extractor] = {}
 
+# ---------------------------------------------------------------------------
+# Extraction-result LRU cache (in-memory, per-process)
+# ---------------------------------------------------------------------------
+# Why: even with the mtime/SHA short-circuits in index_project(), single-file
+# re-indexes triggered by the dirty-queue worker still pay for a fresh
+# tree-sitter parse every time. When an editor "saves without modification"
+# (mtime bumped, content unchanged) we currently still walk the AST. Caching
+# the (symbols, refs, imports_exports, sections) tuple by content-SHA lets the
+# second extract() with the same bytes skip tree-sitter entirely.
+#
+# Scope: per-process, in-memory. Crossed-process worker invocations don't
+# benefit (no on-disk persistence yet), but the worker stays resident in the
+# common case, and within a single Claude Code session multiple files often
+# share boilerplate (e.g. regenerated codegen, duplicated stubs) that produce
+# identical hashes.
+#
+# Sizing: 256 entries is generous given typical files yield <1 kB of Symbol
+# objects each — total memory ceiling is well under 1 MB.
+_RESULT_CACHE_MAX: Final[int] = 256
+_ResultTuple = tuple[list[Symbol], list[Ref], list[ImpExp], list[Section]]
+_RESULT_CACHE: OrderedDict[tuple[str, str], _ResultTuple] = OrderedDict()
+# Worker may invoke extract() from multiple threads when scaling; guard the
+# OrderedDict with a Lock so move_to_end() and popitem() don't race.
+_RESULT_CACHE_LOCK: threading.Lock = threading.Lock()
+# Hit/miss counters exposed for tests + observability via parser_cache_stats().
+_RESULT_CACHE_STATS: dict[str, int] = {"hits": 0, "misses": 0, "evictions": 0}
+
+
+def _result_cache_get(language: str, sha: str) -> _ResultTuple | None:
+    """Return the cached extraction tuple for (language, sha), or None.
+
+    On hit, the entry is moved to the end of the LRU so it survives the next
+    eviction.  Returns *shallow copies* of the symbol/ref/imp/section lists so
+    callers cannot mutate the cached payload (the lists are wrapped in
+    FileIndex objects that the DB writer iterates non-destructively, but a
+    defensive copy is cheap and prevents future bugs).
+    """
+    key = (language, sha)
+    with _RESULT_CACHE_LOCK:
+        hit = _RESULT_CACHE.get(key)
+        if hit is None:
+            _RESULT_CACHE_STATS["misses"] += 1
+            return None
+        _RESULT_CACHE.move_to_end(key)
+        _RESULT_CACHE_STATS["hits"] += 1
+        symbols, refs, imp_exp, sections = hit
+    return list(symbols), list(refs), list(imp_exp), list(sections)
+
+
+def _result_cache_put(language: str, sha: str, payload: _ResultTuple) -> None:
+    """Store *payload* under (language, sha); evicts oldest entry on overflow.
+
+    Stores defensive copies of each list so that callers who mutate the lists
+    returned via FileIndex (e.g. test helpers that ``fi.symbols.clear()``) do
+    not corrupt the cached payload.  The cost is a single shallow list copy
+    per insert — negligible compared to the tree-sitter parse it saves.
+    """
+    symbols, refs, imp_exp, sections = payload
+    key = (language, sha)
+    with _RESULT_CACHE_LOCK:
+        _RESULT_CACHE[key] = (list(symbols), list(refs), list(imp_exp), list(sections))
+        _RESULT_CACHE.move_to_end(key)
+        while len(_RESULT_CACHE) > _RESULT_CACHE_MAX:
+            _RESULT_CACHE.popitem(last=False)
+            _RESULT_CACHE_STATS["evictions"] += 1
+
+
+def parser_cache_stats() -> dict[str, int]:
+    """Return a snapshot of {hits, misses, evictions, size} for the result LRU."""
+    with _RESULT_CACHE_LOCK:
+        return {
+            "hits": _RESULT_CACHE_STATS["hits"],
+            "misses": _RESULT_CACHE_STATS["misses"],
+            "evictions": _RESULT_CACHE_STATS["evictions"],
+            "size": len(_RESULT_CACHE),
+        }
+
+
+def parser_cache_clear() -> None:
+    """Reset the result LRU and its counters (test helper, also safe at runtime)."""
+    with _RESULT_CACHE_LOCK:
+        _RESULT_CACHE.clear()
+        _RESULT_CACHE_STATS["hits"] = 0
+        _RESULT_CACHE_STATS["misses"] = 0
+        _RESULT_CACHE_STATS["evictions"] = 0
+
 
 def get_extractor(language: str) -> Extractor | None:
     """Return the extractor for *language*, or None if unsupported.
@@ -384,15 +474,27 @@ def index_file(project: Project, file_path: Path) -> FileIndex | None:
         _LOG.debug("index_file: unsupported extension %r for %s (skipping)", suffix_lower, rel)
         return None
     line_count = _line_count_from_bytes(raw)
-    extractor = get_extractor(language)
-    if extractor is None:
-        _LOG.debug("no extractor for %s (%s)", rel, language)
-        return None
-    try:
-        symbols, refs, imp_exp, sections = extractor(raw, rel)
-    except Exception:  # noqa: BLE001
-        _LOG.exception("extractor crashed on %s", rel)
-        return None
+    # Compute SHA up front so we can consult the in-memory extraction cache
+    # before paying the tree-sitter parse cost.  Hashing 2 MB of bytes is ~5 ms
+    # on a typical workstation — orders of magnitude cheaper than a full AST walk.
+    content_sha = hashlib.sha256(raw).hexdigest()
+    cached = _result_cache_get(language, content_sha)
+    if cached is not None:
+        symbols, refs, imp_exp, sections = cached
+        _LOG.debug("index_file: result-cache hit for %s (lang=%s)", rel, language)
+    else:
+        extractor = get_extractor(language)
+        if extractor is None:
+            _LOG.debug("no extractor for %s (%s)", rel, language)
+            return None
+        try:
+            symbols, refs, imp_exp, sections = extractor(raw, rel)
+        except Exception:  # noqa: BLE001
+            _LOG.exception("extractor crashed on %s", rel)
+            return None
+        # Only cache successful extracts; failed parses must re-run so a future
+        # grammar fix is picked up without manual cache invalidation.
+        _result_cache_put(language, content_sha, (symbols, refs, imp_exp, sections))
 
     if not symbols and language not in ("markdown", "html", "json"):
         _LOG.debug(
@@ -419,7 +521,9 @@ def index_file(project: Project, file_path: Path) -> FileIndex | None:
         size=stat.st_size,
         line_count=line_count,
         mtime=stat.st_mtime,
-        content_sha256=hashlib.sha256(raw).hexdigest(),
+        # Reuse the SHA we already computed for the result-cache lookup above
+        # instead of paying for a second hash of the same bytes.
+        content_sha256=content_sha,
         symbols=symbols,
         refs=refs,
         imports_exports=imp_exp,
