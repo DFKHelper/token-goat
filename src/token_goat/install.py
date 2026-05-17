@@ -1365,27 +1365,42 @@ def _check_skill() -> str:
     return "not installed"
 
 
-def _check_worker_task() -> str:
-    """Return 'installed' if the HKCU Run key for the worker exists."""
-    if sys.platform != "win32":
-        return "n/a (non-Windows)"
+def _winreg_run_value_exists(value_name: str) -> bool | None:
+    """Return True/False if the HKCU Run key can be read, None on error.
+
+    Centralises the winreg open/query/close pattern used by both
+    ``_check_worker_task`` (read) and ``install_worker_task`` (write) so
+    neither has to manage CloseKey manually in multiple exception branches.
+    Returns None when the registry is inaccessible (non-Windows, permission
+    error, etc.) so callers can distinguish "absent" from "unreadable".
+    """
     try:
         import winreg  # type: ignore[import]
-        key = winreg.OpenKey(
+        with winreg.OpenKey(
             winreg.HKEY_CURRENT_USER,
             r"Software\Microsoft\Windows\CurrentVersion\Run",
             0,
             winreg.KEY_READ,
-        )
-        try:
-            winreg.QueryValueEx(key, TASK_WORKER)
-            winreg.CloseKey(key)
-            return "installed"
-        except FileNotFoundError:
-            winreg.CloseKey(key)
-            return "not installed"
-    except Exception as e:  # noqa: BLE001
-        return f"error reading HKCU\\Run ({e})"
+        ) as key:
+            try:
+                winreg.QueryValueEx(key, value_name)
+                return True
+            except FileNotFoundError:
+                return False
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _check_worker_task() -> str:
+    """Return 'installed' if the HKCU Run key for the worker exists."""
+    if sys.platform != "win32":
+        return "n/a (non-Windows)"
+    result = _winreg_run_value_exists(TASK_WORKER)
+    if result is True:
+        return "installed"
+    if result is False:
+        return "not installed"
+    return "error reading HKCU\\Run"
 
 
 def _check_update_task() -> str:
@@ -1434,6 +1449,53 @@ def check_status() -> dict[str, str]:
 
 
 # ---------------------------------------------------------------------------
+# Platform autostart helpers (shared by install_all / uninstall_all)
+# ---------------------------------------------------------------------------
+
+
+def _install_platform_autostart(result: dict[str, str]) -> None:
+    """Install platform-appropriate worker autostart and update schedule.
+
+    Mutates *result* in-place with the step keys and formatted outcome strings.
+    Extracted from ``install_all`` to eliminate the identical win32/darwin/else
+    dispatch that also appears in ``uninstall_all``.
+    """
+    if sys.platform == "win32":
+        worker_ok, worker_out = install_worker_task()
+        result["task: worker"] = _ok_fail(worker_ok, worker_out)
+        update_ok, update_out = install_update_task()
+        result["task: update"] = _ok_fail(update_ok, update_out)
+    elif sys.platform == "darwin":
+        worker_ok, worker_out = install_mac_autostart()
+        result["autostart: worker"] = _ok_fail(worker_ok, worker_out)
+        cron_ok, cron_out = install_linux_update_cron()
+        result["cron: update"] = _ok_fail(cron_ok, cron_out)
+    else:
+        worker_ok, worker_out = install_linux_autostart()
+        result["autostart: worker"] = _ok_fail(worker_ok, worker_out)
+        cron_ok, cron_out = install_linux_update_cron()
+        result["cron: update"] = _ok_fail(cron_ok, cron_out)
+
+
+def _uninstall_platform_autostart(result: dict[str, str]) -> None:
+    """Remove platform-appropriate worker autostart and update schedule.
+
+    Mutates *result* in-place.  Mirror of ``_install_platform_autostart``.
+    """
+    if sys.platform == "win32":
+        removed_tasks = uninstall_tasks()
+        result["tasks"] = f"removed: {removed_tasks}"
+    elif sys.platform == "darwin":
+        removed_mac = uninstall_mac_autostart()
+        result["autostart"] = f"removed: {removed_mac}" if removed_mac else "none found"
+        result["cron"] = uninstall_linux_update_cron()
+    else:
+        removed_linux = uninstall_linux_autostart()
+        result["autostart"] = f"removed: {removed_linux}" if removed_linux else "none found"
+        result["cron"] = uninstall_linux_update_cron()
+
+
+# ---------------------------------------------------------------------------
 # Top-level install / uninstall
 # ---------------------------------------------------------------------------
 
@@ -1464,21 +1526,7 @@ def install_all(
     skill_path = write_skill()
     result["skill"] = _ok_fail(True, skill_path)
 
-    if sys.platform == "win32":
-        worker_ok, worker_out = install_worker_task()
-        result["task: worker"] = _ok_fail(worker_ok, worker_out)
-        update_ok, update_out = install_update_task()
-        result["task: update"] = _ok_fail(update_ok, update_out)
-    elif sys.platform == "darwin":
-        worker_ok, worker_out = install_mac_autostart()
-        result["autostart: worker"] = _ok_fail(worker_ok, worker_out)
-        cron_ok, cron_out = install_linux_update_cron()
-        result["cron: update"] = _ok_fail(cron_ok, cron_out)
-    else:
-        worker_ok, worker_out = install_linux_autostart()
-        result["autostart: worker"] = _ok_fail(worker_ok, worker_out)
-        cron_ok, cron_out = install_linux_update_cron()
-        result["cron: update"] = _ok_fail(cron_ok, cron_out)
+    _install_platform_autostart(result)
 
     # Spawn the worker right now (fail-soft)
     try:
@@ -1551,17 +1599,7 @@ def uninstall_all(
     except Exception as e:  # noqa: BLE001
         result["worker"] = f"stop failed: {e}"
 
-    if sys.platform == "win32":
-        removed_tasks = uninstall_tasks()
-        result["tasks"] = f"removed: {removed_tasks}"
-    elif sys.platform == "darwin":
-        removed_mac = uninstall_mac_autostart()
-        result["autostart"] = f"removed: {removed_mac}" if removed_mac else "none found"
-        result["cron"] = uninstall_linux_update_cron()
-    else:
-        removed_linux = uninstall_linux_autostart()
-        result["autostart"] = f"removed: {removed_linux}" if removed_linux else "none found"
-        result["cron"] = uninstall_linux_update_cron()
+    _uninstall_platform_autostart(result)
 
     result["settings.json"] = _ok_fail(True, f"unpatched — {unpatch_settings_json()}")
     result["CLAUDE.md"] = _ok_fail(True, f"unpatched — {unpatch_claude_md()}")
