@@ -650,8 +650,8 @@ def mark_file_read(
         else:
             _LOG.debug("mark_file_read: symbol %r already tracked in %s", symbol, key)
     else:
-        line_offset = max(0, int(offset)) if offset is not None else 0
-        line_limit = max(0, int(limit)) if limit is not None else 0
+        line_offset = min(max(0, int(offset)), _MAX_LINE_NUMBER) if offset is not None else 0
+        line_limit = min(max(0, int(limit)), _MAX_LINE_NUMBER) if limit is not None else 0
         start = line_offset + 1  # Read tool's offset is 0-indexed; we store 1-indexed inclusive
         end = start + line_limit - 1 if line_limit else (start + _UNKNOWN_END_SENTINEL)
         prev_range_count = len(entry.line_ranges)
@@ -696,6 +696,22 @@ _MAX_SYMBOL_LEN = 256
 # harness could call ``token-goat read file::sym`` in a tight loop; without a cap the
 # symbols_read list grows without bound, bloating session JSON and manifest output.
 _MAX_SYMBOLS_PER_FILE = 50
+
+# Maximum line number (1-indexed) stored in a FileEntry line-range.  The Read tool's
+# ``offset`` and ``limit`` fields come from the harness payload (external input) and are
+# converted to 1-indexed start/end before storage.  Without an upper cap, a crafted
+# payload with offset=2**62 produces a line number that overflows JSON integer precision
+# in some parsers, inflates session-JSON size on every save, and corrupts range-merge
+# arithmetic.  100 million covers any file tree-sitter can realistically parse (~10 M
+# lines) while keeping stored integers well within safe JSON/SQLite integer range.
+_MAX_LINE_NUMBER = 100_000_000
+
+# Maximum value stored for Grep result_count in the session cache.  The field arrives
+# from the harness payload (external input) and is serialized to JSON on every save.
+# Without a cap, a crafted payload could store an arbitrarily large integer, inflating
+# session JSON and corrupting compaction-manifest output.  1 million is well above any
+# realistic grep hit count (a repo-wide search rarely exceeds tens of thousands).
+_MAX_RESULT_COUNT = 1_000_000
 
 def mark_grep(
     session_id: str,
