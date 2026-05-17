@@ -8,6 +8,7 @@ from .hooks_common import (
     CONTINUE,
     HookResponse,
     get_tool_input,
+    sanitize_log_str,
 )
 from .hooks_common import (
     LOG as _LOG,
@@ -64,6 +65,10 @@ def _enqueue_for_reindex(file_path: str, cwd: str | None) -> None:
     search_root = abs_path.parent if abs_path.is_absolute() else Path(cwd or ".")
     project = find_project(search_root)
     if project is None:
+        _LOG.debug(
+            "post-edit: %s is outside any indexed project; skipping reindex enqueue",
+            sanitize_log_str(file_path),
+        )
         return
     if not abs_path.is_absolute():
         abs_path = (project.root / file_path).resolve()
@@ -104,7 +109,10 @@ def post_edit(payload: dict[str, Any]) -> HookResponse:
         session.mark_file_edited(session_id, file_path, cache=cache)
 
     if file_path:
+        _LOG.debug("post-edit: enqueuing %s for reindex", sanitize_log_str(file_path))
         _enqueue_for_reindex(file_path, payload.get("cwd"))
         _nudge_worker_if_down()
+    else:
+        _LOG.debug("post-edit: no file_path in payload; nothing to enqueue")
 
     return CONTINUE()

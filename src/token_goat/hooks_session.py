@@ -67,6 +67,11 @@ def _auto_index_if_needed(proj: Project) -> None:
                     proj.root,
                     pid,
                 )
+        else:
+            _LOG.debug(
+                "session-start: project %s already indexed; skipping auto-index",
+                proj.hash[:8],
+            )
     except Exception:  # noqa: BLE001
         _LOG.exception("auto-index spawn failed")
 
