@@ -24,8 +24,12 @@ import logging
 import shlex
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Literal
 
 _LOG = logging.getLogger("token_goat.bash_parser")
+
+#: All valid values for :attr:`BashIntent.kind`.
+BashIntentKind = Literal["read", "grep", "glob", "unknown"]
 
 
 @dataclass
@@ -48,7 +52,7 @@ class BashIntent:
             logging when the hook skips processing.
     """
 
-    kind: str
+    kind: BashIntentKind
     target_path: str | None = None
     pattern: str | None = None
     offset: int | None = None

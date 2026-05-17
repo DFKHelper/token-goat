@@ -8,7 +8,7 @@ import os
 import sys
 from dataclasses import asdict, is_dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, get_args
 
 if TYPE_CHECKING:
     from .project import Project
@@ -738,6 +738,25 @@ _HARNESS_OPT = typer.Option("claude", "--harness", help="Hook harness: claude or
 _INPUT_OPT = typer.Option(None, "--input-file")
 _HOOK_CTX = {"ignore_unknown_options": True, "allow_extra_args": True}
 
+_VALID_HARNESSES = get_args(hooks_cli.Harness)
+
+
+def _parse_harness(raw: str) -> hooks_cli.Harness:
+    """Validate and narrow a raw CLI harness string to the ``Harness`` literal type.
+
+    Typer infers the ``harness`` parameter as ``str`` from the option default, so
+    mypy cannot prove the value is a valid ``Harness`` literal.  This helper
+    performs a runtime check and returns the narrowed type, giving mypy a
+    concrete ``Harness`` at every :func:`~token_goat.hooks_cli.safe_run` call site.
+
+    Unknown values fall back to ``"claude"`` (the safe default) so an unrecognised
+    ``--harness`` flag from a newer harness version does not abort the hook.
+    """
+    if raw in _VALID_HARNESSES:
+        return raw  # type: ignore[return-value]  # membership check proves the Literal constraint
+    _LOG.debug("unknown harness %r; defaulting to 'claude'", raw)
+    return "claude"
+
 
 @hook_app.command(context_settings=_HOOK_CTX)
 def session_start(
@@ -745,7 +764,7 @@ def session_start(
     harness: str = _HARNESS_OPT,
 ) -> None:
     """Hook: session-start event."""
-    hooks_cli.safe_run("session-start", input_file, harness)
+    hooks_cli.safe_run("session-start", input_file, _parse_harness(harness))
 
 
 @hook_app.command(context_settings=_HOOK_CTX)
@@ -754,7 +773,7 @@ def pre_read(
     harness: str = _HARNESS_OPT,
 ) -> None:
     """Hook: pre-read event."""
-    hooks_cli.safe_run("pre-read", input_file, harness)
+    hooks_cli.safe_run("pre-read", input_file, _parse_harness(harness))
 
 
 @hook_app.command(context_settings=_HOOK_CTX)
@@ -763,7 +782,7 @@ def pre_fetch(
     harness: str = _HARNESS_OPT,
 ) -> None:
     """Hook: pre-fetch event."""
-    hooks_cli.safe_run("pre-fetch", input_file, harness)
+    hooks_cli.safe_run("pre-fetch", input_file, _parse_harness(harness))
 
 
 @hook_app.command(context_settings=_HOOK_CTX)
@@ -772,7 +791,7 @@ def post_edit(
     harness: str = _HARNESS_OPT,
 ) -> None:
     """Hook: post-edit event."""
-    hooks_cli.safe_run("post-edit", input_file, harness)
+    hooks_cli.safe_run("post-edit", input_file, _parse_harness(harness))
 
 
 @hook_app.command(context_settings=_HOOK_CTX)
@@ -781,7 +800,7 @@ def post_read(
     harness: str = _HARNESS_OPT,
 ) -> None:
     """Hook: post-read event."""
-    hooks_cli.safe_run("post-read", input_file, harness)
+    hooks_cli.safe_run("post-read", input_file, _parse_harness(harness))
 
 
 @hook_app.command(context_settings=_HOOK_CTX)
@@ -790,7 +809,7 @@ def pre_compact(
     harness: str = _HARNESS_OPT,
 ) -> None:
     """Hook: pre-compact event."""
-    hooks_cli.safe_run("pre-compact", input_file, harness)
+    hooks_cli.safe_run("pre-compact", input_file, _parse_harness(harness))
 
 
 @app.command("compact-hint", rich_help_panel="Advanced")
