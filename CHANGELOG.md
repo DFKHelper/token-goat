@@ -4,6 +4,12 @@ All notable changes to Token-Goat are documented in this file. Format follows Ke
 
 ## [Unreleased]
 
+## [0.5.2] - 2026-05-17
+
+### Fixed
+
+- **"Did you mean?" suggestion paths no longer crash when the per-project DB has not been created yet.** The four suggestion code paths (`read_commands._close_symbol_matches`, `read_commands._close_section_matches`, `cli._project_close_symbol_matches`, `cli._global_close_symbol_matches`) caught `sqlite3.OperationalError` and `sqlite3.DatabaseError` but not `FileNotFoundError`. `db.open_project_readonly` raises `FileNotFoundError` when the project DB has not been indexed, so a `token-goat read` against an unindexed project that resolved via `find_in_all_projects` would surface a hard crash instead of a clean miss message. Suggestions are best-effort polish — they must always degrade silently.
+
 ## [0.5.1] - 2026-05-17
 
 ### Added

@@ -253,7 +253,7 @@ def _root(
         is_eager=True,
     ),
 ) -> None:
-    """token-goat — hook-based token optimizer for Claude Code and Codex CLI."""
+    """token-goat — token optimizer for Claude Code, Codex CLI, opencode, and openclaw."""
     # The callback is required to register --version on the root command; the
     # body is intentionally empty so the no_args_is_help behaviour still fires.
     _ = version
