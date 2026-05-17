@@ -110,7 +110,7 @@ class TestValidateSessionIdPublicAlias:
         from token_goat.session import validate_session_id  # noqa: PLC0415
 
         with pytest.raises(ValueError, match="too long"):
-            validate_session_id("a" * 257)
+            validate_session_id("a" * 129)
 
     def test_slash_raises_value_error(self):
         from token_goat.session import validate_session_id  # noqa: PLC0415
@@ -130,10 +130,10 @@ class TestValidateSessionIdPublicAlias:
         with pytest.raises(ValueError, match="invalid characters"):
             validate_session_id("../../etc/passwd")
 
-    def test_exactly_256_chars_is_accepted(self):
+    def test_exactly_128_chars_is_accepted(self):
         from token_goat.session import validate_session_id  # noqa: PLC0415
 
-        validate_session_id("a" * 256)  # boundary: exactly 256 must pass
+        validate_session_id("a" * 128)  # boundary: exactly 128 must pass
 
     def test_uuid_style_id_accepted(self):
         from token_goat.session import validate_session_id  # noqa: PLC0415

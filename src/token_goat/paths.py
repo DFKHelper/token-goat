@@ -191,7 +191,16 @@ def session_cache_path(session_id: str) -> Path:
     which would happen with traversal sequences like ``../../../evil``.
     Also rejects null bytes, which some filesystems treat as path terminators
     and which Python's os module passes through on POSIX.
+
+    On Windows, also rejects paths whose total length would reach or exceed
+    MAX_PATH (260 characters).  The ``sessions/`` base directory is typically
+    ~60–80 chars; combined with a 128-char session_id cap the path stays well
+    under the limit, but the explicit check ensures correctness even on systems
+    with unusually deep ``%LOCALAPPDATA%`` paths (e.g. long usernames, managed
+    profiles, or roaming AppData redirections).
     """
+    import sys
+
     if "\x00" in session_id:
         raise ValueError(f"session_id contains null byte: {session_id!r}")
     base = data_dir() / "sessions"
@@ -200,6 +209,11 @@ def session_cache_path(session_id: str) -> Path:
         candidate.relative_to(base.resolve())
     except ValueError as exc:
         raise ValueError(f"session_id produces a path outside the sessions directory: {session_id!r}") from exc
+    if sys.platform == "win32" and len(str(candidate)) >= 260:
+        raise ValueError(
+            f"session_id produces a path that exceeds Windows MAX_PATH (260 chars): "
+            f"len={len(str(candidate))}"
+        )
     return candidate
 
 

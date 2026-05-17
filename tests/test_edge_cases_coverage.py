@@ -22,8 +22,8 @@ class TestSessionValidation:
             session.load("")
 
     def test_load_too_long_session_id_raises(self, tmp_data_dir):
-        """load() with session_id > 256 chars raises ValueError."""
-        long_id = "a" * 257
+        """load() with session_id > 128 chars raises ValueError."""
+        long_id = "a" * 129
         with pytest.raises(ValueError, match="session_id too long"):
             session.load(long_id)
 

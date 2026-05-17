@@ -367,14 +367,22 @@ _MAX_LOG_STR = 120  # truncation limit for user-controlled values embedded in lo
 def validate_session_id(session_id: str) -> None:
     """Validate session_id to prevent path traversal attacks. Raises ValueError on invalid input.
 
-    Session IDs must be non-empty, at most 256 characters, and contain only
+    Session IDs must be non-empty, at most 128 characters, and contain only
     alphanumeric characters, hyphens, and underscores — no path separators or
     other suspicious characters that could enable directory traversal.
+
+    The 128-character cap is conservative relative to the Windows MAX_PATH limit
+    of 260 characters.  The session file lives at
+    ``%LOCALAPPDATA%\\dfk-helper\\token-goat\\sessions\\<id>.json``; the base
+    directory alone consumes roughly 60–80 chars on a typical Windows install,
+    leaving less than 200 chars for the filename.  Claude session IDs are UUIDs
+    (36 chars), so 128 is far above any legitimate value while providing a
+    comfortable safety margin before MAX_PATH is reached.
     """
     if not session_id:
         raise ValueError("session_id cannot be empty")
-    if len(session_id) > 256:
-        raise ValueError("session_id too long (max 256 chars)")
+    if len(session_id) > 128:
+        raise ValueError("session_id too long (max 128 chars)")
     if not _SESSION_ID_RE.match(session_id):
         raise ValueError(f"session_id contains invalid characters: {session_id!r}")
 

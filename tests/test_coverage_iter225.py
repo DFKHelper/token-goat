@@ -40,8 +40,8 @@ def test_validate_session_id_valid_underscores() -> None:
 
 
 def test_validate_session_id_valid_max_length() -> None:
-    # Exactly 256 chars should pass.
-    validate_session_id("a" * 256)
+    # Exactly 128 chars should pass (new cap reduced from 256 for MAX_PATH safety).
+    validate_session_id("a" * 128)
 
 
 def test_validate_session_id_empty_raises() -> None:
@@ -51,7 +51,7 @@ def test_validate_session_id_empty_raises() -> None:
 
 def test_validate_session_id_too_long_raises() -> None:
     with pytest.raises(ValueError, match="too long"):
-        validate_session_id("a" * 257)
+        validate_session_id("a" * 129)
 
 
 def test_validate_session_id_path_traversal_slash() -> None:
