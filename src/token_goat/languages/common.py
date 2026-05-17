@@ -220,9 +220,10 @@ def build_signature(source: bytes, item_span: object, body_span: object | None) 
         if len(text) > 200:
             text = text[:200]
         return text or None
-    except (IndexError, AttributeError):
+    except (IndexError, AttributeError) as exc:
         # AttributeError: span objects are duck-typed C extension structs; .start_byte /
         # .end_byte may be absent on unexpected node shapes from newer tree-sitter grammars.
+        _LOG.debug("build_signature: skipping malformed span (no signature extracted): %s", exc)
         return None
 
 

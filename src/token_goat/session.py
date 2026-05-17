@@ -228,8 +228,12 @@ def _parse_file_entry(key: str, v: dict[str, Any], now: float) -> FileEntry | No
             line_ranges=line_ranges,
             symbols_read=symbols_read,
         )
-    except (TypeError, ValueError, KeyError):
-        _LOG.debug("session: skipping corrupted file entry for key %r", key)
+    except (TypeError, ValueError, KeyError) as exc:
+        _LOG.debug(
+            "session: skipping corrupted file entry for key %s: %s",
+            sanitize_log_str(key, max_len=_MAX_LOG_STR),
+            exc,
+        )
         return None
 
 
