@@ -345,6 +345,7 @@ def shrink_if_image(path: Path) -> Path:
         shrunken = shrink(path)
         if shrunken is not None:
             return shrunken
+        _LOG.debug("shrink_if_image: shrink returned None for %s, using original path", path.name)
     return path
 
 
