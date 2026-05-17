@@ -397,7 +397,11 @@ def index_file(project: Project, file_path: Path) -> FileIndex | None:
     except ValueError as e:
         _LOG.warning("index_file: path not under project root (skipping): %s: %s", file_path, e)
         return None
-    language = LANG_BY_EXT[file_path.suffix.lower()]
+    suffix_lower = file_path.suffix.lower()
+    language = LANG_BY_EXT.get(suffix_lower)
+    if language is None:
+        _LOG.debug("index_file: unsupported extension %r for %s (skipping)", suffix_lower, rel)
+        return None
     line_count = _line_count_from_bytes(raw)
     extractor = get_extractor(language)
     if extractor is None:

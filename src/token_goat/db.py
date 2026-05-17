@@ -833,8 +833,13 @@ def file_count(project_hash: str) -> int:
         with open_project(project_hash) as conn:
             row = conn.execute("SELECT COUNT(*) FROM files").fetchone()
             return int(row[0]) if row else 0
+    except FileNotFoundError:
+        # DB does not exist yet — normal for un-indexed projects; not worth logging.
+        return 0
     except Exception as exc:  # noqa: BLE001
-        _LOG.debug("file_count(%s…) failed, returning 0: %s", project_hash[:8], exc)
+        # Log at WARNING: returning 0 here is indistinguishable from "never indexed"
+        # to callers, so a silent swallow can trigger unnecessary full reindexes.
+        _LOG.warning("file_count(%s…) failed, returning 0: %s", project_hash[:8], exc)
         return 0
 
 

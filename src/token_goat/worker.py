@@ -436,12 +436,14 @@ def drain_dirty_queue() -> list[DirtyQueueEntry]:
     # rather than risk a partial read.
     if p.exists():
         claimed = False
+        last_replace_err: OSError | None = None
         for _ in range(5):
             try:
                 os.replace(p, draining)
                 claimed = True
                 break
-            except OSError:
+            except OSError as _e:
+                last_replace_err = _e
                 time.sleep(0.05)
         if claimed:
             try:
@@ -452,7 +454,10 @@ def drain_dirty_queue() -> list[DirtyQueueEntry]:
             except OSError as e:
                 _LOG.warning("failed to read/clear drained queue file: %s", e)
         else:
-            _LOG.warning("dirty queue busy; deferring drain to next cycle")
+            _LOG.warning(
+                "dirty queue busy after 5 retries; deferring drain to next cycle (%s)",
+                last_replace_err,
+            )
 
     entries: list[DirtyQueueEntry] = []
     malformed_count = 0
