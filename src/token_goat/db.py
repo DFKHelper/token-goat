@@ -586,6 +586,22 @@ def _repair_if_corrupt(conn: sqlite3.Connection, path: Path) -> sqlite3.Connecti
 # Public context managers
 # ---------------------------------------------------------------------------
 
+def _log_session_close(label: str, t0: float, conn: sqlite3.Connection | None) -> None:
+    """Log session duration and close *conn*.
+
+    Shared by ``open_global`` and ``open_project`` to avoid duplicating the
+    identical timing/warning pattern in both finally blocks.  A session that
+    took 1 s or more is logged at WARNING so slow DB operations are visible in
+    production logs without manual filtering.
+    """
+    session_ms = (time.monotonic() - t0) * 1000
+    if session_ms >= 1000:
+        _LOG.warning("%s session slow: %.1fms total", label, session_ms)
+    else:
+        _LOG.debug("closing %s (session %.1fms)", label, session_ms)
+    _close_conn(conn)
+
+
 @contextlib.contextmanager
 def open_global() -> Iterator[sqlite3.Connection]:
     """Yield a connection to global.db with schema applied."""
@@ -599,12 +615,7 @@ def open_global() -> Iterator[sqlite3.Connection]:
         _LOG.debug("global db ready in %.1fms", (time.monotonic() - t0) * 1000)
         yield conn
     finally:
-        session_ms = (time.monotonic() - t0) * 1000
-        if session_ms >= 1000:
-            _LOG.warning("global db session slow: %.1fms total", session_ms)
-        else:
-            _LOG.debug("closing global db (session %.1fms)", session_ms)
-        _close_conn(conn)
+        _log_session_close("global db", t0, conn)
 
 
 # Maximum age (seconds) of a writer lock before it is treated as stale.
@@ -657,12 +668,7 @@ def open_project(project_hash: str) -> Iterator[sqlite3.Connection]:
         _LOG.debug("project db ready in %.1fms (hash=%s)", (time.monotonic() - t0) * 1000, project_hash[:8])
         yield conn
     finally:
-        session_ms = (time.monotonic() - t0) * 1000
-        if session_ms >= 1000:
-            _LOG.warning("project db session slow: %.1fms total (hash=%s)", session_ms, project_hash[:8])
-        else:
-            _LOG.debug("closing project db: %s (session %.1fms)", project_hash[:8], session_ms)
-        _close_conn(conn)
+        _log_session_close(f"project db {project_hash[:8]}", t0, conn)
 
 
 # ---------------------------------------------------------------------------
