@@ -31,6 +31,8 @@ CONTINUE; never modifies tool output.
 """
 from __future__ import annotations
 
+__all__ = ["post_read", "pre_read"]
+
 from pathlib import Path
 from typing import TYPE_CHECKING
 

@@ -12,6 +12,8 @@ Exports:
 """
 from __future__ import annotations
 
+__all__ = ["C", "RGB", "RESET", "USE_COLOR", "bg", "fg", "lerp_rgb", "pad_l", "pad_r", "strip_ansi", "vlen"]
+
 import os
 import re
 import sys

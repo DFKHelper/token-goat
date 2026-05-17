@@ -1,6 +1,8 @@
 """TypeScript/TSX/JS/JSX symbol extractor using tree_sitter_language_pack."""
 from __future__ import annotations
 
+__all__ = ["extract"]
+
 import logging
 import re
 from os.path import basename

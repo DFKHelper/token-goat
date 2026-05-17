@@ -1,6 +1,8 @@
 """Markdown extractor — ATX headings, Setext headings, front-matter titles."""
 from __future__ import annotations
 
+__all__ = ["extract"]
+
 import logging
 import re
 

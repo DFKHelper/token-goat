@@ -19,6 +19,8 @@ come from ``ansi.C`` (GitHub dark palette).
 """
 from __future__ import annotations
 
+__all__ = ["render_stats"]
+
 import heapq
 import json
 import logging
