@@ -10,14 +10,23 @@ Dataclasses:
 - ``KindStat``: Per-event-kind breakdown (e.g. Read, image_shrink).
 - ``DayStat``: Daily activity row (date string, bytes, tokens, events).
 - ``ProjectStat``: Per-project breakdown row.
+- ``SourceStat``: Per-source (image/hint/read/compact/other) breakdown row.
 - ``Sparklines``: Normalised 0–1 float lists for the three KPI mini-charts.
-- ``StatsData``: Top-level payload: totals + the three breakdown lists.
+- ``StatsData``: Top-level payload: totals + the breakdown lists.
 """
 from __future__ import annotations
 
-__all__ = ["DayStat", "KindStat", "ProjectStat", "Sparklines", "StatsData", "TotalStats"]
+__all__ = [
+    "DayStat",
+    "KindStat",
+    "ProjectStat",
+    "SourceStat",
+    "Sparklines",
+    "StatsData",
+    "TotalStats",
+]
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date
 
 
@@ -90,12 +99,29 @@ class ProjectStat:
 
 
 @dataclass
+class SourceStat:
+    """Statistics for one user-facing source bucket (image / hint / read / compact / other).
+
+    Sources collapse the raw event kinds into the four mechanisms token-goat ships
+    (plus an ``other`` catch-all).  Renderer consumers can show "image vs hint vs
+    read vs compact" without re-walking the underlying DB.
+    """
+    source: str
+    bytes: int
+    tokens: int
+    events: int
+
+
+@dataclass
 class StatsData:
     """Complete stats payload for a reporting period: totals, by-kind, by-day, and by-project breakdowns.
 
     by_kind: All rows, sorted desc by bytes (no top-N applied; renderer handles display limits).
     by_day: Caller-filtered top-N rows, sorted desc by bytes.
     by_project: Caller-filtered top-N rows, sorted desc by bytes.
+    by_source: Sorted desc by bytes; collapses raw kinds into image/hint/read/compact/other.
+        Defaults to empty so older callers that built StatsData before by_source
+        shipped still construct without modification.
     """
     period_start: date
     period_end: date
@@ -106,3 +132,6 @@ class StatsData:
     by_day: list[DayStat]
     # Sorted desc by bytes. Caller decides top-N before passing in.
     by_project: list[ProjectStat]
+    # Sorted desc by bytes.  Optional and defaults to empty so older callers /
+    # cached StatsData snapshots built before by_source shipped still load.
+    by_source: list[SourceStat] = field(default_factory=list)

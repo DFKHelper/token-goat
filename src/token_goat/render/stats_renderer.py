@@ -6,10 +6,12 @@ Produces a multi-section ANSI display from a ``StatsData`` payload:
    with period-over-period deltas and optional mini sparklines.
 2. **By event kind** — colour-barred table showing savings per tool-call type
    (Read, image_shrink, Grep, etc.).
-3. **Activity heatmap** — GitHub-style 12-week heatmap of daily token savings.
-4. **By day** — tabular daily breakdown (top N rows by bytes).
-5. **By project** — tabular per-project breakdown (top N rows by bytes).
-6. **Insights** — motivational copy loaded from ``stats_messages.json``.
+3. **By source** — collapsed view of the four user-facing mechanisms (image
+   / hint / read / compact) plus an ``other`` catch-all.
+4. **Activity heatmap** — GitHub-style 12-week heatmap of daily token savings.
+5. **By day** — tabular daily breakdown (top N rows by bytes).
+6. **By project** — tabular per-project breakdown (top N rows by bytes).
+7. **Insights** — motivational copy loaded from ``stats_messages.json``.
 
 Entry point: :func:`render_stats` — returns a ready-to-print ANSI string.
 
@@ -42,6 +44,7 @@ _key_day_date = operator.attrgetter("date")
 _key_day_events = operator.attrgetter("events")
 _key_kind_bytes = operator.attrgetter("bytes")
 _key_kind_tokens = operator.attrgetter("tokens")
+_key_source_bytes = operator.attrgetter("bytes")
 
 
 class _InsightsMessages(TypedDict):
@@ -539,6 +542,70 @@ def _render_by_kind_section(stats: StatsData) -> list[str]:
     return lines
 
 
+# ── Section: by source ────────────────────────────────────────────────────────
+
+# Distinct palette for the four user-facing source buckets.  Falls back to the
+# muted-text colour for unknown / future sources so they still render rather
+# than going silently grey-on-grey or crashing.
+_SOURCE_COLORS: dict[str, RGB] = {
+    "image":   C.PURPLE,
+    "hint":    C.BLUE,
+    "read":    C.GREEN4,
+    "compact": C.TEAL,
+    "other":   C.TEXT_MUTED,
+}
+
+
+def _source_color(source: str) -> RGB:
+    """Return the palette colour for a source name, falling back to muted."""
+    return _SOURCE_COLORS.get(source, C.TEXT_MUTED)
+
+
+def _render_by_source_section(stats: StatsData) -> list[str]:
+    """Render the "By source" table: one row per source bucket.
+
+    Sources are the four user-facing mechanisms (image / hint / read / compact)
+    plus an ``other`` catch-all.  Rows render bytes saved, tokens saved, share
+    of the period total, and an event count using the same column layout as the
+    by-kind / by-day / by-project sections.
+
+    Each source name is prefixed with a coloured bullet (``●``) drawn from the
+    distinct ``_SOURCE_COLORS`` palette so the four mechanisms are visually
+    separable at a glance, mirroring the by-project bullet treatment.
+
+    Returns ``[]`` when ``stats.by_source`` is empty so older callers that
+    construct ``StatsData`` without a by_source rollup still render cleanly.
+    """
+    if not stats.by_source:
+        return []
+
+    lines: list[str] = [*_section_header("By source"), _table_header("source")]
+
+    sorted_sources = sorted(stats.by_source, key=_key_source_bytes, reverse=True)
+
+    # Bar scaling: positive-only gross so the widest positive bar reaches 100%.
+    # Share %: absolute-value totals so any overhead rows (negative bytes) shrink
+    # the denominator instead of pushing the dominant positive row past 100%.
+    gross_bytes = max(sum(s.bytes for s in sorted_sources if s.bytes > 0), 1)
+    share_bytes_denom = max(sum(abs(s.bytes) for s in sorted_sources), 1)
+    share_tokens_denom = sum(abs(s.tokens) for s in sorted_sources)
+
+    for s in sorted_sources:
+        if share_tokens_denom == 0:
+            share = s.bytes / share_bytes_denom
+        else:
+            share = s.tokens / share_tokens_denom
+        bar_fraction = s.bytes / gross_bytes if s.bytes > 0 else 0.0
+        color = _source_color(s.source)
+        lines.append(_table_row(
+            s.source, bar_fraction, s.bytes, s.tokens, s.events, share,
+            name_prefix=f"{fg(*color)}●{RESET} ",
+            name_color=C.TEXT_PRIMARY,
+        ))
+
+    return lines
+
+
 # ── Section: activity heatmap ─────────────────────────────────────────────────
 
 _PROJECT_COLORS: list[RGB] = [C.PURPLE, C.TEAL, C.BLUE, C.GREEN4, C.TEXT_MUTED]
@@ -819,6 +886,7 @@ def render_stats(stats: StatsData) -> str:
     sections = [
         _render_kpi_section(stats),
         _render_by_kind_section(stats),
+        _render_by_source_section(stats),
         _render_activity_section(stats),
         _render_by_day_section(stats),
         _render_by_project_section(stats),
