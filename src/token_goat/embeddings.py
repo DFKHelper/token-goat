@@ -19,6 +19,7 @@ import array
 import hashlib
 import logging
 import os
+import re
 import sqlite3
 import time
 from dataclasses import dataclass
@@ -75,6 +76,58 @@ _CODE_SYMBOL_KINDS = frozenset({
 # Languages that get sliding-window fallback
 _WINDOW_LANGS = frozenset({"typescript", "javascript", "python", "go", "rust"})
 
+# ---------------------------------------------------------------------------
+# Search-time tunables (re-ranking, filtering, threshold)
+# ---------------------------------------------------------------------------
+
+# Cosine-distance ceiling for a result to be considered "confident".  bge-small-en-v1.5
+# returns cosine distance in [0, 2]; in practice on-topic code/doc matches sit below
+# ~1.0 and off-topic noise sits above ~1.3.  We default to 1.2 so we keep recall on
+# legitimate paraphrase matches while filtering obvious garbage when the corpus has
+# no good answer.  Users can override via the CLI ``--max-distance`` flag.
+DEFAULT_DISTANCE_THRESHOLD = 1.2
+
+# Path-segment fragments that mark generated/build/vendored output that we should
+# de-prioritise in semantic results.  These are matched as POSIX path *segments*
+# (after splitting on '/'), so e.g. ``__pycache__`` matches ``a/__pycache__/x.py``
+# but not ``a/pycache.py``.  Hits in these files aren't deleted — they're demoted
+# (penalty added to distance) so they only surface when nothing better exists.
+_GENERATED_PATH_SEGMENTS = frozenset({
+    "node_modules", "dist", "build", "__pycache__", ".next", ".nuxt",
+    ".turbo", ".cache", "coverage", "out", "target", "vendor",
+    ".venv", "venv", ".tox", "site-packages", "bower_components",
+    ".pytest_cache", ".mypy_cache", ".ruff_cache",
+})
+
+# Distance penalty (in cosine-distance units) added to a hit's score when the
+# hit comes from a generated/build path.  Large enough to push it below any
+# real source-file match (cosine distance for on-topic hits is typically < 0.8),
+# small enough that a generated hit can still appear if nothing else matches.
+_GENERATED_PATH_PENALTY = 0.5
+
+# Verbatim-token boost: subtract from distance when a chunk contains exact
+# substring matches for query tokens.  Code search benefits enormously from
+# exact-name matching ("RateLimiter" should beat a paraphrase like "throttle
+# helper") which pure embedding similarity can miss for novel identifiers.
+# Each matched token deducts this much, capped at MAX_VERBATIM_BOOST.
+_VERBATIM_TOKEN_BOOST = 0.05
+_MAX_VERBATIM_BOOST = 0.25
+
+# Identifier-like tokens we'll boost on.  Tokens shorter than 3 chars are
+# usually too generic ("id", "n", "of") to contribute useful signal; we drop
+# them to avoid spurious boosts.  Strings of \w+ catch snake_case, camelCase,
+# PascalCase, and ALLCAPS identifiers; we also split camelCase below for finer
+# matching.
+_TOKEN_RE = re.compile(r"\w+")
+_MIN_TOKEN_LEN = 3
+
+# How many candidates to over-fetch from sqlite-vec before re-ranking.  Pulling
+# OVER_FETCH_FACTOR * k lets the re-ranker (verbatim boost + generated-path
+# penalty) reshuffle results without losing recall when good matches happen to
+# rank slightly below noise on raw cosine distance.
+_OVER_FETCH_FACTOR = 4
+_MAX_OVER_FETCH = 100
+
 
 class EmbeddingsUnavailable(Exception):
     """Raised when fastembed/model/sqlite-vec are not usable."""
@@ -117,6 +170,121 @@ class SearchHit:
     kind: str
     text: str
     distance: float  # smaller = closer (cosine distance via sqlite-vec)
+
+
+# ---------------------------------------------------------------------------
+# Re-ranking helpers
+# ---------------------------------------------------------------------------
+
+def _is_generated_path(file_rel: str) -> bool:
+    """Return True if any POSIX path segment of file_rel is a known generated/build dir.
+
+    Used to demote (not delete) hits from vendored/output trees so on-topic
+    source-file results outrank them.  Path is compared segment-by-segment so
+    we never false-match on filename substrings (e.g. ``my_dist.py`` should
+    not match ``dist``).
+    """
+    if not file_rel:
+        return False
+    # Normalise to POSIX separators so Windows-style paths in the DB still match.
+    segments = file_rel.replace("\\", "/").split("/")
+    return any(seg in _GENERATED_PATH_SEGMENTS for seg in segments)
+
+
+def _extract_query_tokens(query: str) -> frozenset[str]:
+    """Tokenize the query into lowercase identifier-like tokens for verbatim boost.
+
+    Splits on \\w+, drops tokens shorter than ``_MIN_TOKEN_LEN`` (too noisy:
+    "id", "n", "of" match nearly everything), and also splits camelCase /
+    PascalCase tokens into their components so a query for "RateLimiter" boosts
+    chunks that contain "rate" or "limiter" as well as the exact identifier.
+    Returns a frozenset for O(1) membership lookup during re-ranking.
+    """
+    if not query:
+        return frozenset()
+    raw = _TOKEN_RE.findall(query.lower())
+    tokens: set[str] = set()
+    for tok in raw:
+        if len(tok) >= _MIN_TOKEN_LEN:
+            tokens.add(tok)
+    # Also split camelCase / PascalCase variants present in the original query
+    # (before lowering) — "RateLimiter" -> {"rate", "limiter"}.
+    for tok in _TOKEN_RE.findall(query):
+        # Split on lowercase->uppercase boundaries (matches PascalCase and camelCase).
+        parts = re.findall(r"[A-Z]?[a-z]+|[A-Z]+(?=[A-Z]|$)", tok)
+        for part in parts:
+            lower_part = part.lower()
+            if len(lower_part) >= _MIN_TOKEN_LEN:
+                tokens.add(lower_part)
+    return frozenset(tokens)
+
+
+def _verbatim_boost(text: str, tokens: frozenset[str]) -> float:
+    """Return distance reduction (positive value) for verbatim token hits in text.
+
+    Counts how many query tokens appear as substrings in the chunk text and
+    returns ``min(count * _VERBATIM_TOKEN_BOOST, _MAX_VERBATIM_BOOST)``.  Capped
+    so a chunk that happens to contain every token doesn't dominate purely on
+    that signal — the underlying cosine distance still matters.
+    """
+    if not tokens or not text:
+        return 0.0
+    text_lower = text.lower()
+    hits = sum(1 for tok in tokens if tok in text_lower)
+    return min(hits * _VERBATIM_TOKEN_BOOST, _MAX_VERBATIM_BOOST)
+
+
+def _rerank_hits(
+    rows: list[sqlite3.Row],
+    query: str,
+    *,
+    k: int,
+    max_distance: float | None,
+    boost_verbatim: bool,
+    demote_generated: bool,
+) -> list[SearchHit]:
+    """Apply verbatim-token boost, generated-path penalty, threshold filter, sort.
+
+    Computes an *effective distance* for each row:
+
+        eff = raw_distance + (generated_penalty if generated else 0)
+                            - verbatim_boost(text, query_tokens)
+
+    then drops rows whose ``eff`` exceeds ``max_distance`` (when set), sorts
+    ascending, and truncates to ``k``.  The returned ``SearchHit.distance``
+    field carries the *effective* distance so callers can show a single
+    user-meaningful score — the raw embedding distance is internal detail.
+    """
+    tokens = _extract_query_tokens(query) if boost_verbatim else frozenset()
+    scored: list[tuple[float, sqlite3.Row]] = []
+    for r in rows:
+        raw_dist: float = float(r["distance"])
+        eff = raw_dist
+        if demote_generated and _is_generated_path(r["file_rel"]):
+            eff += _GENERATED_PATH_PENALTY
+        if boost_verbatim:
+            eff -= _verbatim_boost(r["text"], tokens)
+        # Distance is conceptually non-negative; clamp to keep the public
+        # ``SearchHit.distance`` field meaningful for users.  Without this an
+        # exact-match query against a chunk that also contains the query's
+        # tokens could report eff < 0, which is confusing in CLI output.
+        if eff < 0.0:
+            eff = 0.0
+        if max_distance is not None and eff > max_distance:
+            continue
+        scored.append((eff, r))
+    scored.sort(key=lambda t: t[0])
+    return [
+        SearchHit(
+            file_rel=r["file_rel"],
+            start_line=r["start_line"],
+            end_line=r["end_line"],
+            kind=r["kind"],
+            text=r["text"],
+            distance=eff,
+        )
+        for eff, r in scored[:k]
+    ]
 
 
 # ---------------------------------------------------------------------------
@@ -623,11 +791,28 @@ def semantic_search(
     *,
     k: int = 5,
     model_name: str = DEFAULT_MODEL,
+    max_distance: float | None = DEFAULT_DISTANCE_THRESHOLD,
+    boost_verbatim: bool = True,
+    demote_generated: bool = True,
 ) -> list[SearchHit]:
     """Find semantically similar code/text chunks via vector similarity search.
 
-    Embeds the query string and searches the project's indexed chunks (via sqlite-vec)
-    for the k most similar matches, sorted by cosine distance (ascending).
+    Embeds the query string and over-fetches candidates from sqlite-vec (k *
+    ``_OVER_FETCH_FACTOR``), then re-ranks with two precision-oriented signals
+    before truncating to k:
+
+      * **Verbatim-token boost** — chunks containing the query's identifier
+        tokens (camelCase / snake_case split) get a small distance discount.
+        This rescues exact-name matches that pure embedding similarity can
+        rank below paraphrases for novel identifiers like ``RateLimiter``.
+      * **Generated-path penalty** — hits from ``node_modules/``, ``dist/``,
+        ``__pycache__/``, etc. are demoted (not deleted) so real source-file
+        matches surface first; vendored hits still appear when nothing else
+        matches.
+
+    Optionally drops results whose *effective* distance exceeds
+    ``max_distance``, so a corpus with no good answer returns an empty list
+    instead of garbage.
 
     Args:
         project: Project metadata (root, hash, etc.).
@@ -635,10 +820,19 @@ def semantic_search(
                'async/await boundary', 'null guard'.
         k: Number of top results to return (default 5).
         model_name: Embedding model (default: BAAI/bge-small-en-v1.5).
+        max_distance: Drop hits with effective distance above this threshold.
+            Set to ``None`` to disable threshold filtering (return up to k
+            results regardless of confidence).  Default
+            :data:`DEFAULT_DISTANCE_THRESHOLD`.
+        boost_verbatim: When True (default), chunks containing exact query
+            tokens get a small distance discount during re-rank.
+        demote_generated: When True (default), hits in known generated/build
+            paths get a distance penalty.
 
     Returns:
-        List of SearchHit objects, sorted by distance (closest first). Empty list if no
-        chunks indexed or query has no semantic content.
+        List of SearchHit objects, sorted by *effective* distance (closest
+        first). Empty list if no chunks indexed, query has no semantic
+        content, or all candidates exceed ``max_distance``.
 
     Raises:
         EmbeddingsUnavailable: If fastembed not installed, sqlite-vec not loaded, or
@@ -660,6 +854,11 @@ def semantic_search(
     embed_elapsed = time.time() - t_embed_start
     _LOG.debug("query embedded in %.3fs: %d dims", embed_elapsed, len(qvec))
 
+    # Over-fetch: ask sqlite-vec for more candidates than k so the re-ranker
+    # (verbatim boost + generated-path penalty) has room to shuffle the top
+    # results without losing recall.  Cap at _MAX_OVER_FETCH to bound cost.
+    fetch_k = min(max(k * _OVER_FETCH_FACTOR, k), _MAX_OVER_FETCH)
+
     t_search_start = time.time()
     with db.open_project(project.hash) as conn:
         if not _check_vec_available(conn):
@@ -677,31 +876,34 @@ def semantic_search(
               AND k = ?
             ORDER BY e.distance
             """,
-            (_pack_vec(qvec), k),
+            (_pack_vec(qvec), fetch_k),
         ).fetchall()
     search_elapsed = time.time() - t_search_start
+
+    hits = _rerank_hits(
+        list(rows),
+        query,
+        k=k,
+        max_distance=max_distance,
+        boost_verbatim=boost_verbatim,
+        demote_generated=demote_generated,
+    )
+
     if rows:
-        distances = [r["distance"] for r in rows]
+        raw_distances = [r["distance"] for r in rows]
         _LOG.info(
-            "semantic search completed: query_len=%d k=%d results=%d search_elapsed=%.3fs "
-            "embed_elapsed=%.3fs dist_min=%.4f dist_max=%.4f",
-            len(query), k, len(rows), search_elapsed, embed_elapsed,
-            distances[0], distances[-1],
+            "semantic search completed: query_len=%d k=%d fetched=%d returned=%d "
+            "search_elapsed=%.3fs embed_elapsed=%.3fs dist_min=%.4f dist_max=%.4f "
+            "threshold=%s",
+            len(query), k, len(rows), len(hits), search_elapsed, embed_elapsed,
+            raw_distances[0], raw_distances[-1],
+            "off" if max_distance is None else f"{max_distance:.2f}",
         )
     else:
         _LOG.info(
-            "semantic search completed: query_len=%d k=%d results=0 search_elapsed=%.3fs embed_elapsed=%.3fs",
+            "semantic search completed: query_len=%d k=%d fetched=0 returned=0 "
+            "search_elapsed=%.3fs embed_elapsed=%.3fs",
             len(query), k, search_elapsed, embed_elapsed,
         )
 
-    return [
-        SearchHit(
-            file_rel=r["file_rel"],
-            start_line=r["start_line"],
-            end_line=r["end_line"],
-            kind=r["kind"],
-            text=r["text"],
-            distance=r["distance"],
-        )
-        for r in rows
-    ]
+    return hits
