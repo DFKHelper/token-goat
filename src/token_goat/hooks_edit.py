@@ -1,11 +1,10 @@
 """Edit hook helpers."""
 from __future__ import annotations
 
-from typing import Any
-
 from . import paths
 from .hooks_common import (
     CONTINUE,
+    HookPayload,
     HookResponse,
     get_tool_input,
     sanitize_log_str,
@@ -88,7 +87,7 @@ def _enqueue_for_reindex(file_path: str, cwd: str | None) -> None:
         _LOG.warning("failed to enqueue %s for reindex: %s", rel, e)
 
 
-def post_edit(payload: dict[str, Any]) -> HookResponse:
+def post_edit(payload: HookPayload) -> HookResponse:
     """Post-edit hook: record edited files and queue for incremental re-indexing.
 
     Two-part hook action:

@@ -25,28 +25,15 @@ import time
 from collections.abc import Callable
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Literal, ParamSpec, TypedDict, TypeVar, cast
+from typing import Any, Literal, ParamSpec, TypeVar, cast
 
 from . import hooks_edit, hooks_fetch, hooks_read, hooks_session, paths
-from .hooks_common import CONTINUE, HookResponse, sanitize_log_str
+from .hooks_common import CONTINUE, HookPayload, HookResponse, sanitize_log_str
 
 #: Valid harness identifiers used by :func:`normalize_payload`, :func:`denormalize_response`,
 #: and :func:`safe_run`.  Defined as a ``Literal`` so callers get a type error on
 #: an unrecognised harness name rather than silently applying the Claude path.
 Harness = Literal["claude", "codex"]
-
-
-class HookPayload(TypedDict, total=False):
-    """Base hook payload structure (optional fields depend on hook event)."""
-
-    session_id: str
-    cwd: str
-    turn_id: str
-    tool_name: str
-    tool_input: dict[str, Any]
-    file_path: str
-    file_content: str
-    line_number: int
 
 _LOG = logging.getLogger("token_goat.hooks")
 
@@ -249,10 +236,10 @@ def safe_run(event: str, input_file: Path | None = None, harness: Harness = "cla
 
 
 _P = ParamSpec("_P")
-_HookHandler = TypeVar("_HookHandler", bound=Callable[[dict[str, Any]], HookResponse])
+_HookHandler = TypeVar("_HookHandler", bound=Callable[[HookPayload], HookResponse])
 
 # Type alias for the wrapped handler signature — avoids repeating the long form.
-_WrappedHandler = Callable[[dict[str, Any]], HookResponse]
+_WrappedHandler = Callable[[HookPayload], HookResponse]
 
 
 def fail_soft(handler: _HookHandler) -> _HookHandler:
@@ -267,7 +254,7 @@ def fail_soft(handler: _HookHandler) -> _HookHandler:
     Used on all hook dispatchers to ensure harness resilience.
     """
     @functools.wraps(handler)
-    def wrapper(payload: dict[str, Any]) -> HookResponse:
+    def wrapper(payload: HookPayload) -> HookResponse:
         """Invoke *handler* and return its result, suppressing all exceptions.
 
         On any unhandled exception: logs the crash at ERROR level (with handler
@@ -319,7 +306,7 @@ post_read = fail_soft(hooks_read.post_read)
 # --- dispatcher entry point used by cli.py ---
 
 @fail_soft
-def pre_compact(payload: dict[str, Any]) -> HookResponse:
+def pre_compact(payload: HookPayload) -> HookResponse:
     """PreCompact hook: inject a session manifest as systemMessage before compaction.
 
     The compaction LLM receives the manifest in its context and includes it in
@@ -367,7 +354,7 @@ def pre_compact(payload: dict[str, Any]) -> HookResponse:
     return {"continue": True, "systemMessage": manifest}
 
 
-EVENTS: dict[str, Callable[[dict[str, Any]], HookResponse]] = {
+EVENTS: dict[str, Callable[[HookPayload], HookResponse]] = {
     "session-start": session_start,
     "pre-read": pre_read,
     "pre-fetch": pre_fetch,
@@ -394,7 +381,7 @@ def dispatch(event: str, payload: dict[str, Any]) -> dict[str, Any]:
         return dict(CONTINUE())
     _LOG.debug("hook %s started", safe_event)
     t0 = time.monotonic()
-    result: dict[str, Any] = dict(handler(payload))
+    result: dict[str, Any] = dict(handler(cast(HookPayload, payload)))
     elapsed_ms = (time.monotonic() - t0) * 1000
     if elapsed_ms >= _HOOK_SLOW_MS:
         _LOG.warning("hook %s slow: %.1fms (check for blockage or I/O delays)", safe_event, elapsed_ms)
