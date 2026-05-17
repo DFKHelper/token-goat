@@ -13,8 +13,8 @@ Exports:
 from __future__ import annotations
 
 import os
+import re
 import sys
-from re import sub as re_sub
 
 # Requires a terminal with COLORTERM=truecolor (Windows Terminal, iTerm2,
 # Alacritty, kitty, WezTerm, and most modern terminal emulators).
@@ -25,6 +25,17 @@ RGB = tuple[int, int, int]
 
 _E = "\x1b"
 RESET = f"{_E}[0m"
+
+# Full VT/ANSI escape sequence pattern — covers SGR colour codes, cursor
+# controls, and any other CSI/OSC/DCS/PM/SOS/APC/ST sequences.  Compiled once
+# here and shared by vlen(), strip_ansi(), and callers in stats.py /
+# stats_renderer.py so there is exactly one copy of this pattern in the process.
+_ANSI_ESCAPE_RE = re.compile(r"\x1b(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])")
+
+
+def strip_ansi(s: str) -> str:
+    """Remove all ANSI/VT escape sequences from *s*."""
+    return _ANSI_ESCAPE_RE.sub("", s)
 
 
 def fg(r: int, g: int, b: int) -> str:
@@ -39,7 +50,7 @@ def bg(r: int, g: int, b: int) -> str:
 
 def vlen(s: str) -> int:
     """Visible length of a string, stripping all ANSI escape sequences."""
-    return len(re_sub(r"\x1b\[[0-9;]*m", "", s))
+    return len(_ANSI_ESCAPE_RE.sub("", s))
 
 
 def pad_r(s: str, w: int) -> str:

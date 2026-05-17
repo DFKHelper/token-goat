@@ -22,33 +22,23 @@ from __future__ import annotations
 import json
 import logging
 import math
-import re
+import operator
 import shutil
 from datetime import date, timedelta
 from pathlib import Path
 from typing import TypedDict, cast
 
-from .ansi import RESET, RGB, C, bg, fg, lerp_rgb, pad_l, pad_r, vlen
+from .ansi import RESET, RGB, C, bg, fg, lerp_rgb, pad_l, pad_r, strip_ansi, vlen
 from .types import DayStat, KindStat, StatsData
 
 _LOG = logging.getLogger("token_goat.render.stats_renderer")
 
-# Regex to strip ANSI/VT escape sequences from strings before they are
-# interpolated into ANSI-prefixed terminal output lines.  A project root path
-# stored in the stats DB could contain embedded ESC bytes that, if left intact,
-# would inject rogue colour codes or cursor-control sequences into the terminal.
-_ANSI_ESCAPE_RE = re.compile(r"\x1b(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])")
-
-
-def _strip_ansi(s: str) -> str:
-    """Remove ANSI/VT escape sequences from *s*.
-
-    Project root paths are stored in the stats DB from harness payloads and
-    could theoretically contain embedded ESC bytes.  Stripping them before
-    interpolation into ANSI-prefixed f-strings prevents rogue colour or
-    cursor-control injection into the terminal output.
-    """
-    return _ANSI_ESCAPE_RE.sub("", s)
+# Module-level key functions — avoids allocating a new lambda object on every
+# sort/max call in the hot rendering path.
+_key_day_date = operator.attrgetter("date")
+_key_day_events = operator.attrgetter("events")
+_key_kind_bytes = operator.attrgetter("bytes")
+_key_kind_tokens = operator.attrgetter("tokens")
 
 
 class _InsightsMessages(TypedDict):
@@ -565,7 +555,7 @@ def _render_activity_section(stats: StatsData) -> list[str]:
     if not stats.by_day:
         return []
 
-    sorted_days = sorted(stats.by_day, key=lambda d: d.date)
+    sorted_days = sorted(stats.by_day, key=_key_day_date)
     by_date: dict[str, DayStat] = {d.date: d for d in sorted_days}
     max_events = max((d.events for d in sorted_days), default=1) or 1
 
@@ -596,7 +586,7 @@ def _render_activity_section(stats: StatsData) -> list[str]:
 
     total_period_days = (period_end - period_start).days + 1
     active_days = [d for d in sorted_days if d.events > 0]
-    top_days = sorted(active_days, key=lambda d: -d.events)[:3]
+    top_days = sorted(active_days, key=_key_day_events, reverse=True)[:3]
 
     # Build right panel lines
     panel_lines: list[str] = []
@@ -743,7 +733,7 @@ def _render_by_project_section(stats: StatsData) -> list[str]:
             name_prefix=f"{fg(*color)}●{RESET} ",
             name_color=C.TEXT_PRIMARY,
         ))
-        lines.append(f"{_M}  {fg(*C.TEXT_DIM)}└─ {p.hash}  {_strip_ansi(p.path)}{RESET}")
+        lines.append(f"{_M}  {fg(*C.TEXT_DIM)}└─ {p.hash}  {strip_ansi(p.path)}{RESET}")
 
     return lines
 
@@ -766,7 +756,7 @@ def _render_insights_section(stats: StatsData) -> list[str]:
         return f"{fg(*C.TEXT_MUTED)}{s}{RESET}"
 
     # Biggest saver by bytes
-    top_kind: KindStat | None = max(stats.by_kind, key=lambda k: k.bytes, default=None)
+    top_kind: KindStat | None = max(stats.by_kind, key=_key_kind_bytes, default=None)
     if top_kind:
         share = top_kind.bytes / stats.totals.bytes if stats.totals.bytes > 0 else 0.0
         lines.append(
@@ -776,7 +766,7 @@ def _render_insights_section(stats: StatsData) -> list[str]:
         )
 
     # Most active day
-    top_day: DayStat | None = max(stats.by_day, key=lambda d: d.events, default=None)
+    top_day: DayStat | None = max(stats.by_day, key=_key_day_events, default=None)
     if top_day:
         lines.append(
             f"{_M}{bullet} {dim(_STATS_MESSAGES['insights']['mostActive'])}{fg(*C.TEXT_PRIMARY)}{top_day.date}{RESET}"
@@ -785,7 +775,7 @@ def _render_insights_section(stats: StatsData) -> list[str]:
 
     # Token leader (excluding bytes_mode_only kinds)
     token_kinds = [k for k in stats.by_kind if not k.bytes_mode_only]
-    top_token: KindStat | None = max(token_kinds, key=lambda k: k.tokens, default=None)
+    top_token: KindStat | None = max(token_kinds, key=_key_kind_tokens, default=None)
     if top_token:
         lines.append(
             f"{_M}{bullet} {dim(_STATS_MESSAGES['insights']['tokenLeader'])}{fg(*C.TEXT_PRIMARY)}{top_token.kind}{RESET}"

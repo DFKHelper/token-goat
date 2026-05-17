@@ -4,7 +4,6 @@ from __future__ import annotations
 import hashlib
 import logging
 import operator
-import re
 import sqlite3
 import time
 from collections import defaultdict
@@ -14,13 +13,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, TypedDict
 
 from . import db
-
-# Strip ANSI/VT escape sequences from strings before passing to terminal output.
-# Project root paths come from the stats DB (written by harness hooks from
-# attacker-influenced payloads) and could contain embedded ESC bytes.  Rich's
-# Text() is immune to Rich-markup injection but passes raw bytes straight through
-# to the terminal, so stripping here prevents colour/cursor-control injection.
-_ANSI_ESCAPE_RE = re.compile(r"\x1b(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])")
+from .render.ansi import strip_ansi as _strip_ansi
 
 if TYPE_CHECKING:
     from rich.table import Table as RichTable
@@ -750,7 +743,7 @@ def render_text(
         # Rich neutralises its own markup but forwards raw ESC bytes to the
         # terminal, so a crafted root path could inject colour/cursor sequences.
         for p in projs:
-            safe_root = _ANSI_ESCAPE_RE.sub("", p["project_root"]) if p["project_root"] else "(unknown)"
+            safe_root = _strip_ansi(p["project_root"]) if p["project_root"] else "(unknown)"
             console.print(
                 Text("    ", style="")
                 + Text(f"{p['project_hash'][:8]}  ", style="dim cyan")
