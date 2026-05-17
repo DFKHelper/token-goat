@@ -227,6 +227,8 @@ def save(config: Config) -> None:
         },
     }
     try:
-        paths.atomic_write_bytes(p, tomli_w.dumps(cast(dict[str, Any], data)).encode("utf-8"))
+        # _ConfigToml is a TypedDict — a subtype of dict — so tomli_w.dumps
+        # (which accepts Mapping[str, Any]) does not require a cast here.
+        paths.atomic_write_bytes(p, tomli_w.dumps(data).encode("utf-8"))
     except OSError as e:
         _LOG.warning("config save failed: %s", e)
