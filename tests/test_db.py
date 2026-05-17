@@ -418,3 +418,161 @@ def test_open_global_close_error_does_not_propagate(tmp_data_dir):
     ):
         pass
     # Reaching here means OperationalError from close() was swallowed
+
+
+# ---------------------------------------------------------------------------
+# 19. Index optimization: composite indexes for read_symbol / read_section
+# ---------------------------------------------------------------------------
+
+def test_composite_indexes_present(tmp_data_dir):
+    """The (file_rel, name) and (file_rel, heading) composite indexes are
+    required for read_symbol / read_section's hot lookups.  Without them the
+    planner falls back to a single-column index and filters in memory, which
+    scales linearly with symbols-per-file or sections-per-heading.
+    """
+    h = "abcdef0123456789abcdef0123456789abcdef01"
+    with db.open_project(h) as conn:
+        idx_names = {
+            r[0]
+            for r in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'index'"
+            ).fetchall()
+        }
+    assert "idx_symbols_file_name" in idx_names, idx_names
+    assert "idx_sections_file_heading" in idx_names, idx_names
+
+
+def test_read_symbol_query_uses_composite_index(tmp_data_dir):
+    """EXPLAIN QUERY PLAN must confirm the symbols(file_rel,name) composite
+    index is selected for the (file_rel = ? AND name = ?) lookup pattern used
+    by read_symbol().  A regression to a single-column index would cause the
+    planner to scan all symbols in the file (O(symbols-per-file) instead of
+    O(log N)).
+    """
+    h = "abcdef0123456789abcdef0123456789abcdef02"
+    with db.open_project(h) as conn:
+        plan_rows = conn.execute(
+            "EXPLAIN QUERY PLAN "
+            "SELECT name, kind, line, end_line, signature FROM symbols "
+            "WHERE file_rel = ? AND name = ? AND end_line IS NOT NULL ORDER BY line",
+            ("a", "b"),
+        ).fetchall()
+    plan_text = " | ".join(str(tuple(r)) for r in plan_rows)
+    assert "idx_symbols_file_name" in plan_text, plan_text
+
+
+def test_read_section_query_uses_composite_index(tmp_data_dir):
+    h = "abcdef0123456789abcdef0123456789abcdef03"
+    with db.open_project(h) as conn:
+        plan_rows = conn.execute(
+            "EXPLAIN QUERY PLAN "
+            "SELECT heading, level, line, end_line FROM sections "
+            "WHERE file_rel = ? AND heading = ? AND end_line IS NOT NULL ORDER BY line",
+            ("a", "b"),
+        ).fetchall()
+    plan_text = " | ".join(str(tuple(r)) for r in plan_rows)
+    assert "idx_sections_file_heading" in plan_text, plan_text
+
+
+def test_symbol_lookup_under_50ms_with_10k_symbols(tmp_data_dir):
+    """Synthetic benchmark: with 10,000 symbols spread across 200 files,
+    the (file_rel = ? AND name = ?) lookup must complete in well under 50ms.
+    This guards against accidental index regressions or schema changes that
+    would force a table scan.
+    """
+    h = "abcdef0123456789abcdef0123456789abcdef04"
+    n_files = 200
+    n_per_file = 50  # → 10,000 symbols total
+
+    with db.open_project(h) as conn:
+        conn.execute("BEGIN")
+        # Files must exist first so the FK from symbols.file_rel resolves.
+        conn.executemany(
+            "INSERT INTO files (rel_path, language, size, line_count, mtime, "
+            "content_sha256, indexed_at) VALUES (?, 'python', 1, 1, 0.0, '', 0)",
+            ((f"src/mod{i:04d}.py",) for i in range(n_files)),
+        )
+        conn.executemany(
+            "INSERT INTO symbols (name, kind, file_rel, line, col, end_line) "
+            "VALUES (?, 'function', ?, ?, 0, ?)",
+            (
+                (f"sym_{i:04d}_{j:03d}", f"src/mod{i:04d}.py", j + 1, j + 5)
+                for i in range(n_files)
+                for j in range(n_per_file)
+            ),
+        )
+        conn.execute("COMMIT")
+        # Run ANALYZE so the planner has accurate statistics.
+        conn.execute("ANALYZE")
+
+        # Hot lookup: 100 iterations, take the median to smooth out noise.
+        import statistics  # noqa: PLC0415
+
+        timings: list[float] = []
+        for k in range(100):
+            file_idx = k % n_files
+            sym_idx = k % n_per_file
+            t0 = time.monotonic()
+            row = conn.execute(
+                "SELECT name, kind, line, end_line FROM symbols "
+                "WHERE file_rel = ? AND name = ? AND end_line IS NOT NULL "
+                "ORDER BY line",
+                (f"src/mod{file_idx:04d}.py", f"sym_{file_idx:04d}_{sym_idx:03d}"),
+            ).fetchone()
+            timings.append((time.monotonic() - t0) * 1000)
+            assert row is not None, f"missing symbol at iter {k}"
+        median_ms = statistics.median(timings)
+        max_ms = max(timings)
+
+    # 50ms median is extremely generous; in practice this should be <1ms.
+    assert median_ms < 50, f"median lookup too slow: {median_ms:.2f}ms"
+    # 200ms peak guard catches pathological tails (cold cache, GC).
+    assert max_ms < 200, f"max lookup too slow: {max_ms:.2f}ms"
+
+
+def test_write_file_index_uses_transaction(tmp_data_dir):
+    """write_file_index() must wrap its DELETE + INSERT + executemany calls in
+    a single explicit transaction.  Without it, each statement is a separate
+    autocommit fsync, ~80x slower for typical files.  We assert correctness
+    (rows inserted) and performance (a 500-symbol file persists in under 1s).
+    """
+    from token_goat import parser as parser_mod  # noqa: PLC0415
+
+    h = "abcdef0123456789abcdef0123456789abcdef05"
+    fi = parser_mod.FileIndex(
+        rel_path="src/big.py",
+        language="python",
+        size=10000,
+        line_count=500,
+        mtime=0.0,
+        content_sha256="x" * 64,
+        symbols=[
+            parser_mod.Symbol(
+                name=f"f{i:03d}", kind="function", line=i + 1, col=0,
+                end_line=i + 5, signature=f"def f{i:03d}():"
+            )
+            for i in range(500)
+        ],
+        refs=[
+            parser_mod.Ref(name=f"ref{i:03d}", line=i + 1, col=0, context="")
+            for i in range(500)
+        ],
+        imports_exports=[],
+        sections=[],
+    )
+    with db.open_project(h) as conn:
+        t0 = time.monotonic()
+        parser_mod.write_file_index(conn, fi)
+        elapsed = time.monotonic() - t0
+        n_symbols = conn.execute(
+            "SELECT COUNT(*) FROM symbols WHERE file_rel = ?", (fi.rel_path,)
+        ).fetchone()[0]
+        n_refs = conn.execute(
+            "SELECT COUNT(*) FROM refs WHERE file_rel = ?", (fi.rel_path,)
+        ).fetchone()[0]
+    assert n_symbols == 500
+    assert n_refs == 500
+    # 1s is hugely generous; with the transaction wrapping this is ~10ms.
+    # Without the transaction (autocommit), this would routinely exceed 1s
+    # on Windows with WAL fsync on every statement.
+    assert elapsed < 1.0, f"write_file_index too slow: {elapsed:.3f}s"

@@ -405,6 +405,13 @@ CREATE TABLE IF NOT EXISTS symbols (
 );
 CREATE INDEX IF NOT EXISTS idx_symbols_name ON symbols(name);
 CREATE INDEX IF NOT EXISTS idx_symbols_file ON symbols(file_rel);
+-- Composite (file_rel, name) for read_symbol's primary access pattern:
+--   SELECT … FROM symbols WHERE file_rel = ? AND name = ?
+-- Without this, the planner picks idx_symbols_file then filters by name in
+-- memory, which scans every symbol in the file.  EXPLAIN QUERY PLAN before:
+--   'SEARCH symbols USING INDEX idx_symbols_file (file_rel=?)'
+-- After: 'SEARCH symbols USING INDEX idx_symbols_file_name (file_rel=? AND name=?)'
+CREATE INDEX IF NOT EXISTS idx_symbols_file_name ON symbols(file_rel, name);
 
 -- Call-site references: every identifier followed by '(' that appears in the project.
 -- Used for "find usages" and to build the PageRank graph in repomap.py.
@@ -433,6 +440,11 @@ CREATE TABLE IF NOT EXISTS sections (
 );
 CREATE INDEX IF NOT EXISTS idx_sections_file    ON sections(file_rel);
 CREATE INDEX IF NOT EXISTS idx_sections_heading ON sections(heading);
+-- Composite (file_rel, heading) for read_section's primary access pattern.
+-- Without this, the planner uses idx_sections_heading (which can match many
+-- "Install"/"Usage" headings across the project) and filters by file in
+-- memory.  The composite seeks directly to the (file, heading) pair.
+CREATE INDEX IF NOT EXISTS idx_sections_file_heading ON sections(file_rel, heading);
 
 -- Import and export declarations, one row per statement.
 -- kind is 'import', 'export', or 'reexport'; target is the module path or symbol name.
