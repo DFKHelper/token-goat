@@ -1469,3 +1469,120 @@ class TestCollectTransitiveOutgoing:
         # b.ts is reachable; a.ts is not in result (it's the start)
         assert "b.ts" in result
         assert "a.ts" not in result
+
+
+# ---------------------------------------------------------------------------
+# Surgical-read CLI ergonomics: "did you mean…?" suggestions on miss
+# ---------------------------------------------------------------------------
+# Why these tests matter: when a surgical-read command misses, the agent's
+# only fallback is to Read the whole file — defeating the surgical-read
+# mechanism entirely. A "Did you mean:" hint keeps the agent on the
+# narrow-extract path even when its first guess was wrong.
+
+class TestSurgicalReadSuggestionsOnMiss:
+    """Close-match suggestions for symbol/read/section misses keep agents
+    on the surgical-read path instead of falling back to whole-file Read."""
+
+    def test_read_miss_lists_close_symbol_in_same_file(self, indexed_ts_cli):
+        """`token-goat read file::TypoName` should surface real symbol names
+        with similar spelling from that file as suggestions."""
+        from typer.testing import CliRunner
+
+        from token_goat.cli import app
+
+        runner = CliRunner()
+        # `greet` exists; `greetz` is a 1-char typo and should be suggested.
+        result = runner.invoke(app, ["read", "index.ts::greetz"])
+        combined = result.output + (result.stderr or "")
+        assert "Symbol not found" in combined
+        assert "Did you mean" in combined
+        assert "greet" in combined
+
+    def test_read_miss_json_carries_candidates(self, indexed_ts_cli):
+        """JSON-mode miss must include `candidates` so non-human callers
+        (scripts, hooks) can act on the suggestion list programmatically."""
+        from typer.testing import CliRunner
+
+        from token_goat.cli import app
+
+        runner = CliRunner()
+        result = runner.invoke(app, ["read", "--json", "index.ts::greetz"])
+        payload = json.loads(result.output)
+        assert payload["ok"] is False
+        assert payload["error"]["code"] == "symbol_not_found"
+        # `candidates` is the structured "did you mean" field.
+        assert "candidates" in payload["error"]
+        assert "greet" in payload["error"]["candidates"]
+
+    def test_read_miss_with_no_close_match_omits_didyoumean(self, indexed_ts_cli):
+        """When nothing is even remotely similar, do not emit a misleading
+        "Did you mean:" header — the absence of suggestions is meaningful."""
+        from typer.testing import CliRunner
+
+        from token_goat.cli import app
+
+        runner = CliRunner()
+        # Extremely different from any real symbol — no close match should be surfaced.
+        result = runner.invoke(app, ["read", "index.ts::xyzqq__totally_unrelated"])
+        combined = result.output + (result.stderr or "")
+        assert "Symbol not found" in combined
+        assert "Did you mean" not in combined
+
+    def test_section_miss_lists_close_heading_in_same_file(self, indexed_md_cli):
+        """`token-goat section file::TypoHeading` should suggest real headings
+        with similar spelling from that file."""
+        from typer.testing import CliRunner
+
+        from token_goat.cli import app
+
+        runner = CliRunner()
+        # Article has "Methodology"; "Methodolgy" is a 1-char typo.
+        result = runner.invoke(app, ["section", "article.md::Methodolgy"])
+        combined = result.output + (result.stderr or "")
+        assert "Section not found" in combined
+        assert "Did you mean" in combined
+        assert "Methodology" in combined
+
+    def test_section_miss_json_carries_candidates(self, indexed_md_cli):
+        """Section JSON miss includes candidates list."""
+        from typer.testing import CliRunner
+
+        from token_goat.cli import app
+
+        runner = CliRunner()
+        result = runner.invoke(app, ["section", "--json", "article.md::Methodolgy"])
+        payload = json.loads(result.output)
+        assert payload["ok"] is False
+        assert payload["error"]["code"] == "section_not_found"
+        assert "candidates" in payload["error"]
+        assert "Methodology" in payload["error"]["candidates"]
+
+    def test_symbol_miss_lists_close_match_in_project(self, indexed_ts_cli):
+        """`token-goat symbol Typo` should suggest real symbol names in the
+        same project. Without this hint agents bail out to Read."""
+        from typer.testing import CliRunner
+
+        from token_goat.cli import app
+
+        runner = CliRunner()
+        # `UserService` exists; `UserServic` (truncated) should be suggested.
+        result = runner.invoke(app, ["symbol", "UserServic"])
+        assert result.exit_code == 0
+        combined = result.output + (result.stderr or "")
+        assert "No matches for" in combined
+        assert "Did you mean" in combined
+        assert "UserService" in combined
+
+    def test_symbol_miss_with_no_close_match_omits_didyoumean(self, indexed_ts_cli):
+        """When the search term is totally unlike anything indexed, do not
+        emit a "Did you mean:" header (would be misleading)."""
+        from typer.testing import CliRunner
+
+        from token_goat.cli import app
+
+        runner = CliRunner()
+        result = runner.invoke(app, ["symbol", "qqzzqqzz_unrelated"])
+        assert result.exit_code == 0
+        combined = result.output + (result.stderr or "")
+        assert "No matches for" in combined
+        assert "Did you mean" not in combined
