@@ -1024,3 +1024,28 @@ def test_verify_install_idempotent_count_stable(tmp_path, monkeypatch):
     count_third = install._settings_json_token_goat_count()
     assert count_first == count_second == count_third
     assert count_first > 0
+
+
+def test_probe_image_codecs_ok_when_all_present(monkeypatch):
+    """Every codec present + WebP encode works → ok=True, no hint."""
+    import PIL.features as pil_features  # noqa: PLC0415
+
+    monkeypatch.setattr(pil_features, "check", lambda _codec: True)
+    report = install.probe_image_codecs()
+    assert report["ok"] is True
+    assert "WebP=ok" in report["summary"]
+    assert "WebP-encode=ok" in report["summary"]
+    assert report["missing"] == []
+    assert report["hint"] == ""
+
+
+def test_probe_image_codecs_flags_missing_and_emits_hint(monkeypatch):
+    """WebP missing → ok=False, missing list populated, hint references a real installer."""
+    import PIL.features as pil_features  # noqa: PLC0415
+
+    monkeypatch.setattr(pil_features, "check", lambda codec: codec != "webp")
+    report = install.probe_image_codecs()
+    assert report["ok"] is False
+    assert "WebP" in report["missing"]
+    assert "WebP=MISSING" in report["summary"]
+    assert any(tok in report["hint"] for tok in ("apt-get", "dnf", "pacman", "brew", "uv tool install"))

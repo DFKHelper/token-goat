@@ -1972,6 +1972,14 @@ def install_all(
     if install_openclaw:
         _run_step(result, "openclaw: plugin", bridges.install_openclaw_plugin)
 
+    codec_report = probe_image_codecs()
+    result["image codecs"] = (
+        _ok_fail(True, codec_report["summary"])
+        if codec_report["ok"]
+        else _ok_fail(False, codec_report["summary"])
+    )
+    _LOG.info("install step: image codecs — %s", result["image codecs"])
+
     failures = [k for k, v in result.items() if v.startswith("FAIL")]
     elapsed_ms = (time.monotonic() - t0) * 1000
     _LOG.info(
@@ -1982,6 +1990,80 @@ def install_all(
         f": {failures}" if failures else "",
     )
     return result
+
+
+class _ImageCodecReport(TypedDict):
+    ok: bool
+    summary: str
+    missing: list[str]
+    hint: str
+
+
+def probe_image_codecs() -> _ImageCodecReport:
+    """Probe Pillow's image codec availability and return a structured report.
+
+    Why: token-goat's biggest single token win comes from WebP encoding (~39%
+    smaller than JPEG on screenshots). On minimal Linux/WSL images, Pillow may
+    import but ship without libwebp/libjpeg/zlib bindings, which silently
+    breaks the shrink pipeline. Surfacing this at install time — not on first
+    image read — lets the user (or an AI driving the install) fix it as part
+    of the same task. Same logic powers ``token-goat doctor``.
+    """
+    report: _ImageCodecReport = {"ok": False, "summary": "", "missing": [], "hint": ""}
+    try:
+        from PIL import Image, features  # noqa: PLC0415
+
+        parts: list[str] = []
+        missing: list[str] = []
+        for codec, label in (("webp", "WebP"), ("jpg", "JPEG"), ("zlib", "PNG")):
+            if features.check(codec):
+                parts.append(f"{label}=ok")
+            else:
+                parts.append(f"{label}=MISSING")
+                missing.append(label)
+        try:
+            import io  # noqa: PLC0415
+
+            buf = io.BytesIO()
+            Image.new("RGB", (4, 4), (200, 100, 50)).save(buf, "WEBP", quality=80)
+            parts.append("WebP-encode=ok")
+        except Exception as exc:  # noqa: BLE001
+            parts.append(f"WebP-encode=FAIL ({type(exc).__name__})")
+            if "WebP" not in missing:
+                missing.append("WebP")
+        summary = ", ".join(parts)
+        ok = not missing and "FAIL" not in summary
+        hint = ""
+        if not ok:
+            if sys.platform.startswith("linux"):
+                hint = (
+                    "Install system codecs and reinstall Pillow:\n"
+                    "    sudo apt-get install -y libwebp-dev libjpeg-dev zlib1g-dev   # Debian/Ubuntu/WSL\n"
+                    "    sudo dnf install -y libwebp-devel libjpeg-turbo-devel zlib-devel  # Fedora/RHEL\n"
+                    "    sudo pacman -S libwebp libjpeg-turbo zlib                        # Arch\n"
+                    "    sudo apk add libwebp-dev libjpeg-turbo-dev zlib-dev               # Alpine\n"
+                    "    uv tool install --reinstall token-goat"
+                )
+            elif sys.platform == "darwin":
+                hint = (
+                    "Install system codecs and reinstall Pillow:\n"
+                    "    brew install webp jpeg-turbo\n"
+                    "    uv tool install --reinstall token-goat"
+                )
+            else:
+                hint = (
+                    "Pillow on Windows ships codecs by default — a missing codec usually means "
+                    "Pillow itself is broken. Reinstall: uv tool install --reinstall token-goat"
+                )
+        report["ok"] = ok
+        report["summary"] = summary
+        report["missing"] = missing
+        report["hint"] = hint
+    except ImportError as exc:
+        report["summary"] = f"Pillow not importable — {exc}"
+        report["missing"] = ["Pillow"]
+        report["hint"] = "uv tool install --reinstall token-goat"
+    return report
 
 
 def _stop_worker() -> str:

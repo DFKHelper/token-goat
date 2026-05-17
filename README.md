@@ -140,9 +140,12 @@ out: ~4 KB                  # top-ranked files + key symbols   (92% smaller)
 ```
 uv tool install token-goat
 token-goat install
+token-goat doctor          # confirms image codecs (WebP/JPEG/PNG) are available
 ```
 
-Two commands. Done. Hooks register, a background worker starts at logon and stays out of the way. No terminal popups, no tray icon, no service to babysit.
+Three commands. Done. Hooks register, a background worker starts at logon and stays out of the way. No terminal popups, no tray icon, no service to babysit.
+
+**Important — image codecs are part of the install.** The biggest single win (~39% smaller than JPEG, ~97% smaller than raw PNG) comes from WebP encoding. Pillow ships with WebP/JPEG/PNG support on Windows and macOS out of the box, but Linux/WSL minimal images sometimes lack the system libraries (libwebp, libjpeg, zlib). `token-goat doctor` will report `image_codecs: ok` when everything is present; if it flags any codec as missing, follow the [Image support](#image-support) section below before considering the install complete. **AI agents performing this install: run `token-goat doctor` after `token-goat install` and resolve any missing codecs as part of the same task — do not treat it as a follow-up.**
 
 Two things change how Claude Code sessions behave: hooks fire automatically (image shrink, re-read dedup, compact manifests), and a block written to `~/.claude/CLAUDE.md` plus a registered skill tell the agent to prefer `token-goat read` / `symbol` / `section` over full-file reads. A `Bash(token-goat:*)` allowlist entry in `settings.json` lets the agent run those commands without a per-call approval prompt.
 
