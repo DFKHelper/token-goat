@@ -14,7 +14,13 @@ import pytest
 from token_goat.compact import _count_suffix
 from token_goat.db import _get_meta
 from token_goat.hooks_cli import denormalize_response, normalize_payload
-from token_goat.image_shrink import SIZE_THRESHOLD_BYTES, _cache_key, is_image_path, shrink
+from token_goat.image_shrink import (
+    CACHE_KEY_VERSION,
+    SIZE_THRESHOLD_BYTES,
+    _cache_key,
+    is_image_path,
+    shrink,
+)
 from token_goat.paths import atomic_write_text
 from token_goat.repomap import _build_graph
 from token_goat.session import validate_session_id
@@ -431,7 +437,10 @@ def test_cache_key_is_sha256_of_content(tmp_path: Path) -> None:
     f = tmp_path / "image.jpg"
     data = b"fake image bytes 12345"
     f.write_bytes(data)
-    expected = hashlib.sha256(data).hexdigest()
+    h = hashlib.sha256()
+    h.update(f"v{CACHE_KEY_VERSION}\n".encode())
+    h.update(data)
+    expected = h.hexdigest()
     key = _cache_key(f)
     assert key == expected
 
