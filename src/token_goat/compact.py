@@ -316,6 +316,9 @@ def _render(cache: SessionCache, session_id: str, max_tokens: int) -> tuple[str,
     # Accessed before Edited Files — exactly the priority order we want.
     lines = result.splitlines()
     # Budget in chars: max_tokens * 3 chars/token (conservative, matches estimate_tokens logic).
+    # The -1 makes the comparison strictly-less-than rather than at-most, so a
+    # manifest that lands exactly on the char boundary (total_chars == max_tokens * 3)
+    # still triggers one trim pass rather than slipping through as "within budget".
     char_budget = max_tokens * 3 - 1
     # Total chars = sum of line lengths + (n-1) newline separators
     total_chars = sum(len(ln) for ln in lines) + len(lines) - 1
