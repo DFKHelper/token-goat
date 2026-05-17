@@ -27,9 +27,6 @@ _CALL_NOISE = frozenset([
     "bool", "byte", "rune", "error",
 ])
 
-# Regex: identifier NOT preceded by . or -> that is immediately followed by (
-_CALL_RE = re.compile(r"(?<![.\w])([A-Za-z_][A-Za-z0-9_]*)\s*\(")
-
 # Regex to extract quoted import path from a Go import line
 _GO_IMPORT_RE = re.compile(r'"([^"]+)"')
 
@@ -125,7 +122,7 @@ def _extract_const_var_inner(source: bytes) -> list[Symbol]:
 def extract(source: bytes, rel_path: str) -> tuple[list[Symbol], list[Ref], list[ImpExp], list[Section]]:
     """Extract symbols, refs, and imports from a Go file."""
     collected = common.collect_symbols_and_refs(
-        source, "go", rel_path, _LOG, _CALL_RE, _CALL_NOISE
+        source, "go", rel_path, _LOG, common.CALL_RE, _CALL_NOISE
     )
     if collected is None:
         return [], [], [], []
