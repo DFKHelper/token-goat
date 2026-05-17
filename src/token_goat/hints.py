@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import TypedDict
 
 from . import db, session
-from .hooks_common import sanitize_log_str
+from .hooks_common import sanitize_log_str, validate_cwd
 from .project import find_project
 
 _LOG = logging.getLogger("token_goat.hints")
@@ -363,11 +363,12 @@ def _hint_from_index(
     # Sanitize here too for direct callers that bypass build_read_hint.
     if fname is None:
         fname = _sanitize_hint_path(Path(file_path).name)
-    if cwd is None:
-        _LOG.debug("_hint_from_index: skipped for %s (no cwd)", fname)
+    cwd_path = validate_cwd(cwd, caller="_hint_from_index")
+    if cwd_path is None:
+        _LOG.debug("_hint_from_index: skipped for %s (no valid cwd)", fname)
         return None
 
-    project = find_project(Path(cwd))
+    project = find_project(cwd_path)
     if project is None:
         _LOG.debug("_hint_from_index: skipped for %s (no project found in %s)", fname, cwd)
         return None

@@ -26,6 +26,7 @@ from .hooks_common import (
     get_session_context,
     get_tool_input,
     sanitize_log_str,
+    validate_cwd,
 )
 from .hooks_common import (
     LOG as _LOG,
@@ -79,7 +80,14 @@ def _enqueue_for_reindex(file_path: str, cwd: str | None) -> None:
     from .project import find_project  # noqa: PLC0415
 
     abs_path = Path(file_path)
-    search_root = abs_path.parent if abs_path.is_absolute() else Path(cwd or ".")
+    if abs_path.is_absolute():
+        search_root = abs_path.parent
+    else:
+        cwd_path = validate_cwd(cwd, caller="post-edit")
+        if cwd_path is None:
+            _LOG.debug("post-edit: no valid cwd for relative file_path %s; skipping enqueue", sanitize_log_str(file_path))
+            return
+        search_root = cwd_path
     project = find_project(search_root)
     if project is None:
         _LOG.debug(

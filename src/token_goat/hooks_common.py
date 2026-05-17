@@ -40,9 +40,11 @@ __all__ = [
     "pre_tool_use_with_update",
     "sanitize_log_str",
     "sanitize_opt",
+    "validate_cwd",
 ]
 
 import logging
+from pathlib import Path
 from typing import Any, TypedDict, cast
 
 # ---------------------------------------------------------------------------
@@ -310,3 +312,67 @@ def pre_tool_use_with_update(updated_input: dict[str, object], additional_contex
         additionalContext=additional_context,
     )
     return {"continue": True, "hookSpecificOutput": hso}
+
+
+# Maximum byte length accepted for a ``cwd`` value from an untrusted hook
+# payload.  Matches PATH_MAX on Linux; well above any real working-directory
+# path on Windows.  Prevents large Path object allocations from adversarial input.
+_MAX_CWD_LEN: int = 4096
+
+
+def validate_cwd(cwd: object, *, caller: str = "hook") -> Path | None:
+    """Validate a ``cwd`` value from an untrusted hook payload.
+
+    Returns a :class:`pathlib.Path` when *cwd* is a non-empty string that is
+    not too long, is absolute, and names an existing directory.  Returns
+    ``None`` and logs a warning otherwise.
+
+    This replicates — and centralises — the guard in
+    :func:`hooks_session._detect` so that every hook handler that resolves a
+    project from ``cwd`` applies the same checks.  Without this guard a
+    malicious harness payload could supply a relative traversal string (e.g.
+    ``../../sensitive``) or an excessively long value (100 KB+) that would
+    be silently handed to :func:`project.find_project`.
+
+    Args:
+        cwd:    The raw ``cwd`` field from the hook payload (may be any type).
+        caller: Short label used in warning log messages (e.g. ``"post-edit"``).
+
+    Returns:
+        A validated :class:`pathlib.Path`, or ``None`` if validation fails.
+    """
+    if not cwd or not isinstance(cwd, str):
+        return None
+    if len(cwd) > _MAX_CWD_LEN:
+        LOG.warning(
+            "%s: cwd too long (%d chars > %d limit); ignoring",
+            caller,
+            len(cwd),
+            _MAX_CWD_LEN,
+        )
+        return None
+    cwd_path = Path(cwd)
+    if not cwd_path.is_absolute():
+        LOG.warning(
+            "%s: cwd is not an absolute path (%r); ignoring",
+            caller,
+            sanitize_log_str(cwd),
+        )
+        return None
+    try:
+        if not cwd_path.is_dir():
+            LOG.warning(
+                "%s: cwd %r is not an existing directory; ignoring",
+                caller,
+                sanitize_log_str(cwd),
+            )
+            return None
+    except (OSError, ValueError) as exc:
+        LOG.warning(
+            "%s: could not stat cwd %r: %s; ignoring",
+            caller,
+            sanitize_log_str(cwd),
+            exc,
+        )
+        return None
+    return cwd_path
