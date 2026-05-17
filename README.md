@@ -184,6 +184,140 @@ token-goat stats
 
 `doctor` confirms the install is healthy. `stats` shows cumulative savings.
 
+## Stats display
+
+`token-goat stats` uses 24-bit ANSI color and Unicode block characters for gradient bars, sparklines, and the activity heatmap. In the right terminal it renders sharply. In the wrong one you get broken characters, flat gray blocks, or a "rich is not installed" error.
+
+When it's working, the output shows rounded box borders (╭─╮), gradient bars with fractional edges (▏▎▍▌▋▊▉█), sparklines (▁▂▃▄▅▆▇█), and a heatmap where cells step from dark to bright green. Question marks, boxes, or solid-color bars mean the terminal or font needs fixing.
+
+---
+
+### Windows
+
+The old Windows console host — `cmd.exe`, the legacy "Windows PowerShell" app — does not support 24-bit color. Windows Terminal does.
+
+**Step 1: Install Windows Terminal** (already on Windows 11; skip if you have it)
+```powershell
+winget install --id Microsoft.WindowsTerminal -e --silent
+```
+
+**Step 2: Set it as the default terminal** (Windows 10 only — Windows 11 handles this automatically)
+
+Open Windows Terminal → `Ctrl+,` → **Startup** → **Default terminal application** → **Windows Terminal** → **Save**.
+
+**Step 3: Confirm the font**
+
+Windows Terminal ships with Cascadia Code, which covers every character token-goat uses. No additional install needed. To confirm it's selected: `Ctrl+,` → **Profiles → Defaults → Appearance** → Font face should read `Cascadia Code` or `Cascadia Mono`.
+
+If you prefer a Nerd Font, download any variant from [nerdfonts.com](https://www.nerdfonts.com/font-downloads), install it, and select it in the font preference above.
+
+**If bars still look flat** (solid single-color blocks instead of a gradient), add to your PowerShell profile (`$PROFILE`):
+```powershell
+$env:COLORTERM = "truecolor"
+```
+
+---
+
+### macOS
+
+Terminal.app on Catalina and later, iTerm2, and the VS Code integrated terminal all handle truecolor and Unicode without configuration. Most users need nothing here. (macOS is untested — see the badge at the top.)
+
+If sparklines or box borders show as question marks or plain dashes, install a complete font:
+```bash
+brew install --cask font-jetbrains-mono-nerd-font
+```
+Set it in your terminal's font preferences and reopen.
+
+If colors look flat, add to `~/.zshrc` or `~/.bash_profile`:
+```bash
+export COLORTERM=truecolor
+```
+
+---
+
+### Linux / WSL
+
+**WSL users:** you're running inside Windows Terminal. Follow the Windows steps above — same terminal, same font.
+
+**SSH sessions:** the remote shell doesn't inherit truecolor from the local terminal. Add to `~/.bashrc` on the remote machine:
+```bash
+export COLORTERM=truecolor
+export TERM=xterm-256color
+```
+
+**Missing Unicode characters:** any Nerd Font covers everything token-goat uses.
+```bash
+# Ubuntu / Debian
+sudo apt install fonts-jetbrains-mono
+
+# Arch
+sudo pacman -S ttf-jetbrains-mono-nerd
+```
+
+---
+
+### AI automated setup
+
+Scripts for non-interactive setup. No prompts.
+
+#### Windows (PowerShell)
+```powershell
+# 1. Install Windows Terminal if absent
+if (-not (Get-Command wt.exe -ErrorAction SilentlyContinue)) {
+    winget install --id Microsoft.WindowsTerminal -e --silent
+}
+
+# 2. Set Windows Terminal as the default console host
+#    UI equivalent: Windows Terminal -> Ctrl+, -> Startup -> Default terminal application -> Windows Terminal
+#    GUIDs are for Windows Terminal stable release
+reg add "HKCU\Console" /v DelegationConsole /t REG_SZ /d "{E12CFF52-A866-4C77-9A90-F570A7AA2C6B}" /f
+reg add "HKCU\Console" /v DelegationTerminal /t REG_SZ /d "{E12CFF52-A866-4C77-9A90-F570A7AA2C6B}" /f
+
+# 3. Enable truecolor for the current session and persistently for the user account
+[System.Environment]::SetEnvironmentVariable("COLORTERM", "truecolor", "User")
+$env:COLORTERM = "truecolor"
+
+# 4. Verify
+token-goat stats
+```
+
+#### macOS / Linux / WSL (bash)
+```bash
+OS="$(uname -s)"
+
+# Install a complete font
+if [[ "$OS" == "Darwin" ]]; then
+    command -v brew &>/dev/null && brew install --cask font-jetbrains-mono-nerd-font
+elif [[ "$OS" == "Linux" ]]; then
+    command -v apt-get &>/dev/null && sudo apt-get install -y fonts-jetbrains-mono
+    command -v pacman  &>/dev/null && sudo pacman -S --noconfirm ttf-jetbrains-mono-nerd
+fi
+
+# Enable truecolor — appends only if not already present
+RCFILE="${HOME}/.zshrc"
+[[ -f "${HOME}/.bashrc" ]] && RCFILE="${HOME}/.bashrc"
+grep -q "COLORTERM=truecolor" "$RCFILE" || echo 'export COLORTERM=truecolor' >> "$RCFILE"
+grep -q "TERM=xterm-256color" "$RCFILE" || echo 'export TERM=xterm-256color' >> "$RCFILE"
+# shellcheck disable=SC1090
+source "$RCFILE"
+
+# Verify
+token-goat stats
+```
+
+#### Truecolor check (any platform)
+
+Run this if the stats output still looks wrong. A smooth green gradient from left to right means truecolor is active. Solid single-shade green means it isn't.
+
+```bash
+python3 -c "
+import sys
+for r in range(0, 256, 32):
+    sys.stdout.write(f'\x1b[48;2;0;{r};0m  ')
+sys.stdout.write('\x1b[0m\n')
+"
+```
+
 ## Security, privacy, and uninstall
 
 **No telemetry. No analytics. No background reporting or silent outbound connections.**
