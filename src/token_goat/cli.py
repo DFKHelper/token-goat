@@ -9,7 +9,7 @@ import sqlite3
 import sys
 from dataclasses import asdict, is_dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, get_args
+from typing import TYPE_CHECKING, Any, cast, get_args
 
 if TYPE_CHECKING:
     from .project import Project
@@ -790,7 +790,7 @@ def _parse_harness(raw: str) -> hooks_cli.Harness:
     ``--harness`` flag from a newer harness version does not abort the hook.
     """
     if raw in _VALID_HARNESSES:
-        return raw  # type: ignore[return-value]  # membership check proves the Literal constraint
+        return cast(hooks_cli.Harness, raw)
     _LOG.debug("unknown harness %r; defaulting to 'claude'", raw)
     return "claude"
 
