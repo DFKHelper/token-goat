@@ -1,4 +1,10 @@
-"""Fetch hook helpers."""
+"""Pre-fetch hook: intercept Drive and WebFetch image downloads before they reach the model.
+
+Image URLs and Drive file downloads arrive through WebFetch/Drive MCP tools, not the Read
+tool, so the pre-read hook never fires for them.  This module catches those tool calls,
+denies the direct download, and redirects the model to ``token-goat gdrive-fetch`` or
+``token-goat webfetch`` so the shrink+cache pipeline applies before bytes hit context.
+"""
 from __future__ import annotations
 
 from .hooks_common import (
