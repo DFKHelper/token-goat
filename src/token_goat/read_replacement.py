@@ -83,6 +83,56 @@ def _coerce_line(val: object, default: int) -> int:
     return int(val) if val is not None else default  # type: ignore[call-overload]
 
 
+def _coerce_end_line(val: object) -> int | None:
+    """Return *val* as int, or None when *val* is None.
+
+    Companion to :func:`_coerce_line` for the end_line DB column, which may be
+    NULL (None) when only the start line is known.  Both ``read_symbol`` and
+    ``read_section`` contain the identical ``int(x) if x is not None else None``
+    expression; this helper eliminates that duplication.
+    """
+    return int(val) if val is not None else None  # type: ignore[call-overload]
+
+
+def _validate_lookup_args(caller: str, rel_path: str, name: str) -> bool:
+    """Validate the common preamble shared by read_symbol and read_section.
+
+    Both functions begin with the same two guards:
+    1. Reject unsafe relative paths (path traversal).
+    2. Reject oversized name/heading strings (unbounded heap allocation).
+
+    Extracting the guards here eliminates copy-paste and ensures both callers
+    apply the same limits from a single source of truth.
+
+    Parameters
+    ----------
+    caller:
+        Short label for log messages (e.g. ``"read_symbol"`` or ``"read_section"``).
+    rel_path:
+        File-relative path to validate.
+    name:
+        Symbol name or section heading to validate.
+
+    Returns
+    -------
+    bool
+        ``True`` when both guards pass; ``False`` when either rejects the input
+        (a warning is logged before returning ``False``).
+    """
+    if not _is_safe_rel_path(rel_path):
+        _LOG.warning("%s: rejected unsafe rel_path: %s", caller, rel_path)
+        return False
+    if len(name) > _MAX_SYMBOL_LEN:
+        _LOG.warning(
+            "%s: name/heading too long (%d chars > %d limit); rejecting",
+            caller,
+            len(name),
+            _MAX_SYMBOL_LEN,
+        )
+        return False
+    return True
+
+
 class ReadLookupError(ValueError):
     """Structured read-resolution failure."""
 
@@ -577,15 +627,7 @@ def read_symbol(
     Returns None if the symbol is not found or the file cannot be read.
     """
     t0 = time.monotonic()
-    if not _is_safe_rel_path(rel_path):
-        _LOG.warning("rejected unsafe rel_path: %s", rel_path)
-        return None
-    if len(symbol) > _MAX_SYMBOL_LEN:
-        _LOG.warning(
-            "read_symbol: symbol name too long (%d chars > %d limit); rejecting",
-            len(symbol),
-            _MAX_SYMBOL_LEN,
-        )
+    if not _validate_lookup_args("read_symbol", rel_path, symbol):
         return None
 
     try:
@@ -623,7 +665,7 @@ def read_symbol(
     lines, full_bytes = read_result
 
     sym_line: int = _coerce_line(chosen["line"], 1)
-    sym_end_line: int | None = int(chosen["end_line"]) if chosen["end_line"] is not None else None
+    sym_end_line: int | None = _coerce_end_line(chosen["end_line"])
     snippet, snippet_bytes, start, end = _extract_snippet(
         lines, full_bytes, sym_line, sym_end_line, context_lines
     )
@@ -669,15 +711,7 @@ def read_section(
     Returns None if the heading is not found or the file cannot be read.
     """
     t0 = time.monotonic()
-    if not _is_safe_rel_path(rel_path):
-        _LOG.warning("rejected unsafe rel_path: %s", rel_path)
-        return None
-    if len(heading) > _MAX_SYMBOL_LEN:
-        _LOG.warning(
-            "read_section: heading too long (%d chars > %d limit); rejecting",
-            len(heading),
-            _MAX_SYMBOL_LEN,
-        )
+    if not _validate_lookup_args("read_section", rel_path, heading):
         return None
 
     try:
@@ -721,7 +755,7 @@ def read_section(
     lines, full_bytes = read_result
 
     sec_line: int = _coerce_line(chosen["line"], 1)
-    sec_end_line: int | None = int(chosen["end_line"]) if chosen["end_line"] is not None else None
+    sec_end_line: int | None = _coerce_end_line(chosen["end_line"])
     snippet, snippet_bytes, start, end = _extract_snippet(
         lines, full_bytes, sec_line, sec_end_line, context_lines
     )
