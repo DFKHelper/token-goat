@@ -174,11 +174,13 @@ def pre_read(payload: dict[str, Any]) -> HookResponse:
         return CONTINUE()
 
     if tool_name != "Read":
+        _LOG.debug("pre-read: skipping non-Read tool %s", sanitize_log_str(str(tool_name or "")))
         return CONTINUE()
 
     tool_input = get_tool_input(payload)
     file_path = tool_input.get("file_path")
     if not file_path:
+        _LOG.debug("pre-read: no file_path in tool_input; skipping")
         return CONTINUE()
 
     session_id = payload.get("session_id")
@@ -188,7 +190,11 @@ def pre_read(payload: dict[str, Any]) -> HookResponse:
     if shrink_response:
         return shrink_response
 
-    cache = session.load(session_id) if session_id else None
+    if not session_id:
+        _LOG.debug("pre-read: no session_id; skipping hint for %s", sanitize_log_str(file_path))
+        return CONTINUE()
+
+    cache = session.load(session_id)
 
     hint = build_read_hint(
         session_id=session_id,
@@ -199,10 +205,17 @@ def pre_read(payload: dict[str, Any]) -> HookResponse:
         cache=cache,
     )
     if not hint:
+        _LOG.debug("pre-read: no hint for %s", sanitize_log_str(file_path))
         return CONTINUE()
 
     if hint.tokens_saved > 0:
+        _LOG.debug(
+            "pre-read: hint injected for %s (tokens_saved=%d)",
+            sanitize_log_str(file_path), hint.tokens_saved,
+        )
         _record_session_hint_impact(file_path, hint)
+    else:
+        _LOG.debug("pre-read: hint built for %s but tokens_saved=0; no stat recorded", sanitize_log_str(file_path))
 
     return pre_tool_use_with_context(str(hint))
 
@@ -231,12 +244,20 @@ def post_read(payload: dict[str, Any]) -> HookResponse:
             offset = tool_input.get("offset")
             limit = tool_input.get("limit")
             session.mark_file_read(session_id, file_path, offset, limit, cache=cache)
+            _LOG.debug(
+                "post-read: recorded Read file=%s offset=%s limit=%s",
+                sanitize_log_str(file_path), offset, limit,
+            )
     elif tool_name == "Grep":
         pattern = tool_input.get("pattern")
         path = tool_input.get("path")
         result_count = payload.get("result_count")
         if pattern:
             session.mark_grep(session_id, pattern, path, result_count, cache=cache)
+            _LOG.debug(
+                "post-read: recorded Grep pattern=%s path=%s result_count=%s",
+                sanitize_log_str(str(pattern)), sanitize_log_str(str(path or "")), result_count,
+            )
     elif tool_name == "Glob":
         pattern = tool_input.get("pattern")
         path = tool_input.get("path")
