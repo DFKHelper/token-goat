@@ -107,7 +107,7 @@ def test_foreign_keys_on(tmp_data_dir):
 # ---------------------------------------------------------------------------
 
 def test_corruption_auto_rebuild(tmp_data_dir):
-    h = "corruptme0001"
+    h = "c011ec70011ec70011ec70011ec70011ec700001"
     db_path = paths.project_db_path(h)
     db_path.parent.mkdir(parents=True, exist_ok=True)
     db_path.write_bytes(b"this is not a sqlite file GARBAGE GARBAGE GARBAGE")
@@ -127,7 +127,7 @@ def test_corruption_auto_rebuild(tmp_data_dir):
 # ---------------------------------------------------------------------------
 
 def test_writer_lock_acquires_and_releases(tmp_data_dir):
-    h = "lock0001"
+    h = "a0c000a0c000a0c000a0c000a0c000a0c0000001"
     with db.project_writer_lock(h, timeout_sec=2.0):
         lock_path = paths.locks_dir() / f"{h}.lock"
         assert lock_path.exists()
@@ -137,7 +137,7 @@ def test_writer_lock_acquires_and_releases(tmp_data_dir):
 
 def test_writer_lock_raises_timeout_when_held_by_live_pid(tmp_data_dir):
     """Write a lock file owned by the current (live) process with a fresh timestamp."""
-    h = "lock0002"
+    h = "a0c000a0c000a0c000a0c000a0c000a0c0000002"
     lock_path = paths.locks_dir() / f"{h}.lock"
     lock_path.parent.mkdir(parents=True, exist_ok=True)
     # Write lock owned by *this* process (alive) with current timestamp
@@ -152,7 +152,7 @@ def test_writer_lock_raises_timeout_when_held_by_live_pid(tmp_data_dir):
 # ---------------------------------------------------------------------------
 
 def test_stale_lock_auto_cleared(tmp_data_dir):
-    h = "lock0003"
+    h = "a0c000a0c000a0c000a0c000a0c000a0c0000003"
     lock_path = paths.locks_dir() / f"{h}.lock"
     lock_path.parent.mkdir(parents=True, exist_ok=True)
     stale_ts = time.time() - 660  # 11 minutes ago
@@ -187,7 +187,7 @@ def test_sqlite_vec_loads_and_version(tmp_data_dir):
 # ---------------------------------------------------------------------------
 
 def test_record_stat_project(tmp_data_dir):
-    h = "stat0001"
+    h = "5ba00005ba00005ba00005ba00005ba000000001"
     db.record_stat(h, "symbol_hit", tokens_saved=50, bytes_saved=200, detail="test")
     with db.open_project(h) as conn:
         row = conn.execute("SELECT * FROM stats WHERE kind='symbol_hit'").fetchone()
@@ -248,7 +248,7 @@ def test_touch_project_last_seen_noop_for_unregistered_project(tmp_data_dir):
 # ---------------------------------------------------------------------------
 
 def test_schema_version_meta_project(tmp_data_dir):
-    h = "schver0001"
+    h = "5c0e005c0e005c0e005c0e005c0e005c0e000001"
     with db.open_project(h) as conn:
         row = conn.execute("SELECT value FROM meta WHERE key='schema_version'").fetchone()
     assert row is not None
@@ -385,7 +385,7 @@ def test_open_project_close_error_does_not_propagate(tmp_data_dir):
     """
     from unittest.mock import MagicMock
 
-    h = "closeerr0001"
+    h = "c105ec105ec105ec105ec105ec105ec105e00001"
     # Create and initialize the real project DB first so schema exists.
     with db.open_project(h):
         pass

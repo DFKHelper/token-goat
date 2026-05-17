@@ -10,6 +10,7 @@ import pytest
 from token_goat import embeddings as emb
 from token_goat import read_replacement
 from token_goat.parser import index_project
+from token_goat.read_commands import _FileTarget
 
 # Sample fixture directories (for direct use in test methods)
 FIXTURE_DIR = Path(__file__).parent / "fixtures"
@@ -138,8 +139,9 @@ def test_resolve_bare_filename_with_literal_sql_like_chars(tmp_path, tmp_data_di
     ],
 )
 def test_safe_rel_path_rejects_absolute_and_traversal(path_value):
+    # _is_safe_rel_path now lives in token_goat.paths and is re-exported by
+    # read_replacement; embeddings no longer owns its own copy.
     assert read_replacement._is_safe_rel_path(path_value) is False
-    assert emb._is_safe_rel_path(path_value) is False
 
 
 # ---------------------------------------------------------------------------
@@ -630,7 +632,7 @@ def test_cli_deps_reports_dependency_graph(tmp_path, make_project, monkeypatch):
     monkeypatch.setattr(
         read_commands,
         "_resolve_file_target",
-        lambda _file: (fake_proj, "a.ts", fake_proj),
+        lambda _file: _FileTarget(fake_proj, "a.ts", fake_proj),
     )
     monkeypatch.setattr(
         read_commands,
@@ -672,7 +674,7 @@ def test_cli_deps_json_output(tmp_path, make_project, monkeypatch):
     monkeypatch.setattr(
         read_commands,
         "_resolve_file_target",
-        lambda _file: (fake_proj, "a.ts", fake_proj),
+        lambda _file: _FileTarget(fake_proj, "a.ts", fake_proj),
     )
     monkeypatch.setattr(
         read_commands,
@@ -725,7 +727,7 @@ def test_cli_deps_transitive_json_output(tmp_path, make_project, monkeypatch):
         }
 
     monkeypatch.setattr(read_commands.db, "open_project", lambda _hash: _fake_conn())
-    monkeypatch.setattr(read_commands, "_resolve_file_target", lambda _f: (fake_proj, "a.ts", fake_proj))
+    monkeypatch.setattr(read_commands, "_resolve_file_target", lambda _f: _FileTarget(fake_proj, "a.ts", fake_proj))
     monkeypatch.setattr(read_commands, "_collect_dependency_graph", _fake_collect_graph)
     monkeypatch.setattr(read_commands, "_collect_transitive_outgoing", _fake_collect_transitive)
 
@@ -1249,7 +1251,7 @@ class TestDepsDepthTextOutput:
             yield object()
 
         monkeypatch.setattr(read_commands.db, "open_project", lambda _hash: _fake_conn())
-        monkeypatch.setattr(read_commands, "_resolve_file_target", lambda _f: (fake_proj, "a.ts", fake_proj))
+        monkeypatch.setattr(read_commands, "_resolve_file_target", lambda _f: _FileTarget(fake_proj, "a.ts", fake_proj))
         monkeypatch.setattr(read_commands, "_collect_dependency_graph", lambda _c, _r: ({"b.ts": {"greet"}}, {}, []))
         # depth=1 means _collect_transitive_outgoing is never called
 
@@ -1276,7 +1278,7 @@ class TestDepsDepthTextOutput:
             yield object()
 
         monkeypatch.setattr(read_commands.db, "open_project", lambda _hash: _fake_conn())
-        monkeypatch.setattr(read_commands, "_resolve_file_target", lambda _f: (fake_proj, "a.ts", fake_proj))
+        monkeypatch.setattr(read_commands, "_resolve_file_target", lambda _f: _FileTarget(fake_proj, "a.ts", fake_proj))
         monkeypatch.setattr(read_commands, "_collect_dependency_graph", lambda _c, _r: ({"b.ts": {"greet"}}, {}, []))
         monkeypatch.setattr(
             read_commands,
@@ -1310,7 +1312,7 @@ class TestDepsDepthTextOutput:
             yield object()
 
         monkeypatch.setattr(read_commands.db, "open_project", lambda _hash: _fake_conn())
-        monkeypatch.setattr(read_commands, "_resolve_file_target", lambda _f: (fake_proj, "a.ts", fake_proj))
+        monkeypatch.setattr(read_commands, "_resolve_file_target", lambda _f: _FileTarget(fake_proj, "a.ts", fake_proj))
         monkeypatch.setattr(read_commands, "_collect_dependency_graph", lambda _c, _r: ({"b.ts": {"greet"}}, {}, []))
         monkeypatch.setattr(
             read_commands,
@@ -1344,7 +1346,7 @@ class TestDepsDepthTextOutput:
             yield object()
 
         monkeypatch.setattr(read_commands.db, "open_project", lambda _hash: _fake_conn())
-        monkeypatch.setattr(read_commands, "_resolve_file_target", lambda _f: (fake_proj, "a.ts", fake_proj))
+        monkeypatch.setattr(read_commands, "_resolve_file_target", lambda _f: _FileTarget(fake_proj, "a.ts", fake_proj))
         monkeypatch.setattr(read_commands, "_collect_dependency_graph", lambda _c, _r: ({"b.ts": {"greet"}}, {}, []))
         monkeypatch.setattr(
             read_commands,

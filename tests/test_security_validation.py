@@ -55,22 +55,22 @@ class TestProjectHashPathTraversal:
 
     def test_project_hash_rejects_path_traversal(self):
         """Project hash with ../ should raise ValueError."""
-        with pytest.raises(ValueError, match="alphanumeric or underscore"):
+        with pytest.raises(ValueError, match="lowercase hex"):
             db._validate_project_hash("../../../malicious")
 
     def test_project_hash_rejects_forward_slash(self):
         """Project hash with / should raise ValueError."""
-        with pytest.raises(ValueError, match="alphanumeric or underscore"):
+        with pytest.raises(ValueError, match="lowercase hex"):
             db._validate_project_hash("path/to/file")
 
     def test_project_hash_rejects_backslash(self):
         """Project hash with backslash should raise ValueError."""
-        with pytest.raises(ValueError, match="alphanumeric or underscore"):
+        with pytest.raises(ValueError, match="lowercase hex"):
             db._validate_project_hash("path\\to\\file")
 
     def test_project_hash_rejects_dots(self):
         """Project hash with dots should raise ValueError."""
-        with pytest.raises(ValueError, match="alphanumeric or underscore"):
+        with pytest.raises(ValueError, match="lowercase hex"):
             db._validate_project_hash("..hidden")
 
     def test_project_hash_accepts_valid_hex(self):

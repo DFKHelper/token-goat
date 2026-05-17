@@ -532,7 +532,7 @@ class TestGetIndexedSymbolsAndLineCount:
     def test_db_exception_returns_empty_and_none(self, tmp_data_dir):
         from token_goat import db as _db
         with patch.object(_db, "open_project", side_effect=RuntimeError("db gone")):
-            symbols, n_lines, exact = _get_indexed_symbols_and_line_count("foo.py", "deadhash")
+            symbols, n_lines, exact = _get_indexed_symbols_and_line_count("foo.py", "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef")
         assert symbols == []
         assert n_lines is None
         assert exact is False
