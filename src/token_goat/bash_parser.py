@@ -17,6 +17,25 @@ Supported patterns
 * **Grep** — ``rg``, ``grep``, ``ag``, ``ack``, ``ripgrep``.
 * **Glob/find** — ``find``, ``fd``, ``fdfind``, ``ls``, ``eza``.
 
+PowerShell pipelines
+--------------------
+PowerShell's idiomatic read-then-filter pattern is a pipeline:
+``Get-Content file | Select-String 'pat'`` or
+``gc file | ? { $_ -match 'pat' } | select -First 5``.  When the source
+command of such a pipeline is ``Get-Content``/``gc``, the downstream stages
+are inspected for filter/limit cmdlets:
+
+* ``Select-String`` / ``sls`` — pattern filter; sets ``filtered=True`` and
+  records ``filter_pattern``.  Output is a subset of source lines, so the
+  read must not be treated as a full read for dedup purposes.
+* ``Where-Object`` / ``?`` / ``where`` — predicate filter; same treatment.
+  When the predicate is ``{ $_ -match 'pat' }`` the pattern is captured.
+* ``Select-Object -First N`` / ``select -First N`` — head-like slice; sets
+  ``offset=1, limit=N`` if no limit was already specified.
+* ``Select-Object -Last N`` — tail-like slice; sets ``limit=N`` with no offset.
+* ``Out-String`` / formatting stages — passthrough; the source ``Get-Content``
+  is still recognised as a full read.
+
 Line-range extraction
 ---------------------
 Where the source command encodes a slice of the file, ``offset`` and ``limit``
@@ -85,6 +104,15 @@ class BashIntent:
             ``None`` means the whole file.
         reason: Human-readable explanation for ``kind='unknown'``, used for debug
             logging when the hook skips processing.
+        filtered: ``True`` when the read was followed by a pattern-matching
+            pipeline filter (PowerShell ``Select-String``/``Where-Object``,
+            etc.) so the agent only ever saw a *subset* of the file's lines.
+            Session-tracking should not mark the source file as fully read in
+            this case — re-reading later may still surface new content.
+        filter_pattern: When ``filtered`` is True, the substring/regex that the
+            downstream filter searched for.  Captured for debug logging; not
+            currently used by session tracking but available for future
+            "what did the agent actually see?" surfaces.
     """
 
     kind: BashIntentKind
@@ -93,6 +121,8 @@ class BashIntent:
     offset: int | None = None
     limit: int | None = None
     reason: str | None = None
+    filtered: bool = False
+    filter_pattern: str | None = None
 
 
 # Commands whose primary effect is reading a file into stdout without modifying it.
@@ -145,6 +175,56 @@ _PS_PATH_FLAGS = frozenset(["-path", "-literalpath"])
 # from the end.  Mapped to ``head -n N`` / ``tail -n N`` semantics.
 _PS_HEAD_FLAGS = frozenset(["-totalcount", "-first", "-head"])
 _PS_TAIL_FLAGS = frozenset(["-tail", "-last"])
+
+# PowerShell read cmdlets — the *source* of a read-then-filter pipeline.
+# Lowercased for case-insensitive comparison.
+_PS_READ_BINS = frozenset(["get-content", "gc"])
+
+# PowerShell filter cmdlets that *narrow* the source's output to a subset of
+# matching lines.  When one of these appears downstream of ``Get-Content`` we
+# mark the read as ``filtered=True`` so session-tracking treats it as a
+# partial-read and does not skip re-reading on a later request.
+_PS_FILTER_CMDLETS = frozenset(
+    [
+        "select-string",
+        "sls",
+        "where-object",
+        "where",
+        "?",
+    ]
+)
+
+# PowerShell limit cmdlets — ``Select-Object -First N`` is the canonical
+# "head N" of a pipeline.  ``select`` is the standard alias.
+_PS_LIMIT_CMDLETS = frozenset(["select-object", "select"])
+
+# PowerShell formatting / display cmdlets — pure passthrough for our purposes.
+# Their presence in a pipeline does *not* change the read classification; the
+# agent still consumes the full source-file content via Get-Content.
+_PS_PASSTHROUGH_CMDLETS = frozenset(
+    [
+        "out-string",
+        "out-host",
+        "out-default",
+        "format-table",
+        "format-list",
+        "ft",
+        "fl",
+        "write-host",
+        "write-output",
+    ]
+)
+
+# ``Select-String``'s pattern flag (long form).  Matches ``-Pattern`` /
+# ``-pattern`` and the inline ``=`` form, plus shortened ``-pat`` / ``-p``
+# which PowerShell accepts due to partial-name parameter matching.
+_PS_PATTERN_FLAGS = frozenset(["-pattern", "-pat", "-p"])
+
+# Regex extracts the pattern from a Where-Object script block:
+# ``{ $_ -match 'pat' }`` or ``{ $_ -like '*pat*' }``.  Single or double quotes.
+_PS_WHERE_MATCH_RE = re.compile(
+    r"\$_\s*-(?:match|like|imatch|cmatch)\s+(['\"])([^'\"]+)\1"
+)
 
 # Pattern-search tools.  All of these put the search pattern as the first
 # non-flag positional argument, making extraction straightforward.
@@ -288,8 +368,13 @@ def parse(command: str) -> BashIntent:
         )
         return BashIntent(kind="unknown", reason="command too long")
 
-    # Only look at the first pipeline segment (before any |)
-    command = command.split("|")[0].strip()
+    # Split on pipe.  For most shells we only inspect the first segment (the
+    # source command); for PowerShell pipelines where the source is
+    # Get-Content/gc, downstream filter/limit cmdlets are inspected as well so
+    # the read can be marked ``filtered`` and given a correct limit.
+    segments = [s.strip() for s in command.split("|")]
+    command = segments[0]
+    pipeline_tail = segments[1:]
 
     try:
         tokens = shlex.split(command, posix=True)
@@ -341,6 +426,13 @@ def parse(command: str) -> BashIntent:
         # positional path.
         if intent.kind != "read" and redirect_file:
             return _build_read_intent(redirect_file)
+        # PowerShell pipeline tail: ``Get-Content foo | Select-String 'bar'``
+        # — annotate the read with filter/limit info derived from the tail.
+        # Only applied when the source is a PowerShell read cmdlet; bash
+        # pipelines like ``cat foo | grep bar`` keep their historical
+        # whole-file-read semantics for backward compatibility.
+        if intent.kind == "read" and binary in _PS_READ_BINS and pipeline_tail:
+            _apply_powershell_pipeline_filters(intent, pipeline_tail)
         return intent
     if binary in GREP_BINS:
         return _parse_grep(binary, args)
@@ -579,6 +671,118 @@ def _parse_grep(binary: str, args: list[str]) -> BashIntent:
     if pattern is None:
         return BashIntent(kind="unknown")
     return BashIntent(kind="grep", pattern=pattern)
+
+
+def _apply_powershell_pipeline_filters(
+    intent: BashIntent, pipeline_tail: list[str]
+) -> None:
+    """Annotate ``intent`` with filter/limit info from a PowerShell pipeline tail.
+
+    Each segment in *pipeline_tail* is a string (everything between two ``|``
+    characters in the original command).  For each segment we attempt to
+    identify the cmdlet (case-insensitively, aliases resolved) and update the
+    intent in place:
+
+    * **Filter cmdlets** (``Select-String``, ``Where-Object``, ``?``, ``sls``,
+      ``where``) mark ``intent.filtered = True`` and capture the pattern when
+      it can be extracted (``-Pattern 'x'``, ``-match 'x'``, or the first
+      positional argument).
+    * **Limit cmdlets** (``Select-Object -First N`` / ``select -First N``)
+      populate ``intent.limit`` and ``intent.offset = 1`` when no limit was
+      already set by the source command's flags.  ``-Last N`` sets the limit
+      without an offset (tail semantics).
+    * **Passthrough cmdlets** (``Out-String``, ``Format-Table``, ...) are
+      ignored — they do not narrow the read.
+
+    Unrecognized cmdlets are skipped silently; this function never raises and
+    never downgrades the intent kind.  The goal is best-effort enrichment so
+    callers can distinguish a filtered partial-read from a full-file read.
+    """
+    for segment in pipeline_tail:
+        if not segment:
+            continue
+        try:
+            seg_tokens = shlex.split(segment, posix=True)
+        except ValueError:
+            # Malformed segment — skip; the source-command intent is still valid.
+            continue
+        if not seg_tokens:
+            continue
+        cmdlet = seg_tokens[0].lower()
+        seg_args = seg_tokens[1:]
+        if cmdlet in _PS_PASSTHROUGH_CMDLETS:
+            continue
+        if cmdlet in _PS_FILTER_CMDLETS:
+            intent.filtered = True
+            pattern = _extract_ps_filter_pattern(cmdlet, seg_args, segment)
+            if pattern is not None and intent.filter_pattern is None:
+                intent.filter_pattern = pattern
+            continue
+        if cmdlet in _PS_LIMIT_CMDLETS:
+            _apply_ps_select_object(intent, seg_args)
+            continue
+        # Unknown cmdlet — leave the intent as-is.  We deliberately do *not*
+        # set filtered=True here because we don't know whether it narrows the
+        # output (could be ``ConvertTo-Json`` formatting, ``Tee-Object``
+        # branching, etc.).
+
+
+def _extract_ps_filter_pattern(
+    cmdlet: str, args: list[str], raw_segment: str
+) -> str | None:
+    """Pull the search pattern out of a PowerShell filter-cmdlet segment.
+
+    ``Select-String`` / ``sls`` accept the pattern positionally
+    (``sls 'foo'``) or via ``-Pattern 'foo'`` / ``-Pattern=foo``.
+    ``Where-Object`` / ``?`` embed the pattern inside a script block, e.g.
+    ``{ $_ -match 'foo' }``; the regex :data:`_PS_WHERE_MATCH_RE` extracts it.
+
+    Returns ``None`` when no pattern can be confidently identified.
+    """
+    if cmdlet in ("select-string", "sls"):
+        i = 0
+        while i < len(args):
+            a = args[i]
+            lower = a.lower()
+            if lower in _PS_PATTERN_FLAGS and i + 1 < len(args):
+                return args[i + 1]
+            if "=" in a and lower.split("=", 1)[0] in _PS_PATTERN_FLAGS:
+                return a.split("=", 1)[1]
+            if not a.startswith("-"):
+                # First positional argument is the pattern.
+                return a
+            i += 1
+        return None
+    if cmdlet in ("where-object", "where", "?"):
+        m = _PS_WHERE_MATCH_RE.search(raw_segment)
+        if m:
+            return m.group(2)
+        return None
+    return None
+
+
+def _apply_ps_select_object(intent: BashIntent, args: list[str]) -> None:
+    """Apply ``Select-Object -First N`` / ``-Last N`` to *intent* in place.
+
+    Only updates ``offset`` / ``limit`` when they have not already been set
+    by the source command's own flags (e.g. ``Get-Content -TotalCount 50``).
+    This preserves the upstream slice when both the cmdlet and the pipeline
+    encode a limit, which is the conservative choice — we never widen the
+    recorded range.
+    """
+    i = 0
+    while i < len(args):
+        a = args[i]
+        lower = a.lower()
+        if lower in ("-first", "-last") and i + 1 < len(args):
+            value = _try_parse_int(args[i + 1])
+            if value is not None and intent.limit is None:
+                intent.limit = value
+                if lower == "-first":
+                    intent.offset = 1
+            i += 2
+            continue
+        i += 1
 
 
 def _parse_glob(binary: str, args: list[str]) -> BashIntent:
