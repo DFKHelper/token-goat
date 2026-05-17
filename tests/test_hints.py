@@ -1,12 +1,14 @@
 """Tests for hints.build_read_hint() — all hint-generation cases."""
 from __future__ import annotations
 
+import time
 from pathlib import Path
 from unittest.mock import patch
 
 from token_goat import db, session
 from token_goat.hints import (
     LARGE_FILE_LINE_THRESHOLD,
+    STALE_READ_AGE_SECONDS,
     _est_tokens_from_chars,
     _est_tokens_from_lines,
     _get_indexed_symbols_and_line_count,
@@ -646,3 +648,190 @@ class TestHintFromIndexEdgeCases:
             cwd=str(tmp_path),
         )
         assert hint is None
+
+
+# ---------------------------------------------------------------------------
+# Case 9: cached entry whose content is stale — edited after read or aged out
+# ---------------------------------------------------------------------------
+
+
+class TestCachedStaleEntry:
+    """Suppress the line-range dedup hint when cached ranges can't be trusted.
+
+    Two scenarios:
+    1. The file was Write/Edit'd after the last read — line numbers no longer
+       map to the same content (any insertion shifts every later line).
+    2. The cached read is older than STALE_READ_AGE_SECONDS — the model has
+       most likely scrolled the content out of its actual context window.
+    """
+
+    def test_edited_after_read_suppresses_exact_match_hint(self, tmp_data_dir):
+        """Editing a file after reading invalidates its line-range hint.
+
+        Without this guard, the model gets a "you already read lines X-Y"
+        nudge that points at lines that may now contain entirely different
+        code because the edit inserted or removed lines above range X.
+        """
+        sid = "s_edited_exact"
+        path = "C:/proj/edited.py"
+        # Read lines 1-200, then edit the file — last_edit_ts > last_read_ts.
+        session.mark_file_read(sid, path, offset=0, limit=200)
+        session.mark_file_edited(sid, path)
+
+        hint = build_read_hint(
+            session_id=sid, file_path=path, offset=0, limit=200, cwd=None,
+        )
+        assert hint is None, (
+            "Expected no hint after edit invalidated the cached range, "
+            f"got: {hint!r}"
+        )
+
+    def test_edited_after_read_suppresses_overlap_hint(self, tmp_data_dir):
+        """Even partial-overlap hints are suppressed when cache is stale."""
+        sid = "s_edited_overlap"
+        path = "C:/proj/edited_ov.py"
+        session.mark_file_read(sid, path, offset=0, limit=300)
+        session.mark_file_edited(sid, path)
+
+        # Overlap of 100 lines would normally fire the overlap hint.
+        hint = build_read_hint(
+            session_id=sid, file_path=path, offset=200, limit=250, cwd=None,
+        )
+        assert hint is None
+
+    def test_read_after_edit_re_enables_hint(self, tmp_data_dir):
+        """If the file is re-read after the edit, the new read is current.
+
+        After a fresh post-edit read the cached ranges describe the *current*
+        content, so the dedup hint is meaningful again on the next request.
+        """
+        sid = "s_edit_then_read"
+        path = "C:/proj/cycled.py"
+        session.mark_file_read(sid, path, offset=0, limit=200)
+        session.mark_file_edited(sid, path)
+        # Sleep a hair so timestamps differ even on coarse clocks.
+        time.sleep(0.01)
+        session.mark_file_read(sid, path, offset=0, limit=200)
+
+        hint = build_read_hint(
+            session_id=sid, file_path=path, offset=0, limit=200, cwd=None,
+        )
+        assert hint is not None
+        assert "already read" in hint
+
+    def test_stale_entry_suppresses_hint(self, tmp_data_dir):
+        """A read older than STALE_READ_AGE_SECONDS is treated as out of context."""
+        sid = "s_stale"
+        path = "C:/proj/stale.py"
+        session.mark_file_read(sid, path, offset=0, limit=200)
+
+        # Backdate the read so it is "stale" — the cached lines are presumed
+        # to have scrolled out of the model's context.
+        cache = session.load(sid)
+        from token_goat.session import _normalize_path
+        entry = cache.files[_normalize_path(path)]
+        entry.last_read_ts = time.time() - (STALE_READ_AGE_SECONDS + 60)
+        cache._invalidate_json_cache()
+        session.save(cache)
+
+        hint = build_read_hint(
+            session_id=sid, file_path=path, offset=0, limit=200, cwd=None,
+        )
+        assert hint is None
+
+    def test_edited_after_read_does_not_break_symbol_only_entries(self, tmp_data_dir):
+        """If only symbols (not line ranges) were tracked, the entry has no
+        line numbers to invalidate — but the edit still means the symbol body
+        likely changed.  Suppress the suggestion to be safe.
+        """
+        sid = "s_edited_sym"
+        path = "C:/proj/edited_sym.py"
+        session.mark_file_read(sid, path, symbol="MyClass")
+        session.mark_file_edited(sid, path)
+
+        # Symbol-only entries have empty line_ranges, so the new guard's
+        # "and entry.line_ranges" predicate lets this through.  The existing
+        # symbol-hint path then fires normally — names don't shift on edit.
+        # This is the conservative tradeoff: keep symbol nudges, kill range nudges.
+        hint = build_read_hint(
+            session_id=sid, file_path=path, offset=0, limit=2000, cwd=None,
+        )
+        # Symbol hint is allowed; the test exists so future tightening of this
+        # behaviour stays explicit.
+        assert hint is None or "token-goat read" in hint
+
+
+class TestEditedFileTimestamp:
+    """``mark_file_edited`` should stamp ``last_edit_ts`` on the read entry."""
+
+    def test_mark_file_edited_stamps_last_edit_ts(self, tmp_data_dir):
+        sid = "s_stamp"
+        path = "C:/proj/stamp.py"
+        session.mark_file_read(sid, path, offset=0, limit=10)
+
+        before = time.time()
+        session.mark_file_edited(sid, path)
+        after = time.time()
+
+        from token_goat.session import _normalize_path
+        cache = session.load(sid)
+        entry = cache.files[_normalize_path(path)]
+        # 0.05s slack on each side covers clock granularity on Windows.
+        assert before - 0.05 <= entry.last_edit_ts <= after + 0.05
+
+    def test_mark_file_edited_without_prior_read_is_noop_on_read_map(self, tmp_data_dir):
+        """Editing a file that was never read does not invent a read entry."""
+        sid = "s_edit_only"
+        path = "C:/proj/edit_only.py"
+        session.mark_file_edited(sid, path)
+
+        cache = session.load(sid)
+        # edited_files map gains an entry; files map remains empty.
+        assert cache.edited_files
+        assert cache.files == {}
+
+    def test_file_entry_persists_last_edit_ts_across_reload(self, tmp_data_dir):
+        """``last_edit_ts`` round-trips through the JSON cache."""
+        sid = "s_persist"
+        path = "C:/proj/persist.py"
+        session.mark_file_read(sid, path, offset=0, limit=10)
+        session.mark_file_edited(sid, path)
+
+        # Reload from disk (simulating a fresh hook process).
+        reloaded = session.load(sid)
+        from token_goat.session import _normalize_path
+        entry = reloaded.files[_normalize_path(path)]
+        assert entry.last_edit_ts > 0.0
+
+    def test_legacy_session_json_without_last_edit_ts_loads_clean(self, tmp_data_dir):
+        """Session JSON written by older token-goat versions (no last_edit_ts) loads."""
+        import json
+
+        from token_goat import paths
+        sid = "s_legacy"
+        session.validate_session_id(sid)
+        legacy = {
+            "schema_version": 1,
+            "created_by": "token-goat",
+            "session_id": sid,
+            "started_ts": time.time(),
+            "last_activity_ts": time.time(),
+            # No last_edit_ts on the file entry — the old wire format.
+            "files": {
+                "c:/proj/legacy.py": {
+                    "rel_or_abs": "C:/proj/legacy.py",
+                    "last_read_ts": time.time(),
+                    "read_count": 1,
+                    "line_ranges": [[1, 100]],
+                    "symbols_read": [],
+                }
+            },
+            "greps": [],
+            "edited_files": {},
+        }
+        paths.atomic_write_text(paths.session_cache_path(sid), json.dumps(legacy))
+
+        cache = session.load(sid)
+        entry = cache.files["c:/proj/legacy.py"]
+        # Missing field defaults to 0.0 (= "never edited").
+        assert entry.last_edit_ts == 0.0

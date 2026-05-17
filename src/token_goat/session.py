@@ -74,6 +74,13 @@ class FileEntry:
 
     Used by pre-read hooks to detect redundant reads and emit token-saving hints.
     Accumulates line ranges and symbol accesses across all reads in the session.
+
+    ``last_edit_ts`` records when the file was last Write/Edit/MultiEdit'd in this
+    session.  When ``last_edit_ts > last_read_ts`` the cached ``line_ranges`` no
+    longer correspond to the file's current contents (an inserted/deleted line
+    shifts every subsequent line number), so the dedup hint should suppress the
+    "you already read lines X-Y" claim — that range may point at different code now.
+    Default 0.0 means "never edited this session".
     """
 
     rel_or_abs: str  # path as Claude requested it (relative or absolute)
@@ -81,6 +88,7 @@ class FileEntry:
     read_count: int  # number of times Read fired for this file
     line_ranges: list[tuple[int, int]]  # [(start, end), ...] of read ranges, 1-indexed inclusive
     symbols_read: list[str]  # via token-goat read file::symbol
+    last_edit_ts: float = 0.0  # unix ts of last edit; 0.0 = never edited this session
 
 
 @dataclass
@@ -244,12 +252,23 @@ def _parse_file_entry(key: str, v: dict[str, Any], now: float) -> FileEntry | No
             if isinstance(s, (str, int, float)) and not isinstance(s, bool)
         ]
 
+        # ``last_edit_ts`` is optional in the persisted JSON: older session
+        # files predate the field, so missing/non-numeric values default to 0.0
+        # (= "never edited this session"). This preserves backwards compat with
+        # session caches written by prior token-goat versions.
+        raw_last_edit_ts = v.get("last_edit_ts", 0.0)
+        try:
+            last_edit_ts = float(raw_last_edit_ts) if raw_last_edit_ts is not None else 0.0
+        except (TypeError, ValueError):
+            last_edit_ts = 0.0
+
         return FileEntry(
             rel_or_abs=str(v.get("rel_or_abs", key)),
             last_read_ts=float(v.get("last_read_ts", now)),
             read_count=max(0, int(v.get("read_count", 0))),
             line_ranges=line_ranges,
             symbols_read=symbols_read,
+            last_edit_ts=last_edit_ts,
         )
     except (TypeError, ValueError, KeyError) as exc:
         _LOG.debug(
@@ -290,14 +309,19 @@ def _parse_grep_entry(g: dict[str, Any]) -> GrepEntry | None:
         return None
 
 
-class _FileEntryDict(TypedDict):
-    """Wire format of a single FileEntry as it appears in the session JSON."""
+class _FileEntryDict(TypedDict, total=False):
+    """Wire format of a single FileEntry as it appears in the session JSON.
+
+    ``last_edit_ts`` is optional (``total=False``) for backwards compat with
+    session caches written by token-goat versions that predate the field.
+    """
 
     rel_or_abs: str
     last_read_ts: float
     read_count: int
     line_ranges: list[list[int]]
     symbols_read: list[str]
+    last_edit_ts: float
 
 
 class _GrepEntryDict(TypedDict, total=False):
@@ -852,7 +876,14 @@ def reset_session(session_id: str) -> None:
 def mark_file_edited(
     session_id: str, path: str, *, cache: SessionCache | None = None
 ) -> SessionCache:
-    """Record that a file was edited (written/modified) this session."""
+    """Record that a file was edited (written/modified) this session.
+
+    Also stamps ``last_edit_ts`` on the matching ``FileEntry`` (if one exists)
+    so that the pre-read hint engine can detect "edited after last read" and
+    suppress its line-range dedup nudges — those line numbers shift the moment
+    an edit inserts or removes a line, making the cached ranges actively
+    misleading rather than helpful.
+    """
     prep = _prepare_path_mutation(session_id, path, cache)
     if prep is None:
         return cache or _fresh_cache(session_id)
@@ -860,6 +891,13 @@ def mark_file_edited(
     now = time.time()
     prev_count = cache.edited_files.get(key, 0)
     cache.edited_files[key] = prev_count + 1
+    # Stamp last_edit_ts on the read entry too (if any) so build_read_hint can
+    # detect "edited after last read" without an extra dict lookup on each
+    # pre-read call.  Edits to files never read this session leave the read map
+    # untouched — there is nothing to invalidate in that case.
+    entry = cache.files.get(key)
+    if entry is not None:
+        entry.last_edit_ts = now
     _LOG.debug(
         "mark_file_edited: %s (edit #%d this session, total edited files=%d)",
         key,
