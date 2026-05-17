@@ -135,15 +135,16 @@ def _apply_connection_pragmas(conn: sqlite3.Connection, *, suppress: bool = Fals
     ``suppress=True`` wraps the block in ``contextlib.suppress(sqlite3.OperationalError)``
     for the immutable-fallback paths where PRAGMAs may not be accepted.
     """
-    if suppress:
-        with contextlib.suppress(sqlite3.OperationalError):
-            conn.execute("PRAGMA busy_timeout = 5000")
-            conn.execute("PRAGMA synchronous = NORMAL")
-            conn.execute("PRAGMA foreign_keys = ON")
-    else:
+    def _apply() -> None:
         conn.execute("PRAGMA busy_timeout = 5000")
         conn.execute("PRAGMA synchronous = NORMAL")
         conn.execute("PRAGMA foreign_keys = ON")
+
+    if suppress:
+        with contextlib.suppress(sqlite3.OperationalError):
+            _apply()
+    else:
+        _apply()
 
 
 def _connect(db_path: Path, *, load_vec: bool = True) -> sqlite3.Connection:

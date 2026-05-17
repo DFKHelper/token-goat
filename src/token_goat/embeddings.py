@@ -410,6 +410,48 @@ def _check_vec_available(conn: sqlite3.Connection) -> bool:
         return False
 
 
+def _load_existing_chunk_hashes(conn: sqlite3.Connection) -> dict[tuple[str, int, int], str]:
+    """Return a mapping of (file_rel, start_line, end_line) -> content_sha256 for all indexed chunks.
+
+    Used by :func:`index_project_embeddings` to skip re-embedding chunks whose
+    content hasn't changed since the last index run.
+    """
+    existing: dict[tuple[str, int, int], str] = {}
+    for row in conn.execute(
+        "SELECT file_rel, start_line, end_line, content_sha256 FROM chunks"
+    ):
+        existing[(row["file_rel"], row["start_line"], row["end_line"])] = row["content_sha256"]
+    return existing
+
+
+def _delete_stale_chunks(
+    conn: sqlite3.Connection,
+    batch_keys: list[tuple[str, int, int]],
+) -> int:
+    """Delete chunks and their embeddings for the given (file_rel, start_line, end_line) keys.
+
+    Issues one SELECT…IN to find chunk IDs, then two DELETE…IN statements (one for
+    embeddings, one for chunks) — avoiding the N+1 pattern of per-chunk operations.
+
+    Returns the number of chunk rows deleted (0 if none were stale).
+    """
+    key_placeholders = ",".join("(?,?,?)" for _ in batch_keys)
+    stale_ids = [
+        row["id"]
+        for row in conn.execute(
+            f"SELECT id FROM chunks WHERE (file_rel, start_line, end_line) IN ({key_placeholders})",  # noqa: S608
+            [v for key in batch_keys for v in key],
+        ).fetchall()
+    ]
+    if not stale_ids:
+        return 0
+    id_placeholders = ",".join("?" for _ in stale_ids)
+    conn.execute(f"DELETE FROM embeddings WHERE chunk_id IN ({id_placeholders})", stale_ids)  # noqa: S608
+    conn.execute(f"DELETE FROM chunks WHERE id IN ({id_placeholders})", stale_ids)  # noqa: S608
+    _LOG.debug("cleaned %d stale chunks for re-embed", len(stale_ids))
+    return len(stale_ids)
+
+
 # ---------------------------------------------------------------------------
 # Incremental indexing
 # ---------------------------------------------------------------------------
@@ -440,15 +482,7 @@ def index_project_embeddings(
                 "sqlite-vec not loaded; embeddings disabled"
             )
 
-        # Load existing chunk hashes per (file, start, end)
-        existing: dict[tuple[str, int, int], str] = {}
-        for row in conn.execute(
-            "SELECT file_rel, start_line, end_line, content_sha256 FROM chunks"
-        ):
-            existing[
-                (row["file_rel"], row["start_line"], row["end_line"])
-            ] = row["content_sha256"]
-
+        existing = _load_existing_chunk_hashes(conn)
         file_rows = conn.execute("SELECT rel_path FROM files").fetchall()
         n_files = len(file_rows)
 
@@ -497,25 +531,9 @@ def index_project_embeddings(
                        batch_num, total_batches,
                        len(texts), batch_elapsed, project.hash[:8])
             # Batch-delete any stale chunks at the same (file, start, end) positions
-            # before reinserting.  Doing one DELETE…IN per batch instead of
-            # SELECT+DELETE+DELETE per chunk eliminates the N+1 pattern.
-            batch_keys = [
-                (ch.file_rel, ch.start_line, ch.end_line) for ch, _ in batch
-            ]
-            batch_key_placeholders = ",".join("(?,?,?)" for _ in batch_keys)
-            stale_ids = [
-                row["id"]
-                for row in conn.execute(
-                    f"SELECT id FROM chunks WHERE (file_rel, start_line, end_line) IN ({batch_key_placeholders})",  # noqa: S608
-                    [v for key in batch_keys for v in key],
-                ).fetchall()
-            ]
-            if stale_ids:
-                stale_id_placeholders = ",".join("?" for _ in stale_ids)
-                conn.execute(f"DELETE FROM embeddings WHERE chunk_id IN ({stale_id_placeholders})", stale_ids)  # noqa: S608
-                conn.execute(f"DELETE FROM chunks WHERE id IN ({stale_id_placeholders})", stale_ids)  # noqa: S608
-                n_stale_deleted += len(stale_ids)
-                _LOG.debug("cleaned %d stale chunks for re-embed", len(stale_ids))
+            # before reinserting.  One DELETE…IN per batch instead of per chunk.
+            batch_keys = [(ch.file_rel, ch.start_line, ch.end_line) for ch, _ in batch]
+            n_stale_deleted += _delete_stale_chunks(conn, batch_keys)
 
             embed_rows: list[tuple[int, bytes]] = []
             for (ch, sha), vec in zip(batch, vecs, strict=True):
