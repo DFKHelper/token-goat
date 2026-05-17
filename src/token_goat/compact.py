@@ -38,6 +38,15 @@ _MAX_SYMBOLS_PER_FILE_ENTRY = 6
 _BY_EDIT_COUNT = itemgetter(1)
 
 
+def _count_suffix(n: int) -> str:
+    """Return '  ×N' when *n* > 1, or '' when the count is unremarkable.
+
+    Used in the manifest to annotate files edited or read multiple times without
+    cluttering single-occurrence entries.
+    """
+    return f"  ×{n}" if n > 1 else ""
+
+
 def _short_path(p: str, max_len: int = 70) -> str:
     """Return a compact display representation of a file path.
 
@@ -197,8 +206,7 @@ def _render(cache: SessionCache, session_id: str, max_tokens: int) -> tuple[str,
         sections.append("### Files Edited (preserve in summary)")
         # Sort by edit count descending so the most-touched files appear first.
         for path, count in sorted(cache.edited_files.items(), key=_BY_EDIT_COUNT, reverse=True):
-            suffix = f"  ×{count}" if count > 1 else ""
-            sections.append(f"- {_short_path(path)}{suffix}")
+            sections.append(f"- {_short_path(path)}{_count_suffix(count)}")
         sections.append("")
 
     # ── 2. Symbols accessed via token-goat read / symbol ────────────────────────
@@ -215,9 +223,8 @@ def _render(cache: SessionCache, session_id: str, max_tokens: int) -> tuple[str,
     if top_files:
         sections.append("### Key Files Read")
         for entry in top_files:
-            count_str = f"  ×{entry.read_count}" if entry.read_count > 1 else ""
             ranges_str = _format_ranges(entry.line_ranges)
-            sections.append(f"- {_short_path(entry.rel_or_abs)}{count_str}{ranges_str}")
+            sections.append(f"- {_short_path(entry.rel_or_abs)}{_count_suffix(entry.read_count)}{ranges_str}")
         sections.append("")
 
     result = "\n".join(sections).rstrip()

@@ -439,6 +439,14 @@ def index_file(project: Project, file_path: Path) -> FileIndex | None:
     )
 
 
+def _upsert_meta(conn: sqlite3.Connection, key: str, value: str) -> None:
+    """Insert or replace a single key/value row in the project meta table."""
+    conn.execute(
+        "INSERT OR REPLACE INTO meta(key, value) VALUES (?, ?)",
+        (key, value),
+    )
+
+
 def write_file_index(conn: sqlite3.Connection, fi: FileIndex) -> None:
     """Replace all indexed rows for *fi.rel_path* with fresh data from *fi*.
 
@@ -663,18 +671,9 @@ def index_project(
                 )
 
             # Update project meta
-            conn.execute(
-                "INSERT OR REPLACE INTO meta(key, value) VALUES ('last_full_index_at', ?)",
-                (str(int(time.time())),),
-            )
-            conn.execute(
-                "INSERT OR REPLACE INTO meta(key, value) VALUES ('project_root', ?)",
-                (project.root.as_posix(),),
-            )
-            conn.execute(
-                "INSERT OR REPLACE INTO meta(key, value) VALUES ('project_marker', ?)",
-                (project.marker,),
-            )
+            _upsert_meta(conn, "last_full_index_at", str(int(time.time())))
+            _upsert_meta(conn, "project_root", project.root.as_posix())
+            _upsert_meta(conn, "project_marker", project.marker)
 
         # Update global registry
         with db.open_global() as gconn:
