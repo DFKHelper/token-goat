@@ -1,4 +1,26 @@
-"""Session hook helpers."""
+"""Session lifecycle hook handlers: session-start and project auto-detection.
+
+``session_start`` fires on every new Claude Code session (SessionStart event).
+It performs three ordered actions:
+
+1. **Cache reset** — clears the per-session JSON cache for this session ID so
+   stale line-range data from a previous run does not trigger false re-read hints.
+
+2. **Project detection + auto-indexing** — resolves ``cwd`` from the harness
+   payload to a project root.  If the project has never been indexed, a detached
+   background ``token-goat index`` subprocess is spawned so the first Read of the
+   session already has symbols available.  ``db.touch_project_last_seen`` is also
+   called so the worker's periodic-reindex prioritises recently used projects.
+
+3. **Worker watchdog** — calls ``worker.ensure_running()`` to start (or confirm)
+   the background daemon.  The worker handles dirty-queue draining, LRU image
+   eviction, log rotation, and stale-lock cleanup; it must be alive before any
+   post-edit hooks fire.
+
+``cwd`` validation is intentional: the field comes from an untrusted harness
+payload, so empty, non-directory, and excessively long values are rejected before
+being passed to ``find_project``.
+"""
 from __future__ import annotations
 
 from pathlib import Path

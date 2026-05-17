@@ -1,4 +1,34 @@
-"""Read hook helpers."""
+"""Pre- and post-read hook handlers.
+
+Pre-read (``pre_read``)
+-----------------------
+Runs before every Read, Bash, Grep, and Glob tool call.  Three distinct
+responsibilities are applied in order:
+
+1. **Bash synthesis** — Bash tool calls whose command is a read-equivalent
+   (``cat``, ``head``, ``tail``, ``bat``, …) are converted to a synthetic Read
+   payload via :mod:`bash_parser` and processed identically to a native Read.
+   This ensures Codex-style harnesses get image-shrinking and session hints
+   even though they never issue a structured Read tool.
+
+2. **Image shrinking** — Read calls targeting image files are intercepted,
+   the image is compressed to ≤1024 px on its long axis via
+   :func:`image_shrink.shrink`, and the hook response redirects the harness
+   to the cached shrunk copy so Claude receives a cheaper version transparently.
+
+3. **Session hints** — If neither of the above fired, the session cache is
+   consulted.  When the requested lines were already read this session, a
+   "re-reading wastes ~N tokens" hint is injected as ``additionalContext``.
+   When the file is large and has indexed symbols, a surgical-read suggestion
+   is injected instead.
+
+Post-read (``post_read``)
+--------------------------
+Runs after Read, Grep, and Glob tool calls.  Records the accessed file paths,
+line ranges, Grep patterns, and result counts into the per-session JSON cache
+so that subsequent pre-read calls have accurate overlap data.  Always returns
+CONTINUE; never modifies tool output.
+"""
 from __future__ import annotations
 
 from pathlib import Path
