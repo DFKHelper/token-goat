@@ -167,9 +167,12 @@ def _run_step(result: dict[str, str], key: str, fn: object) -> None:
     in :func:`install_all` (codex, opencode, openclaw patches).
     """
     try:
-        result[key] = f"ok — {fn()}"  # type: ignore[operator]
+        detail = fn()  # type: ignore[operator]
+        result[key] = f"ok — {detail}"
+        _LOG.info("install step ok: %s — %s", key, str(detail)[:200])
     except Exception as e:  # noqa: BLE001
         result[key] = f"FAIL — {e}"
+        _LOG.warning("install step failed: %s — %s", key, e)
 
 
 # ---------------------------------------------------------------------------

@@ -293,6 +293,7 @@ def extract_chunks_for_file(
 
     chunks: list[Chunk] = []
     covered: list[tuple[int, int]] = []  # (start_line, end_line) already covered
+    n_dropped_size = 0  # chunks rejected because they fall outside [MIN_CHUNK_CHARS, MAX_CHUNK_CHARS]
 
     # Combine symbol, section, and file language queries into one round-trip
     sym_rows, sec_rows, language = _fetch_chunk_metadata(conn, rel_path)
@@ -307,6 +308,7 @@ def extract_chunks_for_file(
             continue
         chunk_text = "\n".join(lines[start - 1 : end])
         if not (MIN_CHUNK_CHARS <= len(chunk_text) <= MAX_CHUNK_CHARS):
+            n_dropped_size += 1
             continue
         chunks.append(Chunk(rel_path, start, end, chunk_text, row["kind"]))
         covered.append((start, end))
@@ -319,6 +321,7 @@ def extract_chunks_for_file(
             continue
         chunk_text = "\n".join(lines[start - 1 : end])
         if not (MIN_CHUNK_CHARS <= len(chunk_text) <= MAX_CHUNK_CHARS):
+            n_dropped_size += 1
             continue
         chunks.append(Chunk(rel_path, start, end, chunk_text, "section"))
         covered.append((start, end))
@@ -365,6 +368,8 @@ def extract_chunks_for_file(
             chunk_text = "\n".join(lines[line_no - 1 : window_end])
             if MIN_CHUNK_CHARS <= len(chunk_text) <= MAX_CHUNK_CHARS:
                 chunks.append(Chunk(rel_path, line_no, window_end, chunk_text, "window"))
+            else:
+                n_dropped_size += 1
             line_no = window_end + 1
 
     if _LOG.isEnabledFor(logging.DEBUG):
@@ -380,8 +385,8 @@ def extract_chunks_for_file(
             else:
                 n_sym += 1
         _LOG.debug(
-            "extract_chunks_for_file: %s -> %d chunks (sym=%d sec=%d win=%d)",
-            rel_path, len(chunks), n_sym, n_sec, n_win,
+            "extract_chunks_for_file: %s -> %d chunks (sym=%d sec=%d win=%d dropped_size=%d)",
+            rel_path, len(chunks), n_sym, n_sec, n_win, n_dropped_size,
         )
     return chunks
 

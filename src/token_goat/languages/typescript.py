@@ -5,6 +5,7 @@ import logging
 import re
 from os.path import basename
 
+from ..hooks_common import sanitize_log_str
 from ..parser import ImpExp, Ref, Section, Symbol
 from . import common
 
@@ -206,7 +207,15 @@ def extract(
     if len(source) >= abi_threshold and _is_abi_file(source, rel_path, threshold=abi_threshold):
         syms, refs, ie, _ = _extract_abi(source)
         # Honour caller-supplied cap
-        return syms[:abi_max], refs, ie, []
+        capped = syms[:abi_max]
+        _LOG.debug(
+            "ABI fast path: %s size=%d symbols=%d (capped at %d)",
+            sanitize_log_str(rel_path),
+            len(source),
+            len(capped),
+            abi_max,
+        )
+        return capped, refs, ie, []
 
     # Detect language for tlp
     lower = rel_path.lower()

@@ -119,7 +119,16 @@ def _load_session_cache(session_id: str, caller: str) -> SessionCache | None:
     """
     try:
         session_mod.validate_session_id(session_id)
-        return session_mod.load(session_id)
+        cache = session_mod.load(session_id)
+        _LOG.debug(
+            "%s: session=%s loaded (files=%d greps=%d edited=%d)",
+            caller,
+            session_id[:8],
+            len(cache.files),
+            len(cache.greps),
+            len(cache.edited_files),
+        )
+        return cache
     except ValueError as exc:
         _LOG.warning("%s: invalid session_id: %s", caller, exc)
         return None
