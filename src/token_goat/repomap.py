@@ -646,6 +646,11 @@ def _get_rendered_summary(
     ``render_summary`` and appends the result to *cache_writes* for
     persistence at the end of the ``build_map`` call.
 
+    *cache_writes* is an out-parameter owned by the caller (``build_map``).
+    Each entry is ``(rel_path, mtime, size, rendered_text)`` — the same tuple
+    shape used as the cache key so the caller can bulk-insert without re-deriving
+    the key components.
+
     Returns ``(rendered_text, is_cache_hit)``.
     """
     mtime: float = info["mtime"]
