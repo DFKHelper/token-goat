@@ -77,6 +77,40 @@ def _emit_ambiguous_file_match(file_part: str, candidates: Sequence[str], *, jso
     )
 
 
+def _emit_file_not_found_error(
+    file_part: str,
+    current_proj: Project | None,
+    *,
+    json_output: bool,
+) -> None:
+    """Emit a structured error when file resolution returns no match.
+
+    Distinguishes three cases:
+    - No project detected at all (``current_proj is None``).
+    - Project detected but not yet indexed (``_not_indexed_hint`` returns a hint).
+    - Project indexed but the file pattern matched nothing.
+
+    Extracted from the identical ``if rel is None`` blocks in
+    :func:`_run_read_like_command` and :func:`deps`.
+    """
+    if current_proj is None:
+        _emit_read_error(
+            code="no_project",
+            message="No project detected.",
+            json_output=json_output,
+            file_part=file_part,
+        )
+    else:
+        hint = _not_indexed_hint(current_proj.hash)
+        _emit_read_error(
+            code="project_not_indexed" if hint else "file_not_found",
+            message=hint if hint else f"File not found in any indexed project: {file_part}",
+            json_output=json_output,
+            file_part=file_part,
+            project_hash=current_proj.hash,
+        )
+
+
 def _collect_dependency_graph(
     conn: sqlite3.Connection,
     rel_path: str,
@@ -301,22 +335,7 @@ def _run_read_like_command(
         raise typer.Exit(0) from None
 
     if rel is None:
-        if current_proj is None:
-            _emit_read_error(
-                code="no_project",
-                message="No project detected.",
-                json_output=json_output,
-                file_part=file_part,
-            )
-        else:
-            hint = _not_indexed_hint(current_proj.hash)
-            _emit_read_error(
-                code="project_not_indexed" if hint else "file_not_found",
-                message=hint if hint else f"File not found in any indexed project: {file_part}",
-                json_output=json_output,
-                file_part=file_part,
-                project_hash=current_proj.hash,
-            )
+        _emit_file_not_found_error(file_part, current_proj, json_output=json_output)
         raise typer.Exit(0)
 
     assert proj is not None  # guaranteed once rel is resolved
@@ -370,22 +389,7 @@ def deps(
         return
 
     if rel is None:
-        if current_proj is None:
-            _emit_read_error(
-                code="no_project",
-                message="No project detected.",
-                json_output=json_output,
-                file_part=file,
-            )
-        else:
-            hint = _not_indexed_hint(current_proj.hash)
-            _emit_read_error(
-                code="project_not_indexed" if hint else "file_not_found",
-                message=hint if hint else f"File not found in any indexed project: {file}",
-                json_output=json_output,
-                file_part=file,
-                project_hash=current_proj.hash,
-            )
+        _emit_file_not_found_error(file, current_proj, json_output=json_output)
         return
 
     assert proj is not None

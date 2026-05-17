@@ -5,6 +5,7 @@ __all__ = [
     "KindStr",
     "add_imports",
     "add_symbol_info",
+    "build_line_index",
     "build_signature",
     "extract_html_headings",
     "extract_refs_from_source",
@@ -12,6 +13,7 @@ __all__ = [
     "kind_str",
     "make_add_symbol",
     "make_process_config",
+    "offset_to_line",
     "parse_source",
     "sym_kind_str",
 ]
@@ -399,6 +401,39 @@ def add_symbol_info(
                     parent_name=None,
                 )
             )
+
+
+def build_line_index(text: str) -> list[int]:
+    """Return a list of character offsets for the start of each line (0-indexed).
+
+    ``build_line_index(text)[i]`` is the character position of the first character
+    of line ``i+1`` (1-indexed).  A binary search on this list converts any
+    character offset to a 1-indexed line number in O(log n) instead of the O(n)
+    slice-and-count pattern ``text[:pos].count("\\n") + 1``.
+
+    Used by html.py and liquid.py for efficient match-position → line-number
+    conversion; centralised here so both adapters share a single implementation.
+    """
+    offsets = [0]
+    for i, ch in enumerate(text):
+        if ch == "\n":
+            offsets.append(i + 1)
+    return offsets
+
+
+def offset_to_line(line_index: list[int], offset: int) -> int:
+    """Convert a character offset to a 1-indexed line number using binary search.
+
+    Companion to :func:`build_line_index`.  O(log n) in the number of lines.
+    """
+    lo, hi = 0, len(line_index) - 1
+    while lo < hi:
+        mid = (lo + hi + 1) // 2
+        if line_index[mid] <= offset:
+            lo = mid
+        else:
+            hi = mid - 1
+    return lo + 1
 
 
 def _compute_section_end_lines(sections: list[Section], lines: list[str]) -> None:
