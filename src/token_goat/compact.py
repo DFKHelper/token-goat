@@ -180,6 +180,8 @@ def _render(cache: SessionCache, session_id: str, max_tokens: int) -> tuple[str,
     # Most-frequently-read files, capped at _MAX_FILES_READ, for the "Key Files Read" section.
     # heapq.nlargest is O(n log k) instead of O(n log n) full sort — material when a
     # long session has hundreds of file entries but we only need the top 10.
+    # The heap keeps only k items in memory, so this is also more memory-efficient
+    # than sorting the full list when sessions accumulate many hundreds of file reads.
     top_files = heapq.nlargest(_MAX_FILES_READ, cache.files.values(), key=lambda e: e.read_count)
 
     now = datetime.now(UTC).strftime("%Y-%m-%d %H:%M UTC")
@@ -236,6 +238,10 @@ def _render(cache: SessionCache, session_id: str, max_tokens: int) -> tuple[str,
     # the full string on every iteration of the trim loop.  We keep at least 3
     # lines (the "## Token-Goat Session Manifest", session line, and blank), so
     # the output is always a valid Markdown fragment even when heavily truncated.
+    #
+    # Priority is preserved by construction: edited files appear first (top of the
+    # string), so trimming from the bottom sheds Key Files Read before Symbols
+    # Accessed before Edited Files — exactly the priority order we want.
     lines = result.splitlines()
     # Budget in chars: max_tokens * 3 chars/token (conservative, matches estimate_tokens logic).
     char_budget = max_tokens * 3 - 1

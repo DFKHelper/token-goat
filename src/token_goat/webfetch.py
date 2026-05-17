@@ -94,18 +94,25 @@ def _is_ssrf_safe(url: str) -> bool:
     if not hostname:
         return False
 
+    # rstrip(".") strips the trailing DNS root dot (e.g. "example.com." is valid
+    # but would miss a blocklist lookup on "example.com" without the strip).
     hostname_lower = hostname.lower().rstrip(".")
     if hostname_lower in _BLOCKED_HOSTNAMES:
         _LOG.warning("SSRF guard: blocked hostname %r in URL", hostname)
         return False
 
-    # Try resolving the hostname to an IP and checking if it is private/loopback/link-local.
+    # Resolve the hostname to IP(s) and check every returned address.  We must
+    # check *all* addresses, not just the first: a dual-stack host can return a
+    # safe public IPv4 and a private IPv6 in the same getaddrinfo response, and
+    # the OS or httpx can pick either one at connect time.
     try:
         addr_info = socket.getaddrinfo(hostname_lower, None, proto=socket.IPPROTO_TCP)
     except OSError:
         if _ALLOW_UNRESOLVED:
             _LOG.debug("SSRF guard: unresolvable hostname %r allowed (opt-out active)", hostname)
             return True
+        # Fail-closed: an unresolvable hostname is treated as blocked so that
+        # internal hostnames invisible from outside a VPC cannot be probed.
         _LOG.warning("SSRF guard: blocked unresolvable hostname %r", hostname)
         return False
 
