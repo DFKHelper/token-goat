@@ -9,7 +9,9 @@ import os
 import sqlite3
 import subprocess
 import sys
+import threading
 import time
+from collections.abc import Callable
 from datetime import datetime
 from pathlib import Path
 from typing import IO, TypedDict, cast
@@ -562,13 +564,19 @@ def cleanup_on_startup() -> CleanupStats:
     }
     failures: list[str] = []
 
-    for task_name, task_fn, stat_key in [
+    # Each entry is (task_name, task_fn, stat_key).  The task_fn return value
+    # is an int that maps directly to the named CleanupStats key.  Typing the
+    # tuple explicitly lets mypy verify the key is a valid CleanupStats field
+    # without a cast or type: ignore on the assignment.
+    _int_tasks: list[tuple[str, Callable[[], int], str]] = [
         ("stale_locks", _cleanup_stale_locks, "stale_locks_cleared"),
         ("old_logs", _cleanup_old_logs, "logs_deleted"),
         ("stats_prune", _prune_stats_table, "stats_rows_pruned"),
-    ]:
+    ]
+    for task_name, task_fn, stat_key in _int_tasks:
         try:
-            stats[stat_key] = task_fn()  # type: ignore[literal-required]
+            result_int = task_fn()
+            stats[stat_key] = result_int  # type: ignore[literal-required]  # key is validated at construction
         except Exception as exc:  # noqa: BLE001
             _LOG.exception("cleanup task %s failed", task_name)
             failures.append(f"{task_name}: {type(exc).__name__}: {exc}")
@@ -968,7 +976,7 @@ def _register_autostart() -> None:
         _LOG.exception("autostart self-register failed")
 
 
-def run_daemon(stop_event=None) -> None:
+def run_daemon(stop_event: threading.Event | None = None) -> None:
     """Compatibility wrapper around :mod:`token_goat.worker_daemon`."""
     from . import worker_daemon  # noqa: PLC0415
 

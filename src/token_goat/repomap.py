@@ -19,12 +19,36 @@ import time
 from collections import defaultdict
 from dataclasses import dataclass
 from functools import lru_cache
-from typing import TYPE_CHECKING, TypedDict
+from typing import TYPE_CHECKING, Any, Protocol, TypedDict
 
 from . import db
 
 if TYPE_CHECKING:
     from .project import Project
+
+
+class _NxGraph(Protocol):
+    """Structural protocol for a networkx graph used in PageRank helpers.
+
+    Only the methods actually called by :func:`_build_graph`,
+    :func:`_multigraph_to_weighted_digraph`, and :func:`compute_ranks` are
+    declared here.  Using a Protocol (rather than bare ``object``) lets mypy
+    verify that callers pass graph-like objects and that the return types flow
+    correctly through the pipeline — without pulling in the optional networkx
+    stubs package as a dependency.
+    """
+
+    def add_node(self, node: str) -> None: ...
+    def add_edge(self, u: str, v: str) -> None: ...
+    def add_edges_from(self, ebunch: Any) -> None: ...
+    def number_of_nodes(self) -> int: ...
+    def number_of_edges(self) -> int: ...
+
+    @property
+    def nodes(self) -> Any: ...
+
+    @property
+    def edges(self) -> Any: ...
 
 
 class _FileInfo(TypedDict):
@@ -235,7 +259,7 @@ def _load_project_data(
 
 def _build_graph(
     conn: sqlite3.Connection, files: dict[str, _FileInfo], name_to_files: dict[str, set[str]]
-) -> object:
+) -> _NxGraph:
     """Build a directed dependency graph: edge from file A to file B if A references a symbol defined in B.
 
     Nodes are all indexed files; edges represent cross-file symbol references (calls, attribute access, etc.).
@@ -264,7 +288,7 @@ def _build_graph(
     return graph
 
 
-def _multigraph_to_weighted_digraph(multigraph: object) -> object:
+def _multigraph_to_weighted_digraph(multigraph: _NxGraph) -> _NxGraph:
     """Collapse a multigraph to a simple weighted DiGraph for PageRank input.
 
     The dependency graph is built as a ``MultiDiGraph`` because the same pair of
@@ -297,7 +321,7 @@ def _multigraph_to_weighted_digraph(multigraph: object) -> object:
     return simple_graph
 
 
-def compute_ranks(graph: object, *, alpha: float = 0.85) -> dict[str, float]:
+def compute_ranks(graph: _NxGraph, *, alpha: float = 0.85) -> dict[str, float]:
     """Run PageRank on the multigraph (collapsed to simple graph for nx).
 
     Uses the pure-Python power-iteration implementation to avoid a hard

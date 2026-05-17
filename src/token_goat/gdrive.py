@@ -8,10 +8,28 @@ import os
 import sys
 import time
 from pathlib import Path
+from typing import Protocol
 
 from . import image_shrink, paths
 
 _LOG = logging.getLogger("token_goat.gdrive")
+
+
+class _GoogleCredentials(Protocol):
+    """Structural interface for a google-auth credentials object.
+
+    Declares only the attributes and methods that token-goat's gdrive helpers
+    actually access.  Using a Protocol (rather than ``object``) lets mypy verify
+    that callers of :func:`get_credentials` receive something with the expected
+    shape, without pulling in the optional ``google-auth`` stubs package as a
+    hard dependency.
+    """
+
+    expired: bool
+    refresh_token: str | None
+
+    def refresh(self, request: object) -> None: ...
+    def to_json(self) -> str: ...
 
 _DRIVE_SCOPES = ["https://www.googleapis.com/auth/drive.readonly"]
 
@@ -66,19 +84,19 @@ class GDriveCredsUnavailable(Exception):
     """
 
 
-def _try_adc() -> object | None:
+def _try_adc() -> _GoogleCredentials | None:
     """Try Google Application Default Credentials (gcloud auth application-default login)."""
     try:
         import google.auth  # noqa: PLC0415
 
         creds, _project = google.auth.default(scopes=_DRIVE_SCOPES)
-        return creds
+        return creds  # type: ignore[return-value]  # google.auth returns untyped object
     except Exception as e:  # noqa: BLE001
         _LOG.info("ADC unavailable: %s", e)
         return None
 
 
-def _try_stored_oauth() -> object | None:
+def _try_stored_oauth() -> _GoogleCredentials | None:
     """Try cached OAuth tokens from a previous token-goat gdrive-auth run.
 
     On a permanent credential failure (revoked token / invalid grant), the stale
@@ -92,7 +110,7 @@ def _try_stored_oauth() -> object | None:
         from google.auth.transport.requests import Request  # noqa: PLC0415
         from google.oauth2.credentials import Credentials  # noqa: PLC0415
 
-        creds = Credentials.from_authorized_user_file(str(creds_path), scopes=_DRIVE_SCOPES)
+        creds: _GoogleCredentials = Credentials.from_authorized_user_file(str(creds_path), scopes=_DRIVE_SCOPES)  # type: ignore[assignment]
         if creds.expired and creds.refresh_token:
             t_refresh = time.monotonic()
             try:
@@ -128,7 +146,7 @@ def _try_stored_oauth() -> object | None:
         return None
 
 
-def get_credentials() -> object:
+def get_credentials() -> _GoogleCredentials:
     """Try ADC then stored OAuth. Raise GDriveCredsUnavailable if neither works."""
     creds = _try_adc()
     if creds is not None:

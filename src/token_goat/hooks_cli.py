@@ -3,6 +3,7 @@ from __future__ import annotations
 
 __all__ = [
     "EVENTS",
+    "Harness",
     "HookPayload",
     "HookResponse",
     "denormalize_response",
@@ -24,10 +25,15 @@ import time
 from collections.abc import Callable
 from datetime import datetime
 from pathlib import Path
-from typing import Any, ParamSpec, TypedDict, TypeVar, cast
+from typing import Any, Literal, ParamSpec, TypedDict, TypeVar, cast
 
 from . import hooks_edit, hooks_fetch, hooks_read, hooks_session, paths
 from .hooks_common import CONTINUE, HookResponse
+
+#: Valid harness identifiers used by :func:`normalize_payload`, :func:`denormalize_response`,
+#: and :func:`safe_run`.  Defined as a ``Literal`` so callers get a type error on
+#: an unrecognised harness name rather than silently applying the Claude path.
+Harness = Literal["claude", "codex"]
 
 
 class HookPayload(TypedDict, total=False):
@@ -80,7 +86,7 @@ def _setup_logging() -> None:
     _LOG.setLevel(logging.INFO)
 
 
-def normalize_payload(payload: dict[str, Any], harness: str = "claude") -> dict[str, Any]:
+def normalize_payload(payload: dict[str, Any], harness: Harness = "claude") -> dict[str, Any]:
     """Translate harness-specific payloads to token-goat's internal format.
 
     Codex sends snake_case keys for some fields and uses 'turn_id'; Claude uses
@@ -93,23 +99,27 @@ def normalize_payload(payload: dict[str, Any], harness: str = "claude") -> dict[
     return payload
 
 
+#: Mapping of camelCase ``hookSpecificOutput`` keys to their Codex snake_case equivalents.
+#: Keyed by the Claude (outbound) name; value is the Codex wire-format name.
+_HSO_CAMEL_TO_SNAKE: dict[str, str] = {
+    "additionalContext": "additional_context",
+    "updatedInput": "updated_input",
+    "permissionDecision": "permission_decision",
+    "permissionDecisionReason": "permission_decision_reason",
+    "hookEventName": "hook_event_name",
+}
+
+
 def _translate_hso_to_codex(hso: dict[str, Any]) -> dict[str, Any]:
     """Convert camelCase hookSpecificOutput keys to snake_case for Codex wire format."""
-    camel_to_snake = {
-        "additionalContext": "additional_context",
-        "updatedInput": "updated_input",
-        "permissionDecision": "permission_decision",
-        "permissionDecisionReason": "permission_decision_reason",
-        "hookEventName": "hook_event_name",
-    }
     translated = dict(hso)
-    for camel_key, snake_key in camel_to_snake.items():
+    for camel_key, snake_key in _HSO_CAMEL_TO_SNAKE.items():
         if camel_key in translated:
             translated[snake_key] = translated.pop(camel_key)
     return translated
 
 
-def denormalize_response(response: dict[str, Any], harness: str = "claude") -> dict[str, Any]:
+def denormalize_response(response: dict[str, Any], harness: Harness = "claude") -> dict[str, Any]:
     """Translate token-goat's internal response format to harness-specific wire format.
 
     Claude: hookSpecificOutput.{additionalContext, updatedInput, permissionDecision, ...}
@@ -210,7 +220,7 @@ def emit(result: dict[str, Any]) -> None:
             sys.stdout.flush()
 
 
-def safe_run(event: str, input_file: Path | None = None, harness: str = "claude") -> None:
+def safe_run(event: str, input_file: Path | None = None, harness: Harness = "claude") -> None:
     """Run a hook event end-to-end with absolute fail-soft semantics.
 
     Catches every exception (including BaseException) so the process always
