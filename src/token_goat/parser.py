@@ -217,6 +217,8 @@ def _language_importer(module_name: str, attr: str = "extract") -> Callable[[], 
     """
     def _factory() -> Extractor:
         import importlib  # noqa: PLC0415
+        # rsplit strips the submodule name ("parser") leaving the package root ("token_goat"),
+        # so the relative import ".languages.X" resolves correctly however the module is invoked.
         mod = importlib.import_module(f".languages.{module_name}", package=__name__.rsplit(".", 1)[0])
         return getattr(mod, attr)  # type: ignore[return-value]
     return _factory
