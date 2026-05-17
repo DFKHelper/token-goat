@@ -772,9 +772,28 @@ def cmd_install(
     codex: bool = typer.Option(False, "--codex", help="Also install Codex CLI integration"),  # noqa: B008
     opencode: bool = typer.Option(False, "--opencode", help="Also install opencode plugin bridge"),  # noqa: B008
     openclaw: bool = typer.Option(False, "--openclaw", help="Also install openclaw plugin bridge"),  # noqa: B008
+    dry_run: bool = typer.Option(False, "--dry-run", help="Print what would change; make no changes"),  # noqa: B008
+    verify: bool = typer.Option(False, "--verify", help="After install, run a structured self-check"),  # noqa: B008
 ) -> None:
     """One-time setup: scheduled tasks, settings.json, CLAUDE.md, skill, watchdog."""
     from . import install as inst  # noqa: PLC0415
+
+    if dry_run:
+        plan = inst.plan_install(
+            install_codex=codex,
+            install_opencode=opencode,
+            install_openclaw=openclaw,
+        )
+        typer.echo("token-goat install --dry-run (no changes made):")
+        for row in plan:
+            typer.echo(
+                f"  [{row['action']:>17}] {row['component']}: {row['target']}"
+            )
+            if row.get("detail"):
+                typer.echo(f"      {row['detail']}")
+        typer.echo("")
+        typer.echo("Re-run without --dry-run to apply.")
+        return
 
     # Show current integration state before making changes
     status = inst.check_status()
@@ -789,6 +808,12 @@ def cmd_install(
     for step, detail in result.items():
         typer.echo(f"  {step}: {detail}")
     typer.echo("")
+    if verify:
+        typer.echo("Verifying install:")
+        for row in inst.verify_install():
+            icon = "+" if row["action"] == "ok" else "-" if row["action"] == "missing" else "!"
+            typer.echo(f"  [{icon}] {row['component']}: {row['detail']}")
+        typer.echo("")
     typer.echo("All set. token-goat will be invisible from here on.")
     typer.echo("Run `token-goat doctor` anytime to check status.")
     typer.echo("Defender exclusion (optional, for max perf):")

@@ -1542,6 +1542,370 @@ def _uninstall_platform_autostart(result: dict[str, str]) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Plan / verify (dry-run preview + post-install self-check)
+# ---------------------------------------------------------------------------
+
+
+class _PlanEntry(TypedDict):
+    """One row of an install plan: a file or registry artefact that *would* change.
+
+    Used by :func:`plan_install` (dry-run) and :func:`verify_install` (post-check)
+    to give callers a structured, machine-readable view of every artefact the
+    installer touches.  The same shape is used in both directions so the CLI
+    layer can render either ``--dry-run`` or ``doctor --verify`` output with
+    one renderer.
+
+    Fields:
+        component:  Human-readable name of the integration step (e.g.
+            ``"settings.json"``, ``"worker autostart"``).
+        target:     Absolute path or platform-specific identifier of the
+            artefact (e.g. ``HKCU\\Software\\Microsoft\\Windows\\
+            CurrentVersion\\Run\\token-goat-worker``).
+        action:     ``"create"`` / ``"update"`` / ``"already-installed"`` /
+            ``"skip"`` for :func:`plan_install`; ``"ok"`` / ``"missing"`` /
+            ``"error"`` for :func:`verify_install`.
+        detail:     Free-form context (e.g. ``"would patch hooks block"``,
+            or an error message).  Truncated to keep output readable.
+    """
+
+    component: str
+    target: str
+    action: str
+    detail: str
+
+
+def _settings_json_token_goat_count() -> int:
+    """Return the number of token-goat hook entries currently in settings.json.
+
+    Helper for plan/verify: a fresh install yields 0; an idempotent re-install
+    should still yield exactly len(_hooks_block()) regardless of how many
+    times install is run.
+    """
+    settings_path = claude_settings_path()
+    if not settings_path.exists():
+        return 0
+    try:
+        data = _read_settings_json(settings_path) or {}
+    except (json.JSONDecodeError, OSError):
+        return 0
+    raw_hooks = data.get("hooks", {})
+    hooks: dict[str, object] = raw_hooks if isinstance(raw_hooks, dict) else {}
+    count = 0
+    for entries in hooks.values():
+        entry_list = entries if isinstance(entries, list) else []
+        for entry in entry_list:
+            if not isinstance(entry, dict):
+                continue
+            for h in (entry.get("hooks", []) or []):
+                if isinstance(h, dict) and "token_goat" in str(h.get("command", "")):
+                    count += 1
+    return count
+
+
+def plan_install(
+    install_codex: bool = False,
+    install_opencode: bool = False,
+    install_openclaw: bool = False,
+) -> list[_PlanEntry]:
+    """Return what :func:`install_all` *would* do, without making any changes.
+
+    Read-only: must never write to disk, registry, schtasks, launchctl, systemd,
+    or crontab.  Used by ``token-goat install --dry-run`` so users can confirm
+    their config will be merged (not overwritten) and that the right autostart
+    mechanism will be picked on their platform.
+
+    Each row is a :class:`_PlanEntry`.  Optional integrations (codex/opencode/
+    openclaw) are only included when the corresponding flag is set, matching
+    :func:`install_all` semantics.
+    """
+    plan: list[_PlanEntry] = []
+
+    # 1. settings.json
+    settings_path = claude_settings_path()
+    if settings_path.exists():
+        existing_count = _settings_json_token_goat_count()
+        action = "update" if existing_count else "create"
+        detail = (
+            f"would replace {existing_count} existing token-goat hook entries"
+            if existing_count
+            else "would add token-goat hooks block (preserving other hooks)"
+        )
+    else:
+        action = "create"
+        detail = "file does not exist; would create with token-goat hooks"
+    plan.append(_PlanEntry(
+        component="settings.json",
+        target=str(settings_path),
+        action=action,
+        detail=detail,
+    ))
+
+    # 2. CLAUDE.md
+    md_path = claude_md_path()
+    if md_path.exists():
+        try:
+            md_text = md_path.read_text(encoding="utf-8")
+        except OSError as e:
+            plan.append(_PlanEntry(
+                component="CLAUDE.md",
+                target=str(md_path),
+                action="error",
+                detail=f"unreadable: {e}",
+            ))
+        else:
+            has_block = CLAUDE_MD_BEGIN in md_text and CLAUDE_MD_END in md_text
+            plan.append(_PlanEntry(
+                component="CLAUDE.md",
+                target=str(md_path),
+                action="update" if has_block else "update",
+                detail=(
+                    "would replace existing delimited block"
+                    if has_block
+                    else "would append delimited block"
+                ),
+            ))
+    else:
+        plan.append(_PlanEntry(
+            component="CLAUDE.md",
+            target=str(md_path),
+            action="create",
+            detail="file does not exist; would create with delimited block",
+        ))
+
+    # 3. skill
+    skill_md = skill_dir() / "SKILL.md"
+    plan.append(_PlanEntry(
+        component="skill",
+        target=str(skill_md),
+        action="update" if skill_md.exists() else "create",
+        detail="SKILL.md written under ~/.claude/skills/token-goat/",
+    ))
+
+    # 4. platform autostart
+    if sys.platform == "win32":
+        run_present = _winreg_run_value_exists(TASK_WORKER)
+        plan.append(_PlanEntry(
+            component="worker autostart",
+            target=r"HKCU\Software\Microsoft\Windows\CurrentVersion\Run\\" + TASK_WORKER,
+            action="update" if run_present else "create",
+            detail="HKCU Run registry key (no admin required)",
+        ))
+        plan.append(_PlanEntry(
+            component="update task",
+            target=f"schtasks: {TASK_UPDATE}",
+            action="update" if task_exists(TASK_UPDATE) else "create",
+            detail="weekly Sunday 03:00 schtasks job",
+        ))
+    elif sys.platform == "darwin":
+        plist = _launchd_plist_path()
+        plan.append(_PlanEntry(
+            component="worker autostart",
+            target=str(plist),
+            action="update" if plist.exists() else "create",
+            detail="LaunchAgent plist (user scope, RunAtLoad)",
+        ))
+        plan.append(_PlanEntry(
+            component="update cron",
+            target="crontab (current user)",
+            action="update" if CRON_JOB_MARKER in _check_linux_update_cron() else "create",
+            detail="weekly Sunday 03:00 cron entry",
+        ))
+    else:
+        if _systemd_user_available():
+            svc = _systemd_service_path()
+            mechanism = "systemd --user service"
+            target = str(svc)
+            exists = svc.exists()
+        else:
+            desktop = _xdg_autostart_path()
+            mechanism = "XDG autostart .desktop (systemd --user unavailable)"
+            target = str(desktop)
+            exists = desktop.exists()
+        plan.append(_PlanEntry(
+            component="worker autostart",
+            target=target,
+            action="update" if exists else "create",
+            detail=mechanism,
+        ))
+        plan.append(_PlanEntry(
+            component="update cron",
+            target="crontab (current user)",
+            action="update" if "installed" in _check_linux_update_cron() else "create",
+            detail="weekly Sunday 03:00 cron entry",
+        ))
+
+    # 5. optional codex
+    if install_codex:
+        plan.append(_PlanEntry(
+            component="codex: config.toml",
+            target=str(codex_config_path()),
+            action="update" if codex_config_path().exists() else "create",
+            detail="merge token-goat hooks into [hooks]",
+        ))
+        plan.append(_PlanEntry(
+            component="codex: AGENTS.md",
+            target=str(codex_agents_path()),
+            action="update" if codex_agents_path().exists() else "create",
+            detail="append/replace delimited block",
+        ))
+
+    # 6. optional opencode / openclaw
+    if install_opencode or install_openclaw:
+        try:
+            from . import bridges  # noqa: PLC0415
+        except Exception as e:  # noqa: BLE001
+            plan.append(_PlanEntry(
+                component="bridges",
+                target="(import failed)",
+                action="error",
+                detail=str(e),
+            ))
+            bridges = None  # type: ignore[assignment]
+        if install_opencode and bridges is not None:
+            plan.append(_PlanEntry(
+                component="opencode: plugin",
+                target=str(getattr(bridges, "opencode_plugin_path", lambda: "<unknown>")()),
+                action="create",
+                detail="would write/refresh TS shim",
+            ))
+        if install_openclaw and bridges is not None:
+            plan.append(_PlanEntry(
+                component="openclaw: plugin",
+                target=str(getattr(bridges, "openclaw_plugin_path", lambda: "<unknown>")()),
+                action="create",
+                detail="would write/refresh TS shim",
+            ))
+
+    return plan
+
+
+def verify_install() -> list[_PlanEntry]:
+    """Run after :func:`install_all` to confirm each artefact actually landed.
+
+    Read-only.  Distinct from :func:`check_status` (one-line strings) — this
+    returns structured rows with an ``ok`` / ``missing`` / ``error`` action so
+    callers can detect partial-install scenarios (e.g. Linux box where the
+    systemd write succeeded but ``systemctl enable`` silently failed).
+    """
+    report: list[_PlanEntry] = []
+
+    # 1. settings.json
+    settings_path = claude_settings_path()
+    count = _settings_json_token_goat_count()
+    if not settings_path.exists():
+        report.append(_PlanEntry(
+            component="settings.json",
+            target=str(settings_path),
+            action="missing",
+            detail="settings.json absent after install",
+        ))
+    elif count == 0:
+        report.append(_PlanEntry(
+            component="settings.json",
+            target=str(settings_path),
+            action="missing",
+            detail="no token-goat hook entries found",
+        ))
+    else:
+        report.append(_PlanEntry(
+            component="settings.json",
+            target=str(settings_path),
+            action="ok",
+            detail=f"{count} token-goat hook entries present",
+        ))
+
+    # 2. CLAUDE.md
+    md_path = claude_md_path()
+    if not md_path.exists():
+        report.append(_PlanEntry(
+            component="CLAUDE.md",
+            target=str(md_path),
+            action="missing",
+            detail="CLAUDE.md absent",
+        ))
+    else:
+        try:
+            md_text = md_path.read_text(encoding="utf-8")
+        except OSError as e:
+            report.append(_PlanEntry(
+                component="CLAUDE.md",
+                target=str(md_path),
+                action="error",
+                detail=f"unreadable: {e}",
+            ))
+        else:
+            has_block = CLAUDE_MD_BEGIN in md_text and CLAUDE_MD_END in md_text
+            report.append(_PlanEntry(
+                component="CLAUDE.md",
+                target=str(md_path),
+                action="ok" if has_block else "missing",
+                detail="delimited block present" if has_block else "no token-goat block found",
+            ))
+
+    # 3. skill
+    skill_md = skill_dir() / "SKILL.md"
+    report.append(_PlanEntry(
+        component="skill",
+        target=str(skill_md),
+        action="ok" if skill_md.exists() else "missing",
+        detail="SKILL.md present" if skill_md.exists() else "SKILL.md missing",
+    ))
+
+    # 4. platform autostart
+    if sys.platform == "win32":
+        run_present = _winreg_run_value_exists(TASK_WORKER)
+        action = (
+            "ok" if run_present is True
+            else "missing" if run_present is False
+            else "error"
+        )
+        report.append(_PlanEntry(
+            component="worker autostart",
+            target=r"HKCU\Run\\" + TASK_WORKER,
+            action=action,
+            detail="HKCU Run key " + (
+                "present" if run_present is True
+                else "absent" if run_present is False
+                else "unreadable"
+            ),
+        ))
+    elif sys.platform == "darwin":
+        plist = _launchd_plist_path()
+        report.append(_PlanEntry(
+            component="worker autostart",
+            target=str(plist),
+            action="ok" if plist.exists() else "missing",
+            detail="LaunchAgent plist " + ("present" if plist.exists() else "absent"),
+        ))
+    else:
+        svc = _systemd_service_path()
+        desktop = _xdg_autostart_path()
+        if svc.exists():
+            report.append(_PlanEntry(
+                component="worker autostart",
+                target=str(svc),
+                action="ok",
+                detail="systemd user service installed",
+            ))
+        elif desktop.exists():
+            report.append(_PlanEntry(
+                component="worker autostart",
+                target=str(desktop),
+                action="ok",
+                detail="XDG autostart installed",
+            ))
+        else:
+            report.append(_PlanEntry(
+                component="worker autostart",
+                target=str(svc),
+                action="missing",
+                detail="neither systemd unit nor XDG .desktop present",
+            ))
+
+    return report
+
+
+# ---------------------------------------------------------------------------
 # Top-level install / uninstall
 # ---------------------------------------------------------------------------
 
