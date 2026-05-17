@@ -253,3 +253,244 @@ def test_empty_command():
 def test_whitespace_only():
     intent = parse("   ")
     assert intent.kind == "unknown"
+
+
+# ---------------------------------------------------------------------------
+# 17. Additional read-equivalent binaries (xxd, od, wc, type)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "command,target_path",
+    [
+        ("xxd binary.bin", "binary.bin"),
+        ("od -c binary.bin", "binary.bin"),
+        ("wc -l README.md", "README.md"),
+        ("wc README.md", "README.md"),
+        ("type foo.txt", "foo.txt"),
+    ],
+)
+def test_binary_dump_and_count_readers(command, target_path):
+    intent = parse(command)
+    assert intent.kind == "read"
+    assert intent.target_path == target_path
+
+
+# ---------------------------------------------------------------------------
+# 18. PowerShell Get-Content / gc — case-insensitive, -Path, -TotalCount/-Tail
+# ---------------------------------------------------------------------------
+
+
+def test_powershell_get_content_positional():
+    intent = parse("Get-Content foo.txt")
+    assert intent.kind == "read"
+    assert intent.target_path == "foo.txt"
+    assert intent.limit is None
+
+
+def test_powershell_get_content_case_insensitive():
+    # PowerShell cmdlets are case-insensitive; both must be detected.
+    intent = parse("GET-CONTENT foo.txt")
+    assert intent.kind == "read"
+    assert intent.target_path == "foo.txt"
+
+
+def test_powershell_gc_alias():
+    intent = parse("gc foo.txt")
+    assert intent.kind == "read"
+    assert intent.target_path == "foo.txt"
+
+
+def test_powershell_get_content_path_flag():
+    intent = parse("Get-Content -Path foo.txt")
+    assert intent.kind == "read"
+    assert intent.target_path == "foo.txt"
+
+
+def test_powershell_get_content_literalpath_flag():
+    intent = parse("Get-Content -LiteralPath foo.txt")
+    assert intent.kind == "read"
+    assert intent.target_path == "foo.txt"
+
+
+def test_powershell_get_content_totalcount_offset():
+    # -TotalCount maps to head -n N → offset=1, limit=N.
+    intent = parse("Get-Content -Path foo.txt -TotalCount 50")
+    assert intent.kind == "read"
+    assert intent.target_path == "foo.txt"
+    assert intent.offset == 1
+    assert intent.limit == 50
+
+
+def test_powershell_get_content_tail_no_offset():
+    # -Tail N maps to tail -n N → limit only, no offset.
+    intent = parse("Get-Content foo.txt -Tail 20")
+    assert intent.kind == "read"
+    assert intent.target_path == "foo.txt"
+    assert intent.offset is None
+    assert intent.limit == 20
+
+
+def test_powershell_get_content_skip_encoding_arg():
+    # ``-Encoding utf8`` must not be mistaken for the positional path.
+    intent = parse("Get-Content -Encoding utf8 foo.txt")
+    assert intent.kind == "read"
+    assert intent.target_path == "foo.txt"
+
+
+# ---------------------------------------------------------------------------
+# 19. Stdin redirection (cmd < FILE) — treated as read of FILE
+# ---------------------------------------------------------------------------
+
+
+def test_redirect_cat_lt_file():
+    # ``cat < foo.txt`` is a read of foo.txt — same effect as ``cat foo.txt``.
+    intent = parse("cat < foo.txt")
+    assert intent.kind == "read"
+    assert intent.target_path == "foo.txt"
+
+
+def test_redirect_wc_lt_file():
+    # ``wc -l < foo.txt`` — wc has no positional path, redirect supplies it.
+    intent = parse("wc -l < foo.txt")
+    assert intent.kind == "read"
+    assert intent.target_path == "foo.txt"
+
+
+def test_redirect_unknown_binary_lt_file():
+    # Unknown leading binary but stdin redirected from a real file — still a
+    # read of the file, since the agent will consume its contents.
+    intent = parse("python_script.py < foo.txt")
+    assert intent.kind == "read"
+    assert intent.target_path == "foo.txt"
+
+
+def test_redirect_attached_form():
+    # ``cat <foo.txt`` (no space between ``<`` and the path) is valid shell.
+    intent = parse("cat <foo.txt")
+    assert intent.kind == "read"
+    assert intent.target_path == "foo.txt"
+
+
+# ---------------------------------------------------------------------------
+# 20. Heredoc / here-string — must NOT be classified as a read
+# ---------------------------------------------------------------------------
+
+
+def test_heredoc_not_a_read():
+    # ``cat << EOF ... EOF`` consumes the literal heredoc body, not a file.
+    intent = parse("cat << EOF")
+    assert intent.kind == "unknown"
+    assert intent.reason is not None
+    assert "heredoc" in intent.reason
+
+
+def test_here_string_not_a_read():
+    # ``grep foo <<< 'bar'`` is a here-string, not a file read.
+    intent = parse("cat <<< 'foo bar'")
+    assert intent.kind == "unknown"
+    assert intent.reason is not None
+    assert "heredoc" in intent.reason
+
+
+# ---------------------------------------------------------------------------
+# 21. head extracts offset=1 alongside limit
+# ---------------------------------------------------------------------------
+
+
+def test_head_records_offset_one():
+    # head -n N is conceptually "read lines 1..N"; record the slice precisely
+    # so session tracking knows the exact range consumed.
+    intent = parse("head -n 50 foo.py")
+    assert intent.kind == "read"
+    assert intent.offset == 1
+    assert intent.limit == 50
+
+
+def test_tail_records_limit_only():
+    # tail's starting line depends on the file's total length, which we don't
+    # know at parse time — so we record limit only, not offset.
+    intent = parse("tail -n 20 file.txt")
+    assert intent.kind == "read"
+    assert intent.offset is None
+    assert intent.limit == 20
+
+
+# ---------------------------------------------------------------------------
+# 22. sed -n 'M,Np' line-range extraction
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "command,offset,limit",
+    [
+        ("sed -n '10,20p' src/main.py", 10, 11),  # inclusive: 10..20 → 11 lines
+        ("sed -n '5p' src/main.py", 5, 1),  # single line
+        ("sed -n '1,100p' README.md", 1, 100),
+    ],
+)
+def test_sed_line_range_extraction(command, offset, limit):
+    intent = parse(command)
+    assert intent.kind == "read"
+    assert intent.offset == offset
+    assert intent.limit == limit
+
+
+def test_sed_inverted_range_falls_through():
+    # End < start is nonsensical — fall back to whole-file semantics rather
+    # than emitting negative line counts to the session tracker.
+    intent = parse("sed -n '20,10p' src/main.py")
+    assert intent.kind == "read"
+    assert intent.offset is None
+    assert intent.limit is None
+
+
+def test_sed_unknown_script_no_range():
+    # Substitution / other commands don't encode a slice → no offset/limit.
+    intent = parse("sed -n '/foo/p' src/main.py")
+    assert intent.kind == "read"
+    assert intent.offset is None
+    assert intent.limit is None
+
+
+# ---------------------------------------------------------------------------
+# 23. awk NR slice extraction
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "command,offset,limit",
+    [
+        ("awk 'NR==5' src/main.py", 5, 1),
+        ("awk 'NR>=10 && NR<=20' src/main.py", 10, 11),
+        ("awk 'NR >= 10 && NR <= 20' src/main.py", 10, 11),
+    ],
+)
+def test_awk_line_range_extraction(command, offset, limit):
+    intent = parse(command)
+    assert intent.kind == "read"
+    assert intent.offset == offset
+    assert intent.limit == limit
+
+
+def test_awk_complex_script_no_range():
+    # Anything beyond the recognised NR forms falls back to whole-file.
+    intent = parse("awk '/foo/ { print }' src/main.py")
+    assert intent.kind == "read"
+    assert intent.offset is None
+    assert intent.limit is None
+
+
+# ---------------------------------------------------------------------------
+# 24. Combined: pipe + redirect — leading segment still recognised
+# ---------------------------------------------------------------------------
+
+
+def test_pipe_with_head_offset():
+    # ``head -n 30 foo.py | grep bar`` — only the leading read is parsed,
+    # and the head offset/limit must survive.
+    intent = parse("head -n 30 foo.py | grep bar")
+    assert intent.kind == "read"
+    assert intent.target_path == "foo.py"
+    assert intent.offset == 1
+    assert intent.limit == 30
