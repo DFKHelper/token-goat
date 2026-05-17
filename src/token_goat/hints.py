@@ -155,8 +155,8 @@ def _get_indexed_symbols_and_line_count(
                 for r in sym_rows
             ]
             return sym_dicts, n_lines, line_count_is_exact
-    except Exception:  # noqa: BLE001
-        _LOG.exception("failed to load indexed symbols for %s", file_rel)
+    except (db.DBError, sqlite3.Error, OSError) as exc:
+        _LOG.debug("failed to load indexed symbols for %s: %s", file_rel, exc)
         return [], None, False
 
 

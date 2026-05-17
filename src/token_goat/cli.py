@@ -539,7 +539,7 @@ def cmd_fetch_image(
 
     try:
         path = webfetch.fetch_url(url)
-    except Exception as e:  # noqa: BLE001
+    except (ValueError, RuntimeError, OSError) as e:
         _warn(f"WebFetch failed: {e}")
         raise typer.Exit(0) from None  # fail-soft
     if json_output:
