@@ -9,7 +9,7 @@ from collections import defaultdict
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, TypedDict
 
 from . import db
 
@@ -20,6 +20,14 @@ if TYPE_CHECKING:
 
 # Kinds that track bytes but not (reliable) token counts.
 BYTES_MODE_ONLY_KINDS: frozenset[str] = frozenset({"webfetch_image", "gdrive_image"})
+
+
+class _StatsBucket(TypedDict):
+    """Mutable accumulator for a single stats aggregation bucket (kind, day, or project)."""
+
+    events: int
+    bytes_saved: int
+    tokens_saved: int
 
 _LOG = logging.getLogger("token_goat.stats")
 
@@ -134,16 +142,41 @@ def _root_hash(root: str) -> str:
     return hashlib.sha1(root.encode()).hexdigest()
 
 
-def _zero_bucket() -> dict:
+def _zero_bucket() -> _StatsBucket:
     """Return a fresh zero-valued stats accumulator bucket."""
     return {"events": 0, "bytes_saved": 0, "tokens_saved": 0}
 
 
-def _inc_bucket(bucket: dict, bytes_saved: int, tokens_saved: int) -> None:
+def _inc_bucket(bucket: _StatsBucket, bytes_saved: int, tokens_saved: int) -> None:
     """Increment a stats accumulator bucket by the given byte/token counts."""
     bucket["events"] += 1
     bucket["bytes_saved"] += bytes_saved
     bucket["tokens_saved"] += tokens_saved
+
+
+class _ProjectBucket(_StatsBucket):
+    """Stats bucket extended with a project_root label."""
+
+    project_root: str
+
+
+class _DayRow(TypedDict):
+    """A single by-day aggregation row (after the date key is merged in)."""
+
+    date: str
+    events: int
+    bytes_saved: int
+    tokens_saved: int
+
+
+class _ProjectRow(TypedDict):
+    """A single by-project aggregation row returned in StatsSummary.by_project."""
+
+    project_hash: str
+    project_root: str
+    events: int
+    bytes_saved: int
+    tokens_saved: int
 
 
 @dataclass
@@ -153,9 +186,9 @@ class StatsSummary:
     total_events: int
     total_bytes_saved: int
     total_tokens_saved: int
-    by_kind: dict[str, dict]  # kind -> {events, bytes_saved, tokens_saved}
-    by_day: list[dict]  # newest first: {date, events, bytes_saved, tokens_saved}
-    by_project: list[dict]  # {project_hash, project_root, events, bytes_saved, tokens_saved}
+    by_kind: dict[str, _StatsBucket]  # kind -> {events, bytes_saved, tokens_saved}
+    by_day: list[_DayRow]  # newest first: {date, events, bytes_saved, tokens_saved}
+    by_project: list[_ProjectRow]  # {project_hash, project_root, events, bytes_saved, tokens_saved}
     window_days: int
 
 
@@ -183,10 +216,10 @@ def summarize(window_days: int = 30) -> StatsSummary:
     )
     _LOG.debug("summarize started: window=%d days, since_ts=%s", window_days, since_ts)
 
-    by_kind: dict[str, dict] = defaultdict(_zero_bucket)
-    by_day: dict[str, dict] = defaultdict(_zero_bucket)
-    by_project: dict[str, dict] = defaultdict(
-        lambda: {**_zero_bucket(), "project_root": ""}
+    by_kind: dict[str, _StatsBucket] = defaultdict(_zero_bucket)
+    by_day: dict[str, _StatsBucket] = defaultdict(_zero_bucket)
+    by_project: dict[str, _ProjectBucket] = defaultdict(
+        lambda: _ProjectBucket(events=0, bytes_saved=0, tokens_saved=0, project_root="")
     )
     total_events = 0
     total_bytes = 0
@@ -273,20 +306,28 @@ def summarize(window_days: int = 30) -> StatsSummary:
         _inc_bucket(p, row["bytes_saved"] or 0, row["tokens_saved"] or 0)
         p["project_root"] = root
 
-    by_day_list = sorted(
-        [{"date": k, **v} for k, v in by_day.items()],
+    by_day_list: list[_DayRow] = sorted(
+        [
+            _DayRow(
+                date=k,
+                events=v["events"],
+                bytes_saved=v["bytes_saved"],
+                tokens_saved=v["tokens_saved"],
+            )
+            for k, v in by_day.items()
+        ],
         key=lambda d: d["date"],
         reverse=True,
     )
-    by_project_list = sorted(
+    by_project_list: list[_ProjectRow] = sorted(
         [
-            {
-                "project_hash": k,  # full hash; callers truncate for display
-                "project_root": v["project_root"],
-                "events": v["events"],
-                "bytes_saved": v["bytes_saved"],
-                "tokens_saved": v["tokens_saved"],
-            }
+            _ProjectRow(
+                project_hash=k,  # full hash; callers truncate for display
+                project_root=v["project_root"],
+                events=v["events"],
+                bytes_saved=v["bytes_saved"],
+                tokens_saved=v["tokens_saved"],
+            )
             for k, v in by_project.items()
         ],
         key=lambda entry: entry["bytes_saved"],
@@ -308,7 +349,7 @@ def summarize(window_days: int = 30) -> StatsSummary:
     )
 
 
-def _accumulate(row: sqlite3.Row, by_kind: dict, by_day: dict) -> None:
+def _accumulate(row: sqlite3.Row, by_kind: dict[str, _StatsBucket], by_day: dict[str, _StatsBucket]) -> None:
     """Accumulate a stats row into the kind and day dictionaries.
 
     The kind bucket is always incremented even when day bucketing fails (bad

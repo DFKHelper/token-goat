@@ -78,7 +78,7 @@ def _is_abi_file(source: bytes, rel_path: str, threshold: int = _ABI_SIZE_THRESH
     return False
 
 
-def _extract_abi(source: bytes) -> tuple[list[Symbol], list[Ref], list[ImpExp], list]:
+def _extract_abi(source: bytes) -> tuple[list[Symbol], list[Ref], list[ImpExp], list[Section]]:
     """Fast path for generated ABI files: index top-level exports only, no refs.
 
     Returns a 4-tuple matching the Extractor protocol (symbols, refs,
@@ -162,7 +162,7 @@ def extract(
     source: bytes,
     rel_path: str,
     *,
-    meta: dict | None = None,
+    meta: dict[str, object] | None = None,
 ) -> tuple[list[Symbol], list[Ref], list[ImpExp], list[Section]]:
     """Extract symbols, refs, and imports/exports from a TS/TSX/JS/JSX file.
 
@@ -174,15 +174,19 @@ def extract(
     abi_threshold = _ABI_SIZE_THRESHOLD
     abi_max = _ABI_MAX_SYMBOLS
     if meta:
+        raw_threshold = meta.get("abi_size_threshold")
+        raw_max = meta.get("abi_max_symbols_per_file")
         try:
-            abi_threshold = int(meta.get("abi_size_threshold", abi_threshold))
-            abi_max = int(meta.get("abi_max_symbols_per_file", abi_max))
+            if isinstance(raw_threshold, (int, float, str)):
+                abi_threshold = int(raw_threshold)
+            if isinstance(raw_max, (int, float, str)):
+                abi_max = int(raw_max)
         except (TypeError, ValueError):
             _LOG.debug(
                 "invalid ABI meta values (abi_size_threshold=%r, abi_max_symbols_per_file=%r); "
                 "using defaults",
-                meta.get("abi_size_threshold"),
-                meta.get("abi_max_symbols_per_file"),
+                raw_threshold,
+                raw_max,
             )
 
     # ABI fast path: skip expensive structure walk for huge generated type files
