@@ -86,32 +86,18 @@ def extract(source: bytes, rel_path: str) -> tuple[list[Symbol], list[Ref], list
     ref list focused on project-internal call sites.  Sections are always empty
     for Python files (use :mod:`token_goat.languages.markdown` for prose).
     """
-    result, _text = common.parse_source(source, "python", rel_path, _LOG)
-    if result is None:
-        return [], [], [], []
-
-    symbols: list[Symbol] = []
-    imp_exp: list[ImpExp] = []
-    seen_names: set[tuple[str, int]] = set()
-
-    # promote_methods=True: function inside a class becomes "method"
-    _add_symbol = common.make_add_symbol(
-        symbols, seen_names, source, language="python", promote_methods=True
+    collected = common.collect_symbols_and_refs(
+        source, "python", rel_path, _LOG, _CALL_RE, _CALL_NOISE, promote_methods=True
     )
-    for item in result.structure:
-        _add_symbol(item)
-
-    # --- additional symbols from SymbolInfo (module-level vars/consts) ---
-    common.add_symbol_info(symbols, seen_names, result.symbols, language="python")
+    if collected is None:
+        return [], [], [], []
+    symbols, imp_exp, seen_names, refs, result = collected
 
     # --- imports ---
     common.add_imports(
         imp_exp,
-        result.imports,
+        result.imports,  # type: ignore[attr-defined]
         lambda imp: _parse_import_source(imp.source),  # type: ignore[attr-defined]
     )
-
-    # --- refs ---
-    refs: list[Ref] = common.extract_refs_from_source(source, _CALL_RE, _CALL_NOISE)
 
     return symbols, refs, imp_exp, []

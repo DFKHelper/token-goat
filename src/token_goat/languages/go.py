@@ -124,21 +124,12 @@ def _extract_const_var_inner(source: bytes) -> list[Symbol]:
 
 def extract(source: bytes, rel_path: str) -> tuple[list[Symbol], list[Ref], list[ImpExp], list[Section]]:
     """Extract symbols, refs, and imports from a Go file."""
-    result, _text = common.parse_source(source, "go", rel_path, _LOG)
-    if result is None:
+    collected = common.collect_symbols_and_refs(
+        source, "go", rel_path, _LOG, _CALL_RE, _CALL_NOISE
+    )
+    if collected is None:
         return [], [], [], []
-
-    symbols: list[Symbol] = []
-    imp_exp: list[ImpExp] = []
-    seen_names: set[tuple[str, int]] = set()
-
-    # --- structure: functions and methods ---
-    _add_symbol = common.make_add_symbol(symbols, seen_names, source, language="go")
-    for item in result.structure:
-        _add_symbol(item)
-
-    # --- symbols from SymbolInfo (structs, interfaces, module-level funcs) ---
-    common.add_symbol_info(symbols, seen_names, result.symbols, language="go")
+    symbols, imp_exp, seen_names, refs, result = collected
 
     # --- const/var (not surfaced by tlp) ---
     for cv_sym in _extract_const_var(source):
@@ -164,9 +155,6 @@ def extract(source: bytes, rel_path: str) -> tuple[list[Symbol], list[Ref], list
         m = _GO_IMPORT_RE.search(src)
         return m.group(1) if m else ""
 
-    common.add_imports(imp_exp, result.imports, _extract_go_import_target)
-
-    # --- refs ---
-    refs: list[Ref] = common.extract_refs_from_source(source, _CALL_RE, _CALL_NOISE)
+    common.add_imports(imp_exp, result.imports, _extract_go_import_target)  # type: ignore[attr-defined]
 
     return symbols, refs, imp_exp, []
