@@ -222,6 +222,12 @@ def sanitize_opt(value: object) -> str:
     """
     if not value:
         return ""
+    if not isinstance(value, str):
+        LOG.debug(
+            "sanitize_opt: coercing non-string payload field %s(%r) to str",
+            type(value).__name__,
+            sanitize_log_str(str(value)),
+        )
     return sanitize_log_str(str(value))
 
 
