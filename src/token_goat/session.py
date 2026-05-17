@@ -317,6 +317,19 @@ def _fresh_cache(session_id: str, *, unavailable: bool = False) -> SessionCache:
     )
 
 
+def _has_windows_drive_prefix(s: str) -> bool:
+    """Return True when *s* starts with a Windows drive letter followed by a colon.
+
+    Matches both uppercase and lowercase drive letters (e.g. ``C:``, ``c:``) so
+    the predicate is usable in both normalization contexts (where we need to
+    detect an uppercase letter to lowercase it) and path-classification contexts
+    (where we only need to know whether the path is absolute).
+    Callers that only want to detect *uppercase* drives (for lowercasing) should
+    additionally check ``s[0].isupper()``.
+    """
+    return len(s) >= 2 and s[1] == ":" and s[0].isalpha()
+
+
 def _normalize_path(p: str) -> str:
     """Normalize a path for use as a cache key. Forward slashes; lowercase drive on Windows.
 
@@ -333,15 +346,13 @@ def _normalize_path(p: str) -> str:
     """
     # Fast path: no backslashes — skip the Path allocation entirely.
     if "\\" not in p:
-        if sys.platform == "win32" and len(p) >= 2 and p[1] == ":" and p[0].isupper():
+        if sys.platform == "win32" and _has_windows_drive_prefix(p) and p[0].isupper():
             return p[0].lower() + p[1:]
         return p
     s = p.replace("\\", "/")
-    if sys.platform == "win32" and len(s) >= 2 and s[1] == ":" and s[0].isupper():
+    if sys.platform == "win32" and _has_windows_drive_prefix(s) and s[0].isupper():
         s = s[0].lower() + s[1:]
     return s
-
-
 
 
 _SESSION_ID_RE = re.compile(r"^[a-zA-Z0-9_-]+$")
@@ -526,9 +537,7 @@ def _sanitize_path(path: str) -> str:
         path = path[:_MAX_PATH_LEN]
     normalized = path.replace("\\", "/")
     # Relative paths must not contain traversal components
-    is_absolute = normalized.startswith("/") or (
-        len(normalized) >= 2 and normalized[1] == ":" and normalized[0].isalpha()
-    )
+    is_absolute = normalized.startswith("/") or _has_windows_drive_prefix(normalized)
     if not is_absolute:
         parts = normalized.split("/")
         if ".." in parts:
