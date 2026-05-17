@@ -453,7 +453,7 @@ def write_file_index(conn: sqlite3.Connection, fi: FileIndex) -> None:
     rather than in the extractor so extractors don't need to enforce these invariants.
     """
     t0 = time.time()
-    now = int(time.time())
+    now = int(t0)
     # Delete old rows (cascade handles symbols/refs/imports_exports/sections)
     conn.execute("DELETE FROM files WHERE rel_path = ?", (fi.rel_path,))
     conn.execute(
@@ -705,10 +705,10 @@ def index_project(
             gconn.executemany(
                 "INSERT INTO symbols_global(project_hash, name, kind, file_rel, line, signature) "
                 "VALUES (?, ?, ?, ?, ?, ?)",
-                [
+                (
                     (project.hash, r["name"], r["kind"], r["file_rel"], r["line"], r["signature"])
                     for r in rows
-                ],
+                ),
             )
 
     elapsed = time.time() - t0

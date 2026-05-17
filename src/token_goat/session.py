@@ -25,7 +25,9 @@ from __future__ import annotations
 import contextlib
 import json
 import logging
+import os
 import re
+import stat as _stat_module
 import sys
 import threading
 import time
@@ -686,11 +688,18 @@ def cleanup_stale(max_age_hours: float = 24.0) -> int:
         if not _SESSION_ID_RE.match(stem):
             _LOG.debug("cleanup_stale: skipping non-session-ID filename %r", f.name)
             continue
-        if f.is_symlink():
+        # Use os.lstat() once to get both symlink status and mtime in a single
+        # syscall, avoiding the separate is_symlink() + stat() pair (two syscalls).
+        try:
+            st = os.lstat(f)
+        except OSError as e:
+            _LOG.debug("cleanup_stale: could not stat %s: %s", f.name, e)
+            continue
+        if _stat_module.S_ISLNK(st.st_mode):
             _LOG.warning("cleanup_stale: skipping symlink in sessions dir: %s", f.name)
             continue
         try:
-            if f.stat().st_mtime < cutoff:
+            if st.st_mtime < cutoff:
                 f.unlink()
                 removed += 1
         except OSError as e:
