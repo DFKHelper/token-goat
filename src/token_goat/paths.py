@@ -52,6 +52,34 @@ def python_runner_command(*subcommand: str) -> str:
     return " ".join(quoted)
 
 
+def _safe_env_dir(value: str) -> Path | None:
+    """Validate an environment-variable directory value before using it as a data-dir base.
+
+    Accepts only non-empty, absolute paths so that a crafted env var
+    (e.g. ``LOCALAPPDATA=../../etc`` or ``XDG_DATA_HOME=../../tmp/evil``) cannot
+    redirect the entire data directory — and with it config, DBs, and OAuth
+    credentials — to an attacker-controlled location.
+
+    Returns the resolved ``Path`` when the value passes all checks, or ``None``
+    to signal that the caller should fall back to the home-based default.
+    """
+    stripped = value.strip()
+    if not stripped:
+        return None
+    try:
+        p = Path(stripped)
+    except (ValueError, TypeError):
+        return None
+    # Reject relative paths: ``Path("../../tmp")`` is relative, ``Path("/tmp")`` is not.
+    if not p.is_absolute():
+        import logging  # noqa: PLC0415
+        logging.getLogger("token_goat.paths").warning(
+            "env dir override rejected (not absolute): %r", stripped
+        )
+        return None
+    return p
+
+
 def _default_data_dir() -> Path:
     """Compute the platform-appropriate data directory without platformdirs.
 
@@ -64,16 +92,23 @@ def _default_data_dir() -> Path:
     contexts where only the stdlib is guaranteed (e.g. the hooks entry point runs before
     the venv is fully activated on some CI images). platformdirs is a dev/install extra,
     not a hard runtime dependency.
+
+    Environment variables (``LOCALAPPDATA``, ``XDG_DATA_HOME``) are validated via
+    ``_safe_env_dir`` before use: only absolute paths are accepted.  A relative or
+    otherwise malformed value falls back to the home-based default so a crafted env var
+    cannot redirect data paths to an attacker-controlled location.
     """
     if sys.platform == "win32":
-        base = os.environ.get("LOCALAPPDATA") or os.path.expanduser("~")
+        raw = os.environ.get("LOCALAPPDATA", "")
+        base_path = _safe_env_dir(raw) if raw else None
+        base = str(base_path) if base_path is not None else os.path.expanduser("~")
         return Path(base) / "dfk-helper" / "token-goat"
     if sys.platform == "darwin":
         return Path.home() / "Library" / "Application Support" / "token-goat"
     # Linux / BSD / WSL — honour XDG_DATA_HOME
-    xdg = os.environ.get("XDG_DATA_HOME", "").strip()
-    base_dir = Path(xdg) if xdg else Path.home() / ".local" / "share"
-    return base_dir / "token-goat"
+    xdg = os.environ.get("XDG_DATA_HOME", "")
+    base_dir = _safe_env_dir(xdg) if xdg else None
+    return (base_dir if base_dir is not None else Path.home() / ".local" / "share") / "token-goat"
 
 
 def data_dir() -> Path:

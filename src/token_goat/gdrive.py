@@ -5,6 +5,7 @@ import contextlib
 import io
 import logging
 import os
+import re
 import sys
 import time
 from pathlib import Path
@@ -195,6 +196,13 @@ def _validate_file_id(file_id: str) -> None:
 
 _MAX_DOWNLOAD_BYTES = 100 * 1024 * 1024  # 100 MB — same order of magnitude as webfetch cap
 
+# Drive API can return arbitrary mimeType strings from user-controlled metadata.
+# Allow only the characters that appear in legitimate MIME types (RFC 2045 token +
+# slash + optional parameter suffix) so a crafted type cannot be used to inject
+# unexpected values into googleapiclient calls.
+_MIME_TYPE_RE = re.compile(r'^[A-Za-z0-9!#$&\-^_.+]+/[A-Za-z0-9!#$&\-^_.+]+(?:;[^\x00-\x1f\x7f]*)?$')
+_MAX_MIME_TYPE_LEN = 256
+
 # Maximum characters kept in a sanitised local filename derived from the Drive
 # file's display name.  Long names can exceed filesystem path limits; 200 chars
 # gives ample readability headroom while staying well under the 255-byte limit
@@ -222,6 +230,29 @@ def _build_local_cache_path(file_id: str, name: str, cache_dir: Path) -> Path:
     return local_path
 
 
+def _validate_mime_type(mime: str, file_id: str) -> str:
+    """Validate and return a Drive API mimeType value.
+
+    The Drive API returns ``mimeType`` from user-controlled file metadata, so a
+    compromised or crafted response could contain an unexpected string.  We
+    accept only values that match the RFC 2045 token grammar (type/subtype with
+    optional parameters limited to printable ASCII) and are within a reasonable
+    length.  Any value that fails validation is replaced with
+    ``"application/octet-stream"`` so the download falls through to the direct
+    (non-export) path rather than raising an error that would block legitimate use.
+    """
+    if not isinstance(mime, str):
+        _LOG.warning("gdrive: non-string mimeType for file %s (%r); treating as octet-stream", file_id, type(mime).__name__)
+        return "application/octet-stream"
+    if len(mime) > _MAX_MIME_TYPE_LEN:
+        _LOG.warning("gdrive: mimeType too long (%d chars) for file %s; treating as octet-stream", len(mime), file_id)
+        return "application/octet-stream"
+    if not _MIME_TYPE_RE.match(mime):
+        _LOG.warning("gdrive: mimeType %r for file %s failed validation; treating as octet-stream", mime, file_id)
+        return "application/octet-stream"
+    return mime
+
+
 def _download_to_cache(
     file_id: str,
     mime: str,
@@ -240,6 +271,9 @@ def _download_to_cache(
     Returns the (possibly adjusted) *local_path* — it gains a ``.pdf`` suffix for
     Workspace exports that had no extension.
     """
+    # Validate the MIME type from the Drive API before using it to branch and
+    # before passing it to export_media() to prevent injection via crafted metadata.
+    mime = _validate_mime_type(mime, file_id)
     # Google Workspace formats can't be downloaded directly — export as PDF.
     if mime.startswith("application/vnd.google-apps"):
         request = service.files().export_media(fileId=file_id, mimeType="application/pdf")  # type: ignore[attr-defined]
