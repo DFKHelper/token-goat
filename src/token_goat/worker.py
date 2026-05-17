@@ -829,7 +829,19 @@ def spawn_index_detached(project_root: str, project_hash: str) -> int | None:
     Uses ``pythonw.exe -m token_goat.cli`` rather than the launcher .exe so
     AV/EDR products don't behavior-flag the spawn.
     """
+    from . import db as db_mod  # noqa: PLC0415
     from . import paths  # noqa: PLC0415
+
+    # Validate project_hash before using it in the marker path.  Callers like
+    # _parse_and_group_entries already validate, but this function is part of
+    # the public spawn API and may be called from future code paths without
+    # prior validation.  Defense-in-depth: a traversal sequence in project_hash
+    # would escape locks_dir() when building the .indexing marker path.
+    try:
+        db_mod._validate_project_hash(project_hash)
+    except ValueError as exc:
+        _LOG.warning("spawn_index_detached: rejecting invalid project_hash %r: %s", project_hash, exc)
+        return None
 
     # Validate project_root before using it as cwd in Popen.  project_root can
     # originate from the dirty queue (an external file), so we must confirm it

@@ -49,17 +49,26 @@ def _write_creds_secure(path: Path, content: str) -> None:
 
     On POSIX systems this prevents other local users from reading refresh tokens.
     On Windows, ``os.chmod`` has no meaningful effect (NTFS ACLs control access),
-    so we simply write the file normally — the user's profile directory already
-    provides the required isolation.
+    so we delegate to ``paths.atomic_write_text`` which uses the user-profile
+    location for isolation.
 
     Uses an atomic write-then-rename pattern so a partial write never leaves a
-    truncated credential file behind.
+    truncated credential file behind.  The temp file name includes thread ID and
+    monotonic_ns (same scheme as ``paths.atomic_write_text``) to prevent a
+    predictable-name symlink attack on systems where multiple users share a
+    ``/tmp``-style parent directory.
     """
+    import threading  # noqa: PLC0415
+    import time  # noqa: PLC0415
+
     path.parent.mkdir(parents=True, exist_ok=True)
     if sys.platform != "win32":
         # Write via a low-level fd opened with restrictive mode so the file is
         # never world-readable, even briefly before a post-write chmod.
-        tmp = path.with_suffix(path.suffix + ".tmp")
+        # Unique temp name prevents a predictable-path symlink attack.
+        tmp = path.with_name(
+            f"{path.name}.{threading.get_ident()}.{time.monotonic_ns()}.tmp"
+        )
         fd = os.open(str(tmp), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
         try:
             with os.fdopen(fd, "w", encoding="utf-8") as fh:
