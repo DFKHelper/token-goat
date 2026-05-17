@@ -106,15 +106,35 @@ def _format_ranges(ranges: list[tuple[int, int]]) -> str:
     return f"  lines {parts}{overflow_suffix}"
 
 
-def event_count(session_id: str) -> int:
-    """Count tracked events (reads + greps + edits) for a session."""
+def _load_session_cache(session_id: str, caller: str) -> SessionCache | None:
+    """Validate *session_id* and load the session cache, returning ``None`` on any failure.
+
+    Both :func:`event_count` and :func:`build_manifest` need the same
+    validate → load → except sequence.  Extracting it here avoids duplicating
+    the exception-handling logic and the truncated-ID formatting in log messages.
+
+    *caller* is a short label (e.g. ``"event_count"``) used in the log message
+    so callers remain distinguishable in the log output without duplicating
+    the full message string.
+    """
     try:
         session_mod.validate_session_id(session_id)
-        cache = session_mod.load(session_id)
-        return len(cache.files) + len(cache.greps) + len(cache.edited_files)
+        return session_mod.load(session_id)
+    except ValueError as exc:
+        _LOG.warning("%s: invalid session_id: %s", caller, exc)
+        return None
     except Exception as e:  # noqa: BLE001 — session load can fail for many reasons (missing file, corrupt JSON, etc.)
-        _LOG.debug("event_count(%s) failed: %s", session_id[:8] if session_id else "<empty>", e, exc_info=True)
+        sid_short = session_id[:8] if session_id else "<empty>"
+        _LOG.debug("%s(%s) failed: %s", caller, sid_short, e, exc_info=True)
+        return None
+
+
+def event_count(session_id: str) -> int:
+    """Count tracked events (reads + greps + edits) for a session."""
+    cache = _load_session_cache(session_id, "event_count")
+    if cache is None:
         return 0
+    return len(cache.files) + len(cache.greps) + len(cache.edited_files)
 
 
 def build_manifest(session_id: str, *, max_tokens: int = 400) -> str:
@@ -128,16 +148,9 @@ def build_manifest(session_id: str, *, max_tokens: int = 400) -> str:
     Safe to call even when the session cache is empty or missing.
     """
     t0 = time.monotonic()
-    try:
-        session_mod.validate_session_id(session_id)
-    except ValueError as exc:
-        _LOG.warning("build_manifest: invalid session_id: %s", exc)
-        return ""
     _LOG.debug("build_manifest: session=%s max_tokens=%d", session_id[:8], max_tokens)
-    try:
-        cache = session_mod.load(session_id)
-    except Exception as e:  # noqa: BLE001 — session load can fail for many reasons (missing file, corrupt JSON, etc.)
-        _LOG.warning("compact: could not load session %s: %s", session_id[:8], e, exc_info=True)
+    cache = _load_session_cache(session_id, "build_manifest")
+    if cache is None:
         return ""
 
     result, files_with_symbols_count = _render(cache, session_id, max_tokens)

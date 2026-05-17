@@ -159,6 +159,19 @@ def _ok_fail(ok: bool, detail: str, *, max_detail: int = 200) -> str:
     return f"{prefix} — {detail[:max_detail]}"
 
 
+def _run_step(result: dict[str, str], key: str, fn: object) -> None:
+    """Run *fn* and record ``"ok — <return value>"`` or ``"FAIL — <exc>"`` in *result[key]*.
+
+    Eliminates the repeated ``try: result[key] = f"ok — {fn()}"; except Exception as e:
+    result[key] = f"FAIL — {e}"`` pattern used for optional harness-integration steps
+    in :func:`install_all` (codex, opencode, openclaw patches).
+    """
+    try:
+        result[key] = f"ok — {fn()}"  # type: ignore[operator]
+    except Exception as e:  # noqa: BLE001
+        result[key] = f"FAIL — {e}"
+
+
 # ---------------------------------------------------------------------------
 # Scheduled Tasks (Windows)
 # ---------------------------------------------------------------------------
@@ -1480,29 +1493,17 @@ def install_all(
 
     if install_codex:
         binary = token_goat_hook_binary()
-        try:
-            result["codex: config.toml"] = f"ok — {patch_codex_config(binary)}"
-        except Exception as e:  # noqa: BLE001
-            result["codex: config.toml"] = f"FAIL — {e}"
-        try:
-            result["codex: AGENTS.md"] = f"ok — {patch_codex_agents_md()}"
-        except Exception as e:  # noqa: BLE001
-            result["codex: AGENTS.md"] = f"FAIL — {e}"
+        _run_step(result, "codex: config.toml", lambda: patch_codex_config(binary))
+        _run_step(result, "codex: AGENTS.md", patch_codex_agents_md)
 
     if install_opencode or install_openclaw:
         from . import bridges  # noqa: PLC0415
 
     if install_opencode:
-        try:
-            result["opencode: plugin"] = f"ok — {bridges.install_opencode_plugin()}"
-        except Exception as e:  # noqa: BLE001
-            result["opencode: plugin"] = f"FAIL — {e}"
+        _run_step(result, "opencode: plugin", bridges.install_opencode_plugin)
 
     if install_openclaw:
-        try:
-            result["openclaw: plugin"] = f"ok — {bridges.install_openclaw_plugin()}"
-        except Exception as e:  # noqa: BLE001
-            result["openclaw: plugin"] = f"FAIL — {e}"
+        _run_step(result, "openclaw: plugin", bridges.install_openclaw_plugin)
 
     failures = [k for k, v in result.items() if v.startswith("FAIL")]
     elapsed_ms = (time.monotonic() - t0) * 1000
