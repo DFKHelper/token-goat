@@ -2,10 +2,7 @@
 
 from __future__ import annotations
 
-import pytest
-
 from token_goat.hooks_common import sanitize_log_str
-
 
 # ---------------------------------------------------------------------------
 # Unicode bidirectional override stripping

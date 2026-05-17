@@ -1,17 +1,13 @@
 """Security tests: validate_cwd guards in hooks_common, hooks_edit, hooks_session."""
 from __future__ import annotations
 
-import json
-import pathlib
 import sys
 from pathlib import Path
-from unittest.mock import MagicMock, patch
 
 import pytest
-
 from hook_helpers import assert_continue as _assert_continue
-from token_goat.hooks_common import validate_cwd
 
+from token_goat.hooks_common import validate_cwd
 
 # ---------------------------------------------------------------------------
 # validate_cwd unit tests

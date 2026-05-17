@@ -53,11 +53,17 @@ _LOG = logging.getLogger("token_goat.embeddings")
 DEFAULT_MODEL = "BAAI/bge-small-en-v1.5"
 DEFAULT_DIM = 384
 
-# Chunk size constraints (chars)
+# Chunk size constraints (chars).  MIN_CHUNK_CHARS filters out trivially small
+# symbols (blank stubs, one-liner constants) that add noise without semantic signal.
+# MAX_CHUNK_CHARS caps chunks before embedding — bge-small-en-v1.5 has a 512-token
+# context window (~2 k chars for code); beyond 8 k the model silently truncates,
+# so splitting earlier produces better vectors than feeding an oversized block.
 MIN_CHUNK_CHARS = 50
 MAX_CHUNK_CHARS = 8000
 
-# Sliding-window fallback for unparsed code
+# Line-window size for the sliding-window fallback used on unparsed files.
+# 100 lines gives each chunk enough context to be semantically meaningful while
+# keeping chunk count manageable for large files (a 1 k-line file → ~10 chunks).
 WINDOW_LINES = 100
 
 # Symbol kinds worth chunking
