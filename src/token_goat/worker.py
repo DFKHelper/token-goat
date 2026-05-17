@@ -697,6 +697,18 @@ def evict_image_cache_if_over_limit() -> tuple[int, int]:
 # Spawn API (called by SessionStart watchdog)
 # ---------------------------------------------------------------------------
 
+def _detach_creationflags() -> int:
+    """Return the Windows creationflags for a detached background process.
+
+    Combines DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW.
+    Returns 0 on non-Windows platforms (the flags are ignored anyway, but
+    ``subprocess.Popen`` does not accept non-zero creationflags on POSIX).
+    """
+    if sys.platform == "win32":
+        return 0x00000008 | 0x00000200 | 0x08000000
+    return 0
+
+
 def spawn_detached() -> int | None:
     """Spawn the token-goat worker as a detached background process.
 
@@ -707,10 +719,7 @@ def spawn_detached() -> int | None:
     from . import paths  # noqa: PLC0415
     cmd = paths.python_runner_argv("worker", "--daemon")
 
-    creationflags = 0
-    if sys.platform == "win32":
-        # DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW
-        creationflags = 0x00000008 | 0x00000200 | 0x08000000
+    creationflags = _detach_creationflags()
 
     # Capture the spawned worker's stderr to a file rather than DEVNULL. A
     # worker that fails before its logging FileHandler is attached — an import
@@ -854,9 +863,7 @@ def spawn_index_detached(project_root: str, project_hash: str) -> int | None:
         return None
 
     cmd = paths.python_runner_argv("index", "--full")
-    creationflags = 0
-    if sys.platform == "win32":
-        creationflags = 0x00000008 | 0x00000200 | 0x08000000
+    creationflags = _detach_creationflags()
 
     try:
         proc = subprocess.Popen(
