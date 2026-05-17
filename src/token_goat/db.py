@@ -586,7 +586,9 @@ def open_global() -> Iterator[sqlite3.Connection]:
 
 # Maximum age (seconds) of a writer lock before it is treated as stale.
 # A lock older than this is assumed to belong to a crashed process even if the
-# PID still exists (e.g. recycled to an unrelated process).
+# PID still exists (e.g. recycled to an unrelated process). 10 minutes is chosen
+# to be longer than the slowest realistic full reindex (large monorepos with
+# embeddings), so a legitimately running worker is never falsely evicted.
 LOCK_STALE_SECONDS = 600  # 10 minutes
 
 _PROJECT_HASH_RE = re.compile(r"^[a-zA-Z0-9_]+$")

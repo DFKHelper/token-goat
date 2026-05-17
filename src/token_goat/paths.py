@@ -59,6 +59,11 @@ def _default_data_dir() -> Path:
     - Windows: %LOCALAPPDATA%\\dfk-helper\\token-goat
     - Linux/BSD: $XDG_DATA_HOME/token-goat  (falls back to ~/.local/share/token-goat)
     - macOS:  ~/Library/Application Support/token-goat
+
+    Inlined rather than calling platformdirs because token-goat must be importable in
+    contexts where only the stdlib is guaranteed (e.g. the hooks entry point runs before
+    the venv is fully activated on some CI images). platformdirs is a dev/install extra,
+    not a hard runtime dependency.
     """
     if sys.platform == "win32":
         base = os.environ.get("LOCALAPPDATA") or os.path.expanduser("~")
@@ -277,6 +282,9 @@ def atomic_write_text(path: Path, content: str) -> None:
     This is the canonical implementation shared by :mod:`session` and
     :mod:`config` — both previously carried their own private copies.
     """
+    # Two-component temp name: thread ID prevents collisions when multiple threads
+    # write the same path concurrently; monotonic_ns prevents collisions across rapid
+    # sequential calls in the same thread where the thread ID alone would repeat.
     tmp = path.with_name(f"{path.name}.{threading.get_ident()}.{time.monotonic_ns()}.tmp")
     path.parent.mkdir(parents=True, exist_ok=True)
     try:
@@ -292,6 +300,8 @@ def atomic_write_bytes(path: Path, content: bytes) -> None:
     Equivalent to :func:`atomic_write_text` for binary content.  Creates parent
     directories as needed.  Uses the same retry-on-PermissionError strategy.
     """
+    # Same two-component naming as atomic_write_text: thread ID + monotonic_ns
+    # prevent collisions between concurrent writers and rapid sequential calls.
     tmp = path.with_name(f"{path.name}.{threading.get_ident()}.{time.monotonic_ns()}.tmp")
     path.parent.mkdir(parents=True, exist_ok=True)
     try:
