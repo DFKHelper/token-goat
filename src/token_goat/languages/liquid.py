@@ -8,7 +8,6 @@ from pathlib import Path
 
 from ..parser import ImpExp, Ref, Section, Symbol
 from . import common
-from .html import _build_line_index, _offset_to_line
 
 _LOG = logging.getLogger("token_goat.languages.liquid")
 
@@ -67,13 +66,13 @@ def extract(source: bytes, rel_path: str) -> tuple[list[Symbol], list[Ref], list
 
         # Build a line-start offset index once; all match-position → line-number
         # conversions below use O(log n) binary search rather than O(n) slice-and-count.
-        line_index = _build_line_index(text)
+        line_index = common.build_line_index(text)
 
         # --- Extract includes/sections/renders ---
         for pattern, kind in _LIQUID_TAG_IMPORTS:
             for match in pattern.finditer(text):
                 target = match.group(1)
-                line = _offset_to_line(line_index, match.start())
+                line = common.offset_to_line(line_index, match.start())
                 imports.append(ImpExp(kind=kind, target=target, line=line))
 
         # --- Extract schema block ---
@@ -83,8 +82,8 @@ def extract(source: bytes, rel_path: str) -> tuple[list[Symbol], list[Ref], list
                 schema_json = json.loads(schema_content)
                 if isinstance(schema_json, dict) and "name" in schema_json:
                     name = str(schema_json["name"])
-                    line = _offset_to_line(line_index, match.start())
-                    end_line = _offset_to_line(line_index, match.end())
+                    line = common.offset_to_line(line_index, match.start())
+                    end_line = common.offset_to_line(line_index, match.end())
                     symbols.append(
                         Symbol(name=name, kind="liquid_schema", line=line, end_line=end_line)
                     )

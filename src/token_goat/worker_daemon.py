@@ -7,6 +7,7 @@ import os
 import signal
 import sys
 import time
+from collections.abc import Callable
 from typing import TYPE_CHECKING
 
 from . import worker as _worker
@@ -42,6 +43,23 @@ def _install_signal_handlers() -> None:
                 signal.signal(sig, lambda *_: sys.exit(0))
 
 
+def _timed_cycle(label: str, fn: Callable[[], None]) -> None:
+    """Run *fn*, logging elapsed time on success and exception details on failure.
+
+    Both periodic cycle functions share this pattern: record a start timestamp,
+    call the work function, and emit a timed completion or exception log.  Extracted
+    to avoid duplicating the ``t0``/``try``/``except`` boilerplate in every cycle.
+    """
+    _LOG.info("starting %s", label)
+    t0 = time.time()
+    try:
+        fn()
+    except Exception:  # noqa: BLE001
+        _LOG.exception("%s failed after %.2fs", label, time.time() - t0)
+    else:
+        _LOG.info("%s completed in %.2fs", label, time.time() - t0)
+
+
 def _run_maintenance_cycle() -> None:
     """Execute one periodic maintenance cycle, logging duration and results."""
     _LOG.info("starting maintenance cycle")
@@ -60,14 +78,7 @@ def _run_maintenance_cycle() -> None:
 
 def _run_reindex_cycle() -> None:
     """Execute one periodic reindex cycle, logging duration and any failure."""
-    _LOG.info("starting periodic reindex cycle")
-    t0 = time.time()
-    try:
-        _reindex_active_projects()
-    except Exception:  # noqa: BLE001
-        _LOG.exception("periodic reindex cycle failed after %.2fs", time.time() - t0)
-    else:
-        _LOG.info("periodic reindex cycle completed in %.2fs", time.time() - t0)
+    _timed_cycle("periodic reindex cycle", _reindex_active_projects)
 
 
 def _detect_upgrade() -> bool:
