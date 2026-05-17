@@ -199,7 +199,7 @@ def test_config_list_json_shows_changed_values(tmp_data_dir):
     assert result.exit_code == 0
     data = json.loads(result.output)
     assert data["compact_assist.min_events"]["value"] == 99
-    assert data["compact_assist.min_events"]["default"] == 5
+    assert data["compact_assist.min_events"]["default"] == 3
 
 
 def test_config_list_marks_changed_keys(tmp_data_dir):

@@ -151,7 +151,7 @@ class TestConfigLoadExceptions:
         # Must return a Config with all defaults
         assert isinstance(result, config.Config)
         assert result.compact_assist.enabled is True
-        assert result.compact_assist.min_events == 5
+        assert result.compact_assist.min_events == 3
         assert result.compact_assist.max_manifest_tokens == 400
 
     def test_os_error_returns_default(self, tmp_path):

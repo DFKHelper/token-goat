@@ -62,8 +62,16 @@ class CompactAssistConfig:
     enabled: bool = True
     # Hook triggers that activate the manifest: "manual" (/compact) and/or "auto"
     triggers: list[str] = field(default_factory=lambda: ["manual", "auto"])
-    # Minimum tracked-event count before emitting a manifest (avoids noise on tiny sessions)
-    min_events: int = 5
+    # Minimum tracked-event count before emitting a manifest (avoids noise on tiny sessions).
+    #
+    # Tuning note (iter 17): lowered from 5 → 3. A single Read of a 3000-line
+    # file is itself ~50k tokens of context cost; even with only 3 tracked
+    # events the manifest's edited-files + key-files breakdown is materially
+    # more useful to the compaction LLM than nothing. The 400-token manifest
+    # cap means a tiny session still produces a tiny manifest — the lower
+    # bound was about avoiding noise on a session that did *nothing*, not
+    # about needing five events worth of signal.
+    min_events: int = 3
     # Approximate token budget for the manifest injected as systemMessage
     max_manifest_tokens: int = 400
 
@@ -184,7 +192,7 @@ def load() -> Config:
     ca = CompactAssistConfig(
         enabled=_validated_bool(ca_raw.get("enabled", True), True, "compact_assist.enabled"),
         triggers=_validated_triggers(ca_raw.get("triggers", ["manual", "auto"]), ["manual", "auto"]),
-        min_events=_validated_int(ca_raw.get("min_events", 5), 5, 0, 1000, "compact_assist.min_events"),
+        min_events=_validated_int(ca_raw.get("min_events", 3), 3, 0, 1000, "compact_assist.min_events"),
         max_manifest_tokens=_validated_int(
             ca_raw.get("max_manifest_tokens", 400), 400, 50, 10000, "compact_assist.max_manifest_tokens"
         ),

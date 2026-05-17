@@ -106,7 +106,18 @@ MAINTENANCE_INTERVAL = 300.0  # 5 min
 PERIODIC_REINDEX_INTERVAL = 600.0  # 10 min
 # Skip re-indexing any project that has grown beyond this many files.
 # Guards against accidentally indexing a huge directory and thrashing disk.
-PERIODIC_REINDEX_MAX_FILES = 500
+#
+# Tuning note (iter 17): raised from 500 → 2000. The earlier 500-file ceiling
+# excluded mid-sized monorepos and frontend projects (a vite/next app with a
+# few hundred components plus node_modules-adjacent fixtures easily exceeds
+# 500 indexed files). When a project is excluded, the agent loses access to
+# `token-goat symbol`/`read`/`section`/`semantic` for that project and falls
+# back to the full-file Read tool — the very behaviour token-goat exists to
+# avoid. 2000 files keeps a periodic reindex sweep well under a minute on a
+# typical SSD while letting realistically-sized real-world projects benefit.
+# Tests that assert the old default explicitly monkeypatch this constant so
+# they remain pinned to the value they care about.
+PERIODIC_REINDEX_MAX_FILES = 2000
 # Only periodically re-index projects seen within this window. Bounds the sweep
 # to projects actually in use — the `projects` table accumulates every project
 # token-goat has ever touched, and reindexing all of them would be wasteful.
