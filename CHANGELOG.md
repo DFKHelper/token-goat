@@ -4,6 +4,47 @@ All notable changes to Token-Goat are documented in this file. Format follows Ke
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-05-17
+
+### Added
+
+- **WebP encoding as the default image-shrink format** — ~39% smaller than the previous JPEG output on screenshots, ~97% smaller than raw PNG. Anthropic's Vision API natively supports `image/webp`. The cache key version was bumped so older shrunk artifacts are not served.
+- **Install-time image-codec probe.** `token-goat install` now records `image codecs: ok|FAIL` as a normal install step and, when any codec is missing or WebP encode fails, prints a banner-delimited warning with platform-specific install commands (`apt-get` / `dnf` / `pacman` / `apk` / `brew`) plus the `uv tool install --reinstall token-goat` follow-up. AIs driving the install can resolve the gap as part of the same task instead of discovering it months later via missing savings.
+- **New CLI flags and commands.** `token-goat install --dry-run` previews changes; `--verify` audits an existing install. `token-goat map --compact` fits a 300-token budget. `token-goat semantic` accepts `--max-distance <float>` and `--no-rerank`. `token-goat gdrive-sections <file-id>` lists the heading outline of a Google Doc without fetching the body.
+- **Qualified `Class.method` lookups** in `token-goat read`, plus `Heading#N` ordinal disambiguation for `token-goat section` when a doc has duplicate headings.
+- **"Did you mean…?" suggestions** on surgical-read misses — a typo costs one extra glance instead of a re-read.
+- **`<details><summary>`, setext headings, h1-h6 with anchor IDs, and `__frontmatter__`** are all recognised as Markdown sections.
+- **PowerShell read-then-filter pipelines** (`Get-Content | Select-String / Where-Object / Select-Object`, including `-First` / `-Tail` ranges) now surface to the image-shrink and session-hint paths via `bash_parser`. Also adds `xxd`, `od`, `wc`, `type`, and stdin-redirect (`cmd < FILE`) read detection.
+- **Stats "By source" panel.** `token-goat stats` now shows a per-source rollup (image / hint / read / compact / other) with a distinct palette in the fancy renderer.
+- **Regression benchmark suite** (`tests/test_savings_benchmarks.py`) locks in the measured wins: WebP ratio >=20%, repomap density >=20%, `write_file_index` <200 ms, hook cold-start <1.5 s, composite indexes present, markdown sections cover frontmatter / ATX / setext / `<details>`, and `package-lock.json` is excluded by default.
+
+### Changed
+
+- **DB reindex is ~80x faster** (84 s -> ~1 s for 100 files) - `parser.write_file_index` now wraps writes in an explicit `BEGIN`/`COMMIT` transaction and the schema picks up composite indexes (`idx_symbols_file_name`, `idx_sections_file_heading`).
+- **Hook dispatch cold-start ~65% faster** (~86 ms -> ~30 ms) via lazy submodule imports in `hooks_cli` and PEP 562 `__getattr__` deferring `importlib.metadata.version()`. Unknown hook events return in <1 ms.
+- **Repomap output ~30-40% denser** - short labels (`r=X.XXX`, `cls`/`fn`/`m`), tighter line composition, and an auto-compact mode that fits 300 tokens.
+- **Semantic-search rerank pipeline.** `token-goat semantic` over-fetches `k*4`, boosts verbatim-token matches on camelCase / snake_case splits, demotes generated paths (`dist/`, `*.min.js`, sourcemaps, lockfiles), and applies a default distance threshold of 1.2.
+- **Image cache is real LRU, not FIFO.** `os.utime()` bumps the cache file on every hit so eviction sorts by real access recency. Eviction is also lockfile-guarded (`O_CREAT | O_EXCL`) so concurrent workers cannot race.
+- **Worker adaptive back-off.** Idle poll interval grows from 2 s -> 10 s after five consecutive empty drains.
+- **Compact manifest noise filter and recency markers.** `compact.build_manifest` filters noise paths, prefixes activity markers (edited/read), recency-ranks symbols, and dedupes across sections so an edited file isn't repeated under "read."
+- **Hint suppression smarter.** Already-read hints now suppress when the file was edited after the last read, when the prior read is >30 minutes old, and when the new read is a narrow explicit range.
+- **Per-session and parser result caches.** `parser` keeps a 256-entry SHA-keyed LRU so unchanged content skips tree-sitter entirely; each session keeps a 100-entry FIFO so repeat `read`/`section` queries cost zero.
+- **Webfetch content-hash dedup.** Different URLs that resolve to the same bytes share one shrunk artifact via a `web_cache_dir/by_content/<sha>.idx` pointer.
+- **Cross-shell project hash unified.** `C:\Projects\foo`, `/mnt/c/Projects/foo` (WSL), `/cygdrive/c/Projects/foo` (Cygwin), and `/c/Projects/foo` (Git Bash) now hash to the same project ID, so the SQLite index is no longer split across shells.
+- **Default exclude patterns.** Lockfiles (`package-lock.json`, `yarn.lock`, `poetry.lock`, `uv.lock`, `Pipfile.lock`, `Cargo.lock`, `composer.lock`), minified bundles (`*.min.js`, `*.min.css`), and sourcemaps (`*.map`) are skipped at index time.
+- **JSON indexer permissive fallback.** Minified JSON with no newlines now picks up keys via `_ANY_KEY_RE`, and large structured configs emit one nested layer of `parent.child` symbols plus `[].key` schema peeks on arrays of objects.
+- **Config tuning.** `compact_assist.min_events` drops from 5 to 3 so short sessions still get a manifest.
+
+### Fixed
+
+- **Markdown setext / `<details><summary>` / HR disambiguation / blockquote prefixes** previously produced wrong section boundaries. The Markdown adapter now handles all four cases and emits one `__frontmatter__` section per YAML frontmatter block.
+- **TypeScript decorator post-pass** walks bracket balance so multi-line `@Component({...})` no longer truncates the next symbol.
+- **`gdrive-fetch` filename-hint routing** is now capped at 256 chars and sanitised so a hostile filename cannot inject prompt fragments.
+
+### Security
+
+- Tighter sanitisation on the Google Drive filename hint and the webfetch URL -> content-hash mapping; both surfaces now refuse oversized or malformed values rather than passing them through.
+
 ## [0.3.1] - 2026-05-16
 
 ### Added
