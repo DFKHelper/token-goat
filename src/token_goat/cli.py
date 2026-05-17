@@ -709,7 +709,7 @@ def cmd_gdrive_fetch(
     _emit_path_result(path, json_output)
 
 
-@app.command("gdrive-sections", hidden=True)
+@app.command("gdrive-sections", rich_help_panel="Core")
 def cmd_gdrive_sections(
     file_id: str = typer.Argument(...),
     json_output: bool = typer.Option(False, "--json"),
