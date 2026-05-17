@@ -131,7 +131,7 @@ def _close_symbol_matches(project: Project, rel_path: str, symbol: str) -> list[
                 "SELECT DISTINCT name FROM symbols WHERE file_rel = ? AND name IS NOT NULL",
                 (rel_path,),
             ).fetchall()
-    except (sqlite3.OperationalError, sqlite3.DatabaseError) as exc:
+    except (sqlite3.OperationalError, sqlite3.DatabaseError, FileNotFoundError) as exc:
         _LOG.debug("close-match query failed for symbol in %s: %s", rel_path, exc)
         return []
     names = [r["name"] for r in rows if r["name"]]
@@ -151,7 +151,7 @@ def _close_section_matches(project: Project, rel_path: str, heading: str) -> lis
                 "SELECT DISTINCT heading FROM sections WHERE file_rel = ? AND heading IS NOT NULL",
                 (rel_path,),
             ).fetchall()
-    except (sqlite3.OperationalError, sqlite3.DatabaseError) as exc:
+    except (sqlite3.OperationalError, sqlite3.DatabaseError, FileNotFoundError) as exc:
         _LOG.debug("close-match query failed for section in %s: %s", rel_path, exc)
         return []
     headings = [r["heading"] for r in rows if r["heading"]]
