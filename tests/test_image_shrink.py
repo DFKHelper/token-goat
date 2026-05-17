@@ -2,75 +2,12 @@
 from __future__ import annotations
 
 import os
-from pathlib import Path
 
 import pytest
+from hook_helpers import make_large_jpeg as _make_large_jpeg
+from hook_helpers import make_small_jpeg as _make_small_jpeg
 
 from token_goat import image_shrink
-
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
-def _make_image(path: Path, width: int, height: int, mode: str = "RGB") -> Path:
-    """Create a synthetic image at *path* using Pillow."""
-    import random
-
-    from PIL import Image
-
-    img = Image.new(mode, (width, height))
-    if mode == "RGB":
-        # Fill with random pixel data so it's genuinely large when uncompressed
-        pixels = [
-            (random.randint(0, 255), random.randint(0, 255), random.randint(0, 255))
-            for _ in range(width * height)
-        ]
-        img.putdata(pixels)
-    elif mode == "RGBA":
-        pixels = [
-            (random.randint(0, 255), random.randint(0, 255), random.randint(0, 255), 200)
-            for _ in range(width * height)
-        ]
-        img.putdata(pixels)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    # Save as JPEG for RGB (high quality to get a large file), PNG for RGBA
-    if mode == "RGB":
-        img.save(path, "JPEG", quality=95)
-    else:
-        img.save(path, "PNG")
-    return path
-
-
-def _make_large_jpeg(tmp_path: Path) -> Path:
-    """Create a synthetic >100 KB JPEG (1600×1200 random colors)."""
-    p = tmp_path / "big_photo.jpg"
-    _make_image(p, 1600, 1200, mode="RGB")
-    # Ensure it's actually >100 KB; if not, recreate with less compression
-    if p.stat().st_size <= image_shrink.SIZE_THRESHOLD_BYTES:
-        import random
-
-        from PIL import Image
-        img = Image.new("RGB", (1600, 1200))
-        pixels = [
-            (random.randint(0, 255), random.randint(0, 255), random.randint(0, 255))
-            for _ in range(1600 * 1200)
-        ]
-        img.putdata(pixels)
-        img.save(p, "BMP")  # BMP is always large
-        p = p.with_suffix(".bmp")
-        # rename to jpg for the test
-        dest = tmp_path / "big_photo_bmp.jpg"
-        p.rename(dest)
-        p = dest
-    return p
-
-
-def _make_small_jpeg(tmp_path: Path) -> Path:
-    """Create a synthetic <100 KB JPEG (50×50)."""
-    p = tmp_path / "tiny.jpg"
-    _make_image(p, 50, 50, mode="RGB")
-    return p
-
 
 # ---------------------------------------------------------------------------
 # 1. is_image_path
