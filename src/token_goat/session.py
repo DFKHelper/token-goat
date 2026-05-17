@@ -140,7 +140,11 @@ class SessionCache:
         now = time.time()
 
         schema_v = d.get("schema_version", 0)
-        if schema_v and int(schema_v) > SESSION_SCHEMA_VERSION:
+        try:
+            schema_v_int = int(schema_v) if schema_v else 0
+        except (TypeError, ValueError):
+            schema_v_int = 0
+        if schema_v_int > SESSION_SCHEMA_VERSION:
             _LOG.warning(
                 "session schema_version %s > current %s; some fields may be ignored",
                 sanitize_log_str(str(schema_v), max_len=_MAX_LOG_STR),
@@ -443,7 +447,7 @@ def load(session_id: str) -> SessionCache:
             continue
         try:
             cache = SessionCache.from_dict(json.loads(raw))
-        except (json.JSONDecodeError, KeyError, TypeError) as e:
+        except (json.JSONDecodeError, KeyError, TypeError, ValueError) as e:
             _LOG.warning("session cache corrupted (%s); resetting", e)
             return _fresh_cache(session_id)
         cache.unavailable = False
