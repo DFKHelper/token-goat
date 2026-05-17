@@ -20,6 +20,7 @@ come from ``ansi.C`` (GitHub dark palette).
 from __future__ import annotations
 
 import json
+import logging
 import math
 import re
 import shutil
@@ -29,6 +30,8 @@ from typing import TypedDict, cast
 
 from .ansi import RESET, RGB, C, bg, fg, lerp_rgb, pad_l, pad_r, vlen
 from .types import DayStat, KindStat, StatsData
+
+_LOG = logging.getLogger("token_goat.render.stats_renderer")
 
 # Regex to strip ANSI/VT escape sequences from strings before they are
 # interpolated into ANSI-prefixed terminal output lines.  A project root path
@@ -78,17 +81,36 @@ _BAR_W = max(16, _CONTENT_W - len(_M) * 2 - _COLS_FIXED)
 _RULE = _M + fg(*C.TEXT_DIM) + "─" * (_CONTENT_W - len(_M) * 2) + RESET
 
 
+_STATS_MESSAGES_FALLBACK: _StatsMessages = {
+    "bytesModeOnlyNote": "tracks bytes, not vision tokens",
+    "sessionHintSplitNote": "session_hint shows realized savings; session_hint_overhead shows injected hint cost",
+    "insights": {
+        "biggestSaver": "Biggest saver  ",
+        "mostActive": "Most active    ",
+        "tokenLeader": "Token leader   ",
+    },
+}
+
+
 def _load_stats_messages() -> _StatsMessages:
     """Load the localised stats copy from the bundled ``stats_messages.json`` file.
 
     The JSON is co-located with this module (same directory) and contains
     display strings for the Insights section — taglines, motivational quotes,
     and milestone messages keyed by usage tier.
+
+    Falls back to ``_STATS_MESSAGES_FALLBACK`` if the file is missing or
+    malformed so a corrupted or absent bundle does not crash the entire module
+    at import time and silently fall through to the legacy Rich renderer.
     """
-    return cast(
-        _StatsMessages,
-        json.loads(Path(__file__).with_name("stats_messages.json").read_text(encoding="utf-8")),
-    )
+    try:
+        return cast(
+            _StatsMessages,
+            json.loads(Path(__file__).with_name("stats_messages.json").read_text(encoding="utf-8")),
+        )
+    except (OSError, json.JSONDecodeError, KeyError) as exc:
+        _LOG.warning("stats_messages.json unavailable (%s: %s); using built-in fallback", type(exc).__name__, exc)
+        return _STATS_MESSAGES_FALLBACK
 
 
 _STATS_MESSAGES = _load_stats_messages()
