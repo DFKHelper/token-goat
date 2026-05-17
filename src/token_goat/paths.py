@@ -8,8 +8,6 @@ import threading
 import time
 from pathlib import Path
 
-import platformdirs
-
 # Size cap for a structured daily log file. The daily logs are date-named and
 # age out via the worker's 7-day retention sweep, so they are already bounded
 # in count — but a single pathological day (e.g. a worker stuck in a fast error
@@ -54,9 +52,28 @@ def python_runner_command(*subcommand: str) -> str:
     return " ".join(quoted)
 
 
+def _default_data_dir() -> Path:
+    """Compute the platform-appropriate data directory without platformdirs.
+
+    Matches platformdirs.user_data_dir("token-goat", "dfk-helper") exactly:
+    - Windows: %LOCALAPPDATA%\\dfk-helper\\token-goat
+    - Linux/BSD: $XDG_DATA_HOME/token-goat  (falls back to ~/.local/share/token-goat)
+    - macOS:  ~/Library/Application Support/token-goat
+    """
+    if sys.platform == "win32":
+        base = os.environ.get("LOCALAPPDATA") or os.path.expanduser("~")
+        return Path(base) / "dfk-helper" / "token-goat"
+    if sys.platform == "darwin":
+        return Path.home() / "Library" / "Application Support" / "token-goat"
+    # Linux / BSD / WSL — honour XDG_DATA_HOME
+    xdg = os.environ.get("XDG_DATA_HOME", "").strip()
+    base_dir = Path(xdg) if xdg else Path.home() / ".local" / "share"
+    return base_dir / "token-goat"
+
+
 def data_dir() -> Path:
     """Get token-goat data directory."""
-    return Path(platformdirs.user_data_dir("token-goat", "dfk-helper"))
+    return _default_data_dir()
 
 
 def global_db_path() -> Path:
