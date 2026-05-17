@@ -184,6 +184,127 @@ token-goat stats
 
 `doctor` confirms the install is healthy. `stats` shows cumulative savings.
 
+## Image support
+
+The image-shrink pipeline relies on Pillow with WebP, JPEG, and PNG codecs. Pillow ships as a binary wheel on every platform `uv` supports, so a normal `uv tool install token-goat` puts all three codecs in place without extra steps. The instructions below are only needed if `token-goat doctor` reports `Pillow codecs: WebP=MISSING` (or similar) — that flag means Pillow was built from source against a system that did not ship the codec libraries.
+
+Quick check (any platform):
+
+```
+token-goat doctor
+```
+
+If the `Pillow codecs` line reports any `MISSING` or `FAIL`, follow the platform section below.
+
+### Windows
+
+The official Pillow wheel for Windows bundles libwebp, libjpeg-turbo, and libpng. A failing codec almost always means Pillow was reinstalled inside a stripped-down environment. Reinstall token-goat (and its bundled Pillow wheel) end-to-end:
+
+```powershell
+uv tool install --reinstall --force token-goat
+token-goat doctor
+```
+
+### macOS
+
+Same story as Windows — the universal wheel ships every codec. Reinstall to get the wheel back:
+
+```bash
+uv tool install --reinstall --force token-goat
+token-goat doctor
+```
+
+If you previously installed Pillow via Homebrew with `--build-from-source`, install the libraries first, then reinstall:
+
+```bash
+brew install webp jpeg-turbo libpng
+uv tool install --reinstall --force token-goat
+```
+
+### Linux / WSL
+
+Almost every Linux distro pulls the manylinux Pillow wheel, which bundles every codec. The exceptions are: musl-based distros (Alpine), some ARM boards lacking a matching wheel, and environments where the user forced `--no-binary :all:`. In those cases, install the system headers, then reinstall:
+
+```bash
+# Debian / Ubuntu / WSL
+sudo apt-get update
+sudo apt-get install -y libwebp-dev libjpeg-turbo8-dev libpng-dev
+uv tool install --reinstall --force token-goat
+token-goat doctor
+```
+
+```bash
+# Fedora / RHEL / Alma
+sudo dnf install -y libwebp-devel libjpeg-turbo-devel libpng-devel
+uv tool install --reinstall --force token-goat
+```
+
+```bash
+# Arch / Manjaro
+sudo pacman -S --noconfirm libwebp libjpeg-turbo libpng
+uv tool install --reinstall --force token-goat
+```
+
+```bash
+# Alpine
+sudo apk add libwebp-dev libjpeg-turbo-dev libpng-dev
+uv tool install --reinstall --force token-goat
+```
+
+### AI automated setup
+
+Non-interactive snippets agents can run unattended. Each one is idempotent: it checks current state before changing anything, and re-runs `token-goat doctor` at the end so the agent can verify success from the output.
+
+#### Windows (PowerShell)
+
+```powershell
+# 1. Verify token-goat is reachable; reinstall if not
+if (-not (Get-Command token-goat -ErrorAction SilentlyContinue)) {
+    uv tool install token-goat
+}
+
+# 2. If doctor flags any image codec, reinstall the bundled Pillow wheel
+$doctor = token-goat doctor 2>&1 | Out-String
+if ($doctor -match 'Pillow codecs:.*(MISSING|FAIL)') {
+    uv tool install --reinstall --force token-goat
+}
+
+# 3. Verify
+token-goat doctor
+```
+
+#### macOS / Linux / WSL (bash)
+
+```bash
+set -e
+
+# 1. Verify token-goat is reachable; reinstall if not
+command -v token-goat >/dev/null 2>&1 || uv tool install token-goat
+
+# 2. If doctor flags any image codec, install platform packages then reinstall
+need_fix=$(token-goat doctor 2>&1 | grep -E 'Pillow codecs:.*(MISSING|FAIL)' || true)
+if [[ -n "$need_fix" ]]; then
+    OS="$(uname -s)"
+    if [[ "$OS" == "Darwin" ]]; then
+        command -v brew >/dev/null 2>&1 && brew install webp jpeg-turbo libpng
+    elif [[ "$OS" == "Linux" ]]; then
+        if   command -v apt-get >/dev/null 2>&1; then
+            sudo apt-get update && sudo apt-get install -y libwebp-dev libjpeg-turbo8-dev libpng-dev
+        elif command -v dnf     >/dev/null 2>&1; then
+            sudo dnf install -y libwebp-devel libjpeg-turbo-devel libpng-devel
+        elif command -v pacman  >/dev/null 2>&1; then
+            sudo pacman -S --noconfirm libwebp libjpeg-turbo libpng
+        elif command -v apk     >/dev/null 2>&1; then
+            sudo apk add libwebp-dev libjpeg-turbo-dev libpng-dev
+        fi
+    fi
+    uv tool install --reinstall --force token-goat
+fi
+
+# 3. Verify
+token-goat doctor
+```
+
 ## Stats display
 
 `token-goat stats` uses 24-bit ANSI color and Unicode block characters for gradient bars, sparklines, and the activity heatmap. In the right terminal it renders sharply. In the wrong one you get broken characters, flat gray blocks, or a "rich is not installed" error.
