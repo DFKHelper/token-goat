@@ -43,7 +43,7 @@ __all__ = [
 ]
 
 import logging
-from typing import Any, TypedDict
+from typing import Any, TypedDict, cast
 
 # ---------------------------------------------------------------------------
 # Typed shape for inbound hook payloads
@@ -158,8 +158,8 @@ def get_session_context(payload: HookPayload) -> tuple[str | None, str | None]:
     across hook handler bodies.  Both fields are optional in the harness protocol
     (``HookPayload`` uses ``total=False``), so either or both may be absent.
     """
-    session_id: str | None = payload.get("session_id")  # type: ignore[assignment]
-    cwd: str | None = payload.get("cwd")  # type: ignore[assignment]
+    session_id = cast("str | None", payload.get("session_id"))
+    cwd = cast("str | None", payload.get("cwd"))
     if session_id is None:
         LOG.debug("get_session_context: session_id absent from payload (tool=%s)", sanitize_opt(payload.get("tool_name")))
     if cwd is None:
