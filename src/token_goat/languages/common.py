@@ -417,6 +417,8 @@ def build_line_index(text: str) -> list[int]:
     offsets = [0]
     for i, ch in enumerate(text):
         if ch == "\n":
+            # Record the start of the *next* line (i+1), not the newline itself,
+            # so offsets[k] is always the index of the first char on line k+1.
             offsets.append(i + 1)
     return offsets
 
@@ -425,6 +427,11 @@ def offset_to_line(line_index: list[int], offset: int) -> int:
     """Convert a character offset to a 1-indexed line number using binary search.
 
     Companion to :func:`build_line_index`.  O(log n) in the number of lines.
+
+    Uses the upper-biased midpoint ``(lo + hi + 1) // 2`` (ceiling) so the
+    invariant ``line_index[lo] <= offset`` is maintained when lo == hi - 1,
+    preventing the loop from stalling on adjacent elements.  The plain floor
+    midpoint would loop infinitely in that case.
     """
     lo, hi = 0, len(line_index) - 1
     while lo < hi:

@@ -37,7 +37,14 @@ class Project:
 
 
 def canonicalize(path: Path) -> Path:
-    """Resolve symlinks, normalize, lowercase the Windows drive letter."""
+    """Resolve symlinks, normalize, lowercase the Windows drive letter.
+
+    The drive-letter lowercase step is required because Windows treats ``C:\\``
+    and ``c:\\`` as the same path, but Python's Path.resolve() preserves the
+    original case.  Without normalising here, the same project opened from two
+    shells with different drive-letter capitalisation would produce two different
+    hashes and two separate DB files.
+    """
     resolved = path.resolve()
     s = resolved.as_posix()
     # Lowercase drive letter on Windows (e.g. "C:/foo" → "c:/foo")
@@ -47,7 +54,12 @@ def canonicalize(path: Path) -> Path:
 
 
 def project_hash(canonical_root: Path) -> str:
-    """Return sha1 hash of canonical posix path."""
+    """Return sha1 hash of canonical posix path.
+
+    Must always receive the output of ``canonicalize()`` — never a raw
+    Path.cwd() or user-supplied path — so that the hash is stable across
+    drive-letter case variation, symlinks, and relative vs. absolute forms.
+    """
     return hashlib.sha1(canonical_root.as_posix().encode("utf-8")).hexdigest()
 
 

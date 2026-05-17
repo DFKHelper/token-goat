@@ -191,6 +191,10 @@ def embed_texts(
                     f"embed() returned non-array object {type(arr).__name__!r}: {e}"
                 ) from e
             if expected_dim is not None and len(vec) != expected_dim:
+                # A silent dimension mismatch would corrupt the sqlite-vec index:
+                # the stored BLOB length determines the assumed dimension at query
+                # time, so mixed-dimension rows produce incorrect distance scores
+                # without any error.  Fail loudly here instead.
                 raise EmbeddingsUnavailable(
                     f"Dimension mismatch: model {model_name!r} returned {len(vec)}-dim vector, "
                     f"expected {expected_dim}. The sqlite-vec index uses {expected_dim}-dim embeddings. "
@@ -599,6 +603,10 @@ def semantic_search(
     with db.open_project(project.hash) as conn:
         if not _check_vec_available(conn):
             raise EmbeddingsUnavailable("sqlite-vec not loaded")
+        # sqlite-vec uses a non-standard KNN syntax: ``WHERE embedding MATCH <blob>
+        # AND k = <int>`` is a virtual table constraint that triggers the ANN scan,
+        # not a conventional SQL WHERE clause.  Both constraints must be present;
+        # omitting ``k`` causes a full-table scan; omitting ``MATCH`` raises an error.
         rows = conn.execute(
             """
             SELECT c.file_rel, c.start_line, c.end_line, c.kind, c.text, e.distance

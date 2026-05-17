@@ -267,6 +267,13 @@ def _resolve_file_target(file_part: str) -> tuple[Project | None, str | None, Pr
     all indexed projects. Returns (project, rel_path, current_project). rel_path is
     None if file not found; project is the one owning that file (or None if not found
     in any project).
+
+    The cross-project fallback exists so that ``token-goat read`` and
+    ``token-goat section`` can reach files in ~/.claude/skills/ or other
+    marker-free directories indexed with ``token-goat index --root``, regardless
+    of which project the shell's cwd belongs to.  ``current_proj`` is preserved
+    as the third return value so callers can tell whether the file came from a
+    foreign project (``proj != current_proj``) and emit an appropriate hint.
     """
     proj = find_project(Path.cwd())
     if proj is not None:
