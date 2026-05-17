@@ -323,16 +323,19 @@ def _get_meta(conn: sqlite3.Connection, key: str) -> str | None:
 
 
 _GLOBAL_TABLES = """
+-- Registry of every project token-goat has indexed, keyed by SHA1(canonical_path).
 CREATE TABLE IF NOT EXISTS projects (
     hash       TEXT    PRIMARY KEY,
     root       TEXT    NOT NULL,
-    marker     TEXT    NOT NULL,
+    marker     TEXT    NOT NULL,  -- detection marker type, e.g. 'pyproject', 'package.json', 'manual'
     first_seen INTEGER NOT NULL,
     last_seen  INTEGER NOT NULL,
     file_count INTEGER NOT NULL DEFAULT 0,
-    languages  TEXT    NOT NULL DEFAULT ''
+    languages  TEXT    NOT NULL DEFAULT ''  -- comma-separated language names for quick display
 );
 
+-- Snapshot of top-level symbols across all projects, used for cross-project symbol lookup.
+-- Populated by the indexer; queried by 'token-goat symbol --all-projects'.
 CREATE TABLE IF NOT EXISTS symbols_global (
     project_hash TEXT NOT NULL,
     name         TEXT NOT NULL,
@@ -345,17 +348,20 @@ CREATE TABLE IF NOT EXISTS symbols_global (
 CREATE INDEX IF NOT EXISTS idx_symbols_global_name    ON symbols_global(name);
 CREATE INDEX IF NOT EXISTS idx_symbols_global_project ON symbols_global(project_hash);
 
+-- Cumulative token/byte savings events, one row per hook intercept or CLI read.
+-- Queried by 'token-goat stats' to compute total savings across all sessions.
 CREATE TABLE IF NOT EXISTS stats (
     id           INTEGER PRIMARY KEY AUTOINCREMENT,
     ts           INTEGER NOT NULL,
-    kind         TEXT    NOT NULL,
+    kind         TEXT    NOT NULL,  -- event type, e.g. 'image_shrink', 'symbol_read', 'section_read'
     tokens_saved INTEGER NOT NULL DEFAULT 0,
     bytes_saved  INTEGER NOT NULL DEFAULT 0,
-    detail       TEXT
+    detail       TEXT               -- optional JSON or human-readable annotation
 );
 CREATE INDEX IF NOT EXISTS idx_stats_global_ts   ON stats(ts);
 CREATE INDEX IF NOT EXISTS idx_stats_global_kind ON stats(kind);
 
+-- Key/value store for global configuration and version stamps (e.g. schema_version).
 CREATE TABLE IF NOT EXISTS meta (
     key   TEXT PRIMARY KEY,
     value TEXT NOT NULL
@@ -363,11 +369,14 @@ CREATE TABLE IF NOT EXISTS meta (
 """
 
 _PROJECT_TABLES = """
+-- Key/value store for per-project metadata (e.g. schema_version, project root).
 CREATE TABLE IF NOT EXISTS meta (
     key   TEXT PRIMARY KEY,
     value TEXT NOT NULL
 );
 
+-- One row per indexed source file; tracks mtime and SHA so the worker skips
+-- files that have not changed since the last index pass.
 CREATE TABLE IF NOT EXISTS files (
     rel_path       TEXT    PRIMARY KEY,
     language       TEXT    NOT NULL,
@@ -378,6 +387,9 @@ CREATE TABLE IF NOT EXISTS files (
     indexed_at     INTEGER NOT NULL
 );
 
+-- Named code symbols (functions, classes, types, constants) extracted by tree-sitter.
+-- parent_id links nested symbols to their enclosing scope (e.g. method → class).
+-- Queried by 'token-goat symbol' and 'token-goat read'.
 CREATE TABLE IF NOT EXISTS symbols (
     id        INTEGER PRIMARY KEY AUTOINCREMENT,
     name      TEXT    NOT NULL,
@@ -387,24 +399,29 @@ CREATE TABLE IF NOT EXISTS symbols (
     col       INTEGER NOT NULL DEFAULT 0,
     end_line  INTEGER,
     signature TEXT,
-    parent_id INTEGER,
+    parent_id INTEGER,  -- enclosing symbol id, NULL for top-level
     FOREIGN KEY (file_rel)   REFERENCES files(rel_path) ON DELETE CASCADE,
     FOREIGN KEY (parent_id)  REFERENCES symbols(id)     ON DELETE CASCADE
 );
 CREATE INDEX IF NOT EXISTS idx_symbols_name ON symbols(name);
 CREATE INDEX IF NOT EXISTS idx_symbols_file ON symbols(file_rel);
 
+-- Call-site references: every identifier followed by '(' that appears in the project.
+-- Used for "find usages" and to build the PageRank graph in repomap.py.
 CREATE TABLE IF NOT EXISTS refs (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
     symbol_name TEXT    NOT NULL,
     file_rel    TEXT    NOT NULL,
     line        INTEGER NOT NULL,
     col         INTEGER NOT NULL DEFAULT 0,
-    context     TEXT,
+    context     TEXT,  -- surrounding line text for display
     FOREIGN KEY (file_rel) REFERENCES files(rel_path) ON DELETE CASCADE
 );
 CREATE INDEX IF NOT EXISTS idx_refs_symbol ON refs(symbol_name);
 
+-- Document sections extracted from Markdown headings and similar structural markers.
+-- Queried by 'token-goat section' to serve one heading's content without reading
+-- the whole file.
 CREATE TABLE IF NOT EXISTS sections (
     id       INTEGER PRIMARY KEY AUTOINCREMENT,
     file_rel TEXT    NOT NULL,
@@ -417,6 +434,8 @@ CREATE TABLE IF NOT EXISTS sections (
 CREATE INDEX IF NOT EXISTS idx_sections_file    ON sections(file_rel);
 CREATE INDEX IF NOT EXISTS idx_sections_heading ON sections(heading);
 
+-- Import and export declarations, one row per statement.
+-- kind is 'import', 'export', or 'reexport'; target is the module path or symbol name.
 CREATE TABLE IF NOT EXISTS imports_exports (
     id       INTEGER PRIMARY KEY AUTOINCREMENT,
     file_rel TEXT    NOT NULL,
@@ -427,19 +446,24 @@ CREATE TABLE IF NOT EXISTS imports_exports (
 );
 CREATE INDEX IF NOT EXISTS idx_imex_file ON imports_exports(file_rel);
 
+-- Fixed-size text chunks feeding the embedding pipeline.  Each chunk is a
+-- contiguous slice of a source file; content_sha256 allows the embedder to skip
+-- chunks whose text hasn't changed since the last embedding pass.
 CREATE TABLE IF NOT EXISTS chunks (
     id             INTEGER PRIMARY KEY AUTOINCREMENT,
     file_rel       TEXT    NOT NULL,
     start_line     INTEGER NOT NULL,
     end_line       INTEGER NOT NULL,
     content_sha256 TEXT    NOT NULL,
-    kind           TEXT    NOT NULL,
+    kind           TEXT    NOT NULL,  -- e.g. 'symbol', 'section', 'block'
     text           TEXT    NOT NULL,
     FOREIGN KEY (file_rel) REFERENCES files(rel_path) ON DELETE CASCADE
 );
 CREATE INDEX IF NOT EXISTS idx_chunks_file ON chunks(file_rel);
 CREATE INDEX IF NOT EXISTS idx_chunks_sha  ON chunks(content_sha256);
 
+-- Per-project savings events, mirroring the global stats table.
+-- Allows per-project breakdown in 'token-goat stats'.
 CREATE TABLE IF NOT EXISTS stats (
     id           INTEGER PRIMARY KEY AUTOINCREMENT,
     ts           INTEGER NOT NULL,
@@ -451,6 +475,9 @@ CREATE TABLE IF NOT EXISTS stats (
 CREATE INDEX IF NOT EXISTS idx_stats_ts   ON stats(ts);
 CREATE INDEX IF NOT EXISTS idx_stats_kind ON stats(kind);
 
+-- Cached per-file summaries for the repomap PageRank overview.  Keyed on
+-- (rel_path, mtime, size) so entries are invalidated automatically when a file
+-- changes without requiring an explicit cache-bust step.
 CREATE TABLE IF NOT EXISTS repomap_cache (
     rel_path      TEXT    NOT NULL,
     mtime         REAL    NOT NULL,
