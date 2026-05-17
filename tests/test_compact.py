@@ -117,6 +117,132 @@ class TestBuildManifest:
         assert isinstance(result, str)
 
 
+class TestNoisePathFilter:
+    """Build artifacts, lockfiles, and OS metadata must not eat manifest budget."""
+
+    def test_pyc_extension_is_noise(self):
+        assert compact.is_noise_path("/proj/src/foo.pyc") is True
+        assert compact.is_noise_path("/proj/src/foo.pyo") is True
+
+    def test_native_binaries_are_noise(self):
+        assert compact.is_noise_path("/proj/build/libfoo.so") is True
+        assert compact.is_noise_path("C:/proj/foo.dll") is True
+
+    def test_lockfiles_are_noise(self):
+        assert compact.is_noise_path("/proj/package-lock.json") is True
+        assert compact.is_noise_path("/proj/uv.lock") is True
+        assert compact.is_noise_path("/proj/Cargo.lock") is True
+
+    def test_os_metadata_is_noise(self):
+        assert compact.is_noise_path("/proj/.DS_Store") is True
+        assert compact.is_noise_path("/proj/Thumbs.db") is True
+
+    def test_cache_directories_are_noise(self):
+        assert compact.is_noise_path("/proj/src/__pycache__/foo.cpython-311.pyc") is True
+        assert compact.is_noise_path("/proj/.git/HEAD") is True
+        assert compact.is_noise_path("/proj/node_modules/react/index.js") is True
+        assert compact.is_noise_path("/proj/.venv/lib/site-packages/x.py") is True
+        assert compact.is_noise_path("/proj/.mypy_cache/x.json") is True
+
+    def test_real_source_files_pass(self):
+        assert compact.is_noise_path("/proj/src/auth.py") is False
+        assert compact.is_noise_path("/proj/tests/test_x.py") is False
+        assert compact.is_noise_path("README.md") is False
+        assert compact.is_noise_path("") is False
+
+    def test_windows_separators_work(self):
+        assert compact.is_noise_path("C:\\proj\\__pycache__\\x.py") is True
+        assert compact.is_noise_path("C:\\proj\\src\\auth.py") is False
+
+    def test_noise_files_excluded_from_manifest(self, tmp_data_dir):
+        """A session whose only reads are noise paths should not get listed in Key Files Read."""
+        sid = "noise-filter-session-abc"
+        # Mix one real file with several noise paths
+        session.mark_file_read(sid, "/proj/src/real.py", offset=0, limit=50)
+        session.mark_file_read(sid, "/proj/src/__pycache__/real.cpython-311.pyc", offset=0, limit=50)
+        session.mark_file_read(sid, "/proj/uv.lock", offset=0, limit=50)
+        session.mark_file_read(sid, "/proj/.DS_Store", offset=0, limit=50)
+        result = compact.build_manifest(sid)
+        assert "real.py" in result
+        # Noise paths must be absent
+        assert "uv.lock" not in result
+        assert ".DS_Store" not in result
+        assert "__pycache__" not in result
+
+    def test_noise_edits_excluded_from_manifest(self, tmp_data_dir):
+        sid = "noise-edit-filter-session-abc"
+        session.mark_file_edited(sid, "/proj/src/real.py")
+        session.mark_file_edited(sid, "/proj/build/.pyc")  # noise extension
+        session.mark_file_edited(sid, "/proj/poetry.lock")
+        result = compact.build_manifest(sid)
+        assert "real.py" in result
+        assert "poetry.lock" not in result
+
+
+class TestActivityMarkers:
+    """Edited vs. read distinction must be visible to the compaction LLM."""
+
+    def test_edited_files_prefixed_with_edit_marker(self, tmp_data_dir):
+        sid = "marker-edit-session-abc"
+        session.mark_file_edited(sid, "/proj/src/auth.py")
+        result = compact.build_manifest(sid)
+        assert "✎" in result
+
+    def test_read_files_prefixed_with_read_marker(self, tmp_data_dir):
+        sid = "marker-read-session-abc"
+        session.mark_file_read(sid, "/proj/src/db.py", offset=0, limit=100)
+        result = compact.build_manifest(sid)
+        # The "→" arrow appears as both the symbols-section separator and the
+        # read-files prefix; the read-files prefix is "- → " at line start.
+        assert "- → " in result
+
+    def test_manifest_has_legend(self, tmp_data_dir):
+        sid = "legend-session-abc"
+        session.mark_file_edited(sid, "/proj/src/auth.py")
+        result = compact.build_manifest(sid)
+        assert "Legend:" in result
+
+
+class TestDedupAcrossSections:
+    """A file edited this session should not be re-listed under Key Files Read."""
+
+    def test_edited_file_not_repeated_in_key_files_read(self, tmp_data_dir):
+        sid = "dedup-session-abc"
+        # Same file edited AND read many times — should appear once, under Edited
+        for _ in range(5):
+            session.mark_file_read(sid, "/proj/src/shared.py", offset=0, limit=100)
+        session.mark_file_edited(sid, "/proj/src/shared.py")
+        result = compact.build_manifest(sid)
+        # Count occurrences of "shared.py" — should be exactly 1
+        assert result.count("shared.py") == 1, f"expected 1, got {result.count('shared.py')}\n{result}"
+
+
+class TestSymbolRankingByRecency:
+    """Symbols Accessed must be ranked most-recently-read first, not insertion order."""
+
+    def test_recent_symbol_file_appears_before_older(self, tmp_data_dir):
+        import time as _time
+        sid = "symbol-recency-session-abc"
+        # Older symbol read
+        session.mark_file_read(sid, "/proj/src/older.py", symbol="old_sym")
+        _time.sleep(0.01)  # ensure last_read_ts differs
+        # Many intervening files-with-symbols
+        for i in range(3):
+            session.mark_file_read(sid, f"/proj/src/mid{i}.py", symbol=f"mid_sym_{i}")
+            _time.sleep(0.005)
+        # Most-recent symbol read
+        session.mark_file_read(sid, "/proj/src/recent.py", symbol="recent_sym")
+        result = compact.build_manifest(sid)
+        # In Symbols Accessed section, recent.py should appear before older.py
+        symbols_section = result.split("### Symbols Accessed")[1] if "### Symbols Accessed" in result else result
+        # Truncate to next section if present, so older.py listed in Key Files Read
+        # doesn't fool the index check
+        symbols_section = symbols_section.split("###")[0]
+        assert "recent.py" in symbols_section
+        assert "older.py" in symbols_section
+        assert symbols_section.index("recent.py") < symbols_section.index("older.py")
+
+
 # ---------------------------------------------------------------------------
 # config.load / config.save
 # ---------------------------------------------------------------------------

@@ -9,13 +9,13 @@ __all__ = [
     "build_manifest",
     "build_manifest_with_count",
     "event_count",
+    "is_noise_path",
 ]
 
 import heapq
 import logging
 import time
 from datetime import UTC, datetime
-from itertools import islice
 from operator import attrgetter, itemgetter
 from typing import TYPE_CHECKING, Final
 
@@ -24,7 +24,7 @@ from .hooks_common import sanitize_log_str
 from .repomap import estimate_tokens
 
 if TYPE_CHECKING:
-    from .session import SessionCache
+    from .session import FileEntry, SessionCache
 
 _LOG = logging.getLogger("token_goat.compact")
 
@@ -60,6 +60,71 @@ _BY_EDIT_COUNT = itemgetter(1)
 # attrgetter is faster than a lambda for attribute access: it avoids the
 # CALL_FUNCTION bytecode overhead of a Python lambda on every comparison.
 _BY_READ_COUNT = attrgetter("read_count")
+
+# Attribute-based key for sorting FileEntry objects by recency.
+# Used to rank "Symbols Accessed" entries — most-recently-touched first
+# (the symbols a user just inspected are more load-bearing for the upcoming
+# compaction than ones touched at the start of a long session).
+_BY_LAST_READ_TS = attrgetter("last_read_ts")
+
+# Noise file extensions and basenames that should never enter the manifest.
+# These files are build artifacts, OS metadata, or auto-generated lockfiles that
+# the compaction LLM does not need to "preserve" — listing them wastes budget on
+# items that carry no semantic information about the user's work.  Keep the set
+# small and conservative: false negatives (a real file mistakenly skipped) are
+# worse than false positives (a noise file slipping through).
+_NOISE_EXTS: Final[frozenset[str]] = frozenset({
+    ".pyc", ".pyo", ".pyd",          # Python bytecode / extension binaries
+    ".class",                          # Java
+    ".o", ".obj", ".a", ".lib", ".dll", ".so", ".dylib",  # compiled native
+    ".log",                            # log files
+    ".tmp", ".temp", ".swp", ".swo",  # editor / scratch files
+    ".bak",                            # backup files
+})
+_NOISE_BASENAMES: Final[frozenset[str]] = frozenset({
+    ".ds_store", "thumbs.db", "desktop.ini",  # OS metadata
+    "package-lock.json", "yarn.lock", "pnpm-lock.yaml",  # JS lockfiles
+    "poetry.lock", "uv.lock", "pdm.lock",                # Python lockfiles
+    "cargo.lock",                                         # Rust lockfile
+    "composer.lock", "gemfile.lock",                      # PHP/Ruby lockfiles
+})
+# Path-substring noise markers — any normalized path containing one of these
+# segments is considered noise.  Forward-slash form because _short_path already
+# normalises backslashes; the matcher runs against the un-shortened normalized
+# path so it works regardless of where the segment appears in the tree.
+_NOISE_SEGMENTS: Final[tuple[str, ...]] = (
+    "/__pycache__/", "/.git/", "/node_modules/", "/.venv/", "/venv/",
+    "/dist/", "/build/", "/.mypy_cache/", "/.pytest_cache/", "/.ruff_cache/",
+)
+
+
+def is_noise_path(path: str) -> bool:
+    """Return True when *path* should be excluded from the manifest as low-value noise.
+
+    Build artifacts (``.pyc``, ``.o``), OS metadata (``.DS_Store``,
+    ``Thumbs.db``), lockfiles (``package-lock.json``, ``poetry.lock``), and
+    cache directories (``__pycache__/``, ``.git/``, ``node_modules/``) carry
+    no information the compaction LLM needs to preserve, and would otherwise
+    eat into the manifest's strict token budget.
+
+    Matching is case-insensitive and tolerant of both POSIX and Windows
+    separators.  Returns False for any empty or malformed input.
+    """
+    if not path:
+        return False
+    p = path.replace("\\", "/").lower()
+    # Path-segment check first: catches whole noise directories regardless of
+    # the file's own extension (e.g. ``project/.venv/lib/foo.py``).
+    for segment in _NOISE_SEGMENTS:
+        if segment in p:
+            return True
+    # Basename and extension checks — slice once and reuse.
+    slash_idx = p.rfind("/")
+    basename = p[slash_idx + 1:] if slash_idx >= 0 else p
+    if basename in _NOISE_BASENAMES:
+        return True
+    dot_idx = basename.rfind(".")
+    return dot_idx >= 0 and basename[dot_idx:] in _NOISE_EXTS
 
 
 def _count_suffix(n: int) -> str:
@@ -262,7 +327,21 @@ def _render(cache: SessionCache, session_id: str, max_tokens: int) -> tuple[str,
     Priority order:
     1. **Edited files** — always listed first; the compaction LLM must preserve these.
     2. **Symbols accessed** — files where specific symbols were read via ``token-goat read``.
+       Ranked by ``last_read_ts`` (most-recent first), not insertion order, so the
+       symbols a user just inspected take precedence over symbols touched earlier.
     3. **Key files read** — top files by ``read_count`` (most re-read first).
+       Files that already appear in the Edited section are excluded here to avoid
+       wasting budget on duplicate entries.
+
+    Each manifest line is prefixed with an activity marker so the compaction LLM
+    can distinguish edited (``✎``) from read-only (``→``) files — edited files
+    represent ongoing work and must always survive compaction, whereas a file
+    read once for context can be safely summarised.
+
+    Noise paths (``.pyc``, ``__pycache__/``, lockfiles, OS metadata, build dirs)
+    are filtered out before any ranking so the budget is spent on entries the
+    compaction LLM can actually use.  See :func:`is_noise_path` for the full
+    deny-list.
 
     If the rendered manifest exceeds *max_tokens*, lines are trimmed from the
     bottom until the budget is met, preserving the highest-priority sections.
@@ -270,10 +349,36 @@ def _render(cache: SessionCache, session_id: str, max_tokens: int) -> tuple[str,
     when the cache has no meaningful data (nothing edited, no symbols accessed,
     no files read).
     """
+    # Filter noise paths out of both maps before any other work.
+    # Build artifacts, lockfiles, and cache dirs eat manifest budget for items the
+    # compaction LLM can't usefully preserve.  Filter once up-front so every
+    # downstream selection (top_files, files_with_symbols, edited_files) inherits
+    # the cleaned input — no need to repeat the predicate per-section.
+    # Defensive: legacy/test fixtures sometimes hand us a list for edited_files
+    # rather than a dict; guard with isinstance so the filter never KeyErrors.
+    raw_edited = cache.edited_files if isinstance(cache.edited_files, dict) else {}
+    edited_clean: dict[str, int] = {
+        path: count for path, count in raw_edited.items()
+        if not is_noise_path(path)
+    }
+    files_clean: dict[str, FileEntry] = {
+        key: entry for key, entry in cache.files.items()
+        if not is_noise_path(entry.rel_or_abs) and not is_noise_path(key)
+    }
+    noise_skipped = (
+        (len(raw_edited) - len(edited_clean))
+        + (len(cache.files) - len(files_clean))
+    )
+    if noise_skipped:
+        _LOG.debug(
+            "_render: filtered %d noise path(s) from manifest input (session=%s)",
+            noise_skipped, session_id[:8],
+        )
+
     # Nothing to report when the session has no file activity at all.
     # edited_files covers writes; files covers reads/greps — both empty means
     # the manifest would be just the header, which isn't worth injecting.
-    if not cache.edited_files and not cache.files:
+    if not edited_clean and not files_clean:
         _LOG.info(
             "_render: manifest suppressed for session=%s "
             "(no file activity tracked: edited=0 files_read=0 greps=%d)",
@@ -282,27 +387,52 @@ def _render(cache: SessionCache, session_id: str, max_tokens: int) -> tuple[str,
         )
         return "", 0
 
-    # Use a generator so we only materialise up to _MAX_SYMBOLS_FILES entries
-    # instead of scanning every file entry when only the first few are needed.
-    files_with_symbols = list(
-        islice((e for e in cache.files.values() if e.symbols_read), _MAX_SYMBOLS_FILES)
+    # Normalised key set of edited files (lower-cased forward-slash form) so we can
+    # de-dup the "Key Files Read" section against the "Files Edited" section.
+    # An edited file is *already* flagged as must-preserve in the edited section;
+    # listing it a second time under Key Files Read wastes budget without adding
+    # signal.  We compare normalised forms because edited_files keys come from
+    # session._normalize_path() and files-dict keys come from the same helper —
+    # but the rel_or_abs display strings differ (relative vs. absolute), so we
+    # match on the dict keys, not the display path.
+    edited_keys = {p.replace("\\", "/").lower() for p in edited_clean}
+
+    # Rank "Symbols Accessed" by most-recent read first.  When a long session
+    # touches many files, the *recent* symbols are more load-bearing for the
+    # upcoming compaction than ones inspected at the start.  Previously we used
+    # insertion order (whatever dict-iteration gave us), which is arbitrary and
+    # often dumps the earliest reads into the manifest while burying the latest.
+    files_with_symbols_all = [
+        e for e in files_clean.values()
+        if e.symbols_read
+    ]
+    files_with_symbols = heapq.nlargest(
+        _MAX_SYMBOLS_FILES, files_with_symbols_all, key=_BY_LAST_READ_TS
     )
     files_with_symbols_count = len(files_with_symbols)
+
     # Most-frequently-read files, capped at _MAX_FILES_READ, for the "Key Files Read" section.
     # heapq.nlargest is O(n log k) instead of O(n log n) full sort — material when a
     # long session has hundreds of file entries but we only need the top 10.
     # The heap keeps only k items in memory, so this is also more memory-efficient
     # than sorting the full list when sessions accumulate many hundreds of file reads.
-    total_files_read = len(cache.files)
-    top_files = heapq.nlargest(_MAX_FILES_READ, cache.files.values(), key=_BY_READ_COUNT)
+    # We exclude files that already appear in the Edited section: those are pinned
+    # at higher priority and re-listing them duplicates manifest budget.
+    total_files_read = len(files_clean)
+    key_files_candidates = [
+        entry for key, entry in files_clean.items()
+        if key.replace("\\", "/").lower() not in edited_keys
+    ]
+    top_files = heapq.nlargest(_MAX_FILES_READ, key_files_candidates, key=_BY_READ_COUNT)
     _LOG.debug(
         "_render: selected top %d/%d files by read_count (cap=%d); "
-        "files_with_symbols=%d edited=%d",
+        "files_with_symbols=%d edited=%d noise_skipped=%d",
         len(top_files),
         total_files_read,
         _MAX_FILES_READ,
         files_with_symbols_count,
-        len(cache.edited_files),
+        len(edited_clean),
+        noise_skipped,
     )
 
     now = datetime.now(UTC).strftime("%Y-%m-%d %H:%M UTC")
@@ -310,15 +440,18 @@ def _render(cache: SessionCache, session_id: str, max_tokens: int) -> tuple[str,
     sections: list[str] = [
         "## Token-Goat Session Manifest",
         f"Session: {sid}  |  {now}",
+        # Legend tells the compaction LLM what the prefixes mean — single line,
+        # ~12 tokens — pays back many times over by making the markers unambiguous.
+        "Legend: edited=✎  read=→",
         "",
     ]
 
     # ── 1. Edited files — highest priority ────────────────────────────────────
-    if cache.edited_files:
+    if edited_clean:
         sections.append("### Files Edited (preserve in summary)")
         # Sort by edit count descending so the most-touched files appear first.
-        for path, count in sorted(cache.edited_files.items(), key=_BY_EDIT_COUNT, reverse=True):
-            sections.append(f"- {_short_path(path)}{_count_suffix(count)}")
+        for path, count in sorted(edited_clean.items(), key=_BY_EDIT_COUNT, reverse=True):
+            sections.append(f"- ✎ {_short_path(path)}{_count_suffix(count)}")
         sections.append("")
 
     # ── 2. Symbols accessed via token-goat read / symbol ────────────────────────
@@ -336,7 +469,9 @@ def _render(cache: SessionCache, session_id: str, max_tokens: int) -> tuple[str,
         sections.append("### Key Files Read")
         for entry in top_files:
             ranges_str = _format_ranges(entry.line_ranges)
-            sections.append(f"- {_short_path(entry.rel_or_abs)}{_count_suffix(entry.read_count)}{ranges_str}")
+            sections.append(
+                f"- → {_short_path(entry.rel_or_abs)}{_count_suffix(entry.read_count)}{ranges_str}"
+            )
         sections.append("")
 
     result = "\n".join(sections).rstrip()
