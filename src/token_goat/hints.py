@@ -78,6 +78,20 @@ _BYTES_PER_LINE_ESTIMATE = 75
 # Enough to fill a useful hint; the full list is available via `token-goat symbol`.
 _MAX_INDEXED_SYMBOLS_FETCHED = 50
 
+# A request narrower than this (with an explicit limit set by the agent) is treated
+# as "surgical intent" — the agent is already doing the right thing by reading a
+# small slice, so the dedup nag is suppressed.  Two reasons:
+#   1. The hint text itself costs ~50-80 tokens.  For a 50-line re-read
+#      (~860 tokens saved at most) the advice barely breaks even, and the agent
+#      may genuinely need those lines back in context.
+#   2. The exact-match hint tells the agent to "use a different offset/limit",
+#      which is misleading when the agent already provided a narrow explicit
+#      offset/limit — it punishes the surgical behaviour we want to encourage.
+# Bound is intentionally aligned with MIN_OVERLAP_TO_WARN so the "ignore tiny
+# overlaps" and "ignore tiny exact-matches with explicit limit" thresholds
+# move in lockstep if MIN_OVERLAP_TO_WARN is ever retuned.
+_NARROW_EXPLICIT_READ_LINES = MIN_OVERLAP_TO_WARN
+
 
 class ReadHint(str):
     """A pre-read hint string carrying the genuine token saving it represents.
@@ -252,6 +266,10 @@ def _build_read_hint_inner(
     safe_limit = max(0, int(limit)) if limit is not None else 0
     req_start = safe_offset + 1
     req_end = req_start + (safe_limit or DEFAULT_READ_LIMIT) - 1
+    # An explicit limit signals "surgical intent" — the agent picked a narrow
+    # window deliberately, not the implicit DEFAULT_READ_LIMIT fallback. Used
+    # by _hint_from_cache to suppress nag-text on small intentional re-reads.
+    has_explicit_limit = safe_limit > 0
 
     # Compute fname once; it is used in multiple debug log calls below and
     # forwarded to _hint_from_cache / _hint_from_index which also need it.
@@ -264,7 +282,10 @@ def _build_read_hint_inner(
     # 1. Check session cache first.
     entry = session.get_file_entry(session_id, file_path, cache=cache)
     if entry is not None:
-        hint = _hint_from_cache(entry, req_start, req_end, file_path, fname=fname)
+        hint = _hint_from_cache(
+            entry, req_start, req_end, file_path,
+            fname=fname, has_explicit_limit=has_explicit_limit,
+        )
         if hint is not None:
             _LOG.debug(
                 "build_read_hint: cache hint for %s lines %d-%d (tokens_saved=%d)",
@@ -295,14 +316,22 @@ def _hint_from_cache(
     file_path: str,
     *,
     fname: str | None = None,
+    has_explicit_limit: bool = False,
 ) -> ReadHint | None:
-    """Build hint when the file was already accessed this session."""
+    """Build hint when the file was already accessed this session.
+
+    ``has_explicit_limit`` is True when the agent supplied a concrete ``limit``
+    on the Read call (rather than relying on the implicit DEFAULT_READ_LIMIT).
+    A small explicit-limit request is surgical intent — see
+    ``_NARROW_EXPLICIT_READ_LINES`` for why this short-circuits the dedup nag.
+    """
     # Accept pre-computed fname from build_read_hint to avoid a redundant
     # Path allocation on the hot pre-read path (one Path per hook call saved).
     # Sanitize here too for direct callers that bypass build_read_hint.
     if fname is None:
         fname = _sanitize_hint_path(Path(file_path).name)
     file_path = _sanitize_hint_path(file_path)
+    requested_lines = req_end - req_start + 1
 
     # Suppress the line-range dedup hint when the cached ranges are no longer
     # trustworthy:
@@ -377,7 +406,21 @@ def _hint_from_cache(
 
     # Exact re-read of already-cached lines — the full request is avoidable.
     if exact_match:
-        wasted = _est_tokens_from_lines(req_end - req_start + 1)
+        # Surgical intent guard: when the agent picked a narrow window with an
+        # explicit limit, suppress the nag. The advice "use a different
+        # offset/limit" is misleading (the agent already did) and the hint
+        # text itself (~50-80 tokens) approaches the realized saving for very
+        # small re-reads, making the nudge net-neutral or net-negative.  The
+        # surrounding-context Read may also be legitimate: a small slice the
+        # agent needs back in active context after intervening turns.
+        if has_explicit_limit and requested_lines <= _NARROW_EXPLICIT_READ_LINES:
+            _LOG.debug(
+                "_hint_from_cache: suppressing exact-match nag for %s "
+                "(surgical re-read: %d lines with explicit limit)",
+                fname, requested_lines,
+            )
+            return None
+        wasted = _est_tokens_from_lines(requested_lines)
         return ReadHint(
             f"Note: `{fname}` lines {req_start}-{req_end} were already read this session "
             f"(cached ranges: {cached_summary}{extra}). "
