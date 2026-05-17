@@ -127,7 +127,7 @@ $ token-goat map --budget 4000
 out: ~4 KB                  # top-ranked files + key symbols   (92% smaller)
 ```
 
-`--budget` is a hard cap. Below 6 KB the output automatically switches to short-label mode (`f:` files, `s:` symbols, `c:` calls) to fit more signal per byte.
+`--budget` is a hard cap. Below 6 KB the output automatically switches to short-label mode (`f:` files, `s:` symbols, `c:` calls) to fit more signal per byte. `token-goat map --compact` is a shortcut for a 300-token budget when you only need the high-rank cluster.
 
 ## Install
 
