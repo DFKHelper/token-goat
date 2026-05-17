@@ -3,8 +3,8 @@ from __future__ import annotations
 
 import json
 import os
-import re
 import sys
+from re import sub as re_sub
 
 import typer
 
@@ -14,7 +14,7 @@ from . import stats as stats_mod
 def _write_raw(text: str) -> None:
     """Write text with truecolor ANSI codes directly, bypassing colorama."""
     if os.environ.get("NO_COLOR") or not sys.stdout.isatty():
-        text = re.sub(r"\x1b\[[0-9;]*m", "", text)
+        text = re_sub(r"\x1b\[[0-9;]*m", "", text)
 
     stream: object = sys.stdout
     if hasattr(stream, "_StreamWrapper__wrapped"):

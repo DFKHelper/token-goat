@@ -2,8 +2,8 @@
 from __future__ import annotations
 
 import logging
-import os
 import re
+from os.path import basename
 
 from ..parser import ImpExp, Ref, Section, Symbol
 from . import common
@@ -52,7 +52,7 @@ def _is_abi_file(source: bytes, rel_path: str, threshold: int = _ABI_SIZE_THRESH
         return False
 
     # Filename heuristic
-    name = os.path.basename(rel_path).lower()
+    name = basename(rel_path).lower()
     parts = rel_path.replace("\\", "/").split("/")
     if (
         name.endswith("abi.ts")
