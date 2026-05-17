@@ -32,6 +32,75 @@ def _process_dirty_entries(entries: list[DirtyQueueEntry]) -> None:
     _worker._process_dirty_entries(entries)
 
 
+def _install_signal_handlers() -> None:
+    """Register SIGTERM/SIGINT handlers that exit cleanly, suppressing errors on platforms
+    where the signal module exists but signal installation is restricted (e.g. non-main threads).
+    """
+    for sig in (signal.SIGTERM, signal.SIGINT):
+        if hasattr(signal, sig.name):
+            with contextlib.suppress(ValueError, AttributeError):
+                signal.signal(sig, lambda *_: sys.exit(0))
+
+
+def _run_maintenance_cycle() -> None:
+    """Execute one periodic maintenance cycle, logging duration and results."""
+    _LOG.info("starting maintenance cycle")
+    t0 = time.time()
+    try:
+        s = cleanup_on_startup()
+    except Exception:  # noqa: BLE001
+        _LOG.exception("periodic maintenance failed after %.2fs", time.time() - t0)
+    else:
+        elapsed = time.time() - t0
+        if any(s.values()):
+            _LOG.info("periodic maintenance completed in %.2fs: %s", elapsed, s)
+        else:
+            _LOG.debug("periodic maintenance completed in %.2fs (no actions needed)", elapsed)
+
+
+def _run_reindex_cycle() -> None:
+    """Execute one periodic reindex cycle, logging duration and any failure."""
+    _LOG.info("starting periodic reindex cycle")
+    t0 = time.time()
+    try:
+        _reindex_active_projects()
+    except Exception:  # noqa: BLE001
+        _LOG.exception("periodic reindex cycle failed after %.2fs", time.time() - t0)
+    else:
+        _LOG.info("periodic reindex cycle completed in %.2fs", time.time() - t0)
+
+
+def _detect_upgrade() -> bool:
+    """Return True when a package version or code fingerprint change is detected.
+
+    Compares the currently installed version/fingerprint against the values
+    captured at daemon boot.  Returns False when either snapshot is unavailable
+    (fresh install with no prior boot record) so the daemon does not restart
+    unnecessarily on the very first run.
+    """
+    current_version = _worker._installed_version()
+    current_fp = _worker._package_fingerprint()
+    version_changed = (
+        _worker._BOOTED_VERSION is not None
+        and current_version is not None
+        and current_version != _worker._BOOTED_VERSION
+    )
+    code_changed = (
+        _worker._BOOTED_FINGERPRINT is not None
+        and current_fp is not None
+        and current_fp != _worker._BOOTED_FINGERPRINT
+    )
+    if version_changed or code_changed:
+        _LOG.info(
+            "token-goat %s changed on disk (version %s -> %s); restarting worker to load new code",
+            "version" if version_changed else "code",
+            _worker._BOOTED_VERSION,
+            current_version,
+        )
+        return True
+    return False
+
+
 def run_daemon(stop_event=None) -> None:
     """Main loop: heartbeat + dirty-queue processing + periodic maintenance."""
     _worker._setup_logging()
@@ -57,20 +126,18 @@ def run_daemon(stop_event=None) -> None:
     last_periodic_reindex = time.time()
     last_version_check = time.time()
     restart_for_upgrade = False
-    _LOG.debug("worker main loop initialized: heartbeat=%.1fs maintenance=%.1fs reindex=%.1fs",
-              _worker.HEARTBEAT_INTERVAL, _worker.MAINTENANCE_INTERVAL, _worker.PERIODIC_REINDEX_INTERVAL)
+    _LOG.debug(
+        "worker main loop initialized: heartbeat=%.1fs maintenance=%.1fs reindex=%.1fs",
+        _worker.HEARTBEAT_INTERVAL,
+        _worker.MAINTENANCE_INTERVAL,
+        _worker.PERIODIC_REINDEX_INTERVAL,
+    )
 
     def should_stop() -> bool:
         """Return True when the caller has signalled the worker to shut down."""
         return stop_event is not None and stop_event.is_set()
 
-    if hasattr(signal, "SIGTERM"):
-        with contextlib.suppress(ValueError, AttributeError):
-            signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))
-    if hasattr(signal, "SIGINT"):
-        with contextlib.suppress(ValueError, AttributeError):
-            signal.signal(signal.SIGINT, lambda *_: sys.exit(0))
-
+    _install_signal_handlers()
     _LOG.info("worker started, pid=%s", os.getpid())
 
     try:
@@ -88,53 +155,15 @@ def run_daemon(stop_event=None) -> None:
                 _process_dirty_entries(entries)
 
             if now - last_maintenance >= _worker.MAINTENANCE_INTERVAL:
-                _LOG.info("starting maintenance cycle")
-                t_maint = time.time()
-                try:
-                    s = cleanup_on_startup()
-                except Exception:  # noqa: BLE001
-                    maint_elapsed = time.time() - t_maint
-                    _LOG.exception("periodic maintenance failed after %.2fs", maint_elapsed)
-                else:
-                    maint_elapsed = time.time() - t_maint
-                    if any(s.values()):
-                        _LOG.info("periodic maintenance completed in %.2fs: %s", maint_elapsed, s)
-                    else:
-                        _LOG.debug("periodic maintenance completed in %.2fs (no actions needed)", maint_elapsed)
+                _run_maintenance_cycle()
                 last_maintenance = now
 
             if now - last_periodic_reindex >= _worker.PERIODIC_REINDEX_INTERVAL:
-                _LOG.info("starting periodic reindex cycle")
-                t_reindex = time.time()
-                try:
-                    _reindex_active_projects()
-                except Exception:  # noqa: BLE001
-                    _LOG.exception("periodic reindex cycle failed after %.2fs", time.time() - t_reindex)
-                else:
-                    _LOG.info("periodic reindex cycle completed in %.2fs", time.time() - t_reindex)
+                _run_reindex_cycle()
                 last_periodic_reindex = now
 
             if now - last_version_check >= _worker.VERSION_CHECK_INTERVAL:
-                current = _worker._installed_version()
-                current_fp = _worker._package_fingerprint()
-                version_changed = (
-                    _worker._BOOTED_VERSION is not None
-                    and current is not None
-                    and current != _worker._BOOTED_VERSION
-                )
-                code_changed = (
-                    _worker._BOOTED_FINGERPRINT is not None
-                    and current_fp is not None
-                    and current_fp != _worker._BOOTED_FINGERPRINT
-                )
-                if version_changed or code_changed:
-                    _LOG.info(
-                        "token-goat %s changed on disk (version %s -> %s); "
-                        "restarting worker to load new code",
-                        "version" if version_changed else "code",
-                        _worker._BOOTED_VERSION,
-                        current,
-                    )
+                if _detect_upgrade():
                     restart_for_upgrade = True
                     break
                 last_version_check = now

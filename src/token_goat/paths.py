@@ -325,6 +325,32 @@ def _open_restricted(tmp: Path) -> int:
     return os.open(str(tmp), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
 
 
+def _atomic_write_core(path: Path, content: str | bytes, mode: str) -> None:
+    """Write *content* to *path* atomically via a temp file + rename.
+
+    Shared implementation for :func:`atomic_write_text` and :func:`atomic_write_bytes`.
+    *mode* is the ``open()`` mode string — ``"w"`` for text, ``"wb"`` for binary.
+
+    Two-component temp name: thread ID prevents collisions when multiple threads
+    write the same path concurrently; monotonic_ns prevents collisions across rapid
+    sequential calls in the same thread where the thread ID alone would repeat.
+    """
+    tmp = path.with_name(f"{path.name}.{threading.get_ident()}.{time.monotonic_ns()}.tmp")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        fd = _open_restricted(tmp)
+        try:
+            kwargs = {"encoding": "utf-8"} if "b" not in mode else {}
+            with os.fdopen(fd, mode, **kwargs) as fh:
+                fh.write(content)  # type: ignore[arg-type]
+        except Exception:  # noqa: BLE001 — any write error: clean up tmp then re-raise
+            tmp.unlink(missing_ok=True)
+            raise
+        _rename_with_retry(tmp, path)
+    finally:
+        tmp.unlink(missing_ok=True)
+
+
 def atomic_write_text(path: Path, content: str) -> None:
     """Write *content* to *path* atomically via a temp file + rename.
 
@@ -338,22 +364,7 @@ def atomic_write_text(path: Path, content: str) -> None:
     This is the canonical implementation shared by :mod:`session` and
     :mod:`config` — both previously carried their own private copies.
     """
-    # Two-component temp name: thread ID prevents collisions when multiple threads
-    # write the same path concurrently; monotonic_ns prevents collisions across rapid
-    # sequential calls in the same thread where the thread ID alone would repeat.
-    tmp = path.with_name(f"{path.name}.{threading.get_ident()}.{time.monotonic_ns()}.tmp")
-    path.parent.mkdir(parents=True, exist_ok=True)
-    try:
-        fd = _open_restricted(tmp)
-        try:
-            with os.fdopen(fd, "w", encoding="utf-8") as fh:
-                fh.write(content)
-        except Exception:  # noqa: BLE001 — any write error: clean up tmp then re-raise
-            tmp.unlink(missing_ok=True)
-            raise
-        _rename_with_retry(tmp, path)
-    finally:
-        tmp.unlink(missing_ok=True)
+    _atomic_write_core(path, content, "w")
 
 
 def atomic_write_bytes(path: Path, content: bytes) -> None:
@@ -365,18 +376,4 @@ def atomic_write_bytes(path: Path, content: bytes) -> None:
     On POSIX the temp file is created with owner-only permissions (0o600) so
     it is never world-readable even during the brief window before the rename.
     """
-    # Same two-component naming as atomic_write_text: thread ID + monotonic_ns
-    # prevent collisions between concurrent writers and rapid sequential calls.
-    tmp = path.with_name(f"{path.name}.{threading.get_ident()}.{time.monotonic_ns()}.tmp")
-    path.parent.mkdir(parents=True, exist_ok=True)
-    try:
-        fd = _open_restricted(tmp)
-        try:
-            with os.fdopen(fd, "wb") as fh:
-                fh.write(content)
-        except Exception:  # noqa: BLE001 — any write error: clean up tmp then re-raise
-            tmp.unlink(missing_ok=True)
-            raise
-        _rename_with_retry(tmp, path)
-    finally:
-        tmp.unlink(missing_ok=True)
+    _atomic_write_core(path, content, "wb")
