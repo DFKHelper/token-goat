@@ -11,12 +11,30 @@ from . import common
 
 _LOG = logging.getLogger("token_goat.languages.markdown")
 
-# ATX headings: ^#{1,6} followed by text
+# ATX headings: ^#{1,6} followed by text.
+#
+# WHY the leading-space cap at 3: CommonMark allows up to three leading spaces
+# before an ATX marker; four or more spaces makes the line an indented code
+# block, not a heading.  WHY exclude lines that start with `>` or list markers:
+# `> ## Quoted` inside a blockquote is a heading *inside the blockquote* (level
+# semantics differ) and including it as a top-level section corrupts the
+# parent section's end_line.  The same applies to list-item-prefixed headings
+# like `- ## item title` which are list content, not document structure.
+# We require zero leading whitespace via the negative-look-around-free anchor
+# combined with the post-match guard in :func:`_atx_line_is_genuine`.
 _ATX_RE = re.compile(r"^(#{1,6})\s+(.+?)\s*#*\s*$", re.MULTILINE)
 
-# Setext headings: underline with === or ---
-_SETEXT_H1_RE = re.compile(r"^(.+)\n=+\s*$", re.MULTILINE)
-_SETEXT_H2_RE = re.compile(r"^(.+)\n-+\s*$", re.MULTILINE)
+# Setext headings: a line of text followed by a line of === (level 1) or ---
+# (level 2).  WHY we don't use a single multi-line regex: the `===`/`---`
+# underline must (a) sit immediately below a non-blank text line, (b) not be
+# preceded by a blank line, and (c) the text line itself must not be a list
+# item, blockquote, or another heading.  These constraints are clearer to
+# express as a line-by-line scan than as a single regex.
+_SETEXT_H1_UNDERLINE_RE = re.compile(r"^=+\s*$")
+_SETEXT_H2_UNDERLINE_RE = re.compile(r"^-+\s*$")
+# A horizontal rule (HR) of three or more `-`, `_`, or `*` separated by
+# optional spaces.  `---` after a blank line is an HR, not a setext underline.
+_HR_RE = re.compile(r"^ {0,3}([-_*])(?:\s*\1){2,}\s*$")
 
 # Front-matter YAML: starts with --- and ends with ---
 _FRONTMATTER_RE = re.compile(r"^---\n(.*?)\n---\n", re.DOTALL)
@@ -28,6 +46,11 @@ _YAML_TITLE_RE = re.compile(r"^\s*title\s*:\s*(.+?)\s*$", re.MULTILINE)
 # (CommonMark requires the fence be the first non-whitespace; here we accept up to
 # three leading spaces, matching CommonMark's "indent less than 4 spaces" rule).
 _FENCE_RE = re.compile(r"^ {0,3}(```|~~~)")
+
+# Synthetic heading name for the YAML front-matter block.  Exposed as a Section
+# so callers can do `token-goat section path::__frontmatter__` to retrieve only
+# the front-matter without dragging in the rest of the document.
+FRONTMATTER_HEADING: str = "__frontmatter__"
 
 
 def _compute_fenced_line_set(lines: list[str]) -> frozenset[int]:
@@ -68,6 +91,89 @@ def _compute_fenced_line_set(lines: list[str]) -> frozenset[int]:
     return frozenset(inside)
 
 
+def _is_blockquote_or_list_prefixed(line: str) -> bool:
+    """Return True if *line* starts with a blockquote (``>``) or list marker.
+
+    WHY this matters: ``> ## Quoted heading`` and ``- ## Item heading`` both
+    match ``_ATX_RE`` because the regex anchors at line start but the indent
+    rules let `>` and list markers slip through.  These are *not* document
+    structure — they are content inside a blockquote / list item — and indexing
+    them as top-level sections corrupts the surrounding section's end_line.
+    """
+    stripped = line.lstrip(" ")
+    if not stripped:
+        return False
+    # Blockquote prefix.
+    if stripped.startswith(">"):
+        return True
+    # Unordered list markers: -, +, * (with at least one trailing space).
+    if len(stripped) >= 2 and stripped[0] in "-+*" and stripped[1] == " ":
+        return True
+    # Ordered list markers: `1.`, `42.`, `1)`, etc.  WHY the cap at 9 digits:
+    # CommonMark caps ordered-list markers at 9 digits; anything longer is
+    # treated as paragraph text.
+    m = re.match(r"^\d{1,9}[.)]\s", stripped)
+    return m is not None
+
+
+def _find_setext_headings(
+    lines: list[str],
+    fenced_lines: frozenset[int],
+    atx_lines: frozenset[int],
+) -> list[tuple[int, int, str]]:
+    """Scan *lines* for Setext headings, returning ``(line, level, text)`` tuples.
+
+    A Setext heading is a text line followed by an underline line of ``=`` (H1)
+    or ``-`` (H2).  We require:
+
+    * The text line is non-blank, not inside a fenced code block, not itself an
+      ATX heading, and not blockquote/list-prefixed.
+    * The underline matches ``^=+$`` (H1) or ``^-+$`` (H2) with optional
+      trailing whitespace.
+    * The underline is *not* a horizontal rule (HR).  An HR like ``---`` after
+      a blank line is not a setext underline.  We disambiguate by requiring the
+      preceding text line to be non-blank — which is the CommonMark rule.
+
+    The returned ``line`` is the 1-indexed line of the *heading text*, not the
+    underline.  Callers can compute the end of the heading block (underline
+    line) as ``line + 1`` if needed.
+    """
+    results: list[tuple[int, int, str]] = []
+    n = len(lines)
+    # Iterate over potential underline lines (i is 0-indexed).
+    for i in range(1, n):
+        underline = lines[i]
+        if (i + 1) in fenced_lines:
+            continue
+        h1 = bool(_SETEXT_H1_UNDERLINE_RE.match(underline))
+        h2 = bool(_SETEXT_H2_UNDERLINE_RE.match(underline))
+        if not (h1 or h2):
+            continue
+        text_line = lines[i - 1]
+        text_lineno = i  # 1-indexed line of the text
+        # Skip when text line is blank, inside a fence, an ATX heading, or
+        # blockquote/list-prefixed — see CommonMark setext rules.
+        if not text_line.strip():
+            continue
+        if text_lineno in fenced_lines:
+            continue
+        if text_lineno in atx_lines:
+            continue
+        if _is_blockquote_or_list_prefixed(text_line):
+            continue
+        # H2 (`---`) ambiguity with HR: if the previous line is blank, the
+        # `---` is an HR, not a setext underline.  We already filtered blank
+        # text_line above, so this is implicitly handled.  An H2 underline
+        # that is also a valid HR (e.g. ``---``) is *still* a setext underline
+        # under CommonMark when the line above is paragraph text.
+        level = 1 if h1 else 2
+        text = text_line.strip()
+        if not text:
+            continue
+        results.append((text_lineno, level, text))
+    return results
+
+
 def _trim_trailing_blanks(sections: list[Section], lines: list[str]) -> None:
     """Tighten each section's end_line by stepping back past trailing blank lines.
 
@@ -99,16 +205,24 @@ def extract(source: bytes, rel_path: str) -> tuple[list[Symbol], list[Ref], list
     Symbols:
       - ``md_title``  — ``title:`` value from YAML front-matter (``---`` fences),
         recorded at line 1.  Only the first front-matter block is inspected.
-      - ``heading``   — every ATX heading (``# H1`` … ``###### H6``).
-        Setext headings (``===`` and ``---`` underlines) are *not* promoted to
-        symbols because their line-number calculation is ambiguous when the
-        underline and text are on separate lines, and they rarely appear in
-        modern documentation.
+      - ``heading``   — every ATX heading (``# H1`` … ``###### H6``) **and**
+        every Setext heading (``Title\\n===`` / ``Title\\n---``).  Setext
+        heading symbols are recorded at the text line, not the underline.
 
     Sections:
-      - All ATX headings also become :class:`Section` entries.  ``end_line``
-        is assigned by :func:`common._compute_section_end_lines` after the ATX
-        heading pass completes.
+      - All ATX and Setext headings become :class:`Section` entries.
+        ``end_line`` is assigned by :func:`common._compute_section_end_lines`
+        after both passes complete.
+      - When YAML front-matter is present, a synthetic Section named
+        ``__frontmatter__`` covers its delimited range.  This lets callers
+        retrieve just the front-matter block via
+        ``token-goat section path::__frontmatter__``.
+
+    Skipped (intentional):
+      - ATX-looking lines inside ``` / ~~~ fenced code blocks.
+      - ATX-looking lines that begin with a blockquote marker (``>``) or list
+        marker (``-``, ``+``, ``*``, ``1.``, ``1)``).  These are content
+        inside a quote/list, not document structure.
 
     Refs and imports are always empty for Markdown files.
     """
@@ -119,7 +233,7 @@ def extract(source: bytes, rel_path: str) -> tuple[list[Symbol], list[Ref], list
 
         lines = text.split("\n")
 
-        # --- Extract front-matter title ---
+        # --- Extract front-matter title + synthetic section ---
         fm_match = _FRONTMATTER_RE.match(text)
         if fm_match:
             fm_content = fm_match.group(1)
@@ -127,9 +241,30 @@ def extract(source: bytes, rel_path: str) -> tuple[list[Symbol], list[Ref], list
             if title_match:
                 title = title_match.group(1).strip(' "\'')
                 symbols.append(Symbol(name=title, kind="md_title", line=1))
+            # The front-matter block runs from line 1 (opening `---`) through
+            # the line containing the closing `---`.  We compute the closing
+            # line by counting newlines up to (but not including) the matched
+            # end offset; this avoids assuming a specific number of lines.
+            fm_end_line = text[: fm_match.end()].count("\n")
+            # Level 0 keeps it from being treated as a parent of H1 sections
+            # by `_compute_section_end_lines` — front-matter is metadata, not
+            # document hierarchy.  We pre-assign end_line so the pass below
+            # leaves it alone.
+            sections.append(
+                Section(
+                    heading=FRONTMATTER_HEADING,
+                    level=0,
+                    line=1,
+                    end_line=max(1, fm_end_line),
+                )
+            )
 
         # --- Identify fenced code-block regions so we skip false-positive ATX ---
         fenced_lines = _compute_fenced_line_set(lines)
+
+        # Track which lines have an ATX heading so the setext pass doesn't
+        # double-count a line that's already an ATX heading.
+        atx_lines: set[int] = set()
 
         # --- Extract ATX headings (#-######), skipping those inside code fences ---
         for match in _ATX_RE.finditer(text):
@@ -142,16 +277,44 @@ def extract(source: bytes, rel_path: str) -> tuple[list[Symbol], list[Ref], list
             # truncating it prematurely at the fake heading.
             if line in fenced_lines:
                 continue
+            # WHY skip blockquoted / list-prefixed ATX: `> ## Title` and
+            # `- ## item` are content inside their container, not top-level
+            # document structure.  Indexing them inflates the section count
+            # and breaks end_line for the real ancestor section.
+            raw_line = lines[line - 1] if 0 <= line - 1 < len(lines) else ""
+            if _is_blockquote_or_list_prefixed(raw_line):
+                continue
+            atx_lines.add(line)
             sections.append(Section(heading=heading_text, level=level, line=line))
             symbols.append(
                 Symbol(name=heading_text, kind="heading", line=line)
             )
 
-        # --- Compute end_line for sections ---
-        common._compute_section_end_lines(sections, lines)
-        # Trim trailing blank lines from each section's end_line so extracted
-        # snippets don't carry padding tokens before the next heading.
-        _trim_trailing_blanks(sections, lines)
+        # --- Extract Setext headings (Title\n=== or Title\n---) ---
+        # WHY after ATX: we need atx_lines populated so setext doesn't pick up
+        # text that is already an ATX heading on the line above an underline.
+        for s_line, s_level, s_text in _find_setext_headings(
+            lines, fenced_lines, frozenset(atx_lines)
+        ):
+            sections.append(Section(heading=s_text, level=s_level, line=s_line))
+            symbols.append(Symbol(name=s_text, kind="heading", line=s_line))
+
+        # Sort sections by line so _compute_section_end_lines walks them in
+        # document order.  Without this, an interleaved setext+atx file would
+        # produce wrong end_lines because the algorithm assumes sorted input.
+        sections.sort(key=lambda sec: sec.line)
+
+        # --- Compute end_line for sections (skip front-matter; already set) ---
+        # We split out the front-matter section temporarily so the standard
+        # end_line algorithm doesn't try to use its level-0 heading as a
+        # boundary for the H1 that may follow it.
+        fm_sections = [s for s in sections if s.heading == FRONTMATTER_HEADING]
+        body_sections = [s for s in sections if s.heading != FRONTMATTER_HEADING]
+        common._compute_section_end_lines(body_sections, lines)
+        # Trim trailing blank lines from each body section's end_line so
+        # extracted snippets don't carry padding tokens before the next heading.
+        _trim_trailing_blanks(body_sections, lines)
+        sections = sorted(fm_sections + body_sections, key=lambda sec: sec.line)
 
         return symbols, [], [], sections
     except (re.error, UnicodeDecodeError, AttributeError, IndexError, OverflowError) as exc:

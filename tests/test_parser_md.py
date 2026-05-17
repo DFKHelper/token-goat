@@ -223,3 +223,181 @@ def test_fenced_skip_does_not_drop_heading_with_hash_before_fence():
     headings = {s.heading for s in sections}
     assert "Heading Before Fence" in headings
     assert "fake" not in headings
+
+
+# ---------------------------------------------------------------------------
+# Setext-style heading support (Title\n=== for H1, Title\n--- for H2)
+# ---------------------------------------------------------------------------
+
+
+def test_setext_h1_extracted():
+    """`Title\\n===` must produce an H1 section at the *text* line."""
+    src = (
+        b"Some Big Title\n"
+        b"==============\n"
+        b"\n"
+        b"body text\n"
+    )
+    _, _, _, sections = extract(src, "setext1.md")
+    titles = [s for s in sections if s.heading == "Some Big Title"]
+    assert len(titles) == 1
+    assert titles[0].level == 1
+    assert titles[0].line == 1
+
+
+def test_setext_h2_extracted():
+    """`Title\\n---` must produce an H2 section when the line above is non-blank."""
+    src = (
+        b"H2 Subtitle\n"
+        b"-----------\n"
+        b"\n"
+        b"body\n"
+    )
+    _, _, _, sections = extract(src, "setext2.md")
+    subs = [s for s in sections if s.heading == "H2 Subtitle"]
+    assert len(subs) == 1
+    assert subs[0].level == 2
+
+
+def test_setext_h2_not_confused_with_hr():
+    """A `---` that follows a blank line is a horizontal rule, not setext.
+
+    Without this check, every HR in a document would silently steal the
+    previous paragraph as a fake H2 heading.
+    """
+    src = (
+        b"Some paragraph.\n"
+        b"\n"
+        b"---\n"
+        b"\n"
+        b"More text.\n"
+    )
+    _, _, _, sections = extract(src, "hr.md")
+    assert not any(s.heading == "Some paragraph." for s in sections)
+
+
+def test_setext_skipped_inside_fence():
+    """A setext underline inside a code fence must not promote the line above."""
+    src = (
+        b"```\n"
+        b"Fake Title\n"
+        b"==========\n"
+        b"```\n"
+        b"\n"
+        b"# Real\n"
+    )
+    _, _, _, sections = extract(src, "setextfence.md")
+    assert not any(s.heading == "Fake Title" for s in sections)
+    assert any(s.heading == "Real" for s in sections)
+
+
+def test_setext_skipped_when_text_is_blockquote():
+    """`> Quoted\\n---` is content inside a blockquote, not a setext heading."""
+    src = (
+        b"> Quoted text\n"
+        b"-------------\n"
+    )
+    _, _, _, sections = extract(src, "setextquote.md")
+    assert not any(s.heading == "> Quoted text" for s in sections)
+
+
+def test_setext_and_atx_interleaved_end_lines():
+    """Setext + ATX in the same doc must yield correct end_lines in doc order."""
+    src = (
+        b"Top\n"
+        b"===\n"
+        b"\n"
+        b"intro\n"
+        b"\n"
+        b"## Sub A\n"
+        b"\n"
+        b"aaa\n"
+        b"\n"
+        b"Sub B\n"
+        b"-----\n"
+        b"\n"
+        b"bbb\n"
+    )
+    _, _, _, sections = extract(src, "mix.md")
+    top = next(s for s in sections if s.heading == "Top")
+    sub_a = next(s for s in sections if s.heading == "Sub A")
+    sub_b = next(s for s in sections if s.heading == "Sub B")
+    # Top is H1 and should wrap both H2s.  Sub A ends before Sub B starts.
+    assert top.line < sub_a.line < sub_b.line
+    assert sub_a.end_line is not None and sub_a.end_line < sub_b.line
+
+
+# ---------------------------------------------------------------------------
+# Blockquote / list-prefixed ATX-looking lines must be skipped
+# ---------------------------------------------------------------------------
+
+
+def test_blockquoted_atx_not_extracted():
+    """`> ## Quoted` is content inside a blockquote, not a section."""
+    src = (
+        b"# Real\n"
+        b"\n"
+        b"> ## Quoted heading\n"
+        b"> more quote\n"
+        b"\n"
+        b"## Real Sub\n"
+    )
+    _, _, _, sections = extract(src, "quoted.md")
+    headings = {s.heading for s in sections}
+    assert "Real" in headings
+    assert "Real Sub" in headings
+    assert "Quoted heading" not in headings
+
+
+def test_list_item_atx_not_extracted():
+    """`- ## item` and `1. ## item` are list content, not sections."""
+    src = (
+        b"# Real\n"
+        b"\n"
+        b"- ## list item heading\n"
+        b"- another\n"
+        b"\n"
+        b"1. ## ordered item\n"
+        b"\n"
+        b"## Real Sub\n"
+    )
+    _, _, _, sections = extract(src, "listitem.md")
+    headings = {s.heading for s in sections}
+    assert "list item heading" not in headings
+    assert "ordered item" not in headings
+    assert "Real Sub" in headings
+
+
+# ---------------------------------------------------------------------------
+# Front-matter exposed as synthetic `__frontmatter__` section
+# ---------------------------------------------------------------------------
+
+
+def test_frontmatter_synthetic_section():
+    """YAML front-matter must produce a `__frontmatter__` section covering its span."""
+    src = (
+        b"---\n"
+        b"title: Hello\n"
+        b"author: Someone\n"
+        b"---\n"
+        b"\n"
+        b"# Body\n"
+        b"\n"
+        b"text\n"
+    )
+    _, _, _, sections = extract(src, "fm.md")
+    fm = next((s for s in sections if s.heading == "__frontmatter__"), None)
+    assert fm is not None, "expected synthetic __frontmatter__ section"
+    assert fm.line == 1
+    # Closing `---` is on line 4; end_line must cover at least line 4 and not
+    # extend into the body.
+    assert fm.end_line is not None and fm.end_line >= 3
+    # Body H1 must still be extracted normally.
+    assert any(s.heading == "Body" for s in sections)
+
+
+def test_no_frontmatter_means_no_synthetic_section():
+    """Files without front-matter must not get a `__frontmatter__` section."""
+    src = b"# Title\n\nbody\n"
+    _, _, _, sections = extract(src, "no-fm.md")
+    assert not any(s.heading == "__frontmatter__" for s in sections)

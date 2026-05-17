@@ -48,10 +48,12 @@ def extract(source: bytes, rel_path: str) -> tuple[list[Symbol], list[Ref], list
       - ``liquid_render``  — ``{% render 'snippet' %}`` tag targets
 
     Sections:
-      - ``<h1>``–``<h4>`` HTML headings found inside the template become
+      - ``<h1>``–``<h6>`` HTML headings found inside the template become
         :class:`Section` entries (shared logic with ``html.py`` via
         ``common.extract_html_headings``).  ``end_line`` is computed by
-        ``common._compute_section_end_lines``.
+        ``common._compute_section_end_lines``.  Headings with ``id="..."``
+        attributes also produce an anchor-keyed section pointing at the same
+        span.
 
     Liquid tags are matched by regex, not by a Liquid parser, so ``{% raw %}``
     blocks or comment-escaped tags may produce false positives.  Refs are always
