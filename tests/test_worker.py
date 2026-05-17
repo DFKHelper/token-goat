@@ -1384,3 +1384,194 @@ def test_event_wait_used_when_stop_event_provided(tmp_data_dir, monkeypatch):
 
     assert len(wait_calls) >= 1, "stop_event.wait() was never called"
     assert wait_calls[0] == worker.POLL_INTERVAL
+
+
+# ---------------------------------------------------------------------------
+# Adaptive poll interval — back-off when the dirty queue is repeatedly empty
+# ---------------------------------------------------------------------------
+
+def test_adaptive_poll_interval_stays_baseline_under_threshold():
+    """First few empty drains must keep the baseline interval to preserve responsiveness."""
+    for n in range(worker.IDLE_BACKOFF_AFTER_EMPTY_DRAINS):
+        assert worker.adaptive_poll_interval(n) == worker.POLL_INTERVAL
+
+
+def test_adaptive_poll_interval_grows_after_threshold():
+    """Past the threshold, the interval must strictly increase with consecutive empty drains."""
+    threshold = worker.IDLE_BACKOFF_AFTER_EMPTY_DRAINS
+    first_backoff = worker.adaptive_poll_interval(threshold)
+    second_backoff = worker.adaptive_poll_interval(threshold + 1)
+    assert first_backoff > worker.POLL_INTERVAL
+    assert second_backoff > first_backoff
+
+
+def test_adaptive_poll_interval_caps_at_max():
+    """No matter how long the queue stays empty, the interval must never exceed POLL_INTERVAL_MAX."""
+    # A pathologically large counter must clamp at the documented cap.
+    capped = worker.adaptive_poll_interval(10_000)
+    assert capped == worker.POLL_INTERVAL_MAX
+    # And the cap must actually be larger than the baseline (sanity-check the constants).
+    assert worker.POLL_INTERVAL_MAX > worker.POLL_INTERVAL
+
+
+def test_run_daemon_backs_off_after_consecutive_empty_drains(tmp_data_dir, monkeypatch):
+    """After IDLE_BACKOFF_AFTER_EMPTY_DRAINS empty cycles, the wait interval must grow.
+
+    Regression test: an always-empty queue should pay a smaller fraction of wakeup cost
+    once the worker has been idle long enough that fresh edits are clearly not arriving.
+    """
+    wait_calls: list[float] = []
+    n_cycles = worker.IDLE_BACKOFF_AFTER_EMPTY_DRAINS + 3
+    stop_at = n_cycles
+
+    class _TrackingEvent(threading.Event):
+        def wait(self, timeout=None):  # type: ignore[override]
+            wait_calls.append(timeout or 0.0)
+            if len(wait_calls) >= stop_at:
+                self.set()  # signal stop after the back-off ramp is observable
+            return self.is_set()
+
+    stop = _TrackingEvent()
+    monkeypatch.setattr(worker, "spawn_detached", lambda: None)
+    monkeypatch.setattr(worker, "_try_claim_worker_slot", lambda: 99)
+    monkeypatch.setattr(worker, "_clear_pid", lambda: None)
+    monkeypatch.setattr(worker, "_write_pid", lambda: None)
+    monkeypatch.setattr(worker, "_heartbeat", lambda: None)
+    monkeypatch.setattr(worker, "_register_autostart", lambda: None)
+    monkeypatch.setattr(worker, "cleanup_on_startup", lambda: {})
+    monkeypatch.setattr(worker, "drain_dirty_queue", lambda: [])  # always empty
+    monkeypatch.setattr(worker, "_reindex_active_projects", lambda: None)
+    monkeypatch.setattr(worker, "_installed_version", lambda: None)
+    monkeypatch.setattr(worker, "_package_fingerprint", lambda: None)
+    monkeypatch.setattr(worker, "_BOOTED_VERSION", None)
+    monkeypatch.setattr(worker, "_BOOTED_FINGERPRINT", None)
+
+    from token_goat import worker_daemon
+    worker_daemon.run_daemon(stop_event=stop)
+
+    # The Nth wait call follows the Nth empty drain (counter has just been incremented),
+    # so wait_calls[i] is observed when consecutive_empty_drains == i + 1.
+    # Below the threshold (i + 1 < threshold) the interval must stay at the baseline.
+    threshold = worker.IDLE_BACKOFF_AFTER_EMPTY_DRAINS
+    for i in range(threshold - 1):
+        assert wait_calls[i] == worker.POLL_INTERVAL, (
+            f"call {i} (consecutive_empty={i + 1}) expected baseline "
+            f"{worker.POLL_INTERVAL}, got {wait_calls[i]}"
+        )
+    # The Nth empty drain (consecutive_empty == threshold) is the first cycle that backs off.
+    assert wait_calls[threshold - 1] > worker.POLL_INTERVAL, (
+        f"adaptive back-off should engage at call {threshold - 1} "
+        f"(consecutive_empty={threshold}), got {wait_calls[threshold - 1]}"
+    )
+
+
+def test_run_daemon_resets_backoff_after_work_appears(tmp_data_dir, monkeypatch):
+    """A drain that returns work must immediately drop the next wait back to the baseline.
+
+    Locks in the documented behavior: a quiet period followed by a single real edit must
+    not be slowed by stale back-off state from before the edit arrived.
+    """
+    wait_calls: list[float] = []
+    drain_results: list[list] = [
+        [],  # cycle 1: empty
+        [],  # cycle 2: empty
+        [],  # cycle 3: empty
+        [],  # cycle 4: empty
+        [],  # cycle 5: empty — back-off threshold reached
+        [],  # cycle 6: empty — back-off engaged here
+        [{"path": "x.py", "project_hash": "a" * 40, "ts": 0.0}],  # cycle 7: work! reset
+    ]
+    drain_idx = {"i": 0}
+
+    def fake_drain() -> list:
+        i = drain_idx["i"]
+        drain_idx["i"] += 1
+        if i < len(drain_results):
+            return drain_results[i]
+        return []  # exhausted — anything after counts as empty
+
+    class _TrackingEvent(threading.Event):
+        def wait(self, timeout=None):  # type: ignore[override]
+            wait_calls.append(timeout or 0.0)
+            if len(wait_calls) >= len(drain_results):
+                self.set()
+            return self.is_set()
+
+    stop = _TrackingEvent()
+    monkeypatch.setattr(worker, "spawn_detached", lambda: None)
+    monkeypatch.setattr(worker, "_try_claim_worker_slot", lambda: 99)
+    monkeypatch.setattr(worker, "_clear_pid", lambda: None)
+    monkeypatch.setattr(worker, "_write_pid", lambda: None)
+    monkeypatch.setattr(worker, "_heartbeat", lambda: None)
+    monkeypatch.setattr(worker, "_register_autostart", lambda: None)
+    monkeypatch.setattr(worker, "cleanup_on_startup", lambda: {})
+    monkeypatch.setattr(worker, "drain_dirty_queue", fake_drain)
+    # _process_dirty_entries would try to look up the project — short-circuit it.
+    monkeypatch.setattr(worker, "_process_dirty_entries", lambda _entries: None)
+    monkeypatch.setattr(worker, "_reindex_active_projects", lambda: None)
+    monkeypatch.setattr(worker, "_installed_version", lambda: None)
+    monkeypatch.setattr(worker, "_package_fingerprint", lambda: None)
+    monkeypatch.setattr(worker, "_BOOTED_VERSION", None)
+    monkeypatch.setattr(worker, "_BOOTED_FINGERPRINT", None)
+
+    from token_goat import worker_daemon
+    # worker_daemon imports _process_dirty_entries at module load via worker.<attr> access;
+    # patching worker._process_dirty_entries works because the daemon dereferences through
+    # the _worker alias each call.
+    worker_daemon.run_daemon(stop_event=stop)
+
+    # Cycle 6 (index 5) was the engaged-back-off wait. Cycle 7 returned work, so the
+    # wait recorded after cycle 7 (index 6) must be back at the baseline.
+    assert wait_calls[5] > worker.POLL_INTERVAL, (
+        f"expected back-off to be engaged on cycle 6, got {wait_calls[5]}"
+    )
+    assert wait_calls[6] == worker.POLL_INTERVAL, (
+        f"expected baseline after work cycle, got {wait_calls[6]} (all={wait_calls})"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Dirty-queue coalescing — multiple appends of the same file must dedupe to one reindex
+# ---------------------------------------------------------------------------
+
+def test_parse_and_group_entries_coalesces_duplicate_paths():
+    """Five appends of the same (project, path) collapse to one entry per (project, path).
+
+    Regression guard for the worker's de-duplication contract: a rapid burst of edits to
+    the same file must not produce N reindexes. The _ProjectBucket["rels"] set carries the
+    invariant; this test pins it so a refactor cannot accidentally swap the set for a list.
+    """
+    ph = "a" * 40
+    entries: list[worker.DirtyQueueEntry] = [
+        {  # type: ignore[typeddict-item]
+            "path": "src/foo.py",
+            "project_hash": ph,
+            "project_root": "C:/proj" if sys.platform == "win32" else "/proj",
+            "project_marker": "manual",
+            "ts": float(i),
+        }
+        for i in range(5)
+    ]
+    by_project = worker._parse_and_group_entries(entries)
+    assert ph in by_project
+    bucket = by_project[ph]
+    # Five queue lines, one unique rel-path — bucket must hold exactly one entry.
+    assert bucket["rels"] == {"src/foo.py"}
+    assert len(bucket["rels"]) == 1
+
+
+def test_parse_and_group_entries_coalesces_distinct_files_independently():
+    """Different files in the same project remain distinct after coalescing."""
+    ph = "b" * 40
+    entries: list[worker.DirtyQueueEntry] = []
+    root = "C:/proj" if sys.platform == "win32" else "/proj"
+    for path in ("src/a.py", "src/b.py", "src/a.py", "src/c.py", "src/b.py"):
+        entries.append({  # type: ignore[typeddict-item]
+            "path": path,
+            "project_hash": ph,
+            "project_root": root,
+            "project_marker": "manual",
+            "ts": 0.0,
+        })
+    by_project = worker._parse_and_group_entries(entries)
+    assert by_project[ph]["rels"] == {"src/a.py", "src/b.py", "src/c.py"}

@@ -155,6 +155,9 @@ def run_daemon(stop_event=None) -> None:
     last_maintenance = time.time()
     last_periodic_reindex = time.time()
     last_version_check = time.time()
+    # Tracks how many consecutive drain cycles produced zero entries. Drives the adaptive
+    # back-off in `_worker.adaptive_poll_interval` so a long-idle worker wakes less often.
+    consecutive_empty_drains = 0
     restart_for_upgrade = False
     _LOG.debug(
         "worker main loop initialized: heartbeat=%.1fs maintenance=%.1fs reindex=%.1fs",
@@ -183,6 +186,12 @@ def run_daemon(stop_event=None) -> None:
             if entries:
                 _LOG.debug("found %d dirty queue entries, processing", len(entries))
                 _process_dirty_entries(entries)
+                # Any real work resets the idle counter so the next poll runs at the
+                # baseline interval — a burst of edits should never be slowed by stale
+                # back-off state from a prior quiet stretch.
+                consecutive_empty_drains = 0
+            else:
+                consecutive_empty_drains += 1
 
             if now - last_maintenance >= _worker.MAINTENANCE_INTERVAL:
                 _run_maintenance_cycle()
@@ -198,10 +207,11 @@ def run_daemon(stop_event=None) -> None:
                     break
                 last_version_check = now
 
+            sleep_for = _worker.adaptive_poll_interval(consecutive_empty_drains)
             if stop_event is not None:
-                stop_event.wait(timeout=_worker.POLL_INTERVAL)
+                stop_event.wait(timeout=sleep_for)
             else:
-                time.sleep(_worker.POLL_INTERVAL)
+                time.sleep(sleep_for)
     finally:
         _LOG.info("worker shutting down, pid=%s", os.getpid())
         _worker._clear_pid()
