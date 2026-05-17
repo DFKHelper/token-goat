@@ -432,10 +432,14 @@ class TestImageShrinkCacheHit:
             if candidate.exists():
                 candidate.unlink()
 
+        import builtins  # noqa: PLC0415
+
+        real_import = builtins.__import__
+
         def fake_import(name, *args, **kwargs):
             if name == "PIL" or (isinstance(name, str) and name.startswith("PIL")):
                 raise ImportError("PIL not installed")
-            return __import__(name, *args, **kwargs)
+            return real_import(name, *args, **kwargs)
 
         with patch("builtins.__import__", side_effect=fake_import):
             result = shrink(src)
