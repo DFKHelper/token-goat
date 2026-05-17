@@ -13,8 +13,6 @@ from pathlib import Path
 from typing import TYPE_CHECKING, cast, get_args
 
 if TYPE_CHECKING:
-    from typing import Any
-
     from .project import Project
 
 # Force UTF-8 on stdout/stderr (Windows defaults to cp1252 which can't encode
@@ -1056,10 +1054,12 @@ def config_list(
     current = config_mod.load()
 
     # Flatten a dataclass to dotted-key -> value pairs
-    def _flatten(obj: Any, prefix: str = "") -> list[tuple[str, object]]:
+    def _flatten(obj: object, prefix: str = "") -> list[tuple[str, object]]:
         """Recursively expand a dataclass into ``(dotted_key, value)`` pairs."""
         from dataclasses import fields as _fields  # noqa: PLC0415
         pairs: list[tuple[str, object]] = []
+        if not is_dataclass(obj) or isinstance(obj, type):
+            return pairs
         for f in _fields(obj):
             key = f"{prefix}{f.name}" if not prefix else f"{prefix}.{f.name}"
             val = getattr(obj, f.name)
