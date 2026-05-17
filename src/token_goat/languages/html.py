@@ -17,12 +17,14 @@ _CLASS_RE = re.compile(r'class=["\']([^"\']+)["\']', re.IGNORECASE)
 _LINK_RE = re.compile(r'<link[^>]*href=["\']([^"\']+)["\']', re.IGNORECASE)
 _SCRIPT_RE = re.compile(r'<script[^>]*src=["\']([^"\']+)["\']', re.IGNORECASE)
 
-# Common HTML classes/ids to skip (noise filter)
-_NOISE_IDS_CLASSES = {
+# Common HTML classes/ids to skip (noise filter).
+# frozenset: immutable (documents intent) and avoids accidental mutation; lookup
+# cost is identical to set but construction communicates "this is a constant".
+_NOISE_IDS_CLASSES = frozenset({
     "a", "b", "c", "d", "e", "f", "g", "h", "i", "j", "k", "l", "m", "n", "o", "p",
     "container", "wrapper", "row", "col", "main", "content", "header", "footer",
     "nav", "navbar", "menu", "button", "link", "text", "box", "section", "page",
-}
+})
 
 
 def _is_noise(name: str) -> bool:
