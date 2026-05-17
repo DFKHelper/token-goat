@@ -15,7 +15,7 @@ import sqlite3
 from unittest.mock import patch
 
 import token_goat.db as db_module
-from token_goat.hooks_cli import _sanitize_log_str
+from token_goat.hooks_common import sanitize_log_str as _sanitize_log_str
 from token_goat.parser import _KNOWN_EXTENSIONS, LANG_BY_EXT, iter_source_files
 from token_goat.project import Project
 from token_goat.read_replacement import _extract_snippet, _pick_best_match
