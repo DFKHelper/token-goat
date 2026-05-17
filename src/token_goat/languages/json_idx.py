@@ -2,9 +2,12 @@
 from __future__ import annotations
 
 import json
+import logging
 import re
 
 from ..parser import ImpExp, Ref, Section, Symbol
+
+_LOG = logging.getLogger("token_goat.languages.json_idx")
 
 # Minimum file size to index JSON (50 KB)
 _MIN_JSON_SIZE = 50_000
@@ -69,8 +72,8 @@ def extract(source: bytes, rel_path: str) -> tuple[list[Symbol], list[Ref], list
                 )
             )
         return symbols, [], [], []
-    except (json.JSONDecodeError, ValueError):
-        pass
+    except (json.JSONDecodeError, ValueError) as exc:
+        _LOG.debug("json_idx: full parse failed for %s, falling back to regex: %s", rel_path, exc)
 
     # Fallback: regex extraction of top-level keys (for large/malformed JSON)
     for match in _TOP_LEVEL_KEY_RE.finditer(text):
@@ -89,5 +92,6 @@ def _safe_repr(obj: object, max_len: int = 100) -> str:
         if len(s) > max_len:
             s = s[:max_len] + "..."
         return s
-    except Exception:  # noqa: BLE001
+    except Exception as exc:  # noqa: BLE001
+        _LOG.debug("_safe_repr: json.dumps failed for %s: %s", type(obj).__name__, exc)
         return str(type(obj).__name__)

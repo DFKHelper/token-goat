@@ -342,7 +342,13 @@ def _resolve_file_rel_db(project: Project, file_part: str) -> str | None:
                 if row:
                     return row["rel_path"]
             except ValueError:
-                pass  # path is not under this project root — expected control flow
+                # path is not under this project root — expected control flow when
+                # an absolute path from a different drive/mount is passed in
+                _LOG.debug(
+                    "_resolve_file_rel_db: absolute path %s is not under project root %s",
+                    file_part,
+                    project.root,
+                )
             except OSError as e:
                 _LOG.debug("resolve_file_rel: could not resolve absolute path %s: %s", file_part, e)
 
