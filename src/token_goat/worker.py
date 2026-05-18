@@ -1176,12 +1176,12 @@ def ensure_running() -> int | None:
                   Spawning a duplicate would just lose the claim race and exit,
                   and clearing its pid file would orphan a working daemon.
 
-    Under CI (``TOKEN_GOAT_NO_WORKER_SPAWN=1``) the spawn step is skipped
-    entirely.  GitHub Actions on Windows wraps each step in a Win32 job
-    object that tracks every descendant — a detached worker daemon's
-    infinite loop keeps the step alive until the global six-hour timeout
-    fires.  The opt-out env var lets hook-level tests still exercise the
-    watchdog code path without leaving a daemon behind.
+    Under CI (``TOKEN_GOAT_NO_WORKER_SPAWN=1``) the spawn inside
+    :func:`spawn_detached` is suppressed so a detached daemon's infinite
+    loop cannot hold the GitHub Actions Windows step open until the
+    global six-hour timeout fires — see ``spawn_detached`` for the env
+    var details.  The watchdog path itself still runs end-to-end so the
+    rest of the state machine remains testable.
     """
     if is_worker_alive():
         try:
@@ -1197,18 +1197,6 @@ def ensure_running() -> int | None:
         busy_pid = _live_worker_pid()
         if busy_pid is not None:
             return busy_pid
-
-    # CI opt-out: short-circuit before spawning so a test that exercises
-    # the watchdog path does not leave a detached daemon attached to the
-    # action runner.  The env var is read each call rather than cached so
-    # individual tests can set/unset it via ``monkeypatch.setenv``.
-    if os.environ.get("TOKEN_GOAT_NO_WORKER_SPAWN", "").strip().lower() in (
-        "1", "true", "yes", "on",
-    ):
-        _LOG.debug(
-            "ensure_running: spawn suppressed by TOKEN_GOAT_NO_WORKER_SPAWN env var",
-        )
-        return None
 
     # Either nothing was running, or we just reaped a hung worker. Clear stale
     # pid/claim state so the fresh worker can take the slot cleanly.

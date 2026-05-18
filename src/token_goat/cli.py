@@ -1481,7 +1481,22 @@ def cmd_image_shrink(
 def cmd_worker(
     daemon: bool = typer.Option(False, "--daemon", help="Run as background daemon (otherwise interactive)"),
 ) -> None:
-    """Internal: background worker daemon. Should be invoked by the SessionStart watchdog, not directly."""
+    """Internal: background worker daemon. Should be invoked by the SessionStart watchdog, not directly.
+
+    Under CI (``TOKEN_GOAT_NO_WORKER_SPAWN=1`` in the environment) this
+    entry point exits immediately without invoking ``run_daemon``.  The
+    env var is inherited by the spawned child via ``subprocess.Popen``'s
+    default env-passing behaviour, so a daemon launched from a test
+    suite (or any CI step that sets the var) terminates cleanly instead
+    of holding the GitHub Actions Windows step open until the six-hour
+    timeout fires.  Direct unit tests of ``worker_daemon.run_daemon``
+    do not go through this entry point, so they remain unaffected.
+    """
+    if os.environ.get("TOKEN_GOAT_NO_WORKER_SPAWN", "").strip().lower() in (
+        "1", "true", "yes", "on",
+    ):
+        return
+
     from . import worker_daemon  # noqa: PLC0415
 
     worker_daemon.run_daemon()
