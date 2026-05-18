@@ -20,6 +20,10 @@
   <img src="https://img.shields.io/badge/requires-uv-6340ac" alt="requires uv">
 </p>
 
+<p align="center">
+  Give us a ⭐️ GitHub star ⭐️ on the top of this page to support what we're doing — it means a lot for open source projects!
+</p>
+
 ---
 
 <p align="center">
