@@ -31,35 +31,36 @@ jobs:
         # exception in the log without needing to download artefacts.
         # ``--tb=short`` keeps each entry compact (one line per frame) so
         # the summary stays readable even when several tests fail at once.
-        # Output is redirected to a file via direct shell redirection (no
-        # tee) because ``tee`` over a pipe on the Windows runner deadlocks
-        # intermittently — the shorter redirection chain is reliable on
-        # both platforms.
-        shell: bash
-        run: uv run pytest -rfE --tb=short > pytest.log 2>&1
-
-      - name: Show pytest output
-        if: always()
-        shell: bash
-        run: cat pytest.log || true
+        # ``Tee-Object`` captures the stream while still surfacing it in
+        # the live log; PowerShell is the default Windows shell here so
+        # no ``shell:`` override is needed (the bash + tee combination
+        # deadlocked intermittently on git-bash for Windows).
+        run: |
+          uv run pytest -rfE --tb=short 2>&1 | Tee-Object -FilePath pytest.log
+          exit $LASTEXITCODE
 
       - name: Surface failure summary to PR
         if: failure() && github.event_name == 'pull_request'
-        shell: bash
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        # Trim to the last 80 lines so a multi-failure run still fits in
+        # one PR comment (GitHub's per-comment cap is 65 KB).
         run: |
-          # Trim to the last 80 lines so a multi-failure run still fits in
-          # one PR comment (GitHub's per-comment cap is 65 KB).
-          {
-            echo "### CI test failure (windows-2022 / Python 3.13)"
-            echo ""
-            echo "Commit: ${{ github.sha }}"
-            echo ""
-            echo "Last 80 lines of pytest output:"
-            echo ""
-            echo '```'
-            tail -n 80 pytest.log || true
-            echo '```'
-          } > comment.md
-          gh pr comment "${{ github.event.pull_request.number }}" --body-file comment.md || true
+          $tail = Get-Content pytest.log -Tail 80 | Out-String
+          $body = @"
+### CI test failure (windows-2022 / Python 3.13)
+
+Commit: ${{ github.sha }}
+
+Last 80 lines of pytest output:
+
+``````
+$tail
+``````
+"@
+          $body | Out-File -FilePath comment.md -Encoding utf8
+          gh pr comment "${{ github.event.pull_request.number }}" --body-file comment.md
+          if ($LASTEXITCODE -ne 0) {
+              Write-Host "::warning::Could not post PR comment (push event with no PR?)"
+              exit 0
+          }
