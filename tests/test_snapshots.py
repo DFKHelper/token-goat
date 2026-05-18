@@ -33,13 +33,35 @@ class TestSnapshotStore:
         assert snapshots.load("sess4", "/tmp/a.py") is None
 
     def test_eviction_keeps_per_session_under_cap(self, tmp_data_dir, monkeypatch):
-        """When more than MAX_SNAPSHOTS_PER_SESSION are stored, oldest go first."""
+        """When more than MAX_SNAPSHOTS_PER_SESSION are stored, oldest go first.
+
+        We set explicit mtimes via ``os.utime`` after each store because on
+        Windows the system clock and the NTFS mtime cache can yield identical
+        timestamps for files written within ~10 ms of each other, which makes
+        a naive "oldest first" assertion flaky.  Forcing a known mtime
+        sequence gives the eviction loop a deterministic ordering.
+        """
+        import os as _os
+        import time as _time
+
         monkeypatch.setattr(snapshots, "MAX_SNAPSHOTS_PER_SESSION", 3)
+        base_ts = _time.time() - 100  # well in the past, ascending order
+        stored: list = []
         for i in range(5):
-            snapshots.store("sess5", f"/tmp/f{i}.py", f"v{i}".encode())
-        # The first two snapshots should have been evicted by the time we've
-        # stored five with a cap of three.
+            result = snapshots.store("sess5", f"/tmp/f{i}.py", f"v{i}".encode())
+            assert result is not None
+            # Stamp each snapshot with a distinct, strictly-ascending mtime so
+            # the in-store eviction triggered by the *next* store has an
+            # unambiguous oldest candidate.  We stamp *before* the next call
+            # so that call's _evict_oldest sees the right age ordering.
+            _os.utime(result.path, (base_ts + i, base_ts + i))
+            stored.append(result.path)
+        # After 5 stores with cap=3 (eviction trigger at MAX-1=2 before each
+        # write), exactly two of the oldest entries are evicted.  f4 must
+        # always survive (it was the most recent insertion); the other two
+        # survivors are the two most-recently-inserted before f4.
         assert snapshots.load("sess5", "/tmp/f0.py") is None
+        assert snapshots.load("sess5", "/tmp/f1.py") is None
         assert snapshots.load("sess5", "/tmp/f4.py") == b"v4"
 
 
@@ -92,16 +114,27 @@ class TestDiffHint:
 
 class TestPostReadSnapshots:
     def test_post_read_captures_snapshot(self, tmp_data_dir, tmp_path):
-        """post_read writes a snapshot of the read file's bytes."""
+        """post_read writes a snapshot of the read file's bytes.
+
+        Uses ``write_bytes`` rather than ``write_text`` so the on-disk content
+        is exact and platform-independent — ``write_text`` on Windows expands
+        ``\\n`` to ``\\r\\n`` which would break a byte-equality assertion that
+        passes on Linux.
+        """
         src = tmp_path / "small.py"
-        src.write_text("def x(): pass\n", encoding="utf-8")
+        src.write_bytes(b"def x(): pass\n")
         payload = {
             "session_id": "post-read-snap-1",
             "tool_name": "Read",
             "tool_input": {"file_path": str(src)},
         }
         _assert_continue(hooks_read.post_read(payload))
-        assert snapshots.load("post-read-snap-1", str(src)) == b"def x(): pass\n"
+        # Compare against the exact disk bytes so the test is invariant to any
+        # newline translation that the harness might apply.  The snapshot is
+        # read straight from a binary file open and stored verbatim, so it
+        # must match the source byte-for-byte regardless of platform.
+        expected = src.read_bytes()
+        assert snapshots.load("post-read-snap-1", str(src)) == expected
         # Session also records the snapshot SHA so a future hook can short-circuit.
         sha = session.get_snapshot_sha("post-read-snap-1", str(src))
         assert sha and len(sha) == 64
