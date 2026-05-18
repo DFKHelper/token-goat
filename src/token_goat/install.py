@@ -780,7 +780,13 @@ def _hooks_block(binary: str | None = None) -> dict[str, list[_HookMatcherEntry]
         ],
         "PreToolUse": [
             {
-                "matcher": "Read",
+                # ``Bash`` is included so token-goat can rewrite noisy commands
+                # (pytest, npm install, docker build, ...) to flow through
+                # ``token-goat compress``, which captures stdout/stderr and
+                # emits a per-tool compressed view that strips progress bars,
+                # dedupes warnings, and surfaces failures first.  Disabled by
+                # setting TOKEN_GOAT_BASH_COMPRESS=0.
+                "matcher": "Read|Bash",
                 "hooks": [
                     {
                         "type": "command",
