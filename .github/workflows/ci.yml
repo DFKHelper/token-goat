@@ -25,45 +25,15 @@ jobs:
       - run: uv python install 3.13
       - run: uv sync --all-extras
       - name: Test
-        id: test
         # ``-rfE`` prints short tracebacks for failures and errors at the
         # end of the run so a CI failure surfaces the actual assertion or
         # exception in the log without needing to download artefacts.
         # ``--tb=short`` keeps each entry compact (one line per frame) so
         # the summary stays readable even when several tests fail at once.
-        # ``Tee-Object`` captures the stream while still surfacing it in
-        # the live log; PowerShell is the default Windows shell here so
-        # no ``shell:`` override is needed (the bash + tee combination
-        # deadlocked intermittently on git-bash for Windows).
-        run: |
-          uv run pytest -rfE --tb=short 2>&1 | Tee-Object -FilePath pytest.log
-          exit $LASTEXITCODE
-
-      - name: Surface failure summary to PR
-        if: failure() && github.event_name == 'pull_request'
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        # Trim to the last 80 lines so a multi-failure run still fits in
-        # one PR comment (GitHub's per-comment cap is 65 KB).  Comment
-        # body assembled with line-by-line ``Add-Content`` to keep the
-        # script readable inside the YAML literal block and avoid a
-        # PowerShell here-string whose interior indentation would
-        # collide with the YAML block-scalar indent.
-        run: |
-          $fence = '```'
-          $sha = '${{ github.sha }}'
-          New-Item -ItemType File -Path comment.md -Force | Out-Null
-          Add-Content comment.md "### CI test failure (windows-2022 / Python 3.13)"
-          Add-Content comment.md ""
-          Add-Content comment.md "Commit: $sha"
-          Add-Content comment.md ""
-          Add-Content comment.md "Last 80 lines of pytest output:"
-          Add-Content comment.md ""
-          Add-Content comment.md $fence
-          Get-Content pytest.log -Tail 80 | Add-Content comment.md
-          Add-Content comment.md $fence
-          gh pr comment "${{ github.event.pull_request.number }}" --body-file comment.md
-          if ($LASTEXITCODE -ne 0) {
-              Write-Host "::warning::Could not post PR comment (push event with no PR?)"
-              exit 0
-          }
+        # No output redirection or pipe — earlier attempts to capture
+        # stdout via ``tee`` (git-bash) and ``Tee-Object`` (PowerShell)
+        # both deadlocked on the Windows runner.  pytest's own output
+        # lands directly in the action log; failure tracebacks are
+        # surfaced via ``-rfE`` so the in-line log already contains the
+        # actionable detail without needing artefact downloads.
+        run: uv run pytest -rfE --tb=short
