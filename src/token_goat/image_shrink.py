@@ -33,6 +33,7 @@ __all__ = [
 ]
 
 import contextlib
+import functools
 import hashlib
 import logging
 import os
@@ -200,12 +201,16 @@ def _lossy_format() -> str:
     return _DEFAULT_LOSSY_FORMAT
 
 
+@functools.lru_cache(maxsize=256)
 def vision_tokens(width: int, height: int) -> int:
     """Approximate Claude vision token cost for an image of given dimensions.
 
     Claude resizes images to fit within CLAUDE_MAX_VISION_EDGE_PX on the long
     edge before tokenizing. Token cost ≈ (effective_width × effective_height) /
     CLAUDE_VISION_PIXELS_PER_TOKEN.
+
+    Cached with maxsize=256: repeated dimension lookups within a session
+    (common for identical screenshots or documents) skip recalculation.
     """
     if width <= 0 or height <= 0:
         return 0
@@ -335,10 +340,16 @@ def shrink(src_path: Path) -> Path | None:
 
     stem = _cache_path_for(src_path)  # e.g. .../abc123.shrunk
     # Check for already-cached variants in any supported output format.  The
-    # order is "modern first" so a WebP cache hit short-circuits before we even
-    # consider JPEG — a directory that has both (from a previous format
-    # switchover) will prefer the smaller modern artifact.
-    for suffix in (".webp", ".jpg", ".png"):
+    # order respects the active lossy format preference (WebP or JPEG), falling
+    # back to PNG for screenshots/text.  This ensures format switches via
+    # TOKEN_GOAT_IMAGE_FORMAT env var correctly probe the preferred variant first.
+    lossy_fmt = _lossy_format()
+    lossy_suffix = f".{lossy_fmt}" if lossy_fmt != "jpeg" else ".jpg"
+    suffixes = [lossy_suffix, ".png"]
+    if lossy_suffix != ".webp":
+        suffixes.insert(1, ".webp")  # Check modern format as fallback
+
+    for suffix in suffixes:
         candidate = stem.with_suffix(suffix)
         if candidate.exists():
             elapsed = time.time() - t0
@@ -468,12 +479,17 @@ def shrink_if_image(path: Path) -> Path:
     Centralises the "maybe shrink" pattern used by both gdrive.py and
     webfetch.py so neither module needs to repeat the is_image_path guard.
 
+    Uses should_shrink() for fast pre-check before calling shrink(), avoiding
+    PIL overhead on small images or non-image files.
+
     Raises ``TypeError`` if *path* is None so callers get a meaningful message
     instead of an ``AttributeError`` deep inside ``is_image_path``.
     """
     if path is None:
         raise TypeError("shrink_if_image: path must not be None")
-    if is_image_path(path):
+    # Fast pre-check: should_shrink() does extension + size check without PIL.
+    # This avoids calling shrink() on small files or non-image types.
+    if should_shrink(path):
         shrunken = shrink(path)
         if shrunken is not None:
             return shrunken

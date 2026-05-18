@@ -173,6 +173,7 @@ class TestFetchFile:
             build_p,
             dl_p,
             patch.object(gdrive.image_shrink, "is_image_path", return_value=True),
+            patch.object(gdrive.image_shrink, "should_shrink", return_value=True),
             patch.object(gdrive.image_shrink, "shrink", return_value=shrunken_path) as mock_shrink,
         ):
             result = gdrive.fetch_file("fake_id")
