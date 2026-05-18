@@ -203,6 +203,38 @@ class TestActivityMarkers:
         assert "Legend:" in result
 
 
+class TestFormatRanges:
+    """_format_ranges must suppress whole-file sentinel ranges."""
+
+    def test_sentinel_range_returns_empty(self):
+        # (1, 100000) is the sentinel stored for a full-file read with no limit.
+        # It must not leak into manifest output as "lines 1-100000".
+        from token_goat import session as session_mod
+        sentinel_end = 1 + session_mod._UNKNOWN_END_SENTINEL
+        result = compact._format_ranges([(1, sentinel_end)])
+        assert result == "", f"sentinel range should be suppressed, got: {result!r}"
+
+    def test_partial_ranges_still_shown(self):
+        result = compact._format_ranges([(10, 50)])
+        assert "10-50" in result
+
+    def test_mixed_sentinel_and_partial_shows_only_partial(self):
+        from token_goat import session as session_mod
+        sentinel_end = 1 + session_mod._UNKNOWN_END_SENTINEL
+        result = compact._format_ranges([(1, sentinel_end), (200, 300)])
+        assert "200-300" in result
+        assert "100000" not in result
+
+    def test_build_manifest_no_sentinel_leak(self, tmp_data_dir):
+        # End-to-end: a full-file read (no offset/limit) must not show "100000"
+        # in the rendered manifest.
+        sid = "sentinel-e2e-session-abc"
+        session.mark_file_read(sid, "/proj/src/big.py")
+        result = compact.build_manifest(sid)
+        assert "big.py" in result
+        assert "100000" not in result, f"sentinel leaked into manifest:\n{result}"
+
+
 class TestDedupAcrossSections:
     """A file edited this session should not be re-listed under Key Files Read."""
 

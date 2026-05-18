@@ -184,7 +184,8 @@ export const server = async (pluginInput: { directory: string }) => {
         if (input.args[ccKey] !== undefined) toolInput[tgKey] = input.args[ccKey];
       }
 
-      callHook(tgTool === "Edit" ? "post-edit" : "post-read", {
+      const postEvent = tgTool === "Edit" ? "post-edit" : tgTool === "Bash" ? "post-bash" : tgTool === "WebFetch" ? "post-fetch" : "post-read";
+      callHook(postEvent, {
         session_id: input.sessionID,
         tool_name: tgTool,
         tool_input: toolInput,
@@ -227,8 +228,8 @@ const POST_HOOK: Record<string, string> = {
   Read: "post-read",
   Grep: "post-read",
   Glob: "post-read",
-  Bash: "post-read",
-  WebFetch: "post-read",
+  Bash: "post-bash",
+  WebFetch: "post-fetch",
   Edit: "post-edit",
   Write: "post-edit",
 };

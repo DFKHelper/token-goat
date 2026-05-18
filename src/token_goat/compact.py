@@ -56,6 +56,11 @@ _MAX_BASH_ENTRIES: Final[int] = 6
 # tokens that would not be paid back even if the agent acted on the hint.
 _MIN_BASH_BYTES_FOR_MANIFEST: Final[int] = 400
 
+# Sentinel gap used by session.mark_file_read() when no line limit is specified.
+# A range whose (end - start) equals this value represents "whole file read, extent
+# unknown" — _format_ranges() suppresses these rather than printing "lines 1-100000".
+_FULL_READ_SENTINEL_GAP: Final[int] = session_mod._UNKNOWN_END_SENTINEL
+
 # Hard ceiling on the max_tokens parameter accepted by build_manifest.
 # The config layer sets a sensible default (400) but build_manifest is also part of
 # the public API.  Without a cap, a caller could pass an arbitrarily large value,
@@ -202,7 +207,10 @@ def _format_ranges(ranges: list[tuple[int, int]]) -> str:
     for entry in ranges:
         try:
             start, end = entry
-            valid.append((int(start), int(end)))
+            start, end = int(start), int(end)
+            if end - start >= _FULL_READ_SENTINEL_GAP:
+                continue  # whole-file sentinel — no specific range to report
+            valid.append((start, end))
         except (TypeError, ValueError):
             _LOG.debug("_format_ranges: skipping malformed range entry: %r", entry)
     if not valid:

@@ -89,6 +89,24 @@ class TestPluginTsSources:
         # TS object keys are unquoted: `Write: "post-edit",`
         assert 'Write: "post-edit"' in bridges.OPENCLAW_PLUGIN_TS
 
+    def test_opencode_ts_bash_routes_to_post_bash(self) -> None:
+        # Bash output caching requires post-bash, not post-read.
+        # The ternary must route Bash before the final "post-read" fallback.
+        assert "post-bash" in bridges.OPENCODE_PLUGIN_TS
+        assert '"Bash" ? "post-bash"' in bridges.OPENCODE_PLUGIN_TS
+
+    def test_opencode_ts_webfetch_routes_to_post_fetch(self) -> None:
+        # Web-fetch caching requires post-fetch, not post-read.
+        assert '"WebFetch" ? "post-fetch"' in bridges.OPENCODE_PLUGIN_TS
+
+    def test_openclaw_ts_bash_routes_to_post_bash(self) -> None:
+        # Bash output caching requires post-bash, not post-read.
+        assert 'Bash: "post-bash"' in bridges.OPENCLAW_PLUGIN_TS
+
+    def test_openclaw_ts_webfetch_routes_to_post_fetch(self) -> None:
+        # Web-fetch caching requires post-fetch, not post-read.
+        assert 'WebFetch: "post-fetch"' in bridges.OPENCLAW_PLUGIN_TS
+
 
 # ---------------------------------------------------------------------------
 # Path helpers
