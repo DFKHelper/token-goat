@@ -17,7 +17,9 @@ __all__ = [
     "ReadHint",
     "build_bash_dedup_hint",
     "build_diff_hint",
+    "build_grep_dedup_hint",
     "build_read_hint",
+    "build_web_dedup_hint",
 ]
 
 _LOG = logging.getLogger("token_goat.hints")
@@ -781,6 +783,206 @@ def _build_bash_dedup_hint_inner(
         f"`token-goat bash-output {entry.output_id}` returns the cached result — "
         f"add `--tail 50` or `--grep PATTERN` to slice it. "
         f"Command: `{cmd_short}`.",
+        tokens_avoided,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Grep dedup hint
+# ---------------------------------------------------------------------------
+
+# Minimum result_count before a Grep re-run is worth deduplicating.  A pattern
+# that matched 5 lines twice is fine — the response cost is trivial in either
+# direction.  Above this threshold the dedup hint pays for itself by avoiding
+# the embedded result body in the second response.
+_GREP_DEDUP_MIN_RESULT_COUNT: int = 50
+
+# Rough bytes-per-Grep-result estimate.  A real grep result line is one line of
+# match + path + line-number context, typically 80-160 bytes.  120 is a
+# reasonable mid-point used solely for the tokens-avoided estimate that the
+# hint quotes back to the agent.
+_GREP_AVG_BYTES_PER_RESULT: int = 120
+
+
+def build_grep_dedup_hint(
+    *,
+    session_id: str,
+    pattern: str,
+    path: str | None,
+    cache: session.SessionCache | None = None,
+) -> ReadHint | None:
+    """Return a hint when the same Grep pattern was just run in this session.
+
+    Mirrors :func:`build_bash_dedup_hint` for the Grep tool surface: a repeat
+    invocation with the same ``(pattern, path)`` pair within
+    :data:`STALE_READ_AGE_SECONDS` produces a "this just ran, reuse the
+    prior response" advisory.  The hint quotes the previous result count so
+    the agent knows whether the re-run is materially different from the
+    prior one.
+
+    Returns ``None`` (no hint) when:
+
+    * no session_id is provided
+    * no prior Grep with the same pattern has been recorded
+    * the previous result was too small to be worth deduplicating
+      (:data:`_GREP_DEDUP_MIN_RESULT_COUNT` matches)
+    * the previous run is older than :data:`STALE_READ_AGE_SECONDS`
+
+    Never raises; any unexpected exception is caught and the hint is
+    suppressed (the pre-Grep path must stay fail-soft).
+    """
+    try:
+        return _build_grep_dedup_hint_inner(
+            session_id=session_id, pattern=pattern, path=path, cache=cache,
+        )
+    except Exception as exc:  # noqa: BLE001 — fail-soft for the hot pre-read path
+        _LOG.warning(
+            "build_grep_dedup_hint: unexpected error (session=%s): %s",
+            (session_id or "")[:16], exc, exc_info=True,
+        )
+        return None
+
+
+def _build_grep_dedup_hint_inner(
+    *,
+    session_id: str,
+    pattern: str,
+    path: str | None,
+    cache: session.SessionCache | None,
+) -> ReadHint | None:
+    """Inner implementation of :func:`build_grep_dedup_hint`; may raise.
+
+    Walks the session ``greps`` list in reverse-chronological order looking
+    for a prior entry with the same ``(pattern, path)`` pair.  The list is
+    typically short (well under 100 entries even in long sessions); a linear
+    scan in reverse is cheap and avoids the cost of indexing by pattern up
+    front, which would not pay back for the common case of distinct patterns.
+    """
+    if not session_id or not pattern:
+        return None
+    if cache is None:
+        cache = session.load(session_id)
+    if cache.unavailable or not cache.greps:
+        return None
+
+    now = time.time()
+    for entry in reversed(cache.greps):
+        if entry.pattern != pattern:
+            continue
+        if entry.path != path:
+            continue
+        age = now - entry.ts
+        if age > STALE_READ_AGE_SECONDS:
+            # Older entries are even older — short-circuit the scan.
+            return None
+        if entry.result_count is None or entry.result_count < _GREP_DEDUP_MIN_RESULT_COUNT:
+            return None
+        # Estimate the bytes that would land in context if the agent re-runs.
+        bytes_avoided = entry.result_count * _GREP_AVG_BYTES_PER_RESULT
+        tokens_avoided = _est_tokens_from_chars(bytes_avoided)
+        pattern_short = _sanitize_hint_path(pattern)
+        path_str = f" in `{_sanitize_hint_path(path)}`" if path else ""
+        return ReadHint(
+            f"Note: Grep for `{pattern_short}`{path_str} ran ~{int(age)}s ago "
+            f"in this session and matched {entry.result_count} line(s). "
+            f"Re-running adds ~{tokens_avoided} tokens. "
+            f"If the prior result is still in your context, reuse it; "
+            f"otherwise narrow the pattern or add `path=` to scope it.",
+            tokens_avoided,
+        )
+    return None
+
+
+# ---------------------------------------------------------------------------
+# WebFetch dedup hint
+# ---------------------------------------------------------------------------
+
+# Minimum response body size (bytes) before a WebFetch re-run is worth
+# deduplicating.  Pages under this threshold are cheap to re-fetch and the
+# hint preamble would approach the saving.  1 KB matches the typical
+# "interesting" threshold for HTML/JSON responses.
+_WEB_DEDUP_MIN_BYTES: int = 1024
+
+
+def build_web_dedup_hint(
+    *,
+    session_id: str,
+    url: str,
+    cache: session.SessionCache | None = None,
+) -> ReadHint | None:
+    """Return a hint when *url* was fetched earlier in this session.
+
+    The pre-WebFetch hook calls this before fetching.  When the same URL has
+    been fetched before and its body cached on disk, we suggest the agent
+    retrieve the cached body via ``token-goat web-output`` instead of
+    re-fetching — avoiding the network round-trip and the duplicated bytes
+    in the conversation.
+
+    Returns ``None`` (no hint) when:
+
+    * no session_id or url is provided
+    * the URL has never been recorded
+    * the previous body was too small to be worth deduplicating
+    * the previous fetch is older than :data:`STALE_READ_AGE_SECONDS`
+      (above that window the page content is likely to have changed and a
+      re-fetch is legitimate)
+    """
+    try:
+        return _build_web_dedup_hint_inner(
+            session_id=session_id, url=url, cache=cache,
+        )
+    except Exception as exc:  # noqa: BLE001 — fail-soft for the hot pre-fetch path
+        _LOG.warning(
+            "build_web_dedup_hint: unexpected error (session=%s): %s",
+            (session_id or "")[:16], exc, exc_info=True,
+        )
+        return None
+
+
+def _build_web_dedup_hint_inner(
+    *,
+    session_id: str,
+    url: str,
+    cache: session.SessionCache | None,
+) -> ReadHint | None:
+    """Inner implementation; may raise.
+
+    Imported lazily so the hot path does not pay the web_cache import cost
+    on every WebFetch invocation — web_cache is only needed when we are
+    actually about to dispatch a dedup.
+    """
+    if not session_id or not url:
+        return None
+
+    from . import web_cache  # noqa: PLC0415
+
+    url_sha = web_cache.url_hash(url)
+    entry = session.lookup_web_entry(session_id, url_sha, cache=cache)
+    if entry is None:
+        return None
+
+    age = time.time() - entry.ts
+    if age > STALE_READ_AGE_SECONDS:
+        _LOG.debug(
+            "build_web_dedup_hint: prior fetch stale (age=%.0fs > %ds); suppressing",
+            age, STALE_READ_AGE_SECONDS,
+        )
+        return None
+    if entry.body_bytes < _WEB_DEDUP_MIN_BYTES:
+        return None
+
+    tokens_avoided = _est_tokens_from_chars(entry.body_bytes)
+    url_short = _sanitize_hint_path(url)
+    status_str = (
+        f", status={entry.status_code}" if entry.status_code is not None else ""
+    )
+    return ReadHint(
+        f"Note: this URL was fetched ~{int(age)}s ago in this session "
+        f"({entry.body_bytes:,} bytes of body{status_str}). "
+        f"Re-fetching adds ~{tokens_avoided} tokens. "
+        f"`token-goat web-output {entry.output_id}` returns the cached body — "
+        f"add `--head 50`, `--tail 50`, or `--grep PATTERN` to slice it. "
+        f"URL: `{url_short}`.",
         tokens_avoided,
     )
 

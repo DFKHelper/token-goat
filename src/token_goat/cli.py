@@ -136,10 +136,72 @@ def _validate_session_id(session_id: str) -> None:
 # Centralised here so the symbol/read/section paths stay consistent.
 _SYMBOL_DIDYOUMEAN_LIMIT = 5
 _SYMBOL_DIDYOUMEAN_CUTOFF = 0.6
+# Confidence cutoff for the auto-redirect path (default behaviour when no
+# ``--strict`` flag).  Set high so the redirect only fires on near-typos
+# (``getuser`` ≈ ``getUser``, ``Sesion`` ≈ ``Session``) and not on
+# weakly-related substring matches.  0.85 corresponds to roughly one
+# single-character edit on a 7-character identifier; below this the agent
+# should make the choice itself from the suggestion list.
+_SYMBOL_AUTO_REDIRECT_CUTOFF = 0.85
+
+
+def _auto_redirect_target(name: str, candidate_pool: list[str]) -> str | None:
+    """Return the unambiguous high-confidence close match, or None.
+
+    The auto-redirect only fires when:
+
+    1. There is exactly one candidate at or above
+       :data:`_SYMBOL_AUTO_REDIRECT_CUTOFF`.  Two candidates at equal
+       similarity (e.g. ``foo`` vs ``foa`` for query ``fob``) means the
+       agent should still choose; we refuse to guess.
+    2. The candidate is not the exact query itself (defensive: the caller
+       should not normally pass an exact match through this helper).
+
+    Returns ``None`` when the redirect should NOT fire so callers can fall
+    through to the standard "Did you mean …?" suggestion path.
+    """
+    from difflib import get_close_matches  # noqa: PLC0415
+
+    if not candidate_pool or not name:
+        return None
+    high_conf = get_close_matches(
+        name, candidate_pool, n=2, cutoff=_SYMBOL_AUTO_REDIRECT_CUTOFF,
+    )
+    if len(high_conf) != 1:
+        return None
+    target = high_conf[0]
+    if target == name:
+        return None
+    return target
 # Hard ceiling on rows pulled into Python for fuzzy matching. Without this the
 # global index (potentially hundreds of thousands of symbols across many
 # projects) could push memory pressure on a casual `token-goat symbol` miss.
 _SYMBOL_DIDYOUMEAN_POOL = 50_000
+
+
+def _project_symbol_pool(proj_hash: str) -> list[str]:
+    """Return the deduplicated symbol-name pool for *proj_hash*.
+
+    Capped at :data:`_SYMBOL_DIDYOUMEAN_POOL` (50k) so a giant monorepo
+    cannot push memory pressure on a casual ``token-goat symbol`` miss.
+    Returns ``[]`` on any DB error so the miss path still emits.
+
+    Centralising the pool query here means the close-match suggestion list
+    and the auto-redirect lookup hit the DB exactly once per command
+    invocation instead of twice.
+    """
+    from . import db as _db  # noqa: PLC0415
+
+    try:
+        with _db.open_project_readonly(proj_hash) as conn:
+            rows = conn.execute(
+                "SELECT DISTINCT name FROM symbols WHERE name IS NOT NULL LIMIT ?",
+                (_SYMBOL_DIDYOUMEAN_POOL,),
+            ).fetchall()
+    except (_db.DBError, sqlite3.OperationalError, sqlite3.DatabaseError, FileNotFoundError) as exc:
+        _LOG.debug("symbol pool query failed for project %s: %s", proj_hash[:8], exc)
+        return []
+    return [r["name"] for r in rows if r["name"]]
 
 
 def _project_close_symbol_matches(proj_hash: str, name: str) -> list[str]:
@@ -154,21 +216,29 @@ def _project_close_symbol_matches(proj_hash: str, name: str) -> list[str]:
     """
     from difflib import get_close_matches  # noqa: PLC0415
 
-    from . import db as _db  # noqa: PLC0415
-
-    try:
-        with _db.open_project_readonly(proj_hash) as conn:
-            rows = conn.execute(
-                "SELECT DISTINCT name FROM symbols WHERE name IS NOT NULL LIMIT ?",
-                (_SYMBOL_DIDYOUMEAN_POOL,),
-            ).fetchall()
-    except (_db.DBError, sqlite3.OperationalError, sqlite3.DatabaseError, FileNotFoundError) as exc:
-        _LOG.debug("close-symbol-match query failed for project %s: %s", proj_hash[:8], exc)
-        return []
-    names = [r["name"] for r in rows if r["name"]]
+    names = _project_symbol_pool(proj_hash)
     return get_close_matches(
         name, names, n=_SYMBOL_DIDYOUMEAN_LIMIT, cutoff=_SYMBOL_DIDYOUMEAN_CUTOFF,
     )
+
+
+def _global_symbol_pool() -> list[str]:
+    """Return the deduplicated symbol-name pool across the global index.
+
+    Mirrors :func:`_project_symbol_pool` for cross-project lookups.
+    """
+    from . import db as _db  # noqa: PLC0415
+
+    try:
+        with _db.open_global_readonly() as gconn:
+            rows = gconn.execute(
+                "SELECT DISTINCT name FROM symbols_global WHERE name IS NOT NULL LIMIT ?",
+                (_SYMBOL_DIDYOUMEAN_POOL,),
+            ).fetchall()
+    except (_db.DBError, sqlite3.OperationalError, sqlite3.DatabaseError, FileNotFoundError) as exc:
+        _LOG.debug("global symbol pool query failed: %s", exc)
+        return []
+    return [r["name"] for r in rows if r["name"]]
 
 
 def _global_close_symbol_matches(name: str) -> list[str]:
@@ -181,18 +251,7 @@ def _global_close_symbol_matches(name: str) -> list[str]:
     """
     from difflib import get_close_matches  # noqa: PLC0415
 
-    from . import db as _db  # noqa: PLC0415
-
-    try:
-        with _db.open_global_readonly() as gconn:
-            rows = gconn.execute(
-                "SELECT DISTINCT name FROM symbols_global WHERE name IS NOT NULL LIMIT ?",
-                (_SYMBOL_DIDYOUMEAN_POOL,),
-            ).fetchall()
-    except (_db.DBError, sqlite3.OperationalError, sqlite3.DatabaseError, FileNotFoundError) as exc:
-        _LOG.debug("close-symbol-match query failed for global index: %s", exc)
-        return []
-    names = [r["name"] for r in rows if r["name"]]
+    names = _global_symbol_pool()
     return get_close_matches(
         name, names, n=_SYMBOL_DIDYOUMEAN_LIMIT, cutoff=_SYMBOL_DIDYOUMEAN_CUTOFF,
     )
@@ -292,13 +351,31 @@ def symbol(
     all_projects: bool = typer.Option(False, "--all-projects"),
     as_json: bool = typer.Option(False, "--json"),
     limit: int = typer.Option(50, "--limit"),
+    strict: bool = typer.Option(
+        False,
+        "--strict",
+        help=(
+            "Disable close-match auto-redirect on a miss.  By default a "
+            "single high-confidence close match (no other candidates) is "
+            "followed transparently with a `(redirected from: <typo>)` "
+            "marker; ``--strict`` returns 'no matches' instead."
+        ),
+    ),
 ) -> None:
     """Find a symbol definition by name (function, class, method, type, constant, etc.).
 
     Searches the indexed project for functions, classes, methods, variables, types, and
     other named definitions matching the given name. Use ``--all-projects`` to search
     across all indexed projects (useful for skills and plugins). Use ``--limit`` to
-    control max results (default 50)."""
+    control max results (default 50).
+
+    Close-match auto-redirect: when the requested name returns zero results
+    *and* the project has exactly one close-match candidate at high
+    confidence (difflib ratio >= 0.85), the lookup is automatically re-run
+    against that candidate.  The redirected response carries a
+    ``redirected_from`` field in JSON output and a ``(redirected from: ...)``
+    marker in plain-text output so the substitution is auditable.  Use
+    ``--strict`` to opt out and get the previous behaviour."""
     from . import db as _db  # noqa: PLC0415
 
     use_tty_color = sys.stdout.isatty() and not as_json
@@ -318,11 +395,9 @@ def symbol(
         results: list[dict],
         not_found_extra: str | None = None,
         close_matches: list[str] | None = None,
+        redirected_from: str | None = None,
     ) -> None:
         """Emit symbol results as JSON or plain text; print a not-found message when empty.
-
-        Extracted to remove the identical ``if as_json / elif results / else`` block that
-        appeared in both the ``--all-projects`` and single-project branches of this command.
 
         Args:
             results:         List of symbol dicts to emit.
@@ -332,10 +407,32 @@ def symbol(
                              "Did you mean:" suggestions when no results are returned.
                              Skipped silently for JSON output (callers can request the
                              same data themselves) — text mode is where agents get stuck.
+            redirected_from: The original (typoed) name the agent supplied,
+                             when results were resolved via the close-match
+                             auto-redirect path.  Surfaces in JSON as a
+                             top-level ``redirected_from`` field and in
+                             plain-text as a ``(redirected from: ...)``
+                             marker preceding the result block so the
+                             substitution is auditable.
         """
         if as_json:
-            typer.echo(json.dumps(results))
+            if redirected_from is not None:
+                # Wrap the result list with an envelope when a redirect was
+                # applied so structured callers can detect and (optionally)
+                # surface the substitution.  Non-redirect callers stay on the
+                # pre-existing bare-list shape — adding the envelope
+                # unconditionally would be a breaking change for anyone who
+                # parses the JSON output today.
+                envelope = {"redirected_from": redirected_from, "results": results}
+                typer.echo(json.dumps(envelope))
+            else:
+                typer.echo(json.dumps(results))
         elif results:
+            if redirected_from is not None:
+                marker = f"(redirected from: {redirected_from!r})"
+                if use_tty_color:
+                    marker = f"\033[33m{marker}\033[0m"
+                typer.echo(marker)
             _fmt_plain(results)
         else:
             # Empty results path: pick the appropriate headline (project hint
@@ -349,20 +446,21 @@ def symbol(
                 for candidate in close_matches:
                     typer.echo(f"  - {candidate}")
 
-    if all_projects:
-        try:
-            with _db.open_global() as gconn:
-                rows_raw = gconn.execute(
-                    "SELECT sg.project_hash, p.root, sg.name, sg.kind, sg.file_rel, sg.line, sg.signature "
-                    "FROM symbols_global sg "
-                    "JOIN projects p ON p.hash = sg.project_hash "
-                    "WHERE sg.name = ? LIMIT ?",
-                    (name, limit),
-                ).fetchall()
-        except _db.DBError as exc:
-            _error(f"global index unavailable: {exc}. Run `token-goat index` first.")
-            raise typer.Exit(1) from None
-        results = [
+    def _global_query(target: str) -> list[dict]:
+        """Run the symbols_global query for *target* and shape the rows.
+
+        Pulled out so the auto-redirect path can re-run the same query with
+        a different name without duplicating the SELECT or the row-shaping.
+        """
+        with _db.open_global() as gconn:
+            rows_raw_inner = gconn.execute(
+                "SELECT sg.project_hash, p.root, sg.name, sg.kind, sg.file_rel, sg.line, sg.signature "
+                "FROM symbols_global sg "
+                "JOIN projects p ON p.hash = sg.project_hash "
+                "WHERE sg.name = ? LIMIT ?",
+                (target, limit),
+            ).fetchall()
+        return [
             {
                 "project": r["root"],
                 "file": r["file_rel"],
@@ -371,51 +469,103 @@ def symbol(
                 "name": r["name"],
                 "signature": r["signature"],
             }
-            for r in rows_raw
+            for r in rows_raw_inner
         ]
-        # On a global miss, query distinct symbol names across all projects and
-        # surface up to 5 close matches. This is the most impactful suggestion
-        # path: agents searching with --all-projects often misspell a symbol
-        # from a different repo, and without a hint the only fallback is Read.
+
+    if all_projects:
+        try:
+            results = _global_query(name)
+        except _db.DBError as exc:
+            _error(f"global index unavailable: {exc}. Run `token-goat index` first.")
+            raise typer.Exit(1) from None
+
+        # On a global miss, query distinct symbol names across all projects.
+        # The same pool feeds both the close-match suggestions list AND the
+        # auto-redirect target so the DB is hit exactly once.
         close: list[str] = []
+        redirected: str | None = None
         if not results:
-            close = _global_close_symbol_matches(name)
-        _emit_results(results, close_matches=close)
+            from difflib import get_close_matches  # noqa: PLC0415
+
+            pool = _global_symbol_pool()
+            if not strict:
+                redirect_target = _auto_redirect_target(name, pool)
+                if redirect_target is not None:
+                    try:
+                        redirect_results = _global_query(redirect_target)
+                    except _db.DBError as exc:
+                        _error(f"global index unavailable: {exc}. Run `token-goat index` first.")
+                        raise typer.Exit(1) from None
+                    if redirect_results:
+                        results = redirect_results
+                        redirected = name
+                        _LOG.info(
+                            "symbol --all-projects: auto-redirected %r -> %r",
+                            name, redirect_target,
+                        )
+            if not results:
+                close = get_close_matches(
+                    name, pool,
+                    n=_SYMBOL_DIDYOUMEAN_LIMIT, cutoff=_SYMBOL_DIDYOUMEAN_CUTOFF,
+                )
+        _emit_results(results, close_matches=close, redirected_from=redirected)
         return
 
     proj = _require_project()
 
-    rows_raw = _query_project(
-        proj.hash,
-        "SELECT name, kind, file_rel, line, signature FROM symbols WHERE name = ? LIMIT ?",
-        (name, limit),
-    )
+    def _project_query(target: str) -> list[dict]:
+        """Run the per-project symbols query for *target*.
 
-    results = [
-        {
-            "file": r["file_rel"],
-            "line": r["line"],
-            "kind": r["kind"],
-            "name": r["name"],
-            "signature": r["signature"],
-        }
-        for r in rows_raw
-    ]
+        Same role as :func:`_global_query` for the single-project branch.
+        """
+        rows_raw_inner = _query_project(
+            proj.hash,
+            "SELECT name, kind, file_rel, line, signature FROM symbols WHERE name = ? LIMIT ?",
+            (target, limit),
+        )
+        return [
+            {
+                "file": r["file_rel"],
+                "line": r["line"],
+                "kind": r["kind"],
+                "name": r["name"],
+                "signature": r["signature"],
+            }
+            for r in rows_raw_inner
+        ]
+
+    results = _project_query(name)
 
     from . import read_commands  # noqa: PLC0415
 
     hint = read_commands._not_indexed_hint(proj.hash)
-    # When the project is indexed but the name missed, suggest close-match
-    # symbol names from the same project's symbols table.
-    # Only pass ``not_found_extra`` when we have a real hint to display — the
-    # default "No matches for X" line is added by ``_emit_results`` itself,
-    # and routing it through ``not_found_extra`` would silently suppress the
-    # close-match suggestions below.
-    close = [] if results or hint else _project_close_symbol_matches(proj.hash, name)
+    close = []
+    redirected = None
+    if not results and not hint:
+        from difflib import get_close_matches  # noqa: PLC0415
+
+        pool = _project_symbol_pool(proj.hash)
+        if not strict:
+            redirect_target = _auto_redirect_target(name, pool)
+            if redirect_target is not None:
+                redirect_results = _project_query(redirect_target)
+                if redirect_results:
+                    results = redirect_results
+                    redirected = name
+                    _LOG.info(
+                        "symbol: auto-redirected %r -> %r in project %s",
+                        name, redirect_target, proj.hash[:8],
+                    )
+        if not results:
+            close = get_close_matches(
+                name, pool,
+                n=_SYMBOL_DIDYOUMEAN_LIMIT, cutoff=_SYMBOL_DIDYOUMEAN_CUTOFF,
+            )
     _emit_results(
         results,
         not_found_extra=hint,
         close_matches=close,
+        redirected_from=redirected,
     )
 
 
@@ -1025,6 +1175,122 @@ def cmd_bash_output(
     typer.echo(sliced)
 
 
+@app.command("web-output", rich_help_panel="Core")
+def cmd_web_output(
+    output_id: str = typer.Argument(..., help="ID returned by the post-fetch hook or `web-history`."),
+    head: int = typer.Option(0, "--head", help="Show first N lines (0 = no head limit)"),
+    tail: int = typer.Option(0, "--tail", help="Show last N lines (0 = no tail limit)"),
+    grep: str | None = typer.Option(None, "--grep", "-g", help="Show only lines matching the (case-sensitive) substring"),
+    json_output: bool = typer.Option(False, "--json"),
+) -> None:
+    """Retrieve a sliced view of a cached WebFetch response body.
+
+    The post-WebFetch hook stores each non-trivial text response to disk
+    under ``data_dir() / "web_outputs"``. Use this command to retrieve
+    specific parts of that body without forcing the agent to re-fetch the
+    URL — typically much cheaper in tokens.
+
+    Combine ``--head``, ``--tail``, and ``--grep`` to narrow further; without
+    any filter the whole cached body is returned. JSON mode includes the
+    full path, stored byte size, status code, and a 1-based ``numbered_lines``
+    list anchored to the original body so an agent can follow up with a
+    positional slicer.
+    """
+    from . import web_cache  # noqa: PLC0415
+
+    body = web_cache.load_output(output_id)
+    if body is None:
+        _error(f"no cached web output for id: {output_id}")
+        raise typer.Exit(1)
+
+    lines = body.splitlines()
+    if grep:
+        lines = [ln for ln in lines if grep in ln]
+    if head > 0:
+        lines = lines[: head]
+    if tail > 0:
+        lines = lines[-tail :]
+    sliced = "\n".join(lines)
+
+    if json_output:
+        meta = web_cache.load_output_meta(output_id) or {}
+        sidecar = web_cache.read_sidecar(output_id)
+        original_lines = body.splitlines()
+        original_index: dict[str, int] = {}
+        for i, ln in enumerate(original_lines, start=1):
+            if ln not in original_index:
+                original_index[ln] = i
+        numbered: list[dict[str, object]] = [
+            {"lineno": original_index.get(ln, 0), "text": ln}
+            for ln in lines
+        ]
+        payload: dict[str, object] = {
+            "output_id": output_id,
+            "text": sliced,
+            "lines": len(lines),
+            "numbered_lines": numbered,
+            "total_lines": len(original_lines),
+        }
+        payload.update(meta)
+        if sidecar is not None:
+            payload["url_preview"] = sidecar.url_preview
+            payload["status_code"] = sidecar.status_code
+            payload["truncated"] = sidecar.truncated
+        typer.echo(json.dumps(payload, ensure_ascii=False, indent=2))
+        return
+
+    typer.echo(sliced)
+
+
+@app.command("web-history", rich_help_panel="Core")
+def cmd_web_history(
+    json_output: bool = typer.Option(False, "--json"),
+    limit: int = typer.Option(20, "--limit", "-n", help="Maximum entries to show (newest first)"),
+) -> None:
+    """List cached WebFetch responses, newest first.
+
+    Each row shows the cache ID, byte size, age, status code (when known),
+    and a sanitised URL preview.  Use the ID with ``token-goat web-output
+    <id>`` to retrieve the body.
+    """
+    from . import web_cache  # noqa: PLC0415
+
+    entries = web_cache.list_outputs()
+    if limit > 0:
+        entries = entries[:limit]
+
+    if json_output:
+        out: list[dict[str, object]] = []
+        for e in entries:
+            sidecar = web_cache.read_sidecar(str(e["output_id"]))
+            row = dict(e)
+            if sidecar is not None:
+                row["url_preview"] = sidecar.url_preview
+                row["status_code"] = sidecar.status_code
+                row["truncated"] = sidecar.truncated
+            out.append(row)
+        typer.echo(json.dumps(out, ensure_ascii=False, indent=2))
+        return
+
+    if not entries:
+        typer.echo("(no cached WebFetch responses)")
+        return
+
+    now = time.time()
+    for e in entries:
+        oid = str(e["output_id"])
+        size = int(cast(int, e["size_bytes"]))
+        age = int(now - float(cast(float, e["mtime"])))
+        sidecar = web_cache.read_sidecar(oid)
+        url_str = sidecar.url_preview if sidecar is not None else "(no sidecar)"
+        status_str = (
+            f" status={sidecar.status_code}"
+            if sidecar is not None and sidecar.status_code is not None
+            else ""
+        )
+        typer.echo(f"{oid}  {size:>10,}B  {age:>6}s ago{status_str}  {url_str}")
+
+
 @app.command("bash-history", rich_help_panel="Core")
 def cmd_bash_history(
     json_output: bool = typer.Option(False, "--json"),
@@ -1307,6 +1573,15 @@ def post_bash(
 ) -> None:
     """Hook: post-bash event (caches Bash output for dedup + retrieval)."""
     hooks_cli.safe_run("post-bash", input_file, _parse_harness(harness))
+
+
+@hook_app.command(context_settings=_HOOK_CTX)
+def post_fetch(
+    input_file: Path | None = _INPUT_OPT,
+    harness: str = _HARNESS_OPT,
+) -> None:
+    """Hook: post-fetch event (caches WebFetch text body for dedup + retrieval)."""
+    hooks_cli.safe_run("post-fetch", input_file, _parse_harness(harness))
 
 
 @hook_app.command(context_settings=_HOOK_CTX)

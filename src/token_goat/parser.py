@@ -65,15 +65,20 @@ LANG_BY_EXT: dict[str, str] = {
     ".yml": "yaml",
     ".ini": "ini",
     ".cfg": "ini",
+    ".dockerfile": "dockerfile",
 }
 
 # Files identified by full basename rather than suffix.  Dotfiles like ``.env``
 # and ``.envrc`` have an empty ``Path.suffix``, so the standard suffix lookup
 # would silently skip them.  We resolve these by lowercase basename and fall
 # through to the suffix-based ``LANG_BY_EXT`` path when no match is found.
+# ``Dockerfile`` and ``Containerfile`` are also recognised by basename
+# because the conventional spelling has no extension.
 LANG_BY_BASENAME: dict[str, str] = {
     ".env": "env",
     ".envrc": "env",
+    "dockerfile": "dockerfile",
+    "containerfile": "dockerfile",
 }
 # Frozenset view of LANG_BY_BASENAME (already-lowercase keys) — see the
 # matching declaration above ``_KNOWN_EXTENSIONS`` for why this is precomputed.
@@ -304,6 +309,7 @@ _EXTRACTOR_REGISTRY: dict[str, Callable[[], Extractor]] = {
     "yaml":       _language_importer("yaml_idx"),
     "ini":        _language_importer("ini_idx"),
     "env":        _language_importer("ini_idx", attr="extract_env"),
+    "dockerfile": _language_importer("dockerfile_idx"),
 }
 
 # Cache resolved extractors so each language module is imported at most once.

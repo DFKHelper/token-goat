@@ -31,16 +31,20 @@ __all__ = [
     "ResultCacheEntry",
     "SESSION_SCHEMA_VERSION",
     "SessionCache",
+    "WEB_HISTORY_MAX",
+    "WebEntry",
     "get_file_entry",
     "get_result_cache",
     "list_edited",
     "list_touched",
     "load",
     "lookup_bash_entry",
+    "lookup_web_entry",
     "mark_bash_run",
     "mark_file_edited",
     "mark_file_read",
     "mark_grep",
+    "mark_web_fetch",
     "put_result_cache",
     "reset_session",
     "save",
@@ -115,6 +119,30 @@ class GrepEntry:
 
 
 @dataclass
+class WebEntry:
+    """Tracks one WebFetch invocation within a session.
+
+    Stored in :attr:`SessionCache.web_history` keyed by the SHA prefix of the
+    URL so a future pre-fetch can quickly dedupe a repeat fetch.  The body
+    itself lives on disk under the web-cache directory and is referenced here
+    only by ``output_id``.
+
+    ``url_preview`` stores up to 200 chars of the URL for human-readable
+    display in ``token-goat web-history``; the full URL is not persisted
+    because URLs longer than that are typically presigned download tokens or
+    similar that should not live in session JSON longer than necessary.
+    """
+
+    url_sha: str
+    url_preview: str
+    output_id: str
+    ts: float
+    body_bytes: int
+    status_code: int | None = None
+    truncated: bool = False
+
+
+@dataclass
 class BashEntry:
     """Tracks one execution of a Bash command within a session.
 
@@ -186,6 +214,17 @@ _BASH_HISTORY_EVICT = 50
 # short enough to keep the manifest output bounded.
 _MAX_BASH_PREVIEW = 120
 
+# Maximum number of web-history entries retained per session, with the same
+# FIFO-eviction semantics as bash history.  Web sessions tend to involve
+# fewer distinct URLs than commands but bigger payloads on disk; the cap is
+# chosen to mirror BASH_HISTORY_MAX so the operational mental model stays
+# uniform between the two caches.
+WEB_HISTORY_MAX = 200
+_WEB_HISTORY_EVICT = 50
+# Length of the URL preview persisted in session JSON.  200 covers any
+# realistic page URL while keeping the per-entry footprint predictable.
+_MAX_WEB_URL_PREVIEW = 200
+
 
 @dataclass
 class SessionCache:
@@ -214,6 +253,10 @@ class SessionCache:
     # Insertion-ordered dict; FIFO eviction at BASH_HISTORY_MAX prevents growth
     # in tight retry loops.
     bash_history: dict[str, BashEntry] = field(default_factory=dict)
+    # Per-session web-fetch history keyed by short SHA of the URL.  Used by
+    # the pre-WebFetch dedup hint and by ``token-goat web-history`` for
+    # listing.  Same FIFO + cap semantics as bash_history.
+    web_history: dict[str, WebEntry] = field(default_factory=dict)
     # Per-session content snapshots used by the diff-aware re-read hint.  Maps
     # normalized file path → SHA of the snapshot bytes stored on disk under
     # ``data_dir() / "session_snapshots" / <session_short> / <pathhash>.bin``.
@@ -243,6 +286,10 @@ class SessionCache:
             bash_history={
                 k: cast("_BashEntryDict", asdict(v))
                 for k, v in self.bash_history.items()
+            },
+            web_history={
+                k: cast("_WebEntryDict", asdict(v))
+                for k, v in self.web_history.items()
             },
             snapshot_shas=dict(self.snapshot_shas),
         )
@@ -335,6 +382,14 @@ class SessionCache:
             if be_entry is not None:
                 bash_history[k] = be_entry
 
+        web_history: dict[str, WebEntry] = {}
+        for k, v in d.get("web_history", {}).items():
+            if not isinstance(v, dict) or not isinstance(k, str):
+                continue
+            we_entry = _parse_web_entry(v)
+            if we_entry is not None:
+                web_history[k] = we_entry
+
         # snapshot_shas: dict[str, str] — coerce values defensively so a
         # malformed entry written by a future version (e.g. structured object)
         # is dropped silently rather than poisoning the lookup path.
@@ -354,6 +409,7 @@ class SessionCache:
             edited_files=edited_files,
             result_cache=result_cache,
             bash_history=bash_history,
+            web_history=web_history,
             snapshot_shas=snapshot_shas,
         )
 
@@ -491,6 +547,44 @@ class _BashEntryDict(TypedDict, total=False):
     truncated: bool
 
 
+class _WebEntryDict(TypedDict, total=False):
+    """Wire format of a single WebEntry as it appears in the session JSON."""
+
+    url_sha: str
+    url_preview: str
+    output_id: str
+    ts: float
+    body_bytes: int
+    status_code: int | None
+    truncated: bool
+
+
+def _parse_web_entry(v: dict[str, Any]) -> WebEntry | None:
+    """Deserialize one web-history dict from JSON, returning None on parse error.
+
+    Defensive about every field: session JSON is user-readable on disk and
+    could be corrupted, partially upgraded, or hand-edited.  A bad entry is
+    dropped at debug level rather than crashing the session-load path.
+    """
+    try:
+        raw_status = v.get("status_code")
+        status_code: int | None = None
+        if isinstance(raw_status, int) and not isinstance(raw_status, bool):
+            status_code = raw_status
+        return WebEntry(
+            url_sha=str(v.get("url_sha", "")),
+            url_preview=str(v.get("url_preview", "")),
+            output_id=str(v.get("output_id", "")),
+            ts=float(v.get("ts", 0.0)) if isinstance(v.get("ts", 0.0), (int, float)) else 0.0,
+            body_bytes=max(0, int(v.get("body_bytes", 0))),
+            status_code=status_code,
+            truncated=bool(v.get("truncated", False)),
+        )
+    except (TypeError, ValueError, KeyError) as exc:
+        _LOG.debug("session: skipping corrupted web entry: %s", exc)
+        return None
+
+
 def _parse_bash_entry(v: dict[str, Any]) -> BashEntry | None:
     """Deserialize one bash-history dict from JSON, returning None on parse error.
 
@@ -562,6 +656,7 @@ class _SessionDict(TypedDict, total=False):
     edited_files: dict[str, int]
     result_cache: dict[str, _ResultCacheEntryDict]
     bash_history: dict[str, _BashEntryDict]
+    web_history: dict[str, _WebEntryDict]
     snapshot_shas: dict[str, str]
 
 
@@ -1338,6 +1433,81 @@ def lookup_bash_entry(
     if cache.unavailable:
         return None
     return cache.bash_history.get(cmd_sha)
+
+
+def mark_web_fetch(
+    session_id: str,
+    url_sha: str,
+    url_preview: str,
+    output_id: str,
+    body_bytes: int,
+    status_code: int | None,
+    truncated: bool,
+    *,
+    cache: SessionCache | None = None,
+) -> SessionCache:
+    """Record a WebFetch invocation in the per-session history.
+
+    Mirrors :func:`mark_bash_run` for the WebFetch surface.  Storing only the
+    short URL SHA — not the full URL — keeps the session JSON small and
+    avoids persisting potentially-sensitive query parameters (auth tokens,
+    presigned URL signatures) longer than necessary.  ``url_preview`` is the
+    first 200 chars of the URL, which is enough to identify a repeat fetch
+    while remaining bounded.
+
+    FIFO eviction batches removals at ``_WEB_HISTORY_EVICT`` so a tight
+    re-fetch loop does not rewrite the dict on every insert.
+    """
+    try:
+        cache = _resolve_cache(session_id, cache)
+    except ValueError as exc:
+        _LOG.warning("mark_web_fetch: invalid session_id (%s); skipping", exc)
+        return cache or _fresh_cache(session_id)
+    if cache.unavailable:
+        return cache
+
+    safe_preview = sanitize_log_str(url_preview, max_len=_MAX_WEB_URL_PREVIEW)
+
+    now = time.time()
+    if url_sha not in cache.web_history and len(cache.web_history) >= WEB_HISTORY_MAX:
+        evict_keys = list(islice(cache.web_history.keys(), _WEB_HISTORY_EVICT))
+        for k in evict_keys:
+            del cache.web_history[k]
+        _LOG.debug(
+            "web_history: evicted %d entries (cap=%d) for session=%s",
+            _WEB_HISTORY_EVICT, WEB_HISTORY_MAX, session_id[:16],
+        )
+
+    cache.web_history[url_sha] = WebEntry(
+        url_sha=url_sha,
+        url_preview=safe_preview,
+        output_id=output_id,
+        ts=now,
+        body_bytes=max(0, int(body_bytes)),
+        status_code=(
+            status_code
+            if isinstance(status_code, int) and not isinstance(status_code, bool)
+            else None
+        ),
+        truncated=bool(truncated),
+    )
+    cache.last_activity_ts = now
+    cache._invalidate_json_cache()
+    save(cache)
+    return cache
+
+
+def lookup_web_entry(
+    session_id: str, url_sha: str, *, cache: SessionCache | None = None
+) -> WebEntry | None:
+    """Return the :class:`WebEntry` for *url_sha* in *session_id*, or None."""
+    try:
+        cache = _resolve_cache(session_id, cache)
+    except ValueError:
+        return None
+    if cache.unavailable:
+        return None
+    return cache.web_history.get(url_sha)
 
 
 def set_snapshot_sha(
