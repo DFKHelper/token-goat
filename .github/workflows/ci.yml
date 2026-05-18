@@ -44,21 +44,24 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         # Trim to the last 80 lines so a multi-failure run still fits in
-        # one PR comment (GitHub's per-comment cap is 65 KB).
+        # one PR comment (GitHub's per-comment cap is 65 KB).  Comment
+        # body assembled with line-by-line ``Add-Content`` to keep the
+        # script readable inside the YAML literal block and avoid a
+        # PowerShell here-string whose interior indentation would
+        # collide with the YAML block-scalar indent.
         run: |
-          $tail = Get-Content pytest.log -Tail 80 | Out-String
-          $body = @"
-### CI test failure (windows-2022 / Python 3.13)
-
-Commit: ${{ github.sha }}
-
-Last 80 lines of pytest output:
-
-``````
-$tail
-``````
-"@
-          $body | Out-File -FilePath comment.md -Encoding utf8
+          $fence = '```'
+          $sha = '${{ github.sha }}'
+          New-Item -ItemType File -Path comment.md -Force | Out-Null
+          Add-Content comment.md "### CI test failure (windows-2022 / Python 3.13)"
+          Add-Content comment.md ""
+          Add-Content comment.md "Commit: $sha"
+          Add-Content comment.md ""
+          Add-Content comment.md "Last 80 lines of pytest output:"
+          Add-Content comment.md ""
+          Add-Content comment.md $fence
+          Get-Content pytest.log -Tail 80 | Add-Content comment.md
+          Add-Content comment.md $fence
           gh pr comment "${{ github.event.pull_request.number }}" --body-file comment.md
           if ($LASTEXITCODE -ne 0) {
               Write-Host "::warning::Could not post PR comment (push event with no PR?)"
