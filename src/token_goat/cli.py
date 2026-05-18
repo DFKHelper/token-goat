@@ -1113,7 +1113,7 @@ def cmd_compress(
         None,
         "--filter",
         "-f",
-        help="Filter name (pytest, jest, git, …). Auto-detected from the command when omitted.",
+        help="Filter name (pytest, jest, git, ...). Auto-detected from the command when omitted.",
     ),
     timeout: int = typer.Option(
         0,
@@ -1145,7 +1145,7 @@ def cmd_compress(
     from . import bash_runner  # noqa: PLC0415
 
     if no_compress:
-        # Stream straight through — useful for debugging.
+        # Stream straight through; useful for debugging.
         import subprocess as _sp  # noqa: PLC0415
 
         proc = _sp.run(cmd, shell=True, check=False)  # noqa: S602

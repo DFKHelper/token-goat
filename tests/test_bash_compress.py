@@ -1,4 +1,4 @@
-"""Tests for token_goat.bash_compress — common helpers and filter dispatch."""
+"""Tests for token_goat.bash_compress, common helpers and filter dispatch."""
 from __future__ import annotations
 
 import re
@@ -281,7 +281,7 @@ class TestDetectFromCommand:
         assert f.name == "pytest" and argv[0] == "pytest"
 
     def test_rejects_pipeline(self):
-        # Pipes can't be safely wrapped — must skip.
+        # Pipes can't be safely wrapped, must skip.
         assert bc.detect_from_command("pytest | head") is None
 
     def test_rejects_redirect(self):
@@ -325,7 +325,7 @@ class TestFilterBase:
         f = bc.GenericFilter()
         stdout = "same\n" * 100
         result = bc.compress_output(f, stdout, "", 0, ["foo"])
-        # Generic dedupes consecutive — savings should be positive.
+        # Generic dedupes consecutive, savings should be positive.
         assert result.original_bytes > result.compressed_bytes
         assert result.bytes_saved > 0
         assert result.tokens_saved > 0
@@ -365,7 +365,7 @@ class TestFilterBase:
 class TestPytestFilter:
     def test_drops_dots_progress(self):
         f = bc.PytestFilter()
-        # ``...... [100%]`` is a pure progress line — fully dropped by the
+        # ``...... [100%]`` is a pure progress line, fully dropped by the
         # _PYTEST_DOTS_RE filter.  ``FAILED test_a`` must survive.
         out = f.compress("...... [100%]\nFAILED test_a\n", "", 0, ["pytest"])
         assert "[100%]" not in out

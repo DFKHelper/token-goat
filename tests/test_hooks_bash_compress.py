@@ -90,7 +90,7 @@ class TestNoRewrite:
 
     def test_already_wrapped_command_not_double_wrapped(self, tmp_data_dir, monkeypatch):
         monkeypatch.delenv("TOKEN_GOAT_BASH_COMPRESS", raising=False)
-        # Simulate the wrapper invocation — must not recurse.
+        # Simulate the wrapper invocation, must not recurse.
         result = _dispatch(_payload("token-goat compress --filter pytest --cmd 'pytest'"))
         assert "hookSpecificOutput" not in result
 
@@ -149,10 +149,10 @@ class TestConfigDisable:
         cfg = config_mod.Config()
         cfg.bash_compress.disabled_filters = ["pytest"]
         config_mod.save(cfg)
-        # pytest is disabled — should not wrap.
+        # pytest is disabled, should not wrap.
         result = _dispatch(_payload("pytest tests/"))
         assert "hookSpecificOutput" not in result
-        # git is still enabled — should wrap.
+        # git is still enabled, should wrap.
         result = _dispatch(_payload("git status"))
         assert "hookSpecificOutput" in result
 

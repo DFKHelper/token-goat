@@ -102,9 +102,9 @@ class BashCompressConfig:
     Token-Goat intercepts Bash tool calls whose binary matches a registered
     output filter (``pytest``, ``git``, ``npm``, ``docker``, ``kubectl``, ...)
     and rewrites the command to flow through ``token-goat compress``, which
-    captures stdout + stderr and emits a per-tool compressed view that
-    preserves failures-first signal while stripping progress bars, deprecation
-    noise, duplicate lines, and verbose pass listings.
+    captures stdout + stderr and prints a per-tool compressed view that keeps
+    every error block, drops progress bars and duplicate warnings, and groups
+    linter issues by rule.
 
     Attributes:
         enabled: Master on/off switch.  Can also be disabled at runtime by
