@@ -139,10 +139,10 @@ class TestByReadCount:
     """_BY_READ_COUNT attrgetter must rank FileEntry objects by read_count."""
 
     def test_nlargest_picks_highest_read_count(self):
-        """heapq.nlargest with _BY_READ_COUNT returns entries ordered by read_count desc."""
+        """heapq.nlargest with _BY_READ_COUNT_THEN_TS returns entries ordered by read_count desc."""
         import heapq
 
-        from token_goat.compact import _BY_READ_COUNT
+        from token_goat.compact import _BY_READ_COUNT_THEN_TS
         from token_goat.session import FileEntry
 
         now = 0.0
@@ -151,25 +151,25 @@ class TestByReadCount:
             FileEntry(rel_or_abs="b.py", last_read_ts=now, read_count=5, line_ranges=[], symbols_read=[]),
             FileEntry(rel_or_abs="c.py", last_read_ts=now, read_count=3, line_ranges=[], symbols_read=[]),
         ]
-        top2 = heapq.nlargest(2, entries, key=_BY_READ_COUNT)
+        top2 = heapq.nlargest(2, entries, key=_BY_READ_COUNT_THEN_TS)
         assert [e.rel_or_abs for e in top2] == ["b.py", "c.py"]
 
     def test_single_entry_returned_as_top(self):
         import heapq
 
-        from token_goat.compact import _BY_READ_COUNT
+        from token_goat.compact import _BY_READ_COUNT_THEN_TS
         from token_goat.session import FileEntry
 
         now = 0.0
         entry = FileEntry(rel_or_abs="only.py", last_read_ts=now, read_count=7, line_ranges=[], symbols_read=[])
-        top1 = heapq.nlargest(1, [entry], key=_BY_READ_COUNT)
+        top1 = heapq.nlargest(1, [entry], key=_BY_READ_COUNT_THEN_TS)
         assert top1[0].read_count == 7
 
     def test_tied_read_counts_all_included(self):
         """When counts tie, nlargest still returns the requested number."""
         import heapq
 
-        from token_goat.compact import _BY_READ_COUNT
+        from token_goat.compact import _BY_READ_COUNT_THEN_TS
         from token_goat.session import FileEntry
 
         now = 0.0
@@ -177,7 +177,7 @@ class TestByReadCount:
             FileEntry(rel_or_abs="x.py", last_read_ts=now, read_count=2, line_ranges=[], symbols_read=[]),
             FileEntry(rel_or_abs="y.py", last_read_ts=now, read_count=2, line_ranges=[], symbols_read=[]),
         ]
-        top2 = heapq.nlargest(2, entries, key=_BY_READ_COUNT)
+        top2 = heapq.nlargest(2, entries, key=_BY_READ_COUNT_THEN_TS)
         assert len(top2) == 2
         assert all(e.read_count == 2 for e in top2)
 
