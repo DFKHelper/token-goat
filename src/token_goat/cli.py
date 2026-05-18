@@ -1097,6 +1097,69 @@ def cmd_worker(
     worker_daemon.run_daemon()
 
 
+@app.command(
+    "compress",
+    rich_help_panel="Advanced",
+    context_settings={"ignore_unknown_options": True, "allow_extra_args": True},
+)
+def cmd_compress(
+    cmd: str = typer.Option(
+        ...,
+        "--cmd",
+        "-c",
+        help="The original shell command to run, captured into a single string.",
+    ),
+    filter_name: str | None = typer.Option(
+        None,
+        "--filter",
+        "-f",
+        help="Filter name (pytest, jest, git, …). Auto-detected from the command when omitted.",
+    ),
+    timeout: int = typer.Option(
+        0,
+        "--timeout",
+        help="Wall-clock timeout in seconds (0 = use built-in default).",
+    ),
+    no_compress: bool = typer.Option(
+        False,
+        "--no-compress",
+        help="Skip compression and stream output raw (for debugging the wrapper).",
+    ),
+) -> None:
+    """Run a shell command and emit a compressed view of its output.
+
+    Used internally by the PreToolUse hook to wrap commands whose output
+    would otherwise burn excess tokens (pytest, jest, npm install, docker
+    build, kubectl get, ...).  Can also be invoked directly from a terminal
+    to preview the compression for any command::
+
+        token-goat compress --cmd 'pytest tests/'
+        token-goat compress --cmd 'git log --oneline -n 200'
+        token-goat compress --filter docker --cmd 'docker build -t foo .'
+
+    Always exits with the wrapped command's exit code so it composes cleanly
+    with shell chaining.  Set ``TOKEN_GOAT_BASH_COMPRESS=0`` to bypass the
+    compression layer at the hook level (this CLI still works when invoked
+    directly because it is the layer being bypassed).
+    """
+    from . import bash_runner  # noqa: PLC0415
+
+    if no_compress:
+        # Stream straight through — useful for debugging.
+        import subprocess as _sp  # noqa: PLC0415
+
+        proc = _sp.run(cmd, shell=True, check=False)  # noqa: S602
+        raise typer.Exit(proc.returncode)
+
+    effective_timeout = timeout if timeout > 0 else bash_runner.DEFAULT_TIMEOUT_SECONDS
+    exit_code = bash_runner.run(
+        cmd,
+        filter_name=filter_name,
+        timeout=effective_timeout,
+    )
+    raise typer.Exit(exit_code)
+
+
 # Hook entry points. Each one delegates to hooks_cli.safe_run, which is
 # bulletproof: catches BaseException, always emits valid JSON, always exits 0.
 # That way a hook never marks itself failed to Claude Code or Codex even when
