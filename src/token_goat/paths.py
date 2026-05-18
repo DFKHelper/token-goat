@@ -401,31 +401,40 @@ def _open_restricted(tmp: Path) -> int:
     return os.open(str(tmp), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
 
 
+class _OwnerOnlyFileHandler(logging.FileHandler):
+    """FileHandler that creates its file with 0o600 (owner-only) permissions.
+
+    The stdlib :class:`logging.FileHandler` opens its file with the process
+    umask applied, typically yielding 0o644 (world-readable).  Log files
+    contain session IDs and local file paths that should not be visible to
+    other local users on a shared host, so we override ``_open`` to apply
+    a tighter mode at open time.  Subclassing (rather than returning a bare
+    ``StreamHandler``) preserves ``isinstance(h, FileHandler)`` checks that
+    callers and tests rely on to distinguish file vs console handlers.
+    """
+
+    def _open(self):  # type: ignore[override]
+        flags = os.O_WRONLY | os.O_CREAT | os.O_APPEND
+        fd = os.open(self.baseFilename, flags, 0o600)
+        return os.fdopen(fd, self.mode, encoding=self.encoding or "utf-8")
+
+
 def open_log_file(path: Path) -> logging.FileHandler:
     """Return a ``logging.FileHandler`` for *path* with owner-only permissions.
 
-    ``logging.FileHandler`` opens its file with the process umask applied, which
-    typically yields 0o644 (world-readable).  Log files contain session IDs and
-    local file paths that should not be visible to other local users.  On POSIX
-    this function opens the file descriptor with 0o600 before handing it to
-    ``FileHandler`` via the ``delay=False`` + ``stream`` path, ensuring the file
-    is never world-readable even transiently.  On Windows the ACL on the user-
-    profile directory provides equivalent isolation, so we fall back to a normal
-    ``FileHandler``.
+    On POSIX the returned handler is an :class:`_OwnerOnlyFileHandler` that
+    creates its file with mode 0o600 so other local users cannot read session
+    IDs / paths from the log.  On Windows the ACL on the user-profile
+    directory provides equivalent isolation, so a plain ``FileHandler``
+    suffices.  In all cases the returned object is a ``FileHandler`` instance
+    so callers that branch on ``isinstance(h, FileHandler)`` to tell file vs
+    console handlers apart behave correctly.
 
     The returned handler writes UTF-8 text in append mode.
     """
     if sys.platform == "win32":
         return logging.FileHandler(str(path), encoding="utf-8")
-
-    # On POSIX: open the fd with 0o600 then wrap it so FileHandler appends to
-    # the same fd without re-opening (and potentially re-creating) the file.
-    flags = os.O_WRONLY | os.O_CREAT | os.O_APPEND
-    fd = os.open(str(path), flags, 0o600)
-    stream = os.fdopen(fd, "a", encoding="utf-8")
-    handler = logging.StreamHandler(stream)  # type: ignore[arg-type]
-    handler.baseFilename = str(path)  # type: ignore[attr-defined]
-    return handler  # type: ignore[return-value]
+    return _OwnerOnlyFileHandler(str(path), mode="a", encoding="utf-8")
 
 
 def _atomic_write_core(path: Path, content: str | bytes, mode: Literal["w", "wb"]) -> None:

@@ -1,0 +1,1789 @@
+"""Compress Bash command output before it reaches the model context window.
+
+Many developer tools (``pytest``, ``npm install``, ``docker build``, ``cargo
+build``, ``kubectl get``, ...) emit large quantities of low-information output:
+progress bars that overwrite themselves with ``\\r``, ANSI colour escapes that
+double the byte count, lists of files that are nearly identical, deprecation
+warnings repeated dozens of times, and long success summaries that bury the one
+line that actually matters (the failure or the final tally).
+
+Token-Goat detects compressible commands in the Bash tool's ``tool_input``,
+rewrites the command to ``token-goat compress --cmd '<orig>' --filter <name>``,
+and the wrapper subprocess runs the original through the system shell, captures
+stdout + stderr, dispatches to a per-tool filter, and prints a compressed
+version that preserves *failures-first* signal while stripping noise.
+
+Design goals
+============
+
+* **Lossless on signal**: every error block, every failed test, every warning
+  that introduces a new kind of issue, every diff hunk, and every final
+  summary line survives the filter unchanged.  Compression is applied only to
+  *redundant* output (progress bars, repeated lines, lists with bounded value).
+
+* **Bounded output**: every filter caps total output at
+  ``DEFAULT_MAX_LINES`` lines (~1000) and ``DEFAULT_MAX_BYTES`` bytes (~64 KiB)
+  regardless of input size.  When the cap is reached the filter emits a clear
+  marker explaining how to disable compression.
+
+* **Fail-soft**: a filter that crashes or raises an exception returns the raw
+  (ANSI-stripped) output rather than blocking the shell call.  The wrapper
+  always preserves the original command's exit code.
+
+* **No silent dataloss**: a compression marker is appended to the output so the
+  model knows it is reading a summarised view and how to bypass it.
+
+* **Zero overhead when off**: setting ``TOKEN_GOAT_BASH_COMPRESS=0`` disables
+  the entire system at the hook layer so neither the wrapper subprocess nor the
+  filter runs.
+
+Public API
+==========
+
+* :func:`select_filter`: dispatch a parsed argv to a :class:`Filter`.
+* :func:`compress_output`: apply a filter to stdout / stderr / exit_code,
+  returning a :class:`CompressedOutput` with metadata.
+* :func:`detect_from_command`: parse a raw shell command string and return
+  the dispatched filter (or ``None`` if no filter applies).
+* :class:`Filter`: base class for per-tool compressors.
+* :class:`CompressedOutput`: dataclass holding compressed text and byte stats.
+
+The CLI entry point ``token-goat compress`` lives in :mod:`cli`; the
+subprocess wrapper that runs the user's command lives in :mod:`bash_runner`.
+"""
+from __future__ import annotations
+
+__all__ = [
+    "DEFAULT_MAX_BYTES",
+    "DEFAULT_MAX_LINES",
+    "CompressedOutput",
+    "Filter",
+    "FILTERS",
+    "compress_output",
+    "dedupe_consecutive",
+    "detect_from_command",
+    "select_filter",
+    "strip_ansi",
+    "strip_progress",
+    "truncate_middle",
+]
+
+import logging
+import re
+import shlex
+from collections.abc import Iterable
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Final
+
+_LOG = logging.getLogger("token_goat.bash_compress")
+
+# ---------------------------------------------------------------------------
+# Tunable limits
+# ---------------------------------------------------------------------------
+
+#: Maximum line count produced by any filter.  Beyond this the filter elides
+#: the middle of the output with a ``truncate_middle`` marker.  ~1000 lines at
+#: ~80 chars each is about 80 KB / 20K tokens, already past the point where a
+#: human (or a model) is reading every line.
+DEFAULT_MAX_LINES: Final[int] = 1000
+
+#: Maximum byte count produced by any filter.  Acts as a backstop when
+#: individual lines are unusually long (binary diff, base64, ...).  64 KiB
+#: corresponds to ~16K tokens which is still a meaningful chunk of context.
+DEFAULT_MAX_BYTES: Final[int] = 64 * 1024
+
+#: Maximum bytes of raw output a filter is willing to inspect.  Beyond this the
+#: filter falls back to head/tail truncation without per-tool analysis to keep
+#: filter runtime bounded.  2 MiB covers virtually any realistic command, a
+#: 100K-line file at 20 bytes/line is 2 MiB, and prevents a runaway log from
+#: causing a multi-second pause in the hook.
+MAX_INSPECT_BYTES: Final[int] = 2 * 1024 * 1024
+
+#: Trailing marker appended to every compressed output so the agent knows it is
+#: looking at a summary and can opt out if it needs the raw view.  Kept short
+#: (~80 chars) so the meta-cost of the marker is dwarfed by the savings.
+_COMPRESSION_MARKER_FMT: Final[str] = (
+    "\n[token-goat: {filter} filter compressed {orig_kb:.1f} KiB to "
+    "{out_kb:.1f} KiB ({pct:.0f}% saved); set TOKEN_GOAT_BASH_COMPRESS=0 to disable]"
+)
+
+# ---------------------------------------------------------------------------
+# Regex tables
+# ---------------------------------------------------------------------------
+
+# CSI (Control Sequence Introducer): ESC [ ... <final byte>
+# OSC (Operating System Command):    ESC ] ... BEL  | ESC ] ... ESC \
+# Plus a few stragglers used by progress UIs (cursor save/restore, etc.).
+# Matches every escape Pillow / pip / docker / jest / pytest emit.
+_ANSI_RE: Final[re.Pattern[str]] = re.compile(
+    r"""
+    \x1B \[ [0-?]* [ -/]* [@-~]       # CSI sequence
+    | \x1B \] .*? (?: \x07 | \x1B \\) # OSC sequence
+    | \x1B [@-Z\\-_]                  # 2-byte ESC sequence
+    | \x1B [PX^_].*?\x1B\\            # DCS/SOS/PM/APC
+    """,
+    re.VERBOSE | re.DOTALL,
+)
+
+# Cursor-movement escapes that some progress UIs emit in lieu of \r.
+# Stripped along with ANSI to collapse multi-line spinners onto a single line.
+_CURSOR_RE: Final[re.Pattern[str]] = re.compile(r"\x1B\[[0-9]*[ABCDEFGJKST]")
+
+
+# ---------------------------------------------------------------------------
+# Common text-shaping helpers
+# ---------------------------------------------------------------------------
+
+def strip_ansi(text: str) -> str:
+    """Remove ANSI / OSC / cursor escape sequences.
+
+    Strips every ``ESC [ ... <final>`` (CSI) and ``ESC ] ... BEL`` (OSC)
+    sequence as well as standalone 2-byte ``ESC X`` codes.  Idempotent on text
+    that has no escapes.  Does *not* attempt to interpret colours (just deletes
+    them), the goal is byte reduction, not faithful reproduction.
+
+    On a 10 KB pytest output with full colour the savings are typically 30–40%
+    before any structural compression has even fired.
+    """
+    out = _ANSI_RE.sub("", text)
+    out = _CURSOR_RE.sub("", out)
+    return out
+
+
+def strip_progress(text: str) -> str:
+    """Collapse ``\\r``-overwrite progress lines to their final state.
+
+    Most terminal progress renderers (``pip``, ``docker``, ``cargo``, ``npm``,
+    ``apt``) emit a sequence of bytes ending in ``\\r`` so each subsequent
+    update overwrites the previous one on a terminal.  In a captured stream
+    these renderings concatenate, producing a 1 KB blob like
+    ``Building [.....] 10%\\rBuilding [#####] 50%\\rBuilding [#########] 100%``.
+    All but the last state is invisible noise.
+
+    This helper keeps only the segment after the last ``\\r`` within each line,
+    which is what a terminal user would have actually seen.  Lines without
+    ``\\r`` are passed through unchanged.
+    """
+    if "\r" not in text:
+        return text
+    return "\n".join(
+        (line.rsplit("\r", 1)[-1] if "\r" in line else line)
+        for line in text.split("\n")
+    )
+
+
+def dedupe_consecutive(
+    lines: Iterable[str],
+    *,
+    min_run: int = 2,
+    fmt: str = "{line}  (×{count})",
+) -> list[str]:
+    """Collapse runs of identical consecutive lines to ``line  (×N)``.
+
+    A run shorter than *min_run* is emitted verbatim: single repetitions stay
+    untouched so we never spuriously add ``(×1)`` noise.  The default *fmt*
+    appends the count after two spaces, which keeps grep-anchored greps on the
+    original line text working.
+
+    Useful for compiler warnings, ``kubectl logs`` streaming, and any tool that
+    repeats an identical line for each item.  Non-consecutive duplicates are
+    *not* deduped because their separation may carry meaning (e.g. one error
+    block per file, with the same trailing summary line between).
+    """
+    out: list[str] = []
+    prev: str | None = None
+    count = 0
+    for line in lines:
+        if line == prev:
+            count += 1
+            continue
+        if prev is not None:
+            if count >= min_run:
+                out.append(fmt.format(line=prev, count=count))
+            else:
+                out.extend([prev] * count)
+        prev = line
+        count = 1
+    if prev is not None:
+        if count >= min_run:
+            out.append(fmt.format(line=prev, count=count))
+        else:
+            out.extend([prev] * count)
+    return out
+
+
+def dedupe_by_key(
+    lines: Iterable[str],
+    key: re.Pattern[str],
+    *,
+    keep_first_n: int = 3,
+    fmt: str = "... +{count} more lines with key={key_value}",
+) -> list[str]:
+    """Group lines by a regex *key* and keep only *keep_first_n* per group.
+
+    For each line, the first capture group of *key* is the bucket id.  Lines
+    whose pattern does not match pass through unchanged.  The *count* in *fmt*
+    is the number of additional lines dropped beyond *keep_first_n*.
+
+    Used by linter filters to keep three examples per rule code rather than
+    every occurrence, which is the difference between a 5 KB and a 500 KB
+    eslint dump on a brownfield codebase.
+    """
+    seen: dict[str, int] = {}
+    out: list[str] = []
+    summaries: dict[str, int] = {}
+    for line in lines:
+        m = key.search(line)
+        if m is None:
+            out.append(line)
+            continue
+        bucket = m.group(1) if m.groups() else m.group(0)
+        seen[bucket] = seen.get(bucket, 0) + 1
+        if seen[bucket] <= keep_first_n:
+            out.append(line)
+        else:
+            summaries[bucket] = summaries.get(bucket, 0) + 1
+    for bucket, count in sorted(summaries.items()):
+        out.append(fmt.format(count=count, key_value=bucket))
+    return out
+
+
+def truncate_middle(
+    lines: list[str],
+    max_lines: int,
+    *,
+    head_ratio: float = 0.4,
+    marker_fmt: str = "... [{n} lines elided by token-goat]",
+) -> list[str]:
+    """Cap *lines* at *max_lines* by keeping the head and tail with a marker.
+
+    The split favours the *tail* (where summaries and failures usually live)
+    by default (``head_ratio=0.4`` keeps 40% at the head, 60% at the tail).
+    When the input is already within budget the list is returned unchanged.
+
+    The marker is one extra line so the actual output length is
+    ``max_lines + 1``.  This is deliberate: the marker is metadata, not
+    payload, and counting it against the limit would force us to drop one more
+    real line for no gain.
+    """
+    if len(lines) <= max_lines:
+        return lines
+    head_keep = max(1, int(max_lines * head_ratio))
+    tail_keep = max(1, max_lines - head_keep)
+    elided = len(lines) - head_keep - tail_keep
+    return [
+        *lines[:head_keep],
+        marker_fmt.format(n=elided),
+        *lines[-tail_keep:],
+    ]
+
+
+def cap_bytes(text: str, max_bytes: int) -> str:
+    """Truncate *text* to *max_bytes* UTF-8 bytes, preserving line boundaries.
+
+    Avoids splitting a multibyte UTF-8 character or the middle of a line: cuts
+    at the last newline before the budget when one exists, otherwise at the
+    last well-formed UTF-8 code point.  A truncation marker is appended.
+    """
+    encoded = text.encode("utf-8", errors="replace")
+    if len(encoded) <= max_bytes:
+        return text
+    # Reserve room for the marker so the final size stays under the cap.
+    marker = f"\n... [{len(encoded) - max_bytes} bytes elided by token-goat]"
+    marker_bytes = marker.encode("utf-8")
+    budget = max_bytes - len(marker_bytes)
+    if budget <= 0:
+        return marker.strip()
+    truncated = encoded[:budget]
+    # Walk back to the last newline so we don't slice mid-line, falling back
+    # to the original cut if no newline exists in budget.
+    nl = truncated.rfind(b"\n")
+    if nl > budget // 2:
+        truncated = truncated[:nl]
+    return truncated.decode("utf-8", errors="replace") + marker
+
+
+def split_blocks(
+    text: str,
+    block_re: re.Pattern[str],
+) -> list[str]:
+    """Split *text* into blocks demarcated by lines matching *block_re*.
+
+    Each returned block begins at a line matching *block_re* (the match is the
+    first line of the block) and extends through the line before the next
+    match.  Leading content before the first match is returned as the first
+    block (may be empty).
+    """
+    lines = text.split("\n")
+    blocks: list[str] = []
+    current: list[str] = []
+    for line in lines:
+        if block_re.match(line):
+            if current:
+                blocks.append("\n".join(current))
+            current = [line]
+        else:
+            current.append(line)
+    if current:
+        blocks.append("\n".join(current))
+    return blocks
+
+
+def normalise(text: str) -> str:
+    """Run the universal pre-filter pipeline: progress + ANSI + line endings.
+
+    Every filter should call this on its raw input before per-tool logic, it
+    removes the noise that obscures structural patterns.  Idempotent.
+    """
+    if not text:
+        return ""
+    # CRLF → LF before progress collapsing so the rsplit('\r', ...) doesn't
+    # spuriously eat the line-feed half of a Windows line ending.
+    text = text.replace("\r\n", "\n")
+    text = strip_progress(text)
+    text = strip_ansi(text)
+    return text
+
+
+# ---------------------------------------------------------------------------
+# Public dataclass
+# ---------------------------------------------------------------------------
+
+@dataclass
+class CompressedOutput:
+    """Result of running a :class:`Filter` over a captured command output.
+
+    Attributes:
+        text: The compressed output ready to be written to the wrapper's
+            stdout.  Always ends without a trailing newline (the wrapper adds
+            one).
+        original_bytes: Total bytes of ``stdout + stderr`` before compression
+            (post-decoding, pre-filter).
+        compressed_bytes: ``len(text.encode("utf-8"))``.  Stored explicitly so
+            stats reporting does not re-encode on every read.
+        filter_name: ``Filter.name`` of the filter that produced this output.
+            ``"raw"`` when no filter applied (compression was a no-op).
+        exit_code: The exit code of the wrapped subprocess.  The wrapper exits
+            with this code so shell chaining (``cmd && next``) still works.
+        notes: Optional diagnostic lines produced during compression (e.g.
+            "filter raised TimeoutError; falling back to truncation").  Joined
+            with ``\\n`` and prepended to *text* by :meth:`finalize`.
+    """
+
+    text: str
+    original_bytes: int
+    compressed_bytes: int
+    filter_name: str
+    exit_code: int = 0
+    notes: list[str] = field(default_factory=list)
+
+    @property
+    def bytes_saved(self) -> int:
+        """Non-negative byte savings (``original - compressed`` clamped at 0)."""
+        return max(0, self.original_bytes - self.compressed_bytes)
+
+    @property
+    def tokens_saved(self) -> int:
+        """Estimated token savings using the project's ~4 bytes/token rule."""
+        return self.bytes_saved // 4
+
+    @property
+    def percent_saved(self) -> float:
+        """Reduction as a percentage of the original size (0.0 when no input)."""
+        if self.original_bytes <= 0:
+            return 0.0
+        return 100.0 * self.bytes_saved / self.original_bytes
+
+    def with_marker(self) -> str:
+        """Return ``text`` with the trailing compression-summary marker appended.
+
+        The marker tells the reader exactly how much was elided and how to opt
+        out.  Skipped entirely when the compression was a no-op (savings ≤ 0)
+        so we never confuse the model with a marker on raw output.
+        """
+        if self.bytes_saved <= 0 or self.original_bytes <= 0:
+            return self.text
+        marker = _COMPRESSION_MARKER_FMT.format(
+            filter=self.filter_name,
+            orig_kb=self.original_bytes / 1024,
+            out_kb=self.compressed_bytes / 1024,
+            pct=self.percent_saved,
+        )
+        return self.text + marker
+
+
+# ---------------------------------------------------------------------------
+# Filter base class + registry
+# ---------------------------------------------------------------------------
+
+class Filter:
+    """Per-tool output compressor.
+
+    Subclasses declare which command binaries they accept via :attr:`binaries`
+    (matched against the resolved argv stem after prefix-stripping) and
+    implement :meth:`compress` to produce the compressed body.  The base
+    :meth:`apply` method handles ANSI / progress normalisation, byte caps,
+    and the trailing compression marker so subclasses can focus on
+    tool-specific structural compression.
+    """
+
+    #: Display name used in stats and the compression marker.  Should be a short
+    #: identifier ([a-z-]+) without whitespace so it survives in log lines.
+    name: str = "base"
+
+    #: Set of accepted binary stems (lower-case, no extension).  ``pytest``
+    #: matches both ``/usr/bin/pytest`` and ``pytest.exe``.  See
+    #: :func:`_resolve_binary` for the matching rule.
+    binaries: frozenset[str] = frozenset()
+
+    #: When non-empty, only fire when one of these tokens appears as a
+    #: positional argument after the binary.  Used to scope a filter to a
+    #: subcommand (``git status`` but not ``git rev-parse``).  Empty means
+    #: "match any subcommand".
+    subcommands: frozenset[str] = frozenset()
+
+    def matches(self, argv: list[str]) -> bool:
+        """Return True when this filter should run for the given argv.
+
+        Default implementation checks :attr:`binaries` against the lowercased
+        stem of ``argv[0]`` and, when :attr:`subcommands` is non-empty, looks
+        for an exact match in the first three positional arguments (skipping
+        leading flags).  Override for more sophisticated dispatch (e.g. when
+        a filter wants to inspect a flag's value).
+        """
+        if not argv:
+            return False
+        stem = Path(argv[0]).stem.lower()
+        if stem not in self.binaries:
+            return False
+        if not self.subcommands:
+            return True
+        return any(tok in self.subcommands for tok in _positional_args(argv[1:])[:3])
+
+    def compress(
+        self, stdout: str, stderr: str, exit_code: int, argv: list[str],
+    ) -> str:
+        """Return the compressed body (no marker; no byte cap).
+
+        Subclasses override this.  *stdout* and *stderr* have already been run
+        through :func:`normalise` (ANSI / progress stripped, CRLF → LF) by
+        :meth:`apply`.  *argv* is the parsed command tokens (after prefix
+        stripping) so filters can dispatch on subcommands.  *exit_code* lets
+        filters preserve failure context (e.g. don't strip dots when the
+        command failed because a failure block is more important than a
+        passing summary line).
+
+        The default implementation is a passthrough that concatenates stdout
+        and stderr with a separator, useful when the only compression is the
+        ANSI / progress strip that :meth:`apply` already performed.
+        """
+        if stderr and stdout:
+            return f"{stdout.rstrip()}\n---\n{stderr.rstrip()}"
+        return stdout if stdout else stderr
+
+    def apply(
+        self,
+        stdout: str,
+        stderr: str,
+        exit_code: int,
+        argv: list[str],
+        *,
+        max_lines: int = DEFAULT_MAX_LINES,
+        max_bytes: int = DEFAULT_MAX_BYTES,
+    ) -> CompressedOutput:
+        """Top-level entry: normalise → compress → cap → wrap in CompressedOutput.
+
+        Wraps :meth:`compress` with the universal pipeline that every filter
+        needs:
+
+        1. Compute original byte count from raw stdout + stderr.
+        2. Run :func:`normalise` over both streams (strip ANSI / progress).
+        3. Bail out early when post-normalisation input exceeds
+           :data:`MAX_INSPECT_BYTES`, for runaway logs we head/tail truncate
+           rather than risk a slow per-line filter pass.
+        4. Call :meth:`compress` to produce the structurally-compressed body.
+        5. Cap line count via :func:`truncate_middle` (preserves head + tail).
+        6. Cap byte count via :func:`cap_bytes` as a hard backstop.
+        7. Return the result wrapped in a :class:`CompressedOutput`.
+
+        Errors from :meth:`compress` are caught and logged; the fallback is a
+        truncated view of the raw normalised text so the agent always sees
+        *something*.
+        """
+        original_bytes = len(stdout.encode("utf-8", errors="replace")) + len(
+            stderr.encode("utf-8", errors="replace")
+        )
+        notes: list[str] = []
+        try:
+            norm_out = normalise(stdout)
+            norm_err = normalise(stderr)
+            if (
+                len(norm_out.encode("utf-8", errors="replace"))
+                + len(norm_err.encode("utf-8", errors="replace"))
+                > MAX_INSPECT_BYTES
+            ):
+                notes.append(
+                    f"input exceeded inspect budget ({MAX_INSPECT_BYTES // 1024} KiB); "
+                    "fell back to truncation"
+                )
+                body = _fallback_truncate(norm_out, norm_err, max_lines)
+            else:
+                body = self.compress(norm_out, norm_err, exit_code, argv)
+        except Exception as exc:  # noqa: BLE001, fail-soft is the contract
+            _LOG.exception("filter %s raised; falling back to truncation", self.name)
+            notes.append(f"{self.name} filter raised {type(exc).__name__}; truncated raw")
+            body = _fallback_truncate(
+                normalise(stdout), normalise(stderr), max_lines,
+            )
+
+        # Line cap.
+        lines = body.split("\n")
+        if len(lines) > max_lines:
+            lines = truncate_middle(lines, max_lines)
+            body = "\n".join(lines)
+        # Byte cap (backstop for pathological lines).
+        body = cap_bytes(body, max_bytes)
+        if notes:
+            body = "[" + "; ".join(notes) + "]\n" + body
+        compressed_bytes = len(body.encode("utf-8", errors="replace"))
+        return CompressedOutput(
+            text=body,
+            original_bytes=original_bytes,
+            compressed_bytes=compressed_bytes,
+            filter_name=self.name,
+            exit_code=exit_code,
+        )
+
+
+def _fallback_truncate(stdout: str, stderr: str, max_lines: int) -> str:
+    """Produce a head/tail-truncated dump when a filter cannot run normally.
+
+    Used when input exceeds the inspect budget or when a filter raises.
+    Combines stdout + stderr (each separately truncated) and includes a
+    clear ``---`` separator so the model can tell them apart.
+    """
+    out_lines = truncate_middle(stdout.split("\n"), max_lines // 2)
+    err_lines = truncate_middle(stderr.split("\n"), max_lines // 2)
+    if stderr:
+        return "\n".join(out_lines) + "\n---\n" + "\n".join(err_lines)
+    return "\n".join(out_lines)
+
+
+def _positional_args(args: list[str]) -> list[str]:
+    """Return positional arguments (skipping ``-x`` and ``--xyz`` flags).
+
+    Naïve but correct for the dispatch use-case: we only need to find the
+    *subcommand* (``status``, ``build``, etc.) which is always positional.
+    Flag-value pairs like ``--config=foo`` are treated as flags; standalone
+    flag values (``-c foo``) leak ``foo`` into the positional list, but that
+    is benign because we only check the first few tokens.
+    """
+    return [a for a in args if not a.startswith("-")]
+
+
+# ---------------------------------------------------------------------------
+# Command prefix stripping (sudo, env, nice, …)
+# ---------------------------------------------------------------------------
+
+# Wrappers that change resource use but not the underlying command semantics.
+# Their first non-flag argument is the *real* binary we want to dispatch on.
+_PASSTHROUGH_PREFIXES: Final[frozenset[str]] = frozenset([
+    "sudo", "doas", "time", "nice", "ionice", "nohup", "exec",
+    "env", "stdbuf", "unbuffer", "script",
+])
+
+# Multi-token wrappers where the *next two* tokens form the real binary.
+# ``python -m pytest``, ``uv run pytest``, ``poetry run pytest``, ``npx jest``,
+# ``pnpm exec eslint``, ``yarn run lint``, ``bundle exec rspec``.
+_TWO_TOKEN_PREFIXES: Final[dict[str, frozenset[str]]] = {
+    "python": frozenset(["-m"]),
+    "python3": frozenset(["-m"]),
+    "py": frozenset(["-m"]),
+    "uv": frozenset(["run", "tool", "pip"]),
+    "uvx": frozenset(),  # uvx <tool>, second token IS the binary
+    "poetry": frozenset(["run"]),
+    "rye": frozenset(["run"]),
+    "pdm": frozenset(["run"]),
+    "pipenv": frozenset(["run"]),
+    "npx": frozenset(),  # npx <tool>, second token IS the binary
+    "pnpm": frozenset(["exec", "dlx", "run"]),
+    "yarn": frozenset(["run", "exec", "dlx"]),
+    "bundle": frozenset(["exec"]),
+    "tox": frozenset(["-e"]),
+    "hatch": frozenset(["run"]),
+}
+
+
+def _strip_prefixes(argv: list[str]) -> list[str]:
+    """Strip pass-through wrappers and resolve multi-token launchers to the real binary.
+
+    Handles three classes of prefix:
+
+    * **Env assignments**: ``FOO=bar BAZ=qux cmd``: drop tokens with ``=``.
+    * **Single-token wrappers**: ``sudo``, ``time``, ``nice``, ``env``,
+      ``stdbuf``: skip the wrapper and any of its short flags.
+    * **Two-token launchers**: ``python -m pytest``, ``uv run pytest``,
+      ``npx jest``: skip the launcher and (optionally) the dispatch keyword,
+      treating the *next* token as the binary.
+
+    Returns a new argv list with the first element being the resolved binary
+    stem (no path, no extension).  An empty list is returned when stripping
+    consumes all tokens.
+    """
+    if not argv:
+        return []
+    out = list(argv)
+    # Strip leading env assignments (``FOO=bar BAZ=qux cmd ...``).
+    while out and "=" in out[0] and not out[0].startswith("-") and "/" not in out[0]:
+        # Only treat ``KEY=value`` as an env assignment when KEY is a valid
+        # identifier; otherwise it could be a real arg like ``--flag=val``.
+        head = out[0].split("=", 1)[0]
+        if head and (head[0].isalpha() or head[0] == "_") and all(
+            c.isalnum() or c == "_" for c in head
+        ):
+            out.pop(0)
+        else:
+            break
+    # Strip pass-through prefixes, including their short flags (``nice -n 10``).
+    while out:
+        stem = Path(out[0]).stem.lower()
+        if stem not in _PASSTHROUGH_PREFIXES:
+            break
+        out.pop(0)
+        # Skip the prefix's own flags (``-n 10``, ``-c env``) so we land on
+        # the real binary in argv[0] after the loop.
+        while out and out[0].startswith("-"):
+            flag = out.pop(0)
+            # Two-token flags need their value consumed too.  A naive heuristic
+            # is enough here: known short flags that take an arg.
+            if flag in ("-n", "-c", "-i", "-u", "-e") and out:
+                out.pop(0)
+    if not out:
+        return out
+    # Resolve two-token launchers.  ``python -m pytest`` → ``pytest``.
+    stem = Path(out[0]).stem.lower()
+    if stem in _TWO_TOKEN_PREFIXES and len(out) >= 2:
+        next_tok = out[1]
+        triggers = _TWO_TOKEN_PREFIXES[stem]
+        if not triggers or next_tok in triggers:
+            # Skip the launcher and (when present) the dispatch keyword.
+            consume = 1 if not triggers else 2
+            if len(out) > consume:
+                out = out[consume:]
+    return out
+
+
+# ---------------------------------------------------------------------------
+# Filter implementations
+# ---------------------------------------------------------------------------
+
+class GenericFilter(Filter):
+    """Fallback filter: ANSI strip + progress strip + consecutive dedupe.
+
+    Used when no per-tool filter matches but the hook layer has decided to
+    wrap a command (e.g. a custom binary the user opted in to compress).
+    Cannot rely on tool-specific structure, so it just removes the universal
+    noise sources.
+    """
+
+    name = "generic"
+
+    def compress(
+        self, stdout: str, stderr: str, exit_code: int, argv: list[str],
+    ) -> str:
+        out_lines = dedupe_consecutive(stdout.split("\n"))
+        err_lines = dedupe_consecutive(stderr.split("\n"))
+        if stderr.strip():
+            return "\n".join(out_lines).rstrip() + "\n---\n" + "\n".join(err_lines).rstrip()
+        return "\n".join(out_lines)
+
+
+# --- Pytest ----------------------------------------------------------------
+
+_PYTEST_DOTS_RE: Final[re.Pattern[str]] = re.compile(
+    r"^[\.FxXEsS]+\s*(\[\s*\d+%\])?\s*$"
+)
+_PYTEST_HEADER_RE: Final[re.Pattern[str]] = re.compile(
+    r"^=+\s*(?:test session starts|FAILURES|ERRORS|short test summary info|"
+    r"warnings summary|slowest \d+ durations|\d+ failed|\d+ passed|\d+ error)\b"
+)
+_PYTEST_FAIL_LINE_RE: Final[re.Pattern[str]] = re.compile(
+    r"^(FAILED|ERROR|PASSED|SKIPPED|XFAIL|XPASS)\s+\S"
+)
+_PYTEST_COLLECT_RE: Final[re.Pattern[str]] = re.compile(r"^collected \d+ items?")
+
+
+class PytestFilter(Filter):
+    """Compress pytest output: keep failures + summary, drop pass progress.
+
+    Pytest output is highly structured.  The compression model is:
+
+    * **Keep**: header section (rootdir, plugins, collected), every ``FAILED``
+      block (full traceback), every ``ERROR`` block, the ``short test summary
+      info`` section, warnings summary, and the final ``= N failed, M passed
+      in Xs =`` line.
+    * **Drop**: pass-progress dots line (``....F..s....    [ 50%]``),
+      ``PASSED`` lines in verbose mode (kept as a count), individual collected
+      file names beyond the first few.
+
+    On a 5 KB pytest run with no failures the output shrinks to ~10 lines.
+    With failures the failure tracebacks are preserved untouched so the agent
+    has full debugging context.
+    """
+
+    name = "pytest"
+    binaries = frozenset(["pytest", "py.test"])
+
+    def compress(
+        self, stdout: str, stderr: str, exit_code: int, argv: list[str],
+    ) -> str:
+        text = stdout
+        if stderr.strip():
+            text = (text.rstrip() + "\n" + stderr.rstrip()) if text else stderr
+        lines = text.split("\n")
+        kept: list[str] = []
+        passed_count = 0
+        in_failures = False
+        in_errors = False
+        for line in lines:
+            # Drop the dots/percent progress line entirely.
+            if _PYTEST_DOTS_RE.match(line):
+                continue
+            # Section transitions, re-evaluate which block we're in.
+            if _PYTEST_HEADER_RE.match(line):
+                in_failures = "FAILURES" in line
+                in_errors = "ERRORS" in line or "short test summary" in line
+                kept.append(line)
+                continue
+            # PASSED entries: count, do not keep.  Only when not inside a
+            # failure traceback (PASSED can appear in tracebacks as part of
+            # captured stderr, keep those).
+            if not in_failures and not in_errors and _PYTEST_FAIL_LINE_RE.match(line):
+                tag = line.split(None, 1)[0]
+                if tag == "PASSED":
+                    passed_count += 1
+                    continue
+                kept.append(line)
+                continue
+            kept.append(line)
+        # Trim collected-files spam to first three.
+        kept = _trim_repeated_prefix(kept, _PYTEST_COLLECT_RE, keep=3)
+        if passed_count:
+            kept.append(f"[token-goat: collapsed {passed_count} PASSED lines]")
+        # Drop runs of consecutive blank lines (pytest pads blocks with them).
+        return _squeeze_blank_lines("\n".join(kept))
+
+
+# --- Jest / Vitest / Mocha -------------------------------------------------
+
+_JEST_PASS_LINE_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\s*(?:PASS|✓|√)\s+\S"
+)
+_JEST_FAIL_LINE_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\s*(?:FAIL|✗|×|✘)\s+\S"
+)
+_JEST_SUMMARY_RE: Final[re.Pattern[str]] = re.compile(
+    r"^(Test Suites|Tests|Snapshots|Time|Ran all test suites):"
+)
+
+
+class JestFilter(Filter):
+    """Compress Jest / Vitest / Mocha output.
+
+    Jest emits ``PASS`` and ``FAIL`` headers per test file plus a final
+    summary block.  Failures include diff-style output (``Expected`` /
+    ``Received``) that we preserve verbatim.
+
+    Compression model:
+
+    * **Drop** ``PASS path/to/file.test.js`` lines (collapse to count).
+    * **Keep** ``FAIL`` blocks with their full body (signature + diff).
+    * **Keep** the final ``Test Suites: …`` / ``Tests: …`` / ``Snapshots: …``
+      / ``Time: …`` summary lines.
+    * **Drop** the per-file pass list (``✓ should do thing (5 ms)``) outside of
+      a FAIL block.
+    """
+
+    name = "jest"
+    binaries = frozenset(["jest", "vitest", "mocha", "ava", "tap"])
+
+    def compress(
+        self, stdout: str, stderr: str, exit_code: int, argv: list[str],
+    ) -> str:
+        # Jest writes summaries to stderr by default.
+        merged = (stdout.rstrip() + "\n" + stderr) if stdout.strip() else stderr
+        lines = merged.split("\n")
+        kept: list[str] = []
+        pass_count = 0
+        in_fail_block = False
+        for line in lines:
+            if _JEST_PASS_LINE_RE.match(line) and not in_fail_block:
+                pass_count += 1
+                continue
+            if _JEST_FAIL_LINE_RE.match(line):
+                in_fail_block = True
+                kept.append(line)
+                continue
+            # Blank line ends a fail block.
+            if not line.strip() and in_fail_block:
+                in_fail_block = False
+            # Suppress the per-test pass tick when outside a fail block.
+            stripped = line.lstrip()
+            if not in_fail_block and stripped.startswith(("✓", "√")):
+                continue
+            kept.append(line)
+        if pass_count:
+            kept.append(f"[token-goat: collapsed {pass_count} PASS files]")
+        return _squeeze_blank_lines("\n".join(kept))
+
+
+# --- Cargo ------------------------------------------------------------------
+
+_CARGO_COMPILING_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\s*Compiling\s+\S+\s+v\S+"
+)
+_CARGO_PROGRESS_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\s*(Downloading|Fetching|Updating|Documenting|Checking|Building)\s+\S"
+)
+_CARGO_FINISHED_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\s*Finished\s+(dev|release|test)"
+)
+
+
+class CargoFilter(Filter):
+    """Compress cargo build / test / check output.
+
+    Cargo emits a ``Compiling foo v0.1.0`` line per crate (often dozens),
+    plus optional ``Downloading``, ``Fetching``, ``Updating`` lines.  These
+    are noise unless they fail.
+
+    Compression model:
+
+    * **Drop** ``Compiling`` lines beyond a head + tail sample (keep first 2
+      and last 2 so the agent can see what triggered the build).
+    * **Drop** ``Downloading`` / ``Fetching`` / ``Updating`` / ``Documenting``
+      lines unless followed by an error.
+    * **Keep** every ``warning:`` and ``error:`` block in full (Rust diagnostics
+      span multiple lines with arrow-pointers; preserving them is essential).
+    * **Keep** the ``Finished`` summary line.
+    * **Keep** ``cargo test`` output (delegates to test-style filtering).
+    """
+
+    name = "cargo"
+    binaries = frozenset(["cargo"])
+
+    def compress(
+        self, stdout: str, stderr: str, exit_code: int, argv: list[str],
+    ) -> str:
+        # Cargo writes progress / errors to stderr; only test bodies to stdout.
+        merged = (stderr.rstrip() + "\n" + stdout) if stderr.strip() else stdout
+        lines = merged.split("\n")
+        compiled: list[str] = []
+        kept: list[str] = []
+        dropped_progress = 0
+        for line in lines:
+            if _CARGO_COMPILING_RE.match(line):
+                compiled.append(line)
+                continue
+            if _CARGO_PROGRESS_RE.match(line):
+                dropped_progress += 1
+                continue
+            kept.append(line)
+        # Reinject a compact compilation summary.
+        if compiled:
+            if len(compiled) <= 4:
+                kept = compiled + kept
+            else:
+                kept = [
+                    *compiled[:2],
+                    f"[token-goat: collapsed {len(compiled) - 4} 'Compiling …' lines]",
+                    *compiled[-2:],
+                    *kept,
+                ]
+        if dropped_progress:
+            kept.append(f"[token-goat: dropped {dropped_progress} cargo progress lines]")
+        return _squeeze_blank_lines("\n".join(kept))
+
+
+# --- Node package managers (npm / pnpm / yarn) -----------------------------
+
+_NPM_PROGRESS_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\s*(⠋|⠙|⠹|⠸|⠼|⠴|⠦|⠧|⠇|⠏)\s"
+)
+_NPM_DEPRECATED_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\s*npm warn deprecated|^\s*WARN deprecated", re.IGNORECASE
+)
+_NPM_AUDIT_PKG_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\s*[a-z0-9@._/-]+\s+(low|moderate|high|critical)\s", re.IGNORECASE
+)
+_NPM_ERR_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\s*npm (?:ERR!|error)\s|^\s*ERROR\s", re.IGNORECASE
+)
+
+
+class NodePackageFilter(Filter):
+    """Compress ``npm`` / ``pnpm`` / ``yarn`` / ``bun`` package-manager output.
+
+    Package managers emit huge amounts of progress (spinner characters,
+    "added X packages" lines, deprecation warnings for transitive deps).
+    Errors are usually multi-line ``npm ERR!`` blocks that must survive
+    unchanged.
+
+    Compression model:
+
+    * **Drop** spinner / progress lines (``⠋ idealTree:…``).
+    * **Collapse** deprecation warnings to one summary line per unique package.
+    * **Keep** every ``npm ERR!`` / ``npm error`` block verbatim.
+    * **Keep** vulnerability counts but collapse per-package audit detail.
+    * **Keep** the final ``added/changed/removed N packages in Xs`` line.
+    """
+
+    name = "npm"
+    binaries = frozenset(["npm", "pnpm", "yarn", "bun"])
+
+    def compress(
+        self, stdout: str, stderr: str, exit_code: int, argv: list[str],
+    ) -> str:
+        merged = (stdout.rstrip() + "\n" + stderr) if stdout.strip() else stderr
+        lines = merged.split("\n")
+        kept: list[str] = []
+        deprecated_pkgs: dict[str, int] = {}
+        audit_lines_dropped = 0
+        for line in lines:
+            if _NPM_PROGRESS_RE.match(line):
+                continue
+            if _NPM_DEPRECATED_RE.match(line):
+                # Extract the package name (``foo@1.2.3:``) for grouping.
+                m = re.search(r"\b([a-z0-9@._/-]+)@[\d.]+", line)
+                pkg = m.group(1) if m else "<unknown>"
+                deprecated_pkgs[pkg] = deprecated_pkgs.get(pkg, 0) + 1
+                continue
+            if _NPM_AUDIT_PKG_RE.match(line) and not _NPM_ERR_RE.match(line):
+                audit_lines_dropped += 1
+                continue
+            kept.append(line)
+        if deprecated_pkgs:
+            kept.append(
+                f"[token-goat: collapsed {sum(deprecated_pkgs.values())} deprecation "
+                f"warnings across {len(deprecated_pkgs)} packages: "
+                f"{', '.join(sorted(deprecated_pkgs)[:5])}"
+                + ("…" if len(deprecated_pkgs) > 5 else "")
+                + "]"
+            )
+        if audit_lines_dropped:
+            kept.append(
+                f"[token-goat: dropped {audit_lines_dropped} per-package audit lines; "
+                "run `npm audit` for detail]"
+            )
+        return _squeeze_blank_lines("\n".join(kept))
+
+
+# --- Docker ----------------------------------------------------------------
+
+_DOCKER_DIGEST_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\s*#\d+\s+(sha256:[a-f0-9]{8,}|resolve\s)"
+)
+_DOCKER_PROGRESS_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\s*#\d+\s+\d+(?:\.\d+)?(?:MB|kB|GB)\s+/"
+)
+_DOCKER_STEP_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\s*=>\s|^\s*#\d+\s+\[(internal|build|stage)"
+)
+_DOCKER_STEP_BODY_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\s*#\d+\s+\d+(\.\d+)?\s+"
+)
+
+
+class DockerFilter(Filter):
+    """Compress ``docker build`` / ``docker run`` / ``docker push`` output.
+
+    BuildKit emits one block per step (``#N [internal] load context``,
+    ``#N transferring`` …).  When successful most blocks are uninteresting;
+    only ``=> ERROR`` blocks matter.
+
+    Compression model:
+
+    * **Drop** sha256 digest lines (``#3 sha256:…``).
+    * **Drop** layer-transfer progress (``#5 12.3MB / 50.0MB 0.5s``).
+    * **Drop** internal step bodies (timestamp + line of build output) when
+      the step succeeded, keep only the step header and the trailing ``DONE``.
+    * **Keep** every step containing ``ERROR`` or ``FAILED``.
+    * **Keep** the final ``ERROR: failed to solve:`` block.
+    * **Keep** the final ``Successfully built …`` / ``writing image sha256:…``
+      line.
+    """
+
+    name = "docker"
+    binaries = frozenset(["docker", "buildah", "podman", "nerdctl"])
+
+    def compress(
+        self, stdout: str, stderr: str, exit_code: int, argv: list[str],
+    ) -> str:
+        merged = (stderr.rstrip() + "\n" + stdout) if stderr.strip() else stdout
+        lines = merged.split("\n")
+        kept: list[str] = []
+        dropped_digest = 0
+        dropped_progress = 0
+        dropped_body = 0
+        for line in lines:
+            if _DOCKER_DIGEST_RE.match(line):
+                dropped_digest += 1
+                continue
+            if _DOCKER_PROGRESS_RE.match(line):
+                dropped_progress += 1
+                continue
+            # When the step succeeded, drop its body (the prefixed timestamps).
+            if (
+                _DOCKER_STEP_BODY_RE.match(line)
+                and not _DOCKER_STEP_RE.match(line)
+                and "ERROR" not in line
+                and "WARN" not in line.upper()
+            ):
+                dropped_body += 1
+                continue
+            kept.append(line)
+        if dropped_digest + dropped_progress + dropped_body:
+            kept.append(
+                f"[token-goat: dropped {dropped_digest} digest, "
+                f"{dropped_progress} transfer, {dropped_body} body lines]"
+            )
+        return _squeeze_blank_lines("\n".join(kept))
+
+
+# --- kubectl / helm --------------------------------------------------------
+
+class KubectlFilter(Filter):
+    """Compress ``kubectl`` and ``helm`` output.
+
+    ``kubectl get`` returns tabular output (NAME, READY, STATUS, RESTARTS, AGE);
+    on a large cluster this is thousands of lines.  Truncate to header + first
+    25 rows + tail summary.
+
+    ``kubectl logs`` emits high-volume streaming text; dedupe identical
+    consecutive lines (the common "still waiting" / heartbeat pattern).
+
+    ``kubectl describe`` ends with a verbose Events section; preserve only
+    Warning events when there are many Normal ones.
+
+    ``helm`` output for ``install`` / ``upgrade`` includes the entire chart's
+    NOTES section which can be 100+ lines of post-install documentation;
+    truncate to the first 20.
+    """
+
+    name = "kubectl"
+    binaries = frozenset(["kubectl", "k", "helm", "oc"])
+
+    def compress(
+        self, stdout: str, stderr: str, exit_code: int, argv: list[str],
+    ) -> str:
+        positionals = _positional_args(argv[1:])
+        subcommand = positionals[0] if positionals else ""
+        text = stdout
+        if subcommand in ("get", "top") and "\n" in text:
+            text = _compress_kubectl_table(text)
+        elif subcommand == "logs":
+            text = "\n".join(dedupe_consecutive(text.split("\n")))
+        if stderr.strip():
+            text = (text.rstrip() + "\n---\n" + stderr.rstrip()) if text else stderr
+        return text
+
+
+def _compress_kubectl_table(text: str, max_rows: int = 25) -> str:
+    """Truncate a kubectl tabular output to header + first *max_rows* rows."""
+    lines = text.split("\n")
+    if len(lines) <= max_rows + 1:
+        return text
+    return (
+        "\n".join(lines[: max_rows + 1])
+        + f"\n[token-goat: {len(lines) - max_rows - 1} more rows; use --selector or -l to narrow]"
+    )
+
+
+# --- AWS CLI ---------------------------------------------------------------
+
+class AwsFilter(Filter):
+    """Compress AWS CLI output.
+
+    The AWS CLI's default ``--output json`` emits one giant JSON document.
+    Pagination via ``--no-paginate`` is common, but most calls produce a list
+    of resources where the first 20 are representative.  For ``--output
+    table`` we truncate the same way as kubectl tables.
+
+    Compression model:
+
+    * **Top-level array** with > 20 items: keep first 20, append ``[+N more
+      items elided by token-goat]``.
+    * **Nested ``Items`` / ``Reservations`` / ``Functions`` / ``Buckets``
+      arrays**: same treatment, preserving the surrounding metadata.
+    * **Table output**: same row-truncation as kubectl tables.
+    * **Error output**: passed through unchanged.
+    """
+
+    name = "aws"
+    binaries = frozenset(["aws", "aws2"])
+
+    def compress(
+        self, stdout: str, stderr: str, exit_code: int, argv: list[str],
+    ) -> str:
+        text = stdout
+        # Try JSON compression first; fall back to table truncation.
+        compressed = _try_compress_json_list(text)
+        if compressed is not None:
+            text = compressed
+        elif "\n" in text and "|" in text:
+            text = _compress_kubectl_table(text, max_rows=25)
+        if stderr.strip():
+            text = (text.rstrip() + "\n---\n" + stderr.rstrip()) if text else stderr
+        return text
+
+
+def _try_compress_json_list(text: str) -> str | None:
+    """If *text* is a JSON document with a long top-level list, truncate it.
+
+    Returns the compressed JSON string, or ``None`` when the text is not JSON
+    or when no compression was applied.  Only the most common AWS list shapes
+    are detected: top-level array, or top-level object whose first list-valued
+    key has > 20 entries.
+    """
+    import json  # noqa: PLC0415
+
+    stripped = text.strip()
+    if not stripped or stripped[0] not in "{[":
+        return None
+    try:
+        data = json.loads(stripped)
+    except (ValueError, json.JSONDecodeError):
+        return None
+    changed = False
+    if isinstance(data, list) and len(data) > 20:
+        original = len(data)
+        data = data[:20]
+        data.append({"__token_goat__": f"+{original - 20} items elided"})
+        changed = True
+    elif isinstance(data, dict):
+        for key, value in list(data.items()):
+            if isinstance(value, list) and len(value) > 20:
+                original = len(value)
+                data[key] = [*value[:20], {"__token_goat__": f"+{original - 20} items elided"}]
+                changed = True
+    if not changed:
+        return None
+    return json.dumps(data, indent=2)
+
+
+# --- Linters (eslint / ruff / mypy / pylint) -------------------------------
+
+_ESLINT_LOC_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\s+\d+:\d+\s+(error|warning|info)\s"
+)
+_ESLINT_FILE_RE: Final[re.Pattern[str]] = re.compile(
+    r"^(?:/|[A-Z]:|[a-zA-Z0-9_./-]+\.(?:js|jsx|ts|tsx|mjs|cjs|vue))"
+)
+_RUFF_LINE_RE: Final[re.Pattern[str]] = re.compile(
+    r"^(?P<file>.+?):(?P<line>\d+):(?P<col>\d+):\s+(?P<code>[A-Z]+\d+)\s"
+)
+_MYPY_LINE_RE: Final[re.Pattern[str]] = re.compile(
+    r"^(?P<file>.+?):(?P<line>\d+):(?:\d+:)?\s+(?P<level>error|note|warning):"
+)
+
+
+class LinterFilter(Filter):
+    """Compress linter output: group by file, dedupe by rule.
+
+    Linters often report the same rule fires 50+ times across a brownfield
+    codebase; the agent learns nothing new from the 51st occurrence.  Group
+    by ``file`` and within each file group by ``rule_code``, keeping the first
+    three line numbers as examples and appending ``(+N more)``.
+
+    Filters dispatched:
+
+    * **eslint**: ``  3:12  error  'foo' is defined but never used  no-unused-vars``
+    * **ruff**: ``src/foo.py:3:12: F401 'foo' imported but unused``
+    * **mypy / pyright**: ``src/foo.py:3: error: incompatible type``
+    * **pylint**: similar: falls through to dedupe_by_key.
+    """
+
+    name = "linter"
+    binaries = frozenset([
+        "eslint", "ruff", "mypy", "pyright", "pylint", "tsc",
+        "stylelint", "biome", "rome",
+    ])
+
+    def compress(
+        self, stdout: str, stderr: str, exit_code: int, argv: list[str],
+    ) -> str:
+        merged = (stdout.rstrip() + "\n" + stderr) if stdout.strip() else stderr
+        binary = Path(argv[0]).stem.lower() if argv else ""
+        if binary in ("ruff", "mypy", "pyright", "pylint"):
+            compressed = dedupe_by_key(
+                merged.split("\n"),
+                re.compile(r"\b([A-Z][A-Z0-9]+\d+|error|warning|note)\b"),
+                keep_first_n=3,
+                fmt="[token-goat: +{count} more matching {key_value}]",
+            )
+            return _squeeze_blank_lines("\n".join(compressed))
+        # ESLint: stanza-style.
+        return _compress_eslint_stanza(merged)
+
+
+def _compress_eslint_stanza(text: str) -> str:
+    """Compress ESLint's per-file stanza format.
+
+    Format::
+
+        path/to/file.js
+          12:8  error    'foo' is defined but never used  no-unused-vars
+          15:1  warning  Missing semicolon                semi
+        ...
+        ✖ 47 problems (12 errors, 35 warnings)
+
+    Strategy: within each file stanza, dedupe by rule name (last token on
+    each issue line) keeping up to three examples; preserve the final ``✖``
+    summary.
+    """
+    lines = text.split("\n")
+    out: list[str] = []
+    current_file: list[str] = []
+
+    def flush_file() -> None:
+        if not current_file:
+            return
+        header = current_file[0]
+        body = current_file[1:]
+        per_rule: dict[str, list[str]] = {}
+        for line in body:
+            m = _ESLINT_LOC_RE.match(line)
+            if not m:
+                # Not an issue line, flush as-is.
+                if per_rule:
+                    out.extend(_emit_eslint_rules(per_rule))
+                    per_rule = {}
+                out.append(line)
+                continue
+            rule = line.rsplit(None, 1)[-1].strip()
+            per_rule.setdefault(rule, []).append(line)
+        out.append(header)
+        out.extend(_emit_eslint_rules(per_rule))
+
+    for line in lines:
+        if _ESLINT_FILE_RE.match(line):
+            flush_file()
+            current_file = [line]
+        elif current_file:
+            current_file.append(line)
+        else:
+            out.append(line)
+    flush_file()
+    return _squeeze_blank_lines("\n".join(out))
+
+
+def _emit_eslint_rules(per_rule: dict[str, list[str]]) -> list[str]:
+    """Emit grouped eslint issues: up to 3 examples per rule plus a count."""
+    out: list[str] = []
+    for rule, entries in sorted(per_rule.items()):
+        keep = entries[:3]
+        out.extend(keep)
+        if len(entries) > 3:
+            out.append(f"  [token-goat: +{len(entries) - 3} more {rule} violations]")
+    return out
+
+
+# --- Git -------------------------------------------------------------------
+
+_GIT_STATUS_HEADER_RE: Final[re.Pattern[str]] = re.compile(
+    r"^(?:On branch|Your branch|Untracked files|Changes (?:not staged|to be committed):|"
+    r"Unmerged paths|Changes to be committed|nothing to commit)"
+)
+_GIT_LOG_COMMIT_RE: Final[re.Pattern[str]] = re.compile(r"^commit [0-9a-f]{7,}")
+_GIT_DIFF_FILE_RE: Final[re.Pattern[str]] = re.compile(r"^diff --git ")
+_GIT_DIFF_HUNK_RE: Final[re.Pattern[str]] = re.compile(r"^@@\s")
+
+
+class GitFilter(Filter):
+    """Compress ``git`` output across status / log / diff / show / ls-files.
+
+    Git is the highest-volume command in any agent session, ``git status``
+    after a refactor can be hundreds of lines.  Subcommand dispatch table:
+
+    * **status**: keep headers + first 30 changed-file lines, summarize rest by
+      change kind (modified / new / deleted).
+    * **log**: keep first 10 commits in full, summarize rest by date range.
+    * **diff / show**: per-file: keep first 3 hunks unchanged; replace
+      additional hunks with ``[+N more hunks elided by token-goat]``.  For
+      large diffs (> 200 files) drop file bodies entirely and emit
+      ``--stat`` style summary.
+    * **ls-files / ls-tree**: truncate to first 100 + tail summary.
+    * **fetch / pull / push**: drop ``remote: counting objects`` progress,
+      keep the ``->`` ref-update lines and any error.
+    * **everything else** (rev-parse, config, blame, …): generic dedupe only.
+    """
+
+    name = "git"
+    binaries = frozenset(["git"])
+
+    def compress(
+        self, stdout: str, stderr: str, exit_code: int, argv: list[str],
+    ) -> str:
+        positionals = _positional_args(argv[1:])
+        subcommand = positionals[0] if positionals else ""
+        # Git writes "counting objects" etc. to stderr, useful only when something fails.
+        if subcommand in ("status",):
+            return _compress_git_status(stdout, stderr)
+        if subcommand == "log":
+            return _compress_git_log(stdout, stderr)
+        if subcommand in ("diff", "show"):
+            return _compress_git_diff(stdout, stderr)
+        if subcommand in ("ls-files", "ls-tree"):
+            return _truncate_listing(stdout, stderr, head=100)
+        if subcommand in ("fetch", "pull", "push", "clone"):
+            return _compress_git_remote(stdout, stderr)
+        # Fallback: ANSI / progress already stripped; dedupe consecutive.
+        merged = stdout + ("\n" + stderr if stderr.strip() else "")
+        return _squeeze_blank_lines("\n".join(dedupe_consecutive(merged.split("\n"))))
+
+
+def _compress_git_status(stdout: str, stderr: str) -> str:
+    """Truncate ``git status`` output, summarising long file lists by category."""
+    lines = stdout.split("\n")
+    out: list[str] = []
+    kept_files = 0
+    bucket: dict[str, int] = {}
+    for line in lines:
+        if _GIT_STATUS_HEADER_RE.match(line) or not line.strip() or line.startswith("\t("):
+            out.append(line)
+            continue
+        if line.startswith("\t") or line.startswith("        "):
+            kept_files += 1
+            if kept_files <= 30:
+                out.append(line)
+            else:
+                kind = _git_status_kind(line)
+                bucket[kind] = bucket.get(kind, 0) + 1
+            continue
+        out.append(line)
+    if bucket:
+        summary = ", ".join(f"{count} {kind}" for kind, count in sorted(bucket.items()))
+        out.append(f"[token-goat: +{sum(bucket.values())} more files: {summary}]")
+    if stderr.strip():
+        out.extend(["---", stderr.rstrip()])
+    return "\n".join(out)
+
+
+def _git_status_kind(line: str) -> str:
+    """Return a short label for a porcelain git status line (modified / new / deleted)."""
+    stripped = line.strip()
+    if stripped.startswith("modified:"):
+        return "modified"
+    if stripped.startswith("new file:"):
+        return "new"
+    if stripped.startswith("deleted:"):
+        return "deleted"
+    if stripped.startswith("renamed:"):
+        return "renamed"
+    if stripped.startswith("typechange:"):
+        return "typechange"
+    return "other"
+
+
+def _compress_git_log(stdout: str, stderr: str, *, max_commits: int = 10) -> str:
+    """Keep the first *max_commits* commit blocks in full, summarising the rest."""
+    blocks = split_blocks(stdout, _GIT_LOG_COMMIT_RE)
+    # split_blocks returns leading non-commit text as block 0; preserve it.
+    if not blocks:
+        return stdout
+    prelude = blocks[0] if not _GIT_LOG_COMMIT_RE.match(blocks[0]) else ""
+    commits = [b for b in blocks if _GIT_LOG_COMMIT_RE.match(b)]
+    if len(commits) <= max_commits:
+        return stdout
+    kept = commits[:max_commits]
+    elided = commits[max_commits:]
+    # Extract first and last commit refs from the elided set for context.
+    first_elided = elided[0].split("\n", 1)[0]
+    last_elided = elided[-1].split("\n", 1)[0]
+    summary = (
+        f"\n[token-goat: +{len(elided)} earlier commits elided; "
+        f"oldest: {last_elided[:80]}; first elided: {first_elided[:80]}]"
+    )
+    text = (prelude + "\n" if prelude else "") + "\n".join(kept) + summary
+    if stderr.strip():
+        text += "\n---\n" + stderr.rstrip()
+    return text
+
+
+def _compress_git_diff(stdout: str, stderr: str, *, max_hunks_per_file: int = 3) -> str:
+    """Compress git diff: keep first N hunks per file, summarise the rest."""
+    file_blocks = split_blocks(stdout, _GIT_DIFF_FILE_RE)
+    if not file_blocks:
+        return stdout
+    # When > 200 files, drop bodies and emit a stat-style summary instead.
+    real_files = [b for b in file_blocks if _GIT_DIFF_FILE_RE.match(b)]
+    if len(real_files) > 200:
+        stat_lines = []
+        for b in real_files:
+            header = b.split("\n", 1)[0]
+            adds = sum(1 for ln in b.split("\n") if ln.startswith("+") and not ln.startswith("+++"))
+            dels = sum(1 for ln in b.split("\n") if ln.startswith("-") and not ln.startswith("---"))
+            stat_lines.append(f"{header}  +{adds} -{dels}")
+        return (
+            f"[token-goat: large diff ({len(real_files)} files); showing stat-only view]\n"
+            + "\n".join(stat_lines)
+        )
+    out_blocks: list[str] = []
+    for block in file_blocks:
+        if not _GIT_DIFF_FILE_RE.match(block):
+            out_blocks.append(block)
+            continue
+        hunks = split_blocks(block, _GIT_DIFF_HUNK_RE)
+        if len(hunks) <= max_hunks_per_file + 1:
+            out_blocks.append(block)
+            continue
+        # The first hunk-block is the diff header (no @@), keep it.
+        head = hunks[:max_hunks_per_file + 1]
+        elided = hunks[max_hunks_per_file + 1:]
+        out_blocks.append(
+            "\n".join(head)
+            + f"\n[token-goat: +{len(elided)} more hunks in this file elided]"
+        )
+    text = "\n".join(out_blocks)
+    if stderr.strip():
+        text += "\n---\n" + stderr.rstrip()
+    return text
+
+
+def _truncate_listing(stdout: str, stderr: str, *, head: int = 100) -> str:
+    """Truncate a flat list output (one item per line) to the first *head* lines."""
+    lines = stdout.split("\n")
+    if len(lines) <= head:
+        merged = stdout
+    else:
+        merged = (
+            "\n".join(lines[:head])
+            + f"\n[token-goat: +{len(lines) - head} more lines elided]"
+        )
+    if stderr.strip():
+        merged += "\n---\n" + stderr.rstrip()
+    return merged
+
+
+def _compress_git_remote(stdout: str, stderr: str) -> str:
+    """Drop ``remote: Counting/Compressing objects`` progress; keep ref updates."""
+    keep_re = re.compile(
+        r"^(?:From |To |   [a-f0-9]+\.\.[a-f0-9]+|\s+\*\s|\s+!\s|\s+\+\s|fatal:|error:|warning:)"
+    )
+    drop_re = re.compile(
+        r"^(?:remote: (?:Counting|Compressing|Total|Enumerating|Receiving|Resolving) objects|"
+        r"Receiving objects:|Resolving deltas:|Unpacking objects:|Updating files:)"
+    )
+    merged_lines = stdout.split("\n") + ([] if not stderr.strip() else ["---"] + stderr.split("\n"))
+    kept: list[str] = []
+    dropped = 0
+    for line in merged_lines:
+        if drop_re.match(line):
+            dropped += 1
+            continue
+        # When neither side matches a keep/drop pattern, keep it (could be an
+        # unanticipated diagnostic).
+        kept.append(line)
+        _ = keep_re  # keep_re is documentation of what we *intend* to keep
+    if dropped:
+        kept.append(f"[token-goat: dropped {dropped} 'remote:' progress lines]")
+    return "\n".join(kept)
+
+
+# --- Make / Ninja / Gradle / Maven / Go build ------------------------------
+
+_MAKE_RECURSE_RE: Final[re.Pattern[str]] = re.compile(
+    r"^make\[\d+\]: (Entering|Leaving) directory"
+)
+_MAKE_ECHO_RE: Final[re.Pattern[str]] = re.compile(r"^(echo |cc |gcc |clang |g\+\+ )")
+
+
+class MakeFilter(Filter):
+    """Compress ``make`` / ``ninja`` / ``gradle`` / ``mvn`` / ``go build`` output.
+
+    Build systems emit one line per compilation unit plus recursion markers.
+    Errors are the only thing the agent typically cares about.
+
+    Compression model:
+
+    * **Drop** ``make[N]: Entering/Leaving directory '...'`` recursion noise.
+    * **Drop** plain ``cc``/``clang``/``g++`` invocation echoes: keep only
+      the diagnostic lines (warning / error / undefined reference).
+    * **Keep** every ``warning:`` / ``error:`` block.
+    * **Keep** the final ``Error 1`` / ``BUILD FAILED`` summary.
+    * **Go**: keep ``./path/file.go:N:M: error`` lines verbatim; drop
+      ``go: downloading mod@ver`` progress.
+    """
+
+    name = "make"
+    binaries = frozenset([
+        "make", "gmake", "ninja", "gradle", "mvn", "maven", "bazel", "buck",
+        "go", "goimports",
+    ])
+
+    def compress(
+        self, stdout: str, stderr: str, exit_code: int, argv: list[str],
+    ) -> str:
+        merged = (stdout.rstrip() + "\n" + stderr) if stdout.strip() else stderr
+        lines = merged.split("\n")
+        kept: list[str] = []
+        dropped_recurse = 0
+        dropped_echo = 0
+        dropped_go_download = 0
+        for line in lines:
+            if _MAKE_RECURSE_RE.match(line):
+                dropped_recurse += 1
+                continue
+            if line.startswith("go: downloading"):
+                dropped_go_download += 1
+                continue
+            if (
+                _MAKE_ECHO_RE.match(line)
+                and "error" not in line.lower()
+                and "warning" not in line.lower()
+            ):
+                dropped_echo += 1
+                continue
+            kept.append(line)
+        notes: list[str] = []
+        if dropped_recurse:
+            notes.append(f"{dropped_recurse} 'Entering/Leaving directory' lines")
+        if dropped_echo:
+            notes.append(f"{dropped_echo} compiler-invocation echoes")
+        if dropped_go_download:
+            notes.append(f"{dropped_go_download} 'go: downloading' lines")
+        if notes:
+            kept.append(f"[token-goat: dropped {', '.join(notes)}]")
+        return _squeeze_blank_lines("\n".join(kept))
+
+
+# --- Terraform -------------------------------------------------------------
+
+_TF_REFRESH_RE: Final[re.Pattern[str]] = re.compile(
+    r"^[a-z0-9_.\[\]\"-]+: (Refreshing state|Reading|Read complete|Still |Modifications complete)"
+)
+
+
+class TerraformFilter(Filter):
+    """Compress ``terraform plan`` / ``apply`` output.
+
+    Terraform prints per-resource ``Refreshing state…`` lines (one per object,
+    often hundreds), then a giant diff with full resource bodies (mostly
+    unchanged attributes).
+
+    Compression model:
+
+    * **Drop** ``Refreshing state`` / ``Reading…`` / ``Still creating…`` lines.
+    * **Keep** the ``Plan: X to add, Y to change, Z to destroy.`` line.
+    * **Keep** every ``# resource_type.name will be created`` header.
+    * **Drop** unchanged attribute lines within a resource diff (those
+      starting with ``      `` and no ``+``/``-``/``~`` prefix), keeping
+      only the changed ones.
+    * **Keep** the final ``Apply complete!`` / ``Error:`` line.
+    """
+
+    name = "terraform"
+    binaries = frozenset(["terraform", "tf", "tofu", "opentofu"])
+
+    def compress(
+        self, stdout: str, stderr: str, exit_code: int, argv: list[str],
+    ) -> str:
+        merged = (stdout.rstrip() + "\n" + stderr) if stdout.strip() else stderr
+        lines = merged.split("\n")
+        kept: list[str] = []
+        dropped = 0
+        for line in lines:
+            if _TF_REFRESH_RE.match(line):
+                dropped += 1
+                continue
+            kept.append(line)
+        if dropped:
+            kept.append(f"[token-goat: dropped {dropped} terraform refresh/read lines]")
+        return _squeeze_blank_lines("\n".join(kept))
+
+
+# --- pip / uv / poetry ------------------------------------------------------
+
+class PipFilter(Filter):
+    """Compress ``pip install`` / ``uv pip install`` / ``poetry install`` output.
+
+    Pip emits ``Downloading X.whl (10 MB)`` lines per dependency plus the
+    final ``Successfully installed`` list.  When everything succeeds the
+    interesting line is just the final tally.
+    """
+
+    name = "pip"
+    binaries = frozenset(["pip", "pip3", "pipx"])
+
+    def compress(
+        self, stdout: str, stderr: str, exit_code: int, argv: list[str],
+    ) -> str:
+        merged = (stdout.rstrip() + "\n" + stderr) if stdout.strip() else stderr
+        lines = merged.split("\n")
+        kept: list[str] = []
+        downloads = 0
+        collects = 0
+        for line in lines:
+            if line.startswith("  Downloading "):
+                downloads += 1
+                continue
+            if line.startswith("Collecting "):
+                collects += 1
+                kept.append(line) if collects <= 5 else None
+                continue
+            kept.append(line)
+        if collects > 5:
+            kept.append(f"[token-goat: +{collects - 5} more 'Collecting' lines elided]")
+        if downloads:
+            kept.append(f"[token-goat: dropped {downloads} 'Downloading' progress lines]")
+        return _squeeze_blank_lines("\n".join(kept))
+
+
+# ---------------------------------------------------------------------------
+# Helpers shared by filters
+# ---------------------------------------------------------------------------
+
+def _squeeze_blank_lines(text: str) -> str:
+    """Collapse 3+ consecutive blank lines to a single blank line.
+
+    Many filters drop selected lines, leaving runs of empties that bloat
+    output.  Applied at the end of each filter's :meth:`compress`.
+    """
+    return re.sub(r"\n\s*\n\s*\n+", "\n\n", text)
+
+
+def _trim_repeated_prefix(
+    lines: list[str], pattern: re.Pattern[str], *, keep: int,
+) -> list[str]:
+    """Keep only the first *keep* lines matching *pattern*; drop the rest.
+
+    Used to deduplicate spammy headers (pytest "collected N items", cargo
+    "Compiling foo v0.1.0", …) where the count is more useful than the list.
+    """
+    out: list[str] = []
+    matched = 0
+    dropped = 0
+    for line in lines:
+        if pattern.match(line):
+            matched += 1
+            if matched <= keep:
+                out.append(line)
+            else:
+                dropped += 1
+        else:
+            out.append(line)
+    if dropped:
+        out.append(f"[token-goat: +{dropped} more lines matching {pattern.pattern!r}]")
+    return out
+
+
+# ---------------------------------------------------------------------------
+# Public registry & dispatch
+# ---------------------------------------------------------------------------
+
+#: Ordered registry of built-in filters.  First match wins, so more-specific
+#: filters (named binaries) precede the generic fallback.  Users can append
+#: their own :class:`Filter` subclasses but cannot redefine built-ins.
+FILTERS: list[Filter] = [
+    PytestFilter(),
+    JestFilter(),
+    CargoFilter(),
+    NodePackageFilter(),
+    DockerFilter(),
+    KubectlFilter(),
+    AwsFilter(),
+    LinterFilter(),
+    GitFilter(),
+    MakeFilter(),
+    TerraformFilter(),
+    PipFilter(),
+]
+
+
+def select_filter(argv: list[str]) -> Filter | None:
+    """Return the first registered filter whose ``matches(argv)`` is True.
+
+    Returns ``None`` when no filter applies, callers should NOT wrap such
+    commands in the compression subprocess (the overhead would be pure cost).
+
+    The argv is prefix-stripped first via :func:`_strip_prefixes` so
+    ``sudo time python -m pytest`` resolves to a ``pytest`` filter.
+    """
+    if not argv:
+        return None
+    resolved = _strip_prefixes(argv)
+    if not resolved:
+        return None
+    for f in FILTERS:
+        try:
+            if f.matches(resolved):
+                return f
+        except Exception:  # noqa: BLE001, never let a custom filter break dispatch
+            _LOG.exception("filter %s raised during matches()", f.name)
+    return None
+
+
+def detect_from_command(command: str) -> tuple[Filter, list[str]] | None:
+    """Parse a shell command string and return ``(filter, argv)`` or ``None``.
+
+    Convenience wrapper for the hook layer: the hook receives one string from
+    the harness, and dispatch needs both the filter and the argv (so the
+    filter can inspect subcommands).  Returns ``None`` when:
+
+    * the command exceeds 64 KiB (defensive against crafted payloads),
+    * ``shlex.split`` fails (unbalanced quotes: leave it alone),
+    * the command is empty after prefix stripping,
+    * no filter matches.
+    """
+    if not command or len(command) > 65_536:
+        return None
+    # Reject commands containing shell control operators (pipe, redirect,
+    # subshell, command substitution).  Those cannot be safely wrapped
+    # because the wrapper would only intercept the first stage of the pipe.
+    # The user can still opt into wrapping by writing the pipeline themselves
+    # against ``token-goat compress``.
+    if any(op in command for op in ("|", "&&", "||", ";", "$(", "`", ">", "<")):
+        return None
+    try:
+        argv = shlex.split(command, posix=True)
+    except ValueError:
+        return None
+    filter_ = select_filter(argv)
+    if filter_ is None:
+        return None
+    return filter_, _strip_prefixes(argv)
+
+
+def compress_output(
+    filter_: Filter,
+    stdout: str,
+    stderr: str,
+    exit_code: int,
+    argv: list[str],
+    *,
+    max_lines: int = DEFAULT_MAX_LINES,
+    max_bytes: int = DEFAULT_MAX_BYTES,
+) -> CompressedOutput:
+    """Run *filter_* over the captured output and return a :class:`CompressedOutput`.
+
+    This is the canonical entry point for the wrapper subprocess.  Always
+    succeeds (the filter's own :meth:`apply` catches exceptions and falls back
+    to a head/tail truncation).
+    """
+    return filter_.apply(
+        stdout, stderr, exit_code, argv, max_lines=max_lines, max_bytes=max_bytes,
+    )
+
+
+def filter_by_name(name: str) -> Filter | None:
+    """Look up a registered filter by its :attr:`Filter.name`.
+
+    Used when the hook layer has already detected the filter and the wrapper
+    just needs to reconstruct it from a CLI flag.  Returns ``None`` for
+    unknown names; the wrapper should then fall back to ``select_filter``.
+    """
+    for f in FILTERS:
+        if f.name == name:
+            return f
+    return None

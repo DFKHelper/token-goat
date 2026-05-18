@@ -33,6 +33,7 @@ from __future__ import annotations
 
 __all__ = ["post_bash", "post_read", "pre_read"]
 
+import os
 from pathlib import Path
 
 from .hooks_common import (
@@ -49,6 +50,107 @@ from .hooks_common import (
 from .hooks_common import (
     LOG as _LOG,
 )
+
+# Environment variable that disables Bash output compression at the hook layer.
+# Recognised values: "0", "false", "no", "off" (case-insensitive).  Any other
+# value (including unset) leaves compression enabled.  Matches the pattern used
+# by compact_assist for consistency.
+_ENV_BASH_COMPRESS = "TOKEN_GOAT_BASH_COMPRESS"
+
+
+def _bash_compress_enabled() -> bool:
+    """Return False when the user has explicitly disabled bash output compression.
+
+    Defaults to True so the feature is opt-out: new installs benefit
+    immediately, and an opt-out path is available for users who want the
+    raw output (e.g. debugging a filter that strips too much).
+    """
+    val = os.environ.get(_ENV_BASH_COMPRESS, "").strip().lower()
+    return val not in ("0", "false", "no", "off")
+
+
+def _handle_bash_compress(payload: HookPayload) -> HookResponse | None:
+    """Rewrite compressible Bash commands to flow through ``token-goat compress``.
+
+    When the agent issues a Bash tool call whose first binary is one of the
+    recognised noisy tools (``pytest``, ``npm install``, ``docker build``,
+    ``git log``, ``cargo build``, ``kubectl get``, ...), we intercept the
+    command and rewrite it to::
+
+        token-goat compress --filter <name> --cmd '<original>'
+
+    The wrapper subprocess runs the original through the system shell,
+    captures stdout + stderr, applies the per-tool filter, and prints a
+    compressed view that keeps every error block while dropping progress
+    bars, deprecation noise, duplicate lines, and verbose passes.
+
+    Returns ``None`` when:
+    * the user has disabled bash compression via ``TOKEN_GOAT_BASH_COMPRESS=0``
+      or the ``[bash_compress] enabled = false`` config entry,
+    * the matched filter appears in the ``disabled_filters`` config list,
+    * the command contains shell pipeline / redirect operators (the wrapper
+      can only intercept the first stage of a pipeline, so wrapping would be
+      semantically wrong),
+    * no filter matches the command's binary, or
+    * the command already starts with ``token-goat`` (avoid double-wrapping
+      when the agent invokes the wrapper itself).
+    """
+    if not _bash_compress_enabled():
+        return None
+
+    from . import bash_compress  # noqa: PLC0415
+    from . import config as config_mod  # noqa: PLC0415
+    from . import paths as paths_mod  # noqa: PLC0415
+
+    cfg = config_mod.load().bash_compress
+    if not cfg.enabled:
+        return None
+
+    tool_input = get_tool_input(payload)
+    cmd = tool_input.get("command", "")
+    if not isinstance(cmd, str) or not cmd.strip():
+        return None
+    # Avoid recursive wrapping: if the command already invokes token-goat,
+    # leave it alone.  This catches both direct calls and the wrapper's own
+    # rewrite (which would otherwise compose infinitely).
+    stripped = cmd.lstrip()
+    if stripped.startswith(("token-goat", "token_goat")) or "token_goat.cli" in stripped:
+        return None
+
+    detected = bash_compress.detect_from_command(cmd)
+    if detected is None:
+        return None
+    filter_, _argv = detected
+
+    if filter_.name in cfg.disabled_filters:
+        _LOG.debug("bash_compress: filter %s disabled by config; skipping", filter_.name)
+        return None
+
+    # Build the wrapper invocation.  paths.python_runner_command gives us the
+    # exact ``pythonw -m token_goat.cli`` form already used by the hook
+    # entries, so the rewritten command works in any environment where the
+    # hooks themselves work.
+    wrapper = paths_mod.python_runner_command(
+        "compress",
+        "--filter", filter_.name,
+        "--timeout", str(cfg.timeout_seconds),
+        "--cmd", cmd,
+    )
+    rewritten_input: dict[str, object] = dict(tool_input)
+    rewritten_input["command"] = wrapper
+    _LOG.info(
+        "bash_compress: wrapping command with %s filter (orig=%s)",
+        filter_.name,
+        sanitize_log_str(cmd, max_len=200),
+    )
+    return pre_tool_use_with_update(
+        rewritten_input,
+        (
+            f"Note: command auto-wrapped by token-goat ({filter_.name} filter) "
+            "to compress its output before it lands in context. "
+            "Set TOKEN_GOAT_BASH_COMPRESS=0 to disable."
+        ),
+    )
 
 
 def _handle_bash_read_equivalent(payload: HookPayload) -> HookPayload | None:
@@ -419,6 +521,11 @@ def pre_read(payload: HookPayload) -> HookResponse:
             # for any payload whose tool_name is not 'Bash', so the recursive
             # call always reaches the tool_name != "Read" branch at worst.
             return pre_read(read_payload)
+        # Not a read-equivalent. Check whether it's a compressible command
+        # (pytest, npm install, docker build, ...) and rewrite if so.
+        compress_response = _handle_bash_compress(payload)
+        if compress_response is not None:
+            return compress_response
         return CONTINUE()
 
     if tool_name == "Grep":

@@ -1,7 +1,14 @@
 """Config loader/saver for token-goat. Reads/writes TOML at paths.config_path()."""
 from __future__ import annotations
 
-__all__ = ["CompactAssistConfig", "Config", "CONFIG_SCHEMA_VERSION", "load", "save"]
+__all__ = [
+    "BashCompressConfig",
+    "CompactAssistConfig",
+    "Config",
+    "CONFIG_SCHEMA_VERSION",
+    "load",
+    "save",
+]
 
 import logging
 import os
@@ -15,6 +22,7 @@ _LOG = logging.getLogger("token_goat.config")
 
 _ENV_COMPACT_ASSIST: Final[str] = "TOKEN_GOAT_COMPACT_ASSIST"  # set to "0"/"false"/"no"/"off" to disable
 _ENV_COMPACT_ASSIST_LEGACY: Final[str] = "TOKENWISE_COMPACT_ASSIST"  # backward-compat alias
+_ENV_BASH_COMPRESS: Final[str] = "TOKEN_GOAT_BASH_COMPRESS"  # set to "0"/"false"/"no"/"off" to disable
 
 CONFIG_SCHEMA_VERSION: Final[int] = 1
 
@@ -30,11 +38,22 @@ class _CompactAssistToml(TypedDict, total=False):
     max_manifest_tokens: int
 
 
+class _BashCompressToml(TypedDict, total=False):
+    """Expected shape of the [bash_compress] TOML section."""
+
+    enabled: bool
+    disabled_filters: list[str]
+    max_lines: int
+    max_bytes: int
+    timeout_seconds: int
+
+
 class _ConfigToml(TypedDict, total=False):
     """Expected shape of the token-goat config TOML file."""
 
     schema_version: int
     compact_assist: _CompactAssistToml
+    bash_compress: _BashCompressToml
 
 
 @dataclass
@@ -77,6 +96,39 @@ class CompactAssistConfig:
 
 
 @dataclass
+class BashCompressConfig:
+    """Configuration for the Bash output-compression feature.
+
+    Token-Goat intercepts Bash tool calls whose binary matches a registered
+    output filter (``pytest``, ``git``, ``npm``, ``docker``, ``kubectl``, ...)
+    and rewrites the command to flow through ``token-goat compress``, which
+    captures stdout + stderr and prints a per-tool compressed view that keeps
+    every error block, drops progress bars and duplicate warnings, and groups
+    linter issues by rule.
+
+    Attributes:
+        enabled: Master on/off switch.  Can also be disabled at runtime by
+            setting ``TOKEN_GOAT_BASH_COMPRESS=0`` (or ``false``/``no``/``off``).
+        disabled_filters: Filter names (``pytest``, ``git``, ...) to disable
+            without turning the whole feature off.  Useful when a specific
+            filter is too aggressive for a particular project.
+        max_lines: Per-invocation line cap.  Output longer than this is
+            truncated with a head/tail split and an elision marker.
+        max_bytes: Per-invocation byte cap (backstop for unusually long lines).
+        timeout_seconds: Wall-clock timeout passed to the wrapper subprocess.
+            Default 600 s covers ``npm install`` on a fresh ``node_modules``;
+            raise for longer-running builds (e.g. ``terraform apply`` on a
+            large stack).
+    """
+
+    enabled: bool = True
+    disabled_filters: list[str] = field(default_factory=list)
+    max_lines: int = 1000
+    max_bytes: int = 64 * 1024
+    timeout_seconds: int = 600
+
+
+@dataclass
 class Config:
     """Top-level token-goat configuration.
 
@@ -86,6 +138,7 @@ class Config:
     """
 
     compact_assist: CompactAssistConfig = field(default_factory=CompactAssistConfig)
+    bash_compress: BashCompressConfig = field(default_factory=BashCompressConfig)
 
 
 # ---------------------------------------------------------------------------
@@ -133,6 +186,28 @@ def _validated_bool(val: object, default: bool, name: str) -> bool:
         return bool(val)
     _LOG.warning("config: %s=%r is not a bool; using default %s", name, val, default)
     return default
+
+
+def _validated_str_list(val: object, default: list[str], name: str) -> list[str]:
+    """Validate a TOML list-of-strings, dropping non-string entries with a warning.
+
+    Returns a fresh list copy of ``default`` when *val* is not a list at all.
+    Empty lists are accepted as a meaningful value (e.g.
+    ``bash_compress.disabled_filters = []`` explicitly enables every filter).
+    """
+    if not isinstance(val, list):
+        _LOG.warning("config: %s must be a list of strings; using default %s", name, default)
+        return list(default)
+    valid: list[str] = []
+    unknown: list[object] = []
+    for item in val:
+        if isinstance(item, str):
+            valid.append(item)
+        else:
+            unknown.append(item)
+    if unknown:
+        _LOG.warning("config: %s contained non-string entries (ignored): %s", name, unknown)
+    return valid
 
 
 def _validated_triggers(val: object, default: list[str]) -> list[str]:
@@ -212,14 +287,49 @@ def load() -> Config:
         )
         ca.enabled = False
 
+    bc_raw: _BashCompressToml = cast("_BashCompressToml", raw.get("bash_compress", {}))
+    bc = BashCompressConfig(
+        enabled=_validated_bool(bc_raw.get("enabled", True), True, "bash_compress.enabled"),
+        disabled_filters=_validated_str_list(
+            bc_raw.get("disabled_filters", []), [], "bash_compress.disabled_filters"
+        ),
+        max_lines=_validated_int(
+            bc_raw.get("max_lines", 1000), 1000, 50, 100_000, "bash_compress.max_lines"
+        ),
+        max_bytes=_validated_int(
+            bc_raw.get("max_bytes", 64 * 1024),
+            64 * 1024,
+            1024,
+            16 * 1024 * 1024,
+            "bash_compress.max_bytes",
+        ),
+        timeout_seconds=_validated_int(
+            bc_raw.get("timeout_seconds", 600), 600, 5, 7200, "bash_compress.timeout_seconds"
+        ),
+    )
+    env_bash = os.environ.get(_ENV_BASH_COMPRESS, "").strip().lower()
+    if env_bash in ("0", "false", "no", "off"):
+        _LOG.info(
+            "bash_compress disabled by environment variable (%s=%s)",
+            _ENV_BASH_COMPRESS,
+            env_bash,
+        )
+        bc.enabled = False
+
     _LOG.debug(
-        "config resolved: compact_assist enabled=%s triggers=%s min_events=%d max_tokens=%d",
+        "config resolved: compact_assist enabled=%s triggers=%s min_events=%d max_tokens=%d; "
+        "bash_compress enabled=%s disabled_filters=%s max_lines=%d max_bytes=%d timeout=%d",
         ca.enabled,
         ca.triggers,
         ca.min_events,
         ca.max_manifest_tokens,
+        bc.enabled,
+        bc.disabled_filters,
+        bc.max_lines,
+        bc.max_bytes,
+        bc.timeout_seconds,
     )
-    return Config(compact_assist=ca)
+    return Config(compact_assist=ca, bash_compress=bc)
 
 
 def save(config: Config) -> None:
@@ -229,6 +339,7 @@ def save(config: Config) -> None:
     p = paths.config_path()
     p.parent.mkdir(parents=True, exist_ok=True)
     ca = config.compact_assist
+    bc = config.bash_compress
     data: _ConfigToml = {
         "schema_version": CONFIG_SCHEMA_VERSION,
         "compact_assist": {
@@ -236,6 +347,13 @@ def save(config: Config) -> None:
             "triggers": ca.triggers,
             "min_events": ca.min_events,
             "max_manifest_tokens": ca.max_manifest_tokens,
+        },
+        "bash_compress": {
+            "enabled": bc.enabled,
+            "disabled_filters": bc.disabled_filters,
+            "max_lines": bc.max_lines,
+            "max_bytes": bc.max_bytes,
+            "timeout_seconds": bc.timeout_seconds,
         },
     }
     try:
