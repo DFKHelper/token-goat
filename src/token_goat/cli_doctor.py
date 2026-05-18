@@ -3,10 +3,75 @@ from __future__ import annotations
 
 import contextlib
 import sqlite3
+import time
 from datetime import date
 from pathlib import Path
 
 import typer
+
+
+def _cache_dir_stats(d: Path) -> tuple[int, int, int | None]:
+    """Return ``(total_bytes, file_count, oldest_age_seconds_or_None)`` for *d*.
+
+    Walks a single directory level — none of the cache directories the doctor
+    inspects are nested.  ``session_snapshots/`` is the one exception (one
+    subdir per session); we descend one level for it.  Symlinks are skipped
+    defensively.  Raises :class:`OSError` only when the directory itself
+    cannot be enumerated; per-file errors are silently skipped because the
+    caller treats unreadable individual entries as zero-sized.
+    """
+    total_bytes = 0
+    file_count = 0
+    oldest_mtime: float | None = None
+    now = time.time()
+    for entry in d.iterdir():
+        try:
+            if entry.is_symlink():
+                continue
+            if entry.is_dir():
+                # One-level descent for session_snapshots/<session_id>/...
+                for child in entry.iterdir():
+                    if child.is_symlink() or not child.is_file():
+                        continue
+                    try:
+                        st = child.stat()
+                    except OSError:
+                        continue
+                    total_bytes += st.st_size
+                    file_count += 1
+                    if oldest_mtime is None or st.st_mtime < oldest_mtime:
+                        oldest_mtime = st.st_mtime
+                continue
+            if not entry.is_file():
+                continue
+            try:
+                st = entry.stat()
+            except OSError:
+                continue
+            total_bytes += st.st_size
+            file_count += 1
+            if oldest_mtime is None or st.st_mtime < oldest_mtime:
+                oldest_mtime = st.st_mtime
+        except OSError:
+            continue
+    oldest_age = int(now - oldest_mtime) if oldest_mtime is not None else None
+    return total_bytes, file_count, oldest_age
+
+
+def _humanize_bytes_doctor(n: int) -> str:
+    """Compact ``B`` / ``KB`` / ``MB`` / ``GB`` formatter for the doctor output.
+
+    Identical shape to :func:`compact._humanize_bytes` but lives here so
+    cli_doctor stays a leaf importer (doctor must run even when the compaction
+    machinery is unavailable, e.g. during a partial install).
+    """
+    if n < 1024:
+        return f"{n}B"
+    if n < 1024 * 1024:
+        return f"{n / 1024:.1f}KB"
+    if n < 1024 * 1024 * 1024:
+        return f"{n / (1024 * 1024):.1f}MB"
+    return f"{n / (1024 * 1024 * 1024):.1f}GB"
 
 
 def doctor(  # noqa: C901
@@ -23,7 +88,6 @@ def doctor(  # noqa: C901
     import importlib
     import subprocess
     import sys
-    import time
 
     import psutil
 
@@ -383,7 +447,40 @@ def doctor(  # noqa: C901
         ok("(none)", "no log for today")
 
     # ------------------------------------------------------------------
-    # 13. Stats summary
+    # 13. New-cache stores (bash outputs, web outputs, session snapshots)
+    # ------------------------------------------------------------------
+    # Surfaces the disk-store stats added by the bash-output / WebFetch /
+    # diff-aware-re-read features so a long-lived install can be inspected
+    # for runaway growth without grep-ing the data directory by hand.
+    typer.echo("\nCaches")
+    for label, dir_name, cap_bytes in (
+        ("bash outputs", "bash_outputs", 16 * 1024 * 1024),
+        ("web outputs", "web_outputs", 32 * 1024 * 1024),
+        ("session snapshots", "session_snapshots", None),
+    ):
+        d = paths.data_dir() / dir_name
+        if not d.exists():
+            ok(label, "(not yet created)")
+            continue
+        try:
+            total_bytes, file_count, oldest_age = _cache_dir_stats(d)
+        except OSError as e:
+            flag(label, f"unreadable — {e}", warn=True)
+            continue
+        if file_count == 0:
+            ok(label, "0 files (empty)")
+            continue
+        age_str = f", oldest {oldest_age // 3600}h ago" if oldest_age is not None else ""
+        size_str = _humanize_bytes_doctor(total_bytes)
+        if cap_bytes is not None and total_bytes > int(cap_bytes * 1.1):
+            # 10% over the cap is the eviction's grace window; beyond that
+            # the periodic sweep should have caught up by now.
+            flag(label, f"{file_count} files, {size_str}{age_str} (over cap)", warn=True)
+        else:
+            ok(label, f"{file_count} files, {size_str}{age_str}")
+
+    # ------------------------------------------------------------------
+    # 14. Stats summary
     # ------------------------------------------------------------------
     typer.echo("\nStats")
     try:

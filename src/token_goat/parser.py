@@ -60,7 +60,29 @@ LANG_BY_EXT: dict[str, str] = {
     ".html": "html",
     ".htm": "html",
     ".json": "json",
+    ".toml": "toml",
+    ".yaml": "yaml",
+    ".yml": "yaml",
+    ".ini": "ini",
+    ".cfg": "ini",
+    ".dockerfile": "dockerfile",
 }
+
+# Files identified by full basename rather than suffix.  Dotfiles like ``.env``
+# and ``.envrc`` have an empty ``Path.suffix``, so the standard suffix lookup
+# would silently skip them.  We resolve these by lowercase basename and fall
+# through to the suffix-based ``LANG_BY_EXT`` path when no match is found.
+# ``Dockerfile`` and ``Containerfile`` are also recognised by basename
+# because the conventional spelling has no extension.
+LANG_BY_BASENAME: dict[str, str] = {
+    ".env": "env",
+    ".envrc": "env",
+    "dockerfile": "dockerfile",
+    "containerfile": "dockerfile",
+}
+# Frozenset view of LANG_BY_BASENAME (already-lowercase keys) — see the
+# matching declaration above ``_KNOWN_EXTENSIONS`` for why this is precomputed.
+_KNOWN_BASENAMES = frozenset(LANG_BY_BASENAME)
 
 # Frozenset of all known extensions (already lowercase).  Used by iter_source_files
 # for a fast O(1) membership test before the LANG_BY_EXT dict lookup, avoiding a
@@ -283,6 +305,11 @@ _EXTRACTOR_REGISTRY: dict[str, Callable[[], Extractor]] = {
     "markdown":   _language_importer("markdown"),
     "html":       _language_importer("html"),
     "json":       _language_importer("json_idx"),
+    "toml":       _language_importer("toml_idx"),
+    "yaml":       _language_importer("yaml_idx"),
+    "ini":        _language_importer("ini_idx"),
+    "env":        _language_importer("ini_idx", attr="extract_env"),
+    "dockerfile": _language_importer("dockerfile_idx"),
 }
 
 # Cache resolved extractors so each language module is imported at most once.
@@ -457,9 +484,14 @@ def iter_source_files(project: Project) -> Iterable[Path]:
             # allocation for each file whose suffix is already lowercase (the
             # common case on Linux/macOS).  Fall back to lowering only when the
             # suffix is not found in the fast path (mixed-case extension on Windows).
-            suffix = path.suffix
-            if suffix not in _KNOWN_EXTENSIONS and suffix.lower() not in _KNOWN_EXTENSIONS:
-                continue
+            # Basename match (``.env``, ``.envrc``) wins when present: those
+            # files have empty suffixes so the standard suffix gate would
+            # exclude them.
+            name_lower = name.lower()
+            if name_lower not in _KNOWN_BASENAMES:
+                suffix = path.suffix
+                if suffix not in _KNOWN_EXTENSIONS and suffix.lower() not in _KNOWN_EXTENSIONS:
+                    continue
             # Reject symlinks whose resolved target escapes the project root.
             # os.walk does not follow symlink *directories* by default, but it
             # does yield symlink *files*, so we must guard here.
@@ -518,9 +550,16 @@ def index_file(project: Project, file_path: Path) -> FileIndex | None:
         _LOG.warning("index_file: path not under project root (skipping): %s: %s", file_path, e)
         return None
     suffix_lower = file_path.suffix.lower()
-    language = LANG_BY_EXT.get(suffix_lower)
+    basename_lower = file_path.name.lower()
+    # Basename match wins over suffix match: ``.env`` has an empty suffix
+    # but a meaningful basename.  When the basename resolves we use that
+    # language; otherwise fall back to the suffix table.
+    language = LANG_BY_BASENAME.get(basename_lower) or LANG_BY_EXT.get(suffix_lower)
     if language is None:
-        _LOG.debug("index_file: unsupported extension %r for %s (skipping)", suffix_lower, rel)
+        _LOG.debug(
+            "index_file: unsupported file %r (basename=%r suffix=%r) for %s (skipping)",
+            basename_lower, basename_lower, suffix_lower, rel,
+        )
         return None
     line_count = _line_count_from_bytes(raw)
     # Compute SHA up front so we can consult the in-memory extraction cache

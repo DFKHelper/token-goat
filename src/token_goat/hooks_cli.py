@@ -322,6 +322,8 @@ _HANDLER_LOOKUP: dict[str, tuple[str, str]] = {
     "pre-fetch": ("hooks_fetch", "pre_fetch"),
     "post-edit": ("hooks_edit", "post_edit"),
     "post-read": ("hooks_read", "post_read"),
+    "post-bash": ("hooks_read", "post_bash"),
+    "post-fetch": ("hooks_fetch", "post_fetch"),
 }
 
 _HANDLER_CACHE: dict[str, Callable[[HookPayload], HookResponse]] = {}
@@ -359,6 +361,8 @@ def __getattr__(name: str) -> object:
         "pre_fetch": "pre-fetch",
         "post_edit": "post-edit",
         "post_read": "post-read",
+        "post_bash": "post-bash",
+        "post_fetch": "post-fetch",
     }
     if name in event_map:
         handler = _resolve_handler(event_map[name])
@@ -446,6 +450,8 @@ EVENTS: dict[str, Callable[[HookPayload], HookResponse]] = {
     "pre-fetch": _make_lazy_proxy("pre-fetch"),
     "post-edit": _make_lazy_proxy("post-edit"),
     "post-read": _make_lazy_proxy("post-read"),
+    "post-bash": _make_lazy_proxy("post-bash"),
+    "post-fetch": _make_lazy_proxy("post-fetch"),
     "pre-compact": pre_compact,
 }
 
