@@ -1557,16 +1557,38 @@ class TestSurgicalReadSuggestionsOnMiss:
         assert "candidates" in payload["error"]
         assert "Methodology" in payload["error"]["candidates"]
 
-    def test_symbol_miss_lists_close_match_in_project(self, indexed_ts_cli):
-        """`token-goat symbol Typo` should suggest real symbol names in the
-        same project. Without this hint agents bail out to Read."""
+    def test_symbol_typo_auto_redirects_to_real_match(self, indexed_ts_cli):
+        """`token-goat symbol Typo` with a single high-confidence close match
+        transparently returns that match (auto-redirect). Without this the
+        agent would have to parse a "Did you mean" hint and retry."""
         from typer.testing import CliRunner
 
         from token_goat.cli import app
 
         runner = CliRunner()
-        # `UserService` exists; `UserServic` (truncated) should be suggested.
+        # `UserService` exists; `UserServic` (truncated, ratio ~0.95) is the
+        # textbook auto-redirect case — single candidate well over the 0.85
+        # cutoff means the lookup is re-run against the real name.
         result = runner.invoke(app, ["symbol", "UserServic"])
+        assert result.exit_code == 0
+        combined = result.output + (result.stderr or "")
+        # Audit marker so the substitution is visible to the caller.
+        assert "redirected from" in combined
+        assert "UserServic" in combined
+        # Result row for the real symbol is in the output.
+        assert "UserService" in combined
+        assert "index.ts" in combined
+
+    def test_symbol_typo_strict_mode_falls_back_to_didyoumean(self, indexed_ts_cli):
+        """With ``--strict`` the auto-redirect is disabled and the miss path
+        emits the "Did you mean" hint instead. Integration coverage on a real
+        indexed DB — the unit test for ``--strict`` uses stubs."""
+        from typer.testing import CliRunner
+
+        from token_goat.cli import app
+
+        runner = CliRunner()
+        result = runner.invoke(app, ["symbol", "UserServic", "--strict"])
         assert result.exit_code == 0
         combined = result.output + (result.stderr or "")
         assert "No matches for" in combined
