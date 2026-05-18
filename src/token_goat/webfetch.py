@@ -634,6 +634,10 @@ def fetch_url(
         extra_meta["content_sha256"] = content_sha
         canonical = _read_content_index(content_sha)
         if canonical is not None and canonical != cache_path:
+            # Consult the canonical URL's sidecar for a cached shrink pointer.
+            # Most cache hits will have this from a previous shrink, avoiding
+            # both the shrink overhead and a redundant sidecar read on *this*
+            # URL's entry later when we try to write it.
             canonical_meta = _read_cache_meta(canonical)
             shrunk_pointer = canonical_meta.get("shrunk_path")
             if shrunk_pointer:
@@ -650,9 +654,7 @@ def fetch_url(
                     if response_headers is not None:
                         _write_cache_meta(cache_path, response_headers, extra=extra_meta)
                     return shrunk_path
-
-    if response_headers is not None:
-        _write_cache_meta(cache_path, response_headers, extra=extra_meta)
+                # Shrunk path missing but canonical exists; will re-shrink below.
 
     # Shrink if image
     if shrink_if_image:
@@ -665,11 +667,18 @@ def fetch_url(
         # already optimal and writing a self-pointer is wasted I/O.
         if content_sha is not None and shrunk != cache_path:
             extra_meta["shrunk_path"] = str(shrunk)
-            if response_headers is not None:
-                _write_cache_meta(cache_path, response_headers, extra=extra_meta)
+        # Write all metadata (headers + dedup pointers) in one operation,
+        # reducing I/O overhead. If shrink didn't produce a different path,
+        # this still records the content_sha and http headers for revalidation.
+        if response_headers is not None or extra_meta:
+            _write_cache_meta(cache_path, response_headers or {}, extra=extra_meta)
+        if content_sha is not None:
             _write_content_index(content_sha, cache_path)
         return shrunk
 
+    # No shrink requested; still record metadata for cache revalidation.
+    if response_headers is not None or extra_meta:
+        _write_cache_meta(cache_path, response_headers or {}, extra=extra_meta)
     if content_sha is not None:
         _write_content_index(content_sha, cache_path)
     return cache_path
