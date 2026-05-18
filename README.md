@@ -21,7 +21,7 @@
 </p>
 
 <p align="center">
-  <b>Token-Goat is built by one person and given away free.</b> If it saves you tokens, please drop a ⭐️ at the top of this page. One click, takes a second, and it genuinely makes our day. Thank you.
+  <b>Token-Goat is built by one person and given away free.</b> If it saves you tokens, please drop a ⭐️ at the top of this page. One click, takes a second, and it genuinely makes my day. Thank you.
 </p>
 
 ---
