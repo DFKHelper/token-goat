@@ -497,7 +497,7 @@ def shrink_if_image(path: Path) -> Path:
     return path
 
 
-def stats_for(src_path: Path, shrunken_path: Path) -> ImageStats:
+def stats_for(src_path: Path, shrunken_path: Path, src_size_bytes: int | None = None) -> ImageStats:
     """Compute compression telemetry for a source/shrunken image pair.
 
     Reads file sizes via stat and image dimensions via PIL. Both dimension
@@ -505,9 +505,17 @@ def stats_for(src_path: Path, shrunken_path: Path) -> ImageStats:
     the width/height fields are 0 and only byte savings are reported.
     Returns an all-zero ImageStats on any OS error rather than raising.
 
+    Args:
+        src_path: Path to the original image file.
+        shrunken_path: Path to the compressed/shrunk image file.
+        src_size_bytes: Optional pre-computed source file size in bytes. If provided,
+            avoids a redundant stat() call on the source file. Useful when stats_for()
+            is called immediately after shrinking, where the source size is already known.
+
     Optimizations:
     - PIL is imported only once and reused for both image reads.
     - Short-circuit on missing files or unsafe paths before importing PIL.
+    - Accepts pre-computed source size to avoid double-statting during shrinking pipeline.
     """
     _empty = ImageStats(
         src_bytes=0, out_bytes=0, bytes_saved=0,
@@ -517,7 +525,10 @@ def stats_for(src_path: Path, shrunken_path: Path) -> ImageStats:
         if not _is_safe_path(src_path) or not _is_safe_path(shrunken_path):
             _LOG.warning("rejected unsafe path in stats_for")
             return _empty
-        src_size = src_path.stat().st_size
+        # Use pre-computed src_size if provided to avoid redundant stat() call.
+        # When called from pre-read hook or shrink pipeline, the source size is
+        # already known from should_shrink() or shrink() and we can skip re-statting.
+        src_size = src_size_bytes if src_size_bytes is not None else src_path.stat().st_size
         out_size = shrunken_path.stat().st_size
 
         orig_w = orig_h = out_w = out_h = 0

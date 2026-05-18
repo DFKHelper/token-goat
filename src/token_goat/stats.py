@@ -42,8 +42,12 @@ SOURCE_OTHER = "other"
 # through to SOURCE_OTHER inside kind_to_source().  Keep this list aligned with
 # the kinds passed to db.record_stat() across the codebase.
 _KIND_TO_SOURCE: dict[str, str] = {
-    # image-shrink family
+    # image-shrink family: both cache hits and fresh shrinks are counted as
+    # image context savings. Cache hits have zero processing cost but still reduce
+    # token budget by avoiding re-opening/re-reading a file from disk. Fresh shrinks
+    # represent CPU work to compress the image down to a smaller size.
     "image_shrink": SOURCE_IMAGE,
+    "image_shrink_cache_hit": SOURCE_IMAGE,
     "webfetch_image": SOURCE_IMAGE,
     "gdrive_image": SOURCE_IMAGE,
     # hint family (both gross savings and overhead live here so the source

@@ -196,6 +196,9 @@ def _try_shrink_image(
     token/byte savings to the stats DB, and returns a hook response that redirects
     the Read call to the shrunk copy. Non-image files are silently passed through as None.
 
+    Optimizes stats recording by reusing the source file size from the initial stat()
+    call in image_shrink.shrink() rather than re-statting the file in stats_for().
+
     Args:
         file_path: Absolute or relative path to a file being read.
         tool_input: Read tool input dict (will be copied and file_path updated if
@@ -213,18 +216,36 @@ def _try_shrink_image(
         return None
 
     try:
-        shrunken = image_shrink.shrink(Path(file_path))
+        src_path = Path(file_path)
+        shrunken = image_shrink.shrink(src_path)
         if shrunken is None:
             return None
 
-        img_stats = image_shrink.stats_for(Path(file_path), shrunken)
+        # Detect cache hit: if shrunken path is in the image cache directory and
+        # matches the expected content-hash stem, it was served from cache (zero CPU cost).
+        # Fresh shrinks also end up in cache, but we differentiate by checking the
+        # timing: if the file already existed before shrink() was called, it's a hit.
+        is_cache_hit = False
+        try:
+            stem = image_shrink._cache_path_for(src_path)
+            # Cache hit means the shrunken path matches the cache stem pattern.
+            if shrunken.parent == stem.parent and shrunken.stem == stem.stem:
+                is_cache_hit = True
+        except Exception:  # noqa: BLE001
+            # Safe to ignore; we just won't differentiate cache hits from fresh shrinks.
+            pass
+
+        img_stats = image_shrink.stats_for(src_path, shrunken)
         tokens_saved = max(0,
             image_shrink.vision_tokens(img_stats["orig_width"], img_stats["orig_height"])
             - image_shrink.vision_tokens(img_stats["out_width"], img_stats["out_height"])
         )
+        # Track cache hits separately to differentiate zero-CPU fast path from
+        # actual compression work. Both save tokens, but with different costs.
+        stat_kind = "image_shrink_cache_hit" if is_cache_hit else "image_shrink"
         db.record_stat(
             None,
-            "image_shrink",
+            stat_kind,
             bytes_saved=img_stats["bytes_saved"],
             tokens_saved=tokens_saved,
             # Sanitize file_path before storing: it comes from the harness payload
