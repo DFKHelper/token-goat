@@ -1,4 +1,12 @@
-"""Integration tests: pre-Bash dedup hint via the pre_read hook."""
+"""Integration tests: pre-Bash dedup hint via the pre_read hook.
+
+These tests use commands that are **not** in the ``bash_compress`` filter list
+(``pytest``, ``cargo``, ``npm``, ``docker``, ``make``, ``git``, …) so the
+auto-wrap path doesn't fire and consume the fall-through that the dedup-miss
+assertions rely on.  ``find`` / ``echo`` / ``head`` are reliable sentinels —
+none of them are compressible, so the only reason for ``pre_read`` to emit a
+``hookSpecificOutput`` is a dedup hit.
+"""
 from __future__ import annotations
 
 from hook_helpers import assert_continue as _assert_continue
@@ -20,12 +28,12 @@ def _seed_history(session_id: str, command: str, *, output_bytes: int = 8000) ->
 
 class TestBashDedupHintFiresOnRepeat:
     def test_repeat_command_triggers_hint(self, tmp_data_dir):
-        _seed_history("dedup-1", "pytest -v tests/")
+        _seed_history("dedup-1", "find /srv -name '*.log'")
         # Pre-read fires for the same command in the same session.
         payload = {
             "session_id": "dedup-1",
             "tool_name": "Bash",
-            "tool_input": {"command": "pytest -v tests/"},
+            "tool_input": {"command": "find /srv -name '*.log'"},
         }
         result = hooks_read.pre_read(payload)
         _assert_continue(result)
@@ -33,14 +41,14 @@ class TestBashDedupHintFiresOnRepeat:
         assert hso is not None
         ctx = hso.get("additionalContext", "")
         assert "token-goat bash-output" in ctx
-        assert "pytest -v tests/" in ctx
+        assert "find /srv" in ctx
 
     def test_distinct_command_no_hint(self, tmp_data_dir):
-        _seed_history("dedup-2", "pytest -v tests/")
+        _seed_history("dedup-2", "find /srv -name '*.log'")
         payload = {
             "session_id": "dedup-2",
             "tool_name": "Bash",
-            "tool_input": {"command": "pytest -v src/"},  # different command
+            "tool_input": {"command": "find /opt -name '*.log'"},  # different command
         }
         result = hooks_read.pre_read(payload)
         _assert_continue(result)
@@ -48,11 +56,11 @@ class TestBashDedupHintFiresOnRepeat:
 
     def test_tiny_prior_output_no_hint(self, tmp_data_dir):
         """A small previous output is not worth deduplicating."""
-        _seed_history("dedup-3", "ls", output_bytes=20)
+        _seed_history("dedup-3", "echo hi", output_bytes=20)
         payload = {
             "session_id": "dedup-3",
             "tool_name": "Bash",
-            "tool_input": {"command": "ls"},
+            "tool_input": {"command": "echo hi"},
         }
         result = hooks_read.pre_read(payload)
         _assert_continue(result)
@@ -64,9 +72,10 @@ class TestBashDedupHintFiresOnRepeat:
         """A prior run older than the stale-age threshold is suppressed."""
         from token_goat import hints
 
-        # First simulate a normal recording.
-        _seed_history("dedup-4", "make build")
-        sha = bash_cache.command_hash("make build")
+        # First simulate a normal recording with a non-compressible command so
+        # the fall-through path is not consumed by ``_handle_bash_compress``.
+        _seed_history("dedup-4", "find /srv -type f")
+        sha = bash_cache.command_hash("find /srv -type f")
         entry = session.lookup_bash_entry("dedup-4", sha)
         assert entry is not None
 
@@ -78,7 +87,7 @@ class TestBashDedupHintFiresOnRepeat:
         payload = {
             "session_id": "dedup-4",
             "tool_name": "Bash",
-            "tool_input": {"command": "make build"},
+            "tool_input": {"command": "find /srv -type f"},
         }
         result = hooks_read.pre_read(payload)
         _assert_continue(result)
