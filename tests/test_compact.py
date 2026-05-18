@@ -299,6 +299,46 @@ class TestGrepSection:
             "duplicate grep pattern should appear only once\n" + result
         )
 
+    def test_grep_dedup_by_pattern_ignores_different_paths(self, tmp_data_dir):
+        # Searching the same pattern in different scopes should produce one entry
+        # (the most-recent one), not two — the compaction LLM cares about what
+        # was searched, not how the search scope changed between runs.
+        import time as _time
+        sid = "grep-scope-dedup-session-abc"
+        session.mark_grep(sid, "find_me", "/proj/src")
+        _time.sleep(0.01)
+        session.mark_grep(sid, "find_me", "/proj/tests")
+        result = compact.build_manifest(sid)
+        assert result.count("find_me") == 1, (
+            "same pattern with different paths should collapse to one entry\n" + result
+        )
+
+    def test_grep_result_count_shown_when_available(self, tmp_data_dir):
+        sid = "grep-count-session-abc"
+        session.mark_grep(sid, "needle", "/proj/src", result_count=7)
+        result = compact.build_manifest(sid)
+        assert "7 results" in result, f"result count missing:\n{result}"
+
+    def test_grep_zero_result_count_shown(self, tmp_data_dir):
+        sid = "grep-zero-session-abc"
+        session.mark_grep(sid, "dead_end", "/proj/src", result_count=0)
+        result = compact.build_manifest(sid)
+        assert "0 results" in result, f"zero result count missing:\n{result}"
+
+    def test_grep_result_count_singular(self, tmp_data_dir):
+        sid = "grep-singular-session-abc"
+        session.mark_grep(sid, "unique_hit", "/proj/src", result_count=1)
+        result = compact.build_manifest(sid)
+        assert "1 result" in result, f"singular form missing:\n{result}"
+        assert "1 results" not in result, f"wrong plural form:\n{result}"
+
+    def test_grep_no_count_when_unknown(self, tmp_data_dir):
+        sid = "grep-no-count-session-abc"
+        session.mark_grep(sid, "unknown_count", "/proj/src", result_count=None)
+        result = compact.build_manifest(sid)
+        assert "unknown_count" in result
+        assert "result" not in result, f"count shown when it should be absent:\n{result}"
+
     def test_grep_most_recent_shown_first(self, tmp_data_dir):
         import time as _time
         sid = "grep-recency-session-abc"
