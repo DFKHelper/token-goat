@@ -498,27 +498,141 @@ def post_read(payload: HookPayload) -> HookResponse:
 _BASH_CACHE_MIN_BYTES: int = 400
 
 
+def _coerce_text(value: object) -> str:
+    """Best-effort string coercion for a payload field of unknown shape.
+
+    Handles the three shapes a Bash PostToolUse payload can legitimately carry
+    for an output field:
+
+    * **str** — already textual; returned as-is.
+    * **list** — an MCP-style ``content`` array of ``{"type": "text",
+      "text": "..."}`` items.  We concatenate the ``text`` of every text-typed
+      item; non-text items are skipped (binary results would need different
+      handling and have no place in a stdout-replacement cache).
+    * **anything else** — coerced via ``str()``.  This catches int/float exit
+      lines from a misshapen harness ("0\\n" sent as the int 0) and lets the
+      cache still record an approximate body rather than dropping the event.
+
+    Returns ``""`` for ``None`` and empty containers so the calling threshold
+    check is a single numeric comparison.
+    """
+    if value is None:
+        return ""
+    if isinstance(value, str):
+        return value
+    if isinstance(value, list):
+        parts: list[str] = []
+        for item in value:
+            if isinstance(item, dict):
+                # MCP CallToolResult shape: {"type": "text", "text": "..."}
+                # Older harnesses use "text" as the only key.
+                txt = item.get("text") if item.get("type") == "text" else None
+                if txt is None:
+                    txt = item.get("text")
+                if isinstance(txt, str):
+                    parts.append(txt)
+            elif isinstance(item, str):
+                parts.append(item)
+        return "".join(parts)
+    return str(value)
+
+
 def _extract_bash_response(payload: HookPayload) -> tuple[str, str, int | None]:
     """Pull (stdout, stderr, exit_code) from a PostToolUse Bash payload.
 
-    Defensive against payload shape drift between harness versions: each field
-    is read at multiple plausible keys and falls back to empty/None when absent.
-    Non-string stdout/stderr is coerced via :func:`str` so a future change to
-    structured output (e.g. JSON tool result) does not crash the hook.
+    Defensive against payload shape drift across harness versions and tool
+    flavours.  Three concrete shapes are accepted at the top level:
+
+    1. ``payload["tool_response"]`` is a **dict** with named subfields
+       (``stdout`` / ``stderr`` / ``exit_code`` and their snake_case + alt
+       spellings).  This is the documented Claude Code shape.
+    2. ``payload["tool_response"]`` is a **str** carrying the raw output as
+       one blob — used by older harness builds and some MCP relays.
+    3. ``payload["tool_response"]`` is an **MCP CallToolResult dict** with a
+       ``content`` array of ``{"type": "text", "text": "..."}`` items —
+       common when Bash is exposed through an MCP server adapter.
+
+    The function also probes ``tool_result``, ``response``, ``output``, and
+    the top-level payload itself for stdout (in that order) so a harness
+    version that promotes the result to the top-level still works.  Every
+    coercion routes through :func:`_coerce_text` so an unexpected shape can
+    never raise — the hook stays fail-soft for any input.
     """
-    raw_resp = payload.get("tool_response") or payload.get("tool_result") or {}
-    if not isinstance(raw_resp, dict):
-        return "", "", None
-    stdout_val = raw_resp.get("stdout") or raw_resp.get("output") or ""
-    stderr_val = raw_resp.get("stderr") or ""
-    exit_val = raw_resp.get("exit_code")
-    if exit_val is None:
-        exit_val = raw_resp.get("returncode")
-    stdout = stdout_val if isinstance(stdout_val, str) else str(stdout_val)
-    stderr = stderr_val if isinstance(stderr_val, str) else str(stderr_val)
+    # Step 1: locate the response container.  Newer payloads nest it under
+    # ``tool_response``; older ones use ``tool_result`` or ``response``; some
+    # MCP relays put it at the top level under ``output``.
+    raw_resp: object = (
+        payload.get("tool_response")
+        if isinstance(payload, dict) else None
+    )
+    if raw_resp is None and isinstance(payload, dict):
+        raw_resp = payload.get("tool_result") or payload.get("response")
+
+    stdout = ""
+    stderr = ""
+    exit_val: object = None
+
+    if isinstance(raw_resp, str):
+        # Whole response was a bare string — treat as combined stdout.
+        stdout = raw_resp
+    elif isinstance(raw_resp, list):
+        # MCP content-array style at the top level (no surrounding dict).
+        stdout = _coerce_text(raw_resp)
+    elif isinstance(raw_resp, dict):
+        # Named-field style.  Probe in priority order so the most-specific
+        # field wins when a shape carries multiple at once.
+        stdout_raw = (
+            raw_resp.get("stdout")
+            or raw_resp.get("output")
+            or raw_resp.get("text")
+            or raw_resp.get("content")
+        )
+        stdout = _coerce_text(stdout_raw)
+        stderr_raw = raw_resp.get("stderr") or raw_resp.get("err")
+        stderr = _coerce_text(stderr_raw)
+        exit_val = (
+            raw_resp.get("exit_code")
+            if "exit_code" in raw_resp
+            else raw_resp.get("returncode")
+            if "returncode" in raw_resp
+            else raw_resp.get("exit")
+        )
+
+    # When nothing came back from the structured shapes, fall back to a
+    # top-level ``output``/``stdout`` field.  This covers the rare harness
+    # where the result is flattened onto the payload itself rather than
+    # nested under ``tool_response``.  Note ``exit_code`` uses explicit-
+    # membership checks rather than ``a or b`` because ``0`` is a perfectly
+    # valid (and common) exit code that would otherwise be filtered out.
+    if not stdout and isinstance(payload, dict):
+        stdout = _coerce_text(payload.get("stdout") or payload.get("output"))
+    if not stderr and isinstance(payload, dict):
+        stderr = _coerce_text(payload.get("stderr"))
+    if exit_val is None and isinstance(payload, dict):
+        # HookPayload is a TypedDict that does not declare these keys (they
+        # are harness-version-specific extras), but the runtime payload may
+        # carry them; ``dict.get`` on a TypedDict instance is type-erased so
+        # we route through a ``cast`` to keep mypy strict elsewhere.
+        from typing import cast as _cast  # noqa: PLC0415
+
+        plain: dict[str, object] = _cast("dict[str, object]", payload)
+        if "exit_code" in plain:
+            exit_val = plain["exit_code"]
+        elif "returncode" in plain:
+            exit_val = plain["returncode"]
+
     exit_code: int | None = None
     if isinstance(exit_val, int) and not isinstance(exit_val, bool):
         exit_code = exit_val
+    elif isinstance(exit_val, str):
+        # Some harnesses send the exit code as a string ("0", "1").  Accept
+        # numerics within int range; reject anything else silently rather
+        # than crash on int("oops").
+        try:
+            exit_code = int(exit_val)
+        except (TypeError, ValueError):
+            exit_code = None
+
     return stdout, stderr, exit_code
 
 

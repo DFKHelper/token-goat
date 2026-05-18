@@ -63,6 +63,55 @@ class TestStoreAndLoad:
         evicted = bash_cache.evict_old_entries(max_total_bytes=300_000)
         assert evicted >= 1
 
+    def test_evict_removes_paired_sidecars(self, tmp_data_dir):
+        """Eviction removes both the body and its sidecar JSON together."""
+        from pathlib import Path as _Path
+
+        metas = []
+        for i in range(5):
+            m = bash_cache.store_output(
+                f"sess{i}", f"echo {i}", "X" * 200_000, "", 0,
+            )
+            assert m is not None
+            bash_cache.write_sidecar(m)
+            metas.append(m)
+
+        # Sanity: every body has a sidecar before eviction.
+        for m in metas:
+            sp = bash_cache.sidecar_meta_path(m.output_id)
+            assert sp is not None and sp.exists()
+
+        bash_cache.evict_old_entries(max_total_bytes=300_000)
+
+        # For any body removed, the sidecar must also be gone.
+        for m in metas:
+            body = (
+                _Path(bash_cache._bash_outputs_dir()) / f"{m.output_id}.txt"
+            )
+            sp = bash_cache.sidecar_meta_path(m.output_id)
+            assert sp is not None
+            if not body.exists():
+                assert not sp.exists(), f"orphan sidecar left after eviction: {sp.name}"
+
+    def test_orphan_sidecar_sweep(self, tmp_data_dir):
+        """An orphan sidecar (no matching body) is removed by the next pass."""
+        # Seed a single legitimate entry so the cache directory exists.
+        m = bash_cache.store_output("sess0", "ls", "X" * 500, "", 0)
+        assert m is not None
+        bash_cache.write_sidecar(m)
+
+        # Plant an orphan sidecar with no matching body.
+        orphan = bash_cache._bash_outputs_dir() / "anon-0000000000000-deadbeefcafebabe.json"
+        orphan.write_text("{}", encoding="utf-8")
+        assert orphan.exists()
+
+        # Drive eviction with a tight cap so the body-loop runs and the
+        # orphan sweep runs at the end regardless of total size.
+        bash_cache.evict_old_entries(max_total_bytes=1)
+        # The body in question (orphan's pair) never existed, so the sweep
+        # must remove the sidecar.
+        assert not orphan.exists()
+
 
 class TestPostBashHook:
     def test_small_output_skipped(self, tmp_data_dir):

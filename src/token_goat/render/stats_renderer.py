@@ -552,6 +552,7 @@ _SOURCE_COLORS: dict[str, RGB] = {
     "hint":    C.BLUE,
     "read":    C.GREEN4,
     "compact": C.TEAL,
+    "bash":    C.ORANGE,
     "other":   C.TEXT_MUTED,
 }
 
