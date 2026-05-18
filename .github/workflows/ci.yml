@@ -30,6 +30,15 @@ jobs:
         # exception in the log without needing to download artefacts.
         # ``--tb=short`` keeps each entry compact (one line per frame) so
         # the summary stays readable even when several tests fail at once.
+        # ``TOKEN_GOAT_NO_WORKER_SPAWN=1`` suppresses the detached worker
+        # daemon spawn from ``worker.ensure_running()``.  Under GitHub
+        # Actions on Windows the runner tracks every descendant via a
+        # Win32 job object, so the daemon's infinite loop holds the
+        # test step open until the global six-hour timeout fires.  Tests
+        # still exercise the watchdog branch by reading the env var; only
+        # the actual ``subprocess.Popen`` is skipped.
+        env:
+          TOKEN_GOAT_NO_WORKER_SPAWN: "1"
         run: uv run pytest -rfE --tb=short
 
       - name: Kill leftover detached worker daemons
