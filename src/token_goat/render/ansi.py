@@ -93,4 +93,5 @@ class C:
     PURPLE:       RGB = (188, 140, 255)  # project bullet 1
     TEAL:         RGB = (138, 212, 255)  # project bullet 2
     ORANGE:       RGB = (235, 165,  80)  # bash bucket — distinct from the cool-toned hint/read/compact
+    YELLOW:       RGB = (240, 215,  80)  # web bucket — pairs with orange in warm-tone half
     RED:          RGB = (200,  60,  60)  # negative delta

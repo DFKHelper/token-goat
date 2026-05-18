@@ -35,6 +35,7 @@ SOURCE_HINT = "hint"
 SOURCE_READ = "read"
 SOURCE_COMPACT = "compact"
 SOURCE_BASH = "bash"
+SOURCE_WEB = "web"
 SOURCE_OTHER = "other"
 
 # Map each raw event kind → user-facing source bucket.  Unknown kinds fall
@@ -48,11 +49,15 @@ _KIND_TO_SOURCE: dict[str, str] = {
     # hint family (both gross savings and overhead live here so the source
     # bucket reflects the net contribution of the hint mechanism).  Diff hints
     # are the smart variant that injects a unified diff instead of suppressing
-    # the re-read entirely — same prevention mechanism, same bucket.
+    # the re-read entirely — same prevention mechanism, same bucket.  Grep
+    # dedup is a "prevent another file-like read" hint and stays in this
+    # bucket too; the cross-tool symmetry keeps stats scannable.
     "session_hint": SOURCE_HINT,
     "session_hint_overhead": SOURCE_HINT,
     "diff_hint": SOURCE_HINT,
     "diff_hint_overhead": SOURCE_HINT,
+    "grep_dedup_hint": SOURCE_HINT,
+    "grep_dedup_hint_overhead": SOURCE_HINT,
     # surgical read family
     "read_replacement": SOURCE_READ,
     "section_replacement": SOURCE_READ,
@@ -67,6 +72,12 @@ _KIND_TO_SOURCE: dict[str, str] = {
     "bash_dedup_hint": SOURCE_BASH,
     "bash_dedup_hint_overhead": SOURCE_BASH,
     "bash_output_cached": SOURCE_BASH,
+    # web-fetch cache family — same shape as bash, separate bucket so the
+    # network-savings line is distinct from the local-execution-savings line
+    # in the stats output.
+    "web_dedup_hint": SOURCE_WEB,
+    "web_dedup_hint_overhead": SOURCE_WEB,
+    "web_output_cached": SOURCE_WEB,
 }
 
 
@@ -88,6 +99,7 @@ __all__ = [
     "SOURCE_IMAGE",
     "SOURCE_OTHER",
     "SOURCE_READ",
+    "SOURCE_WEB",
     "StatsSummary",
     "kind_to_source",
     "render_text",

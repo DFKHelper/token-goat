@@ -281,6 +281,59 @@ def _try_diff_hint(
     return pre_tool_use_with_context(str(hint))
 
 
+def _handle_grep_dedup(payload: HookPayload) -> HookResponse | None:
+    """Return a dedup hint when the same Grep pattern just ran in this session.
+
+    Mirrors :func:`_handle_bash_dedup` for the Grep tool surface.  Returns
+    ``None`` to let the hook fall through to ``CONTINUE`` when no dedup
+    hit is available — we never deny a Grep call, only suggest the agent
+    reuse the prior result.
+    """
+    from . import db, session  # noqa: PLC0415
+    from .hints import CHARS_PER_TOKEN, build_grep_dedup_hint  # noqa: PLC0415
+
+    session_id, _cwd = get_session_context(payload)
+    if not session_id:
+        return None
+
+    tool_input = get_tool_input(payload)
+    pattern = tool_input.get("pattern")
+    if not isinstance(pattern, str) or not pattern:
+        return None
+    path = tool_input.get("path")
+    if path is not None and not isinstance(path, str):
+        path = None
+
+    try:
+        cache = session.load(session_id)
+    except (OSError, ValueError):
+        return None
+
+    hint = build_grep_dedup_hint(
+        session_id=session_id, pattern=pattern, path=path, cache=cache,
+    )
+    if hint is None:
+        return None
+
+    realized_tokens = hint.tokens_saved
+    injection_bytes = len(hint)
+    injection_cost_tokens = max(1, int(injection_bytes / CHARS_PER_TOKEN))
+    db.record_stat(
+        None, "grep_dedup_hint",
+        bytes_saved=realized_tokens * 4, tokens_saved=realized_tokens,
+        detail=sanitize_log_str(pattern, max_len=200),
+    )
+    db.record_stat(
+        None, "grep_dedup_hint_overhead",
+        bytes_saved=-injection_bytes, tokens_saved=-injection_cost_tokens,
+        detail=sanitize_log_str(pattern, max_len=200),
+    )
+    _LOG.info(
+        "pre-read: grep-dedup hint injected (tokens_saved=%d)", realized_tokens,
+    )
+    return pre_tool_use_with_context(str(hint))
+
+
 def _handle_bash_dedup(payload: HookPayload) -> HookResponse | None:
     """Return a dedup hint when this exact Bash command ran earlier in the session.
 
@@ -366,6 +419,12 @@ def pre_read(payload: HookPayload) -> HookResponse:
             # for any payload whose tool_name is not 'Bash', so the recursive
             # call always reaches the tool_name != "Read" branch at worst.
             return pre_read(read_payload)
+        return CONTINUE()
+
+    if tool_name == "Grep":
+        dedup = _handle_grep_dedup(payload)
+        if dedup is not None:
+            return dedup
         return CONTINUE()
 
     if tool_name != "Read":

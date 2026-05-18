@@ -1,20 +1,37 @@
-"""Pre-fetch hook: intercept Drive and WebFetch image downloads before they reach the model.
+"""Pre/post-fetch hook handlers: image redirect + WebFetch text dedup cache.
 
-Image URLs and Drive file downloads arrive through WebFetch/Drive MCP tools, not the Read
-tool, so the pre-read hook never fires for them.  This module catches those tool calls,
-denies the direct download, and redirects the model to ``token-goat gdrive-fetch`` or
-``token-goat webfetch`` so the shrink+cache pipeline applies before bytes hit context.
+Three responsibilities run from this module:
+
+1. **Drive image / WebFetch image redirect** (existing): downloads to image
+   URLs are routed through ``token-goat fetch-image`` so the shrink+cache
+   pipeline applies before bytes hit context.
+
+2. **WebFetch text dedup hint** (new): when a non-image URL is fetched a
+   second time in the same session, the pre-fetch hook suggests the agent
+   retrieve the cached body via ``token-goat web-output`` instead of
+   re-fetching.  Mirrors the bash-dedup hint pattern.
+
+3. **WebFetch text capture** (new): the post-fetch hook persists the
+   response body to ``data_dir() / "web_outputs"`` and records the
+   ``(url_sha → output_id)`` mapping in the session cache so step 2 has
+   something to point at.
 """
 from __future__ import annotations
 
-__all__ = ["pre_fetch"]
+__all__ = ["post_fetch", "pre_fetch"]
 
 from .hooks_common import (
     CONTINUE,
     HookPayload,
     HookResponse,
     deny_redirect,
+    get_session_context,
     get_tool_input,
+    pre_tool_use_with_context,
+    sanitize_log_str,
+)
+from .hooks_common import (
+    LOG as _LOG,
 )
 
 # Maximum URL length accepted for embedding in hook messages.  URLs longer than
@@ -119,8 +136,52 @@ def _intercept_webfetch_image(url: str) -> HookResponse:
     )
 
 
+def _handle_web_dedup(payload: HookPayload, url: str) -> HookResponse | None:
+    """Return a dedup hint when *url* was just fetched in this session.
+
+    Mirrors :func:`hooks_read._handle_bash_dedup` for the WebFetch surface.
+    Returns ``None`` to let the hook continue to its existing image-redirect
+    path or pass through unchanged.
+    """
+    from . import db, session  # noqa: PLC0415
+    from .hints import CHARS_PER_TOKEN, build_web_dedup_hint  # noqa: PLC0415
+
+    session_id, _cwd = get_session_context(payload)
+    if not session_id:
+        return None
+
+    try:
+        cache = session.load(session_id)
+    except (OSError, ValueError):
+        return None
+
+    hint = build_web_dedup_hint(
+        session_id=session_id, url=url, cache=cache,
+    )
+    if hint is None:
+        return None
+
+    realized_tokens = hint.tokens_saved
+    injection_bytes = len(hint)
+    injection_cost_tokens = max(1, int(injection_bytes / CHARS_PER_TOKEN))
+    db.record_stat(
+        None, "web_dedup_hint",
+        bytes_saved=realized_tokens * 4, tokens_saved=realized_tokens,
+        detail=sanitize_log_str(url, max_len=200),
+    )
+    db.record_stat(
+        None, "web_dedup_hint_overhead",
+        bytes_saved=-injection_bytes, tokens_saved=-injection_cost_tokens,
+        detail=sanitize_log_str(url, max_len=200),
+    )
+    _LOG.info(
+        "pre-fetch: web-dedup hint injected (tokens_saved=%d)", realized_tokens,
+    )
+    return pre_tool_use_with_context(str(hint))
+
+
 def pre_fetch(payload: HookPayload) -> HookResponse:
-    """Deny Drive/WebFetch image tools and redirect to token-goat shims."""
+    """Deny Drive/WebFetch image tools and dedup repeat text WebFetch calls."""
     tool_name = payload.get("tool_name", "")
 
     drive_tools = (
@@ -160,14 +221,170 @@ def pre_fetch(payload: HookPayload) -> HookResponse:
     if tool_name == "WebFetch":
         tool_input = get_tool_input(payload)
         url = tool_input.get("url")
-        if not url:
+        if not url or not isinstance(url, str):
             return CONTINUE()
 
         from . import webfetch  # noqa: PLC0415
 
-        if not webfetch.is_image_url(url):
-            return CONTINUE()
+        if webfetch.is_image_url(url):
+            return _intercept_webfetch_image(url)
 
-        return _intercept_webfetch_image(url)
+        # Non-image WebFetch: try dedup first.  When the same URL was fetched
+        # earlier in this session, emit a hint pointing at the cached body
+        # instead of letting the request go through.
+        dedup = _handle_web_dedup(payload, url)
+        if dedup is not None:
+            return dedup
+        return CONTINUE()
 
+    return CONTINUE()
+
+
+# ---------------------------------------------------------------------------
+# post_fetch — capture WebFetch text responses to the on-disk cache
+# ---------------------------------------------------------------------------
+
+# Smallest WebFetch body worth caching.  Mirrors the dedup-hint floor: below
+# this size the dedup hint would not fire anyway, and the disk+JSON churn
+# outweighs the saving.
+_WEB_CACHE_MIN_BYTES: int = 1024
+
+
+def _extract_web_response(payload: HookPayload) -> tuple[str, int | None]:
+    """Pull (body, status_code) from a PostToolUse WebFetch payload.
+
+    Defensive about payload-shape drift between harness versions.  The text
+    body is read at multiple plausible keys (``output``, ``text``, ``body``,
+    ``content``) and falls back to a bare string when ``tool_response`` is
+    itself a string.  Status code is read at ``status``, ``status_code``,
+    or ``code`` and coerced via int — string-typed codes are accepted to
+    handle harnesses that surface them as ``"200"``.
+    """
+    raw_resp: object = payload.get("tool_response") if isinstance(payload, dict) else None
+    if raw_resp is None and isinstance(payload, dict):
+        raw_resp = payload.get("tool_result") or payload.get("response")
+
+    body = ""
+    status_val: object = None
+
+    if isinstance(raw_resp, str):
+        body = raw_resp
+    elif isinstance(raw_resp, dict):
+        body_raw = (
+            raw_resp.get("output")
+            or raw_resp.get("text")
+            or raw_resp.get("body")
+            or raw_resp.get("content")
+            or raw_resp.get("response")
+        )
+        if isinstance(body_raw, str):
+            body = body_raw
+        elif isinstance(body_raw, list):
+            # MCP CallToolResult content array — concatenate text items.
+            parts: list[str] = []
+            for item in body_raw:
+                if isinstance(item, dict) and isinstance(item.get("text"), str):
+                    parts.append(item["text"])
+                elif isinstance(item, str):
+                    parts.append(item)
+            body = "".join(parts)
+        else:
+            body = str(body_raw) if body_raw is not None else ""
+        status_val = (
+            raw_resp.get("status_code")
+            if "status_code" in raw_resp
+            else raw_resp.get("status")
+            if "status" in raw_resp
+            else raw_resp.get("code")
+        )
+
+    status_code: int | None = None
+    if isinstance(status_val, int) and not isinstance(status_val, bool):
+        status_code = status_val
+    elif isinstance(status_val, str):
+        try:
+            status_code = int(status_val)
+        except (TypeError, ValueError):
+            status_code = None
+
+    return body, status_code
+
+
+def post_fetch(payload: HookPayload) -> HookResponse:
+    """Post-WebFetch hook: persist large text responses to disk + session history.
+
+    Skips images entirely — those are already handled by the existing
+    image-cache pipeline.  For non-image responses above the cache threshold,
+    writes the body to ``data_dir() / "web_outputs"`` and records the
+    ``(url_sha, output_id)`` mapping in the session so a follow-up
+    ``pre_fetch`` for the same URL can dedupe.
+
+    Always returns CONTINUE — this hook never modifies the tool result.
+    Failures at any step are logged and swallowed.
+    """
+    tool_name = payload.get("tool_name", "")
+    if tool_name != "WebFetch":
+        return CONTINUE()
+
+    session_id, _cwd = get_session_context(payload)
+    if not session_id:
+        _LOG.debug("post-fetch: no session_id; output not cached")
+        return CONTINUE()
+
+    tool_input = get_tool_input(payload)
+    url = tool_input.get("url")
+    if not isinstance(url, str) or not url:
+        return CONTINUE()
+
+    from . import webfetch  # noqa: PLC0415
+
+    if webfetch.is_image_url(url):
+        # Image responses go through the existing image cache pipeline; we
+        # don't double-cache them here.
+        return CONTINUE()
+
+    body, status_code = _extract_web_response(payload)
+    body_size = len(body.encode("utf-8", errors="replace"))
+    if body_size < _WEB_CACHE_MIN_BYTES:
+        _LOG.debug(
+            "post-fetch: body too small to cache (%d bytes < %d threshold)",
+            body_size, _WEB_CACHE_MIN_BYTES,
+        )
+        return CONTINUE()
+
+    from . import db, session, web_cache  # noqa: PLC0415
+
+    meta = web_cache.store_output(session_id, url, body, status_code)
+    if meta is None:
+        return CONTINUE()
+    web_cache.write_sidecar(meta)
+
+    try:
+        session.mark_web_fetch(
+            session_id=session_id,
+            url_sha=meta.url_sha,
+            url_preview=url,
+            output_id=meta.output_id,
+            body_bytes=meta.body_bytes,
+            status_code=meta.status_code,
+            truncated=meta.truncated,
+        )
+    except (ValueError, OSError) as exc:
+        _LOG.debug("post-fetch: session record failed: %s", exc)
+
+    # Informational stat row — no saving claimed at capture time; the saving
+    # is realized when (and if) the agent later avoids a re-fetch.
+    try:
+        db.record_stat(
+            None, "web_output_cached",
+            bytes_saved=0, tokens_saved=0,
+            detail=sanitize_log_str(url, max_len=200),
+        )
+    except Exception:  # noqa: BLE001
+        _LOG.debug("post-fetch: stat record failed", exc_info=True)
+
+    _LOG.info(
+        "post-fetch: cached body id=%s bytes=%d status=%s truncated=%s",
+        meta.output_id, body_size, status_code, meta.truncated,
+    )
     return CONTINUE()
