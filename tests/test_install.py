@@ -205,6 +205,71 @@ def test_unpatch_claude_md_removes_block(tmp_path, monkeypatch):
 
 
 # ---------------------------------------------------------------------------
+# 8b. patch_claude_md — strips legacy tokenwise block left over from pre-rename
+# ---------------------------------------------------------------------------
+
+
+def test_patch_claude_md_strips_legacy_tokenwise_block(tmp_path, monkeypatch):
+    """A CLAUDE.md installed under the old ``tokenwise`` binary name still
+    contains a ``<!-- tokenwise-begin -->...-end -->`` block describing the
+    old routing table. Running the modern installer must strip it so the file
+    is left with only the up-to-date ``token-goat`` block, not both.
+    """
+    home = _fake_home(tmp_path)
+    _patch_home(monkeypatch, home)
+
+    claude_dir = home / ".claude"
+    claude_dir.mkdir(parents=True, exist_ok=True)
+    legacy_block = (
+        f"{install.LEGACY_CLAUDE_MD_BEGIN}\n"
+        "## tokenwise - route code reads through tokenwise first\n\n"
+        "| Goal | Do this | Not this |\n"
+        "|------|---------|----------|\n"
+        "| Find a function | `tokenwise symbol X` | `Grep X` |\n"
+        f"{install.LEGACY_CLAUDE_MD_END}\n"
+    )
+    seed = "# My existing CLAUDE.md\n\nSome prior content.\n\n" + legacy_block
+    md_path = claude_dir / "CLAUDE.md"
+    md_path.write_text(seed, encoding="utf-8")
+
+    install.patch_claude_md()
+    content = md_path.read_text()
+
+    # User content survives.
+    assert "My existing CLAUDE.md" in content
+    # Modern block landed.
+    assert install.CLAUDE_MD_BEGIN in content
+    assert install.CLAUDE_MD_END in content
+    # Legacy fence is gone, and so is the misleading body.
+    assert install.LEGACY_CLAUDE_MD_BEGIN not in content
+    assert install.LEGACY_CLAUDE_MD_END not in content
+    assert "tokenwise symbol X" not in content
+
+
+def test_patch_claude_md_legacy_strip_is_idempotent(tmp_path, monkeypatch):
+    """Two consecutive installs leave exactly one modern block, no legacy."""
+    home = _fake_home(tmp_path)
+    _patch_home(monkeypatch, home)
+
+    claude_dir = home / ".claude"
+    claude_dir.mkdir(parents=True, exist_ok=True)
+    seed = (
+        f"{install.LEGACY_CLAUDE_MD_BEGIN}\nlegacy body\n{install.LEGACY_CLAUDE_MD_END}\n"
+    )
+    md_path = claude_dir / "CLAUDE.md"
+    md_path.write_text(seed, encoding="utf-8")
+
+    install.patch_claude_md()
+    install.patch_claude_md()
+    content = md_path.read_text()
+
+    assert content.count(install.CLAUDE_MD_BEGIN) == 1
+    assert content.count(install.CLAUDE_MD_END) == 1
+    assert install.LEGACY_CLAUDE_MD_BEGIN not in content
+    assert install.LEGACY_CLAUDE_MD_END not in content
+
+
+# ---------------------------------------------------------------------------
 # 9. write_skill — creates SKILL.md under ~/.claude/skills/token-goat/
 # ---------------------------------------------------------------------------
 

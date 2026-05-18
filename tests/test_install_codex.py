@@ -193,6 +193,63 @@ def test_patch_codex_agents_md_idempotent(tmp_path, monkeypatch):
     assert content.count(install.CODEX_AGENTS_END) == 1
 
 
+def test_patch_codex_agents_md_strips_legacy_tokenwise_block(tmp_path, monkeypatch):
+    """An AGENTS.md written under the old ``tokenwise`` binary name still
+    contains a ``<!-- tokenwise-codex-begin -->...-end -->`` block instructing
+    Codex to use the wrong binary. The modern installer must strip it so the
+    file ends up with only the up-to-date ``token-goat`` routing table.
+    """
+    home = _fake_home(tmp_path)
+    _patch_home(monkeypatch, home)
+
+    codex_dir = home / ".codex"
+    codex_dir.mkdir(parents=True, exist_ok=True)
+    legacy_block = (
+        f"{install.LEGACY_CODEX_AGENTS_BEGIN}\n"
+        "## tokenwise - route code reads through tokenwise first (Codex)\n\n"
+        "| Goal | Do this | Not this |\n"
+        "|------|---------|----------|\n"
+        "| Find a function | `tokenwise symbol X` | `rg X` |\n"
+        f"{install.LEGACY_CODEX_AGENTS_END}\n"
+    )
+    md_path = codex_dir / "AGENTS.md"
+    md_path.write_text(legacy_block, encoding="utf-8")
+
+    install.patch_codex_agents_md()
+    content = md_path.read_text(encoding="utf-8")
+
+    assert install.CODEX_AGENTS_BEGIN in content
+    assert install.CODEX_AGENTS_END in content
+    assert install.LEGACY_CODEX_AGENTS_BEGIN not in content
+    assert install.LEGACY_CODEX_AGENTS_END not in content
+    assert "tokenwise symbol X" not in content
+
+
+def test_patch_codex_agents_md_legacy_strip_is_idempotent(tmp_path, monkeypatch):
+    """Two installs in a row leave one modern block and no legacy artifacts."""
+    home = _fake_home(tmp_path)
+    _patch_home(monkeypatch, home)
+
+    codex_dir = home / ".codex"
+    codex_dir.mkdir(parents=True, exist_ok=True)
+    seed = (
+        f"{install.LEGACY_CODEX_AGENTS_BEGIN}\n"
+        f"legacy body\n"
+        f"{install.LEGACY_CODEX_AGENTS_END}\n"
+    )
+    md_path = codex_dir / "AGENTS.md"
+    md_path.write_text(seed, encoding="utf-8")
+
+    install.patch_codex_agents_md()
+    install.patch_codex_agents_md()
+    content = md_path.read_text(encoding="utf-8")
+
+    assert content.count(install.CODEX_AGENTS_BEGIN) == 1
+    assert content.count(install.CODEX_AGENTS_END) == 1
+    assert install.LEGACY_CODEX_AGENTS_BEGIN not in content
+    assert install.LEGACY_CODEX_AGENTS_END not in content
+
+
 # ---------------------------------------------------------------------------
 # 8. patch_codex_agents_md appends to existing file without our block
 # ---------------------------------------------------------------------------
