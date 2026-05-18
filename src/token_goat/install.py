@@ -53,6 +53,14 @@ _LOG = logging.getLogger("token_goat.install")
 CLAUDE_MD_BEGIN = "<!-- token-goat-begin -->"
 CLAUDE_MD_END = "<!-- token-goat-end -->"
 
+# Legacy markers from the pre-rename "tokenwise" era. These blocks describe the
+# old binary name and produce incorrect routing instructions; the patch path
+# strips them on install so a single install run leaves only the modern block.
+LEGACY_CLAUDE_MD_BEGIN = "<!-- tokenwise-begin -->"
+LEGACY_CLAUDE_MD_END = "<!-- tokenwise-end -->"
+LEGACY_CODEX_AGENTS_BEGIN = "<!-- tokenwise-codex-begin -->"
+LEGACY_CODEX_AGENTS_END = "<!-- tokenwise-codex-end -->"
+
 # Scheduled task names (Windows)
 TASK_WORKER = "token-goat-worker"
 TASK_UPDATE = "token-goat-update"
@@ -1042,10 +1050,14 @@ def _patch_md_block(md_path: Path, begin_marker: str, end_marker: str, content: 
                 existing,
                 flags=re.DOTALL,
             )
-        else:
+        elif existing.strip():
             if not existing.endswith("\n"):
                 existing += "\n"
             updated = existing + "\n" + block + "\n"
+        else:
+            # File exists but is whitespace-only (common right after a legacy
+            # strip wiped its sole block). Don't preserve the leading blanks.
+            updated = block + "\n"
     else:
         updated = block + "\n"
 
@@ -1073,6 +1085,29 @@ def _unpatch_md_block(md_path: Path, begin_marker: str, end_marker: str, not_fou
     # Atomic write: a crash mid-write must never leave a truncated markdown file behind.
     paths.atomic_write_text(md_path, new + "\n" if new else "")
     return str(md_path)
+
+
+def _strip_legacy_block(md_path: Path, begin_marker: str, end_marker: str) -> bool:
+    """Remove a legacy ``tokenwise``-era delimited block from *md_path* if present.
+
+    Returns ``True`` if a block was stripped, ``False`` otherwise. The modern
+    patch path calls this before writing its block so a single install run
+    leaves only the up-to-date content — even on machines that were installed
+    under the old binary name and never had their routing tables migrated.
+    """
+    if not md_path.exists():
+        return False
+    content = md_path.read_text(encoding="utf-8")
+    if begin_marker not in content or end_marker not in content:
+        return False
+    new = re.sub(
+        r"\n*" + re.escape(begin_marker) + r".*?" + re.escape(end_marker) + r"\n*",
+        "\n",
+        content,
+        flags=re.DOTALL,
+    ).strip()
+    paths.atomic_write_text(md_path, new + "\n" if new else "")
+    return True
 
 
 # ---------------------------------------------------------------------------
@@ -1113,6 +1148,8 @@ def patch_claude_md() -> str:
     """Add or update the token-goat block in ~/.claude/CLAUDE.md, idempotently."""
     md_path = claude_md_path()
     existed = md_path.exists()
+    if _strip_legacy_block(md_path, LEGACY_CLAUDE_MD_BEGIN, LEGACY_CLAUDE_MD_END):
+        _LOG.info("patch_claude_md: stripped legacy tokenwise block from %s", md_path)
     result = _patch_md_block(md_path, CLAUDE_MD_BEGIN, CLAUDE_MD_END, CLAUDE_MD_CONTENT)
     action = "updated" if existed else "created"
     _LOG.info("patch_claude_md: %s %s", action, md_path)
@@ -1383,8 +1420,11 @@ Verify the habit. Run `token-goat stats` and watch event counts climb. Flat coun
 
 def patch_codex_agents_md() -> str:
     """Append/replace the delimited token-goat block in ~/.codex/AGENTS.md."""
+    md_path = codex_agents_path()
+    if _strip_legacy_block(md_path, LEGACY_CODEX_AGENTS_BEGIN, LEGACY_CODEX_AGENTS_END):
+        _LOG.info("patch_codex_agents_md: stripped legacy tokenwise-codex block from %s", md_path)
     return _patch_md_block(
-        codex_agents_path(), CODEX_AGENTS_BEGIN, CODEX_AGENTS_END, CODEX_AGENTS_MD_CONTENT
+        md_path, CODEX_AGENTS_BEGIN, CODEX_AGENTS_END, CODEX_AGENTS_MD_CONTENT
     )
 
 
