@@ -58,8 +58,14 @@ _MIN_BASH_BYTES_FOR_MANIFEST: Final[int] = 400
 
 # Sentinel gap used by session.mark_file_read() when no line limit is specified.
 # A range whose (end - start) equals this value represents "whole file read, extent
-# unknown" — _format_ranges() suppresses these rather than printing "lines 1-100000".
+# unknown" — _format_ranges() annotates these as "(full)" rather than printing
+# "lines 1-100000", so the compaction LLM knows the entire file was in context.
 _FULL_READ_SENTINEL_GAP: Final[int] = session_mod._UNKNOWN_END_SENTINEL
+
+# Maximum grep patterns listed in the "Patterns Searched" section.  Grep entries
+# give the compaction LLM context about what the user was investigating, but beyond
+# 5 patterns the list becomes noise — the most-recently-searched ones dominate anyway.
+_MAX_GREP_ENTRIES: Final[int] = 5
 
 # Hard ceiling on the max_tokens parameter accepted by build_manifest.
 # The config layer sets a sensible default (400) but build_manifest is also part of
@@ -72,10 +78,11 @@ _MAX_MANIFEST_TOKENS_CAP: Final[int] = 4_000
 # Defined at module level so it is created once rather than re-created on every manifest build.
 _BY_EDIT_COUNT = itemgetter(1)
 
-# Attribute-based key for heapq.nlargest over FileEntry objects.
-# attrgetter is faster than a lambda for attribute access: it avoids the
-# CALL_FUNCTION bytecode overhead of a Python lambda on every comparison.
-_BY_READ_COUNT = attrgetter("read_count")
+# Composite sort key for FileEntry: primary read_count (descending), secondary
+# last_read_ts (descending).  Using a tuple from attrgetter means heapq.nlargest
+# compares both fields in one step — files tied on read_count are broken by
+# recency, so the most recently touched files rise in the Key Files Read section.
+_BY_READ_COUNT_THEN_TS = attrgetter("read_count", "last_read_ts")
 
 # Attribute-based key for sorting FileEntry objects by recency.
 # Used to rank "Symbols Accessed" entries — most-recently-touched first
@@ -204,15 +211,19 @@ def _format_ranges(ranges: list[tuple[int, int]]) -> str:
     if not ranges:
         return ""
     valid: list[tuple[int, int]] = []
+    had_sentinel = False
     for entry in ranges:
         try:
             start, end = entry
             start, end = int(start), int(end)
             if end - start >= _FULL_READ_SENTINEL_GAP:
-                continue  # whole-file sentinel — no specific range to report
-            valid.append((start, end))
+                had_sentinel = True  # whole-file read — sentinel supersedes all partials
+            else:
+                valid.append((start, end))
         except (TypeError, ValueError):
             _LOG.debug("_format_ranges: skipping malformed range entry: %r", entry)
+    if had_sentinel:
+        return "  (full)"
     if not valid:
         return ""
     total_ranges = len(valid)
@@ -292,6 +303,45 @@ def _humanize_bytes(n: int) -> str:
     if n < 1024 * 1024:
         return f"{n / 1024:.1f}KB"
     return f"{n / (1024 * 1024):.1f}MB"
+
+
+def _select_top_grep_entries(greps: list[object]) -> list[object]:
+    """Pick up to :data:`_MAX_GREP_ENTRIES` most-recent unique grep patterns.
+
+    Deduplicates by ``(pattern, path)`` keeping the most recent occurrence of
+    each pair — repeated searches for the same pattern clutter the manifest
+    without adding information.  Returns entries ranked by recency so the
+    patterns most likely to drive the next agent turn appear first.
+
+    Accepts the ``greps`` attribute typed as ``list[object]`` (rather than
+    ``list[GrepEntry]``) to avoid importing :class:`session.GrepEntry` at
+    cold-start time; all field access is via :func:`getattr`.
+    """
+    if not greps:
+        return []
+    # Deduplicate: iterate oldest→newest so newer entries overwrite older ones.
+    seen: dict[tuple[str, str | None], object] = {}
+    for g in sorted(greps, key=lambda g: getattr(g, "ts", 0.0)):
+        key = (getattr(g, "pattern", ""), getattr(g, "path", None))
+        seen[key] = g
+    candidates = list(seen.values())
+    if not candidates:
+        return []
+    return heapq.nlargest(_MAX_GREP_ENTRIES, candidates, key=lambda g: getattr(g, "ts", 0.0))
+
+
+def _format_grep_entry(entry: object) -> str:
+    """Render one :class:`session.GrepEntry` as a single manifest line.
+
+    Format::
+
+        - `pattern` in src/token_goat/
+        - `pattern`               (when no path scope was specified)
+    """
+    pattern = sanitize_log_str(getattr(entry, "pattern", ""), max_len=80)
+    path = getattr(entry, "path", None)
+    path_str = f" in {_short_path(path)}" if path else ""
+    return f"- `{pattern}`{path_str}"
 
 
 def _load_session_cache(session_id: str, caller: str) -> SessionCache | None:
@@ -479,15 +529,15 @@ def _render(cache: SessionCache, session_id: str, max_tokens: int) -> tuple[str,
             noise_skipped, session_id[:8],
         )
 
-    # Nothing to report when the session has no file activity at all.
-    # edited_files covers writes; files covers reads/greps — both empty means
-    # the manifest would be just the header, which isn't worth injecting.
-    if not edited_clean and not files_clean:
+    # Nothing to report when the session has no activity at all.
+    # edited_files covers writes; files covers reads; greps covers searches.
+    # All three empty means the manifest would be just the header — not worth injecting.
+    raw_greps = getattr(cache, "greps", None) or []
+    if not edited_clean and not files_clean and not raw_greps:
         _LOG.info(
             "_render: manifest suppressed for session=%s "
-            "(no file activity tracked: edited=0 files_read=0 greps=%d)",
+            "(no activity tracked: edited=0 files_read=0 greps=0)",
             session_id[:8],
-            len(cache.greps),
         )
         return "", 0
 
@@ -527,9 +577,9 @@ def _render(cache: SessionCache, session_id: str, max_tokens: int) -> tuple[str,
         entry for key, entry in files_clean.items()
         if key.replace("\\", "/").lower() not in edited_keys
     ]
-    top_files = heapq.nlargest(_MAX_FILES_READ, key_files_candidates, key=_BY_READ_COUNT)
+    top_files = heapq.nlargest(_MAX_FILES_READ, key_files_candidates, key=_BY_READ_COUNT_THEN_TS)
     _LOG.debug(
-        "_render: selected top %d/%d files by read_count (cap=%d); "
+        "_render: selected top %d/%d files by read_count+ts (cap=%d); "
         "files_with_symbols=%d edited=%d noise_skipped=%d",
         len(top_files),
         total_files_read,
@@ -580,7 +630,17 @@ def _render(cache: SessionCache, session_id: str, max_tokens: int) -> tuple[str,
             sections.append(_format_bash_entry(be))
         sections.append("")
 
-    # ── 4. Key files read (top N by read_count) ───────────────────────────────
+    # ── 4. Grep patterns searched ─────────────────────────────────────────────
+    # Surface the most-recent distinct patterns so the compaction LLM knows
+    # what the user was investigating — not just which files were open.
+    grep_entries = _select_top_grep_entries(raw_greps)
+    if grep_entries:
+        sections.append("### Patterns Searched")
+        for ge in grep_entries:
+            sections.append(_format_grep_entry(ge))
+        sections.append("")
+
+    # ── 5. Key files read (top N by read_count+ts) ────────────────────────────
     if top_files:
         sections.append("### Key Files Read")
         for entry in top_files:

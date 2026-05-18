@@ -204,35 +204,111 @@ class TestActivityMarkers:
 
 
 class TestFormatRanges:
-    """_format_ranges must suppress whole-file sentinel ranges."""
+    """_format_ranges annotates whole-file sentinel ranges as (full)."""
 
-    def test_sentinel_range_returns_empty(self):
-        # (1, 100000) is the sentinel stored for a full-file read with no limit.
-        # It must not leak into manifest output as "lines 1-100000".
+    def test_sentinel_range_annotated_as_full(self):
         from token_goat import session as session_mod
         sentinel_end = 1 + session_mod._UNKNOWN_END_SENTINEL
         result = compact._format_ranges([(1, sentinel_end)])
-        assert result == "", f"sentinel range should be suppressed, got: {result!r}"
+        assert result == "  (full)", f"expected '  (full)', got: {result!r}"
 
     def test_partial_ranges_still_shown(self):
         result = compact._format_ranges([(10, 50)])
         assert "10-50" in result
 
-    def test_mixed_sentinel_and_partial_shows_only_partial(self):
+    def test_sentinel_wins_over_partial_ranges(self):
+        # When any range is a sentinel, the whole file was in context — (full)
+        # supersedes any partial range annotations.
         from token_goat import session as session_mod
         sentinel_end = 1 + session_mod._UNKNOWN_END_SENTINEL
         result = compact._format_ranges([(1, sentinel_end), (200, 300)])
-        assert "200-300" in result
+        assert result == "  (full)", f"sentinel should win over partials, got: {result!r}"
+        assert "200-300" not in result
         assert "100000" not in result
 
-    def test_build_manifest_no_sentinel_leak(self, tmp_data_dir):
-        # End-to-end: a full-file read (no offset/limit) must not show "100000"
-        # in the rendered manifest.
+    def test_build_manifest_full_annotation_appears(self, tmp_data_dir):
+        # End-to-end: a full-file read (no offset/limit) emits (full) in the
+        # manifest and never leaks the raw sentinel number 100000.
         sid = "sentinel-e2e-session-abc"
         session.mark_file_read(sid, "/proj/src/big.py")
         result = compact.build_manifest(sid)
         assert "big.py" in result
-        assert "100000" not in result, f"sentinel leaked into manifest:\n{result}"
+        assert "(full)" in result, f"expected '(full)' annotation, got:\n{result}"
+        assert "100000" not in result, f"sentinel number leaked into manifest:\n{result}"
+
+
+class TestKeyFilesRecencySort:
+    """Key Files Read must use last_read_ts as a tiebreaker when read_count ties."""
+
+    def test_more_recently_read_file_appears_first_when_counts_tie(self, tmp_data_dir):
+        import time as _time
+        sid = "recency-sort-session-abc"
+        # Both files read exactly once — order must be by recency, not insertion.
+        session.mark_file_read(sid, "/proj/src/older.py", offset=0, limit=50)
+        _time.sleep(0.01)
+        session.mark_file_read(sid, "/proj/src/newer.py", offset=0, limit=50)
+        result = compact.build_manifest(sid)
+        assert "older.py" in result and "newer.py" in result
+        assert result.index("newer.py") < result.index("older.py"), (
+            "more recently read file should appear first\n" + result
+        )
+
+    def test_higher_read_count_still_wins_over_recency(self, tmp_data_dir):
+        import time as _time
+        sid = "count-beats-recency-session-abc"
+        # Older file read 3× should rank above newer file read once.
+        for _ in range(3):
+            session.mark_file_read(sid, "/proj/src/frequent.py", offset=0, limit=50)
+        _time.sleep(0.01)
+        session.mark_file_read(sid, "/proj/src/rare.py", offset=0, limit=50)
+        result = compact.build_manifest(sid)
+        assert result.index("frequent.py") < result.index("rare.py"), (
+            "higher read_count should rank above recency\n" + result
+        )
+
+
+class TestGrepSection:
+    """Patterns Searched section surfaces recent grep patterns for the compaction LLM."""
+
+    def test_grep_section_present_when_greps_exist(self, tmp_data_dir):
+        sid = "grep-section-session-abc"
+        session.mark_grep(sid, "mark_file_read", "/proj/src")
+        result = compact.build_manifest(sid)
+        assert "Patterns Searched" in result
+        assert "mark_file_read" in result
+
+    def test_grep_section_absent_when_no_greps(self, tmp_data_dir):
+        sid = "no-grep-session-abc"
+        session.mark_file_read(sid, "/proj/src/db.py", offset=0, limit=100)
+        result = compact.build_manifest(sid)
+        assert "Patterns Searched" not in result
+
+    def test_grep_section_includes_path_scope(self, tmp_data_dir):
+        sid = "grep-path-session-abc"
+        session.mark_grep(sid, "shrink", "/proj/src/token_goat")
+        result = compact.build_manifest(sid)
+        assert "shrink" in result
+        assert "token_goat" in result
+
+    def test_grep_section_deduplicates_same_pattern(self, tmp_data_dir):
+        sid = "grep-dedup-session-abc"
+        for _ in range(4):
+            session.mark_grep(sid, "duplicate_pattern", "/proj/src")
+        result = compact.build_manifest(sid)
+        assert result.count("duplicate_pattern") == 1, (
+            "duplicate grep pattern should appear only once\n" + result
+        )
+
+    def test_grep_most_recent_shown_first(self, tmp_data_dir):
+        import time as _time
+        sid = "grep-recency-session-abc"
+        session.mark_grep(sid, "old_pattern", "/proj/src")
+        _time.sleep(0.01)
+        session.mark_grep(sid, "new_pattern", "/proj/src")
+        result = compact.build_manifest(sid)
+        assert result.index("new_pattern") < result.index("old_pattern"), (
+            "most-recent grep should appear first\n" + result
+        )
 
 
 class TestDedupAcrossSections:
