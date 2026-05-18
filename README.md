@@ -20,6 +20,10 @@
   <img src="https://img.shields.io/badge/requires-uv-6340ac" alt="requires uv">
 </p>
 
+<p align="center">
+  <b>Token-Goat is built by one person and given away free.</b> If it saves you tokens, please drop a ⭐️ at the top of this page. One click, takes a second, and it genuinely makes my day. Thank you.
+</p>
+
 ---
 
 <p align="center">
