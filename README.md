@@ -46,8 +46,11 @@ Each one is preventable. Token-Goat intercepts all three, automatically.
 |--------------------|-----------------|
 | 3.3 MB screenshot lands in model context | 84 KB compressed copy — 97.4% smaller |
 | Agent re-reads files from earlier in the session | "Already read this" reminder with narrow slice suggestion |
+| Agent re-reads a file edited mid-session | Unified diff injected as a hint — full Read avoided when the diff covers the change |
 | Compaction forgets which files were edited | Structured session manifest injected before compact |
 | Full file read for one function or section | `token-goat read file::symbol` — about 85% smaller |
+| Same `pytest` / `cargo` / `git log` re-run mid-session | Pre-Bash dedup hint points at the cached output (`token-goat bash-output <id>`) |
+| `token-goat section pyproject.toml::tool.ruff` | One TOML table extracted instead of the whole config; same for `.yaml`, `.yml`, `.json` |
 
 > Four hours of use on the author's machine: **59.7 MB** of data that never hit the model, with an estimated **11.5 million tokens** avoided.
 
@@ -190,6 +193,8 @@ The `--openclaw` flag patches Claude Code and drops a TypeScript bridge plugin i
 | `token-goat map` | Get a compact orientation of the repo. Add `--compact` to fit a 300-token budget. |
 | `token-goat gdrive-sections <file-id>` | List the heading outline of a Google Doc without fetching the body. |
 | `token-goat stats` | See how many tokens you have saved. Shows a per-source breakdown (image / hint / read / compact). |
+| `token-goat bash-output <id>` | Retrieve a cached Bash output by ID. Filter with `--head N`, `--tail N`, or `--grep PATTERN` to avoid re-running the command. |
+| `token-goat bash-history` | List cached Bash outputs (newest first) with their IDs, byte sizes, and exit codes. |
 | `token-goat compact-hint --session-id <id>` | Inspect the compaction manifest for a session |
 | `token-goat install` | Wire up hooks and autostart. `--dry-run` previews the changes, `--verify` audits an existing install. |
 | `token-goat doctor` | Confirm everything is wired correctly |

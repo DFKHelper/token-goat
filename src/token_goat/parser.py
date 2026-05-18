@@ -60,6 +60,9 @@ LANG_BY_EXT: dict[str, str] = {
     ".html": "html",
     ".htm": "html",
     ".json": "json",
+    ".toml": "toml",
+    ".yaml": "yaml",
+    ".yml": "yaml",
 }
 
 # Frozenset of all known extensions (already lowercase).  Used by iter_source_files
@@ -283,6 +286,8 @@ _EXTRACTOR_REGISTRY: dict[str, Callable[[], Extractor]] = {
     "markdown":   _language_importer("markdown"),
     "html":       _language_importer("html"),
     "json":       _language_importer("json_idx"),
+    "toml":       _language_importer("toml_idx"),
+    "yaml":       _language_importer("yaml_idx"),
 }
 
 # Cache resolved extractors so each language module is imported at most once.

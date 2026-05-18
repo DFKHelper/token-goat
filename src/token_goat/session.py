@@ -23,6 +23,8 @@ broken cache never blocks the agent.
 from __future__ import annotations
 
 __all__ = [
+    "BASH_HISTORY_MAX",
+    "BashEntry",
     "FileEntry",
     "GrepEntry",
     "RESULT_CACHE_MAX",
@@ -34,6 +36,8 @@ __all__ = [
     "list_edited",
     "list_touched",
     "load",
+    "lookup_bash_entry",
+    "mark_bash_run",
     "mark_file_edited",
     "mark_file_read",
     "mark_grep",
@@ -111,6 +115,33 @@ class GrepEntry:
 
 
 @dataclass
+class BashEntry:
+    """Tracks one execution of a Bash command within a session.
+
+    Stored in :attr:`SessionCache.bash_history` keyed by the SHA prefix of the
+    command string so a future ``pre_read`` for the same command can quickly
+    look up its prior output.  The body itself lives on disk under the
+    bash-cache directory and is referenced here only by ``output_id``.
+
+    ``stdout_bytes`` / ``stderr_bytes`` are the *original* sizes (before any
+    truncation applied by the cache) so dedup hints can quote the real cost of
+    re-running.  ``cmd_preview`` stores up to 120 chars of the command for
+    human-readable display in ``token-goat bash-history``; the full command is
+    not persisted because it is recoverable from agent context if needed and
+    storing arbitrary user input in session JSON is a privacy concern.
+    """
+
+    cmd_sha: str
+    cmd_preview: str
+    output_id: str
+    ts: float
+    stdout_bytes: int
+    stderr_bytes: int
+    exit_code: int | None = None
+    truncated: bool = False
+
+
+@dataclass
 class ResultCacheEntry:
     """A cached read_symbol/read_section result, keyed elsewhere by (rel_path, item).
 
@@ -144,6 +175,17 @@ RESULT_CACHE_MAX = 100
 # rather than reshuffling on every single insertion above the cap.
 _RESULT_CACHE_EVICT = 25
 
+# Maximum number of bash-history entries retained per session.  Each entry is
+# tiny (well under 200 bytes), so 200 is comfortable; the cap exists to keep
+# the session JSON size predictable in pathological loops (e.g. a watch-mode
+# rerunning every few seconds).  FIFO eviction discards the oldest first.
+BASH_HISTORY_MAX = 200
+_BASH_HISTORY_EVICT = 50
+# Length of the bash command preview persisted in session JSON.  Long enough
+# to identify a command across re-runs ("pytest tests/test_x.py -k foo") but
+# short enough to keep the manifest output bounded.
+_MAX_BASH_PREVIEW = 120
+
 
 @dataclass
 class SessionCache:
@@ -167,6 +209,16 @@ class SessionCache:
     # can hit the cache too — without persistence the cache is useless across the
     # one-hook-per-tool-call process model that Claude Code uses on Windows.
     result_cache: dict[str, ResultCacheEntry] = field(default_factory=dict)
+    # Per-session bash command history keyed by short SHA of the command.  Used
+    # by the pre-Bash dedup hint and by ``token-goat bash-history`` for listing.
+    # Insertion-ordered dict; FIFO eviction at BASH_HISTORY_MAX prevents growth
+    # in tight retry loops.
+    bash_history: dict[str, BashEntry] = field(default_factory=dict)
+    # Per-session content snapshots used by the diff-aware re-read hint.  Maps
+    # normalized file path → SHA of the snapshot bytes stored on disk under
+    # ``data_dir() / "session_snapshots" / <session_short> / <pathhash>.bin``.
+    # Storing only the SHA here (not the bytes) keeps the session JSON small.
+    snapshot_shas: dict[str, str] = field(default_factory=dict)
     unavailable: bool = field(default=False, repr=False, compare=False)
     # Internal: cached JSON string from last serialization — invalidated by any mutation.
     # Avoids O(N) re-serialization of files/greps dicts on every hook invocation when
@@ -188,6 +240,11 @@ class SessionCache:
                 k: cast("_ResultCacheEntryDict", asdict(v))
                 for k, v in self.result_cache.items()
             },
+            bash_history={
+                k: cast("_BashEntryDict", asdict(v))
+                for k, v in self.bash_history.items()
+            },
+            snapshot_shas=dict(self.snapshot_shas),
         )
 
     def to_json(self) -> str:
@@ -270,6 +327,24 @@ class SessionCache:
             if rc_entry is not None:
                 result_cache[k] = rc_entry
 
+        bash_history: dict[str, BashEntry] = {}
+        for k, v in d.get("bash_history", {}).items():
+            if not isinstance(v, dict) or not isinstance(k, str):
+                continue
+            be_entry = _parse_bash_entry(v)
+            if be_entry is not None:
+                bash_history[k] = be_entry
+
+        # snapshot_shas: dict[str, str] — coerce values defensively so a
+        # malformed entry written by a future version (e.g. structured object)
+        # is dropped silently rather than poisoning the lookup path.
+        snapshot_shas: dict[str, str] = {}
+        raw_snaps = d.get("snapshot_shas", {})
+        if isinstance(raw_snaps, dict):
+            for k, v in raw_snaps.items():
+                if isinstance(k, str) and isinstance(v, str):
+                    snapshot_shas[k] = v
+
         return cls(
             session_id=session_id,
             started_ts=float(d.get("started_ts", now)),
@@ -278,6 +353,8 @@ class SessionCache:
             greps=greps,
             edited_files=edited_files,
             result_cache=result_cache,
+            bash_history=bash_history,
+            snapshot_shas=snapshot_shas,
         )
 
 
@@ -401,6 +478,46 @@ class _ResultCacheEntryDict(TypedDict, total=False):
     ts: float
 
 
+class _BashEntryDict(TypedDict, total=False):
+    """Wire format of a single BashEntry as it appears in the session JSON."""
+
+    cmd_sha: str
+    cmd_preview: str
+    output_id: str
+    ts: float
+    stdout_bytes: int
+    stderr_bytes: int
+    exit_code: int | None
+    truncated: bool
+
+
+def _parse_bash_entry(v: dict[str, Any]) -> BashEntry | None:
+    """Deserialize one bash-history dict from JSON, returning None on parse error.
+
+    Coerces every field defensively: the session JSON is user-readable on
+    disk and could be corrupted, partially upgraded, or hand-edited.  A bad
+    entry is dropped (logged at debug) rather than crashing the load path.
+    """
+    try:
+        raw_exit = v.get("exit_code")
+        exit_code: int | None = None
+        if isinstance(raw_exit, int) and not isinstance(raw_exit, bool):
+            exit_code = raw_exit
+        return BashEntry(
+            cmd_sha=str(v.get("cmd_sha", "")),
+            cmd_preview=str(v.get("cmd_preview", "")),
+            output_id=str(v.get("output_id", "")),
+            ts=float(v.get("ts", 0.0)) if isinstance(v.get("ts", 0.0), (int, float)) else 0.0,
+            stdout_bytes=max(0, int(v.get("stdout_bytes", 0))),
+            stderr_bytes=max(0, int(v.get("stderr_bytes", 0))),
+            exit_code=exit_code,
+            truncated=bool(v.get("truncated", False)),
+        )
+    except (TypeError, ValueError, KeyError) as exc:
+        _LOG.debug("session: skipping corrupted bash entry: %s", exc)
+        return None
+
+
 class _FileEntryDict(TypedDict, total=False):
     """Wire format of a single FileEntry as it appears in the session JSON.
 
@@ -428,10 +545,11 @@ class _GrepEntryDict(TypedDict, total=False):
 class _SessionDict(TypedDict, total=False):
     """Wire format of a serialized SessionCache (written to / read from JSON on disk).
 
-    ``result_cache`` is optional (``total=False``) for backwards compat with
-    session caches written by token-goat versions that predate the field.  All
-    other fields are still effectively required because :meth:`SessionCache.from_dict`
-    supplies a default for each one.
+    ``result_cache``, ``bash_history``, and ``snapshot_shas`` are optional
+    (``total=False``) for backwards compatibility with session caches written
+    by token-goat versions that predate these fields.  All other fields are
+    still effectively required because :meth:`SessionCache.from_dict` supplies
+    a default for each one.
     """
 
     schema_version: int
@@ -443,6 +561,8 @@ class _SessionDict(TypedDict, total=False):
     greps: list[_GrepEntryDict]
     edited_files: dict[str, int]
     result_cache: dict[str, _ResultCacheEntryDict]
+    bash_history: dict[str, _BashEntryDict]
+    snapshot_shas: dict[str, str]
 
 
 def _fresh_cache(session_id: str, *, unavailable: bool = False) -> SessionCache:
@@ -962,6 +1082,10 @@ def reset_session(session_id: str) -> None:
     Validates session_id before use (defense-in-depth: paths.session_cache_path
     also validates, but an explicit guard here makes the invariant obvious at the
     call site and prevents future callers from bypassing path-level checks).
+
+    Also clears any per-session content snapshots written by the post-read
+    hook so the diff-aware re-read hint engine cannot serve stale diffs that
+    pre-date the reset.
     """
     validate_session_id(session_id)
     p = paths.session_cache_path(session_id)
@@ -970,6 +1094,14 @@ def reset_session(session_id: str) -> None:
             p.unlink()
         except OSError as e:
             _LOG.warning("failed to delete session cache %s: %s", p, e)
+    # Snapshot directory cleanup is best-effort and isolated; failures must
+    # not propagate up because they are inconsequential to session correctness.
+    try:
+        from . import snapshots  # noqa: PLC0415
+
+        snapshots.cleanup_session(session_id)
+    except Exception:  # noqa: BLE001
+        _LOG.debug("reset_session: snapshot cleanup failed", exc_info=True)
 
 
 def mark_file_edited(
@@ -1128,6 +1260,120 @@ def put_result_cache(
         "result_cache: stored %s (kind=%s sha=%s size=%d)",
         key, kind, file_sha[:8], len(cache.result_cache),
     )
+
+
+def mark_bash_run(
+    session_id: str,
+    cmd_sha: str,
+    cmd_preview: str,
+    output_id: str,
+    stdout_bytes: int,
+    stderr_bytes: int,
+    exit_code: int | None,
+    truncated: bool,
+    *,
+    cache: SessionCache | None = None,
+) -> SessionCache:
+    """Record a Bash invocation in the per-session history.
+
+    *cmd_sha* is a short content-derived identifier (see :func:`bash_cache.command_hash`).
+    Storing only the SHA — not the full command — keeps the session JSON small
+    and avoids persisting potentially sensitive command arguments
+    (credentials, file paths) longer than necessary.  ``cmd_preview`` is the
+    first 120 characters of the command, which is enough to identify a re-run
+    while remaining bounded.
+
+    FIFO eviction batches removals at ``_BASH_HISTORY_EVICT`` so a hot retry
+    loop does not rewrite the dict on every single insert.
+    """
+    try:
+        cache = _resolve_cache(session_id, cache)
+    except ValueError as exc:
+        _LOG.warning("mark_bash_run: invalid session_id (%s); skipping", exc)
+        return cache or _fresh_cache(session_id)
+    if cache.unavailable:
+        return cache
+
+    # Sanitize the preview before storage: command strings can contain newlines
+    # (here-docs) and bidi controls that would corrupt the manifest output.
+    safe_preview = sanitize_log_str(cmd_preview, max_len=_MAX_BASH_PREVIEW)
+
+    now = time.time()
+    # Evict oldest entries when at capacity — but only when adding a new key.
+    # Updates to an existing cmd_sha keep their original insertion slot so the
+    # eviction order reflects "first seen, first evicted".
+    if cmd_sha not in cache.bash_history and len(cache.bash_history) >= BASH_HISTORY_MAX:
+        evict_keys = list(islice(cache.bash_history.keys(), _BASH_HISTORY_EVICT))
+        for k in evict_keys:
+            del cache.bash_history[k]
+        _LOG.debug(
+            "bash_history: evicted %d entries (cap=%d) for session=%s",
+            _BASH_HISTORY_EVICT, BASH_HISTORY_MAX, session_id[:16],
+        )
+
+    cache.bash_history[cmd_sha] = BashEntry(
+        cmd_sha=cmd_sha,
+        cmd_preview=safe_preview,
+        output_id=output_id,
+        ts=now,
+        stdout_bytes=max(0, int(stdout_bytes)),
+        stderr_bytes=max(0, int(stderr_bytes)),
+        exit_code=exit_code if isinstance(exit_code, int) and not isinstance(exit_code, bool) else None,
+        truncated=bool(truncated),
+    )
+    cache.last_activity_ts = now
+    cache._invalidate_json_cache()
+    save(cache)
+    return cache
+
+
+def lookup_bash_entry(
+    session_id: str, cmd_sha: str, *, cache: SessionCache | None = None
+) -> BashEntry | None:
+    """Return the :class:`BashEntry` for *cmd_sha* in *session_id*, or None."""
+    try:
+        cache = _resolve_cache(session_id, cache)
+    except ValueError:
+        return None
+    if cache.unavailable:
+        return None
+    return cache.bash_history.get(cmd_sha)
+
+
+def set_snapshot_sha(
+    session_id: str,
+    file_path: str,
+    content_sha: str,
+    *,
+    cache: SessionCache | None = None,
+) -> SessionCache:
+    """Record that a snapshot for *file_path* with hash *content_sha* exists on disk.
+
+    Stored separately from :attr:`SessionCache.files` so the snapshot index can
+    be queried without loading file entries, and so a missing/empty snapshot
+    does not invalidate the read-tracking state.
+    """
+    prep = _prepare_path_mutation(session_id, file_path, cache)
+    if prep is None:
+        return cache or _fresh_cache(session_id)
+    cache, key = prep
+    cache.snapshot_shas[key] = content_sha
+    cache._invalidate_json_cache()
+    save(cache)
+    return cache
+
+
+def get_snapshot_sha(
+    session_id: str, file_path: str, *, cache: SessionCache | None = None
+) -> str | None:
+    """Return the stored snapshot SHA for *file_path*, or None when absent."""
+    try:
+        cache = _resolve_cache(session_id, cache)
+    except ValueError:
+        return None
+    if cache.unavailable:
+        return None
+    return cache.snapshot_shas.get(_normalize_path(file_path))
 
 
 def cleanup_stale(max_age_hours: float = 24.0) -> int:

@@ -1,17 +1,24 @@
 """Builds informational hints for PreToolUse on Read."""
 from __future__ import annotations
 
+import difflib
 import logging
 import sqlite3
 import time
 from pathlib import Path
 from typing import TypedDict
 
-from . import db, session
+from . import db, session, snapshots
 from .hooks_common import sanitize_log_str, validate_cwd
 from .project import find_project
 
-__all__ = ["ReadHint", "build_read_hint"]
+__all__ = [
+    "DIFF_HINT_MAX_BYTES",
+    "ReadHint",
+    "build_bash_dedup_hint",
+    "build_diff_hint",
+    "build_read_hint",
+]
 
 _LOG = logging.getLogger("token_goat.hints")
 
@@ -554,3 +561,226 @@ def _hint_from_index(
         f"Use a full Read if you need the surrounding context.",
         0,
     )
+
+
+# ---------------------------------------------------------------------------
+# Diff-aware re-read hint
+# ---------------------------------------------------------------------------
+
+# Largest diff (in bytes of unified-diff output) eligible for inclusion in the
+# hint.  Beyond this the diff itself stops being a saving — it would push more
+# tokens into context than the original Read.  4 KB ≈ 1100 tokens, comfortably
+# smaller than even a small full-file Read and still big enough to express
+# meaningful refactoring changes (typically tens of changed lines).
+DIFF_HINT_MAX_BYTES: int = 4096
+
+# Minimum *raw* tokens saved (full-file tokens - diff tokens) before the diff
+# hint is emitted.  Below this the hint text and diff itself approach the
+# saving they advertise, so the nudge is suppressed entirely.  ~250 tokens
+# represents roughly 15 lines of code — the rough breakeven point with the
+# ~80-token hint preamble.
+_DIFF_HINT_MIN_TOKENS_SAVED: int = 250
+
+# Number of context lines kept around each changed hunk in the unified diff.
+# Two lines on each side is the same default git uses for code review — wide
+# enough to anchor a hunk visually but narrow enough to keep diff bytes low.
+_DIFF_CONTEXT_LINES: int = 2
+
+
+def build_diff_hint(
+    *,
+    session_id: str,
+    file_path: str,
+    current_text: str,
+) -> ReadHint | None:
+    """Return a diff-based hint when a snapshot is available and the diff fits.
+
+    Computes a unified diff between the prior session snapshot of *file_path*
+    and *current_text* (the file's contents the agent is about to re-read).
+    When the diff is small enough to inject as ``additionalContext`` and
+    represents a meaningful saving over re-reading the whole file, returns a
+    :class:`ReadHint` carrying the diff in a fenced code block.
+
+    Returns ``None`` (no hint) when:
+
+    * no snapshot exists for this (session, file_path)
+    * the snapshot is identical to current contents (no diff to show)
+    * the file is the same length but no meaningful change is detected
+    * the diff would exceed :data:`DIFF_HINT_MAX_BYTES`
+    * the realized saving falls below :data:`_DIFF_HINT_MIN_TOKENS_SAVED`
+
+    Never raises; any unexpected exception is caught at module boundary and
+    the hint is suppressed (an error in hint generation must not break the
+    pre-read hook's fail-soft contract).
+    """
+    try:
+        return _build_diff_hint_inner(
+            session_id=session_id, file_path=file_path, current_text=current_text,
+        )
+    except Exception as exc:  # noqa: BLE001 — fail-soft for the hot pre-read path
+        _LOG.warning(
+            "build_diff_hint: unexpected error for %r (session=%s): %s",
+            file_path, (session_id or "")[:16], exc, exc_info=True,
+        )
+        return None
+
+
+def _build_diff_hint_inner(
+    *,
+    session_id: str,
+    file_path: str,
+    current_text: str,
+) -> ReadHint | None:
+    """Inner implementation of :func:`build_diff_hint`; may raise."""
+    snapshot_bytes = snapshots.load(session_id, file_path)
+    if snapshot_bytes is None:
+        return None
+
+    # Decode defensively: snapshots are stored as raw bytes so an arbitrary
+    # binary file (or one with mixed encodings) does not crash the diff.
+    snapshot_text = snapshot_bytes.decode("utf-8", errors="replace")
+    if snapshot_text == current_text:
+        return None
+
+    fname = _sanitize_hint_path(Path(file_path).name)
+
+    snapshot_lines = snapshot_text.splitlines(keepends=True)
+    current_lines = current_text.splitlines(keepends=True)
+    diff_iter = difflib.unified_diff(
+        snapshot_lines,
+        current_lines,
+        fromfile=f"{fname} (previously read)",
+        tofile=f"{fname} (current)",
+        n=_DIFF_CONTEXT_LINES,
+        lineterm="",
+    )
+    diff_text = "".join(diff_iter)
+    if not diff_text:
+        # difflib returns nothing when the sequences are identical at the line
+        # level (e.g. only trailing-newline differences).  Treat that as "no
+        # change worth reporting" — re-read is the safe path.
+        return None
+
+    diff_bytes = len(diff_text.encode("utf-8"))
+    if diff_bytes > DIFF_HINT_MAX_BYTES:
+        _LOG.debug(
+            "build_diff_hint: diff too large (%d bytes > %d cap) for %s — suppressing",
+            diff_bytes, DIFF_HINT_MAX_BYTES, fname,
+        )
+        return None
+
+    # Compute the saving: full-file re-read tokens minus diff tokens.  Both
+    # the hint preamble and the fenced diff text cost tokens, so the saving
+    # we record is the net — what the agent actually avoids in conversation.
+    full_tokens = _est_tokens_from_chars(len(current_text))
+    diff_tokens = _est_tokens_from_chars(diff_bytes)
+    tokens_saved = max(0, full_tokens - diff_tokens)
+    if tokens_saved < _DIFF_HINT_MIN_TOKENS_SAVED:
+        _LOG.debug(
+            "build_diff_hint: saving too small (%d < %d) for %s — suppressing",
+            tokens_saved, _DIFF_HINT_MIN_TOKENS_SAVED, fname,
+        )
+        return None
+
+    return ReadHint(
+        f"Note: `{fname}` was edited in this session since you last read it. "
+        f"Unified diff against the prior read (saves ~{tokens_saved} tokens vs. a full Read):\n"
+        f"```diff\n{diff_text}\n```\n"
+        f"If the diff covers what you need, skip the full Read.",
+        tokens_saved,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Bash dedup hint
+# ---------------------------------------------------------------------------
+
+
+def build_bash_dedup_hint(
+    *,
+    session_id: str,
+    command: str,
+    cache: session.SessionCache | None = None,
+) -> ReadHint | None:
+    """Return a hint when *command* was run earlier in this session.
+
+    The pre-Bash hook calls this before executing a Bash command.  When the
+    same command has been run before and its output cached on disk, we suggest
+    the agent retrieve the cached output via ``token-goat bash-output``
+    instead of re-running — avoiding both the runtime cost and the duplicated
+    output bytes in the conversation.
+
+    Returns ``None`` (no hint) when:
+
+    * no session_id is provided
+    * the command has never been recorded
+    * the previous output was too small to be worth deduplicating
+    * the previous output is older than :data:`STALE_READ_AGE_SECONDS`
+      (same staleness boundary used by the read-dedup path: above that
+      window the model's context has likely scrolled past the old result)
+    """
+    try:
+        return _build_bash_dedup_hint_inner(
+            session_id=session_id, command=command, cache=cache,
+        )
+    except Exception as exc:  # noqa: BLE001 — fail-soft for the hot pre-bash path
+        _LOG.warning(
+            "build_bash_dedup_hint: unexpected error (session=%s): %s",
+            (session_id or "")[:16], exc, exc_info=True,
+        )
+        return None
+
+
+# Minimum output size before the dedup hint fires.  Re-running `ls` is cheap;
+# re-running `pytest -v` is not.  Below ~400 bytes (~100 tokens) the hint
+# preamble approaches the saving it advertises.
+_BASH_DEDUP_MIN_BYTES: int = 400
+
+
+def _build_bash_dedup_hint_inner(
+    *,
+    session_id: str,
+    command: str,
+    cache: session.SessionCache | None,
+) -> ReadHint | None:
+    """Inner implementation; may raise.
+
+    Imported lazily so the hot pre-read path does not pay the bash_cache
+    import cost on every Read invocation — bash_cache is only needed when
+    we are actually about to dispatch a Bash dedup.
+    """
+    if not session_id or not command:
+        return None
+
+    from . import bash_cache  # noqa: PLC0415
+
+    cmd_sha = bash_cache.command_hash(command)
+    entry = session.lookup_bash_entry(session_id, cmd_sha, cache=cache)
+    if entry is None:
+        return None
+
+    age = time.time() - entry.ts
+    if age > STALE_READ_AGE_SECONDS:
+        _LOG.debug(
+            "build_bash_dedup_hint: prior run stale (age=%.0fs > %ds); suppressing",
+            age, STALE_READ_AGE_SECONDS,
+        )
+        return None
+
+    total_bytes = entry.stdout_bytes + entry.stderr_bytes
+    if total_bytes < _BASH_DEDUP_MIN_BYTES:
+        return None
+
+    tokens_avoided = _est_tokens_from_chars(total_bytes)
+    cmd_short = _sanitize_hint_path(command)
+    exit_str = "" if entry.exit_code is None else f", exit={entry.exit_code}"
+    return ReadHint(
+        f"Note: this Bash command ran ~{int(age)}s ago in this session "
+        f"({total_bytes:,} bytes of output{exit_str}). "
+        f"Re-running adds ~{tokens_avoided} tokens. "
+        f"`token-goat bash-output {entry.output_id}` returns the cached result — "
+        f"add `--tail 50` or `--grep PATTERN` to slice it. "
+        f"Command: `{cmd_short}`.",
+        tokens_avoided,
+    )
+
