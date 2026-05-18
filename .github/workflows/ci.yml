@@ -31,13 +31,17 @@ jobs:
         # exception in the log without needing to download artefacts.
         # ``--tb=short`` keeps each entry compact (one line per frame) so
         # the summary stays readable even when several tests fail at once.
-        # Tee'd to ``pytest.log`` so the on-failure step below can post the
-        # tail to the PR as a comment — Windows-only failures are otherwise
-        # invisible to anyone without GitHub Actions log access.
+        # Output is redirected to a file via direct shell redirection (no
+        # tee) because ``tee`` over a pipe on the Windows runner deadlocks
+        # intermittently — the shorter redirection chain is reliable on
+        # both platforms.
         shell: bash
-        run: |
-          set -o pipefail
-          uv run pytest -rfE --tb=short 2>&1 | tee pytest.log
+        run: uv run pytest -rfE --tb=short > pytest.log 2>&1
+
+      - name: Show pytest output
+        if: always()
+        shell: bash
+        run: cat pytest.log || true
 
       - name: Surface failure summary to PR
         if: failure() && github.event_name == 'pull_request'
@@ -58,4 +62,4 @@ jobs:
             tail -n 80 pytest.log || true
             echo '```'
           } > comment.md
-          gh pr comment "${{ github.event.pull_request.number }}" --body-file comment.md
+          gh pr comment "${{ github.event.pull_request.number }}" --body-file comment.md || true
