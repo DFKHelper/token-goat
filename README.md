@@ -21,7 +21,7 @@
 </p>
 
 <p align="center">
-  Give us a ⭐️ GitHub star ⭐️ on the top of this page to support what we're doing — it means a lot for open source projects!
+  <b>Token-Goat is built by one person and given away free.</b> If it saves you tokens, please drop a ⭐️ at the top of this page. One click, takes a second, and it genuinely makes our day. Thank you.
 </p>
 
 ---
