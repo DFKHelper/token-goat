@@ -951,6 +951,111 @@ def stats(
     cli_stats.stats(window=window, json_output=json_output)
 
 
+@app.command("bash-output", rich_help_panel="Core")
+def cmd_bash_output(
+    output_id: str = typer.Argument(..., help="ID returned by the post-bash hook or `bash-history`."),
+    head: int = typer.Option(0, "--head", help="Show first N lines (0 = no head limit)"),
+    tail: int = typer.Option(0, "--tail", help="Show last N lines (0 = no tail limit)"),
+    grep: str | None = typer.Option(None, "--grep", "-g", help="Show only lines matching the (case-sensitive) substring"),
+    json_output: bool = typer.Option(False, "--json"),
+) -> None:
+    """Retrieve a sliced view of a cached Bash output.
+
+    The post-Bash hook stores each non-trivial command output to disk under
+    ``data_dir() / "bash_outputs"``. Use this command to retrieve specific
+    parts of that output without forcing the agent to re-run the command —
+    typically much cheaper in tokens.
+
+    Combine ``--head``, ``--tail``, and ``--grep`` to narrow further; without
+    any filter the whole cached body is returned. JSON mode includes the
+    full path and stored byte size so a caller can decide whether to slice
+    again.
+    """
+    from . import bash_cache  # noqa: PLC0415
+
+    body = bash_cache.load_output(output_id)
+    if body is None:
+        _error(f"no cached output for id: {output_id}")
+        raise typer.Exit(1)
+
+    lines = body.splitlines()
+    if grep:
+        lines = [ln for ln in lines if grep in ln]
+    if head > 0:
+        lines = lines[: head]
+    if tail > 0:
+        lines = lines[-tail :]
+    sliced = "\n".join(lines)
+
+    if json_output:
+        meta = bash_cache.load_output_meta(output_id) or {}
+        sidecar = bash_cache.read_sidecar(output_id)
+        payload: dict[str, object] = {
+            "output_id": output_id,
+            "text": sliced,
+            "lines": len(lines),
+        }
+        payload.update(meta)
+        if sidecar is not None:
+            payload["cmd_preview"] = sidecar.cmd_preview
+            payload["exit_code"] = sidecar.exit_code
+            payload["truncated"] = sidecar.truncated
+        typer.echo(json.dumps(payload, ensure_ascii=False, indent=2))
+        return
+
+    typer.echo(sliced)
+
+
+@app.command("bash-history", rich_help_panel="Core")
+def cmd_bash_history(
+    json_output: bool = typer.Option(False, "--json"),
+    limit: int = typer.Option(20, "--limit", "-n", help="Maximum entries to show (newest first)"),
+) -> None:
+    """List cached Bash outputs, newest first.
+
+    Helpful when you want to find an earlier command's output without
+    re-running it.  Each row shows the cache ID, byte size, age, and (if a
+    sidecar file is present) the command preview and exit code.  Use the ID
+    with ``token-goat bash-output <id>`` to retrieve the body.
+    """
+    from . import bash_cache  # noqa: PLC0415
+
+    entries = bash_cache.list_outputs()
+    if limit > 0:
+        entries = entries[:limit]
+
+    if json_output:
+        out: list[dict[str, object]] = []
+        for e in entries:
+            sidecar = bash_cache.read_sidecar(str(e["output_id"]))
+            row = dict(e)
+            if sidecar is not None:
+                row["cmd_preview"] = sidecar.cmd_preview
+                row["exit_code"] = sidecar.exit_code
+                row["truncated"] = sidecar.truncated
+            out.append(row)
+        typer.echo(json.dumps(out, ensure_ascii=False, indent=2))
+        return
+
+    if not entries:
+        typer.echo("(no cached Bash outputs)")
+        return
+
+    now = time.time()
+    for e in entries:
+        oid = str(e["output_id"])
+        size = int(cast(int, e["size_bytes"]))
+        age = int(now - float(cast(float, e["mtime"])))
+        sidecar = bash_cache.read_sidecar(oid)
+        cmd_str = sidecar.cmd_preview if sidecar is not None else "(no sidecar)"
+        exit_str = (
+            f" exit={sidecar.exit_code}"
+            if sidecar is not None and sidecar.exit_code is not None
+            else ""
+        )
+        typer.echo(f"{oid}  {size:>10,}B  {age:>6}s ago{exit_str}  {cmd_str}")
+
+
 @app.command(rich_help_panel="Install")
 def doctor(  # noqa: C901
     fix: bool = typer.Option(  # noqa: B008
@@ -1174,6 +1279,15 @@ def post_read(
 ) -> None:
     """Hook: post-read event."""
     hooks_cli.safe_run("post-read", input_file, _parse_harness(harness))
+
+
+@hook_app.command(context_settings=_HOOK_CTX)
+def post_bash(
+    input_file: Path | None = _INPUT_OPT,
+    harness: str = _HARNESS_OPT,
+) -> None:
+    """Hook: post-bash event (caches Bash output for dedup + retrieval)."""
+    hooks_cli.safe_run("post-bash", input_file, _parse_harness(harness))
 
 
 @hook_app.command(context_settings=_HOOK_CTX)

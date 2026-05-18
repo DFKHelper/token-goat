@@ -65,6 +65,8 @@ class CleanupStats(TypedDict, total=False):
     image_bytes_evicted: int
     image_files_evicted: int
     stats_rows_pruned: int
+    snapshots_cleared: int
+    bash_outputs_evicted: int
     failures: list[str]  # task names that raised during cleanup
 
 
@@ -623,6 +625,32 @@ def _prune_stats_table() -> int:
         raise
 
 
+def _cleanup_stale_snapshots() -> int:
+    """Drop per-session content snapshots older than 24 hours.
+
+    Run from :func:`cleanup_on_startup` because the diff-aware re-read store
+    accumulates one directory per session.  Without periodic eviction these
+    pile up across long-lived installations even though most are tied to
+    sessions that ended hours ago.
+    """
+    from . import snapshots  # noqa: PLC0415
+
+    return snapshots.cleanup_stale(max_age_hours=24.0)
+
+
+def _evict_bash_outputs() -> int:
+    """Enforce the on-disk bash-output store byte cap.
+
+    The post-bash hook also calls this opportunistically after every write,
+    but the startup pass picks up the slack when many small writes leave the
+    directory slightly over budget at shutdown time.  Returns the number of
+    cache files removed.
+    """
+    from . import bash_cache  # noqa: PLC0415
+
+    return bash_cache.evict_old_entries()
+
+
 def cleanup_on_startup() -> CleanupStats:
     """Run all self-healing tasks on daemon startup. Returns a summary with counts and failures.
 
@@ -653,6 +681,8 @@ def cleanup_on_startup() -> CleanupStats:
         ("stale_locks", _cleanup_stale_locks, "stale_locks_cleared"),
         ("old_logs", _cleanup_old_logs, "logs_deleted"),
         ("stats_prune", _prune_stats_table, "stats_rows_pruned"),
+        ("snapshots", _cleanup_stale_snapshots, "snapshots_cleared"),
+        ("bash_outputs", _evict_bash_outputs, "bash_outputs_evicted"),
     ]
     for task_name, task_fn, stat_key in _int_tasks:
         try:
@@ -682,13 +712,16 @@ def cleanup_on_startup() -> CleanupStats:
         stats["failures"] = failures
     _LOG.info(
         "startup cleanup complete: locks_cleared=%d index_markers_cleared=%d logs_deleted=%d "
-        "stats_rows_pruned=%d image_bytes_evicted=%d image_files_evicted=%d%s",
+        "stats_rows_pruned=%d image_bytes_evicted=%d image_files_evicted=%d "
+        "snapshots_cleared=%d bash_outputs_evicted=%d%s",
         stats.get("stale_locks_cleared", 0),
         stats.get("stale_index_markers_cleared", 0),
         stats.get("logs_deleted", 0),
         stats.get("stats_rows_pruned", 0),
         stats.get("image_bytes_evicted", 0),
         stats.get("image_files_evicted", 0),
+        stats.get("snapshots_cleared", 0),
+        stats.get("bash_outputs_evicted", 0),
         f" failures={failures}" if failures else "",
     )
     return stats

@@ -4,6 +4,18 @@ All notable changes to Token-Goat are documented in this file. Format follows Ke
 
 ## [Unreleased]
 
+### Added
+
+- **Bash output interception.** A new `PostToolUse(Bash)` hook persists large stdout/stderr to disk under `data_dir() / "bash_outputs"` and records the command in the session cache. When the same command is about to run again in the same session, the pre-Bash hint suggests `token-goat bash-output <id>` (optionally with `--head N`, `--tail N`, or `--grep PATTERN`) instead of re-executing — avoiding both runtime cost and duplicated tokens. The store is byte-capped (16 MB default) with oldest-first eviction; outputs above 2 MB are tail-preserved with a truncation marker. Two new CLI commands surface the cache: `token-goat bash-output` retrieves a sliced view, `token-goat bash-history` lists cached entries newest-first.
+- **Diff-aware re-read.** `post_read` now writes a per-session content snapshot (under `data_dir() / "session_snapshots"`, capped at 256 KB per file and 150 snapshots per session) so a follow-up `Read` after a `Write`/`Edit`/`MultiEdit` can be answered with a unified diff hint instead of a `pre_read` blocking message that silently allowed the full re-read. The diff is bounded to 4 KB and only fires when the realised saving exceeds ~250 tokens; below that the existing session-cache hint path runs unchanged. Stats record both the realised saving (`diff_hint`) and the hint's injection cost (`diff_hint_overhead`) for honest accounting.
+- **TOML, YAML, and JSON section extraction.** `token-goat section pyproject.toml::tool.ruff` (and the equivalents for `.yaml`, `.yml`, and pretty-printed `.json`) now extract a single table/key block instead of forcing a full-file read. The TOML scanner emits one `Section` per `[table]` and `[[array]]` header; the YAML scanner emits top-level keys plus one nested layer (`spec.replicas`-style) computed from the file's detected indent; JSON gains depth-1 section detection on pretty-printed files. None of the three pulls in an extra dependency — all use line-scanners and the existing stdlib parsers.
+- **Stale-data sweeps in the background worker.** `cleanup_on_startup` now also drops snapshot directories older than 24 hours and enforces the bash-output byte cap, so a long-lived install does not accumulate per-session debris.
+
+### Changed
+
+- **`reset_session`** now also removes per-session content snapshots, matching the existing JSON-cache reset semantics.
+- **Codex Bash matcher in `~/.codex/config.toml`** now points at the new `post-bash` hook instead of `post-read`; under Codex, `post-read` previously did nothing for `Bash` calls (no branch in the handler), so this is a strict gain.
+
 ## [0.5.2] - 2026-05-17
 
 ### Fixed

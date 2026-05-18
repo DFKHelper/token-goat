@@ -821,6 +821,16 @@ def _hooks_block(binary: str | None = None) -> dict[str, list[_HookMatcherEntry]
                     }
                 ],
             },
+            {
+                "matcher": "Bash",
+                "hooks": [
+                    {
+                        "type": "command",
+                        "command": runner("hook", "post-bash"),
+                        "timeout": 3000,
+                    }
+                ],
+            },
         ],
         "PreCompact": [
             {
@@ -1066,8 +1076,10 @@ token-goat is installed. Before you call Read or Grep on a source file, check fo
 | Find code by meaning, not name | `token-goat semantic "rate limit retry"` | Several rounds of `Grep` |
 | Get oriented in an unfamiliar repo | `token-goat map --compact` | Recursive `ls` plus multiple `Read` calls |
 | Outline a long Google Doc | `token-goat gdrive-sections <file-id>` | Fetching the whole doc |
+| Read one TOML/YAML/JSON config block | `token-goat section "pyproject.toml::tool.ruff"` | `Read pyproject.toml` |
+| Re-inspect a recent Bash output | `token-goat bash-output <id> --tail 50` | Re-running the same `pytest`/`cargo`/`git log` |
 
-Modifiers worth knowing: `symbol --all-projects` (cross-repo); `map --compact` (300-token budget); `semantic --max-distance 1.0` or `--no-rerank` to widen / tighten results. A miss prints "Did you mean…?" suggestions — try one before falling back to `Read`.
+Modifiers worth knowing: `symbol --all-projects` (cross-repo); `map --compact` (300-token budget); `semantic --max-distance 1.0` or `--no-rerank` to widen / tighten results; `bash-output --grep PATTERN` to filter cached output. A miss prints "Did you mean…?" suggestions — try one before falling back to `Read`. The pre-Bash hook will hint when a command is about to repeat in the same session.
 
 Read is the right call when:
 - The file is under about 200 lines and you need the whole thing.
@@ -1130,9 +1142,11 @@ Before reaching for Read or Grep on a code file, check this table.
 | Find code by meaning, not name | `token-goat semantic "rate limit retry"` | Several rounds of `Grep` |
 | Get oriented in an unfamiliar repo | `token-goat map --compact` | Recursive `ls` plus multiple `Read` calls |
 | Outline a long Google Doc | `token-goat gdrive-sections <file-id>` | Fetching the whole doc |
+| Read one TOML/YAML/JSON config block | `token-goat section "pyproject.toml::tool.ruff"` | `Read pyproject.toml` |
+| Re-inspect a recent Bash output | `token-goat bash-output <id> --tail 50` | Re-running `pytest`/`cargo`/`git log` |
 | See what you have already touched | `token-goat session-touched` | Re-reading and hoping you remember |
 
-Modifiers worth knowing: `symbol --all-projects` searches every indexed repo at once; `map --compact` fits a 300-token budget; `semantic --max-distance 1.0` widens or `--no-rerank` tightens semantic results. A miss prints "Did you mean…?" suggestions — try one of those before falling back to `Read`.
+Modifiers worth knowing: `symbol --all-projects` searches every indexed repo at once; `map --compact` fits a 300-token budget; `semantic --max-distance 1.0` widens or `--no-rerank` tightens semantic results; `bash-output --grep PATTERN` filters cached output. A miss prints "Did you mean…?" suggestions — try one of those before falling back to `Read`.
 
 ## When Read is the right call
 
@@ -1242,8 +1256,8 @@ def _codex_hooks_block(binary: str | None = None) -> dict[str, list[_HookMatcher
                 "hooks": [
                     {
                         "type": "command",
-                        "command": runner("hook", "post-read", "--harness", "codex"),
-                        "timeout": 2000,
+                        "command": runner("hook", "post-bash", "--harness", "codex"),
+                        "timeout": 3000,
                     }
                 ],
             },
@@ -1332,8 +1346,10 @@ token-goat is installed. Before you run `rg`, `grep`, `cat`, `head`, `bat`, or a
 | Find code by meaning, not name | `token-goat semantic "rate limit retry"` | Several rounds of `rg` |
 | Get oriented in an unfamiliar repo | `token-goat map --compact` | `ls -R` plus multiple `cat` calls |
 | Outline a long Google Doc | `token-goat gdrive-sections <file-id>` | Fetching the whole doc |
+| Read one TOML/YAML/JSON config block | `token-goat section "pyproject.toml::tool.ruff"` | `cat pyproject.toml` |
+| Re-inspect a recent Bash output | `token-goat bash-output <id> --tail 50` | Re-running `pytest`/`cargo`/`git log` |
 
-Modifiers worth knowing: `symbol --all-projects` (cross-repo); `map --compact` (300-token budget); `semantic --max-distance 1.0` or `--no-rerank` to widen / tighten results. A miss prints "Did you mean…?" suggestions — try one before falling back to a Bash read.
+Modifiers worth knowing: `symbol --all-projects` (cross-repo); `map --compact` (300-token budget); `semantic --max-distance 1.0` or `--no-rerank` to widen / tighten results; `bash-output --grep PATTERN` to filter cached output. A miss prints "Did you mean…?" suggestions — try one before falling back to a Bash read. The pre-Bash hook will hint when a command is about to repeat in the same session.
 
 Plain Bash reads are the right call when:
 - The file is under about 200 lines and you need the whole thing.
