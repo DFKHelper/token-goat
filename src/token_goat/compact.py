@@ -319,11 +319,13 @@ def _select_top_grep_entries(greps: list[object]) -> list[object]:
     """
     if not greps:
         return []
-    # Deduplicate: iterate oldest→newest so newer entries overwrite older ones.
-    seen: dict[tuple[str, str | None], object] = {}
+    # Deduplicate by pattern text: iterate oldest→newest so the most-recent
+    # search (with its current path scope and result_count) overwrites earlier
+    # ones.  Deduplicating by pattern alone (not pattern+path) avoids listing
+    # the same search term twice just because the scope changed between runs.
+    seen: dict[str, object] = {}
     for g in sorted(greps, key=lambda g: getattr(g, "ts", 0.0)):
-        key = (getattr(g, "pattern", ""), getattr(g, "path", None))
-        seen[key] = g
+        seen[getattr(g, "pattern", "")] = g
     candidates = list(seen.values())
     if not candidates:
         return []
@@ -335,13 +337,20 @@ def _format_grep_entry(entry: object) -> str:
 
     Format::
 
-        - `pattern` in src/token_goat/
-        - `pattern`               (when no path scope was specified)
+        - `pattern` in src/token_goat/  (12 results)
+        - `pattern`  (0 results)        (zero = dead end, still informative)
+        - `pattern` in src/             (when result_count is unknown)
     """
     pattern = sanitize_log_str(getattr(entry, "pattern", ""), max_len=80)
     path = getattr(entry, "path", None)
+    result_count = getattr(entry, "result_count", None)
     path_str = f" in {_short_path(path)}" if path else ""
-    return f"- `{pattern}`{path_str}"
+    if result_count is not None:
+        noun = "result" if result_count == 1 else "results"
+        count_str = f"  ({result_count} {noun})"
+    else:
+        count_str = ""
+    return f"- `{pattern}`{path_str}{count_str}"
 
 
 def _load_session_cache(session_id: str, caller: str) -> SessionCache | None:

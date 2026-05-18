@@ -140,14 +140,23 @@ def _cache_key(src_path: Path) -> str:
     (new format, new quality, new downscale ceiling) automatically supersedes old
     cache entries without us having to crawl the cache dir to evict them — old
     files simply stop being looked up and age out via the LRU cleaner.
+
+    Uses streaming 1 MB chunks to avoid memory spikes on large images.
     """
     try:
         h = hashlib.sha256()
         # Mix the cache version into the hash so a pipeline change invalidates
         # everything previously cached without touching the filesystem.
         h.update(f"v{CACHE_KEY_VERSION}\n".encode())
+        # Stream in 1 MB chunks to avoid loading large images into memory.
+        # chunk_size = 1 << 20 means 1 MB; this is the same buffer size used
+        # throughout the codebase for efficient streaming (see webfetch.py).
         with src_path.open("rb") as f:
-            for chunk in iter(lambda: f.read(1 << 20), b""):
+            chunk_size = 1 << 20
+            while True:
+                chunk = f.read(chunk_size)
+                if not chunk:
+                    break
                 h.update(chunk)
         return h.hexdigest()
     except OSError as exc:
@@ -340,12 +349,17 @@ def shrink(src_path: Path) -> Path | None:
             # so st_mtime equals creation time — the eviction sort would degenerate
             # to FIFO and discard hot entries first.  Windows atime is unreliable
             # (often disabled at the volume level), so bumping mtime is the most
-            # portable per-hit "touch" signal available.  Failure to bump is
-            # benign — we keep returning the cache hit; the cache just loses a
-            # little LRU fidelity for this entry until it's hit again.
-            with contextlib.suppress(OSError):
+            # portable per-hit "touch" signal available.
+            # Only bump if the file was last touched >1 hour ago; this reduces
+            # unnecessary I/O for hot images in a session without materially
+            # affecting LRU accuracy (1 hour is well below typical session length).
+            try:
                 now = time.time()
-                os.utime(candidate, (now, now))
+                st = candidate.stat()
+                if now - st.st_mtime > 3600:  # 1 hour in seconds
+                    os.utime(candidate, (now, now))
+            except OSError:
+                pass  # Benign — cache still works, just loses a little LRU fidelity
             return candidate
 
     try:
@@ -474,6 +488,10 @@ def stats_for(src_path: Path, shrunken_path: Path) -> ImageStats:
     reads are best-effort: if PIL is not installed or either file is unreadable,
     the width/height fields are 0 and only byte savings are reported.
     Returns an all-zero ImageStats on any OS error rather than raising.
+
+    Optimizations:
+    - PIL is imported only once and reused for both image reads.
+    - Short-circuit on missing files or unsafe paths before importing PIL.
     """
     _empty = ImageStats(
         src_bytes=0, out_bytes=0, bytes_saved=0,
@@ -488,13 +506,22 @@ def stats_for(src_path: Path, shrunken_path: Path) -> ImageStats:
 
         orig_w = orig_h = out_w = out_h = 0
         try:
+            # Import PIL once and reuse it for both image opens; avoids the
+            # per-call import overhead in the next-exception path.
             from PIL import Image  # noqa: PLC0415
-            with Image.open(src_path) as img:
-                orig_w, orig_h = img.size
-            with Image.open(shrunken_path) as img:
-                out_w, out_h = img.size
-        except (OSError, MemoryError, ValueError) as exc:
-            _LOG.debug("gather_stats: could not read image dimensions for %s: %s", src_path.name, exc)
+            try:
+                with Image.open(src_path) as img:
+                    orig_w, orig_h = img.size
+            except (OSError, MemoryError, ValueError):
+                pass  # Best effort; dimension reads are optional.
+            try:
+                with Image.open(shrunken_path) as img:
+                    out_w, out_h = img.size
+            except (OSError, MemoryError, ValueError):
+                pass  # Best effort; dimension reads are optional.
+        except ImportError:
+            # PIL not installed; skip dimension reads.
+            _LOG.debug("gather_stats: PIL not available; skipping dimension reads")
         except Exception as exc:  # noqa: BLE001 — PIL raises many undocumented exception subclasses
             _LOG.debug("gather_stats: unexpected error reading dimensions for %s (%s): %s", src_path.name, type(exc).__name__, exc)
 
