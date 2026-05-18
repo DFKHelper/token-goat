@@ -25,9 +25,37 @@ jobs:
       - run: uv python install 3.13
       - run: uv sync --all-extras
       - name: Test
+        id: test
         # ``-rfE`` prints short tracebacks for failures and errors at the
         # end of the run so a CI failure surfaces the actual assertion or
         # exception in the log without needing to download artefacts.
         # ``--tb=short`` keeps each entry compact (one line per frame) so
         # the summary stays readable even when several tests fail at once.
-        run: uv run pytest -rfE --tb=short
+        # Tee'd to ``pytest.log`` so the on-failure step below can post the
+        # tail to the PR as a comment — Windows-only failures are otherwise
+        # invisible to anyone without GitHub Actions log access.
+        shell: bash
+        run: |
+          set -o pipefail
+          uv run pytest -rfE --tb=short 2>&1 | tee pytest.log
+
+      - name: Surface failure summary to PR
+        if: failure() && github.event_name == 'pull_request'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # Trim to the last 80 lines so a multi-failure run still fits in
+          # one PR comment (GitHub's per-comment cap is 65 KB).
+          {
+            echo "### CI test failure (windows-2022 / Python 3.13)"
+            echo ""
+            echo "Commit: ${{ github.sha }}"
+            echo ""
+            echo "Last 80 lines of pytest output:"
+            echo ""
+            echo '```'
+            tail -n 80 pytest.log || true
+            echo '```'
+          } > comment.md
+          gh pr comment "${{ github.event.pull_request.number }}" --body-file comment.md
