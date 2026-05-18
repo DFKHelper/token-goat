@@ -28,6 +28,7 @@ All notable changes to Token-Goat are documented in this file. Format follows Ke
 - **`reset_session`** now also removes per-session content snapshots, matching the existing JSON-cache reset semantics.
 - **Codex Bash matcher in `~/.codex/config.toml`** now points at the new `post-bash` hook instead of `post-read`; under Codex, `post-read` previously did nothing for `Bash` calls (no branch in the handler), so this is a strict gain.
 - **`bash_cache.evict_old_entries`** removes body + sidecar pairs together, and runs a second pass to sweep any orphan sidecars left over from out-of-band deletion. Previously, manual `rm` of a body file or a write race could leave a `.json` sidecar with no matching body that lived forever.
+- **README "Updating" subsection.** New `### Updating` block under `## Install` consolidates the three update paths (weekly auto-update via scheduled task/crontab, on-demand `uv tool upgrade`, force-reinstall via `uv tool install --reinstall --force`) plus how to disable the auto-update entry. The miss-suggestions feature row and the prose footnote previously implied "Did you mean?" was the only miss-handling path; both now name the `symbol` auto-redirect (with `--strict` opt-out) alongside the "Did you mean?" fallback on `read` / `section`.
 
 ### Fixed
 

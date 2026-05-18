@@ -82,7 +82,7 @@ Numbers below come from synthetic-fixture benchmarks in the test suite. Each row
 | Section extraction | Setext headings, h5/h6, anchor IDs, and `__frontmatter__` | `token-goat section` resolves more headings without falling back to a full file read | `languages/markdown.py` |
 | Image cache | Real LRU eviction (was FIFO; old hot entries got dropped) | Higher hit rate on repeat screenshots in long sessions | `image_shrink.py` |
 | Monorepo defaults | Reindex batch 500 → 2000; compact `min_events` 5 → 3 | Fewer worker wakeups; compact manifests fire on shorter sessions | `config.py` defaults |
-| Miss suggestions | "Did you mean…?" on `symbol` / `read` / `section` misses | Keeps agents on the surgical-read path instead of falling back to full-file `Read` | `read_replacement.py` |
+| Miss suggestions | `symbol` auto-redirects on a single high-confidence close match (`--strict` opts out); `read` / `section` print "Did you mean…?" | Keeps agents on the surgical-read path instead of falling back to full-file `Read` | `read_replacement.py` |
 
 ## Token-savings examples
 
@@ -212,6 +212,18 @@ token-goat install --openclaw
 
 The `--openclaw` flag patches Claude Code and drops a TypeScript bridge plugin into `~/.openclaw/plugins/` and registers it in `openclaw.json` — one command, no separate base install. Image shrinking, post-edit indexing, and pre-fetch denial work. Session hints and compact assist don't — no context injection point, no compaction event.
 
+### Updating
+
+Updates ship automatically. `token-goat install` schedules a weekly `uv tool upgrade token-goat` run at Sunday 03:00 local time (Windows scheduled task; Linux/macOS crontab line tagged `# token-goat-autoupdate`). `token-goat uninstall` reverses it.
+
+Manual paths:
+
+| When | Command |
+|------|---------|
+| Update now | `uv tool upgrade token-goat` |
+| Reinstall from scratch (broken venv, missing image codec) | `uv tool install --reinstall --force token-goat` |
+| Disable auto-updates | Delete the `token-goat-update` scheduled task (Windows) or the `# token-goat-autoupdate` crontab line (Linux/macOS) |
+
 ## CLI
 
 | Command | What it does |
@@ -233,7 +245,7 @@ The `--openclaw` flag patches Claude Code and drops a TypeScript bridge plugin i
 
 First `token-goat semantic` call downloads a small embedding model, about 130 MB, into the token-goat data directory. One-time. Offline after that.
 
-Missed lookups print a "Did you mean…?" list of close matches so a typo costs one extra glance, not a re-read.
+Missed lookups recover surgically: `symbol` auto-redirects to a single high-confidence close match (pass `--strict` to opt out), while `read` and `section` print a "Did you mean…?" list — a typo costs at most one extra glance, not a re-read.
 
 ## What gets installed?
 
