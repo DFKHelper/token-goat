@@ -34,6 +34,8 @@ SOURCE_IMAGE = "image"
 SOURCE_HINT = "hint"
 SOURCE_READ = "read"
 SOURCE_COMPACT = "compact"
+SOURCE_BASH = "bash"
+SOURCE_WEB = "web"
 SOURCE_OTHER = "other"
 
 # Map each raw event kind → user-facing source bucket.  Unknown kinds fall
@@ -45,9 +47,17 @@ _KIND_TO_SOURCE: dict[str, str] = {
     "webfetch_image": SOURCE_IMAGE,
     "gdrive_image": SOURCE_IMAGE,
     # hint family (both gross savings and overhead live here so the source
-    # bucket reflects the net contribution of the hint mechanism)
+    # bucket reflects the net contribution of the hint mechanism).  Diff hints
+    # are the smart variant that injects a unified diff instead of suppressing
+    # the re-read entirely — same prevention mechanism, same bucket.  Grep
+    # dedup is a "prevent another file-like read" hint and stays in this
+    # bucket too; the cross-tool symmetry keeps stats scannable.
     "session_hint": SOURCE_HINT,
     "session_hint_overhead": SOURCE_HINT,
+    "diff_hint": SOURCE_HINT,
+    "diff_hint_overhead": SOURCE_HINT,
+    "grep_dedup_hint": SOURCE_HINT,
+    "grep_dedup_hint_overhead": SOURCE_HINT,
     # surgical read family
     "read_replacement": SOURCE_READ,
     "section_replacement": SOURCE_READ,
@@ -56,6 +66,18 @@ _KIND_TO_SOURCE: dict[str, str] = {
     # compaction assist family
     "compact_manifest": SOURCE_COMPACT,
     "compact_assist": SOURCE_COMPACT,
+    # bash output cache family — preventing repeat command runs is structurally
+    # distinct from preventing file re-reads (no source file is involved), so
+    # it gets its own user-visible bucket rather than folding into HINT.
+    "bash_dedup_hint": SOURCE_BASH,
+    "bash_dedup_hint_overhead": SOURCE_BASH,
+    "bash_output_cached": SOURCE_BASH,
+    # web-fetch cache family — same shape as bash, separate bucket so the
+    # network-savings line is distinct from the local-execution-savings line
+    # in the stats output.
+    "web_dedup_hint": SOURCE_WEB,
+    "web_dedup_hint_overhead": SOURCE_WEB,
+    "web_output_cached": SOURCE_WEB,
 }
 
 
@@ -71,11 +93,13 @@ def kind_to_source(kind: str) -> str:
 
 __all__ = [
     "BYTES_MODE_ONLY_KINDS",
+    "SOURCE_BASH",
     "SOURCE_COMPACT",
     "SOURCE_HINT",
     "SOURCE_IMAGE",
     "SOURCE_OTHER",
     "SOURCE_READ",
+    "SOURCE_WEB",
     "StatsSummary",
     "kind_to_source",
     "render_text",

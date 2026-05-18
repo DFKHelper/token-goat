@@ -25,4 +25,36 @@ jobs:
       - run: uv python install 3.13
       - run: uv sync --all-extras
       - name: Test
-        run: uv run pytest
+        # ``-rfE`` prints short tracebacks for failures and errors at the
+        # end of the run so a CI failure surfaces the actual assertion or
+        # exception in the log without needing to download artefacts.
+        # ``--tb=short`` keeps each entry compact (one line per frame) so
+        # the summary stays readable even when several tests fail at once.
+        # ``TOKEN_GOAT_NO_WORKER_SPAWN=1`` suppresses the detached worker
+        # daemon spawn from ``worker.ensure_running()``.  Under GitHub
+        # Actions on Windows the runner tracks every descendant via a
+        # Win32 job object, so the daemon's infinite loop holds the
+        # test step open until the global six-hour timeout fires.  Tests
+        # still exercise the watchdog branch by reading the env var; only
+        # the actual ``subprocess.Popen`` is skipped.
+        env:
+          TOKEN_GOAT_NO_WORKER_SPAWN: "1"
+        run: uv run pytest -rfE --tb=short
+
+      - name: Kill leftover detached worker daemons
+        # Several hook tests trigger ``worker.ensure_running()`` which
+        # spawns ``pythonw.exe -m token_goat.cli worker --daemon`` as a
+        # detached background process.  ``DETACHED_PROCESS`` is honoured
+        # by Windows itself but GitHub Actions' Windows runner uses a
+        # Win32 job object to track every descendant; the daemon's
+        # infinite loop would otherwise hold the step open until the
+        # global six-hour timeout.  This always-runs step terminates
+        # any leftover daemon so the runner can finish promptly.
+        if: always()
+        run: |
+          Get-CimInstance Win32_Process |
+            Where-Object { $_.CommandLine -like '*token_goat*worker*--daemon*' } |
+            ForEach-Object {
+              Write-Host "killing leftover worker pid=$($_.ProcessId)"
+              Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue
+            }

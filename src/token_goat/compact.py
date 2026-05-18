@@ -44,6 +44,17 @@ _MAX_RANGES_PER_FILE: Final[int] = 4
 # Max symbols listed per file entry in the manifest (separate from _MAX_SYMBOLS_FILES,
 # which caps the number of *files* that show any symbols at all).
 _MAX_SYMBOLS_PER_FILE_ENTRY: Final[int] = 6
+# Maximum number of cached Bash commands listed in the manifest.  Bash entries
+# preserve the test/build context most likely to drive the next agent turn
+# (a green pytest, a failing build, the most recent git log), but listing every
+# command across a long session would crowd out higher-priority sections.  Six
+# covers the typical iterate-test-fix-test-commit cycle without dominating the
+# budget — most sessions accumulate fewer than that.
+_MAX_BASH_ENTRIES: Final[int] = 6
+# Smallest cached Bash output worth surfacing in the manifest.  Below ~400 bytes
+# the dedup hint suppresses on size anyway, and the manifest line itself costs
+# tokens that would not be paid back even if the agent acted on the hint.
+_MIN_BASH_BYTES_FOR_MANIFEST: Final[int] = 400
 
 # Hard ceiling on the max_tokens parameter accepted by build_manifest.
 # The config layer sets a sensible default (400) but build_manifest is also part of
@@ -66,6 +77,10 @@ _BY_READ_COUNT = attrgetter("read_count")
 # (the symbols a user just inspected are more load-bearing for the upcoming
 # compaction than ones touched at the start of a long session).
 _BY_LAST_READ_TS = attrgetter("last_read_ts")
+
+# Same idea, applied to BashEntry — most-recently-run commands are the ones
+# whose output the compaction LLM most needs to preserve as context.
+_BY_BASH_TS = attrgetter("ts")
 
 # Noise file extensions and basenames that should never enter the manifest.
 # These files are build artifacts, OS metadata, or auto-generated lockfiles that
@@ -201,6 +216,76 @@ def _format_ranges(ranges: list[tuple[int, int]]) -> str:
     return f"  lines {parts}{overflow_suffix}"
 
 
+def _select_top_bash_entries(bash_history: object) -> list[object]:
+    """Pick up to :data:`_MAX_BASH_ENTRIES` cached Bash runs worth surfacing.
+
+    Filters out entries below :data:`_MIN_BASH_BYTES_FOR_MANIFEST` (the dedup
+    hint would suppress them anyway) and ranks by recency — the most recent
+    runs are the ones whose output drives the next agent turn.  Accepts the
+    ``bash_history`` attribute typed as ``object`` so the helper is safe to
+    call on legacy SessionCache instances written by token-goat versions that
+    predate the field (``None`` / missing → empty list).
+
+    Returns an iterable suitable for unpacking; entries are
+    :class:`session.BashEntry` instances but the helper does not import that
+    type to keep this module light at hook-cold-start time.
+    """
+    if not isinstance(bash_history, dict) or not bash_history:
+        return []
+    candidates = [
+        e for e in bash_history.values()
+        if (getattr(e, "stdout_bytes", 0) + getattr(e, "stderr_bytes", 0))
+        >= _MIN_BASH_BYTES_FOR_MANIFEST
+    ]
+    if not candidates:
+        return []
+    return heapq.nlargest(_MAX_BASH_ENTRIES, candidates, key=_BY_BASH_TS)
+
+
+def _format_bash_entry(entry: object) -> str:
+    """Render one :class:`session.BashEntry` as a single manifest line.
+
+    Format::
+
+        - $ pytest -v tests/  (exit 1, 12.3KB, id=abc123def...)
+
+    The cache ID is included so the compaction LLM hands the agent something
+    actionable — the agent can call ``token-goat bash-output <id>`` to recover
+    the full body instead of re-running.  Byte counts use a compact human
+    suffix (KB/MB) because the raw integer (``12345``) is harder to scan in a
+    glance-level summary.
+    """
+    cmd_preview = sanitize_log_str(getattr(entry, "cmd_preview", ""), max_len=80)
+    total = int(getattr(entry, "stdout_bytes", 0)) + int(getattr(entry, "stderr_bytes", 0))
+    exit_code = getattr(entry, "exit_code", None)
+    output_id = getattr(entry, "output_id", "")
+    truncated_marker = " (truncated)" if getattr(entry, "truncated", False) else ""
+    exit_str = "exit ?" if exit_code is None else f"exit {exit_code}"
+    return (
+        f"- $ {cmd_preview}  "
+        f"({exit_str}, {_humanize_bytes(total)}{truncated_marker}, id={output_id})"
+    )
+
+
+def _humanize_bytes(n: int) -> str:
+    """Return a short human-readable byte count: ``1.2KB``, ``3.4MB``, ``120B``.
+
+    Compact (no spaces, two significant digits) so it fits inside a manifest
+    line without competing with the command preview for visual space.  Sizes
+    below 1024 use plain bytes; above that we step through KB/MB at 1024-byte
+    boundaries.  GB is not represented because the on-disk store caps each
+    entry at 2 MB before any truncation marker is applied — values higher than
+    a few MB indicate the *original* output size, not the stored bytes, but
+    even then GB-scale captures are not realistic for a Bash command surfaced
+    in the manifest.
+    """
+    if n < 1024:
+        return f"{n}B"
+    if n < 1024 * 1024:
+        return f"{n / 1024:.1f}KB"
+    return f"{n / (1024 * 1024):.1f}MB"
+
+
 def _load_session_cache(session_id: str, caller: str) -> SessionCache | None:
     """Validate *session_id* and load the session cache, returning ``None`` on any failure.
 
@@ -234,11 +319,22 @@ def _load_session_cache(session_id: str, caller: str) -> SessionCache | None:
 
 
 def event_count(session_id: str) -> int:
-    """Count tracked events (reads + greps + edits) for a session."""
+    """Count tracked events (reads + greps + edits + bash runs) for a session.
+
+    Bash invocations are counted alongside reads/greps/edits so a session
+    whose only activity is a cached test run still clears the
+    ``min_events`` threshold for compaction-manifest emission — that command's
+    output is exactly what the manifest is meant to preserve.
+    """
     cache = _load_session_cache(session_id, "event_count")
     if cache is None:
         return 0
-    return len(cache.files) + len(cache.greps) + len(cache.edited_files)
+    return (
+        len(cache.files)
+        + len(cache.greps)
+        + len(cache.edited_files)
+        + len(getattr(cache, "bash_history", {}) or {})
+    )
 
 
 def _build_manifest_from_cache(
@@ -464,7 +560,19 @@ def _render(cache: SessionCache, session_id: str, max_tokens: int) -> tuple[str,
             sections.append(f"- {_short_path(entry.rel_or_abs)} → {sym_str}")
         sections.append("")
 
-    # ── 3. Key files read (top N by read_count) ───────────────────────────────
+    # ── 3. Commands run (cached Bash output worth recalling) ──────────────────
+    # Surfacing the most recent meaningful Bash invocations preserves the
+    # test/build context that drives the next agent turn.  Each entry quotes
+    # the cache ID so the agent can retrieve the full body via
+    # `token-goat bash-output <id>` instead of re-running the command.
+    bash_entries = _select_top_bash_entries(getattr(cache, "bash_history", None))
+    if bash_entries:
+        sections.append("### Commands Run (cached output)")
+        for be in bash_entries:
+            sections.append(_format_bash_entry(be))
+        sections.append("")
+
+    # ── 4. Key files read (top N by read_count) ───────────────────────────────
     if top_files:
         sections.append("### Key Files Read")
         for entry in top_files:
