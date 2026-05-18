@@ -25,4 +25,9 @@ jobs:
       - run: uv python install 3.13
       - run: uv sync --all-extras
       - name: Test
-        run: uv run pytest
+        # ``-rfE`` prints short tracebacks for failures and errors at the
+        # end of the run so a CI failure surfaces the actual assertion or
+        # exception in the log without needing to download artefacts.
+        # ``--tb=short`` keeps each entry compact (one line per frame) so
+        # the summary stays readable even when several tests fail at once.
+        run: uv run pytest -rfE --tb=short

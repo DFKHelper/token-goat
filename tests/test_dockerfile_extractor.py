@@ -47,16 +47,26 @@ CMD ["python", "main.py"]
 
 
 class TestBasenameDispatch:
+    """Verify Dockerfile-family files dispatch through the basename table.
+
+    The file path passed to ``index_file`` is built off ``canonicalize(tmp_path)``
+    rather than the raw ``tmp_path`` so the drive-letter case matches the
+    project root on Windows.  Without this, ``Path.relative_to`` on Windows
+    raises ``ValueError`` when the cases differ (it is case-sensitive even
+    though the FS is not), which would make ``index_file`` return ``None``
+    and the test fail with an unhelpful "result is None" assertion.
+    """
+
     def test_dockerfile_resolves_via_basename(self, tmp_data_dir, tmp_path):
         from token_goat import parser
         from token_goat.project import Project, canonicalize, project_hash
 
-        df = tmp_path / "Dockerfile"
+        root = canonicalize(tmp_path)
+        df = root / "Dockerfile"
         df.write_text(
             "FROM python:3.11 AS builder\nRUN pip install build\n",
             encoding="utf-8",
         )
-        root = canonicalize(tmp_path)
         proj = Project(root=root, hash=project_hash(root), marker=".git")
         result = parser.index_file(proj, df)
         assert result is not None
@@ -67,9 +77,9 @@ class TestBasenameDispatch:
         from token_goat import parser
         from token_goat.project import Project, canonicalize, project_hash
 
-        cf = tmp_path / "Containerfile"
-        cf.write_text("FROM alpine\n", encoding="utf-8")
         root = canonicalize(tmp_path)
+        cf = root / "Containerfile"
+        cf.write_text("FROM alpine\n", encoding="utf-8")
         proj = Project(root=root, hash=project_hash(root), marker=".git")
         result = parser.index_file(proj, cf)
         assert result is not None
@@ -79,9 +89,9 @@ class TestBasenameDispatch:
         from token_goat import parser
         from token_goat.project import Project, canonicalize, project_hash
 
-        df = tmp_path / "service.dockerfile"
-        df.write_text("FROM busybox\n", encoding="utf-8")
         root = canonicalize(tmp_path)
+        df = root / "service.dockerfile"
+        df.write_text("FROM busybox\n", encoding="utf-8")
         proj = Project(root=root, hash=project_hash(root), marker=".git")
         result = parser.index_file(proj, df)
         assert result is not None
