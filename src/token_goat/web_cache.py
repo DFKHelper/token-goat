@@ -60,7 +60,7 @@ import stat as _stat_module
 import time
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import cast
+from typing import TypedDict
 
 from . import paths
 from .hooks_common import sanitize_log_str
@@ -108,6 +108,17 @@ class WebOutputMeta:
     status_code: int | None
     ts: float
     truncated: bool
+
+
+class _OutputStatDict(TypedDict, total=False):
+    """Stat-derived metadata returned by :func:`load_output_meta`.
+
+    Keys match the return shape: output_id (always present), size_bytes, mtime.
+    """
+
+    output_id: str
+    size_bytes: int
+    mtime: float
 
 
 def _web_outputs_dir() -> Path:
@@ -239,7 +250,7 @@ def load_output(output_id: str) -> str | None:
         return None
 
 
-def load_output_meta(output_id: str) -> dict[str, object] | None:
+def load_output_meta(output_id: str) -> _OutputStatDict | None:
     """Return stat-derived metadata for an output file (size, mtime), or None."""
     path = _safe_join(output_id)
     if path is None or not path.exists():
@@ -248,11 +259,11 @@ def load_output_meta(output_id: str) -> dict[str, object] | None:
         st = path.stat()
     except OSError:
         return None
-    return {
-        "output_id": output_id,
-        "size_bytes": int(st.st_size),
-        "mtime": float(st.st_mtime),
-    }
+    return _OutputStatDict(
+        output_id=output_id,
+        size_bytes=int(st.st_size),
+        mtime=float(st.st_mtime),
+    )
 
 
 def evict_old_entries(*, max_total_bytes: int = DEFAULT_MAX_TOTAL_BYTES) -> int:
@@ -332,14 +343,14 @@ def evict_old_entries(*, max_total_bytes: int = DEFAULT_MAX_TOTAL_BYTES) -> int:
     return removed
 
 
-def list_outputs() -> list[dict[str, object]]:
+def list_outputs() -> list[_OutputStatDict]:
     """Return metadata for every cached output, newest first."""
     try:
         d = _web_outputs_dir()
     except OSError:
         return []
 
-    results: list[dict[str, object]] = []
+    results: list[_OutputStatDict] = []
     try:
         for fp in d.iterdir():
             if not fp.name.endswith(".txt"):
@@ -350,16 +361,16 @@ def list_outputs() -> list[dict[str, object]]:
                 st = fp.stat()
             except OSError:
                 continue
-            results.append({
-                "output_id": fp.stem,
-                "size_bytes": int(st.st_size),
-                "mtime": float(st.st_mtime),
-            })
+            results.append(_OutputStatDict(
+                output_id=fp.stem,
+                size_bytes=int(st.st_size),
+                mtime=float(st.st_mtime),
+            ))
     except OSError:
         return results
 
-    def _mtime_key(r: dict[str, object]) -> float:
-        return float(cast(float, r["mtime"]))
+    def _mtime_key(r: _OutputStatDict) -> float:
+        return r["mtime"]
 
     results.sort(key=_mtime_key, reverse=True)
     return results
