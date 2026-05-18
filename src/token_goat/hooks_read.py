@@ -81,8 +81,8 @@ def _handle_bash_compress(payload: HookPayload) -> HookResponse | None:
 
     The wrapper subprocess runs the original through the system shell,
     captures stdout + stderr, applies the per-tool filter, and prints a
-    compressed view that preserves failures-first signal while stripping
-    progress bars, deprecation noise, duplicate lines, and verbose passes.
+    compressed view that keeps every error block while dropping progress
+    bars, deprecation noise, duplicate lines, and verbose passes.
 
     Returns ``None`` when:
     * the user has disabled bash compression via ``TOKEN_GOAT_BASH_COMPRESS=0``
@@ -309,7 +309,7 @@ def pre_read(payload: HookPayload) -> HookResponse:
             # for any payload whose tool_name is not 'Bash', so the recursive
             # call always reaches the tool_name != "Read" branch at worst.
             return pre_read(read_payload)
-        # Not a read-equivalent — check whether it is a compressible command
+        # Not a read-equivalent. Check whether it's a compressible command
         # (pytest, npm install, docker build, ...) and rewrite if so.
         compress_response = _handle_bash_compress(payload)
         if compress_response is not None:

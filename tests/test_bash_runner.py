@@ -1,4 +1,4 @@
-"""Tests for token_goat.bash_runner — subprocess wrapper around bash_compress."""
+"""Tests for token_goat.bash_runner, subprocess wrapper around bash_compress."""
 from __future__ import annotations
 
 import io
@@ -85,7 +85,7 @@ class TestWrapAndCompress:
             write_stderr=err_buf.write,
         )
         # generic doesn't exist as a name lookup target, so falls back to no
-        # filter and exits with raw exec — exit code still 0.
+        # filter and exits with raw exec, exit code still 0.
         assert rc == 0
 
 
@@ -139,7 +139,7 @@ class TestOverflow:
 
 
 # ---------------------------------------------------------------------------
-# Stats recording (smoke — uses real DB via tmp_data_dir)
+# Stats recording (smoke, uses real DB via tmp_data_dir)
 # ---------------------------------------------------------------------------
 
 

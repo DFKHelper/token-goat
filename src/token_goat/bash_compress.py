@@ -40,13 +40,13 @@ Design goals
 Public API
 ==========
 
-* :func:`select_filter` — dispatch a parsed argv to a :class:`Filter`.
-* :func:`compress_output` — apply a filter to stdout / stderr / exit_code,
+* :func:`select_filter`: dispatch a parsed argv to a :class:`Filter`.
+* :func:`compress_output`: apply a filter to stdout / stderr / exit_code,
   returning a :class:`CompressedOutput` with metadata.
-* :func:`detect_from_command` — parse a raw shell command string and return
+* :func:`detect_from_command`: parse a raw shell command string and return
   the dispatched filter (or ``None`` if no filter applies).
-* :class:`Filter` — base class for per-tool compressors.
-* :class:`CompressedOutput` — dataclass holding compressed text and byte stats.
+* :class:`Filter`: base class for per-tool compressors.
+* :class:`CompressedOutput`: dataclass holding compressed text and byte stats.
 
 The CLI entry point ``token-goat compress`` lives in :mod:`cli`; the
 subprocess wrapper that runs the user's command lives in :mod:`bash_runner`.
@@ -84,7 +84,7 @@ _LOG = logging.getLogger("token_goat.bash_compress")
 
 #: Maximum line count produced by any filter.  Beyond this the filter elides
 #: the middle of the output with a ``truncate_middle`` marker.  ~1000 lines at
-#: ~80 chars each is about 80 KB / 20K tokens — already past the point where a
+#: ~80 chars each is about 80 KB / 20K tokens, already past the point where a
 #: human (or a model) is reading every line.
 DEFAULT_MAX_LINES: Final[int] = 1000
 
@@ -95,8 +95,8 @@ DEFAULT_MAX_BYTES: Final[int] = 64 * 1024
 
 #: Maximum bytes of raw output a filter is willing to inspect.  Beyond this the
 #: filter falls back to head/tail truncation without per-tool analysis to keep
-#: filter runtime bounded.  2 MiB covers virtually any realistic command — a
-#: 100K-line file at 20 bytes/line is 2 MiB — and prevents a runaway log from
+#: filter runtime bounded.  2 MiB covers virtually any realistic command, a
+#: 100K-line file at 20 bytes/line is 2 MiB, and prevents a runaway log from
 #: causing a multi-second pause in the hook.
 MAX_INSPECT_BYTES: Final[int] = 2 * 1024 * 1024
 
@@ -104,7 +104,7 @@ MAX_INSPECT_BYTES: Final[int] = 2 * 1024 * 1024
 #: looking at a summary and can opt out if it needs the raw view.  Kept short
 #: (~80 chars) so the meta-cost of the marker is dwarfed by the savings.
 _COMPRESSION_MARKER_FMT: Final[str] = (
-    "\n[token-goat: {filter} filter compressed {orig_kb:.1f} KiB → "
+    "\n[token-goat: {filter} filter compressed {orig_kb:.1f} KiB to "
     "{out_kb:.1f} KiB ({pct:.0f}% saved); set TOKEN_GOAT_BASH_COMPRESS=0 to disable]"
 )
 
@@ -141,7 +141,7 @@ def strip_ansi(text: str) -> str:
     Strips every ``ESC [ ... <final>`` (CSI) and ``ESC ] ... BEL`` (OSC)
     sequence as well as standalone 2-byte ``ESC X`` codes.  Idempotent on text
     that has no escapes.  Does *not* attempt to interpret colours (just deletes
-    them) — the goal is byte reduction, not faithful reproduction.
+    them), the goal is byte reduction, not faithful reproduction.
 
     On a 10 KB pytest output with full colour the savings are typically 30–40%
     before any structural compression has even fired.
@@ -181,7 +181,7 @@ def dedupe_consecutive(
 ) -> list[str]:
     """Collapse runs of identical consecutive lines to ``line  (×N)``.
 
-    A run shorter than *min_run* is emitted verbatim — single repetitions stay
+    A run shorter than *min_run* is emitted verbatim: single repetitions stay
     untouched so we never spuriously add ``(×1)`` noise.  The default *fmt*
     appends the count after two spaces, which keeps grep-anchored greps on the
     original line text working.
@@ -333,7 +333,7 @@ def split_blocks(
 def normalise(text: str) -> str:
     """Run the universal pre-filter pipeline: progress + ANSI + line endings.
 
-    Every filter should call this on its raw input before per-tool logic — it
+    Every filter should call this on its raw input before per-tool logic, it
     removes the noise that obscures structural patterns.  Idempotent.
     """
     if not text:
@@ -475,7 +475,7 @@ class Filter:
         passing summary line).
 
         The default implementation is a passthrough that concatenates stdout
-        and stderr with a separator — useful when the only compression is the
+        and stderr with a separator, useful when the only compression is the
         ANSI / progress strip that :meth:`apply` already performed.
         """
         if stderr and stdout:
@@ -500,7 +500,7 @@ class Filter:
         1. Compute original byte count from raw stdout + stderr.
         2. Run :func:`normalise` over both streams (strip ANSI / progress).
         3. Bail out early when post-normalisation input exceeds
-           :data:`MAX_INSPECT_BYTES` — for runaway logs we head/tail truncate
+           :data:`MAX_INSPECT_BYTES`, for runaway logs we head/tail truncate
            rather than risk a slow per-line filter pass.
         4. Call :meth:`compress` to produce the structurally-compressed body.
         5. Cap line count via :func:`truncate_middle` (preserves head + tail).
@@ -530,7 +530,7 @@ class Filter:
                 body = _fallback_truncate(norm_out, norm_err, max_lines)
             else:
                 body = self.compress(norm_out, norm_err, exit_code, argv)
-        except Exception as exc:  # noqa: BLE001 — fail-soft is the contract
+        except Exception as exc:  # noqa: BLE001, fail-soft is the contract
             _LOG.exception("filter %s raised; falling back to truncation", self.name)
             notes.append(f"{self.name} filter raised {type(exc).__name__}; truncated raw")
             body = _fallback_truncate(
@@ -601,12 +601,12 @@ _TWO_TOKEN_PREFIXES: Final[dict[str, frozenset[str]]] = {
     "python3": frozenset(["-m"]),
     "py": frozenset(["-m"]),
     "uv": frozenset(["run", "tool", "pip"]),
-    "uvx": frozenset(),  # uvx <tool> — second token IS the binary
+    "uvx": frozenset(),  # uvx <tool>, second token IS the binary
     "poetry": frozenset(["run"]),
     "rye": frozenset(["run"]),
     "pdm": frozenset(["run"]),
     "pipenv": frozenset(["run"]),
-    "npx": frozenset(),  # npx <tool> — second token IS the binary
+    "npx": frozenset(),  # npx <tool>, second token IS the binary
     "pnpm": frozenset(["exec", "dlx", "run"]),
     "yarn": frozenset(["run", "exec", "dlx"]),
     "bundle": frozenset(["exec"]),
@@ -620,10 +620,10 @@ def _strip_prefixes(argv: list[str]) -> list[str]:
 
     Handles three classes of prefix:
 
-    * **Env assignments** — ``FOO=bar BAZ=qux cmd``: drop tokens with ``=``.
-    * **Single-token wrappers** — ``sudo``, ``time``, ``nice``, ``env``,
+    * **Env assignments**: ``FOO=bar BAZ=qux cmd``: drop tokens with ``=``.
+    * **Single-token wrappers**: ``sudo``, ``time``, ``nice``, ``env``,
       ``stdbuf``: skip the wrapper and any of its short flags.
-    * **Two-token launchers** — ``python -m pytest``, ``uv run pytest``,
+    * **Two-token launchers**: ``python -m pytest``, ``uv run pytest``,
       ``npx jest``: skip the launcher and (optionally) the dispatch keyword,
       treating the *next* token as the binary.
 
@@ -750,7 +750,7 @@ class PytestFilter(Filter):
             # Drop the dots/percent progress line entirely.
             if _PYTEST_DOTS_RE.match(line):
                 continue
-            # Section transitions — re-evaluate which block we're in.
+            # Section transitions, re-evaluate which block we're in.
             if _PYTEST_HEADER_RE.match(line):
                 in_failures = "FAILURES" in line
                 in_errors = "ERRORS" in line or "short test summary" in line
@@ -758,7 +758,7 @@ class PytestFilter(Filter):
                 continue
             # PASSED entries: count, do not keep.  Only when not inside a
             # failure traceback (PASSED can appear in tracebacks as part of
-            # captured stderr — keep those).
+            # captured stderr, keep those).
             if not in_failures and not in_errors and _PYTEST_FAIL_LINE_RE.match(line):
                 tag = line.split(None, 1)[0]
                 if tag == "PASSED":
@@ -1007,7 +1007,7 @@ class DockerFilter(Filter):
     * **Drop** sha256 digest lines (``#3 sha256:…``).
     * **Drop** layer-transfer progress (``#5 12.3MB / 50.0MB 0.5s``).
     * **Drop** internal step bodies (timestamp + line of build output) when
-      the step succeeded — keep only the step header and the trailing ``DONE``.
+      the step succeeded, keep only the step header and the trailing ``DONE``.
     * **Keep** every step containing ``ERROR`` or ``FAILED``.
     * **Keep** the final ``ERROR: failed to solve:`` block.
     * **Keep** the final ``Successfully built …`` / ``writing image sha256:…``
@@ -1201,7 +1201,7 @@ class LinterFilter(Filter):
     * **eslint**: ``  3:12  error  'foo' is defined but never used  no-unused-vars``
     * **ruff**: ``src/foo.py:3:12: F401 'foo' imported but unused``
     * **mypy / pyright**: ``src/foo.py:3: error: incompatible type``
-    * **pylint**: similar — falls through to dedupe_by_key.
+    * **pylint**: similar: falls through to dedupe_by_key.
     """
 
     name = "linter"
@@ -1255,7 +1255,7 @@ def _compress_eslint_stanza(text: str) -> str:
         for line in body:
             m = _ESLINT_LOC_RE.match(line)
             if not m:
-                # Not an issue line — flush as-is.
+                # Not an issue line, flush as-is.
                 if per_rule:
                     out.extend(_emit_eslint_rules(per_rule))
                     per_rule = {}
@@ -1303,7 +1303,7 @@ _GIT_DIFF_HUNK_RE: Final[re.Pattern[str]] = re.compile(r"^@@\s")
 class GitFilter(Filter):
     """Compress ``git`` output across status / log / diff / show / ls-files.
 
-    Git is the highest-volume command in any agent session — ``git status``
+    Git is the highest-volume command in any agent session, ``git status``
     after a refactor can be hundreds of lines.  Subcommand dispatch table:
 
     * **status**: keep headers + first 30 changed-file lines, summarize rest by
@@ -1327,7 +1327,7 @@ class GitFilter(Filter):
     ) -> str:
         positionals = _positional_args(argv[1:])
         subcommand = positionals[0] if positionals else ""
-        # Git writes "counting objects" etc. to stderr — useful only when something fails.
+        # Git writes "counting objects" etc. to stderr, useful only when something fails.
         if subcommand in ("status",):
             return _compress_git_status(stdout, stderr)
         if subcommand == "log":
@@ -1508,7 +1508,7 @@ class MakeFilter(Filter):
     Compression model:
 
     * **Drop** ``make[N]: Entering/Leaving directory '...'`` recursion noise.
-    * **Drop** plain ``cc``/``clang``/``g++`` invocation echoes — keep only
+    * **Drop** plain ``cc``/``clang``/``g++`` invocation echoes: keep only
       the diagnostic lines (warning / error / undefined reference).
     * **Keep** every ``warning:`` / ``error:`` block.
     * **Keep** the final ``Error 1`` / ``BUILD FAILED`` summary.
@@ -1704,7 +1704,7 @@ FILTERS: list[Filter] = [
 def select_filter(argv: list[str]) -> Filter | None:
     """Return the first registered filter whose ``matches(argv)`` is True.
 
-    Returns ``None`` when no filter applies — callers should NOT wrap such
+    Returns ``None`` when no filter applies, callers should NOT wrap such
     commands in the compression subprocess (the overhead would be pure cost).
 
     The argv is prefix-stripped first via :func:`_strip_prefixes` so
@@ -1719,7 +1719,7 @@ def select_filter(argv: list[str]) -> Filter | None:
         try:
             if f.matches(resolved):
                 return f
-        except Exception:  # noqa: BLE001 — never let a custom filter break dispatch
+        except Exception:  # noqa: BLE001, never let a custom filter break dispatch
             _LOG.exception("filter %s raised during matches()", f.name)
     return None
 
@@ -1732,7 +1732,7 @@ def detect_from_command(command: str) -> tuple[Filter, list[str]] | None:
     filter can inspect subcommands).  Returns ``None`` when:
 
     * the command exceeds 64 KiB (defensive against crafted payloads),
-    * ``shlex.split`` fails (unbalanced quotes — leave it alone),
+    * ``shlex.split`` fails (unbalanced quotes: leave it alone),
     * the command is empty after prefix stripping,
     * no filter matches.
     """
