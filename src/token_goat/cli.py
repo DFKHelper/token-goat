@@ -990,10 +990,29 @@ def cmd_bash_output(
     if json_output:
         meta = bash_cache.load_output_meta(output_id) or {}
         sidecar = bash_cache.read_sidecar(output_id)
+        # Match the surgical-read shape exposed elsewhere: alongside the joined
+        # text blob, surface a ``{lineno, text}`` list anchored to the *original*
+        # body line numbers (not the filtered slice positions) so an agent can
+        # follow up with `--head <lineno>` / `--tail <lineno>` slicers that map
+        # back to the on-disk file.
+        original_lines = body.splitlines()
+        # Build a 1-based index for the original body so the lookup below stays
+        # O(unique sliced lines) rather than O(N*M).  Duplicate lines map to
+        # their *first* occurrence — same convention as Read tool line numbers.
+        original_index: dict[str, int] = {}
+        for i, ln in enumerate(original_lines, start=1):
+            if ln not in original_index:
+                original_index[ln] = i
+        numbered: list[dict[str, object]] = [
+            {"lineno": original_index.get(ln, 0), "text": ln}
+            for ln in lines
+        ]
         payload: dict[str, object] = {
             "output_id": output_id,
             "text": sliced,
             "lines": len(lines),
+            "numbered_lines": numbered,
+            "total_lines": len(original_lines),
         }
         payload.update(meta)
         if sidecar is not None:

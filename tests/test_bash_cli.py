@@ -60,6 +60,25 @@ class TestBashOutputCli:
         assert "failing test" in payload["text"]
         assert "exit_code" in payload
 
+    def test_json_numbered_lines_match_original(self, tmp_data_dir):
+        """`numbered_lines` carries the original line number for each kept line.
+
+        Even when `--head`/`--tail`/`--grep` slice the output, every entry
+        carries its 1-based offset into the *original* body so an agent can
+        follow up with a positional slicer that maps to the on-disk file.
+        """
+        oid = _seed()
+        runner = CliRunner()
+        result = runner.invoke(app, ["bash-output", oid, "--grep", "failing", "--json"])
+        assert result.exit_code == 0
+        payload = json.loads(result.stdout)
+        assert payload["total_lines"] == 4
+        # Only one line matches "failing", and it's the 3rd line of the body.
+        numbered = payload["numbered_lines"]
+        assert len(numbered) == 1
+        assert numbered[0]["text"] == "failing test"
+        assert numbered[0]["lineno"] == 3
+
 
 class TestBashHistoryCli:
     def test_empty_history(self, tmp_data_dir):

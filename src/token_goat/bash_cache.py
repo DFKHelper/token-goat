@@ -269,12 +269,19 @@ def load_output_meta(output_id: str) -> dict[str, object] | None:
 
 
 def evict_old_entries(*, max_total_bytes: int = DEFAULT_MAX_TOTAL_BYTES) -> int:
-    """Evict the oldest files until total size is at or under *max_total_bytes*.
+    """Evict the oldest entries until total size is at or under *max_total_bytes*.
 
-    Returns the number of files removed.  Skips symlinks (defensive: an
-    attacker who can plant a symlink into the cache directory should not be
-    able to direct deletes elsewhere by name).  All errors are swallowed —
-    eviction is opportunistic, not authoritative.
+    Each cached output is a pair of files: the body (``<id>.txt``) and the
+    JSON sidecar (``<id>.json``).  Eviction removes both atomically — leaving
+    an orphan sidecar after deleting its body would let stale metadata
+    accumulate over time and would also confuse ``token-goat bash-history``
+    on subsequent calls.
+
+    Returns the number of body files removed; orphan sidecar pairs count as
+    one removal each, matching the per-entry abstraction callers expect.
+    Skips symlinks (defensive: an attacker who can plant a symlink into the
+    cache directory should not be able to direct deletes elsewhere by name).
+    All errors are swallowed — eviction is opportunistic, not authoritative.
     """
     try:
         d = _bash_outputs_dir()
@@ -315,11 +322,43 @@ def evict_old_entries(*, max_total_bytes: int = DEFAULT_MAX_TOTAL_BYTES) -> int:
             removed += 1
         except OSError:
             continue
+        # Best-effort sidecar removal — if the body deletion succeeded the
+        # sidecar should follow.  A failure here is logged at debug only:
+        # leaving a single sidecar around is harmless (read_sidecar tolerates
+        # missing bodies), and the next eviction pass will retry.
+        sidecar = fp.with_suffix(".json")
+        try:
+            sidecar.unlink()
+        except FileNotFoundError:
+            pass
+        except OSError as exc:
+            _LOG.debug("bash_cache: sidecar cleanup failed for %s: %s", sidecar.name, exc)
     if removed:
         _LOG.info(
             "bash_cache: evicted %d entries to fit cap=%d bytes",
             removed, max_total_bytes,
         )
+
+    # Orphan-sidecar sweep.  A sidecar whose body was deleted out-of-band
+    # (e.g. a previous eviction whose body unlink succeeded before the
+    # sidecar unlink could run, or a manual ``rm cache/*.txt``) would
+    # otherwise live forever.  We list ``.json`` files in the cache dir and
+    # drop any without a matching ``.txt``.  Cheap because the directory
+    # typically has only a handful of entries at any time.
+    try:
+        for sp in d.iterdir():
+            if not sp.name.endswith(".json"):
+                continue
+            body = sp.with_suffix(".txt")
+            if body.exists():
+                continue
+            try:
+                sp.unlink()
+            except OSError as exc:
+                _LOG.debug("bash_cache: orphan sidecar removal failed: %s: %s", sp.name, exc)
+    except OSError:
+        pass
+
     return removed
 
 
