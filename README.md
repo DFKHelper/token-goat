@@ -609,6 +609,17 @@ I built this because long Claude Code and Codex sessions on my machine kept burn
 
 This is a solo project. I use it daily on Windows 11. Tests run across Python 3.11, 3.12, and 3.13.
 
+## Requests and issues
+
+Want token-goat to support something it doesn't yet? Open a GitHub issue. Feature requests: a new agent CLI integration (Cursor, Aider, Continue, Cline), a new language adapter (Ruby, Swift, Kotlin, C++), or an image or document format the shrink path doesn't compress yet. Issues are public and searchable. That's where I work out what to build next. A short repro plus what you'd want the command to do is enough.
+
+Bug reports go to the same place. The most useful ones include:
+- Your OS, shell, and token-goat version (`token-goat --version`)
+- The matching log line from `%LOCALAPPDATA%\dfk-helper\token-goat\logs\` on Windows or `~/.local/share/token-goat/logs/` on Linux/WSL
+- What you expected and what actually happened
+
+For private questions, commercial licensing, or anything you'd rather not post publicly, contact me at token-goat@dfkhelper.com.
+
 ## Available for work
 
 Senior or staff engineering. Developer tools, AI infrastructure, or context management.
