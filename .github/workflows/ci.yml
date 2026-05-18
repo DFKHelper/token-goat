@@ -30,10 +30,22 @@ jobs:
         # exception in the log without needing to download artefacts.
         # ``--tb=short`` keeps each entry compact (one line per frame) so
         # the summary stays readable even when several tests fail at once.
-        # No output redirection or pipe — earlier attempts to capture
-        # stdout via ``tee`` (git-bash) and ``Tee-Object`` (PowerShell)
-        # both deadlocked on the Windows runner.  pytest's own output
-        # lands directly in the action log; failure tracebacks are
-        # surfaced via ``-rfE`` so the in-line log already contains the
-        # actionable detail without needing artefact downloads.
         run: uv run pytest -rfE --tb=short
+
+      - name: Kill leftover detached worker daemons
+        # Several hook tests trigger ``worker.ensure_running()`` which
+        # spawns ``pythonw.exe -m token_goat.cli worker --daemon`` as a
+        # detached background process.  ``DETACHED_PROCESS`` is honoured
+        # by Windows itself but GitHub Actions' Windows runner uses a
+        # Win32 job object to track every descendant; the daemon's
+        # infinite loop would otherwise hold the step open until the
+        # global six-hour timeout.  This always-runs step terminates
+        # any leftover daemon so the runner can finish promptly.
+        if: always()
+        run: |
+          Get-CimInstance Win32_Process |
+            Where-Object { $_.CommandLine -like '*token_goat*worker*--daemon*' } |
+            ForEach-Object {
+              Write-Host "killing leftover worker pid=$($_.ProcessId)"
+              Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue
+            }
