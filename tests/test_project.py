@@ -268,7 +268,14 @@ def test_canonicalize_cross_shell_paths_produce_same_hash():
     _normalize_shell_drive_prefix, the same project accessed from PowerShell,
     Git Bash, Cygwin, and WSL would produce four different SHA1 hashes and
     fragment the index into four separate per-project DB files.
+
+    Windows-only: on POSIX ``Path.resolve()`` treats ``C:/Projects/foo`` as a
+    relative path against ``cwd`` and the drive-letter lowercase rule never
+    fires, so the assertion would test against synthesised POSIX paths rather
+    than the intended Windows canonicalisation invariant.
     """
+    if sys.platform != "win32":
+        pytest.skip("Windows-only: cross-shell drive normalisation only matters on Windows")
     forms = [
         "C:/Projects/foo",
         "c:/Projects/foo",
@@ -294,7 +301,16 @@ def test_canonicalize_backslash_and_forward_slash_match_on_windows():
 
 
 def test_canonicalize_drive_case_collapsed():
-    """C:/foo and c:/foo canonicalize identically (drive letter lowercased)."""
+    """C:/foo and c:/foo canonicalize identically (drive letter lowercased).
+
+    Windows-only: on POSIX ``Path("C:/Projects/foo").resolve()`` is treated as
+    a relative path against ``cwd`` and becomes e.g. ``/home/x/C:/Projects/foo``,
+    where the drive-letter lowercasing rule (``s[1] == ':'``) no longer applies.
+    The canonicalization logic targets Windows shells specifically; running this
+    assertion on POSIX would be testing a non-existent invariant.
+    """
+    if sys.platform != "win32":
+        pytest.skip("Windows-only: drive-letter normalisation only fires on Windows paths")
     a = canonicalize(Path("C:/Projects/foo"))
     b = canonicalize(Path("c:/Projects/foo"))
     assert a == b
