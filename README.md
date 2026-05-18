@@ -36,18 +36,22 @@
 
 Claude reads `auth.py`. Then reads it again. Then a third time after compaction wipes the session. You pay for every token.
 
-Long sessions accumulate waste three ways. Screenshots cross the model at full resolution. A single PNG can land at 3.3 MB. The agent re-reads files it already parsed earlier in the same conversation. And when a session compacts, the summary LLM doesn't know which files were edited or which symbols mattered, so it preserves the wrong things.
+Long sessions accumulate waste four ways. Screenshots cross the model at full resolution. A single PNG can land at 3.3 MB. The agent re-reads files it already parsed earlier in the same conversation. When a session compacts, the summary LLM doesn't know which files were edited or which symbols mattered, so it preserves the wrong things. And every `pytest`, `npm install`, `docker build`, or `git log` dumps thousands of lines of progress bars, deprecation warnings, and passing-test names that bury the one line that actually matters.
 
-Each one is preventable. Token-Goat intercepts all three, automatically.
+Each one is preventable. Token-Goat intercepts all four, automatically.
 
 ## What changes
 
 | Without Token-Goat | With Token-Goat |
 |--------------------|-----------------|
-| 3.3 MB screenshot lands in model context | 84 KB compressed copy — 97.4% smaller |
+| 3.3 MB screenshot lands in model context | 84 KB compressed copy, 97.4% smaller |
 | Agent re-reads files from earlier in the session | "Already read this" reminder with narrow slice suggestion |
 | Compaction forgets which files were edited | Structured session manifest injected before compact |
-| Full file read for one function or section | `token-goat read file::symbol` — about 85% smaller |
+| Full file read for one function or section | `token-goat read file::symbol`, about 85% smaller |
+| `pytest` dumps 150 PASSED lines + dots + tracebacks | Failures-first view, 80 to 97% smaller |
+| `npm install` floods deprecation warnings + spinner | Errors kept; warnings collapsed by package, ~90% smaller |
+| `docker build` emits sha256 digests + transfer progress | Step headers + errors kept; noise dropped, ~75% smaller |
+| `ruff` / `eslint` / `mypy` repeat the same rule 50 times | Grouped by rule with first 3 examples, ~80% smaller |
 
 > Four hours of use on the author's machine: **59.7 MB** of data that never hit the model, with an estimated **11.5 million tokens** avoided.
 
@@ -132,6 +136,28 @@ out: ~4 KB                  # top-ranked files + key symbols   (92% smaller)
 ```
 
 `--budget` is a hard cap. Below 6 KB the output automatically switches to short-label mode (`f:` files, `s:` symbols, `c:` calls) to fit more signal per byte. `token-goat map --compact` is a shortcut for a 300-token budget when you only need the high-rank cluster.
+
+**5. Bash output compression**
+
+```
+# Without token-goat: pytest dumps every PASSED line + dots + tracebacks.
+$ pytest -v tests/
+... (3 KB of output, 150 PASSED lines, 1 FAILED at the bottom)
+
+# With token-goat: the PreToolUse hook rewrites the command to
+# `token-goat compress --filter pytest`. The wrapper runs pytest, captures
+# stdout+stderr, applies the per-tool filter, and prints failures first.
+$ token-goat compress --filter pytest --cmd "pytest -v tests/"
+= test session starts =
+collected 150 items
+FAILED tests/test_x.py::test_one
+= 1 failed, 149 passed in 2.3s =
+
+[token-goat: collapsed 149 PASSED lines]
+[token-goat: pytest filter compressed 4.8 KiB to 0.1 KiB (97% saved)]
+```
+
+Twelve built-in filters cover the noisiest dev commands: `pytest`, `jest` / `vitest`, `cargo`, `npm` / `pnpm` / `yarn`, `docker`, `kubectl` / `helm`, `aws`, `ruff` / `eslint` / `mypy`, `git`, `make` / `gradle` / `mvn` / `go`, `terraform`, and `pip`. Each one strips ANSI escapes, collapses `\r` progress bars, dedupes repeated lines, groups linter issues by rule, keeps every error block verbatim, and caps total output at 1000 lines / 64 KiB. Disable globally with `TOKEN_GOAT_BASH_COMPRESS=0`, per-filter via `[bash_compress] disabled_filters = ["docker"]` in config.toml, or preview the output of any command with `token-goat compress --cmd '<your command>'`.
 
 ## Install
 
