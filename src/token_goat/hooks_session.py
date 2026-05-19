@@ -143,7 +143,7 @@ def _build_recovery_hint(session_id: str) -> str | None:
                 exit_str = "" if be.exit_code is None else f" exit={be.exit_code}"
                 total = be.stdout_bytes + be.stderr_bytes
                 lines.append(
-                    f"- `{be.cmd_preview}` ({_humanize_bytes(total)}{exit_str}) — id=`{be.output_id}`"
+                    f"- `{be.cmd_preview}` ({_humanize_bytes(total)}{exit_str}) `{be.output_id}`"
                 )
             sections.append("\n".join(lines))
 
@@ -158,7 +158,7 @@ def _build_recovery_hint(session_id: str) -> str | None:
             for we in web_entries:
                 status_str = "" if we.status_code is None else f" status={we.status_code}"
                 lines.append(
-                    f"- `{we.url_preview}` ({_humanize_bytes(we.body_bytes)}{status_str}) — id=`{we.output_id}`"
+                    f"- `{we.url_preview}` ({_humanize_bytes(we.body_bytes)}{status_str}) `{we.output_id}`"
                 )
             sections.append("\n".join(lines))
 
