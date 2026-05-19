@@ -196,7 +196,7 @@ def _build_recovery_hint(session_id: str) -> str | None:
 
     # 1. Recently-touched files — the agent will likely want these back.
     if files_keep:
-        lines = ["**Recently-read files** (cached snapshot for diff retrieval):"]
+        lines = ["**Recently-read files**:"]
         for entry in files_keep:
             sym_count = len(entry.symbols_read)
             if sym_count > 3:
@@ -213,7 +213,7 @@ def _build_recovery_hint(session_id: str) -> str | None:
 
     # 2. Recent Bash output IDs — the most likely "I had this in context" data.
     if bash_entries:
-        lines = ["**Recent Bash outputs** (use `token-goat bash-output <id>` to recall):"]
+        lines = ["**Recent Bash outputs**:"]
         for be in bash_entries:
             exit_str = "" if be.exit_code is None else f" exit={be.exit_code}"
             total = be.stdout_bytes + be.stderr_bytes
@@ -227,7 +227,7 @@ def _build_recovery_hint(session_id: str) -> str | None:
 
     # 3. Recent WebFetch outputs — same idea for network results.
     if web_entries:
-        lines = ["**Recent WebFetch responses** (use `token-goat web-output <id>` to recall):"]
+        lines = ["**Recent WebFetch responses**:"]
         for we in web_entries:
             status_str = "" if we.status_code is None else f" status={we.status_code}"
             lines.append(
@@ -241,8 +241,17 @@ def _build_recovery_hint(session_id: str) -> str | None:
     if not sections:
         return None
 
-    header = "## Token-Goat Post-Compact Recovery"
-    return "\n\n".join([header, *sections])
+    parts = ["## Token-Goat Post-Compact Recovery"]
+    # Name the recall command only for sections that actually appear.
+    recall = []
+    if bash_entries:
+        recall.append("`token-goat bash-output <id>`")
+    if web_entries:
+        recall.append("`token-goat web-output <id>`")
+    if recall:
+        parts.append("Recall cached output with " + " / ".join(recall) + ".")
+    parts.extend(sections)
+    return "\n\n".join(parts)
 
 
 def _try_recovery_response(session_id: str | None, source: str) -> HookResponse | None:
