@@ -101,6 +101,59 @@ class TestRecoveryHintContent:
         _assert_continue(result)
         assert "hookSpecificOutput" not in result
 
+    def test_truncated_files_section_shows_more_count(self, tmp_data_dir):
+        """When more files exist than the allocator surfaces, a `+N more files`
+        signal must appear so the agent knows data was dropped instead of
+        silently truncated."""
+        sid = "rec-more-files"
+        # Seed 30 files; allocator ceiling for files is 12 → 18 should be dropped.
+        for i in range(30):
+            session.mark_file_read(sid, f"/proj/src/mod_{i:02d}.py", offset=0, limit=50)
+        result = hooks_session.session_start({
+            "session_id": sid,
+            "source": "compact",
+            "cwd": "/proj",
+        })
+        _assert_continue(result)
+        ctx = result["hookSpecificOutput"]["additionalContext"]
+        assert "…+18 more files" in ctx, (
+            f"expected dropped-files signal in hint, got:\n{ctx}"
+        )
+
+    def test_symbol_preview_overflow_shows_plus_count(self, tmp_data_dir):
+        """When a file has more than 3 tracked symbols, the preview must surface
+        the remainder count (`+N`) instead of silently dropping symbols."""
+        sid = "rec-syms-overflow"
+        path = "/proj/src/overflow.py"
+        for sym in ("sym1", "sym2", "sym3", "sym4", "sym5", "sym6", "sym7"):
+            session.mark_file_read(sid, path, symbol=sym)
+        result = hooks_session.session_start({
+            "session_id": sid,
+            "source": "compact",
+            "cwd": "/proj",
+        })
+        _assert_continue(result)
+        ctx = result["hookSpecificOutput"]["additionalContext"]
+        assert "syms=sym1,sym2,sym3+4" in ctx, (
+            f"expected truncated symbol preview with +4 suffix, got:\n{ctx}"
+        )
+
+    def test_symbol_preview_exact_three_no_plus_artifact(self, tmp_data_dir):
+        """A file with exactly 3 symbols must NOT render a stray `+0` suffix."""
+        sid = "rec-syms-exact"
+        path = "/proj/src/exact.py"
+        for sym in ("alpha", "beta", "gamma"):
+            session.mark_file_read(sid, path, symbol=sym)
+        result = hooks_session.session_start({
+            "session_id": sid,
+            "source": "compact",
+            "cwd": "/proj",
+        })
+        _assert_continue(result)
+        ctx = result["hookSpecificOutput"]["additionalContext"]
+        assert "syms=alpha,beta,gamma" in ctx
+        assert "+0" not in ctx, f"unexpected +0 artifact in hint:\n{ctx}"
+
     def test_tiny_outputs_filtered(self, tmp_data_dir):
         """Bash / web entries below the recovery min-bytes floor are skipped."""
         sid = "rec-6"
