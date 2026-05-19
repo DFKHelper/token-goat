@@ -105,6 +105,17 @@ const ARGS_TO_TG: Record<string, Record<string, string>> = {
   webfetch: { url: "url", prompt: "prompt" },
 };
 
+// Post-call hook event per token-goat tool name (mirrors openclaw's POST_HOOK table)
+const POST_HOOK: Record<string, string> = {
+  Read: "post-read",
+  Grep: "post-read",
+  Glob: "post-read",
+  Bash: "post-bash",
+  WebFetch: "post-fetch",
+  Edit: "post-edit",
+  Write: "post-edit",
+};
+
 const _seenSessions = new Set<string>();
 
 function reverseArgMap(tool: string): Record<string, string> {
@@ -184,8 +195,7 @@ export const server = async (pluginInput: { directory: string }) => {
         if (input.args[ccKey] !== undefined) toolInput[tgKey] = input.args[ccKey];
       }
 
-      const postEvent = tgTool === "Edit" ? "post-edit" : tgTool === "Bash" ? "post-bash" : tgTool === "WebFetch" ? "post-fetch" : "post-read";
-      callHook(postEvent, {
+      callHook(POST_HOOK[tgTool] ?? "post-read", {
         session_id: input.sessionID,
         tool_name: tgTool,
         tool_input: toolInput,
@@ -310,6 +320,36 @@ export default {
 """
 
 # ---------------------------------------------------------------------------
+# Shared file-level install / uninstall helpers
+# ---------------------------------------------------------------------------
+
+
+def _write_plugin_file(plugins_dir: Path, filename: str, content: str) -> Path:
+    """Write *content* to *plugins_dir*/*filename*, creating parent directories.
+
+    Returns the absolute path of the written file.  Both opencode and openclaw
+    share this step; the only difference is the filename and content string.
+    """
+    plugins_dir.mkdir(parents=True, exist_ok=True)
+    plugin_path = plugins_dir / filename
+    plugin_path.write_text(content, encoding="utf-8")
+    return plugin_path
+
+
+def _remove_plugin_file(plugin_path: Path) -> str:
+    """Remove *plugin_path* if it exists and return a human-readable status.
+
+    Returns ``"removed <path>"`` on success or ``"not found"`` if the file was
+    absent.  Both opencode and openclaw share this step; the openclaw uninstall
+    additionally deregisters from openclaw.json after calling this helper.
+    """
+    if plugin_path.exists():
+        plugin_path.unlink()
+        return f"removed {plugin_path}"
+    return "not found"
+
+
+# ---------------------------------------------------------------------------
 # Path helpers
 # ---------------------------------------------------------------------------
 
@@ -369,21 +409,14 @@ def _check_plugin_file(plugin_path: Path) -> str:
 
 def install_opencode_plugin() -> str:
     """Write the opencode bridge plugin to the opencode plugins directory. Returns the path."""
-    plugins_dir = opencode_plugins_dir()
-    plugins_dir.mkdir(parents=True, exist_ok=True)
-    plugin_path = plugins_dir / _OPENCODE_FILENAME
-    plugin_path.write_text(OPENCODE_PLUGIN_TS, encoding="utf-8")
+    plugin_path = _write_plugin_file(opencode_plugins_dir(), _OPENCODE_FILENAME, OPENCODE_PLUGIN_TS)
     _LOG.info("opencode plugin written: %s", plugin_path)
     return str(plugin_path)
 
 
 def uninstall_opencode_plugin() -> str:
     """Remove the opencode bridge plugin. Returns a status string."""
-    plugin_path = opencode_plugins_dir() / _OPENCODE_FILENAME
-    if plugin_path.exists():
-        plugin_path.unlink()
-        return f"removed {plugin_path}"
-    return "not found"
+    return _remove_plugin_file(opencode_plugins_dir() / _OPENCODE_FILENAME)
 
 
 def _check_opencode_plugin() -> str:
@@ -432,10 +465,7 @@ def _openclaw_entries_readonly(cfg: dict[str, object]) -> dict[str, object]:
 
 def install_openclaw_plugin() -> str:
     """Write the openclaw bridge plugin and register it in openclaw.json. Returns the path."""
-    plugins_dir = openclaw_plugins_dir()
-    plugins_dir.mkdir(parents=True, exist_ok=True)
-    plugin_path = plugins_dir / _OPENCLAW_FILENAME
-    plugin_path.write_text(OPENCLAW_PLUGIN_TS, encoding="utf-8")
+    plugin_path = _write_plugin_file(openclaw_plugins_dir(), _OPENCLAW_FILENAME, OPENCLAW_PLUGIN_TS)
 
     cfg_path = openclaw_config_path()
     cfg_path.parent.mkdir(parents=True, exist_ok=True)
@@ -457,10 +487,9 @@ def uninstall_openclaw_plugin() -> str:
     """Remove the openclaw bridge plugin and deregister from openclaw.json. Returns a status string."""
     removed: list[str] = []
 
-    plugin_path = openclaw_plugins_dir() / _OPENCLAW_FILENAME
-    if plugin_path.exists():
-        plugin_path.unlink()
-        removed.append(str(plugin_path))
+    file_result = _remove_plugin_file(openclaw_plugins_dir() / _OPENCLAW_FILENAME)
+    if file_result != "not found":
+        removed.append(file_result)
 
     cfg_path = openclaw_config_path()
     if cfg_path.exists():
