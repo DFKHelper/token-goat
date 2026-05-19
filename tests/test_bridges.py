@@ -91,13 +91,22 @@ class TestPluginTsSources:
 
     def test_opencode_ts_bash_routes_to_post_bash(self) -> None:
         # Bash output caching requires post-bash, not post-read.
-        # The ternary must route Bash before the final "post-read" fallback.
+        # opencode now uses a POST_HOOK table (same as openclaw) instead of a ternary chain.
         assert "post-bash" in bridges.OPENCODE_PLUGIN_TS
-        assert '"Bash" ? "post-bash"' in bridges.OPENCODE_PLUGIN_TS
+        assert 'Bash: "post-bash"' in bridges.OPENCODE_PLUGIN_TS
 
     def test_opencode_ts_webfetch_routes_to_post_fetch(self) -> None:
         # Web-fetch caching requires post-fetch, not post-read.
-        assert '"WebFetch" ? "post-fetch"' in bridges.OPENCODE_PLUGIN_TS
+        assert 'WebFetch: "post-fetch"' in bridges.OPENCODE_PLUGIN_TS
+
+    def test_opencode_ts_has_post_hook_table(self) -> None:
+        # opencode now uses a POST_HOOK lookup table, mirroring openclaw's pattern.
+        assert "POST_HOOK" in bridges.OPENCODE_PLUGIN_TS
+        assert 'Edit: "post-edit"' in bridges.OPENCODE_PLUGIN_TS
+
+    def test_opencode_ts_post_hook_table_used_in_after_handler(self) -> None:
+        # The after handler must dispatch via POST_HOOK, not a ternary chain.
+        assert "POST_HOOK[tgTool]" in bridges.OPENCODE_PLUGIN_TS
 
     def test_openclaw_ts_bash_routes_to_post_bash(self) -> None:
         # Bash output caching requires post-bash, not post-read.
@@ -106,6 +115,46 @@ class TestPluginTsSources:
     def test_openclaw_ts_webfetch_routes_to_post_fetch(self) -> None:
         # Web-fetch caching requires post-fetch, not post-read.
         assert 'WebFetch: "post-fetch"' in bridges.OPENCLAW_PLUGIN_TS
+
+
+# ---------------------------------------------------------------------------
+# Shared file-level helpers
+# ---------------------------------------------------------------------------
+
+
+class TestWritePluginFile:
+    def test_writes_content(self, tmp_path: Path) -> None:
+        result = bridges._write_plugin_file(tmp_path, "foo.ts", "content here")
+        assert result.read_text(encoding="utf-8") == "content here"
+
+    def test_returns_absolute_path(self, tmp_path: Path) -> None:
+        result = bridges._write_plugin_file(tmp_path, "foo.ts", "x")
+        assert result.is_absolute()
+        assert result.name == "foo.ts"
+
+    def test_creates_parent_dirs(self, tmp_path: Path) -> None:
+        nested = tmp_path / "a" / "b" / "c"
+        bridges._write_plugin_file(nested, "foo.ts", "x")
+        assert nested.is_dir()
+
+    def test_idempotent_overwrite(self, tmp_path: Path) -> None:
+        bridges._write_plugin_file(tmp_path, "foo.ts", "first")
+        bridges._write_plugin_file(tmp_path, "foo.ts", "second")
+        assert (tmp_path / "foo.ts").read_text(encoding="utf-8") == "second"
+
+
+class TestRemovePluginFile:
+    def test_removes_existing_file(self, tmp_path: Path) -> None:
+        p = tmp_path / "foo.ts"
+        p.write_text("x", encoding="utf-8")
+        result = bridges._remove_plugin_file(p)
+        assert not p.exists()
+        assert "removed" in result
+        assert str(p) in result
+
+    def test_returns_not_found_when_absent(self, tmp_path: Path) -> None:
+        result = bridges._remove_plugin_file(tmp_path / "missing.ts")
+        assert result == "not found"
 
 
 # ---------------------------------------------------------------------------
