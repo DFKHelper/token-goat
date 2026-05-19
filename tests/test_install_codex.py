@@ -4,9 +4,6 @@ from __future__ import annotations
 from pathlib import Path
 from unittest.mock import patch
 
-from conftest import fake_home as _fake_home
-from conftest import patch_home as _patch_home
-
 from token_goat import install
 
 # ---------------------------------------------------------------------------
@@ -14,10 +11,7 @@ from token_goat import install
 # ---------------------------------------------------------------------------
 
 
-def test_patch_codex_config_creates_file(tmp_path, monkeypatch):
-    home = _fake_home(tmp_path)
-    _patch_home(monkeypatch, home)
-
+def test_patch_codex_config_creates_file(patched_home, monkeypatch):
     cfg_path = install.patch_codex_config("token-goat")
 
     p = Path(cfg_path)
@@ -32,11 +26,10 @@ def test_patch_codex_config_creates_file(tmp_path, monkeypatch):
 # ---------------------------------------------------------------------------
 
 
-def test_patch_codex_config_preserves_existing(tmp_path, monkeypatch):
+def test_patch_codex_config_preserves_existing(patched_home, monkeypatch):
     import tomli_w
 
-    home = _fake_home(tmp_path)
-    _patch_home(monkeypatch, home)
+    home = patched_home
 
     # Write an existing config with an unrelated hook
     codex_dir = home / ".codex"
@@ -71,11 +64,10 @@ def test_patch_codex_config_preserves_existing(tmp_path, monkeypatch):
 # ---------------------------------------------------------------------------
 
 
-def test_patch_codex_config_idempotent(tmp_path, monkeypatch):
+def test_patch_codex_config_idempotent(patched_home, monkeypatch):
     import tomllib
 
-    home = _fake_home(tmp_path)
-    _patch_home(monkeypatch, home)
+    home = patched_home
 
     install.patch_codex_config("token-goat")
     install.patch_codex_config("token-goat")
@@ -99,13 +91,12 @@ def test_patch_codex_config_idempotent(tmp_path, monkeypatch):
 # ---------------------------------------------------------------------------
 
 
-def test_unpatch_codex_config_removes_token_goat(tmp_path, monkeypatch):
+def test_unpatch_codex_config_removes_token_goat(patched_home, monkeypatch):
     import tomllib  # noqa: PLC0415
 
     import tomli_w  # noqa: PLC0415
 
-    home = _fake_home(tmp_path)
-    _patch_home(monkeypatch, home)
+    home = patched_home
 
     # Pre-install a config with both token-goat and an unrelated hook
     codex_dir = home / ".codex"
@@ -143,9 +134,8 @@ def test_unpatch_codex_config_removes_token_goat(tmp_path, monkeypatch):
 # ---------------------------------------------------------------------------
 
 
-def test_patch_codex_agents_md_creates_file(tmp_path, monkeypatch):
-    home = _fake_home(tmp_path)
-    _patch_home(monkeypatch, home)
+def test_patch_codex_agents_md_creates_file(patched_home):
+    home = patched_home
 
     install.patch_codex_agents_md()
 
@@ -162,9 +152,8 @@ def test_patch_codex_agents_md_creates_file(tmp_path, monkeypatch):
 # ---------------------------------------------------------------------------
 
 
-def test_unpatch_codex_agents_md_removes_block(tmp_path, monkeypatch):
-    home = _fake_home(tmp_path)
-    _patch_home(monkeypatch, home)
+def test_unpatch_codex_agents_md_removes_block(patched_home):
+    home = patched_home
 
     install.patch_codex_agents_md()
     install.unpatch_codex_agents_md()
@@ -180,9 +169,8 @@ def test_unpatch_codex_agents_md_removes_block(tmp_path, monkeypatch):
 # ---------------------------------------------------------------------------
 
 
-def test_patch_codex_agents_md_idempotent(tmp_path, monkeypatch):
-    home = _fake_home(tmp_path)
-    _patch_home(monkeypatch, home)
+def test_patch_codex_agents_md_idempotent(patched_home):
+    home = patched_home
 
     install.patch_codex_agents_md()
     install.patch_codex_agents_md()
@@ -193,14 +181,13 @@ def test_patch_codex_agents_md_idempotent(tmp_path, monkeypatch):
     assert content.count(install.CODEX_AGENTS_END) == 1
 
 
-def test_patch_codex_agents_md_strips_legacy_tokenwise_block(tmp_path, monkeypatch):
+def test_patch_codex_agents_md_strips_legacy_tokenwise_block(patched_home):
     """An AGENTS.md written under the old ``tokenwise`` binary name still
     contains a ``<!-- tokenwise-codex-begin -->...-end -->`` block instructing
     Codex to use the wrong binary. The modern installer must strip it so the
     file ends up with only the up-to-date ``token-goat`` routing table.
     """
-    home = _fake_home(tmp_path)
-    _patch_home(monkeypatch, home)
+    home = patched_home
 
     codex_dir = home / ".codex"
     codex_dir.mkdir(parents=True, exist_ok=True)
@@ -225,10 +212,9 @@ def test_patch_codex_agents_md_strips_legacy_tokenwise_block(tmp_path, monkeypat
     assert "tokenwise symbol X" not in content
 
 
-def test_patch_codex_agents_md_legacy_strip_is_idempotent(tmp_path, monkeypatch):
+def test_patch_codex_agents_md_legacy_strip_is_idempotent(patched_home):
     """Two installs in a row leave one modern block and no legacy artifacts."""
-    home = _fake_home(tmp_path)
-    _patch_home(monkeypatch, home)
+    home = patched_home
 
     codex_dir = home / ".codex"
     codex_dir.mkdir(parents=True, exist_ok=True)
@@ -255,9 +241,8 @@ def test_patch_codex_agents_md_legacy_strip_is_idempotent(tmp_path, monkeypatch)
 # ---------------------------------------------------------------------------
 
 
-def test_patch_codex_agents_md_appends(tmp_path, monkeypatch):
-    home = _fake_home(tmp_path)
-    _patch_home(monkeypatch, home)
+def test_patch_codex_agents_md_appends(patched_home):
+    home = patched_home
 
     codex_dir = home / ".codex"
     codex_dir.mkdir(parents=True, exist_ok=True)
@@ -275,9 +260,8 @@ def test_patch_codex_agents_md_appends(tmp_path, monkeypatch):
 # ---------------------------------------------------------------------------
 
 
-def test_install_all_codex_flag(tmp_path, monkeypatch):
-    home = _fake_home(tmp_path)
-    _patch_home(monkeypatch, home)
+def test_install_all_codex_flag(patched_home, monkeypatch):
+    home = patched_home
     monkeypatch.setattr(install, "token_goat_binary", lambda: "token-goat")
 
     def fake_schtasks(args):
@@ -307,11 +291,10 @@ def test_install_all_codex_flag(tmp_path, monkeypatch):
 # ---------------------------------------------------------------------------
 
 
-def test_uninstall_all_codex_flag(tmp_path, monkeypatch):
+def test_uninstall_all_codex_flag(patched_home, monkeypatch, tmp_path):
     import tomllib
 
-    home = _fake_home(tmp_path)
-    _patch_home(monkeypatch, home)
+    home = patched_home
     monkeypatch.setattr(install, "token_goat_binary", lambda: "token-goat")
 
     def fake_schtasks(args):

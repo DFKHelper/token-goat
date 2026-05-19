@@ -26,6 +26,24 @@ def patch_home(monkeypatch, home: Path) -> None:
     """Monkeypatch Path.home() to return *home*."""
     monkeypatch.setattr(Path, "home", staticmethod(lambda: home))
 
+
+@pytest.fixture
+def patched_home(tmp_path, monkeypatch) -> Path:
+    """Fixture: create a fake home dir and monkeypatch Path.home() to point at it.
+
+    Replaces the repeated two-liner in install tests::
+
+        home = _fake_home(tmp_path)
+        _patch_home(monkeypatch, home)
+
+    Tests that still need ``monkeypatch`` for other setattr calls can declare
+    both ``patched_home`` and ``monkeypatch`` — pytest injects the same
+    ``monkeypatch`` instance to both.
+    """
+    home = fake_home(tmp_path)
+    patch_home(monkeypatch, home)
+    return home
+
 # ---------------------------------------------------------------------------
 # Shared hook-response assertions — see tests/hook_helpers.py
 # ---------------------------------------------------------------------------
