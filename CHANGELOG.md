@@ -4,6 +4,8 @@ All notable changes to Token-Goat are documented in this file. Format follows Ke
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-05-19
+
 ### Added
 
 - **Bash output compression.** PreToolUse hook on Bash detects compressible commands and rewrites them to flow through `token-goat compress`, which runs the original through the system shell, captures stdout + stderr, applies a per-tool filter, and prints a compressed view that surfaces failures first. Twelve filters cover the noisiest dev commands: `pytest`, `jest` / `vitest`, `cargo`, `npm` / `pnpm` / `yarn` / `bun`, `docker` / `buildah` / `podman`, `kubectl` / `helm`, `aws`, `ruff` / `eslint` / `mypy` / `pyright` / `pylint` / `stylelint` / `biome` / `tsc`, `git`, `make` / `ninja` / `gradle` / `mvn` / `bazel` / `go`, `terraform` / `tofu`, `pip` / `pipx`. Typical savings: pytest 80-97%, npm 88%, docker 75%, linters 80%. Each filter strips ANSI, collapses `\r` progress bars, dedupes consecutive lines, groups linter issues by rule (3 examples per code), keeps every error and warning block verbatim, and caps total output at 1000 lines / 64 KiB. The wrapper preserves the original exit code, kills the process group on timeout (SIGTERM then SIGKILL after a grace period on POSIX), and caps each stream capture at 32 MiB. Configurable via `[bash_compress]` in config.toml (`enabled`, `disabled_filters`, `max_lines`, `max_bytes`, `timeout_seconds`) or disabled with `TOKEN_GOAT_BASH_COMPRESS=0`. Savings are recorded per filter as `bash_compress:<name>`. New CLI subcommand `token-goat compress` for previewing compression on any command.
