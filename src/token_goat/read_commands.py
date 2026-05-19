@@ -105,9 +105,11 @@ def _file_sha1(abs_path: Path) -> str:
 
 
 # Max number of "did you mean…?" suggestions to surface on a missed lookup.
-# 5 is the difflib default ceiling; more becomes noise and competes with the
-# error message for the agent's attention.
-_DIDYOUMEAN_LIMIT = 5
+# Capped at 3: a top-3 spelling-similarity list covers the typo case without
+# burning ~50-100 tokens of "is it any of these?" noise per miss. Difflib's
+# default ceiling is 5, but in practice the 4th and 5th candidates are almost
+# always weaker and rarely chosen by the agent.
+_DIDYOUMEAN_LIMIT = 3
 # difflib similarity cutoff. 0.6 is difflib's default; lowering would surface
 # more candidates but also more noise. The aim is to cover near-typos and
 # case mismatches, not arbitrary substring containment.
@@ -535,12 +537,16 @@ def _run_read_like_command(
         base_message = f"{missing_label} not found: {item_part} (in {file_target.rel_path})"
         if suggestions and not json_output:
             base_message = base_message + "\nDid you mean:"
+        # On this path the file resolved cleanly — only the symbol/heading missed.
+        # ``rel_path`` is the canonical, normalized form (e.g. "src/index.ts");
+        # the raw ``file_part`` ("index.ts") that triggered the lookup is already
+        # echoed back in the user's command and isn't useful downstream, so we
+        # omit it to save ~30-150 bytes of redundant payload per miss.
         _emit_read_error(
             code=f"{_label_lower}_not_found",
             message=base_message,
             json_output=json_output,
             candidates=suggestions,
-            file_part=file_part,
             rel_path=file_target.rel_path,
             item=item_part,
             item_kind=_label_lower,
