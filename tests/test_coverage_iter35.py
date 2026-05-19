@@ -142,7 +142,8 @@ class TestRenderSummary:
         rendered = render_summary(s)
         assert "src/foo.py" in rendered
         assert "python" in rendered
-        assert "~100L" in rendered
+        # Dense format: bare line count, no "~"/"L" decoration
+        assert "[python,100," in rendered
         # Dense format: rank rendered as "r=0.500" (3 decimals, short label)
         assert "0.500" in rendered
 
