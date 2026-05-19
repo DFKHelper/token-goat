@@ -751,10 +751,9 @@ def build_bash_dedup_hint(
         return None
 
 
-# Minimum output size before the dedup hint fires.  Re-running `ls` is cheap;
-# re-running `pytest -v` is not.  Below ~400 bytes (~100 tokens) the hint
-# preamble approaches the saving it advertises.
-_BASH_DEDUP_MIN_BYTES: int = 400
+# Minimum output size before the bash dedup hint fires.  The hint itself costs
+# ~40 tokens; 1000 bytes ≈ 250 tokens saved, yielding a clear positive margin.
+_BASH_DEDUP_MIN_BYTES: int = 1000
 
 
 def _build_bash_dedup_hint_inner(
@@ -795,11 +794,8 @@ def _build_bash_dedup_hint_inner(
     cmd_short = _sanitize_hint_path(command)
     exit_str = "" if entry.exit_code is None else f", exit={entry.exit_code}"
     return ReadHint(
-        f"Note: this Bash command ran ~{int(age)}s ago in this session "
-        f"({total_bytes:,} bytes of output{exit_str}). "
-        f"Re-running adds ~{tokens_avoided} tokens. "
-        f"`token-goat bash-output {entry.output_id}` returns the cached result — "
-        f"add `--tail 50` or `--grep PATTERN` to slice it. "
+        f"Bash command ran ~{int(age)}s ago ({total_bytes:,} B{exit_str}, ~{tokens_avoided} tokens). "
+        f"`token-goat bash-output {entry.output_id}` recalls it (`--tail 50` / `--grep PATTERN`). "
         f"Command: `{cmd_short}`.",
         tokens_avoided,
     )
@@ -809,11 +805,11 @@ def _build_bash_dedup_hint_inner(
 # Grep dedup hint
 # ---------------------------------------------------------------------------
 
-# Minimum result_count before a Grep re-run is worth deduplicating.  A pattern
-# that matched 5 lines twice is fine — the response cost is trivial in either
-# direction.  Above this threshold the dedup hint pays for itself by avoiding
-# the embedded result body in the second response.
-_GREP_DEDUP_MIN_RESULT_COUNT: int = 50
+# Minimum result_count before the grep dedup hint fires.  At 8 results ×
+# 120 B ≈ 960 B ≈ 240 tokens saved; the hint itself costs ~30 tokens, so the
+# break-even is around 1 result — but low counts rarely recur, so 8 filters
+# out noise while keeping the economic margin large.
+_GREP_DEDUP_MIN_RESULT_COUNT: int = 8
 
 # Rough bytes-per-Grep-result estimate.  A real grep result line is one line of
 # match + path + line-number context, typically 80-160 bytes.  120 is a
@@ -901,11 +897,9 @@ def _build_grep_dedup_hint_inner(
         pattern_short = _sanitize_hint_path(pattern)
         path_str = f" in `{_sanitize_hint_path(path)}`" if path else ""
         return ReadHint(
-            f"Note: Grep for `{pattern_short}`{path_str} ran ~{int(age)}s ago "
-            f"in this session and matched {entry.result_count} line(s). "
-            f"Re-running adds ~{tokens_avoided} tokens. "
-            f"If the prior result is still in your context, reuse it; "
-            f"otherwise narrow the pattern or add `path=` to scope it.",
+            f"Grep for `{pattern_short}`{path_str} ran ~{int(age)}s ago "
+            f"({entry.result_count} line(s), ~{tokens_avoided} tokens). "
+            f"Reuse context or narrow pattern / add `path=` to scope.",
             tokens_avoided,
         )
     return None
