@@ -119,14 +119,14 @@ def test_repomap_compact_is_denser_than_full(tmp_path: Path, tmp_data_dir) -> No
     full = repomap.build_map(proj, budget_tokens=4000, compact=False)
     compact = repomap.build_map(proj, budget_tokens=4000, compact=True)
 
-    # The leading header line has shape "# twenty (Nf,python)" — extract N.
+    # The leading header line has shape "# twenty (N,python)" — extract N.
     def _files_listed(text: str) -> int:
         first = text.splitlines()[0]
-        # "(20f,python)" → 20
+        # "(20,python)" → 20
         marker = first.find("(")
         if marker == -1:
             return 0
-        return int(first[marker + 1 :].split("f", 1)[0])
+        return int(first[marker + 1 :].split(",", 1)[0])
 
     full_files = _files_listed(full)
     compact_files = _files_listed(compact)
