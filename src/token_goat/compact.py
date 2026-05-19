@@ -345,9 +345,14 @@ def _format_grep_entry(entry: object) -> str:
 
     Format::
 
-        - `pattern` in src/token_goat/  (12 results)
-        - `pattern`  (0 results)        (zero = dead end, still informative)
-        - `pattern` in src/             (when result_count is unknown)
+        - `pattern` in src/token_goat/ (12 results)
+        - `pattern` (0 results)        (zero = dead end, still informative)
+        - `pattern` in src/            (when result_count is unknown)
+
+    Single space before the count parens (was double) — saves ~1 token per
+    entry × _MAX_GREP_ENTRIES, no information lost.  The "results" noun is
+    kept because tests assert on the literal "N results" / "1 result" form
+    and the singular distinction is load-bearing for compaction-LLM context.
     """
     pattern = sanitize_log_str(getattr(entry, "pattern", ""), max_len=80)
     path = getattr(entry, "path", None)
@@ -355,7 +360,7 @@ def _format_grep_entry(entry: object) -> str:
     path_str = f" in {_short_path(path)}" if path else ""
     if result_count is not None:
         noun = "result" if result_count == 1 else "results"
-        count_str = f"  ({result_count} {noun})"
+        count_str = f" ({result_count} {noun})"
     else:
         count_str = ""
     return f"- `{pattern}`{path_str}{count_str}"
@@ -668,11 +673,18 @@ def _render(cache: SessionCache, session_id: str, max_tokens: int) -> tuple[str,
     # ── 4. Grep patterns searched ─────────────────────────────────────────────
     # Surface the most-recent distinct patterns so the compaction LLM knows
     # what the user was investigating — not just which files were open.
+    # Distinct-by-pattern count is the right baseline for the truncation tail:
+    # _select_top_grep_entries() dedups before capping, so reporting the raw
+    # grep count would double-count repeated searches for the same pattern.
     grep_entries = _select_top_grep_entries(raw_greps)
     if grep_entries:
+        distinct_patterns = len({getattr(g, "pattern", "") for g in raw_greps})
         sections.append("### Patterns Searched")
         for ge in grep_entries:
             sections.append(_format_grep_entry(ge))
+        dropped_greps = distinct_patterns - len(grep_entries)
+        if dropped_greps > 0:
+            sections.append(f"- …+{dropped_greps} more patterns")
         sections.append("")
 
     # ── 4b. Cold outputs (old cached Bash runs, safe to drop from context) ────
@@ -681,7 +693,7 @@ def _render(cache: SessionCache, session_id: str, max_tokens: int) -> tuple[str,
     # evictable while still giving the agent a recall path via bash-output.
     now_ts = time.time()
     bash_hist_raw = getattr(cache, "bash_history", None) or {}
-    cold_outputs = sorted(
+    cold_candidates = sorted(
         [
             be for be in bash_hist_raw.values()
             if (now_ts - getattr(be, "ts", now_ts)) > _COLD_OUTPUT_AGE_SECS
@@ -690,15 +702,25 @@ def _render(cache: SessionCache, session_id: str, max_tokens: int) -> tuple[str,
         ],
         key=lambda be: getattr(be, "ts", 0.0),
         reverse=True,
-    )[:_MAX_COLD_OUTPUTS]
+    )
+    cold_outputs = cold_candidates[:_MAX_COLD_OUTPUTS]
     if cold_outputs:
-        sections.append("### Cold Outputs (safe to evict — recall via bash-output id)")
+        # Header carries the recall instruction once.  Per-line `id=` prefix is
+        # redundant when every line already trails a backticked id — strip it
+        # to save ~2 tokens per entry × _MAX_COLD_OUTPUTS (matches the recovery
+        # hint convention established in iter 3).
+        sections.append("### Cold Outputs (safe to evict — recall via `token-goat bash-output <id>`)")
         for be in cold_outputs:
             age_min = int((now_ts - getattr(be, "ts", now_ts)) / 60)
             total = getattr(be, "stdout_bytes", 0) + getattr(be, "stderr_bytes", 0)
             oid = sanitize_log_str(getattr(be, "output_id", "?"), max_len=24)
             prev = sanitize_log_str(getattr(be, "cmd_preview", "?"), max_len=60)
-            sections.append(f"- ❄ `{prev}` — id=`{oid}` ({_humanize_bytes(total)}, {age_min}min old)")
+            sections.append(
+                f"- ❄ `{prev}` ({_humanize_bytes(total)}, {age_min}min old) `{oid}`"
+            )
+        dropped_cold = len(cold_candidates) - len(cold_outputs)
+        if dropped_cold > 0:
+            sections.append(f"- …+{dropped_cold} more cold outputs")
         sections.append("")
 
     # ── 5. Key files read (top N by read_count+ts) ────────────────────────────
