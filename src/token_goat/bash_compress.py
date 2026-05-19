@@ -1168,7 +1168,7 @@ def _try_compress_json_list(text: str) -> str | None:
                 changed = True
     if not changed:
         return None
-    return json.dumps(data, indent=2)
+    return json.dumps(data, separators=(",", ":"))
 
 
 # --- Linters (eslint / ruff / mypy / pylint) -------------------------------

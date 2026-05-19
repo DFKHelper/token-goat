@@ -798,7 +798,7 @@ def stub_view(
             }
             for row in filtered
         ]
-        typer.echo(_json.dumps(out, indent=2))
+        typer.echo(_json.dumps(out, separators=(",", ":")))
         return
 
     typer.echo(f"# Skeleton: {file_rel}  ({len(filtered)} symbols)")

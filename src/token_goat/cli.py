@@ -737,7 +737,7 @@ def cmd_map(
             data = repomap.build_map_json(proj)
             elapsed = time.monotonic() - t0
             _LOG.info("map complete: project=%s files=%d dur=%.3fs", proj.root.name, len(data), elapsed)
-            typer.echo(json.dumps(data, indent=2))
+            typer.echo(json.dumps(data, separators=(",", ":")))
             return
         # Pass compact=True only if the user opted in; None lets build_map
         # auto-engage the compact path when the budget is below the threshold.
@@ -981,7 +981,7 @@ def session_touched(
             }
             for e in entries
         ]
-        typer.echo(json.dumps(out, indent=2))
+        typer.echo(json.dumps(out, separators=(",", ":")))
         return
     if not entries:
         typer.echo("(no files touched in this session)")
@@ -1359,7 +1359,7 @@ def cmd_bash_output(
             payload["cmd_preview"] = sidecar.cmd_preview
             payload["exit_code"] = sidecar.exit_code
             payload["truncated"] = sidecar.truncated
-        typer.echo(json.dumps(payload, ensure_ascii=False, indent=2))
+        typer.echo(json.dumps(payload, ensure_ascii=False, separators=(",", ":")))
         return
 
     typer.echo(sliced)
@@ -1431,7 +1431,7 @@ def cmd_web_output(
             payload["url_preview"] = sidecar.url_preview
             payload["status_code"] = sidecar.status_code
             payload["truncated"] = sidecar.truncated
-        typer.echo(json.dumps(payload, ensure_ascii=False, indent=2))
+        typer.echo(json.dumps(payload, ensure_ascii=False, separators=(",", ":")))
         return
 
     typer.echo(sliced)
@@ -1464,7 +1464,7 @@ def cmd_web_history(
                 row["status_code"] = sidecar.status_code
                 row["truncated"] = sidecar.truncated
             out.append(row)
-        typer.echo(json.dumps(out, ensure_ascii=False, indent=2))
+        typer.echo(json.dumps(out, ensure_ascii=False, separators=(",", ":")))
         return
 
     if not entries:
@@ -1514,7 +1514,7 @@ def cmd_bash_history(
                 row["exit_code"] = sidecar.exit_code
                 row["truncated"] = sidecar.truncated
             out.append(row)
-        typer.echo(json.dumps(out, ensure_ascii=False, indent=2))
+        typer.echo(json.dumps(out, ensure_ascii=False, separators=(",", ":")))
         return
 
     if not entries:
@@ -1897,7 +1897,7 @@ def compact_hint(
             "event_count": n_events,
             "would_emit": cfg.enabled and n_events >= cfg.min_events and bool(manifest),
             "manifest": manifest,
-        }, indent=2))
+        }, separators=(",", ":")))
         return
 
     n_events = compact_mod.event_count(session_id)
@@ -2046,7 +2046,7 @@ def config_list(
             k: {"value": current_pairs[k], "default": default_pairs[k]}
             for k in current_pairs
         }
-        typer.echo(json.dumps(out, ensure_ascii=False, indent=2))
+        typer.echo(json.dumps(out, ensure_ascii=False, separators=(",", ":")))
         return
 
     # Human-readable table
@@ -2080,7 +2080,7 @@ def get(key: str) -> None:
     if is_dataclass(value) and not isinstance(value, type):
         value = asdict(value)
 
-    typer.echo(json.dumps(value, ensure_ascii=False, indent=2))
+    typer.echo(json.dumps(value, ensure_ascii=False, separators=(",", ":")))
 
 
 @config_app.command()
@@ -2099,7 +2099,7 @@ def set(key: str, value: str) -> None:
     config_mod.save(cfg)
     if is_dataclass(updated) and not isinstance(updated, type):
         updated = asdict(updated)
-    typer.echo(json.dumps(updated, ensure_ascii=False, indent=2))
+    typer.echo(json.dumps(updated, ensure_ascii=False, separators=(",", ":")))
 
 
 if __name__ == "__main__":
