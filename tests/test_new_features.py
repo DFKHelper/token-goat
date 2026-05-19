@@ -282,11 +282,18 @@ class TestCompactStaleAndCold:
     def test_legend_contains_stale_and_cold_markers(self) -> None:
         from token_goat import compact
 
-        cache = self._make_cache(edited={"src/a.py": 1})
+        now = time.time()
+        # Stale read + cold bash output present, so the conditional legend
+        # must list both stale=⚠ and cold=❄.
+        cache = self._make_cache(
+            edited={"src/bar.py": 1},
+            files=[("src/foo.py", now - 100, now - 50)],
+            bash_ts_offset=2400,
+        )
         with patch("token_goat.compact.estimate_tokens", return_value=1):
             result, _ = compact._render(cache, "sess1234", 400)  # type: ignore[attr-defined]
-        assert "⚠" in result or "stale=⚠" in result
-        assert "❄" in result or "cold=❄" in result
+        assert "stale=⚠" in result
+        assert "cold=❄" in result
 
 
 # ---------------------------------------------------------------------------
