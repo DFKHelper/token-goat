@@ -381,11 +381,9 @@ def _hint_from_cache(
         sym_list = ", ".join(f"`{s}`" for s in entry.symbols_read[:3])
         more = f" and {n_syms - 3} more" if n_syms > 3 else ""
         return ReadHint(
-            f"Note: `{fname}` was already accessed this session via "
-            f"`token-goat read` for symbol(s): {sym_list}{more}. "
-            f"If you only need additional symbols, consider "
-            f"`token-goat read \"{file_path}::another_symbol\"` "
-            f"instead of reading the whole file.",
+            f"`{fname}` already read this session via `token-goat read`: {sym_list}{more}. "
+            f"For more symbols use `token-goat read \"{file_path}::another_symbol\"` "
+            f"instead of the whole file.",
             0,
         )
 
@@ -431,11 +429,9 @@ def _hint_from_cache(
             return None
         wasted = _est_tokens_from_lines(requested_lines)
         return ReadHint(
-            f"Note: `{fname}` lines {req_start}-{req_end} were already read this session "
-            f"(cached ranges: {cached_summary}{extra}). "
-            f"Re-reading wastes ~{wasted} tokens. "
-            f"Consider whether your existing context is sufficient, or use a different "
-            f"offset/limit to read only new content.",
+            f"`{fname}` lines {req_start}-{req_end} already read this session "
+            f"(cached: {cached_summary}{extra}). "
+            f"Re-reading wastes ~{wasted} tokens — use a different offset/limit for new content.",
             wasted,
         )
 
@@ -448,10 +444,9 @@ def _hint_from_cache(
         # last_cached_end was already computed above during the overlap scan.
         resume_offset = last_cached_end
         return ReadHint(
-            f"Note: `{fname}` was previously read this session at lines {cached_summary}{extra}. "
-            f"Your current request (lines {req_start}-{req_end}) overlaps by {overlap_lines} lines "
-            f"(~{wasted} wasted tokens). "
-            f"Consider using `offset={resume_offset}` to skip the overlap.",
+            f"`{fname}` previously read at lines {cached_summary}{extra}. "
+            f"Request {req_start}-{req_end} overlaps by {overlap_lines} lines (~{wasted} wasted tokens). "
+            f"Use `offset={resume_offset}` to skip the overlap.",
             wasted,
         )
 
@@ -557,10 +552,10 @@ def _hint_from_index(
     # conversation, so it carries one example command rather than enumerating
     # every indexed symbol (`token-goat symbol`/`map` cover that on demand).
     return ReadHint(
-        f"`{fname}` is {n_lines} lines (~{full_tokens} tokens to read fully). "
-        f"token-goat has {n_total} symbol(s) indexed here — e.g. "
-        f"`token-goat read \"{rel}::{first_sym_name}\"` extracts just one (~85% fewer tokens). "
-        f"Use a full Read if you need the surrounding context.",
+        f"`{fname}` is {n_lines} lines (~{full_tokens} tokens). "
+        f"{n_total} symbol(s) indexed — e.g. "
+        f"`token-goat read \"{rel}::{first_sym_name}\"` (~85% fewer tokens). "
+        f"Full Read only if you need surrounding context.",
         0,
     )
 
