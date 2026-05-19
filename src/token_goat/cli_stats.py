@@ -55,7 +55,7 @@ def stats(
                     "by_project": summary.by_project,
                     "window_days": summary.window_days,
                 },
-                indent=2,
+                separators=(",", ":"),
             )
         )
         return

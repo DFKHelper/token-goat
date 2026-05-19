@@ -445,3 +445,83 @@ class TestRepomapFraming:
         assert not re.search(r"\(\d+f,", result), (
             f"header has old 'Nf,' format: {result[:120]!r}"
         )
+
+
+# ---------------------------------------------------------------------------
+# (g) CLI stdout payloads are compact JSON (iter 1 of token-savings loop)
+# ---------------------------------------------------------------------------
+
+
+def _is_compact(captured: str) -> None:
+    """Assert *captured* is single-line compact JSON with no indent whitespace."""
+    line = captured.strip()
+    assert "\n" not in line, f"JSON had newlines: {line!r}"
+    assert '": "' not in line, f"JSON had ': ' indent artifact: {line!r}"
+    assert '", "' not in line, f"JSON had ', ' indent artifact: {line!r}"
+    json.loads(line)  # must be valid JSON
+
+
+class TestCliStdoutIsCompactJson:
+    """All typer.echo(json.dumps(...)) stdout paths must emit single-line compact JSON."""
+
+    def test_stats_json_is_compact(self, tmp_data_dir):
+        """token-goat stats --json must emit compact JSON."""
+        from typer.testing import CliRunner
+
+        from token_goat.cli import app
+
+        result = CliRunner().invoke(app, ["stats", "--json"])
+        assert result.exit_code == 0, result.output
+        _is_compact(result.output)
+
+    def test_bash_history_json_is_compact(self, tmp_data_dir):
+        """bash-history --json must emit compact JSON."""
+        from typer.testing import CliRunner
+
+        from token_goat.cli import app
+
+        result = CliRunner().invoke(app, ["bash-history", "--json"])
+        assert result.exit_code == 0, result.output
+        _is_compact(result.output)
+
+    def test_web_history_json_is_compact(self, tmp_data_dir):
+        """web-history --json must emit compact JSON."""
+        from typer.testing import CliRunner
+
+        from token_goat.cli import app
+
+        result = CliRunner().invoke(app, ["web-history", "--json"])
+        assert result.exit_code == 0, result.output
+        _is_compact(result.output)
+
+    def test_try_compress_json_list_output_is_compact(self):
+        """bash_compress._try_compress_json_list must return compact JSON."""
+        from token_goat.bash_compress import _try_compress_json_list
+
+        # Build a list long enough to trigger truncation (> 20 items).
+        big_list = [{"key": f"value_{i}", "num": i} for i in range(30)]
+        import json as _json
+        text = _json.dumps(big_list)
+        result = _try_compress_json_list(text)
+        assert result is not None, "expected truncation to trigger"
+        _is_compact(result)
+
+    def test_config_get_json_is_compact(self, tmp_data_dir):
+        """config get must emit compact JSON."""
+        from typer.testing import CliRunner
+
+        from token_goat.cli import app
+
+        result = CliRunner().invoke(app, ["config", "get", "compact_assist.enabled"])
+        assert result.exit_code == 0, result.output
+        _is_compact(result.output)
+
+    def test_config_list_json_is_compact(self, tmp_data_dir):
+        """config list --json must emit compact JSON."""
+        from typer.testing import CliRunner
+
+        from token_goat.cli import app
+
+        result = CliRunner().invoke(app, ["config", "list", "--json"])
+        assert result.exit_code == 0, result.output
+        _is_compact(result.output)
