@@ -178,7 +178,7 @@ def _emit_read_error(
         if candidates:
             error["candidates"] = list(candidates)
         error.update(details)
-        typer.echo(json.dumps({"ok": False, "error": error}, indent=2))
+        typer.echo(json.dumps({"ok": False, "error": error}, separators=(",", ":")))
         return
 
     typer.echo(message, err=True)
@@ -516,7 +516,8 @@ def _run_read_like_command(
         # for a cache hit — we already counted the savings on the original call.
         session.mark_file_read(session_id, file_target.rel_path, symbol=item_part)
         if json_output:
-            typer.echo(json.dumps(cached_result, indent=2))
+            out = {k: v for k, v in cached_result.items() if k not in ("bytes_total", "bytes_extracted")}
+            typer.echo(json.dumps(out, separators=(",", ":")))
         else:
             typer.echo(cached_result["text"])
         return
@@ -584,7 +585,9 @@ def _run_read_like_command(
     )
 
     if json_output:
-        typer.echo(json.dumps(result, indent=2))
+        # Strip internal stat fields — model never acts on them; stats are recorded above.
+        out = {k: v for k, v in result.items() if k not in ("bytes_total", "bytes_extracted")}
+        typer.echo(json.dumps(out, separators=(",", ":")))
         return
     typer.echo(result["text"])
 

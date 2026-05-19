@@ -694,7 +694,7 @@ def semantic(
             }
             for h in hits
         ]
-        typer.echo(json.dumps(out, indent=2))
+        typer.echo(json.dumps(out, separators=(",", ":")))
         return
 
     if not hits:
