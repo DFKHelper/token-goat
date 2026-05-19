@@ -340,14 +340,11 @@ def shrink(src_path: Path) -> Path | None:
 
     stem = _cache_path_for(src_path)  # e.g. .../abc123.shrunk
     # Check for already-cached variants in any supported output format.  The
-    # order respects the active lossy format preference (WebP or JPEG), falling
-    # back to PNG for screenshots/text.  This ensures format switches via
-    # TOKEN_GOAT_IMAGE_FORMAT env var correctly probe the preferred variant first.
+    # configured lossy format is probed first; all other formats follow so a
+    # format switch via TOKEN_GOAT_IMAGE_FORMAT still finds existing cache entries.
     lossy_fmt = _lossy_format()
     lossy_suffix = f".{lossy_fmt}" if lossy_fmt != "jpeg" else ".jpg"
-    suffixes = [lossy_suffix, ".png"]
-    if lossy_suffix != ".webp":
-        suffixes.insert(1, ".webp")  # Check modern format as fallback
+    suffixes = [lossy_suffix] + [s for s in (".webp", ".jpg", ".png") if s != lossy_suffix]
 
     for suffix in suffixes:
         candidate = stem.with_suffix(suffix)

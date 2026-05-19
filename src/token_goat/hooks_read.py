@@ -312,6 +312,34 @@ def _try_snapshot(
         )
 
 
+def _build_git_hint(cwd: str | None, file_path: str) -> str | None:
+    """Return a compact git-history hint for *file_path*, or None on any failure.
+
+    Looks up the per-project git commit index for recent commits touching the
+    file and formats them as a short bullet list.  Fail-soft: any exception
+    (missing index, git absent, non-project file) returns None silently.
+    """
+    try:
+        from . import git_history  # noqa: PLC0415
+        from .hooks_common import validate_cwd  # noqa: PLC0415
+        from .project import find_project  # noqa: PLC0415
+
+        cwd_path = validate_cwd(cwd, caller="pre-read-git-hint")
+        if cwd_path is None:
+            return None
+        proj = find_project(cwd_path)
+        if proj is None:
+            return None
+        try:
+            abs_file = Path(file_path) if Path(file_path).is_absolute() else (cwd_path / file_path)
+            rel_path = abs_file.relative_to(proj.root).as_posix()
+        except ValueError:
+            return None
+        return git_history.build_hint(proj.hash, rel_path)
+    except Exception:  # noqa: BLE001
+        return None
+
+
 def _record_session_hint_impact(file_path: str, hint: str) -> None:
     """Record net impact of session hints: avoided re-reads minus injection overhead.
 
@@ -579,6 +607,9 @@ def pre_read(payload: HookPayload) -> HookResponse:
 
     cache = session.load(session_id)
 
+    # Collect context parts from all hint sources; combine and return once.
+    context_parts: list[str] = []
+
     # Diff-aware path: file was read AND edited in this session AND we have
     # a snapshot to compare against.  When applicable, the diff hint replaces
     # the standard cache hint — both communicate the same idea (you've seen
@@ -587,30 +618,45 @@ def pre_read(payload: HookPayload) -> HookResponse:
     if entry is not None and entry.last_edit_ts > entry.last_read_ts:
         diff_response = _try_diff_hint(session_id, file_path)
         if diff_response is not None:
-            return diff_response
+            # Extract the text so we can combine with the git hint if present.
+            hso = diff_response.get("hookSpecificOutput") or {}
+            diff_text = hso.get("additionalContext", "") if isinstance(hso, dict) else ""
+            if diff_text:
+                context_parts.append(diff_text)
 
-    hint = build_read_hint(
-        session_id=session_id,
-        file_path=file_path,
-        offset=tool_input.get("offset"),
-        limit=tool_input.get("limit"),
-        cwd=cwd,
-        cache=cache,
-    )
-    if not hint:
+    if not context_parts:
+        hint = build_read_hint(
+            session_id=session_id,
+            file_path=file_path,
+            offset=tool_input.get("offset"),
+            limit=tool_input.get("limit"),
+            cwd=cwd,
+            cache=cache,
+        )
+        if hint:
+            if hint.tokens_saved > 0:
+                _LOG.debug(
+                    "pre-read: hint injected for %s (tokens_saved=%d)",
+                    sanitize_log_str(file_path), hint.tokens_saved,
+                )
+                _record_session_hint_impact(file_path, hint)
+            else:
+                _LOG.debug(
+                    "pre-read: hint built for %s but tokens_saved=0; no stat recorded",
+                    sanitize_log_str(file_path),
+                )
+            context_parts.append(str(hint))
+
+    # Append git commit history for the file (always, when available).
+    git_ctx = _build_git_hint(cwd, file_path)
+    if git_ctx:
+        context_parts.append(git_ctx)
+
+    if not context_parts:
         _LOG.debug("pre-read: no hint for %s", sanitize_log_str(file_path))
         return CONTINUE()
 
-    if hint.tokens_saved > 0:
-        _LOG.debug(
-            "pre-read: hint injected for %s (tokens_saved=%d)",
-            sanitize_log_str(file_path), hint.tokens_saved,
-        )
-        _record_session_hint_impact(file_path, hint)
-    else:
-        _LOG.debug("pre-read: hint built for %s but tokens_saved=0; no stat recorded", sanitize_log_str(file_path))
-
-    return pre_tool_use_with_context(str(hint))
+    return pre_tool_use_with_context("\n\n".join(context_parts))
 
 
 def post_read(payload: HookPayload) -> HookResponse:
