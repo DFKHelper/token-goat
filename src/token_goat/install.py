@@ -1334,11 +1334,6 @@ def _codex_hooks_block(binary: str | None = None) -> dict[str, list[_HookMatcher
     }
 
 
-def _strip_codex_token_goat_entries(entries: list[dict[str, object]]) -> list[dict[str, object]]:
-    """Remove hook entries whose command string contains 'token-goat'."""
-    return _strip_token_goat_entries(entries)
-
-
 def patch_codex_config(binary: str) -> str:
     """Merge token-goat hooks into ~/.codex/config.toml idempotently."""
     import tomllib  # noqa: PLC0415
@@ -1354,7 +1349,7 @@ def patch_codex_config(binary: str) -> str:
     existing_hooks = existing.get("hooks", {})
     for event, entries in our_hooks.items():
         existing_entries = existing_hooks.get(event, [])
-        kept = _strip_codex_token_goat_entries(existing_entries)
+        kept = _strip_token_goat_entries(existing_entries)
         existing_hooks[event] = kept + cast(list[dict[str, object]], entries)
     existing["hooks"] = existing_hooks
 
@@ -1376,7 +1371,7 @@ def unpatch_codex_config() -> str:
     existing = tomllib.loads(cfg_path.read_text(encoding="utf-8"))
     hooks = existing.get("hooks", {})
     for event in list(hooks.keys()):
-        cleaned = _strip_codex_token_goat_entries(hooks[event])
+        cleaned = _strip_token_goat_entries(hooks[event])
         if cleaned:
             hooks[event] = cleaned
         else:
