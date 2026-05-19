@@ -588,6 +588,11 @@ _DIFF_HINT_MIN_TOKENS_SAVED: int = 250
 # enough to anchor a hunk visually but narrow enough to keep diff bytes low.
 _DIFF_CONTEXT_LINES: int = 2
 
+# For tiny edits (≤ this many changed lines), one context line on each side is
+# plenty of anchor — saves ~6 lines of duplicated context per small hunk.
+_DIFF_TINY_CHANGE_THRESHOLD: int = 3
+_DIFF_TINY_CONTEXT_LINES: int = 1
+
 
 def build_diff_hint(
     *,
@@ -648,12 +653,32 @@ def _build_diff_hint_inner(
 
     snapshot_lines = snapshot_text.splitlines(keepends=True)
     current_lines = current_text.splitlines(keepends=True)
+
+    # Adaptive context sizing: count the actual `+`/`-` changes (excluding the
+    # `+++`/`---` header) using a zero-context probe, then re-emit with the
+    # right width.  Tiny edits get 1 line of context; everything else gets the
+    # standard 2.  Two unified_diff calls, but the n=0 pass is tiny by design.
+    probe_text = "".join(
+        difflib.unified_diff(
+            snapshot_lines, current_lines, n=0, lineterm="",
+        ),
+    )
+    changed_count = sum(
+        1 for line in probe_text.splitlines()
+        if line[:1] in ("+", "-") and not line.startswith(("+++", "---"))
+    )
+    n_context = (
+        _DIFF_TINY_CONTEXT_LINES
+        if 0 < changed_count <= _DIFF_TINY_CHANGE_THRESHOLD
+        else _DIFF_CONTEXT_LINES
+    )
+
     diff_iter = difflib.unified_diff(
         snapshot_lines,
         current_lines,
         fromfile=f"{fname} (previously read)",
         tofile=f"{fname} (current)",
-        n=_DIFF_CONTEXT_LINES,
+        n=n_context,
         lineterm="",
     )
     diff_text = "".join(diff_iter)
@@ -685,10 +710,8 @@ def _build_diff_hint_inner(
         return None
 
     return ReadHint(
-        f"Note: `{fname}` was edited in this session since you last read it. "
-        f"Unified diff against the prior read (saves ~{tokens_saved} tokens vs. a full Read):\n"
-        f"```diff\n{diff_text}\n```\n"
-        f"If the diff covers what you need, skip the full Read.",
+        f"`{fname}` changed since last read; diff saves ~{tokens_saved} tokens vs Read:\n"
+        f"```diff\n{diff_text}\n```\n",
         tokens_saved,
     )
 
