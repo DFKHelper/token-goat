@@ -1265,12 +1265,34 @@ def stats(
     cli_stats.stats(window=window, json_output=json_output)
 
 
+# Smart-default constants for no-flag recall of bash-output / web-output.
+# Head is small: just enough to show the command invocation and early output.
+_SMART_DEFAULT_HEAD = 30
+# Tail is generous: pytest/cargo/ruff failure summaries and tracebacks can be
+# 40-60 lines on their own; 80 ensures a full trailing error block survives.
+_SMART_DEFAULT_TAIL = 80
+# Only apply the smart default when the output exceeds head+tail combined.
+# Outputs at or below this threshold are returned in full — no elision.
+_SMART_DEFAULT_THRESHOLD = _SMART_DEFAULT_HEAD + _SMART_DEFAULT_TAIL
+
+
+def _apply_smart_default(lines: list[str]) -> list[str]:
+    """Return head+tail slice with an elision marker, or the original list unchanged."""
+    total = len(lines)
+    if total <= _SMART_DEFAULT_THRESHOLD:
+        return lines
+    elided = total - _SMART_DEFAULT_HEAD - _SMART_DEFAULT_TAIL
+    marker = f"[token-goat: {elided} lines elided; pass --full for all {total} lines]"
+    return [*lines[:_SMART_DEFAULT_HEAD], marker, *lines[-_SMART_DEFAULT_TAIL:]]
+
+
 @app.command("bash-output", rich_help_panel="Core")
 def cmd_bash_output(
     output_id: str = typer.Argument(..., help="ID returned by the post-bash hook or `bash-history`."),
     head: int = typer.Option(0, "--head", help="Show first N lines (0 = no head limit)"),
     tail: int = typer.Option(0, "--tail", help="Show last N lines (0 = no tail limit)"),
     grep: str | None = typer.Option(None, "--grep", "-g", help="Show only lines matching the (case-sensitive) substring"),
+    full: bool = typer.Option(False, "--full", help="Return the entire cached output (disables smart-default head+tail)"),
     json_output: bool = _OPT_JSON,
 ) -> None:
     """Retrieve a sliced view of a cached Bash output.
@@ -1280,10 +1302,11 @@ def cmd_bash_output(
     parts of that output without forcing the agent to re-run the command —
     typically much cheaper in tokens.
 
-    Combine ``--head``, ``--tail``, and ``--grep`` to narrow further; without
-    any filter the whole cached body is returned. JSON mode includes the
-    full path and stored byte size so a caller can decide whether to slice
-    again.
+    By default (no flags), large outputs are trimmed to the first
+    30 lines and last 80 lines with an elision marker.  Pass ``--full`` to
+    get everything.  Combine ``--head``, ``--tail``, and ``--grep`` to
+    narrow further; those flags suppress the smart default automatically.
+    JSON mode includes the full path and stored byte size.
     """
     from . import bash_cache  # noqa: PLC0415
 
@@ -1293,12 +1316,15 @@ def cmd_bash_output(
         raise typer.Exit(1)
 
     lines = body.splitlines()
+    _slicing_requested = grep or head > 0 or tail > 0
     if grep:
         lines = [ln for ln in lines if grep in ln]
     if head > 0:
         lines = lines[: head]
     if tail > 0:
         lines = lines[-tail :]
+    if not _slicing_requested and not full:
+        lines = _apply_smart_default(lines)
     sliced = "\n".join(lines)
 
     if json_output:
@@ -1345,6 +1371,7 @@ def cmd_web_output(
     head: int = typer.Option(0, "--head", help="Show first N lines (0 = no head limit)"),
     tail: int = typer.Option(0, "--tail", help="Show last N lines (0 = no tail limit)"),
     grep: str | None = typer.Option(None, "--grep", "-g", help="Show only lines matching the (case-sensitive) substring"),
+    full: bool = typer.Option(False, "--full", help="Return the entire cached output (disables smart-default head+tail)"),
     json_output: bool = _OPT_JSON,
 ) -> None:
     """Retrieve a sliced view of a cached WebFetch response body.
@@ -1354,11 +1381,12 @@ def cmd_web_output(
     specific parts of that body without forcing the agent to re-fetch the
     URL — typically much cheaper in tokens.
 
-    Combine ``--head``, ``--tail``, and ``--grep`` to narrow further; without
-    any filter the whole cached body is returned. JSON mode includes the
-    full path, stored byte size, status code, and a 1-based ``numbered_lines``
-    list anchored to the original body so an agent can follow up with a
-    positional slicer.
+    By default (no flags), large outputs are trimmed to the first
+    30 lines and last 80 lines with an elision marker.  Pass ``--full`` to
+    get everything.  Combine ``--head``, ``--tail``, and ``--grep`` to
+    narrow further; those flags suppress the smart default automatically.
+    JSON mode includes the full path, stored byte size, status code, and a
+    1-based ``numbered_lines`` list anchored to the original body.
     """
     from . import web_cache  # noqa: PLC0415
 
@@ -1368,12 +1396,15 @@ def cmd_web_output(
         raise typer.Exit(1)
 
     lines = body.splitlines()
+    _slicing_requested = grep or head > 0 or tail > 0
     if grep:
         lines = [ln for ln in lines if grep in ln]
     if head > 0:
         lines = lines[: head]
     if tail > 0:
         lines = lines[-tail :]
+    if not _slicing_requested and not full:
+        lines = _apply_smart_default(lines)
     sliced = "\n".join(lines)
 
     if json_output:
