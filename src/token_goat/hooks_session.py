@@ -164,12 +164,7 @@ def _build_recovery_hint(session_id: str) -> str | None:
     if not sections:
         return None
 
-    header = (
-        "## Token-Goat Post-Compact Recovery\n"
-        "Compaction just ran.  The following resources were active in the prior "
-        "context window and remain cached — pull them on demand instead of "
-        "re-reading from scratch."
-    )
+    header = "## Token-Goat Post-Compact Recovery"
     return "\n\n".join([header, *sections])
 
 
