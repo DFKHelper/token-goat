@@ -308,18 +308,18 @@ def build_hint(project_hash: str, rel_path: str) -> str | None:
     """Build a compact git-history hint for *rel_path*.
 
     Returns None when there are no relevant commits or the index is absent.
-    The hint is short (<100 tokens) and structured for easy scanning.
+    The hint is short (<80 tokens) and structured for easy scanning.
     """
     commits = find_commits_for_file(project_hash, rel_path, limit=_MAX_HINT_COMMITS)
     if not commits:
         return None
 
     now = time.time()
-    lines = [f"Recent commits touching `{rel_path}`:"]
+    lines = [f"git: {rel_path}"]
     for c in commits:
         age_days = int((now - float(str(c["author_ts"]))) / 86_400)
-        age_str = f"{age_days}d ago" if age_days > 0 else "today"
-        summary = str(c["summary"])[:80]
+        age_str = f"{age_days}d" if age_days > 0 else "today"
+        summary = str(c["summary"])[:72]
         short = str(c["commit_short"])[:8]
-        lines.append(f"  - {short}: {summary} ({age_str})")
+        lines.append(f"  {short} {summary} ({age_str})")
     return "\n".join(lines)

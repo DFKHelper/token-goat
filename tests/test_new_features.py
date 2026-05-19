@@ -87,6 +87,35 @@ class TestProjectMemory:
             entries = project_memory.load_entries("abc123")
         assert entries["note"] == "line1\nline2"
 
+    def test_total_size_budget_enforced(self, tmp_path: Path) -> None:
+        """Oversized injection must be bounded and emit the omission marker."""
+        from token_goat import paths, project_memory
+        from token_goat.project_memory import _MAX_TOTAL_CHARS
+
+        with patch.object(paths, "data_dir", return_value=tmp_path):
+            # Each value is 350 chars; 20 entries × ~370 chars/line >> _MAX_TOTAL_CHARS
+            for i in range(20):
+                project_memory.set_entry("abc123", f"key{i:02d}", "v" * 350)
+            result = project_memory.build_injection("abc123")
+
+        assert result is not None
+        assert len(result) <= _MAX_TOTAL_CHARS + 200  # omission line may push slightly past
+        assert "omitted" in result
+
+    def test_normal_memory_not_truncated_by_total_budget(self, tmp_path: Path) -> None:
+        """A typical small memory block must not be cut off by the total budget."""
+        from token_goat import paths, project_memory
+
+        with patch.object(paths, "data_dir", return_value=tmp_path):
+            project_memory.set_entry("abc123", "stack", "Python/FastAPI")
+            project_memory.set_entry("abc123", "owner", "alice")
+            result = project_memory.build_injection("abc123")
+
+        assert result is not None
+        assert "omitted" not in result
+        assert "stack" in result
+        assert "owner" in result
+
 
 # ---------------------------------------------------------------------------
 # git_history — unit tests (no real git required)
@@ -145,7 +174,11 @@ class TestGitHistoryParse:
         assert result is not None
         assert "src/bar.py" in result
         assert "fix(bar): patch issue" in result
-        assert "3d ago" in result
+        assert "3d" in result
+        # Terse header: starts with "git: " not a verbose sentence
+        assert result.startswith("git: ")
+        # No verbose "ago" suffix in age label
+        assert "ago" not in result
 
 
 # ---------------------------------------------------------------------------

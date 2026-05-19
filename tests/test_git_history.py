@@ -270,7 +270,7 @@ class TestBuildHint:
         ])
         with _fake_readonly(conn):
             hint = build_hint("fakehash", "f.py")
-        assert "5d ago" in hint  # type: ignore[operator]
+        assert "5d" in hint  # type: ignore[operator]
 
     def test_summary_truncated_to_80_chars(self):
         long_summary = "x" * 120
