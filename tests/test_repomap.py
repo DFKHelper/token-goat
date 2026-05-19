@@ -88,9 +88,8 @@ def test_build_map_no_edges_fallback(ts_project):
 def test_build_map_header(ts_project):
     text = repomap.build_map(ts_project, budget_tokens=4000)
     assert "ts_sample" in text
-    # New dense header: "# ts_sample (1f,typescript)"
-    # Old header was "files=1 languages=...", new collapses both into "(Nf,...)"
-    assert "1f" in text
+    # Header: "# ts_sample (1,typescript)" — file count followed by lang list.
+    assert "(1," in text
 
 
 # ---------------------------------------------------------------------------
@@ -477,7 +476,7 @@ def test_render_summary_compact_is_much_smaller():
 def test_build_map_header_density(ts_project):
     """Header line should be under ~50 chars for a small project."""
     text = repomap.build_map(ts_project, budget_tokens=4000)
-    # First line is the header; assert it's compact (project + "(1f,lang)")
+    # First line is the header; assert it's compact (project + "(1,lang)")
     header_line = text.splitlines()[0]
     assert len(header_line) < 50, f"header too long ({len(header_line)} chars): {header_line!r}"
 

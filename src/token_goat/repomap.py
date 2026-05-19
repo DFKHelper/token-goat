@@ -548,7 +548,7 @@ def render_summary(summary: FileSummary, *, compact: bool = False) -> str:
         symbol; comma is unambiguous because identifiers cannot contain ``,``).
     """
     head = (
-        f"{summary.rel_path} [{summary.language},~{summary.line_count}L,"
+        f"{summary.rel_path} [{summary.language},{summary.line_count},"
         f"r={summary.rank:.3f}]"
     )
     if compact:
@@ -792,12 +792,11 @@ def build_map(
     use_compact = compact if compact is not None else budget_tokens < _AUTO_COMPACT_BUDGET
 
     lang_set = sorted({info["language"] for info in data.files.values()})
-    # Tightened header: drop the "files=" / "languages=" labels (positionally
-    # obvious — a number followed by a comma-list) and use a single space rather
-    # than the previous two-space indent.  Saves ~6 tokens per call.
+    # Header: project name + (file count, langs). No "f" suffix — the count
+    # position is unambiguous. Saves ~2 chars per call.
     header = (
         f"# {project.root.name} "
-        f"({len(data.files)}f,{','.join(lang_set)})\n"
+        f"({len(data.files)},{','.join(lang_set)})\n"
     )
     out = [header]
     used = estimate_tokens(header)
@@ -829,9 +828,9 @@ def build_map(
 
     if include_unranked_tail and included < len(data.ranked):
         omitted = len(data.ranked) - included
-        # Compressed tail marker: "+N more (budget B)" is ~half the chars of the
-        # previous full sentence and conveys identical information.
-        out.append(f"+{omitted} more (budget {budget_tokens}t)\n")
+        # Tail marker: just the count — the model needs to know N were omitted,
+        # not what the budget was.
+        out.append(f"+{omitted} more\n")
 
     # Persist new cache entries (best-effort; failure must not affect output)
     if cache_writes:
