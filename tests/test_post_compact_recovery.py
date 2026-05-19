@@ -4,6 +4,7 @@ from __future__ import annotations
 from hook_helpers import assert_continue as _assert_continue
 
 from token_goat import hooks_session, session
+from token_goat.hooks_session import _allocate_recovery_slots
 
 
 def _seed_state(sid: str) -> None:
@@ -120,3 +121,51 @@ class TestRecoveryHintContent:
         _assert_continue(result)
         # No file activity, only one tiny bash entry → no hint emitted.
         assert "hookSpecificOutput" not in result
+
+
+class TestRecoverySlotAllocator:
+    """Direct tests of the floor/ceiling/total slot allocator.
+
+    The helper preserves current behaviour when every section is saturated
+    (sums to 14, evenly distributed at floors) AND reclaims unused budget
+    from empty/short sections in lopsided sessions.
+    """
+
+    def test_saturated_matches_floors(self):
+        # Plenty of items everywhere → each section gets exactly its floor;
+        # the floors sum to the total budget so no reallocation happens.
+        assert _allocate_recovery_slots(50, 50, 50) == (6, 4, 4)
+
+    def test_web_empty_expands_files_and_bash(self):
+        # 30 files, 30 bash, 0 web: web's 4-slot floor is unused.  The 4 slots
+        # are handed to files first (priority order).  Result: (10, 4, 0).
+        assert _allocate_recovery_slots(30, 30, 0) == (10, 4, 0)
+
+    def test_all_files_fills_to_ceiling(self):
+        # 30 files, 0 bash, 0 web: 8 unused slots from bash+web flow to files
+        # which expands to its 12-slot ceiling (the remaining 2 slots have
+        # nowhere to go).
+        assert _allocate_recovery_slots(30, 0, 0) == (12, 0, 0)
+
+    def test_files_empty_redistributes_to_bash_and_web(self):
+        # 0 files, 20 bash, 20 web: floor pass yields (0,4,4)=8, leaving 6.
+        # Priority order routes everything through bash first (headroom=6),
+        # which absorbs the full remainder.  Result: (0, 10, 4).
+        assert _allocate_recovery_slots(0, 20, 20) == (0, 10, 4)
+
+    def test_under_floor_only_takes_what_exists(self):
+        # 2 files, 1 bash, 1 web: each section caps at its true item count,
+        # not its floor, so the sum is 4 rather than 14.
+        assert _allocate_recovery_slots(2, 1, 1) == (2, 1, 1)
+
+    def test_zero_input_returns_zeros(self):
+        assert _allocate_recovery_slots(0, 0, 0) == (0, 0, 0)
+
+    def test_total_never_exceeds_budget(self):
+        # Stress: every section has unlimited items.  Sum must equal the total
+        # budget (14) regardless of how greedy the expansion gets.
+        files, bash, web = _allocate_recovery_slots(100, 100, 100)
+        assert files + bash + web == hooks_session._RECOVERY_TOTAL_ITEMS
+        assert files <= hooks_session._RECOVERY_FILES_CEILING
+        assert bash <= hooks_session._RECOVERY_BASH_CEILING
+        assert web <= hooks_session._RECOVERY_WEB_CEILING

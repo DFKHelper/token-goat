@@ -74,17 +74,72 @@ def _reset_session_cache(session_id: str | None) -> None:
     session.reset_session(session_id)
 
 
-# Maximum number of files / bash entries / web entries surfaced in the
-# recovery hint.  Each line costs ~25-40 tokens; keeping the per-section cap
-# small keeps the whole hint comfortably under 400 tokens even when the
-# pre-compaction session was dense.
-_RECOVERY_MAX_FILES: int = 6
-_RECOVERY_MAX_BASH: int = 4
-_RECOVERY_MAX_WEB: int = 4
+# Recovery hint slot budget.  Each line costs ~25-40 tokens; the total budget
+# keeps the whole hint comfortably under 400 tokens.  The per-section ``_MAX_``
+# values are *floors* (guaranteed minimum allocation when items exist) and the
+# ``_CEILING`` values are *soft caps* (max take when other sections leave slack).
+# A web-empty session, for example, can grow the file/bash sections beyond
+# their floors instead of wasting the unused web budget.
+_RECOVERY_MAX_FILES: int = 6  # floor
+_RECOVERY_MAX_BASH: int = 4  # floor
+_RECOVERY_MAX_WEB: int = 4  # floor
+_RECOVERY_TOTAL_ITEMS: int = 14  # global budget = sum of floors
+_RECOVERY_FILES_CEILING: int = 12
+_RECOVERY_BASH_CEILING: int = 10
+_RECOVERY_WEB_CEILING: int = 10
 # Minimum byte size before a cached output is worth listing in the recovery
 # hint.  Below this the dedup hint would not have fired anyway, and the line
 # the recovery hint costs in the budget would not be repaid.
 _RECOVERY_MIN_BYTES: int = 400
+
+
+def _allocate_recovery_slots(
+    files_n: int, bash_n: int, web_n: int,
+) -> tuple[int, int, int]:
+    """Allocate recovery-hint slots across files / bash / web sections.
+
+    Two-pass greedy allocator:
+
+    1. **Floor pass** — each section claims ``min(available, floor)``.  Sections
+       with fewer candidates than their floor release the slack immediately.
+    2. **Reallocation pass** — leftover budget (total minus floor pass) is
+       distributed greedily in priority order (Files → Bash → Web), each
+       section capped at its ceiling AND at its true item count.
+
+    Returns ``(files_keep, bash_keep, web_keep)`` — exact slice sizes to apply
+    to the candidate lists.  Sum is ``min(files_n + bash_n + web_n, total)``.
+    """
+    files_keep = min(files_n, _RECOVERY_MAX_FILES)
+    bash_keep = min(bash_n, _RECOVERY_MAX_BASH)
+    web_keep = min(web_n, _RECOVERY_MAX_WEB)
+
+    remaining = _RECOVERY_TOTAL_ITEMS - (files_keep + bash_keep + web_keep)
+    if remaining <= 0:
+        return files_keep, bash_keep, web_keep
+
+    # Priority-ordered greedy expansion: files first (most reusable signal),
+    # then bash (re-runnable evidence), then web (rarest re-fetch path).
+    for current, total, ceiling in (
+        ("files", files_n, _RECOVERY_FILES_CEILING),
+        ("bash", bash_n, _RECOVERY_BASH_CEILING),
+        ("web", web_n, _RECOVERY_WEB_CEILING),
+    ):
+        if remaining <= 0:
+            break
+        kept = {"files": files_keep, "bash": bash_keep, "web": web_keep}[current]
+        headroom = min(ceiling, total) - kept
+        if headroom <= 0:
+            continue
+        grant = min(headroom, remaining)
+        if current == "files":
+            files_keep += grant
+        elif current == "bash":
+            bash_keep += grant
+        else:
+            web_keep += grant
+        remaining -= grant
+
+    return files_keep, bash_keep, web_keep
 
 
 def _build_recovery_hint(session_id: str) -> str | None:
@@ -111,56 +166,62 @@ def _build_recovery_hint(session_id: str) -> str | None:
     if cache.unavailable:
         return None
 
+    # Build full candidate lists first (sorted, floor-filtered) so the
+    # allocator sees the true per-section item counts and can reclaim unused
+    # budget from empty sections instead of silently dropping high-signal data.
+    from operator import attrgetter  # noqa: PLC0415
+
+    files_all = (
+        sorted(cache.files.values(), key=attrgetter("last_read_ts"), reverse=True)
+        if cache.files else []
+    )
+    bash_all = sorted(
+        (be for be in cache.bash_history.values()
+         if (be.stdout_bytes + be.stderr_bytes) >= _RECOVERY_MIN_BYTES),
+        key=lambda be: be.ts, reverse=True,
+    ) if cache.bash_history else []
+    web_all = sorted(
+        (we for we in cache.web_history.values() if we.body_bytes >= _RECOVERY_MIN_BYTES),
+        key=lambda we: we.ts, reverse=True,
+    ) if cache.web_history else []
+
+    files_n, bash_n, web_n = _allocate_recovery_slots(
+        len(files_all), len(bash_all), len(web_all),
+    )
+    files_keep = files_all[:files_n]
+    bash_entries = bash_all[:bash_n]
+    web_entries = web_all[:web_n]
+
     sections: list[str] = []
 
     # 1. Recently-touched files — the agent will likely want these back.
-    # Rank by last_read_ts so the *most recent* reads (which still match the
-    # agent's mental model best) appear first.
-    if cache.files:
-        from operator import attrgetter  # noqa: PLC0415
+    if files_keep:
+        lines = ["**Recently-read files** (cached snapshot for diff retrieval):"]
+        for entry in files_keep:
+            sym_str = f" syms={','.join(entry.symbols_read[:3])}" if entry.symbols_read else ""
+            lines.append(f"- {entry.rel_or_abs}{sym_str}")
+        sections.append("\n".join(lines))
 
-        by_recency = attrgetter("last_read_ts")
-        files_sorted = sorted(cache.files.values(), key=by_recency, reverse=True)
-        files_keep = files_sorted[:_RECOVERY_MAX_FILES]
-        if files_keep:
-            lines = ["**Recently-read files** (cached snapshot for diff retrieval):"]
-            for entry in files_keep:
-                sym_str = f" syms={','.join(entry.symbols_read[:3])}" if entry.symbols_read else ""
-                lines.append(f"- {entry.rel_or_abs}{sym_str}")
-            sections.append("\n".join(lines))
-
-    # 2. Recent Bash output IDs — the most likely "I had this in context"
-    # data.  Sort by ts descending and keep only entries above the size floor.
-    if cache.bash_history:
-        bash_entries = sorted(
-            (be for be in cache.bash_history.values()
-             if (be.stdout_bytes + be.stderr_bytes) >= _RECOVERY_MIN_BYTES),
-            key=lambda be: be.ts, reverse=True,
-        )[:_RECOVERY_MAX_BASH]
-        if bash_entries:
-            lines = ["**Recent Bash outputs** (use `token-goat bash-output <id>` to recall):"]
-            for be in bash_entries:
-                exit_str = "" if be.exit_code is None else f" exit={be.exit_code}"
-                total = be.stdout_bytes + be.stderr_bytes
-                lines.append(
-                    f"- `{be.cmd_preview}` ({_humanize_bytes(total)}{exit_str}) `{be.output_id}`"
-                )
-            sections.append("\n".join(lines))
+    # 2. Recent Bash output IDs — the most likely "I had this in context" data.
+    if bash_entries:
+        lines = ["**Recent Bash outputs** (use `token-goat bash-output <id>` to recall):"]
+        for be in bash_entries:
+            exit_str = "" if be.exit_code is None else f" exit={be.exit_code}"
+            total = be.stdout_bytes + be.stderr_bytes
+            lines.append(
+                f"- `{be.cmd_preview}` ({_humanize_bytes(total)}{exit_str}) `{be.output_id}`"
+            )
+        sections.append("\n".join(lines))
 
     # 3. Recent WebFetch outputs — same idea for network results.
-    if cache.web_history:
-        web_entries = sorted(
-            (we for we in cache.web_history.values() if we.body_bytes >= _RECOVERY_MIN_BYTES),
-            key=lambda we: we.ts, reverse=True,
-        )[:_RECOVERY_MAX_WEB]
-        if web_entries:
-            lines = ["**Recent WebFetch responses** (use `token-goat web-output <id>` to recall):"]
-            for we in web_entries:
-                status_str = "" if we.status_code is None else f" status={we.status_code}"
-                lines.append(
-                    f"- `{we.url_preview}` ({_humanize_bytes(we.body_bytes)}{status_str}) `{we.output_id}`"
-                )
-            sections.append("\n".join(lines))
+    if web_entries:
+        lines = ["**Recent WebFetch responses** (use `token-goat web-output <id>` to recall):"]
+        for we in web_entries:
+            status_str = "" if we.status_code is None else f" status={we.status_code}"
+            lines.append(
+                f"- `{we.url_preview}` ({_humanize_bytes(we.body_bytes)}{status_str}) `{we.output_id}`"
+            )
+        sections.append("\n".join(lines))
 
     if not sections:
         return None
