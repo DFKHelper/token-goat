@@ -583,7 +583,7 @@ Outbound network is reserved to three explicit cases:
 
 - First `token-goat semantic` call downloads the embedding model (~130 MB) into the data directory. Offline after that.
 - Google Drive API calls, only if you already authorized Drive in Claude Code. Token-goat never prompts for its own auth.
-- Explicit, user-triggered URL fetches via `token-goat fetch-image <url>`.
+- Image fetches from URLs: either explicit via `token-goat fetch-image <url>`, or when the AI agent issues a WebFetch call that returns image content — the hook intercepts and shrinks the image. The URL always originates from the agent's work, not from token-goat itself.
 
 **Security reports.** See [SECURITY.md](SECURITY.md). Email `token-goat@dfkhelper.com`; do not file as a GitHub issue. Reports are acknowledged within 7 days; coordinated disclosure with a 90-day default window.
 
