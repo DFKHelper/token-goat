@@ -38,6 +38,11 @@ _MAX_ENTRIES: int = 30
 # Maximum length of a single value in the injection; longer values are truncated.
 _MAX_VALUE_LEN: int = 300
 
+# Hard ceiling on the total injection size (chars). Safety net against a
+# pathological CLAUDE.md that sets dozens of large values. 4 000 chars ≈ 1 000
+# tokens — generous enough for any normal project, but blocks runaway dumps.
+_MAX_TOTAL_CHARS: int = 4_000
+
 # Key validation: alphanumeric, hyphens, underscores only; max 80 chars.
 _KEY_RE = re.compile(r"^[A-Za-z0-9_-]{1,80}$")
 
@@ -125,8 +130,18 @@ def build_injection(project_hash: str) -> str | None:
     if not entries:
         return None
 
-    lines = ["## Project Memory (persistent facts for this project)"]
+    header = "## Project Memory"
+    lines = [header]
+    total = len(header)
+    skipped = 0
     for key, val in list(entries.items())[:_MAX_ENTRIES]:
         display = val if len(val) <= _MAX_VALUE_LEN else val[:_MAX_VALUE_LEN] + "…"
-        lines.append(f"- **{key}**: {display}")
+        line = f"- **{key}**: {display}"
+        if total + len(line) + 1 > _MAX_TOTAL_CHARS:
+            skipped += 1
+            continue
+        lines.append(line)
+        total += len(line) + 1  # +1 for the joining newline
+    if skipped:
+        lines.append(f"- (+{skipped} more memory entries omitted — total size limit reached)")
     return "\n".join(lines)
