@@ -1111,37 +1111,159 @@ def _strip_legacy_block(md_path: Path, begin_marker: str, end_marker: str) -> bo
 
 
 # ---------------------------------------------------------------------------
+# Routing-table single source of truth
+# ---------------------------------------------------------------------------
+# Each row: (goal, do_this, not_this_claude_skill, not_this_codex)
+# "not_this_claude_skill" is used by both CLAUDE_MD_CONTENT and SKILL_MD_CONTENT.
+# "not_this_codex"        is used by CODEX_AGENTS_MD_CONTENT.
+_ROUTING_ROWS: list[tuple[str, str, str, str]] = [
+    (
+        "Find a function, class, or type",
+        "`token-goat symbol getUser`",
+        '`Grep "getUser"` (10 to 50x more tokens)',
+        '`rg "getUser"` (10 to 50x more tokens)',
+    ),
+    (
+        "Read one function or method body",
+        '`token-goat read "src/auth.py::login"`',
+        "`Read src/auth.py` (about 85% more tokens)",
+        "`cat src/auth.py` (about 85% more tokens)",
+    ),
+    (
+        "Read one method on a class",
+        '`token-goat read "src/auth.py::Session.refresh"`',
+        "`Read src/auth.py`",
+        "`cat src/auth.py`",
+    ),
+    (
+        "Read one section of a doc",
+        '`token-goat section "README.md::Install"`',
+        "`Read README.md`",
+        "`cat README.md`",
+    ),
+    (
+        "Disambiguate a duplicate heading",
+        '`token-goat section "doc.md::Setup#2"`',
+        "`Read doc.md`",
+        "`cat doc.md`",
+    ),
+    (
+        "Find code by meaning, not name",
+        '`token-goat semantic "rate limit retry"`',
+        "Several rounds of `Grep`",
+        "Several rounds of `rg`",
+    ),
+    (
+        "Get oriented in an unfamiliar repo",
+        "`token-goat map --compact`",
+        "Recursive `ls` plus multiple `Read` calls",
+        "`ls -R` plus multiple `cat` calls",
+    ),
+    (
+        "Outline a long Google Doc",
+        "`token-goat gdrive-sections <file-id>`",
+        "Fetching the whole doc",
+        "Fetching the whole doc",
+    ),
+    (
+        "Read one TOML/YAML/JSON/INI/.env/Dockerfile block",
+        '`token-goat section "pyproject.toml::tool.ruff"`',
+        "`Read pyproject.toml`",
+        "`cat pyproject.toml`",
+    ),
+    (
+        "Re-inspect a recent Bash output",
+        "`token-goat bash-output <id> --tail 50`",
+        "Re-running `pytest`/`cargo`/`git log`",
+        "Re-running `pytest`/`cargo`/`git log`",
+    ),
+]
+
+# Goal text for the WebFetch row differs by harness (Codex adds "/ web_search").
+_ROUTING_ROW_WEBFETCH_CLAUDE_SKILL: tuple[str, str, str, str] = (
+    "Re-inspect a recent WebFetch response",
+    '`token-goat web-output <id> --grep "TODO"`',
+    "Re-fetching the same docs URL",
+    "Re-fetching the same docs URL",  # not_this_codex unused here
+)
+_ROUTING_ROW_WEBFETCH_CODEX: tuple[str, str, str, str] = (
+    "Re-inspect a recent WebFetch / web_search response",
+    '`token-goat web-output <id> --grep "TODO"`',
+    "Re-fetching the same docs URL",  # not_this_claude_skill unused here
+    "Re-fetching the same docs URL",
+)
+
+# Extra row present only in SKILL_MD_CONTENT.
+_ROUTING_ROW_SESSION_TOUCHED: tuple[str, str, str, str] = (
+    "See what you have already touched",
+    "`token-goat session-touched`",
+    "Re-reading and hoping you remember",
+    "Re-reading and hoping you remember",
+)
+
+_ROUTING_TABLE_HEADER = "| Goal | Do this | Not this |\n|------|---------|----------|\n"
+
+
+def _render_routing_table(rows: list[tuple[str, str, str, str]], *, codex: bool) -> str:
+    """Render routing rows as a markdown table string (no trailing newline).
+
+    Each row is ``(goal, do_this, not_this_claude_skill, not_this_codex)``.
+    When *codex* is True the fourth element is used; otherwise the third.
+    """
+    col = 3 if codex else 2
+    lines = [_ROUTING_TABLE_HEADER.rstrip("\n")]
+    for row in rows:
+        lines.append(f"| {row[0]} | {row[1]} | {row[col]} |")
+    return "\n".join(lines)
+
+
+def _claude_skill_routing_rows() -> list[tuple[str, str, str, str]]:
+    """Rows for CLAUDE_MD_CONTENT and SKILL_MD_CONTENT (11 common rows + WebFetch)."""
+    return _ROUTING_ROWS + [_ROUTING_ROW_WEBFETCH_CLAUDE_SKILL]
+
+
+def _codex_routing_rows() -> list[tuple[str, str, str, str]]:
+    """Rows for CODEX_AGENTS_MD_CONTENT (11 common rows + Codex WebFetch)."""
+    return _ROUTING_ROWS + [_ROUTING_ROW_WEBFETCH_CODEX]
+
+
+def _skill_routing_rows() -> list[tuple[str, str, str, str]]:
+    """Rows for SKILL_MD_CONTENT (common + WebFetch + session-touched extra row)."""
+    return _ROUTING_ROWS + [_ROUTING_ROW_WEBFETCH_CLAUDE_SKILL, _ROUTING_ROW_SESSION_TOUCHED]
+
+
+# ---------------------------------------------------------------------------
 # CLAUDE.md patching
 # ---------------------------------------------------------------------------
 
-CLAUDE_MD_CONTENT = """\
-## token-goat - route code reads through token-goat first
-
-token-goat is installed. Before you call Read or Grep on a source file, check for a token-goat command that does the same job for a fraction of the tokens. This is the default path, not an optimization. Skipping it burns context you will need later in the session.
-
-| Goal | Do this | Not this |
-|------|---------|----------|
-| Find a function, class, or type | `token-goat symbol getUser` | `Grep "getUser"` (10 to 50x more tokens) |
-| Read one function or method body | `token-goat read "src/auth.py::login"` | `Read src/auth.py` (about 85% more tokens) |
-| Read one method on a class | `token-goat read "src/auth.py::Session.refresh"` | `Read src/auth.py` |
-| Read one section of a doc | `token-goat section "README.md::Install"` | `Read README.md` |
-| Disambiguate a duplicate heading | `token-goat section "doc.md::Setup#2"` | `Read doc.md` |
-| Find code by meaning, not name | `token-goat semantic "rate limit retry"` | Several rounds of `Grep` |
-| Get oriented in an unfamiliar repo | `token-goat map --compact` | Recursive `ls` plus multiple `Read` calls |
-| Outline a long Google Doc | `token-goat gdrive-sections <file-id>` | Fetching the whole doc |
-| Read one TOML/YAML/JSON/INI/.env/Dockerfile block | `token-goat section "pyproject.toml::tool.ruff"` | `Read pyproject.toml` |
-| Re-inspect a recent Bash output | `token-goat bash-output <id> --tail 50` | Re-running the same `pytest`/`cargo`/`git log` |
-| Re-inspect a recent WebFetch response | `token-goat web-output <id> --grep "TODO"` | Re-fetching the same docs URL |
-
-Modifiers worth knowing: `symbol --all-projects` (cross-repo); `symbol --strict` to opt out of close-match auto-redirect; `map --compact` (300-token budget); `semantic --max-distance 1.0` or `--no-rerank` to widen / tighten results; `bash-output --grep PATTERN` / `web-output --grep PATTERN` to filter cached output. A miss without an unambiguous close match prints "Did you mean…?" suggestions; a unique close match at high confidence is followed transparently with a `(redirected from: ...)` marker. The pre-Bash, pre-Grep, and pre-WebFetch hooks hint when a tool call is about to repeat in the same session.
-
-Read is the right call when:
-- The file is under about 200 lines and you need the whole thing.
-- The file has never been indexed (new path, scratch script, untracked draft).
-- It is an image you need to see visually. The shrink runs automatically. Just Read it.
-
-Verify the habit. Run `token-goat stats` and watch event counts climb. Flat counts during code work mean you are reaching for Read or Grep where token-goat would apply.
-"""
+CLAUDE_MD_CONTENT = (
+    "## token-goat - route code reads through token-goat first\n"
+    "\n"
+    "token-goat is installed. Before you call Read or Grep on a source file, check for a"
+    " token-goat command that does the same job for a fraction of the tokens. This is the"
+    " default path, not an optimization. Skipping it burns context you will need later in"
+    " the session.\n"
+    "\n"
+    + _render_routing_table(_claude_skill_routing_rows(), codex=False)
+    + "\n"
+    "\n"
+    "Modifiers worth knowing: `symbol --all-projects` (cross-repo); `symbol --strict` to opt"
+    " out of close-match auto-redirect; `map --compact` (300-token budget);"
+    " `semantic --max-distance 1.0` or `--no-rerank` to widen / tighten results;"
+    " `bash-output --grep PATTERN` / `web-output --grep PATTERN` to filter cached output."
+    " A miss without an unambiguous close match prints \"Did you mean…?\" suggestions;"
+    " a unique close match at high confidence is followed transparently with a"
+    " `(redirected from: ...)` marker. The pre-Bash, pre-Grep, and pre-WebFetch hooks hint"
+    " when a tool call is about to repeat in the same session.\n"
+    "\n"
+    "Read is the right call when:\n"
+    "- The file is under about 200 lines and you need the whole thing.\n"
+    "- The file has never been indexed (new path, scratch script, untracked draft).\n"
+    "- It is an image you need to see visually. The shrink runs automatically. Just Read it.\n"
+    "\n"
+    "Verify the habit. Run `token-goat stats` and watch event counts climb. Flat counts"
+    " during code work mean you are reaching for Read or Grep where token-goat would apply.\n"
+)
 
 
 def patch_claude_md() -> str:
@@ -1165,56 +1287,59 @@ def unpatch_claude_md() -> str:
 # Skill
 # ---------------------------------------------------------------------------
 
-SKILL_MD_CONTENT = """\
----
-name: token-goat
-description: Use BEFORE reaching for Read or Grep on a source file. token-goat commands replace symbol search, single-function reads, doc-section reads, semantic search, and repo overviews at a fraction of the token cost. Hooks handle image shrink, Drive intercept, and read dedup automatically. Skipping token-goat burns session context.
----
-
-# token-goat
-
-token-goat is installed. Route code and content reads through it first. This is the default path, not optional polish. Tokens you spend rereading files or grepping wide are tokens you will not have for the work that matters.
-
-## Automatic. Do not duplicate.
-
-- Large images on Read get redirected to a shrunken cached copy (about 95% fewer tokens).
-- Google Drive downloads get redirected to a token-goat fetch that downloads, shrinks, and caches.
-- WebFetch on an image URL gets the same treatment.
-- Repeat reads of the same file in one session trigger a system reminder so you do not pay twice.
-
-You do not call these. They run on their own.
-
-## What you DO call
-
-Before reaching for Read or Grep on a code file, check this table.
-
-| Goal | Do this | Not this |
-|------|---------|----------|
-| Find a function, class, or type | `token-goat symbol getUser` | `Grep "getUser"` (10 to 50x more tokens) |
-| Read one function or method body | `token-goat read "src/auth.py::login"` | `Read src/auth.py` (about 85% more tokens) |
-| Read one method on a class | `token-goat read "src/auth.py::Session.refresh"` | `Read src/auth.py` |
-| Read one section of a doc | `token-goat section "README.md::Install"` | `Read README.md` |
-| Disambiguate a duplicate heading | `token-goat section "doc.md::Setup#2"` | `Read doc.md` |
-| Find code by meaning, not name | `token-goat semantic "rate limit retry"` | Several rounds of `Grep` |
-| Get oriented in an unfamiliar repo | `token-goat map --compact` | Recursive `ls` plus multiple `Read` calls |
-| Outline a long Google Doc | `token-goat gdrive-sections <file-id>` | Fetching the whole doc |
-| Read one TOML/YAML/JSON/INI/.env/Dockerfile block | `token-goat section "pyproject.toml::tool.ruff"` | `Read pyproject.toml` |
-| Re-inspect a recent Bash output | `token-goat bash-output <id> --tail 50` | Re-running `pytest`/`cargo`/`git log` |
-| Re-inspect a recent WebFetch response | `token-goat web-output <id> --grep "TODO"` | Re-fetching the same docs URL |
-| See what you have already touched | `token-goat session-touched` | Re-reading and hoping you remember |
-
-Modifiers worth knowing: `symbol --all-projects` searches every indexed repo at once; `symbol --strict` disables close-match auto-redirect; `map --compact` fits a 300-token budget; `semantic --max-distance 1.0` widens or `--no-rerank` tightens semantic results; `bash-output --grep PATTERN` / `web-output --grep PATTERN` filter cached output. A miss prints "Did you mean…?" suggestions — try one of those before falling back to `Read`. A unique high-confidence close match is followed transparently with a `(redirected from: ...)` marker.
-
-## When Read is the right call
-
-- The file is under about 200 lines and you need the whole thing.
-- The file has never been indexed (new path, scratch script, untracked draft).
-- You need to view an image visually. The shrink already ran. Just Read it.
-
-## Verify the habit
-
-Run `token-goat stats` and watch event counts climb. Flat counts during code work mean you are reaching for Read or Grep where a token-goat command would apply. Run `token-goat doctor` if anything looks wrong.
-"""
+SKILL_MD_CONTENT = (
+    "---\n"
+    "name: token-goat\n"
+    "description: Use BEFORE reaching for Read or Grep on a source file. token-goat commands"
+    " replace symbol search, single-function reads, doc-section reads, semantic search, and"
+    " repo overviews at a fraction of the token cost. Hooks handle image shrink, Drive"
+    " intercept, and read dedup automatically. Skipping token-goat burns session context.\n"
+    "---\n"
+    "\n"
+    "# token-goat\n"
+    "\n"
+    "token-goat is installed. Route code and content reads through it first. This is the"
+    " default path, not optional polish. Tokens you spend rereading files or grepping wide"
+    " are tokens you will not have for the work that matters.\n"
+    "\n"
+    "## Automatic. Do not duplicate.\n"
+    "\n"
+    "- Large images on Read get redirected to a shrunken cached copy (about 95% fewer tokens).\n"
+    "- Google Drive downloads get redirected to a token-goat fetch that downloads, shrinks,"
+    " and caches.\n"
+    "- WebFetch on an image URL gets the same treatment.\n"
+    "- Repeat reads of the same file in one session trigger a system reminder so you do not"
+    " pay twice.\n"
+    "\n"
+    "You do not call these. They run on their own.\n"
+    "\n"
+    "## What you DO call\n"
+    "\n"
+    "Before reaching for Read or Grep on a code file, check this table.\n"
+    "\n"
+    + _render_routing_table(_skill_routing_rows(), codex=False)
+    + "\n"
+    "\n"
+    "Modifiers worth knowing: `symbol --all-projects` searches every indexed repo at once;"
+    " `symbol --strict` disables close-match auto-redirect; `map --compact` fits a 300-token"
+    " budget; `semantic --max-distance 1.0` widens or `--no-rerank` tightens semantic results;"
+    " `bash-output --grep PATTERN` / `web-output --grep PATTERN` filter cached output."
+    " A miss prints \"Did you mean…?\" suggestions — try one of those before falling back to"
+    " `Read`. A unique high-confidence close match is followed transparently with a"
+    " `(redirected from: ...)` marker.\n"
+    "\n"
+    "## When Read is the right call\n"
+    "\n"
+    "- The file is under about 200 lines and you need the whole thing.\n"
+    "- The file has never been indexed (new path, scratch script, untracked draft).\n"
+    "- You need to view an image visually. The shrink already ran. Just Read it.\n"
+    "\n"
+    "## Verify the habit\n"
+    "\n"
+    "Run `token-goat stats` and watch event counts climb. Flat counts during code work mean"
+    " you are reaching for Read or Grep where a token-goat command would apply. Run"
+    " `token-goat doctor` if anything looks wrong.\n"
+)
 
 
 def write_skill() -> str:
@@ -1383,34 +1508,35 @@ def unpatch_codex_config() -> str:
     return str(cfg_path)
 
 
-CODEX_AGENTS_MD_CONTENT = """\
-## token-goat - route code reads through token-goat first (Codex)
-
-token-goat is installed. Before you run `rg`, `grep`, `cat`, `head`, `bat`, or any Bash read of a source file, check whether a token-goat command does the same job for a fraction of the tokens. Route through token-goat by default. Skipping it burns context you will need later in the session.
-
-| Goal | Do this | Not this |
-|------|---------|----------|
-| Find a function, class, or type | `token-goat symbol getUser` | `rg "getUser"` (10 to 50x more tokens) |
-| Read one function or method body | `token-goat read "src/auth.py::login"` | `cat src/auth.py` (about 85% more tokens) |
-| Read one method on a class | `token-goat read "src/auth.py::Session.refresh"` | `cat src/auth.py` |
-| Read one section of a doc | `token-goat section "README.md::Install"` | `cat README.md` |
-| Disambiguate a duplicate heading | `token-goat section "doc.md::Setup#2"` | `cat doc.md` |
-| Find code by meaning, not name | `token-goat semantic "rate limit retry"` | Several rounds of `rg` |
-| Get oriented in an unfamiliar repo | `token-goat map --compact` | `ls -R` plus multiple `cat` calls |
-| Outline a long Google Doc | `token-goat gdrive-sections <file-id>` | Fetching the whole doc |
-| Read one TOML/YAML/JSON/INI/.env/Dockerfile block | `token-goat section "pyproject.toml::tool.ruff"` | `cat pyproject.toml` |
-| Re-inspect a recent Bash output | `token-goat bash-output <id> --tail 50` | Re-running `pytest`/`cargo`/`git log` |
-| Re-inspect a recent WebFetch / web_search response | `token-goat web-output <id> --grep "TODO"` | Re-fetching the same docs URL |
-
-Modifiers worth knowing: `symbol --all-projects` (cross-repo); `symbol --strict` disables close-match auto-redirect; `map --compact` (300-token budget); `semantic --max-distance 1.0` or `--no-rerank` to widen / tighten results; `bash-output --grep PATTERN` / `web-output --grep PATTERN` filter cached output. A miss without an unambiguous close match prints "Did you mean…?" suggestions; a unique high-confidence close match is followed transparently with a `(redirected from: ...)` marker. The pre-Bash, pre-Grep, and pre-WebFetch hooks hint when a tool call is about to repeat in the same session.
-
-Plain Bash reads are the right call when:
-- The file is under about 200 lines and you need the whole thing.
-- The file has never been indexed (new path, scratch script, untracked draft).
-- You need exact bytes to build an `apply_patch` hunk that must match the file verbatim.
-
-Verify the habit. Run `token-goat stats` and watch event counts climb. Flat counts during code work mean you are reaching for `rg` or `cat` where a token-goat command would apply.
-"""
+CODEX_AGENTS_MD_CONTENT = (
+    "## token-goat - route code reads through token-goat first (Codex)\n"
+    "\n"
+    "token-goat is installed. Before you run `rg`, `grep`, `cat`, `head`, `bat`, or any Bash"
+    " read of a source file, check whether a token-goat command does the same job for a"
+    " fraction of the tokens. Route through token-goat by default. Skipping it burns context"
+    " you will need later in the session.\n"
+    "\n"
+    + _render_routing_table(_codex_routing_rows(), codex=True)
+    + "\n"
+    "\n"
+    "Modifiers worth knowing: `symbol --all-projects` (cross-repo); `symbol --strict` disables"
+    " close-match auto-redirect; `map --compact` (300-token budget);"
+    " `semantic --max-distance 1.0` or `--no-rerank` to widen / tighten results;"
+    " `bash-output --grep PATTERN` / `web-output --grep PATTERN` filter cached output."
+    " A miss without an unambiguous close match prints \"Did you mean…?\" suggestions;"
+    " a unique high-confidence close match is followed transparently with a"
+    " `(redirected from: ...)` marker. The pre-Bash, pre-Grep, and pre-WebFetch hooks hint"
+    " when a tool call is about to repeat in the same session.\n"
+    "\n"
+    "Plain Bash reads are the right call when:\n"
+    "- The file is under about 200 lines and you need the whole thing.\n"
+    "- The file has never been indexed (new path, scratch script, untracked draft).\n"
+    "- You need exact bytes to build an `apply_patch` hunk that must match the file verbatim.\n"
+    "\n"
+    "Verify the habit. Run `token-goat stats` and watch event counts climb. Flat counts"
+    " during code work mean you are reaching for `rg` or `cat` where a token-goat command"
+    " would apply.\n"
+)
 
 
 def patch_codex_agents_md() -> str:
