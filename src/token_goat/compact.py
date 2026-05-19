@@ -620,15 +620,11 @@ def _render(cache: SessionCache, session_id: str, max_tokens: int) -> tuple[str,
         noise_skipped,
     )
 
-    now = datetime.now(UTC).strftime("%Y-%m-%d %H:%M UTC")
+    now = datetime.now(UTC).strftime("%Y-%m-%d %H:%M")
     sid = session_id[:8]
     sections: list[str] = [
         "## Token-Goat Session Manifest",
         f"Session: {sid}  |  {now}",
-        # Legend tells the compaction LLM what the prefixes mean — single line,
-        # ~12 tokens — pays back many times over by making the markers unambiguous.
-        "Legend: edited=✎  read=→  stale=⚠  cold=❄",
-        "",
     ]
 
     # ── 1. Edited files — highest priority ────────────────────────────────────
@@ -637,16 +633,13 @@ def _render(cache: SessionCache, session_id: str, max_tokens: int) -> tuple[str,
         # Sort by edit count descending so the most-touched files appear first.
         for path, count in sorted(edited_clean.items(), key=_BY_EDIT_COUNT, reverse=True):
             sections.append(f"- ✎ {_short_path(path)}{_count_suffix(count)}")
-        sections.append("")
 
     # ── 1b. Stale file snapshots — read before a subsequent edit ─────────────
-    # Warn the compaction LLM that these cached reads are outdated so it does
-    # not preserve the old snapshot as if it reflects current file state.
+    # Warn the compaction LLM that these cached reads are outdated.
     if stale_read_files:
-        sections.append("### Outdated File Snapshots (edited after last read — discard old copy)")
+        sections.append("### Outdated File Snapshots")
         for path in stale_read_files[:6]:
             sections.append(f"- ⚠ {_short_path(path)}")
-        sections.append("")
 
     # ── 2. Symbols accessed via token-goat read / symbol ────────────────────────
     if files_with_symbols:
@@ -656,26 +649,17 @@ def _render(cache: SessionCache, session_id: str, max_tokens: int) -> tuple[str,
             overflow = len(entry.symbols_read) - _MAX_SYMBOLS_PER_FILE_ENTRY
             sym_str = ", ".join(syms) + (f" +{overflow}" if overflow > 0 else "")
             sections.append(f"- {_short_path(entry.rel_or_abs)} → {sym_str}")
-        sections.append("")
 
     # ── 3. Commands run (cached Bash output worth recalling) ──────────────────
-    # Surfacing the most recent meaningful Bash invocations preserves the
-    # test/build context that drives the next agent turn.  Each entry quotes
-    # the cache ID so the agent can retrieve the full body via
+    # Each entry quotes the cache ID so the agent can retrieve the full body via
     # `token-goat bash-output <id>` instead of re-running the command.
     bash_entries = _select_top_bash_entries(getattr(cache, "bash_history", None))
     if bash_entries:
         sections.append("### Commands Run (cached output)")
         for be in bash_entries:
             sections.append(_format_bash_entry(be))
-        sections.append("")
 
     # ── 4. Grep patterns searched ─────────────────────────────────────────────
-    # Surface the most-recent distinct patterns so the compaction LLM knows
-    # what the user was investigating — not just which files were open.
-    # Distinct-by-pattern count is the right baseline for the truncation tail:
-    # _select_top_grep_entries() dedups before capping, so reporting the raw
-    # grep count would double-count repeated searches for the same pattern.
     grep_entries = _select_top_grep_entries(raw_greps)
     if grep_entries:
         distinct_patterns = len({getattr(g, "pattern", "") for g in raw_greps})
@@ -685,12 +669,8 @@ def _render(cache: SessionCache, session_id: str, max_tokens: int) -> tuple[str,
         dropped_greps = distinct_patterns - len(grep_entries)
         if dropped_greps > 0:
             sections.append(f"- …+{dropped_greps} more patterns")
-        sections.append("")
 
     # ── 4b. Cold outputs (old cached Bash runs, safe to drop from context) ────
-    # Outputs older than _COLD_OUTPUT_AGE_SECS are unlikely to be the active
-    # iteration target.  Listing their IDs lets the compaction LLM mark them
-    # evictable while still giving the agent a recall path via bash-output.
     now_ts = time.time()
     bash_hist_raw = getattr(cache, "bash_history", None) or {}
     cold_candidates = sorted(
@@ -705,11 +685,7 @@ def _render(cache: SessionCache, session_id: str, max_tokens: int) -> tuple[str,
     )
     cold_outputs = cold_candidates[:_MAX_COLD_OUTPUTS]
     if cold_outputs:
-        # Header carries the recall instruction once.  Per-line `id=` prefix is
-        # redundant when every line already trails a backticked id — strip it
-        # to save ~2 tokens per entry × _MAX_COLD_OUTPUTS (matches the recovery
-        # hint convention established in iter 3).
-        sections.append("### Cold Outputs (safe to evict — recall via `token-goat bash-output <id>`)")
+        sections.append("### Cold Outputs (evict — recall via `token-goat bash-output <id>`)")
         for be in cold_outputs:
             age_min = int((now_ts - getattr(be, "ts", now_ts)) / 60)
             total = getattr(be, "stdout_bytes", 0) + getattr(be, "stderr_bytes", 0)
@@ -721,7 +697,6 @@ def _render(cache: SessionCache, session_id: str, max_tokens: int) -> tuple[str,
         dropped_cold = len(cold_candidates) - len(cold_outputs)
         if dropped_cold > 0:
             sections.append(f"- …+{dropped_cold} more cold outputs")
-        sections.append("")
 
     # ── 5. Key files read (top N by read_count+ts) ────────────────────────────
     if top_files:
@@ -731,7 +706,23 @@ def _render(cache: SessionCache, session_id: str, max_tokens: int) -> tuple[str,
             sections.append(
                 f"- → {_short_path(entry.rel_or_abs)}{_count_suffix(entry.read_count)}{ranges_str}"
             )
-        sections.append("")
+
+    # ── Legend — only list markers that actually appear above ─────────────────
+    has_edit = bool(edited_clean)
+    has_read = bool(top_files or files_with_symbols)
+    has_stale = bool(stale_read_files)
+    has_cold = bool(cold_outputs)
+    legend_parts = []
+    if has_edit:
+        legend_parts.append("edited=✎")
+    if has_read:
+        legend_parts.append("read=→")
+    if has_stale:
+        legend_parts.append("stale=⚠")
+    if has_cold:
+        legend_parts.append("cold=❄")
+    if legend_parts:
+        sections.append("Legend: " + "  ".join(legend_parts))
 
     result = "\n".join(sections).rstrip()
     token_count = estimate_tokens(result)
