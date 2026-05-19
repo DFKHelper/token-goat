@@ -78,7 +78,7 @@ DEFAULT_MAX_TOTAL_BYTES: int = 32 * 1024 * 1024
 OUTPUT_FILENAME_RE = re.compile(r"^[a-zA-Z0-9_\-]{1,80}\.txt$")
 
 # Sentinel placed at the head of every truncated body, mirroring bash_cache.
-_TRUNC_MARKER = "[token-goat: web output truncated to {n} bytes; full size was {total} bytes]\n"
+_TRUNC_MARKER = "[token-goat: web output truncated; stored {n} of {total} bytes]\n"
 
 # Maximum bytes stored per response body.  HTML pages can easily exceed this
 # (a single Reddit thread is often 3-5 MB of HTML); the truncation keeps any
