@@ -38,6 +38,7 @@ __all__ = [
     "get_tool_input",
     "pre_tool_use_with_context",
     "pre_tool_use_with_update",
+    "record_hint_stat_pair",
     "sanitize_log_str",
     "sanitize_opt",
     "validate_cwd",
@@ -303,6 +304,54 @@ def sanitize_opt(value: object) -> str:
             sanitize_log_str(str(value)),
         )
     return sanitize_log_str(str(value))
+
+
+def record_hint_stat_pair(kind: str, hint: object, detail: str) -> None:
+    """Record a matched-pair of stat rows for a hint: the gross saving plus the injection overhead.
+
+    Every dedup / diff / session hint saves tokens by suppressing a re-read or
+    re-run, but the hint text itself costs tokens to inject.  Honest accounting
+    requires both rows so ``token-goat stats`` can net them out.
+
+    This helper centralises the five-line block that previously appeared
+    identically in ``_handle_bash_dedup``, ``_handle_grep_dedup``,
+    ``_handle_web_dedup``, ``_try_diff_hint``, and ``_record_session_hint_impact``.
+    Each site only differs in the *kind* string and the *detail* label; the
+    arithmetic and the two ``db.record_stat`` calls are always the same.
+
+    Args:
+        kind:   Base stat kind for the saving row (e.g. ``"bash_dedup_hint"``).
+                The overhead row is recorded under ``kind + "_overhead"``
+                automatically.
+        hint:   The hint object — must have a numeric ``tokens_saved`` attribute
+                (any :class:`~hints.ReadHint` / :class:`~hints.DedupHint`
+                subclass), and must support ``len()`` so the injection byte cost
+                can be measured.  Accepts ``object`` so callers that pass a
+                typed hint subclass do not need a cast.
+        detail: Short string stored in the stat row for triage (path, pattern,
+                URL, or command preview).  Callers are responsible for
+                sanitising it before passing — use :func:`sanitize_log_str`.
+    """
+    from . import db  # noqa: PLC0415
+    from .hints import CHARS_PER_TOKEN  # noqa: PLC0415
+
+    realized_tokens: int = getattr(hint, "tokens_saved", 0)
+    injection_bytes: int = len(hint)  # type: ignore[arg-type]
+    injection_cost_tokens = max(1, int(injection_bytes / CHARS_PER_TOKEN))
+    db.record_stat(
+        None,
+        kind,
+        bytes_saved=realized_tokens * 4,
+        tokens_saved=realized_tokens,
+        detail=detail,
+    )
+    db.record_stat(
+        None,
+        kind + "_overhead",
+        bytes_saved=-injection_bytes,
+        tokens_saved=-injection_cost_tokens,
+        detail=detail,
+    )
 
 
 def pre_tool_use_with_update(updated_input: dict[str, object], additional_context: str) -> HookResponse:

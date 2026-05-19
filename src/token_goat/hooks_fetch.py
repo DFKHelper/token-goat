@@ -28,6 +28,7 @@ from .hooks_common import (
     get_session_context,
     get_tool_input,
     pre_tool_use_with_context,
+    record_hint_stat_pair,
     sanitize_log_str,
 )
 from .hooks_common import (
@@ -143,8 +144,8 @@ def _handle_web_dedup(payload: HookPayload, url: str) -> HookResponse | None:
     Returns ``None`` to let the hook continue to its existing image-redirect
     path or pass through unchanged.
     """
-    from . import db, session  # noqa: PLC0415
-    from .hints import CHARS_PER_TOKEN, build_web_dedup_hint  # noqa: PLC0415
+    from . import session  # noqa: PLC0415
+    from .hints import build_web_dedup_hint  # noqa: PLC0415
 
     session_id, _cwd = get_session_context(payload)
     if not session_id:
@@ -161,21 +162,9 @@ def _handle_web_dedup(payload: HookPayload, url: str) -> HookResponse | None:
     if hint is None:
         return None
 
-    realized_tokens = hint.tokens_saved
-    injection_bytes = len(hint)
-    injection_cost_tokens = max(1, int(injection_bytes / CHARS_PER_TOKEN))
-    db.record_stat(
-        None, "web_dedup_hint",
-        bytes_saved=realized_tokens * 4, tokens_saved=realized_tokens,
-        detail=sanitize_log_str(url, max_len=200),
-    )
-    db.record_stat(
-        None, "web_dedup_hint_overhead",
-        bytes_saved=-injection_bytes, tokens_saved=-injection_cost_tokens,
-        detail=sanitize_log_str(url, max_len=200),
-    )
+    record_hint_stat_pair("web_dedup_hint", hint, sanitize_log_str(url, max_len=200))
     _LOG.info(
-        "pre-fetch: web-dedup hint injected (tokens_saved=%d)", realized_tokens,
+        "pre-fetch: web-dedup hint injected (tokens_saved=%d)", hint.tokens_saved,
     )
     return pre_tool_use_with_context(str(hint))
 
