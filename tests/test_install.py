@@ -5,9 +5,6 @@ import json
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-from conftest import fake_home as _fake_home
-from conftest import patch_home as _patch_home
-
 import token_goat.install as install_mod
 from token_goat import install
 
@@ -16,9 +13,8 @@ from token_goat import install
 # ---------------------------------------------------------------------------
 
 
-def test_patch_settings_json_missing_file(tmp_path, monkeypatch):
-    home = _fake_home(tmp_path)
-    _patch_home(monkeypatch, home)
+def test_patch_settings_json_missing_file(patched_home, monkeypatch):
+    home = patched_home
     monkeypatch.setattr(install, "token_goat_binary", lambda: "token-goat")
 
     ok, detail = install.patch_settings_json()
@@ -46,9 +42,8 @@ def test_patch_settings_json_missing_file(tmp_path, monkeypatch):
 # ---------------------------------------------------------------------------
 
 
-def test_patch_settings_json_preserves_existing_hooks(tmp_path, monkeypatch):
-    home = _fake_home(tmp_path)
-    _patch_home(monkeypatch, home)
+def test_patch_settings_json_preserves_existing_hooks(patched_home, monkeypatch):
+    home = patched_home
     monkeypatch.setattr(install, "token_goat_binary", lambda: "token-goat")
 
     claude_dir = home / ".claude"
@@ -84,9 +79,8 @@ def test_patch_settings_json_preserves_existing_hooks(tmp_path, monkeypatch):
 # ---------------------------------------------------------------------------
 
 
-def test_patch_settings_json_idempotent(tmp_path, monkeypatch):
-    home = _fake_home(tmp_path)
-    _patch_home(monkeypatch, home)
+def test_patch_settings_json_idempotent(patched_home, monkeypatch):
+    home = patched_home
     monkeypatch.setattr(install, "token_goat_binary", lambda: "token-goat")
 
     install.patch_settings_json()
@@ -109,9 +103,8 @@ def test_patch_settings_json_idempotent(tmp_path, monkeypatch):
 # ---------------------------------------------------------------------------
 
 
-def test_unpatch_settings_json_removes_token_goat(tmp_path, monkeypatch):
-    home = _fake_home(tmp_path)
-    _patch_home(monkeypatch, home)
+def test_unpatch_settings_json_removes_token_goat(patched_home, monkeypatch):
+    home = patched_home
     monkeypatch.setattr(install, "token_goat_binary", lambda: "token-goat")
 
     install.patch_settings_json()
@@ -133,9 +126,8 @@ def test_unpatch_settings_json_removes_token_goat(tmp_path, monkeypatch):
 # ---------------------------------------------------------------------------
 
 
-def test_patch_claude_md_missing_file(tmp_path, monkeypatch):
-    home = _fake_home(tmp_path)
-    _patch_home(monkeypatch, home)
+def test_patch_claude_md_missing_file(patched_home):
+    home = patched_home
 
     install.patch_claude_md()
     md_path = home / ".claude" / "CLAUDE.md"
@@ -151,9 +143,8 @@ def test_patch_claude_md_missing_file(tmp_path, monkeypatch):
 # ---------------------------------------------------------------------------
 
 
-def test_patch_claude_md_appends_to_existing(tmp_path, monkeypatch):
-    home = _fake_home(tmp_path)
-    _patch_home(monkeypatch, home)
+def test_patch_claude_md_appends_to_existing(patched_home):
+    home = patched_home
 
     claude_dir = home / ".claude"
     claude_dir.mkdir(parents=True, exist_ok=True)
@@ -173,9 +164,8 @@ def test_patch_claude_md_appends_to_existing(tmp_path, monkeypatch):
 # ---------------------------------------------------------------------------
 
 
-def test_patch_claude_md_replaces_existing_block(tmp_path, monkeypatch):
-    home = _fake_home(tmp_path)
-    _patch_home(monkeypatch, home)
+def test_patch_claude_md_replaces_existing_block(patched_home):
+    home = patched_home
 
     install.patch_claude_md()
     install.patch_claude_md()
@@ -191,9 +181,8 @@ def test_patch_claude_md_replaces_existing_block(tmp_path, monkeypatch):
 # ---------------------------------------------------------------------------
 
 
-def test_unpatch_claude_md_removes_block(tmp_path, monkeypatch):
-    home = _fake_home(tmp_path)
-    _patch_home(monkeypatch, home)
+def test_unpatch_claude_md_removes_block(patched_home):
+    home = patched_home
 
     install.patch_claude_md()
     install.unpatch_claude_md()
@@ -209,14 +198,13 @@ def test_unpatch_claude_md_removes_block(tmp_path, monkeypatch):
 # ---------------------------------------------------------------------------
 
 
-def test_patch_claude_md_strips_legacy_tokenwise_block(tmp_path, monkeypatch):
+def test_patch_claude_md_strips_legacy_tokenwise_block(patched_home):
     """A CLAUDE.md installed under the old ``tokenwise`` binary name still
     contains a ``<!-- tokenwise-begin -->...-end -->`` block describing the
     old routing table. Running the modern installer must strip it so the file
     is left with only the up-to-date ``token-goat`` block, not both.
     """
-    home = _fake_home(tmp_path)
-    _patch_home(monkeypatch, home)
+    home = patched_home
 
     claude_dir = home / ".claude"
     claude_dir.mkdir(parents=True, exist_ok=True)
@@ -246,10 +234,9 @@ def test_patch_claude_md_strips_legacy_tokenwise_block(tmp_path, monkeypatch):
     assert "tokenwise symbol X" not in content
 
 
-def test_patch_claude_md_legacy_strip_is_idempotent(tmp_path, monkeypatch):
+def test_patch_claude_md_legacy_strip_is_idempotent(patched_home):
     """Two consecutive installs leave exactly one modern block, no legacy."""
-    home = _fake_home(tmp_path)
-    _patch_home(monkeypatch, home)
+    home = patched_home
 
     claude_dir = home / ".claude"
     claude_dir.mkdir(parents=True, exist_ok=True)
@@ -274,9 +261,8 @@ def test_patch_claude_md_legacy_strip_is_idempotent(tmp_path, monkeypatch):
 # ---------------------------------------------------------------------------
 
 
-def test_write_skill(tmp_path, monkeypatch):
-    home = _fake_home(tmp_path)
-    _patch_home(monkeypatch, home)
+def test_write_skill(patched_home):
+    home = patched_home
 
     install.write_skill()
     skill_path = home / ".claude" / "skills" / "token-goat" / "SKILL.md"
@@ -291,9 +277,8 @@ def test_write_skill(tmp_path, monkeypatch):
 # ---------------------------------------------------------------------------
 
 
-def test_remove_skill(tmp_path, monkeypatch):
-    home = _fake_home(tmp_path)
-    _patch_home(monkeypatch, home)
+def test_remove_skill(patched_home):
+    home = patched_home
 
     install.write_skill()
     skill_dir = home / ".claude" / "skills" / "token-goat"
@@ -399,10 +384,9 @@ def test_task_exists_false(monkeypatch):
 # ---------------------------------------------------------------------------
 
 
-def test_install_uninstall_round_trip(tmp_path, monkeypatch, tmp_data_dir):
+def test_install_uninstall_round_trip(patched_home, monkeypatch, tmp_data_dir, tmp_path):
     """install_all creates files; uninstall_all removes them. Full hermetic round-trip."""
-    home = _fake_home(tmp_path)
-    _patch_home(monkeypatch, home)
+    home = patched_home
     monkeypatch.setattr(install, "token_goat_binary", lambda: "token-goat")
 
     bin_dir = home / ".local" / "bin"
@@ -504,10 +488,9 @@ def test_install_uninstall_round_trip(tmp_path, monkeypatch, tmp_data_dir):
 # ---------------------------------------------------------------------------
 
 
-def test_strip_deduplicates_on_reinstall(tmp_path, monkeypatch):
+def test_strip_deduplicates_on_reinstall(patched_home, monkeypatch):
     """Running patch_settings_json twice must not leave duplicate hook entries."""
-    home = _fake_home(tmp_path)
-    _patch_home(monkeypatch, home)
+    home = patched_home
     monkeypatch.setattr(install, "token_goat_binary", lambda: "token-goat")
 
     install.patch_settings_json()
@@ -877,11 +860,9 @@ def test_check_status_linux_keys(monkeypatch):
 # ---------------------------------------------------------------------------
 
 
-def test_install_all_linux_dispatches(tmp_path, monkeypatch):
+def test_install_all_linux_dispatches(patched_home, monkeypatch):
     """install_all on Linux calls install_linux_autostart and install_linux_update_cron."""
     import sys
-    home = _fake_home(tmp_path)
-    _patch_home(monkeypatch, home)
     monkeypatch.setattr(sys, "platform", "linux")
     monkeypatch.setattr(install, "token_goat_binary", lambda: "token-goat")
 
@@ -916,12 +897,11 @@ def test_install_all_linux_dispatches(tmp_path, monkeypatch):
 # ---------------------------------------------------------------------------
 
 
-def test_plan_install_makes_no_changes(tmp_path, monkeypatch):
+def test_plan_install_makes_no_changes(patched_home, monkeypatch):
     """plan_install() is read-only: no files created, no registry / cron / systemd calls."""
     import sys as _sys
 
-    home = _fake_home(tmp_path)
-    _patch_home(monkeypatch, home)
+    home = patched_home
 
     # Force Linux branch so we exercise the systemd/XDG path; that branch makes
     # the most subprocess calls and is the easiest to assert against.
@@ -954,12 +934,10 @@ def test_plan_install_makes_no_changes(tmp_path, monkeypatch):
     assert "worker autostart" in components
 
 
-def test_plan_install_picks_systemd_when_available(tmp_path, monkeypatch):
+def test_plan_install_picks_systemd_when_available(patched_home, monkeypatch):
     """Linux branch: when systemd --user is up, plan recommends a systemd unit."""
     import sys as _sys
 
-    home = _fake_home(tmp_path)
-    _patch_home(monkeypatch, home)
     monkeypatch.setattr(install, "_systemd_user_available", lambda: True)
     monkeypatch.setattr(install, "_check_linux_update_cron", lambda: "not installed")
     monkeypatch.setattr(_sys, "platform", "linux")
@@ -970,12 +948,10 @@ def test_plan_install_picks_systemd_when_available(tmp_path, monkeypatch):
     assert autostart["target"].endswith("token-goat-worker.service")
 
 
-def test_plan_install_falls_back_to_xdg_without_systemd(tmp_path, monkeypatch):
+def test_plan_install_falls_back_to_xdg_without_systemd(patched_home, monkeypatch):
     """Linux branch: when systemd --user is down, plan recommends the XDG fallback."""
     import sys as _sys
 
-    home = _fake_home(tmp_path)
-    _patch_home(monkeypatch, home)
     monkeypatch.setattr(install, "_systemd_user_available", lambda: False)
     monkeypatch.setattr(install, "_check_linux_update_cron", lambda: "not installed")
     monkeypatch.setattr(_sys, "platform", "linux")
@@ -986,12 +962,10 @@ def test_plan_install_falls_back_to_xdg_without_systemd(tmp_path, monkeypatch):
     assert "xdg" in autostart["detail"].lower() or "autostart" in autostart["detail"].lower()
 
 
-def test_plan_install_detects_existing_settings(tmp_path, monkeypatch):
+def test_plan_install_detects_existing_settings(patched_home, monkeypatch):
     """When settings.json already has token-goat hooks, plan should report 'update'."""
     import sys as _sys
 
-    home = _fake_home(tmp_path)
-    _patch_home(monkeypatch, home)
     monkeypatch.setattr(install, "_systemd_user_available", lambda: False)
     monkeypatch.setattr(install, "_check_linux_update_cron", lambda: "not installed")
     monkeypatch.setattr(_sys, "platform", "linux")
@@ -1006,12 +980,10 @@ def test_plan_install_detects_existing_settings(tmp_path, monkeypatch):
     assert "existing token-goat hook entries" in settings_row["detail"]
 
 
-def test_plan_install_optional_codex_only_when_flagged(tmp_path, monkeypatch):
+def test_plan_install_optional_codex_only_when_flagged(patched_home, monkeypatch):
     """Codex rows appear only when install_codex=True."""
     import sys as _sys
 
-    home = _fake_home(tmp_path)
-    _patch_home(monkeypatch, home)
     monkeypatch.setattr(install, "_systemd_user_available", lambda: False)
     monkeypatch.setattr(install, "_check_linux_update_cron", lambda: "not installed")
     monkeypatch.setattr(_sys, "platform", "linux")
@@ -1031,12 +1003,10 @@ def test_plan_install_optional_codex_only_when_flagged(tmp_path, monkeypatch):
 # ---------------------------------------------------------------------------
 
 
-def test_verify_install_clean_state_all_missing(tmp_path, monkeypatch):
+def test_verify_install_clean_state_all_missing(patched_home, monkeypatch):
     """On a freshly faked home with nothing installed, every component reports 'missing'."""
     import sys as _sys
 
-    home = _fake_home(tmp_path)
-    _patch_home(monkeypatch, home)
     monkeypatch.setattr(_sys, "platform", "linux")
 
     report = install.verify_install()
@@ -1047,12 +1017,10 @@ def test_verify_install_clean_state_all_missing(tmp_path, monkeypatch):
     assert actions_by_component["worker autostart"] == "missing"
 
 
-def test_verify_install_after_install_reports_ok(tmp_path, monkeypatch, tmp_data_dir):
+def test_verify_install_after_install_reports_ok(patched_home, monkeypatch, tmp_data_dir):
     """After an end-to-end install on Linux+systemd, verify reports ok for landed pieces."""
     import sys as _sys
 
-    home = _fake_home(tmp_path)
-    _patch_home(monkeypatch, home)
     monkeypatch.setattr(_sys, "platform", "linux")
     monkeypatch.setattr(install, "_systemd_user_available", lambda: True)
     # Avoid real subprocess calls during systemd setup
@@ -1072,13 +1040,11 @@ def test_verify_install_after_install_reports_ok(tmp_path, monkeypatch, tmp_data
     assert actions_by_component["worker autostart"] == "ok"
 
 
-def test_verify_install_idempotent_count_stable(tmp_path, monkeypatch):
+def test_verify_install_idempotent_count_stable(patched_home, monkeypatch):
     """patch_settings_json twice → verify_install reports the same hook-entry count.
 
     Guards against the 'each install doubles the hook entries' bug.
     """
-    home = _fake_home(tmp_path)
-    _patch_home(monkeypatch, home)
     monkeypatch.setattr(install, "token_goat_binary", lambda: "token-goat")
 
     install.patch_settings_json()
