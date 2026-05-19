@@ -150,6 +150,77 @@ class TestFallbackKeys:
         assert entry["exit_code"] == 0
 
 
+class TestCompressWrapperUnwrap:
+    """The post-Bash hook records the original command, not the compress wrapper.
+
+    The pre-Bash hook rewrites pytest/npm/cargo/etc. into a ``token-goat
+    compress --cmd '<orig>'`` invocation so output can be filtered before it
+    lands in context.  When that wrapped command finishes, the PostToolUse
+    payload still carries the verbose wrapper string.  Persisting the wrapper
+    verbatim into the session cache wastes ~150–200 bytes per entry (visible
+    every time the recovery hint or compaction manifest renders) and obscures
+    which underlying tool was actually run.  These tests pin the unwrap
+    behaviour: the cached ``cmd_preview`` is the original command.
+    """
+
+    def test_compress_wrapper_unwrapped_to_original(self, tmp_data_dir):
+        wrapped = (
+            'pythonw -m token_goat.cli compress --filter pytest '
+            '--timeout 600 --cmd "pytest -v --cov tests/"'
+        )
+        entry = _run({
+            "session_id": "unwrap-1",
+            "tool_name": "Bash",
+            "tool_input": {"command": wrapped},
+            "tool_response": {"stdout": "X" * 5000, "exit_code": 0},
+        })
+        assert entry is not None
+        # The cmd_preview reflects the underlying command, not the wrapper.
+        assert entry["cmd_preview"] == "pytest -v --cov tests/"
+        assert "compress" not in entry["cmd_preview"]
+        assert "--cmd" not in entry["cmd_preview"]
+
+    def test_non_wrapper_command_passthrough(self, tmp_data_dir):
+        """Commands that were never wrapped are stored verbatim."""
+        entry = _run({
+            "session_id": "unwrap-2",
+            "tool_name": "Bash",
+            "tool_input": {"command": "ls -la /tmp"},
+            "tool_response": {"stdout": "X" * 5000, "exit_code": 0},
+        })
+        assert entry is not None
+        assert entry["cmd_preview"] == "ls -la /tmp"
+
+    def test_unwrap_helper_directly(self):
+        """Spot-check the helper across the variants the hook emits."""
+        from token_goat.hooks_read import _unwrap_compress_command
+
+        # The exact shape produced by paths.python_runner_command on Windows.
+        wrapped = (
+            '"C:/path/to/pythonw.exe" -m token_goat.cli compress '
+            '--filter npm --timeout 600 --cmd "npm install --save-dev jest"'
+        )
+        assert _unwrap_compress_command(wrapped) == "npm install --save-dev jest"
+
+        # POSIX-style invocation through the installed entrypoint.
+        assert _unwrap_compress_command(
+            "token-goat compress --filter cargo --timeout 600 --cmd 'cargo test'"
+        ) == "cargo test"
+
+        # ``--cmd=foo`` (joined) form is also accepted.
+        assert _unwrap_compress_command(
+            "token-goat compress --filter pytest --cmd=pytest"
+        ) == "pytest"
+
+        # Non-wrapper commands pass through unchanged.
+        assert _unwrap_compress_command("pytest -v") == "pytest -v"
+        assert _unwrap_compress_command("ls -la") == "ls -la"
+
+        # Malformed shell quoting falls back to the input.
+        bad = 'token-goat compress --cmd "unterminated'
+        assert _unwrap_compress_command(bad) == bad
+
+
 class TestMisshapenInputs:
     def test_none_tool_response_no_crash(self, tmp_data_dir):
         _assert_continue(hooks_read.post_bash({
