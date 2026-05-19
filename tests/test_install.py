@@ -298,7 +298,11 @@ def test_install_worker_task_correct_args(monkeypatch):
     written = {}
 
     class FakeKey:
-        pass
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_):
+            return False
 
     class FakeWinreg:
         HKEY_CURRENT_USER = "HKCU"

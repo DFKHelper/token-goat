@@ -213,6 +213,8 @@ def _run_step(result: dict[str, str], key: str, fn: Callable[[], object]) -> Non
 # Scheduled Tasks (Windows)
 # ---------------------------------------------------------------------------
 
+_HKCU_RUN_PATH = r"Software\Microsoft\Windows\CurrentVersion\Run"
+
 
 def _run_schtasks(args: list[str]) -> tuple[int, str]:
     """Wrap schtasks.exe subprocess call."""
@@ -253,14 +255,13 @@ def install_worker_task() -> tuple[bool, str]:
 
     try:
         import winreg  # type: ignore[import]
-        key = winreg.OpenKey(
+        with winreg.OpenKey(
             winreg.HKEY_CURRENT_USER,
-            r"Software\Microsoft\Windows\CurrentVersion\Run",
+            _HKCU_RUN_PATH,
             0,
             winreg.KEY_SET_VALUE,
-        )
-        winreg.SetValueEx(key, TASK_WORKER, 0, winreg.REG_SZ, cmd)
-        winreg.CloseKey(key)
+        ) as key:
+            winreg.SetValueEx(key, TASK_WORKER, 0, winreg.REG_SZ, cmd)
         _LOG.info("HKCU Run key set: key=%s cmd=%s", TASK_WORKER, cmd)
         return True, f"HKCU Run key set: {cmd}"
     except OSError as exc:
@@ -332,14 +333,13 @@ def uninstall_tasks() -> list[str]:
     if sys.platform == "win32":
         try:
             import winreg  # type: ignore[import]
-            key = winreg.OpenKey(
+            with winreg.OpenKey(
                 winreg.HKEY_CURRENT_USER,
-                r"Software\Microsoft\Windows\CurrentVersion\Run",
+                _HKCU_RUN_PATH,
                 0,
                 winreg.KEY_SET_VALUE,
-            )
-            winreg.DeleteValue(key, TASK_WORKER)
-            winreg.CloseKey(key)
+            ) as key:
+                winreg.DeleteValue(key, TASK_WORKER)
             removed.append(TASK_WORKER)
         except FileNotFoundError:
             pass  # key didn't exist
@@ -1616,17 +1616,16 @@ def _check_skill() -> str:
 def _winreg_run_value_exists(value_name: str) -> bool | None:
     """Return True/False if the HKCU Run key can be read, None on error.
 
-    Centralises the winreg open/query/close pattern used by both
-    ``_check_worker_task`` (read) and ``install_worker_task`` (write) so
-    neither has to manage CloseKey manually in multiple exception branches.
-    Returns None when the registry is inaccessible (non-Windows, permission
-    error, etc.) so callers can distinguish "absent" from "unreadable".
+    Uses ``_HKCU_RUN_PATH`` (the shared registry key path constant) with
+    ``KEY_READ`` access.  Returns None when the registry is inaccessible
+    (non-Windows, permission error, etc.) so callers can distinguish "absent"
+    from "unreadable".
     """
     try:
         import winreg  # type: ignore[import]
         with winreg.OpenKey(
             winreg.HKEY_CURRENT_USER,
-            r"Software\Microsoft\Windows\CurrentVersion\Run",
+            _HKCU_RUN_PATH,
             0,
             winreg.KEY_READ,
         ) as key:
