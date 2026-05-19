@@ -712,6 +712,67 @@ def _coerce_text(value: object) -> str:
     return str(value)
 
 
+def _unwrap_compress_command(cmd: str) -> str:
+    """Return the original command if *cmd* is a ``token-goat compress`` wrapper.
+
+    The pre-Bash hook rewrites filter-eligible commands (``pytest``, ``npm``,
+    ``cargo``, …) to ``pythonw -m token_goat.cli compress --filter <name>
+    --timeout <n> --cmd '<orig>'`` so the wrapper can capture and compress
+    output before it lands in context.  When the PostToolUse hook then
+    persists the executed command into the session cache, recording the
+    wrapper verbatim is wasteful: the wrapper boilerplate is ~150–200 bytes
+    of repeated, agent-irrelevant noise per entry.  This helper extracts the
+    ``--cmd`` payload via :mod:`shlex` parsing so downstream consumers
+    (recovery hint, compaction manifest, ``token-goat stats``) can display
+    the user-facing command instead.
+
+    Returns *cmd* unchanged when:
+
+    * The string does not parse as a shell command (``shlex`` raises).
+    * The argv does not include a recognisable token-goat invocation.
+    * The ``compress`` subcommand or ``--cmd`` flag is missing.
+
+    Any failure path is silent: this is a presentation-layer cleanup, never
+    a correctness gate.
+    """
+    if "compress" not in cmd or "--cmd" not in cmd:
+        # Cheap rejection: avoid shlex.split on the (overwhelming) common case
+        # where the command is not a wrapper at all.
+        return cmd
+    import shlex  # noqa: PLC0415
+
+    try:
+        argv = shlex.split(cmd, posix=True)
+    except ValueError:
+        return cmd
+    # Locate the ``compress`` subcommand following a token_goat.cli or
+    # token-goat invocation.  The interpreter / module prefix varies across
+    # platforms (pythonw on Windows, python on POSIX, direct ``token-goat``
+    # entrypoint when installed), so we scan for the marker tokens rather
+    # than asserting a specific argv shape.
+    is_wrapper = False
+    for i, token in enumerate(argv):
+        if token in ("token-goat", "token_goat.cli") or token.endswith("token_goat.cli"):
+            # Look ahead for the ``compress`` subcommand.
+            for j in range(i + 1, min(i + 4, len(argv))):
+                if argv[j] == "compress":
+                    is_wrapper = True
+                    break
+            if is_wrapper:
+                break
+    if not is_wrapper:
+        return cmd
+    # Extract the value following ``--cmd``.  Both ``--cmd foo`` (separate)
+    # and ``--cmd=foo`` (joined) forms are accepted because either is valid
+    # Typer input.
+    for k, token in enumerate(argv):
+        if token == "--cmd" and k + 1 < len(argv):
+            return argv[k + 1]
+        if token.startswith("--cmd="):
+            return token[len("--cmd="):]
+    return cmd
+
+
 def _extract_bash_response(payload: HookPayload) -> tuple[str, str, int | None]:
     """Pull (stdout, stderr, exit_code) from a PostToolUse Bash payload.
 
@@ -832,6 +893,14 @@ def post_bash(payload: HookPayload) -> HookResponse:
     if not isinstance(command, str) or not command:
         return CONTINUE()
 
+    # When the pre-Bash hook wrapped this command for output compression, the
+    # tool_input still carries the verbose wrapper invocation.  Persist the
+    # original user-facing command (via shlex-unwrap) so the session cache,
+    # recovery hints, compaction manifest, and ``token-goat stats`` show the
+    # agent's intent ("pytest -v"), not ~200 bytes of wrapper boilerplate.
+    # Falls through to *command* unchanged when the input was never wrapped.
+    display_cmd = _unwrap_compress_command(command)
+
     stdout, stderr, exit_code = _extract_bash_response(payload)
     total_bytes = len(stdout.encode("utf-8", errors="replace")) + len(
         stderr.encode("utf-8", errors="replace")
@@ -848,8 +917,10 @@ def post_bash(payload: HookPayload) -> HookResponse:
 
     from . import bash_cache, db, session  # noqa: PLC0415
 
+    # Hash and preview the *original* command so reruns of the same logical
+    # invocation (whether wrapped or not) collide on the same cache entry.
     meta = bash_cache.store_output(
-        session_id, command, stdout, stderr, exit_code,
+        session_id, display_cmd, stdout, stderr, exit_code,
     )
     if meta is None:
         return CONTINUE()
@@ -859,7 +930,7 @@ def post_bash(payload: HookPayload) -> HookResponse:
         session.mark_bash_run(
             session_id=session_id,
             cmd_sha=meta.cmd_sha,
-            cmd_preview=command,
+            cmd_preview=display_cmd,
             output_id=meta.output_id,
             stdout_bytes=meta.stdout_bytes,
             stderr_bytes=meta.stderr_bytes,
@@ -877,7 +948,7 @@ def post_bash(payload: HookPayload) -> HookResponse:
         db.record_stat(
             None, "bash_output_cached",
             bytes_saved=0, tokens_saved=0,
-            detail=sanitize_log_str(command, max_len=200),
+            detail=sanitize_log_str(display_cmd, max_len=200),
         )
     except Exception:  # noqa: BLE001 — stat logging is best-effort
         _LOG.debug("post-bash: stat record failed", exc_info=True)
