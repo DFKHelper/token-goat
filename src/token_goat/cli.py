@@ -91,6 +91,23 @@ def _emit_json(data: object, *, indent: int | None = None) -> None:
     raise typer.Exit(0)
 
 
+# ---------------------------------------------------------------------------
+# Reusable Typer option constants
+#
+# Declaring these once at module level eliminates the ~19 identical
+# ``typer.Option(False, "--json")`` repetitions across commands and avoids
+# the per-site ``noqa: B008`` suppressions that were needed at every call site.
+# Typer reads the annotation type from the parameter signature; these objects
+# carry only the CLI flag name, default value, and help text.
+# ---------------------------------------------------------------------------
+
+#: ``--json`` flag shared by every command that can emit structured output.
+_OPT_JSON: bool = typer.Option(False, "--json", help="Output structured JSON instead of human-readable text.")  # noqa: B008
+
+#: ``--context`` / ``-c`` lines option shared by bash-output and web-output commands.
+_OPT_CONTEXT_LINES: int = typer.Option(0, "--context", "-c", help="Extra lines before/after")  # noqa: B008
+
+
 def _emit_path_result(path: Path, json_output: bool) -> None:
     """Echo a local file path result, either as JSON or plain text.
 
@@ -349,7 +366,7 @@ def main() -> None:
 def symbol(
     name: str,
     all_projects: bool = typer.Option(False, "--all-projects"),
-    as_json: bool = typer.Option(False, "--json"),
+    as_json: bool = _OPT_JSON,
     limit: int = typer.Option(50, "--limit"),
     strict: bool = typer.Option(
         False,
@@ -572,7 +589,7 @@ def symbol(
 @app.command(rich_help_panel="Core")
 def ref(
     name: str,
-    as_json: bool = typer.Option(False, "--json"),
+    as_json: bool = _OPT_JSON,
     limit: int = typer.Option(100, "--limit"),
 ) -> None:
     """Find all code references to a symbol by name.
@@ -622,7 +639,7 @@ def ref(
 def semantic(
     query: str = typer.Argument(...),
     k: int = typer.Option(5, "-k", help="Top-k results"),
-    json_output: bool = typer.Option(False, "--json"),
+    json_output: bool = _OPT_JSON,
     max_distance: float = typer.Option(
         -1.0,
         "--max-distance",
@@ -740,7 +757,7 @@ def cmd_map(
 @app.command(rich_help_panel="Core")
 def deps(
     file: str,
-    json_output: bool = typer.Option(False, "--json"),
+    json_output: bool = _OPT_JSON,
     depth: int = typer.Option(1, "--depth", "-d", help="Transitive depth (1=direct, 0=unlimited)"),
 ) -> None:
     """Show the dependency graph (imports and references) for a file.
@@ -757,8 +774,8 @@ def deps(
 def read(
     target: str = typer.Argument(..., help="<file>::<symbol> — e.g., 'parser.py::index_project' or 'auth.py::Session.refresh' for a qualified method."),
     session_id: str | None = typer.Option(None, "--session-id", "-s"),
-    json_output: bool = typer.Option(False, "--json"),
-    context_lines: int = typer.Option(0, "--context", "-c", help="Extra lines before/after"),
+    json_output: bool = _OPT_JSON,
+    context_lines: int = _OPT_CONTEXT_LINES,
 ) -> None:
     """Read just <symbol> from <file>, not the whole file."""
     from . import read_commands  # noqa: PLC0415
@@ -778,8 +795,8 @@ def read(
 def section(
     target: str = typer.Argument(..., help="<file>::<heading> — e.g., 'README.md::Install'. Append #N to disambiguate duplicate headings, e.g. 'doc.md::Setup#2'."),
     session_id: str | None = typer.Option(None, "--session-id", "-s"),
-    json_output: bool = typer.Option(False, "--json"),
-    context_lines: int = typer.Option(0, "--context", "-c", help="Extra lines before/after"),
+    json_output: bool = _OPT_JSON,
+    context_lines: int = _OPT_CONTEXT_LINES,
 ) -> None:
     """Extract just <heading> section from <file>, not the whole file."""
     from . import read_commands  # noqa: PLC0415
@@ -798,7 +815,7 @@ def section(
 @app.command("skeleton", rich_help_panel="Core")
 def skeleton(
     file: str = typer.Argument(..., help="File to show signatures for"),
-    json_output: bool = typer.Option(False, "--json"),
+    json_output: bool = _OPT_JSON,
     include_private: bool = typer.Option(False, "--private", "-p", help="Include _private names"),
 ) -> None:
     """Show all signatures in <file> without bodies — typically 70-90% fewer tokens."""
@@ -945,7 +962,7 @@ def cache_audit() -> None:
 @app.command("session-touched", rich_help_panel="Advanced")
 def session_touched(
     session_id: str = typer.Option(..., "--session-id", "-s", help="Claude session_id"),
-    json_output: bool = typer.Option(False, "--json"),
+    json_output: bool = _OPT_JSON,
 ) -> None:
     """List files already read in the given Claude session."""
     from . import session as session_mod  # noqa: PLC0415
@@ -994,7 +1011,7 @@ def session_mark(
 @app.command("gdrive-fetch", hidden=True)
 def cmd_gdrive_fetch(
     file_id: str = typer.Argument(...),
-    json_output: bool = typer.Option(False, "--json"),
+    json_output: bool = _OPT_JSON,
 ) -> None:
     """Fetch a Google Drive file (image gets auto-shrunk). Returns the local path."""
     from . import gdrive  # noqa: PLC0415
@@ -1013,7 +1030,7 @@ def cmd_gdrive_fetch(
 @app.command("gdrive-sections", rich_help_panel="Core")
 def cmd_gdrive_sections(
     file_id: str = typer.Argument(...),
-    json_output: bool = typer.Option(False, "--json"),
+    json_output: bool = _OPT_JSON,
     max_sections: int = typer.Option(
         80, "--max-sections",
         help="Maximum number of sections to list (rest are summarised). Keeps the hint compact.",
@@ -1133,7 +1150,7 @@ def cmd_gdrive_auth(
 @app.command("fetch-image", hidden=True)
 def cmd_fetch_image(
     url: str = typer.Argument(...),
-    json_output: bool = typer.Option(False, "--json"),
+    json_output: bool = _OPT_JSON,
 ) -> None:
     """Fetch an image URL (auto-shrunk). Returns the local cached path."""
     from . import webfetch  # noqa: PLC0415
@@ -1240,7 +1257,7 @@ def index(
 @app.command(rich_help_panel="Core")
 def stats(
     window: int = typer.Option(30, "--window", "-w", help="Days to include (0 = all time)"),
-    json_output: bool = typer.Option(False, "--json"),
+    json_output: bool = _OPT_JSON,
 ) -> None:
     """Show cumulative token savings."""
     from . import cli_stats  # noqa: PLC0415
@@ -1254,7 +1271,7 @@ def cmd_bash_output(
     head: int = typer.Option(0, "--head", help="Show first N lines (0 = no head limit)"),
     tail: int = typer.Option(0, "--tail", help="Show last N lines (0 = no tail limit)"),
     grep: str | None = typer.Option(None, "--grep", "-g", help="Show only lines matching the (case-sensitive) substring"),
-    json_output: bool = typer.Option(False, "--json"),
+    json_output: bool = _OPT_JSON,
 ) -> None:
     """Retrieve a sliced view of a cached Bash output.
 
@@ -1328,7 +1345,7 @@ def cmd_web_output(
     head: int = typer.Option(0, "--head", help="Show first N lines (0 = no head limit)"),
     tail: int = typer.Option(0, "--tail", help="Show last N lines (0 = no tail limit)"),
     grep: str | None = typer.Option(None, "--grep", "-g", help="Show only lines matching the (case-sensitive) substring"),
-    json_output: bool = typer.Option(False, "--json"),
+    json_output: bool = _OPT_JSON,
 ) -> None:
     """Retrieve a sliced view of a cached WebFetch response body.
 
@@ -1391,7 +1408,7 @@ def cmd_web_output(
 
 @app.command("web-history", rich_help_panel="Core")
 def cmd_web_history(
-    json_output: bool = typer.Option(False, "--json"),
+    json_output: bool = _OPT_JSON,
     limit: int = typer.Option(20, "--limit", "-n", help="Maximum entries to show (newest first)"),
 ) -> None:
     """List cached WebFetch responses, newest first.
@@ -1440,7 +1457,7 @@ def cmd_web_history(
 
 @app.command("bash-history", rich_help_panel="Core")
 def cmd_bash_history(
-    json_output: bool = typer.Option(False, "--json"),
+    json_output: bool = _OPT_JSON,
     limit: int = typer.Option(20, "--limit", "-n", help="Maximum entries to show (newest first)"),
 ) -> None:
     """List cached Bash outputs, newest first.
@@ -1597,7 +1614,7 @@ def cmd_uninstall(
 @app.command("image-shrink", hidden=True)
 def cmd_image_shrink(
     src: Path = typer.Argument(...),  # noqa: B008
-    json_output: bool = typer.Option(False, "--json"),  # noqa: B008
+    json_output: bool = _OPT_JSON,
 ) -> None:
     """Manually shrink an image (also used by hooks)."""
     from . import image_shrink  # noqa: PLC0415
@@ -1821,7 +1838,7 @@ def pre_compact(
 @app.command("compact-hint", rich_help_panel="Advanced")
 def compact_hint(
     session_id: str = typer.Option(..., "--session-id", "-s", help="Claude session_id"),
-    json_output: bool = typer.Option(False, "--json"),
+    json_output: bool = _OPT_JSON,
     max_tokens: int = typer.Option(400, "--max-tokens", help="Token budget for the manifest"),
 ) -> None:
     """Show the compaction manifest token-goat would inject for a session.
@@ -1968,7 +1985,7 @@ def _config_set_value(config: config_mod.Config, key: str, raw_value: str) -> ob
 
 @config_app.command(name="list")
 def config_list(
-    json_output: bool = typer.Option(False, "--json"),
+    json_output: bool = _OPT_JSON,
 ) -> None:
     """List all config keys with their current values and defaults."""
     defaults = config_mod.Config()
