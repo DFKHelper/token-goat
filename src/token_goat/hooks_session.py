@@ -198,8 +198,17 @@ def _build_recovery_hint(session_id: str) -> str | None:
     if files_keep:
         lines = ["**Recently-read files** (cached snapshot for diff retrieval):"]
         for entry in files_keep:
-            sym_str = f" syms={','.join(entry.symbols_read[:3])}" if entry.symbols_read else ""
+            sym_count = len(entry.symbols_read)
+            if sym_count > 3:
+                sym_str = f" syms={','.join(entry.symbols_read[:3])}+{sym_count - 3}"
+            elif sym_count:
+                sym_str = f" syms={','.join(entry.symbols_read)}"
+            else:
+                sym_str = ""
             lines.append(f"- {entry.rel_or_abs}{sym_str}")
+        dropped = len(files_all) - len(files_keep)
+        if dropped > 0:
+            lines.append(f"- …+{dropped} more files")
         sections.append("\n".join(lines))
 
     # 2. Recent Bash output IDs — the most likely "I had this in context" data.
@@ -211,6 +220,9 @@ def _build_recovery_hint(session_id: str) -> str | None:
             lines.append(
                 f"- `{be.cmd_preview}` ({_humanize_bytes(total)}{exit_str}) `{be.output_id}`"
             )
+        dropped = len(bash_all) - len(bash_entries)
+        if dropped > 0:
+            lines.append(f"- …+{dropped} more cached bash outputs")
         sections.append("\n".join(lines))
 
     # 3. Recent WebFetch outputs — same idea for network results.
@@ -221,6 +233,9 @@ def _build_recovery_hint(session_id: str) -> str | None:
             lines.append(
                 f"- `{we.url_preview}` ({_humanize_bytes(we.body_bytes)}{status_str}) `{we.output_id}`"
             )
+        dropped = len(web_all) - len(web_entries)
+        if dropped > 0:
+            lines.append(f"- …+{dropped} more cached web responses")
         sections.append("\n".join(lines))
 
     if not sections:
