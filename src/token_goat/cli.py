@@ -711,7 +711,7 @@ def semantic(
 @app.command("map", rich_help_panel="Core")
 def cmd_map(
     budget: int = typer.Option(4000, "--budget", "-b", help="Approximate token budget"),
-    json_output: bool = typer.Option(False, "--json", help="Output structured JSON"),
+    json_output: bool = _OPT_JSON,
     compact: bool = typer.Option(
         False,
         "--compact",
