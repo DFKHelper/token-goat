@@ -102,10 +102,9 @@ MAX_INSPECT_BYTES: Final[int] = 2 * 1024 * 1024
 
 #: Trailing marker appended to every compressed output so the agent knows it is
 #: looking at a summary and can opt out if it needs the raw view.  Kept short
-#: (~80 chars) so the meta-cost of the marker is dwarfed by the savings.
+#: so the meta-cost of the marker is dwarfed by the savings.
 _COMPRESSION_MARKER_FMT: Final[str] = (
-    "\n[token-goat: {filter} filter compressed {orig_kb:.1f} KiB to "
-    "{out_kb:.1f} KiB ({pct:.0f}% saved); set TOKEN_GOAT_BASH_COMPRESS=0 to disable]"
+    "\n[token-goat: {filter} filter -{pct:.0f}%; TOKEN_GOAT_BASH_COMPRESS=0 to disable]"
 )
 
 # ---------------------------------------------------------------------------

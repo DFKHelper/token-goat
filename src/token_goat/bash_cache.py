@@ -66,7 +66,7 @@ OUTPUT_FILENAME_RE = re.compile(r"^[a-zA-Z0-9_\-]{1,80}\.txt$")
 
 # Sentinel placed at the head of every output file marking the truncation
 # boundary, so a reader can immediately see when the stored bytes are partial.
-_TRUNC_MARKER = "[token-goat: bash output truncated to {n} bytes; full size was {total} bytes]\n"
+_TRUNC_MARKER = "[token-goat: bash output truncated; stored {n} of {total} bytes]\n"
 
 # Maximum bytes stored per output file.  Larger captures are truncated head-only
 # (tail is preserved because the failing portion of a test log is usually at the

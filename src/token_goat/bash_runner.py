@@ -116,8 +116,8 @@ def _decode_capture(buf: bytes, overflow: int) -> str:
     decoded = buf.decode("utf-8", errors="replace")
     if overflow > 0:
         decoded += (
-            f"\n[token-goat: capture buffer exceeded {MAX_CAPTURE_BYTES // (1024 * 1024)} "
-            f"MiB; dropped {overflow:,} additional bytes]"
+            f"\n[token-goat: capture capped at {MAX_CAPTURE_BYTES // (1024 * 1024)} MiB;"
+            f" {overflow:,} bytes dropped]"
         )
     return decoded
 
