@@ -94,6 +94,14 @@ _BY_LAST_READ_TS = attrgetter("last_read_ts")
 # whose output the compaction LLM most needs to preserve as context.
 _BY_BASH_TS = attrgetter("ts")
 
+# Age threshold (seconds) for flagging cached Bash outputs as cold / evictable.
+# Outputs this old are unlikely to be actively iterated on; surfacing them in
+# the manifest lets the compaction LLM know they can be dropped from context.
+_COLD_OUTPUT_AGE_SECS: Final[int] = 1_800  # 30 minutes
+
+# Maximum cold bash entries surfaced in the "Cold Outputs" manifest section.
+_MAX_COLD_OUTPUTS: Final[int] = 4
+
 # Noise file extensions and basenames that should never enter the manifest.
 # These files are build artifacts, OS metadata, or auto-generated lockfiles that
 # the compaction LLM does not need to "preserve" — listing them wastes budget on
@@ -560,6 +568,15 @@ def _render(cache: SessionCache, session_id: str, max_tokens: int) -> tuple[str,
     # match on the dict keys, not the display path.
     edited_keys = {p.replace("\\", "/").lower() for p in edited_clean}
 
+    # Files where the agent has a cached read that predates a subsequent edit —
+    # the snapshot in context may no longer match the file on disk.
+    stale_read_files: list[str] = [
+        entry.rel_or_abs
+        for key, entry in files_clean.items()
+        if getattr(entry, "last_edit_ts", 0.0) > entry.last_read_ts
+        and key.replace("\\", "/").lower() not in edited_keys
+    ]
+
     # Rank "Symbols Accessed" by most-recent read first.  When a long session
     # touches many files, the *recent* symbols are more load-bearing for the
     # upcoming compaction than ones inspected at the start.  Previously we used
@@ -605,7 +622,7 @@ def _render(cache: SessionCache, session_id: str, max_tokens: int) -> tuple[str,
         f"Session: {sid}  |  {now}",
         # Legend tells the compaction LLM what the prefixes mean — single line,
         # ~12 tokens — pays back many times over by making the markers unambiguous.
-        "Legend: edited=✎  read=→",
+        "Legend: edited=✎  read=→  stale=⚠  cold=❄",
         "",
     ]
 
@@ -615,6 +632,15 @@ def _render(cache: SessionCache, session_id: str, max_tokens: int) -> tuple[str,
         # Sort by edit count descending so the most-touched files appear first.
         for path, count in sorted(edited_clean.items(), key=_BY_EDIT_COUNT, reverse=True):
             sections.append(f"- ✎ {_short_path(path)}{_count_suffix(count)}")
+        sections.append("")
+
+    # ── 1b. Stale file snapshots — read before a subsequent edit ─────────────
+    # Warn the compaction LLM that these cached reads are outdated so it does
+    # not preserve the old snapshot as if it reflects current file state.
+    if stale_read_files:
+        sections.append("### Outdated File Snapshots (edited after last read — discard old copy)")
+        for path in stale_read_files[:6]:
+            sections.append(f"- ⚠ {_short_path(path)}")
         sections.append("")
 
     # ── 2. Symbols accessed via token-goat read / symbol ────────────────────────
@@ -647,6 +673,32 @@ def _render(cache: SessionCache, session_id: str, max_tokens: int) -> tuple[str,
         sections.append("### Patterns Searched")
         for ge in grep_entries:
             sections.append(_format_grep_entry(ge))
+        sections.append("")
+
+    # ── 4b. Cold outputs (old cached Bash runs, safe to drop from context) ────
+    # Outputs older than _COLD_OUTPUT_AGE_SECS are unlikely to be the active
+    # iteration target.  Listing their IDs lets the compaction LLM mark them
+    # evictable while still giving the agent a recall path via bash-output.
+    now_ts = time.time()
+    bash_hist_raw = getattr(cache, "bash_history", None) or {}
+    cold_outputs = sorted(
+        [
+            be for be in bash_hist_raw.values()
+            if (now_ts - getattr(be, "ts", now_ts)) > _COLD_OUTPUT_AGE_SECS
+            and (getattr(be, "stdout_bytes", 0) + getattr(be, "stderr_bytes", 0))
+            >= _MIN_BASH_BYTES_FOR_MANIFEST
+        ],
+        key=lambda be: getattr(be, "ts", 0.0),
+        reverse=True,
+    )[:_MAX_COLD_OUTPUTS]
+    if cold_outputs:
+        sections.append("### Cold Outputs (safe to evict — recall via bash-output id)")
+        for be in cold_outputs:
+            age_min = int((now_ts - getattr(be, "ts", now_ts)) / 60)
+            total = getattr(be, "stdout_bytes", 0) + getattr(be, "stderr_bytes", 0)
+            oid = sanitize_log_str(getattr(be, "output_id", "?"), max_len=24)
+            prev = sanitize_log_str(getattr(be, "cmd_preview", "?"), max_len=60)
+            sections.append(f"- ❄ `{prev}` — id=`{oid}` ({_humanize_bytes(total)}, {age_min}min old)")
         sections.append("")
 
     # ── 5. Key files read (top N by read_count+ts) ────────────────────────────

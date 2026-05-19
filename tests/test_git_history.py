@@ -1,0 +1,413 @@
+"""Tests for token_goat.git_history."""
+from __future__ import annotations
+
+import json
+import sqlite3
+import time
+from contextlib import contextmanager
+from pathlib import Path
+from unittest.mock import patch
+
+import pytest
+
+from token_goat.git_history import (
+    _MAX_COMMIT_AGE_DAYS,
+    _REINDEX_STALENESS_SECS,
+    _ensure_schema,
+    _needs_reindex,
+    _parse_log,
+    build_hint,
+    find_commits_for_file,
+    index_project_history,
+)
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+def _mem_conn() -> sqlite3.Connection:
+    """Return an in-memory SQLite connection with git history schema applied."""
+    conn = sqlite3.connect(":memory:")
+    _ensure_schema(conn)
+    return conn
+
+
+def _seed(conn: sqlite3.Connection, commits: list[dict]) -> None:
+    """Insert rows into git_commits."""
+    for c in commits:
+        conn.execute(
+            "INSERT INTO git_commits(commit_short, summary, author_ts, changed_files) "
+            "VALUES (?, ?, ?, ?)",
+            (c["commit_short"], c["summary"], c["author_ts"], json.dumps(c["changed_files"])),
+        )
+    conn.commit()
+
+
+@contextmanager
+def _fake_readonly(conn: sqlite3.Connection):
+    """Patch db.open_project_readonly to yield the given in-memory connection."""
+    @contextmanager
+    def _cm(_hash):
+        yield conn
+
+    with patch("token_goat.db.open_project_readonly", _cm):
+        yield
+
+
+# ---------------------------------------------------------------------------
+# _parse_log
+# ---------------------------------------------------------------------------
+
+class TestParseLog:
+    def test_single_commit(self):
+        raw = "\x00abc123def456789\x01add auth module\x0115000000\nmy/auth.py\nmy/utils.py\n"
+        commits = _parse_log(raw)
+        assert len(commits) == 1
+        c = commits[0]
+        assert c["commit_short"] == "abc123def456"
+        assert c["summary"] == "add auth module"
+        assert c["author_ts"] == 15000000
+        assert c["changed_files"] == ["my/auth.py", "my/utils.py"]
+
+    def test_multiple_commits(self):
+        raw = (
+            "\x00aaaa\x01first change\x011000\nfile_a.py\n"
+            "\x00bbbb\x01second change\x012000\nfile_b.py\n"
+        )
+        commits = _parse_log(raw)
+        assert len(commits) == 2
+        assert commits[0]["commit_short"] == "aaaa"
+        assert commits[1]["commit_short"] == "bbbb"
+
+    def test_summary_too_short_skipped(self):
+        raw = "\x00aaaa\x01wip\x011000\nfile.py\n"  # "wip" is 3 chars < _MIN_SUMMARY_LEN=6
+        commits = _parse_log(raw)
+        assert commits == []
+
+    def test_empty_raw(self):
+        assert _parse_log("") == []
+
+    def test_only_null_bytes(self):
+        assert _parse_log("\x00\x00\x00") == []
+
+    def test_hash_truncated_to_12(self):
+        raw = "\x00" + "a" * 40 + "\x01some long summary here\x011000\nf.py\n"
+        commits = _parse_log(raw)
+        assert commits[0]["commit_short"] == "a" * 12
+
+    def test_changed_files_capped_at_40(self):
+        files = [f"src/f{i}.py" for i in range(60)]
+        raw = "\x00abc\x01big commit message\x011000\n" + "\n".join(files) + "\n"
+        commits = _parse_log(raw)
+        assert len(commits[0]["changed_files"]) == 40  # type: ignore[arg-type]
+
+    def test_invalid_timestamp_defaults_zero(self):
+        raw = "\x00abc\x01valid summary here\x01not-a-number\nfile.py\n"
+        commits = _parse_log(raw)
+        assert commits[0]["author_ts"] == 0
+
+
+# ---------------------------------------------------------------------------
+# _needs_reindex
+# ---------------------------------------------------------------------------
+
+class TestNeedsReindex:
+    def test_fresh_index_not_stale(self):
+        conn = _mem_conn()
+        conn.execute(
+            "INSERT INTO git_history_meta(key, value) VALUES ('last_indexed_at', ?)",
+            (str(time.time()),),
+        )
+        conn.commit()
+        assert _needs_reindex(conn) is False
+
+    def test_stale_index_triggers_reindex(self):
+        conn = _mem_conn()
+        old_ts = time.time() - _REINDEX_STALENESS_SECS - 1
+        conn.execute(
+            "INSERT INTO git_history_meta(key, value) VALUES ('last_indexed_at', ?)",
+            (str(old_ts),),
+        )
+        conn.commit()
+        assert _needs_reindex(conn) is True
+
+    def test_missing_meta_entry_triggers_reindex(self):
+        conn = _mem_conn()
+        assert _needs_reindex(conn) is True
+
+    def test_git_history_meta_table_missing_triggers_reindex(self):
+        conn = sqlite3.connect(":memory:")
+        # No schema applied — table doesn't exist.
+        assert _needs_reindex(conn) is True
+
+
+# ---------------------------------------------------------------------------
+# find_commits_for_file  (via patched db.open_project_readonly)
+# ---------------------------------------------------------------------------
+
+class TestFindCommitsForFile:
+    def test_exact_match_only(self):
+        """json_each must match exactly — no false positives from partial paths."""
+        conn = _mem_conn()
+        _seed(conn, [
+            {"commit_short": "aaa", "summary": "exact match", "author_ts": 3000,
+             "changed_files": ["src/foo.py"]},
+            {"commit_short": "bbb", "summary": "longer path", "author_ts": 2000,
+             "changed_files": ["src/bar/src/foo.py"]},  # different file, shares suffix
+            {"commit_short": "ccc", "summary": "backup file", "author_ts": 1000,
+             "changed_files": ["src/foo.py.bak"]},  # extension variant
+        ])
+        with _fake_readonly(conn):
+            results = find_commits_for_file("fakehash", "src/foo.py")
+        assert len(results) == 1
+        assert results[0]["commit_short"] == "aaa"
+
+    def test_ordered_by_recency(self):
+        conn = _mem_conn()
+        _seed(conn, [
+            {"commit_short": "old", "summary": "older commit", "author_ts": 1000,
+             "changed_files": ["x.py"]},
+            {"commit_short": "new", "summary": "newer commit", "author_ts": 9000,
+             "changed_files": ["x.py"]},
+        ])
+        with _fake_readonly(conn):
+            results = find_commits_for_file("fakehash", "x.py", limit=10)
+        assert results[0]["commit_short"] == "new"
+        assert results[1]["commit_short"] == "old"
+
+    def test_limit_respected(self):
+        conn = _mem_conn()
+        _seed(conn, [
+            {"commit_short": f"c{i:03d}", "summary": f"commit {i}", "author_ts": i,
+             "changed_files": ["f.py"]}
+            for i in range(10)
+        ])
+        with _fake_readonly(conn):
+            results = find_commits_for_file("fakehash", "f.py", limit=3)
+        assert len(results) == 3
+
+    def test_no_match_returns_empty(self):
+        conn = _mem_conn()
+        _seed(conn, [
+            {"commit_short": "aaa", "summary": "some commit", "author_ts": 1000,
+             "changed_files": ["other.py"]},
+        ])
+        with _fake_readonly(conn):
+            results = find_commits_for_file("fakehash", "missing.py")
+        assert results == []
+
+    def test_missing_project_db_returns_empty(self):
+        """FileNotFoundError from open_project_readonly must be swallowed."""
+        def _raise(_hash):
+            raise FileNotFoundError("project db not found")
+
+        with patch("token_goat.db.open_project_readonly", _raise):
+            results = find_commits_for_file("badhash", "any.py")
+        assert results == []
+
+    def test_result_fields_present(self):
+        conn = _mem_conn()
+        _seed(conn, [
+            {"commit_short": "abc123", "summary": "fix bug", "author_ts": 5000,
+             "changed_files": ["a.py"]},
+        ])
+        with _fake_readonly(conn):
+            results = find_commits_for_file("fakehash", "a.py")
+        assert len(results) == 1
+        r = results[0]
+        assert r["commit_short"] == "abc123"
+        assert r["summary"] == "fix bug"
+        assert r["author_ts"] == 5000
+
+
+# ---------------------------------------------------------------------------
+# build_hint
+# ---------------------------------------------------------------------------
+
+class TestBuildHint:
+    def test_returns_none_when_no_commits(self):
+        conn = _mem_conn()
+        with _fake_readonly(conn):
+            assert build_hint("fakehash", "missing.py") is None
+
+    def test_hint_contains_file_path(self):
+        conn = _mem_conn()
+        _seed(conn, [
+            {"commit_short": "deadbeef1234", "summary": "refactor auth", "author_ts": 1000,
+             "changed_files": ["src/auth.py"]},
+        ])
+        with _fake_readonly(conn):
+            hint = build_hint("fakehash", "src/auth.py")
+        assert hint is not None
+        assert "src/auth.py" in hint
+
+    def test_hint_contains_short_hash(self):
+        conn = _mem_conn()
+        _seed(conn, [
+            {"commit_short": "deadbeef1234", "summary": "refactor auth", "author_ts": 1000,
+             "changed_files": ["src/auth.py"]},
+        ])
+        with _fake_readonly(conn):
+            hint = build_hint("fakehash", "src/auth.py")
+        assert "deadbeef" in hint  # type: ignore[operator]
+
+    def test_today_label_for_recent_commit(self):
+        conn = _mem_conn()
+        _seed(conn, [
+            {"commit_short": "abc", "summary": "recent change", "author_ts": int(time.time()),
+             "changed_files": ["f.py"]},
+        ])
+        with _fake_readonly(conn):
+            hint = build_hint("fakehash", "f.py")
+        assert "today" in hint  # type: ignore[operator]
+
+    def test_age_days_shown_for_old_commit(self):
+        conn = _mem_conn()
+        ts_5d_ago = int(time.time()) - 5 * 86_400
+        _seed(conn, [
+            {"commit_short": "abc", "summary": "old change here", "author_ts": ts_5d_ago,
+             "changed_files": ["f.py"]},
+        ])
+        with _fake_readonly(conn):
+            hint = build_hint("fakehash", "f.py")
+        assert "5d ago" in hint  # type: ignore[operator]
+
+    def test_summary_truncated_to_80_chars(self):
+        long_summary = "x" * 120
+        conn = _mem_conn()
+        _seed(conn, [
+            {"commit_short": "abc", "summary": long_summary, "author_ts": 1000,
+             "changed_files": ["f.py"]},
+        ])
+        with _fake_readonly(conn):
+            hint = build_hint("fakehash", "f.py")
+        assert hint is not None
+        # The summary line is "  - abcdefgh: <summary> (Nd ago)"
+        # It must not contain more than 80 x chars (truncated at 80)
+        assert "x" * 81 not in hint
+
+
+# ---------------------------------------------------------------------------
+# index_project_history  (integration — requires a real temp git repo)
+# ---------------------------------------------------------------------------
+
+class TestIndexProjectHistory:
+    @pytest.fixture()
+    def git_repo(self, tmp_path: Path):
+        """Create a minimal git repo with two commits."""
+        import subprocess as sp
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        sp.run(["git", "init", "-b", "main"], cwd=repo, check=True, capture_output=True)
+        sp.run(["git", "config", "user.email", "t@t.com"], cwd=repo, check=True, capture_output=True)
+        sp.run(["git", "config", "user.name", "Test"], cwd=repo, check=True, capture_output=True)
+        (repo / "a.py").write_text("x = 1")
+        sp.run(["git", "add", "a.py"], cwd=repo, check=True, capture_output=True)
+        sp.run(["git", "commit", "-m", "add a module"], cwd=repo, check=True, capture_output=True)
+        (repo / "b.py").write_text("y = 2")
+        sp.run(["git", "add", "b.py"], cwd=repo, check=True, capture_output=True)
+        sp.run(["git", "commit", "-m", "add b module"], cwd=repo, check=True, capture_output=True)
+        return repo
+
+    def test_indexes_commits_and_writes_meta(self, git_repo: Path, tmp_path: Path):
+        """index_project_history stores commits and updates last_indexed_at."""
+        db_path = tmp_path / "project.db"
+        proj_hash = "a" * 40
+
+        with (
+            patch("token_goat.paths.project_db_path", return_value=db_path),
+            patch("token_goat.db.open_project") as mock_open_project,
+        ):
+            # Use a real SQLite connection for the test.
+            conn = sqlite3.connect(str(db_path))
+            from contextlib import contextmanager as cm
+
+            @cm
+            def _fake_open(_hash):
+                yield conn
+
+            mock_open_project.side_effect = _fake_open
+            count = index_project_history(git_repo, proj_hash)
+
+        assert count == 2
+        row = conn.execute(
+            "SELECT value FROM git_history_meta WHERE key = 'last_indexed_at'"
+        ).fetchone()
+        assert row is not None
+        # Timestamp should be recent (within last 10 seconds).
+        assert abs(time.time() - float(row[0])) < 10
+
+    def test_skips_reindex_when_fresh(self, git_repo: Path, tmp_path: Path):
+        """Second call within staleness window returns 0 without running git."""
+        db_path = tmp_path / "project.db"
+
+        with (
+            patch("token_goat.paths.project_db_path", return_value=db_path),
+            patch("token_goat.db.open_project") as mock_open_project,
+        ):
+            conn = sqlite3.connect(str(db_path))
+            from contextlib import contextmanager as cm
+
+            @cm
+            def _fake_open(_hash):
+                yield conn
+
+            mock_open_project.side_effect = _fake_open
+            _ensure_schema(conn)
+            # Simulate a recent index.
+            conn.execute(
+                "INSERT OR REPLACE INTO git_history_meta(key, value) "
+                "VALUES ('last_indexed_at', ?)",
+                (str(time.time()),),
+            )
+            conn.commit()
+            count = index_project_history(git_repo, "a" * 40)
+
+        assert count == 0  # skipped — index is fresh
+
+    def test_returns_zero_when_db_missing(self, tmp_path: Path):
+        """No project DB → returns 0 without raising."""
+        missing = tmp_path / "nonexistent.db"
+        with patch("token_goat.paths.project_db_path", return_value=missing):
+            count = index_project_history(tmp_path, "a" * 40)
+        assert count == 0
+
+    def test_git_log_after_uses_string_format(self, git_repo: Path, tmp_path: Path):
+        """Verify the git log command uses '60 days ago' format, not raw Unix int."""
+        db_path = tmp_path / "project.db"
+        captured_args: list[list[str]] = []
+
+        original_run_git = __import__(
+            "token_goat.git_history", fromlist=["_run_git"]
+        )._run_git
+
+        def _capturing_run_git(args: list[str], cwd: Path, timeout: int = 10):
+            captured_args.append(args)
+            return original_run_git(args, cwd, timeout)
+
+        with (
+            patch("token_goat.paths.project_db_path", return_value=db_path),
+            patch("token_goat.db.open_project") as mock_open_project,
+            patch("token_goat.git_history._run_git", _capturing_run_git),
+        ):
+            conn = sqlite3.connect(str(db_path))
+            from contextlib import contextmanager as cm
+
+            @cm
+            def _fake_open(_hash):
+                yield conn
+
+            mock_open_project.side_effect = _fake_open
+            index_project_history(git_repo, "a" * 40)
+
+        # Find the --after flag in captured args.
+        after_flags = [
+            arg for args in captured_args for arg in args if arg.startswith("--after=")
+        ]
+        assert len(after_flags) == 1
+        assert after_flags[0] == f"--after={_MAX_COMMIT_AGE_DAYS} days ago"
+        # Must NOT be a raw integer.
+        after_value = after_flags[0].split("=", 1)[1]
+        assert not after_value.strip("-").isdigit(), (
+            f"--after value must be a string date, got: {after_value!r}"
+        )

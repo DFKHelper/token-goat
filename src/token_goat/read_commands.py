@@ -717,3 +717,94 @@ def section(
         stat_kind="section_replacement",
         reader=read_replacement.read_section,
     )
+
+
+# Symbol kinds worth including in a skeleton view.  Excludes variables, imports,
+# and other non-structural items that add noise without aiding navigation.
+_STUB_VIEW_INCLUDE_KINDS: frozenset[str] = frozenset({
+    "function", "method", "class", "interface", "struct", "trait", "enum",
+    "type_alias", "constructor", "property", "decorator",
+})
+
+# Cap on symbols listed; large files with 200+ symbols still produce a useful
+# skeleton without hitting context limits.
+_STUB_VIEW_MAX_SYMBOLS: int = 80
+
+
+def _format_stub_line(name: str, kind: str, line: int, signature: str | None) -> str:
+    """Render one symbol entry for the skeleton view."""
+    sig = f"  {signature}" if signature else ""
+    return f"  {line:>5}  {kind:<12}  {name}{sig}"
+
+
+def stub_view(
+    file: str,
+    json_output: bool = False,
+    include_private: bool = False,
+) -> None:
+    """Show all signatures in <file> without bodies — typically 70-90% fewer tokens.
+
+    Queries the indexed symbol DB for the file and prints each symbol's kind,
+    line number, and signature.  Use ``--private`` to include underscore-prefixed
+    names.
+    """
+    target = _resolve_file_target(file)
+    if target.project is None or target.rel_path is None:
+        typer.echo(f"File not found in any indexed project: {file}", err=True)
+        raise typer.Exit(1)
+
+    proj = target.project
+    file_rel = target.rel_path
+
+    with db.open_project_readonly(proj.hash) as conn:
+        try:
+            rows = conn.execute(
+                "SELECT name, kind, start_line, signature "
+                "FROM symbols "
+                "WHERE file_rel = ? AND end_line IS NOT NULL "
+                "ORDER BY start_line",
+                (file_rel,),
+            ).fetchall()
+        except sqlite3.OperationalError:
+            rows = []
+
+    if not rows:
+        typer.echo(f"No indexed symbols found for {file_rel}.")
+        return
+
+    filtered = [
+        row for row in rows
+        if row["kind"] in _STUB_VIEW_INCLUDE_KINDS
+        and (include_private or not str(row["name"]).startswith("_"))
+    ][:_STUB_VIEW_MAX_SYMBOLS]
+
+    if json_output:
+        import json as _json  # noqa: PLC0415
+        out = [
+            {
+                "name": row["name"],
+                "kind": row["kind"],
+                "line": row["start_line"],
+                "signature": row["signature"],
+            }
+            for row in filtered
+        ]
+        typer.echo(_json.dumps(out, indent=2))
+        return
+
+    typer.echo(f"# Skeleton: {file_rel}  ({len(filtered)} symbols)")
+    for row in filtered:
+        typer.echo(_format_stub_line(row["name"], row["kind"], row["start_line"], row["signature"]))
+
+    # Record savings: stub views cost ~5-15% of a full file read.
+    try:
+        abs_path = proj.root / file_rel
+        src_bytes = abs_path.stat().st_size
+        stub_bytes = sum(
+            len(_format_stub_line(r["name"], r["kind"], r["start_line"], r["signature"]).encode())
+            for r in filtered
+        )
+        saved = max(0, src_bytes - stub_bytes)
+        db.record_stat(None, "stub_view", bytes_saved=saved, tokens_saved=saved // 4, detail=file_rel)
+    except Exception:  # noqa: BLE001
+        pass

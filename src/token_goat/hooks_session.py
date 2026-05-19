@@ -251,6 +251,39 @@ def _auto_index_if_needed(proj: Project) -> None:
         _LOG.exception("auto-index spawn failed")
 
 
+def _index_git_history(proj: Project) -> None:
+    """Trigger git history indexing in a daemon background thread."""
+    try:
+        import threading  # noqa: PLC0415
+
+        from . import git_history  # noqa: PLC0415
+
+        t = threading.Thread(
+            target=git_history.index_project_history,
+            args=(proj.root, proj.hash),
+            daemon=True,
+            name="tg-git-history",
+        )
+        t.start()
+        _LOG.debug("session-start: git history indexing started (background thread)")
+    except Exception:  # noqa: BLE001
+        _LOG.debug("session-start: git history indexing failed to start", exc_info=True)
+
+
+def _build_startup_context(proj: Project) -> str | None:
+    """Build additionalContext from project memory for the session-start response.
+
+    Returns None when the project has no stored memory entries.
+    """
+    try:
+        from . import project_memory  # noqa: PLC0415
+
+        return project_memory.build_injection(proj.hash)
+    except Exception:  # noqa: BLE001
+        _LOG.debug("session-start: project memory injection failed", exc_info=True)
+        return None
+
+
 def _ensure_worker_running() -> None:
     """Watchdog: start or verify worker daemon is alive."""
     try:
@@ -309,6 +342,7 @@ def session_start(payload: HookPayload) -> HookResponse:
 
         db.touch_project_last_seen(proj.hash)
         _auto_index_if_needed(proj)
+        _index_git_history(proj)
     _ensure_worker_running()
 
     if recovery is not None:
@@ -318,4 +352,18 @@ def session_start(payload: HookPayload) -> HookResponse:
     # a chance to fire (so a misdetection of source can't both reset the
     # cache and lose the recovery data).
     _reset_session_cache(session_id)
+
+    # Inject project memory facts for the new session (non-compact only —
+    # compact sessions preserve prior context and don't need a re-injection).
+    if proj is not None:
+        mem_ctx = _build_startup_context(proj)
+        if mem_ctx:
+            return {
+                "continue": True,
+                "hookSpecificOutput": {
+                    "hookEventName": "SessionStart",
+                    "additionalContext": mem_ctx,
+                },
+            }
+
     return CONTINUE()

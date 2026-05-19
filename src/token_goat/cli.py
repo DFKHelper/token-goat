@@ -795,6 +795,153 @@ def section(
     )
 
 
+@app.command("skeleton", rich_help_panel="Core")
+def skeleton(
+    file: str = typer.Argument(..., help="File to show signatures for"),
+    json_output: bool = typer.Option(False, "--json"),
+    include_private: bool = typer.Option(False, "--private", "-p", help="Include _private names"),
+) -> None:
+    """Show all signatures in <file> without bodies — typically 70-90% fewer tokens."""
+    from . import read_commands  # noqa: PLC0415
+
+    read_commands.stub_view(file, json_output=json_output, include_private=include_private)
+
+
+@app.command("memory", rich_help_panel="Core")
+def memory_cmd(
+    action: str = typer.Argument(..., help="show | set | unset | clear"),
+    key: str | None = typer.Argument(None, help="Memory key (required for set/unset)"),
+    value: str | None = typer.Argument(None, help="Memory value (required for set)"),
+    project_dir: str | None = typer.Option(None, "--project", "-p", help="Project root (default: cwd)"),
+) -> None:
+    """Manage persistent per-project memory facts injected at session start."""
+    import os  # noqa: PLC0415
+    from pathlib import Path  # noqa: PLC0415
+
+    from . import project_memory  # noqa: PLC0415
+    from .project import find_project  # noqa: PLC0415
+
+    root = Path(project_dir) if project_dir else Path(os.getcwd())
+    proj = find_project(root)
+    if proj is None:
+        typer.echo("Not in an indexed project root.", err=True)
+        raise typer.Exit(1)
+
+    if action == "show":
+        entries = project_memory.load_entries(proj.hash)
+        if not entries:
+            typer.echo("(no memory entries)")
+        else:
+            for k, v in sorted(entries.items()):
+                typer.echo(f"{k}: {v}")
+    elif action == "set":
+        if not key or value is None:
+            typer.echo("Usage: memory set <key> <value>", err=True)
+            raise typer.Exit(1)
+        project_memory.set_entry(proj.hash, key, value)
+        typer.echo(f"Set {key!r}")
+    elif action == "unset":
+        if not key:
+            typer.echo("Usage: memory unset <key>", err=True)
+            raise typer.Exit(1)
+        project_memory.unset_entry(proj.hash, key)
+        typer.echo(f"Removed {key!r}")
+    elif action == "clear":
+        project_memory.clear_all(proj.hash)
+        typer.echo("Memory cleared.")
+    else:
+        typer.echo(f"Unknown action {action!r}. Use: show | set | unset | clear", err=True)
+        raise typer.Exit(1)
+
+
+@app.command("git-history", rich_help_panel="Core")
+def git_history_cmd(
+    file: str = typer.Argument(..., help="File path to look up in git history"),
+    limit: int = typer.Option(5, "--limit", "-n", help="Number of commits to show"),
+) -> None:
+    """Show recent git commits that touched <file> (from the indexed git history)."""
+    import os  # noqa: PLC0415
+    import time  # noqa: PLC0415
+    from pathlib import Path  # noqa: PLC0415
+
+    from . import git_history  # noqa: PLC0415
+    from .project import find_project  # noqa: PLC0415
+
+    cwd = Path(os.getcwd())
+    proj = find_project(cwd)
+    if proj is None:
+        typer.echo("Not in an indexed project root.", err=True)
+        raise typer.Exit(1)
+
+    try:
+        abs_file = Path(file) if Path(file).is_absolute() else (cwd / file)
+        rel_path = abs_file.relative_to(proj.root).as_posix()
+    except ValueError:
+        typer.echo(f"File is not under project root: {proj.root}", err=True)
+        raise typer.Exit(1) from None
+
+    commits = git_history.find_commits_for_file(proj.hash, rel_path, limit=limit)
+    if not commits:
+        typer.echo(f"No indexed commits found for {rel_path}.")
+        typer.echo("Tip: run 'token-goat index' to (re)index, or wait for session-start indexing.")
+        return
+
+    now = time.time()
+    for c in commits:
+        age_days = int((now - float(str(c["author_ts"]))) / 86_400)
+        age_str = f"{age_days}d ago" if age_days > 0 else "today"
+        typer.echo(f"{str(c['commit_short'])[:8]}  {c['summary']} ({age_str})")
+
+
+@app.command("cache-audit", rich_help_panel="Advanced")
+def cache_audit() -> None:
+    """Audit Claude Code config for patterns that bust the prompt cache."""
+    import json as _json  # noqa: PLC0415
+
+    from . import install  # noqa: PLC0415
+
+    issues: list[str] = []
+
+    # Check settings.json for hook coverage (cache-busting if PreToolUse fires on every call).
+    settings_path = install.claude_settings_path()
+    if settings_path.exists():
+        try:
+            cfg = _json.loads(settings_path.read_text(encoding="utf-8"))
+            hooks = cfg.get("hooks", {})
+            pre_hooks = hooks.get("PreToolUse", [])
+            post_hooks = hooks.get("PostToolUse", [])
+            for h in pre_hooks:
+                matchers = h.get("matcher", "")
+                if "Read" in matchers or "Bash" in matchers or "Grep" in matchers:
+                    issues.append(f"PreToolUse hook matches high-frequency tools ({matchers!r}): every call recomputes cache")
+            for h in post_hooks:
+                matchers = h.get("matcher", "")
+                if "Bash" in matchers or "WebFetch" in matchers:
+                    issues.append(f"PostToolUse hook on {matchers!r}: may add dynamic content that busts cache")
+        except Exception:  # noqa: BLE001
+            issues.append(f"Could not parse {settings_path}")
+    else:
+        issues.append(f"settings.json not found at {settings_path}")
+
+    # Check CLAUDE.md for dynamic content patterns.
+    claude_md = install.claude_md_path()
+    if claude_md and claude_md.exists():
+        content = claude_md.read_text(encoding="utf-8", errors="replace")
+        size_kb = len(content.encode()) / 1024
+        if size_kb > 50:
+            issues.append(f"CLAUDE.md is {size_kb:.1f}KB — large system prompts bust cache on every token-count change")
+        for pat in ("{{date}}", "{{time}}", "Date:", "Time:", "today is"):
+            if pat.lower() in content.lower():
+                issues.append(f"CLAUDE.md contains dynamic pattern {pat!r} — changes every session, busting cache")
+
+    if issues:
+        typer.echo("Cache-busting issues found:")
+        for issue in issues:
+            typer.echo(f"  - {issue}")
+    else:
+        typer.echo("No obvious cache-busting patterns detected.")
+
+
 @app.command("session-touched", rich_help_panel="Advanced")
 def session_touched(
     session_id: str = typer.Option(..., "--session-id", "-s", help="Claude session_id"),

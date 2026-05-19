@@ -30,17 +30,24 @@ class TestDbImportDeferral:
 
     def test_db_imports_without_sqlite_vec(self):
         """db module must be importable even when sqlite_vec is absent."""
+        import token_goat as _tg_pkg  # noqa: PLC0415
+
         # Temporarily block sqlite_vec to confirm it is not imported at module level.
         blocked = sys.modules.pop("sqlite_vec", None)
         sys.modules["sqlite_vec"] = None  # type: ignore[assignment]  # simulate absent
         try:
             # Force re-evaluation by removing db from cache if present.
             db_mod = sys.modules.pop("token_goat.db", None)
+            pkg_attr = getattr(_tg_pkg, "db", None)
             import token_goat.db  # noqa: PLC0415, F401
 
-            # Restore
+            # Restore both sys.modules entry AND the package attribute so later
+            # tests that do `from . import db` get the original module object.
             if db_mod is not None:
                 sys.modules["token_goat.db"] = db_mod
+                _tg_pkg.db = db_mod
+            elif pkg_attr is not None:
+                _tg_pkg.db = pkg_attr
         finally:
             if blocked is None:
                 sys.modules.pop("sqlite_vec", None)
