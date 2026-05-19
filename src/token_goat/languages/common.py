@@ -7,9 +7,12 @@ __all__ = [
     "KindStr",
     "add_imports",
     "add_symbol_info",
+    "assign_flat_end_lines",
+    "bom_strip_first_line",
     "build_line_index",
     "build_signature",
     "collect_symbols_and_refs",
+    "decode_source_text",
     "extract_and_finalize_html_sections",
     "extract_html_headings",
     "extract_refs_from_source",
@@ -689,3 +692,89 @@ def extract_html_headings(text: str, sections: list[Section]) -> None:
                 sections.append(_Section(heading=anchor, level=level, line=line))
     added = len(sections) - before
     _LOG.debug("extract_html_headings: added %d section(s)", added)
+
+
+# ---------------------------------------------------------------------------
+# Config-file helpers (TOML / INI / YAML / Dockerfile)
+# ---------------------------------------------------------------------------
+
+def decode_source_text(source: bytes, log: logging.Logger, label: str) -> str | None:
+    """Decode *source* bytes to a normalised text string, or return None on failure.
+
+    Consolidates the identical preamble in ``toml_idx``, ``yaml_idx``,
+    ``ini_idx``, and ``dockerfile_idx``::
+
+        text = source.decode("utf-8", errors="replace").replace(\"\\r\\n\", \"\\n\").replace(\"\\r\", \"\\n\")
+
+    On :exc:`UnicodeDecodeError` or :exc:`AttributeError` the error is logged
+    at DEBUG level and ``None`` is returned so callers can ``return [], [], [], []``
+    directly.
+
+    Parameters
+    ----------
+    source:
+        Raw file bytes to decode.
+    log:
+        Caller's logger; used for the failure message.
+    label:
+        Short adapter label prepended to the log message (e.g. ``"toml_idx"``).
+    """
+    try:
+        return source.decode("utf-8", errors="replace").replace("\r\n", "\n").replace("\r", "\n")
+    except (UnicodeDecodeError, AttributeError) as exc:
+        log.debug("%s: decode failed: %s", label, exc)
+        return None
+
+
+_UTF8_BOM = "﻿"
+
+
+def bom_strip_first_line(line: str, idx: int) -> str:
+    """Strip a leading UTF-8 BOM from *line* when *idx* is 1, otherwise return *line* unchanged.
+
+    Consolidates the repeated pattern in ``toml_idx``, ``yaml_idx``,
+    ``ini_idx``, and ``dockerfile_idx``::
+
+        candidate = line.lstrip(\"\\ufeff\") if idx == 1 else line
+
+    Notepad on Windows saves plain-text files as UTF-8 with BOM by default.
+    The BOM character (U+FEFF) appears as the very first byte sequence and
+    prevents column-0-anchored regexes from matching headers on the first line.
+    Stripping it only on line 1 is safe: BOM is only valid at the start of a
+    file, never mid-document.
+    """
+    return line.lstrip(_UTF8_BOM) if idx == 1 else line
+
+
+def assign_flat_end_lines(sections: list[Section], total_lines: int) -> None:
+    """Assign ``end_line`` to each Section in a flat (non-nested) section list.
+
+    Consolidates the identical end-line computation loop found in
+    ``toml_idx``, ``ini_idx``, and ``dockerfile_idx``::
+
+        for i, sec in enumerate(sections):
+            if i + 1 < len(sections):
+                sec.end_line = max(sec.line, sections[i + 1].line - 1)
+            else:
+                sec.end_line = max(sec.line, total_lines)
+
+    "Flat" means no nested heading hierarchy — every section is at the same
+    level and a section's content ends at the line before the next section
+    header (or at ``total_lines`` for the last one).  TOML, INI, and
+    Dockerfile all share this shape.
+
+    YAML's nested sections use a different algorithm
+    (:func:`_compute_section_end_lines`) and should not use this helper.
+
+    Parameters
+    ----------
+    sections:
+        The ordered list of :class:`~token_goat.parser.Section` objects to mutate.
+    total_lines:
+        Total number of lines in the file (``len(text.split("\\n"))``).
+    """
+    for i, sec in enumerate(sections):
+        if i + 1 < len(sections):
+            sec.end_line = max(sec.line, sections[i + 1].line - 1)
+        else:
+            sec.end_line = max(sec.line, total_lines)

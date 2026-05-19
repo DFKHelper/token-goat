@@ -40,6 +40,7 @@ import logging
 import re
 
 from ..parser import ImpExp, Ref, Section, Symbol
+from . import common
 
 _LOG = logging.getLogger("token_goat.languages.toml_idx")
 
@@ -77,10 +78,8 @@ def extract(
     are simply not emitted.  A file with no table headers at all produces an
     empty result, which is the correct behaviour — there is nothing to index.
     """
-    try:
-        text = source.decode("utf-8", errors="replace").replace("\r\n", "\n").replace("\r", "\n")
-    except (UnicodeDecodeError, AttributeError) as exc:
-        _LOG.debug("toml_idx: decode failed for %s: %s", rel_path, exc)
+    text = common.decode_source_text(source, _LOG, "toml_idx")
+    if text is None:
         return [], [], [], []
 
     lines = text.split("\n")
@@ -90,7 +89,7 @@ def extract(
     for idx, line in enumerate(lines, start=1):
         # Strip a UTF-8 BOM if present at file start.  The regex anchors at
         # column 0 and would otherwise miss a header on line 1 of a BOM file.
-        candidate = line.lstrip("﻿") if idx == 1 else line
+        candidate = common.bom_strip_first_line(line, idx)
         # Headers must start at column 0 — leading whitespace makes the line
         # either invalid TOML or a key inside an inline table.
         if not candidate.startswith("["):
@@ -121,11 +120,6 @@ def extract(
     # at the source level — every header is a top-level marker — so the end
     # of section N is simply the line before section N+1, or the last line of
     # the file for the final section.
-    total = len(lines)
-    for i, sec in enumerate(sections):
-        if i + 1 < len(sections):
-            sec.end_line = max(sec.line, sections[i + 1].line - 1)
-        else:
-            sec.end_line = max(sec.line, total)
+    common.assign_flat_end_lines(sections, len(lines))
 
     return symbols, [], [], sections

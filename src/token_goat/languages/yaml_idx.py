@@ -52,6 +52,7 @@ import re
 from collections.abc import Iterable
 
 from ..parser import ImpExp, Ref, Section, Symbol
+from . import common
 
 _LOG = logging.getLogger("token_goat.languages.yaml_idx")
 
@@ -114,10 +115,8 @@ def extract(
     Symbols mirror the section headings as ``yaml_key`` (top level) and
     ``yaml_nested_key`` (one level deep).  Refs and imports are always empty.
     """
-    try:
-        text = source.decode("utf-8", errors="replace").replace("\r\n", "\n").replace("\r", "\n")
-    except (UnicodeDecodeError, AttributeError) as exc:
-        _LOG.debug("yaml_idx: decode failed for %s: %s", rel_path, exc)
+    text = common.decode_source_text(source, _LOG, "yaml_idx")
+    if text is None:
         return [], [], [], []
 
     lines = text.split("\n")
@@ -135,7 +134,7 @@ def extract(
     for idx, line in enumerate(lines, start=1):
         # Strip a UTF-8 BOM if present on line 1; otherwise the column-0
         # regex anchor would miss the first key.
-        candidate = line.lstrip("﻿") if idx == 1 else line
+        candidate = common.bom_strip_first_line(line, idx)
         if not candidate or candidate.startswith("#"):
             continue
         # Multi-document marker resets the parser state for the next doc.
