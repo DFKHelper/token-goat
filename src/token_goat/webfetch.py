@@ -671,14 +671,14 @@ def fetch_url(
         # reducing I/O overhead. If shrink didn't produce a different path,
         # this still records the content_sha and http headers for revalidation.
         if response_headers is not None or extra_meta:
-            _write_cache_meta(cache_path, response_headers or {}, extra=extra_meta)
+            _write_cache_meta(cache_path, response_headers if response_headers is not None else httpx.Headers(), extra=extra_meta)
         if content_sha is not None:
             _write_content_index(content_sha, cache_path)
         return shrunk
 
     # No shrink requested; still record metadata for cache revalidation.
     if response_headers is not None or extra_meta:
-        _write_cache_meta(cache_path, response_headers or {}, extra=extra_meta)
+        _write_cache_meta(cache_path, response_headers if response_headers is not None else httpx.Headers(), extra=extra_meta)
     if content_sha is not None:
         _write_content_index(content_sha, cache_path)
     return cache_path

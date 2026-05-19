@@ -44,6 +44,7 @@ from .hooks_common import (
     get_tool_input,
     pre_tool_use_with_context,
     pre_tool_use_with_update,
+    record_hint_stat_pair,
     sanitize_log_str,
     sanitize_opt,
 )
@@ -352,29 +353,7 @@ def _record_session_hint_impact(file_path: str, hint: str) -> None:
         file_path: Path of the file being read (recorded in stats detail).
         hint: ReadHint string instance with .tokens_saved attribute set.
     """
-    from . import db  # noqa: PLC0415
-    from .hints import CHARS_PER_TOKEN  # noqa: PLC0415
-
-    realized_tokens = getattr(hint, "tokens_saved", 0)
-    injection_cost_tokens = max(1, int(len(hint) / CHARS_PER_TOKEN))
-    realized_bytes = realized_tokens * 4  # project convention: ~4 bytes/token
-    injection_bytes = len(hint)
-
-    safe_path = sanitize_log_str(file_path, max_len=512)
-    db.record_stat(
-        None,
-        "session_hint",
-        bytes_saved=realized_bytes,
-        tokens_saved=realized_tokens,
-        detail=safe_path,
-    )
-    db.record_stat(
-        None,
-        "session_hint_overhead",
-        bytes_saved=-injection_bytes,
-        tokens_saved=-injection_cost_tokens,
-        detail=safe_path,
-    )
+    record_hint_stat_pair("session_hint", hint, sanitize_log_str(file_path, max_len=512))
 
 
 def _try_diff_hint(
@@ -390,7 +369,7 @@ def _try_diff_hint(
     ``diff_hint_overhead`` row covering the hint's own injection cost — same
     honest-accounting pattern used by the session_hint path.
     """
-    from . import db, snapshots  # noqa: PLC0415
+    from . import snapshots  # noqa: PLC0415
     from .hints import build_diff_hint  # noqa: PLC0415
 
     try:
@@ -411,23 +390,10 @@ def _try_diff_hint(
     if hint is None:
         return None
 
-    safe_path = sanitize_log_str(file_path, max_len=512)
-    realized_tokens = hint.tokens_saved
-    realized_bytes = realized_tokens * 4
-    injection_bytes = len(hint)
-    from .hints import CHARS_PER_TOKEN  # noqa: PLC0415
-    injection_cost_tokens = max(1, int(injection_bytes / CHARS_PER_TOKEN))
-    db.record_stat(
-        None, "diff_hint",
-        bytes_saved=realized_bytes, tokens_saved=realized_tokens, detail=safe_path,
-    )
-    db.record_stat(
-        None, "diff_hint_overhead",
-        bytes_saved=-injection_bytes, tokens_saved=-injection_cost_tokens, detail=safe_path,
-    )
+    record_hint_stat_pair("diff_hint", hint, sanitize_log_str(file_path, max_len=512))
     _LOG.info(
         "pre-read: diff-hint injected for %s (tokens_saved=%d)",
-        sanitize_log_str(file_path), realized_tokens,
+        sanitize_log_str(file_path), hint.tokens_saved,
     )
     return pre_tool_use_with_context(str(hint))
 
@@ -440,8 +406,8 @@ def _handle_grep_dedup(payload: HookPayload) -> HookResponse | None:
     hit is available — we never deny a Grep call, only suggest the agent
     reuse the prior result.
     """
-    from . import db, session  # noqa: PLC0415
-    from .hints import CHARS_PER_TOKEN, build_grep_dedup_hint  # noqa: PLC0415
+    from . import session  # noqa: PLC0415
+    from .hints import build_grep_dedup_hint  # noqa: PLC0415
 
     session_id, _cwd = get_session_context(payload)
     if not session_id:
@@ -466,21 +432,9 @@ def _handle_grep_dedup(payload: HookPayload) -> HookResponse | None:
     if hint is None:
         return None
 
-    realized_tokens = hint.tokens_saved
-    injection_bytes = len(hint)
-    injection_cost_tokens = max(1, int(injection_bytes / CHARS_PER_TOKEN))
-    db.record_stat(
-        None, "grep_dedup_hint",
-        bytes_saved=realized_tokens * 4, tokens_saved=realized_tokens,
-        detail=sanitize_log_str(pattern, max_len=200),
-    )
-    db.record_stat(
-        None, "grep_dedup_hint_overhead",
-        bytes_saved=-injection_bytes, tokens_saved=-injection_cost_tokens,
-        detail=sanitize_log_str(pattern, max_len=200),
-    )
+    record_hint_stat_pair("grep_dedup_hint", hint, sanitize_log_str(pattern, max_len=200))
     _LOG.info(
-        "pre-read: grep-dedup hint injected (tokens_saved=%d)", realized_tokens,
+        "pre-read: grep-dedup hint injected (tokens_saved=%d)", hint.tokens_saved,
     )
     return pre_tool_use_with_context(str(hint))
 
@@ -493,8 +447,8 @@ def _handle_bash_dedup(payload: HookPayload) -> HookResponse | None:
     rather than re-running.  Returns ``None`` to let the hook fall through to
     the normal bash-as-read handling when no dedup hit is available.
     """
-    from . import db, session  # noqa: PLC0415
-    from .hints import CHARS_PER_TOKEN, build_bash_dedup_hint  # noqa: PLC0415
+    from . import session  # noqa: PLC0415
+    from .hints import build_bash_dedup_hint  # noqa: PLC0415
 
     session_id, _cwd = get_session_context(payload)
     if not session_id:
@@ -516,21 +470,9 @@ def _handle_bash_dedup(payload: HookPayload) -> HookResponse | None:
     if hint is None:
         return None
 
-    realized_tokens = hint.tokens_saved
-    injection_bytes = len(hint)
-    injection_cost_tokens = max(1, int(injection_bytes / CHARS_PER_TOKEN))
-    db.record_stat(
-        None, "bash_dedup_hint",
-        bytes_saved=realized_tokens * 4, tokens_saved=realized_tokens,
-        detail=sanitize_log_str(command, max_len=200),
-    )
-    db.record_stat(
-        None, "bash_dedup_hint_overhead",
-        bytes_saved=-injection_bytes, tokens_saved=-injection_cost_tokens,
-        detail=sanitize_log_str(command, max_len=200),
-    )
+    record_hint_stat_pair("bash_dedup_hint", hint, sanitize_log_str(command, max_len=200))
     _LOG.info(
-        "pre-read: bash-dedup hint injected (tokens_saved=%d)", realized_tokens,
+        "pre-read: bash-dedup hint injected (tokens_saved=%d)", hint.tokens_saved,
     )
     return pre_tool_use_with_context(str(hint))
 
