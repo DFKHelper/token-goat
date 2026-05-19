@@ -39,6 +39,7 @@ import logging
 import re
 
 from ..parser import ImpExp, Ref, Section, Symbol
+from . import common
 
 _LOG = logging.getLogger("token_goat.languages.ini_idx")
 
@@ -66,10 +67,8 @@ def extract(
     Refs and imports are always empty for INI files — there is no cross-file
     reference model in this format.
     """
-    try:
-        text = source.decode("utf-8", errors="replace").replace("\r\n", "\n").replace("\r", "\n")
-    except (UnicodeDecodeError, AttributeError) as exc:
-        _LOG.debug("ini_idx: decode failed for %s: %s", rel_path, exc)
+    text = common.decode_source_text(source, _LOG, "ini_idx")
+    if text is None:
         return [], [], [], []
 
     lines = text.split("\n")
@@ -80,7 +79,7 @@ def extract(
         # Strip a UTF-8 BOM if present at file start so the column-0 anchor
         # still matches a header on line 1 of a BOM-saved file (Notepad on
         # Windows defaults to UTF-8 with BOM for plain-text saves).
-        candidate = line.lstrip("﻿") if idx == 1 else line
+        candidate = common.bom_strip_first_line(line, idx)
         if not candidate or candidate[0] != "[":
             continue
         m = _HEADER_RE.match(candidate)
@@ -98,12 +97,7 @@ def extract(
     # line before the next header (or EOF for the trailing section).  This is
     # the same shape as TOML — both formats are flat at the source level even
     # when their names look hierarchical.
-    total = len(lines)
-    for i, sec in enumerate(sections):
-        if i + 1 < len(sections):
-            sec.end_line = max(sec.line, sections[i + 1].line - 1)
-        else:
-            sec.end_line = max(sec.line, total)
+    common.assign_flat_end_lines(sections, len(lines))
 
     return symbols, [], [], sections
 
@@ -132,15 +126,13 @@ def extract_env(
     captured key carries its 1-based line number so ``token-goat symbol``
     points at the assignment.
     """
-    try:
-        text = source.decode("utf-8", errors="replace").replace("\r\n", "\n").replace("\r", "\n")
-    except (UnicodeDecodeError, AttributeError) as exc:
-        _LOG.debug("ini_idx: env decode failed for %s: %s", rel_path, exc)
+    text = common.decode_source_text(source, _LOG, "ini_idx")
+    if text is None:
         return [], [], [], []
 
     symbols: list[Symbol] = []
     for idx, line in enumerate(text.split("\n"), start=1):
-        candidate = line.lstrip("﻿") if idx == 1 else line
+        candidate = common.bom_strip_first_line(line, idx)
         if not candidate or candidate[0] in "#;":
             continue
         # Reject leading whitespace defensively: continuation lines and shell

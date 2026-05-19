@@ -31,6 +31,7 @@ import logging
 import re
 
 from ..parser import ImpExp, Ref, Section, Symbol
+from . import common
 
 _LOG = logging.getLogger("token_goat.languages.dockerfile_idx")
 
@@ -60,10 +61,8 @@ def extract(
     Refs and imports are always empty for Dockerfiles — there is no
     cross-file reference model.
     """
-    try:
-        text = source.decode("utf-8", errors="replace").replace("\r\n", "\n").replace("\r", "\n")
-    except (UnicodeDecodeError, AttributeError) as exc:
-        _LOG.debug("dockerfile_idx: decode failed for %s: %s", rel_path, exc)
+    text = common.decode_source_text(source, _LOG, "dockerfile_idx")
+    if text is None:
         return [], [], [], []
 
     lines = text.split("\n")
@@ -72,7 +71,7 @@ def extract(
 
     for idx, line in enumerate(lines, start=1):
         # BOM-strip on line 1 (Notepad-on-Windows defaults to UTF-8-BOM).
-        candidate = line.lstrip("﻿") if idx == 1 else line
+        candidate = common.bom_strip_first_line(line, idx)
         m = _FROM_RE.match(candidate)
         if m is None:
             continue
@@ -89,11 +88,6 @@ def extract(
         if len(sections) >= _MAX_STAGES:
             break
 
-    total = len(lines)
-    for i, sec in enumerate(sections):
-        if i + 1 < len(sections):
-            sec.end_line = max(sec.line, sections[i + 1].line - 1)
-        else:
-            sec.end_line = max(sec.line, total)
+    common.assign_flat_end_lines(sections, len(lines))
 
     return symbols, [], [], sections
