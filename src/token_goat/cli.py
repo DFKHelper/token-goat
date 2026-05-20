@@ -1309,6 +1309,7 @@ def cmd_bash_output(
     JSON mode includes the full path and stored byte size.
     """
     from . import bash_cache  # noqa: PLC0415
+    from . import db as _db  # noqa: PLC0415
 
     body = bash_cache.load_output(output_id)
     if body is None:
@@ -1326,6 +1327,21 @@ def cmd_bash_output(
     if not _slicing_requested and not full:
         lines = _apply_smart_default(lines)
     sliced = "\n".join(lines)
+
+    # Record a recall stat so `token-goat stats` reflects the value of avoiding
+    # a re-run.  Saving = full cached output − what was actually returned here.
+    # A full unsliced recall returns everything → saved = 0 (honest).
+    # A sliced recall returns less → saved > 0 (real saving).
+    _body_bytes = len(body.encode())
+    _returned_bytes = len(sliced.encode())
+    _saved_bytes = max(0, _body_bytes - _returned_bytes)
+    _db.record_stat(
+        None,
+        "bash_output_recall",
+        bytes_saved=_saved_bytes,
+        tokens_saved=_saved_bytes // 4,
+        detail=output_id[:64],
+    )
 
     if json_output:
         meta = bash_cache.load_output_meta(output_id) or {}
@@ -1388,6 +1404,7 @@ def cmd_web_output(
     JSON mode includes the full path, stored byte size, status code, and a
     1-based ``numbered_lines`` list anchored to the original body.
     """
+    from . import db as _db_web  # noqa: PLC0415
     from . import web_cache  # noqa: PLC0415
 
     body = web_cache.load_output(output_id)
@@ -1406,6 +1423,21 @@ def cmd_web_output(
     if not _slicing_requested and not full:
         lines = _apply_smart_default(lines)
     sliced = "\n".join(lines)
+
+    # Record a recall stat so `token-goat stats` reflects the value of avoiding
+    # a re-fetch.  Saving = full cached body − what was actually returned here.
+    # A full unsliced recall returns everything → saved = 0 (honest).
+    # A sliced recall returns less → saved > 0 (real saving).
+    _body_bytes_web = len(body.encode())
+    _returned_bytes_web = len(sliced.encode())
+    _saved_bytes_web = max(0, _body_bytes_web - _returned_bytes_web)
+    _db_web.record_stat(
+        None,
+        "web_output_recall",
+        bytes_saved=_saved_bytes_web,
+        tokens_saved=_saved_bytes_web // 4,
+        detail=output_id[:64],
+    )
 
     if json_output:
         meta = web_cache.load_output_meta(output_id) or {}

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+from unittest.mock import patch
 
 from typer.testing import CliRunner
 
@@ -253,3 +254,220 @@ class TestSmartDefaultWebOutput:
         assert result.exit_code == 0
         assert "WEB_END" in result.stdout
         assert "token-goat:" not in result.stdout
+
+
+# ---------------------------------------------------------------------------
+# bash_output_recall stat recording
+# ---------------------------------------------------------------------------
+
+class TestBashOutputRecallStat:
+    """cmd_bash_output records a bash_output_recall stat on every successful recall.
+
+    Savings model: saved_bytes = len(full_body) - len(returned_slice).
+    A full unsliced recall returns everything → saved = 0 (honest).
+    A sliced recall returns a strict subset → saved > 0 (real saving).
+    An invalid / missing id exits with error and records nothing.
+    """
+
+    def _body(self) -> str:
+        """100-line body, each line "line NNN\\n"."""
+        return "\n".join(f"line {i:03d}" for i in range(1, 101))
+
+    def _seed_body(self, body: str, command: str = "pytest -v") -> str:
+        meta = bash_cache.store_output("recall-sess", command, body, "", 0)
+        assert meta is not None
+        bash_cache.write_sidecar(meta)
+        return meta.output_id
+
+    def test_sliced_recall_records_nonzero_saving(self, tmp_data_dir):
+        """A --head slice returns fewer bytes than the full body → saved > 0."""
+        body = self._body()
+        oid = self._seed_body(body)
+
+        recorded: list[dict] = []
+
+        def capture(project_hash, kind, *, bytes_saved=0, tokens_saved=0, detail=None):
+            recorded.append({"kind": kind, "bytes_saved": bytes_saved, "tokens_saved": tokens_saved})
+
+        with patch("token_goat.db.record_stat", side_effect=capture):
+            runner = CliRunner()
+            result = runner.invoke(app, ["bash-output", oid, "--head", "5"])
+
+        assert result.exit_code == 0
+
+        recall_rows = [r for r in recorded if r["kind"] == "bash_output_recall"]
+        assert len(recall_rows) == 1, "expected exactly one bash_output_recall stat row"
+        row = recall_rows[0]
+
+        # The full body is much larger than 5 lines → bytes_saved must be > 0.
+        assert row["bytes_saved"] > 0, "sliced recall must record positive bytes_saved"
+        assert row["tokens_saved"] > 0, "sliced recall must record positive tokens_saved"
+        # tokens_saved must be bytes_saved // 4 (the bash-family conversion).
+        assert row["tokens_saved"] == row["bytes_saved"] // 4
+
+        # Verify the arithmetic: saved = full_body_bytes - returned_slice_bytes.
+        full_bytes = len(body.encode())
+        returned_slice = "\n".join(body.splitlines()[:5])
+        returned_bytes = len(returned_slice.encode())
+        expected_saved = full_bytes - returned_bytes
+        assert row["bytes_saved"] == expected_saved
+
+    def test_full_recall_records_zero_saving(self, tmp_data_dir):
+        """A --full recall returns everything → saved = 0 (honest)."""
+        body = self._body()
+        oid = self._seed_body(body)
+
+        recorded: list[dict] = []
+
+        def capture(project_hash, kind, *, bytes_saved=0, tokens_saved=0, detail=None):
+            recorded.append({"kind": kind, "bytes_saved": bytes_saved, "tokens_saved": tokens_saved})
+
+        with patch("token_goat.db.record_stat", side_effect=capture):
+            runner = CliRunner()
+            result = runner.invoke(app, ["bash-output", oid, "--full"])
+
+        assert result.exit_code == 0
+
+        recall_rows = [r for r in recorded if r["kind"] == "bash_output_recall"]
+        assert len(recall_rows) == 1, "expected exactly one bash_output_recall stat row"
+        assert recall_rows[0]["bytes_saved"] == 0, "full recall must record zero bytes_saved"
+        assert recall_rows[0]["tokens_saved"] == 0, "full recall must record zero tokens_saved"
+
+    def test_invalid_id_records_nothing(self, tmp_data_dir):
+        """An invalid / missing output_id exits with error and records no stat."""
+        recorded: list[dict] = []
+
+        def capture(project_hash, kind, *, bytes_saved=0, tokens_saved=0, detail=None):
+            recorded.append({"kind": kind})
+
+        with patch("token_goat.db.record_stat", side_effect=capture):
+            runner = CliRunner()
+            result = runner.invoke(app, ["bash-output", "no-such-id-deadbeef"])
+
+        assert result.exit_code != 0
+
+        recall_rows = [r for r in recorded if r["kind"] == "bash_output_recall"]
+        assert recall_rows == [], "invalid id must not record any recall stat"
+
+    def test_empty_body_records_zero_without_error(self, tmp_data_dir):
+        """An empty cached output: saved = 0 with no division-by-zero or crash."""
+        meta = bash_cache.store_output("recall-empty", "true", "", "", 0)
+        assert meta is not None
+        # An empty body is below the storage threshold; write the file manually.
+        from token_goat.paths import data_dir
+        out_dir = data_dir() / "bash_outputs"
+        out_dir.mkdir(parents=True, exist_ok=True)
+        (out_dir / f"{meta.output_id}.txt").write_text("", encoding="utf-8")
+
+        recorded: list[dict] = []
+
+        def capture(project_hash, kind, *, bytes_saved=0, tokens_saved=0, detail=None):
+            recorded.append({"kind": kind, "bytes_saved": bytes_saved, "tokens_saved": tokens_saved})
+
+        with patch("token_goat.db.record_stat", side_effect=capture):
+            runner = CliRunner()
+            result = runner.invoke(app, ["bash-output", meta.output_id, "--full"])
+
+        assert result.exit_code == 0
+
+        recall_rows = [r for r in recorded if r["kind"] == "bash_output_recall"]
+        assert len(recall_rows) == 1
+        assert recall_rows[0]["bytes_saved"] == 0
+        assert recall_rows[0]["tokens_saved"] == 0
+
+    def test_kind_to_source_maps_bash_output_recall(self):
+        """bash_output_recall must be in _KIND_TO_SOURCE → SOURCE_BASH."""
+        from token_goat.stats import SOURCE_BASH, kind_to_source
+        assert kind_to_source("bash_output_recall") == SOURCE_BASH
+
+
+# ---------------------------------------------------------------------------
+# web_output_recall stat recording
+# ---------------------------------------------------------------------------
+
+class TestWebOutputRecallStat:
+    """cmd_web_output records a web_output_recall stat on every successful recall.
+
+    Same semantics as bash_output_recall — full recall = 0, slice = > 0,
+    invalid id = nothing.
+    """
+
+    def _body(self) -> str:
+        return "\n".join(f"<p>line {i:03d}</p>" for i in range(1, 101))
+
+    def _seed_body(self, body: str) -> str:
+        meta = web_cache.store_output("recall-web-sess", "https://example.com/doc", body, 200)
+        assert meta is not None
+        web_cache.write_sidecar(meta)
+        return meta.output_id
+
+    def test_sliced_recall_records_nonzero_saving(self, tmp_data_dir):
+        """A --head slice returns fewer bytes than the full body → saved > 0."""
+        body = self._body()
+        oid = self._seed_body(body)
+
+        recorded: list[dict] = []
+
+        def capture(project_hash, kind, *, bytes_saved=0, tokens_saved=0, detail=None):
+            recorded.append({"kind": kind, "bytes_saved": bytes_saved, "tokens_saved": tokens_saved})
+
+        with patch("token_goat.db.record_stat", side_effect=capture):
+            runner = CliRunner()
+            result = runner.invoke(app, ["web-output", oid, "--head", "5"])
+
+        assert result.exit_code == 0
+
+        recall_rows = [r for r in recorded if r["kind"] == "web_output_recall"]
+        assert len(recall_rows) == 1, "expected exactly one web_output_recall stat row"
+        row = recall_rows[0]
+
+        assert row["bytes_saved"] > 0
+        assert row["tokens_saved"] > 0
+        assert row["tokens_saved"] == row["bytes_saved"] // 4
+
+        full_bytes = len(body.encode())
+        returned_slice = "\n".join(body.splitlines()[:5])
+        returned_bytes = len(returned_slice.encode())
+        expected_saved = full_bytes - returned_bytes
+        assert row["bytes_saved"] == expected_saved
+
+    def test_full_recall_records_zero_saving(self, tmp_data_dir):
+        """A --full recall returns everything → saved = 0."""
+        body = self._body()
+        oid = self._seed_body(body)
+
+        recorded: list[dict] = []
+
+        def capture(project_hash, kind, *, bytes_saved=0, tokens_saved=0, detail=None):
+            recorded.append({"kind": kind, "bytes_saved": bytes_saved, "tokens_saved": tokens_saved})
+
+        with patch("token_goat.db.record_stat", side_effect=capture):
+            runner = CliRunner()
+            result = runner.invoke(app, ["web-output", oid, "--full"])
+
+        assert result.exit_code == 0
+
+        recall_rows = [r for r in recorded if r["kind"] == "web_output_recall"]
+        assert len(recall_rows) == 1
+        assert recall_rows[0]["bytes_saved"] == 0
+        assert recall_rows[0]["tokens_saved"] == 0
+
+    def test_invalid_id_records_nothing(self, tmp_data_dir):
+        """An invalid / missing output_id exits with error and records no stat."""
+        recorded: list[dict] = []
+
+        def capture(project_hash, kind, *, bytes_saved=0, tokens_saved=0, detail=None):
+            recorded.append({"kind": kind})
+
+        with patch("token_goat.db.record_stat", side_effect=capture):
+            runner = CliRunner()
+            result = runner.invoke(app, ["web-output", "no-such-id-deadbeef"])
+
+        assert result.exit_code != 0
+        recall_rows = [r for r in recorded if r["kind"] == "web_output_recall"]
+        assert recall_rows == []
+
+    def test_kind_to_source_maps_web_output_recall(self):
+        """web_output_recall must be in _KIND_TO_SOURCE → SOURCE_WEB."""
+        from token_goat.stats import SOURCE_WEB, kind_to_source
+        assert kind_to_source("web_output_recall") == SOURCE_WEB
