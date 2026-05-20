@@ -26,6 +26,8 @@ All notable changes to Token-Goat are documented in this file. Format follows Ke
 
 ### Fixed
 
+- **Unbounded `global.db` WAL growth.** Every hook writes stat rows to `global.db`, and under a heavy multi-agent burst its passive autocheckpoints were perpetually blocked by overlapping readers, so the write-ahead-log file only ever grew — one session reached an 11 GB `global.db-wal`, after which every hook (including the SessionStart hook that runs on `/compact`) stalled for minutes scanning it. Connections now set `PRAGMA journal_size_limit` so the WAL file is truncated after each checkpoint, and the worker force-runs a `wal_checkpoint(TRUNCATE)` on `global.db` every maintenance cycle. A `tests/test_wal_growth_guard.py` regression suite, wired into the pre-commit hook, locks both halves of the fix in place.
+
 - **Temp files and automation artifacts excluded from PreCompact manifest.** Paths under `/tmp/`, Windows `%APPDATA%`, `.improve-state-*.json`, and `improve_commit_msg_*` are filtered before the manifest renders. Previously they leaked into "Files Edited" and wasted manifest budget on entries the compaction LLM couldn't use.
 
 ## [0.6.1] - 2026-05-19
