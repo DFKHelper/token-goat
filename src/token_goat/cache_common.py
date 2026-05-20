@@ -9,7 +9,11 @@ from __future__ import annotations
 __all__ = [
     "OUTPUT_FILENAME_RE",
     "evict_cache_dir",
+    "list_cache_outputs",
+    "load_output_meta_stat",
+    "load_output_text",
     "load_sidecar_json",
+    "safe_join_output_id",
     "safe_session_fragment",
 ]
 
@@ -20,7 +24,7 @@ import re
 import stat as _stat_module
 from collections.abc import Callable
 from pathlib import Path
-from typing import Any
+from typing import Any, TypedDict
 
 # Filename pattern shared by both the bash-output and web-output caches.
 # Components are intentionally kept short so the full path stays well within
@@ -200,3 +204,139 @@ def safe_session_fragment(session_id: str) -> str:
         safe_session_fragment("")              # "anon"
     """
     return _SESSION_UNSAFE_RE.sub("_", session_id)[:16] or "anon"
+
+
+# ---------------------------------------------------------------------------
+# Shared path / I/O helpers for bash_cache and web_cache
+# ---------------------------------------------------------------------------
+
+class _OutputStatDict(TypedDict, total=False):
+    """Stat-derived metadata shape shared by :mod:`bash_cache` and :mod:`web_cache`.
+
+    Both modules expose this as their own ``_OutputStatDict``; the fields are
+    identical so the construction and consumption code is shared here.
+    """
+
+    output_id: str
+    size_bytes: int
+    mtime: float
+
+
+def safe_join_output_id(
+    output_id: str,
+    cache_dir_fn: Callable[[], Path],
+    log_name: str,
+) -> Path | None:
+    """Validate *output_id* and return the corresponding ``<id>.txt`` path.
+
+    Returns ``None`` (with a warning log) when the ID is malformed — for
+    example a traversal attempt like ``../etc/passwd`` or an embedded null
+    byte.  The on-disk store sits next to other token-goat data; an
+    attacker-influenced ID must not be able to walk out of it.
+
+    Parameters
+    ----------
+    output_id:
+        The raw ID string to validate.
+    cache_dir_fn:
+        Zero-argument callable that returns (and creates if absent) the cache
+        directory.  Matches the ``_bash_outputs_dir`` / ``_web_outputs_dir``
+        pattern inside each module.
+    log_name:
+        Module prefix for warning messages (e.g. ``"bash_cache"``).
+    """
+    if not output_id:
+        return None
+    name = f"{output_id}.txt"
+    _log = logging.getLogger(f"token_goat.{log_name}")
+    if not OUTPUT_FILENAME_RE.match(name):
+        _log.warning("%s: rejected output_id with invalid chars: %r", log_name, output_id[:200])
+        return None
+    base = cache_dir_fn().resolve()
+    candidate = (base / name).resolve()
+    try:
+        candidate.relative_to(base)
+    except ValueError:
+        _log.warning("%s: rejected output_id escaping base dir: %r", log_name, output_id[:200])
+        return None
+    return candidate
+
+
+def load_output_text(
+    output_id: str,
+    cache_dir_fn: Callable[[], Path],
+    log_name: str,
+) -> str | None:
+    """Return the cached output body for *output_id*, or ``None`` if absent.
+
+    Shared implementation for :func:`bash_cache.load_output` and
+    :func:`web_cache.load_output`.
+    """
+    path = safe_join_output_id(output_id, cache_dir_fn, log_name)
+    if path is None or not path.exists():
+        return None
+    _log = logging.getLogger(f"token_goat.{log_name}")
+    try:
+        return path.read_text(encoding="utf-8", errors="replace")
+    except OSError as exc:
+        _log.warning("%s: load failed for %s: %s", log_name, output_id[:200], exc)
+        return None
+
+
+def load_output_meta_stat(
+    output_id: str,
+    cache_dir_fn: Callable[[], Path],
+    log_name: str,
+) -> _OutputStatDict | None:
+    """Return stat-derived metadata for an output file (size, mtime), or None.
+
+    Shared implementation for :func:`bash_cache.load_output_meta` and
+    :func:`web_cache.load_output_meta`.
+    """
+    path = safe_join_output_id(output_id, cache_dir_fn, log_name)
+    if path is None or not path.exists():
+        return None
+    try:
+        st = path.stat()
+    except OSError:
+        return None
+    return _OutputStatDict(
+        output_id=output_id,
+        size_bytes=int(st.st_size),
+        mtime=float(st.st_mtime),
+    )
+
+
+def list_cache_outputs(cache_dir_fn: Callable[[], Path]) -> list[_OutputStatDict]:
+    """Return metadata for every cached output in *cache_dir_fn()*, newest first.
+
+    Shared implementation for :func:`bash_cache.list_outputs` and
+    :func:`web_cache.list_outputs`.  Returns an empty list when the directory
+    is missing or unreadable; never raises.
+    """
+    try:
+        d = cache_dir_fn()
+    except OSError:
+        return []
+
+    results: list[_OutputStatDict] = []
+    try:
+        for fp in d.iterdir():
+            if not fp.name.endswith(".txt"):
+                continue
+            if not OUTPUT_FILENAME_RE.match(fp.name):
+                continue
+            try:
+                st = fp.stat()
+            except OSError:
+                continue
+            results.append(_OutputStatDict(
+                output_id=fp.stem,
+                size_bytes=int(st.st_size),
+                mtime=float(st.st_mtime),
+            ))
+    except OSError:
+        return results
+
+    results.sort(key=lambda r: r["mtime"], reverse=True)
+    return results

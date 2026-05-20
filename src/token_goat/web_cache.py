@@ -63,7 +63,11 @@ from . import paths
 from .cache_common import (
     OUTPUT_FILENAME_RE,
     evict_cache_dir,
+    list_cache_outputs,
+    load_output_meta_stat,
+    load_output_text,
     load_sidecar_json,
+    safe_join_output_id,
     safe_session_fragment,
 )
 from .hooks_common import sanitize_log_str
@@ -159,25 +163,10 @@ def output_id_for(session_id: str, url: str, ts: float | None = None) -> str:
 def _safe_join(output_id: str) -> Path | None:
     """Validate *output_id* and return the corresponding cache file path.
 
-    Returns ``None`` (with a warning log) when the ID is malformed.  The
-    on-disk store sits next to other token-goat data; an attacker-influenced
-    ID must not be able to walk out of it even if the surrounding hook
-    machinery somehow forwards a crafted value.
+    Delegates to :func:`cache_common.safe_join_output_id` with the web-specific
+    directory function and log name.
     """
-    if not output_id:
-        return None
-    name = f"{output_id}.txt"
-    if not OUTPUT_FILENAME_RE.match(name):
-        _LOG.warning("web_cache: rejected output_id with invalid chars: %r", sanitize_log_str(output_id))
-        return None
-    base = _web_outputs_dir().resolve()
-    candidate = (base / name).resolve()
-    try:
-        candidate.relative_to(base)
-    except ValueError:
-        _LOG.warning("web_cache: rejected output_id escaping base dir: %r", sanitize_log_str(output_id))
-        return None
-    return candidate
+    return safe_join_output_id(output_id, _web_outputs_dir, "web_cache")
 
 
 def store_output(
@@ -241,30 +230,12 @@ def store_output(
 
 def load_output(output_id: str) -> str | None:
     """Return the cached response body for *output_id*, or ``None`` if absent."""
-    path = _safe_join(output_id)
-    if path is None or not path.exists():
-        return None
-    try:
-        return path.read_text(encoding="utf-8", errors="replace")
-    except OSError as exc:
-        _LOG.warning("web_cache: load failed for %s: %s", sanitize_log_str(output_id), exc)
-        return None
+    return load_output_text(output_id, _web_outputs_dir, "web_cache")
 
 
 def load_output_meta(output_id: str) -> _OutputStatDict | None:
     """Return stat-derived metadata for an output file (size, mtime), or None."""
-    path = _safe_join(output_id)
-    if path is None or not path.exists():
-        return None
-    try:
-        st = path.stat()
-    except OSError:
-        return None
-    return _OutputStatDict(
-        output_id=output_id,
-        size_bytes=int(st.st_size),
-        mtime=float(st.st_mtime),
-    )
+    return load_output_meta_stat(output_id, _web_outputs_dir, "web_cache")
 
 
 def evict_old_entries(*, max_total_bytes: int = DEFAULT_MAX_TOTAL_BYTES) -> int:
@@ -285,35 +256,7 @@ def evict_old_entries(*, max_total_bytes: int = DEFAULT_MAX_TOTAL_BYTES) -> int:
 
 def list_outputs() -> list[_OutputStatDict]:
     """Return metadata for every cached output, newest first."""
-    try:
-        d = _web_outputs_dir()
-    except OSError:
-        return []
-
-    results: list[_OutputStatDict] = []
-    try:
-        for fp in d.iterdir():
-            if not fp.name.endswith(".txt"):
-                continue
-            if not OUTPUT_FILENAME_RE.match(fp.name):
-                continue
-            try:
-                st = fp.stat()
-            except OSError:
-                continue
-            results.append(_OutputStatDict(
-                output_id=fp.stem,
-                size_bytes=int(st.st_size),
-                mtime=float(st.st_mtime),
-            ))
-    except OSError:
-        return results
-
-    def _mtime_key(r: _OutputStatDict) -> float:
-        return r["mtime"]
-
-    results.sort(key=_mtime_key, reverse=True)
-    return results
+    return list_cache_outputs(_web_outputs_dir)
 
 
 def sidecar_meta_path(output_id: str) -> Path | None:
