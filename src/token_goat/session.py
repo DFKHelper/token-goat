@@ -268,6 +268,9 @@ class SessionCache:
     # as list[str] for JSON serialization.  Cleared when session expires or approaches
     # time-to-live limits to avoid false-positive suppression on stale cached hints.
     hints_seen: set[str] = field(default_factory=set)
+    # Working directory at session start, used by git diff operations in the manifest.
+    # Optional — may be None if the session was created before this field was added.
+    cwd: str | None = None
     unavailable: bool = field(default=False, repr=False, compare=False)
     # Internal: cached JSON string from last serialization — invalidated by any mutation.
     # Avoids O(N) re-serialization of files/greps dicts on every hook invocation when

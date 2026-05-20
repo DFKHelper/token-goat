@@ -16,6 +16,7 @@ __all__ = [
 
 import heapq
 import logging
+import subprocess
 import time
 from datetime import UTC, datetime
 from operator import attrgetter, itemgetter
@@ -171,6 +172,77 @@ def is_noise_path(path: str) -> bool:
         return True
     dot_idx = basename.rfind(".")
     return dot_idx >= 0 and basename[dot_idx:] in _NOISE_EXTS
+
+
+def _get_git_diff_stat(
+    edited_paths: list[str],
+    cwd: str | None,
+) -> str | None:
+    """Get git diff --stat output for edited files, truncated to 8 lines and 200 chars.
+
+    Returns a formatted string like:
+        src/foo.py    | 12 ++++-----
+        src/bar.py    |  3 +-
+
+    Or None if: git unavailable, not a repo, no differences, or cwd is None.
+
+    Timeout: 2 seconds. Output is capped at 8 lines and 200 characters total.
+    """
+    if not cwd or not edited_paths:
+        return None
+
+    try:
+        # Run git diff --stat HEAD for the given files
+        result = subprocess.run(
+            ["git", "diff", "--stat", "HEAD", "--"] + edited_paths,
+            cwd=cwd,
+            capture_output=True,
+            text=True,
+            timeout=2,
+        )
+
+        # Only use output if git succeeded
+        if result.returncode != 0:
+            _LOG.debug(
+                "_get_git_diff_stat: git diff failed with code %d (cwd=%s)",
+                result.returncode,
+                cwd,
+            )
+            return None
+
+        if not result.stdout.strip():
+            _LOG.debug("_get_git_diff_stat: git diff returned empty output")
+            return None
+
+        # Split into lines and filter out summary line (contains "file changed")
+        all_lines = result.stdout.strip().splitlines()
+        diff_lines = [
+            line for line in all_lines
+            if "file changed" not in line.lower() and "insertion" not in line.lower()
+        ]
+
+        if not diff_lines:
+            _LOG.debug("_get_git_diff_stat: no diff lines after filtering summary")
+            return None
+
+        # Truncate to 8 lines
+        lines = diff_lines[:8]
+        output = "\n".join(lines)
+
+        # Cap total output at 200 chars
+        if len(output) > 200:
+            output = output[:200].rsplit("\n", 1)[0]  # Backtrack to last newline
+
+        return output
+    except FileNotFoundError:
+        _LOG.debug("_get_git_diff_stat: git not found")
+        return None
+    except subprocess.TimeoutExpired:
+        _LOG.debug("_get_git_diff_stat: git diff timed out (>2s)")
+        return None
+    except Exception as e:  # noqa: BLE001
+        _LOG.debug("_get_git_diff_stat: error running git diff: %s", e)
+        return None
 
 
 def _count_suffix(n: int) -> str:
@@ -701,6 +773,15 @@ def _render(cache: SessionCache, session_id: str, max_tokens: int) -> tuple[str,
         # Sort by edit count descending so the most-touched files appear first.
         for path, count in sorted(edited_clean.items(), key=_BY_EDIT_COUNT, reverse=True):
             sections.append(f"- ✎ {_short_path(path)}{_count_suffix(count)}")
+
+        # ── 1a. Diff summary — show git changes for edited files ──────────────
+        # Include git diff --stat output if cwd is available, compressed to fit budget.
+        cwd = getattr(cache, "cwd", None)
+        diff_stat = _get_git_diff_stat(list(edited_clean.keys()), cwd)
+        if diff_stat:
+            sections.append("### Diff Summary")
+            for line in diff_stat.splitlines():
+                sections.append(f"- {line}")
 
     # ── 1b. Stale file snapshots — read before a subsequent edit ─────────────
     # Warn the compaction LLM that these cached reads are outdated.
