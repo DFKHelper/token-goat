@@ -222,3 +222,85 @@ class TestRecoverySlotAllocator:
         assert files <= hooks_session._RECOVERY_FILES_CEILING
         assert bash <= hooks_session._RECOVERY_BASH_CEILING
         assert web <= hooks_session._RECOVERY_WEB_CEILING
+
+
+class TestRecoveryStatAccounting:
+    """compact_recovery must record its injection overhead like sibling hint kinds.
+
+    Before this fix the stat block only wrote the base ``compact_recovery`` row
+    (0 savings, 0 bytes) and omitted the ``compact_recovery_overhead`` negative
+    row, leaving an honest-accounting gap vs. session_hint / diff_hint /
+    bash_dedup_hint.
+    """
+
+    def test_overhead_row_recorded_when_hint_fires(self, tmp_data_dir):
+        """When _try_recovery_response emits a hint it must write a negative
+        compact_recovery_overhead row whose bytes_saved and tokens_saved are
+        both negative and non-zero."""
+        from token_goat import db
+
+        sid = "rec-overhead-1"
+        _seed_state(sid)
+        hooks_session.session_start({
+            "session_id": sid,
+            "source": "compact",
+            "cwd": "/proj",
+        })
+
+        with db.open_global() as conn:
+            rows = conn.execute(
+                "SELECT kind, bytes_saved, tokens_saved FROM stats"
+                " WHERE kind IN ('compact_recovery', 'compact_recovery_overhead')"
+            ).fetchall()
+
+        by_kind = {r["kind"]: r for r in rows}
+        assert "compact_recovery" in by_kind, "base row must be present"
+        assert "compact_recovery_overhead" in by_kind, (
+            "overhead row must be present — compact_recovery injects real tokens"
+        )
+        overhead = by_kind["compact_recovery_overhead"]
+        assert overhead["bytes_saved"] < 0, "overhead bytes_saved must be negative"
+        assert overhead["tokens_saved"] < 0, "overhead tokens_saved must be negative"
+
+    def test_no_overhead_row_when_hint_not_fired(self, tmp_data_dir):
+        """When no hint is emitted (empty session) no overhead row should appear."""
+        from token_goat import db
+
+        sid = "rec-overhead-2"
+        # No state seeded — empty session → hint suppressed.
+        hooks_session.session_start({
+            "session_id": sid,
+            "source": "compact",
+        })
+
+        with db.open_global() as conn:
+            rows = conn.execute(
+                "SELECT kind FROM stats"
+                " WHERE kind IN ('compact_recovery', 'compact_recovery_overhead')"
+            ).fetchall()
+
+        kinds = {r["kind"] for r in rows}
+        assert "compact_recovery" not in kinds, "base row must not appear when hint suppressed"
+        assert "compact_recovery_overhead" not in kinds, "overhead row must not appear when hint suppressed"
+
+    def test_base_row_has_zero_savings(self, tmp_data_dir):
+        """The base compact_recovery row must claim 0 savings — savings are
+        realised downstream under bash_dedup_hint / web_dedup_hint."""
+        from token_goat import db
+
+        sid = "rec-overhead-3"
+        _seed_state(sid)
+        hooks_session.session_start({
+            "session_id": sid,
+            "source": "compact",
+            "cwd": "/proj",
+        })
+
+        with db.open_global() as conn:
+            row = conn.execute(
+                "SELECT bytes_saved, tokens_saved FROM stats WHERE kind = 'compact_recovery'"
+            ).fetchone()
+
+        assert row is not None
+        assert row["bytes_saved"] == 0
+        assert row["tokens_saved"] == 0

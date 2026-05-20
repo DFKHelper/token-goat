@@ -273,10 +273,25 @@ def _try_recovery_response(session_id: str | None, source: str) -> HookResponse 
     # No saving claimed: the actual saving is realised only when the agent
     # uses the cached IDs from the hint, and those usages are accounted
     # under their own kinds (bash_dedup_hint, web_dedup_hint).
+    #
+    # Record the injection overhead separately so honest accounting matches
+    # the session_hint / diff_hint / bash_dedup_hint siblings.  The recovery
+    # hint has a real injection cost even though its realized saving is
+    # attributed to the downstream recall kinds.
     try:
         from . import db  # noqa: PLC0415
+        from .hints import CHARS_PER_TOKEN  # noqa: PLC0415
 
+        injection_bytes = len(hint.encode("utf-8"))
+        injection_cost_tokens = max(1, int(injection_bytes / CHARS_PER_TOKEN))
         db.record_stat(None, "compact_recovery", bytes_saved=0, tokens_saved=0, detail=session_id[:32])
+        db.record_stat(
+            None,
+            "compact_recovery_overhead",
+            bytes_saved=-injection_bytes,
+            tokens_saved=-injection_cost_tokens,
+            detail=session_id[:32],
+        )
     except Exception:  # noqa: BLE001
         _LOG.debug("recovery hint: stat record failed", exc_info=True)
 
