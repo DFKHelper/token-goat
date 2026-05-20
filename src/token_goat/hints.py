@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import difflib
+import hashlib
 import logging
 import sqlite3
 import time
@@ -29,6 +30,17 @@ _LOG = logging.getLogger("token_goat.hints")
 # stripped because they would split a single hint line into fake separate entries
 # when the hint is injected as ``additionalContext`` in the PreToolUse response.
 _MAX_HINT_PATH_LEN = 300
+
+
+def _hint_fingerprint(hint_text: str) -> str:
+    """Return a stable SHA256 fingerprint (first 12 hex chars) of hint text.
+
+    Used to suppress duplicate hints within the same session.  The 12-char
+    prefix is a balance between collision risk (negligible at this length)
+    and token overhead in session JSON (fingerprints stored in hints_seen set).
+    """
+    digest = hashlib.sha256(hint_text.encode("utf-8")).hexdigest()
+    return digest[:12]
 
 
 def _sanitize_hint_path(p: str) -> str:

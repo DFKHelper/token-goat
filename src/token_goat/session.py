@@ -263,6 +263,11 @@ class SessionCache:
     # ``data_dir() / "session_snapshots" / <session_short> / <pathhash>.bin``.
     # Storing only the SHA here (not the bytes) keeps the session JSON small.
     snapshot_shas: dict[str, str] = field(default_factory=dict)
+    # Per-session hint fingerprints to suppress duplicate hint injection within the
+    # same session. Maps hint_fingerprint (hash of hint text) → bool; a set persisted
+    # as list[str] for JSON serialization.  Cleared when session expires or approaches
+    # time-to-live limits to avoid false-positive suppression on stale cached hints.
+    hints_seen: set[str] = field(default_factory=set)
     unavailable: bool = field(default=False, repr=False, compare=False)
     # Internal: cached JSON string from last serialization — invalidated by any mutation.
     # Avoids O(N) re-serialization of files/greps dicts on every hook invocation when
@@ -293,6 +298,7 @@ class SessionCache:
                 for k, v in self.web_history.items()
             },
             snapshot_shas=dict(self.snapshot_shas),
+            hints_seen=sorted(self.hints_seen),  # sorted list for stable JSON
         )
 
     def to_json(self) -> str:
@@ -309,6 +315,24 @@ class SessionCache:
     def _invalidate_json_cache(self) -> None:
         """Invalidate the serialization cache after any mutation."""
         self._json_cache = None
+
+    def has_hint_fingerprint(self, fingerprint: str) -> bool:
+        """Check if a hint fingerprint was already seen this session.
+
+        Returns True if the fingerprint is in hints_seen, False otherwise.
+        """
+        return fingerprint in self.hints_seen
+
+    def mark_hint_seen(self, fingerprint: str) -> None:
+        """Record a hint fingerprint as seen this session, persisting to disk.
+
+        Invalidates the JSON cache and persists to disk since we've mutated hints_seen.
+        """
+        if fingerprint not in self.hints_seen:
+            self.hints_seen.add(fingerprint)
+            self.last_activity_ts = time.time()
+            self._invalidate_json_cache()
+            save(self)
 
     @classmethod
     def from_dict(cls, d: dict[str, Any]) -> SessionCache:
@@ -401,6 +425,15 @@ class SessionCache:
                 if isinstance(k, str) and isinstance(v, str):
                     snapshot_shas[k] = v
 
+        # hints_seen: list[str] (persisted) → set[str] (in-memory).  Coerce entries
+        # to str defensively so a malformed entry is dropped silently.
+        hints_seen: set[str] = set()
+        raw_hints = d.get("hints_seen", [])
+        if isinstance(raw_hints, list):
+            for h in raw_hints:
+                if isinstance(h, str) and h:
+                    hints_seen.add(h)
+
         return cls(
             session_id=session_id,
             started_ts=float(d.get("started_ts", now)),
@@ -412,6 +445,7 @@ class SessionCache:
             bash_history=bash_history,
             web_history=web_history,
             snapshot_shas=snapshot_shas,
+            hints_seen=hints_seen,
         )
 
 
@@ -644,7 +678,7 @@ class _GrepEntryDict(TypedDict, total=False):
 class _SessionDict(TypedDict, total=False):
     """Wire format of a serialized SessionCache (written to / read from JSON on disk).
 
-    ``result_cache``, ``bash_history``, and ``snapshot_shas`` are optional
+    ``result_cache``, ``bash_history``, ``snapshot_shas``, and ``hints_seen`` are optional
     (``total=False``) for backwards compatibility with session caches written
     by token-goat versions that predate these fields.  All other fields are
     still effectively required because :meth:`SessionCache.from_dict` supplies
@@ -663,6 +697,7 @@ class _SessionDict(TypedDict, total=False):
     bash_history: dict[str, _BashEntryDict]
     web_history: dict[str, _WebEntryDict]
     snapshot_shas: dict[str, str]
+    hints_seen: list[str]
 
 
 def _fresh_cache(session_id: str, *, unavailable: bool = False) -> SessionCache:

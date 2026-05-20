@@ -576,18 +576,32 @@ def pre_read(payload: HookPayload) -> HookResponse:
             cache=cache,
         )
         if hint:
-            if hint.tokens_saved > 0:
+            from .hints import _hint_fingerprint  # noqa: PLC0415
+
+            hint_text = str(hint)
+            fingerprint = _hint_fingerprint(hint_text)
+
+            # Suppress hint if identical hint was already seen in this session.
+            if cache.has_hint_fingerprint(fingerprint):
                 _LOG.debug(
-                    "pre-read: hint injected for %s (tokens_saved=%d)",
-                    sanitize_log_str(file_path), hint.tokens_saved,
-                )
-                _record_session_hint_impact(file_path, hint)
-            else:
-                _LOG.debug(
-                    "pre-read: hint built for %s but tokens_saved=0; no stat recorded",
+                    "pre-read: hint fingerprint %s already seen; suppressing duplicate for %s",
+                    fingerprint,
                     sanitize_log_str(file_path),
                 )
-            context_parts.append(str(hint))
+            else:
+                if hint.tokens_saved > 0:
+                    _LOG.debug(
+                        "pre-read: hint injected for %s (tokens_saved=%d)",
+                        sanitize_log_str(file_path), hint.tokens_saved,
+                    )
+                    _record_session_hint_impact(file_path, hint)
+                else:
+                    _LOG.debug(
+                        "pre-read: hint built for %s but tokens_saved=0; no stat recorded",
+                        sanitize_log_str(file_path),
+                    )
+                context_parts.append(hint_text)
+                cache.mark_hint_seen(fingerprint)
 
     # Append git commit history for the file (always, when available).
     git_ctx = _build_git_hint(cwd, file_path)
