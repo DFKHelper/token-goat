@@ -99,6 +99,10 @@ _BYTES_PER_LINE_ESTIMATE = 75
 # Enough to fill a useful hint; the full list is available via `token-goat symbol`.
 _MAX_INDEXED_SYMBOLS_FETCHED = 50
 
+# Maximum character budget for the "[symbols: ...]" suffix appended to cache hints.
+# Keeps the suffix from inflating hints beyond their token ceiling.
+_SYMBOLS_SUFFIX_MAX_CHARS = 60
+
 # A request narrower than this (with an explicit limit set by the agent) is treated
 # as "surgical intent" — the agent is already doing the right thing by reading a
 # small slice, so the dedup nag is suppressed.  Two reasons:
@@ -140,6 +144,26 @@ class ReadHint(str):
         obj = super().__new__(cls, text)
         obj.tokens_saved = tokens_saved
         return obj
+
+
+def _symbols_suffix(symbols_read: list[str], max_chars: int = _SYMBOLS_SUFFIX_MAX_CHARS) -> str:
+    """Return a compact ' [symbols: a, b +N]' suffix, or '' if the list is empty.
+
+    Lists the first three symbol names; shows '+N' when there are more.
+    The whole suffix is capped at *max_chars* characters — if even the first
+    symbol name makes the prefix exceed the cap, returns '' rather than
+    truncating a name mid-way (an incomplete name is more confusing than silence).
+    """
+    if not symbols_read:
+        return ""
+    preview = symbols_read[:3]
+    overflow = len(symbols_read) - len(preview)
+    overflow_str = f" +{overflow}" if overflow > 0 else ""
+    names_part = ", ".join(preview)
+    suffix = f" [symbols: {names_part}{overflow_str}]"
+    if len(suffix) > max_chars:
+        return ""
+    return suffix
 
 
 def _est_tokens_from_lines(n_lines: int) -> int:
@@ -439,8 +463,9 @@ def _hint_from_cache(
             )
             return None
         wasted = _est_tokens_from_lines(requested_lines)
+        sym_suffix = _symbols_suffix(entry.symbols_read)
         return ReadHint(
-            f"`{fname}` lines {req_start}-{req_end} cached ({cached_summary}{extra}). "
+            f"`{fname}` lines {req_start}-{req_end} cached ({cached_summary}{extra}){sym_suffix}. "
             f"~{wasted} tokens wasted — use a different offset/limit.",
             wasted,
         )
@@ -453,8 +478,9 @@ def _hint_from_cache(
         # so passing `last_cached_end` as offset resumes at line last_cached_end+1.
         # last_cached_end was already computed above during the overlap scan.
         resume_offset = last_cached_end
+        sym_suffix = _symbols_suffix(entry.symbols_read)
         return ReadHint(
-            f"`{fname}` read at lines {cached_summary}{extra}. "
+            f"`{fname}` read at lines {cached_summary}{extra}{sym_suffix}. "
             f"Overlap: {overlap_lines} lines (~{wasted} tokens) — use `offset={resume_offset}`.",
             wasted,
         )
@@ -552,6 +578,14 @@ def _hint_from_index(
     # and could contain embedded newlines if the parser extracted a multi-line token.
     first_sym_name = _sanitize_hint_path(symbols[0]["name"])
 
+    # Build a compact "Symbols: a, b, c ..." prefix listing up to 3 names.
+    # Sanitize each name; cap the list at 3 so the hint stays terse.
+    preview_names = [_sanitize_hint_path(s["name"]) for s in symbols[:3]]
+    sym_list_str = ", ".join(preview_names)
+    overflow = n_total - len(preview_names)
+    sym_overflow = " ..." if overflow > 0 else ""
+    sym_clause = f"Symbols: {sym_list_str}{sym_overflow}. "
+
     # A *suggestion*, not a realized saving. tokens_saved=0: if the agent acts
     # on it, `token-goat read` records the real `read_replacement` stat — counting
     # a saving here too would double-count, and counting one when the agent
@@ -562,7 +596,7 @@ def _hint_from_index(
     # every indexed symbol (`token-goat symbol`/`map` cover that on demand).
     return ReadHint(
         f"`{fname}`: {n_lines} lines (~{full_tokens} tokens). "
-        f"{n_total} symbols indexed. "
+        f"{sym_clause}"
         f"Use `token-goat read \"{rel}::{first_sym_name}\"` (~85% fewer tokens).",
         0,
     )
