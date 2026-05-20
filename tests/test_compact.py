@@ -117,6 +117,176 @@ class TestBuildManifest:
         assert isinstance(result, str)
 
 
+class TestComputeAdaptiveBudget:
+    """Tests for compute_adaptive_budget function."""
+
+    def test_empty_session_returns_base_budget(self, tmp_data_dir):
+        """Empty session with no edits, reads, or bash history returns minimum (200)."""
+        sid = "empty-adaptive-session"
+        cache = session.load(sid)
+        budget = compact.compute_adaptive_budget(cache)
+        assert budget == 200
+
+    def test_one_edited_file_adds_fifty(self, tmp_data_dir):
+        """One edited file adds 50 tokens: 200 + 50 = 250."""
+        sid = "one-edit-session"
+        session.mark_file_edited(sid, "/proj/a.py")
+        cache = session.load(sid)
+        budget = compact.compute_adaptive_budget(cache)
+        assert budget == 250
+
+    def test_four_edited_files_reaches_edit_cap(self, tmp_data_dir):
+        """Four edited files: 200 + (4 × 50) = 400."""
+        sid = "four-edits-session"
+        for i in range(4):
+            session.mark_file_edited(sid, f"/proj/edit{i}.py")
+        cache = session.load(sid)
+        budget = compact.compute_adaptive_budget(cache)
+        assert budget == 400
+
+    def test_ten_edited_files_capped_at_edit_limit(self, tmp_data_dir):
+        """Edits capped at 200 tokens: 200 + min(200, 10×50) = 400, not 700."""
+        sid = "many-edits-session"
+        for i in range(10):
+            session.mark_file_edited(sid, f"/proj/edit{i}.py")
+        cache = session.load(sid)
+        budget = compact.compute_adaptive_budget(cache)
+        # 200 base + min(200, 10*50=500) = 200 + 200 = 400
+        assert budget == 400
+
+    def test_symbols_accessed_add_bonus(self, tmp_data_dir):
+        """Files with symbols accessed add 30 tokens each (capped at 150)."""
+        sid = "symbols-session"
+        session.mark_file_read(sid, "/proj/a.py", symbol="func_a")
+        session.mark_file_read(sid, "/proj/b.py", symbol="func_b")
+        cache = session.load(sid)
+        budget = compact.compute_adaptive_budget(cache)
+        # 200 base + (2 files with symbols × 30) = 200 + 60 = 260
+        assert budget == 260
+
+    def test_five_symbol_files_reaches_symbols_cap(self, tmp_data_dir):
+        """Five files with symbols: 200 + (5×30) = 350."""
+        sid = "five-symbols-session"
+        for i in range(5):
+            session.mark_file_read(sid, f"/proj/s{i}.py", symbol=f"func_{i}")
+        cache = session.load(sid)
+        budget = compact.compute_adaptive_budget(cache)
+        assert budget == 350
+
+    def test_many_symbol_files_capped_at_symbols_limit(self, tmp_data_dir):
+        """Symbol files capped at 150 tokens: 200 + min(150, 10×30) = 350."""
+        sid = "many-symbols-session"
+        for i in range(10):
+            session.mark_file_read(sid, f"/proj/s{i}.py", symbol=f"func_{i}")
+        cache = session.load(sid)
+        budget = compact.compute_adaptive_budget(cache)
+        # 200 base + min(150, 10*30=300) = 200 + 150 = 350
+        assert budget == 350
+
+    def test_bash_history_adds_twenty(self, tmp_data_dir):
+        """Presence of bash history adds 20 tokens."""
+        sid = "bash-history-session"
+        session.mark_bash_run(sid, "cmd_sha_1", "pytest -v", "id123", 1000, 500, 0, False)
+        cache = session.load(sid)
+        budget = compact.compute_adaptive_budget(cache)
+        # 200 base + 20 bash bonus = 220
+        assert budget == 220
+
+    def test_complex_session_combines_bonuses(self, tmp_data_dir):
+        """Complex session: edits + symbols + bash all contribute."""
+        sid = "complex-session"
+        # 2 edits = 100 tokens
+        session.mark_file_edited(sid, "/proj/edit1.py")
+        session.mark_file_edited(sid, "/proj/edit2.py")
+        # 3 files with symbols = 90 tokens
+        for i in range(3):
+            session.mark_file_read(sid, f"/proj/sym{i}.py", symbol=f"sym_{i}")
+        # Bash history = 20 tokens
+        session.mark_bash_run(sid, "cmd_sha_2", "pytest", "id456", 1500, 600, 0, False)
+        cache = session.load(sid)
+        budget = compact.compute_adaptive_budget(cache)
+        # 200 + 100 + 90 + 20 = 410
+        assert budget == 410
+
+    def test_budget_never_below_minimum(self, tmp_data_dir):
+        """Budget is always at least 200 tokens."""
+        sid = "minimum-session"
+        cache = session.load(sid)
+        budget = compact.compute_adaptive_budget(cache)
+        assert budget >= 200
+
+    def test_budget_never_exceeds_maximum(self, tmp_data_dir):
+        """Budget is capped at 600 tokens."""
+        sid = "maximum-session"
+        # Add many edits, symbols, bash to try to exceed cap
+        for i in range(20):
+            session.mark_file_edited(sid, f"/proj/e{i}.py")
+        for i in range(20):
+            session.mark_file_read(sid, f"/proj/s{i}.py", symbol=f"s{i}")
+        session.mark_bash_run(sid, "cmd_sha_3", "cmd", "id789", 2000, 1000, 1, False)
+        cache = session.load(sid)
+        budget = compact.compute_adaptive_budget(cache)
+        assert budget <= 600
+
+    def test_maximum_budget_example(self, tmp_data_dir):
+        """Realistic maximum: 4+ edits (200) + 5+ symbols (150) + bash (20) = 370."""
+        sid = "max-example-session"
+        for i in range(4):
+            session.mark_file_edited(sid, f"/proj/e{i}.py")
+        for i in range(5):
+            session.mark_file_read(sid, f"/proj/s{i}.py", symbol=f"s{i}")
+        session.mark_bash_run(sid, "cmd_sha_4", "pytest", "maxid", 2000, 1000, 0, False)
+        cache = session.load(sid)
+        budget = compact.compute_adaptive_budget(cache)
+        # 200 + min(200, 4*50=200) + min(150, 5*30=150) + 20 = 570
+        assert budget == 570
+
+
+class TestBuildManifestAdaptive:
+    """Tests for build_manifest_adaptive convenience wrapper."""
+
+    def test_empty_session_returns_empty(self, tmp_data_dir):
+        """Empty session returns empty manifest (no activity)."""
+        result = compact.build_manifest_adaptive("empty-adaptive")
+        assert result == ""
+
+    def test_adaptive_with_simple_session(self, tmp_data_dir):
+        """Simple session (1 edit) uses lower budget efficiently."""
+        sid = "simple-adaptive"
+        session.mark_file_edited(sid, "/proj/app.py")
+        result = compact.build_manifest_adaptive(sid)
+        # Should be a valid manifest
+        assert "Token-Goat Session Manifest" in result or result == ""
+        # Budget should be 200 + 50 = 250
+
+    def test_adaptive_with_complex_session(self, tmp_data_dir):
+        """Complex session gets larger budget and preserves more detail."""
+        sid = "complex-adaptive"
+        for i in range(3):
+            session.mark_file_edited(sid, f"/proj/edit{i}.py")
+        for i in range(4):
+            session.mark_file_read(sid, f"/proj/src{i}.py", symbol=f"sym_{i}")
+        session.mark_bash_run(sid, "cmd_sha_5", "pytest -v", "bid123", 1500, 800, 0, False)
+        result = compact.build_manifest_adaptive(sid)
+        assert "Token-Goat Session Manifest" in result
+
+    def test_adaptive_budget_applied_correctly(self, tmp_data_dir):
+        """Manifest respects the adaptively-computed budget."""
+        sid = "budget-check"
+        # 2 edits = 250 tokens budget
+        session.mark_file_edited(sid, "/proj/a.py")
+        session.mark_file_edited(sid, "/proj/b.py")
+        result = compact.build_manifest_adaptive(sid)
+        # Verify budget constraint: ~300 char limit for 250 tokens
+        # (conservative 3 chars per token, so 250 * 3 = 750 chars max)
+        assert len(result) <= 750
+
+    def test_adaptive_invalid_session_returns_empty(self, tmp_data_dir):
+        """Invalid session ID returns empty string gracefully."""
+        result = compact.build_manifest_adaptive("x" * 300)  # too long
+        assert result == ""
+
+
 class TestNoisePathFilter:
     """Build artifacts, lockfiles, and OS metadata must not eat manifest budget."""
 

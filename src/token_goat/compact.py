@@ -8,6 +8,8 @@ from __future__ import annotations
 __all__ = [
     "build_manifest",
     "build_manifest_with_count",
+    "build_manifest_adaptive",
+    "compute_adaptive_budget",
     "event_count",
     "is_noise_path",
 ]
@@ -405,6 +407,63 @@ def _load_session_cache(session_id: str, caller: str) -> SessionCache | None:
         sid_short = session_id[:8] if session_id else "<empty>"
         _LOG.debug("%s(%s) failed: %s", caller, sid_short, e, exc_info=True)
         return None
+
+
+def compute_adaptive_budget(cache: SessionCache) -> int:
+    """Compute an adaptive token budget for the manifest based on session complexity.
+
+    Simple sessions (few edits, no bash history) waste no budget; complex sessions
+    get more room to preserve signal.  Formula:
+
+        Base: 200 tokens
+        + min(200, edited_files_count × 50)       [up to 4 files]
+        + min(150, symbols_accessed_files × 30)   [up to 5 files with symbols]
+        + 20 tokens if bash_history has entries
+        Capped to [200, 600]
+
+    Returns a value guaranteed to be in the range [200, 600].
+    """
+    base = 200
+    max_total = 600
+    min_total = 200
+
+    # Edited files bonus: 50 tokens per file, capped at 200
+    edited_count = len(cache.edited_files) if isinstance(cache.edited_files, dict) else 0
+    edited_bonus = min(200, edited_count * 50)
+
+    # Symbols accessed files bonus: 30 tokens per file, capped at 150
+    symbols_files = sum(1 for e in cache.files.values() if e.symbols_read)
+    symbols_bonus = min(150, symbols_files * 30)
+
+    # Bash history bonus: 20 tokens if there are any entries
+    bash_bonus = 20 if (getattr(cache, "bash_history", None) and cache.bash_history) else 0
+
+    total = base + edited_bonus + symbols_bonus + bash_bonus
+    return max(min_total, min(max_total, total))
+
+
+def build_manifest_adaptive(session_id: str) -> str:
+    """Load session cache and build manifest with adaptively-computed token budget.
+
+    Convenience wrapper that loads the cache once and calls build_manifest with
+    a budget computed from session complexity via :func:`compute_adaptive_budget`.
+
+    Returns empty string when the session cache is missing or unreadable.
+    """
+    _LOG.debug("build_manifest_adaptive: session=%s", session_id[:8])
+    cache = _load_session_cache(session_id, "build_manifest_adaptive")
+    if cache is None:
+        return ""
+    budget = compute_adaptive_budget(cache)
+    _LOG.debug(
+        "build_manifest_adaptive: session=%s budget=%d (edited=%d symbols=%d bash=%s)",
+        session_id[:8],
+        budget,
+        len(cache.edited_files) if isinstance(cache.edited_files, dict) else 0,
+        sum(1 for e in cache.files.values() if e.symbols_read),
+        bool(getattr(cache, "bash_history", None) and cache.bash_history),
+    )
+    return _build_manifest_from_cache(cache, session_id, budget)
 
 
 def event_count(session_id: str) -> int:
