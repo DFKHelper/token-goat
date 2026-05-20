@@ -1003,6 +1003,24 @@ def _symbols_set(entry: FileEntry) -> frozenset[str]:
     return frozenset(entry.symbols_read)
 
 
+def _commit_mutation(cache: SessionCache, now: float) -> SessionCache:
+    """Stamp *now* as the last-activity time, flush the JSON cache, persist, and return.
+
+    Every session mutation function ends with the same three-step epilogue:
+
+    1. ``cache.last_activity_ts = now``   — keeps the session file fresh for TTL checks.
+    2. ``cache._invalidate_json_cache()`` — forces re-serialization on the next save.
+    3. ``save(cache)``                    — writes the JSON to disk.
+
+    Centralising this avoids copy-pasting the same three lines across every
+    ``mark_*`` function and makes the commit contract explicit.
+    """
+    cache.last_activity_ts = now
+    cache._invalidate_json_cache()
+    save(cache)
+    return cache
+
+
 def mark_file_read(
     session_id: str,
     path: str,
@@ -1102,10 +1120,7 @@ def mark_file_read(
                 key,
                 new_range_count,
             )
-    cache.last_activity_ts = now
-    cache._invalidate_json_cache()
-    save(cache)
-    return cache
+    return _commit_mutation(cache, now)
 
 
 # 1024 is well above any realistic grep pattern (~200 chars max in practice) but still
@@ -1165,10 +1180,7 @@ def mark_grep(
         session_id[:16],
         len(cache.greps),
     )
-    cache.last_activity_ts = now
-    cache._invalidate_json_cache()
-    save(cache)
-    return cache
+    return _commit_mutation(cache, now)
 
 
 def _merge_ranges(ranges: list[tuple[int, int]]) -> list[tuple[int, int]]:
@@ -1273,10 +1285,7 @@ def mark_file_edited(
         prev_count + 1,
         len(cache.edited_files),
     )
-    cache.last_activity_ts = now
-    cache._invalidate_json_cache()
-    save(cache)
-    return cache
+    return _commit_mutation(cache, now)
 
 
 def list_edited(session_id: str) -> dict[str, int]:
@@ -1461,10 +1470,7 @@ def mark_bash_run(
         truncated=bool(truncated),
         run_count=prior_run_count + 1,
     )
-    cache.last_activity_ts = now
-    cache._invalidate_json_cache()
-    save(cache)
-    return cache
+    return _commit_mutation(cache, now)
 
 
 def lookup_bash_entry(
@@ -1536,10 +1542,7 @@ def mark_web_fetch(
         ),
         truncated=bool(truncated),
     )
-    cache.last_activity_ts = now
-    cache._invalidate_json_cache()
-    save(cache)
-    return cache
+    return _commit_mutation(cache, now)
 
 
 def lookup_web_entry(
