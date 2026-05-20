@@ -4,6 +4,28 @@ All notable changes to Token-Goat are documented in this file. Format follows Ke
 
 ## [Unreleased]
 
+### Added
+
+- **Grep output compression.** Large `grep`/`rg`/`ag`/`ack` results (>30 lines) are compressed to a file-level summary: top 20 files by match count, totals included, full output cached for `token-goat bash-output` recall. Typical savings: ~80%.
+
+- **Bash loop-detection escalation.** The same command run twice triggers a "ran 2×" escalation; three or more repeats produce a "WARNING: ran N×" advisory. Stops runaway loops from burning context unnoticed.
+
+- **Session-wide hint deduplication.** Identical hints are suppressed after their first injection within a session. SHA-256 fingerprinting with a JSON-persisted `hints_seen` set means the agent never gets nagged twice for the same file.
+
+- **Session orientation brief.** At session start in a dirty git repository, a compact block (~50 tokens) is injected: current branch, modified/staged/untracked counts, and the five most-recent commits. Disable via `TOKEN_GOAT_SESSION_BRIEF=0` or `[session_brief] enabled = false` in config.toml.
+
+- **Adaptive PreCompact manifest budget.** The manifest budget scales from 200 to 600 tokens based on edit count, symbol accesses, and bash activity. Sessions with little activity get a lean manifest; complex ones get the full picture.
+
+- **Git diff --stat in PreCompact manifest.** A `git diff --stat HEAD` summary (capped at 8 lines / 200 chars) is now included in the compaction manifest. The compaction LLM always sees which files drifted from the last commit, even when the session cache doesn't list them as edited.
+
+- **Symbol names in re-read hints.** Re-read hints now include up to three symbol names previously accessed in the flagged file (e.g., `[symbols: login, get_user, Session]`), so the agent can decide whether `token-goat read file::symbol` is sufficient.
+
+- **Error-preserving smart truncation.** When bash output exceeds the size cap, the trimmed view keeps: first 10 lines + up to 10 error-signal lines with 2-line context + last 10 lines, separated by `--- N lines omitted ---`. Errors are never lost to truncation.
+
+### Fixed
+
+- **Temp files and automation artifacts excluded from PreCompact manifest.** Paths under `/tmp/`, Windows `%APPDATA%`, `.improve-state-*.json`, and `improve_commit_msg_*` are filtered before the manifest renders. Previously they leaked into "Files Edited" and wasted manifest budget on entries the compaction LLM couldn't use.
+
 ## [0.6.1] - 2026-05-19
 
 ### Changed
