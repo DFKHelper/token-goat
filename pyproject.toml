@@ -1,6 +1,6 @@
 [project]
 name = "token-goat"
-version = "0.6.0"
+version = "0.6.1"
 description = "Token optimizer for Claude Code, Codex CLI, opencode, and openclaw on Windows, macOS, Linux, and WSL. Image shrink, re-read dedup, and compaction assist run automatically; CLI commands (symbol, read, section, semantic, map) replace full-file reads with surgical slices."
 readme = "README.md"
 requires-python = ">=3.11,<3.15"
