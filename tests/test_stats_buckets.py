@@ -16,6 +16,12 @@ class TestSourceBucketMapping:
     def test_bash_output_cached_lands_in_bash_bucket(self):
         assert stats.kind_to_source("bash_output_cached") == stats.SOURCE_BASH
 
+    def test_compact_recovery_lands_in_compact_bucket(self):
+        """compact_recovery and its overhead must be attributed to SOURCE_COMPACT,
+        not SOURCE_OTHER.  They were previously missing from _KIND_TO_SOURCE."""
+        assert stats.kind_to_source("compact_recovery") == stats.SOURCE_COMPACT
+        assert stats.kind_to_source("compact_recovery_overhead") == stats.SOURCE_COMPACT
+
     def test_unknown_kind_falls_back_to_other(self):
         assert stats.kind_to_source("future_unknown_kind") == stats.SOURCE_OTHER
 

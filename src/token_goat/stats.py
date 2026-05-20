@@ -67,9 +67,14 @@ _KIND_TO_SOURCE: dict[str, str] = {
     "section_replacement": SOURCE_READ,
     "symbol_read": SOURCE_READ,
     "section_read": SOURCE_READ,
-    # compaction assist family
+    # compaction assist family — includes the post-compact recovery hint and
+    # its injection overhead.  Recovery overhead is a real cost even though
+    # its realized saving is attributed downstream (bash_dedup_hint /
+    # web_dedup_hint when the agent uses a recalled ID).
     "compact_manifest": SOURCE_COMPACT,
     "compact_assist": SOURCE_COMPACT,
+    "compact_recovery": SOURCE_COMPACT,
+    "compact_recovery_overhead": SOURCE_COMPACT,
     # bash output cache family — preventing repeat command runs is structurally
     # distinct from preventing file re-reads (no source file is involved), so
     # it gets its own user-visible bucket rather than folding into HINT.
