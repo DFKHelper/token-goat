@@ -4,6 +4,20 @@ All notable changes to Token-Goat are documented in this file. Format follows Ke
 
 ## [Unreleased]
 
+## [0.6.1] - 2026-05-19
+
+### Changed
+
+- **Token-savings tuning across the hint, compaction, and output surfaces.** Three internal improvement sweeps tightened the text Token-Goat injects into the conversation: shorter session read-hints and bash / grep / web dedup hints, leaner PreCompact manifest framing, a more compact post-compaction recovery hint, terser `token-goat map` output framing, and budgeted git-history and project-memory injections. The CLAUDE.md / SKILL.md / AGENTS.md directive blocks written by `token-goat install` were condensed without dropping any guidance. The result is the same hints for fewer tokens.
+- **Command `--json` output is now compact single-line JSON.** `stats`, `map`, `config`, `bash-output`, `web-output`, `bash-history`, `web-history`, `compact-hint`, and the surgical-read commands emit `--json` with no indentation whitespace. JSON written to disk (settings.json and config files) stays pretty-printed for human editing.
+- **`bash-output` and `web-output` recall now default to a smart head-and-tail view** for large cached outputs, with `--full` to retrieve the whole thing.
+- **DRY pass on the output-cache layer.** `bash_cache` and `web_cache` were near-parallel implementations; their shared pieces (the cache-filename pattern, session-id sanitization, JSON-sidecar loading, and LRU disk-cap eviction) now live in one `cache_common` module. No user-visible behavior change. Regression tests were added across the token-savings, stat-accounting, and cache surfaces.
+
+### Fixed
+
+- **`compact_recovery` stat accounting.** The post-compaction recovery hint recorded no injection overhead and was bucketed under the `other` source instead of `compact`. It now records a `compact_recovery_overhead` row consistent with the `session_hint`, `diff_hint`, and `bash_dedup_hint` siblings, and both `compact_recovery` kinds map to the `compact` source bucket.
+- **`bash-output` and `web-output` recalls were credited no savings.** Retrieving a cached output instead of re-running a command, or a cached response instead of re-fetching a URL, now records a `bash_output_recall` or `web_output_recall` stat. This closes a measurement gap where thousands of cache hits showed zero tokens saved.
+
 ## [0.6.0] - 2026-05-19
 
 ### Added
