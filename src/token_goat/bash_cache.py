@@ -39,15 +39,18 @@ __all__ = [
 import hashlib
 import json
 import logging
-import os
-import stat as _stat_module
 import time
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import TypedDict
 
 from . import paths
-from .cache_common import OUTPUT_FILENAME_RE, load_sidecar_json, safe_session_fragment
+from .cache_common import (
+    OUTPUT_FILENAME_RE,
+    evict_cache_dir,
+    load_sidecar_json,
+    safe_session_fragment,
+)
 from .hooks_common import sanitize_log_str
 
 _LOG = logging.getLogger("token_goat.bash_cache")
@@ -289,84 +292,15 @@ def evict_old_entries(*, max_total_bytes: int = DEFAULT_MAX_TOTAL_BYTES) -> int:
     Skips symlinks (defensive: an attacker who can plant a symlink into the
     cache directory should not be able to direct deletes elsewhere by name).
     All errors are swallowed — eviction is opportunistic, not authoritative.
+
+    The shared algorithm lives in :func:`cache_common.evict_cache_dir`; this
+    wrapper supplies the bash-specific directory, log name, and default cap.
     """
-    try:
-        d = _bash_outputs_dir()
-    except OSError:
-        return 0
-
-    entries: list[tuple[Path, float, int]] = []
-    total = 0
-    try:
-        for fp in d.iterdir():
-            if not fp.name.endswith(".txt"):
-                continue
-            if not OUTPUT_FILENAME_RE.match(fp.name):
-                continue
-            try:
-                st = os.lstat(fp)
-            except OSError:
-                continue
-            if _stat_module.S_ISLNK(st.st_mode):
-                _LOG.warning("bash_cache: skipping symlink in cache dir: %s", fp.name)
-                continue
-            entries.append((fp, float(st.st_mtime), int(st.st_size)))
-            total += int(st.st_size)
-    except OSError:
-        return 0
-
-    if total <= max_total_bytes:
-        return 0
-
-    entries.sort(key=lambda t: t[1])  # oldest first
-    removed = 0
-    for fp, _mtime, size in entries:
-        if total <= max_total_bytes:
-            break
-        try:
-            fp.unlink()
-            total -= size
-            removed += 1
-        except OSError:
-            continue
-        # Best-effort sidecar removal — if the body deletion succeeded the
-        # sidecar should follow.  A failure here is logged at debug only:
-        # leaving a single sidecar around is harmless (read_sidecar tolerates
-        # missing bodies), and the next eviction pass will retry.
-        sidecar = fp.with_suffix(".json")
-        try:
-            sidecar.unlink()
-        except FileNotFoundError:
-            pass
-        except OSError as exc:
-            _LOG.debug("bash_cache: sidecar cleanup failed for %s: %s", sidecar.name, exc)
-    if removed:
-        _LOG.info(
-            "bash_cache: evicted %d entries to fit cap=%d bytes",
-            removed, max_total_bytes,
-        )
-
-    # Orphan-sidecar sweep.  A sidecar whose body was deleted out-of-band
-    # (e.g. a previous eviction whose body unlink succeeded before the
-    # sidecar unlink could run, or a manual ``rm cache/*.txt``) would
-    # otherwise live forever.  We list ``.json`` files in the cache dir and
-    # drop any without a matching ``.txt``.  Cheap because the directory
-    # typically has only a handful of entries at any time.
-    try:
-        for sp in d.iterdir():
-            if not sp.name.endswith(".json"):
-                continue
-            body = sp.with_suffix(".txt")
-            if body.exists():
-                continue
-            try:
-                sp.unlink()
-            except OSError as exc:
-                _LOG.debug("bash_cache: orphan sidecar removal failed: %s: %s", sp.name, exc)
-    except OSError:
-        pass
-
-    return removed
+    return evict_cache_dir(
+        cache_dir_fn=_bash_outputs_dir,
+        log_name="bash_cache",
+        max_total_bytes=max_total_bytes,
+    )
 
 
 def list_outputs() -> list[_OutputStatDict]:

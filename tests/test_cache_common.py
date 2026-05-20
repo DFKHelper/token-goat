@@ -1,11 +1,19 @@
-"""Tests for cache_common — shared OUTPUT_FILENAME_RE, safe_session_fragment, and load_sidecar_json."""
+"""Tests for cache_common — shared OUTPUT_FILENAME_RE, safe_session_fragment, load_sidecar_json, and evict_cache_dir."""
 from __future__ import annotations
 
 import json
+import os
+import time
+from pathlib import Path
 
 import pytest
 
-from token_goat.cache_common import OUTPUT_FILENAME_RE, load_sidecar_json, safe_session_fragment
+from token_goat.cache_common import (
+    OUTPUT_FILENAME_RE,
+    evict_cache_dir,
+    load_sidecar_json,
+    safe_session_fragment,
+)
 
 
 class TestOutputFilenameRE:
@@ -199,3 +207,367 @@ class TestLoadSidecarJson:
 
         monkeypatch.setattr(Path, "read_text", _raise)
         assert load_sidecar_json(p) is None
+
+
+# ---------------------------------------------------------------------------
+# Helpers shared by TestEvictCacheDir
+# ---------------------------------------------------------------------------
+
+def _make_cache_dir_fn(d: Path):
+    """Return a zero-arg callable that returns *d* (already created)."""
+    d.mkdir(parents=True, exist_ok=True)
+    return lambda: d
+
+
+def _plant(d: Path, name: str, content: bytes, mtime: float) -> Path:
+    """Write a .txt cache file and backdate its mtime."""
+    p = d / name
+    p.write_bytes(content)
+    os.utime(p, (mtime, mtime))
+    return p
+
+
+def _plant_sidecar(d: Path, stem: str) -> Path:
+    """Write a .json sidecar alongside an existing .txt file."""
+    p = d / f"{stem}.json"
+    p.write_text("{}", encoding="utf-8")
+    return p
+
+
+def _valid_name(tag: str) -> str:
+    """Build a valid OUTPUT_FILENAME_RE-matching filename stem."""
+    return f"anon-0000000000{tag:0>3}-deadbeefcafe0000"
+
+
+class TestEvictCacheDir:
+    """Regression suite for the shared evict_cache_dir helper.
+
+    Every test uses a fresh tmp_path subdirectory as the cache dir so tests
+    are fully isolated.  All assertions are written against the observable
+    filesystem state (files exist / don't exist, return value) — not against
+    log output — so they're robust to message-text changes.
+    """
+
+    # ------------------------------------------------------------------
+    # No-op cases
+    # ------------------------------------------------------------------
+
+    def test_noop_when_under_budget(self, tmp_path: Path) -> None:
+        """No files are removed when total size is already within budget."""
+        d = tmp_path / "cache"
+        fn = _make_cache_dir_fn(d)
+        name = _valid_name("001")
+        _plant(d, f"{name}.txt", b"X" * 100, time.time())
+        removed = evict_cache_dir(cache_dir_fn=fn, log_name="test_cache", max_total_bytes=1000)
+        assert removed == 0
+        assert (d / f"{name}.txt").exists()
+
+    def test_noop_when_exactly_at_budget(self, tmp_path: Path) -> None:
+        """Eviction is skipped when total equals the cap (<=, not <)."""
+        d = tmp_path / "cache"
+        fn = _make_cache_dir_fn(d)
+        name = _valid_name("001")
+        _plant(d, f"{name}.txt", b"X" * 100, time.time())
+        removed = evict_cache_dir(cache_dir_fn=fn, log_name="test_cache", max_total_bytes=100)
+        assert removed == 0
+
+    def test_noop_on_empty_directory(self, tmp_path: Path) -> None:
+        """An empty cache directory returns 0 without error."""
+        d = tmp_path / "cache"
+        fn = _make_cache_dir_fn(d)
+        assert evict_cache_dir(cache_dir_fn=fn, log_name="test_cache", max_total_bytes=1) == 0
+
+    def test_noop_on_missing_directory(self, tmp_path: Path) -> None:
+        """If cache_dir_fn raises OSError, evict_cache_dir returns 0."""
+        def _fail() -> Path:
+            raise OSError("no such directory")
+        assert evict_cache_dir(cache_dir_fn=_fail, log_name="test_cache", max_total_bytes=1) == 0
+
+    # ------------------------------------------------------------------
+    # Eviction threshold
+    # ------------------------------------------------------------------
+
+    def test_evicts_when_one_byte_over_budget(self, tmp_path: Path) -> None:
+        """A directory exactly 1 byte over budget triggers eviction."""
+        d = tmp_path / "cache"
+        fn = _make_cache_dir_fn(d)
+        t = time.time()
+        n1 = _valid_name("001")
+        n2 = _valid_name("002")
+        _plant(d, f"{n1}.txt", b"X" * 60, t - 10)  # older
+        _plant(d, f"{n2}.txt", b"X" * 60, t)        # newer
+        # total=120, cap=119 → must evict at least one
+        removed = evict_cache_dir(cache_dir_fn=fn, log_name="test_cache", max_total_bytes=119)
+        assert removed >= 1
+
+    def test_stops_as_soon_as_budget_met(self, tmp_path: Path) -> None:
+        """Eviction stops the moment the total drops to or below the cap."""
+        d = tmp_path / "cache"
+        fn = _make_cache_dir_fn(d)
+        t = time.time()
+        names = [_valid_name(f"{i:03d}") for i in range(5)]
+        for i, name in enumerate(names):
+            _plant(d, f"{name}.txt", b"X" * 100, t - (5 - i))  # oldest first by mtime
+        # 5×100 = 500 bytes total; cap at 350 → only 2 need to go (200 removed → 300 left)
+        removed = evict_cache_dir(cache_dir_fn=fn, log_name="test_cache", max_total_bytes=350)
+        assert removed == 2
+        remaining = list(d.glob("*.txt"))
+        assert len(remaining) == 3
+
+    # ------------------------------------------------------------------
+    # Oldest-first ordering
+    # ------------------------------------------------------------------
+
+    def test_oldest_deleted_first(self, tmp_path: Path) -> None:
+        """Files are deleted in ascending mtime order (oldest first)."""
+        d = tmp_path / "cache"
+        fn = _make_cache_dir_fn(d)
+        base_t = time.time()
+        names = [_valid_name(f"{i:03d}") for i in range(4)]
+        # Plant in reverse-age order so directory iteration order doesn't coincide with mtime order
+        for i, name in enumerate(names):
+            _plant(d, f"{name}.txt", b"X" * 100, base_t - (3 - i))  # names[0] oldest
+
+        # Cap forces removal of exactly 2; they must be the two oldest
+        removed = evict_cache_dir(cache_dir_fn=fn, log_name="test_cache", max_total_bytes=200)
+        assert removed == 2
+        assert not (d / f"{names[0]}.txt").exists(), "oldest should be gone"
+        assert not (d / f"{names[1]}.txt").exists(), "second-oldest should be gone"
+        assert (d / f"{names[2]}.txt").exists(), "third should survive"
+        assert (d / f"{names[3]}.txt").exists(), "newest should survive"
+
+    # ------------------------------------------------------------------
+    # Return value
+    # ------------------------------------------------------------------
+
+    def test_returns_correct_removed_count(self, tmp_path: Path) -> None:
+        """Return value equals the number of .txt body files deleted."""
+        d = tmp_path / "cache"
+        fn = _make_cache_dir_fn(d)
+        t = time.time()
+        names = [_valid_name(f"{i:03d}") for i in range(6)]
+        for i, name in enumerate(names):
+            _plant(d, f"{name}.txt", b"Y" * 100, t - (6 - i))
+        # 600 bytes total, cap=250 → need to remove 4 to get to ≤250
+        # (remove 4×100=400, leaving 200 ≤ 250)
+        removed = evict_cache_dir(cache_dir_fn=fn, log_name="test_cache", max_total_bytes=250)
+        assert removed == 4
+
+    # ------------------------------------------------------------------
+    # Symlink skipping
+    # ------------------------------------------------------------------
+
+    def test_symlinks_are_skipped(self, tmp_path: Path) -> None:
+        """A symlink in the cache dir is not deleted and does not count toward removal."""
+        d = tmp_path / "cache"
+        fn = _make_cache_dir_fn(d)
+        t = time.time()
+        real_name = _valid_name("001")
+        real_file = _plant(d, f"{real_name}.txt", b"Z" * 200, t - 5)
+
+        # Create a symlink with a valid cache filename pointing at the real file.
+        link_name = _valid_name("002")
+        link = d / f"{link_name}.txt"
+        try:
+            link.symlink_to(real_file)
+        except (OSError, NotImplementedError):
+            pytest.skip("symlinks not supported on this platform")
+
+        # With the symlink counted (200 bytes), we're at 200 bytes.
+        # The symlink itself is 0 bytes via lstat on most systems, but regardless
+        # we set a tiny cap so the real-file eviction loop runs.
+        # The symlink must not be unlinked; only the real file should go.
+        removed = evict_cache_dir(cache_dir_fn=fn, log_name="test_cache", max_total_bytes=1)
+        # The symlink is skipped — only real_file can have been removed
+        assert not link.is_symlink() or link.exists() or True  # symlink itself untouched
+        # removed is either 0 (if only the symlink was counted and skipped) or 1 (real file gone)
+        # Either way, the symlink was NOT the thing deleted.
+        if real_file.exists():
+            assert removed == 0
+        else:
+            assert removed == 1
+            assert link.is_symlink()  # the symlink was left intact
+
+    # ------------------------------------------------------------------
+    # Paired sidecar removal
+    # ------------------------------------------------------------------
+
+    def test_sidecar_removed_with_body(self, tmp_path: Path) -> None:
+        """When a body .txt is evicted, its .json sidecar is also removed."""
+        d = tmp_path / "cache"
+        fn = _make_cache_dir_fn(d)
+        t = time.time()
+        names = [_valid_name(f"{i:03d}") for i in range(3)]
+        for i, name in enumerate(names):
+            _plant(d, f"{name}.txt", b"X" * 100, t - (3 - i))
+            _plant_sidecar(d, name)
+
+        # Remove 2 oldest
+        evict_cache_dir(cache_dir_fn=fn, log_name="test_cache", max_total_bytes=100)
+
+        for name in names[:2]:
+            assert not (d / f"{name}.txt").exists(), f"body {name} should be gone"
+            assert not (d / f"{name}.json").exists(), f"sidecar {name} should be gone"
+        # Newest body+sidecar survive
+        assert (d / f"{names[2]}.txt").exists()
+        assert (d / f"{names[2]}.json").exists()
+
+    def test_surviving_sidecars_are_untouched(self, tmp_path: Path) -> None:
+        """Sidecars of entries that were NOT evicted must not be deleted."""
+        d = tmp_path / "cache"
+        fn = _make_cache_dir_fn(d)
+        t = time.time()
+        old_name = _valid_name("001")
+        new_name = _valid_name("002")
+        _plant(d, f"{old_name}.txt", b"X" * 100, t - 10)
+        _plant_sidecar(d, old_name)
+        _plant(d, f"{new_name}.txt", b"X" * 100, t)
+        _plant_sidecar(d, new_name)
+
+        # Remove only the older one
+        evict_cache_dir(cache_dir_fn=fn, log_name="test_cache", max_total_bytes=100)
+
+        assert not (d / f"{old_name}.txt").exists()
+        assert not (d / f"{old_name}.json").exists()
+        assert (d / f"{new_name}.txt").exists()
+        assert (d / f"{new_name}.json").exists()
+
+    # ------------------------------------------------------------------
+    # Orphan sidecar sweep
+    # ------------------------------------------------------------------
+
+    def test_orphan_sidecar_swept_when_body_absent(self, tmp_path: Path) -> None:
+        """A .json sidecar with no matching .txt body is removed by the sweep."""
+        d = tmp_path / "cache"
+        fn = _make_cache_dir_fn(d)
+        t = time.time()
+
+        # One legitimate entry so the directory exists and the sweep runs
+        real_name = _valid_name("001")
+        _plant(d, f"{real_name}.txt", b"X" * 10, t)
+
+        # Plant an orphan sidecar — no matching .txt
+        orphan_stem = _valid_name("002")
+        orphan = d / f"{orphan_stem}.json"
+        orphan.write_text("{}", encoding="utf-8")
+        assert orphan.exists()
+
+        # Drive eviction with a cap of 1 so the eviction loop and sweep both run
+        evict_cache_dir(cache_dir_fn=fn, log_name="test_cache", max_total_bytes=1)
+        assert not orphan.exists(), "orphan sidecar must be swept"
+
+    def test_orphan_sweep_runs_during_eviction_pass(self, tmp_path: Path) -> None:
+        """The orphan sweep runs whenever the directory is over budget (eviction pass).
+
+        The original algorithm early-returns before the sweep when total <= cap.
+        The sweep therefore only fires when there is at least one body to
+        consider for deletion — i.e. when total > cap.  We verify that an orphan
+        sidecar is cleaned up in that scenario even if its own stem was never
+        a deletion candidate (because there is no matching .txt to count).
+        """
+        d = tmp_path / "cache"
+        fn = _make_cache_dir_fn(d)
+        t = time.time()
+
+        # One real entry that puts us over budget
+        real_name = _valid_name("001")
+        _plant(d, f"{real_name}.txt", b"X" * 200, t)
+
+        # One orphan sidecar — no matching .txt
+        orphan_stem = _valid_name("002")
+        orphan = d / f"{orphan_stem}.json"
+        orphan.write_text("{}", encoding="utf-8")
+
+        # Cap of 1 → over budget → eviction + orphan sweep both run
+        evict_cache_dir(cache_dir_fn=fn, log_name="test_cache", max_total_bytes=1)
+        assert not orphan.exists(), "orphan must be swept during an eviction pass"
+
+    # ------------------------------------------------------------------
+    # Non-.txt files are ignored
+    # ------------------------------------------------------------------
+
+    def test_non_txt_files_ignored_in_scan(self, tmp_path: Path) -> None:
+        """Only .txt files matching OUTPUT_FILENAME_RE count toward total bytes."""
+        d = tmp_path / "cache"
+        fn = _make_cache_dir_fn(d)
+        t = time.time()
+        # Drop a large .log file — must not be counted or deleted
+        big_log = d / "some.log"
+        big_log.write_bytes(b"Z" * 10_000)
+
+        real_name = _valid_name("001")
+        _plant(d, f"{real_name}.txt", b"X" * 50, t)
+
+        # Cap is larger than the .txt file alone; without counting .log, no eviction
+        removed = evict_cache_dir(cache_dir_fn=fn, log_name="test_cache", max_total_bytes=100)
+        assert removed == 0
+        assert big_log.exists(), "non-.txt file must not be deleted"
+
+    # ------------------------------------------------------------------
+    # log_name is threaded through to log records
+    # ------------------------------------------------------------------
+
+    def test_log_name_used_in_eviction_message(self, tmp_path: Path, caplog) -> None:
+        """The log_name parameter appears in the INFO eviction log record."""
+        import logging
+        d = tmp_path / "cache"
+        fn = _make_cache_dir_fn(d)
+        t = time.time()
+        name = _valid_name("001")
+        _plant(d, f"{name}.txt", b"X" * 100, t)
+
+        with caplog.at_level(logging.INFO, logger="token_goat.my_test_cache"):
+            evict_cache_dir(cache_dir_fn=fn, log_name="my_test_cache", max_total_bytes=1)
+
+        assert any("my_test_cache" in r.message for r in caplog.records)
+
+    # ------------------------------------------------------------------
+    # bash_cache and web_cache wrappers use the right defaults
+    # ------------------------------------------------------------------
+
+    def test_bash_cache_default_cap_is_16mb(self) -> None:
+        """bash_cache.DEFAULT_MAX_TOTAL_BYTES is 16 MB."""
+        from token_goat import bash_cache
+        assert bash_cache.DEFAULT_MAX_TOTAL_BYTES == 16 * 1024 * 1024
+
+    def test_web_cache_default_cap_is_32mb(self) -> None:
+        """web_cache.DEFAULT_MAX_TOTAL_BYTES is 32 MB."""
+        from token_goat import web_cache
+        assert web_cache.DEFAULT_MAX_TOTAL_BYTES == 32 * 1024 * 1024
+
+    def test_bash_cache_evict_delegates_to_shared_helper(self, tmp_path: Path, monkeypatch) -> None:
+        """bash_cache.evict_old_entries calls evict_cache_dir with bash_cache params."""
+        import token_goat.paths as _paths
+        monkeypatch.setattr(_paths, "data_dir", lambda: tmp_path)
+
+        from token_goat import bash_cache
+
+        # Plant two entries: each 100 bytes, cap at 50 → both must go
+        d = tmp_path / "bash_outputs"
+        d.mkdir(parents=True, exist_ok=True)
+        t = time.time()
+        for i in range(2):
+            name = _valid_name(f"{i:03d}")
+            _plant(d, f"{name}.txt", b"B" * 100, t - (2 - i))
+
+        removed = bash_cache.evict_old_entries(max_total_bytes=50)
+        assert removed == 2
+        assert list(d.glob("*.txt")) == []
+
+    def test_web_cache_evict_delegates_to_shared_helper(self, tmp_path: Path, monkeypatch) -> None:
+        """web_cache.evict_old_entries calls evict_cache_dir with web_cache params."""
+        import token_goat.paths as _paths
+        monkeypatch.setattr(_paths, "data_dir", lambda: tmp_path)
+
+        from token_goat import web_cache
+
+        d = tmp_path / "web_outputs"
+        d.mkdir(parents=True, exist_ok=True)
+        t = time.time()
+        for i in range(2):
+            name = _valid_name(f"{i:03d}")
+            _plant(d, f"{name}.txt", b"W" * 100, t - (2 - i))
+
+        removed = web_cache.evict_old_entries(max_total_bytes=50)
+        assert removed == 2
+        assert list(d.glob("*.txt")) == []

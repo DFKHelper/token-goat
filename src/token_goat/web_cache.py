@@ -54,15 +54,18 @@ __all__ = [
 import hashlib
 import json
 import logging
-import os
-import stat as _stat_module
 import time
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import TypedDict
 
 from . import paths
-from .cache_common import OUTPUT_FILENAME_RE, load_sidecar_json, safe_session_fragment
+from .cache_common import (
+    OUTPUT_FILENAME_RE,
+    evict_cache_dir,
+    load_sidecar_json,
+    safe_session_fragment,
+)
 from .hooks_common import sanitize_log_str
 
 _LOG = logging.getLogger("token_goat.web_cache")
@@ -269,76 +272,15 @@ def evict_old_entries(*, max_total_bytes: int = DEFAULT_MAX_TOTAL_BYTES) -> int:
 
     Removes body + sidecar pairs together, then runs an orphan-sidecar sweep
     at the end.  Same shape as :func:`bash_cache.evict_old_entries`.
+
+    The shared algorithm lives in :func:`cache_common.evict_cache_dir`; this
+    wrapper supplies the web-specific directory, log name, and default cap.
     """
-    try:
-        d = _web_outputs_dir()
-    except OSError:
-        return 0
-
-    entries: list[tuple[Path, float, int]] = []
-    total = 0
-    try:
-        for fp in d.iterdir():
-            if not fp.name.endswith(".txt"):
-                continue
-            if not OUTPUT_FILENAME_RE.match(fp.name):
-                continue
-            try:
-                st = os.lstat(fp)
-            except OSError:
-                continue
-            if _stat_module.S_ISLNK(st.st_mode):
-                _LOG.warning("web_cache: skipping symlink in cache dir: %s", fp.name)
-                continue
-            entries.append((fp, float(st.st_mtime), int(st.st_size)))
-            total += int(st.st_size)
-    except OSError:
-        return 0
-
-    if total <= max_total_bytes:
-        return 0
-
-    entries.sort(key=lambda t: t[1])  # oldest first
-    removed = 0
-    for fp, _mtime, size in entries:
-        if total <= max_total_bytes:
-            break
-        try:
-            fp.unlink()
-            total -= size
-            removed += 1
-        except OSError:
-            continue
-        sidecar = fp.with_suffix(".json")
-        try:
-            sidecar.unlink()
-        except FileNotFoundError:
-            pass
-        except OSError as exc:
-            _LOG.debug("web_cache: sidecar cleanup failed for %s: %s", sidecar.name, exc)
-    if removed:
-        _LOG.info(
-            "web_cache: evicted %d entries to fit cap=%d bytes",
-            removed, max_total_bytes,
-        )
-
-    # Orphan-sidecar sweep — same rationale as bash_cache: a sidecar whose
-    # body was deleted out-of-band must not linger forever.
-    try:
-        for sp in d.iterdir():
-            if not sp.name.endswith(".json"):
-                continue
-            body = sp.with_suffix(".txt")
-            if body.exists():
-                continue
-            try:
-                sp.unlink()
-            except OSError as exc:
-                _LOG.debug("web_cache: orphan sidecar removal failed: %s: %s", sp.name, exc)
-    except OSError:
-        pass
-
-    return removed
+    return evict_cache_dir(
+        cache_dir_fn=_web_outputs_dir,
+        log_name="web_cache",
+        max_total_bytes=max_total_bytes,
+    )
 
 
 def list_outputs() -> list[_OutputStatDict]:
