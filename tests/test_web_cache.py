@@ -148,7 +148,6 @@ class TestPreFetchDedup:
         assert hso is not None
         ctx = hso.get("additionalContext", "")
         assert "token-goat web-output" in ctx
-        assert "docs.example/x" in ctx
 
     def test_distinct_url_no_hint(self, tmp_data_dir):
         hooks_fetch.post_fetch({

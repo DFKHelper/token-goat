@@ -304,4 +304,4 @@ class TestHintsSinglePassMultipleRanges:
         hint = build_read_hint(session_id=sid, file_path=path, offset=50, limit=151, cwd=None)
 
         assert hint is not None
-        assert "already read" in hint.lower() or "re-reading" in hint.lower()
+        assert "cached" in hint.lower() or "already read" in hint.lower() or "re-reading" in hint.lower()

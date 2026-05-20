@@ -278,5 +278,5 @@ class TestRealWorldSpike:
         _assert_continue(result)
         assert "hookSpecificOutput" in result
         hint = result["hookSpecificOutput"]["additionalContext"]
-        assert "already read" in hint
+        assert "cached" in hint
         assert "tokens" in hint
