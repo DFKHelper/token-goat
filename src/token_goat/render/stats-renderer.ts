@@ -1,5 +1,5 @@
 import { readFileSync } from 'node:fs'
-import { fg, bg, padL, padR, vlen, lerpRGB, RESET, C } from './ansi.js'
+import { fg, padL, padR, vlen, lerpRGB, RESET, C } from './ansi.js'
 import type { RGB } from './ansi.js'
 import type { StatsData, DayStat, KindStat } from './types.js'
 
@@ -262,7 +262,7 @@ const renderByKindSection = (stats: StatsData): string[] => {
   return lines
 }
 
-// ── Section: activity heatmap ─────────────────────────────────────────────────
+// ── Shared: project bullet colours ─────────────────────────────────────────────────
 
 const PROJECT_COLORS: RGB[] = [C.purple, C.teal, C.blue, C.green4, C.textMuted]
 
@@ -270,129 +270,6 @@ const PROJECT_COLORS: RGB[] = [C.purple, C.teal, C.blue, C.green4, C.textMuted]
 const hashColor = (hash: string): RGB => {
   const n = hash.split('').reduce((acc, c) => acc + c.charCodeAt(0), 0)
   return PROJECT_COLORS[n % PROJECT_COLORS.length] as RGB
-}
-
-const heatCellColor = (intensity: number): RGB => {
-  if (intensity <= 0) return C.bgTile
-  const stops = [C.green1, C.green2, C.green3, C.green4, C.green5]
-  const idx = intensity * (stops.length - 1)
-  const lo = Math.floor(idx)
-  const hi = Math.min(stops.length - 1, lo + 1)
-  return lerpRGB(stops[lo] as RGB, stops[hi] as RGB, idx - lo)
-}
-
-const DAY_LABELS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'] as const
-
-const renderActivitySection = (stats: StatsData): string[] => {
-  const { byDay, period, totals } = stats
-  if (!byDay.length) return []
-
-  // Aggregate all-days list (byDay may be top-N; build a complete date map)
-  const sorted = [...byDay].sort((a, b) => a.date.localeCompare(b.date))
-  const byDate = new Map(sorted.map(d => [d.date, d]))
-  const maxEvents = Math.max(...sorted.map(d => d.events), 1)
-
-  // Build a 7-row × N-week grid anchored to the Monday before `period.start`
-  const first = new Date(period.start.toISOString().slice(0, 10) + 'T00:00:00')
-  const dow0 = (first.getDay() + 6) % 7  // Mon=0, Sun=6
-  const gridStart = new Date(first)
-  gridStart.setDate(gridStart.getDate() - dow0)
-
-  const last = new Date(period.end.toISOString().slice(0, 10) + 'T00:00:00')
-  const dowLast = (last.getDay() + 6) % 7
-  const daysSpanned = Math.round((last.getTime() - gridStart.getTime()) / 86_400_000) + 1 + (6 - dowLast)
-  const rawWeeks = Math.ceil(daysSpanned / 7)
-
-  // Cap weeks to what fits in the terminal (each week = 2 chars cell + 1 space = 3 chars)
-  const availForCells = CONTENT_W - M.length - 4  // subtract margin + "Mon " label
-  const maxWeeks = Math.max(1, Math.floor(availForCells / 3))
-  const nWeeks = Math.min(rawWeeks, maxWeeks)
-  // Show the most recent nWeeks
-  const weekOffset = rawWeeks - nWeeks
-
-  // grid[dow][week] — week 0 is oldest displayed week
-  const grid: Array<Array<DayStat | null>> = Array.from({ length: 7 }, (_, dow) =>
-    Array.from({ length: nWeeks }, (_, w) => {
-      const d = new Date(gridStart)
-      d.setDate(gridStart.getDate() + (w + weekOffset) * 7 + dow)
-      return byDate.get(d.toISOString().slice(0, 10)) ?? null
-    }),
-  )
-
-  // Total calendar days in the requested period (not just rows passed in byDay)
-  const totalPeriodDays = Math.round((period.end.getTime() - period.start.getTime()) / 86_400_000) + 1
-
-  // Right panel: top days + rhythm analysis
-  const activeDays = sorted.filter(d => d.events > 0)
-  const topDays = [...activeDays].sort((a, b) => b.events - a.events).slice(0, 3)
-
-  const panelLines: string[] = []
-  if (topDays.length) {
-    panelLines.push(`${fg(...C.textBright)}Top days${RESET}`)
-    for (const d of topDays) {
-      const c: RGB = d.events / maxEvents > 0.5 ? C.green5 : C.green4
-      panelLines.push(`${fg(...C.textMuted)}${d.date.slice(5)}  ${fg(...c)}●${RESET}  ${fg(...C.textMuted)}${d.events} ev · ${fmtBytes(d.bytes)}${RESET}`)
-    }
-    panelLines.push('')
-    panelLines.push(`${fg(...C.textBright)}Rhythm${RESET}`)
-
-    const totalEv = activeDays.reduce((s, d) => s + d.events, 0)
-    const weekdayEv = activeDays
-      .filter(d => { const dow = new Date(d.date + 'T00:00:00').getDay(); return dow !== 0 && dow !== 6 })
-      .reduce((s, d) => s + d.events, 0)
-    const mean = totalEv / (activeDays.length || 1)
-    const cv = Math.sqrt(
-      activeDays.reduce((s, d) => s + (d.events - mean) ** 2, 0) / (activeDays.length || 1),
-    ) / (mean || 1)
-
-    const rhythm = cv > 1.0 ? 'Burst pattern' : cv > 0.5 ? 'Moderate bursts' : 'Steady usage'
-    const weekdayBias = totalEv === 0 ? 'No data'
-      : weekdayEv / totalEv > 0.8 ? 'Weekday-heavy'
-      : weekdayEv / totalEv > 0.5 ? 'Mostly weekdays'
-      : 'Spread across week'
-
-    panelLines.push(`${fg(...C.textMuted)}${rhythm}${RESET}`)
-    panelLines.push(`${fg(...C.textMuted)}${weekdayBias}${RESET}`)
-    panelLines.push(`${fg(...C.textMuted)}${activeDays.length} active day${activeDays.length !== 1 ? 's' : ''} of ${totalPeriodDays}${RESET}`)
-  }
-
-  // Visible width of the grid portion of each row: M + "Mon " + n cols × 2 + (n-1) spaces
-  const gridVisW = M.length + 4 + nWeeks * 2 + (nWeeks - 1)
-
-  const activeDayCount = activeDays.length
-  const subtitle = `·  ${fmtDate(period.start)} → ${fmtDate(period.end)}  ·  ${totals.events} events across ${activeDayCount} active day${activeDayCount !== 1 ? 's' : ''}`
-
-  const lines: string[] = [...sectionHeader('Activity', subtitle)]
-
-  for (let dow = 0; dow < 7; dow++) {
-    const label = padR(fg(...C.textDim) + DAY_LABELS[dow] + RESET, 3)
-    const cells = grid[dow]
-      .map(cell => {
-        const intensity = cell ? cell.events / maxEvents : 0
-        const [r, g, b] = heatCellColor(intensity)
-        return `${bg(r, g, b)}  ${RESET}`
-      })
-      .join(' ')
-
-    const leftPart = `${M}${label} ${cells}`
-    const panelPart = dow < panelLines.length ? `  ${panelLines[dow]}` : ''
-    lines.push(padR(leftPart, gridVisW) + panelPart)
-  }
-
-  // Any remaining panel lines below the 7 grid rows
-  for (let i = 7; i < panelLines.length; i++) {
-    lines.push(' '.repeat(gridVisW) + `  ${panelLines[i]}`)
-  }
-
-  // Legend
-  const legendCells = [0, 0.25, 0.5, 0.75, 1.0].map(t => {
-    const [r, g, b] = heatCellColor(t)
-    return `${bg(r, g, b)}  ${RESET}`
-  }).join(' ')
-  lines.push('')
-  lines.push(`${M}${' '.repeat(4)}${fg(...C.textDim)}Less${RESET}  ${legendCells}  ${fg(...C.textDim)}More${RESET}`)
-
-  return lines
 }
 
 // ── Section: by day ───────────────────────────────────────────────────────────
@@ -505,7 +382,6 @@ export const renderStats = (stats: StatsData): string =>
   [
     ...renderKpiSection(stats),
     ...renderByKindSection(stats),
-    ...renderActivitySection(stats),
     ...renderByDaySection(stats),
     ...renderByProjectSection(stats),
     ...renderInsightsSection(stats),
