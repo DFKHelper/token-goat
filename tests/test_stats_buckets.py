@@ -13,6 +13,10 @@ class TestSourceBucketMapping:
         assert stats.kind_to_source("bash_dedup_hint") == stats.SOURCE_BASH
         assert stats.kind_to_source("bash_dedup_hint_overhead") == stats.SOURCE_BASH
 
+    def test_web_dedup_lands_in_web_bucket(self):
+        assert stats.kind_to_source("web_dedup_hint") == stats.SOURCE_WEB
+        assert stats.kind_to_source("web_dedup_hint_overhead") == stats.SOURCE_WEB
+
     def test_bash_output_cached_lands_in_bash_bucket(self):
         assert stats.kind_to_source("bash_output_cached") == stats.SOURCE_BASH
 
