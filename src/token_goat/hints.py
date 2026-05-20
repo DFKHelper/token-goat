@@ -6,6 +6,7 @@ import hashlib
 import logging
 import sqlite3
 import time
+from collections.abc import Callable
 from pathlib import Path
 from typing import TypedDict
 
@@ -754,6 +755,45 @@ def _build_diff_hint_inner(
 
 
 # ---------------------------------------------------------------------------
+# Shared fail-soft wrapper for all dedup hint builders
+# ---------------------------------------------------------------------------
+
+
+def _failsoft_dedup_hint(
+    fn: Callable[[], ReadHint | None],
+    *,
+    caller: str,
+    session_id: str,
+) -> ReadHint | None:
+    """Invoke *fn* and return its result, suppressing any exception.
+
+    All three dedup hint builders (bash, grep, web) share the same fail-soft
+    contract: if the inner implementation raises unexpectedly, the exception
+    is logged at WARNING level and ``None`` is returned so the pre-tool hook
+    continues unchanged.  This helper centralises that boilerplate — the only
+    per-caller variation is the *caller* label used in the warning message.
+
+    Args:
+        fn:         Zero-argument callable wrapping the inner hint builder with
+                    all its keyword arguments already bound (typically a lambda
+                    or :func:`functools.partial`).
+        caller:     Short name used in the warning log, e.g. ``"build_bash_dedup_hint"``.
+        session_id: Used in the warning log to help correlate the error to a session.
+
+    Returns:
+        The hint returned by *fn*, or ``None`` on any exception.
+    """
+    try:
+        return fn()
+    except Exception as exc:  # noqa: BLE001 — fail-soft for the hot pre-tool hook path
+        _LOG.warning(
+            "%s: unexpected error (session=%s): %s",
+            caller, (session_id or "")[:16], exc, exc_info=True,
+        )
+        return None
+
+
+# ---------------------------------------------------------------------------
 # Bash dedup hint
 # ---------------------------------------------------------------------------
 
@@ -781,16 +821,13 @@ def build_bash_dedup_hint(
       (same staleness boundary used by the read-dedup path: above that
       window the model's context has likely scrolled past the old result)
     """
-    try:
-        return _build_bash_dedup_hint_inner(
+    return _failsoft_dedup_hint(
+        lambda: _build_bash_dedup_hint_inner(
             session_id=session_id, command=command, cache=cache,
-        )
-    except Exception as exc:  # noqa: BLE001 — fail-soft for the hot pre-bash path
-        _LOG.warning(
-            "build_bash_dedup_hint: unexpected error (session=%s): %s",
-            (session_id or "")[:16], exc, exc_info=True,
-        )
-        return None
+        ),
+        caller="build_bash_dedup_hint",
+        session_id=session_id,
+    )
 
 
 # Minimum output size before the bash dedup hint fires.  The hint itself costs
@@ -899,16 +936,13 @@ def build_grep_dedup_hint(
     Never raises; any unexpected exception is caught and the hint is
     suppressed (the pre-Grep path must stay fail-soft).
     """
-    try:
-        return _build_grep_dedup_hint_inner(
+    return _failsoft_dedup_hint(
+        lambda: _build_grep_dedup_hint_inner(
             session_id=session_id, pattern=pattern, path=path, cache=cache,
-        )
-    except Exception as exc:  # noqa: BLE001 — fail-soft for the hot pre-read path
-        _LOG.warning(
-            "build_grep_dedup_hint: unexpected error (session=%s): %s",
-            (session_id or "")[:16], exc, exc_info=True,
-        )
-        return None
+        ),
+        caller="build_grep_dedup_hint",
+        session_id=session_id,
+    )
 
 
 def _build_grep_dedup_hint_inner(
@@ -992,16 +1026,13 @@ def build_web_dedup_hint(
       (above that window the page content is likely to have changed and a
       re-fetch is legitimate)
     """
-    try:
-        return _build_web_dedup_hint_inner(
+    return _failsoft_dedup_hint(
+        lambda: _build_web_dedup_hint_inner(
             session_id=session_id, url=url, cache=cache,
-        )
-    except Exception as exc:  # noqa: BLE001 — fail-soft for the hot pre-fetch path
-        _LOG.warning(
-            "build_web_dedup_hint: unexpected error (session=%s): %s",
-            (session_id or "")[:16], exc, exc_info=True,
-        )
-        return None
+        ),
+        caller="build_web_dedup_hint",
+        session_id=session_id,
+    )
 
 
 def _build_web_dedup_hint_inner(
