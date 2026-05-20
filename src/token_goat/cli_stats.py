@@ -44,9 +44,11 @@ def stats(
     """Show cumulative token savings."""
     summary = stats_mod.summarize(window_days=window)
     if json_output:
+        from . import __version__  # noqa: PLC0415
         typer.echo(
             json.dumps(
                 {
+                    "version": __version__,
                     "total_events": summary.total_events,
                     "total_bytes_saved": summary.total_bytes_saved,
                     "total_tokens_saved": summary.total_tokens_saved,

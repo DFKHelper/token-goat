@@ -945,3 +945,42 @@ class TestRenderBySource:
         # Both buckets should appear in the rendered table.
         assert "image" in text
         assert "read" in text
+
+
+class TestVersionInStatsOutput:
+    """token-goat stats surfaces the loaded package version."""
+
+    def test_to_stats_data_carries_version(self, tmp_data_dir):
+        """_to_stats_data stamps the StatsData payload with the loaded version."""
+        from token_goat import __version__
+
+        summary = stats.summarize(window_days=30)
+        data = stats._to_stats_data(summary)
+        assert data.version == __version__
+        assert data.version  # non-empty: importlib.metadata value or the dev fallback
+
+    def test_json_output_includes_version(self, tmp_data_dir):
+        """`token-goat stats --json` emits a top-level version field."""
+        from typer.testing import CliRunner
+
+        from token_goat import __version__, cli
+
+        result = CliRunner().invoke(cli.app, ["stats", "--json"])
+        assert result.exit_code == 0, result.output
+        payload = json.loads(result.output)
+        assert payload["version"] == __version__
+
+    def test_legacy_renderer_title_includes_version(self, tmp_data_dir):
+        """The rich fallback renderer also shows the version in its panel title."""
+        from unittest.mock import patch
+
+        from token_goat import __version__
+
+        db.record_stat(None, "image_shrink", bytes_saved=1000, tokens_saved=250)
+        summary = stats.summarize(window_days=30)
+        with patch(
+            "token_goat.render.stats_renderer.render_stats",
+            side_effect=RuntimeError("force fallback"),
+        ):
+            text = stats.render_text(summary)
+        assert f"v{__version__}" in text

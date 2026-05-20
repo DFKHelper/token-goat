@@ -14,6 +14,7 @@ import pytest
 from token_goat.render.ansi import strip_ansi
 from token_goat.render.stats_renderer import (
     _render_by_source_section,
+    _render_header,
     _source_color,
     render_stats,
 )
@@ -186,3 +187,36 @@ class TestBySourceFullRender:
                 )
                 return
         pytest.fail(f"source {source!r} not found in output")
+
+
+class TestVersionHeader:
+    """render_stats surfaces the loaded token-goat version in a header line."""
+
+    def test_render_header_with_version(self):
+        """_render_header shows the name followed by a v-prefixed version."""
+        stats = _make_stats()
+        stats.version = "0.6.1"
+        header = strip_ansi("\n".join(_render_header(stats)))
+        assert header.strip() == "token-goat  v0.6.1"
+
+    def test_render_header_without_version(self):
+        """An empty version (older StatsData payload) renders just the name."""
+        stats = _make_stats()  # version defaults to ""
+        assert stats.version == ""
+        header = strip_ansi("\n".join(_render_header(stats)))
+        assert header.strip() == "token-goat"
+
+    def test_full_render_includes_version(self):
+        """The version string appears in the complete render_stats output."""
+        stats = _make_stats()
+        stats.version = "9.9.9"
+        plain = strip_ansi(render_stats(stats))
+        assert "token-goat" in plain
+        assert "v9.9.9" in plain
+
+    def test_header_precedes_all_sections(self):
+        """The header line is rendered before the first data section."""
+        stats = _make_stats()
+        stats.version = "9.9.9"
+        plain = strip_ansi(render_stats(stats))
+        assert plain.index("token-goat") < plain.index("By kind")

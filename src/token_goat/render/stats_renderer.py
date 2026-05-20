@@ -718,6 +718,21 @@ def _render_insights_section(stats: StatsData) -> list[str]:
     return lines
 
 
+# ── Report header ──────────────────────────────────────────────────────────────
+
+def _render_header(stats: StatsData) -> list[str]:
+    """Return the report header line: the token-goat name and loaded version.
+
+    ``stats.version`` is the installed token-goat package version. An empty
+    string (older ``StatsData`` payloads built before the field shipped)
+    renders just the name with no version suffix.
+    """
+    line = f"{_M}{fg(*C.TEXT_BRIGHT)}token-goat{RESET}"
+    if stats.version:
+        line += f"  {fg(*C.TEXT_MUTED)}v{stats.version}{RESET}"
+    return [line]
+
+
 # ── Main export ────────────────────────────────────────────────────────────────
 
 def render_stats(stats: StatsData) -> str:
@@ -731,6 +746,7 @@ def render_stats(stats: StatsData) -> str:
         print(render_stats(stats))
     """
     sections = [
+        _render_header(stats),
         _render_kpi_section(stats),
         _render_by_kind_section(stats),
         _render_by_source_section(stats),

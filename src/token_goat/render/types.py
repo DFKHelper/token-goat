@@ -122,6 +122,7 @@ class StatsData:
     by_source: Sorted desc by bytes; collapses raw kinds into image/hint/read/compact/other.
         Defaults to empty so older callers that built StatsData before by_source
         shipped still construct without modification.
+    version: Loaded token-goat package version string (e.g. "0.6.1"); "" when unknown.
     """
     period_start: date
     period_end: date
@@ -135,3 +136,7 @@ class StatsData:
     # Sorted desc by bytes.  Optional and defaults to empty so older callers /
     # cached StatsData snapshots built before by_source shipped still load.
     by_source: list[SourceStat] = field(default_factory=list)
+    # Loaded token-goat package version, e.g. "0.6.1".  Defaults to "" so older
+    # callers / cached snapshots built before this field shipped still load; the
+    # renderer omits the version suffix when it is empty.
+    version: str = ""
