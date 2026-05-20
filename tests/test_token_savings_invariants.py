@@ -525,3 +525,42 @@ class TestCliStdoutIsCompactJson:
         result = CliRunner().invoke(app, ["config", "list", "--json"])
         assert result.exit_code == 0, result.output
         _is_compact(result.output)
+
+
+# ---------------------------------------------------------------------------
+# (h) Injected blocks contain all modifier concepts (steering integrity)
+# ---------------------------------------------------------------------------
+
+
+class TestInjectedBlockModifiers:
+    """Modifier concepts must appear in all three directive blocks to ensure
+    steering directives are consistently distributed across CLAUDE.md, SKILL.md,
+    and CODEX_AGENTS_MD_CONTENT.
+    """
+
+    def test_all_modifier_concepts_in_all_blocks(self):
+        """Every modifier concept must appear in CLAUDE.md, SKILL.md, and CODEX_AGENTS."""
+        from token_goat.install import CLAUDE_MD_CONTENT, CODEX_AGENTS_MD_CONTENT, SKILL_MD_CONTENT
+
+        # Modifier concepts that must be present in all three blocks
+        required_concepts = [
+            "symbol --all-projects",
+            "--strict",
+            "map --compact",
+            "--max-distance",
+            "--no-rerank",
+            "--grep",
+            "Did you mean",
+            "redirected from",
+        ]
+
+        for concept in required_concepts:
+            assert concept in CLAUDE_MD_CONTENT, (
+                f"modifier concept '{concept}' missing from CLAUDE_MD_CONTENT"
+            )
+            assert concept in SKILL_MD_CONTENT, (
+                f"modifier concept '{concept}' missing from SKILL_MD_CONTENT"
+            )
+            assert concept in CODEX_AGENTS_MD_CONTENT, (
+                f"modifier concept '{concept}' missing from CODEX_AGENTS_MD_CONTENT"
+            )
