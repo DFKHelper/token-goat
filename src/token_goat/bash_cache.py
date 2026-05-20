@@ -47,7 +47,7 @@ from pathlib import Path
 from typing import TypedDict
 
 from . import paths
-from .cache_common import OUTPUT_FILENAME_RE, safe_session_fragment
+from .cache_common import OUTPUT_FILENAME_RE, load_sidecar_json, safe_session_fragment
 from .hooks_common import sanitize_log_str
 
 _LOG = logging.getLogger("token_goat.bash_cache")
@@ -438,13 +438,10 @@ def read_sidecar(output_id: str) -> BashOutputMeta | None:
     fall back to safe defaults so an old cache survives a token-goat upgrade.
     """
     p = sidecar_meta_path(output_id)
-    if p is None or not p.exists():
+    if p is None:
         return None
-    try:
-        data = json.loads(p.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return None
-    if not isinstance(data, dict):
+    data = load_sidecar_json(p)
+    if data is None:
         return None
     try:
         return BashOutputMeta(

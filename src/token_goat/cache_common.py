@@ -8,10 +8,14 @@ from __future__ import annotations
 
 __all__ = [
     "OUTPUT_FILENAME_RE",
+    "load_sidecar_json",
     "safe_session_fragment",
 ]
 
+import json
 import re
+from pathlib import Path
+from typing import Any
 
 # Filename pattern shared by both the bash-output and web-output caches.
 # Components are intentionally kept short so the full path stays well within
@@ -23,6 +27,26 @@ OUTPUT_FILENAME_RE = re.compile(r"^[a-zA-Z0-9_\-]{1,80}\.txt$")
 # Pre-compiled pattern used by safe_session_fragment — module-level so it is
 # only compiled once across both callers.
 _SESSION_UNSAFE_RE = re.compile(r"[^a-zA-Z0-9_\-]")
+
+
+def load_sidecar_json(path: Path) -> dict[str, Any] | None:
+    """Load and validate a JSON sidecar file, returning a ``dict`` or ``None``.
+
+    Returns ``None`` when the file is absent, unreadable, contains malformed
+    JSON, or has a top-level type other than ``dict``.  This covers every
+    failure mode that :func:`bash_cache.read_sidecar` and
+    :func:`web_cache.read_sidecar` must tolerate; callers keep the
+    dataclass-construction step so the two metadata shapes stay independent.
+    """
+    if not path.exists():
+        return None
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    if not isinstance(data, dict):
+        return None
+    return data
 
 
 def safe_session_fragment(session_id: str) -> str:
