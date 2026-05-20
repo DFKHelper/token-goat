@@ -5,6 +5,7 @@ __all__ = [
     "BashCompressConfig",
     "CompactAssistConfig",
     "Config",
+    "SessionBriefConfig",
     "CONFIG_SCHEMA_VERSION",
     "load",
     "save",
@@ -23,6 +24,7 @@ _LOG = logging.getLogger("token_goat.config")
 _ENV_COMPACT_ASSIST: Final[str] = "TOKEN_GOAT_COMPACT_ASSIST"  # set to "0"/"false"/"no"/"off" to disable
 _ENV_COMPACT_ASSIST_LEGACY: Final[str] = "TOKENWISE_COMPACT_ASSIST"  # backward-compat alias
 _ENV_BASH_COMPRESS: Final[str] = "TOKEN_GOAT_BASH_COMPRESS"  # set to "0"/"false"/"no"/"off" to disable
+_ENV_SESSION_BRIEF: Final[str] = "TOKEN_GOAT_SESSION_BRIEF"  # set to "0"/"false"/"no"/"off" to disable
 
 CONFIG_SCHEMA_VERSION: Final[int] = 1
 
@@ -48,12 +50,19 @@ class _BashCompressToml(TypedDict, total=False):
     timeout_seconds: int
 
 
+class _SessionBriefToml(TypedDict, total=False):
+    """Expected shape of the [session_brief] TOML section."""
+
+    enabled: bool
+
+
 class _ConfigToml(TypedDict, total=False):
     """Expected shape of the token-goat config TOML file."""
 
     schema_version: int
     compact_assist: _CompactAssistToml
     bash_compress: _BashCompressToml
+    session_brief: _SessionBriefToml
 
 
 @dataclass
@@ -129,6 +138,23 @@ class BashCompressConfig:
 
 
 @dataclass
+class SessionBriefConfig:
+    """Configuration for the session-start orientation brief.
+
+    When enabled, token-goat injects a compact git-status + recent-commits
+    summary into the session context at startup.  This saves the model 3-4
+    orientation tool calls (``git status``, ``git log``, ``git branch``) that
+    it would otherwise spend discovering the same info from scratch.
+
+    Attributes:
+        enabled: Master on/off switch.  Can also be disabled at runtime by
+            setting ``TOKEN_GOAT_SESSION_BRIEF=0`` (or ``false``/``no``/``off``).
+    """
+
+    enabled: bool = True
+
+
+@dataclass
 class Config:
     """Top-level token-goat configuration.
 
@@ -139,6 +165,7 @@ class Config:
 
     compact_assist: CompactAssistConfig = field(default_factory=CompactAssistConfig)
     bash_compress: BashCompressConfig = field(default_factory=BashCompressConfig)
+    session_brief: SessionBriefConfig = field(default_factory=SessionBriefConfig)
 
 
 # ---------------------------------------------------------------------------
@@ -316,9 +343,23 @@ def load() -> Config:
         )
         bc.enabled = False
 
+    sb_raw: _SessionBriefToml = cast("_SessionBriefToml", raw.get("session_brief", {}))
+    sb = SessionBriefConfig(
+        enabled=_validated_bool(sb_raw.get("enabled", True), True, "session_brief.enabled"),
+    )
+    env_brief = os.environ.get(_ENV_SESSION_BRIEF, "").strip().lower()
+    if env_brief in ("0", "false", "no", "off"):
+        _LOG.info(
+            "session_brief disabled by environment variable (%s=%s)",
+            _ENV_SESSION_BRIEF,
+            env_brief,
+        )
+        sb.enabled = False
+
     _LOG.debug(
         "config resolved: compact_assist enabled=%s triggers=%s min_events=%d max_tokens=%d; "
-        "bash_compress enabled=%s disabled_filters=%s max_lines=%d max_bytes=%d timeout=%d",
+        "bash_compress enabled=%s disabled_filters=%s max_lines=%d max_bytes=%d timeout=%d; "
+        "session_brief enabled=%s",
         ca.enabled,
         ca.triggers,
         ca.min_events,
@@ -328,8 +369,9 @@ def load() -> Config:
         bc.max_lines,
         bc.max_bytes,
         bc.timeout_seconds,
+        sb.enabled,
     )
-    return Config(compact_assist=ca, bash_compress=bc)
+    return Config(compact_assist=ca, bash_compress=bc, session_brief=sb)
 
 
 def save(config: Config) -> None:
@@ -340,6 +382,7 @@ def save(config: Config) -> None:
     p.parent.mkdir(parents=True, exist_ok=True)
     ca = config.compact_assist
     bc = config.bash_compress
+    sb = config.session_brief
     data: _ConfigToml = {
         "schema_version": CONFIG_SCHEMA_VERSION,
         "compact_assist": {
@@ -354,6 +397,9 @@ def save(config: Config) -> None:
             "max_lines": bc.max_lines,
             "max_bytes": bc.max_bytes,
             "timeout_seconds": bc.timeout_seconds,
+        },
+        "session_brief": {
+            "enabled": sb.enabled,
         },
     }
     try:

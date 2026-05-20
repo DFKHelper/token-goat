@@ -308,6 +308,142 @@ def _try_recovery_response(session_id: str | None, source: str) -> HookResponse 
     }
 
 
+def _build_session_brief(cwd: str) -> str | None:
+    """Build a compact git orientation brief for the session start context.
+
+    Runs ``git status --porcelain`` and ``git log --oneline -5`` in *cwd*.
+    Returns a short Markdown block (under 80 tokens) or ``None`` when:
+
+    - The directory is not a git repo or git is not available
+    - Both status and log are empty (clean repo with no commits)
+    - Any subprocess call times out or raises
+    - The feature is disabled via env var or config
+
+    The brief format::
+
+        ## Session Context
+        Branch: main | 2 modified, 1 untracked
+        Recent: abc1234 fix auth | def5678 add tests | ghi9012 init
+
+    The ``source`` guard (only fires on non-compact starts) is enforced by the
+    caller.  This function just builds the string; it has no knowledge of
+    session source.
+    """
+    import os  # noqa: PLC0415
+    import subprocess  # noqa: PLC0415
+
+    # Feature gate: env var override (checked first, cheapest)
+    env_val = os.environ.get("TOKEN_GOAT_SESSION_BRIEF", "").strip().lower()
+    if env_val in ("0", "false", "no", "off"):
+        return None
+
+    # Feature gate: config file
+    try:
+        from . import config as cfg_mod  # noqa: PLC0415
+
+        cfg = cfg_mod.load()
+        if not cfg.session_brief.enabled:
+            return None
+    except Exception:  # noqa: BLE001
+        pass  # fail-open: config load errors don't suppress the brief
+
+    try:
+        import pathlib  # noqa: PLC0415
+
+        cwd_path = pathlib.Path(cwd)
+        if not cwd_path.is_dir():
+            return None
+    except Exception:  # noqa: BLE001
+        return None
+
+    common_kwargs: dict = {
+        "cwd": cwd,
+        "capture_output": True,
+        "text": True,
+        "timeout": 2,
+    }
+
+    # Determine current branch
+    branch = "unknown"
+    try:
+        br = subprocess.run(
+            ["git", "rev-parse", "--abbrev-ref", "HEAD"],
+            **common_kwargs,
+        )
+        if br.returncode == 0:
+            branch = br.stdout.strip() or "unknown"
+        elif br.returncode == 128:
+            # Not a git repo
+            return None
+    except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
+        return None
+
+    # git status --porcelain — cap at 20 lines
+    status_lines: list[str] = []
+    try:
+        st = subprocess.run(
+            ["git", "status", "--porcelain"],
+            **common_kwargs,
+        )
+        if st.returncode == 0:
+            status_lines = st.stdout.splitlines()[:20]
+    except (subprocess.TimeoutExpired, OSError):
+        pass
+
+    # git log --oneline -5
+    log_lines: list[str] = []
+    try:
+        lg = subprocess.run(
+            ["git", "log", "--oneline", "-5"],
+            **common_kwargs,
+        )
+        if lg.returncode == 0:
+            log_lines = [line.strip() for line in lg.stdout.splitlines() if line.strip()]
+    except (subprocess.TimeoutExpired, OSError):
+        pass
+
+    # Skip entirely if nothing to report (clean + no commits)
+    if not status_lines and not log_lines:
+        return None
+
+    # Build status summary
+    parts: list[str] = []
+
+    if status_lines:
+        # XY format: X is index (staged), Y is work-tree
+        staged = sum(1 for line in status_lines if line[:1] not in (" ", "?", "!"))
+        modified = sum(1 for line in status_lines if line[1:2] == "M")
+        untracked = sum(1 for line in status_lines if line.startswith("??"))
+        counts: list[str] = []
+        if staged:
+            counts.append(f"{staged} staged")
+        if modified:
+            counts.append(f"{modified} modified")
+        if untracked:
+            counts.append(f"{untracked} untracked")
+        status_str = ", ".join(counts) if counts else "changes"
+        parts.append(f"Branch: {branch} | {status_str}")
+    else:
+        parts.append(f"Branch: {branch} | clean")
+
+    if log_lines:
+        # Each commit: "abc1234 message" — keep short (hash + 40 chars max per entry)
+        short_commits: list[str] = []
+        for entry in log_lines[:5]:
+            tokens = entry.split(" ", 1)
+            if len(tokens) == 2:
+                h, msg = tokens
+                msg = msg[:40]
+                short_commits.append(f"{h} {msg}")
+            else:
+                short_commits.append(entry[:50])
+        parts.append("Recent: " + " | ".join(short_commits))
+
+    brief = "## Session Context\n" + "\n".join(parts)
+    _LOG.debug("session-start: orientation brief built (%d chars)", len(brief))
+    return brief
+
+
 def _detect(payload: HookPayload) -> Project | None:
     """Detect the current project from cwd. Returns None if not in a project root.
 
@@ -449,17 +585,36 @@ def session_start(payload: HookPayload) -> HookResponse:
     # cache and lose the recovery data).
     _reset_session_cache(session_id)
 
+    # Build the git orientation brief (injected as systemMessage so it takes
+    # priority over additionalContext and is visible immediately at session start).
+    brief: str | None = None
+    if cwd:
+        try:
+            brief = _build_session_brief(cwd)
+        except Exception:  # noqa: BLE001
+            _LOG.debug("session-start: brief build failed", exc_info=True)
+
     # Inject project memory facts for the new session (non-compact only —
     # compact sessions preserve prior context and don't need a re-injection).
+    mem_ctx: str | None = None
     if proj is not None:
         mem_ctx = _build_startup_context(proj)
+
+    # Combine brief (systemMessage) and project memory (additionalContext) into
+    # a single response.  Either or both may be absent.
+    if brief or mem_ctx:
+        resp: HookResponse = {
+            "continue": True,
+            "hookSpecificOutput": {
+                "hookEventName": "SessionStart",
+            },
+        }
+        if brief:
+            resp["systemMessage"] = brief
         if mem_ctx:
-            return {
-                "continue": True,
-                "hookSpecificOutput": {
-                    "hookEventName": "SessionStart",
-                    "additionalContext": mem_ctx,
-                },
-            }
+            hso = resp.get("hookSpecificOutput")
+            if isinstance(hso, dict):
+                hso["additionalContext"] = mem_ctx
+        return resp
 
     return CONTINUE()
