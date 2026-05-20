@@ -13,6 +13,9 @@ import pytest
 
 from token_goat.render.ansi import strip_ansi
 from token_goat.render.stats_renderer import (
+    _render_by_day_section,
+    _render_by_kind_section,
+    _render_by_project_section,
     _render_by_source_section,
     _render_header,
     _source_color,
@@ -220,3 +223,53 @@ class TestVersionHeader:
         stats.version = "9.9.9"
         plain = strip_ansi(render_stats(stats))
         assert plain.index("token-goat") < plain.index("By kind")
+
+
+class TestShareOrdering:
+    """By kind / by day / by project rows render in descending share order.
+
+    Regression: the rows were emitted in the caller's byte-sorted order while
+    the share column they display is token-derived, so the share column
+    zig-zagged whenever bytes and tokens ranked rows differently (an
+    image-heavy day saves bytes but ~0 tokens). Each section renderer now
+    orders its rows by the same share metric it displays.
+    """
+
+    def test_by_kind_rows_descending_share(self):
+        """read_replacement (50% token share) outranks image_shrink (40% byte share)."""
+        out = strip_ansi("\n".join(_render_by_kind_section(_make_stats())))
+        assert (
+            out.index("read_replacement")
+            < out.index("image_shrink")
+            < out.index("session_hint")
+            < out.index("compact_manifest")
+        )
+
+    def test_by_day_rows_descending_share(self):
+        """A low-byte / high-token day outranks a high-byte / low-token day."""
+        stats = _make_stats()
+        stats.totals = TotalStats(events=20, bytes=10_000, tokens=1_000)
+        stats.by_day = [
+            DayStat(date="2026-03-01", bytes=8_000, tokens=100, events=10),
+            DayStat(date="2026-03-02", bytes=2_000, tokens=900, events=10),
+        ]
+        out = strip_ansi("\n".join(_render_by_day_section(stats)))
+        # 2026-03-02 = 90% token share despite fewer bytes — it renders first.
+        assert out.index("2026-03-02") < out.index("2026-03-01")
+
+    def test_by_project_rows_descending_share(self):
+        """A low-byte / high-token project outranks a high-byte / low-token one."""
+        stats = _make_stats()
+        stats.by_project = [
+            ProjectStat(
+                project="big-bytes", hash="aaaa1111", path="/tmp/a",
+                bytes=8_000, tokens=100, events=10,
+            ),
+            ProjectStat(
+                project="big-tokens", hash="bbbb2222", path="/tmp/b",
+                bytes=2_000, tokens=900, events=10,
+            ),
+        ]
+        out = strip_ansi("\n".join(_render_by_project_section(stats)))
+        # big-tokens = 90% of the cross-project token total despite fewer bytes.
+        assert out.index("big-tokens") < out.index("big-bytes")

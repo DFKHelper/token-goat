@@ -237,7 +237,9 @@ const renderByKindSection = (stats: StatsData): string[] => {
     tableHeader('name'),
   ]
 
-  for (const k of byKind) {
+  // Rows are ordered by share of the period total, largest first (share is
+  // byte-proportional in this renderer, so descending bytes gives share order).
+  for (const k of [...byKind].sort((a, b) => b.bytes - a.bytes)) {
     const share = totals.bytes > 0 ? k.bytes / totals.bytes : 0
     lines.push(tableRow(k.kind, {
       fraction: share,
@@ -283,7 +285,8 @@ const renderByDaySection = (stats: StatsData): string[] => {
     tableHeader('date'),
   ]
 
-  for (const d of byDay) {
+  // Rows are ordered by share of the period total, largest first.
+  for (const d of [...byDay].sort((a, b) => b.bytes - a.bytes)) {
     const share = totals.bytes > 0 ? d.bytes / totals.bytes : 0
     lines.push(tableRow(d.date, {
       fraction: share,
@@ -310,7 +313,8 @@ const renderByProjectSection = (stats: StatsData): string[] => {
     tableHeader('project'),
   ]
 
-  for (const p of byProject) {
+  // Rows are ordered by share of the cross-project total, largest first.
+  for (const p of [...byProject].sort((a, b) => b.bytes - a.bytes)) {
     const share = projectTotal > 0 ? p.bytes / projectTotal : 0
     const color = hashColor(p.hash)
     lines.push(tableRow(p.project, {

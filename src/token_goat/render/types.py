@@ -116,9 +116,9 @@ class SourceStat:
 class StatsData:
     """Complete stats payload for a reporting period: totals, by-kind, by-day, and by-project breakdowns.
 
-    by_kind: All rows, sorted desc by bytes (no top-N applied; renderer handles display limits).
-    by_day: Caller-filtered top-N rows, sorted desc by bytes.
-    by_project: Caller-filtered top-N rows, sorted desc by bytes.
+    by_kind: All breakdown rows (no top-N applied); the renderer orders them by share.
+    by_day: Caller-filtered top-N rows; the renderer orders them by share.
+    by_project: Caller-filtered top-N rows; the renderer orders them by share.
     by_source: Sorted desc by bytes; collapses raw kinds into image/hint/read/compact/other.
         Defaults to empty so older callers that built StatsData before by_source
         shipped still construct without modification.
@@ -127,11 +127,12 @@ class StatsData:
     period_start: date
     period_end: date
     totals: TotalStats
-    # Sorted desc by bytes. Pass all rows — renderer applies no top-N limit here.
+    # Renderer orders rows by share of savings; input order is not significant.
+    # Pass all rows — the renderer applies no top-N limit here.
     by_kind: list[KindStat]
-    # Sorted desc by bytes. Caller decides top-N before passing in.
+    # Renderer orders rows by share of savings. Caller decides top-N before passing in.
     by_day: list[DayStat]
-    # Sorted desc by bytes. Caller decides top-N before passing in.
+    # Renderer orders rows by share of savings. Caller decides top-N before passing in.
     by_project: list[ProjectStat]
     # Sorted desc by bytes.  Optional and defaults to empty so older callers /
     # cached StatsData snapshots built before by_source shipped still load.
