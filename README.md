@@ -235,9 +235,10 @@ Manual paths:
 | `token-goat map` | Get a compact orientation of the repo. Add `--compact` to fit a 300-token budget. |
 | `token-goat gdrive-sections <file-id>` | List the heading outline of a Google Doc without fetching the body. |
 | `token-goat stats` | See how many tokens you have saved. Shows a per-source breakdown (image / hint / read / compact / bash / web). |
-| `token-goat bash-output <id>` | Retrieve a cached Bash output by ID. Filter with `--head N`, `--tail N`, or `--grep PATTERN` to avoid re-running the command. |
+| `token-goat bash-output <id>` | Retrieve a cached Bash output by ID instead of re-running the command. Large outputs return a head+tail view by default; pass `--full` for everything, or narrow with `--head N`, `--tail N`, or `--grep PATTERN`. |
 | `token-goat bash-history` | List cached Bash outputs (newest first) with their IDs, byte sizes, and exit codes. |
-| `token-goat web-output <id>` | Retrieve a cached WebFetch response body by ID with the same `--head`/`--tail`/`--grep` slicers. |
+| `token-goat compress --cmd '<command>'` | Preview what the Bash compression hook would do to any command — runs it, applies the matching filter, and prints the compressed view. |
+| `token-goat web-output <id>` | Retrieve a cached WebFetch response body by ID — same head+tail default, `--full`, and `--head`/`--tail`/`--grep` slicers as `bash-output`. |
 | `token-goat web-history` | List cached WebFetch responses (newest first) with their IDs, byte sizes, status codes, and URL previews. |
 | `token-goat compact-hint --session-id <id>` | Inspect the compaction manifest for a session |
 | `token-goat install` | Wire up hooks and autostart. `--dry-run` previews the changes, `--verify` audits an existing install. |
@@ -255,7 +256,7 @@ Missed lookups recover surgically: `symbol` auto-redirects to a single high-conf
 
 | Path | What |
 |------|------|
-| `~/.claude/settings.json` | Hook entries for `SessionStart`, `PreToolUse` (Read, Drive/WebFetch), `PostToolUse` (Edit/Write/MultiEdit, Read/Grep/Glob), and `PreCompact`. Plus a `Bash(token-goat:*)` permission allowlist entry. Existing hooks are preserved; a timestamped `.bak` is written before any change. |
+| `~/.claude/settings.json` | Hook entries for `SessionStart`, `PreToolUse` (Read/Grep/Bash, Drive/WebFetch), `PostToolUse` (Edit/Write/MultiEdit, Read/Grep/Glob, Bash, WebFetch), and `PreCompact`. Plus a `Bash(token-goat:*)` permission allowlist entry. Existing hooks are preserved; a timestamped `.bak` is written before any change. |
 | `~/.claude/CLAUDE.md` | A delimited block (`<!-- token-goat-begin -->` … `<!-- token-goat-end -->`) telling the agent to prefer `token-goat read` / `symbol` / `section` over `Read` / `Grep`. Any existing content is preserved. |
 | `~/.claude/skills/token-goat/SKILL.md` | The token-goat skill — the same routing guidance in skill form. |
 
