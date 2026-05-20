@@ -40,7 +40,6 @@ import hashlib
 import json
 import logging
 import os
-import re
 import stat as _stat_module
 import time
 from dataclasses import asdict, dataclass
@@ -48,6 +47,7 @@ from pathlib import Path
 from typing import TypedDict
 
 from . import paths
+from .cache_common import OUTPUT_FILENAME_RE, safe_session_fragment
 from .hooks_common import sanitize_log_str
 
 _LOG = logging.getLogger("token_goat.bash_cache")
@@ -58,11 +58,7 @@ _LOG = logging.getLogger("token_goat.bash_cache")
 # full build/test logs (~1-3 MB each is typical).
 DEFAULT_MAX_TOTAL_BYTES: int = 16 * 1024 * 1024
 
-# Filename pattern:  <session_short>-<turn_short>-<cmdhash>.txt
-# The components are intentionally kept short so the path stays well within
-# any platform's PATH_MAX even when the data dir already lives several levels
-# deep (e.g. roaming AppData on Windows).
-OUTPUT_FILENAME_RE = re.compile(r"^[a-zA-Z0-9_\-]{1,80}\.txt$")
+# OUTPUT_FILENAME_RE is imported from cache_common — shared with web_cache.
 
 # Sentinel placed at the head of every output file marking the truncation
 # boundary, so a reader can immediately see when the stored bytes are partial.
@@ -136,7 +132,7 @@ def output_id_for(session_id: str, command: str, ts: float | None = None) -> str
     already caps it at 128 chars and stripping to 16 keeps total filename length
     under 50 chars.  Non-alphanumeric characters are replaced with ``_``.
     """
-    safe_session = re.sub(r"[^a-zA-Z0-9_\-]", "_", session_id)[:16] or "anon"
+    safe_session = safe_session_fragment(session_id)
     ms = int((ts if ts is not None else time.time()) * 1000)
     return f"{safe_session}-{ms:013d}-{command_hash(command)}"
 

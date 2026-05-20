@@ -55,7 +55,6 @@ import hashlib
 import json
 import logging
 import os
-import re
 import stat as _stat_module
 import time
 from dataclasses import asdict, dataclass
@@ -63,6 +62,7 @@ from pathlib import Path
 from typing import TypedDict
 
 from . import paths
+from .cache_common import OUTPUT_FILENAME_RE, safe_session_fragment
 from .hooks_common import sanitize_log_str
 
 _LOG = logging.getLogger("token_goat.web_cache")
@@ -73,9 +73,7 @@ _LOG = logging.getLogger("token_goat.web_cache")
 # is enough headroom while still being invisible on any modern disk.
 DEFAULT_MAX_TOTAL_BYTES: int = 32 * 1024 * 1024
 
-# Same filename pattern as bash_cache so a future shared eviction helper can
-# operate on either directory.
-OUTPUT_FILENAME_RE = re.compile(r"^[a-zA-Z0-9_\-]{1,80}\.txt$")
+# OUTPUT_FILENAME_RE is imported from cache_common — shared with bash_cache.
 
 # Sentinel placed at the head of every truncated body, mirroring bash_cache.
 _TRUNC_MARKER = "[token-goat: web output truncated; stored {n} of {total} bytes]\n"
@@ -150,7 +148,7 @@ def output_id_for(session_id: str, url: str, ts: float | None = None) -> str:
     remains addressable for forensic retrieval (e.g. when an agent wants to
     compare an earlier response to a later one).
     """
-    safe_session = re.sub(r"[^a-zA-Z0-9_\-]", "_", session_id)[:16] or "anon"
+    safe_session = safe_session_fragment(session_id)
     ms = int((ts if ts is not None else time.time()) * 1000)
     return f"{safe_session}-{ms:013d}-{url_hash(url)}"
 
