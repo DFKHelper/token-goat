@@ -178,6 +178,40 @@ class TestNoisePathFilter:
         assert "real.py" in result
         assert "poetry.lock" not in result
 
+    # -- automation tool artifacts (regression: these leaked into manifests) --
+
+    def test_improve_state_files_are_noise(self):
+        assert compact.is_noise_path(".improve-state-general.json") is True
+        assert compact.is_noise_path("/proj/.improve-state-my-feature.json") is True
+        assert compact.is_noise_path("C:\\proj\\.improve-state-foo.json") is True
+
+    def test_improve_commit_msg_files_are_noise(self):
+        assert compact.is_noise_path("/tmp/improve_commit_msg_general_1.txt") is True
+        assert compact.is_noise_path("improve_commit_msg_foo_2.txt") is True
+        assert compact.is_noise_path("C:\\tmp\\improve_commit_msg_x.txt") is True
+
+    def test_unix_tmp_dir_is_noise(self):
+        assert compact.is_noise_path("/tmp/anything.py") is True
+        assert compact.is_noise_path("/tmp/scratch.json") is True
+
+    def test_windows_temp_dirs_are_noise(self):
+        assert compact.is_noise_path("C:/Users/x/AppData/Local/Temp/foo.txt") is True
+        assert compact.is_noise_path("C:\\Users\\x\\AppData\\Roaming\\bar.json") is True
+
+    def test_automation_edits_excluded_from_manifest(self, tmp_data_dir):
+        """Regression: improve-skill artifacts must never appear in 'Files Edited'."""
+        sid = "noise-automation-session-abc"
+        session.mark_file_edited(sid, "/proj/src/real.py")
+        session.mark_file_edited(sid, "/tmp/improve_commit_msg_general_1.txt")
+        session.mark_file_edited(sid, "/proj/.improve-state-general.json")
+        session.mark_file_edited(sid, "C:/Users/x/AppData/Local/Temp/scratch.txt")
+        result = compact.build_manifest(sid)
+        assert "real.py" in result
+        assert "improve_commit_msg" not in result
+        assert "improve-state" not in result
+        assert "AppData" not in result
+        assert "/tmp/" not in result
+
 
 class TestActivityMarkers:
     """Edited vs. read distinction must be visible to the compaction LLM."""

@@ -116,8 +116,8 @@ class TestCachedExactRange:
             cwd=None,
         )
         assert hint is not None
-        assert "already read" in hint
-        assert "wastes" in hint.lower() or "waste" in hint.lower()
+        assert "cached" in hint
+        assert "waste" in hint.lower()
         expected_tokens = _est_tokens_from_lines(200)
         assert str(expected_tokens) in hint
 
@@ -137,7 +137,7 @@ class TestCachedExactRange:
             cwd=None,
         )
         assert hint is not None
-        assert "already read" in hint
+        assert "cached" in hint
 
 
 # ---------------------------------------------------------------------------
@@ -257,7 +257,7 @@ class TestSymbolOnlyCache:
         assert hint is not None
         # Should mention at most 3 symbols inline (4th is "more")
         assert "Alpha" in hint
-        assert "and 1 more" in hint
+        assert "+1" in hint
 
 
 # ---------------------------------------------------------------------------
@@ -717,7 +717,7 @@ class TestCachedStaleEntry:
             session_id=sid, file_path=path, offset=0, limit=200, cwd=None,
         )
         assert hint is not None
-        assert "already read" in hint
+        assert "cached" in hint
 
     def test_stale_entry_suppresses_hint(self, tmp_data_dir):
         """A read older than STALE_READ_AGE_SECONDS is treated as out of context."""
@@ -841,7 +841,7 @@ class TestSurgicalReadSuppression:
             session_id=sid, file_path=path, offset=0, limit=500, cwd=None,
         )
         assert hint is not None
-        assert "already read" in hint
+        assert "cached" in hint
 
     def test_narrow_implicit_reread_still_warns(self, tmp_data_dir):
         """No explicit limit → not surgical intent. Default-limit re-reads
@@ -856,7 +856,7 @@ class TestSurgicalReadSuppression:
             session_id=sid, file_path=path, offset=0, limit=None, cwd=None,
         )
         assert hint is not None
-        assert "already read" in hint
+        assert "cached" in hint
 
     def test_at_threshold_explicit_reread_is_suppressed(self, tmp_data_dir):
         """Exactly _NARROW_EXPLICIT_READ_LINES with explicit limit → suppressed."""
@@ -883,7 +883,7 @@ class TestSurgicalReadSuppression:
             offset=10, limit=_NARROW_EXPLICIT_READ_LINES + 1, cwd=None,
         )
         assert hint is not None
-        assert "already read" in hint
+        assert "cached" in hint
 
 
 class TestLegacySessionJsonFromOlderVersion:

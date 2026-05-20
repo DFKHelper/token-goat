@@ -379,11 +379,10 @@ def _hint_from_cache(
     if entry.symbols_read and not entry.line_ranges:
         n_syms = len(entry.symbols_read)
         sym_list = ", ".join(f"`{s}`" for s in entry.symbols_read[:3])
-        more = f" and {n_syms - 3} more" if n_syms > 3 else ""
+        more = f" +{n_syms - 3}" if n_syms > 3 else ""
         return ReadHint(
-            f"`{fname}` already read this session via `token-goat read`: {sym_list}{more}. "
-            f"For more symbols use `token-goat read \"{file_path}::another_symbol\"` "
-            f"instead of the whole file.",
+            f"`{fname}` read via `token-goat read`: {sym_list}{more}. "
+            f"Use `token-goat read \"{file_path}::symbol\"` for more.",
             0,
         )
 
@@ -429,9 +428,8 @@ def _hint_from_cache(
             return None
         wasted = _est_tokens_from_lines(requested_lines)
         return ReadHint(
-            f"`{fname}` lines {req_start}-{req_end} already read this session "
-            f"(cached: {cached_summary}{extra}). "
-            f"Re-reading wastes ~{wasted} tokens — use a different offset/limit for new content.",
+            f"`{fname}` lines {req_start}-{req_end} cached ({cached_summary}{extra}). "
+            f"~{wasted} tokens wasted — use a different offset/limit.",
             wasted,
         )
 
@@ -444,9 +442,8 @@ def _hint_from_cache(
         # last_cached_end was already computed above during the overlap scan.
         resume_offset = last_cached_end
         return ReadHint(
-            f"`{fname}` previously read at lines {cached_summary}{extra}. "
-            f"Request {req_start}-{req_end} overlaps by {overlap_lines} lines (~{wasted} wasted tokens). "
-            f"Use `offset={resume_offset}` to skip the overlap.",
+            f"`{fname}` read at lines {cached_summary}{extra}. "
+            f"Overlap: {overlap_lines} lines (~{wasted} tokens) — use `offset={resume_offset}`.",
             wasted,
         )
 
@@ -552,10 +549,9 @@ def _hint_from_index(
     # conversation, so it carries one example command rather than enumerating
     # every indexed symbol (`token-goat symbol`/`map` cover that on demand).
     return ReadHint(
-        f"`{fname}` is {n_lines} lines (~{full_tokens} tokens). "
-        f"{n_total} symbol(s) indexed — e.g. "
-        f"`token-goat read \"{rel}::{first_sym_name}\"` (~85% fewer tokens). "
-        f"Full Read only if you need surrounding context.",
+        f"`{fname}`: {n_lines} lines (~{full_tokens} tokens). "
+        f"{n_total} symbols indexed. "
+        f"Use `token-goat read \"{rel}::{first_sym_name}\"` (~85% fewer tokens).",
         0,
     )
 
@@ -705,7 +701,7 @@ def _build_diff_hint_inner(
         return None
 
     return ReadHint(
-        f"`{fname}` changed since last read; diff saves ~{tokens_saved} tokens vs Read:\n"
+        f"`{fname}` diff (~{tokens_saved} tokens saved):\n"
         f"```diff\n{diff_text}\n```\n",
         tokens_saved,
     )
@@ -794,9 +790,8 @@ def _build_bash_dedup_hint_inner(
     cmd_short = _sanitize_hint_path(command)
     exit_str = "" if entry.exit_code is None else f", exit={entry.exit_code}"
     return ReadHint(
-        f"Bash command ran ~{int(age)}s ago ({total_bytes:,} B{exit_str}, ~{tokens_avoided} tokens). "
-        f"`token-goat bash-output {entry.output_id}` recalls it (`--tail 50` / `--grep PATTERN`). "
-        f"Command: `{cmd_short}`.",
+        f"Bash `{cmd_short}` ran ~{int(age)}s ago ({total_bytes:,}B{exit_str}, ~{tokens_avoided} tokens). "
+        f"Use `token-goat bash-output {entry.output_id}` to recall.",
         tokens_avoided,
     )
 
@@ -897,9 +892,8 @@ def _build_grep_dedup_hint_inner(
         pattern_short = _sanitize_hint_path(pattern)
         path_str = f" in `{_sanitize_hint_path(path)}`" if path else ""
         return ReadHint(
-            f"Grep for `{pattern_short}`{path_str} ran ~{int(age)}s ago "
-            f"({entry.result_count} line(s), ~{tokens_avoided} tokens). "
-            f"Reuse context or narrow pattern / add `path=` to scope.",
+            f"Grep `{pattern_short}`{path_str} ran ~{int(age)}s ago "
+            f"({entry.result_count} line(s), ~{tokens_avoided} tokens).",
             tokens_avoided,
         )
     return None
@@ -984,14 +978,12 @@ def _build_web_dedup_hint_inner(
         return None
 
     tokens_avoided = _est_tokens_from_chars(entry.body_bytes)
-    url_short = _sanitize_hint_path(url)
     status_str = (
         f", status={entry.status_code}" if entry.status_code is not None else ""
     )
     return ReadHint(
-        f"URL fetched ~{int(age)}s ago ({entry.body_bytes:,} bytes{status_str}, ~{tokens_avoided} tokens). "
-        f"`token-goat web-output {entry.output_id}` recalls it (`--head 50` / `--tail 50` / `--grep PATTERN`). "
-        f"URL: `{url_short}`.",
+        f"URL fetched ~{int(age)}s ago ({entry.body_bytes:,}B{status_str}, ~{tokens_avoided} tokens). "
+        f"Use `token-goat web-output {entry.output_id}` (`--head 50` / `--tail 50` / `--grep PATTERN`).",
         tokens_avoided,
     )
 

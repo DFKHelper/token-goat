@@ -130,6 +130,8 @@ _NOISE_BASENAMES: Final[frozenset[str]] = frozenset({
 _NOISE_SEGMENTS: Final[tuple[str, ...]] = (
     "/__pycache__/", "/.git/", "/node_modules/", "/.venv/", "/venv/",
     "/dist/", "/build/", "/.mypy_cache/", "/.pytest_cache/", "/.ruff_cache/",
+    "/appdata/local/temp/", "/appdata/roaming/",
+    "/tmp/",  # Unix temp dir — ephemeral files (improve_commit_msg, etc.)
 )
 
 
@@ -141,6 +143,10 @@ def is_noise_path(path: str) -> bool:
     cache directories (``__pycache__/``, ``.git/``, ``node_modules/``) carry
     no information the compaction LLM needs to preserve, and would otherwise
     eat into the manifest's strict token budget.
+
+    Also filters temporary files in /tmp/, Windows temp paths (AppData/Local/Temp,
+    AppData/Roaming), and loop-state files (.improve-state-*.json,
+    improve_commit_msg_*.txt) created by automation tools.
 
     Matching is case-insensitive and tolerant of both POSIX and Windows
     separators.  Returns False for any empty or malformed input.
@@ -157,6 +163,9 @@ def is_noise_path(path: str) -> bool:
     slash_idx = p.rfind("/")
     basename = p[slash_idx + 1:] if slash_idx >= 0 else p
     if basename in _NOISE_BASENAMES:
+        return True
+    # Basename prefix checks: ephemeral state files from automation tools.
+    if basename.startswith(".improve-state-") or basename.startswith("improve_commit_msg_"):
         return True
     dot_idx = basename.rfind(".")
     return dot_idx >= 0 and basename[dot_idx:] in _NOISE_EXTS
