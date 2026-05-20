@@ -139,6 +139,144 @@ class TestTruncateMiddle:
         assert any("elided" in ln for ln in out)
 
 
+class TestTruncateMiddleSmart:
+    """Tests for truncate_middle_smart — error-preserving truncation."""
+
+    # ------------------------------------------------------------------
+    # No-error path: must fall back to plain head+tail behaviour
+    # ------------------------------------------------------------------
+
+    def test_under_budget_unchanged(self):
+        """Lines within budget are returned as-is."""
+        lines = ["a", "b", "c"]
+        assert bc.truncate_middle_smart(lines, 100) == lines
+
+    def test_no_errors_uses_head_tail(self):
+        """Without error signals the output keeps first and last lines."""
+        lines = [f"line {i}" for i in range(200)]
+        out = bc.truncate_middle_smart(lines, 30)
+        # head line and tail line must survive
+        assert out[0] == "line 0"
+        assert out[-1] == "line 199"
+        # a marker must be present
+        assert any("omitted" in ln or "elided" in ln for ln in out)
+        # middle content without errors is gone
+        assert "line 100" not in out
+
+    def test_no_errors_marker_present(self):
+        """Plain head+tail omission marker is present."""
+        lines = [f"x{i}" for i in range(100)]
+        out = bc.truncate_middle_smart(lines, 20)
+        markers = [ln for ln in out if "omitted" in ln or "elided" in ln]
+        assert len(markers) >= 1
+
+    # ------------------------------------------------------------------
+    # Error-preservation path
+    # ------------------------------------------------------------------
+
+    def test_error_in_middle_preserved(self):
+        """An 'error:' line buried in the middle of output is kept."""
+        lines = (
+            [f"progress {i}" for i in range(100)]
+            + ["src/foo.py:42: error: undefined variable 'x'"]
+            + [f"progress {i}" for i in range(100, 200)]
+        )
+        out = bc.truncate_middle_smart(lines, 50)
+        assert any("error: undefined variable" in ln for ln in out)
+
+    def test_error_context_lines_included(self):
+        """Lines surrounding an error line (within error_context) are kept."""
+        lines = (
+            [f"build step {i}" for i in range(50)]
+            + ["before_error_context"]
+            + ["before_error_direct"]
+            + ["ERROR: compilation failed"]
+            + ["after_error_direct"]
+            + ["after_error_context"]
+            + [f"build step {i}" for i in range(50, 100)]
+        )
+        out = bc.truncate_middle_smart(lines, 40, error_context=2)
+        joined = "\n".join(out)
+        assert "before_error_direct" in joined
+        assert "ERROR: compilation failed" in joined
+        assert "after_error_direct" in joined
+
+    def test_omission_markers_between_sections(self):
+        """Omission markers appear between non-contiguous kept sections."""
+        lines = (
+            [f"header {i}" for i in range(20)]
+            + [f"noise {i}" for i in range(200)]
+            + ["FAILED: test_foo"]
+            + [f"noise {i}" for i in range(200, 400)]
+            + [f"summary {i}" for i in range(20)]
+        )
+        out = bc.truncate_middle_smart(lines, 60)
+        markers = [ln for ln in out if "omitted" in ln or "elided" in ln]
+        # Expect at least two markers: one between head→error section, one
+        # between error section→tail.
+        assert len(markers) >= 2
+
+    def test_traceback_preserved(self):
+        """'Traceback' keyword triggers error preservation."""
+        lines = (
+            ["Running tests..."] * 100
+            + ["Traceback (most recent call last):"]
+            + ['  File "test.py", line 10, in test_foo']
+            + ["AssertionError: expected 1 got 2"]
+            + ["......"] * 100
+        )
+        out = bc.truncate_middle_smart(lines, 40)
+        joined = "\n".join(out)
+        assert "Traceback" in joined
+
+    def test_multiple_error_lines_capped_at_max_error_lines(self):
+        """At most max_error_lines distinct error-signal lines are preserved."""
+        error_lines = [f"Error: problem {i}" for i in range(30)]
+        lines = (
+            ["start"] * 20
+            + [item for pair in zip(["noise"] * 30, error_lines, strict=False) for item in pair]
+            + ["end"] * 20
+        )
+        out = bc.truncate_middle_smart(lines, 80, max_error_lines=5)
+        # Should not blow past the line budget significantly.
+        assert len(out) <= 90  # max_lines + some markers
+
+    def test_panic_preserved(self):
+        """'panic:' keyword (Go runtime panics) is treated as an error signal."""
+        lines = (
+            [f"compiling pkg {i}" for i in range(150)]
+            + ["goroutine 1 [running]:"]
+            + ["panic: runtime error: index out of range [3] with length 3"]
+            + [f"output {i}" for i in range(150)]
+        )
+        out = bc.truncate_middle_smart(lines, 50)
+        assert any("panic:" in ln for ln in out)
+
+    def test_failed_keyword_preserved(self):
+        """'FAILED' keyword is treated as an error signal."""
+        lines = (
+            [f"test {i} ok" for i in range(200)]
+            + ["FAILED tests/test_api.py::test_login - AssertionError"]
+            + [f"test {i} ok" for i in range(200, 400)]
+        )
+        out = bc.truncate_middle_smart(lines, 50)
+        assert any("FAILED" in ln for ln in out)
+
+    def test_head_and_tail_always_present_with_errors(self):
+        """Header (first lines) and tail (last lines) survive even with errors."""
+        lines = (
+            ["=== build start ==="]
+            + [f"step {i}" for i in range(200)]
+            + ["Error: something went wrong"]
+            + [f"step {i}" for i in range(200, 400)]
+            + ["=== build end ==="]
+        )
+        out = bc.truncate_middle_smart(lines, 60)
+        assert out[0] == "=== build start ==="
+        assert out[-1] == "=== build end ==="
+        assert any("Error:" in ln for ln in out)
+
+
 class TestCapBytes:
     def test_under_budget_unchanged(self):
         assert bc.cap_bytes("hello", 100) == "hello"

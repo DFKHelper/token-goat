@@ -278,6 +278,116 @@ def truncate_middle(
     ]
 
 
+# Patterns that signal an error or failure line worth preserving.
+_ERROR_SIGNAL_RE: re.Pattern[str] = re.compile(
+    r"error:|Error:|ERROR|FAILED|failed|fatal:|Traceback"
+    r"|exception:|Exception:|AssertionError|assert |panic:",
+    re.IGNORECASE,
+)
+
+
+def truncate_middle_smart(
+    lines: list[str],
+    max_lines: int,
+    *,
+    head_keep: int = 10,
+    tail_keep: int = 10,
+    error_context: int = 2,
+    max_error_lines: int = 10,
+    marker_fmt: str = "--- {n} lines omitted ---",
+) -> list[str]:
+    """Cap *lines* at *max_lines*, preserving error-signal lines from the middle.
+
+    Unlike :func:`truncate_middle`, this variant scans for lines that match
+    error/failure patterns before deciding what to keep.  This prevents
+    important failures buried in the middle of long output (e.g. a stack trace
+    after 200 lines of progress) from being silently elided.
+
+    Algorithm:
+    - If no error-signal lines are found, fall back to :func:`truncate_middle`
+      (unchanged head+tail behaviour).
+    - If error-signal lines are found:
+      1. Keep up to *head_keep* lines from the start (context/header).
+      2. Collect up to *max_error_lines* unique error-signal lines, each with
+         up to *error_context* lines of surrounding context.
+      3. Keep up to *tail_keep* lines from the end (summary).
+      4. Insert ``--- N lines omitted ---`` markers between non-contiguous
+         sections.
+      Total kept lines will not exceed *max_lines* (error section is trimmed
+      proportionally if needed).
+    """
+    if len(lines) <= max_lines:
+        return lines
+
+    # Find error-signal line indices.
+    error_indices = [i for i, ln in enumerate(lines) if _ERROR_SIGNAL_RE.search(ln)]
+    if not error_indices:
+        # No error signals — use simple head+tail.
+        return truncate_middle(lines, max_lines, marker_fmt=marker_fmt)
+
+    total = len(lines)
+
+    # Clamp head/tail so they don't overlap when the output is only slightly
+    # over budget (we'd rather emit a smaller head/tail than duplicate lines).
+    eff_head = min(head_keep, total // 4)
+    eff_tail = min(tail_keep, total // 4)
+
+    # Build the set of indices to include from the middle (error + context).
+    middle_indices: set[int] = set()
+    for kept_error_count, ei in enumerate(error_indices):
+        if kept_error_count >= max_error_lines:
+            break
+        for ci in range(max(0, ei - error_context), min(total, ei + error_context + 1)):
+            middle_indices.add(ci)
+
+    # Remove indices already covered by head/tail to avoid duplication.
+    head_set = set(range(eff_head))
+    tail_set = set(range(total - eff_tail, total))
+    middle_indices -= head_set | tail_set
+
+    # Sort and trim middle indices to stay within the line budget.
+    budget_for_middle = max(0, max_lines - eff_head - eff_tail)
+    sorted_middle = sorted(middle_indices)
+    if len(sorted_middle) > budget_for_middle:
+        sorted_middle = sorted_middle[:budget_for_middle]
+
+    # Build output as sections, inserting omission markers between gaps.
+    result: list[str] = []
+
+    def _append_section(indices: list[int]) -> None:
+        """Append *indices* to result, inserting omission markers at gaps."""
+        for pos, idx in enumerate(indices):
+            if pos == 0:
+                result.append(lines[idx])
+                continue
+            prev_idx = indices[pos - 1]
+            if idx != prev_idx + 1:
+                gap = idx - prev_idx - 1
+                result.append(marker_fmt.format(n=gap))
+            result.append(lines[idx])
+
+    head_list = list(range(eff_head))
+    tail_list = list(range(total - eff_tail, total))
+
+    # Determine the boundary between head and middle sections.
+    _append_section(head_list)
+
+    if sorted_middle:
+        gap_after_head = sorted_middle[0] - (head_list[-1] if head_list else -1) - 1
+        if gap_after_head > 0:
+            result.append(marker_fmt.format(n=gap_after_head))
+        _append_section(sorted_middle)
+
+    if tail_list:
+        last_kept = sorted_middle[-1] if sorted_middle else (head_list[-1] if head_list else -1)
+        gap_before_tail = tail_list[0] - last_kept - 1
+        if gap_before_tail > 0:
+            result.append(marker_fmt.format(n=gap_before_tail))
+        _append_section(tail_list)
+
+    return result
+
+
 def cap_bytes(text: str, max_bytes: int) -> str:
     """Truncate *text* to *max_bytes* UTF-8 bytes, preserving line boundaries.
 
@@ -502,7 +612,7 @@ class Filter:
            :data:`MAX_INSPECT_BYTES`, for runaway logs we head/tail truncate
            rather than risk a slow per-line filter pass.
         4. Call :meth:`compress` to produce the structurally-compressed body.
-        5. Cap line count via :func:`truncate_middle` (preserves head + tail).
+        5. Cap line count via :func:`truncate_middle_smart` (error-preserving).
         6. Cap byte count via :func:`cap_bytes` as a hard backstop.
         7. Return the result wrapped in a :class:`CompressedOutput`.
 
@@ -536,10 +646,12 @@ class Filter:
                 normalise(stdout), normalise(stderr), max_lines,
             )
 
-        # Line cap.
+        # Line cap — use smart truncation to preserve error-signal lines from
+        # the middle of long output (e.g. stack traces after 200 lines of
+        # progress).  Falls back to plain head+tail when no error signals exist.
         lines = body.split("\n")
         if len(lines) > max_lines:
-            lines = truncate_middle(lines, max_lines)
+            lines = truncate_middle_smart(lines, max_lines)
             body = "\n".join(lines)
         # Byte cap (backstop for pathological lines).
         body = cap_bytes(body, max_bytes)
