@@ -661,3 +661,176 @@ class TestPipFilter:
         result = f.apply(text, "", 0, ["pip", "install", "numpy"])
         assert "Downloading numpy" not in result.text
         assert "Successfully installed numpy" in result.text
+
+
+# ---------------------------------------------------------------------------
+# Grep filter
+# ---------------------------------------------------------------------------
+
+
+def _make_grep_output(n_files: int, matches_per_file: int) -> str:
+    """Build a synthetic grep-style output with ``n_files`` files."""
+    lines = []
+    for i in range(n_files):
+        for j in range(matches_per_file):
+            lines.append(f"src/module_{i}.py:{j + 1}:    some_pattern_here()")
+    return "\n".join(lines)
+
+
+class TestGrepFilter:
+    def test_large_output_compressed(self):
+        """Output with >30 non-empty lines is compressed to a summary."""
+        text = _make_grep_output(n_files=5, matches_per_file=10)  # 50 lines
+        f = bc.GrepFilter()
+        result = f.apply(text, "", 0, ["rg", "some_pattern"])
+        assert "grep:" in result.text
+        assert "matches across" in result.text
+        # Original match lines should NOT be present
+        assert "some_pattern_here" not in result.text
+
+    def test_small_output_passes_through(self):
+        """Output with ≤30 non-empty lines is returned unchanged."""
+        text = _make_grep_output(n_files=3, matches_per_file=5)  # 15 lines
+        f = bc.GrepFilter()
+        result = f.apply(text, "", 0, ["rg", "some_pattern"])
+        # Original content should be preserved
+        assert "some_pattern_here" in result.text
+        # No summary header
+        assert "matches across" not in result.text
+
+    def test_exit_code_preserved_found(self):
+        """Exit code 0 (match found) is preserved through compression."""
+        text = _make_grep_output(n_files=5, matches_per_file=10)
+        f = bc.GrepFilter()
+        result = f.apply(text, "", 0, ["grep", "-r", "pattern"])
+        assert result.exit_code == 0
+
+    def test_exit_code_preserved_not_found(self):
+        """Exit code 1 (no match) is preserved through compression."""
+        text = ""  # empty output = no matches
+        f = bc.GrepFilter()
+        result = f.apply(text, "", 1, ["grep", "-r", "pattern"])
+        assert result.exit_code == 1
+
+    def test_per_file_line_counts(self):
+        """Summary lists files with correct match counts."""
+        # 4 matches in file0, 3 in file1, 3 in file2 → total 10 matches per group
+        lines = []
+        for _ in range(4):
+            lines.append("src/alpha.py:1:hit")
+        for _ in range(3):
+            lines.append("src/beta.py:1:hit")
+        # Pad to >30 lines with a third file
+        for i in range(30):
+            lines.append(f"src/gamma.py:{i}:hit")
+        text = "\n".join(lines)
+        f = bc.GrepFilter()
+        result = f.apply(text, "", 0, ["rg", "hit"])
+        assert "src/alpha.py: 4 match(es)" in result.text
+        assert "src/beta.py: 3 match(es)" in result.text
+        assert "src/gamma.py: 30 match(es)" in result.text
+
+    def test_sorted_by_count_descending(self):
+        """Files are listed highest-count first."""
+        lines = []
+        for _ in range(2):
+            lines.append("src/rare.py:1:hit")
+        for _ in range(20):
+            lines.append("src/common.py:1:hit")
+        # Pad to >30
+        for i in range(15):
+            lines.append(f"src/mid_{i}.py:1:hit")
+        text = "\n".join(lines)
+        f = bc.GrepFilter()
+        result = f.apply(text, "", 0, ["ag", "hit"])
+        # common.py should appear before rare.py
+        common_pos = result.text.find("src/common.py")
+        rare_pos = result.text.find("src/rare.py")
+        assert common_pos < rare_pos
+
+    def test_git_grep_matched(self):
+        """GrepFilter matches 'git grep' argv."""
+        f = bc.GrepFilter()
+        assert f.matches(["git", "grep", "pattern"])
+
+    def test_git_grep_not_matched_other_subcommand(self):
+        """GrepFilter does NOT match other git subcommands (those go to GitFilter)."""
+        f = bc.GrepFilter()
+        assert not f.matches(["git", "log"])
+        assert not f.matches(["git", "status"])
+        assert not f.matches(["git", "diff"])
+
+    def test_rg_matched(self):
+        """GrepFilter matches 'rg' argv."""
+        f = bc.GrepFilter()
+        assert f.matches(["rg", "pattern", "src/"])
+
+    def test_plain_grep_r_matched(self):
+        """GrepFilter matches 'grep -r' argv."""
+        f = bc.GrepFilter()
+        assert f.matches(["grep", "-r", "pattern", "."])
+
+    def test_ag_matched(self):
+        """GrepFilter matches 'ag' argv."""
+        f = bc.GrepFilter()
+        assert f.matches(["ag", "pattern"])
+
+    def test_ack_matched(self):
+        """GrepFilter matches 'ack' argv."""
+        f = bc.GrepFilter()
+        assert f.matches(["ack", "pattern"])
+
+    def test_top_20_files_limit(self):
+        """When >20 files match, only top 20 are shown with an elision note."""
+        lines = []
+        for i in range(25):
+            # Each file gets 2 matches; pad to >30 total lines
+            lines.append(f"src/file_{i:02d}.py:1:hit")
+            lines.append(f"src/file_{i:02d}.py:2:hit")
+        text = "\n".join(lines)  # 50 lines
+        f = bc.GrepFilter()
+        result = f.apply(text, "", 0, ["rg", "hit"])
+        assert "+5 more file(s) elided" in result.text
+
+    def test_git_grep_large_compressed(self):
+        """'git grep' output above threshold is compressed."""
+        lines = [f"src/file_{i}.py:1:matched" for i in range(40)]
+        text = "\n".join(lines)
+        f = bc.GrepFilter()
+        result = f.apply(text, "", 0, ["git", "grep", "matched"])
+        assert "grep:" in result.text
+        assert "matches across" in result.text
+
+    def test_select_filter_returns_grep_for_rg(self):
+        """select_filter dispatches 'rg' to GrepFilter."""
+        f = bc.select_filter(["rg", "pattern", "src/"])
+        assert f is not None
+        assert f.name == "grep"
+
+    def test_select_filter_returns_grep_for_grep(self):
+        """select_filter dispatches 'grep' to GrepFilter."""
+        f = bc.select_filter(["grep", "-r", "pattern", "."])
+        assert f is not None
+        assert f.name == "grep"
+
+    def test_select_filter_git_still_dispatches_git_log(self):
+        """Git log is still handled by GitFilter, not GrepFilter."""
+        f = bc.select_filter(["git", "log"])
+        assert f is not None
+        assert f.name == "git"
+
+    def test_boundary_exactly_30_lines(self):
+        """Exactly 30 non-empty lines: pass-through (not compressed)."""
+        lines = [f"src/f.py:{i}:hit" for i in range(30)]
+        text = "\n".join(lines)
+        f = bc.GrepFilter()
+        result = f.apply(text, "", 0, ["rg", "hit"])
+        assert "matches across" not in result.text
+
+    def test_boundary_31_lines(self):
+        """31 non-empty lines: compressed."""
+        lines = [f"src/f.py:{i}:hit" for i in range(31)]
+        text = "\n".join(lines)
+        f = bc.GrepFilter()
+        result = f.apply(text, "", 0, ["rg", "hit"])
+        assert "matches across" in result.text
