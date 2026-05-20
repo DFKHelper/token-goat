@@ -42,6 +42,7 @@ from .hooks_common import (
     HookResponse,
     get_session_context,
     get_tool_input,
+    is_real_int,
     pre_tool_use_with_context,
     pre_tool_use_with_update,
     record_hint_stat_pair,
@@ -657,7 +658,7 @@ def post_read(payload: HookPayload) -> HookResponse:
         # Accept only plain ints (not bool subclass); clamp to [0, _MAX_RESULT_COUNT]
         # so a crafted payload cannot store an absurd integer in the session JSON.
         result_count: int | None = None
-        if isinstance(raw_result_count, int) and not isinstance(raw_result_count, bool):
+        if is_real_int(raw_result_count):
             result_count = max(0, min(raw_result_count, session._MAX_RESULT_COUNT))
         if pattern:
             session.mark_grep(session_id, pattern, path, result_count, cache=cache)
@@ -872,7 +873,7 @@ def _extract_bash_response(payload: HookPayload) -> tuple[str, str, int | None]:
             exit_val = plain["returncode"]
 
     exit_code: int | None = None
-    if isinstance(exit_val, int) and not isinstance(exit_val, bool):
+    if is_real_int(exit_val):
         exit_code = exit_val
     elif isinstance(exit_val, str):
         # Some harnesses send the exit code as a string ("0", "1").  Accept

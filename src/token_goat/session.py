@@ -66,7 +66,7 @@ from operator import attrgetter
 from typing import Any, TypedDict, cast
 
 from . import paths
-from .hooks_common import sanitize_log_str
+from .hooks_common import is_real_int, sanitize_log_str
 
 _LOG = logging.getLogger("token_goat.session")
 
@@ -522,7 +522,7 @@ def _parse_grep_entry(g: dict[str, Any]) -> GrepEntry | None:
             ts=float(raw_ts) if isinstance(raw_ts, (int, float)) else 0.0,
             result_count=(
                 int(raw_result_count)
-                if isinstance(raw_result_count, int) and not isinstance(raw_result_count, bool)
+                if is_real_int(raw_result_count)
                 else None
             ),
         )
@@ -608,7 +608,7 @@ def _parse_web_entry(v: dict[str, Any]) -> WebEntry | None:
     try:
         raw_status = v.get("status_code")
         status_code: int | None = None
-        if isinstance(raw_status, int) and not isinstance(raw_status, bool):
+        if is_real_int(raw_status):
             status_code = raw_status
         return WebEntry(
             url_sha=str(v.get("url_sha", "")),
@@ -634,7 +634,7 @@ def _parse_bash_entry(v: dict[str, Any]) -> BashEntry | None:
     try:
         raw_exit = v.get("exit_code")
         exit_code: int | None = None
-        if isinstance(raw_exit, int) and not isinstance(raw_exit, bool):
+        if is_real_int(raw_exit):
             exit_code = raw_exit
         raw_run_count = v.get("run_count", 1)
         run_count = max(1, int(raw_run_count)) if isinstance(raw_run_count, (int, float)) else 1
@@ -1466,7 +1466,7 @@ def mark_bash_run(
         ts=now,
         stdout_bytes=max(0, int(stdout_bytes)),
         stderr_bytes=max(0, int(stderr_bytes)),
-        exit_code=exit_code if isinstance(exit_code, int) and not isinstance(exit_code, bool) else None,
+        exit_code=exit_code if is_real_int(exit_code) else None,
         truncated=bool(truncated),
         run_count=prior_run_count + 1,
     )
@@ -1537,7 +1537,7 @@ def mark_web_fetch(
         body_bytes=max(0, int(body_bytes)),
         status_code=(
             status_code
-            if isinstance(status_code, int) and not isinstance(status_code, bool)
+            if is_real_int(status_code)
             else None
         ),
         truncated=bool(truncated),
