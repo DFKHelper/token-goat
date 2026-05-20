@@ -36,6 +36,7 @@ __all__ = [
     "deny_redirect",
     "get_session_context",
     "get_tool_input",
+    "is_real_int",
     "pre_tool_use_with_context",
     "pre_tool_use_with_update",
     "record_hint_stat_pair",
@@ -46,7 +47,7 @@ __all__ = [
 
 import logging
 from pathlib import Path
-from typing import Any, TypedDict, cast
+from typing import Any, TypedDict, TypeGuard, cast
 
 # ---------------------------------------------------------------------------
 # Typed shape for inbound hook payloads
@@ -449,3 +450,23 @@ def validate_cwd(cwd: object, *, caller: str = "hook") -> Path | None:
         )
         return None
     return cwd_path
+
+
+def is_real_int(value: object) -> TypeGuard[int]:
+    """Return *True* when *value* is a genuine ``int``, not a ``bool``.
+
+    Python's ``bool`` subclasses ``int``, so a plain ``isinstance(x, int)``
+    check accepts ``True`` / ``False``.  Call-sites that guard untrusted
+    payload fields against accidental bool values previously repeated the
+    same two-clause idiom:
+
+    .. code-block:: python
+
+        isinstance(x, int) and not isinstance(x, bool)
+
+    This predicate names the intent, documents the gotcha, and guarantees all
+    sites apply the guard identically.  Returning a ``TypeGuard[int]`` lets
+    type-checkers narrow the value to ``int`` in the branch where this
+    returns ``True``.
+    """
+    return isinstance(value, int) and not isinstance(value, bool)

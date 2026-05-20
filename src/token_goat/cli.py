@@ -28,6 +28,7 @@ import typer
 
 from . import config as config_mod
 from . import hooks_cli
+from .hooks_common import is_real_int
 
 _LOG = logging.getLogger(__name__)
 
@@ -2002,7 +2003,7 @@ def _coerce_config_value(current: object, raw_value: str) -> object:
             return False
         raise ValueError("expected a boolean value")
 
-    if isinstance(current, int) and not isinstance(current, bool):
+    if is_real_int(current):
         return int(raw_value)
 
     if isinstance(current, list):

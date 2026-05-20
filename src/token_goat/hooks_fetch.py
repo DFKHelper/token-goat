@@ -27,6 +27,7 @@ from .hooks_common import (
     deny_redirect,
     get_session_context,
     get_tool_input,
+    is_real_int,
     pre_tool_use_with_context,
     record_hint_stat_pair,
     sanitize_log_str,
@@ -288,7 +289,7 @@ def _extract_web_response(payload: HookPayload) -> tuple[str, int | None]:
         )
 
     status_code: int | None = None
-    if isinstance(status_val, int) and not isinstance(status_val, bool):
+    if is_real_int(status_val):
         status_code = status_val
     elif isinstance(status_val, str):
         try:
