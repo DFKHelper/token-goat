@@ -1602,6 +1602,128 @@ class TerraformFilter(Filter):
         return _squeeze_blank_lines("\n".join(kept))
 
 
+# --- grep / rg / ag / ack / git grep -----------------------------------------
+
+#: Threshold: outputs with more non-empty lines than this are compressed.
+_GREP_COMPRESS_THRESHOLD = 30
+#: Maximum number of per-file lines emitted in the summary.
+_GREP_MAX_FILE_LINES = 20
+
+
+class GrepFilter(Filter):
+    """Compress ``grep``, ``rg``, ``ag``, ``ack``, and ``git grep`` output.
+
+    Grep commands are among the highest-volume outputs in an agent session:
+    ``rg "pattern" .`` can return thousands of match lines where the agent
+    only needs to know *which* files matched and *how many* times.
+
+    Compression model:
+
+    * **Pass-through** when the total non-empty output lines are ≤ 30 — at
+      that size the signal is fully readable and compression adds no value.
+    * **Summarise** when output exceeds 30 lines:
+
+      1. Emit a one-line header: ``grep: N matches across F files``
+      2. Emit up to 20 per-file lines sorted by match count (descending):
+         ``  src/foo.py: 12 matches``
+      3. If more than 20 files matched, append a trailing elision note.
+
+    Exit code semantics are unchanged: the caller receives the original
+    exit code so ``grep … || fallback`` idioms still work correctly.
+
+    ``git grep`` is intercepted here (before ``GitFilter``) because the
+    output format is identical to plain ``grep`` and the compression logic
+    applies equally.  ``GitFilter`` continues to handle all other ``git``
+    subcommands.
+    """
+
+    name = "grep"
+    #: Standalone grep-family binaries.
+    binaries = frozenset(["grep", "egrep", "fgrep", "rg", "ag", "ack", "ack-grep"])
+
+    def matches(self, argv: list[str]) -> bool:  # noqa: D102
+        if not argv:
+            return False
+        stem = argv[0].lower().split("/")[-1].split("\\")[-1]
+        # Strip .exe on Windows
+        if stem.endswith(".exe"):
+            stem = stem[:-4]
+        # Standalone grep-family binary
+        if stem in self.binaries:
+            return True
+        # git grep (two-token form after prefix stripping)
+        if stem == "git":
+            positionals = _positional_args(argv[1:])
+            return bool(positionals) and positionals[0] == "grep"
+        return False
+
+    def compress(
+        self, stdout: str, stderr: str, exit_code: int, argv: list[str],
+    ) -> str:
+        # Combine stdout and stderr for line counting; stderr is usually empty
+        # for grep but may carry "permission denied" notices.
+        text = stdout
+        if stderr.strip():
+            text = (text.rstrip() + "\n" + stderr.rstrip()) if text.strip() else stderr
+
+        lines = text.split("\n")
+        non_empty = [ln for ln in lines if ln.strip()]
+        if len(non_empty) <= _GREP_COMPRESS_THRESHOLD:
+            # Pass through — small enough to read in full.
+            return text
+
+        # Build per-file match counts.  Grep output lines are typically:
+        #   path/to/file.py:42:matched content   (grep / rg / ag)
+        #   path/to/file.py-42-context line       (rg context lines, ignore)
+        #   Binary file path/to/foo matches        (grep binary notice)
+        #   matched content                        (no filename, e.g. stdin / single-file)
+        file_counts: dict[str, int] = {}
+        unattributed = 0
+        for line in non_empty:
+            # Binary file message
+            if line.startswith("Binary file ") and " matches" in line:
+                fname = line.split(" ", 2)[2].rsplit(" matches", 1)[0]
+                file_counts[fname] = file_counts.get(fname, 0) + 1
+                continue
+            # Standard grep/rg match line: "path:lineno:content" or "path:content"
+            colon_idx = line.find(":")
+            if colon_idx > 0:
+                candidate = line[:colon_idx]
+                # Heuristic: the candidate looks like a file path when it
+                # contains a dot or a path separator, or is short enough that
+                # it's almost certainly not a bare match prefix.
+                if ("." in candidate or "/" in candidate or "\\" in candidate
+                        or len(candidate) <= 120):
+                    file_counts[candidate] = file_counts.get(candidate, 0) + 1
+                    continue
+            unattributed += 1
+
+        total_matches = sum(file_counts.values()) + unattributed
+        num_files = len(file_counts)
+
+        # Emit compact summary.
+        out_lines: list[str] = [f"grep: {total_matches} matches across {num_files} file(s)"]
+
+        # Sort by match count descending, emit top N.
+        sorted_files = sorted(file_counts.items(), key=lambda kv: kv[1], reverse=True)
+        shown = sorted_files[:_GREP_MAX_FILE_LINES]
+        for fname, count in shown:
+            out_lines.append(f"  {fname}: {count} match(es)")
+        if len(sorted_files) > _GREP_MAX_FILE_LINES:
+            remaining = len(sorted_files) - _GREP_MAX_FILE_LINES
+            out_lines.append(
+                f"  [token-goat: +{remaining} more file(s) elided; "
+                f"use --context or -C flags to narrow]"
+            )
+        if unattributed:
+            out_lines.append(f"  (unattributed lines: {unattributed})")
+        out_lines.append(
+            f"[token-goat: grep output compressed from {len(non_empty)} lines "
+            f"to {len(out_lines)} — pass TOKEN_GOAT_BASH_COMPRESS=0 to disable]"
+        )
+        return "\n".join(out_lines)
+
+
 # --- pip / uv / poetry ------------------------------------------------------
 
 class PipFilter(Filter):
@@ -1693,6 +1815,7 @@ FILTERS: list[Filter] = [
     KubectlFilter(),
     AwsFilter(),
     LinterFilter(),
+    GrepFilter(),
     GitFilter(),
     MakeFilter(),
     TerraformFilter(),
