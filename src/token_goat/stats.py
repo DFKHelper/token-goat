@@ -81,12 +81,20 @@ _KIND_TO_SOURCE: dict[str, str] = {
     "bash_dedup_hint": SOURCE_BASH,
     "bash_dedup_hint_overhead": SOURCE_BASH,
     "bash_output_cached": SOURCE_BASH,
+    # bash_output_recall: fired by cmd_bash_output when the agent calls
+    # `token-goat bash-output` to retrieve a cached output.  saved_bytes =
+    # full_output − returned_slice; zero for an unsliced full recall (honest).
+    "bash_output_recall": SOURCE_BASH,
     # web-fetch cache family — same shape as bash, separate bucket so the
     # network-savings line is distinct from the local-execution-savings line
     # in the stats output.
     "web_dedup_hint": SOURCE_WEB,
     "web_dedup_hint_overhead": SOURCE_WEB,
     "web_output_cached": SOURCE_WEB,
+    # web_output_recall: fired by cmd_web_output when the agent calls
+    # `token-goat web-output` to retrieve a cached web response.  Same
+    # semantics as bash_output_recall: zero for a full recall, >0 for a slice.
+    "web_output_recall": SOURCE_WEB,
 }
 
 
