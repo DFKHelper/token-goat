@@ -886,6 +886,192 @@ class TestSurgicalReadSuppression:
         assert "cached" in hint
 
 
+# ---------------------------------------------------------------------------
+# Symbol tagging in re-read hints (_hint_from_cache exact-match and overlap)
+# ---------------------------------------------------------------------------
+
+
+class TestCacheHintSymbolSuffix:
+    """Re-read hints include '[symbols: ...]' when symbols_read is populated."""
+
+    def test_exact_match_hint_includes_symbol_names(self, tmp_data_dir):
+        """When symbols were also accessed, exact-match hint mentions them."""
+        sid = "s_sym_exact"
+        path = "C:/proj/auth.py"
+        _mark(tmp_data_dir, sid, path, offset=0, limit=200)
+        session.mark_file_read(sid, path, symbol="login")
+        session.mark_file_read(sid, path, symbol="validate_token")
+
+        hint = build_read_hint(
+            session_id=sid, file_path=path, offset=0, limit=200, cwd=None,
+        )
+        assert hint is not None
+        assert "cached" in hint
+        assert "login" in hint
+        assert "validate_token" in hint
+        assert "[symbols:" in hint
+
+    def test_exact_match_hint_overflow_shows_plus_n(self, tmp_data_dir):
+        """Four symbols → first 3 shown inline, '+1' for the overflow."""
+        sid = "s_sym_overflow"
+        path = "C:/proj/util.py"
+        _mark(tmp_data_dir, sid, path, offset=0, limit=300)
+        for sym in ["alpha", "beta", "gamma", "delta"]:
+            session.mark_file_read(sid, path, symbol=sym)
+
+        hint = build_read_hint(
+            session_id=sid, file_path=path, offset=0, limit=300, cwd=None,
+        )
+        assert hint is not None
+        assert "alpha" in hint
+        assert "beta" in hint
+        assert "gamma" in hint
+        assert "+1" in hint
+        # Fourth name should NOT appear as a standalone entry
+        assert "delta" not in hint
+
+    def test_exact_match_hint_no_symbols_read_unchanged(self, tmp_data_dir):
+        """When symbols_read is empty, hint has no '[symbols:' suffix."""
+        sid = "s_nosym_exact"
+        path = "C:/proj/plain.py"
+        _mark(tmp_data_dir, sid, path, offset=0, limit=100)
+
+        hint = build_read_hint(
+            session_id=sid, file_path=path, offset=0, limit=100, cwd=None,
+        )
+        assert hint is not None
+        assert "[symbols:" not in hint
+
+    def test_overlap_hint_includes_symbol_names(self, tmp_data_dir):
+        """Overlap hint also carries the symbol suffix when symbols were read."""
+        sid = "s_sym_overlap"
+        path = "C:/proj/service.py"
+        _mark(tmp_data_dir, sid, path, offset=0, limit=300)
+        session.mark_file_read(sid, path, symbol="get_user")
+        session.mark_file_read(sid, path, symbol="set_password")
+
+        # Overlap of 100 lines (201-300) — above MIN_OVERLAP_TO_WARN.
+        hint = build_read_hint(
+            session_id=sid, file_path=path, offset=200, limit=250, cwd=None,
+        )
+        assert hint is not None
+        assert "overlap" in hint.lower()
+        assert "get_user" in hint
+        assert "set_password" in hint
+        assert "[symbols:" in hint
+
+    def test_symbol_suffix_is_under_max_chars(self, tmp_data_dir):
+        """Suffix must be ≤ 60 chars; very long names cause it to be suppressed."""
+        sid = "s_longname"
+        path = "C:/proj/heavy.py"
+        _mark(tmp_data_dir, sid, path, offset=0, limit=200)
+        long_name = "a" * 70  # a single 70-char name exceeds the 60-char cap
+        session.mark_file_read(sid, path, symbol=long_name)
+
+        hint = build_read_hint(
+            session_id=sid, file_path=path, offset=0, limit=200, cwd=None,
+        )
+        assert hint is not None
+        # The suffix is suppressed because even one name exceeds the budget.
+        assert "[symbols:" not in hint
+
+    def test_three_symbols_no_overflow(self, tmp_data_dir):
+        """Exactly 3 symbols → no '+N' overflow marker."""
+        sid = "s_three"
+        path = "C:/proj/three.py"
+        _mark(tmp_data_dir, sid, path, offset=0, limit=200)
+        for sym in ["foo", "bar", "baz"]:
+            session.mark_file_read(sid, path, symbol=sym)
+
+        hint = build_read_hint(
+            session_id=sid, file_path=path, offset=0, limit=200, cwd=None,
+        )
+        assert hint is not None
+        assert "foo" in hint
+        assert "bar" in hint
+        assert "baz" in hint
+        assert "+" not in hint.split("[symbols:")[-1].split("]")[0]
+
+
+# ---------------------------------------------------------------------------
+# Symbol listing in _hint_from_index (large indexed file)
+# ---------------------------------------------------------------------------
+
+
+class TestIndexHintSymbolListing:
+    """_hint_from_index lists the first 3 indexed symbol names."""
+
+    def test_index_hint_lists_first_symbol_names(self, tmp_data_dir, tmp_path):
+        """Large indexed file hint shows first 3 symbol names."""
+        (tmp_path / ".git").mkdir()
+        src_file = tmp_path / "big2.py"
+        _make_large_file(src_file, n_lines=LARGE_FILE_LINE_THRESHOLD + 50)
+
+        from token_goat.project import find_project
+        proj = find_project(tmp_path)
+        assert proj is not None
+
+        with db.open_project(proj.hash) as conn:
+            conn.execute(
+                "INSERT OR IGNORE INTO files (rel_path, language, size, mtime, content_sha256, indexed_at) "
+                "VALUES (?, ?, ?, ?, ?, ?)",
+                ("big2.py", "python", 50000, 0.0, "abc123", 0),
+            )
+            for i, name in enumerate(["login", "logout", "validate_token", "refresh"]):
+                conn.execute(
+                    "INSERT INTO symbols (name, kind, file_rel, line, col, end_line) VALUES (?, ?, ?, ?, ?, ?)",
+                    (name, "function", "big2.py", 10 + i * 20, 0, 25 + i * 20),
+                )
+
+        hint = build_read_hint(
+            session_id="s_idx_syms",
+            file_path=str(src_file),
+            offset=0,
+            limit=2000,
+            cwd=str(tmp_path),
+        )
+        assert hint is not None
+        # First 3 symbols must appear in the hint
+        assert "login" in hint
+        assert "logout" in hint
+        assert "validate_token" in hint
+        # 4th symbol is overflow — should NOT appear by name
+        assert "refresh" not in hint
+        assert "..." in hint  # overflow indicator
+
+    def test_index_hint_single_symbol_no_overflow(self, tmp_data_dir, tmp_path):
+        """Single indexed symbol: hint shows it, no overflow marker."""
+        (tmp_path / ".git").mkdir()
+        src_file = tmp_path / "single_sym.py"
+        _make_large_file(src_file, n_lines=LARGE_FILE_LINE_THRESHOLD + 10)
+
+        from token_goat.project import find_project
+        proj = find_project(tmp_path)
+        assert proj is not None
+
+        with db.open_project(proj.hash) as conn:
+            conn.execute(
+                "INSERT OR IGNORE INTO files (rel_path, language, size, mtime, content_sha256, indexed_at) "
+                "VALUES (?, ?, ?, ?, ?, ?)",
+                ("single_sym.py", "python", 50000, 0.0, "xyz", 0),
+            )
+            conn.execute(
+                "INSERT INTO symbols (name, kind, file_rel, line, col, end_line) VALUES (?, ?, ?, ?, ?, ?)",
+                ("only_func", "function", "single_sym.py", 10, 0, 20),
+            )
+
+        hint = build_read_hint(
+            session_id="s_single",
+            file_path=str(src_file),
+            offset=0,
+            limit=2000,
+            cwd=str(tmp_path),
+        )
+        assert hint is not None
+        assert "only_func" in hint
+        assert "..." not in hint
+
+
 class TestLegacySessionJsonFromOlderVersion:
     def test_legacy_session_json_without_last_edit_ts_loads_clean(self, tmp_data_dir):
         """Session JSON written by older token-goat versions (no last_edit_ts) loads."""
