@@ -68,6 +68,97 @@ class TestBashDedupHintFiresOnRepeat:
         # so no hint can fire.
         assert "hookSpecificOutput" not in result
 
+    def test_run_count_increments_on_repeat(self, tmp_data_dir):
+        """run_count advances each time the same command is recorded."""
+        from token_goat import bash_cache
+
+        cmd = "find /data -name '*.csv'"
+        _seed_history("rc-1", cmd)
+        sha = bash_cache.command_hash(cmd)
+        entry = session.lookup_bash_entry("rc-1", sha)
+        assert entry is not None
+        assert entry.run_count == 1
+
+        # Record the same command again (second run).
+        _seed_history("rc-1", cmd)
+        entry2 = session.lookup_bash_entry("rc-1", sha)
+        assert entry2 is not None
+        assert entry2.run_count == 2
+
+        # A third run.
+        _seed_history("rc-1", cmd)
+        entry3 = session.lookup_bash_entry("rc-1", sha)
+        assert entry3 is not None
+        assert entry3.run_count == 3
+
+    def test_hint_text_run_count_2(self, tmp_data_dir):
+        """At run_count==2 the hint says '2x this session'."""
+        cmd = "find /logs -name '*.log'"
+        _seed_history("rc-2a", cmd)
+        _seed_history("rc-2a", cmd)  # second run → run_count=2
+        payload = {
+            "session_id": "rc-2a",
+            "tool_name": "Bash",
+            "tool_input": {"command": cmd},
+        }
+        result = hooks_read.pre_read(payload)
+        _assert_continue(result)
+        ctx = result.get("hookSpecificOutput", {}).get("additionalContext", "")
+        assert "ran 2x this session" in ctx
+        assert "WARNING" not in ctx
+        assert "token-goat bash-output" in ctx
+
+    def test_hint_text_run_count_3(self, tmp_data_dir):
+        """At run_count>=3 the hint fires a WARNING about looping."""
+        cmd = "find /tmp -name '*.tmp'"
+        _seed_history("rc-3a", cmd)
+        _seed_history("rc-3a", cmd)
+        _seed_history("rc-3a", cmd)  # third run → run_count=3
+        payload = {
+            "session_id": "rc-3a",
+            "tool_name": "Bash",
+            "tool_input": {"command": cmd},
+        }
+        result = hooks_read.pre_read(payload)
+        _assert_continue(result)
+        ctx = result.get("hookSpecificOutput", {}).get("additionalContext", "")
+        assert "WARNING" in ctx
+        assert "3x" in ctx
+        assert "token-goat bash-output" in ctx
+
+    def test_hint_text_run_count_5(self, tmp_data_dir):
+        """run_count>3 still uses the WARNING path with the correct count."""
+        cmd = "find /etc -name '*.conf'"
+        for _ in range(5):
+            _seed_history("rc-5a", cmd)
+        payload = {
+            "session_id": "rc-5a",
+            "tool_name": "Bash",
+            "tool_input": {"command": cmd},
+        }
+        result = hooks_read.pre_read(payload)
+        _assert_continue(result)
+        ctx = result.get("hookSpecificOutput", {}).get("additionalContext", "")
+        assert "WARNING" in ctx
+        assert "5x" in ctx
+
+    def test_single_run_hint_unchanged(self, tmp_data_dir):
+        """First-time dedup hint (run_count==1) still uses the old 'ran ~Ns ago' format."""
+        cmd = "find /var -name '*.pid'"
+        _seed_history("rc-single", cmd)
+        payload = {
+            "session_id": "rc-single",
+            "tool_name": "Bash",
+            "tool_input": {"command": cmd},
+        }
+        result = hooks_read.pre_read(payload)
+        _assert_continue(result)
+        ctx = result.get("hookSpecificOutput", {}).get("additionalContext", "")
+        assert "ran ~" in ctx
+        assert "ago" in ctx
+        assert "WARNING" not in ctx
+        assert "2x" not in ctx
+
     def test_old_history_entry_suppressed(self, tmp_data_dir, monkeypatch):
         """A prior run older than the stale-age threshold is suppressed."""
         from token_goat import hints

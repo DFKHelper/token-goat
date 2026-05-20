@@ -167,6 +167,7 @@ class BashEntry:
     stderr_bytes: int
     exit_code: int | None = None
     truncated: bool = False
+    run_count: int = 1
 
 
 @dataclass
@@ -545,6 +546,7 @@ class _BashEntryDict(TypedDict, total=False):
     stderr_bytes: int
     exit_code: int | None
     truncated: bool
+    run_count: int
 
 
 class _WebEntryDict(TypedDict, total=False):
@@ -597,6 +599,8 @@ def _parse_bash_entry(v: dict[str, Any]) -> BashEntry | None:
         exit_code: int | None = None
         if isinstance(raw_exit, int) and not isinstance(raw_exit, bool):
             exit_code = raw_exit
+        raw_run_count = v.get("run_count", 1)
+        run_count = max(1, int(raw_run_count)) if isinstance(raw_run_count, (int, float)) else 1
         return BashEntry(
             cmd_sha=str(v.get("cmd_sha", "")),
             cmd_preview=str(v.get("cmd_preview", "")),
@@ -606,6 +610,7 @@ def _parse_bash_entry(v: dict[str, Any]) -> BashEntry | None:
             stderr_bytes=max(0, int(v.get("stderr_bytes", 0))),
             exit_code=exit_code,
             truncated=bool(v.get("truncated", False)),
+            run_count=run_count,
         )
     except (TypeError, ValueError, KeyError) as exc:
         _LOG.debug("session: skipping corrupted bash entry: %s", exc)
@@ -1406,6 +1411,7 @@ def mark_bash_run(
             _BASH_HISTORY_EVICT, BASH_HISTORY_MAX, session_id[:16],
         )
 
+    prior_run_count = cache.bash_history[cmd_sha].run_count if cmd_sha in cache.bash_history else 0
     cache.bash_history[cmd_sha] = BashEntry(
         cmd_sha=cmd_sha,
         cmd_preview=safe_preview,
@@ -1415,6 +1421,7 @@ def mark_bash_run(
         stderr_bytes=max(0, int(stderr_bytes)),
         exit_code=exit_code if isinstance(exit_code, int) and not isinstance(exit_code, bool) else None,
         truncated=bool(truncated),
+        run_count=prior_run_count + 1,
     )
     cache.last_activity_ts = now
     cache._invalidate_json_cache()
