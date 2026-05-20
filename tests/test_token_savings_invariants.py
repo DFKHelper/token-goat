@@ -88,10 +88,9 @@ class TestHintSizeCeilings:
         _seed_web(sid)
         cache = session.load(sid)
         hint = build_web_dedup_hint(session_id=sid, url=_WEB_URL, cache=cache)
-        # Web dedup hint still starts with "Note:" — not changed in iters 1-9.
-        # The ceiling (120) is set from the measured value (~104) with headroom.
+        # Ceiling (80) matches the bash/grep dedup hints — concise single-line format.
         assert hint is not None
-        assert estimate_tokens(str(hint)) <= 120
+        assert estimate_tokens(str(hint)) <= 80
 
     def test_symbol_only_hint_under_ceiling(self, tmp_data_dir):
         from token_goat.hints import build_read_hint
@@ -164,6 +163,16 @@ class TestNoNotePrefix:
         hint = build_read_hint(
             session_id=sid, file_path="C:/proj/svc.py", offset=0, limit=2000, cwd=None,
         )
+        assert hint is not None
+        assert not str(hint).startswith("Note:")
+
+    def test_web_dedup_hint_no_note_prefix(self, tmp_data_dir):
+        from token_goat.hints import build_web_dedup_hint
+
+        sid = "inv-no-note-web"
+        _seed_web(sid)
+        cache = session.load(sid)
+        hint = build_web_dedup_hint(session_id=sid, url=_WEB_URL, cache=cache)
         assert hint is not None
         assert not str(hint).startswith("Note:")
 

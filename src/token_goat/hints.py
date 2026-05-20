@@ -989,11 +989,8 @@ def _build_web_dedup_hint_inner(
         f", status={entry.status_code}" if entry.status_code is not None else ""
     )
     return ReadHint(
-        f"Note: this URL was fetched ~{int(age)}s ago in this session "
-        f"({entry.body_bytes:,} bytes of body{status_str}). "
-        f"Re-fetching adds ~{tokens_avoided} tokens. "
-        f"`token-goat web-output {entry.output_id}` returns the cached body — "
-        f"add `--head 50`, `--tail 50`, or `--grep PATTERN` to slice it. "
+        f"URL fetched ~{int(age)}s ago ({entry.body_bytes:,} bytes{status_str}, ~{tokens_avoided} tokens). "
+        f"`token-goat web-output {entry.output_id}` recalls it (`--head 50` / `--tail 50` / `--grep PATTERN`). "
         f"URL: `{url_short}`.",
         tokens_avoided,
     )
