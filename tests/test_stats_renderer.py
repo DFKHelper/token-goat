@@ -3,7 +3,7 @@
 Focuses on the by-source rollup added on top of the existing kind/day/project
 sections.  Snapshot-style assertions strip ANSI escapes so the tests survive
 palette tweaks while still verifying structural stability (column ordering,
-row presence, ordering by bytes, backward-compat fallback).
+row presence, ordering by share, backward-compat fallback).
 """
 from __future__ import annotations
 
@@ -74,16 +74,16 @@ class TestBySourceRendering:
         for src in ("image", "hint", "read", "compact"):
             assert src in plain, f"source {src!r} missing from rendered output"
 
-    def test_rows_sorted_desc_by_bytes(self):
-        """Largest-byte source must appear before smaller ones in the output."""
+    def test_rows_sorted_desc_by_share(self):
+        """Highest-share source must appear before lower-share ones in the output."""
         out = "\n".join(_render_by_source_section(_make_stats()))
         plain = strip_ansi(out)
-        # Order should be: image (4kB) > read (3kB) > hint (2kB) > compact (1kB)
-        idx_image   = plain.index("image")
+        # Share = tokens / token total: read 50% > hint 33% > compact 17% > image 0%
         idx_read    = plain.index("read")
         idx_hint    = plain.index("hint")
         idx_compact = plain.index("compact")
-        assert idx_image < idx_read < idx_hint < idx_compact
+        idx_image   = plain.index("image")
+        assert idx_read < idx_hint < idx_compact < idx_image
 
     def test_column_layout_matches_other_tables(self):
         """The header row must include data saved / tokens saved / share / events."""

@@ -8,10 +8,9 @@ Produces a multi-section ANSI display from a ``StatsData`` payload:
    (Read, image_shrink, Grep, etc.).
 3. **By source** — collapsed view of the four user-facing mechanisms (image
    / hint / read / compact) plus an ``other`` catch-all.
-4. **Activity heatmap** — GitHub-style 12-week heatmap of daily token savings.
-5. **By day** — tabular daily breakdown (top N rows by bytes).
-6. **By project** — tabular per-project breakdown (top N rows by bytes).
-7. **Insights** — motivational copy loaded from ``stats_messages.json``.
+4. **By day** — tabular daily breakdown (top N rows by bytes).
+5. **By project** — tabular per-project breakdown (top N rows by bytes).
+6. **Insights** — motivational copy loaded from ``stats_messages.json``.
 
 Entry point: :func:`render_stats` — returns a ready-to-print ANSI string.
 
@@ -23,28 +22,25 @@ from __future__ import annotations
 
 __all__ = ["render_stats"]
 
-import heapq
 import json
 import logging
 import math
 import operator
 import shutil
-from datetime import date, timedelta
+from datetime import date
 from pathlib import Path
 from typing import TypedDict, cast
 
-from .ansi import RESET, RGB, C, bg, fg, lerp_rgb, pad_l, pad_r, strip_ansi, vlen
-from .types import DayStat, KindStat, StatsData
+from .ansi import RESET, RGB, C, fg, lerp_rgb, pad_l, pad_r, strip_ansi, vlen
+from .types import DayStat, KindStat, SourceStat, StatsData
 
 _LOG = logging.getLogger("token_goat.render.stats_renderer")
 
 # Module-level key functions — avoids allocating a new lambda object on every
 # sort/max call in the hot rendering path.
-_key_day_date = operator.attrgetter("date")
 _key_day_events = operator.attrgetter("events")
 _key_kind_bytes = operator.attrgetter("bytes")
 _key_kind_tokens = operator.attrgetter("tokens")
-_key_source_bytes = operator.attrgetter("bytes")
 
 
 class _InsightsMessages(TypedDict):
@@ -583,20 +579,22 @@ def _render_by_source_section(stats: StatsData) -> list[str]:
 
     lines: list[str] = [*_section_header("By source"), _table_header("source")]
 
-    sorted_sources = sorted(stats.by_source, key=_key_source_bytes, reverse=True)
-
     # Bar scaling: positive-only gross so the widest positive bar reaches 100%.
     # Share %: absolute-value totals so any overhead rows (negative bytes) shrink
     # the denominator instead of pushing the dominant positive row past 100%.
-    gross_bytes = max(sum(s.bytes for s in sorted_sources if s.bytes > 0), 1)
-    share_bytes_denom = max(sum(abs(s.bytes) for s in sorted_sources), 1)
-    share_tokens_denom = sum(abs(s.tokens) for s in sorted_sources)
+    gross_bytes = max(sum(s.bytes for s in stats.by_source if s.bytes > 0), 1)
+    share_bytes_denom = max(sum(abs(s.bytes) for s in stats.by_source), 1)
+    share_tokens_denom = sum(abs(s.tokens) for s in stats.by_source)
 
-    for s in sorted_sources:
+    def _share(s: SourceStat) -> float:
+        """Fraction of the period total this source represents."""
         if share_tokens_denom == 0:
-            share = s.bytes / share_bytes_denom
-        else:
-            share = s.tokens / share_tokens_denom
+            return s.bytes / share_bytes_denom
+        return s.tokens / share_tokens_denom
+
+    # Rows are ordered by share of the period total, largest first.
+    for s in sorted(stats.by_source, key=_share, reverse=True):
+        share = _share(s)
         bar_fraction = s.bytes / gross_bytes if s.bytes > 0 else 0.0
         color = _source_color(s.source)
         lines.append(_table_row(
@@ -608,168 +606,15 @@ def _render_by_source_section(stats: StatsData) -> list[str]:
     return lines
 
 
-# ── Section: activity heatmap ─────────────────────────────────────────────────
+# ── Shared: project bullet colours ─────────────────────────────────────────────────
 
 _PROJECT_COLORS: list[RGB] = [C.PURPLE, C.TEAL, C.BLUE, C.GREEN4, C.TEXT_MUTED]
-_DAY_LABELS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
 
 
 def _hash_color(hash_str: str) -> RGB:
     """Stable colour assignment based on hash string."""
     n = sum(ord(c) for c in hash_str)
     return _PROJECT_COLORS[n % len(_PROJECT_COLORS)]
-
-
-def _heat_cell_color(intensity: float) -> RGB:
-    """Map a 0–1 activity intensity to an RGB background colour for heatmap cells.
-
-    Zero (no activity) returns ``C.BG_TILE`` (dark background).
-    Non-zero values are interpolated across a 5-stop green gradient
-    (``GREEN1`` dim → ``GREEN5`` bright) proportional to *intensity*.
-    """
-    if intensity <= 0:
-        return C.BG_TILE
-    stops: list[RGB] = [C.GREEN1, C.GREEN2, C.GREEN3, C.GREEN4, C.GREEN5]
-    idx = intensity * (len(stops) - 1)
-    lo = math.floor(idx)
-    hi = min(len(stops) - 1, lo + 1)
-    return lerp_rgb(stops[lo], stops[hi], idx - lo)
-
-
-def _render_activity_section(stats: StatsData) -> list[str]:
-    """Render the GitHub-style weekly activity heatmap and rhythm summary panel.
-
-    The heatmap is a 7-row (Mon–Sun) × N-week grid anchored to the Monday
-    before ``stats.period_start``.  Weeks are capped by terminal width (each
-    week takes 3 visible chars: 2-char coloured cell + 1 space).  Cell colour
-    intensity is proportional to the day's event count relative to the period
-    maximum.
-
-    A right-side panel shows: top 3 days by events, and a "Rhythm" summary
-    (burst/moderate/steady based on coefficient of variation, plus weekday bias).
-    Returns ``[]`` when ``stats.by_day`` is empty.
-    """
-    if not stats.by_day:
-        return []
-
-    sorted_days = sorted(stats.by_day, key=_key_day_date)
-    by_date: dict[str, DayStat] = {d.date: d for d in sorted_days}
-    max_events = max((d.events for d in sorted_days), default=1) or 1
-
-    # Build 7-row × N-week grid anchored to the Monday before period_start
-    period_start = stats.period_start
-    period_end = stats.period_end
-    dow0 = period_start.weekday()  # Mon=0 (Python weekday already Mon-based)
-    grid_start = period_start - timedelta(days=dow0)
-
-    dow_last = period_end.weekday()
-    days_spanned = (period_end - grid_start).days + 1 + (6 - dow_last)
-    raw_weeks = math.ceil(days_spanned / 7)
-
-    # Cap to what fits in the terminal (each week = 2-char cell + 1 space = 3 chars)
-    avail_for_cells = _CONTENT_W - len(_M) - 4  # subtract margin + "Mon " label
-    max_weeks = max(1, avail_for_cells // 3)
-    n_weeks = min(raw_weeks, max_weeks)
-    week_offset = raw_weeks - n_weeks
-
-    # grid[dow][week] — week 0 is oldest displayed week
-    grid: list[list[DayStat | None]] = [
-        [
-            by_date.get((grid_start + timedelta(days=(w + week_offset) * 7 + dow)).isoformat())
-            for w in range(n_weeks)
-        ]
-        for dow in range(7)
-    ]
-
-    total_period_days = (period_end - period_start).days + 1
-    active_days = [d for d in sorted_days if d.events > 0]
-    top_days = heapq.nlargest(3, active_days, key=_key_day_events)
-
-    # Build right panel lines
-    panel_lines: list[str] = []
-    if top_days:
-        panel_lines.append(f"{fg(*C.TEXT_BRIGHT)}Top days{RESET}")
-        for d in top_days:
-            c: RGB = C.GREEN5 if d.events / max_events > 0.5 else C.GREEN4
-            panel_lines.append(
-                f"{fg(*C.TEXT_MUTED)}{d.date[5:]}  {fg(*c)}●{RESET}  "
-                f"{fg(*C.TEXT_MUTED)}{d.events:,} ev · {RESET}{_fmt_bytes(d.bytes)}"
-            )
-        panel_lines.append("")
-        panel_lines.append(f"{fg(*C.TEXT_BRIGHT)}Rhythm{RESET}")
-
-        total_ev = sum(d.events for d in active_days)
-        weekday_ev = sum(
-            d.events for d in active_days
-            if date.fromisoformat(d.date).weekday() < 5  # Mon–Fri
-        )
-        n_active = len(active_days)
-        mean = total_ev / (n_active or 1)
-        variance = sum((d.events - mean) ** 2 for d in active_days) / (n_active or 1)
-        cv = math.sqrt(variance) / (mean or 1)
-
-        rhythm = (
-            "Burst pattern"   if cv > 1.0 else
-            "Moderate bursts" if cv > 0.5 else
-            "Steady usage"
-        )
-        if total_ev == 0:
-            weekday_bias = "No data"
-        elif weekday_ev / total_ev > 0.8:
-            weekday_bias = "Weekday-heavy"
-        elif weekday_ev / total_ev > 0.5:
-            weekday_bias = "Mostly weekdays"
-        else:
-            weekday_bias = "Spread across week"
-
-        panel_lines.append(f"{fg(*C.TEXT_MUTED)}{rhythm}{RESET}")
-        panel_lines.append(f"{fg(*C.TEXT_MUTED)}{weekday_bias}{RESET}")
-        plural = "" if n_active == 1 else "s"
-        day_msg = (
-            f"{fg(*C.TEXT_MUTED)}{n_active} active day{plural} of "
-            f"{total_period_days}{RESET}"
-        )
-        panel_lines.append(day_msg)
-
-    # Visible width of grid rows: M + "Mon " + n_weeks × 2 cells + (n_weeks-1) spaces
-    grid_vis_w = len(_M) + 4 + n_weeks * 2 + (n_weeks - 1)
-
-    active_count = len(active_days)  # also cached as n_active inside the if-block above
-    plural = "" if active_count == 1 else "s"
-    subtitle = (
-        f"·  {_fmt_date(period_start)} → {_fmt_date(period_end)}"
-        f"  ·  {stats.totals.events:,} events across {active_count} active day{plural}"
-    )
-
-    lines: list[str] = [*_section_header("Activity", subtitle)]
-
-    for dow in range(7):
-        label = pad_r(f"{fg(*C.TEXT_DIM)}{_DAY_LABELS[dow]}{RESET}", 3)
-        cells = " ".join(
-            f"{bg(*_heat_cell_color(cell.events / max_events if cell else 0))}  {RESET}"
-            for cell in grid[dow]
-        )
-        left_part = f"{_M}{label} {cells}"
-        panel_part = f"  {panel_lines[dow]}" if dow < len(panel_lines) else ""
-        lines.append(pad_r(left_part, grid_vis_w) + panel_part)
-
-    # Remaining panel lines below the 7 grid rows
-    for i in range(7, len(panel_lines)):
-        lines.append(" " * grid_vis_w + f"  {panel_lines[i]}")
-
-    # Legend
-    legend_cells = " ".join(
-        f"{bg(*_heat_cell_color(t))}  {RESET}"
-        for t in [0.0, 0.25, 0.5, 0.75, 1.0]
-    )
-    lines.append("")
-    legend = (
-        f"{_M}    {fg(*C.TEXT_DIM)}Less{RESET}  {legend_cells}  "
-        f"{fg(*C.TEXT_DIM)}More{RESET}"
-    )
-    lines.append(legend)
-
-    return lines
 
 
 # ── Section: by day ───────────────────────────────────────────────────────────
@@ -889,7 +734,6 @@ def render_stats(stats: StatsData) -> str:
         _render_kpi_section(stats),
         _render_by_kind_section(stats),
         _render_by_source_section(stats),
-        _render_activity_section(stats),
         _render_by_day_section(stats),
         _render_by_project_section(stats),
         _render_insights_section(stats),
