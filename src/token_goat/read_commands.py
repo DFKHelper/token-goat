@@ -116,6 +116,38 @@ _DIDYOUMEAN_LIMIT = 3
 _DIDYOUMEAN_CUTOFF = 0.6
 
 
+def _close_db_matches(
+    project: Project,
+    rel_path: str,
+    query_term: str,
+    *,
+    table: str,
+    column: str,
+    kind: str,
+) -> list[str]:
+    """Return up to :data:`_DIDYOUMEAN_LIMIT` values from ``column`` in ``table``
+    that are close lexical matches for ``query_term``.
+
+    Shared implementation used by :func:`_close_symbol_matches` and
+    :func:`_close_section_matches`. ``kind`` is only used in the debug log
+    message to identify which lookup produced the error.
+
+    Returns an empty list on any DB error so the caller's miss message still emits.
+    """
+    try:
+        with db.open_project_readonly(project.hash) as conn:
+            rows = conn.execute(
+                f"SELECT DISTINCT {column} FROM {table}"  # noqa: S608
+                f" WHERE file_rel = ? AND {column} IS NOT NULL",
+                (rel_path,),
+            ).fetchall()
+    except (sqlite3.OperationalError, sqlite3.DatabaseError, FileNotFoundError) as exc:
+        _LOG.debug("close-match query failed for %s in %s: %s", kind, rel_path, exc)
+        return []
+    candidates = [r[column] for r in rows if r[column]]
+    return difflib.get_close_matches(query_term, candidates, n=_DIDYOUMEAN_LIMIT, cutoff=_DIDYOUMEAN_CUTOFF)
+
+
 def _close_symbol_matches(project: Project, rel_path: str, symbol: str) -> list[str]:
     """Return up to :data:`_DIDYOUMEAN_LIMIT` symbol names from ``rel_path`` that are
     close lexical matches for ``symbol``.
@@ -127,17 +159,7 @@ def _close_symbol_matches(project: Project, rel_path: str, symbol: str) -> list[
 
     Returns an empty list on any DB error so the miss message still emits.
     """
-    try:
-        with db.open_project_readonly(project.hash) as conn:
-            rows = conn.execute(
-                "SELECT DISTINCT name FROM symbols WHERE file_rel = ? AND name IS NOT NULL",
-                (rel_path,),
-            ).fetchall()
-    except (sqlite3.OperationalError, sqlite3.DatabaseError, FileNotFoundError) as exc:
-        _LOG.debug("close-match query failed for symbol in %s: %s", rel_path, exc)
-        return []
-    names = [r["name"] for r in rows if r["name"]]
-    return difflib.get_close_matches(symbol, names, n=_DIDYOUMEAN_LIMIT, cutoff=_DIDYOUMEAN_CUTOFF)
+    return _close_db_matches(project, rel_path, symbol, table="symbols", column="name", kind="symbol")
 
 
 def _close_section_matches(project: Project, rel_path: str, heading: str) -> list[str]:
@@ -147,17 +169,7 @@ def _close_section_matches(project: Project, rel_path: str, heading: str) -> lis
     The mirror of :func:`_close_symbol_matches` for ``token-goat section``.
     Returns an empty list on any DB error.
     """
-    try:
-        with db.open_project_readonly(project.hash) as conn:
-            rows = conn.execute(
-                "SELECT DISTINCT heading FROM sections WHERE file_rel = ? AND heading IS NOT NULL",
-                (rel_path,),
-            ).fetchall()
-    except (sqlite3.OperationalError, sqlite3.DatabaseError, FileNotFoundError) as exc:
-        _LOG.debug("close-match query failed for section in %s: %s", rel_path, exc)
-        return []
-    headings = [r["heading"] for r in rows if r["heading"]]
-    return difflib.get_close_matches(heading, headings, n=_DIDYOUMEAN_LIMIT, cutoff=_DIDYOUMEAN_CUTOFF)
+    return _close_db_matches(project, rel_path, heading, table="sections", column="heading", kind="section")
 
 
 def _emit_read_error(
