@@ -789,11 +789,24 @@ def _build_bash_dedup_hint_inner(
     tokens_avoided = _est_tokens_from_chars(total_bytes)
     cmd_short = _sanitize_hint_path(command)
     exit_str = "" if entry.exit_code is None else f", exit={entry.exit_code}"
-    return ReadHint(
-        f"Bash `{cmd_short}` ran ~{int(age)}s ago ({total_bytes:,}B{exit_str}, ~{tokens_avoided} tokens). "
-        f"Use `token-goat bash-output {entry.output_id}` to recall.",
-        tokens_avoided,
-    )
+    run_count = getattr(entry, "run_count", 1)
+    recall_cmd = f"token-goat bash-output {entry.output_id}"
+    if run_count >= 3:
+        hint_text = (
+            f"WARNING: Bash `{cmd_short}` ran {run_count}x this session — likely stuck in a loop. "
+            f"Last output ({total_bytes:,}B{exit_str}): `{recall_cmd}`"
+        )
+    elif run_count == 2:
+        hint_text = (
+            f"Bash `{cmd_short}` ran 2x this session — output cached ({total_bytes:,}B{exit_str}, ~{tokens_avoided} tokens). "
+            f"Recall with: `{recall_cmd}`"
+        )
+    else:
+        hint_text = (
+            f"Bash `{cmd_short}` ran ~{int(age)}s ago ({total_bytes:,}B{exit_str}, ~{tokens_avoided} tokens). "
+            f"Use `{recall_cmd}` to recall."
+        )
+    return ReadHint(hint_text, tokens_avoided)
 
 
 # ---------------------------------------------------------------------------
