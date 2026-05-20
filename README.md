@@ -3,7 +3,7 @@
 </p>
 
 <p align="center">
-  Cuts the tokens Claude Code, Codex CLI, opencode, and openclaw burn. Windows, Linux, WSL, and macOS. Install once, then forget it.
+  A Claude Code companion that cuts token costs on long sessions. Works with Claude Code, Codex CLI, opencode, and openclaw. Windows, Linux, WSL, and macOS. Install once, forget it.
 </p>
 
 <p align="center">
@@ -38,7 +38,7 @@ Claude reads `auth.py`. Then reads it again. Then a third time after compaction 
 
 Long sessions accumulate waste four ways. Screenshots cross the model at full resolution. A single PNG can land at 3.3 MB. The agent re-reads files it already parsed earlier in the same conversation. When a session compacts, the summary LLM doesn't know which files were edited or which symbols mattered, so it preserves the wrong things. And every `pytest`, `npm install`, `docker build`, or `git log` dumps thousands of lines of progress bars, deprecation warnings, and passing-test names that bury the one line that actually matters.
 
-Each one is preventable. Token-Goat intercepts all four, automatically.
+The fastest way to reduce Claude Code token costs is fixing these four, not writing shorter prompts. Each one is preventable. Token-Goat intercepts all four, automatically.
 
 ## What changes
 
@@ -71,7 +71,7 @@ Each one is preventable. Token-Goat intercepts all four, automatically.
   <img src="assets/stats.png" alt="token-goat stats" width="800">
 </p>
 
-On a per-token API plan, 100K wasted tokens per session runs about $0.30. Five sessions a week is ~$450/year. Token-goat is free.
+On a per-token API plan, 100K wasted tokens per session runs about $0.30. Five sessions a week is ~$450/year. AI coding cost reduction at that scale comes from fixing the waste, not from using the product less. Token-goat is free.
 
 ## Token savings, measured
 
