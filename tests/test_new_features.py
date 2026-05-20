@@ -345,7 +345,9 @@ class TestPreReadGitHint:
             patch("token_goat.hints.build_read_hint", return_value=fake_hint),
             patch("token_goat.hooks_read._build_git_hint", return_value="git hint text"),
             patch("token_goat.hooks_read._record_session_hint_impact"),
-            patch("token_goat.session.load", return_value=MagicMock(files={})),
+            patch("token_goat.session.load", return_value=MagicMock(
+                files={}, hints_seen=set(), has_hint_fingerprint=lambda fp: False,
+            )),
         ):
             payload = {
                 "tool_name": "Read",

@@ -692,13 +692,15 @@ def _render(cache: SessionCache, session_id: str, max_tokens: int) -> tuple[str,
         )
 
     # Nothing to report when the session has no activity at all.
-    # edited_files covers writes; files covers reads; greps covers searches.
-    # All three empty means the manifest would be just the header — not worth injecting.
+    # edited_files covers writes; files covers reads; greps covers searches;
+    # bash_history covers commands run.  All four empty → just a header → not worth injecting.
     raw_greps = getattr(cache, "greps", None) or []
-    if not edited_clean and not files_clean and not raw_greps:
+    _raw_bash = getattr(cache, "bash_history", None)
+    raw_bash: dict = _raw_bash if isinstance(_raw_bash, dict) else {}
+    if not edited_clean and not files_clean and not raw_greps and not raw_bash:
         _LOG.info(
             "_render: manifest suppressed for session=%s "
-            "(no activity tracked: edited=0 files_read=0 greps=0)",
+            "(no activity tracked: edited=0 files_read=0 greps=0 bash=0)",
             session_id[:8],
         )
         return "", 0

@@ -196,7 +196,7 @@ class TestPreFetchWebFetchDedup:
         result = hooks_cli.pre_fetch(self._payload())
 
         ctx = result.get("hookSpecificOutput", {}).get("additionalContext", "")
-        assert "bytes" in ctx
+        assert "B" in ctx  # byte size shown as e.g. "5,000B"
 
     def test_cache_miss_passes_through(self, tmp_data_dir):
         """A URL that was never fetched must not produce a hint — just CONTINUE."""

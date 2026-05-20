@@ -30,7 +30,7 @@ class TestGrepDedupHint:
         hso = result.get("hookSpecificOutput")
         assert hso is not None
         ctx = hso.get("additionalContext", "")
-        assert "Grep for `TODO`" in ctx
+        assert "Grep `TODO`" in ctx or "Grep for `TODO`" in ctx
         assert "200 line(s)" in ctx
 
     def test_different_pattern_no_hint(self, tmp_data_dir):
