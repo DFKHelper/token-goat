@@ -537,6 +537,7 @@ def _short_project(root: str) -> str:
 
 def _to_stats_data(summary: StatsSummary) -> StatsData:
     """Convert StatsSummary to the render layer's StatsData."""
+    from . import __version__  # noqa: PLC0415
     from .render.types import DayStat, KindStat, ProjectStat, SourceStat, StatsData, TotalStats
 
     today = date.today()
@@ -625,6 +626,7 @@ def _to_stats_data(summary: StatsSummary) -> StatsData:
         by_day=by_day,
         by_project=by_project,
         by_source=by_source,
+        version=__version__,
     )
 
 
@@ -746,6 +748,7 @@ def render_text(
     window_desc = (
         "all time" if summary.window_days == 0 else f"last {summary.window_days} days"
     )
+    from . import __version__  # noqa: PLC0415
 
     # ---- Headline panel ----
     # Keep label+value pairs as single styled segments so substring matches
@@ -768,6 +771,7 @@ def render_text(
             headline,
             title=Text.assemble(
                 ("token-goat stats", "bold white"),
+                (f"  v{__version__}", "dim"),
                 ("  ·  ", "dim"),
                 (window_desc, "cyan"),
             ),

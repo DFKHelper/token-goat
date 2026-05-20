@@ -12,6 +12,8 @@ export interface StatsData {
   byDay: DayStat[]
   /** Sorted desc by bytes. Caller decides top-N before passing in. */
   byProject: ProjectStat[]
+  /** Loaded token-goat package version (e.g. "0.6.1"); omit to hide the version suffix. */
+  version?: string
 }
 
 export interface TotalStats {

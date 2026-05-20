@@ -366,6 +366,19 @@ const renderInsightsSection = (stats: StatsData): string[] => {
   return lines
 }
 
+// ── Report header ─────────────────────────────────────────────────────────────
+
+/**
+ * Render the report header line: the token-goat name and loaded version.
+ * `stats.version` is the installed token-goat package version; an empty or
+ * omitted value renders just the name with no version suffix.
+ */
+const renderHeader = (stats: StatsData): string[] => {
+  let line = `${M}${fg(...C.textBright)}token-goat${RESET}`
+  if (stats.version) line += `  ${fg(...C.textMuted)}v${stats.version}${RESET}`
+  return [line]
+}
+
 // ── Main export ───────────────────────────────────────────────────────────────
 
 /**
@@ -380,6 +393,7 @@ const renderInsightsSection = (stats: StatsData): string[] => {
  */
 export const renderStats = (stats: StatsData): string =>
   [
+    ...renderHeader(stats),
     ...renderKpiSection(stats),
     ...renderByKindSection(stats),
     ...renderByDaySection(stats),

@@ -22,6 +22,8 @@ All notable changes to Token-Goat are documented in this file. Format follows Ke
 
 - **Error-preserving smart truncation.** When bash output exceeds the size cap, the trimmed view keeps: first 10 lines + up to 10 error-signal lines with 2-line context + last 10 lines, separated by `--- N lines omitted ---`. Errors are never lost to truncation.
 
+- **Loaded version in `token-goat stats`.** The stats report now shows the running token-goat package version: a header line in the ANSI renderer (`token-goat  v0.6.1`), the version in the rich fallback renderer's panel title, and a top-level `version` field in `--json` output. Confirms at a glance which build produced the numbers.
+
 ### Fixed
 
 - **Temp files and automation artifacts excluded from PreCompact manifest.** Paths under `/tmp/`, Windows `%APPDATA%`, `.improve-state-*.json`, and `improve_commit_msg_*` are filtered before the manifest renders. Previously they leaked into "Files Edited" and wasted manifest budget on entries the compaction LLM couldn't use.
