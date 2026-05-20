@@ -6,11 +6,11 @@
 export interface StatsData {
   period: { start: Date; end: Date }
   totals: TotalStats
-  /** Sorted desc by bytes. Pass all rows — renderer applies no top-N limit here. */
+  /** Renderer orders rows by share of savings. Pass all rows — no top-N limit here. */
   byKind: KindStat[]
-  /** Sorted desc by bytes. Caller decides top-N before passing in. */
+  /** Renderer orders rows by share of savings. Caller decides top-N before passing in. */
   byDay: DayStat[]
-  /** Sorted desc by bytes. Caller decides top-N before passing in. */
+  /** Renderer orders rows by share of savings. Caller decides top-N before passing in. */
   byProject: ProjectStat[]
   /** Loaded token-goat package version (e.g. "0.6.1"); omit to hide the version suffix. */
   version?: string

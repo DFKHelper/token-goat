@@ -26,6 +26,8 @@ All notable changes to Token-Goat are documented in this file. Format follows Ke
 
 ### Fixed
 
+- **`token-goat stats` breakdown rows now rank by share.** The "By kind", "By day", and "By project" tables emitted rows in byte-sorted order while the share column they display is token-derived, so the share percentage zig-zagged whenever bytes and tokens ranked rows differently (an image-heavy day saves bytes but ~0 tokens). Each section renderer now orders its rows by the same share metric it displays — "By source" already did this.
+
 - **Unbounded `global.db` WAL growth.** Every hook writes stat rows to `global.db`, and under a heavy multi-agent burst its passive autocheckpoints were perpetually blocked by overlapping readers, so the write-ahead-log file only ever grew — one session reached an 11 GB `global.db-wal`, after which every hook (including the SessionStart hook that runs on `/compact`) stalled for minutes scanning it. Connections now set `PRAGMA journal_size_limit` so the WAL file is truncated after each checkpoint, and the worker force-runs a `wal_checkpoint(TRUNCATE)` on `global.db` every maintenance cycle. A `tests/test_wal_growth_guard.py` regression suite, wired into the pre-commit hook, locks both halves of the fix in place.
 
 - **Temp files and automation artifacts excluded from PreCompact manifest.** Paths under `/tmp/`, Windows `%APPDATA%`, `.improve-state-*.json`, and `improve_commit_msg_*` are filtered before the manifest renders. Previously they leaked into "Files Edited" and wasted manifest budget on entries the compaction LLM couldn't use.

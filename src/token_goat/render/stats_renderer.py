@@ -32,7 +32,7 @@ from pathlib import Path
 from typing import TypedDict, cast
 
 from .ansi import RESET, RGB, C, fg, lerp_rgb, pad_l, pad_r, strip_ansi, vlen
-from .types import DayStat, KindStat, SourceStat, StatsData
+from .types import DayStat, KindStat, ProjectStat, SourceStat, StatsData
 
 _LOG = logging.getLogger("token_goat.render.stats_renderer")
 
@@ -475,7 +475,7 @@ def _render_kpi_section(stats: StatsData) -> list[str]:
 # ── Section: by kind ──────────────────────────────────────────────────────────
 
 def _render_by_kind_section(stats: StatsData) -> list[str]:
-    """Render the "By kind" table: one row per event kind, sorted desc by bytes.
+    """Render the "By kind" table: one row per event kind, ordered by share (largest first).
 
     Bar fill is scaled to the largest positive-bytes kind.  Share percentage
     uses absolute-value totals so overhead kinds (negative bytes/tokens) reduce
@@ -511,11 +511,16 @@ def _render_by_kind_section(stats: StatsData) -> list[str]:
     share_bytes_denom = max(_share_bytes_sum, 1)
     share_tokens_denom = _share_tokens_sum
 
-    for k in stats.by_kind:
+    def _share(k: KindStat) -> float:
+        """Fraction of the period total this kind represents (see section docstring)."""
         if k.bytes_mode_only or share_tokens_denom == 0:
-            share = k.bytes / share_bytes_denom
-        else:
-            share = k.tokens / share_tokens_denom
+            return k.bytes / share_bytes_denom
+        return k.tokens / share_tokens_denom
+
+    # Rows are ordered by share of the period total, largest first — matching
+    # the share column the row renders, so the column reads monotonically.
+    for k in sorted(stats.by_kind, key=_share, reverse=True):
+        share = _share(k)
         bar_fraction = k.bytes / gross_bytes if k.bytes > 0 else 0.0
         lines.append(_table_row(
             k.kind, bar_fraction, k.bytes, k.tokens, k.events, share,
@@ -620,7 +625,7 @@ def _hash_color(hash_str: str) -> RGB:
 # ── Section: by day ───────────────────────────────────────────────────────────
 
 def _render_by_day_section(stats: StatsData) -> list[str]:
-    """Render the "By day (top 7)" table: one row per day, sorted desc by bytes by the caller.
+    """Render the "By day (top 7)" table: one row per day, ordered by share (largest first).
 
     Share fraction uses tokens when the period total is non-zero, falling back
     to bytes when all token counts are zero (e.g. an image-only session).
@@ -631,8 +636,14 @@ def _render_by_day_section(stats: StatsData) -> list[str]:
 
     lines: list[str] = [*_section_header("By day (top 7)"), _table_header("date")]
 
-    for d in stats.by_day:
-        share = _token_or_byte_share(d.tokens, d.bytes, stats.totals.tokens, stats.totals.bytes)
+    def _share(d: DayStat) -> float:
+        """Fraction of the period total this day represents (see section docstring)."""
+        return _token_or_byte_share(d.tokens, d.bytes, stats.totals.tokens, stats.totals.bytes)
+
+    # Rows are ordered by share of the period total, largest first — matching
+    # the share column the row renders, so the column reads monotonically.
+    for d in sorted(stats.by_day, key=_share, reverse=True):
+        share = _share(d)
         lines.append(_table_row(d.date, share, d.bytes, d.tokens, d.events, share))
 
     return lines
@@ -641,7 +652,7 @@ def _render_by_day_section(stats: StatsData) -> list[str]:
 # ── Section: by project ───────────────────────────────────────────────────────
 
 def _render_by_project_section(stats: StatsData) -> list[str]:
-    """Render the "By project (top 5)" table: one row per project plus a path sub-row.
+    """Render the "By project (top 5)" table: one row per project (ordered by share) plus a path sub-row.
 
     Each project bullet is coloured via ``_hash_color`` for visual distinction.
     The sub-row shows the short project hash and absolute path in dim colour.
@@ -657,8 +668,13 @@ def _render_by_project_section(stats: StatsData) -> list[str]:
 
     lines: list[str] = [*_section_header("By project (top 5)"), _table_header("project")]
 
-    for p in stats.by_project:
-        share = _token_or_byte_share(p.tokens, p.bytes, project_total_tokens, project_total_bytes)
+    def _share(p: ProjectStat) -> float:
+        """Fraction of the cross-project total this project represents."""
+        return _token_or_byte_share(p.tokens, p.bytes, project_total_tokens, project_total_bytes)
+
+    # Rows are ordered by share of the cross-project total, largest first.
+    for p in sorted(stats.by_project, key=_share, reverse=True):
+        share = _share(p)
         color = _hash_color(p.hash)
         lines.append(_table_row(
             p.project, share, p.bytes, p.tokens, p.events, share,
