@@ -1,9 +1,11 @@
-"""Tests for cache_common — shared OUTPUT_FILENAME_RE and safe_session_fragment."""
+"""Tests for cache_common — shared OUTPUT_FILENAME_RE, safe_session_fragment, and load_sidecar_json."""
 from __future__ import annotations
+
+import json
 
 import pytest
 
-from token_goat.cache_common import OUTPUT_FILENAME_RE, safe_session_fragment
+from token_goat.cache_common import OUTPUT_FILENAME_RE, load_sidecar_json, safe_session_fragment
 
 
 class TestOutputFilenameRE:
@@ -125,3 +127,75 @@ class TestSafeSessionFragment:
         assert out_id.startswith(expected_prefix + "-"), (
             f"output_id {out_id!r} should start with {expected_prefix!r}-"
         )
+
+
+class TestLoadSidecarJson:
+    """load_sidecar_json: load + validate a JSON sidecar, returning dict or None."""
+
+    def test_returns_dict_for_valid_file(self, tmp_path) -> None:
+        p = tmp_path / "sidecar.json"
+        p.write_text(json.dumps({"output_id": "abc", "ts": 1.0}), encoding="utf-8")
+        result = load_sidecar_json(p)
+        assert isinstance(result, dict)
+        assert result["output_id"] == "abc"
+
+    def test_missing_file_returns_none(self, tmp_path) -> None:
+        p = tmp_path / "nonexistent.json"
+        assert load_sidecar_json(p) is None
+
+    def test_malformed_json_returns_none(self, tmp_path) -> None:
+        p = tmp_path / "bad.json"
+        p.write_text("not valid json {{{", encoding="utf-8")
+        assert load_sidecar_json(p) is None
+
+    def test_non_dict_top_level_array_returns_none(self, tmp_path) -> None:
+        p = tmp_path / "array.json"
+        p.write_text(json.dumps([1, 2, 3]), encoding="utf-8")
+        assert load_sidecar_json(p) is None
+
+    def test_non_dict_top_level_string_returns_none(self, tmp_path) -> None:
+        p = tmp_path / "string.json"
+        p.write_text(json.dumps("just a string"), encoding="utf-8")
+        assert load_sidecar_json(p) is None
+
+    def test_non_dict_top_level_null_returns_none(self, tmp_path) -> None:
+        p = tmp_path / "null.json"
+        p.write_text("null", encoding="utf-8")
+        assert load_sidecar_json(p) is None
+
+    def test_non_dict_top_level_number_returns_none(self, tmp_path) -> None:
+        p = tmp_path / "number.json"
+        p.write_text("42", encoding="utf-8")
+        assert load_sidecar_json(p) is None
+
+    def test_empty_dict_is_valid(self, tmp_path) -> None:
+        p = tmp_path / "empty.json"
+        p.write_text("{}", encoding="utf-8")
+        result = load_sidecar_json(p)
+        assert result == {}
+
+    def test_returns_same_dict_on_repeated_call(self, tmp_path) -> None:
+        """Two calls on the same file return equal (not necessarily identical) dicts."""
+        p = tmp_path / "repeat.json"
+        payload = {"output_id": "xyz", "ts": 9.9, "truncated": False}
+        p.write_text(json.dumps(payload), encoding="utf-8")
+        r1 = load_sidecar_json(p)
+        r2 = load_sidecar_json(p)
+        assert r1 == r2 == payload
+
+    def test_io_error_returns_none(self, tmp_path, monkeypatch) -> None:
+        """An OSError during read_text (e.g. permission denied) returns None."""
+        from pathlib import Path
+
+        p = tmp_path / "locked.json"
+        p.write_text("{}", encoding="utf-8")
+
+        original_read_text = Path.read_text
+
+        def _raise(self, *args, **kwargs):  # type: ignore[override]
+            if self == p:
+                raise OSError("permission denied")
+            return original_read_text(self, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "read_text", _raise)
+        assert load_sidecar_json(p) is None
