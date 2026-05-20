@@ -67,6 +67,7 @@ class CleanupStats(TypedDict, total=False):
     stats_rows_pruned: int
     snapshots_cleared: int
     bash_outputs_evicted: int
+    wal_bytes_reclaimed: int
     failures: list[str]  # task names that raised during cleanup
 
 
@@ -651,6 +652,29 @@ def _evict_bash_outputs() -> int:
     return bash_cache.evict_old_entries()
 
 
+def _checkpoint_global_wal() -> int:
+    """Force a TRUNCATE checkpoint of global.db's WAL, returning bytes reclaimed.
+
+    Every hook in every project writes stat rows to ``global.db``, so its WAL
+    is the one that outgrows passive autocheckpoints under a heavy multi-agent
+    burst — each autocheckpoint blocked by an overlapping reader.  Left alone
+    the file reached 11 GB, after which every connection that scanned it
+    stalled for minutes.  ``db.WAL_SIZE_LIMIT_BYTES`` on every connection caps
+    the file; this checkpoint, run from the single long-lived worker on each
+    maintenance cycle, is the active backstop that drains it on a schedule.
+    """
+    wal_path = paths.global_db_path()
+    wal_path = wal_path.with_name(wal_path.name + "-wal")
+    before = wal_path.stat().st_size if wal_path.exists() else 0
+    with db.open_global() as conn:
+        conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+    after = wal_path.stat().st_size if wal_path.exists() else 0
+    reclaimed = max(0, before - after)
+    if reclaimed:
+        _LOG.info("WAL checkpoint reclaimed %d bytes from global.db-wal", reclaimed)
+    return reclaimed
+
+
 def cleanup_on_startup() -> CleanupStats:
     """Run all self-healing tasks on daemon startup. Returns a summary with counts and failures.
 
@@ -662,6 +686,7 @@ def cleanup_on_startup() -> CleanupStats:
     * ``_prune_stats_table``     — drop stats rows beyond STATS_RETENTION_DAYS.
     * ``reap_stale_index_markers`` — clear ``*.indexing`` markers for finished/crashed spawns.
     * ``evict_image_cache_if_over_limit`` — LRU-evict images when cache exceeds 500 MB.
+    * ``_checkpoint_global_wal`` — TRUNCATE-checkpoint global.db's WAL so it cannot grow unbounded.
     """
     stats: CleanupStats = {
         "stale_locks_cleared": 0,
@@ -683,6 +708,7 @@ def cleanup_on_startup() -> CleanupStats:
         ("stats_prune", _prune_stats_table, "stats_rows_pruned"),
         ("snapshots", _cleanup_stale_snapshots, "snapshots_cleared"),
         ("bash_outputs", _evict_bash_outputs, "bash_outputs_evicted"),
+        ("wal_checkpoint", _checkpoint_global_wal, "wal_bytes_reclaimed"),
     ]
     for task_name, task_fn, stat_key in _int_tasks:
         try:
@@ -713,7 +739,7 @@ def cleanup_on_startup() -> CleanupStats:
     _LOG.info(
         "startup cleanup complete: locks_cleared=%d index_markers_cleared=%d logs_deleted=%d "
         "stats_rows_pruned=%d image_bytes_evicted=%d image_files_evicted=%d "
-        "snapshots_cleared=%d bash_outputs_evicted=%d%s",
+        "snapshots_cleared=%d bash_outputs_evicted=%d wal_bytes_reclaimed=%d%s",
         stats.get("stale_locks_cleared", 0),
         stats.get("stale_index_markers_cleared", 0),
         stats.get("logs_deleted", 0),
@@ -722,6 +748,7 @@ def cleanup_on_startup() -> CleanupStats:
         stats.get("image_files_evicted", 0),
         stats.get("snapshots_cleared", 0),
         stats.get("bash_outputs_evicted", 0),
+        stats.get("wal_bytes_reclaimed", 0),
         f" failures={failures}" if failures else "",
     )
     return stats

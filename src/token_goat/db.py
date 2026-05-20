@@ -121,6 +121,16 @@ def _close_conn(conn: sqlite3.Connection | None) -> None:
         conn.close()
 
 
+# Cap the WAL file size.  ``journal_size_limit`` makes SQLite truncate the
+# ``-wal`` file back down to this size whenever a checkpoint resets it.  Without
+# it the WAL file only ever grows: under a heavy multi-agent burst whose passive
+# autocheckpoints are perpetually blocked by overlapping readers, ``global.db-wal``
+# reached 11 GB, after which every connection that scanned the WAL stalled for
+# minutes.  64 MB is generous headroom over the ~4 MB the default 1000-page
+# autocheckpoint normally holds.
+WAL_SIZE_LIMIT_BYTES: Final[int] = 64 * 1024 * 1024
+
+
 def _apply_connection_pragmas(conn: sqlite3.Connection, *, suppress: bool = False) -> None:
     """Apply the standard read/write PRAGMA settings to *conn*.
 
@@ -141,6 +151,9 @@ def _apply_connection_pragmas(conn: sqlite3.Connection, *, suppress: bool = Fals
     * ``mmap_size``      — map up to 128 MB of the DB file into the process
                            address space so sequential scans avoid system-call
                            overhead on hot pages.
+    * ``journal_size_limit`` — truncate the WAL file back to
+                           ``WAL_SIZE_LIMIT_BYTES`` after each checkpoint so it
+                           cannot grow without bound under reader contention.
 
     ``suppress=True`` wraps the block in ``contextlib.suppress(sqlite3.OperationalError)``
     for the immutable-fallback paths where PRAGMAs may not be accepted.
@@ -152,6 +165,7 @@ def _apply_connection_pragmas(conn: sqlite3.Connection, *, suppress: bool = Fals
         conn.execute("PRAGMA cache_size = -65536")   # 64 MB (value in KB when negative)
         conn.execute("PRAGMA temp_store = MEMORY")
         conn.execute("PRAGMA mmap_size = 134217728")  # 128 MB
+        conn.execute(f"PRAGMA journal_size_limit = {WAL_SIZE_LIMIT_BYTES}")
 
     if suppress:
         with contextlib.suppress(sqlite3.OperationalError):
