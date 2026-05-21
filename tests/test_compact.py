@@ -1338,3 +1338,126 @@ class TestTrimRefillPass:
         )
         # The result must be non-empty
         assert len(result) > 0
+
+
+# ---------------------------------------------------------------------------
+# Session commits section
+# ---------------------------------------------------------------------------
+
+class TestSessionCommits:
+    """Test the new "Commits This Session" manifest section."""
+
+    def test_get_session_commits_with_no_cwd_returns_empty_list(self):
+        """_get_session_commits returns [] when cwd is None."""
+        result = compact._get_session_commits(None, time.time())
+        assert result == []
+
+    def test_get_session_commits_with_zero_timestamp_returns_empty_list(self):
+        """_get_session_commits returns [] when session_start_ts <= 0."""
+        result = compact._get_session_commits("/some/path", 0.0)
+        assert result == []
+
+    def test_get_session_commits_handles_missing_git(self):
+        """_get_session_commits returns [] when git is not available."""
+        # Use a non-existent path to ensure git fails
+        result = compact._get_session_commits("/nonexistent/path/to/repo", time.time() - 3600)
+        assert result == []
+
+    def test_get_session_commits_returns_commits_when_available(self, tmp_path):
+        """_get_session_commits returns formatted commit lines from a real git repo."""
+        import subprocess
+
+        # Create a minimal git repo with a commit
+        repo_path = tmp_path / "test_repo"
+        repo_path.mkdir()
+
+        # Initialize git repo
+        subprocess.run(
+            ["git", "init"],
+            cwd=str(repo_path),
+            capture_output=True,
+            check=True,
+        )
+
+        # Configure git user
+        subprocess.run(
+            ["git", "config", "user.email", "test@example.com"],
+            cwd=str(repo_path),
+            capture_output=True,
+            check=True,
+        )
+        subprocess.run(
+            ["git", "config", "user.name", "Test User"],
+            cwd=str(repo_path),
+            capture_output=True,
+            check=True,
+        )
+
+        # Create a commit
+        test_file = repo_path / "test.txt"
+        test_file.write_text("content")
+        subprocess.run(
+            ["git", "add", "test.txt"],
+            cwd=str(repo_path),
+            capture_output=True,
+            check=True,
+        )
+        subprocess.run(
+            ["git", "commit", "-m", "test commit"],
+            cwd=str(repo_path),
+            capture_output=True,
+            check=True,
+        )
+
+        # Call _get_session_commits with a timestamp from before the commit
+        past_timestamp = time.time() - 3600
+        result = compact._get_session_commits(str(repo_path), past_timestamp)
+
+        # Should return at least one formatted commit
+        assert len(result) > 0
+        assert all(line.startswith("- ") for line in result)
+        assert "test commit" in result[0]
+
+    def test_manifest_includes_commits_section_when_present(self, tmp_data_dir):
+        """Manifest includes "Commits This Session" section when commits exist."""
+        from unittest.mock import patch
+
+        # Create a session with a file edit and set cwd + created_ts
+        sid = "commits-session-abc"
+        session.mark_file_edited(sid, "/proj/src/app.py")
+
+        # Set session cwd and created_ts
+        cache = session.load(sid)
+        cache.cwd = "/some/repo"
+        cache.created_ts = time.time() - 3600
+        session.save(cache)
+
+        # Mock _get_session_commits to return some commits
+        mock_commits = ["- abc1234 feat: add feature", "- def5678 fix: bug fix"]
+        with patch("token_goat.compact._get_session_commits", return_value=mock_commits):
+            result = compact.build_manifest(sid)
+
+        # Should contain "Commits This Session" section
+        assert "Commits This Session" in result
+        assert "abc1234" in result
+        assert "feat: add feature" in result
+
+    def test_manifest_omits_commits_section_when_no_commits(self, tmp_data_dir):
+        """Manifest omits "Commits This Session" when there are no session commits."""
+        from unittest.mock import patch
+
+        # Create a session with a file edit and set cwd + created_ts
+        sid = "no-new-commits-session"
+        session.mark_file_edited(sid, "/proj/src/app.py")
+
+        cache = session.load(sid)
+        cache.cwd = "/some/repo"
+        cache.created_ts = time.time() - 3600
+        session.save(cache)
+
+        # Mock _get_session_commits to return empty list (no commits in session)
+        with patch("token_goat.compact._get_session_commits", return_value=[]):
+            result = compact.build_manifest(sid)
+
+        # Should NOT contain "Commits This Session" since there are no new commits
+        assert "Commits This Session" not in result
