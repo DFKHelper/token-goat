@@ -912,12 +912,28 @@ class TestCacheHintSymbolSuffix:
         assert "[symbols:" in hint
 
     def test_exact_match_hint_overflow_shows_plus_n(self, tmp_data_dir):
-        """Four symbols → first 3 shown inline, '+1' for the overflow."""
+        """Four symbols → first 3 shown inline, '+1' for the overflow.
+
+        Uses _mark + 4 symbol reads but pins read_count to 4 (below the
+        _SUPPRESS_HINT_AT_READ_COUNT=5 threshold) so the exact-match hint
+        still fires and we can exercise the symbols suffix overflow display.
+        """
+        from token_goat.session import _normalize_path
+
         sid = "s_sym_overflow"
         path = "C:/proj/util.py"
         _mark(tmp_data_dir, sid, path, offset=0, limit=300)
         for sym in ["alpha", "beta", "gamma", "delta"]:
             session.mark_file_read(sid, path, symbol=sym)
+
+        # Pin read_count below the suppression threshold so this test stays
+        # focused on the symbols-suffix overflow display rather than the
+        # working-file suppression path.
+        cache = session.load(sid)
+        entry = cache.files[_normalize_path(path)]
+        entry.read_count = 4
+        cache._invalidate_json_cache()
+        session.save(cache)
 
         hint = build_read_hint(
             session_id=sid, file_path=path, offset=0, limit=300, cwd=None,
@@ -1105,3 +1121,153 @@ class TestLegacySessionJsonFromOlderVersion:
         entry = cache.files["c:/proj/legacy.py"]
         # Missing field defaults to 0.0 (= "never edited").
         assert entry.last_edit_ts == 0.0
+
+
+# ---------------------------------------------------------------------------
+# Improvement 1: suppress line-range hints for heavily-repeated reads
+# ---------------------------------------------------------------------------
+
+
+class TestReadCountSuppression:
+    """Line-range dedup hints are suppressed once read_count reaches the threshold.
+
+    A file read 5+ times is a "working file" — the agent is clearly iterating
+    on it and the hint isn't changing behaviour. Suppressing it saves tokens.
+    The symbol-only hint (no line_ranges) is exempt: it's a suggestion, not a nag.
+    """
+
+    def _make_entry_with_read_count(self, sid: str, path: str, read_count: int) -> None:
+        """Mark a file read `read_count` times so session cache reflects it."""
+        for _ in range(read_count):
+            session.mark_file_read(sid, path, offset=0, limit=200)
+
+    def test_read_count_4_still_gets_exact_match_hint(self, tmp_data_dir):
+        """read_count=4 is below threshold — exact-match hint still fires."""
+        sid, path = "s_rc4", "C:/proj/rc4.py"
+        self._make_entry_with_read_count(sid, path, 4)
+
+        hint = build_read_hint(
+            session_id=sid, file_path=path, offset=0, limit=200, cwd=None,
+        )
+        assert hint is not None
+        assert "cached" in hint
+
+    def test_read_count_5_returns_none(self, tmp_data_dir):
+        """read_count=5 hits the threshold — line-range hint suppressed."""
+        sid, path = "s_rc5", "C:/proj/rc5.py"
+        self._make_entry_with_read_count(sid, path, 5)
+
+        hint = build_read_hint(
+            session_id=sid, file_path=path, offset=0, limit=200, cwd=None,
+        )
+        assert hint is None
+
+    def test_read_count_10_returns_none(self, tmp_data_dir):
+        """read_count=10 still suppressed — threshold applies at all higher counts."""
+        sid, path = "s_rc10", "C:/proj/rc10.py"
+        self._make_entry_with_read_count(sid, path, 10)
+
+        hint = build_read_hint(
+            session_id=sid, file_path=path, offset=0, limit=200, cwd=None,
+        )
+        assert hint is None
+
+    def test_symbol_only_hint_not_suppressed_at_high_read_count(self, tmp_data_dir):
+        """Symbol-only entries (no line_ranges) are not suppressed at read_count=5.
+
+        The symbol hint is a suggestion, not a nag — it doesn't cost tokens
+        relative to a full-file read because the agent is already using surgical
+        reads. Suppressing it would reduce useful guidance with no token benefit.
+        """
+        sid, path = "s_rc_sym", "C:/proj/rc_sym.py"
+        # Mark as symbol-only reads (no line ranges accumulate).
+        for _ in range(5):
+            session.mark_file_read(sid, path, symbol="MyFunc")
+
+        hint = build_read_hint(
+            session_id=sid, file_path=path, offset=0, limit=2000, cwd=None,
+        )
+        # Symbol hint should still fire (not suppressed by read_count).
+        assert hint is not None
+        assert "token-goat read" in hint
+
+
+# ---------------------------------------------------------------------------
+# Improvement 2: adaptive staleness threshold based on session age
+# ---------------------------------------------------------------------------
+
+
+class TestComputeStaleThreshold:
+    """compute_stale_threshold() returns a session-age-proportional threshold
+    clamped to [900, STALE_READ_AGE_SECONDS]."""
+
+    def test_zero_session_age_returns_floor(self):
+        """0s session → 25% of 0 = 0, clamped up to 900s floor."""
+        from token_goat.hints import compute_stale_threshold
+        assert compute_stale_threshold(0) == 900.0
+
+    def test_3600s_session_age_returns_floor(self):
+        """3600s session → 25% of 3600 = 900s = exactly the floor."""
+        from token_goat.hints import compute_stale_threshold
+        assert compute_stale_threshold(3600) == 900.0
+
+    def test_7200s_session_age_returns_mid_range(self):
+        """7200s session → 25% of 7200 = 1800s, within [900, 1800]."""
+        from token_goat.hints import compute_stale_threshold
+        assert compute_stale_threshold(7200) == 1800.0
+
+    def test_14400s_session_age_returns_ceiling(self):
+        """14400s session → 25% of 14400 = 3600s, clamped down to ceiling (1800s)."""
+        from token_goat.hints import STALE_READ_AGE_SECONDS, compute_stale_threshold
+        result = compute_stale_threshold(14400)
+        assert result == STALE_READ_AGE_SECONDS
+
+    def test_stale_read_age_seconds_is_unchanged(self):
+        """Public constant STALE_READ_AGE_SECONDS must remain 30*60=1800s."""
+        from token_goat.hints import STALE_READ_AGE_SECONDS
+        assert STALE_READ_AGE_SECONDS == 30 * 60
+
+    def test_adaptive_threshold_used_in_read_hint(self, tmp_data_dir):
+        """A read that is older than the adaptive threshold (but newer than
+        STALE_READ_AGE_SECONDS) should be suppressed in a long session."""
+        from token_goat.session import _normalize_path
+
+        sid, path = "s_adaptive", "C:/proj/adaptive.py"
+        session.mark_file_read(sid, path, offset=0, limit=200)
+
+        # Simulate a long session (4 hours = 14400s) with a read that is
+        # 1000s old. The adaptive threshold = clamp(14400*0.25, 900, 1800) = 1800s.
+        # Since 1000s < 1800s the read is still fresh — hint should fire.
+        cache = session.load(sid)
+        cache.created_ts = time.time() - 14400  # session started 4h ago
+        entry = cache.files[_normalize_path(path)]
+        entry.last_read_ts = time.time() - 1000  # read 1000s ago
+        cache._invalidate_json_cache()
+        session.save(cache)
+
+        hint = build_read_hint(
+            session_id=sid, file_path=path, offset=0, limit=200, cwd=None,
+        )
+        assert hint is not None, "Read 1000s ago in 4h session should still be fresh (threshold=1800s)"
+        assert "cached" in hint
+
+    def test_adaptive_threshold_suppresses_older_read_in_long_session(self, tmp_data_dir):
+        """In a short session (1h), a read 1000s ago uses threshold=900s.
+        Since 1000s > 900s the read is stale — hint should be suppressed."""
+        from token_goat.session import _normalize_path
+
+        sid, path = "s_adaptive2", "C:/proj/adaptive2.py"
+        session.mark_file_read(sid, path, offset=0, limit=200)
+
+        # Short session (3600s = 1h). threshold = clamp(3600*0.25, 900, 1800) = 900s.
+        cache = session.load(sid)
+        cache.created_ts = time.time() - 3600
+        entry = cache.files[_normalize_path(path)]
+        entry.last_read_ts = time.time() - 1000  # read 1000s ago (> 900s threshold)
+        cache._invalidate_json_cache()
+        session.save(cache)
+
+        hint = build_read_hint(
+            session_id=sid, file_path=path, offset=0, limit=200, cwd=None,
+        )
+        assert hint is None, "Read 1000s ago in 1h session should be stale (threshold=900s)"
