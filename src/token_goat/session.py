@@ -25,11 +25,14 @@ from __future__ import annotations
 __all__ = [
     "BASH_HISTORY_MAX",
     "BashEntry",
+    "EDITED_FILES_MAX",
+    "FILES_MAX",
     "FileEntry",
     "GrepEntry",
     "GREPS_HISTORY_MAX",
     "HINTS_SEEN_MAX",
     "RESULT_CACHE_MAX",
+    "SNAPSHOT_SHAS_MAX",
     "ResultCacheEntry",
     "SESSION_SCHEMA_VERSION",
     "SessionCache",
@@ -241,6 +244,29 @@ _GREPS_HISTORY_EVICT: Final[int] = 50
 # preferable to unbounded growth, and the fingerprint set is a performance
 # optimization, not a correctness requirement).
 HINTS_SEEN_MAX: Final[int] = 500
+
+# Maximum number of unique file entries tracked per session (files dict).  An
+# agent that reads hundreds of files in a single session would otherwise grow
+# the session JSON without bound.  FIFO eviction drops the least-recently-inserted
+# entry (dict insertion order) — oldest reads are least likely to generate
+# useful hints anyway.
+FILES_MAX: Final[int] = 500
+_FILES_EVICT: Final[int] = 50
+
+# Maximum number of edited-file entries tracked per session.  Agentic scaffolding
+# loops that generate many files would otherwise grow edited_files without bound.
+EDITED_FILES_MAX: Final[int] = 500
+_EDITED_FILES_EVICT: Final[int] = 50
+
+# Maximum number of snapshot SHA entries retained per session.  One entry per
+# unique edited file; 200 covers any realistic session while bounding JSON size.
+SNAPSHOT_SHAS_MAX: Final[int] = 200
+_SNAPSHOT_SHAS_EVICT: Final[int] = 50
+
+# Maximum size of the module-level _REPORTED_CONTENTION set.  One entry per
+# (session_id, phase) pair that logged a contention warning; cleared when the
+# set grows past this threshold to prevent unbounded growth in the worker process.
+_CONTENTION_MAX: Final[int] = 1_000
 
 
 @dataclass
@@ -818,6 +844,8 @@ def _record_cache_contention(session_id: str, phase: str, exc: OSError) -> None:
     key = (session_id, phase)
     if key in _REPORTED_CONTENTION:
         return
+    if len(_REPORTED_CONTENTION) >= _CONTENTION_MAX:
+        _REPORTED_CONTENTION.clear()
     _REPORTED_CONTENTION.add(key)
     try:
         from . import db  # noqa: PLC0415
@@ -1081,6 +1109,14 @@ def mark_file_read(
     entry = cache.files.get(key)
     now = time.time()
     if entry is None:
+        if len(cache.files) >= FILES_MAX:
+            evict_keys = list(islice(cache.files.keys(), _FILES_EVICT))
+            for k in evict_keys:
+                del cache.files[k]
+            _LOG.debug(
+                "files: evicted %d entries (cap=%d) for session=%s",
+                _FILES_EVICT, FILES_MAX, session_id[:16],
+            )
         entry = FileEntry(
             rel_or_abs=path, last_read_ts=now, read_count=0, line_ranges=[], symbols_read=[]
         )
@@ -1302,6 +1338,14 @@ def mark_file_edited(
     cache, key = prep
     now = time.time()
     prev_count = cache.edited_files.get(key, 0)
+    if prev_count == 0 and len(cache.edited_files) >= EDITED_FILES_MAX:
+        evict_keys = list(islice(cache.edited_files.keys(), _EDITED_FILES_EVICT))
+        for k in evict_keys:
+            del cache.edited_files[k]
+        _LOG.debug(
+            "edited_files: evicted %d entries (cap=%d) for session=%s",
+            _EDITED_FILES_EVICT, EDITED_FILES_MAX, session_id[:16],
+        )
     cache.edited_files[key] = prev_count + 1
     # Stamp last_edit_ts on the read entry too (if any) so build_read_hint can
     # detect "edited after last read" without an extra dict lookup on each
@@ -1606,6 +1650,14 @@ def set_snapshot_sha(
     if prep is None:
         return cache or _fresh_cache(session_id)
     cache, key = prep
+    if key not in cache.snapshot_shas and len(cache.snapshot_shas) >= SNAPSHOT_SHAS_MAX:
+        evict_keys = list(islice(cache.snapshot_shas.keys(), _SNAPSHOT_SHAS_EVICT))
+        for k in evict_keys:
+            del cache.snapshot_shas[k]
+        _LOG.debug(
+            "snapshot_shas: evicted %d entries (cap=%d) for session=%s",
+            _SNAPSHOT_SHAS_EVICT, SNAPSHOT_SHAS_MAX, session_id[:16],
+        )
     cache.snapshot_shas[key] = content_sha
     cache._invalidate_json_cache()
     save(cache)

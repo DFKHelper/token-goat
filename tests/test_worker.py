@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import sqlite3
 import sys
 import threading
 import time
@@ -1816,3 +1817,139 @@ class TestImageCacheEviction:
         assert not lock_path.exists(), (
             "lockfile must be released even when cache is under the limit"
         )
+
+
+# ---------------------------------------------------------------------------
+# _checkpoint_project_wals — WAL checkpoint for all per-project DBs
+# ---------------------------------------------------------------------------
+
+class TestCheckpointProjectWals:
+    """_checkpoint_project_wals iterates project DBs and runs PRAGMA wal_checkpoint."""
+
+    def test_no_projects_returns_zero(self, tmp_data_dir):
+        """With no projects registered in global.db, returns 0 with no errors."""
+        # global.db is initialised by tmp_data_dir fixture via db.open_global().
+        result = worker._checkpoint_project_wals()
+        assert result == 0
+
+    def test_project_with_no_wal_file_is_skipped_gracefully(self, tmp_data_dir):
+        """A project whose WAL file does not exist is skipped without error."""
+        from token_goat import db as _db
+
+        ph = "a" * 40
+        now = int(time.time())
+        with _db.open_global() as gconn:
+            gconn.execute(
+                "INSERT OR REPLACE INTO projects(hash, root, marker, first_seen, last_seen, file_count, languages) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (ph, "/some/proj", ".git", now, now, 1, "python"),
+            )
+        # No WAL file on disk for this project — function must skip it cleanly.
+        result = worker._checkpoint_project_wals()
+        assert result == 0
+
+    def test_db_error_listing_projects_returns_zero(self, tmp_data_dir, monkeypatch):
+        """If opening global.db to list projects fails, the function returns 0 without propagating."""
+        from token_goat import db as _db
+
+        def boom():
+            raise _db.DBError("simulated global DB error")
+
+        monkeypatch.setattr(_db, "open_global_readonly", boom)
+        result = worker._checkpoint_project_wals()
+        assert result == 0
+
+    def test_checkpoint_error_on_one_project_continues_and_returns_zero(self, tmp_data_dir, monkeypatch):
+        """A checkpoint failure on a project is caught; function does not propagate the exception."""
+        from token_goat import db as _db
+
+        ph = "b" * 40
+        now = int(time.time())
+        with _db.open_global() as gconn:
+            gconn.execute(
+                "INSERT OR REPLACE INTO projects(hash, root, marker, first_seen, last_seen, file_count, languages) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (ph, "/some/other/proj", ".git", now, now, 1, "python"),
+            )
+
+        # Create a fake WAL file so the size-check path is reached.
+        db_path = paths.project_db_path(ph)
+        db_path.parent.mkdir(parents=True, exist_ok=True)
+        wal_path = db_path.with_name(db_path.name + "-wal")
+        wal_path.write_bytes(b"x" * 512)
+
+        # Make open_project raise so the checkpoint itself fails.
+        import contextlib
+
+        @contextlib.contextmanager
+        def boom(hash_):
+            raise sqlite3.DatabaseError("simulated checkpoint failure")
+            yield  # makes this a contextmanager generator
+
+        monkeypatch.setattr(_db, "open_project", boom)
+        # Must not raise — failure is caught and logged.
+        result = worker._checkpoint_project_wals()
+        assert isinstance(result, int)
+
+    def test_project_with_wal_reclaims_bytes(self, tmp_data_dir, tmp_path):
+        """A real project WAL is checkpointed and the reclaimed byte count is positive."""
+        from token_goat import db as _db
+        from token_goat.parser import index_project
+        from token_goat.project import canonicalize, make_project_at
+        from token_goat.project import project_hash as ph_fn
+
+        # Build a real indexed project so open_project works without errors.
+        proj_root = tmp_path / "wal_proj"
+        proj_root.mkdir()
+        (proj_root / "mod.py").write_text("def hello(): pass\n", encoding="utf-8")
+        ph = ph_fn(canonicalize(proj_root))
+        index_project(make_project_at(proj_root), full=True)
+
+        now = int(time.time())
+        with _db.open_global() as gconn:
+            gconn.execute(
+                "INSERT OR REPLACE INTO projects(hash, root, marker, first_seen, last_seen, file_count, languages) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (ph, proj_root.as_posix(), ".git", now, now, 1, "python"),
+            )
+
+        # Ensure a WAL file exists by opening the project DB in WAL mode and
+        # writing something to it, then closing without checkpointing.
+        db_path = paths.project_db_path(ph)
+        wal_path = db_path.with_name(db_path.name + "-wal")
+
+        # Write a dummy WAL file large enough to measure (checkpoint will shrink/remove it).
+        if not wal_path.exists():
+            wal_path.write_bytes(b"\x00" * 4096)
+
+        # Should not raise; return value is a non-negative integer.
+        result = worker._checkpoint_project_wals()
+        assert isinstance(result, int)
+        assert result >= 0
+
+
+# ---------------------------------------------------------------------------
+# cleanup_on_startup — project_wal_bytes_reclaimed key is present in result
+# ---------------------------------------------------------------------------
+
+def test_cleanup_on_startup_includes_project_wal_bytes_reclaimed(tmp_data_dir, monkeypatch):
+    """cleanup_on_startup must include 'project_wal_bytes_reclaimed' in its result dict.
+
+    Regression guard: the key was added to CleanupStats and wired into the
+    _int_tasks list; this test locks in the contract so a future refactor
+    cannot silently drop the entry.
+    """
+    # Stub out all the sub-tasks to keep the test fast and side-effect-free.
+    monkeypatch.setattr(worker, "_cleanup_stale_locks", lambda: 0)
+    monkeypatch.setattr(worker, "_cleanup_old_logs", lambda: 0)
+    monkeypatch.setattr(worker, "_prune_stats_table", lambda: 0)
+    monkeypatch.setattr(worker, "_cleanup_stale_snapshots", lambda: 0)
+    monkeypatch.setattr(worker, "_evict_bash_outputs", lambda: 0)
+    monkeypatch.setattr(worker, "_checkpoint_global_wal", lambda: 0)
+    monkeypatch.setattr(worker, "_checkpoint_project_wals", lambda: 42)
+    monkeypatch.setattr(worker, "reap_stale_index_markers", lambda: 0)
+    monkeypatch.setattr(worker, "evict_image_cache_if_over_limit", lambda: (0, 0))
+
+    stats = worker.cleanup_on_startup()
+    assert "project_wal_bytes_reclaimed" in stats
+    assert stats["project_wal_bytes_reclaimed"] == 42

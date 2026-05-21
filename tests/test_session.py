@@ -627,3 +627,154 @@ class TestHintsSeenCap:
         session.save(cache)
         reloaded = session.load(sid)
         assert len(reloaded.hints_seen) == 10
+
+
+class TestFilesMaxEviction:
+    """FILES_MAX FIFO eviction in mark_file_read."""
+
+    def test_files_evicted_when_cap_exceeded(self, tmp_data_dir):
+        """Filling past FILES_MAX evicts oldest entries; dict stays at most FILES_MAX."""
+        sid = "files_cap_1"
+        overshoot = 10
+        for i in range(session.FILES_MAX + overshoot):
+            session.mark_file_read(sid, f"/abs/path/file_{i}.py")
+        cache = session.load(sid)
+        assert len(cache.files) <= session.FILES_MAX
+
+    def test_newest_files_survive_eviction(self, tmp_data_dir):
+        """After eviction the most recently inserted files are still present."""
+        sid = "files_cap_2"
+        total = session.FILES_MAX + 20
+        for i in range(total):
+            session.mark_file_read(sid, f"/abs/path/file_{i}.py")
+        cache = session.load(sid)
+        # The last inserted file must survive — it was added after the eviction pass.
+        last_key = f"/abs/path/file_{total - 1}.py"
+        assert last_key in cache.files, "most recently added file was evicted"
+
+    def test_files_exactly_at_cap_not_evicted(self, tmp_data_dir):
+        """Exactly FILES_MAX unique files: no eviction fires."""
+        sid = "files_cap_3"
+        for i in range(session.FILES_MAX):
+            session.mark_file_read(sid, f"/abs/path/f_{i}.py")
+        cache = session.load(sid)
+        assert len(cache.files) == session.FILES_MAX
+
+
+class TestEditedFilesMaxEviction:
+    """EDITED_FILES_MAX FIFO eviction in mark_file_edited."""
+
+    def test_edited_files_evicted_when_cap_exceeded(self, tmp_data_dir):
+        """Filling past EDITED_FILES_MAX evicts oldest entries; dict stays bounded."""
+        sid = "edited_cap_1"
+        overshoot = 10
+        for i in range(session.EDITED_FILES_MAX + overshoot):
+            session.mark_file_edited(sid, f"/abs/path/edit_{i}.py")
+        cache = session.load(sid)
+        assert len(cache.edited_files) <= session.EDITED_FILES_MAX
+
+    def test_newest_edited_files_survive_eviction(self, tmp_data_dir):
+        """After eviction the most recently edited files are still present."""
+        sid = "edited_cap_2"
+        total = session.EDITED_FILES_MAX + 20
+        for i in range(total):
+            session.mark_file_edited(sid, f"/abs/path/edit_{i}.py")
+        cache = session.load(sid)
+        last_key = f"/abs/path/edit_{total - 1}.py"
+        assert last_key in cache.edited_files, "most recently edited file was evicted"
+
+    def test_edited_files_exactly_at_cap_not_evicted(self, tmp_data_dir):
+        """Exactly EDITED_FILES_MAX unique files: no eviction fires."""
+        sid = "edited_cap_3"
+        for i in range(session.EDITED_FILES_MAX):
+            session.mark_file_edited(sid, f"/abs/path/e_{i}.py")
+        cache = session.load(sid)
+        assert len(cache.edited_files) == session.EDITED_FILES_MAX
+
+    def test_repeated_edit_of_same_file_does_not_evict(self, tmp_data_dir):
+        """Editing the same file repeatedly never adds new keys, so no eviction fires."""
+        sid = "edited_cap_4"
+        # Fill to cap with distinct files.
+        for i in range(session.EDITED_FILES_MAX):
+            session.mark_file_edited(sid, f"/abs/path/e_{i}.py")
+        # Edit the first file many more times — it's already a key, so no new insertion.
+        for _ in range(20):
+            session.mark_file_edited(sid, "/abs/path/e_0.py")
+        cache = session.load(sid)
+        assert len(cache.edited_files) == session.EDITED_FILES_MAX
+        # Edit count for the repeated file must be > 1.
+        assert cache.edited_files.get("/abs/path/e_0.py", 0) > 1
+
+
+class TestSnapshotShasMaxEviction:
+    """SNAPSHOT_SHAS_MAX FIFO eviction in set_snapshot_sha."""
+
+    def test_snapshot_shas_evicted_when_cap_exceeded(self, tmp_data_dir):
+        """Filling past SNAPSHOT_SHAS_MAX evicts oldest entries; dict stays bounded."""
+        sid = "snap_cap_1"
+        overshoot = 5
+        for i in range(session.SNAPSHOT_SHAS_MAX + overshoot):
+            session.set_snapshot_sha(sid, f"/abs/path/snap_{i}.py", f"sha_{i}")
+        cache = session.load(sid)
+        assert len(cache.snapshot_shas) <= session.SNAPSHOT_SHAS_MAX
+
+    def test_newest_snapshots_survive_eviction(self, tmp_data_dir):
+        """After eviction the most recently inserted snapshot is still present."""
+        sid = "snap_cap_2"
+        total = session.SNAPSHOT_SHAS_MAX + 10
+        for i in range(total):
+            session.set_snapshot_sha(sid, f"/abs/path/snap_{i}.py", f"sha_{i}")
+        cache = session.load(sid)
+        last_key = f"/abs/path/snap_{total - 1}.py"
+        assert last_key in cache.snapshot_shas, "most recently added snapshot was evicted"
+
+    def test_snapshot_shas_exactly_at_cap_not_evicted(self, tmp_data_dir):
+        """Exactly SNAPSHOT_SHAS_MAX unique paths: no eviction fires."""
+        sid = "snap_cap_3"
+        for i in range(session.SNAPSHOT_SHAS_MAX):
+            session.set_snapshot_sha(sid, f"/abs/path/s_{i}.py", f"sha_{i}")
+        cache = session.load(sid)
+        assert len(cache.snapshot_shas) == session.SNAPSHOT_SHAS_MAX
+
+
+class TestContentionMaxClear:
+    """_CONTENTION_MAX: _REPORTED_CONTENTION is cleared when the cap is hit."""
+
+    def test_contention_set_cleared_at_cap(self, tmp_data_dir, monkeypatch):
+        """When _REPORTED_CONTENTION reaches _CONTENTION_MAX, the next call clears it
+        then re-adds the new key, leaving the set with exactly 1 entry."""
+        # Fill _REPORTED_CONTENTION to exactly _CONTENTION_MAX via direct mutation
+        # (bypassing DB writes) so the test stays fast and DB-free.
+        fake_set: set[tuple[str, str]] = set()
+        for i in range(session._CONTENTION_MAX):
+            fake_set.add((f"session_{i}", "load"))
+        monkeypatch.setattr(session, "_REPORTED_CONTENTION", fake_set)
+
+        # Stub out db.record_stat so no real DB write happens.
+        import token_goat.db as _db
+        monkeypatch.setattr(_db, "record_stat", lambda *a, **kw: None)
+
+        # _record_cache_contention with a brand-new key must trigger the clear.
+        exc = OSError("simulated contention")
+        session._record_cache_contention("new_session_id", "load", exc)
+
+        # After the call: set was cleared then the new (session_id, phase) was added.
+        assert len(session._REPORTED_CONTENTION) == 1
+        assert ("new_session_id", "load") in session._REPORTED_CONTENTION
+
+    def test_contention_set_not_cleared_below_cap(self, tmp_data_dir, monkeypatch):
+        """Below the cap, _REPORTED_CONTENTION grows normally without being cleared."""
+        fake_set: set[tuple[str, str]] = set()
+        monkeypatch.setattr(session, "_REPORTED_CONTENTION", fake_set)
+
+        import token_goat.db as _db
+        monkeypatch.setattr(_db, "record_stat", lambda *a, **kw: None)
+
+        exc = OSError("contention")
+        session._record_cache_contention("sess_a", "load", exc)
+        session._record_cache_contention("sess_b", "save", exc)
+
+        # Both entries must be present — no clear fired.
+        assert ("sess_a", "load") in fake_set
+        assert ("sess_b", "save") in fake_set
+        assert len(fake_set) == 2

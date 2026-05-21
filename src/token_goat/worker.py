@@ -68,6 +68,7 @@ class CleanupStats(TypedDict, total=False):
     snapshots_cleared: int
     bash_outputs_evicted: int
     wal_bytes_reclaimed: int
+    project_wal_bytes_reclaimed: int
     failures: list[str]  # task names that raised during cleanup
 
 
@@ -693,6 +694,45 @@ def _checkpoint_global_wal() -> int:
     return reclaimed
 
 
+def _checkpoint_project_wals() -> int:
+    """TRUNCATE-checkpoint the WAL for every active project DB, returning total bytes reclaimed.
+
+    global.db is checkpointed by ``_checkpoint_global_wal``; per-project DBs are
+    written on every reindex pass but never explicitly checkpointed, so their WAL
+    files can grow unboundedly when passive autocheckpoints are blocked by readers.
+    """
+    reclaimed = 0
+    try:
+        with db.open_global_readonly() as gconn:
+            hashes = [
+                row[0]
+                for row in gconn.execute("SELECT hash FROM projects").fetchall()
+            ]
+    except (db.DBError, sqlite3.DatabaseError, OSError):
+        _LOG.debug("_checkpoint_project_wals: could not list projects; skipping")
+        return 0
+    for project_hash in hashes:
+        db_path = paths.project_db_path(project_hash)
+        wal_path = db_path.with_name(db_path.name + "-wal")
+        if not wal_path.exists():
+            continue
+        before = wal_path.stat().st_size
+        try:
+            with db.open_project(project_hash) as conn:
+                conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+        except Exception:  # noqa: BLE001
+            _LOG.debug("_checkpoint_project_wals: checkpoint failed for %s", project_hash)
+            continue
+        after = wal_path.stat().st_size if wal_path.exists() else 0
+        reclaimed += max(0, before - after)
+    if reclaimed:
+        _LOG.info(
+            "WAL checkpoint reclaimed %d bytes across %d project DBs",
+            reclaimed, len(hashes),
+        )
+    return reclaimed
+
+
 def cleanup_on_startup() -> CleanupStats:
     """Run all self-healing tasks on daemon startup. Returns a summary with counts and failures.
 
@@ -727,6 +767,7 @@ def cleanup_on_startup() -> CleanupStats:
         ("snapshots", _cleanup_stale_snapshots, "snapshots_cleared"),
         ("bash_outputs", _evict_bash_outputs, "bash_outputs_evicted"),
         ("wal_checkpoint", _checkpoint_global_wal, "wal_bytes_reclaimed"),
+        ("project_wal_checkpoint", _checkpoint_project_wals, "project_wal_bytes_reclaimed"),
     ]
     for task_name, task_fn, stat_key in _int_tasks:
         try:
