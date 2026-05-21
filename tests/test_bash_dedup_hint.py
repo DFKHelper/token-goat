@@ -92,7 +92,7 @@ class TestBashDedupHintFiresOnRepeat:
         assert entry3.run_count == 3
 
     def test_hint_text_run_count_2(self, tmp_data_dir):
-        """At run_count==2 the hint says '2x this session'."""
+        """At run_count==2 the hint says '2x' indicating repeated run."""
         cmd = "find /logs -name '*.log'"
         _seed_history("rc-2a", cmd)
         _seed_history("rc-2a", cmd)  # second run → run_count=2
@@ -104,7 +104,7 @@ class TestBashDedupHintFiresOnRepeat:
         result = hooks_read.pre_read(payload)
         _assert_continue(result)
         ctx = result.get("hookSpecificOutput", {}).get("additionalContext", "")
-        assert "ran 2x this session" in ctx
+        assert "ran 2x" in ctx
         assert "WARNING" not in ctx
         assert "token-goat bash-output" in ctx
 
@@ -143,7 +143,7 @@ class TestBashDedupHintFiresOnRepeat:
         assert "5x" in ctx
 
     def test_single_run_hint_unchanged(self, tmp_data_dir):
-        """First-time dedup hint (run_count==1) still uses the old 'ran ~Ns ago' format."""
+        """First-time dedup hint (run_count==1) uses '(age ~Ns)' format."""
         cmd = "find /var -name '*.pid'"
         _seed_history("rc-single", cmd)
         payload = {
@@ -154,8 +154,8 @@ class TestBashDedupHintFiresOnRepeat:
         result = hooks_read.pre_read(payload)
         _assert_continue(result)
         ctx = result.get("hookSpecificOutput", {}).get("additionalContext", "")
-        assert "ran ~" in ctx
-        assert "ago" in ctx
+        assert "age ~" in ctx
+        assert "cached" in ctx
         assert "WARNING" not in ctx
         assert "2x" not in ctx
 

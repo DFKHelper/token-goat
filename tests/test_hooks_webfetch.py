@@ -186,7 +186,7 @@ class TestPreFetchWebFetchDedup:
         result = hooks_cli.pre_fetch(self._payload())
 
         ctx = result.get("hookSpecificOutput", {}).get("additionalContext", "")
-        assert "ago" in ctx
+        assert "age ~" in ctx
 
     def test_cache_hit_hint_mentions_byte_size(self, tmp_data_dir):
         """Hint text must include body size so model can judge recall value."""
