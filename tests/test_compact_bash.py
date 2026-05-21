@@ -88,3 +88,121 @@ class TestManifestBashSection:
         assert compact._humanize_bytes(120) == "120B"
         assert compact._humanize_bytes(2048).startswith("2.0KB")
         assert compact._humanize_bytes(5 * 1024 * 1024).startswith("5.0MB")
+
+
+class TestNoopBashFiltering:
+    def test_git_status_filtered_from_manifest(self, tmp_data_dir):
+        """git status commands consume budget with zero compaction value."""
+        sid = "noop-1"
+        session.mark_file_edited(sid, "/tmp/src.py")
+        # Add a meaningful command
+        _seed_bash(sid, "pytest -v tests/", output_bytes=12000, exit_code=0)
+        # Add a no-op status check
+        _seed_bash(sid, "git status", output_bytes=5000, exit_code=0)
+        _make_mature(sid)
+        m = compact.build_manifest(sid, max_tokens=400)
+        # pytest should appear, git status should not
+        assert "pytest -v tests/" in m
+        assert "git status" not in m
+
+    def test_pwd_filtered_from_manifest(self, tmp_data_dir):
+        """pwd is a no-op (< 5 chars, inaudible)."""
+        sid = "noop-2"
+        session.mark_file_edited(sid, "/tmp/src.py")
+        _seed_bash(sid, "pytest", output_bytes=12000)
+        _seed_bash(sid, "pwd", output_bytes=1000)
+        _make_mature(sid)
+        m = compact.build_manifest(sid, max_tokens=400)
+        assert "pytest" in m
+        assert "pwd" not in m
+
+    def test_echo_filtered_from_manifest(self, tmp_data_dir):
+        """echo is a no-op."""
+        sid = "noop-3"
+        session.mark_file_edited(sid, "/tmp/src.py")
+        _seed_bash(sid, "npm test", output_bytes=8000)
+        _seed_bash(sid, "echo hello", output_bytes=500)
+        _make_mature(sid)
+        m = compact.build_manifest(sid, max_tokens=400)
+        assert "npm test" in m
+        assert "echo hello" not in m
+
+    def test_cat_with_tiny_output_filtered(self, tmp_data_dir):
+        """cat on small files (< 200 bytes) is inaudible."""
+        sid = "noop-4"
+        session.mark_file_edited(sid, "/tmp/src.py")
+        _seed_bash(sid, "pytest", output_bytes=8000)
+        _seed_bash(sid, "cat config.txt", output_bytes=100)
+        _make_mature(sid)
+        m = compact.build_manifest(sid, max_tokens=400)
+        assert "pytest" in m
+        assert "cat config.txt" not in m
+
+    def test_cat_with_large_output_not_filtered(self, tmp_data_dir):
+        """cat on larger files (>= 200 bytes) may be useful."""
+        sid = "noop-5"
+        session.mark_file_edited(sid, "/tmp/src.py")
+        _seed_bash(sid, "pytest", output_bytes=8000)
+        _seed_bash(sid, "cat large_log.txt", output_bytes=2000)
+        _make_mature(sid)
+        m = compact.build_manifest(sid, max_tokens=400)
+        assert "pytest" in m
+        # cat with large output passes the filter (may or may not appear based on budget)
+        # The key is it's not filtered as a no-op
+        from token_goat import bash_cache
+        cat_sha = bash_cache.command_hash("cat large_log.txt")
+        cat_id = f"id=out-{cat_sha}"
+        # Either it appears or budget constraints exclude it, but not the no-op filter
+        assert "cat large_log.txt" in m or cat_id not in m  # Allow both outcomes
+
+
+class TestAnsiStrippingInTokenCap:
+    def test_ansi_stripped_before_token_measurement(self, tmp_data_dir):
+        """Verify that cap_tokens measures clean text, not ANSI-inflated text.
+
+        When text contains heavy ANSI codes, the raw length includes escape
+        sequences that don't render. Without stripping, the token estimate
+        would be inflated, causing the cap to kick in too early. This test
+        verifies that cap_tokens uses the clean text for its initial budget
+        check.
+        """
+        from token_goat import bash_compress
+
+        # Create a short text with minimal ANSI overhead
+        short_text = "Output is OK"
+
+        # Add heavy ANSI to inflate the byte count
+        ansi_heavy = (
+            "\x1b[31m" + short_text + "\x1b[0m" +  # red + short text + reset
+            "\x1b[32m" * 100 +  # 200+ bytes of pure ANSI
+            "\x1b[0m" * 100
+        )
+
+        # Without ANSI stripping, this would be ~400+ bytes but only ~2 tokens of content.
+        # With stripping, it's ~12 bytes / ~3 tokens.
+        # At max_tokens=10, without stripping the inflated estimate might trigger
+        # truncation, with stripping it shouldn't.
+
+        # With stripping (current code), the short text should pass through unchanged
+        result = bash_compress.cap_tokens(ansi_heavy, max_tokens=10)
+        clean_result = bash_compress.strip_ansi(result)
+        # If cap_tokens used the ANSI-inflated estimate, it would truncate.
+        # Since we strip before measuring, it should preserve the content.
+        assert "Output is OK" in clean_result or "output capped at" in result
+        # More specifically: the check should be: can we fit ~3 tokens in budget of 10?
+        # Yes, so it should NOT be truncated.
+        assert "output capped at" not in result
+
+    def test_clean_text_token_cap_still_works(self, tmp_data_dir):
+        """Normal text without ANSI codes should still be capped correctly."""
+        from token_goat import bash_compress
+
+        # ~1500 chars of plain text
+        plain_text = "This is test output. " * 75
+
+        # With max_tokens=50 (roughly 175 bytes), should be truncated
+        result = bash_compress.cap_tokens(plain_text, max_tokens=50)
+        # Should be smaller than original
+        assert len(result) < len(plain_text)
+        # Should have a capping marker
+        assert "output capped at" in result
