@@ -70,6 +70,11 @@ _FULL_READ_SENTINEL_GAP: Final[int] = session_mod._UNKNOWN_END_SENTINEL
 # 5 patterns the list becomes noise — the most-recently-searched ones dominate anyway.
 _MAX_GREP_ENTRIES: Final[int] = 5
 
+# Grep patterns older than this are excluded from the manifest.  Grep patterns are
+# investigation context worth preserving longer than read files, but beyond 3 hours
+# they are unlikely to be relevant to the current agent turn.
+_GREP_MANIFEST_STALE_SECS: Final[int] = 3 * 3600  # 3 hours
+
 # Hard ceiling on the max_tokens parameter accepted by build_manifest.
 # The config layer sets a sensible default (400) but build_manifest is also part of
 # the public API.  Without a cap, a caller could pass an arbitrarily large value,
@@ -404,6 +409,9 @@ def _select_top_grep_entries(greps: list[object]) -> list[object]:
     without adding information.  Returns entries ranked by recency so the
     patterns most likely to drive the next agent turn appear first.
 
+    Filters out patterns older than :data:`_GREP_MANIFEST_STALE_SECS` to avoid
+    listing stale investigation history.
+
     Accepts the ``greps`` attribute typed as ``list[object]`` (rather than
     ``list[GrepEntry]``) to avoid importing :class:`session.GrepEntry` at
     cold-start time; all field access is via :func:`getattr`.
@@ -418,6 +426,14 @@ def _select_top_grep_entries(greps: list[object]) -> list[object]:
     for g in sorted(greps, key=lambda g: getattr(g, "ts", 0.0)):
         seen[getattr(g, "pattern", "")] = g
     candidates = list(seen.values())
+    if not candidates:
+        return []
+    # Filter out stale patterns (older than _GREP_MANIFEST_STALE_SECS).
+    now_ts = time.time()
+    candidates = [
+        g for g in candidates
+        if (now_ts - getattr(g, "ts", 0.0)) < _GREP_MANIFEST_STALE_SECS
+    ]
     if not candidates:
         return []
     return heapq.nlargest(_MAX_GREP_ENTRIES, candidates, key=lambda g: getattr(g, "ts", 0.0))
@@ -835,6 +851,7 @@ def _render(cache: SessionCache, session_id: str, max_tokens: int) -> tuple[str,
             if (now_ts - getattr(be, "ts", now_ts)) > _COLD_OUTPUT_AGE_SECS
             and (getattr(be, "stdout_bytes", 0) + getattr(be, "stderr_bytes", 0))
             >= _MIN_BASH_BYTES_FOR_MANIFEST
+            and getattr(be, "exit_code", 0) == 0  # Exclude failed commands (unresolved issues)
         ],
         key=lambda be: getattr(be, "ts", 0.0),
         reverse=True,
