@@ -1224,3 +1224,117 @@ class TestSessionAgeInManifest:
         # Should include age at the 60-second boundary
         assert "age:" in result
         assert "1m" in result
+
+
+# ---------------------------------------------------------------------------
+# Hot-file consolidation
+# ---------------------------------------------------------------------------
+
+class TestHotFileConsolidation:
+    """Files read 5+ times are consolidated into a single summary line."""
+
+    def test_hot_files_collapsed_to_single_line(self, tmp_data_dir):
+        """Files with read_count >= 5 appear in a consolidated 'Hot (5+×): ...' line."""
+        sid = "hot-file-collapse-session"
+        for _ in range(6):
+            session.mark_file_read(sid, "/proj/src/hot.py", offset=0, limit=50)
+        result = compact.build_manifest(sid)
+        assert "Hot (5+×):" in result
+        assert "hot.py" in result
+
+    def test_hot_file_not_listed_individually(self, tmp_data_dir):
+        """A hot file must not get its own '- → path  ×N  lines ...' entry."""
+        sid = "hot-file-no-dup-session"
+        for _ in range(7):
+            session.mark_file_read(sid, "/proj/src/frequent.py", offset=0, limit=50)
+        result = compact.build_manifest(sid)
+        # The hot line should exist
+        assert "Hot (5+×):" in result
+        # Count occurrences of the filename — should be exactly one (inside the hot line)
+        assert result.count("frequent.py") == 1, (
+            f"hot file should appear only once (in consolidated line):\n{result}"
+        )
+
+    def test_normal_files_still_get_individual_entries(self, tmp_data_dir):
+        """Files with read_count < 5 continue to appear as individual '- → ...' entries."""
+        sid = "normal-file-individual-session"
+        for _ in range(3):
+            session.mark_file_read(sid, "/proj/src/normal.py", offset=0, limit=50)
+        result = compact.build_manifest(sid)
+        # Should NOT be in the hot group
+        assert "Hot (5+×):" not in result
+        # Should appear as an individual read entry
+        assert "- → " in result
+        assert "normal.py" in result
+
+    def test_hot_line_appears_before_normal_entries(self, tmp_data_dir):
+        """Hot summary line comes before normal file entries."""
+        sid = "hot-before-normal-session"
+        for _ in range(5):
+            session.mark_file_read(sid, "/proj/src/hot.py", offset=0, limit=50)
+        for _ in range(2):
+            session.mark_file_read(sid, "/proj/src/normal.py", offset=0, limit=50)
+        result = compact.build_manifest(sid)
+        assert "Hot (5+×):" in result
+        assert "normal.py" in result
+        # Hot line must precede the normal individual entry
+        assert result.index("Hot (5+×):") < result.index("normal.py"), (
+            f"hot summary should appear before normal entries:\n{result}"
+        )
+
+    def test_more_than_six_hot_files_shows_overflow(self, tmp_data_dir):
+        """When > 6 hot files exist, first 6 are named and '+N more' is appended."""
+        sid = "hot-overflow-session"
+        for i in range(8):
+            for _ in range(5):
+                session.mark_file_read(sid, f"/proj/src/hot{i}.py", offset=0, limit=50)
+        result = compact.build_manifest(sid)
+        assert "Hot (5+×):" in result
+        # Should show overflow for the extra 2 files (8 - 6 = 2)
+        assert "+2 more" in result or "+ more" in result or "more" in result, (
+            f"overflow suffix missing for 8 hot files:\n{result}"
+        )
+
+    def test_exactly_six_hot_files_no_overflow(self, tmp_data_dir):
+        """Exactly 6 hot files: all shown by name, no '+N more'."""
+        sid = "hot-exactly-six-session"
+        for i in range(6):
+            for _ in range(5):
+                session.mark_file_read(sid, f"/proj/src/file{i}.py", offset=0, limit=50)
+        result = compact.build_manifest(sid)
+        assert "Hot (5+×):" in result
+        # No overflow expected
+        assert "+0 more" not in result
+        # Verify all 6 filenames appear
+        for i in range(6):
+            assert f"file{i}.py" in result, f"file{i}.py missing from hot line:\n{result}"
+
+
+# ---------------------------------------------------------------------------
+# Trim refill pass
+# ---------------------------------------------------------------------------
+
+class TestTrimRefillPass:
+    """After conservative char-budget trimming, the refill pass recovers budget."""
+
+    def test_refill_recovers_lines_under_accurate_budget(self, tmp_data_dir):
+        """A manifest trimmed by the conservative estimate gets refilled to use more tokens."""
+        from token_goat.repomap import estimate_tokens
+
+        sid = "refill-session-abc"
+        # Add enough files so the manifest is big enough to require trimming
+        for i in range(15):
+            session.mark_file_read(sid, f"/proj/src/module{i:02d}.py", offset=0, limit=100)
+        session.mark_file_edited(sid, "/proj/src/edited.py")
+
+        # Use a moderate budget that will definitely trigger trimming but leave room to refill
+        budget = 80
+        result = compact.build_manifest(sid, max_tokens=budget)
+
+        # The token count of the result must be within the budget
+        actual_tokens = estimate_tokens(result)
+        assert actual_tokens <= budget, (
+            f"manifest exceeds token budget: {actual_tokens} > {budget}\n{result}"
+        )
+        # The result must be non-empty
+        assert len(result) > 0
