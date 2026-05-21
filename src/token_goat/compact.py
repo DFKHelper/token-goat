@@ -80,10 +80,26 @@ _HOT_FILE_MAX_SHOWN: Final[int] = 6
 # 5 patterns the list becomes noise — the most-recently-searched ones dominate anyway.
 _MAX_GREP_ENTRIES: Final[int] = 5
 
-# Grep patterns older than this are excluded from the manifest.  Grep patterns are
-# investigation context worth preserving longer than read files, but beyond 3 hours
-# they are unlikely to be relevant to the current agent turn.
-_GREP_MANIFEST_STALE_SECS: Final[int] = 3 * 3600  # 3 hours
+# Grep patterns older than this are considered stale and dropped from the manifest.
+# 45 minutes is a practical session horizon: patterns from more than 45 minutes ago
+# predate most recent context switches and carry little signal for the upcoming compact.
+# If *all* patterns are older than this threshold, the 2 most recent are surfaced anyway
+# so the section is never entirely empty when searches exist.
+_GREP_STALE_SECS: Final[int] = 2700  # 45 minutes
+
+# Kept for external callers (e.g. tests) that may reference the old name.  The new
+# constant _GREP_STALE_SECS is the authoritative staleness threshold used internally.
+_GREP_MANIFEST_STALE_SECS: Final[int] = _GREP_STALE_SECS
+
+# Minimum number of grep entries to show even when all are stale.  Avoids rendering
+# an empty "Patterns Searched" section when the session only has old searches.
+_GREP_MIN_WHEN_ALL_STALE: Final[int] = 2
+
+# Half-life used by the grep recency weight in _select_top_grep_entries.
+# At age=0 weight=1.0; at age=30min weight≈0.5; at age=45min weight≈0.35.
+# The weight is multiplied by a normalised match_count so high-result searches
+# that are still recent beat zero-result searches of the same age.
+_GREP_RECENCY_HALF_LIFE_SECS: Final[float] = 1800.0  # 30 minutes
 
 # Hard ceiling on the max_tokens parameter accepted by build_manifest.
 # The config layer sets a sensible default (400) but build_manifest is also part of
@@ -697,42 +713,72 @@ def _humanize_bytes(n: int) -> str:
     return f"{n / (1024 * 1024):.1f}MB"
 
 
+def _grep_sort_key(entry: object, now_ts: float) -> float:
+    """Composite sort key for grep entries: recency_weight * (1 + normalised match_count).
+
+    Recency weight uses exponential decay with :data:`_GREP_RECENCY_HALF_LIFE_SECS`
+    so a search from 30 minutes ago is worth half as much as one from just now.
+    The match_count factor rewards searches that actually found results — a search
+    that returned 20 matches is more load-bearing context than one that returned 0.
+    Match counts are normalised to [0, 1] by capping at 100 so a single mega-result
+    search does not completely swamp recency.
+
+    Returns a float in (0, 2] — higher is more important.
+    """
+    age = max(0.0, now_ts - getattr(entry, "ts", 0.0))
+    recency = math.exp(-age * math.log(2) / _GREP_RECENCY_HALF_LIFE_SECS)
+    match_count = getattr(entry, "result_count", None)
+    # Treat unknown result_count as 1 (neutral) so it neither boosts nor penalises.
+    count_factor = 1.0 + min(100, match_count or 1) / 100.0
+    return recency * count_factor
+
+
 def _select_top_grep_entries(greps: list[object]) -> list[object]:
-    """Pick up to :data:`_MAX_GREP_ENTRIES` most-recent unique grep patterns.
+    """Pick up to :data:`_MAX_GREP_ENTRIES` best unique grep patterns for the manifest.
 
-    Deduplicates by ``(pattern, path)`` keeping the most recent occurrence of
-    each pair — repeated searches for the same pattern clutter the manifest
-    without adding information.  Returns entries ranked by recency so the
-    patterns most likely to drive the next agent turn appear first.
+    **Step 1 — Dedup by pattern text**: iterate oldest→newest so the most-recent
+    search (with its current path scope and result_count) overwrites earlier ones.
+    Deduplicating by pattern alone (not pattern+path) avoids listing the same search
+    term twice just because the scope changed between runs.
 
-    Filters out patterns older than :data:`_GREP_MANIFEST_STALE_SECS` to avoid
-    listing stale investigation history.
+    **Step 2 — Drop stale entries**: patterns older than :data:`_GREP_STALE_SECS`
+    (45 min) are unlikely to drive the next agent turn.  If *all* patterns are stale,
+    the :data:`_GREP_MIN_WHEN_ALL_STALE` most-recent ones are kept so the section is
+    never entirely empty when searches exist.
 
-    Accepts the ``greps`` attribute typed as ``list[object]`` (rather than
-    ``list[GrepEntry]``) to avoid importing :class:`session.GrepEntry` at
-    cold-start time; all field access is via :func:`getattr`.
+    **Step 3 — Rank by composite score**: :func:`_grep_sort_key` combines a
+    30-minute recency half-life with a normalised match_count factor so searches that
+    found more results AND were more recent surface first.
+
+    Accepts ``greps`` typed as ``list[object]`` (rather than ``list[GrepEntry]``) to
+    avoid importing :class:`session.GrepEntry` at cold-start time; all field access is
+    via :func:`getattr`.
     """
     if not greps:
         return []
-    # Deduplicate by pattern text: iterate oldest→newest so the most-recent
-    # search (with its current path scope and result_count) overwrites earlier
-    # ones.  Deduplicating by pattern alone (not pattern+path) avoids listing
-    # the same search term twice just because the scope changed between runs.
+
+    # Step 1: Deduplicate by pattern — keep the most-recent occurrence.
     seen: dict[str, object] = {}
     for g in sorted(greps, key=lambda g: getattr(g, "ts", 0.0)):
         seen[getattr(g, "pattern", "")] = g
     candidates = list(seen.values())
     if not candidates:
         return []
-    # Filter out stale patterns (older than _GREP_MANIFEST_STALE_SECS).
+
+    # Step 2: Staleness filter — drop entries older than _GREP_STALE_SECS.
     now_ts = time.time()
-    candidates = [
-        g for g in candidates
-        if (now_ts - getattr(g, "ts", 0.0)) < _GREP_MANIFEST_STALE_SECS
-    ]
-    if not candidates:
-        return []
-    return heapq.nlargest(_MAX_GREP_ENTRIES, candidates, key=lambda g: getattr(g, "ts", 0.0))
+    fresh = [g for g in candidates if (now_ts - getattr(g, "ts", 0.0)) < _GREP_STALE_SECS]
+    if not fresh:
+        # All entries are stale — surface the _GREP_MIN_WHEN_ALL_STALE most-recent ones
+        # so the section is never entirely empty when searches exist.
+        fresh = heapq.nlargest(
+            _GREP_MIN_WHEN_ALL_STALE,
+            candidates,
+            key=lambda g: getattr(g, "ts", 0.0),
+        )
+
+    # Step 3: Rank by composite (recency × match_count) score, then pick top N.
+    return heapq.nlargest(_MAX_GREP_ENTRIES, fresh, key=lambda g: _grep_sort_key(g, now_ts))
 
 
 def _format_grep_entry(entry: object) -> str:

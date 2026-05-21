@@ -592,6 +592,100 @@ class TestGrepSection:
         # Fresh pattern should be in manifest
         assert "fresh_pattern" in result, f"fresh grep should appear:\n{result}"
 
+    # ------------------------------------------------------------------
+    # Dedup / staleness / composite-rank improvements
+    # ------------------------------------------------------------------
+
+    def test_grep_dedup_by_pattern_keeps_most_recent(self, tmp_data_dir):
+        """Duplicate pattern entries: only the most-recent occurrence survives."""
+        import time as _time
+
+        sid = "grep-dedup-most-recent-abc"
+        # Search the same pattern twice in different scopes; the second (newer) wins.
+        session.mark_grep(sid, "target_fn", "/proj/src", result_count=3)
+        _time.sleep(0.02)
+        session.mark_grep(sid, "target_fn", "/proj/tests", result_count=7)
+
+        result = compact.build_manifest(sid)
+
+        # Pattern must appear exactly once.
+        assert result.count("target_fn") == 1, (
+            f"deduplicated pattern should appear exactly once:\n{result}"
+        )
+        # The most-recent entry had result_count=7 — that should be the surviving entry.
+        assert "7 results" in result, (
+            f"most-recent occurrence (7 results) should survive dedup:\n{result}"
+        )
+
+    def test_grep_stale_45min_dropped_fresh_kept(self, tmp_data_dir):
+        """Entries older than 45 minutes are dropped; fresh entries are kept."""
+        import time as _time
+
+        sid = "grep-stale-45min-abc"
+
+        # A stale grep (>45 min old)
+        session.mark_grep(sid, "old_search", "/proj/src")
+        stale_age = 2700 + 120  # 47 min — exceeds the 45-min threshold
+        cache = session.load(sid)
+        cache.greps[-1].ts = _time.time() - stale_age
+        session.save(cache)
+
+        # A fresh grep (just now)
+        session.mark_grep(sid, "new_search", "/proj/src")
+
+        result = compact.build_manifest(sid)
+
+        assert "new_search" in result, f"fresh grep must be in manifest:\n{result}"
+        assert "old_search" not in result, f"stale grep (47min) must be dropped:\n{result}"
+
+    def test_grep_all_stale_keeps_two_most_recent(self, tmp_data_dir):
+        """When all patterns are stale, the 2 most recent survive anyway."""
+        import time as _time
+
+        sid = "grep-all-stale-fallback-abc"
+
+        patterns = ["oldest", "middle", "newest"]
+        for _i, pat in enumerate(patterns):
+            session.mark_grep(sid, pat, "/proj/src")
+
+        # Make all three stale (>45 min) but at different ages.
+        cache = session.load(sid)
+        now = _time.time()
+        ages = [3600 * 3, 3600 * 2, 3600]  # 3h, 2h, 1h old — all stale
+        for grep, age in zip(cache.greps[-3:], ages, strict=False):
+            grep.ts = now - age
+        session.save(cache)
+
+        result = compact.build_manifest(sid)
+
+        # "newest" (1h ago) and "middle" (2h ago) should survive; "oldest" (3h ago) should not.
+        assert "newest" in result, f"most-recent stale grep must be kept:\n{result}"
+        assert "middle" in result, f"second-most-recent stale grep must be kept:\n{result}"
+        assert "oldest" not in result, f"oldest stale grep should be dropped:\n{result}"
+
+    def test_grep_high_match_count_ranked_above_low_match_similar_age(self, tmp_data_dir):
+        """After dedup/filter, entries with more matches rank above low-match ones of similar age."""
+        import time as _time
+
+        sid = "grep-match-rank-abc"
+
+        # Two searches at nearly the same time; one has many matches, one has none.
+        session.mark_grep(sid, "rich_search", "/proj/src", result_count=50)
+        _time.sleep(0.01)
+        session.mark_grep(sid, "empty_search", "/proj/src", result_count=0)
+
+        result = compact.build_manifest(sid)
+
+        # Both should appear (different patterns, both fresh).
+        assert "rich_search" in result, f"high-match search missing:\n{result}"
+        assert "empty_search" in result, f"zero-match search missing:\n{result}"
+
+        # "rich_search" should appear before "empty_search" because its composite score
+        # (recency × match_count factor) is higher.
+        assert result.index("rich_search") < result.index("empty_search"), (
+            f"high-match search should rank before zero-match search:\n{result}"
+        )
+
 
 class TestColdOutputs:
     """Cold outputs (old cached bash runs) must exclude failed commands."""
