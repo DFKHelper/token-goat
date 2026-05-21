@@ -483,8 +483,11 @@ def doctor(  # noqa: C901
     # 14. Stats summary
     # ------------------------------------------------------------------
     typer.echo("\nStats")
+    # doctor only reads here — use the read-only opener. open_global() runs
+    # PRAGMA integrity_check on connect, which is multi-second on a large
+    # global.db; a diagnostic must not pay that cost or create the DB.
     try:
-        with _db.open_global() as conn:
+        with _db.open_global_readonly() as conn:
             row = conn.execute(
                 "SELECT COUNT(*), SUM(tokens_saved), SUM(bytes_saved) FROM stats"
             ).fetchone()
@@ -506,6 +509,8 @@ def doctor(  # noqa: C901
             )
         else:
             ok("session-cache", "no contention events in the last hour")
+    except FileNotFoundError:
+        ok("(none)", "no recorded savings yet")
     except Exception as e:  # noqa: BLE001
         flag("stats", str(e), warn=True)
 

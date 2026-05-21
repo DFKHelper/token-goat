@@ -19,7 +19,7 @@ def test_doctor_exits_zero_and_prints_sections():
         [sys.executable, "-m", "token_goat.cli", "doctor"],
         capture_output=True,
         text=True,
-        timeout=60,
+        timeout=120,
     )
     assert result.returncode == 0, (
         f"doctor exited {result.returncode}\nstdout:\n{result.stdout}\nstderr:\n{result.stderr}"
@@ -40,7 +40,7 @@ def test_doctor_via_entry_point():
         ["uv", "run", "token-goat", "doctor"],
         capture_output=True,
         text=True,
-        timeout=60,
+        timeout=120,
         cwd=str(Path(__file__).parent.parent),
     )
     assert result.returncode == 0, (
@@ -215,6 +215,25 @@ class TestDoctorBranches:
         result = runner.invoke(cli.app, ["doctor"])
         assert result.exit_code == 0
         assert "no recorded savings yet" in result.stdout
+
+    def test_doctor_does_not_create_global_db(self, tmp_data_dir):
+        """doctor must not create global.db as a side effect of diagnosing.
+
+        Reading stats through open_global() (read-write) creates the file when
+        absent and runs PRAGMA integrity_check — multi-second on a large
+        production global.db, which timed out the doctor subprocess smoke tests
+        under full-suite load. open_global_readonly() does neither.
+        """
+        paths.ensure_dirs()
+        assert not paths.global_db_path().exists()  # precondition: no DB yet
+
+        result = runner.invoke(cli.app, ["doctor"])
+
+        assert result.exit_code == 0, result.stdout
+        assert "no recorded savings yet" in result.stdout
+        assert not paths.global_db_path().exists(), (
+            "doctor created global.db — stats must be read via open_global_readonly()"
+        )
 
     def test_project_db_file_count_zero_shows_not_yet_indexed(self, tmp_data_dir, tmp_path):
         """Project found but file_count == 0 → '(not yet indexed)' label."""
