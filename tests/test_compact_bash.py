@@ -206,3 +206,111 @@ class TestAnsiStrippingInTokenCap:
         assert len(result) < len(plain_text)
         # Should have a capping marker
         assert "output capped at" in result
+
+
+class TestCurrentBlockersSection:
+    """Tests for the 'Current Blockers' manifest section."""
+
+    def test_recent_failure_produces_blockers_section(self, tmp_data_dir):
+        """A recent failed command surfaces in a 'Current Blockers' section."""
+        sid = "blk-1"
+        session.mark_file_edited(sid, "/tmp/src.py")
+        _seed_bash(sid, "pytest tests/", output_bytes=8000, exit_code=1)
+        _make_mature(sid)
+        m = compact.build_manifest(sid, max_tokens=400)
+        assert "Current Blockers" in m
+        assert "pytest tests/" in m
+        assert "exit 1" in m
+
+    def test_no_failures_omits_blockers_header(self, tmp_data_dir):
+        """When all commands succeeded, 'Current Blockers' header is absent."""
+        sid = "blk-2"
+        session.mark_file_edited(sid, "/tmp/src.py")
+        _seed_bash(sid, "pytest tests/", output_bytes=8000, exit_code=0)
+        _make_mature(sid)
+        m = compact.build_manifest(sid, max_tokens=400)
+        assert "Current Blockers" not in m
+
+    def test_stale_failure_omits_blockers_header(self, tmp_data_dir):
+        """A failure older than 60 minutes is not treated as an active blocker."""
+        sid = "blk-3"
+        session.mark_file_edited(sid, "/tmp/src.py")
+        # Seed a failure, then backdate it to 90 minutes ago via direct mutation.
+        _seed_bash(sid, "make build", output_bytes=8000, exit_code=2)
+        cache = session.load(sid)
+        from token_goat import bash_cache
+        sha = bash_cache.command_hash("make build")
+        entry = cache.bash_history[sha]
+        # Mutate the timestamp to 90 minutes in the past.
+        object.__setattr__(entry, "ts", time.time() - 5400)
+        session.save(cache)
+        _make_mature(sid)
+        m = compact.build_manifest(sid, max_tokens=400)
+        assert "Current Blockers" not in m
+
+    def test_unknown_exit_code_not_treated_as_blocker(self, tmp_data_dir):
+        """Commands with exit_code=None (unknown) are not surfaced as blockers."""
+        sid = "blk-4"
+        session.mark_file_edited(sid, "/tmp/src.py")
+        _seed_bash(sid, "cargo build", output_bytes=8000, exit_code=None)
+        _make_mature(sid)
+        m = compact.build_manifest(sid, max_tokens=400)
+        assert "Current Blockers" not in m
+
+    def test_blockers_appear_before_edited_files(self, tmp_data_dir):
+        """Current Blockers section must precede Files Edited in the manifest."""
+        sid = "blk-5"
+        # Use a non-noise path so the Files Edited section actually appears.
+        session.mark_file_edited(sid, "/home/user/project/src/module.py")
+        _seed_bash(sid, "pytest tests/", output_bytes=8000, exit_code=1)
+        _make_mature(sid)
+        m = compact.build_manifest(sid, max_tokens=400)
+        assert "Current Blockers" in m
+        assert "Files Edited" in m
+        blockers_pos = m.index("Current Blockers")
+        edited_pos = m.index("Files Edited")
+        assert blockers_pos < edited_pos, (
+            f"Expected 'Current Blockers' (pos {blockers_pos}) before "
+            f"'Files Edited' (pos {edited_pos})"
+        )
+
+    def test_success_exit_zero_not_a_blocker(self, tmp_data_dir):
+        """exit_code=0 is never a blocker regardless of output size."""
+        sid = "blk-6"
+        session.mark_file_edited(sid, "/tmp/src.py")
+        _seed_bash(sid, "npm install", output_bytes=50000, exit_code=0)
+        _make_mature(sid)
+        m = compact.build_manifest(sid, max_tokens=400)
+        assert "Current Blockers" not in m
+
+    def test_multiple_failures_capped_at_three(self, tmp_data_dir):
+        """At most 3 blocker entries are shown even when more commands failed."""
+        sid = "blk-7"
+        session.mark_file_edited(sid, "/tmp/src.py")
+        for i in range(5):
+            _seed_bash(sid, f"pytest test_{i}.py", output_bytes=5000, exit_code=1)
+        _make_mature(sid)
+        m = compact.build_manifest(sid, max_tokens=800)
+        # Count occurrences of the failure marker in the blockers section.
+        lines = m.splitlines()
+        blocker_section_lines = []
+        in_blockers = False
+        for line in lines:
+            if line.startswith("### Current Blockers"):
+                in_blockers = True
+                continue
+            if in_blockers and line.startswith("###"):
+                break
+            if in_blockers and line.startswith("- ✗"):
+                blocker_section_lines.append(line)
+        assert len(blocker_section_lines) <= 3
+
+    def test_blocker_format_includes_exit_code(self, tmp_data_dir):
+        """Each blocker line shows the command preview and exit code."""
+        sid = "blk-8"
+        session.mark_file_edited(sid, "/tmp/src.py")
+        _seed_bash(sid, "mypy src/", output_bytes=6000, exit_code=2)
+        _make_mature(sid)
+        m = compact.build_manifest(sid, max_tokens=400)
+        assert "✗ mypy src/" in m
+        assert "exit 2" in m
