@@ -1461,3 +1461,135 @@ class TestSessionCommits:
 
         # Should NOT contain "Commits This Session" since there are no new commits
         assert "Commits This Session" not in result
+
+
+# ---------------------------------------------------------------------------
+# _section_budgets and per-section budget allocation
+# ---------------------------------------------------------------------------
+
+
+class TestSectionBudgets:
+    """Unit tests for _section_budgets() and per-section budget enforcement."""
+
+    def test_proportions_sum_to_total_remaining(self):
+        """Allocated budgets collectively cover the full remaining budget."""
+        budgets = compact._section_budgets(400, 100)
+        # Remaining = 300; proportions 40/30/15/15 = 100%
+        # Each individual bucket may be slightly under due to int truncation,
+        # but the sum must be <= remaining (never overallocated).
+        assert sum(budgets.values()) <= 300
+        # And must be close — within 4 tokens of 300 (one int-rounding unit per bucket).
+        assert sum(budgets.values()) >= 300 - 4
+
+    def test_symbols_gets_forty_percent(self):
+        """Symbols section receives 40% of the remaining budget."""
+        budgets = compact._section_budgets(400, 0)
+        assert budgets["symbols"] == int(400 * 0.40)
+
+    def test_files_gets_thirty_percent(self):
+        """Files section receives 30% of the remaining budget."""
+        budgets = compact._section_budgets(400, 0)
+        assert budgets["files"] == int(400 * 0.30)
+
+    def test_greps_gets_fifteen_percent(self):
+        """Greps section receives 15% of the remaining budget."""
+        budgets = compact._section_budgets(400, 0)
+        assert budgets["greps"] == int(400 * 0.15)
+
+    def test_bash_gets_fifteen_percent(self):
+        """Bash section receives 15% of the remaining budget."""
+        budgets = compact._section_budgets(400, 0)
+        assert budgets["bash"] == int(400 * 0.15)
+
+    def test_edited_tokens_reduce_remaining(self):
+        """Edited-section cost is subtracted before proportional split."""
+        budgets_no_edit = compact._section_budgets(400, 0)
+        budgets_with_edit = compact._section_budgets(400, 100)
+        # Each section should be smaller when 100 tokens are pre-consumed.
+        for key in ("symbols", "files", "greps", "bash"):
+            assert budgets_with_edit[key] < budgets_no_edit[key]
+
+    def test_minimum_section_tokens_enforced(self):
+        """Every section gets at least the minimum even with a tiny budget."""
+        # 10-token budget with 9 tokens already consumed → 1 token remaining.
+        # Each section must still get at least 20 tokens (the minimum floor).
+        budgets = compact._section_budgets(10, 9)
+        for key in ("symbols", "files", "greps", "bash"):
+            assert budgets[key] >= 20, (
+                f"section {key!r} got {budgets[key]} tokens, expected >= 20"
+            )
+
+    def test_zero_remaining_gives_minimums(self):
+        """When edited section consumes the entire budget, sections get minimums."""
+        budgets = compact._section_budgets(400, 500)  # edited_tokens > total
+        for key in ("symbols", "files", "greps", "bash"):
+            assert budgets[key] >= 20
+
+    def test_returns_all_four_keys(self):
+        """Return dict always contains exactly the four expected keys."""
+        budgets = compact._section_budgets(400, 100)
+        assert set(budgets.keys()) == {"symbols", "files", "greps", "bash"}
+
+    def test_manifest_stays_within_budget_simple_session(self, tmp_data_dir):
+        """A simple session manifest stays within the requested token budget."""
+        from token_goat.repomap import estimate_tokens
+
+        sid = "section-budget-simple"
+        for i in range(5):
+            session.mark_file_read(sid, f"/proj/src/module{i}.py", offset=0, limit=100)
+        session.mark_file_edited(sid, "/proj/src/app.py")
+        session.mark_grep(sid, "def handle", "/proj/src")
+
+        budget = 200
+        result = compact.build_manifest(sid, max_tokens=budget)
+        assert result, "non-empty session must produce a manifest"
+        assert estimate_tokens(result) <= budget
+
+    def test_manifest_stays_within_budget_saturated_session(self, tmp_data_dir):
+        """A heavily populated session never exceeds the token budget."""
+        from token_goat.repomap import estimate_tokens
+
+        sid = "section-budget-saturated"
+        for i in range(20):
+            session.mark_file_edited(sid, f"/proj/src/edited_{i:02d}.py")
+        for i in range(15):
+            session.mark_file_read(sid, f"/proj/src/sym_{i:02d}.py", symbol=f"fn_{i}")
+        for i in range(20):
+            session.mark_file_read(sid, f"/proj/src/read_{i:02d}.py", offset=0, limit=100)
+        for i in range(10):
+            session.mark_grep(sid, f"pattern_{i}", "/proj/src")
+
+        budget = 400
+        result = compact.build_manifest(sid, max_tokens=budget)
+        assert result
+        actual = estimate_tokens(result)
+        assert actual <= budget, (
+            f"saturated manifest exceeded budget: {actual} > {budget}\n{result}"
+        )
+
+    def test_bash_section_included_when_files_section_is_small(self, tmp_data_dir):
+        """Bash history appears even when files section is small (no crowding)."""
+        from token_goat.repomap import estimate_tokens
+
+        sid = "section-budget-bash-not-crowded"
+        # Only one file read — files section will be tiny.
+        session.mark_file_read(sid, "/proj/src/only.py", offset=0, limit=50)
+        # Add bash history.
+        session.mark_bash_run(
+            sid, "abc123def456", "pytest tests/ -x",
+            "output-id-001",
+            stdout_bytes=2000, stderr_bytes=100,
+            exit_code=0, truncated=False,
+        )
+
+        result = compact.build_manifest(sid, max_tokens=400)
+        assert "Commands Run" in result, (
+            f"bash section missing when files section is small:\n{result}"
+        )
+        assert estimate_tokens(result) <= 400
+
+    def test_token_count_helper(self):
+        """_token_count returns len(text) // 4."""
+        assert compact._token_count("") == 0
+        assert compact._token_count("a" * 8) == 2
+        assert compact._token_count("a" * 100) == 25
