@@ -65,6 +65,15 @@ _MIN_BASH_BYTES_FOR_MANIFEST: Final[int] = 400
 # "lines 1-100000", so the compaction LLM knows the entire file was in context.
 _FULL_READ_SENTINEL_GAP: Final[int] = session_mod._UNKNOWN_END_SENTINEL
 
+# Files read this many times or more are "hot" — the model knows them intimately.
+# Listing them individually wastes manifest lines on content the compaction LLM
+# would never evict. Consolidate to a single summary line instead.
+_HOT_FILE_READ_THRESHOLD: Final[int] = 5
+
+# Maximum number of hot files shown by name in the consolidated summary line.
+# Beyond this, a "+N more" suffix is appended so the line stays compact.
+_HOT_FILE_MAX_SHOWN: Final[int] = 6
+
 # Maximum grep patterns listed in the "Patterns Searched" section.  Grep entries
 # give the compaction LLM context about what the user was investigating, but beyond
 # 5 patterns the list becomes noise — the most-recently-searched ones dominate anyway.
@@ -1040,7 +1049,33 @@ def _render(cache: SessionCache, session_id: str, max_tokens: int) -> tuple[str,
     # ── 5. Key files read (top N by read_count+ts) ────────────────────────────
     if top_files:
         sections.append("### Key Files Read")
-        for entry in top_files:
+
+        # Split into hot (≥ threshold reads) and normal (< threshold) groups.
+        # Hot files are definitively in the model's working set — consolidate them
+        # into a single summary line to avoid wasting budget on entries the
+        # compaction LLM would never drop anyway.
+        hot_files = [e for e in top_files if e.read_count >= _HOT_FILE_READ_THRESHOLD]
+        normal_files = [e for e in top_files if e.read_count < _HOT_FILE_READ_THRESHOLD]
+
+        if hot_files:
+            shown = hot_files[:_HOT_FILE_MAX_SHOWN]
+            overflow = len(hot_files) - _HOT_FILE_MAX_SHOWN
+            # Use only the filename (basename) for the hot line — these files are
+            # well-known in the session; the full path wastes space.
+            def _basename(p: str) -> str:
+                p = p.replace("\\", "/")
+                return p.rsplit("/", 1)[-1] if "/" in p else p
+
+            name_parts = [
+                f"{_basename(e.rel_or_abs)}{_count_suffix(e.read_count)}"
+                for e in shown
+            ]
+            hot_line = "Hot (5+×): " + ", ".join(name_parts)
+            if overflow > 0:
+                hot_line += f" +{overflow} more"
+            sections.append(f"- → {hot_line}")
+
+        for entry in normal_files:
             ranges_str = _format_ranges(entry.line_ranges)
             sections.append(
                 f"- → {_short_path(entry.rel_or_abs)}{_count_suffix(entry.read_count)}{ranges_str}"
@@ -1110,10 +1145,26 @@ def _render(cache: SessionCache, session_id: str, max_tokens: int) -> tuple[str,
     while total_chars > char_budget and len(lines) > 3:
         removed = lines.pop()
         total_chars -= len(removed) + 1  # +1 accounts for the '\n' separator removed with the line
+
+    # Refill pass: the trim loop uses a conservative char-based estimate (3 chars/token)
+    # to avoid over-including content.  After trimming, attempt to add back recently
+    # removed lines using the more accurate estimate_tokens() (len/3.5) to recover
+    # budget left on the table.  This is safe because estimate_tokens() is pure string
+    # math and the number of trimmed lines is bounded by the total manifest size (~30-50).
+    all_lines = result.splitlines()
+    if len(lines) < len(all_lines):
+        for candidate_line in all_lines[len(lines):]:
+            probe = "\n".join(lines + [candidate_line])
+            if estimate_tokens(probe) <= max_tokens:
+                lines.append(candidate_line)
+            else:
+                break  # if one line doesn't fit, further lines won't either
+
     trimmed_result = "\n".join(lines)
     _LOG.debug(
-        "_render: trimmed %d line(s) for session=%s; final ~%d tokens",
+        "_render: trimmed %d line(s) (refilled to %d) for session=%s; final ~%d tokens",
         lines_before - len(lines),
+        len(lines),
         session_id[:8],
         estimate_tokens(trimmed_result),
     )
