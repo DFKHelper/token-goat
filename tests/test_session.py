@@ -93,6 +93,67 @@ class TestLineRanges:
         cache = session.mark_file_read("s6", "f.py", symbol="foo")
         assert cache.files["f.py"].symbols_read == ["foo"]
 
+    def test_idempotency_same_range_twice(self, tmp_data_dir):
+        """Adding the same range twice produces the same result as once."""
+        cache = session.mark_file_read("s_ident", "f.py", offset=10, limit=40)
+        ranges_after_first = list(cache.files["f.py"].line_ranges)
+        cache = session.mark_file_read("s_ident", "f.py", offset=10, limit=40)
+        ranges_after_second = list(cache.files["f.py"].line_ranges)
+        assert ranges_after_first == ranges_after_second == [(11, 50)]
+
+    def test_gap_greater_than_one_no_merge(self, tmp_data_dir):
+        """Ranges with gap > 1 stay separate: (1,5) and (7,10)."""
+        cache = session.mark_file_read("s_gap", "f.py", offset=0, limit=5)
+        assert cache.files["f.py"].line_ranges == [(1, 5)]
+        cache = session.mark_file_read("s_gap", "f.py", offset=6, limit=4)
+        # offset=6 → line 7, limit=4 → end at line 10
+        ranges = sorted(cache.files["f.py"].line_ranges)
+        assert ranges == [(1, 5), (7, 10)]
+
+    def test_gap_exactly_one_merge(self, tmp_data_dir):
+        """Ranges with gap == 1 merge: (1,5) + (6,10) → (1,10)."""
+        cache = session.mark_file_read("s_gap1", "f.py", offset=0, limit=5)
+        cache = session.mark_file_read("s_gap1", "f.py", offset=5, limit=5)
+        # First: offset=0, limit=5 → (1, 5)
+        # Second: offset=5, limit=5 → (6, 10)
+        assert cache.files["f.py"].line_ranges == [(1, 10)]
+
+    def test_three_ranges_partial_merge(self, tmp_data_dir):
+        """Three reads with some adjacent: (1,5), (6,10), (20,30)."""
+        cache = session.mark_file_read("s_three", "f.py", offset=0, limit=5)
+        cache = session.mark_file_read("s_three", "f.py", offset=5, limit=5)
+        cache = session.mark_file_read("s_three", "f.py", offset=19, limit=11)
+        # (1,5) + (6,10) merge → (1,10), then (20,30) stays separate
+        assert cache.files["f.py"].line_ranges == [(1, 10), (20, 30)]
+
+    def test_merge_ranges_unsorted_input(self, tmp_data_dir):
+        """_merge_ranges handles unsorted input correctly."""
+        result = session._merge_ranges([(20, 30), (1, 10), (5, 15)])
+        # Unsorted: (20,30), (1,10), (5,15)
+        # After sort: (1,10), (5,15), (20,30)
+        # (1,10) overlaps (5,15) → (1,15)
+        # (1,15) is disjoint from (20,30) → stays separate
+        assert result == [(1, 15), (20, 30)]
+
+    def test_merge_ranges_empty_list(self):
+        """_merge_ranges on empty list returns empty."""
+        assert session._merge_ranges([]) == []
+
+    def test_merge_ranges_single_range(self):
+        """_merge_ranges on single range returns a copy."""
+        result = session._merge_ranges([(5, 10)])
+        assert result == [(5, 10)]
+
+    def test_merge_ranges_duplicate_ranges(self):
+        """_merge_ranges merges duplicate ranges into one."""
+        result = session._merge_ranges([(5, 10), (5, 10)])
+        assert result == [(5, 10)]
+
+    def test_merge_ranges_complete_overlap(self):
+        """_merge_ranges handles complete overlap: (1,100) contains (10,50)."""
+        result = session._merge_ranges([(1, 100), (10, 50)])
+        assert result == [(1, 100)]
+
 
 class TestGrep:
     """Grep recording."""
