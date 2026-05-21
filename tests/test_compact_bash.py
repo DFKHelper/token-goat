@@ -1,7 +1,16 @@
 """Tests for the Commands Run section in the compaction manifest."""
 from __future__ import annotations
 
+import time
+
 from token_goat import compact, session
+
+
+def _make_mature(sid: str, age_seconds: float = 7200.0) -> None:
+    """Backdate created_ts so the session is treated as 'mature' by age-tier logic."""
+    cache = session.load(sid)
+    cache.created_ts = time.time() - age_seconds
+    session.save(cache)
 
 
 def _seed_bash(sid: str, command: str, *, output_bytes: int = 8000, exit_code: int = 0) -> str:
@@ -41,6 +50,8 @@ class TestManifestBashSection:
         # Add some non-bash activity so the manifest renders normally.
         session.mark_file_edited(sid, "/tmp/src.py")
         _seed_bash(sid, "pytest -v tests/", output_bytes=12000, exit_code=1)
+        # Backdate session so age-tier logic treats it as mature (bash section enabled).
+        _make_mature(sid)
         m = compact.build_manifest(sid, max_tokens=400)
         assert "Commands Run" in m
         assert "pytest -v tests/" in m

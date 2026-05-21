@@ -54,6 +54,14 @@ __all__ = [
     "reset_session",
     "save",
     "validate_session_id",
+    # Serialization helpers exposed for testing
+    "_parse_file_entry",
+    "_round_ts",
+    "_serialize_bash_entry",
+    "_serialize_file_entry",
+    "_serialize_grep_entry",
+    "_serialize_result_cache_entry",
+    "_serialize_web_entry",
 ]
 
 import contextlib
@@ -65,10 +73,10 @@ import stat as _stat_module
 import sys
 import threading
 import time
-from dataclasses import asdict, dataclass, field
+from dataclasses import dataclass, field
 from itertools import islice
 from operator import attrgetter
-from typing import Any, Final, TypedDict, cast
+from typing import Any, Final, TypedDict
 
 from . import paths
 from .hooks_common import is_real_int, sanitize_log_str
@@ -197,6 +205,17 @@ class ResultCacheEntry:
 # attrgetter key for sorting FileEntry objects by last_read_ts.
 # Defined at module level to avoid allocating a new lambda on every list_touched() call.
 _BY_LAST_READ_TS = attrgetter("last_read_ts")
+
+
+def _round_ts(ts: float) -> float:
+    """Round a Unix timestamp to millisecond precision (3 decimal places).
+
+    Full microsecond precision (e.g. 1747854321.4839182) wastes ~7 bytes per
+    field in the session JSON and is never needed for hint staleness logic.
+    Millisecond precision is more than sufficient for all comparisons performed
+    by the pre-read and diff-aware hint engines.
+    """
+    return round(ts, 3)
 
 # Cap for the in-session result cache.  100 entries is enough to cover a typical
 # multi-hour Claude Code session — agents rarely re-ask for more than a few
@@ -329,22 +348,22 @@ class SessionCache:
             schema_version=SESSION_SCHEMA_VERSION,
             created_by="token-goat",
             session_id=self.session_id,
-            started_ts=self.started_ts,
-            last_activity_ts=self.last_activity_ts,
-            created_ts=self.created_ts,
-            files={k: cast("_FileEntryDict", asdict(v)) for k, v in self.files.items()},
-            greps=[cast("_GrepEntryDict", asdict(g)) for g in self.greps],
+            started_ts=_round_ts(self.started_ts),
+            last_activity_ts=_round_ts(self.last_activity_ts),
+            created_ts=_round_ts(self.created_ts),
+            files={k: _serialize_file_entry(v) for k, v in self.files.items()},
+            greps=[_serialize_grep_entry(g) for g in self.greps],
             edited_files=self.edited_files,
             result_cache={
-                k: cast("_ResultCacheEntryDict", asdict(v))
+                k: _serialize_result_cache_entry(v)
                 for k, v in self.result_cache.items()
             },
             bash_history={
-                k: cast("_BashEntryDict", asdict(v))
+                k: _serialize_bash_entry(v)
                 for k, v in self.bash_history.items()
             },
             web_history={
-                k: cast("_WebEntryDict", asdict(v))
+                k: _serialize_web_entry(v)
                 for k, v in self.web_history.items()
             },
             snapshot_shas=dict(self.snapshot_shas),
@@ -503,6 +522,81 @@ class SessionCache:
             snapshot_shas=snapshot_shas,
             hints_seen=hints_seen,
         )
+
+
+def _serialize_file_entry(entry: FileEntry) -> _FileEntryDict:
+    """Serialize a FileEntry to its wire dict, omitting fields that equal their defaults.
+
+    Skip-if-default rules (reduce JSON verbosity on entries read without symbol access):
+    - ``symbols_read`` is omitted when empty (default []).
+    - ``line_ranges`` is omitted when empty (default []).
+    - ``last_edit_ts`` is omitted when 0.0 (default; means "never edited this session").
+
+    Timestamps are rounded to millisecond precision (3 decimal places) — full
+    microsecond precision wastes ~7 bytes per field and is never needed for hint logic.
+    """
+    d = _FileEntryDict(
+        rel_or_abs=entry.rel_or_abs,
+        last_read_ts=_round_ts(entry.last_read_ts),
+        read_count=entry.read_count,
+    )
+    if entry.line_ranges:
+        d["line_ranges"] = [list(r) for r in entry.line_ranges]
+    if entry.symbols_read:
+        d["symbols_read"] = list(entry.symbols_read)
+    if entry.last_edit_ts:
+        d["last_edit_ts"] = _round_ts(entry.last_edit_ts)
+    return d
+
+
+def _serialize_grep_entry(entry: GrepEntry) -> _GrepEntryDict:
+    """Serialize a GrepEntry to its wire dict with rounded timestamp."""
+    d = _GrepEntryDict(
+        pattern=entry.pattern,
+        path=entry.path,
+        ts=_round_ts(entry.ts),
+    )
+    if entry.result_count is not None:
+        d["result_count"] = entry.result_count
+    return d
+
+
+def _serialize_result_cache_entry(entry: ResultCacheEntry) -> _ResultCacheEntryDict:
+    """Serialize a ResultCacheEntry to its wire dict with rounded timestamp."""
+    return _ResultCacheEntryDict(
+        file_sha=entry.file_sha,
+        kind=entry.kind,
+        result=entry.result,
+        ts=_round_ts(entry.ts),
+    )
+
+
+def _serialize_bash_entry(entry: BashEntry) -> _BashEntryDict:
+    """Serialize a BashEntry to its wire dict with rounded timestamp."""
+    return _BashEntryDict(
+        cmd_sha=entry.cmd_sha,
+        cmd_preview=entry.cmd_preview,
+        output_id=entry.output_id,
+        ts=_round_ts(entry.ts),
+        stdout_bytes=entry.stdout_bytes,
+        stderr_bytes=entry.stderr_bytes,
+        exit_code=entry.exit_code,
+        truncated=entry.truncated,
+        run_count=entry.run_count,
+    )
+
+
+def _serialize_web_entry(entry: WebEntry) -> _WebEntryDict:
+    """Serialize a WebEntry to its wire dict with rounded timestamp."""
+    return _WebEntryDict(
+        url_sha=entry.url_sha,
+        url_preview=entry.url_preview,
+        output_id=entry.output_id,
+        ts=_round_ts(entry.ts),
+        body_bytes=entry.body_bytes,
+        status_code=entry.status_code,
+        truncated=entry.truncated,
+    )
 
 
 def _parse_file_entry(key: str, v: dict[str, Any], now: float) -> FileEntry | None:
