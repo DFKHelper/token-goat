@@ -1,6 +1,8 @@
 """Tests for compaction assist: manifest generation, config, and pre_compact hook."""
 from __future__ import annotations
 
+import time
+
 from hook_helpers import assert_continue as _assert_continue
 
 from token_goat import compact, config, hooks_cli, session
@@ -552,6 +554,111 @@ class TestGrepSection:
         result = compact.build_manifest(sid)
         assert result.index("new_pattern") < result.index("old_pattern"), (
             "most-recent grep should appear first\n" + result
+        )
+
+    def test_grep_stale_patterns_filtered_from_manifest(self, tmp_data_dir):
+        """Grep patterns older than _GREP_MANIFEST_STALE_SECS are excluded from manifest."""
+        sid = "grep-staleness-session-abc"
+
+        # Add a stale grep (older than 3 hours)
+        stale_age = (3 * 3600) + 60  # 3 hours + 1 minute, exceeds the threshold
+        session.mark_grep(sid, "stale_pattern", "/proj/src")
+
+        # Manually adjust the timestamp to simulate age
+        cache = session.load(sid)
+        if cache and cache.greps:
+            stale_grep = cache.greps[0]
+            stale_grep.ts = time.time() - stale_age
+            session.save(cache)
+
+        # Add a fresh grep (recent)
+        session.mark_grep(sid, "fresh_pattern", "/proj/src")
+
+        result = compact.build_manifest(sid)
+
+        # Fresh pattern should be in manifest
+        assert "fresh_pattern" in result, f"fresh grep should appear:\n{result}"
+        # Stale pattern should NOT be in manifest
+        assert "stale_pattern" not in result, f"stale grep should be filtered:\n{result}"
+
+    def test_grep_fresh_patterns_included_in_manifest(self, tmp_data_dir):
+        """Grep patterns younger than _GREP_MANIFEST_STALE_SECS are included."""
+        sid = "grep-fresh-session-abc"
+
+        # Add a grep that is recent (well under 3 hours old)
+        session.mark_grep(sid, "fresh_pattern", "/proj/src")
+        result = compact.build_manifest(sid)
+
+        # Fresh pattern should be in manifest
+        assert "fresh_pattern" in result, f"fresh grep should appear:\n{result}"
+
+
+class TestColdOutputs:
+    """Cold outputs (old cached bash runs) must exclude failed commands."""
+
+    def test_failed_command_not_in_cold_outputs(self, tmp_data_dir):
+        """A bash entry with non-zero exit_code should not appear in Cold Outputs section."""
+        sid = "cold-failed-session-abc"
+
+        # Add an old bash output with non-zero exit code (failed command)
+        old_ts = time.time() - 1801  # 30 minutes + 1 second, exceeds cold threshold
+        session.mark_bash_run(
+            sid,
+            "cmd_sha_failed",
+            "pytest --tb=short",
+            "failed_id_001",
+            stdout_bytes=1000,
+            stderr_bytes=500,
+            exit_code=1,  # FAILED
+            truncated=False,
+        )
+
+        # Manually adjust the timestamp to simulate age
+        cache = session.load(sid)
+        if cache and cache.bash_history:
+            for bash_entry in cache.bash_history.values():
+                if getattr(bash_entry, "output_id", None) == "failed_id_001":
+                    bash_entry.ts = old_ts
+            session.save(cache)
+
+        result = compact.build_manifest(sid)
+
+        # Failed command should NOT appear in Cold Outputs section
+        assert "Cold Outputs" not in result or "failed_id_001" not in result, (
+            f"failed command should not appear in cold outputs:\n{result}"
+        )
+
+    def test_successful_cold_command_in_cold_outputs(self, tmp_data_dir):
+        """A bash entry with exit_code=0 that is >30 min old SHOULD appear in Cold Outputs."""
+        sid = "cold-success-session-abc"
+
+        # Add an old bash output with zero exit code (successful command)
+        old_ts = time.time() - 1801  # 30 minutes + 1 second, exceeds cold threshold
+        session.mark_bash_run(
+            sid,
+            "cmd_sha_success",
+            "pytest",
+            "success_id_001",
+            stdout_bytes=1000,
+            stderr_bytes=0,
+            exit_code=0,  # SUCCESS
+            truncated=False,
+        )
+
+        # Manually adjust the timestamp to simulate age
+        cache = session.load(sid)
+        if cache and cache.bash_history:
+            for bash_entry in cache.bash_history.values():
+                if getattr(bash_entry, "output_id", None) == "success_id_001":
+                    bash_entry.ts = old_ts
+            session.save(cache)
+
+        result = compact.build_manifest(sid)
+
+        # Successful command SHOULD appear in Cold Outputs section
+        assert "Cold Outputs" in result, f"cold outputs section missing:\n{result}"
+        assert "success_id_001" in result, (
+            f"successful cold command should appear in cold outputs:\n{result}"
         )
 
 
