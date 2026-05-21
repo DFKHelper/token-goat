@@ -590,8 +590,8 @@ class TestSessionCreatedTs:
 
     def test_created_ts_backward_compatible_missing(self, tmp_data_dir):
         """from_dict falls back gracefully when created_ts is missing."""
-        before = time.time()
-        # Simulate a legacy session dict without created_ts
+        # Build the legacy dict first; from_dict captures `now` as its first
+        # operation, so before/after must bracket the from_dict call itself.
         legacy_dict = {
             "schema_version": 1,
             "created_by": "token-goat",
@@ -607,9 +607,9 @@ class TestSessionCreatedTs:
             "snapshot_shas": {},
             "hints_seen": [],
         }
-        after = time.time()
+        before = time.time()
         cache = session.SessionCache.from_dict(legacy_dict)
-        # Should default to approximately now
+        after = time.time()
         assert before <= cache.created_ts <= after
 
 
