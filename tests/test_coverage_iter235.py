@@ -187,6 +187,7 @@ class TestBuildManifest:
         fake_cache.edited_files = []
         fake_cache.files = {}
         fake_cache.greps = []
+        fake_cache.created_ts = 0.0
 
         with (
             patch.object(session_mod, "validate_session_id"),
@@ -202,6 +203,7 @@ class TestBuildManifest:
         fake_cache.edited_files = {"src/foo.py": 1, "src/bar.py": 2}
         fake_cache.files = {}
         fake_cache.greps = []
+        fake_cache.created_ts = 0.0
 
         with (
             patch.object(session_mod, "validate_session_id"),
