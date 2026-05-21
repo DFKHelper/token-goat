@@ -43,6 +43,7 @@ __all__ = [
     "build_hint",
 ]
 
+import contextlib
 import json
 import logging
 import sqlite3
@@ -217,31 +218,48 @@ def _index_history_inner(project_root: Path, project_hash: str) -> int:
     with db.open_project(project_hash) as conn:
         _ensure_schema(conn)
         stored = 0
-        for commit in commits:
-            try:
+        # Wrap the whole batch in one transaction: connections open in autocommit mode (isolation_level=None), so without an explicit BEGIN each INSERT commits on its own — re-acquiring the writer lock and fsyncing once per row instead of once per batch.
+        in_txn = False
+        try:
+            conn.execute("BEGIN")
+            in_txn = True
+        except sqlite3.OperationalError as exc:
+            _LOG.debug("git_history: BEGIN skipped (%s); using autocommit", exc)
+        try:
+            for commit in commits:
+                try:
+                    conn.execute(
+                        "INSERT OR IGNORE INTO git_commits"
+                        "(commit_short, summary, author_ts, changed_files) "
+                        "VALUES (?, ?, ?, ?)",
+                        (
+                            commit["commit_short"],
+                            commit["summary"],
+                            commit["author_ts"],
+                            json.dumps(commit["changed_files"]),
+                        ),
+                    )
+                    stored += 1
+                except Exception as exc:  # noqa: BLE001
+                    _LOG.debug(
+                        "git_history: failed to store commit %s: %s",
+                        commit["commit_short"], exc,
+                    )
+            # Stamp last_indexed_at only when at least one commit stored — a wholly-failed batch must leave the index stale so the next cycle retries, rather than being suppressed for _REINDEX_STALENESS_SECS.
+            if stored:
                 conn.execute(
-                    "INSERT OR IGNORE INTO git_commits"
-                    "(commit_short, summary, author_ts, changed_files) "
-                    "VALUES (?, ?, ?, ?)",
-                    (
-                        commit["commit_short"],
-                        commit["summary"],
-                        commit["author_ts"],
-                        json.dumps(commit["changed_files"]),
-                    ),
+                    "INSERT OR REPLACE INTO git_history_meta(key, value) "
+                    "VALUES ('last_indexed_at', ?)",
+                    (str(time.time()),),
                 )
-                stored += 1
-            except Exception as exc:  # noqa: BLE001
-                _LOG.debug(
-                    "git_history: failed to store commit %s: %s",
-                    commit["commit_short"], exc,
-                )
-        conn.execute(
-            "INSERT OR REPLACE INTO git_history_meta(key, value) "
-            "VALUES ('last_indexed_at', ?)",
-            (str(time.time()),),
-        )
-        conn.commit()
+            if in_txn:
+                with contextlib.suppress(sqlite3.OperationalError):
+                    conn.execute("COMMIT")
+        except Exception:
+            if in_txn:
+                with contextlib.suppress(sqlite3.OperationalError):
+                    conn.execute("ROLLBACK")
+            raise
 
     _LOG.info("git_history: indexed %d commits for project=%s", stored, project_hash[:8])
     return stored
