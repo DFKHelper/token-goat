@@ -185,11 +185,11 @@ class TestManifestBudget:
         assert "## Token-Goat Session Manifest" in manifest
 
         # Highest-priority sections must survive trimming.  Lower-priority
-        # sections (Patterns Searched / Cold Outputs / Key Files Read) get
-        # trimmed off the tail when the 400-token budget binds, which is the
+        # sections (Patterns Searched / Cold Outputs / Key Files Read / Commands Run)
+        # get trimmed off the tail when the 400-token budget binds, which is the
         # correct trim-pass behaviour and not a regression — this test only
-        # asserts the sections the trim pass refuses to drop.
-        for header in ("Files Edited", "Symbols Accessed", "Commands Run"):
+        # asserts the two sections that always survive regardless of budget pressure.
+        for header in ("Files Edited", "Symbols Accessed"):
             assert header in manifest, (
                 f"missing manifest section {header!r}; rendered:\n{manifest}"
             )
@@ -198,6 +198,23 @@ class TestManifestBudget:
         assert tokens <= _MANIFEST_BUDGET, (
             f"pre-compact manifest grew to {tokens} tokens "
             f"(budget {_MANIFEST_BUDGET}); rendered:\n{manifest}"
+        )
+
+    def test_commands_run_appears_at_larger_budget(self, tmp_data_dir):
+        """Commands Run section survives when budget is large enough to include it."""
+        import time
+        sid = "manifest-budget-bash"
+        _seed_saturated_manifest_state(sid)
+        # Backdate to mature tier (>60 min) so the bash section is not suppressed
+        # by the age-tier guard (young sessions skip bash/web sections).
+        cache = session.load(sid)
+        cache.created_ts = time.time() - 7200
+        session.save(cache)
+        # Use a 700-token budget — what compute_adaptive_budget gives a heavily
+        # saturated mature session — so bash section is not crowded out.
+        manifest, _ = compact.build_manifest_with_count(sid, max_tokens=700)
+        assert "Commands Run" in manifest, (
+            f"Commands Run missing at 700-token budget; rendered:\n{manifest}"
         )
 
     def test_manifest_respects_lower_max_tokens(self, tmp_data_dir):

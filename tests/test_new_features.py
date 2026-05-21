@@ -193,14 +193,23 @@ class TestCompactStaleAndCold:
         edited: dict | None = None,
         files: list[tuple[str, float, float]] | None = None,
         bash_ts_offset: int | None = None,
+        age_seconds: float = 7200.0,
     ):
-        """Build a minimal SessionCache-like object."""
+        """Build a minimal SessionCache-like object.
+
+        *age_seconds* controls the session age reported via ``created_ts``.
+        Defaults to 7200 s (2 h, "mature" tier) so bash/web sections are not
+        suppressed by the young-session guard in ``_render``.
+        """
         from types import SimpleNamespace
 
         cache = SimpleNamespace()
         cache.edited_files = edited or {}
         cache.greps = []
         cache.bash_history = {}
+        cache.web_history = {}
+        # Backdate created_ts to match the requested age tier.
+        cache.created_ts = time.time() - age_seconds
 
         file_entries: dict = {}
         for rel, last_read, last_edit in (files or []):
@@ -262,8 +271,10 @@ class TestCompactStaleAndCold:
             edited={"src/x.py": 1},
             bash_ts_offset=2400,
         )
+        # Use 800 tokens so the bash budget slice (10%) is wide enough to hold
+        # both the "Commands Run" header+entry AND the "Cold Outputs" block.
         with patch("token_goat.compact.estimate_tokens", return_value=1):
-            result, _ = compact._render(cache, "sess1234", 400)  # type: ignore[attr-defined]
+            result, _ = compact._render(cache, "sess1234", 800)  # type: ignore[attr-defined]
         assert "❄" in result
         assert "Cold Outputs" in result
 
@@ -290,8 +301,10 @@ class TestCompactStaleAndCold:
             files=[("src/foo.py", now - 100, now - 50)],
             bash_ts_offset=2400,
         )
+        # Use 800 tokens so the bash budget slice (10%) is wide enough to hold
+        # both the "Commands Run" header+entry AND the "Cold Outputs" block.
         with patch("token_goat.compact.estimate_tokens", return_value=1):
-            result, _ = compact._render(cache, "sess1234", 400)  # type: ignore[attr-defined]
+            result, _ = compact._render(cache, "sess1234", 800)  # type: ignore[attr-defined]
         assert "stale=⚠" in result
         assert "cold=❄" in result
 

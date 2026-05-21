@@ -1579,39 +1579,44 @@ class TestSectionBudgets:
     def test_proportions_sum_to_total_remaining(self):
         """Allocated budgets collectively cover the full remaining budget."""
         budgets = compact._section_budgets(400, 100)
-        # Remaining = 300; proportions 40/30/15/15 = 100%
+        # Remaining = 300; proportions 40/25/15/10/10 = 100%
         # Each individual bucket may be slightly under due to int truncation,
         # but the sum must be <= remaining (never overallocated).
         assert sum(budgets.values()) <= 300
-        # And must be close — within 4 tokens of 300 (one int-rounding unit per bucket).
-        assert sum(budgets.values()) >= 300 - 4
+        # And must be close — within 5 tokens of 300 (one int-rounding unit per bucket).
+        assert sum(budgets.values()) >= 300 - 5
 
     def test_symbols_gets_forty_percent(self):
         """Symbols section receives 40% of the remaining budget."""
         budgets = compact._section_budgets(400, 0)
         assert budgets["symbols"] == int(400 * 0.40)
 
-    def test_files_gets_thirty_percent(self):
-        """Files section receives 30% of the remaining budget."""
+    def test_files_gets_twenty_five_percent(self):
+        """Files section receives 25% of the remaining budget."""
         budgets = compact._section_budgets(400, 0)
-        assert budgets["files"] == int(400 * 0.30)
+        assert budgets["files"] == int(400 * 0.25)
 
     def test_greps_gets_fifteen_percent(self):
         """Greps section receives 15% of the remaining budget."""
         budgets = compact._section_budgets(400, 0)
         assert budgets["greps"] == int(400 * 0.15)
 
-    def test_bash_gets_fifteen_percent(self):
-        """Bash section receives 15% of the remaining budget."""
+    def test_bash_gets_ten_percent(self):
+        """Bash section receives 10% of the remaining budget."""
         budgets = compact._section_budgets(400, 0)
-        assert budgets["bash"] == int(400 * 0.15)
+        assert budgets["bash"] == int(400 * 0.10)
+
+    def test_web_gets_ten_percent(self):
+        """Web section receives 10% of the remaining budget."""
+        budgets = compact._section_budgets(400, 0)
+        assert budgets["web"] == int(400 * 0.10)
 
     def test_edited_tokens_reduce_remaining(self):
         """Edited-section cost is subtracted before proportional split."""
         budgets_no_edit = compact._section_budgets(400, 0)
         budgets_with_edit = compact._section_budgets(400, 100)
         # Each section should be smaller when 100 tokens are pre-consumed.
-        for key in ("symbols", "files", "greps", "bash"):
+        for key in ("symbols", "files", "greps", "bash", "web"):
             assert budgets_with_edit[key] < budgets_no_edit[key]
 
     def test_minimum_section_tokens_enforced(self):
@@ -1619,7 +1624,7 @@ class TestSectionBudgets:
         # 10-token budget with 9 tokens already consumed → 1 token remaining.
         # Each section must still get at least 20 tokens (the minimum floor).
         budgets = compact._section_budgets(10, 9)
-        for key in ("symbols", "files", "greps", "bash"):
+        for key in ("symbols", "files", "greps", "bash", "web"):
             assert budgets[key] >= 20, (
                 f"section {key!r} got {budgets[key]} tokens, expected >= 20"
             )
@@ -1627,13 +1632,13 @@ class TestSectionBudgets:
     def test_zero_remaining_gives_minimums(self):
         """When edited section consumes the entire budget, sections get minimums."""
         budgets = compact._section_budgets(400, 500)  # edited_tokens > total
-        for key in ("symbols", "files", "greps", "bash"):
+        for key in ("symbols", "files", "greps", "bash", "web"):
             assert budgets[key] >= 20
 
-    def test_returns_all_four_keys(self):
-        """Return dict always contains exactly the four expected keys."""
+    def test_returns_all_five_keys(self):
+        """Return dict always contains exactly the five expected keys."""
         budgets = compact._section_budgets(400, 100)
-        assert set(budgets.keys()) == {"symbols", "files", "greps", "bash"}
+        assert set(budgets.keys()) == {"symbols", "files", "greps", "bash", "web"}
 
     def test_manifest_stays_within_budget_simple_session(self, tmp_data_dir):
         """A simple session manifest stays within the requested token budget."""
