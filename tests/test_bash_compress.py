@@ -1136,3 +1136,145 @@ class TestMypyFilter:
         f = bc.MypyFilter()
         result = f.apply(text, "", 1, ["mypy", "src/"])
         assert "errors prevented further checking" not in result.text
+
+
+# ---------------------------------------------------------------------------
+# UvFilter
+# ---------------------------------------------------------------------------
+
+
+def _make_uv_sync_output(n_packages: int = 10) -> str:
+    """Build synthetic ``uv sync`` output."""
+    lines = ["Resolved 42 packages in 0.12s"]
+    for i in range(n_packages):
+        lines.append(f"   Downloading package-{i}-1.0.0-py3-none-any.whl (1.2 MB)")
+    lines.append("   Fetching wheel metadata for pip (23.3.1)")
+    for i in range(n_packages):
+        lines.append(f"   + package-{i}==1.0.0")
+    lines.append(f"Installed {n_packages} packages in 0.45s")
+    return "\n".join(lines)
+
+
+class TestUvFilter:
+    def test_matches_uv_sync(self):
+        """UvFilter matches 'uv sync' argv."""
+        f = bc.UvFilter()
+        assert f.matches(["uv", "sync"])
+
+    def test_matches_uv_add(self):
+        """UvFilter matches 'uv add <pkg>' argv."""
+        f = bc.UvFilter()
+        assert f.matches(["uv", "add", "requests"])
+
+    def test_matches_uv_remove(self):
+        """UvFilter matches 'uv remove <pkg>' argv."""
+        f = bc.UvFilter()
+        assert f.matches(["uv", "remove", "requests"])
+
+    def test_matches_uv_pip_install(self):
+        """UvFilter matches 'uv pip install <pkg>' argv."""
+        f = bc.UvFilter()
+        assert f.matches(["uv", "pip", "install", "numpy"])
+
+    def test_matches_uv_lock(self):
+        """UvFilter matches 'uv lock' argv."""
+        f = bc.UvFilter()
+        assert f.matches(["uv", "lock"])
+
+    def test_does_not_match_uv_run(self):
+        """UvFilter does not match 'uv run' — not a package management command."""
+        f = bc.UvFilter()
+        assert not f.matches(["uv", "run", "pytest"])
+
+    def test_does_not_match_uv_tool(self):
+        """UvFilter does not match 'uv tool run' — not a package management command."""
+        f = bc.UvFilter()
+        assert not f.matches(["uv", "tool", "run", "ruff"])
+
+    def test_does_not_match_pip(self):
+        """UvFilter does not match plain 'pip' — that goes to PipFilter."""
+        f = bc.UvFilter()
+        assert not f.matches(["pip", "install", "numpy"])
+
+    def test_drops_downloading_lines(self):
+        """Downloading progress lines are dropped from output; only the elision note remains."""
+        text = _make_uv_sync_output(n_packages=5)
+        f = bc.UvFilter()
+        result = f.apply(text, "", 0, ["uv", "sync"])
+        # Original "Downloading foo.whl (X MB)" lines must be gone.
+        # The elision note contains "Downloading" as a word — check no
+        # per-package download lines survived by scanning for the whl pattern.
+        assert ".whl" not in result.text
+        assert "Fetching wheel metadata" not in result.text
+
+    def test_drops_diff_lines(self):
+        """Per-package +/- diff lines are dropped from output."""
+        text = _make_uv_sync_output(n_packages=5)
+        f = bc.UvFilter()
+        result = f.apply(text, "", 0, ["uv", "sync"])
+        # The "+  package-0==1.0.0" style lines should not appear
+        assert "+ package-" not in result.text
+
+    def test_keeps_resolved_summary(self):
+        """'Resolved N packages' summary line is preserved."""
+        text = _make_uv_sync_output(n_packages=5)
+        f = bc.UvFilter()
+        result = f.apply(text, "", 0, ["uv", "sync"])
+        assert "Resolved 42 packages" in result.text
+
+    def test_keeps_installed_summary(self):
+        """'Installed N packages' summary line is preserved."""
+        text = _make_uv_sync_output(n_packages=5)
+        f = bc.UvFilter()
+        result = f.apply(text, "", 0, ["uv", "sync"])
+        assert "Installed 5 packages" in result.text
+
+    def test_dropping_note_included(self):
+        """A note is appended stating how many progress lines were dropped."""
+        text = _make_uv_sync_output(n_packages=8)
+        f = bc.UvFilter()
+        result = f.apply(text, "", 0, ["uv", "add", "numpy"])
+        # Should have both a downloads note and a diff-lines note
+        assert "token-goat" in result.text
+        assert "dropped" in result.text
+
+    def test_error_output_preserved(self):
+        """Error lines in output survive compression."""
+        lines = [
+            "Resolved 5 packages in 0.05s",
+            "   Downloading foo-1.0-py3-none.whl (500 kB)",
+            "error: Failed to fetch https://pypi.org/simple/foo/",
+            "  Caused by: Connection refused (os error 111)",
+        ]
+        text = "\n".join(lines)
+        f = bc.UvFilter()
+        result = f.apply(text, "", 1, ["uv", "sync"])
+        assert "error: Failed to fetch" in result.text
+        assert "Connection refused" in result.text
+
+    def test_select_filter_dispatches_uv_sync(self):
+        """select_filter returns UvFilter for 'uv sync'."""
+        f = bc.select_filter(["uv", "sync"])
+        assert f is not None
+        assert f.name == "uv"
+
+    def test_select_filter_dispatches_uv_add(self):
+        """select_filter returns UvFilter for 'uv add numpy'."""
+        f = bc.select_filter(["uv", "add", "numpy"])
+        assert f is not None
+        assert f.name == "uv"
+
+    def test_select_filter_uv_run_returns_none_or_generic(self):
+        """select_filter does not dispatch 'uv run pytest' to UvFilter."""
+        f = bc.select_filter(["uv", "run", "pytest"])
+        # Should not be the uv filter (may be None or GenericFilter)
+        assert f is None or f.name != "uv"
+
+    def test_no_progress_output_no_note(self):
+        """When there are no download/diff lines, no dropping note is appended."""
+        text = "Resolved 5 packages in 0.01s\nInstalled 2 packages in 0.10s"
+        f = bc.UvFilter()
+        result = f.apply(text, "", 0, ["uv", "sync"])
+        assert "dropped" not in result.text
+        assert "Resolved 5 packages" in result.text
+        assert "Installed 2 packages" in result.text
