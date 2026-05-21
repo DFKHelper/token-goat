@@ -59,6 +59,9 @@ __all__ = [
     "CompressedOutput",
     "Filter",
     "FILTERS",
+    "bytes_to_tokens",
+    "cap_bytes",
+    "cap_tokens",
     "compress_output",
     "dedupe_consecutive",
     "dedupe_numeric_runs",
@@ -72,6 +75,7 @@ __all__ = [
 ]
 
 import logging
+import math
 import re
 import shlex
 from collections.abc import Iterable
@@ -479,6 +483,37 @@ def cap_bytes(text: str, max_bytes: int) -> str:
     return truncated.decode("utf-8", errors="replace") + marker
 
 
+def bytes_to_tokens(n: int) -> int:
+    """Convert a byte count to an approximate token count.
+
+    Uses a conservative estimate of 3.5 characters per token, rounding up.
+    This aligns byte limits with actual model context usage.
+    """
+    return max(1, math.ceil(n / 3.5))
+
+
+def cap_tokens(text: str, max_tokens: int) -> str:
+    """Truncate *text* to approximately *max_tokens* tokens.
+
+    Estimates token count as ``len(text) / 3.5`` and uses
+    :func:`truncate_middle_smart` for line-aware truncation when over budget.
+    A truncation marker is appended when truncation occurs.
+    """
+    estimated_tokens = len(text) / 3.5
+    if estimated_tokens <= max_tokens:
+        return text
+    # Convert max_tokens back to bytes for truncation (conservative: 3.5 chars/token).
+    max_bytes = int(max_tokens * 3.5)
+    # Use cap_bytes to handle UTF-8 boundaries and line breaks correctly.
+    truncated = cap_bytes(text, max_bytes)
+    # Replace the byte-based marker with a token-based one.
+    if "[token-goat: output capped at" not in truncated:
+        # cap_bytes added a marker; replace it with token-aware version.
+        truncated = truncated.rsplit("\n... [", 1)[0]
+        truncated += f"\n[token-goat: output capped at ~{max_tokens} tokens]"
+    return truncated
+
+
 def split_blocks(
     text: str,
     block_re: re.Pattern[str],
@@ -872,8 +907,11 @@ class GenericFilter(Filter):
         out_lines = dedupe_consecutive(stdout.split("\n"))
         err_lines = dedupe_consecutive(stderr.split("\n"))
         if stderr.strip():
-            return "\n".join(out_lines).rstrip() + "\n---\n" + "\n".join(err_lines).rstrip()
-        return "\n".join(out_lines)
+            result = "\n".join(out_lines).rstrip() + "\n---\n" + "\n".join(err_lines).rstrip()
+        else:
+            result = "\n".join(out_lines)
+        # Cap token-aware output to ~2000 tokens (~7KB).
+        return cap_tokens(result, max_tokens=2000)
 
 
 # --- Pytest ----------------------------------------------------------------

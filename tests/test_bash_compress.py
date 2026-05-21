@@ -1390,3 +1390,110 @@ class TestUvFilter:
         assert "dropped" not in result.text
         assert "Resolved 5 packages" in result.text
         assert "Installed 2 packages" in result.text
+
+
+# ---------------------------------------------------------------------------
+# bytes_to_tokens
+# ---------------------------------------------------------------------------
+
+
+class TestBytesToTokens:
+    def test_converts_350_bytes_to_100_tokens(self):
+        """350 bytes / 3.5 = 100 tokens."""
+        assert bc.bytes_to_tokens(350) == 100
+
+    def test_rounds_up(self):
+        """Rounding up: 355 bytes / 3.5 = 101.43... -> 102 tokens."""
+        assert bc.bytes_to_tokens(355) == 102
+
+    def test_zero_converts_to_one(self):
+        """Even 0 bytes is at least 1 token (fail-safe)."""
+        assert bc.bytes_to_tokens(0) == 1
+
+    def test_small_values(self):
+        """1-3 bytes → 1 token."""
+        assert bc.bytes_to_tokens(1) == 1
+        assert bc.bytes_to_tokens(3) == 1
+
+    def test_large_values(self):
+        """Large byte counts scale proportionally."""
+        assert bc.bytes_to_tokens(7000) == 2000
+
+
+# ---------------------------------------------------------------------------
+# cap_tokens
+# ---------------------------------------------------------------------------
+
+
+class TestCapTokens:
+    def test_returns_text_unchanged_when_under_budget(self):
+        """Text under token budget is unchanged."""
+        text = "short text"
+        result = bc.cap_tokens(text, max_tokens=1000)
+        assert result == text
+
+    def test_truncates_when_over_budget(self):
+        """Text over token budget is truncated."""
+        # Create text that's roughly 5000 tokens (5000 * 3.5 = 17,500 chars).
+        text = "a" * 18000
+        result = bc.cap_tokens(text, max_tokens=2000)
+        # Result should be shorter and include the cap annotation.
+        assert len(result) < len(text)
+        assert "output capped at" in result
+        assert "~2000 tokens" in result
+
+    def test_preserves_newlines(self):
+        """Truncation respects line boundaries when possible."""
+        text = "\n".join(["line"] * 500)  # 500 lines = 2000 chars, ~570 tokens.
+        result = bc.cap_tokens(text, max_tokens=300)
+        # Should be truncated.
+        assert len(result) < len(text)
+        # Should not contain incomplete lines (no split in the middle).
+        assert not result.endswith("lin") or result.endswith("\n")
+
+    def test_marker_includes_token_count(self):
+        """The truncation marker includes the token limit."""
+        text = "x" * 20000  # ~5714 tokens.
+        result = bc.cap_tokens(text, max_tokens=1500)
+        assert "~1500 tokens" in result
+
+    def test_empty_string(self):
+        """Empty string is unchanged."""
+        assert bc.cap_tokens("", max_tokens=100) == ""
+
+    def test_single_line_over_budget(self):
+        """A single very long line is still truncated."""
+        text = "a" * 20000
+        result = bc.cap_tokens(text, max_tokens=500)
+        assert len(result) < len(text)
+        assert "output capped at" in result
+
+
+# ---------------------------------------------------------------------------
+# GenericFilter with cap_tokens
+# ---------------------------------------------------------------------------
+
+
+class TestGenericFilterCapTokens:
+    def test_caps_very_large_output(self):
+        """GenericFilter caps output that exceeds token budget."""
+        # Create large output (10,000 identical lines = ~2M chars = ~570k tokens).
+        lines = ["output line"] * 10000
+        stdout = "\n".join(lines)
+        f = bc.GenericFilter()
+        result = f.apply(stdout, "", 0, ["some", "command"])
+        # Should be capped at ~2000 tokens (~7KB).
+        assert result.compressed_bytes < len(stdout.encode("utf-8"))
+        # Should indicate it was capped.
+        assert "output capped at" in result.text or result.text.count("\n") < 2000
+
+    def test_caps_with_stderr(self):
+        """GenericFilter caps large output even with stderr present."""
+        stdout = "x" * 50000
+        stderr = "error line"
+        f = bc.GenericFilter()
+        result = f.apply(stdout, stderr, 1, ["cmd"])
+        # Should be capped (the output is much smaller than input).
+        assert result.compressed_bytes < len((stdout + stderr).encode("utf-8"))
+        # Should indicate it was capped.
+        assert "output capped at" in result.text
