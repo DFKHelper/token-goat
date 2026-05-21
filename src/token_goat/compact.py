@@ -839,7 +839,21 @@ def _load_session_cache(session_id: str, caller: str) -> SessionCache | None:
         return None
 
 
-def compute_adaptive_budget(cache: SessionCache) -> int:
+def _session_age_tier(age_seconds: float) -> str:
+    """Classify session age into a tier that controls manifest verbosity.
+
+    young  < 10 min  → minimal manifest; session is fresh, little to preserve
+    active 10-60 min → standard manifest
+    mature > 60 min  → expanded manifest; session has significant context
+    """
+    if age_seconds < 600:
+        return "young"
+    if age_seconds < 3600:
+        return "active"
+    return "mature"
+
+
+def compute_adaptive_budget(cache: SessionCache, age_seconds: float = 0.0) -> int:
     """Compute an adaptive token budget for the manifest based on session complexity.
 
     Simple sessions (few edits, no bash history) waste no budget; complex sessions
@@ -849,12 +863,17 @@ def compute_adaptive_budget(cache: SessionCache) -> int:
         + min(200, edited_files_count × 50)       [up to 4 files]
         + min(150, symbols_accessed_files × 30)   [up to 5 files with symbols]
         + 20 tokens if bash_history has entries
-        Capped to [200, 600]
+        × tier multiplier (young=0.6, active=1.0, mature=1.4)
+        Capped to [200, 800]
 
-    Returns a value guaranteed to be in the range [200, 600].
+    *age_seconds* is the session age in seconds.  When omitted (or 0) the session
+    is treated as young.  Pass ``time.time() - cache.created_ts`` at call sites
+    that have the cache in hand.
+
+    Returns a value guaranteed to be in the range [200, 800].
     """
     base = 200
-    max_total = 600
+    max_total = 800
     min_total = 200
 
     # Edited files bonus: 50 tokens per file, capped at 200
@@ -868,7 +887,15 @@ def compute_adaptive_budget(cache: SessionCache) -> int:
     # Bash history bonus: 20 tokens if there are any entries
     bash_bonus = 20 if (getattr(cache, "bash_history", None) and cache.bash_history) else 0
 
-    total = base + edited_bonus + symbols_bonus + bash_bonus
+    raw_total = base + edited_bonus + symbols_bonus + bash_bonus
+
+    # Apply session-age tier multiplier: young sessions need less manifest space
+    # (little context has accumulated); mature sessions need more.
+    tier = _session_age_tier(age_seconds)
+    tier_factors = {"young": 0.6, "active": 1.0, "mature": 1.4}
+    factor = tier_factors[tier]
+    total = int(round(raw_total * factor))
+
     return max(min_total, min(max_total, total))
 
 
@@ -884,11 +911,14 @@ def build_manifest_adaptive(session_id: str) -> str:
     cache = _load_session_cache(session_id, "build_manifest_adaptive")
     if cache is None:
         return ""
-    budget = compute_adaptive_budget(cache)
+    created_ts = getattr(cache, "created_ts", None)
+    age_seconds = max(0.0, time.time() - created_ts) if created_ts is not None else 0.0
+    budget = compute_adaptive_budget(cache, age_seconds=age_seconds)
     _LOG.debug(
-        "build_manifest_adaptive: session=%s budget=%d (edited=%d symbols=%d bash=%s)",
+        "build_manifest_adaptive: session=%s budget=%d tier=%s (edited=%d symbols=%d bash=%s)",
         session_id[:8],
         budget,
+        _session_age_tier(age_seconds),
         len(cache.edited_files) if isinstance(cache.edited_files, dict) else 0,
         sum(1 for e in cache.files.values() if e.symbols_read),
         bool(getattr(cache, "bash_history", None) and cache.bash_history),
@@ -1081,6 +1111,11 @@ def _render(cache: SessionCache, session_id: str, max_tokens: int) -> tuple[str,
     # match on the dict keys, not the display path.
     edited_keys = {p.replace("\\", "/").lower() for p in edited_clean}
 
+    # Compute session age and tier once up-front — used in multiple sections below.
+    _created_ts = getattr(cache, "created_ts", None)
+    age_secs = max(0.0, time.time() - _created_ts) if _created_ts is not None else 0.0
+    age_tier = _session_age_tier(age_secs)
+
     # Files where the agent has a cached read that predates a subsequent edit —
     # the snapshot in context may no longer match the file on disk.
     stale_read_files: list[str] = [
@@ -1127,8 +1162,11 @@ def _render(cache: SessionCache, session_id: str, max_tokens: int) -> tuple[str,
     # was both read and edited but its edit-section entry predates the re-read so it
     # wasn't deduplicated into edited_keys.  Normalized key lookup for robustness.
     edited_keys_set = edited_keys  # already a set of normalized lower/forward-slash keys
+    # Mature sessions (> 60 min) get 2 extra key-file slots: more context has
+    # accumulated and the compaction LLM benefits from a broader file picture.
+    max_key_files = _MAX_FILES_READ + (2 if age_tier == "mature" else 0)
     top_files = heapq.nlargest(
-        _MAX_FILES_READ,
+        max_key_files,
         key_files_candidates,
         key=lambda e: _importance_score(
             e,
@@ -1149,7 +1187,6 @@ def _render(cache: SessionCache, session_id: str, max_tokens: int) -> tuple[str,
 
     now = datetime.now(UTC).strftime("%Y-%m-%d %H:%M")
     sid = session_id[:8]
-    age_secs = time.time() - getattr(cache, "created_ts", time.time())
     age_str = _format_duration(age_secs) if age_secs >= 60 else None
     age_part = f"  |  age: {age_str}" if age_str else ""
     header_lines: list[str] = [
@@ -1224,11 +1261,17 @@ def _render(cache: SessionCache, session_id: str, max_tokens: int) -> tuple[str,
 
     # ── 3. Bash history — up to 15 % of remaining budget ─────────────────────
     # (built before files so bash is never crowded out by the files section)
+    # Young sessions (< 10 min) skip bash/web sections: few commands have run
+    # and the overhead of listing them is not worth it relative to the budget.
     bash_budget = sec_budgets["bash"]
     bash_lines: list[str] = []
     bash_used = 0
 
-    bash_entries = _select_top_bash_entries(getattr(cache, "bash_history", None))
+    bash_entries = (
+        _select_top_bash_entries(getattr(cache, "bash_history", None))
+        if age_tier != "young"
+        else []
+    )
     if bash_entries:
         header = "### Commands Run (cached output)"
         header_cost = _token_count(header)
@@ -1244,8 +1287,9 @@ def _render(cache: SessionCache, session_id: str, max_tokens: int) -> tuple[str,
             bash_used += cost
 
     # Cold outputs are grouped with bash history (same budget slice).
+    # Skip for young sessions — same rationale as bash_entries above.
     now_ts = time.time()
-    bash_hist_raw = getattr(cache, "bash_history", None) or {}
+    bash_hist_raw = getattr(cache, "bash_history", None) or {} if age_tier != "young" else {}
     cold_candidates = sorted(
         [
             be for be in bash_hist_raw.values()
