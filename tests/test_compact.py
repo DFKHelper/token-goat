@@ -1164,3 +1164,63 @@ class TestCommonPrefixStripping:
         assert "hints.py" in result
         assert "session.py" in result
         assert "FileEntry" in result
+
+
+class TestSessionAgeInManifest:
+    """Tests for session age display in manifest header."""
+
+    def test_format_duration_minutes(self):
+        """_format_duration formats seconds as minutes when < 1 hour."""
+        assert compact._format_duration(65) == "1m"
+        assert compact._format_duration(300) == "5m"
+        assert compact._format_duration(3599) == "59m"
+
+    def test_format_duration_hours_and_minutes(self):
+        """_format_duration formats with hours and minutes."""
+        assert compact._format_duration(3665) == "1h 1m"
+        assert compact._format_duration(7200) == "2h"
+        assert compact._format_duration(7260) == "2h 1m"
+        assert compact._format_duration(3600) == "1h"
+
+    def test_manifest_includes_age_when_session_is_old(self, tmp_data_dir):
+        """Manifest header includes age when session is > 60 seconds old."""
+        sid = "age-test-session"
+        cache = session.load(sid)
+        # Simulate a session that's 2 hours old
+        cache.created_ts = time.time() - 7200
+        session.save(cache)
+        # Add activity so manifest is not suppressed
+        session.mark_file_read(sid, "file.py")
+        result = compact.build_manifest(sid)
+        # Should contain the session line with age
+        assert "Session:" in result
+        assert "age:" in result
+        assert "2h" in result
+
+    def test_manifest_omits_age_when_session_is_very_young(self, tmp_data_dir):
+        """Manifest header omits age when session is < 60 seconds old."""
+        sid = "young-session"
+        cache = session.load(sid)
+        # Keep the session very young (30 seconds old)
+        cache.created_ts = time.time() - 30
+        session.save(cache)
+        # Add activity so manifest is not suppressed
+        session.mark_file_read(sid, "file.py")
+        result = compact.build_manifest(sid)
+        # Should contain the session line without age
+        lines = result.split("\n")
+        session_line = [line for line in lines if line.startswith("Session:")][0]
+        assert "age:" not in session_line
+
+    def test_manifest_age_format_with_min_threshold(self, tmp_data_dir):
+        """Manifest shows age only when >= 60 seconds."""
+        sid = "threshold-session"
+        cache = session.load(sid)
+        # Exactly 60 seconds old
+        cache.created_ts = time.time() - 60
+        session.save(cache)
+        session.mark_file_read(sid, "file.py")
+        result = compact.build_manifest(sid)
+        # Should include age at the 60-second boundary
+        assert "age:" in result
+        assert "1m" in result

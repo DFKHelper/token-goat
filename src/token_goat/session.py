@@ -287,6 +287,10 @@ class SessionCache:
     # Working directory at session start, used by git diff operations in the manifest.
     # Optional — may be None if the session was created before this field was added.
     cwd: str | None = None
+    # Timestamp when the session was created, used for session age display in the manifest.
+    # For new sessions, defaults to time.time(); for legacy sessions loaded via from_dict,
+    # defaults to the current time if the field is missing.
+    created_ts: float = field(default_factory=time.time)
     unavailable: bool = field(default=False, repr=False, compare=False)
     # Internal: cached JSON string from last serialization — invalidated by any mutation.
     # Avoids O(N) re-serialization of files/greps dicts on every hook invocation when
@@ -301,6 +305,7 @@ class SessionCache:
             session_id=self.session_id,
             started_ts=self.started_ts,
             last_activity_ts=self.last_activity_ts,
+            created_ts=self.created_ts,
             files={k: cast("_FileEntryDict", asdict(v)) for k, v in self.files.items()},
             greps=[cast("_GrepEntryDict", asdict(g)) for g in self.greps],
             edited_files=self.edited_files,
@@ -462,6 +467,7 @@ class SessionCache:
             session_id=session_id,
             started_ts=float(d.get("started_ts", now)),
             last_activity_ts=float(d.get("last_activity_ts", now)),
+            created_ts=float(d.get("created_ts", now)),
             files=files,
             greps=greps,
             edited_files=edited_files,
@@ -702,8 +708,8 @@ class _GrepEntryDict(TypedDict, total=False):
 class _SessionDict(TypedDict, total=False):
     """Wire format of a serialized SessionCache (written to / read from JSON on disk).
 
-    ``result_cache``, ``bash_history``, ``snapshot_shas``, and ``hints_seen`` are optional
-    (``total=False``) for backwards compatibility with session caches written
+    ``result_cache``, ``bash_history``, ``snapshot_shas``, ``hints_seen``, and ``created_ts``
+    are optional (``total=False``) for backwards compatibility with session caches written
     by token-goat versions that predate these fields.  All other fields are
     still effectively required because :meth:`SessionCache.from_dict` supplies
     a default for each one.
@@ -714,6 +720,7 @@ class _SessionDict(TypedDict, total=False):
     session_id: str
     started_ts: float
     last_activity_ts: float
+    created_ts: float
     files: dict[str, _FileEntryDict]
     greps: list[_GrepEntryDict]
     edited_files: dict[str, int]
