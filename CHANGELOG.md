@@ -4,6 +4,8 @@ All notable changes to Token-Goat are documented in this file. Format follows Ke
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-05-20
+
 ### Added
 
 - **Grep output compression.** Large `grep`/`rg`/`ag`/`ack` results (>30 lines) are compressed to a file-level summary: top 20 files by match count, totals included, full output cached for `token-goat bash-output` recall. Typical savings: ~80%.
