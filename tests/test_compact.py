@@ -120,13 +120,18 @@ class TestBuildManifest:
 
 
 class TestComputeAdaptiveBudget:
-    """Tests for compute_adaptive_budget function."""
+    """Tests for compute_adaptive_budget function.
+
+    All calls use age_seconds=1800 (active tier, ×1.0) so the arithmetic
+    matches the pre-age-tier behaviour and the tests remain deterministic.
+    Age-tier-specific tests live in TestComputeAdaptiveBudgetWithAge.
+    """
 
     def test_empty_session_returns_base_budget(self, tmp_data_dir):
         """Empty session with no edits, reads, or bash history returns minimum (200)."""
         sid = "empty-adaptive-session"
         cache = session.load(sid)
-        budget = compact.compute_adaptive_budget(cache)
+        budget = compact.compute_adaptive_budget(cache, age_seconds=1800)
         assert budget == 200
 
     def test_one_edited_file_adds_fifty(self, tmp_data_dir):
@@ -134,7 +139,7 @@ class TestComputeAdaptiveBudget:
         sid = "one-edit-session"
         session.mark_file_edited(sid, "/proj/a.py")
         cache = session.load(sid)
-        budget = compact.compute_adaptive_budget(cache)
+        budget = compact.compute_adaptive_budget(cache, age_seconds=1800)
         assert budget == 250
 
     def test_four_edited_files_reaches_edit_cap(self, tmp_data_dir):
@@ -143,7 +148,7 @@ class TestComputeAdaptiveBudget:
         for i in range(4):
             session.mark_file_edited(sid, f"/proj/edit{i}.py")
         cache = session.load(sid)
-        budget = compact.compute_adaptive_budget(cache)
+        budget = compact.compute_adaptive_budget(cache, age_seconds=1800)
         assert budget == 400
 
     def test_ten_edited_files_capped_at_edit_limit(self, tmp_data_dir):
@@ -152,7 +157,7 @@ class TestComputeAdaptiveBudget:
         for i in range(10):
             session.mark_file_edited(sid, f"/proj/edit{i}.py")
         cache = session.load(sid)
-        budget = compact.compute_adaptive_budget(cache)
+        budget = compact.compute_adaptive_budget(cache, age_seconds=1800)
         # 200 base + min(200, 10*50=500) = 200 + 200 = 400
         assert budget == 400
 
@@ -162,7 +167,7 @@ class TestComputeAdaptiveBudget:
         session.mark_file_read(sid, "/proj/a.py", symbol="func_a")
         session.mark_file_read(sid, "/proj/b.py", symbol="func_b")
         cache = session.load(sid)
-        budget = compact.compute_adaptive_budget(cache)
+        budget = compact.compute_adaptive_budget(cache, age_seconds=1800)
         # 200 base + (2 files with symbols × 30) = 200 + 60 = 260
         assert budget == 260
 
@@ -172,7 +177,7 @@ class TestComputeAdaptiveBudget:
         for i in range(5):
             session.mark_file_read(sid, f"/proj/s{i}.py", symbol=f"func_{i}")
         cache = session.load(sid)
-        budget = compact.compute_adaptive_budget(cache)
+        budget = compact.compute_adaptive_budget(cache, age_seconds=1800)
         assert budget == 350
 
     def test_many_symbol_files_capped_at_symbols_limit(self, tmp_data_dir):
@@ -181,7 +186,7 @@ class TestComputeAdaptiveBudget:
         for i in range(10):
             session.mark_file_read(sid, f"/proj/s{i}.py", symbol=f"func_{i}")
         cache = session.load(sid)
-        budget = compact.compute_adaptive_budget(cache)
+        budget = compact.compute_adaptive_budget(cache, age_seconds=1800)
         # 200 base + min(150, 10*30=300) = 200 + 150 = 350
         assert budget == 350
 
@@ -190,7 +195,7 @@ class TestComputeAdaptiveBudget:
         sid = "bash-history-session"
         session.mark_bash_run(sid, "cmd_sha_1", "pytest -v", "id123", 1000, 500, 0, False)
         cache = session.load(sid)
-        budget = compact.compute_adaptive_budget(cache)
+        budget = compact.compute_adaptive_budget(cache, age_seconds=1800)
         # 200 base + 20 bash bonus = 220
         assert budget == 220
 
@@ -206,7 +211,7 @@ class TestComputeAdaptiveBudget:
         # Bash history = 20 tokens
         session.mark_bash_run(sid, "cmd_sha_2", "pytest", "id456", 1500, 600, 0, False)
         cache = session.load(sid)
-        budget = compact.compute_adaptive_budget(cache)
+        budget = compact.compute_adaptive_budget(cache, age_seconds=1800)
         # 200 + 100 + 90 + 20 = 410
         assert budget == 410
 
@@ -214,11 +219,11 @@ class TestComputeAdaptiveBudget:
         """Budget is always at least 200 tokens."""
         sid = "minimum-session"
         cache = session.load(sid)
-        budget = compact.compute_adaptive_budget(cache)
+        budget = compact.compute_adaptive_budget(cache, age_seconds=1800)
         assert budget >= 200
 
     def test_budget_never_exceeds_maximum(self, tmp_data_dir):
-        """Budget is capped at 600 tokens."""
+        """Budget is capped at 800 tokens (mature tier at maximum complexity)."""
         sid = "maximum-session"
         # Add many edits, symbols, bash to try to exceed cap
         for i in range(20):
@@ -227,11 +232,12 @@ class TestComputeAdaptiveBudget:
             session.mark_file_read(sid, f"/proj/s{i}.py", symbol=f"s{i}")
         session.mark_bash_run(sid, "cmd_sha_3", "cmd", "id789", 2000, 1000, 1, False)
         cache = session.load(sid)
-        budget = compact.compute_adaptive_budget(cache)
-        assert budget <= 600
+        # Use mature tier (× 1.4) to push toward the ceiling
+        budget = compact.compute_adaptive_budget(cache, age_seconds=7200)
+        assert budget <= 800
 
     def test_maximum_budget_example(self, tmp_data_dir):
-        """Realistic maximum: 4+ edits (200) + 5+ symbols (150) + bash (20) = 370."""
+        """Realistic maximum (active tier): 4+ edits (200) + 5+ symbols (150) + bash (20) = 570."""
         sid = "max-example-session"
         for i in range(4):
             session.mark_file_edited(sid, f"/proj/e{i}.py")
@@ -239,7 +245,7 @@ class TestComputeAdaptiveBudget:
             session.mark_file_read(sid, f"/proj/s{i}.py", symbol=f"s{i}")
         session.mark_bash_run(sid, "cmd_sha_4", "pytest", "maxid", 2000, 1000, 0, False)
         cache = session.load(sid)
-        budget = compact.compute_adaptive_budget(cache)
+        budget = compact.compute_adaptive_budget(cache, age_seconds=1800)
         # 200 + min(200, 4*50=200) + min(150, 5*30=150) + 20 = 570
         assert budget == 570
 
@@ -707,17 +713,20 @@ class TestColdOutputs:
             truncated=False,
         )
 
-        # Manually adjust the timestamp to simulate age
+        # Manually adjust the timestamp to simulate age; set session to mature so
+        # bash sections are not suppressed by the young-tier guard.
         cache = session.load(sid)
-        if cache and cache.bash_history:
+        cache.created_ts = time.time() - 7200  # 2 hours old → mature tier
+        if cache.bash_history:
             for bash_entry in cache.bash_history.values():
                 if getattr(bash_entry, "output_id", None) == "failed_id_001":
                     bash_entry.ts = old_ts
-            session.save(cache)
+        session.save(cache)
 
         result = compact.build_manifest(sid)
 
-        # Failed command should NOT appear in Cold Outputs section
+        # Failed command should NOT appear in the Cold Outputs section
+        # (it may still appear in the Commands Run section — that is acceptable).
         assert "Cold Outputs" not in result or "failed_id_001" not in result, (
             f"failed command should not appear in cold outputs:\n{result}"
         )
@@ -739,13 +748,15 @@ class TestColdOutputs:
             truncated=False,
         )
 
-        # Manually adjust the timestamp to simulate age
+        # Manually adjust the timestamp to simulate age; set session to mature so
+        # bash sections are not suppressed by the young-tier guard.
         cache = session.load(sid)
-        if cache and cache.bash_history:
+        cache.created_ts = time.time() - 7200  # 2 hours old → mature tier
+        if cache.bash_history:
             for bash_entry in cache.bash_history.values():
                 if getattr(bash_entry, "output_id", None) == "success_id_001":
                     bash_entry.ts = old_ts
-            session.save(cache)
+        session.save(cache)
 
         result = compact.build_manifest(sid)
 
@@ -1675,6 +1686,10 @@ class TestSectionBudgets:
             stdout_bytes=2000, stderr_bytes=100,
             exit_code=0, truncated=False,
         )
+        # Set session to mature so the young-tier guard does not suppress bash.
+        cache = session.load(sid)
+        cache.created_ts = time.time() - 7200
+        session.save(cache)
 
         result = compact.build_manifest(sid, max_tokens=400)
         assert "Commands Run" in result, (
@@ -1882,3 +1897,170 @@ class TestImportanceScoringInManifest:
             assert result.index("newer.py") < result.index("older.py"), (
                 f"recently-read file should appear before older file:\n{result}"
             )
+
+
+# ---------------------------------------------------------------------------
+# Session age tier and age-aware budget / section visibility
+# ---------------------------------------------------------------------------
+
+
+class TestSessionAgeTier:
+    """_session_age_tier classifies age into young / active / mature."""
+
+    def test_zero_seconds_is_young(self):
+        assert compact._session_age_tier(0) == "young"
+
+    def test_just_below_10min_is_young(self):
+        assert compact._session_age_tier(599) == "young"
+
+    def test_exactly_10min_is_active(self):
+        assert compact._session_age_tier(600) == "active"
+
+    def test_just_below_60min_is_active(self):
+        assert compact._session_age_tier(3599) == "active"
+
+    def test_exactly_60min_is_mature(self):
+        assert compact._session_age_tier(3600) == "mature"
+
+    def test_two_hours_is_mature(self):
+        assert compact._session_age_tier(7200) == "mature"
+
+
+class TestComputeAdaptiveBudgetWithAge:
+    """compute_adaptive_budget applies tier multipliers and respects the new ceiling."""
+
+    def test_young_session_reduces_budget(self, tmp_data_dir):
+        """Young session (age < 10 min) multiplies base budget by 0.6."""
+        sid = "young-age-budget"
+        # 2 edits → raw = 200 + 100 = 300; × 0.6 = 180 → clamped to 200 (floor)
+        session.mark_file_edited(sid, "/proj/a.py")
+        session.mark_file_edited(sid, "/proj/b.py")
+        cache = session.load(sid)
+        budget = compact.compute_adaptive_budget(cache, age_seconds=0.0)
+        # raw=300 × 0.6 = 180 → floor clamps to 200
+        assert budget == 200
+
+    def test_young_session_floor_clamped(self, tmp_data_dir):
+        """Young empty session: 200 base × 0.6 = 120 → clamped to 200."""
+        sid = "young-floor-clamp"
+        cache = session.load(sid)
+        budget = compact.compute_adaptive_budget(cache, age_seconds=0.0)
+        assert budget == 200
+
+    def test_active_session_no_change(self, tmp_data_dir):
+        """Active session (10-60 min) multiplier is 1.0 — budget unchanged."""
+        sid = "active-age-budget"
+        session.mark_file_edited(sid, "/proj/a.py")
+        session.mark_file_edited(sid, "/proj/b.py")
+        cache = session.load(sid)
+        budget_active = compact.compute_adaptive_budget(cache, age_seconds=1800)
+        budget_no_age = compact.compute_adaptive_budget(cache, age_seconds=0.0)
+        # active × 1.0 should equal the full raw budget (300 tokens)
+        assert budget_active == 300
+        # Must differ from the young-session budget (which would be 200)
+        assert budget_active > budget_no_age
+
+    def test_mature_session_increases_budget(self, tmp_data_dir):
+        """Mature session (> 60 min) multiplies budget by 1.4, capped at 800."""
+        sid = "mature-age-budget"
+        # 2 edits → raw = 200 + 100 = 300; × 1.4 = 420
+        session.mark_file_edited(sid, "/proj/a.py")
+        session.mark_file_edited(sid, "/proj/b.py")
+        cache = session.load(sid)
+        budget = compact.compute_adaptive_budget(cache, age_seconds=7200)
+        assert budget == 420
+
+    def test_mature_session_capped_at_800(self, tmp_data_dir):
+        """Mature session with maximum complexity is capped at 800 tokens."""
+        sid = "mature-ceiling"
+        for i in range(10):
+            session.mark_file_edited(sid, f"/proj/e{i}.py")
+        for i in range(10):
+            session.mark_file_read(sid, f"/proj/s{i}.py", symbol=f"fn_{i}")
+        session.mark_bash_run(sid, "sha_ceil", "pytest", "id_ceil", 2000, 1000, 0, False)
+        cache = session.load(sid)
+        budget = compact.compute_adaptive_budget(cache, age_seconds=7200)
+        assert budget <= 800
+
+    def test_default_age_zero_treated_as_young(self, tmp_data_dir):
+        """Omitting age_seconds defaults to 0.0 (young tier)."""
+        sid = "default-age-young"
+        for i in range(4):
+            session.mark_file_edited(sid, f"/proj/e{i}.py")
+        cache = session.load(sid)
+        # With no age arg: raw=200+200=400 × 0.6 = 240
+        budget_default = compact.compute_adaptive_budget(cache)
+        budget_explicit = compact.compute_adaptive_budget(cache, age_seconds=0.0)
+        assert budget_default == budget_explicit == 240
+
+
+class TestYoungSessionOmitsBashSection:
+    """Young sessions must not render the bash history or cold outputs sections."""
+
+    def test_young_session_omits_bash_section(self, tmp_data_dir):
+        """Bash history section absent for young session even when bash history exists."""
+        sid = "young-no-bash-abc"
+        session.mark_file_edited(sid, "/proj/src/app.py")
+        session.mark_bash_run(
+            sid, "sha_young_bash", "pytest -x",
+            "out_young_001",
+            stdout_bytes=2000, stderr_bytes=100,
+            exit_code=0, truncated=False,
+        )
+        cache = session.load(sid)
+        # Mark session as very young (2 minutes old)
+        cache.created_ts = time.time() - 120
+        session.save(cache)
+
+        result = compact.build_manifest(sid)
+
+        assert "Commands Run" not in result, (
+            f"bash section must be absent for young session:\n{result}"
+        )
+
+    def test_young_session_omits_cold_outputs(self, tmp_data_dir):
+        """Cold outputs section absent for young session."""
+        sid = "young-no-cold-abc"
+        session.mark_file_edited(sid, "/proj/src/app.py")
+        old_ts = time.time() - 1801
+        session.mark_bash_run(
+            sid, "sha_young_cold", "make build",
+            "out_cold_young",
+            stdout_bytes=1500, stderr_bytes=0,
+            exit_code=0, truncated=False,
+        )
+        cache = session.load(sid)
+        # Adjust bash entry timestamp to be cold
+        for entry in cache.bash_history.values():
+            if getattr(entry, "output_id", None) == "out_cold_young":
+                entry.ts = old_ts
+        # Mark session as young
+        cache.created_ts = time.time() - 120
+        session.save(cache)
+
+        result = compact.build_manifest(sid)
+
+        assert "Cold Outputs" not in result, (
+            f"cold outputs must be absent for young session:\n{result}"
+        )
+
+    def test_mature_session_includes_bash_section(self, tmp_data_dir):
+        """Mature session (> 60 min) does render bash history when present."""
+        sid = "mature-bash-abc"
+        session.mark_file_edited(sid, "/proj/src/app.py")
+        session.mark_bash_run(
+            sid, "sha_mature_bash", "pytest -v",
+            "out_mature_001",
+            stdout_bytes=2000, stderr_bytes=100,
+            exit_code=0, truncated=False,
+        )
+        cache = session.load(sid)
+        # Mark session as mature (2 hours old)
+        cache.created_ts = time.time() - 7200
+        session.save(cache)
+
+        result = compact.build_manifest(sid)
+
+        assert "Commands Run" in result, (
+            f"bash section must be present for mature session:\n{result}"
+        )
