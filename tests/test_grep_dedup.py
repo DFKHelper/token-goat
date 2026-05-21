@@ -31,7 +31,7 @@ class TestGrepDedupHint:
         assert hso is not None
         ctx = hso.get("additionalContext", "")
         assert "Grep `TODO`" in ctx or "Grep for `TODO`" in ctx
-        assert "200 line(s)" in ctx
+        assert "200 matches" in ctx
 
     def test_different_pattern_no_hint(self, tmp_data_dir):
         _seed_grep("g-2", "TODO", result_count=200)

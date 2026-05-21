@@ -508,8 +508,8 @@ def _hint_from_cache(
         wasted = _est_tokens_from_lines(requested_lines)
         sym_suffix = _symbols_suffix(entry.symbols_read)
         return ReadHint(
-            f"`{fname}` lines {req_start}-{req_end} cached ({cached_summary}{extra}){sym_suffix}. "
-            f"~{wasted} tokens wasted — use a different offset/limit.",
+            f"`{fname}` L{req_start}-{req_end} cached (L{cached_summary}{extra}){sym_suffix}. "
+            f"~{wasted} tokens wasted — different offset/limit needed.",
             wasted,
         )
 
@@ -523,7 +523,7 @@ def _hint_from_cache(
         resume_offset = last_cached_end
         sym_suffix = _symbols_suffix(entry.symbols_read)
         return ReadHint(
-            f"`{fname}` read at lines {cached_summary}{extra}{sym_suffix}. "
+            f"`{fname}` cached at L{cached_summary}{extra}{sym_suffix}. "
             f"Overlap: {overlap_lines} lines (~{wasted} tokens) — use `offset={resume_offset}`.",
             wasted,
         )
@@ -621,7 +621,7 @@ def _hint_from_index(
     # and could contain embedded newlines if the parser extracted a multi-line token.
     first_sym_name = _sanitize_hint_path(symbols[0]["name"])
 
-    # Build a compact "Symbols: a, b, c ..." prefix listing up to 3 names.
+    # Build a compact listing of up to 3 symbol names.
     # Sanitize each name; cap the list at 3 so the hint stays terse.
     preview_names = [_sanitize_hint_path(s["name"]) for s in symbols[:3]]
     sym_list_str = ", ".join(preview_names)
@@ -640,7 +640,7 @@ def _hint_from_index(
     return ReadHint(
         f"`{fname}`: {n_lines} lines (~{full_tokens} tokens). "
         f"{sym_clause}"
-        f"Use `token-goat read \"{rel}::{first_sym_name}\"` (~85% fewer tokens).",
+        f"Use `token-goat read \"{rel}::{first_sym_name}\"` (~85% faster).",
         0,
     )
 
@@ -917,23 +917,23 @@ def _build_bash_dedup_hint_inner(
 
     tokens_avoided = _est_tokens_from_chars(total_bytes)
     cmd_short = _sanitize_hint_path(command)
-    exit_str = "" if entry.exit_code is None else f", exit={entry.exit_code}"
+    exit_str = "" if entry.exit_code is None else f" exit={entry.exit_code}"
     run_count = getattr(entry, "run_count", 1)
     recall_cmd = f"token-goat bash-output {entry.output_id}"
     if run_count >= 3:
         hint_text = (
-            f"WARNING: Bash `{cmd_short}` ran {run_count}x this session — likely stuck in a loop. "
-            f"Last output ({total_bytes:,}B{exit_str}): `{recall_cmd}`"
+            f"WARNING: `{cmd_short}` ran {run_count}x — loop? "
+            f"Cached: ({total_bytes:,}B{exit_str}): `{recall_cmd}`"
         )
     elif run_count == 2:
         hint_text = (
-            f"Bash `{cmd_short}` ran 2x this session — output cached ({total_bytes:,}B{exit_str}, ~{tokens_avoided} tokens). "
-            f"Recall with: `{recall_cmd}`"
+            f"`{cmd_short}` ran 2x — cached ({total_bytes:,}B{exit_str}, ~{tokens_avoided} tokens). "
+            f"`{recall_cmd}`"
         )
     else:
         hint_text = (
-            f"Bash `{cmd_short}` ran ~{int(age)}s ago ({total_bytes:,}B{exit_str}, ~{tokens_avoided} tokens). "
-            f"Use `{recall_cmd}` to recall."
+            f"`{cmd_short}` (age ~{int(age)}s): {total_bytes:,}B{exit_str} cached. "
+            f"`{recall_cmd}`"
         )
     return ReadHint(hint_text, tokens_avoided)
 
@@ -1031,8 +1031,7 @@ def _build_grep_dedup_hint_inner(
         pattern_short = _sanitize_hint_path(pattern)
         path_str = f" in `{_sanitize_hint_path(path)}`" if path else ""
         return ReadHint(
-            f"Grep `{pattern_short}`{path_str} ran ~{int(age)}s ago "
-            f"({entry.result_count} line(s), ~{tokens_avoided} tokens).",
+            f"Grep `{pattern_short}`{path_str} (age ~{int(age)}s): {entry.result_count} matches, ~{tokens_avoided} tokens.",
             tokens_avoided,
         )
     return None
@@ -1115,11 +1114,11 @@ def _build_web_dedup_hint_inner(
 
     tokens_avoided = _est_tokens_from_chars(entry.body_bytes)
     status_str = (
-        f", status={entry.status_code}" if entry.status_code is not None else ""
+        f" status={entry.status_code}" if entry.status_code is not None else ""
     )
     return ReadHint(
-        f"URL fetched ~{int(age)}s ago ({entry.body_bytes:,}B{status_str}, ~{tokens_avoided} tokens). "
-        f"Use `token-goat web-output {entry.output_id}` (`--head 50` / `--tail 50` / `--grep PATTERN`).",
+        f"URL (age ~{int(age)}s): {entry.body_bytes:,}B{status_str}, ~{tokens_avoided} tokens. "
+        f"`token-goat web-output {entry.output_id}`",
         tokens_avoided,
     )
 
