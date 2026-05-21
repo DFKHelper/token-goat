@@ -369,7 +369,7 @@ class TestSelectFilter:
 
     def test_mypy(self):
         f = bc.select_filter(["mypy", "src/"])
-        assert f is not None and f.name == "linter"
+        assert f is not None and f.name == "mypy"
 
     def test_make(self):
         f = bc.select_filter(["make", "all"])
@@ -972,3 +972,167 @@ class TestGrepFilter:
         f = bc.GrepFilter()
         result = f.apply(text, "", 0, ["rg", "hit"])
         assert "matches across" in result.text
+
+    def test_bare_word_before_colon_not_treated_as_filename(self):
+        """Lines like 'INFO: message' should not be counted as filename matches."""
+        # Build output that is above the threshold so compression fires.
+        lines = [f"INFO: some log message {i}" for i in range(40)]
+        text = "\n".join(lines)
+        f = bc.GrepFilter()
+        result = f.apply(text, "", 0, ["grep", "message"])
+        # The 40 lines should all be unattributed, not attributed to "INFO".
+        assert "INFO" not in result.text or "unattributed" in result.text
+
+    def test_path_with_dot_counted_as_filename(self):
+        """Lines like 'setup.py:10:match' should be attributed to 'setup.py'."""
+        lines = [f"setup.py:{i}:match" for i in range(40)]
+        text = "\n".join(lines)
+        f = bc.GrepFilter()
+        result = f.apply(text, "", 0, ["grep", "match"])
+        assert "setup.py" in result.text
+
+
+class TestDedupeNumericRuns:
+    """Tests for dedupe_numeric_runs."""
+
+    def test_collapses_counter_sequence(self):
+        """Lines differing only in a counter should be collapsed."""
+        lines = [f"Downloading package {i}/50 (foo)" for i in range(1, 21)]
+        result = bc.dedupe_numeric_runs(lines, min_run=3)
+        assert len(result) == 1
+        assert "20 similar lines" in result[0]
+        assert "Downloading package 1/50" in result[0]
+
+    def test_short_run_passes_through(self):
+        """Runs shorter than min_run should not be collapsed."""
+        lines = ["Downloading 1/5", "Downloading 2/5"]
+        result = bc.dedupe_numeric_runs(lines, min_run=3)
+        assert result == lines
+
+    def test_non_numeric_diff_not_collapsed(self):
+        """Lines that differ in non-numeric content should not be collapsed."""
+        lines = ["alpha line", "beta line", "gamma line"]
+        result = bc.dedupe_numeric_runs(lines, min_run=2)
+        assert result == lines
+
+    def test_error_lines_never_collapsed(self):
+        """Lines matching the error signal should never be collapsed even in a run."""
+        lines = [f"error: type mismatch at line {i}" for i in range(10)]
+        result = bc.dedupe_numeric_runs(lines, min_run=3)
+        # All 10 lines must be preserved because each matches _ERROR_SIGNAL_RE.
+        assert len(result) == 10
+
+    def test_mixed_run_splits_correctly(self):
+        """A run followed by a different template produces two separate groups."""
+        lines = (
+            [f"Downloading {i}/10" for i in range(1, 6)]
+            + [f"Installing pkg-{i}" for i in range(1, 6)]
+        )
+        result = bc.dedupe_numeric_runs(lines, min_run=3)
+        assert len(result) == 2
+        assert "5 similar lines" in result[0]
+        assert "5 similar lines" in result[1]
+
+    def test_empty_input(self):
+        assert bc.dedupe_numeric_runs([]) == []
+
+    def test_single_line(self):
+        assert bc.dedupe_numeric_runs(["only line"]) == ["only line"]
+
+
+class TestMypyFilter:
+    """Tests for MypyFilter."""
+
+    def _make_mypy_output(
+        self,
+        *,
+        n_errors: int = 5,
+        unique_messages: int = 2,
+        include_summary: bool = True,
+        include_notes: bool = False,
+        include_see_also: bool = False,
+    ) -> str:
+        """Build synthetic mypy output."""
+        lines: list[str] = []
+        messages = [f"Incompatible type {i}" for i in range(unique_messages)]
+        for i in range(n_errors):
+            msg = messages[i % unique_messages]
+            lines.append(f"src/foo.py:{i + 1}: error: {msg}  [assignment]")
+        if include_notes:
+            for i in range(4):
+                lines.append(f"src/foo.py:{i + 1}: note: Revealed type is 'int'")
+        if include_see_also:
+            lines.append(
+                "src/foo.py:1: note: See https://mypy.readthedocs.io/en/stable/error_codes.html"
+            )
+        if include_summary:
+            lines.append(f"Found {n_errors} errors in 1 file (checked 3 source files)")
+        return "\n".join(lines)
+
+    def test_select_filter_dispatches_mypy(self):
+        f = bc.select_filter(["mypy", "src/"])
+        assert f is not None and f.name == "mypy"
+
+    def test_dmypy_dispatches_to_mypy_filter(self):
+        f = bc.select_filter(["dmypy", "run", "--", "src/"])
+        assert f is not None and f.name == "mypy"
+
+    def test_summary_line_always_kept(self):
+        text = self._make_mypy_output(n_errors=100, unique_messages=1)
+        f = bc.MypyFilter()
+        result = f.apply(text, "", 1, ["mypy", "src/"])
+        assert "Found 100 errors" in result.text
+
+    def test_duplicate_errors_deduplicated(self):
+        """When the same error message fires many times, only 3 are kept."""
+        # 20 errors all with the same message.
+        text = self._make_mypy_output(n_errors=20, unique_messages=1)
+        f = bc.MypyFilter()
+        result = f.apply(text, "", 1, ["mypy", "src/"])
+        # Exactly 3 error lines + summary + dedup note.
+        error_lines = [ln for ln in result.text.split("\n") if "error:" in ln and "src/foo.py" in ln]
+        assert len(error_lines) == 3
+        assert "suppressed" in result.text
+
+    def test_diverse_errors_all_kept(self):
+        """When every error has a unique message, all are kept."""
+        n = 6
+        text = self._make_mypy_output(n_errors=n, unique_messages=n)
+        f = bc.MypyFilter()
+        result = f.apply(text, "", 1, ["mypy", "src/"])
+        error_lines = [ln for ln in result.text.split("\n") if "error:" in ln and "src/foo.py" in ln]
+        assert len(error_lines) == n
+
+    def test_see_also_notes_dropped(self):
+        """'See https://…' note lines should be dropped."""
+        text = self._make_mypy_output(include_see_also=True, include_notes=False)
+        f = bc.MypyFilter()
+        result = f.apply(text, "", 1, ["mypy", "src/"])
+        assert "mypy.readthedocs.io" not in result.text
+
+    def test_duplicate_notes_deduplicated(self):
+        """Note lines with the same message are deduplicated (keep first 3)."""
+        # 4 identical note lines.
+        text = self._make_mypy_output(n_errors=1, include_notes=True)
+        f = bc.MypyFilter()
+        result = f.apply(text, "", 1, ["mypy", "src/"])
+        note_lines = [ln for ln in result.text.split("\n") if " note:" in ln and "src/foo.py" in ln]
+        assert len(note_lines) <= 3
+
+    def test_success_output_passes_through(self):
+        """'Success: no issues found' should survive unchanged."""
+        text = "Success: no issues found in 3 source files"
+        f = bc.MypyFilter()
+        result = f.apply(text, "", 0, ["mypy", "src/"])
+        assert "Success" in result.text
+
+    def test_errors_prevented_further_checking_dropped(self):
+        """'(errors prevented further checking)' annotations should be dropped."""
+        lines = [
+            "src/foo.py:1: error: (errors prevented further checking)",
+            "Found 1 error in 1 file (checked 3 source files)",
+        ]
+        text = "\n".join(lines)
+        f = bc.MypyFilter()
+        result = f.apply(text, "", 1, ["mypy", "src/"])
+        assert "errors prevented further checking" not in result.text

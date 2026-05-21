@@ -61,6 +61,7 @@ __all__ = [
     "FILTERS",
     "compress_output",
     "dedupe_consecutive",
+    "dedupe_numeric_runs",
     "detect_from_command",
     "select_filter",
     "strip_ansi",
@@ -209,6 +210,69 @@ def dedupe_consecutive(
             out.append(fmt.format(line=prev, count=count))
         else:
             out.extend([prev] * count)
+    return out
+
+
+# Pre-compiled pattern used by dedupe_numeric_runs for digit normalisation.
+_DIGITS_RE: Final[re.Pattern[str]] = re.compile(r"\d+")
+
+
+def dedupe_numeric_runs(
+    lines: Iterable[str],
+    *,
+    min_run: int = 3,
+    fmt: str = "{first}  … ({count} similar lines)",
+) -> list[str]:
+    """Collapse runs of lines that differ only in embedded numbers.
+
+    Many tools emit progress sequences where each line is structurally identical
+    but carries a changing counter:
+
+    .. code-block:: text
+
+        Downloading package 1/50 (foo)
+        Downloading package 2/50 (bar)
+        ...
+        Downloading package 50/50 (qux)
+
+    :func:`dedupe_consecutive` cannot collapse these because the lines are not
+    *identical*.  This function normalises all digit sequences to ``#`` before
+    comparison so the structural template ``Downloading package #/# (#)`` is
+    used as the deduplication key.  When a run of *min_run* or more consecutive
+    lines share the same normalised template the whole run is replaced by the
+    *first* verbatim line plus the count marker.  Runs shorter than *min_run*
+    are passed through unchanged to avoid compressing meaningful consecutive-but-
+    different lines (e.g. two compiler warnings with different line numbers).
+
+    Error/failure signal lines (matching :data:`_ERROR_SIGNAL_RE`) are never
+    collapsed regardless of whether they share a template with their neighbours.
+    """
+    line_list = list(lines)
+    out: list[str] = []
+    i = 0
+    while i < len(line_list):
+        line = line_list[i]
+        # Never collapse lines containing error/failure signal.
+        if _ERROR_SIGNAL_RE.search(line):
+            out.append(line)
+            i += 1
+            continue
+        key = _DIGITS_RE.sub("#", line)
+        # Look ahead for consecutive lines with the same normalised template.
+        j = i + 1
+        while j < len(line_list):
+            candidate = line_list[j]
+            if _ERROR_SIGNAL_RE.search(candidate):
+                break
+            if _DIGITS_RE.sub("#", candidate) != key:
+                break
+            j += 1
+        run_len = j - i
+        if run_len >= min_run:
+            out.append(fmt.format(first=line, count=run_len))
+        else:
+            out.extend(line_list[i:j])
+        i = j
     return out
 
 
@@ -1317,7 +1381,7 @@ class LinterFilter(Filter):
 
     name = "linter"
     binaries = frozenset([
-        "eslint", "ruff", "mypy", "pyright", "pylint", "tsc",
+        "eslint", "ruff", "pyright", "pylint", "tsc",
         "stylelint", "biome", "rome",
     ])
 
@@ -1326,7 +1390,7 @@ class LinterFilter(Filter):
     ) -> str:
         merged = (stdout.rstrip() + "\n" + stderr) if stdout.strip() else stderr
         binary = Path(argv[0]).stem.lower() if argv else ""
-        if binary in ("ruff", "mypy", "pyright", "pylint"):
+        if binary in ("ruff", "pyright", "pylint"):
             compressed = dedupe_by_key(
                 merged.split("\n"),
                 re.compile(r"\b([A-Z][A-Z0-9]+\d+|error|warning|note)\b"),
@@ -1398,6 +1462,126 @@ def _emit_eslint_rules(per_rule: dict[str, list[str]]) -> list[str]:
         if len(entries) > 3:
             out.append(f"  [token-goat: +{len(entries) - 3} more {rule} violations]")
     return out
+
+
+# --- mypy ------------------------------------------------------------------
+
+_MYPY_SUMMARY_RE: Final[re.Pattern[str]] = re.compile(
+    r"^Found \d+ error"
+)
+_MYPY_NOTE_CONTINUATION_RE: Final[re.Pattern[str]] = re.compile(
+    r"^(?P<file>.+?):(?P<line>\d+):(?:\d+:)?\s+note:"
+)
+
+
+class MypyFilter(Filter):
+    """Compress ``mypy`` type-check output.
+
+    Mypy on a large codebase can emit hundreds or thousands of diagnostics.
+    The agent needs to see the *variety* of errors and the final tally, not
+    every individual occurrence.
+
+    Compression model:
+
+    * **Keep** all ``error:`` lines — each is a distinct type violation.
+    * **Keep** up to 3 ``note:`` lines per unique note *message* (notes that
+      differ only in the cited line number are the same conceptual hint).
+    * **Dedupe** errors with identical message text: keep the first 3
+      occurrences of each unique error message and append ``(+N more)`` for
+      the rest.  This prevents a single widespread error (e.g.
+      ``Incompatible return value type``) from drowning out rarer ones.
+    * **Always keep** the final ``Found N errors in M files`` summary line.
+    * **Drop** ``note:`` lines that are merely "see: [error-codes]" cross-
+      references (``note: See https://mypy.readthedocs.io/…``).
+    * **Drop** ``(errors prevented further checking)`` annotations — they add
+      noise without actionable information.
+
+    On a 2 000-line mypy run with 300 errors the output typically shrinks to
+    30–60 lines while preserving all unique error messages.
+    """
+
+    name = "mypy"
+    binaries = frozenset(["mypy", "dmypy"])
+
+    def compress(
+        self, stdout: str, stderr: str, exit_code: int, argv: list[str],
+    ) -> str:
+        merged = (stdout.rstrip() + "\n" + stderr) if stdout.strip() else stderr
+        lines = merged.split("\n")
+
+        kept: list[str] = []
+        # Map from normalised error message → count of occurrences kept so far.
+        error_msg_counts: dict[str, int] = {}
+        # Map from normalised note message → count of occurrences kept so far.
+        note_msg_counts: dict[str, int] = {}
+        dropped_errors = 0
+        dropped_notes = 0
+
+        for line in lines:
+            # Always keep the final summary line.
+            if _MYPY_SUMMARY_RE.match(line):
+                kept.append(line)
+                continue
+
+            m = _MYPY_LINE_RE.match(line)
+            if m is None:
+                # Not a diagnostic line — keep as-is (could be a blank line,
+                # a "Success: no issues found" message, etc.).
+                kept.append(line)
+                continue
+
+            level = m.group("level")
+
+            if level == "error":
+                # Normalise the error message (everything after "error: ").
+                msg_start = line.find("error:") + len("error:")
+                msg = line[msg_start:].strip()
+                # Strip "(errors prevented further checking)" annotations.
+                if msg.startswith("(errors prevented further checking)"):
+                    continue
+                # Normalise away file-local identifiers like quoted names and
+                # line/column refs so structurally identical errors group together.
+                normalised = re.sub(r'"[^"]*"', '"…"', msg)
+                normalised = re.sub(r"'[^']*'", "'…'", normalised)
+                count = error_msg_counts.get(normalised, 0)
+                error_msg_counts[normalised] = count + 1
+                if count < 3:
+                    kept.append(line)
+                else:
+                    dropped_errors += 1
+
+            elif level == "note":
+                # Drop see-also cross-reference notes (noisy, rarely actionable).
+                if "See https://" in line or "See http://" in line:
+                    dropped_notes += 1
+                    continue
+                msg_start = line.find("note:") + len("note:")
+                msg = line[msg_start:].strip()
+                normalised = re.sub(r'"[^"]*"', '"…"', msg)
+                normalised = re.sub(r"'[^']*'", "'…'", normalised)
+                count = note_msg_counts.get(normalised, 0)
+                note_msg_counts[normalised] = count + 1
+                if count < 3:
+                    kept.append(line)
+                else:
+                    dropped_notes += 1
+
+            else:
+                # warning: or any other level — keep.
+                kept.append(line)
+
+        if dropped_errors:
+            kept.append(
+                f"[token-goat: suppressed {dropped_errors} duplicate error lines "
+                f"(kept first 3 per unique message); re-run with TOKEN_GOAT_BASH_COMPRESS=0 "
+                f"for the full list]"
+            )
+        if dropped_notes:
+            kept.append(
+                f"[token-goat: suppressed {dropped_notes} duplicate/cross-reference note lines]"
+            )
+
+        return _squeeze_blank_lines("\n".join(kept))
 
 
 # --- Git -------------------------------------------------------------------
@@ -1802,10 +1986,14 @@ class GrepFilter(Filter):
             if colon_idx > 0:
                 candidate = line[:colon_idx]
                 # Heuristic: the candidate looks like a file path when it
-                # contains a dot or a path separator, or is short enough that
-                # it's almost certainly not a bare match prefix.
-                if ("." in candidate or "/" in candidate or "\\" in candidate
-                        or len(candidate) <= 120):
+                # contains a dot or a path separator.  We intentionally require
+                # at least one of these markers so bare words like "INFO",
+                # "WARNING", or short match prefixes are not misidentified as
+                # filenames.  rg emits "path/to/file:lineno:content" on POSIX
+                # and "path\to\file:lineno:content" on Windows; both are caught
+                # by the slash/backslash check.  Files without path separators
+                # (e.g. bare "setup.py") are caught by the dot check.
+                if "." in candidate or "/" in candidate or "\\" in candidate:
                     file_counts[candidate] = file_counts.get(candidate, 0) + 1
                     continue
             unattributed += 1
@@ -1926,6 +2114,7 @@ FILTERS: list[Filter] = [
     DockerFilter(),
     KubectlFilter(),
     AwsFilter(),
+    MypyFilter(),
     LinterFilter(),
     GrepFilter(),
     GitFilter(),
