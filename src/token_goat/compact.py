@@ -145,6 +145,15 @@ _COLD_OUTPUT_AGE_SECS: Final[int] = 1_800  # 30 minutes
 # Maximum cold bash entries surfaced in the "Cold Outputs" manifest section.
 _MAX_COLD_OUTPUTS: Final[int] = 4
 
+# Maximum number of failed bash commands surfaced in the "Current Blockers" section.
+# Three is enough to identify the active failure without crowding the header.
+_MAX_BLOCKER_ENTRIES: Final[int] = 3
+
+# Failed commands older than this are not considered active blockers.
+# 60 minutes: if a command failed more than an hour ago the agent has likely
+# already moved on and the failure is no longer the immediate problem.
+_BLOCKER_STALE_SECS: Final[int] = 3600  # 60 minutes
+
 # Half-life for the recency component of _importance_score, in seconds.
 # At t=0 the recency bonus is 3.0; at t=30min it is ~1.5; at t=60min it is ~0.75.
 # Files read within the last 5 minutes receive a bonus close to the full 3.0.
@@ -651,6 +660,53 @@ def _is_noop_bash_command(entry: object) -> bool:
     return False
 
 
+def _select_failed_bash_entries(bash_history: object, now_ts: float) -> list[object]:
+    """Return up to :data:`_MAX_BLOCKER_ENTRIES` recently-failed bash commands.
+
+    A "failure" is any entry whose ``exit_code`` is a real integer != 0.
+    Entries with ``exit_code=None`` (unknown / not captured) are excluded —
+    we cannot assert they failed, so surfacing them as blockers would be noisy.
+
+    Only commands run within the last :data:`_BLOCKER_STALE_SECS` seconds (60
+    min) are considered; older failures are stale and no longer the active
+    problem.  Results are sorted most-recent-first so the freshest failure is
+    listed first in the "Current Blockers" section.
+
+    Accepts ``bash_history`` typed as ``object`` for the same defensive reason
+    as :func:`_select_top_bash_entries` — legacy or test SessionCache instances
+    may not have the field.
+    """
+    if not isinstance(bash_history, dict) or not bash_history:
+        return []
+    cutoff = now_ts - _BLOCKER_STALE_SECS
+    candidates = [
+        e for e in bash_history.values()
+        if isinstance(getattr(e, "exit_code", None), int)
+        and e.exit_code != 0  # type: ignore[union-attr]
+        and getattr(e, "ts", 0.0) >= cutoff
+    ]
+    if not candidates:
+        return []
+    return heapq.nlargest(_MAX_BLOCKER_ENTRIES, candidates, key=_BY_BASH_TS)
+
+
+def _format_blocker_entry(entry: object) -> str:
+    """Render one failed :class:`session.BashEntry` as a "Current Blockers" line.
+
+    Format::
+
+        - ✗ pytest tests/  (exit 1)
+        - ✗ make build  (exit 2)
+
+    Kept deliberately terse — the compaction LLM only needs to know *what*
+    failed and *how* (exit code), not the full output size or cache ID.  The
+    agent can retrieve details via ``token-goat bash-output <id>`` if needed.
+    """
+    cmd_preview = sanitize_log_str(getattr(entry, "cmd_preview", ""), max_len=80)
+    exit_code = getattr(entry, "exit_code", "?")
+    return f"- ✗ {cmd_preview}  (exit {exit_code})"
+
+
 def _select_top_bash_entries(bash_history: object) -> list[object]:
     """Pick up to :data:`_MAX_BASH_ENTRIES` cached Bash runs worth surfacing.
 
@@ -1148,14 +1204,18 @@ def build_manifest_with_count(
 def _render(cache: SessionCache, session_id: str, max_tokens: int) -> tuple[str, int]:
     """Build the Markdown session manifest string from *cache* for the PreCompact hook.
 
-    Priority order:
-    1. **Edited files** — always listed first; the compaction LLM must preserve these.
+    Priority order (inverted pyramid — most critical first so truncation hurts least):
+    0. **Current Blockers** — failed bash commands from the last 60 min (up to 3).
+       Omitted entirely when there are no recent failures.
+    1. **Edited files** — always listed after blockers; the compaction LLM must preserve these.
        This section is uncapped — every edited file is must-preserve.
-    2. **Symbols accessed** — files where specific symbols were read via ``token-goat read``.
+    2. **Bash history** — cached command outputs; the current work context.
+       Capped at 15 % of remaining budget.
+    3. **Symbols accessed** — files where specific symbols were read via ``token-goat read``.
        Ranked by ``last_read_ts`` (most-recent first), capped at 40 % of remaining budget.
-    3. **Key files read** — top files by ``read_count`` (most re-read first), capped at 30 %.
-    4. **Grep history** — recent search patterns, capped at 15 % of remaining budget.
-    5. **Bash history** — cached command outputs, capped at 15 % of remaining budget.
+    4. **Web fetches** — reference material loaded mid-session, capped at 10 %.
+    5. **Grep history** — recent search patterns, capped at 15 % of remaining budget.
+    6. **Key files read** — top files by ``read_count`` (most re-read first), capped at 30 %.
 
     Budget allocation via :func:`_section_budgets`: the edited-files block is rendered
     first and its token cost is subtracted from the global budget before the remaining
@@ -1315,6 +1375,17 @@ def _render(cache: SessionCache, session_id: str, max_tokens: int) -> tuple[str,
     cwd = getattr(cache, "cwd", None)
     created_ts = getattr(cache, "created_ts", 0.0)
 
+    # ── 0. Current Blockers — failed commands from the last 60 min ───────────
+    # Built before everything else so it appears at the top of the manifest.
+    # Young sessions are included here too — a failure is critical regardless of age.
+    now_ts_for_blockers = time.time()
+    blocker_entries = _select_failed_bash_entries(raw_bash, now_ts_for_blockers)
+    blocker_lines: list[str] = []
+    if blocker_entries:
+        blocker_lines.append("### Current Blockers")
+        for be in blocker_entries:
+            blocker_lines.append(_format_blocker_entry(be))
+
     # ── 1. Edited files — highest priority (no cap) ───────────────────────────
     # Build the entire edited-files block first so we can measure its token cost
     # before allocating the remaining budget to variable sections.
@@ -1346,8 +1417,10 @@ def _render(cache: SessionCache, session_id: str, max_tokens: int) -> tuple[str,
         for path in stale_read_files[:6]:
             stale_lines.append(f"- ⚠ {_short_path(path)}")
 
-    # Measure the "fixed" cost (header + edited + stale) to derive per-section budgets.
-    fixed_text = "\n".join(header_lines + edited_lines + stale_lines)
+    # Measure the "fixed" cost (header + blockers + edited + stale) to derive
+    # per-section budgets.  Blocker lines are small (≤3 lines) so they rarely
+    # consume more than ~15 tokens, but we count them to keep the budget accurate.
+    fixed_text = "\n".join(header_lines + blocker_lines + edited_lines + stale_lines)
     fixed_tokens = _token_count(fixed_text)
     sec_budgets = _section_budgets(max_tokens, fixed_tokens)
     _LOG.debug(
@@ -1558,13 +1631,23 @@ def _render(cache: SessionCache, session_id: str, max_tokens: int) -> tuple[str,
     if has_cold:
         legend_parts.append("cold=❄")
 
-    # Assemble the final manifest from sections in priority order.
+    # Assemble the final manifest in inverted-pyramid order: most critical first
+    # so that if the manifest is truncated mid-token the surviving content is
+    # the highest-value information for the compaction LLM.
+    #   0. Current Blockers  — active failures the agent must know about
+    #   1. Files Edited       — ongoing work (must survive compaction)
+    #   2. Bash history       — current work context (what was just run)
+    #   3. Symbols accessed   — precise code read
+    #   4. Web fetches        — reference material
+    #   5. Grep patterns      — investigation history (least critical)
+    #   6. Key files read     — broader context
     sections: list[str] = (
         header_lines
+        + blocker_lines
         + edited_lines
         + stale_lines
-        + sym_lines
         + bash_lines
+        + sym_lines
         + web_lines
         + grep_lines
         + files_lines
