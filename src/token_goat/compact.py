@@ -632,7 +632,12 @@ def build_manifest_with_count(
     cache = _load_session_cache(session_id, "build_manifest_with_count")
     if cache is None:
         return "", 0
-    n_events = len(cache.files) + len(cache.greps) + len(cache.edited_files)
+    n_events = (
+        len(cache.files)
+        + len(cache.greps)
+        + len(cache.edited_files)
+        + len(getattr(cache, "bash_history", {}) or {})
+    )
     manifest = _build_manifest_from_cache(cache, session_id, max_tokens)
     return manifest, n_events
 

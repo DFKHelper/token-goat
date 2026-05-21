@@ -27,6 +27,8 @@ __all__ = [
     "BashEntry",
     "FileEntry",
     "GrepEntry",
+    "GREPS_HISTORY_MAX",
+    "HINTS_SEEN_MAX",
     "RESULT_CACHE_MAX",
     "ResultCacheEntry",
     "SESSION_SCHEMA_VERSION",
@@ -63,7 +65,7 @@ import time
 from dataclasses import asdict, dataclass, field
 from itertools import islice
 from operator import attrgetter
-from typing import Any, TypedDict, cast
+from typing import Any, Final, TypedDict, cast
 
 from . import paths
 from .hooks_common import is_real_int, sanitize_log_str
@@ -226,6 +228,20 @@ _WEB_HISTORY_EVICT = 50
 # realistic page URL while keeping the per-entry footprint predictable.
 _MAX_WEB_URL_PREVIEW = 200
 
+# Maximum number of grep entries retained per session.  Grep calls accumulate
+# across the session; without a cap the greps list grows without bound.
+# FIFO eviction (keep most recent) prevents unbounded growth in long sessions.
+GREPS_HISTORY_MAX: Final[int] = 200
+_GREPS_HISTORY_EVICT: Final[int] = 50
+
+# Maximum number of hint fingerprints retained per session.  The hints_seen set
+# tracks emitted hints to suppress duplicates within the same session; without a
+# cap it grows without bound.  When the cap is exceeded, the set is cleared
+# (acceptable because false-positive re-emission of a suppressed hint is
+# preferable to unbounded growth, and the fingerprint set is a performance
+# optimization, not a correctness requirement).
+HINTS_SEEN_MAX: Final[int] = 500
+
 
 @dataclass
 class SessionCache:
@@ -333,6 +349,11 @@ class SessionCache:
         """
         if fingerprint not in self.hints_seen:
             self.hints_seen.add(fingerprint)
+            # Enforce HINTS_SEEN_MAX by clearing when cap is exceeded.
+            # False-positive re-emission of a suppressed hint is acceptable;
+            # unbounded growth is not.
+            if len(self.hints_seen) > HINTS_SEEN_MAX:
+                self.hints_seen.clear()
             self.last_activity_ts = time.time()
             self._invalidate_json_cache()
             save(self)
@@ -1172,6 +1193,9 @@ def mark_grep(
     # payload could inflate the session JSON file on every Grep call.
     safe_pattern = pattern[:_MAX_GREP_PATTERN_LEN] if len(pattern) > _MAX_GREP_PATTERN_LEN else pattern
     cache.greps.append(GrepEntry(pattern=safe_pattern, path=path, ts=now, result_count=result_count))
+    # Enforce GREPS_HISTORY_MAX by keeping only the most recent entries (FIFO eviction)
+    if len(cache.greps) > GREPS_HISTORY_MAX:
+        cache.greps = cache.greps[-GREPS_HISTORY_MAX:]
     _LOG.debug(
         "mark_grep: pattern=%r path=%r results=%s (session=%s total_greps=%d)",
         sanitize_log_str(safe_pattern[:60], max_len=_MAX_LOG_STR),
