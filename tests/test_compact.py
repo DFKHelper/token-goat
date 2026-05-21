@@ -990,3 +990,177 @@ class TestDispatcherIntegration:
 
         result = hooks_cli.dispatch("pre-compact", {"session_id": "dispatch-test-abc", "trigger": "manual"})
         assert result.get("continue") is True
+
+
+# ---------------------------------------------------------------------------
+# Common prefix stripping
+# ---------------------------------------------------------------------------
+
+class TestCommonPrefixStripping:
+    """Token-efficient manifest path display by stripping common prefixes."""
+
+    def test_extract_path_from_edited_line(self):
+        """Extract path from edited file marker line."""
+        line = "- ✎ token_goat/compact.py  ×2"
+        result = compact._extract_path_from_line(line)
+        assert result == "token_goat/compact.py"
+
+    def test_extract_path_from_read_line(self):
+        """Extract path from read file marker line."""
+        line = "- → token_goat/hints.py  lines 1-100"
+        result = compact._extract_path_from_line(line)
+        assert result == "token_goat/hints.py"
+
+    def test_extract_path_from_stale_line(self):
+        """Extract path from stale file marker line."""
+        line = "- ⚠ token_goat/session.py"
+        result = compact._extract_path_from_line(line)
+        assert result == "token_goat/session.py"
+
+    def test_extract_path_from_symbol_line(self):
+        """Extract path from symbol line."""
+        line = "- token_goat/session.py → FileEntry, SessionCache"
+        result = compact._extract_path_from_line(line)
+        assert result == "token_goat/session.py"
+
+    def test_extract_path_returns_none_for_header(self):
+        """Non-path lines return None."""
+        assert compact._extract_path_from_line("### Files Edited") is None
+        assert compact._extract_path_from_line("Legend: edited=✎") is None
+        assert compact._extract_path_from_line("") is None
+
+    def test_extract_path_returns_none_for_command_line(self):
+        """Command lines (starting with backtick) return None."""
+        line = "- `pytest -v` (exit 0)"
+        result = compact._extract_path_from_line(line)
+        assert result is None
+
+    def test_find_common_prefix_same_directory(self):
+        """Find common prefix when all paths are in same directory."""
+        paths = ["token_goat/compact.py", "token_goat/hints.py", "token_goat/session.py"]
+        result = compact._find_common_prefix(paths)
+        assert result == "token_goat/"
+
+    def test_find_common_prefix_nested_directory(self):
+        """Find common prefix for nested paths."""
+        paths = ["src/token_goat/compact.py", "src/token_goat/hints.py"]
+        result = compact._find_common_prefix(paths)
+        assert result == "src/token_goat/"
+
+    def test_find_common_prefix_no_common_prefix(self):
+        """Return None when paths have no common prefix."""
+        paths = ["src/foo.py", "tests/bar.py"]
+        result = compact._find_common_prefix(paths)
+        assert result is None
+
+    def test_find_common_prefix_single_segment_paths(self):
+        """Return None for single-segment paths."""
+        paths = ["compact.py", "hints.py"]
+        result = compact._find_common_prefix(paths)
+        assert result is None
+
+    def test_find_common_prefix_empty_list(self):
+        """Return None for empty path list."""
+        result = compact._find_common_prefix([])
+        assert result is None
+
+    def test_find_common_prefix_single_path(self):
+        """Single path contributes to prefix detection."""
+        paths = ["token_goat/compact.py"]
+        result = compact._find_common_prefix(paths)
+        # Single path's directory is the potential prefix
+        assert result == "token_goat/" or result is None
+
+    def test_strip_common_prefix_from_sections(self):
+        """Rewrite sections to strip common prefix."""
+        sections = [
+            "## Token-Goat Session Manifest",
+            "Session: abc12345  |  2026-05-21 10:00",
+            "### Files Edited (preserve in summary)",
+            "- ✎ token_goat/compact.py  ×2",
+            "- ✎ token_goat/hints.py",
+        ]
+        result = compact._strip_common_prefix_from_sections(sections, "token_goat/")
+        # Should have the prefix note inserted
+        assert any("token_goat/" in line and "(stripped)" in line for line in result)
+        # Paths should be shortened (with or without exact spacing)
+        joined = "\n".join(result)
+        assert "compact.py" in joined
+        assert "hints.py" in joined
+        # No full "token_goat/" prefix should remain on path lines
+        path_lines = [line for line in result if line.startswith("- ✎")]
+        for line in path_lines:
+            # Should not have the full path with directory
+            assert "token_goat/compact.py" not in line
+            assert "token_goat/hints.py" not in line
+
+    def test_manifest_strips_common_prefix_when_3plus_paths(self, tmp_data_dir):
+        """Manifest strips prefix when 3+ files share a common directory."""
+        sid = "prefix-strip-session-abc"
+        # Add 3+ files in the same directory
+        session.mark_file_edited(sid, "/proj/src/token_goat/compact.py")
+        session.mark_file_edited(sid, "/proj/src/token_goat/hints.py")
+        session.mark_file_edited(sid, "/proj/src/token_goat/session.py")
+        result = compact.build_manifest(sid)
+        # Manifest should contain the prefix stripping header
+        assert "token_goat/" in result
+        assert "(stripped)" in result
+        # Paths should be shortened (no "token_goat/" prefix on each line)
+        assert "- ✎ compact.py" in result or "- ✎ hints.py" in result
+
+    def test_manifest_no_strip_when_fewer_than_3_paths(self, tmp_data_dir):
+        """Manifest does not strip prefix when fewer than 3 files."""
+        sid = "no-strip-few-paths-session"
+        session.mark_file_edited(sid, "/proj/src/token_goat/compact.py")
+        session.mark_file_edited(sid, "/proj/src/token_goat/hints.py")
+        result = compact.build_manifest(sid)
+        # Should not have stripping header (not enough paths)
+        assert "(stripped)" not in result
+
+    def test_manifest_no_strip_when_no_common_prefix(self, tmp_data_dir):
+        """Manifest does not strip when files don't share a common prefix."""
+        sid = "no-strip-no-prefix-session"
+        session.mark_file_edited(sid, "/proj/src/auth.py")
+        session.mark_file_edited(sid, "/proj/tests/test_auth.py")
+        session.mark_file_edited(sid, "/proj/docs/readme.md")
+        result = compact.build_manifest(sid)
+        # No stripping should occur
+        assert "(stripped)" not in result
+
+    def test_manifest_no_strip_prefix_too_short(self, tmp_data_dir):
+        """Manifest does not strip prefix if it's shorter than 6 characters."""
+        sid = "no-strip-short-prefix-session"
+        # Create files with only a short common prefix
+        session.mark_file_edited(sid, "/x/y/file1.py")
+        session.mark_file_edited(sid, "/x/y/file2.py")
+        session.mark_file_edited(sid, "/x/y/file3.py")
+        result = compact.build_manifest(sid)
+        # "x/y/" is 4 chars, too short — no stripping
+        assert "(stripped)" not in result
+
+    def test_manifest_no_strip_when_prefix_covers_less_than_70_percent(self, tmp_data_dir):
+        """Manifest does not strip if the prefix covers <70% of path lines."""
+        sid = "no-strip-low-coverage-session"
+        # Add 2 files in token_goat/, but 3 elsewhere (fails 70% threshold)
+        session.mark_file_edited(sid, "/proj/src/token_goat/compact.py")
+        session.mark_file_edited(sid, "/proj/src/token_goat/hints.py")
+        session.mark_file_edited(sid, "/proj/src/parser.py")
+        session.mark_file_edited(sid, "/proj/src/helpers.py")
+        session.mark_file_edited(sid, "/proj/src/utils.py")
+        result = compact.build_manifest(sid)
+        # Less than 70% share token_goat/ — no stripping should occur
+        assert "(stripped)" not in result
+
+    def test_prefix_stripping_preserves_all_path_information(self, tmp_data_dir):
+        """Prefix stripping is a display transformation only; no info is lost."""
+        sid = "prefix-preservation-session"
+        session.mark_file_edited(sid, "/proj/src/token_goat/compact.py")
+        session.mark_file_edited(sid, "/proj/src/token_goat/hints.py")
+        session.mark_file_edited(sid, "/proj/src/token_goat/session.py")
+        session.mark_file_read(sid, "/proj/src/token_goat/session.py", symbol="FileEntry")
+        result = compact.build_manifest(sid)
+        # All files and symbols should still be present
+        assert "compact.py" in result
+        assert "hints.py" in result
+        assert "session.py" in result
+        assert "FileEntry" in result

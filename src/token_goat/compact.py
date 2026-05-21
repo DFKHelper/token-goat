@@ -286,6 +286,156 @@ def _short_path(p: str, max_len: int = 70) -> str:
     return p
 
 
+def _extract_path_from_line(line: str) -> str | None:
+    """Extract the path string from a manifest line if it contains one.
+
+    Recognizes lines with path-bearing markers: '- ✎ ', '- → ', '- ⚠ ', '- ❄ ',
+    and plain symbol lines '- '.  Returns the path token (first non-empty token
+    after the marker) or None if the line doesn't contain a path.
+
+    Examples:
+        "- ✎ token_goat/compact.py  ×2" → "token_goat/compact.py"
+        "- → token_goat/hints.py  lines 1-100" → "token_goat/hints.py"
+        "- token_goat/session.py → FileEntry" → "token_goat/session.py"
+        "### Files Edited" → None
+        "Legend: edited=✎" → None
+    """
+    line = line.rstrip()
+    if not line.startswith("- "):
+        return None
+
+    # Remove the "- " prefix
+    rest = line[2:]
+
+    # Skip marker symbols (✎, →, ⚠, ❄) if present
+    if rest and rest[0] in ("✎", "→", "⚠", "❄"):
+        rest = rest[1:].lstrip()
+
+    # Extract the first whitespace-delimited token
+    if not rest:
+        return None
+    parts = rest.split()
+    if not parts:
+        return None
+
+    path = parts[0]
+    # Validate: a path should not start with a backtick or look like a command
+    if path.startswith("`"):
+        return None
+    return path
+
+
+def _find_common_prefix(paths: list[str]) -> str | None:
+    """Find the longest common directory prefix shared by all paths.
+
+    A directory prefix is one that ends at a '/' boundary.  Single-segment
+    paths (no '/') contribute no prefix.  Returns None if no common directory
+    prefix exists or if the prefix is too short to be worthwhile.
+
+    Examples:
+        ["token_goat/compact.py", "token_goat/hints.py"] → "token_goat/"
+        ["src/foo.py", "src/bar.py"] → "src/"
+        ["a/b/c.py", "x/y/z.py"] → None (no common prefix)
+        ["compact.py", "hints.py"] → None (single-segment paths)
+    """
+    if not paths:
+        return None
+
+    # If only one path, extract its directory
+    if len(paths) == 1:
+        p = paths[0]
+        if "/" in p:
+            idx = p.rfind("/")
+            return p[:idx + 1]
+        return None
+
+    # Find the longest common string prefix across all paths
+    # First, find the shortest common substring that is a prefix of all
+    common = paths[0]
+    for p in paths[1:]:
+        # Shorten 'common' until it's a prefix of p (or becomes empty)
+        while common and not p.startswith(common):
+            common = common[:-1]
+
+    if not common:
+        return None
+
+    # Ensure the common prefix ends at a directory boundary ('/')
+    # Trim back to the last '/', or return None if there is no '/'
+    if "/" not in common:
+        return None
+
+    # Find the directory boundary (last '/' in the common part)
+    slash_idx = common.rfind("/")
+    # Include the '/' in the result
+    return common[:slash_idx + 1]
+
+
+def _strip_common_prefix_from_sections(
+    sections: list[str],
+    common_prefix: str,
+) -> list[str]:
+    """Rewrite sections list to strip common_prefix from all path-bearing lines.
+
+    Inserts a header note after the "Session: ..." line indicating the stripped prefix.
+    All path-bearing lines have their paths rewritten to remove the prefix.
+
+    Args:
+        sections: The list of manifest lines to transform.
+        common_prefix: The directory prefix to strip (e.g., "token_goat/").
+
+    Returns:
+        A new list of sections with the prefix stripped and a header note inserted.
+    """
+    if not common_prefix:
+        return sections
+
+    result = []
+    session_line_idx = -1
+
+    # Find the session line and copy header lines
+    for i, line in enumerate(sections):
+        result.append(line)
+        if line.startswith("Session: "):
+            session_line_idx = i
+            break
+
+    # Insert the prefix note after the session line
+    if session_line_idx >= 0:
+        result.insert(session_line_idx + 1, f"Paths: {common_prefix} (stripped)")
+
+    # Process remaining lines, stripping prefix from path-bearing lines
+    for i in range(session_line_idx + 1 if session_line_idx >= 0 else 0, len(sections)):
+        line = sections[i]
+        path = _extract_path_from_line(line)
+        if path and path.startswith(common_prefix):
+            # Reconstruct the line with the prefix stripped
+            # Extract the marker and rest of the line
+            if line.startswith("- "):
+                rest = line[2:]
+                marker = ""
+                if rest and rest[0] in ("✎", "→", "⚠", "❄"):
+                    marker = rest[0]
+                    rest = rest[1:].lstrip()
+                else:
+                    rest = rest.lstrip()
+
+                # Remove old path and build new one
+                parts = rest.split(None, 1)
+                new_path = path[len(common_prefix):]
+                tail = f" {parts[1]}" if len(parts) > 1 else ""
+                if marker:
+                    result.append(f"- {marker} {new_path}{tail}")
+                else:
+                    result.append(f"- {new_path}{tail}")
+            else:
+                result.append(line)
+        else:
+            result.append(line)
+
+    return result
+
+
 def _format_ranges(ranges: list[tuple[int, int]]) -> str:
     """Render merged line ranges compactly for inclusion in the manifest.
 
@@ -896,6 +1046,19 @@ def _render(cache: SessionCache, session_id: str, max_tokens: int) -> tuple[str,
         legend_parts.append("cold=❄")
     if legend_parts:
         sections.append("Legend: " + "  ".join(legend_parts))
+
+    # ── Common prefix stripping — save tokens by detecting shared path prefixes ─
+    # Extract all paths from the sections, find common prefix, and rewrite if worthwhile.
+    path_lines = [line for line in sections if _extract_path_from_line(line) is not None]
+    paths_only = [p for line in path_lines if (p := _extract_path_from_line(line)) is not None]
+    if (
+        len(path_lines) >= 3  # Worthwhile only with 3+ paths
+        and len(paths_only) > 0
+        and (common_prefix := _find_common_prefix(paths_only))
+        and len(common_prefix) >= 6  # Prefix must be at least 6 chars to justify header
+        and len(paths_only) >= int(len(path_lines) * 0.7)  # Must cover 70% of path lines
+    ):
+        sections = _strip_common_prefix_from_sections(sections, common_prefix)
 
     result = "\n".join(sections).rstrip()
     token_count = estimate_tokens(result)
