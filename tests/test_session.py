@@ -798,6 +798,91 @@ class TestSnapshotShasMaxEviction:
         assert len(cache.snapshot_shas) == session.SNAPSHOT_SHAS_MAX
 
 
+class TestWebHistoryMaxEviction:
+    """WEB_HISTORY_MAX FIFO eviction in mark_web_fetch."""
+
+    def test_web_history_evicted_when_cap_exceeded(self, tmp_data_dir):
+        """Filling past WEB_HISTORY_MAX evicts oldest entries; dict stays bounded."""
+        sid = "web_cap_1"
+        overshoot = 5
+        for i in range(session.WEB_HISTORY_MAX + overshoot):
+            session.mark_web_fetch(
+                sid,
+                url_sha=f"sha_{i}",
+                url_preview=f"https://example.com/page_{i}",
+                output_id=f"out_{i}",
+                body_bytes=1000,
+                status_code=200,
+                truncated=False,
+            )
+        cache = session.load(sid)
+        assert len(cache.web_history) <= session.WEB_HISTORY_MAX
+
+    def test_newest_web_entries_survive_eviction(self, tmp_data_dir):
+        """After eviction the most recently added web entry is still present."""
+        sid = "web_cap_2"
+        total = session.WEB_HISTORY_MAX + 10
+        for i in range(total):
+            session.mark_web_fetch(
+                sid,
+                url_sha=f"sha_{i}",
+                url_preview=f"https://example.com/page_{i}",
+                output_id=f"out_{i}",
+                body_bytes=1000,
+                status_code=200,
+                truncated=False,
+            )
+        cache = session.load(sid)
+        last_key = f"sha_{total - 1}"
+        assert last_key in cache.web_history, "most recently added web entry was evicted"
+
+    def test_web_history_exactly_at_cap_not_evicted(self, tmp_data_dir):
+        """Exactly WEB_HISTORY_MAX unique URLs: no eviction fires."""
+        sid = "web_cap_3"
+        for i in range(session.WEB_HISTORY_MAX):
+            session.mark_web_fetch(
+                sid,
+                url_sha=f"sha_{i}",
+                url_preview=f"https://example.com/page_{i}",
+                output_id=f"out_{i}",
+                body_bytes=1000,
+                status_code=200,
+                truncated=False,
+            )
+        cache = session.load(sid)
+        assert len(cache.web_history) == session.WEB_HISTORY_MAX
+
+    def test_duplicate_url_sha_does_not_trigger_eviction(self, tmp_data_dir):
+        """Re-fetching the same URL (same SHA) updates the entry without triggering eviction."""
+        sid = "web_cap_4"
+        # Fill to cap with distinct URLs.
+        for i in range(session.WEB_HISTORY_MAX):
+            session.mark_web_fetch(
+                sid,
+                url_sha=f"sha_{i}",
+                url_preview=f"https://example.com/page_{i}",
+                output_id=f"out_{i}",
+                body_bytes=1000,
+                status_code=200,
+                truncated=False,
+            )
+        # Fetch the first URL again (same SHA).
+        session.mark_web_fetch(
+            sid,
+            url_sha="sha_0",
+            url_preview="https://example.com/page_0?v=2",
+            output_id="out_0_retry",
+            body_bytes=1000,
+            status_code=200,
+            truncated=False,
+        )
+        cache = session.load(sid)
+        # Should still be at cap (no new entry added).
+        assert len(cache.web_history) == session.WEB_HISTORY_MAX
+        # The updated entry must be present with the newer output_id.
+        assert cache.web_history["sha_0"].output_id == "out_0_retry"
+
+
 class TestContentionMaxClear:
     """_CONTENTION_MAX: _REPORTED_CONTENTION is cleared when the cap is hit."""
 
