@@ -671,6 +671,16 @@ class Filter:
             return True
         return any(tok in self.subcommands for tok in _positional_args(argv[1:])[:3])
 
+    def _combine_output(self, stdout: str, stderr: str) -> str:
+        """Combine stdout and stderr with a separator when both are present.
+
+        Returns stderr if stdout is empty; otherwise returns stdout + "\\n---\\n" + stderr.
+        This is the standard output combination pattern used by most filters.
+        """
+        if stderr.strip() and stdout.strip():
+            return f"{stdout.rstrip()}\n---\n{stderr.rstrip()}"
+        return stdout.rstrip() if stdout.strip() else stderr.rstrip()
+
     def compress(
         self, stdout: str, stderr: str, exit_code: int, argv: list[str],
     ) -> str:
@@ -953,9 +963,7 @@ class PytestFilter(Filter):
     def compress(
         self, stdout: str, stderr: str, exit_code: int, argv: list[str],
     ) -> str:
-        text = stdout
-        if stderr.strip():
-            text = (text.rstrip() + "\n" + stderr.rstrip()) if text else stderr
+        text = self._combine_output(stdout, stderr)
         lines = text.split("\n")
         kept: list[str] = []
         passed_count = 0
@@ -1027,7 +1035,7 @@ class JestFilter(Filter):
         self, stdout: str, stderr: str, exit_code: int, argv: list[str],
     ) -> str:
         # Jest writes summaries to stderr by default.
-        merged = (stdout.rstrip() + "\n" + stderr) if stdout.strip() else stderr
+        merged = self._combine_output(stdout, stderr)
         lines = merged.split("\n")
         kept: list[str] = []
         pass_count = 0
@@ -1092,7 +1100,8 @@ class CargoFilter(Filter):
         self, stdout: str, stderr: str, exit_code: int, argv: list[str],
     ) -> str:
         # Cargo writes progress / errors to stderr; only test bodies to stdout.
-        merged = (stderr.rstrip() + "\n" + stdout) if stderr.strip() else stdout
+        # Note: reversed order (stderr first) — we swap the arguments.
+        merged = self._combine_output(stderr, stdout)
         lines = merged.split("\n")
         compiled: list[str] = []
         kept: list[str] = []
@@ -1160,7 +1169,7 @@ class NodePackageFilter(Filter):
     def compress(
         self, stdout: str, stderr: str, exit_code: int, argv: list[str],
     ) -> str:
-        merged = (stdout.rstrip() + "\n" + stderr) if stdout.strip() else stderr
+        merged = self._combine_output(stdout, stderr)
         lines = merged.split("\n")
         kept: list[str] = []
         deprecated_pkgs: dict[str, int] = {}
@@ -1235,7 +1244,9 @@ class DockerFilter(Filter):
     def compress(
         self, stdout: str, stderr: str, exit_code: int, argv: list[str],
     ) -> str:
-        merged = (stderr.rstrip() + "\n" + stdout) if stderr.strip() else stdout
+        # Docker writes progress / errors to stderr; only bodies to stdout.
+        # Note: reversed order (stderr first) — we swap the arguments.
+        merged = self._combine_output(stderr, stdout)
         lines = merged.split("\n")
         kept: list[str] = []
         dropped_digest = 0
@@ -1300,7 +1311,7 @@ class KubectlFilter(Filter):
         elif subcommand == "logs":
             text = "\n".join(dedupe_consecutive(text.split("\n")))
         if stderr.strip():
-            text = (text.rstrip() + "\n---\n" + stderr.rstrip()) if text else stderr
+            text = (text.rstrip() + "\n---\n" + stderr.rstrip()) if text.strip() else stderr
         return text
 
 
@@ -1349,7 +1360,7 @@ class AwsFilter(Filter):
         elif "\n" in text and "|" in text:
             text = _compress_kubectl_table(text, max_rows=25)
         if stderr.strip():
-            text = (text.rstrip() + "\n---\n" + stderr.rstrip()) if text else stderr
+            text = (text.rstrip() + "\n---\n" + stderr.rstrip()) if text.strip() else stderr
         return text
 
 
@@ -1428,7 +1439,7 @@ class LinterFilter(Filter):
     def compress(
         self, stdout: str, stderr: str, exit_code: int, argv: list[str],
     ) -> str:
-        merged = (stdout.rstrip() + "\n" + stderr) if stdout.strip() else stderr
+        merged = self._combine_output(stdout, stderr)
         binary = Path(argv[0]).stem.lower() if argv else ""
         if binary in ("ruff", "pyright", "pylint"):
             compressed = dedupe_by_key(
@@ -1546,7 +1557,7 @@ class MypyFilter(Filter):
     def compress(
         self, stdout: str, stderr: str, exit_code: int, argv: list[str],
     ) -> str:
-        merged = (stdout.rstrip() + "\n" + stderr) if stdout.strip() else stderr
+        merged = self._combine_output(stdout, stderr)
         lines = merged.split("\n")
 
         kept: list[str] = []
@@ -1674,7 +1685,7 @@ class GitFilter(Filter):
         if subcommand in ("fetch", "pull", "push", "clone"):
             return _compress_git_remote(stdout, stderr)
         # Fallback: ANSI / progress already stripped; dedupe consecutive.
-        merged = stdout + ("\n" + stderr if stderr.strip() else "")
+        merged = self._combine_output(stdout, stderr)
         return _squeeze_blank_lines("\n".join(dedupe_consecutive(merged.split("\n"))))
 
 
@@ -1860,7 +1871,7 @@ class MakeFilter(Filter):
     def compress(
         self, stdout: str, stderr: str, exit_code: int, argv: list[str],
     ) -> str:
-        merged = (stdout.rstrip() + "\n" + stderr) if stdout.strip() else stderr
+        merged = self._combine_output(stdout, stderr)
         lines = merged.split("\n")
         kept: list[str] = []
         dropped_recurse = 0
@@ -1924,7 +1935,7 @@ class TerraformFilter(Filter):
     def compress(
         self, stdout: str, stderr: str, exit_code: int, argv: list[str],
     ) -> str:
-        merged = (stdout.rstrip() + "\n" + stderr) if stdout.strip() else stderr
+        merged = self._combine_output(stdout, stderr)
         lines = merged.split("\n")
         kept: list[str] = []
         dropped = 0
@@ -1998,9 +2009,7 @@ class GrepFilter(Filter):
     ) -> str:
         # Combine stdout and stderr for line counting; stderr is usually empty
         # for grep but may carry "permission denied" notices.
-        text = stdout
-        if stderr.strip():
-            text = (text.rstrip() + "\n" + stderr.rstrip()) if text.strip() else stderr
+        text = self._combine_output(stdout, stderr)
 
         lines = text.split("\n")
         non_empty = [ln for ln in lines if ln.strip()]
@@ -2080,7 +2089,7 @@ class PipFilter(Filter):
     def compress(
         self, stdout: str, stderr: str, exit_code: int, argv: list[str],
     ) -> str:
-        merged = (stdout.rstrip() + "\n" + stderr) if stdout.strip() else stderr
+        merged = self._combine_output(stdout, stderr)
         lines = merged.split("\n")
         kept: list[str] = []
         downloads = 0
@@ -2351,7 +2360,7 @@ class UvFilter(Filter):
     def compress(
         self, stdout: str, stderr: str, exit_code: int, argv: list[str],
     ) -> str:
-        merged = (stdout.rstrip() + "\n" + stderr) if stdout.strip() else stderr
+        merged = self._combine_output(stdout, stderr)
         lines = merged.split("\n")
         kept: list[str] = []
         downloads = 0
