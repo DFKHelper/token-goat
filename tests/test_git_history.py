@@ -54,6 +54,21 @@ def _fake_readonly(conn: sqlite3.Connection):
         yield
 
 
+class _RecordingConn:
+    """Wraps a sqlite3.Connection, recording every SQL string passed to execute()."""
+
+    def __init__(self, conn: sqlite3.Connection) -> None:
+        self._conn = conn
+        self.executed: list[str] = []
+
+    def execute(self, sql, *args, **kwargs):
+        self.executed.append(sql)
+        return self._conn.execute(sql, *args, **kwargs)
+
+    def __getattr__(self, name):
+        return getattr(self._conn, name)
+
+
 # ---------------------------------------------------------------------------
 # _parse_log
 # ---------------------------------------------------------------------------
@@ -411,3 +426,76 @@ class TestIndexProjectHistory:
         assert not after_value.strip("-").isdigit(), (
             f"--after value must be a string date, got: {after_value!r}"
         )
+
+    def test_failed_batch_does_not_stamp_last_indexed_at(
+        self, git_repo: Path, tmp_path: Path
+    ):
+        """A batch where every commit insert fails must leave the index stale.
+
+        Regression: the meta row was written unconditionally after the loop, so
+        a wholly-failed batch stamped ``last_indexed_at`` and suppressed the
+        retry for an hour.  An ``object()`` author_ts cannot be bound, so every
+        INSERT raises and ``stored`` stays 0.
+        """
+        db_path = tmp_path / "project.db"
+        bad_commit = {
+            "commit_short": "abc123abc123",
+            "summary": "valid summary here",
+            "author_ts": object(),  # unbindable — every INSERT raises
+            "changed_files": ["x.py"],
+        }
+
+        with (
+            patch("token_goat.paths.project_db_path", return_value=db_path),
+            patch("token_goat.db.open_project") as mock_open_project,
+            patch("token_goat.git_history._parse_log", return_value=[bad_commit]),
+        ):
+            conn = sqlite3.connect(str(db_path))
+            from contextlib import contextmanager as cm
+
+            @cm
+            def _fake_open(_hash):
+                yield conn
+
+            mock_open_project.side_effect = _fake_open
+            count = index_project_history(git_repo, "a" * 40)
+
+        assert count == 0
+        row = conn.execute(
+            "SELECT value FROM git_history_meta WHERE key = 'last_indexed_at'"
+        ).fetchone()
+        assert row is None, "last_indexed_at must not be stamped when no commit stored"
+        stored_rows = conn.execute("SELECT COUNT(*) FROM git_commits").fetchone()[0]
+        assert stored_rows == 0
+
+    def test_batch_inserts_run_in_a_single_transaction(
+        self, git_repo: Path, tmp_path: Path
+    ):
+        """All commit inserts must be wrapped in exactly one BEGIN/COMMIT.
+
+        Regression: connections open in autocommit mode (isolation_level=None),
+        so without an explicit transaction each of the (up to 200) INSERTs
+        committed on its own — 200 fsyncs and lock acquisitions per sweep.
+        """
+        db_path = tmp_path / "project.db"
+
+        with (
+            patch("token_goat.paths.project_db_path", return_value=db_path),
+            patch("token_goat.db.open_project") as mock_open_project,
+        ):
+            rec = _RecordingConn(sqlite3.connect(str(db_path)))
+            from contextlib import contextmanager as cm
+
+            @cm
+            def _fake_open(_hash):
+                yield rec
+
+            mock_open_project.side_effect = _fake_open
+            count = index_project_history(git_repo, "a" * 40)
+
+        assert count == 2
+        assert rec.executed.count("BEGIN") == 1, (
+            f"batch must run in exactly one transaction, got "
+            f"{rec.executed.count('BEGIN')} BEGIN statement(s)"
+        )
+        assert "COMMIT" in rec.executed
