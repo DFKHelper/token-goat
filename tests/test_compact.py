@@ -846,6 +846,168 @@ class TestGitDiffStat:
         assert "|" in result, f"diff stat format should have pipe separator: {result!r}"
 
 
+class TestGetGitDiffStatSummary:
+    """_get_git_diff_stat_summary — whole-repo git diff --stat helper."""
+
+    def test_returns_empty_string_when_root_is_none(self):
+        """None root must return '' without raising."""
+        assert compact._get_git_diff_stat_summary(None) == ""
+
+    def test_returns_empty_string_when_not_a_repo(self, tmp_path):
+        """Directory that is not a git repo must return '' gracefully."""
+        result = compact._get_git_diff_stat_summary(tmp_path)
+        assert result == ""
+
+    def test_returns_empty_string_when_subprocess_raises(self, monkeypatch):
+        """Any exception from subprocess.run must be swallowed; '' returned."""
+        import subprocess as _subprocess  # noqa: PLC0415
+        monkeypatch.setattr(
+            _subprocess,
+            "run",
+            lambda *a, **kw: (_ for _ in ()).throw(OSError("git not found")),
+        )
+        result = compact._get_git_diff_stat_summary("/some/path")
+        assert result == ""
+
+    def test_returns_empty_string_when_subprocess_times_out(self, monkeypatch):
+        """TimeoutExpired from subprocess must be swallowed; '' returned."""
+        import subprocess as _subprocess  # noqa: PLC0415
+
+        def _raise_timeout(*a, **kw):
+            raise _subprocess.TimeoutExpired(cmd="git", timeout=5)
+
+        monkeypatch.setattr(_subprocess, "run", _raise_timeout)
+        result = compact._get_git_diff_stat_summary("/some/path")
+        assert result == ""
+
+    def test_integration_with_real_git_repo(self, tmp_path):
+        """Integration: returns non-empty output when there are uncommitted changes."""
+        import subprocess as _subprocess  # noqa: PLC0415
+
+        git_repo = tmp_path / "repo"
+        git_repo.mkdir()
+        _subprocess.run(["git", "init"], cwd=git_repo, capture_output=True, check=True)
+        _subprocess.run(["git", "config", "user.email", "t@t.com"], cwd=git_repo, capture_output=True, check=True)
+        _subprocess.run(["git", "config", "user.name", "T"], cwd=git_repo, capture_output=True, check=True)
+
+        (git_repo / "foo.py").write_text("line1\n")
+        _subprocess.run(["git", "add", "foo.py"], cwd=git_repo, capture_output=True, check=True)
+        _subprocess.run(["git", "commit", "-m", "init"], cwd=git_repo, capture_output=True, check=True)
+
+        # Modify so there is a diff vs HEAD
+        (git_repo / "foo.py").write_text("line1\nline2\nline3\n")
+
+        result = compact._get_git_diff_stat_summary(str(git_repo))
+        assert result != "", "expected non-empty stat for dirty working tree"
+        assert "foo.py" in result, f"expected file name in output: {result!r}"
+
+    def test_integration_clean_repo_returns_empty(self, tmp_path):
+        """Integration: clean repo (no pending changes) returns ''."""
+        import subprocess as _subprocess  # noqa: PLC0415
+
+        git_repo = tmp_path / "clean"
+        git_repo.mkdir()
+        _subprocess.run(["git", "init"], cwd=git_repo, capture_output=True, check=True)
+        _subprocess.run(["git", "config", "user.email", "t@t.com"], cwd=git_repo, capture_output=True, check=True)
+        _subprocess.run(["git", "config", "user.name", "T"], cwd=git_repo, capture_output=True, check=True)
+
+        (git_repo / "bar.py").write_text("x\n")
+        _subprocess.run(["git", "add", "bar.py"], cwd=git_repo, capture_output=True, check=True)
+        _subprocess.run(["git", "commit", "-m", "init"], cwd=git_repo, capture_output=True, check=True)
+
+        # No further changes — working tree is clean
+        result = compact._get_git_diff_stat_summary(str(git_repo))
+        assert result == "", f"expected '' for clean repo, got {result!r}"
+
+    def test_caps_at_six_lines(self, monkeypatch):
+        """Output with more than 6 lines is trimmed to the last 6."""
+        import subprocess as _subprocess  # noqa: PLC0415
+        import types  # noqa: PLC0415
+
+        # Simulate git producing 10 file-stat lines + 1 summary line
+        fake_lines = [f" file{i}.py | {i} +" for i in range(10)]
+        fake_lines.append(" 10 files changed, 45 insertions(+), 0 deletions(-)")
+        fake_stdout = "\n".join(fake_lines) + "\n"
+
+        def _fake_run(*a, **kw):
+            r = types.SimpleNamespace(returncode=0, stdout=fake_stdout, stderr="")
+            return r
+
+        monkeypatch.setattr(_subprocess, "run", _fake_run)
+        result = compact._get_git_diff_stat_summary("/some/repo")
+        assert result != ""
+        lines = result.splitlines()
+        assert len(lines) <= 6, f"expected <= 6 lines, got {len(lines)}: {lines}"
+
+    def test_returns_empty_when_output_exceeds_300_chars(self, monkeypatch):
+        """Output longer than 300 chars returns '' to avoid ballooning the manifest."""
+        import subprocess as _subprocess  # noqa: PLC0415
+        import types  # noqa: PLC0415
+
+        long_line = " " + "a" * 100 + ".py | 1 +"
+        fake_stdout = "\n".join([long_line] * 4) + "\n 4 files changed, 4 insertions(+)\n"
+
+        def _fake_run(*a, **kw):
+            return types.SimpleNamespace(returncode=0, stdout=fake_stdout, stderr="")
+
+        monkeypatch.setattr(_subprocess, "run", _fake_run)
+        result = compact._get_git_diff_stat_summary("/some/repo")
+        assert result == "", f"expected '' for oversized output, got {result!r}"
+
+    def test_manifest_includes_pending_changes_section(self, tmp_data_dir, monkeypatch):
+        """When diff stat is non-empty, manifest includes 'Pending Changes' section."""
+        sid = "pending-diff-manifest-test-abc"
+        session.mark_file_edited(sid, "/proj/src/main.py")
+        session.mark_file_read(sid, "/proj/src/main.py")
+
+        monkeypatch.setattr(
+            compact,
+            "_get_git_diff_stat_summary",
+            lambda _root: "src/main.py | 3 +++\n1 file changed, 3 insertions(+)",
+        )
+        result = compact.build_manifest(sid)
+        assert "Pending Changes" in result, f"Expected 'Pending Changes' in manifest:\n{result}"
+        assert "src/main.py" in result
+
+    def test_manifest_omits_pending_changes_when_diff_empty(self, tmp_data_dir, monkeypatch):
+        """When diff stat is empty, 'Pending Changes' section is absent from manifest."""
+        sid = "pending-diff-empty-test-abc"
+        session.mark_file_edited(sid, "/proj/src/utils.py")
+        session.mark_file_read(sid, "/proj/src/utils.py")
+
+        monkeypatch.setattr(compact, "_get_git_diff_stat_summary", lambda _root: "")
+        result = compact.build_manifest(sid)
+        assert "Pending Changes" not in result, f"Should not include section when diff is empty:\n{result}"
+
+
+class TestComputeAdaptiveBudgetDiffBonus:
+    """compute_adaptive_budget adds +50 when has_pending_diff=True."""
+
+    def test_diff_bonus_adds_fifty_tokens(self, tmp_data_dir):
+        """has_pending_diff=True increases budget by 50 before tier scaling."""
+        sid = "diff-bonus-test-abc"
+        session.mark_file_read(sid, "/proj/src/a.py")
+        cache = session.load(sid)
+
+        age = 1800.0  # active tier → factor 1.0, so delta is unscaled
+        budget_without = compact.compute_adaptive_budget(cache, age_seconds=age, has_pending_diff=False)
+        budget_with = compact.compute_adaptive_budget(cache, age_seconds=age, has_pending_diff=True)
+        assert budget_with == budget_without + 50, (
+            f"Expected +50 for diff bonus: without={budget_without} with={budget_with}"
+        )
+
+    def test_diff_bonus_false_by_default(self, tmp_data_dir):
+        """Default has_pending_diff=False produces same budget as explicit False."""
+        sid = "diff-bonus-default-test-abc"
+        session.mark_file_read(sid, "/proj/src/b.py")
+        cache = session.load(sid)
+
+        age = 1800.0
+        budget_default = compact.compute_adaptive_budget(cache, age_seconds=age)
+        budget_explicit = compact.compute_adaptive_budget(cache, age_seconds=age, has_pending_diff=False)
+        assert budget_default == budget_explicit
+
+
 class TestSymbolRankingByRecency:
     """Symbols Accessed must be ranked most-recently-read first, not insertion order."""
 
@@ -2068,4 +2230,400 @@ class TestYoungSessionOmitsBashSection:
 
         assert "Commands Run" in result, (
             f"bash section must be present for mature session:\n{result}"
+        )
+
+
+# ---------------------------------------------------------------------------
+# Tests for _get_uncommitted_changes and the ### Uncommitted Changes section
+# ---------------------------------------------------------------------------
+
+
+class TestGetUncommittedChanges:
+    """Unit tests for compact._get_uncommitted_changes()."""
+
+    def test_returns_none_when_project_root_is_none(self):
+        """None project_root must return None immediately without calling git."""
+        result = compact._get_uncommitted_changes(None)
+        assert result is None
+
+    def test_returns_none_when_subprocess_raises(self, monkeypatch):
+        """Any exception from subprocess.run must be swallowed; None returned."""
+        import subprocess as _subprocess  # noqa: PLC0415
+
+        monkeypatch.setattr(
+            _subprocess,
+            "run",
+            lambda *a, **kw: (_ for _ in ()).throw(OSError("git not found")),
+        )
+        result = compact._get_uncommitted_changes("/some/path")
+        assert result is None
+
+    def test_returns_none_when_subprocess_times_out(self, monkeypatch):
+        """TimeoutExpired from subprocess must be swallowed; None returned."""
+        import subprocess as _subprocess  # noqa: PLC0415
+
+        def _raise_timeout(*a, **kw):
+            raise _subprocess.TimeoutExpired(cmd="git", timeout=5)
+
+        monkeypatch.setattr(_subprocess, "run", _raise_timeout)
+        result = compact._get_uncommitted_changes("/some/path")
+        assert result is None
+
+    def test_returns_none_when_both_commands_produce_empty_output(self, monkeypatch):
+        """Both diff and status returning empty → None (no changes)."""
+        import subprocess as _subprocess  # noqa: PLC0415
+        import types  # noqa: PLC0415
+
+        def _fake_run(args, **kw):
+            return types.SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        monkeypatch.setattr(_subprocess, "run", _fake_run)
+        result = compact._get_uncommitted_changes("/some/repo")
+        assert result is None
+
+    def test_returns_diff_stat_lines_for_tracked_changes(self, monkeypatch):
+        """Tracked file changes from git diff --stat appear in the output."""
+        import subprocess as _subprocess  # noqa: PLC0415
+        import types  # noqa: PLC0415
+
+        diff_output = " src/foo.py | 12 ++++++------\n 1 file changed, 6 insertions(+), 6 deletions(-)\n"
+        status_output = " M src/foo.py\n"
+
+        call_count = {"n": 0}
+
+        def _fake_run(args, **kw):
+            call_count["n"] += 1
+            # First call is git diff, second is git status
+            if "diff" in args:
+                return types.SimpleNamespace(returncode=0, stdout=diff_output, stderr="")
+            return types.SimpleNamespace(returncode=0, stdout=status_output, stderr="")
+
+        monkeypatch.setattr(_subprocess, "run", _fake_run)
+        result = compact._get_uncommitted_changes("/some/repo")
+        assert result is not None
+        assert "foo.py" in result
+
+    def test_includes_untracked_files_from_status(self, monkeypatch):
+        """Untracked files (??) in git status --short appear when not in diff output."""
+        import subprocess as _subprocess  # noqa: PLC0415
+        import types  # noqa: PLC0415
+
+        def _fake_run(args, **kw):
+            if "diff" in args:
+                # No tracked changes
+                return types.SimpleNamespace(returncode=0, stdout="", stderr="")
+            # Untracked file
+            return types.SimpleNamespace(returncode=0, stdout="?? new_file.py\n", stderr="")
+
+        monkeypatch.setattr(_subprocess, "run", _fake_run)
+        result = compact._get_uncommitted_changes("/some/repo")
+        assert result is not None
+        assert "new_file.py" in result
+
+    def test_caps_output_at_eight_lines(self, monkeypatch):
+        """Output with more than 8 lines is truncated to 8."""
+        import subprocess as _subprocess  # noqa: PLC0415
+        import types  # noqa: PLC0415
+
+        # 12 file-stat lines from diff
+        many_lines = "\n".join(f" file{i}.py | {i+1} +" for i in range(12))
+
+        def _fake_run(args, **kw):
+            if "diff" in args:
+                return types.SimpleNamespace(returncode=0, stdout=many_lines + "\n", stderr="")
+            return types.SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        monkeypatch.setattr(_subprocess, "run", _fake_run)
+        result = compact._get_uncommitted_changes("/some/repo")
+        assert result is not None
+        assert len(result.splitlines()) <= 8
+
+    def test_does_not_duplicate_files_in_both_diff_and_status(self, monkeypatch):
+        """A file appearing in both diff --stat and status --short is not listed twice."""
+        import subprocess as _subprocess  # noqa: PLC0415
+        import types  # noqa: PLC0415
+
+        def _fake_run(args, **kw):
+            if "diff" in args:
+                return types.SimpleNamespace(
+                    returncode=0,
+                    stdout=" src/bar.py | 5 ++---\n 1 file changed\n",
+                    stderr="",
+                )
+            return types.SimpleNamespace(returncode=0, stdout=" M src/bar.py\n", stderr="")
+
+        monkeypatch.setattr(_subprocess, "run", _fake_run)
+        result = compact._get_uncommitted_changes("/some/repo")
+        assert result is not None
+        # "bar.py" appears at most once in the combined output
+        assert result.count("bar.py") == 1
+
+    def test_integration_with_real_git_repo(self, tmp_path):
+        """Integration: returns non-None when there are uncommitted changes."""
+        import subprocess as _subprocess  # noqa: PLC0415
+
+        git_repo = tmp_path / "repo"
+        git_repo.mkdir()
+        _subprocess.run(["git", "init"], cwd=git_repo, capture_output=True, check=True)
+        _subprocess.run(
+            ["git", "config", "user.email", "t@t.com"], cwd=git_repo, capture_output=True, check=True
+        )
+        _subprocess.run(
+            ["git", "config", "user.name", "T"], cwd=git_repo, capture_output=True, check=True
+        )
+        (git_repo / "foo.py").write_text("line1\n")
+        _subprocess.run(["git", "add", "foo.py"], cwd=git_repo, capture_output=True, check=True)
+        _subprocess.run(
+            ["git", "commit", "-m", "init"], cwd=git_repo, capture_output=True, check=True
+        )
+
+        # Modify tracked file
+        (git_repo / "foo.py").write_text("line1\nline2\n")
+        result = compact._get_uncommitted_changes(str(git_repo))
+        assert result is not None
+        assert "foo.py" in result
+
+    def test_integration_untracked_file(self, tmp_path):
+        """Integration: returns non-None for a new untracked file."""
+        import subprocess as _subprocess  # noqa: PLC0415
+
+        git_repo = tmp_path / "repo2"
+        git_repo.mkdir()
+        _subprocess.run(["git", "init"], cwd=git_repo, capture_output=True, check=True)
+        _subprocess.run(
+            ["git", "config", "user.email", "t@t.com"], cwd=git_repo, capture_output=True, check=True
+        )
+        _subprocess.run(
+            ["git", "config", "user.name", "T"], cwd=git_repo, capture_output=True, check=True
+        )
+        (git_repo / "base.py").write_text("x\n")
+        _subprocess.run(["git", "add", "base.py"], cwd=git_repo, capture_output=True, check=True)
+        _subprocess.run(
+            ["git", "commit", "-m", "init"], cwd=git_repo, capture_output=True, check=True
+        )
+        # Add an untracked file (not staged, not committed)
+        (git_repo / "untracked.py").write_text("new\n")
+
+        result = compact._get_uncommitted_changes(str(git_repo))
+        assert result is not None
+        assert "untracked.py" in result
+
+    def test_integration_clean_repo_returns_none(self, tmp_path):
+        """Integration: clean repo (no pending changes) returns None."""
+        import subprocess as _subprocess  # noqa: PLC0415
+
+        git_repo = tmp_path / "clean"
+        git_repo.mkdir()
+        _subprocess.run(["git", "init"], cwd=git_repo, capture_output=True, check=True)
+        _subprocess.run(
+            ["git", "config", "user.email", "t@t.com"], cwd=git_repo, capture_output=True, check=True
+        )
+        _subprocess.run(
+            ["git", "config", "user.name", "T"], cwd=git_repo, capture_output=True, check=True
+        )
+        (git_repo / "bar.py").write_text("x\n")
+        _subprocess.run(["git", "add", "bar.py"], cwd=git_repo, capture_output=True, check=True)
+        _subprocess.run(
+            ["git", "commit", "-m", "init"], cwd=git_repo, capture_output=True, check=True
+        )
+        result = compact._get_uncommitted_changes(str(git_repo))
+        assert result is None
+
+
+class TestUncommittedChangesManifestSection:
+    """Tests for the ### Uncommitted Changes section in the manifest."""
+
+    def test_section_present_when_uncommitted_changes_exist(self, tmp_data_dir, monkeypatch):
+        """Manifest includes '### Uncommitted Changes' when helper returns non-empty string."""
+        sid = "uncommitted-present-test-abc"
+        session.mark_file_edited(sid, "/proj/src/main.py")
+        session.mark_file_read(sid, "/proj/src/main.py")
+
+        monkeypatch.setattr(
+            compact,
+            "_get_uncommitted_changes",
+            lambda _root: " src/main.py | 5 ++---\n 1 file changed, 3 insertions(+), 2 deletions(-)",
+        )
+        # Suppress the other git calls so they don't interfere
+        monkeypatch.setattr(compact, "_get_git_diff_stat_summary", lambda _root: "")
+        monkeypatch.setattr(compact, "_get_git_diff_stat", lambda *a: None)
+        monkeypatch.setattr(compact, "_get_session_commits", lambda *a: [])
+
+        result = compact.build_manifest(sid)
+        assert "Uncommitted Changes" in result, (
+            f"Expected '### Uncommitted Changes' in manifest:\n{result}"
+        )
+        assert "main.py" in result
+
+    def test_section_absent_when_no_uncommitted_changes(self, tmp_data_dir, monkeypatch):
+        """Manifest does not include '### Uncommitted Changes' when helper returns None."""
+        sid = "uncommitted-absent-test-abc"
+        session.mark_file_edited(sid, "/proj/src/utils.py")
+        session.mark_file_read(sid, "/proj/src/utils.py")
+
+        monkeypatch.setattr(compact, "_get_uncommitted_changes", lambda _root: None)
+        monkeypatch.setattr(compact, "_get_git_diff_stat_summary", lambda _root: "")
+        monkeypatch.setattr(compact, "_get_git_diff_stat", lambda *a: None)
+        monkeypatch.setattr(compact, "_get_session_commits", lambda *a: [])
+
+        result = compact.build_manifest(sid)
+        assert "Uncommitted Changes" not in result, (
+            f"Should not include section when helper returns None:\n{result}"
+        )
+
+    def test_section_absent_when_subprocess_raises(self, tmp_data_dir, monkeypatch):
+        """Manifest is unaffected when subprocess raises inside _get_uncommitted_changes."""
+        import subprocess as _subprocess  # noqa: PLC0415
+
+        sid = "uncommitted-subprocess-raises-test-abc"
+        session.mark_file_edited(sid, "/proj/src/crash.py")
+        session.mark_file_read(sid, "/proj/src/crash.py")
+
+        # Make subprocess.run raise for both git calls; the helper must swallow
+        # the exception and return None, leaving the section absent.
+        monkeypatch.setattr(
+            _subprocess,
+            "run",
+            lambda *a, **kw: (_ for _ in ()).throw(OSError("git not available")),
+        )
+        monkeypatch.setattr(compact, "_get_git_diff_stat_summary", lambda _root: "")
+        monkeypatch.setattr(compact, "_get_git_diff_stat", lambda *a: None)
+        monkeypatch.setattr(compact, "_get_session_commits", lambda *a: [])
+
+        # build_manifest must complete without raising
+        result = compact.build_manifest(sid)
+        assert "Uncommitted Changes" not in result, (
+            f"Section must be absent when subprocess fails:\n{result}"
+        )
+
+    def test_section_appears_before_files_edited(self, tmp_data_dir, monkeypatch):
+        """'### Uncommitted Changes' must appear before '### Files Edited' in the manifest."""
+        sid = "uncommitted-order-test-abc"
+        session.mark_file_edited(sid, "/proj/src/order.py")
+        session.mark_file_read(sid, "/proj/src/order.py")
+
+        monkeypatch.setattr(
+            compact,
+            "_get_uncommitted_changes",
+            lambda _root: " src/order.py | 2 +-\n 1 file changed",
+        )
+        monkeypatch.setattr(compact, "_get_git_diff_stat_summary", lambda _root: "")
+        monkeypatch.setattr(compact, "_get_git_diff_stat", lambda *a: None)
+        monkeypatch.setattr(compact, "_get_session_commits", lambda *a: [])
+
+        result = compact.build_manifest(sid)
+        assert "Uncommitted Changes" in result
+        assert "Files Edited" in result
+
+        idx_uncommitted = result.index("Uncommitted Changes")
+        idx_edited = result.index("Files Edited")
+        assert idx_uncommitted < idx_edited, (
+            f"'Uncommitted Changes' (pos {idx_uncommitted}) must precede "
+            f"'Files Edited' (pos {idx_edited})"
+        )
+
+    def test_section_shown_even_without_claude_tool_edits(self, tmp_data_dir, monkeypatch):
+        """Uncommitted Changes section appears even when edited_files is empty."""
+        sid = "uncommitted-no-edits-test-abc"
+        # Only a read, no edits tracked by Claude tools
+        session.mark_file_read(sid, "/proj/src/read_only.py")
+
+        monkeypatch.setattr(
+            compact,
+            "_get_uncommitted_changes",
+            lambda _root: "?? untracked.py",
+        )
+        monkeypatch.setattr(compact, "_get_git_diff_stat_summary", lambda _root: "")
+        monkeypatch.setattr(compact, "_get_git_diff_stat", lambda *a: None)
+        monkeypatch.setattr(compact, "_get_session_commits", lambda *a: [])
+
+        result = compact.build_manifest(sid)
+        assert "Uncommitted Changes" in result, (
+            f"Uncommitted Changes section must appear even with no Claude-tracked edits:\n{result}"
+        )
+        assert "untracked.py" in result
+
+    def test_section_lines_are_indented(self, tmp_data_dir, monkeypatch):
+        """Each content line in the Uncommitted Changes section is indented with two spaces."""
+        sid = "uncommitted-indent-test-abc"
+        session.mark_file_edited(sid, "/proj/src/indent.py")
+        session.mark_file_read(sid, "/proj/src/indent.py")
+
+        monkeypatch.setattr(
+            compact,
+            "_get_uncommitted_changes",
+            lambda _root: " src/indent.py | 3 +++",
+        )
+        monkeypatch.setattr(compact, "_get_git_diff_stat_summary", lambda _root: "")
+        monkeypatch.setattr(compact, "_get_git_diff_stat", lambda *a: None)
+        monkeypatch.setattr(compact, "_get_session_commits", lambda *a: [])
+
+        result = compact.build_manifest(sid)
+        lines = result.splitlines()
+        header_idx = next(
+            (i for i, line in enumerate(lines) if "Uncommitted Changes" in line), None
+        )
+        assert header_idx is not None
+        # The line immediately after the header should be the content, indented
+        content_lines = [
+            line for line in lines[header_idx + 1:]
+            if line.strip() and not line.startswith("#")
+        ]
+        for content_line in content_lines[:3]:  # Check first few content lines
+            if "indent.py" in content_line or "file changed" in content_line or content_line.strip().startswith("src/"):
+                assert content_line.startswith("  "), (
+                    f"Content line should start with two spaces: {content_line!r}"
+                )
+                break
+
+
+class TestComputeAdaptiveBudgetUncommittedBonus:
+    """compute_adaptive_budget adds +10 when has_uncommitted_changes=True."""
+
+    def test_uncommitted_bonus_adds_ten_tokens(self, tmp_data_dir):
+        """has_uncommitted_changes=True increases budget by 10 before tier scaling."""
+        sid = "uncommitted-bonus-test-abc"
+        session.mark_file_read(sid, "/proj/src/a.py")
+        cache = session.load(sid)
+
+        age = 1800.0  # active tier → factor 1.0, so delta is unscaled
+        budget_without = compact.compute_adaptive_budget(
+            cache, age_seconds=age, has_uncommitted_changes=False
+        )
+        budget_with = compact.compute_adaptive_budget(
+            cache, age_seconds=age, has_uncommitted_changes=True
+        )
+        assert budget_with == budget_without + 10, (
+            f"Expected +10 for uncommitted bonus: without={budget_without} with={budget_with}"
+        )
+
+    def test_uncommitted_bonus_false_by_default(self, tmp_data_dir):
+        """Default has_uncommitted_changes=False produces same budget as explicit False."""
+        sid = "uncommitted-bonus-default-test-abc"
+        session.mark_file_read(sid, "/proj/src/b.py")
+        cache = session.load(sid)
+
+        age = 1800.0
+        budget_default = compact.compute_adaptive_budget(cache, age_seconds=age)
+        budget_explicit = compact.compute_adaptive_budget(
+            cache, age_seconds=age, has_uncommitted_changes=False
+        )
+        assert budget_default == budget_explicit
+
+    def test_uncommitted_bonus_independent_of_pending_diff(self, tmp_data_dir):
+        """has_uncommitted_changes and has_pending_diff bonuses stack independently."""
+        sid = "uncommitted-stack-test-abc"
+        session.mark_file_read(sid, "/proj/src/c.py")
+        cache = session.load(sid)
+
+        age = 1800.0
+        budget_neither = compact.compute_adaptive_budget(
+            cache, age_seconds=age, has_pending_diff=False, has_uncommitted_changes=False
+        )
+        budget_both = compact.compute_adaptive_budget(
+            cache, age_seconds=age, has_pending_diff=True, has_uncommitted_changes=True
+        )
+        # pending_diff adds 50, uncommitted adds 10 → total +60
+        assert budget_both == budget_neither + 60, (
+            f"Expected +60 for both bonuses: neither={budget_neither} both={budget_both}"
         )
