@@ -140,40 +140,40 @@ def run_daemon(stop_event=None) -> None:
         _LOG.info("another worker holds the slot; exiting")
         return
 
-    _worker._clear_pid()
-    _worker._write_pid()
-    _worker._heartbeat()
-    _worker._register_autostart()
-
-    stats = cleanup_on_startup()
-    if any(stats.values()):
-        _LOG.info("startup cleanup: %s", stats)
-    else:
-        _LOG.debug("startup cleanup: no actions needed")
-
-    last_heartbeat = time.time()
-    last_maintenance = time.time()
-    last_periodic_reindex = time.time()
-    last_version_check = time.time()
-    # Tracks how many consecutive drain cycles produced zero entries. Drives the adaptive
-    # back-off in `_worker.adaptive_poll_interval` so a long-idle worker wakes less often.
-    consecutive_empty_drains = 0
+    # try/finally so the claim file is always released, even if startup raises before the main loop.
     restart_for_upgrade = False
-    _LOG.debug(
-        "worker main loop initialized: heartbeat=%.1fs maintenance=%.1fs reindex=%.1fs",
-        _worker.HEARTBEAT_INTERVAL,
-        _worker.MAINTENANCE_INTERVAL,
-        _worker.PERIODIC_REINDEX_INTERVAL,
-    )
-
-    def should_stop() -> bool:
-        """Return True when the caller has signalled the worker to shut down."""
-        return stop_event is not None and stop_event.is_set()
-
-    _install_signal_handlers()
-    _LOG.info("worker started, pid=%s", os.getpid())
-
     try:
+        _worker._clear_pid()
+        _worker._write_pid()
+        _worker._heartbeat()
+        _worker._register_autostart()
+
+        stats = cleanup_on_startup()
+        if any(stats.values()):
+            _LOG.info("startup cleanup: %s", stats)
+        else:
+            _LOG.debug("startup cleanup: no actions needed")
+
+        last_heartbeat = time.time()
+        last_maintenance = time.time()
+        last_periodic_reindex = time.time()
+        last_version_check = time.time()
+        # Consecutive zero-entry drains; drives adaptive back-off so a long-idle worker wakes less often.
+        consecutive_empty_drains = 0
+        _LOG.debug(
+            "worker main loop initialized: heartbeat=%.1fs maintenance=%.1fs reindex=%.1fs",
+            _worker.HEARTBEAT_INTERVAL,
+            _worker.MAINTENANCE_INTERVAL,
+            _worker.PERIODIC_REINDEX_INTERVAL,
+        )
+
+        def should_stop() -> bool:
+            """Return True when the caller has signalled the worker to shut down."""
+            return stop_event is not None and stop_event.is_set()
+
+        _install_signal_handlers()
+        _LOG.info("worker started, pid=%s", os.getpid())
+
         while not should_stop():
             now = time.time()
 
@@ -186,9 +186,10 @@ def run_daemon(stop_event=None) -> None:
             if entries:
                 _LOG.debug("found %d dirty queue entries, processing", len(entries))
                 _process_dirty_entries(entries)
-                # Any real work resets the idle counter so the next poll runs at the
-                # baseline interval — a burst of edits should never be slowed by stale
-                # back-off state from a prior quiet stretch.
+                # Real work resets the idle counter so the next poll runs at the baseline interval, never slowed by stale back-off from a prior quiet stretch.
+                consecutive_empty_drains = 0
+            elif entries is None:
+                # Drain deferred (queue existed but couldn't be claimed) — work is still pending, so don't let this count as an idle cycle and slow back-off.
                 consecutive_empty_drains = 0
             else:
                 consecutive_empty_drains += 1

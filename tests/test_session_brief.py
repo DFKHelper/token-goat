@@ -346,3 +346,44 @@ class TestSessionStartIntegration:
         # falls through to the non-compact branch when recovery returns None).
         # This is acceptable; the brief is informational regardless of source.
         assert result.get("continue") is True
+
+
+# ---------------------------------------------------------------------------
+# Latency budget — the three git calls share one wall-clock deadline
+# ---------------------------------------------------------------------------
+
+
+class TestBriefLatencyBudget:
+    """The git subprocesses must not stack their timeouts into a long pause."""
+
+    def test_session_brief_caps_total_git_latency(self, tmp_path):
+        """The three git subprocesses share one wall-clock budget.
+
+        Regression test: each git call used a fixed timeout=2, run sequentially,
+        so a slow repo could stack three 2 s timeouts into a ~6 s session-start
+        pause. The fix gives the three calls a single ~2.5 s deadline. Here
+        rev-parse returns fast but status and log hang to their timeout:
+        pre-fix this took ~4 s (status 2 s + log 2 s), the fixed code stays
+        near the shared budget and skips the call it no longer has time for.
+        """
+        import time
+
+        def _slow_run(cmd, **kwargs):
+            timeout = kwargs.get("timeout", 2.0)
+            if "rev-parse" in cmd:
+                result = MagicMock()
+                result.returncode = 0
+                result.stdout = "main\n"
+                return result
+            # status and log hang until their deadline, then time out (worst case).
+            time.sleep(timeout)
+            raise subprocess.TimeoutExpired(cmd, timeout)
+
+        start = time.monotonic()
+        with patch("subprocess.run", side_effect=_slow_run):
+            _build_session_brief(str(tmp_path))
+        elapsed = time.monotonic() - start
+
+        assert elapsed < 3.0, (
+            f"session brief took {elapsed:.2f}s — the git calls are not sharing a deadline"
+        )

@@ -88,8 +88,15 @@ class TestFileCountErrorPaths:
 class TestDrainDirtyQueueRetryExhaustion:
     """drain_dirty_queue must defer gracefully when os.replace() always fails."""
 
-    def test_retry_exhaustion_logs_warning_and_returns_empty(self, tmp_data_dir, caplog):
-        """When os.replace() raises OSError 5 times, the function warns and returns []."""
+    def test_retry_exhaustion_logs_warning_and_returns_none(self, tmp_data_dir, caplog):
+        """When os.replace() raises OSError 5 times, the function warns and returns None.
+
+        None is the deferral signal: the live dirty.txt existed but could not be
+        claimed, so work is still pending. The previous implementation returned
+        [] here, which the worker could not distinguish from a genuinely empty
+        queue — and so counted a deferred drain as an idle cycle, letting
+        adaptive back-off slow re-indexing while edits piled up.
+        """
         import logging
 
         from token_goat import worker
@@ -106,7 +113,7 @@ class TestDrainDirtyQueueRetryExhaustion:
         ):
             result = worker.drain_dirty_queue()
 
-        assert result == []
+        assert result is None
         assert any("5 retries" in r.getMessage() or "busy" in r.getMessage() for r in caplog.records)
 
     def test_abandoned_draining_file_read_failure_logs_warning(self, tmp_data_dir, caplog):
