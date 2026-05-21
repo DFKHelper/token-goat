@@ -910,6 +910,19 @@ _SESSION_ID_RE = re.compile(r"^[a-zA-Z0-9_-]+$")
 _MAX_LOG_STR = 120  # truncation limit for user-controlled values embedded in log messages
 
 
+def _evict_oldest(mapping: dict, cap: int, evict_n: int, label: str, session_id: str) -> None:
+    """FIFO-evict the oldest `evict_n` entries from `mapping` when it hits `cap`.
+
+    Uses dict insertion order (Python 3.7+). No-ops if len(mapping) < cap.
+    """
+    if len(mapping) < cap:
+        return
+    evict_keys = list(islice(mapping.keys(), evict_n))
+    for k in evict_keys:
+        del mapping[k]
+    _LOG.debug("%s: evicted %d entries (cap=%d) for session=%s", label, evict_n, cap, session_id[:16])
+
+
 def validate_session_id(session_id: str) -> None:
     """Validate session_id to prevent path traversal attacks. Raises ValueError on invalid input.
 
@@ -1203,14 +1216,7 @@ def mark_file_read(
     entry = cache.files.get(key)
     now = time.time()
     if entry is None:
-        if len(cache.files) >= FILES_MAX:
-            evict_keys = list(islice(cache.files.keys(), _FILES_EVICT))
-            for k in evict_keys:
-                del cache.files[k]
-            _LOG.debug(
-                "files: evicted %d entries (cap=%d) for session=%s",
-                _FILES_EVICT, FILES_MAX, session_id[:16],
-            )
+        _evict_oldest(cache.files, FILES_MAX, _FILES_EVICT, "files", session_id)
         entry = FileEntry(
             rel_or_abs=path, last_read_ts=now, read_count=0, line_ranges=[], symbols_read=[]
         )
@@ -1432,14 +1438,8 @@ def mark_file_edited(
     cache, key = prep
     now = time.time()
     prev_count = cache.edited_files.get(key, 0)
-    if prev_count == 0 and len(cache.edited_files) >= EDITED_FILES_MAX:
-        evict_keys = list(islice(cache.edited_files.keys(), _EDITED_FILES_EVICT))
-        for k in evict_keys:
-            del cache.edited_files[k]
-        _LOG.debug(
-            "edited_files: evicted %d entries (cap=%d) for session=%s",
-            _EDITED_FILES_EVICT, EDITED_FILES_MAX, session_id[:16],
-        )
+    if prev_count == 0:
+        _evict_oldest(cache.edited_files, EDITED_FILES_MAX, _EDITED_FILES_EVICT, "edited_files", session_id)
     cache.edited_files[key] = prev_count + 1
     # Stamp last_edit_ts on the read entry too (if any) so build_read_hint can
     # detect "edited after last read" without an extra dict lookup on each
@@ -1556,14 +1556,8 @@ def put_result_cache(
     key = _result_cache_key(rel_path, item, kind)
     # Evict oldest entries when at capacity — but only on a fresh insertion.
     # Updates to an existing key reuse the slot and never trigger eviction.
-    if key not in cache.result_cache and len(cache.result_cache) >= RESULT_CACHE_MAX:
-        evict_keys = list(islice(cache.result_cache.keys(), _RESULT_CACHE_EVICT))
-        for k in evict_keys:
-            del cache.result_cache[k]
-        _LOG.debug(
-            "result_cache: evicted %d entries (cap=%d) for session=%s",
-            _RESULT_CACHE_EVICT, RESULT_CACHE_MAX, session_id[:16],
-        )
+    if key not in cache.result_cache:
+        _evict_oldest(cache.result_cache, RESULT_CACHE_MAX, _RESULT_CACHE_EVICT, "result_cache", session_id)
     cache.result_cache[key] = ResultCacheEntry(
         file_sha=file_sha,
         kind=kind,
@@ -1618,14 +1612,8 @@ def mark_bash_run(
     # Evict oldest entries when at capacity — but only when adding a new key.
     # Updates to an existing cmd_sha keep their original insertion slot so the
     # eviction order reflects "first seen, first evicted".
-    if cmd_sha not in cache.bash_history and len(cache.bash_history) >= BASH_HISTORY_MAX:
-        evict_keys = list(islice(cache.bash_history.keys(), _BASH_HISTORY_EVICT))
-        for k in evict_keys:
-            del cache.bash_history[k]
-        _LOG.debug(
-            "bash_history: evicted %d entries (cap=%d) for session=%s",
-            _BASH_HISTORY_EVICT, BASH_HISTORY_MAX, session_id[:16],
-        )
+    if cmd_sha not in cache.bash_history:
+        _evict_oldest(cache.bash_history, BASH_HISTORY_MAX, _BASH_HISTORY_EVICT, "bash_history", session_id)
 
     prior_run_count = cache.bash_history[cmd_sha].run_count if cmd_sha in cache.bash_history else 0
     cache.bash_history[cmd_sha] = BashEntry(
@@ -1689,14 +1677,8 @@ def mark_web_fetch(
     safe_preview = sanitize_log_str(url_preview, max_len=_MAX_WEB_URL_PREVIEW)
 
     now = time.time()
-    if url_sha not in cache.web_history and len(cache.web_history) >= WEB_HISTORY_MAX:
-        evict_keys = list(islice(cache.web_history.keys(), _WEB_HISTORY_EVICT))
-        for k in evict_keys:
-            del cache.web_history[k]
-        _LOG.debug(
-            "web_history: evicted %d entries (cap=%d) for session=%s",
-            _WEB_HISTORY_EVICT, WEB_HISTORY_MAX, session_id[:16],
-        )
+    if url_sha not in cache.web_history:
+        _evict_oldest(cache.web_history, WEB_HISTORY_MAX, _WEB_HISTORY_EVICT, "web_history", session_id)
 
     cache.web_history[url_sha] = WebEntry(
         url_sha=url_sha,
@@ -1744,14 +1726,8 @@ def set_snapshot_sha(
     if prep is None:
         return cache or _fresh_cache(session_id)
     cache, key = prep
-    if key not in cache.snapshot_shas and len(cache.snapshot_shas) >= SNAPSHOT_SHAS_MAX:
-        evict_keys = list(islice(cache.snapshot_shas.keys(), _SNAPSHOT_SHAS_EVICT))
-        for k in evict_keys:
-            del cache.snapshot_shas[k]
-        _LOG.debug(
-            "snapshot_shas: evicted %d entries (cap=%d) for session=%s",
-            _SNAPSHOT_SHAS_EVICT, SNAPSHOT_SHAS_MAX, session_id[:16],
-        )
+    if key not in cache.snapshot_shas:
+        _evict_oldest(cache.snapshot_shas, SNAPSHOT_SHAS_MAX, _SNAPSHOT_SHAS_EVICT, "snapshot_shas", session_id)
     cache.snapshot_shas[key] = content_sha
     cache._invalidate_json_cache()
     save(cache)
