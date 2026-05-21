@@ -589,3 +589,119 @@ class TestFetchUrlContentDedup:
         """An unreadable file yields None (caller treats as 'no dedup possible')."""
         nonexistent = tmp_path / "ghost.png"
         assert webfetch._hash_file_sha256(nonexistent) is None
+
+
+# ---------------------------------------------------------------------------
+# 13. _strip_html_to_text: HTML-to-text compression
+# ---------------------------------------------------------------------------
+
+class TestStripHtmlToText:
+    """Unit tests for the _strip_html_to_text helper."""
+
+    # Minimal HTML page padded to guarantee >20% reduction
+    _HTML_TEMPLATE = (
+        "<!DOCTYPE html>\n<html><head><title>Test</title>"
+        "<style>body {{ color: red; }}</style>"
+        "<script>alert('x');</script>"
+        "</head><body>"
+        "<nav><a href='/'>Home</a></nav>"
+        "<header><h1>Header</h1></header>"
+        "<main><p>Hello world</p><p>Second paragraph</p></main>"
+        "<footer>Footer content here</footer>"
+        "</body></html>"
+    )
+
+    def _html_body(self, extra_padding: int = 0) -> bytes:
+        """Return HTML bytes, optionally padded so the stripping ratio is clear."""
+        # Build a page with enough boilerplate that stripping yields >20% reduction.
+        nav_bloat = "<nav>" + ("<a href='#'>link</a>" * 20) + "</nav>"
+        script_bloat = "<script>" + ("var x = 1;\n" * 30) + "</script>"
+        style_bloat = "<style>" + ("body { margin: 0; }\n" * 30) + "</style>"
+        content = "<p>Readable content here.</p>" * 5
+        html = (
+            "<!DOCTYPE html>\n<html><head>"
+            + style_bloat
+            + script_bloat
+            + "</head><body>"
+            + nav_bloat
+            + content
+            + "</body></html>"
+        )
+        return (html + " " * extra_padding).encode("utf-8")
+
+    def test_html_is_stripped_to_text(self):
+        """HTML with substantial boilerplate is stripped and returns fewer bytes."""
+        body = self._html_body()
+        result = webfetch._strip_html_to_text(body)
+        assert result is not body
+        assert len(result) < len(body)
+
+    def test_result_contains_marker(self):
+        """Stripped output starts with the token-goat marker line."""
+        body = self._html_body()
+        result = webfetch._strip_html_to_text(body)
+        # Only check marker if stripping fired (i.e. result differs from input)
+        if result is not body and result != body:
+            first_line = result.decode("utf-8", errors="replace").splitlines()[0]
+            assert first_line.startswith("[token-goat: HTML→text,"), (
+                f"Marker missing or wrong; first line was: {first_line!r}"
+            )
+
+    def test_json_content_passes_through_unchanged(self):
+        """Non-HTML content (JSON) is returned as-is."""
+        body = b'{"key": "value", "items": [1, 2, 3]}'
+        assert webfetch._strip_html_to_text(body) is body
+
+    def test_plain_text_passes_through_unchanged(self):
+        """Plain text without HTML markers is returned as-is."""
+        body = b"Just some plain text content without any markup.\n" * 10
+        assert webfetch._strip_html_to_text(body) is body
+
+    def test_minimal_html_no_reduction_passes_through(self):
+        """When stripping yields <20% reduction the original bytes are returned."""
+        # A page that is almost entirely text inside a thin HTML shell —
+        # after stripping the HTML shell the byte count drops by much less than 20%.
+        content = "word " * 500  # ~2500 bytes of text
+        thin_html = f"<html><body>{content}</body></html>"
+        body = thin_html.encode("utf-8")
+        result = webfetch._strip_html_to_text(body)
+        # Should be unchanged because reduction < 20%
+        assert result is body
+
+    def test_script_and_style_blocks_removed(self):
+        """<script> and <style> block content does not appear in stripped output."""
+        body = self._html_body()
+        result = webfetch._strip_html_to_text(body)
+        if result is body:
+            pytest.skip("stripping threshold not met for this input size")
+        decoded = result.decode("utf-8", errors="replace")
+        assert "var x = 1" not in decoded, "script content should be removed"
+        assert "margin: 0" not in decoded, "style content should be removed"
+
+    def test_nav_block_removed(self):
+        """<nav> block content does not appear in stripped output."""
+        body = self._html_body()
+        result = webfetch._strip_html_to_text(body)
+        if result is body:
+            pytest.skip("stripping threshold not met for this input size")
+        # The nav contains many repetitions of the link anchor text
+        decoded = result.decode("utf-8", errors="replace")
+        # nav block had 20 repetitions of 'link'; at most a stray one might
+        # survive as link text, but the bulk should be gone
+        link_count = decoded.count("link")
+        assert link_count < 5, f"nav <a> text leaked into stripped output ({link_count} occurrences)"
+
+    def test_readable_content_preserved(self):
+        """Paragraph text survives the stripping pass."""
+        body = self._html_body()
+        result = webfetch._strip_html_to_text(body)
+        if result is body:
+            pytest.skip("stripping threshold not met for this input size")
+        decoded = result.decode("utf-8", errors="replace")
+        assert "Readable content here" in decoded
+
+    def test_never_raises_on_garbage_input(self):
+        """_strip_html_to_text must not raise for any byte sequence."""
+        for bad in (b"", b"\xff\xfe\x00", b"<html>" + bytes(range(256)), b"\x00" * 1000):
+            result = webfetch._strip_html_to_text(bad)
+            assert isinstance(result, bytes)

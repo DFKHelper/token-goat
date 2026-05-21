@@ -22,10 +22,12 @@ from __future__ import annotations
 
 import contextlib
 import hashlib
+import html as _html_mod
 import ipaddress
 import json
 import logging
 import os
+import re as _re
 import socket
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -497,6 +499,102 @@ def cleanup_stale_downloads() -> int:
     return removed
 
 
+def _strip_html_to_text(body: bytes) -> bytes:
+    """Strip HTML boilerplate to readable text for token-efficient storage.
+
+    Returns the stripped text as UTF-8 bytes, or the original bytes if:
+    - Content is not HTML (no ``<html`` or ``<!doctype`` near the top)
+    - Stripping produces less than 20% size reduction
+    - Any decoding/processing error occurs
+
+    The function is intentionally fail-soft: any unhandled exception returns
+    the original *body* unchanged so a malformed page never breaks caching.
+    """
+    try:
+        try:
+            text = body.decode("utf-8", errors="replace")
+        except Exception:  # noqa: BLE001
+            return body
+
+        lower = text[:2000].lower()  # check only the preamble for speed
+        if "<html" not in lower and "<!doctype" not in lower:
+            return body  # not HTML — JSON, plain text, Markdown pass through unchanged
+
+        original_len = len(body)
+
+        # Remove script/style/nav/header/footer/aside/noscript blocks entirely
+        for tag in ("script", "style", "nav", "header", "footer", "aside", "noscript"):
+            text = _re.sub(
+                rf"<{tag}[\s>].*?</{tag}>",
+                " ",
+                text,
+                flags=_re.IGNORECASE | _re.DOTALL,
+            )
+
+        # Convert block-level elements to newlines
+        text = _re.sub(
+            r"<(?:p|div|br|li|tr|h[1-6])[^>]*>",
+            "\n",
+            text,
+            flags=_re.IGNORECASE,
+        )
+
+        # Strip remaining HTML tags
+        text = _re.sub(r"<[^>]+>", "", text)
+
+        # Decode HTML entities
+        text = _html_mod.unescape(text)
+
+        # Normalize whitespace: strip each line, then collapse blank-line runs
+        lines = [line.strip() for line in text.splitlines()]
+        result_lines: list[str] = []
+        empty_run = 0
+        for line in lines:
+            if not line:
+                empty_run += 1
+                if empty_run <= 2:
+                    result_lines.append("")
+            else:
+                empty_run = 0
+                result_lines.append(line)
+
+        stripped = "\n".join(result_lines).strip()
+        stripped_bytes = stripped.encode("utf-8")
+        stripped_len = len(stripped_bytes)
+
+        # Only use stripped version when it's meaningfully smaller (≥20% reduction)
+        if stripped_len >= original_len * 0.80:
+            return body
+
+        marker = f"[token-goat: HTML→text, {original_len}B→{stripped_len}B]\n"
+        return (marker + stripped).encode("utf-8")
+
+    except Exception:  # noqa: BLE001 — fail-soft, never break caching
+        return body
+
+
+def _apply_html_strip(cache_path: Path) -> None:
+    """Read *cache_path*, strip HTML if applicable, and write the result back.
+
+    No-op when the file does not exist, is unreadable, or ``_strip_html_to_text``
+    determines the content is not HTML or the reduction is below the 20% threshold.
+    Failures are logged at DEBUG and swallowed so a broken strip never blocks caching.
+    """
+    try:
+        raw = cache_path.read_bytes()
+        stripped = _strip_html_to_text(raw)
+        if stripped is not raw and stripped != raw:
+            cache_path.write_bytes(stripped)
+            _LOG.debug(
+                "webfetch: HTML stripped %d→%d bytes for %s",
+                len(raw),
+                len(stripped),
+                cache_path.name,
+            )
+    except Exception as exc:  # noqa: BLE001 — fail-soft, never break caching
+        _LOG.debug("webfetch: HTML strip failed for %s: %s", cache_path.name, exc)
+
+
 def fetch_url(
     url: str,
     *,
@@ -605,6 +703,10 @@ def fetch_url(
             cache_path = _cache_path_for(url, suffix)
             _stream_to_file(r, cache_path, max_size_bytes)
             response_headers = r.headers
+            # Strip HTML boilerplate in-place before any caching or dedup logic
+            # so everything downstream (content hash, stored bytes, recalled output)
+            # operates on the compact text form, not the raw markup.
+            _apply_html_strip(cache_path)
     except (ValueError, RuntimeError):
         # ValueError: SSRF check failed after redirect (_validate_response_url)
         # RuntimeError: size cap exceeded (_stream_to_file)
