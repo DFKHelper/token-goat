@@ -260,13 +260,35 @@ class TestWriterLockDeadPid:
 # ===========================================================================
 
 class TestWriterLockMalformed:
-    def test_malformed_lock_treated_as_stale(self, tmp_data_dir):
+    def test_fresh_malformed_lock_blocks_as_owner_mid_write(self, tmp_data_dir):
+        """A freshly written malformed lock is the create-then-write window of a
+        live owner — it must NOT be reclaimed, or the O_EXCL acquisition race reopens.
+        """
         import token_goat.paths as paths
 
         h = "badf" * 10  # 40-char valid lowercase hex
         lock_path = paths.locks_dir() / f"{h}.lock"
         lock_path.parent.mkdir(parents=True, exist_ok=True)
+        lock_path.write_text("NOT_A_PID", encoding="utf-8")  # malformed, just written
+
+        with pytest.raises(TimeoutError):  # noqa: SIM117
+            with db.project_writer_lock(h, timeout_sec=0.3):
+                pass
+
+    def test_old_malformed_lock_is_reclaimed(self, tmp_data_dir):
+        """A malformed lock whose mtime is past the stale window is reclaimed —
+        the mtime fallback recovers from a process that crashed mid-write.
+        """
+        import os
+
+        import token_goat.paths as paths
+
+        h = "badf" * 10
+        lock_path = paths.locks_dir() / f"{h}.lock"
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
         lock_path.write_text("NOT_A_PID", encoding="utf-8")
+        old = time.time() - 660  # 11 minutes ago — past LOCK_STALE_SECONDS
+        os.utime(lock_path, (old, old))
 
         with db.project_writer_lock(h, timeout_sec=1.0):
             assert lock_path.exists()

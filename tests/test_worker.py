@@ -428,6 +428,25 @@ def test_claim_worker_slot_empty_claim_is_not_stale(tmp_data_dir):
     claim.unlink(missing_ok=True)
 
 
+def test_claim_worker_slot_write_failure_removes_orphan(tmp_data_dir):
+    """A write failure after the O_EXCL create must close the fd and delete the empty file.
+
+    Regression test: a failed os.write used to leak the fd and leave an empty
+    claim file behind. _worker_claim_is_stale treats an empty claim as NOT
+    stale (to protect the create -> write window), so an orphaned empty file
+    could never be reclaimed — it wedged the single-worker slot permanently.
+    """
+    paths.ensure_dirs()
+    claim = worker._worker_claim_path()
+    assert not claim.exists()
+
+    with patch("token_goat.worker.os.write", side_effect=OSError("disk full")):
+        fd = worker._try_claim_worker_slot()
+
+    assert fd is None, "a failed claim must return None"
+    assert not claim.exists(), "an empty claim file was orphaned — it would wedge the worker slot"
+
+
 def test_run_daemon_second_instance_exits_immediately(tmp_data_dir):
     """If the slot is already claimed, run_daemon must return without running."""
     paths.ensure_dirs()
@@ -1006,6 +1025,35 @@ class TestReindexActiveProjects:
         with patch("token_goat.parser.index_project") as mock_index:
             worker._reindex_active_projects()
             mock_index.assert_called_once()
+
+    def test_reindex_triggers_git_history_indexing(self, tmp_data_dir, tmp_path):
+        """The periodic sweep refreshes git-history hints for each active project.
+
+        Regression test: git-history indexing used to run only from a daemon
+        thread spawned by the SessionStart hook — a thread killed when the
+        ephemeral hook process exited, so the indexing rarely finished. The
+        durable worker now owns it as part of the reindex sweep.
+        """
+        from token_goat import db as _db
+        from token_goat import git_history
+        from token_goat.parser import index_project
+        from token_goat.project import canonicalize, make_project_at, project_hash
+
+        proj_root = tmp_path / "code"
+        proj_root.mkdir()
+        (proj_root / "mod.py").write_text("def f():\n    return 1\n", encoding="utf-8")
+        ph = project_hash(canonicalize(proj_root))
+        index_project(make_project_at(proj_root), full=True)
+        with _db.open_global() as gconn:
+            self._register_project(gconn, ph, proj_root.as_posix(), ".git", 1)
+
+        with patch.object(git_history, "index_project_history") as mock_gh:
+            worker._reindex_active_projects()
+
+        mock_gh.assert_called_once()
+        called_root, called_hash = mock_gh.call_args[0]
+        assert called_root == proj_root
+        assert called_hash == ph
 
     def test_reindexes_manual_project(self, tmp_data_dir, tmp_path):
         from token_goat import db as _db

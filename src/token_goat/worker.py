@@ -389,13 +389,6 @@ def _try_claim_worker_slot() -> int | None:
     for attempt in (1, 2):
         try:
             fd = os.open(str(claim_path), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
-            create_time = _proc_create_time(os.getpid()) or time.time()
-            # Write pid+create_time in a single os.write call.  The file is
-            # empty between O_EXCL create and this write; _worker_claim_is_stale
-            # treats an empty/malformed claim as NOT stale specifically to make
-            # that window safe — a concurrent reader cannot reclaim it mid-write.
-            os.write(fd, f"{os.getpid()}\n{create_time}".encode())
-            return fd
         except FileExistsError:
             if attempt == 1 and _worker_claim_is_stale(claim_path):
                 _LOG.info("removing stale worker claim file")
@@ -406,6 +399,17 @@ def _try_claim_worker_slot() -> int | None:
         except OSError as e:
             _LOG.warning("failed to claim worker slot: %s", e)
             return None
+        # On write failure, close the fd and remove the empty file: an orphaned empty claim is treated as not-stale and would wedge the worker slot forever.
+        try:
+            create_time = _proc_create_time(os.getpid()) or time.time()
+            os.write(fd, f"{os.getpid()}\n{create_time}".encode())
+        except OSError as e:
+            os.close(fd)
+            with contextlib.suppress(OSError):
+                claim_path.unlink()
+            _LOG.warning("failed to populate worker claim file: %s", e)
+            return None
+        return fd
     return None
 
 
@@ -456,7 +460,7 @@ def adaptive_poll_interval(consecutive_empty_drains: int) -> float:
     return min(POLL_INTERVAL_MAX, POLL_INTERVAL + extra * POLL_INTERVAL)
 
 
-def drain_dirty_queue() -> list[DirtyQueueEntry]:
+def drain_dirty_queue() -> list[DirtyQueueEntry] | None:
     """Atomically claim and return all queued entries.
 
     The queue is drained by *renaming* dirty.txt to a private ``.draining``
@@ -470,11 +474,20 @@ def drain_dirty_queue() -> list[DirtyQueueEntry]:
 
     Validates each entry is a dict before appending; skips malformed entries
     with a warning.
+
+    Returns a (possibly empty) list of entries on a successful drain, or
+    ``None`` when the drain was *deferred* — the live dirty.txt existed but
+    could not be claimed (a Windows ``ERROR_SHARING_VIOLATION`` from a
+    concurrent ``enqueue_dirty``). ``None`` means "work is still pending,
+    retry soon"; an empty list means "genuinely nothing queued". The caller
+    relies on that distinction so adaptive idle back-off does not treat a
+    deferred drain as a quiet cycle.
     """
     _LOG.debug("draining dirty queue")
     p = paths.dirty_queue_path()
     draining = p.with_name(p.name + ".draining")
     raw_lines: list[str] = []
+    deferred = False  # set when a live dirty.txt existed but could not be claimed
 
     # Recover entries from a .draining file a previous (crashed) drain abandoned.
     if draining.exists():
@@ -512,6 +525,7 @@ def drain_dirty_queue() -> list[DirtyQueueEntry]:
             except OSError as e:
                 _LOG.warning("failed to read/clear drained queue file: %s", e)
         else:
+            deferred = True
             _LOG.warning(
                 "dirty queue busy after 5 retries; deferring drain to next cycle (%s)",
                 last_replace_err,
@@ -536,6 +550,10 @@ def drain_dirty_queue() -> list[DirtyQueueEntry]:
     if entries:
         _LOG.info("drained dirty queue: %d valid entries%s", len(entries),
                   f", {malformed_count} malformed" if malformed_count else "")
+        return entries
+    if deferred:
+        # No entries and the live queue couldn't be claimed — return None so the caller knows work is still pending and doesn't count this as an idle cycle.
+        return None
     return entries
 
 
@@ -1329,6 +1347,10 @@ def _reindex_active_projects() -> None:
                 reindexed_count += 1
             else:
                 _LOG.debug("periodic reindex: root=%s no changes", row["root"])
+            # Refresh git-history hints in the durable worker — the SessionStart hook used to spawn this on a daemon thread that died with the hook process. index_project_history is idempotent and staleness-gated (1 h).
+            from . import git_history  # noqa: PLC0415
+
+            git_history.index_project_history(proj.root, proj.hash)
         except Exception:  # noqa: BLE001
             _LOG.exception("periodic reindex failed for %s", row["root"])
     if skipped_oversized > 0:

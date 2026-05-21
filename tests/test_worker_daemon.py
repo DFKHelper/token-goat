@@ -4,6 +4,8 @@ from __future__ import annotations
 import threading
 from unittest.mock import patch
 
+import pytest
+
 import token_goat.worker as worker
 import token_goat.worker_daemon as daemon
 
@@ -265,3 +267,65 @@ def test_run_daemon_periodic_reindex_exception_swallowed(tmp_data_dir):
         patch.object(worker, "_reindex_active_projects", _fake_reindex),
     ):
         daemon.run_daemon(stop_event=stop)  # must not raise
+
+
+# ---------------------------------------------------------------------------
+# run_daemon — claim-file cleanup when startup raises before the main loop
+# ---------------------------------------------------------------------------
+
+
+def test_run_daemon_releases_claim_file_when_startup_raises(tmp_data_dir):
+    """If startup raises before the main loop, run_daemon must still release the claim file.
+
+    Regression test: the claim-file cleanup lives in a `finally`, but its `try`
+    used to start *after* _write_pid / _register_autostart / cleanup_on_startup.
+    An exception in any of those escaped before the try, so the finally never
+    ran and the worker slot stayed claimed — wedging every future worker start.
+    """
+    claim_path = worker._worker_claim_path()
+
+    with patch.object(worker, "_write_pid", side_effect=RuntimeError("startup boom")):  # noqa: SIM117
+        with pytest.raises(RuntimeError, match="startup boom"):
+            daemon.run_daemon()
+
+    assert not claim_path.exists(), "claim file leaked — run_daemon did not release the worker slot"
+
+
+# ---------------------------------------------------------------------------
+# run_daemon — a deferred drain must not accumulate idle back-off
+# ---------------------------------------------------------------------------
+
+
+def test_run_daemon_deferred_drain_does_not_accumulate_backoff(tmp_data_dir):
+    """A deferred drain (drain_dirty_queue returns None) must not count as an idle cycle.
+
+    Regression test: drain_dirty_queue returns None when the dirty queue could
+    not be claimed (work still pending). run_daemon must reset the idle counter
+    on None, not increment it — otherwise adaptive back-off slows re-indexing
+    while a burst of edits keeps colliding with the queue file.
+    """
+    stop = threading.Event()
+    poll_args: list[int] = []
+
+    def _fake_adaptive(consecutive_empty: int) -> float:
+        poll_args.append(consecutive_empty)
+        if len(poll_args) >= 4:
+            stop.set()
+        return 0.001
+
+    with (
+        patch.object(worker, "HEARTBEAT_INTERVAL", 9999.0),
+        patch.object(worker, "MAINTENANCE_INTERVAL", 9999.0),
+        patch.object(worker, "PERIODIC_REINDEX_INTERVAL", 9999.0),
+        patch.object(worker, "VERSION_CHECK_INTERVAL", 9999.0),
+        patch.object(worker, "drain_dirty_queue", return_value=None),
+        patch.object(worker, "adaptive_poll_interval", _fake_adaptive),
+        patch.object(worker, "_heartbeat"),
+        patch.object(worker, "cleanup_on_startup", return_value={}),
+    ):
+        daemon.run_daemon(stop_event=stop)
+
+    assert poll_args, "loop never ran"
+    assert all(n == 0 for n in poll_args), (
+        f"deferred drains accumulated idle back-off instead of resetting it: {poll_args}"
+    )

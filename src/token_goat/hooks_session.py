@@ -331,6 +331,7 @@ def _build_session_brief(cwd: str) -> str | None:
     """
     import os  # noqa: PLC0415
     import subprocess  # noqa: PLC0415
+    import time  # noqa: PLC0415
 
     # Feature gate: env var override (checked first, cheapest)
     env_val = os.environ.get("TOKEN_GOAT_SESSION_BRIEF", "").strip().lower()
@@ -360,14 +361,19 @@ def _build_session_brief(cwd: str) -> str | None:
         "cwd": cwd,
         "capture_output": True,
         "text": True,
-        "timeout": 2,
     }
+    # Whole-brief wall-clock budget: the three git calls share one deadline so a slow repo can't stack three 2 s timeouts into a 6 s session-start pause.
+    deadline = time.monotonic() + 2.5
+
+    def _remaining() -> float:
+        return deadline - time.monotonic()
 
     # Determine current branch
     branch = "unknown"
     try:
         br = subprocess.run(
             ["git", "rev-parse", "--abbrev-ref", "HEAD"],
+            timeout=max(0.1, min(2.0, _remaining())),
             **common_kwargs,
         )
         if br.returncode == 0:
@@ -380,27 +386,33 @@ def _build_session_brief(cwd: str) -> str | None:
 
     # git status --porcelain — cap at 20 lines
     status_lines: list[str] = []
-    try:
-        st = subprocess.run(
-            ["git", "status", "--porcelain"],
-            **common_kwargs,
-        )
-        if st.returncode == 0:
-            status_lines = st.stdout.splitlines()[:20]
-    except (subprocess.TimeoutExpired, OSError):
-        pass
+    status_budget = _remaining()
+    if status_budget > 0.1:
+        try:
+            st = subprocess.run(
+                ["git", "status", "--porcelain"],
+                timeout=status_budget,
+                **common_kwargs,
+            )
+            if st.returncode == 0:
+                status_lines = st.stdout.splitlines()[:20]
+        except (subprocess.TimeoutExpired, OSError):
+            pass
 
     # git log --oneline -5
     log_lines: list[str] = []
-    try:
-        lg = subprocess.run(
-            ["git", "log", "--oneline", "-5"],
-            **common_kwargs,
-        )
-        if lg.returncode == 0:
-            log_lines = [line.strip() for line in lg.stdout.splitlines() if line.strip()]
-    except (subprocess.TimeoutExpired, OSError):
-        pass
+    log_budget = _remaining()
+    if log_budget > 0.1:
+        try:
+            lg = subprocess.run(
+                ["git", "log", "--oneline", "-5"],
+                timeout=log_budget,
+                **common_kwargs,
+            )
+            if lg.returncode == 0:
+                log_lines = [line.strip() for line in lg.stdout.splitlines() if line.strip()]
+        except (subprocess.TimeoutExpired, OSError):
+            pass
 
     # Skip entirely if nothing to report (clean + no commits)
     if not status_lines and not log_lines:
@@ -483,25 +495,6 @@ def _auto_index_if_needed(proj: Project) -> None:
         _LOG.exception("auto-index spawn failed")
 
 
-def _index_git_history(proj: Project) -> None:
-    """Trigger git history indexing in a daemon background thread."""
-    try:
-        import threading  # noqa: PLC0415
-
-        from . import git_history  # noqa: PLC0415
-
-        t = threading.Thread(
-            target=git_history.index_project_history,
-            args=(proj.root, proj.hash),
-            daemon=True,
-            name="tg-git-history",
-        )
-        t.start()
-        _LOG.debug("session-start: git history indexing started (background thread)")
-    except Exception:  # noqa: BLE001
-        _LOG.debug("session-start: git history indexing failed to start", exc_info=True)
-
-
 def _build_startup_context(proj: Project) -> str | None:
     """Build additionalContext from project memory for the session-start response.
 
@@ -574,7 +567,6 @@ def session_start(payload: HookPayload) -> HookResponse:
 
         db.touch_project_last_seen(proj.hash)
         _auto_index_if_needed(proj)
-        _index_git_history(proj)
     _ensure_worker_running()
 
     if recovery is not None:

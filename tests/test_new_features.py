@@ -302,8 +302,13 @@ class TestCompactStaleAndCold:
 
 
 class TestSessionStartGitHistory:
-    def test_git_history_thread_spawned_on_project_detection(self) -> None:
-        from token_goat import hooks_session
+    def test_session_start_does_not_index_git_history_inline(self) -> None:
+        """Git-history indexing is owned by the background worker, not the
+        SessionStart hook. The hook used to spawn it on a daemon thread that
+        died with the millisecond-lived hook process; the worker-side path is
+        covered by test_reindex_triggers_git_history_indexing.
+        """
+        from token_goat import git_history, hooks_session
 
         fake_proj = MagicMock()
         fake_proj.root = Path("/fake/root")
@@ -317,12 +322,15 @@ class TestSessionStartGitHistory:
             patch("token_goat.hooks_session._try_recovery_response", return_value=None),
             patch("token_goat.hooks_session._build_startup_context", return_value=None),
             patch("token_goat.db.touch_project_last_seen"),
-            patch("token_goat.hooks_session._index_git_history") as mock_git,
+            patch.object(git_history, "index_project_history") as mock_git,
         ):
             payload = {"session_id": "s" * 32, "cwd": "/fake/root", "source": "startup"}
             hooks_session.session_start(payload)
 
-        mock_git.assert_called_once_with(fake_proj)
+        assert not hasattr(hooks_session, "_index_git_history"), (
+            "_index_git_history was reintroduced — git-history indexing belongs to the worker"
+        )
+        mock_git.assert_not_called()
 
 
 # ---------------------------------------------------------------------------

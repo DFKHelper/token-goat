@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import os
 import sqlite3
+import threading
 import time
 from unittest.mock import patch
 
@@ -162,6 +163,52 @@ def test_stale_lock_auto_cleared(tmp_data_dir):
     with db.project_writer_lock(h, timeout_sec=1.0):
         assert lock_path.exists()
     assert not lock_path.exists()
+
+
+def test_writer_lock_is_mutually_exclusive_under_concurrency(tmp_data_dir):
+    """Concurrent acquirers must never both hold the writer lock.
+
+    Regression test for a check-then-write TOCTOU: the previous _try_acquire
+    did ``if lock_path.exists(): ... else: write_text(...)``, so two callers
+    that both observed the file absent each wrote the lock and each believed it
+    held it. The fix makes acquisition an atomic ``os.open(O_CREAT|O_EXCL)``
+    create. Eight threads are released through a barrier so they contend for
+    one lock at the same instant: this records concurrent holders (peak > 1) on
+    the pre-fix code and stays at exactly 1 on the fixed code.
+    """
+    h = "a0c000a0c000a0c000a0c000a0c000a0c0000099"
+    state = {"current": 0, "max": 0}
+    violations: list[int] = []
+    successes = 0
+    guard = threading.Lock()
+    barrier = threading.Barrier(8)
+
+    def worker() -> None:
+        nonlocal successes
+        barrier.wait()  # release all threads at the same instant to force the race
+        try:
+            with db.project_writer_lock(h, timeout_sec=5.0):
+                with guard:
+                    state["current"] += 1
+                    state["max"] = max(state["max"], state["current"])
+                    if state["current"] > 1:
+                        violations.append(state["current"])
+                    successes += 1
+                time.sleep(0.05)
+                with guard:
+                    state["current"] -= 1
+        except TimeoutError:
+            pass
+
+    threads = [threading.Thread(target=worker) for _ in range(8)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    assert not violations, f"writer lock was held concurrently: peak holders={violations}"
+    assert state["max"] == 1, f"expected exclusive access, peak holders={state['max']}"
+    assert successes == 8, f"every thread should eventually acquire; got {successes}/8"
 
 
 # ---------------------------------------------------------------------------

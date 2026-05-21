@@ -860,8 +860,14 @@ def project_writer_lock(project_hash: str, timeout_sec: float = 5.0) -> Iterator
     def _stale(lock_text: str) -> bool:
         """Return True if the lock file content represents a stale (dead) lock.
 
-        A lock is stale if: the owning PID no longer exists, the timestamp is
-        older than 10 minutes (crash recovery), or the file content is malformed.
+        A lock is stale if the owning PID no longer exists or the timestamp is
+        older than 10 minutes (crash recovery).
+
+        Empty/malformed content is the microsecond window between the O_EXCL
+        create and the owner's ``os.write`` — it is NOT treated as stale, so a
+        concurrent acquirer cannot unlink a lock that is being populated. The
+        file's mtime is the fallback: a process that crashed inside that window
+        leaves an empty file whose mtime ages out, so the lock still self-heals.
         """
         try:
             parts = lock_text.strip().split("\n", 1)
@@ -871,28 +877,50 @@ def project_writer_lock(project_hash: str, timeout_sec: float = 5.0) -> Iterator
                 return True
             return not psutil.pid_exists(owner_pid)
         except (ValueError, IndexError):
-            return True  # malformed → treat as stale
+            try:
+                age = time.time() - lock_path.stat().st_mtime
+            except OSError:
+                return False
+            return age > LOCK_STALE_SECONDS
 
     def _try_acquire() -> bool:
-        """Attempt a single lock acquisition; return True on success, False if held."""
-        if lock_path.exists():
+        """Attempt a single lock acquisition via an atomic O_EXCL create.
+
+        ``os.open(O_CREAT | O_EXCL)`` makes *creation* the mutex — exactly one
+        caller can create the lock file. The previous check-then-write
+        (``if lock_path.exists(): ... else: write_text(...)``) had a TOCTOU
+        window: two callers that both observed the file absent each wrote it
+        and each believed it held the lock. Mirrors ``worker._try_claim_worker_slot``.
+        """
+        for attempt in (1, 2):
             try:
-                text = lock_path.read_text(encoding="utf-8")
+                fd = os.open(str(lock_path), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+            except FileExistsError:
+                try:
+                    text = lock_path.read_text(encoding="utf-8")
+                except OSError as e:
+                    _LOG.debug("lock read failed for %s: %s", lock_path.name, e)
+                    return False
                 if not _stale(text):
                     return False
+                if attempt == 2:
+                    return False  # cleared a stale lock once already; let the caller re-loop
                 # Stale — log at info (clearing another PID's lock is notable) and remove
                 _LOG.info("clearing stale writer lock for project %s (lock content: %s)",
                           project_hash[:8], text.strip()[:60])
-                lock_path.unlink(missing_ok=True)
+                with contextlib.suppress(FileNotFoundError):
+                    lock_path.unlink()
+                continue  # retry the atomic create once
             except OSError as e:
-                _LOG.debug("lock read/remove failed for %s: %s", lock_path.name, e)
+                _LOG.debug("lock create failed for %s: %s", lock_path.name, e)
                 return False
-        try:
-            lock_path.write_text(f"{pid}\n{time.time()}", encoding="utf-8")
+            # We hold the lock — record owner pid + timestamp, then release the fd.
+            try:
+                os.write(fd, f"{pid}\n{time.time()}".encode())
+            finally:
+                os.close(fd)
             return True
-        except OSError as e:
-            _LOG.debug("lock write failed for %s: %s", lock_path.name, e)
-            return False
+        return False
 
     acquired = False
     t0 = time.monotonic()
