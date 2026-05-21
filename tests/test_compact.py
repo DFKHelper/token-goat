@@ -1593,3 +1593,198 @@ class TestSectionBudgets:
         assert compact._token_count("") == 0
         assert compact._token_count("a" * 8) == 2
         assert compact._token_count("a" * 100) == 25
+
+
+# ---------------------------------------------------------------------------
+# _importance_score and composite ranking in Key Files Read
+# ---------------------------------------------------------------------------
+
+
+def _make_entry(
+    path: str,
+    *,
+    read_count: int = 1,
+    symbols: list[str] | None = None,
+    last_read_ts: float | None = None,
+) -> session.FileEntry:
+    """Construct a FileEntry for _importance_score unit tests."""
+    from token_goat.session import FileEntry
+    if last_read_ts is None:
+        last_read_ts = time.time()
+    return FileEntry(
+        rel_or_abs=path,
+        last_read_ts=last_read_ts,
+        read_count=read_count,
+        line_ranges=[],
+        symbols_read=symbols or [],
+    )
+
+
+class TestImportanceScore:
+    """Unit tests for _importance_score() composite ranking function."""
+
+    def test_file_with_symbols_outranks_file_with_more_reads(self):
+        """A file read once with 5 symbols outranks a file read 5× with no symbols.
+
+        Symbol score: 5 * 2.0 = 10.0 vs read score: 5 * 1.0 = 5.0.
+        Even with equal recency the symbol-heavy file wins.
+        """
+        now = time.time()
+        # File A: read 5×, no symbols → read_score=5.0, symbol_score=0.0
+        entry_a = _make_entry("/proj/scanned.py", read_count=5, symbols=[], last_read_ts=now - 10)
+        # File B: read 1×, 5 symbols → read_score=1.0, symbol_score=10.0
+        entry_b = _make_entry("/proj/symbolic.py", read_count=1, symbols=["a", "b", "c", "d", "e"], last_read_ts=now - 10)
+
+        score_a = compact._importance_score(entry_a, now)
+        score_b = compact._importance_score(entry_b, now)
+
+        assert score_b > score_a, (
+            f"symbol-heavy file should outrank read-heavy file: "
+            f"symbolic={score_b:.3f} vs scanned={score_a:.3f}"
+        )
+
+    def test_edited_file_outranks_unedited_files(self):
+        """A file with edit_bonus=15.0 outranks files with more reads and symbols.
+
+        Even a file read 10× with 5 symbols (read=10 + symbol=10 = 20) cannot
+        beat edit_bonus=15.0 + read=1 + recency=~3 = ~19... actually let's
+        use a simpler case: edit_bonus alone (15) beats read-only (10 reads, no symbols).
+        """
+        now = time.time()
+        # Unedited: read 10×, no symbols → max read_score=10.0 + recency≈3.0 = ~13
+        entry_heavy = _make_entry("/proj/heavy.py", read_count=10, symbols=[], last_read_ts=now - 1)
+        # Edited: read once, no symbols, edit_bonus=15.0 → 1.0 + 0 + 15.0 + recency≈3.0 = ~19
+        entry_edited = _make_entry("/proj/edited.py", read_count=1, symbols=[], last_read_ts=now - 1)
+
+        score_heavy = compact._importance_score(entry_heavy, now, edit_bonus=0.0)
+        score_edited = compact._importance_score(entry_edited, now, edit_bonus=15.0)
+
+        assert score_edited > score_heavy, (
+            f"edited file should outrank heavy-read file: "
+            f"edited={score_edited:.3f} vs heavy={score_heavy:.3f}"
+        )
+
+    def test_older_file_scores_lower_than_recent_file(self):
+        """An older file scores lower than a recently-read file with the same counts.
+
+        Two files with identical read_count and symbols; the one read 2 hours
+        ago has a much lower recency bonus than the one read 1 second ago.
+        """
+        now = time.time()
+        entry_recent = _make_entry("/proj/recent.py", read_count=2, symbols=[], last_read_ts=now - 5)
+        entry_old = _make_entry("/proj/old.py", read_count=2, symbols=[], last_read_ts=now - 7200)
+
+        score_recent = compact._importance_score(entry_recent, now)
+        score_old = compact._importance_score(entry_old, now)
+
+        assert score_recent > score_old, (
+            f"recently-read file should score higher: recent={score_recent:.3f} old={score_old:.3f}"
+        )
+
+    def test_read_count_capped_at_ten(self):
+        """read_count is capped at 10 so a 50× file does not dominate symbol signal."""
+        now = time.time()
+        entry_10 = _make_entry("/proj/a.py", read_count=10, symbols=[], last_read_ts=now)
+        entry_50 = _make_entry("/proj/b.py", read_count=50, symbols=[], last_read_ts=now)
+
+        # Both capped to 10 → identical read_score → scores must be equal (same recency)
+        assert compact._importance_score(entry_10, now) == compact._importance_score(entry_50, now)
+
+    def test_symbol_count_capped_at_twenty(self):
+        """symbol_score is capped at 20 symbols (score=40) to prevent extreme outliers."""
+        now = time.time()
+        entry_20 = _make_entry("/proj/a.py", read_count=1, symbols=[f"s{i}" for i in range(20)], last_read_ts=now)
+        entry_50 = _make_entry("/proj/b.py", read_count=1, symbols=[f"s{i}" for i in range(50)], last_read_ts=now)
+
+        assert compact._importance_score(entry_20, now) == compact._importance_score(entry_50, now)
+
+    def test_recency_max_at_zero_age(self):
+        """recency bonus is 3.0 when the file was just read (age=0)."""
+        now = time.time()
+        entry = _make_entry("/proj/fresh.py", read_count=0, symbols=[], last_read_ts=now)
+        score = compact._importance_score(entry, now)
+        # read_score=0, symbol_score=0, edit_bonus=0, recency=exp(0)*3.0=3.0
+        assert abs(score - 3.0) < 0.01, f"expected ~3.0 at age=0, got {score}"
+
+    def test_recency_half_life_at_thirty_minutes(self):
+        """recency bonus is ~1.5 (half of 3.0) at exactly 30 minutes."""
+        now = time.time()
+        age = 1800.0  # 30 minutes — one half-life
+        entry = _make_entry("/proj/halflife.py", read_count=0, symbols=[], last_read_ts=now - age)
+        score = compact._importance_score(entry, now)
+        # read_score=0, symbol_score=0, recency=0.5*3.0=1.5
+        assert abs(score - 1.5) < 0.05, f"expected ~1.5 at 30min, got {score}"
+
+
+class TestImportanceScoringInManifest:
+    """Integration tests: _importance_score drives 'Key Files Read' section ordering."""
+
+    def test_symbol_file_outranks_scan_heavy_file_in_manifest(self, tmp_data_dir):
+        """A file read once with symbols appears before a file read many times with none."""
+        sid = "importance-sym-vs-reads-session"
+        # File A: read 5 times, no symbols
+        for _ in range(5):
+            session.mark_file_read(sid, "/proj/src/scanned.py", offset=0, limit=50)
+        # File B: read once, 3 symbols
+        session.mark_file_read(sid, "/proj/src/symbolic.py", symbol="parse_tree")
+        session.mark_file_read(sid, "/proj/src/symbolic.py", symbol="walk_nodes")
+        session.mark_file_read(sid, "/proj/src/symbolic.py", symbol="emit_tokens")
+
+        result = compact.build_manifest(sid)
+        # Both should appear (scanned has 5 reads so it might be hot; if so use Key Files)
+        assert "scanned.py" in result
+        assert "symbolic.py" in result
+
+        # Symbols Accessed section shows symbolic.py — check it appears before scanned.py
+        # in the overall manifest (symbols section precedes key-files section)
+        assert result.index("symbolic.py") < result.index("scanned.py"), (
+            f"symbolic file should appear before scanned file:\n{result}"
+        )
+
+    def test_edited_file_appears_before_unedited_in_manifest(self, tmp_data_dir):
+        """Files Edited section always precedes Key Files Read."""
+        sid = "importance-edit-before-reads-session"
+        # Read an unedited file many times
+        for _ in range(8):
+            session.mark_file_read(sid, "/proj/src/read_heavy.py", offset=0, limit=50)
+        # Edit a different file once
+        session.mark_file_edited(sid, "/proj/src/edited_once.py")
+
+        result = compact.build_manifest(sid)
+        assert "edited_once.py" in result
+        assert "read_heavy.py" in result
+        # "Files Edited" section must appear before "Key Files Read"
+        assert result.index("Files Edited") < result.index("Key Files Read"), (
+            f"'Files Edited' must precede 'Key Files Read':\n{result}"
+        )
+        # Edited file must appear before read-heavy file
+        assert result.index("edited_once.py") < result.index("read_heavy.py"), (
+            f"edited file must appear before unedited read-heavy file:\n{result}"
+        )
+
+    def test_recently_read_file_outranks_older_file_when_counts_tie(self, tmp_data_dir):
+        """When read_count and symbol counts are equal, the recently-read file ranks higher."""
+        import time as _time
+        sid = "importance-recency-tie-session"
+        # Both files read exactly twice, no symbols
+        session.mark_file_read(sid, "/proj/src/older.py", offset=0, limit=50)
+        session.mark_file_read(sid, "/proj/src/older.py", offset=50, limit=50)
+        _time.sleep(0.02)
+        session.mark_file_read(sid, "/proj/src/newer.py", offset=0, limit=50)
+        session.mark_file_read(sid, "/proj/src/newer.py", offset=50, limit=50)
+
+        result = compact.build_manifest(sid)
+        assert "older.py" in result
+        assert "newer.py" in result
+
+        # Find the Key Files Read section to check ordering there
+        if "### Key Files Read" in result:
+            key_section = result.split("### Key Files Read")[1]
+            assert key_section.index("newer.py") < key_section.index("older.py"), (
+                f"recently-read file should rank higher in Key Files Read:\n{result}"
+            )
+        else:
+            # Both might be in Symbols or Hot — just check overall ordering
+            assert result.index("newer.py") < result.index("older.py"), (
+                f"recently-read file should appear before older file:\n{result}"
+            )

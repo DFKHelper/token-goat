@@ -16,6 +16,7 @@ __all__ = [
 
 import heapq
 import logging
+import math
 import subprocess
 import time
 from datetime import UTC, datetime
@@ -119,6 +120,11 @@ _COLD_OUTPUT_AGE_SECS: Final[int] = 1_800  # 30 minutes
 # Maximum cold bash entries surfaced in the "Cold Outputs" manifest section.
 _MAX_COLD_OUTPUTS: Final[int] = 4
 
+# Half-life for the recency component of _importance_score, in seconds.
+# At t=0 the recency bonus is 3.0; at t=30min it is ~1.5; at t=60min it is ~0.75.
+# Files read within the last 5 minutes receive a bonus close to the full 3.0.
+_RECENCY_HALF_LIFE_SECS: Final[float] = 1800.0  # 30 minutes
+
 # Noise file extensions and basenames that should never enter the manifest.
 # These files are build artifacts, OS metadata, or auto-generated lockfiles that
 # the compaction LLM does not need to "preserve" — listing them wastes budget on
@@ -150,6 +156,47 @@ _NOISE_SEGMENTS: Final[tuple[str, ...]] = (
     "/appdata/local/temp/", "/appdata/roaming/",
     "/tmp/",  # Unix temp dir — ephemeral files (improve_commit_msg, etc.)
 )
+
+
+def _importance_score(entry: FileEntry, now: float, edit_bonus: float = 0.0) -> float:
+    """Composite importance score for manifest ranking of 'Key Files Read' entries.
+
+    Combines four signals so the most genuinely important files rise to the top
+    of the manifest, not just the most-frequently-polled ones:
+
+    - **read_score**: raw read frequency, capped at 10 to avoid dominating.
+    - **symbol_score**: each unique symbol accessed adds 2.0 — a file read once
+      for a specific function is more load-bearing than one blindly scanned.
+    - **edit_bonus**: 15.0 when the file was edited this session, 0.0 otherwise.
+      (Edited files are *already* pinned in the 'Files Edited' section; this
+      bonus only affects files that are in ``files_clean`` but NOT in
+      ``edited_files`` — i.e. files that were both read and edited but whose
+      edited-section entry predates the read, or files whose edit path key
+      differs slightly from their read key.)
+    - **recency**: exponential decay with a 30-minute half-life so a file read
+      five minutes ago outweighs one read two hours ago even when counts tie.
+
+    Args:
+        entry:      A :class:`session.FileEntry` with ``read_count``,
+                    ``symbols_read``, and ``last_read_ts`` attributes.
+        now:        Current Unix timestamp (``time.time()``).  Passed in so the
+                    caller can snapshot it once per render pass rather than
+                    calling ``time.time()`` per entry.
+        edit_bonus: Additional score for files edited this session.  The caller
+                    passes 15.0 when ``entry``'s path is in ``edited_files``,
+                    0.0 otherwise.
+
+    Returns:
+        A float importance score.  Higher is more important.
+    """
+    # Base: read frequency, capped so a file read 50× doesn't drown symbol signal.
+    read_score = min(entry.read_count, 10) * 1.0
+    # Symbol bonus: each unique symbol is strong evidence the agent used this file.
+    symbol_score = min(len(entry.symbols_read), 20) * 2.0
+    # Recency bonus: exponential decay, half-life = 30 minutes.
+    age_seconds = max(0.0, now - entry.last_read_ts)
+    recency = math.exp(-age_seconds * math.log(2) / _RECENCY_HALF_LIFE_SECS)
+    return read_score + symbol_score + edit_bonus + recency * 3.0
 
 
 def is_noise_path(path: str) -> bool:
@@ -1011,21 +1058,40 @@ def _render(cache: SessionCache, session_id: str, max_tokens: int) -> tuple[str,
     )
     files_with_symbols_count = len(files_with_symbols)
 
-    # Most-frequently-read files, capped at _MAX_FILES_READ, for the "Key Files Read" section.
+    # Most-important files, capped at _MAX_FILES_READ, for the "Key Files Read" section.
+    # Uses _importance_score() — a composite of read frequency, symbols accessed,
+    # edit status, and recency — rather than read_count alone.  This surfaces files
+    # the agent genuinely worked with (e.g. read once but accessed many symbols, or
+    # read/edited recently) over files that were merely scanned many times.
+    #
     # heapq.nlargest is O(n log k) instead of O(n log n) full sort — material when a
     # long session has hundreds of file entries but we only need the top 10.
     # The heap keeps only k items in memory, so this is also more memory-efficient
     # than sorting the full list when sessions accumulate many hundreds of file reads.
     # We exclude files that already appear in the Edited section: those are pinned
     # at higher priority and re-listing them duplicates manifest budget.
+    now_for_scoring = time.time()
     total_files_read = len(files_clean)
     key_files_candidates = [
         entry for key, entry in files_clean.items()
         if key.replace("\\", "/").lower() not in edited_keys
     ]
-    top_files = heapq.nlargest(_MAX_FILES_READ, key_files_candidates, key=_BY_READ_COUNT_THEN_TS)
+    # Files that are also in edited_files (path key match) get an edit_bonus even
+    # when they appear in key_files_candidates — this handles the case where a file
+    # was both read and edited but its edit-section entry predates the re-read so it
+    # wasn't deduplicated into edited_keys.  Normalized key lookup for robustness.
+    edited_keys_set = edited_keys  # already a set of normalized lower/forward-slash keys
+    top_files = heapq.nlargest(
+        _MAX_FILES_READ,
+        key_files_candidates,
+        key=lambda e: _importance_score(
+            e,
+            now_for_scoring,
+            edit_bonus=15.0 if e.rel_or_abs.replace("\\", "/").lower() in edited_keys_set else 0.0,
+        ),
+    )
     _LOG.debug(
-        "_render: selected top %d/%d files by read_count+ts (cap=%d); "
+        "_render: selected top %d/%d files by importance_score (cap=%d); "
         "files_with_symbols=%d edited=%d noise_skipped=%d",
         len(top_files),
         total_files_read,
