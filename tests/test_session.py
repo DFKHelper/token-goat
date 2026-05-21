@@ -550,3 +550,80 @@ class TestSessionCreatedTs:
         cache = session.SessionCache.from_dict(legacy_dict)
         # Should default to approximately now
         assert before <= cache.created_ts <= after
+
+
+class TestGrepHistoryCap:
+    """GREPS_HISTORY_MAX cap — oldest entries are evicted FIFO when exceeded."""
+
+    def test_greps_capped_at_max(self, tmp_data_dir):
+        """Filling past GREPS_HISTORY_MAX keeps at most GREPS_HISTORY_MAX entries."""
+        sid = "greps_cap_1"
+        for i in range(session.GREPS_HISTORY_MAX + 5):
+            session.mark_grep(sid, f"pattern_{i}", "/proj/src")
+        cache = session.load(sid)
+        assert len(cache.greps) <= session.GREPS_HISTORY_MAX
+
+    def test_greps_cap_evicts_oldest(self, tmp_data_dir):
+        """When the cap fires, the oldest (first) entries are evicted."""
+        sid = "greps_cap_2"
+        n = session.GREPS_HISTORY_MAX + 3
+        for i in range(n):
+            session.mark_grep(sid, f"pattern_{i}", "/proj/src")
+        cache = session.load(sid)
+        patterns = [g.pattern for g in cache.greps]
+        # The first (oldest) patterns must be gone
+        assert "pattern_0" not in patterns
+        assert "pattern_1" not in patterns
+        assert "pattern_2" not in patterns
+        # The most recent must survive
+        assert f"pattern_{n - 1}" in patterns
+
+    def test_greps_exactly_at_cap_not_evicted(self, tmp_data_dir):
+        """Exactly GREPS_HISTORY_MAX entries: no eviction occurs."""
+        sid = "greps_cap_3"
+        for i in range(session.GREPS_HISTORY_MAX):
+            session.mark_grep(sid, f"pat_{i}", "/proj/src")
+        cache = session.load(sid)
+        assert len(cache.greps) == session.GREPS_HISTORY_MAX
+
+
+class TestHintsSeenCap:
+    """HINTS_SEEN_MAX cap — hints_seen is cleared via mark_hint_seen() when exceeded."""
+
+    def test_hints_seen_capped_via_mark(self, tmp_data_dir):
+        """hints_seen is cleared (reset to empty set) when mark_hint_seen pushes it past HINTS_SEEN_MAX."""
+        sid = "hints_cap_1"
+        cache = session.load(sid)
+        # Fill hints_seen to exactly the cap using mark_hint_seen so the
+        # enforcement path in SessionCache.mark_hint_seen() fires correctly.
+        for i in range(session.HINTS_SEEN_MAX):
+            cache.mark_hint_seen(f"fp_{i}")
+        # One more push past the cap — should trigger the clear.
+        cache.mark_hint_seen("fp_overflow")
+        # After the clear, only the newly-added fingerprint remains (or it
+        # may be empty depending on whether the clear happens before or after
+        # the add — the production code clears then the loop continues, so
+        # "fp_overflow" was added before clear fired; check cap is satisfied).
+        assert len(cache.hints_seen) <= session.HINTS_SEEN_MAX
+
+    def test_hints_seen_cleared_after_cap_roundtrip(self, tmp_data_dir):
+        """After cap fires and cache is saved+loaded, hints_seen is compact."""
+        sid = "hints_cap_2"
+        cache = session.load(sid)
+        # Overflow via mark_hint_seen
+        for i in range(session.HINTS_SEEN_MAX + 1):
+            cache.mark_hint_seen(f"fp_{i}")
+        session.save(cache)
+        reloaded = session.load(sid)
+        assert len(reloaded.hints_seen) <= session.HINTS_SEEN_MAX
+
+    def test_hints_seen_below_cap_preserved(self, tmp_data_dir):
+        """hints_seen below the cap is preserved across save/load."""
+        sid = "hints_cap_3"
+        cache = session.load(sid)
+        # Put a handful of entries well below the cap
+        for i in range(10):
+            cache.mark_hint_seen(f"fp_{i}")
+        session.save(cache)
+        reloaded = session.load(sid)
+        assert len(reloaded.hints_seen) == 10

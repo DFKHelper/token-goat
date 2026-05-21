@@ -67,6 +67,7 @@ __all__ = [
     "strip_ansi",
     "strip_progress",
     "truncate_middle",
+    "UvFilter",
 ]
 
 import logging
@@ -2061,6 +2062,81 @@ class PipFilter(Filter):
         return _squeeze_blank_lines("\n".join(kept))
 
 
+# --- uv ---------------------------------------------------------------------
+
+#: uv per-package download/fetch progress lines: "   Downloading foo-1.0 (2.3 MB)"
+_UV_DOWNLOAD_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\s*(Downloading|Fetching)\s+\S"
+)
+#: uv per-package install/uninstall diff lines: "   + foo==1.0" / "   - foo==1.0"
+_UV_DIFF_LINE_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\s+[+\-]\s+\S"
+)
+
+
+class UvFilter(Filter):
+    """Compress ``uv sync`` / ``uv add`` / ``uv remove`` / ``uv pip install`` output.
+
+    uv emits verbose per-package ``Downloading`` / ``Fetching`` lines while
+    resolving and installing dependencies plus per-package ``+``/``-`` diff
+    lines.  The interesting lines are the summary lines emitted at the end
+    (``Resolved N packages``, ``Installed N packages``, ``Uninstalled N
+    packages``, ``Audited N packages``).  Errors and warnings are always
+    preserved.
+
+    Compression model:
+
+    * **Drop** ``Downloading`` / ``Fetching`` progress lines.
+    * **Drop** per-package ``+`` / ``-`` diff lines (e.g. ``  + requests==2.31``).
+    * **Keep** summary lines: ``Resolved``, ``Installed``, ``Uninstalled``,
+      ``Updated``, ``Removed``, ``Audited``.
+    * **Keep** every ``error:`` / ``warning:`` line verbatim.
+    * **Keep** the first and last lines for context.
+    """
+
+    name = "uv"
+    binaries = frozenset(["uv"])
+
+    def matches(self, argv: list[str]) -> bool:  # noqa: D102
+        if not argv:
+            return False
+        stem = Path(argv[0]).stem.lower()
+        if stem != "uv":
+            return False
+        # Only fire for package-management subcommands.
+        pm_subcommands = frozenset([
+            "sync", "add", "remove", "install", "uninstall", "pip", "lock",
+        ])
+        positionals = _positional_args(argv[1:])[:3]
+        return any(tok in pm_subcommands for tok in positionals)
+
+    def compress(
+        self, stdout: str, stderr: str, exit_code: int, argv: list[str],
+    ) -> str:
+        merged = (stdout.rstrip() + "\n" + stderr) if stdout.strip() else stderr
+        lines = merged.split("\n")
+        kept: list[str] = []
+        downloads = 0
+        diff_lines = 0
+        for line in lines:
+            if _UV_DOWNLOAD_RE.match(line):
+                downloads += 1
+                continue
+            if _UV_DIFF_LINE_RE.match(line):
+                diff_lines += 1
+                continue
+            kept.append(line)
+        if downloads:
+            kept.append(
+                f"[token-goat: dropped {downloads} Downloading/Fetching progress lines]"
+            )
+        if diff_lines:
+            kept.append(
+                f"[token-goat: dropped {diff_lines} per-package +/- diff lines]"
+            )
+        return _squeeze_blank_lines("\n".join(kept))
+
+
 # ---------------------------------------------------------------------------
 # Helpers shared by filters
 # ---------------------------------------------------------------------------
@@ -2121,6 +2197,7 @@ FILTERS: list[Filter] = [
     MakeFilter(),
     TerraformFilter(),
     PipFilter(),
+    UvFilter(),
 ]
 
 
