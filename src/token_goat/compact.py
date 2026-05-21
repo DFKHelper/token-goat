@@ -579,6 +579,58 @@ def _format_bash_entry(entry: object) -> str:
     )
 
 
+def _token_count(text: str) -> int:
+    """Rough token estimate: 1 token ≈ 4 characters.
+
+    Used for per-section budget enforcement inside :func:`_render`.  The same
+    ratio is used by :func:`~token_goat.repomap.estimate_tokens` (which divides
+    by 3.5); using 4 here makes section budgets slightly conservative so the
+    assembled manifest fits the global budget even before the final
+    ``estimate_tokens`` check.
+    """
+    return len(text) // 4
+
+
+def _section_budgets(total_budget: int, edited_tokens: int) -> dict[str, int]:
+    """Distribute the manifest token budget across variable sections.
+
+    The edited-files section is must-preserve and gets its full allocation first.
+    The remaining budget is split proportionally:
+
+        - ``symbols``  — 40 %
+        - ``files``    — 30 %
+        - ``greps``    — 15 %
+        - ``bash``     — 15 %
+
+    Every section is guaranteed at least *_MIN_SECTION_TOKENS* tokens so that a
+    section with a very tight budget still renders at least one line.
+
+    Args:
+        total_budget:  The global token ceiling for the entire manifest.
+        edited_tokens: Token estimate for the already-rendered edited-files block
+                       (header + file lines + diff stat + commits).  This is
+                       subtracted from *total_budget* before distribution.
+
+    Returns:
+        A dict with keys ``"symbols"``, ``"files"``, ``"greps"``, ``"bash"``
+        mapping to their respective token budgets.
+    """
+    _MIN_SECTION_TOKENS = 20
+    remaining = max(0, total_budget - edited_tokens)
+
+    # Proportions must sum to 1.0.
+    proportions: dict[str, float] = {
+        "symbols": 0.40,
+        "files":   0.30,
+        "greps":   0.15,
+        "bash":    0.15,
+    }
+    budgets: dict[str, int] = {}
+    for name, ratio in proportions.items():
+        budgets[name] = max(_MIN_SECTION_TOKENS, int(remaining * ratio))
+    return budgets
+
+
 def _humanize_bytes(n: int) -> str:
     """Return a short human-readable byte count: ``1.2KB``, ``3.4MB``, ``120B``.
 
@@ -860,12 +912,17 @@ def _render(cache: SessionCache, session_id: str, max_tokens: int) -> tuple[str,
 
     Priority order:
     1. **Edited files** — always listed first; the compaction LLM must preserve these.
+       This section is uncapped — every edited file is must-preserve.
     2. **Symbols accessed** — files where specific symbols were read via ``token-goat read``.
-       Ranked by ``last_read_ts`` (most-recent first), not insertion order, so the
-       symbols a user just inspected take precedence over symbols touched earlier.
-    3. **Key files read** — top files by ``read_count`` (most re-read first).
-       Files that already appear in the Edited section are excluded here to avoid
-       wasting budget on duplicate entries.
+       Ranked by ``last_read_ts`` (most-recent first), capped at 40 % of remaining budget.
+    3. **Key files read** — top files by ``read_count`` (most re-read first), capped at 30 %.
+    4. **Grep history** — recent search patterns, capped at 15 % of remaining budget.
+    5. **Bash history** — cached command outputs, capped at 15 % of remaining budget.
+
+    Budget allocation via :func:`_section_budgets`: the edited-files block is rendered
+    first and its token cost is subtracted from the global budget before the remaining
+    sections split the remainder proportionally.  Each section builder stops adding
+    entries when its slice is exhausted.  No post-hoc bottom-trimming is needed.
 
     Each manifest line is prefixed with an activity marker so the compaction LLM
     can distinguish edited (``✎``) from read-only (``→``) files — edited files
@@ -877,8 +934,6 @@ def _render(cache: SessionCache, session_id: str, max_tokens: int) -> tuple[str,
     compaction LLM can actually use.  See :func:`is_noise_path` for the full
     deny-list.
 
-    If the rendered manifest exceeds *max_tokens*, lines are trimmed from the
-    bottom until the budget is met, preserving the highest-priority sections.
     Returns a (manifest_string, symbols_files_count) tuple.  The string is empty
     when the cache has no meaningful data (nothing edited, no symbols accessed,
     no files read).
@@ -985,7 +1040,7 @@ def _render(cache: SessionCache, session_id: str, max_tokens: int) -> tuple[str,
     age_secs = time.time() - getattr(cache, "created_ts", time.time())
     age_str = _format_duration(age_secs) if age_secs >= 60 else None
     age_part = f"  |  age: {age_str}" if age_str else ""
-    sections: list[str] = [
+    header_lines: list[str] = [
         "## Token-Goat Session Manifest",
         f"Session: {sid}  |  {now}{age_part}",
     ]
@@ -994,67 +1049,89 @@ def _render(cache: SessionCache, session_id: str, max_tokens: int) -> tuple[str,
     cwd = getattr(cache, "cwd", None)
     created_ts = getattr(cache, "created_ts", 0.0)
 
-    # ── 1. Edited files — highest priority ────────────────────────────────────
+    # ── 1. Edited files — highest priority (no cap) ───────────────────────────
+    # Build the entire edited-files block first so we can measure its token cost
+    # before allocating the remaining budget to variable sections.
+    edited_lines: list[str] = []
     if edited_clean:
-        sections.append("### Files Edited (preserve in summary)")
+        edited_lines.append("### Files Edited (preserve in summary)")
         # Sort by edit count descending so the most-touched files appear first.
         for path, count in sorted(edited_clean.items(), key=_BY_EDIT_COUNT, reverse=True):
-            sections.append(f"- ✎ {_short_path(path)}{_count_suffix(count)}")
+            edited_lines.append(f"- ✎ {_short_path(path)}{_count_suffix(count)}")
 
         # ── 1a. Diff summary — show git changes for edited files ──────────────
-        # Include git diff --stat output if cwd is available, compressed to fit budget.
         diff_stat = _get_git_diff_stat(list(edited_clean.keys()), cwd)
         if diff_stat:
-            sections.append("### Diff Summary")
+            edited_lines.append("### Diff Summary")
             for line in diff_stat.splitlines():
-                sections.append(f"- {line}")
+                edited_lines.append(f"- {line}")
 
-        # ── 1b. Commits this session — work completed during the session ──────
-        # Show git commits made after session start; helps the compaction LLM
-        # understand what work is done vs. in-progress.
+        # ── 1b. Commits this session ──────────────────────────────────────────
         if created_ts > 0:
             session_commits = _get_session_commits(cwd, created_ts)
             if session_commits:
-                sections.append("### Commits This Session")
-                sections.extend(session_commits)
+                edited_lines.append("### Commits This Session")
+                edited_lines.extend(session_commits)
 
-    # ── 1d. Stale file snapshots — read before a subsequent edit ──────────────
-    # Warn the compaction LLM that these cached reads are outdated.
+    # ── 1d. Stale file snapshots ──────────────────────────────────────────────
+    stale_lines: list[str] = []
     if stale_read_files:
-        sections.append("### Outdated File Snapshots")
+        stale_lines.append("### Outdated File Snapshots")
         for path in stale_read_files[:6]:
-            sections.append(f"- ⚠ {_short_path(path)}")
+            stale_lines.append(f"- ⚠ {_short_path(path)}")
 
-    # ── 2. Symbols accessed via token-goat read / symbol ────────────────────────
+    # Measure the "fixed" cost (header + edited + stale) to derive per-section budgets.
+    fixed_text = "\n".join(header_lines + edited_lines + stale_lines)
+    fixed_tokens = _token_count(fixed_text)
+    sec_budgets = _section_budgets(max_tokens, fixed_tokens)
+    _LOG.debug(
+        "_render: fixed_tokens=%d  section_budgets=%s  (session=%s)",
+        fixed_tokens, sec_budgets, session_id[:8],
+    )
+
+    # ── 2. Symbols accessed — up to 40 % of remaining budget ─────────────────
+    sym_budget = sec_budgets["symbols"]
+    sym_lines: list[str] = []
+    sym_used = 0
     if files_with_symbols:
-        sections.append("### Symbols Accessed")
+        header = "### Symbols Accessed"
+        header_cost = _token_count(header)
+        if sym_used + header_cost <= sym_budget:
+            sym_lines.append(header)
+            sym_used += header_cost
         for entry in files_with_symbols:
             syms = [sanitize_log_str(s, max_len=80) for s in entry.symbols_read[:_MAX_SYMBOLS_PER_FILE_ENTRY]]
             overflow = len(entry.symbols_read) - _MAX_SYMBOLS_PER_FILE_ENTRY
             sym_str = ", ".join(syms) + (f" +{overflow}" if overflow > 0 else "")
-            sections.append(f"- {_short_path(entry.rel_or_abs)} → {sym_str}")
+            line = f"- {_short_path(entry.rel_or_abs)} → {sym_str}"
+            cost = _token_count(line)
+            if sym_used + cost > sym_budget:
+                break
+            sym_lines.append(line)
+            sym_used += cost
 
-    # ── 3. Commands run (cached Bash output worth recalling) ──────────────────
-    # Each entry quotes the cache ID so the agent can retrieve the full body via
-    # `token-goat bash-output <id>` instead of re-running the command.
+    # ── 3. Bash history — up to 15 % of remaining budget ─────────────────────
+    # (built before files so bash is never crowded out by the files section)
+    bash_budget = sec_budgets["bash"]
+    bash_lines: list[str] = []
+    bash_used = 0
+
     bash_entries = _select_top_bash_entries(getattr(cache, "bash_history", None))
     if bash_entries:
-        sections.append("### Commands Run (cached output)")
+        header = "### Commands Run (cached output)"
+        header_cost = _token_count(header)
+        if bash_used + header_cost <= bash_budget:
+            bash_lines.append(header)
+            bash_used += header_cost
         for be in bash_entries:
-            sections.append(_format_bash_entry(be))
+            line = _format_bash_entry(be)
+            cost = _token_count(line)
+            if bash_used + cost > bash_budget:
+                break
+            bash_lines.append(line)
+            bash_used += cost
 
-    # ── 4. Grep patterns searched ─────────────────────────────────────────────
-    grep_entries = _select_top_grep_entries(raw_greps)
-    if grep_entries:
-        distinct_patterns = len({getattr(g, "pattern", "") for g in raw_greps})
-        sections.append("### Patterns Searched")
-        for ge in grep_entries:
-            sections.append(_format_grep_entry(ge))
-        dropped_greps = distinct_patterns - len(grep_entries)
-        if dropped_greps > 0:
-            sections.append(f"- …+{dropped_greps} more patterns")
-
-    # ── 4b. Cold outputs (old cached Bash runs, safe to drop from context) ────
+    # Cold outputs are grouped with bash history (same budget slice).
     now_ts = time.time()
     bash_hist_raw = getattr(cache, "bash_history", None) or {}
     cold_candidates = sorted(
@@ -1068,37 +1145,79 @@ def _render(cache: SessionCache, session_id: str, max_tokens: int) -> tuple[str,
         key=lambda be: getattr(be, "ts", 0.0),
         reverse=True,
     )
-    cold_outputs = cold_candidates[:_MAX_COLD_OUTPUTS]
-    if cold_outputs:
-        sections.append("### Cold Outputs (evict — recall via `token-goat bash-output <id>`)")
-        for be in cold_outputs:
-            age_min = int((now_ts - getattr(be, "ts", now_ts)) / 60)
-            total = getattr(be, "stdout_bytes", 0) + getattr(be, "stderr_bytes", 0)
-            oid = sanitize_log_str(getattr(be, "output_id", "?"), max_len=24)
-            prev = sanitize_log_str(getattr(be, "cmd_preview", "?"), max_len=60)
-            sections.append(
-                f"- ❄ `{prev}` ({_humanize_bytes(total)}, {age_min}min old) `{oid}`"
-            )
-        dropped_cold = len(cold_candidates) - len(cold_outputs)
-        if dropped_cold > 0:
-            sections.append(f"- …+{dropped_cold} more cold outputs")
+    cold_outputs: list[object] = []
+    if cold_candidates:
+        cold_header = "### Cold Outputs (evict — recall via `token-goat bash-output <id>`)"
+        cold_header_cost = _token_count(cold_header)
+        if bash_used + cold_header_cost <= bash_budget:
+            bash_lines.append(cold_header)
+            bash_used += cold_header_cost
+            for be in cold_candidates[:_MAX_COLD_OUTPUTS]:
+                age_min = int((now_ts - getattr(be, "ts", now_ts)) / 60)
+                total = getattr(be, "stdout_bytes", 0) + getattr(be, "stderr_bytes", 0)
+                oid = sanitize_log_str(getattr(be, "output_id", "?"), max_len=24)
+                prev = sanitize_log_str(getattr(be, "cmd_preview", "?"), max_len=60)
+                line = f"- ❄ `{prev}` ({_humanize_bytes(total)}, {age_min}min old) `{oid}`"
+                cost = _token_count(line)
+                if bash_used + cost > bash_budget:
+                    break
+                bash_lines.append(line)
+                bash_used += cost
+                cold_outputs.append(be)
+            dropped_cold = len(cold_candidates) - len(cold_outputs)
+            if dropped_cold > 0 and bash_used < bash_budget:
+                overflow_line = f"- …+{dropped_cold} more cold outputs"
+                if bash_used + _token_count(overflow_line) <= bash_budget:
+                    bash_lines.append(overflow_line)
 
-    # ── 5. Key files read (top N by read_count+ts) ────────────────────────────
+    # ── 4. Grep patterns — up to 15 % of remaining budget ────────────────────
+    grep_budget = sec_budgets["greps"]
+    grep_lines: list[str] = []
+    grep_used = 0
+    grep_entries = _select_top_grep_entries(raw_greps)
+    if grep_entries:
+        header = "### Patterns Searched"
+        header_cost = _token_count(header)
+        if grep_used + header_cost <= grep_budget:
+            grep_lines.append(header)
+            grep_used += header_cost
+        included_greps = 0
+        for ge in grep_entries:
+            line = _format_grep_entry(ge)
+            cost = _token_count(line)
+            if grep_used + cost > grep_budget:
+                break
+            grep_lines.append(line)
+            grep_used += cost
+            included_greps += 1
+        distinct_patterns = len({getattr(g, "pattern", "") for g in raw_greps})
+        dropped_greps = distinct_patterns - included_greps
+        if dropped_greps > 0:
+            overflow_line = f"- …+{dropped_greps} more patterns"
+            if grep_used + _token_count(overflow_line) <= grep_budget:
+                grep_lines.append(overflow_line)
+
+    # ── 5. Key files read — up to 30 % of remaining budget ───────────────────
+    files_budget = sec_budgets["files"]
+    files_lines: list[str] = []
+    files_used = 0
+    included_top_files: list[object] = []
+
     if top_files:
-        sections.append("### Key Files Read")
+        header = "### Key Files Read"
+        header_cost = _token_count(header)
+        if files_used + header_cost <= files_budget:
+            files_lines.append(header)
+            files_used += header_cost
 
-        # Split into hot (≥ threshold reads) and normal (< threshold) groups.
-        # Hot files are definitively in the model's working set — consolidate them
-        # into a single summary line to avoid wasting budget on entries the
-        # compaction LLM would never drop anyway.
+        # Hot files (≥ threshold reads) get a single consolidated summary line.
         hot_files = [e for e in top_files if e.read_count >= _HOT_FILE_READ_THRESHOLD]
         normal_files = [e for e in top_files if e.read_count < _HOT_FILE_READ_THRESHOLD]
 
         if hot_files:
             shown = hot_files[:_HOT_FILE_MAX_SHOWN]
             overflow = len(hot_files) - _HOT_FILE_MAX_SHOWN
-            # Use only the filename (basename) for the hot line — these files are
-            # well-known in the session; the full path wastes space.
+
             def _basename(p: str) -> str:
                 p = p.replace("\\", "/")
                 return p.rsplit("/", 1)[-1] if "/" in p else p
@@ -1107,20 +1226,29 @@ def _render(cache: SessionCache, session_id: str, max_tokens: int) -> tuple[str,
                 f"{_basename(e.rel_or_abs)}{_count_suffix(e.read_count)}"
                 for e in shown
             ]
-            hot_line = "Hot (5+×): " + ", ".join(name_parts)
+            hot_line_text = "Hot (5+×): " + ", ".join(name_parts)
             if overflow > 0:
-                hot_line += f" +{overflow} more"
-            sections.append(f"- → {hot_line}")
+                hot_line_text += f" +{overflow} more"
+            hot_line = f"- → {hot_line_text}"
+            cost = _token_count(hot_line)
+            if files_used + cost <= files_budget:
+                files_lines.append(hot_line)
+                files_used += cost
+                included_top_files.extend(shown)
 
         for entry in normal_files:
             ranges_str = _format_ranges(entry.line_ranges)
-            sections.append(
-                f"- → {_short_path(entry.rel_or_abs)}{_count_suffix(entry.read_count)}{ranges_str}"
-            )
+            line = f"- → {_short_path(entry.rel_or_abs)}{_count_suffix(entry.read_count)}{ranges_str}"
+            cost = _token_count(line)
+            if files_used + cost > files_budget:
+                break
+            files_lines.append(line)
+            files_used += cost
+            included_top_files.append(entry)
 
     # ── Legend — only list markers that actually appear above ─────────────────
     has_edit = bool(edited_clean)
-    has_read = bool(top_files or files_with_symbols)
+    has_read = bool(included_top_files or sym_lines)
     has_stale = bool(stale_read_files)
     has_cold = bool(cold_outputs)
     legend_parts = []
@@ -1132,11 +1260,21 @@ def _render(cache: SessionCache, session_id: str, max_tokens: int) -> tuple[str,
         legend_parts.append("stale=⚠")
     if has_cold:
         legend_parts.append("cold=❄")
+
+    # Assemble the final manifest from sections in priority order.
+    sections: list[str] = (
+        header_lines
+        + edited_lines
+        + stale_lines
+        + sym_lines
+        + bash_lines
+        + grep_lines
+        + files_lines
+    )
     if legend_parts:
         sections.append("Legend: " + "  ".join(legend_parts))
 
     # ── Common prefix stripping — save tokens by detecting shared path prefixes ─
-    # Extract all paths from the sections, find common prefix, and rewrite if worthwhile.
     path_lines = [line for line in sections if _extract_path_from_line(line) is not None]
     paths_only = [p for line in path_lines if (p := _extract_path_from_line(line)) is not None]
     if (
@@ -1150,59 +1288,25 @@ def _render(cache: SessionCache, session_id: str, max_tokens: int) -> tuple[str,
 
     result = "\n".join(sections).rstrip()
     token_count = estimate_tokens(result)
-    if token_count <= max_tokens:
-        return result, files_with_symbols_count
-
-    _LOG.info(
-        "_render: manifest over budget (%d tokens > %d limit) for session=%s — trimming",
-        token_count,
-        max_tokens,
-        session_id[:8],
-    )
-
-    # Trim: drop lines from the bottom until within budget, preserving the header.
-    # Strategy: work in character space (1 token ≈ 3 chars per estimate_tokens),
-    # tracking running length incrementally to avoid the O(n²) cost of re-joining
-    # the full string on every iteration of the trim loop.  We keep at least 3
-    # lines (the "## Token-Goat Session Manifest", session line, and blank), so
-    # the output is always a valid Markdown fragment even when heavily truncated.
-    #
-    # Priority is preserved by construction: edited files appear first (top of the
-    # string), so trimming from the bottom sheds Key Files Read before Symbols
-    # Accessed before Edited Files — exactly the priority order we want.
-    lines = result.splitlines()
-    # Budget in chars: max_tokens * 3 chars/token (conservative, matches estimate_tokens logic).
-    # The -1 makes the comparison strictly-less-than rather than at-most, so a
-    # manifest that lands exactly on the char boundary (total_chars == max_tokens * 3)
-    # still triggers one trim pass rather than slipping through as "within budget".
-    char_budget = max_tokens * 3 - 1
-    # Total chars = sum of line lengths + (n-1) newline separators
-    total_chars = sum(len(ln) for ln in lines) + len(lines) - 1
-    lines_before = len(lines)
-    while total_chars > char_budget and len(lines) > 3:
-        removed = lines.pop()
-        total_chars -= len(removed) + 1  # +1 accounts for the '\n' separator removed with the line
-
-    # Refill pass: the trim loop uses a conservative char-based estimate (3 chars/token)
-    # to avoid over-including content.  After trimming, attempt to add back recently
-    # removed lines using the more accurate estimate_tokens() (len/3.5) to recover
-    # budget left on the table.  This is safe because estimate_tokens() is pure string
-    # math and the number of trimmed lines is bounded by the total manifest size (~30-50).
-    all_lines = result.splitlines()
-    if len(lines) < len(all_lines):
-        for candidate_line in all_lines[len(lines):]:
-            probe = "\n".join(lines + [candidate_line])
-            if estimate_tokens(probe) <= max_tokens:
-                lines.append(candidate_line)
-            else:
-                break  # if one line doesn't fit, further lines won't either
-
-    trimmed_result = "\n".join(lines)
     _LOG.debug(
-        "_render: trimmed %d line(s) (refilled to %d) for session=%s; final ~%d tokens",
-        lines_before - len(lines),
-        len(lines),
-        session_id[:8],
-        estimate_tokens(trimmed_result),
+        "_render: manifest assembled for session=%s; ~%d tokens (budget=%d) "
+        "sym=%d bash=%d grep=%d files=%d",
+        session_id[:8], token_count, max_tokens,
+        sym_used, bash_used, grep_used, files_used,
     )
-    return trimmed_result, files_with_symbols_count
+
+    # Safety net: per-section budgets use _token_count (len//4, conservative) while
+    # estimate_tokens uses len/3.5 (slightly more generous).  In rare cases the
+    # assembled total can still exceed max_tokens by a few tokens.  Trim from the
+    # bottom (lowest-priority sections) to stay within the global ceiling.
+    if token_count > max_tokens:
+        _LOG.info(
+            "_render: safety trim for session=%s (%d tokens > %d budget)",
+            session_id[:8], token_count, max_tokens,
+        )
+        lines = result.splitlines()
+        while len(lines) > 3 and estimate_tokens("\n".join(lines)) > max_tokens:
+            lines.pop()
+        result = "\n".join(lines)
+
+    return result, files_with_symbols_count
