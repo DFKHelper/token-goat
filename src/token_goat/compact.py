@@ -60,6 +60,15 @@ _MAX_BASH_ENTRIES: Final[int] = 6
 # tokens that would not be paid back even if the agent acted on the hint.
 _MIN_BASH_BYTES_FOR_MANIFEST: Final[int] = 400
 
+# Maximum web fetches listed in the "Web Fetches" section of the manifest.
+# Web fetches capture documentation, API responses, and external context the
+# agent loaded mid-session.  Four entries cover the common case (fetch a docs
+# page, maybe an API reference or two) without crowding the bash section.
+_MAX_WEB_ENTRIES: Final[int] = 4
+# Smallest cached web body worth surfacing in the manifest.  Small fetches
+# (redirects, tiny JSON blobs) don't pay back the manifest line's token cost.
+_MIN_WEB_BYTES_FOR_MANIFEST: Final[int] = 200
+
 # Sentinel gap used by session.mark_file_read() when no line limit is specified.
 # A range whose (end - start) equals this value represents "whole file read, extent
 # unknown" — _format_ranges() annotates these as "(full)" rather than printing
@@ -642,6 +651,54 @@ def _format_bash_entry(entry: object) -> str:
     )
 
 
+def _select_top_web_entries(web_history: object) -> list[object]:
+    """Pick up to :data:`_MAX_WEB_ENTRIES` web fetches worth surfacing in the manifest.
+
+    Filters entries below :data:`_MIN_WEB_BYTES_FOR_MANIFEST` (tiny redirects
+    and empty responses provide no recoverable context) and ranks by recency —
+    the most recently fetched pages are the ones whose content is most likely
+    to drive the next agent turn.
+
+    Accepts ``web_history`` typed as ``object`` to remain safe on legacy
+    SessionCache instances that predate the field (``None`` / missing → empty list).
+    Entries are :class:`session.WebEntry` instances accessed via :func:`getattr`.
+    """
+    if not isinstance(web_history, dict) or not web_history:
+        return []
+    candidates = [
+        e for e in web_history.values()
+        if getattr(e, "body_bytes", 0) >= _MIN_WEB_BYTES_FOR_MANIFEST
+    ]
+    if not candidates:
+        return []
+    return heapq.nlargest(_MAX_WEB_ENTRIES, candidates, key=lambda e: getattr(e, "ts", 0.0))
+
+
+def _format_web_entry(entry: object) -> str:
+    """Render one :class:`session.WebEntry` as a single manifest line.
+
+    Format::
+
+        - 🌐 https://docs.example.com/api  (200, 14.2KB, id=abc123...)
+        - 🌐 https://example.com/page  (404, 0.5KB, id=def456...)
+
+    The cache ID is included so the compaction LLM can hand the agent
+    ``token-goat web-output <id>`` to recover the body without re-fetching.
+    Status code distinguishes successful fetches from error responses so the
+    LLM knows whether the cached body is useful content or an error page.
+    """
+    url_preview = sanitize_log_str(getattr(entry, "url_preview", ""), max_len=100)
+    body_bytes = int(getattr(entry, "body_bytes", 0))
+    status_code = getattr(entry, "status_code", None)
+    output_id = sanitize_log_str(getattr(entry, "output_id", ""), max_len=24)
+    truncated_marker = " (truncated)" if getattr(entry, "truncated", False) else ""
+    status_str = str(status_code) if status_code is not None else "?"
+    return (
+        f"- 🌐 {url_preview}  "
+        f"({status_str}, {_humanize_bytes(body_bytes)}{truncated_marker}, id={output_id})"
+    )
+
+
 def _token_count(text: str) -> int:
     """Rough token estimate: 1 token ≈ 4 characters.
 
@@ -684,9 +741,10 @@ def _section_budgets(total_budget: int, edited_tokens: int) -> dict[str, int]:
     # Proportions must sum to 1.0.
     proportions: dict[str, float] = {
         "symbols": 0.40,
-        "files":   0.30,
+        "files":   0.25,
         "greps":   0.15,
-        "bash":    0.15,
+        "bash":    0.10,
+        "web":     0.10,
     }
     budgets: dict[str, int] = {}
     for name, ratio in proportions.items():
@@ -887,7 +945,10 @@ def compute_adaptive_budget(cache: SessionCache, age_seconds: float = 0.0) -> in
     # Bash history bonus: 20 tokens if there are any entries
     bash_bonus = 20 if (getattr(cache, "bash_history", None) and cache.bash_history) else 0
 
-    raw_total = base + edited_bonus + symbols_bonus + bash_bonus
+    # Web history bonus: 15 tokens if there are any cached web fetches
+    web_bonus = 15 if (getattr(cache, "web_history", None) and cache.web_history) else 0
+
+    raw_total = base + edited_bonus + symbols_bonus + bash_bonus + web_bonus
 
     # Apply session-age tier multiplier: young sessions need less manifest space
     # (little context has accumulated); mature sessions need more.
@@ -915,13 +976,14 @@ def build_manifest_adaptive(session_id: str) -> str:
     age_seconds = max(0.0, time.time() - created_ts) if created_ts is not None else 0.0
     budget = compute_adaptive_budget(cache, age_seconds=age_seconds)
     _LOG.debug(
-        "build_manifest_adaptive: session=%s budget=%d tier=%s (edited=%d symbols=%d bash=%s)",
+        "build_manifest_adaptive: session=%s budget=%d tier=%s (edited=%d symbols=%d bash=%s web=%s)",
         session_id[:8],
         budget,
         _session_age_tier(age_seconds),
         len(cache.edited_files) if isinstance(cache.edited_files, dict) else 0,
         sum(1 for e in cache.files.values() if e.symbols_read),
         bool(getattr(cache, "bash_history", None) and cache.bash_history),
+        bool(getattr(cache, "web_history", None) and cache.web_history),
     )
     return _build_manifest_from_cache(cache, session_id, budget)
 
@@ -1093,7 +1155,9 @@ def _render(cache: SessionCache, session_id: str, max_tokens: int) -> tuple[str,
     raw_greps = getattr(cache, "greps", None) or []
     _raw_bash = getattr(cache, "bash_history", None)
     raw_bash: dict = _raw_bash if isinstance(_raw_bash, dict) else {}
-    if not edited_clean and not files_clean and not raw_greps and not raw_bash:
+    _raw_web = getattr(cache, "web_history", None)
+    raw_web: dict = _raw_web if isinstance(_raw_web, dict) else {}
+    if not edited_clean and not files_clean and not raw_greps and not raw_bash and not raw_web:
         _LOG.info(
             "_render: manifest suppressed for session=%s "
             "(no activity tracked: edited=0 files_read=0 greps=0 bash=0)",
@@ -1326,6 +1390,30 @@ def _render(cache: SessionCache, session_id: str, max_tokens: int) -> tuple[str,
                 if bash_used + _token_count(overflow_line) <= bash_budget:
                     bash_lines.append(overflow_line)
 
+    # ── 3b. Web fetches — up to 10 % of remaining budget ─────────────────────
+    # Young sessions skip web sections — same rationale as bash_entries above.
+    web_budget = sec_budgets["web"]
+    web_lines: list[str] = []
+    web_used = 0
+    web_entries = (
+        _select_top_web_entries(raw_web)
+        if age_tier != "young"
+        else []
+    )
+    if web_entries:
+        header = "### Web Fetches (cached body)"
+        header_cost = _token_count(header)
+        if web_used + header_cost <= web_budget:
+            web_lines.append(header)
+            web_used += header_cost
+        for we in web_entries:
+            line = _format_web_entry(we)
+            cost = _token_count(line)
+            if web_used + cost > web_budget:
+                break
+            web_lines.append(line)
+            web_used += cost
+
     # ── 4. Grep patterns — up to 15 % of remaining budget ────────────────────
     grep_budget = sec_budgets["greps"]
     grep_lines: list[str] = []
@@ -1424,6 +1512,7 @@ def _render(cache: SessionCache, session_id: str, max_tokens: int) -> tuple[str,
         + stale_lines
         + sym_lines
         + bash_lines
+        + web_lines
         + grep_lines
         + files_lines
     )
@@ -1446,9 +1535,9 @@ def _render(cache: SessionCache, session_id: str, max_tokens: int) -> tuple[str,
     token_count = estimate_tokens(result)
     _LOG.debug(
         "_render: manifest assembled for session=%s; ~%d tokens (budget=%d) "
-        "sym=%d bash=%d grep=%d files=%d",
+        "sym=%d bash=%d web=%d grep=%d files=%d",
         session_id[:8], token_count, max_tokens,
-        sym_used, bash_used, grep_used, files_used,
+        sym_used, bash_used, web_used, grep_used, files_used,
     )
 
     # Safety net: per-section budgets use _token_count (len//4, conservative) while
