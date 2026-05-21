@@ -340,6 +340,144 @@ def _get_git_diff_stat(
         return None
 
 
+def _get_uncommitted_changes(project_root: str | None) -> str | None:
+    """Return a compact summary of all uncommitted changes in *project_root*.
+
+    Combines ``git diff --stat HEAD`` (tracked file changes) with
+    ``git status --short`` (which also surfaces untracked files not yet staged).
+    Returns a non-empty string on success, or ``None`` on any failure (git
+    unavailable, not a repo, nothing changed, timeout, etc.).
+
+    Caps:
+    - At most 8 lines total (across both commands, deduplicated).
+    - At most 200 characters total (header not included — caller adds it).
+    - Timeout 5 s so a slow git never blocks the PreCompact hook.
+    - Each line has trailing whitespace stripped.
+
+    This function must never raise.
+    """
+    if project_root is None:
+        return None
+    try:
+        # Run git diff --stat HEAD to see tracked file changes with +/- counts.
+        diff_result = subprocess.run(
+            ["git", "diff", "--no-color", "--stat", "HEAD"],
+            cwd=project_root,
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        diff_lines: list[str] = []
+        if diff_result.returncode == 0 and diff_result.stdout.strip():
+            diff_lines = [
+                line.rstrip()
+                for line in diff_result.stdout.strip().splitlines()
+                if line.strip()
+            ]
+
+        # Run git status --short to catch untracked (??) and staged files not
+        # reflected in diff --stat HEAD (e.g. new files added to the index).
+        status_result = subprocess.run(
+            ["git", "status", "--short"],
+            cwd=project_root,
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        status_lines: list[str] = []
+        if status_result.returncode == 0 and status_result.stdout.strip():
+            status_lines = [
+                line.rstrip()
+                for line in status_result.stdout.strip().splitlines()
+                if line.strip()
+            ]
+
+        if not diff_lines and not status_lines:
+            return None
+
+        # Prefer diff --stat lines (they include +/- counts which are more
+        # informative) and supplement with status lines that mention files not
+        # already covered by the diff output.  We extract the filename from
+        # each status line ("?? foo.py" → "foo.py") to check for overlap.
+        diff_filenames: set[str] = set()
+        for dl in diff_lines:
+            # diff --stat lines look like " src/foo.py | 12 +++---"
+            parts = dl.split("|")
+            if parts:
+                diff_filenames.add(parts[0].strip())
+
+        combined: list[str] = list(diff_lines)
+        for sl in status_lines:
+            # status --short lines: "?? foo.py", " M src/bar.py", "A  new.py"
+            tokens = sl.split(None, 1)
+            filename = tokens[1].strip() if len(tokens) > 1 else sl.strip()
+            if filename not in diff_filenames:
+                combined.append(sl)
+
+        if not combined:
+            return None
+
+        # Truncate to 8 lines and cap total chars at 200.
+        lines = combined[:8]
+        output = "\n".join(lines)
+        if len(output) > 200:
+            output = output[:200].rsplit("\n", 1)[0]
+        return output if output.strip() else None
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _get_git_diff_stat_summary(root: object) -> str:
+    """Run ``git diff --stat HEAD`` in *root* and return a compact summary string.
+
+    Designed for the "Pending Changes" section of the compaction manifest.
+    Unlike :func:`_get_git_diff_stat` (which queries specific files and strips the
+    summary line), this helper runs on the whole working tree and *keeps* the
+    ``N files changed, M insertions(+), K deletions(-)`` summary line so the
+    compaction LLM sees the scope at a glance.
+
+    Caps:
+    - At most 6 lines (5 per-file lines + 1 summary line).
+    - At most 300 characters total (avoid ballooning the manifest).
+    - Timeout 5 s so a slow git never blocks the PreCompact hook.
+
+    ANSI escape codes are stripped from the output (git --no-color is used
+    directly, which is simpler and more reliable than a regex).
+
+    Returns:
+        A non-empty string on success, or ``""`` on any failure (git not found,
+        not a git repo, no changes, output too large, timeout, etc.).  This
+        function must never raise.
+    """
+    if root is None:
+        return ""
+    try:
+        from pathlib import Path as _Path  # noqa: PLC0415
+        root_str = str(_Path(root)) if not isinstance(root, str) else root
+        result = subprocess.run(
+            ["git", "diff", "--no-color", "--stat", "HEAD"],
+            cwd=root_str,
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        if result.returncode != 0 or not result.stdout.strip():
+            return ""
+        lines = result.stdout.strip().splitlines()
+        # Keep at most 6 lines (last 5 file-stat lines + the summary line which is last).
+        # git --stat outputs file lines first then a summary line at the end; taking the
+        # last 6 lines captures the summary and up to 5 file entries.
+        last6 = lines[-6:]
+        output = "\n".join(last6)
+        # Hard cap: if still too long, drop the manifest section entirely rather than
+        # truncating mid-line (a partial diff stat is misleading).
+        if len(output) > 300:
+            return ""
+        return output
+    except Exception:  # noqa: BLE001
+        return ""
+
+
 def _get_session_commits(cwd: str | None, session_start_ts: float) -> list[str]:
     """Return git log lines for commits made after session_start_ts.
 
@@ -1020,7 +1158,13 @@ def _session_age_tier(age_seconds: float) -> str:
     return "mature"
 
 
-def compute_adaptive_budget(cache: SessionCache, age_seconds: float = 0.0) -> int:
+def compute_adaptive_budget(
+    cache: SessionCache,
+    age_seconds: float = 0.0,
+    *,
+    has_pending_diff: bool = False,
+    has_uncommitted_changes: bool = False,
+) -> int:
     """Compute an adaptive token budget for the manifest based on session complexity.
 
     Simple sessions (few edits, no bash history) waste no budget; complex sessions
@@ -1030,12 +1174,22 @@ def compute_adaptive_budget(cache: SessionCache, age_seconds: float = 0.0) -> in
         + min(200, edited_files_count × 50)       [up to 4 files]
         + min(150, symbols_accessed_files × 30)   [up to 5 files with symbols]
         + 20 tokens if bash_history has entries
+        + 50 tokens if there are pending git changes (git diff --stat HEAD non-empty)
+        + 10 tokens if there are uncommitted changes (git diff/status non-empty)
         × tier multiplier (young=0.6, active=1.0, mature=1.4)
         Capped to [200, 800]
 
     *age_seconds* is the session age in seconds.  When omitted (or 0) the session
     is treated as young.  Pass ``time.time() - cache.created_ts`` at call sites
     that have the cache in hand.
+
+    *has_pending_diff* should be ``True`` when ``_get_git_diff_stat_summary()``
+    returned a non-empty string for this session's working directory.  Adds 50
+    tokens to account for the "Pending Changes" section in the manifest.
+
+    *has_uncommitted_changes* should be ``True`` when ``_get_uncommitted_changes()``
+    returned a non-empty string.  Adds 10 tokens to account for the
+    "Uncommitted Changes" section in the manifest.
 
     Returns a value guaranteed to be in the range [200, 800].
     """
@@ -1057,7 +1211,13 @@ def compute_adaptive_budget(cache: SessionCache, age_seconds: float = 0.0) -> in
     # Web history bonus: 15 tokens if there are any cached web fetches
     web_bonus = 15 if (getattr(cache, "web_history", None) and cache.web_history) else 0
 
-    raw_total = base + edited_bonus + symbols_bonus + bash_bonus + web_bonus
+    # Pending diff bonus: 50 tokens when there are uncommitted changes to show
+    diff_bonus = 50 if has_pending_diff else 0
+
+    # Uncommitted changes bonus: 10 tokens for the "Uncommitted Changes" section
+    uncommitted_bonus = 10 if has_uncommitted_changes else 0
+
+    raw_total = base + edited_bonus + symbols_bonus + bash_bonus + web_bonus + diff_bonus + uncommitted_bonus
 
     # Apply session-age tier multiplier: young sessions need less manifest space
     # (little context has accumulated); mature sessions need more.
@@ -1083,9 +1243,17 @@ def build_manifest_adaptive(session_id: str) -> str:
         return ""
     created_ts = getattr(cache, "created_ts", None)
     age_seconds = max(0.0, time.time() - created_ts) if created_ts is not None else 0.0
-    budget = compute_adaptive_budget(cache, age_seconds=age_seconds)
+    cwd = getattr(cache, "cwd", None)
+    pending_diff = _get_git_diff_stat_summary(cwd)
+    uncommitted = _get_uncommitted_changes(cwd)
+    budget = compute_adaptive_budget(
+        cache,
+        age_seconds=age_seconds,
+        has_pending_diff=bool(pending_diff),
+        has_uncommitted_changes=bool(uncommitted),
+    )
     _LOG.debug(
-        "build_manifest_adaptive: session=%s budget=%d tier=%s (edited=%d symbols=%d bash=%s web=%s)",
+        "build_manifest_adaptive: session=%s budget=%d tier=%s (edited=%d symbols=%d bash=%s web=%s diff=%s uncommitted=%s)",
         session_id[:8],
         budget,
         _session_age_tier(age_seconds),
@@ -1093,6 +1261,8 @@ def build_manifest_adaptive(session_id: str) -> str:
         sum(1 for e in cache.files.values() if e.symbols_read),
         bool(getattr(cache, "bash_history", None) and cache.bash_history),
         bool(getattr(cache, "web_history", None) and cache.web_history),
+        bool(pending_diff),
+        bool(uncommitted),
     )
     return _build_manifest_from_cache(cache, session_id, budget)
 
@@ -1207,6 +1377,10 @@ def _render(cache: SessionCache, session_id: str, max_tokens: int) -> tuple[str,
     Priority order (inverted pyramid — most critical first so truncation hurts least):
     0. **Current Blockers** — failed bash commands from the last 60 min (up to 3).
        Omitted entirely when there are no recent failures.
+    0b.**Uncommitted Changes** — ``git diff --stat HEAD`` + ``git status --short``,
+       capped at 8 lines / 200 chars.  Provides a ground-truth view of what's on
+       disk (including manual edits and untracked files) before the Claude-tracked
+       sections.  Omitted when the working tree is clean or git is unavailable.
     1. **Edited files** — always listed after blockers; the compaction LLM must preserve these.
        This section is uncapped — every edited file is must-preserve.
     2. **Bash history** — cached command outputs; the current work context.
@@ -1386,17 +1560,43 @@ def _render(cache: SessionCache, session_id: str, max_tokens: int) -> tuple[str,
         for be in blocker_entries:
             blocker_lines.append(_format_blocker_entry(be))
 
+    # ── 0b. Uncommitted Changes — git diff --stat + status --short ───────────
+    # Ground-truth picture of what's on disk regardless of which tool made the
+    # changes.  Shown before Files Edited so the compaction LLM sees both the
+    # Claude-tool-tracked edits and any manual changes in one pass.
+    # Budget: ~40 tokens / ~200 chars max for the content; not counted against
+    # the adaptive per-section budget (it's additional fixed context).
+    uncommitted_changes: str | None = _get_uncommitted_changes(cwd)
+    uncommitted_lines: list[str] = []
+    if uncommitted_changes:
+        uncommitted_lines.append("### Uncommitted Changes")
+        for line in uncommitted_changes.splitlines():
+            uncommitted_lines.append(f"  {line.rstrip()}")
+
     # ── 1. Edited files — highest priority (no cap) ───────────────────────────
     # Build the entire edited-files block first so we can measure its token cost
     # before allocating the remaining budget to variable sections.
     edited_lines: list[str] = []
+    # Run the whole-repo git diff --stat once here so both the "Pending Changes"
+    # section and the adaptive budget computation can use the cached result.
+    pending_diff_stat: str = _get_git_diff_stat_summary(cwd)
+
     if edited_clean:
         edited_lines.append("### Files Edited (preserve in summary)")
         # Sort by edit count descending so the most-touched files appear first.
         for path, count in sorted(edited_clean.items(), key=_BY_EDIT_COUNT, reverse=True):
             edited_lines.append(f"- ✎ {_short_path(path)}{_count_suffix(count)}")
 
-        # ── 1a. Diff summary — show git changes for edited files ──────────────
+        # ── 1a. Pending Changes (git diff --stat HEAD) ────────────────────────
+        # Whole-repo stat placed immediately after Files Edited so the compaction
+        # LLM sees the scope and magnitude of in-flight work alongside the list of
+        # edited files.  Omitted entirely when there are no uncommitted changes.
+        if pending_diff_stat:
+            edited_lines.append("### Pending Changes (git diff --stat)")
+            for line in pending_diff_stat.splitlines():
+                edited_lines.append(f"  {line}")
+
+        # ── 1b. Diff summary — show git changes for edited files ──────────────
         diff_stat = _get_git_diff_stat(list(edited_clean.keys()), cwd)
         if diff_stat:
             edited_lines.append("### Diff Summary")
@@ -1417,10 +1617,12 @@ def _render(cache: SessionCache, session_id: str, max_tokens: int) -> tuple[str,
         for path in stale_read_files[:6]:
             stale_lines.append(f"- ⚠ {_short_path(path)}")
 
-    # Measure the "fixed" cost (header + blockers + edited + stale) to derive
-    # per-section budgets.  Blocker lines are small (≤3 lines) so they rarely
-    # consume more than ~15 tokens, but we count them to keep the budget accurate.
-    fixed_text = "\n".join(header_lines + blocker_lines + edited_lines + stale_lines)
+    # Measure the "fixed" cost (header + blockers + uncommitted + edited + stale)
+    # to derive per-section budgets.  Blocker lines are small (≤3 lines) so they
+    # rarely consume more than ~15 tokens, but we count them to keep the budget
+    # accurate.  The uncommitted-changes section is additional fixed context and
+    # is not counted against any per-section proportional budget.
+    fixed_text = "\n".join(header_lines + blocker_lines + uncommitted_lines + edited_lines + stale_lines)
     fixed_tokens = _token_count(fixed_text)
     sec_budgets = _section_budgets(max_tokens, fixed_tokens)
     _LOG.debug(
@@ -1644,6 +1846,7 @@ def _render(cache: SessionCache, session_id: str, max_tokens: int) -> tuple[str,
     sections: list[str] = (
         header_lines
         + blocker_lines
+        + uncommitted_lines
         + edited_lines
         + stale_lines
         + bash_lines
