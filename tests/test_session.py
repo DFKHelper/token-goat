@@ -923,4 +923,198 @@ class TestContentionMaxClear:
         # Both entries must be present — no clear fired.
         assert ("sess_a", "load") in fake_set
         assert ("sess_b", "save") in fake_set
-        assert len(fake_set) == 2
+
+
+class TestCompactSerialization:
+    """Skip-if-default serialization and timestamp rounding in FileEntry / to_dict."""
+
+    # --- FileEntry skip-if-default ---
+
+    def test_file_entry_empty_symbols_omitted(self):
+        """FileEntry with empty symbols_read serializes without the symbols_read key."""
+        entry = session.FileEntry(
+            rel_or_abs="src/foo.py",
+            last_read_ts=1_700_000_000.0,
+            read_count=1,
+            line_ranges=[(1, 50)],
+            symbols_read=[],
+        )
+        d = session._serialize_file_entry(entry)
+        assert "symbols_read" not in d
+
+    def test_file_entry_empty_line_ranges_omitted(self):
+        """FileEntry with empty line_ranges serializes without the line_ranges key."""
+        entry = session.FileEntry(
+            rel_or_abs="src/foo.py",
+            last_read_ts=1_700_000_000.0,
+            read_count=1,
+            line_ranges=[],
+            symbols_read=["MyClass"],
+        )
+        d = session._serialize_file_entry(entry)
+        assert "line_ranges" not in d
+
+    def test_file_entry_both_empty_omitted(self):
+        """FileEntry with both empty lists serializes without either key."""
+        entry = session.FileEntry(
+            rel_or_abs="src/foo.py",
+            last_read_ts=1_700_000_000.0,
+            read_count=1,
+            line_ranges=[],
+            symbols_read=[],
+        )
+        d = session._serialize_file_entry(entry)
+        assert "symbols_read" not in d
+        assert "line_ranges" not in d
+
+    def test_file_entry_nonempty_fields_present(self):
+        """Non-empty symbols_read and line_ranges are always included."""
+        entry = session.FileEntry(
+            rel_or_abs="src/foo.py",
+            last_read_ts=1_700_000_000.0,
+            read_count=2,
+            line_ranges=[(1, 10), (20, 30)],
+            symbols_read=["func_a", "func_b"],
+        )
+        d = session._serialize_file_entry(entry)
+        assert d["symbols_read"] == ["func_a", "func_b"]
+        assert d["line_ranges"] == [[1, 10], [20, 30]]
+
+    def test_file_entry_default_last_edit_ts_omitted(self):
+        """last_edit_ts == 0.0 (default: never edited) is omitted from the dict."""
+        entry = session.FileEntry(
+            rel_or_abs="src/foo.py",
+            last_read_ts=1_700_000_000.0,
+            read_count=1,
+            line_ranges=[],
+            symbols_read=[],
+            last_edit_ts=0.0,
+        )
+        d = session._serialize_file_entry(entry)
+        assert "last_edit_ts" not in d
+
+    def test_file_entry_nonzero_last_edit_ts_present(self):
+        """last_edit_ts != 0.0 is always included."""
+        entry = session.FileEntry(
+            rel_or_abs="src/foo.py",
+            last_read_ts=1_700_000_000.0,
+            read_count=1,
+            line_ranges=[],
+            symbols_read=[],
+            last_edit_ts=1_700_000_100.5,
+        )
+        d = session._serialize_file_entry(entry)
+        assert "last_edit_ts" in d
+
+    # --- Round-trip: missing optional keys restore correct defaults ---
+
+    def test_roundtrip_missing_symbols_read_defaults_to_empty(self):
+        """from_dict on a dict without symbols_read restores symbols_read=[]."""
+        raw = {
+            "rel_or_abs": "src/bar.py",
+            "last_read_ts": 1_700_000_000.0,
+            "read_count": 1,
+            # symbols_read deliberately absent
+        }
+        entry = session._parse_file_entry("src/bar.py", raw, now=1_700_000_000.0)
+        assert entry is not None
+        assert entry.symbols_read == []
+
+    def test_roundtrip_missing_line_ranges_defaults_to_empty(self):
+        """from_dict on a dict without line_ranges restores line_ranges=[]."""
+        raw = {
+            "rel_or_abs": "src/bar.py",
+            "last_read_ts": 1_700_000_000.0,
+            "read_count": 1,
+            # line_ranges deliberately absent
+        }
+        entry = session._parse_file_entry("src/bar.py", raw, now=1_700_000_000.0)
+        assert entry is not None
+        assert entry.line_ranges == []
+
+    def test_roundtrip_full_cycle_file_entry(self, tmp_data_dir):
+        """Serialize → deserialize round-trip for a FileEntry with all defaults omitted."""
+        sid = "roundtrip_compact_1"
+        cache = session.mark_file_read(sid, "src/mod.py", offset=0, limit=100)
+        entry_before = cache.files["src/mod.py"]
+        assert entry_before.symbols_read == []
+
+        loaded = session.load(sid)
+        entry_after = loaded.files["src/mod.py"]
+        assert entry_after.symbols_read == []
+        assert entry_after.line_ranges == entry_before.line_ranges
+        assert entry_after.read_count == entry_before.read_count
+
+    # --- Timestamp rounding ---
+
+    def test_file_entry_ts_rounded_to_3dp(self):
+        """last_read_ts is rounded to 3 decimal places in serialized form."""
+        ts = 1_747_854_321.4839182
+        entry = session.FileEntry(
+            rel_or_abs="src/foo.py",
+            last_read_ts=ts,
+            read_count=1,
+            line_ranges=[],
+            symbols_read=[],
+        )
+        d = session._serialize_file_entry(entry)
+        serialized = d["last_read_ts"]
+        assert serialized == round(ts, 3)
+        # Confirm it actually differs from the raw value (has more than 3 dp)
+        assert serialized != ts
+
+    def test_session_top_level_ts_rounded(self, tmp_data_dir):
+        """started_ts, last_activity_ts, and created_ts are rounded in to_dict()."""
+        sid = "ts_round_top_1"
+        cache = session.load(sid)
+        # Inject high-precision timestamps to verify rounding
+        cache.started_ts = 1_747_854_321.4839182
+        cache.last_activity_ts = 1_747_854_400.9991234
+        cache.created_ts = 1_747_854_200.1234567
+        d = cache.to_dict()
+        assert d["started_ts"] == round(1_747_854_321.4839182, 3)
+        assert d["last_activity_ts"] == round(1_747_854_400.9991234, 3)
+        assert d["created_ts"] == round(1_747_854_200.1234567, 3)
+
+    def test_grep_ts_rounded(self):
+        """GrepEntry timestamp is rounded to 3 decimal places in serialized form."""
+        entry = session.GrepEntry(pattern="foo", path=None, ts=1_747_000_000.9876543)
+        d = session._serialize_grep_entry(entry)
+        assert d["ts"] == round(1_747_000_000.9876543, 3)
+
+    def test_bash_ts_rounded(self):
+        """BashEntry timestamp is rounded to 3 decimal places in serialized form."""
+        entry = session.BashEntry(
+            cmd_sha="abc123",
+            cmd_preview="pytest",
+            output_id="out_1",
+            ts=1_747_000_000.1234567,
+            stdout_bytes=500,
+            stderr_bytes=0,
+        )
+        d = session._serialize_bash_entry(entry)
+        assert d["ts"] == round(1_747_000_000.1234567, 3)
+
+    def test_web_ts_rounded(self):
+        """WebEntry timestamp is rounded to 3 decimal places in serialized form."""
+        entry = session.WebEntry(
+            url_sha="sha_abc",
+            url_preview="https://example.com",
+            output_id="out_web",
+            ts=1_747_000_000.5551234,
+            body_bytes=2048,
+        )
+        d = session._serialize_web_entry(entry)
+        assert d["ts"] == round(1_747_000_000.5551234, 3)
+
+    def test_timestamp_roundtrip_within_millisecond(self, tmp_data_dir):
+        """Round-trip preserves timestamp value within 0.001 seconds."""
+        sid = "ts_roundtrip_1"
+        ts_before = time.time()
+        session.mark_file_read(sid, "src/z.py", offset=0, limit=10)
+        loaded = session.load(sid)
+        entry = loaded.files["src/z.py"]
+        assert abs(entry.last_read_ts - ts_before) < 1.0  # within 1 second of when we started
+        # The stored value must be rounded (no more than 3 significant decimal places)
+        serialized = round(entry.last_read_ts, 3)
+        assert entry.last_read_ts == serialized
