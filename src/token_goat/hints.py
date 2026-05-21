@@ -8,7 +8,7 @@ import sqlite3
 import time
 from collections.abc import Callable
 from pathlib import Path
-from typing import TypedDict
+from typing import Final, TypedDict
 
 from . import db, session, snapshots
 from .hooks_common import sanitize_log_str, validate_cwd
@@ -22,6 +22,7 @@ __all__ = [
     "build_grep_dedup_hint",
     "build_read_hint",
     "build_web_dedup_hint",
+    "compute_stale_threshold",
 ]
 
 _LOG = logging.getLogger("token_goat.hints")
@@ -91,6 +92,19 @@ DEFAULT_READ_LIMIT = 2000
 # context-relevance window for any single file.
 STALE_READ_AGE_SECONDS = 30 * 60
 
+def compute_stale_threshold(session_age_secs: float) -> float:
+    """Return an adaptive staleness threshold in seconds.
+
+    In short sessions everything is likely still in context; in long
+    sessions the context window scrolls faster so reads go stale sooner.
+    Formula: clamp(session_age * 0.25, 900, STALE_READ_AGE_SECONDS)
+    - Floor of 900s (15 min): always suppress reads older than 15 min
+    - Ceiling of STALE_READ_AGE_SECONDS (30 min): never suppress reads
+      newer than 30 min regardless of session age
+    """
+    return max(900.0, min(STALE_READ_AGE_SECONDS, session_age_secs * 0.25))
+
+
 # How many bytes to assume per line when estimating line count from file size.
 # This is intentionally conservative (real code averages 30-50 bytes/line) so
 # we slightly overestimate the line count rather than underestimate it.
@@ -103,6 +117,11 @@ _MAX_INDEXED_SYMBOLS_FETCHED = 50
 # Maximum character budget for the "[symbols: ...]" suffix appended to cache hints.
 # Keeps the suffix from inflating hints beyond their token ceiling.
 _SYMBOLS_SUFFIX_MAX_CHARS = 60
+
+# A file read this many times or more is a "working file" — the agent
+# is clearly iterating on it. Stop emitting dedup nags that the agent
+# is ignoring anyway.
+_SUPPRESS_HINT_AT_READ_COUNT: Final[int] = 5
 
 # A request narrower than this (with an explicit limit set by the agent) is treated
 # as "surgical intent" — the agent is already doing the right thing by reading a
@@ -326,11 +345,16 @@ def _build_read_hint_inner(
     file_path = _sanitize_hint_path(file_path)
 
     # 1. Check session cache first.
+    # Load the cache once and pass it explicitly so _hint_from_cache can access
+    # created_ts for the adaptive staleness threshold without a second disk read.
+    if cache is None:
+        cache = session.load(session_id)
     entry = session.get_file_entry(session_id, file_path, cache=cache)
     if entry is not None:
         hint = _hint_from_cache(
             entry, req_start, req_end, file_path,
             fname=fname, has_explicit_limit=has_explicit_limit,
+            cache=cache,
         )
         if hint is not None:
             _LOG.debug(
@@ -363,6 +387,7 @@ def _hint_from_cache(
     *,
     fname: str | None = None,
     has_explicit_limit: bool = False,
+    cache: session.SessionCache | None = None,
 ) -> ReadHint | None:
     """Build hint when the file was already accessed this session.
 
@@ -393,7 +418,10 @@ def _hint_from_cache(
     #    has likely scrolled out of the model's actual context window even
     #    though the session JSON still tracks it.  Re-reading is legitimate.
     edited_after_read = entry.last_edit_ts > entry.last_read_ts
-    read_is_stale = (time.time() - entry.last_read_ts) > STALE_READ_AGE_SECONDS
+    _created_ts = getattr(cache, "created_ts", None)
+    session_age = (time.time() - _created_ts) if _created_ts is not None else STALE_READ_AGE_SECONDS
+    stale_threshold = compute_stale_threshold(session_age)
+    read_is_stale = (time.time() - entry.last_read_ts) > stale_threshold
     if (edited_after_read or read_is_stale) and entry.line_ranges:
         _LOG.debug(
             "_hint_from_cache: suppressing line-range hint for %s "
@@ -409,6 +437,20 @@ def _hint_from_cache(
         # combined symbols+ranges entry shouldn't emit either hint variant:
         # the symbol hint below assumes "no line_ranges" so we'd lie about the
         # access pattern. Suppress entirely.
+        return None
+
+    # Suppress line-range dedup nags for "working files" — files the agent
+    # has read so many times that the hint is clearly not changing behaviour.
+    # At _SUPPRESS_HINT_AT_READ_COUNT reads the agent is iterating on this
+    # file; continuing to nag wastes tokens without reducing re-reads.
+    # Only suppress the line-range hint; the symbol-only hint (below) is a
+    # suggestion, not a nag, so it is left intact regardless of read_count.
+    if entry.read_count >= _SUPPRESS_HINT_AT_READ_COUNT and entry.line_ranges:
+        _LOG.debug(
+            "_hint_from_cache: suppressing line-range hint for %s "
+            "(working file: read_count=%d >= %d)",
+            fname, entry.read_count, _SUPPRESS_HINT_AT_READ_COUNT,
+        )
         return None
 
     # Case: file accessed only via token-goat read <file>::<symbol>.
@@ -857,11 +899,15 @@ def _build_bash_dedup_hint_inner(
     if entry is None:
         return None
 
-    age = time.time() - entry.ts
-    if age > STALE_READ_AGE_SECONDS:
+    now = time.time()
+    age = now - entry.ts
+    _bash_created_ts = getattr(cache, "created_ts", None)
+    bash_session_age = (now - _bash_created_ts) if _bash_created_ts is not None else STALE_READ_AGE_SECONDS
+    bash_stale_threshold = compute_stale_threshold(bash_session_age)
+    if age > bash_stale_threshold:
         _LOG.debug(
-            "build_bash_dedup_hint: prior run stale (age=%.0fs > %ds); suppressing",
-            age, STALE_READ_AGE_SECONDS,
+            "build_bash_dedup_hint: prior run stale (age=%.0fs > %.0fs); suppressing",
+            age, bash_stale_threshold,
         )
         return None
 
