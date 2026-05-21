@@ -259,6 +259,19 @@ def _count_suffix(n: int) -> str:
     return f"  ×{n}" if n > 1 else ""
 
 
+def _format_duration(seconds: float) -> str:
+    """Format a duration in seconds as a compact human-readable string.
+
+    Examples: 65 → "1m", 3665 → "1h 1m", 7200 → "2h"
+    """
+    secs = int(seconds)
+    if secs < 3600:
+        return f"{secs // 60}m"
+    hours = secs // 3600
+    mins = (secs % 3600) // 60
+    return f"{hours}h {mins}m" if mins > 0 else f"{hours}h"
+
+
 def _short_path(p: str, max_len: int = 70) -> str:
     """Return a compact display representation of a file path.
 
@@ -935,9 +948,12 @@ def _render(cache: SessionCache, session_id: str, max_tokens: int) -> tuple[str,
 
     now = datetime.now(UTC).strftime("%Y-%m-%d %H:%M")
     sid = session_id[:8]
+    age_secs = time.time() - getattr(cache, "created_ts", time.time())
+    age_str = _format_duration(age_secs) if age_secs >= 60 else None
+    age_part = f"  |  age: {age_str}" if age_str else ""
     sections: list[str] = [
         "## Token-Goat Session Manifest",
-        f"Session: {sid}  |  {now}",
+        f"Session: {sid}  |  {now}{age_part}",
     ]
 
     # ── 1. Edited files — highest priority ────────────────────────────────────

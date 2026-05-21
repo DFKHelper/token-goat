@@ -504,3 +504,49 @@ class TestResultCache:
         again = session.get_result_cache(sid, "f.py", "x", "symbol", "sha")
         assert again is not None
         assert again["text"] == "original"
+
+
+class TestSessionCreatedTs:
+    """Tests for the session creation timestamp tracking."""
+
+    def test_created_ts_defaults_to_now_on_load(self, tmp_data_dir):
+        """Loading a new session sets created_ts to approximately now."""
+        before = time.time()
+        cache = session.load("test_created_ts_1")
+        after = time.time()
+        assert before <= cache.created_ts <= after
+
+    def test_created_ts_persists_roundtrip(self, tmp_data_dir):
+        """created_ts is preserved when saved and loaded again."""
+        sid = "test_created_ts_2"
+        cache = session.load(sid)
+        original_ts = cache.created_ts
+        # Mark some activity to trigger a save
+        session.mark_file_read(sid, "file.py")
+        reloaded = session.load(sid)
+        # created_ts should be identical (preserved from serialization)
+        assert abs(reloaded.created_ts - original_ts) < 0.01  # allow 10ms tolerance for float precision
+
+    def test_created_ts_backward_compatible_missing(self, tmp_data_dir):
+        """from_dict falls back gracefully when created_ts is missing."""
+        before = time.time()
+        # Simulate a legacy session dict without created_ts
+        legacy_dict = {
+            "schema_version": 1,
+            "created_by": "token-goat",
+            "session_id": "legacy_session",
+            "started_ts": time.time(),
+            "last_activity_ts": time.time(),
+            "files": {},
+            "greps": [],
+            "edited_files": {},
+            "result_cache": {},
+            "bash_history": {},
+            "web_history": {},
+            "snapshot_shas": {},
+            "hints_seen": [],
+        }
+        after = time.time()
+        cache = session.SessionCache.from_dict(legacy_dict)
+        # Should default to approximately now
+        assert before <= cache.created_ts <= after
