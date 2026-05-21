@@ -65,10 +65,18 @@ The fastest way to reduce Claude Code token costs is fixing these four, not writ
 | Agent starts cold with no git context in a dirty repo | Branch, change counts, and 5 recent commits injected at startup (~50 tokens) |
 | Re-read hint shows only the line range | Hint includes previously-accessed symbol names: `[symbols: login, refresh, …]` |
 
-> Four hours of use on the author's machine: **59.7 MB** of data that never hit the model, with an estimated **11.5 million tokens** avoided.
+> Two snapshots from the author's machine: **v0.1 after four hours**, and the **current build after several days** of real sessions.
 
 <p align="center">
-  <img src="assets/stats.png" alt="token-goat stats" width="800">
+  <img src="assets/stats.png" alt="token-goat stats — v0.1 after four hours of use" width="589">
+  <br>
+  <sub><b>v0.1</b> — after four hours of use</sub>
+</p>
+
+<p align="center">
+  <img src="assets/stats_current.png" alt="token-goat stats — current build after several days" width="589">
+  <br>
+  <sub><b>Current build</b> — after several days, now with per-kind and per-source breakdowns</sub>
 </p>
 
 On a per-token API plan, 100K wasted tokens per session runs about $0.30. Five sessions a week is ~$450/year. AI coding cost reduction at that scale comes from fixing the waste, not from using the product less. Token-goat is free.
