@@ -259,6 +259,31 @@ def _get_git_diff_stat(
         return None
 
 
+def _get_session_commits(cwd: str | None, session_start_ts: float) -> list[str]:
+    """Return git log lines for commits made after session_start_ts.
+
+    Returns at most 5 commits, formatted as "- {short_hash} {subject}".
+    Returns [] when git is unavailable, not in a repo, or cwd is None.
+    Times out after 2 seconds.
+    """
+    if not cwd or session_start_ts <= 0:
+        return []
+    try:
+        result = subprocess.run(
+            ["git", "log", "--oneline", f"--since={int(session_start_ts)}", "--max-count=5"],
+            cwd=cwd,
+            capture_output=True,
+            text=True,
+            timeout=2,
+        )
+        if result.returncode != 0 or not result.stdout.strip():
+            return []
+        lines = result.stdout.strip().splitlines()
+        return [f"- {sanitize_log_str(line, max_len=100)}" for line in lines[:5]]
+    except Exception:  # noqa: BLE001
+        return []
+
+
 def _count_suffix(n: int) -> str:
     """Return '  ×N' when *n* > 1, or '' when the count is unremarkable.
 
@@ -965,6 +990,10 @@ def _render(cache: SessionCache, session_id: str, max_tokens: int) -> tuple[str,
         f"Session: {sid}  |  {now}{age_part}",
     ]
 
+    # Get cwd early so it can be used by both diff summary and commits section.
+    cwd = getattr(cache, "cwd", None)
+    created_ts = getattr(cache, "created_ts", 0.0)
+
     # ── 1. Edited files — highest priority ────────────────────────────────────
     if edited_clean:
         sections.append("### Files Edited (preserve in summary)")
@@ -974,14 +1003,22 @@ def _render(cache: SessionCache, session_id: str, max_tokens: int) -> tuple[str,
 
         # ── 1a. Diff summary — show git changes for edited files ──────────────
         # Include git diff --stat output if cwd is available, compressed to fit budget.
-        cwd = getattr(cache, "cwd", None)
         diff_stat = _get_git_diff_stat(list(edited_clean.keys()), cwd)
         if diff_stat:
             sections.append("### Diff Summary")
             for line in diff_stat.splitlines():
                 sections.append(f"- {line}")
 
-    # ── 1b. Stale file snapshots — read before a subsequent edit ─────────────
+        # ── 1b. Commits this session — work completed during the session ──────
+        # Show git commits made after session start; helps the compaction LLM
+        # understand what work is done vs. in-progress.
+        if created_ts > 0:
+            session_commits = _get_session_commits(cwd, created_ts)
+            if session_commits:
+                sections.append("### Commits This Session")
+                sections.extend(session_commits)
+
+    # ── 1d. Stale file snapshots — read before a subsequent edit ──────────────
     # Warn the compaction LLM that these cached reads are outdated.
     if stale_read_files:
         sections.append("### Outdated File Snapshots")
