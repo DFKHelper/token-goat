@@ -600,15 +600,67 @@ def _format_ranges(ranges: list[tuple[int, int]]) -> str:
     return f"  lines {parts}{overflow_suffix}"
 
 
+def _is_noop_bash_command(entry: object) -> bool:
+    """Check if a bash entry is a no-op command (status check, pwd, cd, etc).
+
+    No-op commands consume manifest token budget with zero compaction value.
+    Examples: `git status`, `ls`, `pwd`, `echo`, `cd`, `cat` on tiny files,
+    or any command shorter than 5 characters.
+
+    Returns True if the command is deemed a no-op and should be excluded from
+    the manifest bash section.
+    """
+    cmd_preview = getattr(entry, "cmd_preview", "").strip()
+    if not cmd_preview:
+        return False
+
+    # Commands shorter than 5 chars are typically inaudible (ls, cd, pwd, git, etc.)
+    if len(cmd_preview) < 5:
+        return True
+
+    # Extract the base command (first word, handling pipes/redirects)
+    first_word = cmd_preview.split()[0] if cmd_preview.split() else ""
+    first_word_lower = first_word.lower()
+
+    # No-op patterns: common status/navigation commands
+    noop_patterns = {
+        "git status", "git diff --stat", "git log --oneline",
+        "ls", "pwd", "cd", "echo", "cat", "head", "tail",
+    }
+
+    # Check exact match first
+    if cmd_preview.lower() in noop_patterns:
+        return True
+
+    # Check prefix match for common no-ops
+    cmd_lower = cmd_preview.lower()
+    for pattern in ("git status", "git diff --stat", "git log"):
+        if cmd_lower.startswith(pattern):
+            return True
+
+    # Commands that are inherently silent (cd, echo)
+    if first_word_lower in ("cd", "echo"):
+        return True
+
+    # 'cat' or 'head' on tiny outputs (< 200 bytes) are inaudible
+    if first_word_lower in ("cat", "head", "tail"):
+        total_bytes = getattr(entry, "stdout_bytes", 0) + getattr(entry, "stderr_bytes", 0)
+        if total_bytes < 200:
+            return True
+
+    return False
+
+
 def _select_top_bash_entries(bash_history: object) -> list[object]:
     """Pick up to :data:`_MAX_BASH_ENTRIES` cached Bash runs worth surfacing.
 
     Filters out entries below :data:`_MIN_BASH_BYTES_FOR_MANIFEST` (the dedup
-    hint would suppress them anyway) and ranks by recency — the most recent
-    runs are the ones whose output drives the next agent turn.  Accepts the
-    ``bash_history`` attribute typed as ``object`` so the helper is safe to
-    call on legacy SessionCache instances written by token-goat versions that
-    predate the field (``None`` / missing → empty list).
+    hint would suppress them anyway), no-op commands (git status, pwd, etc.),
+    and ranks by recency — the most recent runs are the ones whose output drives
+    the next agent turn.  Accepts the ``bash_history`` attribute typed as
+    ``object`` so the helper is safe to call on legacy SessionCache instances
+    written by token-goat versions that predate the field (``None`` / missing →
+    empty list).
 
     Returns an iterable suitable for unpacking; entries are
     :class:`session.BashEntry` instances but the helper does not import that
@@ -620,6 +672,7 @@ def _select_top_bash_entries(bash_history: object) -> list[object]:
         e for e in bash_history.values()
         if (getattr(e, "stdout_bytes", 0) + getattr(e, "stderr_bytes", 0))
         >= _MIN_BASH_BYTES_FOR_MANIFEST
+        and not _is_noop_bash_command(e)
     ]
     if not candidates:
         return []

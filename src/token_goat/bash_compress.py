@@ -498,11 +498,19 @@ def cap_tokens(text: str, max_tokens: int) -> str:
     Estimates token count as ``len(text) / 3.5`` and uses
     :func:`truncate_middle_smart` for line-aware truncation when over budget.
     A truncation marker is appended when truncation occurs.
+
+    Token measurement strips ANSI codes before counting so that ANSI-heavy
+    output (e.g. full-colour pytest) doesn't falsely trigger the token cap
+    earlier than it should.
     """
-    estimated_tokens = len(text) / 3.5
+    # Strip ANSI codes before measuring token count to avoid inflating the estimate
+    # with escape sequences that don't contribute to readable content.
+    clean_text = strip_ansi(text)
+    estimated_tokens = len(clean_text) / 3.5
     if estimated_tokens <= max_tokens:
         return text
     # Convert max_tokens back to bytes for truncation (conservative: 3.5 chars/token).
+    # Use the clean text for byte budget calculation so ANSI codes don't steal space.
     max_bytes = int(max_tokens * 3.5)
     # Use cap_bytes to handle UTF-8 boundaries and line breaks correctly.
     truncated = cap_bytes(text, max_bytes)
