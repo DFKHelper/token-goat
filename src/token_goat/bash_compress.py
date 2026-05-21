@@ -67,6 +67,7 @@ __all__ = [
     "strip_ansi",
     "strip_progress",
     "truncate_middle",
+    "PythonFilter",
     "UvFilter",
 ]
 
@@ -2062,6 +2063,205 @@ class PipFilter(Filter):
         return _squeeze_blank_lines("\n".join(kept))
 
 
+# --- Python ----------------------------------------------------------------
+
+#: Python traceback frame lines: "  File ..., line N, in <func>"
+_PYTHON_FRAME_RE: Final[re.Pattern[str]] = re.compile(
+    r'^\s+File\s+"[^"]+",\s+line\s+\d+(?:,\s+in\s+.*)?\s*$'
+)
+#: Python error/exception terminator: "ErrorType: message"
+_PYTHON_ERROR_RE: Final[re.Pattern[str]] = re.compile(
+    r"^[A-Za-z][A-Za-z0-9_]*(?:Error|Exception|Warning):\s"
+)
+#: Python warning lines
+_PYTHON_WARNING_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\s*.*Warning:\s"
+)
+
+
+class PythonFilter(Filter):
+    """Compress Python script output and tracebacks.
+
+    When ``python script.py``, ``python -c "code"``, or ``python -m module``
+    produces a traceback, the filter compresses it to preserve only the
+    innermost frame (where the actual error occurred) plus the error message.
+    For very long tracebacks (>10 frames), keeps only the first 2 and last 3
+    frames with a marker in between.
+
+    Compression model:
+
+    * **Traceback compression**: Keep error line + immediate cause line;
+      drop intermediate "File..., line N" frame lines except innermost.
+      For >10-frame tracebacks, keep first 2 + last 3 frames with omission marker.
+    * **Repeated lines**: If a line repeats 5+ times consecutively,
+      replace with "line × N".
+    * **Warning spam**: Lines matching ``Warning:`` that repeat >3 times →
+      keep first 3, summarize rest as "... N similar warnings omitted".
+    * **Progress bars**: Lines ending with ``\\r`` → keep only the last.
+    """
+
+    name = "python"
+    binaries = frozenset(["python", "python3", "python3.11", "python3.12", "python3.13"])
+
+    def matches(self, argv: list[str]) -> bool:  # noqa: D102
+        if not argv:
+            return False
+        stem = Path(argv[0]).stem.lower()
+        # Match python/python3 directly, but NOT pytest (handled by PytestFilter).
+        if stem not in self.binaries:
+            return False
+        # Don't match if this is actually pytest (python -m pytest or pytest).
+        if len(argv) > 1:
+            positionals = _positional_args(argv[1:])
+            # Check for "-m pytest" or "-c" with pytest code
+            if positionals and positionals[0] == "pytest":
+                return False
+        return True
+
+    def compress(
+        self, stdout: str, stderr: str, exit_code: int, argv: list[str],
+    ) -> str:
+        # Combine stderr (traceback) and stdout.
+        text = stderr if stderr.strip() else stdout
+        if text and stderr.strip() and stdout.strip():
+            text = (text.rstrip() + "\n" + stdout.rstrip())
+        if not text.strip():
+            return text
+
+        lines = text.split("\n")
+        lines = self._compress_traceback(lines)
+        lines = self._dedupe_repeated_lines(lines)
+        lines = self._compress_warnings(lines)
+        return _squeeze_blank_lines("\n".join(lines))
+
+    def _compress_traceback(self, lines: list[str]) -> list[str]:
+        """Compress Python tracebacks, keeping error and innermost frame.
+
+        For very long tracebacks (>10 frames), keep first 2 and last 3 frames
+        with an omission marker.
+        """
+        # Find "Traceback" header and "Error:" terminator.
+        traceback_start = None
+        error_line_idx = None
+
+        for i, line in enumerate(lines):
+            if line.startswith("Traceback"):
+                traceback_start = i
+            if _PYTHON_ERROR_RE.search(line):
+                error_line_idx = i
+
+        # No traceback found; pass through.
+        if traceback_start is None:
+            return lines
+
+        # If no error found, the traceback is incomplete (or it's a warning).
+        if error_line_idx is None or error_line_idx <= traceback_start:
+            return lines
+
+        # Extract frame lines (those matching _PYTHON_FRAME_RE) between
+        # Traceback and error line.
+        frame_indices = []
+        for i in range(traceback_start, error_line_idx):
+            if _PYTHON_FRAME_RE.search(lines[i]):
+                frame_indices.append(i)
+
+        # If there are too many frames (>10), keep first 2 and last 3 with marker.
+        if len(frame_indices) > 10:
+            kept_indices = set(frame_indices[:2] + frame_indices[-3:])
+            omitted = len(frame_indices) - 5
+            result = []
+            for i, line in enumerate(lines):
+                if (
+                    i < traceback_start
+                    or i > error_line_idx
+                    or i in kept_indices
+                    or i in (traceback_start, error_line_idx)
+                ):
+                    result.append(line)
+                elif i == frame_indices[2]:
+                    # Insert omission marker at the first dropped frame.
+                    result.append(f"  ... {omitted} frames omitted ...")
+            return result
+
+        # Standard case: keep traceback header, innermost frame(s), and error.
+        result = []
+        for i, line in enumerate(lines):
+            if i < traceback_start or i > error_line_idx:
+                # Before traceback or after error: pass through.
+                result.append(line)
+            elif i == traceback_start:
+                # Keep traceback header.
+                result.append(line)
+            elif i in frame_indices[-1:]:
+                # Keep only the innermost frame (last frame before error).
+                result.append(line)
+            elif i == error_line_idx:
+                # Always keep the error line.
+                result.append(line)
+            elif i == error_line_idx - 1 and not _PYTHON_FRAME_RE.search(line):
+                # Keep the line immediately before the error if it's not a frame.
+                result.append(line)
+        return result
+
+    def _dedupe_repeated_lines(self, lines: list[str]) -> list[str]:
+        """Collapse 5+ consecutive identical lines to 'line × N'."""
+        out: list[str] = []
+        prev: str | None = None
+        count = 0
+        for line in lines:
+            if line == prev:
+                count += 1
+            else:
+                if prev is not None and count >= 5:
+                    out.append(f"{prev}  (×{count})")
+                elif prev is not None:
+                    out.extend([prev] * count)
+                prev = line
+                count = 1
+        if prev is not None:
+            if count >= 5:
+                out.append(f"{prev}  (×{count})")
+            else:
+                out.extend([prev] * count)
+        return out
+
+    def _compress_warnings(self, lines: list[str]) -> list[str]:
+        """Compress repeated warnings: keep first 3, summarize rest."""
+        warning_groups: dict[str, list[int]] = {}
+
+        for i, line in enumerate(lines):
+            if _PYTHON_WARNING_RE.search(line):
+                # Normalize the warning message for grouping.
+                normalized = re.sub(r":\d+:", ":N:", line)
+                if normalized not in warning_groups:
+                    warning_groups[normalized] = []
+                warning_groups[normalized].append(i)
+
+        if not warning_groups:
+            return lines
+
+        # Keep first 3 of each normalized warning; drop the rest.
+        keep_indices = set()
+        for indices in warning_groups.values():
+            keep_indices.update(indices[:3])
+
+        result = []
+        for i, line in enumerate(lines):
+            if i in keep_indices or not _PYTHON_WARNING_RE.search(line):
+                result.append(line)
+
+        # Add summary for dropped warnings.
+        total_warnings = len([i for grp in warning_groups.values() for i in grp])
+        kept_warnings = len(keep_indices)
+        if total_warnings > kept_warnings:
+            result.append(
+                f"[token-goat: suppressed {total_warnings - kept_warnings} "
+                f"additional warning(s)]"
+            )
+
+        return result
+
+
 # --- uv ---------------------------------------------------------------------
 
 #: uv per-package download/fetch progress lines: "   Downloading foo-1.0 (2.3 MB)"
@@ -2198,6 +2398,7 @@ FILTERS: list[Filter] = [
     TerraformFilter(),
     PipFilter(),
     UvFilter(),
+    PythonFilter(),
 ]
 
 

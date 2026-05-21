@@ -1155,6 +1155,118 @@ def _make_uv_sync_output(n_packages: int = 10) -> str:
     return "\n".join(lines)
 
 
+class TestPythonFilter:
+    """Tests for PythonFilter."""
+
+    def _make_traceback(self, n_frames: int = 3, include_error: bool = True) -> str:
+        """Build synthetic Python traceback output."""
+        lines = ["Traceback (most recent call last):"]
+        for i in range(n_frames):
+            lines.append(f'  File "script.py", line {i + 1}, in func_{i}')
+            lines.append(f"    result = func_{i + 1}()")
+        if include_error:
+            lines.append("ValueError: invalid value")
+        return "\n".join(lines)
+
+    def test_traceback_compressed(self):
+        """Short traceback with 3 frames → only innermost frame + error kept."""
+        text = self._make_traceback(n_frames=3)
+        f = bc.PythonFilter()
+        result = f.apply(text, "", 1, ["python", "script.py"])
+        # Should keep traceback header, innermost frame, and error.
+        assert "Traceback" in result.text
+        assert "ValueError: invalid value" in result.text
+        # The innermost frame (line with "func_2") should be kept.
+        assert "func_2" in result.text
+        # But earlier frames should be dropped (func_0).
+        assert "func_0" not in result.text
+
+    def test_long_traceback_omission_marker(self):
+        """12+ frames → first 2 + last 3 kept, '... N frames omitted ...' inserted."""
+        text = self._make_traceback(n_frames=12)
+        f = bc.PythonFilter()
+        result = f.apply(text, "", 1, ["python", "script.py"])
+        # Should contain omission marker.
+        assert "frames omitted" in result.text
+        # Should keep first 2 frames.
+        assert "func_0" in result.text
+        assert "func_1" in result.text
+        # Should keep last 3 frames.
+        assert "func_9" in result.text or "func_10" in result.text or "func_11" in result.text
+        # Middle frames should not appear.
+        assert "func_5" not in result.text
+
+    def test_repeated_lines_collapsed(self):
+        """6 identical consecutive lines → collapsed to 'line × 6'."""
+        # Build output with repeated lines after the error
+        # (which will survive the traceback compression).
+        text = "Traceback (most recent call last):\n"
+        text += '  File "test.py", line 1, in func\n'
+        text += "    x = 1\n"
+        text += "ValueError: error\n"
+        text += ("repeated output\n" * 6)
+        f = bc.PythonFilter()
+        result = f.apply(text, "", 1, ["python", "test.py"])
+        # Should collapse the 6 identical repeated lines to "line × 6".
+        assert "(×6)" in result.text
+
+    def test_warnings_summarized(self):
+        """5+ identical warnings → collapsed to 'line × N' via _dedupe_repeated_lines."""
+        # When warnings are repeated 5+ times consecutively, they're collapsed.
+        lines = (
+            ["Some output"]
+            + ["DeprecationWarning: old api used"] * 5
+            + ["Done"]
+        )
+        text = "\n".join(lines)
+        f = bc.PythonFilter()
+        result = f.apply(text, "", 0, ["python", "test.py"])
+        # The repeated warnings should be collapsed to the "× N" format.
+        assert "(×5)" in result.text
+
+    def test_pytest_not_matched(self):
+        """Command 'python -m pytest' should NOT be matched by PythonFilter."""
+        f = bc.PythonFilter()
+        assert not f.matches(["python", "-m", "pytest"])
+
+    def test_plain_python_matched(self):
+        """Command 'python script.py' IS matched by PythonFilter."""
+        f = bc.PythonFilter()
+        assert f.matches(["python", "script.py"])
+
+    def test_python3_matched(self):
+        """Command 'python3' with any args IS matched."""
+        f = bc.PythonFilter()
+        assert f.matches(["python3", "-c", "print('hello')"])
+
+    def test_clean_output_passthrough(self):
+        """Non-traceback output passes through unchanged."""
+        text = "Hello\nWorld\nSuccess\n"
+        f = bc.PythonFilter()
+        result = f.apply(text, "", 0, ["python", "script.py"])
+        # No traceback, so output should pass through with minimal changes.
+        assert "Hello" in result.text
+        assert "World" in result.text
+
+    def test_select_filter_dispatches_python(self):
+        """select_filter returns PythonFilter for 'python script.py'."""
+        f = bc.select_filter(["python", "script.py"])
+        assert f is not None
+        assert f.name == "python"
+
+    def test_select_filter_python3_dispatches(self):
+        """select_filter returns PythonFilter for 'python3' commands."""
+        f = bc.select_filter(["python3", "myscript.py"])
+        assert f is not None
+        assert f.name == "python"
+
+    def test_select_filter_pytest_via_python_returns_pytest(self):
+        """select_filter returns PytestFilter for 'python -m pytest', not PythonFilter."""
+        f = bc.select_filter(["python", "-m", "pytest"])
+        assert f is not None
+        assert f.name == "pytest"
+
+
 class TestUvFilter:
     def test_matches_uv_sync(self):
         """UvFilter matches 'uv sync' argv."""
