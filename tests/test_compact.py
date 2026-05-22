@@ -781,6 +781,42 @@ class TestDedupAcrossSections:
         assert result.count("shared.py") == 1, f"expected 1, got {result.count('shared.py')}\n{result}"
 
 
+class TestBlockerDedupFromBashHistory:
+    """A recently-failed command in 'Current Blockers' must not repeat in 'Commands Run'."""
+
+    def test_failed_command_appears_once(self, tmp_data_dir):
+        """A large-output failed command is listed under Blockers only, not also Bash History."""
+        from token_goat import bash_cache
+
+        sid = "blocker-dedup-session"
+        cmd = "uv run mypy src --strict"
+        cmd_sha = bash_cache.command_hash(cmd)
+        output_id = f"out_{cmd_sha[:8]}"
+
+        # Record a recent failure with enough output to qualify for both sections.
+        session.mark_bash_run(
+            sid,
+            cmd_sha,
+            cmd,
+            output_id,
+            stdout_bytes=2000,
+            stderr_bytes=0,
+            exit_code=1,
+            truncated=False,
+        )
+        # Also add an edited file so the session is "old enough" to include bash entries.
+        session.mark_file_edited(sid, "/proj/src/main.py")
+
+        result = compact.build_manifest(sid)
+        # The command preview must appear — it belongs in Current Blockers.
+        assert "mypy" in result, f"Expected 'mypy' in manifest:\n{result}"
+        # But the output_id must appear at most once — not in both Blockers and Bash History.
+        assert result.count(output_id) <= 1, (
+            f"output_id '{output_id}' appeared {result.count(output_id)}x — "
+            f"dedup across sections failed:\n{result}"
+        )
+
+
 class TestGitDiffStat:
     """_get_git_diff_stat extracts git diff output for edited files."""
 
