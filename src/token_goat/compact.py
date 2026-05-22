@@ -26,7 +26,16 @@ from typing import TYPE_CHECKING, Any, Final
 
 from . import session as session_mod
 from .hooks_common import sanitize_log_str
-from .repomap import estimate_tokens
+
+
+def estimate_tokens(text: str) -> int:
+    """Rough token estimate: ~3 chars/token (conservative vs. the true 3.5 ratio).
+
+    Inlined from repomap.estimate_tokens to avoid loading repomap (and its db
+    dependency) during the PreCompact hook cold-start, which runs as a separate
+    Python process on Windows with no shared module cache.
+    """
+    return max(1, len(text) // 3 + 1)
 
 if TYPE_CHECKING:
     from .session import FileEntry, SessionCache
@@ -1006,8 +1015,8 @@ def _token_count(text: str) -> int:
     """Rough token estimate: 1 token ≈ 4 characters.
 
     Used for per-section budget enforcement inside :func:`_render`.  The same
-    ratio is used by :func:`~token_goat.repomap.estimate_tokens` (which divides
-    by 3.5); using 4 here makes section budgets slightly conservative so the
+    ratio is used by :func:`estimate_tokens` (which divides by 3); using 4
+    here makes section budgets slightly conservative so the
     assembled manifest fits the global budget even before the final
     ``estimate_tokens`` check.
     """
