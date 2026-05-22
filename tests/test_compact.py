@@ -3710,6 +3710,47 @@ class TestCapLine:
 
 
 # ---------------------------------------------------------------------------
+# compact._render_budget_lines
+# ---------------------------------------------------------------------------
+
+
+class TestRenderBudgetLines:
+    """Unit tests for _render_budget_lines: header-gated budget loop."""
+
+    def test_empty_input_returns_empty(self):
+        lines: list[str] = []
+        out, used = compact._render_budget_lines("### H", lines, budget=200)
+        assert out == []
+        assert used == 0
+
+    def test_all_lines_fit(self):
+        lines = ["- line one", "- line two"]
+        out, used = compact._render_budget_lines("### H", lines, budget=500)
+        assert out[0] == "### H"
+        assert "- line one" in out
+        assert "- line two" in out
+        assert used > 0
+
+    def test_budget_too_tight_returns_empty(self):
+        # Budget of 1 token can't fit header + any content line.
+        out, used = compact._render_budget_lines("### Header", ["- x"], budget=1)
+        assert out == []
+        assert used == 0
+
+    def test_partial_fit_stops_early(self):
+        # Five long lines; only the first few should fit in a tight budget.
+        lines = [f"- {'x' * 60} line {i}" for i in range(5)]
+        out, used = compact._render_budget_lines("### H", lines, budget=30)
+        # Header + at least one line must fit, but not all five.
+        assert 1 < len(out) < 6
+        assert out[0] == "### H"
+
+    def test_header_always_first(self):
+        out, _ = compact._render_budget_lines("### MySection", ["- a"], budget=200)
+        assert out[0] == "### MySection"
+
+
+# ---------------------------------------------------------------------------
 # compact._dedup_grep_entries
 # ---------------------------------------------------------------------------
 
