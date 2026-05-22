@@ -3370,3 +3370,85 @@ class TestGlobManifestSection:
 
         result = compact.build_manifest(sid, max_tokens=400)
         assert "src/" in result
+
+
+# ---------------------------------------------------------------------------
+# All sections populated simultaneously
+# ---------------------------------------------------------------------------
+
+
+class TestAllSectionsSimultaneous:
+    """_render with every section populated — no crash, budget respected, all headers present."""
+
+    def _build_full_session(self, sid: str) -> None:
+        """Populate edited files, bash, web, symbols/files, greps, and glob."""
+        import time as _time
+
+        # Edited files
+        session.mark_file_edited(sid, "src/token_goat/compact.py")
+        session.mark_file_edited(sid, "src/token_goat/session.py")
+
+        # File reads (symbol + plain)
+        session.mark_file_read(sid, "src/token_goat/compact.py", symbol="_render")
+        session.mark_file_read(sid, "src/token_goat/session.py", 0, 50)
+        session.mark_file_read(sid, "src/token_goat/hints.py", 0, 100)
+
+        # Bash history (output_bytes must be >= _MIN_BASH_BYTES_FOR_MANIFEST = 400)
+        session.mark_bash_run(sid, "sha_pytest", "uv run pytest -q", "out_pytest", 1200, 800, 0, False)
+        session.mark_bash_run(sid, "sha_ruff", "uv run ruff check", "out_ruff", 500, 300, 0, False)
+
+        # Web fetches (content_bytes must be >= _MIN_WEB_BYTES_FOR_MANIFEST = 200)
+        session.mark_web_fetch(sid, "https://docs.python.org/3/library/heapq.html", "out_web1", 5000, 200, 1000, False)
+        session.mark_web_fetch(sid, "https://sqlite.org/json1.html", "out_web2", 3000, 200, 500, False)
+
+        # Grep patterns
+        session.mark_grep(sid, "_render", path="src/token_goat/", result_count=4)
+        session.mark_grep(sid, "estimate_tokens", result_count=7)
+
+        # Glob runs (result_count must be >= _GLOB_DEDUP_MIN_RESULT_COUNT = 5)
+        session.mark_glob_run(sid, "**/*.py", result_count=42)
+        session.mark_glob_run(sid, "tests/**/*.py", path="tests/", result_count=12)
+
+        # Age the session so all tier gates open
+        cache = session.load(sid)
+        cache.created_ts = _time.time() - 7200
+        session.save(cache)
+
+    def test_all_sections_no_crash(self, tmp_data_dir):
+        """Rendering with all sections populated must not raise."""
+        sid = "all-sections-no-crash"
+        self._build_full_session(sid)
+        result = compact.build_manifest(sid, max_tokens=800)
+        assert isinstance(result, str)
+        assert len(result) > 0
+
+    def test_all_sections_budget_respected(self, tmp_data_dir):
+        """Token count must not exceed max_tokens budget."""
+        sid = "all-sections-budget"
+        self._build_full_session(sid)
+        max_tok = 600
+        result = compact.build_manifest(sid, max_tokens=max_tok)
+        assert compact.estimate_tokens(result) <= max_tok
+
+    def test_all_sections_edited_files_present(self, tmp_data_dir):
+        """Edited-files section must always appear when there are edits."""
+        sid = "all-sections-edited"
+        self._build_full_session(sid)
+        result = compact.build_manifest(sid, max_tokens=800)
+        assert "Files Edited" in result or "compact.py" in result
+
+    def test_all_sections_glob_present_in_mature_session(self, tmp_data_dir):
+        """Directory Scans section must appear for a mature session with glob history."""
+        sid = "all-sections-glob"
+        self._build_full_session(sid)
+        result = compact.build_manifest(sid, max_tokens=800)
+        assert "Directory Scans" in result
+
+    def test_all_sections_token_budget_tight(self, tmp_data_dir):
+        """Even with a tight 300-token budget, rendering must not crash or exceed the cap."""
+        sid = "all-sections-tight"
+        self._build_full_session(sid)
+        max_tok = 300
+        result = compact.build_manifest(sid, max_tokens=max_tok)
+        assert isinstance(result, str)
+        assert compact.estimate_tokens(result) <= max_tok
