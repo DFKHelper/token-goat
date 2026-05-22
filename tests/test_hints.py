@@ -1129,10 +1129,12 @@ class TestLegacySessionJsonFromOlderVersion:
 
 
 class TestReadCountSuppression:
-    """Line-range dedup hints are suppressed once read_count reaches the threshold.
+    """At read_count >= threshold, a one-time surgical-read nudge replaces the nag.
 
     A file read 5+ times is a "working file" — the agent is clearly iterating
-    on it and the hint isn't changing behaviour. Suppressing it saves tokens.
+    on it. Instead of suppressing the hint entirely (which loses guidance) or
+    repeating the nag (which wastes tokens), we emit a stable surgical-read
+    suggestion once; the fingerprint dedup in pre_read kills repeats.
     The symbol-only hint (no line_ranges) is exempt: it's a suggestion, not a nag.
     """
 
@@ -1152,15 +1154,32 @@ class TestReadCountSuppression:
         assert hint is not None
         assert "cached" in hint
 
-    def test_read_count_5_returns_none(self, tmp_data_dir):
-        """read_count=5 hits the threshold — line-range hint suppressed."""
+    def test_read_count_5_emits_surgical_nudge(self, tmp_data_dir):
+        """read_count=5 hits the threshold — surgical-read nudge emitted instead of nag."""
         sid, path = "s_rc5", "C:/proj/rc5.py"
         self._make_entry_with_read_count(sid, path, 5)
 
         hint = build_read_hint(
             session_id=sid, file_path=path, offset=0, limit=200, cwd=None,
         )
-        assert hint is None
+        assert hint is not None
+        assert "token-goat read" in hint
+        assert "frequently" in hint.lower() or "surgical" in hint.lower()
+
+    def test_surgical_nudge_text_is_stable_across_read_counts(self, tmp_data_dir):
+        """Nudge text does not include the dynamic read count so fingerprint stays stable."""
+        # Use paths with no digits so digit-checks are unambiguous.
+        sid_a, path_a = "s_nudge_alpha", "C:/proj/alpha.py"
+        sid_b, path_b = "s_nudge_beta", "C:/proj/beta.py"
+        self._make_entry_with_read_count(sid_a, path_a, 5)
+        self._make_entry_with_read_count(sid_b, path_b, 7)
+
+        hint_a = build_read_hint(session_id=sid_a, file_path=path_a, offset=0, limit=200, cwd=None)
+        hint_b = build_read_hint(session_id=sid_b, file_path=path_b, offset=0, limit=200, cwd=None)
+        assert hint_a is not None and hint_b is not None
+        # The read counts (5 and 7) must not appear in the hint text — stable fingerprint.
+        assert "5" not in str(hint_a)
+        assert "7" not in str(hint_b)
 
     def test_read_count_10_returns_sentinel_hint(self, tmp_data_dir):
         """read_count=10 triggers full-file sentinel hint (not suppressed).
