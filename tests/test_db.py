@@ -577,6 +577,66 @@ def test_symbol_lookup_under_50ms_with_10k_symbols(tmp_data_dir):
     assert max_ms < 200, f"max lookup too slow: {max_ms:.2f}ms"
 
 
+# ---------------------------------------------------------------------------
+# 20. _open_with_retry — exponential backoff on transient DB locks
+# ---------------------------------------------------------------------------
+
+def test_open_with_retry_succeeds_after_transient_lock(tmp_data_dir):
+    """_open_with_retry() must retry and return a connection when the first
+    attempt raises a "database is locked" OperationalError.
+    """
+    real_conn = sqlite3.connect(":memory:", isolation_level=None)
+    real_conn.row_factory = sqlite3.Row
+    call_count = 0
+
+    def fake_rebuild(path, *, load_vec=True):
+        nonlocal call_count
+        call_count += 1
+        if call_count == 1:
+            raise sqlite3.OperationalError("database is locked")
+        return real_conn
+
+    with patch("token_goat.db._open_with_rebuild", side_effect=fake_rebuild):
+        conn = db._open_with_retry(tmp_data_dir / "test.db", base_delay=0.0)
+
+    assert call_count == 2, f"expected 2 attempts, got {call_count}"
+    assert conn is real_conn
+
+
+def test_open_with_retry_raises_after_max_attempts(tmp_data_dir):
+    """_open_with_retry() must raise OperationalError after exhausting all
+    retry attempts when every attempt returns a lock error.
+    """
+    with patch(
+        "token_goat.db._open_with_rebuild",
+        side_effect=sqlite3.OperationalError("database is locked"),
+    ), pytest.raises(sqlite3.OperationalError, match="locked"):
+        db._open_with_retry(
+            tmp_data_dir / "test.db",
+            max_attempts=3,
+            base_delay=0.0,
+        )
+
+
+def test_open_with_retry_does_not_retry_non_lock_errors(tmp_data_dir):
+    """_open_with_retry() must NOT retry when the error is not a lock/busy
+    error — it must propagate the original exception immediately on the first
+    attempt to avoid masking genuine failures (e.g. corrupt DB).
+    """
+    call_count = 0
+
+    def fake_rebuild(path, *, load_vec=True):
+        nonlocal call_count
+        call_count += 1
+        raise sqlite3.OperationalError("no such table: symbols")
+
+    with patch("token_goat.db._open_with_rebuild", side_effect=fake_rebuild), \
+            pytest.raises(sqlite3.OperationalError, match="no such table"):
+        db._open_with_retry(tmp_data_dir / "test.db", base_delay=0.0)
+
+    assert call_count == 1, f"non-lock error must not be retried; got {call_count} attempts"
+
+
 def test_write_file_index_uses_transaction(tmp_data_dir):
     """write_file_index() must wrap its DELETE + INSERT + executemany calls in
     a single explicit transaction.  Without it, each statement is a separate
