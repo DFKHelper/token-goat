@@ -7,6 +7,7 @@ from unittest.mock import patch
 
 from token_goat import db, session
 from token_goat.hints import (
+    _BASH_DEDUP_GREP_SUGGEST_BYTES,
     _BASH_DEDUP_LIGHT_MAX_BYTES,
     _BASH_DEDUP_MIN_BYTES,
     LARGE_FILE_LINE_THRESHOLD,
@@ -1701,3 +1702,69 @@ class TestBashDedupLightOutput:
         # Full hint: uses comma-formatted bytes like "1,000B"; light uses "1000B"
         assert "1,000B" in hint
         assert "bash-output" in hint
+
+
+# ---------------------------------------------------------------------------
+# TestBashDedupGrepSuggest — --grep PATTERN suggestion for large outputs
+# ---------------------------------------------------------------------------
+
+
+class TestBashDedupGrepSuggest:
+    """Large cached outputs include a --grep PATTERN suggestion in the hint.
+
+    At _BASH_DEDUP_GREP_SUGGEST_BYTES (5000) the output is ~1250 tokens.
+    Loading it whole when only a few lines are needed wastes significant
+    context; the --grep suffix costs ~8 tokens and can save hundreds.
+    """
+
+    def _record(self, sid: str, cmd: str, *, stdout_bytes: int) -> None:
+        from token_goat import bash_cache
+
+        cmd_sha = bash_cache.command_hash(cmd)
+        session.mark_bash_run(
+            sid,
+            cmd_sha,
+            cmd[:120],
+            f"out_{cmd_sha[:8]}",
+            stdout_bytes=stdout_bytes,
+            stderr_bytes=0,
+            exit_code=0,
+            truncated=False,
+        )
+
+    def test_below_grep_threshold_no_grep_suffix(self, tmp_data_dir):
+        """Outputs below 5000 bytes do not include --grep suggestion."""
+        sid = "s_grep_below"
+        cmd = "uv run pytest tests/test_hints.py -q"
+        self._record(sid, cmd, stdout_bytes=_BASH_DEDUP_GREP_SUGGEST_BYTES - 1)
+        hint = build_bash_dedup_hint(session_id=sid, command=cmd)
+        assert hint is not None
+        assert "--grep" not in hint
+
+    def test_at_grep_threshold_includes_grep_suffix(self, tmp_data_dir):
+        """Outputs at exactly 5000 bytes include --grep suggestion."""
+        sid = "s_grep_at"
+        cmd = "uv run pytest tests/ -v --tb=long"
+        self._record(sid, cmd, stdout_bytes=_BASH_DEDUP_GREP_SUGGEST_BYTES)
+        hint = build_bash_dedup_hint(session_id=sid, command=cmd)
+        assert hint is not None
+        assert "--grep" in hint
+        assert "PATTERN" in hint
+
+    def test_above_grep_threshold_includes_grep_suffix(self, tmp_data_dir):
+        """Outputs well above 5000 bytes also include --grep suggestion."""
+        sid = "s_grep_above"
+        cmd = "git log --oneline --all"
+        self._record(sid, cmd, stdout_bytes=20000)
+        hint = build_bash_dedup_hint(session_id=sid, command=cmd)
+        assert hint is not None
+        assert "--grep" in hint
+
+    def test_light_hint_never_gets_grep_suffix(self, tmp_data_dir):
+        """Light hint (200-999 bytes) never gets --grep even if threshold were met."""
+        sid = "s_grep_light"
+        cmd = "git status"
+        self._record(sid, cmd, stdout_bytes=_BASH_DEDUP_LIGHT_MAX_BYTES - 100)
+        hint = build_bash_dedup_hint(session_id=sid, command=cmd)
+        assert hint is not None
+        assert "--grep" not in hint
