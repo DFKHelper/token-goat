@@ -788,3 +788,74 @@ class TestFormatGlobEntry:
     def test_no_count_when_none(self):
         line = compact._format_glob_entry(self._make_entry("**/*.go"))
         assert "files" not in line
+
+
+class TestSelectTopEntries:
+    """_select_top_entries shared helper: defensive typing and edge cases."""
+
+    def _make_obj(self, size, ts=0.0, exclude=False):
+        """Simple object with configurable size, ts, and exclude flag."""
+        from types import SimpleNamespace
+        return SimpleNamespace(size=size, ts=ts, exclude=exclude)
+
+    def _size_fn(self, e):
+        return e.size
+
+    def _exclude_fn(self, e):
+        return e.exclude
+
+    def test_non_dict_input_returns_empty(self):
+        assert compact._select_top_entries(None, 0, self._size_fn, 5) == []  # type: ignore[arg-type]
+        assert compact._select_top_entries("not-a-dict", 0, self._size_fn, 5) == []  # type: ignore[arg-type]
+        assert compact._select_top_entries([], 0, self._size_fn, 5) == []  # type: ignore[arg-type]
+
+    def test_empty_dict_returns_empty(self):
+        assert compact._select_top_entries({}, 0, self._size_fn, 5) == []
+
+    def test_below_min_bytes_filtered(self):
+        history = {"a": self._make_obj(size=10), "b": self._make_obj(size=5)}
+        result = compact._select_top_entries(history, min_bytes=50, size_fn=self._size_fn, max_n=10)
+        assert result == []
+
+    def test_above_min_bytes_included(self):
+        obj = self._make_obj(size=100)
+        result = compact._select_top_entries({"a": obj}, min_bytes=50, size_fn=self._size_fn, max_n=10)
+        assert len(result) == 1
+        assert result[0] is obj
+
+    def test_exclude_fn_removes_entries(self):
+        keep = self._make_obj(size=100, exclude=False)
+        drop = self._make_obj(size=100, exclude=True)
+        result = compact._select_top_entries(
+            {"a": keep, "b": drop},
+            min_bytes=0, size_fn=self._size_fn, max_n=10,
+            exclude_fn=self._exclude_fn,
+        )
+        assert result == [keep]
+
+    def test_exclude_fn_none_keeps_all(self):
+        objs = {str(i): self._make_obj(size=100, ts=float(i)) for i in range(5)}
+        result = compact._select_top_entries(objs, min_bytes=0, size_fn=self._size_fn, max_n=10)
+        assert len(result) == 5
+
+    def test_max_n_caps_result(self):
+        objs = {str(i): self._make_obj(size=100, ts=float(i)) for i in range(20)}
+        result = compact._select_top_entries(objs, min_bytes=0, size_fn=self._size_fn, max_n=5)
+        assert len(result) == 5
+
+    def test_returns_most_recent_by_ts(self):
+        objs = {str(i): self._make_obj(size=100, ts=float(i)) for i in range(10)}
+        result = compact._select_top_entries(objs, min_bytes=0, size_fn=self._size_fn, max_n=3)
+        tss = {e.ts for e in result}
+        assert tss == {7.0, 8.0, 9.0}
+
+    def test_missing_ts_defaults_to_zero(self):
+        """Entries with no ts attribute rank last (ts defaults to 0.0 via getattr)."""
+        from types import SimpleNamespace
+        no_ts = SimpleNamespace(size=200)  # no .ts attribute
+        with_ts = self._make_obj(size=100, ts=5.0)
+        result = compact._select_top_entries(
+            {"a": with_ts, "b": no_ts},
+            min_bytes=0, size_fn=lambda e: getattr(e, "size", 0), max_n=1,
+        )
+        assert result[0] is with_ts
