@@ -3678,3 +3678,32 @@ class TestEstimateTokensDirect:
         result = compact.estimate_tokens("a" * 300)
         # The formula is max(1, len//3 + 1); exact: 300//3 + 1 = 101
         assert 90 <= result <= 115
+
+
+class TestCapLine:
+    """Tests for _cap_line: enforce 120-char line-length cap."""
+
+    def test_short_line_unchanged(self):
+        """Lines under 120 chars are returned unchanged."""
+        short = "- this is a short line"
+        assert compact._cap_line(short) == short
+
+    def test_exact_120_char_line_unchanged(self):
+        """A line of exactly 120 chars is unchanged."""
+        exact = "x" * 120
+        assert compact._cap_line(exact) == exact
+
+    def test_121_char_line_capped_with_ellipsis(self):
+        """A 121-char line is capped to 120 chars with ellipsis at the end."""
+        long_line = "x" * 121
+        result = compact._cap_line(long_line)
+        assert len(result) == 120
+        assert result.endswith("…")
+        assert result == ("x" * 119) + "…"
+
+    def test_very_long_line_capped(self):
+        """Very long lines (>120) are capped to exactly 120 with ellipsis."""
+        very_long = "x" * 300
+        result = compact._cap_line(very_long)
+        assert len(result) == 120
+        assert result == ("x" * 119) + "…"

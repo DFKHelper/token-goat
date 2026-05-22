@@ -1594,6 +1594,25 @@ def build_manifest_with_count(
     return manifest, n_events
 
 
+def _cap_line(line: str, max_len: int = 120) -> str:
+    """Cap a line to max_len characters, truncating with '…' if exceeded.
+
+    If the line is longer than *max_len*, returns ``line[:max_len-1] + "…"``.
+    Otherwise returns *line* unchanged.  Header lines (starting with '###')
+    are never capped — they are structural and must be preserved whole.
+
+    Args:
+        line: The line to cap.
+        max_len: Maximum line length (default 120).
+
+    Returns:
+        The original line, or a truncated version with ellipsis.
+    """
+    if len(line) <= max_len:
+        return line
+    return line[: max_len - 1] + "…"
+
+
 def _render_section(
     header: str,
     entries: list[Any],
@@ -1611,6 +1630,9 @@ def _render_section(
         - line_1
         - line_2
 
+    Content lines are capped at 120 characters to guarantee predictable token
+    use; header lines are never capped.
+
     Sections with token-budget loops, sub-sections, or non-trivial formatting
     keep their own inline implementation in :func:`_render`.
     """
@@ -1620,7 +1642,7 @@ def _render_section(
     for entry in entries:
         line = fmt(entry)
         if line:
-            lines.append(line)
+            lines.append(_cap_line(line))
     return lines
 
 
