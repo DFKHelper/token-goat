@@ -1606,3 +1606,123 @@ class TestLegacyHighCapSessionLoad:
         )
         cache = session.load(sid)
         assert len(cache.bash_history) <= session.BASH_HISTORY_MAX
+
+
+class TestSessionSchemaMigration:
+    """Schema migration for older session JSON files missing new fields."""
+
+    def test_migrate_session_adds_missing_edited_files(self, tmp_data_dir):
+        """_migrate_session adds empty edited_files dict when missing."""
+        old_data = {
+            "session_id": "test-migrate-1",
+            "started_ts": time.time(),
+            "last_activity_ts": time.time(),
+            "files": {},
+        }
+        migrated = session._migrate_session(old_data)
+        assert "edited_files" in migrated
+        assert migrated["edited_files"] == {}
+
+    def test_migrate_session_adds_missing_glob_history(self, tmp_data_dir):
+        """_migrate_session adds empty glob_history list when missing."""
+        old_data = {
+            "session_id": "test-migrate-2",
+            "started_ts": time.time(),
+            "last_activity_ts": time.time(),
+            "files": {},
+        }
+        migrated = session._migrate_session(old_data)
+        assert "glob_history" in migrated
+        assert migrated["glob_history"] == []
+
+    def test_migrate_session_adds_symbols_ts_to_file_entries(self, tmp_data_dir):
+        """_migrate_session adds empty symbols_ts to each FileEntry."""
+        old_data = {
+            "session_id": "test-migrate-3",
+            "started_ts": time.time(),
+            "last_activity_ts": time.time(),
+            "files": {
+                "src/foo.py": {
+                    "rel_or_abs": "src/foo.py",
+                    "last_read_ts": time.time(),
+                    "read_count": 1,
+                    # symbols_ts missing
+                }
+            },
+        }
+        migrated = session._migrate_session(old_data)
+        file_entry = migrated["files"]["src/foo.py"]
+        assert "symbols_ts" in file_entry
+        assert file_entry["symbols_ts"] == {}
+
+    def test_migrate_session_adds_last_edit_ts_to_file_entries(self, tmp_data_dir):
+        """_migrate_session adds last_edit_ts=0.0 to each FileEntry."""
+        old_data = {
+            "session_id": "test-migrate-4",
+            "started_ts": time.time(),
+            "last_activity_ts": time.time(),
+            "files": {
+                "src/bar.py": {
+                    "rel_or_abs": "src/bar.py",
+                    "last_read_ts": time.time(),
+                    "read_count": 2,
+                    # last_edit_ts missing
+                }
+            },
+        }
+        migrated = session._migrate_session(old_data)
+        file_entry = migrated["files"]["src/bar.py"]
+        assert "last_edit_ts" in file_entry
+        assert file_entry["last_edit_ts"] == 0.0
+
+    def test_old_session_without_glob_history_loads_fine(self, tmp_data_dir):
+        """Loading an old session JSON missing glob_history succeeds."""
+        sid = "old-no-glob-history"
+        session.load(sid)
+        # Mark a file read to trigger a save
+        session.mark_file_read(sid, "test.py", offset=0, limit=10)
+        # Load the session and verify glob_history exists
+        loaded = session.load(sid)
+        assert loaded.glob_history == []
+        assert len(loaded.files) == 1
+
+    def test_old_session_without_symbols_ts_on_file_entry_loads_fine(self, tmp_data_dir):
+        """Loading an old session JSON with FileEntry missing symbols_ts succeeds."""
+        sid = "old-no-symbols-ts"
+        # Mark a file read with a symbol
+        session.mark_file_read(sid, "src/module.py", symbol="MyClass")
+        loaded = session.load(sid)
+        entry = loaded.files.get("src/module.py")
+        assert entry is not None
+        assert isinstance(entry.symbols_ts, dict)  # Migration added field
+        assert "MyClass" in entry.symbols_read
+
+    def test_fully_modern_session_unaffected_by_migration(self, tmp_data_dir):
+        """Loading a fully modern session (with all fields) remains unchanged."""
+        sid = "modern-session"
+        # Create a full session by writing multiple operations
+        session.mark_file_read(sid, "src/test.py", offset=0, limit=50)
+        session.mark_file_edited(sid, "src/test.py")
+        session.mark_glob_run(sid, "**/*.py", result_count=42)
+        loaded = session.load(sid)
+        # Verify all new fields exist and are intact
+        assert isinstance(loaded.glob_history, list)
+        assert len(loaded.glob_history) == 1
+        assert loaded.glob_history[0].pattern == "**/*.py"
+        assert loaded.edited_files == {"src/test.py": 1}
+        entry = loaded.files["src/test.py"]
+        assert isinstance(entry.symbols_ts, dict)
+        assert entry.last_edit_ts > 0.0
+
+    def test_missing_edited_files_defaults_to_empty_list(self, tmp_data_dir):
+        """When edited_files is missing from old JSON, it defaults to empty dict."""
+        old_data = {
+            "session_id": "test-default-edited",
+            "started_ts": time.time(),
+            "last_activity_ts": time.time(),
+            "files": {},
+            # edited_files not present
+        }
+        migrated = session._migrate_session(old_data)
+        cache = session.SessionCache.from_dict(migrated)
+        assert cache.edited_files == {}
