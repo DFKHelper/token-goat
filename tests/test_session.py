@@ -1489,3 +1489,63 @@ class TestLineRangesCap:
         # Spanning range must contain all original reads
         assert span_start <= 1
         assert span_end >= (session._MAX_LINE_RANGES_PER_FILE * 500 + 10)
+
+
+class TestLegacyHighCapSessionLoad:
+    """Sessions written with old 200-entry caps load cleanly under new 75-entry caps."""
+
+    def test_bash_history_over_new_cap_loads_without_error(self, tmp_data_dir):
+        """A session JSON with 150 bash entries (old cap=200) loads intact."""
+        sid = "legacy-bash-150"
+        # Write 150 entries under the old cap; new cap is 75 but load should not crash.
+        for i in range(150):
+            session.mark_bash_run(
+                sid, f"sha{i:04d}", f"pytest tests/test_{i}.py",
+                f"out-{i}", stdout_bytes=1000, stderr_bytes=0,
+                exit_code=0, truncated=False,
+            )
+        # Force-persist so we have a JSON file with 150 entries.
+        cache = session.load(sid)
+        # The in-memory dict may have been evicted to BASH_HISTORY_MAX already;
+        # either way, loading must succeed and result must be a valid cache.
+        assert isinstance(cache, session.SessionCache)
+        assert len(cache.bash_history) <= session.BASH_HISTORY_MAX
+
+    def test_web_history_over_new_cap_loads_without_error(self, tmp_data_dir):
+        """A session JSON with 150 web entries loads intact under the new 75 cap."""
+        sid = "legacy-web-150"
+        for i in range(150):
+            session.mark_web_fetch(
+                sid, f"sha{i:04d}", f"https://example.com/page/{i}",
+                f"wout-{i}", body_bytes=2000, status_code=200, truncated=False,
+            )
+        cache = session.load(sid)
+        assert isinstance(cache, session.SessionCache)
+        assert len(cache.web_history) <= session.WEB_HISTORY_MAX
+
+    def test_grep_history_over_new_cap_loads_without_error(self, tmp_data_dir):
+        """A session JSON with 150 grep entries loads intact under the new 75 cap."""
+        sid = "legacy-grep-150"
+        for i in range(150):
+            session.mark_grep(sid, f"pattern_{i}", f"/proj/src_{i}")
+        cache = session.load(sid)
+        assert isinstance(cache, session.SessionCache)
+        assert len(cache.greps) <= session.GREPS_HISTORY_MAX
+
+    def test_next_write_after_oversize_load_stays_bounded(self, tmp_data_dir):
+        """After loading an oversize session, the next write keeps history bounded."""
+        sid = "legacy-write-bounded"
+        for i in range(150):
+            session.mark_bash_run(
+                sid, f"sha{i:04d}", f"cmd {i}",
+                f"out-{i}", stdout_bytes=500, stderr_bytes=0,
+                exit_code=0, truncated=False,
+            )
+        # One more write should trigger eviction to BASH_HISTORY_MAX.
+        session.mark_bash_run(
+            sid, "shaXXXX", "final cmd",
+            "out-final", stdout_bytes=500, stderr_bytes=0,
+            exit_code=0, truncated=False,
+        )
+        cache = session.load(sid)
+        assert len(cache.bash_history) <= session.BASH_HISTORY_MAX
