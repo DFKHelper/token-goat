@@ -91,7 +91,7 @@ ignore = ["E501"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["tests"]
-addopts = "-rfe --strict-markers"
+addopts = "-rfe --strict-markers -n auto"
 
 [tool.mypy]
 python_version = "3.11"
@@ -130,3 +130,8 @@ module = [
     "networkx.*",
 ]
 ignore_missing_imports = true
+
+[dependency-groups]
+dev = [
+    "pytest-xdist>=3.8.0",
+]
