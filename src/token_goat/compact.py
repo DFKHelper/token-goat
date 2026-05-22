@@ -2130,11 +2130,19 @@ def _render(cache: SessionCache, session_id: str, max_tokens: int) -> tuple[str,
     # Young sessions (< 10 min) skip bash/web sections: few commands have run
     # and the overhead of listing them is not worth it relative to the budget.
     bash_budget = sec_budgets["bash"]
-    bash_entries = (
+    _all_bash_entries = (
         _select_top_bash_entries(getattr(cache, "bash_history", None))
         if age_tier != "young"
         else []
     )
+    # Exclude entries already listed in "Current Blockers" — showing a failed
+    # command as both a brief blocker note and a full entry with output snippet
+    # wastes manifest tokens on the same information twice.
+    _blocker_ids = {getattr(e, "output_id", None) for e in blocker_entries}
+    bash_entries = [
+        e for e in _all_bash_entries
+        if getattr(e, "output_id", None) not in _blocker_ids
+    ]
     bash_lines, bash_used = _render_budget_lines(
         "### Commands Run (cached output)",
         [_format_bash_entry(be) for be in bash_entries],
