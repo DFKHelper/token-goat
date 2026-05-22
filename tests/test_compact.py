@@ -1349,7 +1349,7 @@ class TestCommonPrefixStripping:
         ]
         result = compact._strip_common_prefix_from_sections(sections, "token_goat/")
         # Should have the prefix note inserted
-        assert any("token_goat/" in line and "(stripped)" in line for line in result)
+        assert any("token_goat/" in line and "relative to" in line for line in result)
         # Paths should be shortened (with or without exact spacing)
         joined = "\n".join(result)
         assert "compact.py" in joined
@@ -1369,9 +1369,9 @@ class TestCommonPrefixStripping:
         session.mark_file_edited(sid, "/proj/src/token_goat/hints.py")
         session.mark_file_edited(sid, "/proj/src/token_goat/session.py")
         result = compact.build_manifest(sid)
-        # Manifest should contain the prefix stripping header
+        # Manifest should contain the prefix stripping header with relative-to format
         assert "token_goat/" in result
-        assert "(stripped)" in result
+        assert "relative to" in result
         # Paths should be shortened (no "token_goat/" prefix on each line)
         assert "- ✎ compact.py" in result or "- ✎ hints.py" in result
 
@@ -1382,7 +1382,7 @@ class TestCommonPrefixStripping:
         session.mark_file_edited(sid, "/proj/src/token_goat/hints.py")
         result = compact.build_manifest(sid)
         # Should not have stripping header (not enough paths)
-        assert "(stripped)" not in result
+        assert "relative to" not in result
 
     def test_manifest_no_strip_when_no_common_prefix(self, tmp_data_dir):
         """Manifest does not strip when files don't share a common prefix."""
@@ -1392,7 +1392,7 @@ class TestCommonPrefixStripping:
         session.mark_file_edited(sid, "/proj/docs/readme.md")
         result = compact.build_manifest(sid)
         # No stripping should occur
-        assert "(stripped)" not in result
+        assert "relative to" not in result
 
     def test_manifest_no_strip_prefix_too_short(self, tmp_data_dir):
         """Manifest does not strip prefix if it's shorter than 6 characters."""
@@ -1403,7 +1403,7 @@ class TestCommonPrefixStripping:
         session.mark_file_edited(sid, "/x/y/file3.py")
         result = compact.build_manifest(sid)
         # "x/y/" is 4 chars, too short — no stripping
-        assert "(stripped)" not in result
+        assert "relative to" not in result
 
     def test_manifest_no_strip_when_prefix_covers_less_than_70_percent(self, tmp_data_dir):
         """Manifest does not strip if the prefix covers <70% of path lines."""

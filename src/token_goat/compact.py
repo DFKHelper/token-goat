@@ -693,7 +693,7 @@ def _strip_common_prefix_from_sections(
 
     # Insert the prefix note after the session line
     if session_line_idx >= 0:
-        result.insert(session_line_idx + 1, f"Paths: {common_prefix} (stripped)")
+        result.insert(session_line_idx + 1, f"(paths relative to {common_prefix})")
 
     # Process remaining lines, stripping prefix from path-bearing lines
     for i in range(session_line_idx + 1 if session_line_idx >= 0 else 0, len(sections)):
