@@ -180,6 +180,14 @@ _COLD_OUTPUT_AGE_SECS: Final[int] = 1_800  # 30 minutes
 # Maximum cold bash entries surfaced in the "Cold Outputs" manifest section.
 _MAX_COLD_OUTPUTS: Final[int] = 4
 
+# TTL for the process-level git diff stat summary cache (seconds).
+# `_get_git_diff_stat_summary` runs two git subprocesses per call; caching
+# avoids repeated invocations when build_manifest is called in quick succession
+# (e.g. `token-goat compact-hint --session-id <id>` runs, then PreCompact fires).
+_DIFF_STAT_SUMMARY_TTL: Final[float] = 30.0
+# Cache: {cwd_str → (result, monotonic_timestamp)}
+_diff_stat_summary_cache: dict[str | None, tuple[str, float]] = {}
+
 # Maximum number of failed bash commands surfaced in the "Current Blockers" section.
 # Three is enough to identify the active failure without crowding the header.
 _MAX_BLOCKER_ENTRIES: Final[int] = 3
@@ -488,6 +496,13 @@ def _get_git_diff_stat_summary(root: object) -> str:
         return ""
     try:
         root_str = root if isinstance(root, str) else str(root)
+
+        # Process-level cache: skip the subprocess when called again within TTL.
+        now = time.monotonic()
+        cached = _diff_stat_summary_cache.get(root_str)
+        if cached is not None and now - cached[1] < _DIFF_STAT_SUMMARY_TTL:
+            return cached[0]
+
         result = subprocess.run(
             ["git", "diff", "--no-color", "--stat", "HEAD"],
             cwd=root_str,
@@ -496,6 +511,7 @@ def _get_git_diff_stat_summary(root: object) -> str:
             timeout=5,
         )
         if result.returncode != 0 or not result.stdout.strip():
+            _diff_stat_summary_cache[root_str] = ("", now)
             return ""
         lines = result.stdout.strip().splitlines()
         # Keep at most 6 lines (last 5 file-stat lines + the summary line which is last).
@@ -506,7 +522,9 @@ def _get_git_diff_stat_summary(root: object) -> str:
         # Hard cap: if still too long, drop the manifest section entirely rather than
         # truncating mid-line (a partial diff stat is misleading).
         if len(output) > 300:
+            _diff_stat_summary_cache[root_str] = ("", now)
             return ""
+        _diff_stat_summary_cache[root_str] = (output, now)
         return output
     except Exception:  # noqa: BLE001
         return ""

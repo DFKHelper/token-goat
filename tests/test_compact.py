@@ -3962,3 +3962,64 @@ class TestBuildManifestTimeout:
         elapsed_float = float(elapsed_str)
         assert elapsed_float >= 9.0, \
             f"Expected elapsed >= 9.0s, got: {elapsed_float}s"
+
+
+# ---------------------------------------------------------------------------
+# compact._get_git_diff_stat_summary — process-level cache
+# ---------------------------------------------------------------------------
+
+
+class TestGitDiffStatSummaryCache:
+    """Process-level cache in _get_git_diff_stat_summary avoids repeated subprocesses."""
+
+    def _clear_cache(self):
+        compact._diff_stat_summary_cache.clear()
+
+    def test_cache_hit_skips_subprocess(self, monkeypatch, tmp_path):
+        """Second call within TTL returns cached result without re-running git."""
+        self._clear_cache()
+        call_count = 0
+
+        real_run = __import__("subprocess").run
+
+        def counting_run(cmd, **kwargs):
+            nonlocal call_count
+            if cmd[0] == "git":
+                call_count += 1
+            return real_run(cmd, **kwargs)
+
+        monkeypatch.setattr("subprocess.run", counting_run)
+        cwd = str(tmp_path)
+        compact._get_git_diff_stat_summary(cwd)
+        first_count = call_count
+        compact._get_git_diff_stat_summary(cwd)
+        # Second call must not have triggered another subprocess.run for git.
+        assert call_count == first_count, "Cache hit should skip the git subprocess"
+
+    def test_cache_expires_after_ttl(self, monkeypatch, tmp_path):
+        """Cache entry older than TTL causes a fresh subprocess call."""
+        self._clear_cache()
+        cwd = str(tmp_path)
+        # Prime the cache with a stale timestamp (TTL + 1 seconds in the past).
+        stale_ts = __import__("time").monotonic() - compact._DIFF_STAT_SUMMARY_TTL - 1
+        compact._diff_stat_summary_cache[cwd] = ("stale-result", stale_ts)
+
+        call_count = 0
+        real_run = __import__("subprocess").run
+
+        def counting_run(cmd, **kwargs):
+            nonlocal call_count
+            if cmd[0] == "git":
+                call_count += 1
+            return real_run(cmd, **kwargs)
+
+        monkeypatch.setattr("subprocess.run", counting_run)
+        compact._get_git_diff_stat_summary(cwd)
+        assert call_count >= 1, "Stale cache entry should trigger a fresh subprocess call"
+
+    def test_none_root_returns_empty_no_cache(self):
+        """None root short-circuits before touching the cache."""
+        self._clear_cache()
+        result = compact._get_git_diff_stat_summary(None)
+        assert result == ""
+        assert None not in compact._diff_stat_summary_cache
