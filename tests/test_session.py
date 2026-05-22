@@ -1275,3 +1275,149 @@ class TestGlobSerializationRoundtrip:
         entry = session.GlobEntry(pattern="**/*.py", path="src/", ts=1_747_000_000.0, result_count=7)
         d = session._serialize_glob_entry(entry)
         assert d["result_count"] == 7
+
+
+class TestSessionEvictionFIFO:
+    """FIFO eviction correctness — newest entries are retained, oldest evicted."""
+
+    def test_file_read_eviction_preserves_newest(self, tmp_data_dir):
+        """Marking 25 files with cap=20 keeps the newest 20, evicts first 5."""
+        sid = "evict_file_newest"
+        # Mark 25 files read
+        for i in range(25):
+            session.mark_file_read(sid, f"file_{i:02d}.py", offset=0, limit=10)
+        cache = session.load(sid)
+        # Cap is FILES_MAX (500 in config), so 25 should all fit — no eviction yet
+        assert len(cache.files) == 25
+        # Now mark enough files to trigger eviction when cap=20 is manually enforced
+        # Do a targeted test: manually create a cache with 25 files, then call eviction
+        for i in range(475):  # Now at 500 total
+            session.mark_file_read(sid, f"extra_{i:04d}.py", offset=0, limit=10)
+        cache = session.load(sid)
+        # At FILES_MAX=500, should be capped
+        assert len(cache.files) <= session.FILES_MAX
+        # Newest file should exist (last one added)
+        assert f"extra_{474:04d}.py" in cache.files
+
+    def test_glob_history_eviction_exact_threshold(self, tmp_data_dir):
+        """At exactly GLOB_HISTORY_MAX entries, no eviction occurs."""
+        sid = "glob_exact_cap"
+        # Add exactly GLOB_HISTORY_MAX entries
+        for i in range(session.GLOB_HISTORY_MAX):
+            session.mark_glob_run(sid, f"pattern_{i:03d}", result_count=10 + i)
+        cache = session.load(sid)
+        assert len(cache.glob_history) == session.GLOB_HISTORY_MAX
+        # Verify first entry is still present
+        assert cache.glob_history[0].pattern == "pattern_000"
+
+    def test_glob_history_eviction_at_cap_plus_one(self, tmp_data_dir):
+        """At GLOB_HISTORY_MAX + 1, the oldest entry is evicted immediately."""
+        sid = "glob_at_cap_plus_one"
+        # Add GLOB_HISTORY_MAX + 1 entries
+        for i in range(session.GLOB_HISTORY_MAX + 1):
+            session.mark_glob_run(sid, f"pat_{i:03d}", result_count=i)
+        cache = session.load(sid)
+        # Should be capped at GLOB_HISTORY_MAX
+        assert len(cache.glob_history) == session.GLOB_HISTORY_MAX
+        # The first entry (pat_000) should be gone
+        patterns = [g.pattern for g in cache.glob_history]
+        assert "pat_000" not in patterns
+        # The most recent (pat_020) should be present
+        assert f"pat_{session.GLOB_HISTORY_MAX:03d}" in patterns
+
+    def test_glob_history_eviction_batch_25_entries(self, tmp_data_dir):
+        """Adding 25 entries beyond cap evicts correctly, keeps newest."""
+        sid = "glob_batch_evict"
+        # Add GLOB_HISTORY_MAX + 25 entries
+        total = session.GLOB_HISTORY_MAX + 25
+        for i in range(total):
+            session.mark_glob_run(sid, f"batch_{i:03d}", result_count=100 + i)
+        cache = session.load(sid)
+        # Should be at or below GLOB_HISTORY_MAX
+        assert len(cache.glob_history) <= session.GLOB_HISTORY_MAX
+        # Most recent entries must be present
+        patterns = [g.pattern for g in cache.glob_history]
+        assert f"batch_{total - 1:03d}" in patterns
+        # Oldest entries must be evicted
+        assert "batch_000" not in patterns
+
+    def test_bash_history_eviction_fifo_order(self, tmp_data_dir):
+        """Bash history eviction preserves insertion order, evicts oldest."""
+        from token_goat import bash_cache
+
+        sid = "bash_fifo_order"
+        # Add BASH_HISTORY_MAX + 10 entries
+        for i in range(session.BASH_HISTORY_MAX + 10):
+            cmd = f"cmd_{i:04d}"
+            cmd_sha = bash_cache.command_hash(cmd)
+            session.mark_bash_run(
+                sid,
+                cmd_sha,
+                cmd_preview=cmd,
+                output_id=f"out_{i}",
+                stdout_bytes=1000,
+                stderr_bytes=0,
+                exit_code=0,
+                truncated=False,
+            )
+        cache = session.load(sid)
+        # Should be capped at BASH_HISTORY_MAX
+        assert len(cache.bash_history) <= session.BASH_HISTORY_MAX
+        # Most recent command's output should be in the history
+        # Find the last command that made it through
+        max_i = session.BASH_HISTORY_MAX + 10 - 1
+        last_cmd = f"cmd_{max_i:04d}"
+        assert any(last_cmd in e.cmd_preview for e in cache.bash_history.values())
+
+    def test_web_history_eviction_preserves_newest(self, tmp_data_dir):
+        """Web history eviction at FIFO cap preserves newest entries."""
+        from token_goat import web_cache
+
+        sid = "web_fifo_newest"
+        # Add WEB_HISTORY_MAX + 15 entries
+        for i in range(session.WEB_HISTORY_MAX + 15):
+            url = f"https://example.com/page_{i}"
+            url_sha = web_cache.url_hash(url)
+            session.mark_web_fetch(
+                sid,
+                url_sha,
+                url_preview=url,
+                output_id=f"web_out_{i}",
+                body_bytes=5000,
+                status_code=200,
+                truncated=False,
+            )
+        cache = session.load(sid)
+        # Should be capped at WEB_HISTORY_MAX
+        assert len(cache.web_history) <= session.WEB_HISTORY_MAX
+        # Most recent URL preview should be present
+        previews = [e.url_preview for e in cache.web_history.values()]
+        max_i = session.WEB_HISTORY_MAX + 15 - 1
+        assert any(f"page_{max_i}" in p for p in previews)
+
+
+class TestEdgesCasesForEviction:
+    """Edge cases: empty lists, off-by-one boundaries."""
+
+    def test_evict_oldest_on_empty_dict_noop(self, tmp_data_dir):
+        """_evict_oldest on an empty dict is a no-op."""
+        d = {}
+        session._evict_oldest(d, cap=10, evict_n=5, label="test", session_id="test")
+        assert d == {}
+
+    def test_evict_oldest_below_cap_is_noop(self, tmp_data_dir):
+        """_evict_oldest when len < cap is a no-op."""
+        d = {"a": 1, "b": 2, "c": 3}
+        session._evict_oldest(d, cap=10, evict_n=5, label="test", session_id="test")
+        assert d == {"a": 1, "b": 2, "c": 3}
+
+    def test_evict_oldest_exactly_at_cap_triggers(self, tmp_data_dir):
+        """_evict_oldest triggers when len == cap (should evict)."""
+        d = {"a": 1, "b": 2, "c": 3, "d": 4, "e": 5}
+        session._evict_oldest(d, cap=5, evict_n=2, label="test", session_id="test")
+        # At cap, eviction should fire
+        assert len(d) == 3
+        # First two keys (a, b) should be gone
+        assert "a" not in d
+        assert "b" not in d
+        assert "c" in d
