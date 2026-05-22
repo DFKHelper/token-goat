@@ -395,6 +395,23 @@ def _build_read_hint_inner(
         return hint
 
     # 2. Not cached — consider "large file with indexed symbols" suggestion.
+    # Fast-path: a file smaller than LARGE_FILE_LINE_THRESHOLD * _BYTES_PER_LINE_ESTIMATE
+    # bytes can never have enough lines to trigger a hint.  Skip the project-find + DB
+    # query entirely for small files (the common case on the hot pre-read path).
+    # Stat failure (missing file, permission error) falls through to _hint_from_index
+    # so it can handle those cases with its existing logic.
+    _stat_size: int | None = None
+    try:
+        _stat_size = Path(file_path).stat().st_size
+        if _stat_size < LARGE_FILE_LINE_THRESHOLD * _BYTES_PER_LINE_ESTIMATE:
+            _LOG.debug(
+                "build_read_hint: stat-skip index for %s (%dB < %dB threshold)",
+                fname, _stat_size, LARGE_FILE_LINE_THRESHOLD * _BYTES_PER_LINE_ESTIMATE,
+            )
+            return None
+    except OSError:
+        pass
+
     hint = _hint_from_index(file_path, cwd, req_start, req_end, fname=fname)
     if hint is not None:
         _LOG.debug("build_read_hint: index hint for %s (large file suggestion)", fname)
