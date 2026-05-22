@@ -7,12 +7,15 @@ from unittest.mock import patch
 
 from token_goat import db, session
 from token_goat.hints import (
+    _BASH_DEDUP_LIGHT_MAX_BYTES,
+    _BASH_DEDUP_MIN_BYTES,
     LARGE_FILE_LINE_THRESHOLD,
     STALE_READ_AGE_SECONDS,
     _est_tokens_from_chars,
     _est_tokens_from_lines,
     _get_indexed_symbols_and_line_count,
     _line_count,
+    build_bash_dedup_hint,
     build_read_hint,
 )
 
@@ -1604,3 +1607,97 @@ class TestHintThrottleByFileSize:
         assert "full file" in hint
         assert "15" in hint  # read count
         assert "func1" in hint or "func2" in hint  # symbols should be in suffix
+
+
+# ---------------------------------------------------------------------------
+# TestBashDedupLightOutput — light-output dedup threshold (200–999 bytes)
+# ---------------------------------------------------------------------------
+
+
+class TestBashDedupLightOutput:
+    """Bash dedup hint fires for outputs >= 200 bytes (not just >= 1000).
+
+    Small outputs (200–999 bytes) get a compact one-liner hint so the hint
+    cost (~12 tokens) stays net-positive against the ~50–250 tokens avoided.
+    """
+
+    def _record(
+        self,
+        sid: str,
+        cmd: str,
+        *,
+        stdout_bytes: int,
+        stderr_bytes: int = 0,
+        exit_code: int = 0,
+    ) -> str:
+        from token_goat import bash_cache
+
+        cmd_sha = bash_cache.command_hash(cmd)
+        output_id = f"out_{cmd_sha[:8]}"
+        session.mark_bash_run(
+            sid,
+            cmd_sha,
+            cmd[:120],
+            output_id,
+            stdout_bytes=stdout_bytes,
+            stderr_bytes=stderr_bytes,
+            exit_code=exit_code,
+            truncated=False,
+        )
+        return cmd_sha
+
+    def test_below_min_threshold_no_hint(self, tmp_data_dir):
+        """Outputs below _BASH_DEDUP_MIN_BYTES (200) produce no hint."""
+        sid = "s_light_below"
+        cmd = "git status"
+        self._record(sid, cmd, stdout_bytes=_BASH_DEDUP_MIN_BYTES - 1)
+        hint = build_bash_dedup_hint(session_id=sid, command=cmd)
+        assert hint is None
+
+    def test_at_min_threshold_emits_light_hint(self, tmp_data_dir):
+        """Outputs exactly at _BASH_DEDUP_MIN_BYTES emit the compact hint."""
+        sid = "s_light_at_min"
+        cmd = "git status --short"
+        self._record(sid, cmd, stdout_bytes=_BASH_DEDUP_MIN_BYTES)
+        hint = build_bash_dedup_hint(session_id=sid, command=cmd)
+        assert hint is not None
+        assert "cached" in hint
+        assert "bash-output" in hint
+
+    def test_light_hint_is_compact(self, tmp_data_dir):
+        """Light hint (200–999 bytes) is shorter than the full hint."""
+        sid = "s_light_compact"
+        cmd = "python --version"
+        self._record(sid, cmd, stdout_bytes=300)
+        hint = build_bash_dedup_hint(session_id=sid, command=cmd)
+        assert hint is not None
+        # Light hint must not contain the verbose "tokens" or "WARNING" markers
+        assert "tokens" not in hint
+        assert "WARNING" not in hint
+        assert "bash-output" in hint
+
+    def test_at_light_max_boundary_still_light(self, tmp_data_dir):
+        """Outputs at exactly _BASH_DEDUP_LIGHT_MAX_BYTES still use light hint."""
+        sid = "s_light_boundary"
+        cmd = "ls -la"
+        self._record(sid, cmd, stdout_bytes=_BASH_DEDUP_LIGHT_MAX_BYTES)
+        hint = build_bash_dedup_hint(session_id=sid, command=cmd)
+        assert hint is not None
+        assert "tokens" not in hint
+        assert "bash-output" in hint
+
+    def test_above_light_max_uses_full_hint(self, tmp_data_dir):
+        """Outputs above _BASH_DEDUP_LIGHT_MAX_BYTES use the detailed hint.
+
+        The full hint formats byte counts with thousands-comma (e.g. "1,000B")
+        whereas the light hint uses plain integers ("1000B"). This is the
+        structural discriminator between the two variants.
+        """
+        sid = "s_full_hint"
+        cmd = "uv run pytest tests/ -v"
+        self._record(sid, cmd, stdout_bytes=_BASH_DEDUP_LIGHT_MAX_BYTES + 1)
+        hint = build_bash_dedup_hint(session_id=sid, command=cmd)
+        assert hint is not None
+        # Full hint: uses comma-formatted bytes like "1,000B"; light uses "1000B"
+        assert "1,000B" in hint
+        assert "bash-output" in hint

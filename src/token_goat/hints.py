@@ -930,9 +930,11 @@ def build_bash_dedup_hint(
     )
 
 
-# Minimum output size before the bash dedup hint fires.  The hint itself costs
-# ~40 tokens; 1000 bytes ≈ 250 tokens saved, yielding a clear positive margin.
-_BASH_DEDUP_MIN_BYTES: int = 1000
+# Minimum output size before the bash dedup hint fires.  At 200 bytes the output
+# is ~50 tokens; a short hint costs ~12 tokens, so the net saving is positive.
+_BASH_DEDUP_MIN_BYTES: int = 200
+# Below this threshold use a compact one-liner hint to keep net savings positive.
+_BASH_DEDUP_LIGHT_MAX_BYTES: int = 999
 
 
 def _build_bash_dedup_hint_inner(
@@ -978,6 +980,11 @@ def _build_bash_dedup_hint_inner(
     exit_str = "" if entry.exit_code is None else f" exit={entry.exit_code}"
     run_count = getattr(entry, "run_count", 1)
     recall_cmd = f"token-goat bash-output {entry.output_id}"
+
+    if total_bytes <= _BASH_DEDUP_LIGHT_MAX_BYTES:
+        hint_text = f"`{cmd_short}` cached (age ~{int(age)}s, {total_bytes}B{exit_str}). `{recall_cmd}`"
+        return ReadHint(hint_text, tokens_avoided)
+
     if run_count >= 3:
         hint_text = (
             f"WARNING: `{cmd_short}` ran {run_count}x — loop? "
