@@ -5,7 +5,7 @@ Coverage targets:
 - read_replacement.py: _coerce_line / _coerce_end_line isinstance guards — int, None, non-int
 - compact.py: _BY_READ_COUNT attrgetter — heapq.nlargest sorts by read_count correctly
 - session.py: _merge_ranges len==1 fast path — single-range case works
-- session.py: mark_grep — length cap at 1024 truncates oversized patterns
+- session.py: mark_grep — length cap at 200 truncates oversized patterns
 - hints.py: _sanitize_hint_path — newlines and CR stripped from path in hint output
 - render/stats_renderer.py: _strip_ansi() — ESC sequences stripped from project path
 - paths.py: atomic_write_text — OSError during write cleans up tmp and re-raises
@@ -234,15 +234,15 @@ class TestMergeRanges:
 
 
 # ===========================================================================
-# 5. session.py — mark_grep truncates patterns over 1024 chars
+# 5. session.py — mark_grep truncates patterns over 200 chars
 # ===========================================================================
 
 
 class TestMarkGrepLengthCap:
-    """mark_grep must cap the stored pattern at 1024 characters."""
+    """mark_grep must cap the stored pattern at 200 characters."""
 
     def test_short_pattern_stored_unchanged(self, tmp_data_dir):
-        """A pattern under 1024 chars must be stored as-is."""
+        """A pattern under 200 chars must be stored as-is."""
         from token_goat import session
 
         sid = "a" * 64
@@ -250,19 +250,19 @@ class TestMarkGrepLengthCap:
         result = session.mark_grep(sid, "short_pattern", cache=cache)
         assert result.greps[-1].pattern == "short_pattern"
 
-    def test_exact_1024_pattern_stored_unchanged(self, tmp_data_dir):
-        """A pattern of exactly 1024 chars must not be truncated."""
+    def test_exact_200_pattern_stored_unchanged(self, tmp_data_dir):
+        """A pattern of exactly 200 chars must not be truncated."""
         from token_goat import session
 
         sid = "b" * 64
         cache = session._fresh_cache(sid)
-        pattern = "x" * 1024
+        pattern = "x" * 200
         result = session.mark_grep(sid, pattern, cache=cache)
         assert result.greps[-1].pattern == pattern
-        assert len(result.greps[-1].pattern) == 1024
+        assert len(result.greps[-1].pattern) == 200
 
-    def test_oversized_pattern_truncated_to_1024(self, tmp_data_dir):
-        """A pattern over 1024 chars must be truncated to exactly 1024."""
+    def test_oversized_pattern_truncated_to_200(self, tmp_data_dir):
+        """A pattern over 200 chars must be truncated to exactly 200."""
         from token_goat import session
 
         sid = "c" * 64
@@ -270,18 +270,18 @@ class TestMarkGrepLengthCap:
         pattern = "y" * 2048
         result = session.mark_grep(sid, pattern, cache=cache)
         stored = result.greps[-1].pattern
-        assert len(stored) == 1024
-        assert stored == pattern[:1024]
+        assert len(stored) == 200
+        assert stored == pattern[:200]
 
-    def test_1025_char_pattern_truncated(self, tmp_data_dir):
-        """A pattern of 1025 chars (one over the cap) must be truncated."""
+    def test_201_char_pattern_truncated(self, tmp_data_dir):
+        """A pattern of 201 chars (one over the cap) must be truncated."""
         from token_goat import session
 
         sid = "d" * 64
         cache = session._fresh_cache(sid)
-        pattern = "z" * 1025
+        pattern = "z" * 201
         result = session.mark_grep(sid, pattern, cache=cache)
-        assert len(result.greps[-1].pattern) == 1024
+        assert len(result.greps[-1].pattern) == 200
 
 
 # ===========================================================================
