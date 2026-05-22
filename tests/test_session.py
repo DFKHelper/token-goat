@@ -1421,3 +1421,55 @@ class TestEdgesCasesForEviction:
         assert "a" not in d
         assert "b" not in d
         assert "c" in d
+
+
+class TestLineRangesCap:
+    """mark_file_read collapses line_ranges to a spanning range at _MAX_LINE_RANGES_PER_FILE."""
+
+    def test_below_cap_ranges_kept_distinct(self, tmp_data_dir):
+        sid = "lr-cap-1"
+        path = "/proj/src/big.py"
+        # 3 non-adjacent reads — well below cap of 15
+        session.mark_file_read(sid, path, offset=0, limit=10)
+        session.mark_file_read(sid, path, offset=100, limit=10)
+        session.mark_file_read(sid, path, offset=200, limit=10)
+        entry = session.get_file_entry(sid, path)
+        assert entry is not None
+        assert len(entry.line_ranges) == 3
+
+    def test_at_cap_ranges_not_yet_collapsed(self, tmp_data_dir):
+        sid = "lr-cap-2"
+        path = "/proj/src/big.py"
+        for i in range(session._MAX_LINE_RANGES_PER_FILE):
+            session.mark_file_read(sid, path, offset=i * 100, limit=10)
+        entry = session.get_file_entry(sid, path)
+        assert entry is not None
+        # Exactly at cap — no collapse yet
+        assert len(entry.line_ranges) == session._MAX_LINE_RANGES_PER_FILE
+
+    def test_exceeding_cap_collapses_to_spanning(self, tmp_data_dir):
+        sid = "lr-cap-3"
+        path = "/proj/src/big.py"
+        # Add _MAX + 1 non-adjacent reads (gaps of 50 lines between each)
+        for i in range(session._MAX_LINE_RANGES_PER_FILE + 1):
+            session.mark_file_read(sid, path, offset=i * 100, limit=10)
+        entry = session.get_file_entry(sid, path)
+        assert entry is not None
+        assert len(entry.line_ranges) == 1
+        # Spanning range must cover first and last reads
+        span_start, span_end = entry.line_ranges[0]
+        assert span_start == 1  # first read offset=0 → start=1
+        assert span_end > session._MAX_LINE_RANGES_PER_FILE * 100  # well past last read
+
+    def test_spanning_range_is_superset(self, tmp_data_dir):
+        sid = "lr-cap-4"
+        path = "/proj/src/big.py"
+        # Reads at lines 1-10, 1001-1010 (and 14 more in between)
+        for i in range(session._MAX_LINE_RANGES_PER_FILE + 1):
+            session.mark_file_read(sid, path, offset=i * 500, limit=10)
+        entry = session.get_file_entry(sid, path)
+        assert entry is not None
+        span_start, span_end = entry.line_ranges[0]
+        # Spanning range must contain all original reads
+        assert span_start <= 1
+        assert span_end >= (session._MAX_LINE_RANGES_PER_FILE * 500 + 10)

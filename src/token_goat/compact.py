@@ -892,21 +892,25 @@ def _format_bash_entry(entry: object) -> str:
     Format::
 
         - $ pytest -v tests/  (exit 1, 12.3KB, id=abc123def...)
+        - $ pytest -v tests/  [×3] (exit 1, 12.3KB, id=abc123def...)
 
     The cache ID is included so the compaction LLM hands the agent something
     actionable — the agent can call ``token-goat bash-output <id>`` to recover
     the full body instead of re-running.  Byte counts use a compact human
     suffix (KB/MB) because the raw integer (``12345``) is harder to scan in a
-    glance-level summary.
+    glance-level summary.  ``[×N]`` appears when the command was retried (same
+    SHA, run_count > 1) so retry loops are immediately visible.
     """
     cmd_preview = sanitize_log_str(getattr(entry, "cmd_preview", ""), max_len=80)
     total = int(getattr(entry, "stdout_bytes", 0)) + int(getattr(entry, "stderr_bytes", 0))
     exit_code = getattr(entry, "exit_code", None)
     output_id = getattr(entry, "output_id", "")
     truncated_marker = " (truncated)" if getattr(entry, "truncated", False) else ""
+    run_count = int(getattr(entry, "run_count", 1))
+    run_count_marker = f" [×{run_count}]" if run_count > 1 else ""
     exit_str = "exit ?" if exit_code is None else f"exit {exit_code}"
     return (
-        f"- $ {cmd_preview}  "
+        f"- $ {cmd_preview}{run_count_marker}  "
         f"({exit_str}, {_humanize_bytes(total)}{truncated_marker}, id={output_id})"
     )
 

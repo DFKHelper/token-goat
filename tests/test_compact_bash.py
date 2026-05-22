@@ -681,3 +681,42 @@ class TestPythonFilter:
         # Should pass through without crashing.
         assert isinstance(result.text, str)
         assert len(result.text) > 0
+
+
+class TestFormatBashEntryRunCount:
+    """_format_bash_entry shows [×N] when run_count > 1."""
+
+    def _make_entry(self, run_count=1, exit_code=0):
+        from token_goat.session import BashEntry
+        return BashEntry(
+            cmd_sha="abc123",
+            cmd_preview="pytest -v tests/",
+            output_id="out-abc123",
+            ts=0.0,
+            stdout_bytes=5000,
+            stderr_bytes=0,
+            exit_code=exit_code,
+            truncated=False,
+            run_count=run_count,
+        )
+
+    def test_run_count_1_no_marker(self):
+        line = compact._format_bash_entry(self._make_entry(run_count=1))
+        assert "[×" not in line
+        assert "pytest -v tests/" in line
+
+    def test_run_count_3_shows_marker(self):
+        line = compact._format_bash_entry(self._make_entry(run_count=3))
+        assert "[×3]" in line
+        assert "pytest -v tests/" in line
+
+    def test_run_count_10_shows_marker(self):
+        line = compact._format_bash_entry(self._make_entry(run_count=10))
+        assert "[×10]" in line
+
+    def test_run_count_marker_before_parens(self):
+        line = compact._format_bash_entry(self._make_entry(run_count=5, exit_code=1))
+        # Marker appears between the command preview and the parenthesised metadata.
+        marker_pos = line.index("[×5]")
+        paren_pos = line.index("(exit 1")
+        assert marker_pos < paren_pos
