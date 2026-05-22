@@ -397,7 +397,7 @@ class TestMarkerStringConciseness:
         from token_goat.hints import _BASH_DEDUP_MIN_BYTES
 
         assert _BASH_DEDUP_MIN_BYTES > 0
-        assert _BASH_DEDUP_MIN_BYTES == 1000
+        assert _BASH_DEDUP_MIN_BYTES == 200
 
     def test_grep_dedup_min_result_count_constant_exists_and_positive(self):
         from token_goat.hints import _GREP_DEDUP_MIN_RESULT_COUNT
