@@ -118,6 +118,18 @@ _GREP_RECENCY_HALF_LIFE_SECS: Final[float] = 1800.0  # 30 minutes
 # the trim loop brings it back down — a pointless memory/CPU spike with no benefit.
 _MAX_MANIFEST_TOKENS_CAP: Final[int] = 4_000
 
+# Maximum number of edited files listed individually in the "Files Edited" section.
+# The section is documented as "uncapped — every edited file is must-preserve", but
+# in practice a session that touches 30–100 files (e.g. a large refactor or mass
+# rename) would let the edited-files block alone consume the entire 400-token budget,
+# squeezing out the Symbols Accessed and other variable sections that carry the most
+# useful compaction signal.  Cap at 20: the top-20 most-edited files are listed by
+# name (sorted by edit count descending), and any overflow gets a single "+N more
+# edited" line so the compaction LLM knows additional files exist without paying the
+# per-line token cost.  20 files × ~13 tokens/line ≈ 260 tokens, leaving ~140 for
+# the rest of the sections at a 400-token budget.
+_MAX_EDITED_FILES_SHOWN: Final[int] = 20
+
 # Key for sorting edited_files dict items by edit count (the second element of each pair).
 # Defined at module level so it is created once rather than re-created on every manifest build.
 _BY_EDIT_COUNT = itemgetter(1)
@@ -1611,8 +1623,13 @@ def _render(cache: SessionCache, session_id: str, max_tokens: int) -> tuple[str,
     if edited_clean:
         edited_lines.append("### Files Edited (preserve in summary)")
         # Sort by edit count descending so the most-touched files appear first.
-        for path, count in sorted(edited_clean.items(), key=_BY_EDIT_COUNT, reverse=True):
+        sorted_edited = sorted(edited_clean.items(), key=_BY_EDIT_COUNT, reverse=True)
+        shown_edited = sorted_edited[:_MAX_EDITED_FILES_SHOWN]
+        overflow_edited = len(sorted_edited) - len(shown_edited)
+        for path, count in shown_edited:
             edited_lines.append(f"- ✎ {_short_path(path)}{_count_suffix(count)}")
+        if overflow_edited > 0:
+            edited_lines.append(f"- …+{overflow_edited} more edited")
 
         # ── 1a. Pending Changes (git diff --stat HEAD) ────────────────────────
         # Whole-repo stat placed immediately after Files Edited so the compaction
