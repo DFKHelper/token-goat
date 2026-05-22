@@ -287,6 +287,16 @@ _GLOB_HISTORY_EVICT: Final[int] = 5
 # Cap glob pattern length before storage to keep session JSON bounded.
 _MAX_GLOB_PATTERN_LEN: int = 512
 
+# Maximum number of distinct (non-overlapping, non-adjacent) line-range spans
+# stored per file entry.  _merge_ranges() coalesces overlapping and adjacent
+# reads into fewer spans, but non-adjacent reads of the same file accumulate
+# indefinitely otherwise.  When the cap is hit, all retained spans are collapsed
+# into one spanning range [first_start, last_end] — this is always a correct
+# superset of the actual coverage (hints may over-report but never under-report),
+# and keeps the per-file JSON footprint from growing without bound in sessions
+# that sample a large file in many small offset-jumps.
+_MAX_LINE_RANGES_PER_FILE: Final[int] = 15
+
 # Maximum number of hint fingerprints retained per session.  The hints_seen set
 # tracks emitted hints to suppress duplicates within the same session; without a
 # cap it grows without bound.  When the cap is exceeded, the set is cleared
@@ -1378,7 +1388,16 @@ def mark_file_read(
         start = line_offset + 1  # Read tool's offset is 0-indexed; we store 1-indexed inclusive
         end = start + line_limit - 1 if line_limit else (start + _UNKNOWN_END_SENTINEL)
         prev_range_count = len(entry.line_ranges)
-        entry.line_ranges = _merge_ranges(entry.line_ranges + [(start, end)])
+        merged = _merge_ranges(entry.line_ranges + [(start, end)])
+        if len(merged) > _MAX_LINE_RANGES_PER_FILE:
+            # Collapse all spans into one spanning range to bound session JSON size.
+            merged = [(merged[0][0], merged[-1][1])]
+            _LOG.debug(
+                "mark_file_read: line_ranges collapsed to spanning range for %s "
+                "(exceeded _MAX_LINE_RANGES_PER_FILE=%d)",
+                key, _MAX_LINE_RANGES_PER_FILE,
+            )
+        entry.line_ranges = merged
         new_range_count = len(entry.line_ranges)
         if new_range_count < prev_range_count + 1:
             _LOG.debug(
