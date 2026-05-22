@@ -30,9 +30,9 @@ class TestEventCount:
     def test_empty_session_returns_zero(self, tmp_data_dir):
         assert compact.event_count("empty-session-abc") == 0
 
-    def test_counts_files_greps_and_edits(self, tmp_data_dir):
+    def test_counts_files_greps_and_edits(self, tmp_data_dir, make_session):
         sid = "evcount-session-xyz"
-        _populate_session(sid, files=3, greps=2, edits=1)
+        make_session(sid, files_read=3, greps=2, edits=1)
         # event_count = len(files) + len(greps) + len(edited_files)
         assert compact.event_count(sid) == 6
 
@@ -57,9 +57,9 @@ class TestBuildManifest:
         result = compact.build_manifest("no-activity-session")
         assert result == ""
 
-    def test_manifest_contains_header(self, tmp_data_dir):
+    def test_manifest_contains_header(self, tmp_data_dir, make_session):
         sid = "manifest-header-session"
-        _populate_session(sid, files=2, greps=1, edits=1)
+        make_session(sid, files_read=2, greps=1, edits=1)
         result = compact.build_manifest(sid)
         assert "## Token-Goat Session Manifest" in result
 
@@ -112,9 +112,9 @@ class TestBuildManifest:
         result = compact.build_manifest(sid)
         assert "×4" in result
 
-    def test_manifest_is_string(self, tmp_data_dir):
+    def test_manifest_is_string(self, tmp_data_dir, make_session):
         sid = "str-check-session"
-        _populate_session(sid)
+        make_session(sid, files_read=3, greps=2, edits=1)
         result = compact.build_manifest(sid)
         assert isinstance(result, str)
 
