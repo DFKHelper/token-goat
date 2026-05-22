@@ -1804,3 +1804,89 @@ class TestBashDedupGrepSuggest:
         hint = build_bash_dedup_hint(session_id=sid, command=cmd)
         assert hint is not None
         assert "--grep" not in hint
+
+
+# ---------------------------------------------------------------------------
+# TestBashDedupFailedExitCode — FAILED prefix for non-zero exit codes
+# ---------------------------------------------------------------------------
+
+
+class TestBashDedupFailedExitCode:
+    """Non-zero exit codes produce a FAILED prefix at the start of the hint.
+
+    The exit code used to be buried as "exit=1" mid-string.  Front-loading it
+    helps the agent immediately recognise a failed command without needing to
+    re-run it to rediscover the failure.
+    """
+
+    def _record(
+        self, sid: str, cmd: str, *, stdout_bytes: int, exit_code: int
+    ) -> None:
+        from token_goat import bash_cache
+
+        cmd_sha = bash_cache.command_hash(cmd)
+        session.mark_bash_run(
+            sid,
+            cmd_sha,
+            cmd[:120],
+            f"out_{cmd_sha[:8]}",
+            stdout_bytes=stdout_bytes,
+            stderr_bytes=0,
+            exit_code=exit_code,
+            truncated=False,
+        )
+
+    def test_zero_exit_no_failed_prefix(self, tmp_data_dir):
+        """Successful commands produce no FAILED prefix."""
+        sid = "s_exit0"
+        cmd = "uv run pytest tests/ -q"
+        self._record(sid, cmd, stdout_bytes=2000, exit_code=0)
+        hint = build_bash_dedup_hint(session_id=sid, command=cmd)
+        assert hint is not None
+        assert "FAILED" not in hint
+
+    def test_nonzero_exit_light_hint_has_prefix(self, tmp_data_dir):
+        """Light hint for failed command starts with FAILED."""
+        sid = "s_exit1_light"
+        cmd = "git push"
+        self._record(sid, cmd, stdout_bytes=400, exit_code=1)
+        hint = build_bash_dedup_hint(session_id=sid, command=cmd)
+        assert hint is not None
+        assert hint.startswith("FAILED")
+        assert "exit=1" in hint
+
+    def test_nonzero_exit_full_hint_has_prefix(self, tmp_data_dir):
+        """Full hint for failed command starts with FAILED."""
+        sid = "s_exit2_full"
+        cmd = "uv run mypy src"
+        self._record(sid, cmd, stdout_bytes=3000, exit_code=2)
+        hint = build_bash_dedup_hint(session_id=sid, command=cmd)
+        assert hint is not None
+        assert hint.startswith("FAILED")
+        assert "exit=2" in hint
+
+    def test_exit_code_not_duplicated_in_hint(self, tmp_data_dir):
+        """Exit code appears exactly once — not in both prefix and body."""
+        sid = "s_no_dup"
+        cmd = "ruff check src/"
+        self._record(sid, cmd, stdout_bytes=1500, exit_code=1)
+        hint = build_bash_dedup_hint(session_id=sid, command=cmd)
+        assert hint is not None
+        assert hint.count("exit=1") == 1
+
+    def test_none_exit_code_no_prefix(self, tmp_data_dir):
+        """None exit code (unknown) produces no prefix and no exit string."""
+        sid = "s_exit_none"
+        cmd = "some-command"
+        from token_goat import bash_cache
+
+        cmd_sha = bash_cache.command_hash(cmd)
+        session.mark_bash_run(
+            sid, cmd_sha, cmd, f"out_{cmd_sha[:8]}",
+            stdout_bytes=2000, stderr_bytes=0,
+            exit_code=None, truncated=False,
+        )
+        hint = build_bash_dedup_hint(session_id=sid, command=cmd)
+        assert hint is not None
+        assert "FAILED" not in hint
+        assert "exit=" not in hint
