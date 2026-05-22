@@ -970,7 +970,7 @@ class TestGetGitDiffStatSummary:
             return r
 
         monkeypatch.setattr(_subprocess, "run", _fake_run)
-        result = compact._get_git_diff_stat_summary("/some/repo")
+        result = compact._get_git_diff_stat_summary("/some/sixline-repo")
         assert result != ""
         lines = result.splitlines()
         assert len(lines) <= 6, f"expected <= 6 lines, got {len(lines)}: {lines}"
@@ -987,7 +987,7 @@ class TestGetGitDiffStatSummary:
             return types.SimpleNamespace(returncode=0, stdout=fake_stdout, stderr="")
 
         monkeypatch.setattr(_subprocess, "run", _fake_run)
-        result = compact._get_git_diff_stat_summary("/some/repo")
+        result = compact._get_git_diff_stat_summary("/some/oversized-repo")
         assert result == "", f"expected '' for oversized output, got {result!r}"
 
     def test_manifest_includes_pending_changes_section(self, tmp_data_dir, monkeypatch):
