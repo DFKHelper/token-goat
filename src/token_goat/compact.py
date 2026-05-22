@@ -1807,6 +1807,35 @@ def _render_section(
     return lines
 
 
+def _render_budget_lines(
+    header: str,
+    lines: list[str],
+    budget: int,
+) -> tuple[list[str], int]:
+    """Emit header + as many pre-formatted lines as fit within *budget* tokens.
+
+    Returns ``(output_lines, tokens_used)``; ``output_lines`` is empty when
+    nothing fits.  Callers pre-format their entries so this helper owns only
+    the header-gating and budget-loop logic, eliminating the repeated 15-line
+    pattern across the symbols / bash / web / grep sections of :func:`_render`.
+    """
+    if not lines:
+        return [], 0
+    header_cost = _token_count(header)
+    out: list[str] = []
+    used = 0
+    for line in lines:
+        cost = _token_count(line)
+        if used + header_cost + cost <= budget:
+            out.append(line)
+            used += cost
+        else:
+            break
+    if not out:
+        return [], 0
+    return [header] + out, used + header_cost
+
+
 def _render(cache: SessionCache, session_id: str, max_tokens: int) -> tuple[str, int]:
     """Build the Markdown session manifest string from *cache* for the PreCompact hook.
 
@@ -2070,61 +2099,29 @@ def _render(cache: SessionCache, session_id: str, max_tokens: int) -> tuple[str,
 
     # ── 2. Symbols accessed — up to 40 % of remaining budget ─────────────────
     sym_budget = sec_budgets["symbols"]
-    sym_lines: list[str] = []
-    sym_used = 0
-    if files_with_symbols:
-        header = "### Symbols Accessed"
-        header_cost = _token_count(header)
-        sym_entries_for_section: list[str] = []
-        for entry in files_with_symbols:
-            # Rank symbols by recency: recently-accessed symbols appear first
-            ranked_symbols = _rank_symbols_by_recency(entry, now_for_scoring)
-            syms = [sanitize_log_str(s, max_len=80) for s in ranked_symbols[:_MAX_SYMBOLS_PER_FILE_ENTRY]]
-            overflow = len(ranked_symbols) - _MAX_SYMBOLS_PER_FILE_ENTRY
-            sym_str = ", ".join(syms) + (f" +{overflow}" if overflow > 0 else "")
-            line = f"- {_short_path(entry.rel_or_abs)} → {sym_str}"
-            cost = _token_count(line)
-            if sym_used + header_cost + cost <= sym_budget:
-                sym_entries_for_section.append(line)
-                sym_used += cost
-            else:
-                break
-        # Only emit header if we have entries to show
-        if sym_entries_for_section:
-            sym_lines.append(header)
-            sym_lines.extend(sym_entries_for_section)
-            sym_used += header_cost
+    sym_formatted: list[str] = []
+    for entry in files_with_symbols:
+        ranked_symbols = _rank_symbols_by_recency(entry, now_for_scoring)
+        syms = [sanitize_log_str(s, max_len=80) for s in ranked_symbols[:_MAX_SYMBOLS_PER_FILE_ENTRY]]
+        overflow = len(ranked_symbols) - _MAX_SYMBOLS_PER_FILE_ENTRY
+        sym_str = ", ".join(syms) + (f" +{overflow}" if overflow > 0 else "")
+        sym_formatted.append(f"- {_short_path(entry.rel_or_abs)} → {sym_str}")
+    sym_lines, sym_used = _render_budget_lines("### Symbols Accessed", sym_formatted, sym_budget)
 
     # ── 3. Bash history — up to 15 % of remaining budget ─────────────────────
-    # (built before files so bash is never crowded out by the files section)
     # Young sessions (< 10 min) skip bash/web sections: few commands have run
     # and the overhead of listing them is not worth it relative to the budget.
     bash_budget = sec_budgets["bash"]
-    bash_lines: list[str] = []
-    bash_used = 0
-
     bash_entries = (
         _select_top_bash_entries(getattr(cache, "bash_history", None))
         if age_tier != "young"
         else []
     )
-    if bash_entries:
-        header = "### Commands Run (cached output)"
-        header_cost = _token_count(header)
-        bash_entries_for_section: list[str] = []
-        for be in bash_entries:
-            line = _format_bash_entry(be)
-            cost = _token_count(line)
-            if bash_used + header_cost + cost <= bash_budget:
-                bash_entries_for_section.append(line)
-                bash_used += cost
-            else:
-                break
-        # Only emit header if we have entries to show
-        if bash_entries_for_section:
-            bash_lines.append(header)
-            bash_lines.extend(bash_entries_for_section)
-            bash_used += header_cost
+    bash_lines, bash_used = _render_budget_lines(
+        "### Commands Run (cached output)",
+        [_format_bash_entry(be) for be in bash_entries],
+        bash_budget,
+    )
 
     # Cold outputs are grouped with bash history (same budget slice).
     # Skip for young sessions — same rationale as bash_entries above.
@@ -2169,63 +2166,33 @@ def _render(cache: SessionCache, session_id: str, max_tokens: int) -> tuple[str,
     # ── 3b. Web fetches — up to 10 % of remaining budget ─────────────────────
     # Young sessions skip web sections — same rationale as bash_entries above.
     web_budget = sec_budgets["web"]
-    web_lines: list[str] = []
-    web_used = 0
     web_entries = (
         _select_top_web_entries(raw_web)
         if age_tier != "young"
         else []
     )
-    if web_entries:
-        header = "### Web Fetches (cached body)"
-        header_cost = _token_count(header)
-        # Group entries by domain to save tokens
-        grouped_lines = _group_web_entries_by_domain(web_entries)
-        web_entries_for_section: list[str] = []
-        for line in grouped_lines:
-            cost = _token_count(line)
-            if web_used + header_cost + cost <= web_budget:
-                web_entries_for_section.append(line)
-                web_used += cost
-            else:
-                break
-        # Only emit header if we have entries to show
-        if web_entries_for_section:
-            web_lines.append(header)
-            web_lines.extend(web_entries_for_section)
-            web_used += header_cost
+    web_lines, web_used = _render_budget_lines(
+        "### Web Fetches (cached body)",
+        _group_web_entries_by_domain(web_entries) if web_entries else [],
+        web_budget,
+    )
 
     # ── 4. Grep patterns — up to 15 % of remaining budget ────────────────────
     grep_budget = sec_budgets["greps"]
-    grep_lines: list[str] = []
-    grep_used = 0
-    grep_entries = _select_top_grep_entries(raw_greps)
-    grep_entries = _dedup_grep_entries(grep_entries)
-    if grep_entries:
-        header = "### Patterns Searched"
-        header_cost = _token_count(header)
-        grep_entries_for_section: list[str] = []
-        included_greps = 0
-        for ge in grep_entries:
-            line = _format_grep_entry(ge)
-            cost = _token_count(line)
-            if grep_used + header_cost + cost <= grep_budget:
-                grep_entries_for_section.append(line)
-                grep_used += cost
-                included_greps += 1
-            else:
-                break
-        # Only emit header if we have entries to show
-        if grep_entries_for_section:
-            grep_lines.append(header)
-            grep_lines.extend(grep_entries_for_section)
-            grep_used += header_cost
-            distinct_patterns = len({getattr(g, "pattern", "") for g in raw_greps})
-            dropped_greps = distinct_patterns - included_greps
-            if dropped_greps > 0:
-                overflow_line = f"- …+{dropped_greps} more patterns"
-                if grep_used + _token_count(overflow_line) <= grep_budget:
-                    grep_lines.append(overflow_line)
+    grep_entries = _dedup_grep_entries(_select_top_grep_entries(raw_greps))
+    grep_lines, grep_used = _render_budget_lines(
+        "### Patterns Searched",
+        [_format_grep_entry(ge) for ge in grep_entries],
+        grep_budget,
+    )
+    if grep_lines:
+        included_greps = len(grep_lines) - 1  # index 0 is the header
+        distinct_patterns = len({getattr(g, "pattern", "") for g in raw_greps})
+        dropped_greps = distinct_patterns - included_greps
+        if dropped_greps > 0:
+            overflow_line = f"- …+{dropped_greps} more patterns"
+            if grep_used + _token_count(overflow_line) <= grep_budget:
+                grep_lines.append(overflow_line)
 
     # ── 4b. Glob scans — up to 5 % of remaining budget ───────────────────────
     glob_budget = sec_budgets["glob"]
