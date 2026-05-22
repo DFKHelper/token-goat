@@ -9,6 +9,7 @@ import pytest
 import token_goat.paths as paths
 from token_goat.parser import index_project
 from token_goat.project import Project, canonicalize, project_hash
+from token_goat.session import SessionCache
 
 # ---------------------------------------------------------------------------
 # Home-directory helpers (used by test_install.py and test_install_codex.py)
@@ -310,5 +311,113 @@ def md_project(tmp_path, tmp_data_dir, make_project):
     """Copy md_sample to tmp dir, index it, return just the Project."""
     _, proj = _make_sample_project(tmp_path, tmp_data_dir, make_project, MD_SAMPLE, indexed=True)
     return proj
+
+
+# ============================================================================
+# Session Fixture Factory
+# ============================================================================
+
+
+def _make_session(
+    session_id: str,
+    *,
+    age_seconds: float = 0.0,
+    files_read: int = 0,
+    greps: int = 0,
+    edits: int = 0,
+    web_fetches: dict | None = None,
+    bash_runs: dict | None = None,
+) -> SessionCache:
+    """Create and populate a SessionCache with optional backdating and activity.
+
+    Args:
+        session_id: Unique session identifier
+        age_seconds: Backdate created_ts by this many seconds (0 = now)
+        files_read: Number of files to mark as read (default 0)
+        greps: Number of grep patterns to record (default 0)
+        edits: Number of files to mark as edited (default 0)
+        web_fetches: Dict of {url: body_bytes} for web fetch entries (default None)
+        bash_runs: Dict of {command: (output_bytes, exit_code)} for bash runs (default None)
+
+    Returns:
+        Populated SessionCache object.
+
+    Example:
+        cache = make_session(
+            "test-abc",
+            age_seconds=7200,
+            files_read=2,
+            edits=1,
+            web_fetches={"https://docs.example.com/api": 12000},
+            bash_runs={"pytest -v": (8000, 0)},
+        )
+    """
+    import time
+
+    from token_goat import bash_cache, session
+
+    # Create or load session
+    cache = session.load(session_id)
+
+    # Backdate if requested
+    if age_seconds > 0:
+        cache.created_ts = time.time() - age_seconds
+        session.save(cache)
+
+    # Populate with file reads
+    for i in range(files_read):
+        session.mark_file_read(session_id, f"/proj/src/file{i}.py", offset=0, limit=100)
+
+    # Populate with greps
+    for i in range(greps):
+        session.mark_grep(session_id, f"pattern{i}", "/proj/src")
+
+    # Populate with file edits
+    for i in range(edits):
+        session.mark_file_edited(session_id, f"/proj/src/edited{i}.py")
+
+    # Populate with web fetches
+    if web_fetches:
+        import hashlib
+        for url, body_bytes in web_fetches.items():
+            url_sha = hashlib.sha256(url.encode()).hexdigest()[:12]
+            session.mark_web_fetch(
+                session_id=session_id,
+                url_sha=url_sha,
+                url_preview=url[:200],
+                output_id=f"web-{url_sha}",
+                body_bytes=body_bytes,
+                status_code=200,
+                truncated=False,
+            )
+
+    # Populate with bash runs
+    if bash_runs:
+        for cmd, (output_bytes, exit_code) in bash_runs.items():
+            cmd_sha = bash_cache.command_hash(cmd)
+            session.mark_bash_run(
+                session_id=session_id,
+                cmd_sha=cmd_sha,
+                cmd_preview=cmd,
+                output_id=f"out-{cmd_sha}",
+                stdout_bytes=output_bytes,
+                stderr_bytes=0,
+                exit_code=exit_code,
+                truncated=False,
+            )
+
+    return session.load(session_id)
+
+
+@pytest.fixture
+def make_session(tmp_data_dir) -> callable:
+    """Fixture that provides a session factory function.
+
+    Use in test functions like:
+        def test_something(make_session):
+            cache = make_session("test-id", age_seconds=3600, files_read=2, edits=1)
+            assert cache.session_id == "test-id"
+    """
+    return _make_session
 
 

@@ -6,52 +6,28 @@ import time
 from token_goat import compact, session
 
 
-def _make_mature(sid: str, age_seconds: float = 7200.0) -> None:
-    """Backdate created_ts so the session is treated as 'mature' by age-tier logic."""
-    cache = session.load(sid)
-    cache.created_ts = time.time() - age_seconds
-    session.save(cache)
-
-
-def _seed_bash(sid: str, command: str, *, output_bytes: int = 8000, exit_code: int = 0) -> str:
-    """Record a fake Bash invocation in the session and return its cmd_sha."""
-    from token_goat import bash_cache
-
-    cmd_sha = bash_cache.command_hash(command)
-    session.mark_bash_run(
-        session_id=sid,
-        cmd_sha=cmd_sha,
-        cmd_preview=command,
-        output_id=f"out-{cmd_sha}",
-        stdout_bytes=output_bytes,
-        stderr_bytes=0,
-        exit_code=exit_code,
-        truncated=False,
-    )
-    return cmd_sha
-
-
 class TestEventCountIncludesBash:
-    def test_bash_alone_counts(self, tmp_data_dir):
+    def test_bash_alone_counts(self, tmp_data_dir, make_session):
         sid = "ec-bash-1"
-        _seed_bash(sid, "pytest -v")
+        make_session(sid, bash_runs={"pytest -v": (8_000, 0)})
         assert compact.event_count(sid) == 1
 
-    def test_bash_added_to_other_events(self, tmp_data_dir):
+    def test_bash_added_to_other_events(self, tmp_data_dir, make_session):
         sid = "ec-bash-2"
-        session.mark_file_read(sid, "/tmp/a.py")
-        _seed_bash(sid, "pytest -v")
+        make_session(sid, files_read=1, bash_runs={"pytest -v": (8_000, 0)})
         assert compact.event_count(sid) == 2
 
 
 class TestManifestBashSection:
-    def test_bash_section_emitted(self, tmp_data_dir):
+    def test_bash_section_emitted(self, tmp_data_dir, make_session):
         sid = "mb-1"
         # Add some non-bash activity so the manifest renders normally.
-        session.mark_file_edited(sid, "/tmp/src.py")
-        _seed_bash(sid, "pytest -v tests/", output_bytes=12000, exit_code=1)
-        # Backdate session so age-tier logic treats it as mature (bash section enabled).
-        _make_mature(sid)
+        make_session(
+            sid,
+            age_seconds=7200,
+            edits=1,
+            bash_runs={"pytest -v tests/": (12000, 1)},
+        )
         m = compact.build_manifest(sid, max_tokens=400)
         assert "Commands Run" in m
         assert "pytest -v tests/" in m
@@ -60,15 +36,14 @@ class TestManifestBashSection:
         from token_goat import bash_cache
         assert f"id=out-{bash_cache.command_hash('pytest -v tests/')}" in m
 
-    def test_tiny_bash_skipped(self, tmp_data_dir):
+    def test_tiny_bash_skipped(self, tmp_data_dir, make_session):
         sid = "mb-2"
-        session.mark_file_edited(sid, "/tmp/src.py")
-        _seed_bash(sid, "ls", output_bytes=20, exit_code=0)
+        make_session(sid, edits=1, bash_runs={"ls": (20, 0)})
         m = compact.build_manifest(sid, max_tokens=400)
         # Output too small to be useful — section omitted.
         assert "Commands Run" not in m
 
-    def test_only_bash_still_renders_manifest(self, tmp_data_dir):
+    def test_only_bash_still_renders_manifest(self, tmp_data_dir, make_session):
         sid = "mb-3"
         # Even when nothing was read or edited, a meaningful Bash output
         # alone should produce a manifest — that command's result is exactly
@@ -76,7 +51,7 @@ class TestManifestBashSection:
         # (event_count must clear min_events for the hook to actually fire,
         # but build_manifest itself does not enforce that; we test the render
         # path here.)
-        _seed_bash(sid, "make build", output_bytes=20000)
+        make_session(sid, bash_runs={"make build": (20000, 0)})
         m = compact.build_manifest(sid, max_tokens=400)
         # Files-only render path returns "" when no edits/reads — bash alone
         # does not (yet) lift it above the empty case, but the section helper
@@ -91,60 +66,71 @@ class TestManifestBashSection:
 
 
 class TestNoopBashFiltering:
-    def test_git_status_filtered_from_manifest(self, tmp_data_dir):
+    def test_git_status_filtered_from_manifest(self, tmp_data_dir, make_session):
         """git status commands consume budget with zero compaction value."""
         sid = "noop-1"
-        session.mark_file_edited(sid, "/tmp/src.py")
-        # Add a meaningful command
-        _seed_bash(sid, "pytest -v tests/", output_bytes=12000, exit_code=0)
-        # Add a no-op status check
-        _seed_bash(sid, "git status", output_bytes=5000, exit_code=0)
-        _make_mature(sid)
+        make_session(
+            sid,
+            age_seconds=7200,
+            edits=1,
+            bash_runs={
+                "pytest -v tests/": (12000, 0),
+                "git status": (5000, 0),
+            },
+        )
         m = compact.build_manifest(sid, max_tokens=400)
         # pytest should appear, git status should not
         assert "pytest -v tests/" in m
         assert "git status" not in m
 
-    def test_pwd_filtered_from_manifest(self, tmp_data_dir):
+    def test_pwd_filtered_from_manifest(self, tmp_data_dir, make_session):
         """pwd is a no-op (< 5 chars, inaudible)."""
         sid = "noop-2"
-        session.mark_file_edited(sid, "/tmp/src.py")
-        _seed_bash(sid, "pytest", output_bytes=12000)
-        _seed_bash(sid, "pwd", output_bytes=1000)
-        _make_mature(sid)
+        make_session(
+            sid,
+            age_seconds=7200,
+            edits=1,
+            bash_runs={"pytest": (12000, 0), "pwd": (1000, 0)},
+        )
         m = compact.build_manifest(sid, max_tokens=400)
         assert "pytest" in m
         assert "pwd" not in m
 
-    def test_echo_filtered_from_manifest(self, tmp_data_dir):
+    def test_echo_filtered_from_manifest(self, tmp_data_dir, make_session):
         """echo is a no-op."""
         sid = "noop-3"
-        session.mark_file_edited(sid, "/tmp/src.py")
-        _seed_bash(sid, "npm test", output_bytes=8000)
-        _seed_bash(sid, "echo hello", output_bytes=500)
-        _make_mature(sid)
+        make_session(
+            sid,
+            age_seconds=7200,
+            edits=1,
+            bash_runs={"npm test": (8000, 0), "echo hello": (500, 0)},
+        )
         m = compact.build_manifest(sid, max_tokens=400)
         assert "npm test" in m
         assert "echo hello" not in m
 
-    def test_cat_with_tiny_output_filtered(self, tmp_data_dir):
+    def test_cat_with_tiny_output_filtered(self, tmp_data_dir, make_session):
         """cat on small files (< 200 bytes) is inaudible."""
         sid = "noop-4"
-        session.mark_file_edited(sid, "/tmp/src.py")
-        _seed_bash(sid, "pytest", output_bytes=8000)
-        _seed_bash(sid, "cat config.txt", output_bytes=100)
-        _make_mature(sid)
+        make_session(
+            sid,
+            age_seconds=7200,
+            edits=1,
+            bash_runs={"pytest": (8000, 0), "cat config.txt": (100, 0)},
+        )
         m = compact.build_manifest(sid, max_tokens=400)
         assert "pytest" in m
         assert "cat config.txt" not in m
 
-    def test_cat_with_large_output_not_filtered(self, tmp_data_dir):
+    def test_cat_with_large_output_not_filtered(self, tmp_data_dir, make_session):
         """cat on larger files (>= 200 bytes) may be useful."""
         sid = "noop-5"
-        session.mark_file_edited(sid, "/tmp/src.py")
-        _seed_bash(sid, "pytest", output_bytes=8000)
-        _seed_bash(sid, "cat large_log.txt", output_bytes=2000)
-        _make_mature(sid)
+        make_session(
+            sid,
+            age_seconds=7200,
+            edits=1,
+            bash_runs={"pytest": (8000, 0), "cat large_log.txt": (2000, 0)},
+        )
         m = compact.build_manifest(sid, max_tokens=400)
         assert "pytest" in m
         # cat with large output passes the filter (may or may not appear based on budget)
@@ -211,32 +197,41 @@ class TestAnsiStrippingInTokenCap:
 class TestCurrentBlockersSection:
     """Tests for the 'Current Blockers' manifest section."""
 
-    def test_recent_failure_produces_blockers_section(self, tmp_data_dir):
+    def test_recent_failure_produces_blockers_section(self, tmp_data_dir, make_session):
         """A recent failed command surfaces in a 'Current Blockers' section."""
         sid = "blk-1"
-        session.mark_file_edited(sid, "/tmp/src.py")
-        _seed_bash(sid, "pytest tests/", output_bytes=8000, exit_code=1)
-        _make_mature(sid)
+        make_session(
+            sid,
+            age_seconds=7200,
+            edits=1,
+            bash_runs={"pytest tests/": (8000, 1)},
+        )
         m = compact.build_manifest(sid, max_tokens=400)
         assert "Current Blockers" in m
         assert "pytest tests/" in m
         assert "exit 1" in m
 
-    def test_no_failures_omits_blockers_header(self, tmp_data_dir):
+    def test_no_failures_omits_blockers_header(self, tmp_data_dir, make_session):
         """When all commands succeeded, 'Current Blockers' header is absent."""
         sid = "blk-2"
-        session.mark_file_edited(sid, "/tmp/src.py")
-        _seed_bash(sid, "pytest tests/", output_bytes=8000, exit_code=0)
-        _make_mature(sid)
+        make_session(
+            sid,
+            age_seconds=7200,
+            edits=1,
+            bash_runs={"pytest tests/": (8000, 0)},
+        )
         m = compact.build_manifest(sid, max_tokens=400)
         assert "Current Blockers" not in m
 
-    def test_stale_failure_omits_blockers_header(self, tmp_data_dir):
+    def test_stale_failure_omits_blockers_header(self, tmp_data_dir, make_session):
         """A failure older than 60 minutes is not treated as an active blocker."""
         sid = "blk-3"
-        session.mark_file_edited(sid, "/tmp/src.py")
-        # Seed a failure, then backdate it to 90 minutes ago via direct mutation.
-        _seed_bash(sid, "make build", output_bytes=8000, exit_code=2)
+        make_session(
+            sid,
+            age_seconds=7200,
+            edits=1,
+            bash_runs={"make build": (8000, 2)},
+        )
         cache = session.load(sid)
         from token_goat import bash_cache
         sha = bash_cache.command_hash("make build")
@@ -244,26 +239,42 @@ class TestCurrentBlockersSection:
         # Mutate the timestamp to 90 minutes in the past.
         object.__setattr__(entry, "ts", time.time() - 5400)
         session.save(cache)
-        _make_mature(sid)
         m = compact.build_manifest(sid, max_tokens=400)
         assert "Current Blockers" not in m
 
-    def test_unknown_exit_code_not_treated_as_blocker(self, tmp_data_dir):
+    def test_unknown_exit_code_not_treated_as_blocker(self, tmp_data_dir, make_session):
         """Commands with exit_code=None (unknown) are not surfaced as blockers."""
         sid = "blk-4"
-        session.mark_file_edited(sid, "/tmp/src.py")
-        _seed_bash(sid, "cargo build", output_bytes=8000, exit_code=None)
-        _make_mature(sid)
+        make_session(
+            sid,
+            age_seconds=7200,
+            edits=1,
+            bash_runs={"cargo build": (8000, None)},
+        )
         m = compact.build_manifest(sid, max_tokens=400)
         assert "Current Blockers" not in m
 
-    def test_blockers_appear_before_edited_files(self, tmp_data_dir):
+    def test_blockers_appear_before_edited_files(self, tmp_data_dir, make_session):
         """Current Blockers section must precede Files Edited in the manifest."""
         sid = "blk-5"
         # Use a non-noise path so the Files Edited section actually appears.
+        cache = session.load(sid)
         session.mark_file_edited(sid, "/home/user/project/src/module.py")
-        _seed_bash(sid, "pytest tests/", output_bytes=8000, exit_code=1)
-        _make_mature(sid)
+        cache = session.load(sid)
+        cache.created_ts = time.time() - 7200
+        session.save(cache)
+        from token_goat import bash_cache
+        cmd_sha = bash_cache.command_hash("pytest tests/")
+        session.mark_bash_run(
+            session_id=sid,
+            cmd_sha=cmd_sha,
+            cmd_preview="pytest tests/",
+            output_id=f"out-{cmd_sha}",
+            stdout_bytes=8000,
+            stderr_bytes=0,
+            exit_code=1,
+            truncated=False,
+        )
         m = compact.build_manifest(sid, max_tokens=400)
         assert "Current Blockers" in m
         assert "Files Edited" in m
@@ -274,22 +285,31 @@ class TestCurrentBlockersSection:
             f"'Files Edited' (pos {edited_pos})"
         )
 
-    def test_success_exit_zero_not_a_blocker(self, tmp_data_dir):
+    def test_success_exit_zero_not_a_blocker(self, tmp_data_dir, make_session):
         """exit_code=0 is never a blocker regardless of output size."""
         sid = "blk-6"
-        session.mark_file_edited(sid, "/tmp/src.py")
-        _seed_bash(sid, "npm install", output_bytes=50000, exit_code=0)
-        _make_mature(sid)
+        make_session(
+            sid,
+            age_seconds=7200,
+            edits=1,
+            bash_runs={"npm install": (50000, 0)},
+        )
         m = compact.build_manifest(sid, max_tokens=400)
         assert "Current Blockers" not in m
 
-    def test_multiple_failures_capped_at_three(self, tmp_data_dir):
+    def test_multiple_failures_capped_at_three(self, tmp_data_dir, make_session):
         """At most 3 blocker entries are shown even when more commands failed."""
         sid = "blk-7"
-        session.mark_file_edited(sid, "/tmp/src.py")
-        for i in range(5):
-            _seed_bash(sid, f"pytest test_{i}.py", output_bytes=5000, exit_code=1)
-        _make_mature(sid)
+        bash_runs = {
+            f"pytest test_{i}.py": (5000, 1)
+            for i in range(5)
+        }
+        make_session(
+            sid,
+            age_seconds=7200,
+            edits=1,
+            bash_runs=bash_runs,
+        )
         m = compact.build_manifest(sid, max_tokens=800)
         # Count occurrences of the failure marker in the blockers section.
         lines = m.splitlines()
@@ -305,12 +325,15 @@ class TestCurrentBlockersSection:
                 blocker_section_lines.append(line)
         assert len(blocker_section_lines) <= 3
 
-    def test_blocker_format_includes_exit_code(self, tmp_data_dir):
+    def test_blocker_format_includes_exit_code(self, tmp_data_dir, make_session):
         """Each blocker line shows the command preview and exit code."""
         sid = "blk-8"
-        session.mark_file_edited(sid, "/tmp/src.py")
-        _seed_bash(sid, "mypy src/", output_bytes=6000, exit_code=2)
-        _make_mature(sid)
+        make_session(
+            sid,
+            age_seconds=7200,
+            edits=1,
+            bash_runs={"mypy src/": (6000, 2)},
+        )
         m = compact.build_manifest(sid, max_tokens=400)
         assert "✗ mypy src/" in m
         assert "exit 2" in m
