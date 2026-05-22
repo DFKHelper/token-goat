@@ -3510,3 +3510,93 @@ class TestSafetyTrimAndBudgetFloor:
         session.mark_file_read(sid, "src/lib.py", 0, 50, symbol="MyClass")
         _, files_count = compact.build_manifest_with_count(sid)
         assert files_count > 0
+
+
+# ---------------------------------------------------------------------------
+# Stale read files + estimate_tokens + cold-output blocker path
+# ---------------------------------------------------------------------------
+
+
+class TestStaleReadFilesSection:
+    """Outdated File Snapshots section appears when a file was read then later edited."""
+
+    def test_stale_file_appears_in_manifest(self, tmp_data_dir):
+        """File read at T1 then edited at T2 > T1 (not in edited_files) shows ⚠."""
+
+        sid = "stale-read-path"
+        path = "src/token_goat/hints.py"
+
+        # Read the file first (creates FileEntry with last_read_ts, last_edit_ts=0)
+        session.mark_file_read(sid, path, 0, 80)
+
+        # Manually stamp last_edit_ts > last_read_ts WITHOUT adding to edited_files
+        cache = session.load(sid)
+        key = list(cache.files.keys())[0]
+        entry = cache.files[key]
+        entry.last_edit_ts = entry.last_read_ts + 1.0
+        # Do NOT add to edited_files — this is the stale scenario
+        session.save(cache)
+
+        result = compact.build_manifest(sid, max_tokens=400)
+        assert "Outdated File Snapshots" in result
+        assert "⚠" in result
+
+    def test_stale_file_absent_when_in_edited_files(self, tmp_data_dir):
+        """File that is both stale AND in edited_files must NOT appear in stale section."""
+
+        sid = "stale-but-edited"
+        path = "src/token_goat/compact.py"
+
+        # Read the file first
+        session.mark_file_read(sid, path, 0, 50)
+
+        # Use mark_file_edited — stamps last_edit_ts AND adds to edited_files
+        session.mark_file_edited(sid, path)
+
+        result = compact.build_manifest(sid, max_tokens=400)
+        # edited_files takes priority; stale section must not duplicate it
+        assert "Outdated File Snapshots" not in result
+
+    def test_no_stale_section_when_all_edits_before_reads(self, tmp_data_dir):
+        """File edited then read: last_read_ts > last_edit_ts → not stale."""
+
+        sid = "edit-then-read"
+        path = "src/token_goat/session.py"
+
+        # Edit first (stamps last_edit_ts on FileEntry if it exists — but it doesn't yet)
+        session.mark_file_edited(sid, path)
+        # Read after edit → last_read_ts > last_edit_ts
+        session.mark_file_read(sid, path, 0, 50)
+
+        # Manually clear from edited_files to isolate stale logic
+        cache = session.load(sid)
+        cache.edited_files.clear()
+        session.save(cache)
+
+        result = compact.build_manifest(sid, max_tokens=400)
+        # last_read_ts >= last_edit_ts → not stale (read clears the stale condition)
+        assert "Outdated File Snapshots" not in result
+
+
+class TestEstimateTokensDirect:
+    """estimate_tokens is the global budget guardian — test it directly."""
+
+    def test_empty_string_returns_one(self):
+        """estimate_tokens('') must return at least 1 (never zero)."""
+        assert compact.estimate_tokens("") == 1
+
+    def test_short_string_positive(self):
+        """Any non-empty string returns a positive token count."""
+        assert compact.estimate_tokens("hello") >= 1
+
+    def test_long_string_proportional(self):
+        """Token estimate grows with length — 1000-char string > 100-char string."""
+        short = compact.estimate_tokens("x" * 100)
+        long_ = compact.estimate_tokens("x" * 1000)
+        assert long_ > short
+
+    def test_approx_three_chars_per_token(self):
+        """300-char string should estimate ~100 tokens (using ~3 chars/token ratio)."""
+        result = compact.estimate_tokens("a" * 300)
+        # The formula is max(1, len//3 + 1); exact: 300//3 + 1 = 101
+        assert 90 <= result <= 115
