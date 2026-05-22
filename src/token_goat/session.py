@@ -270,9 +270,9 @@ _MAX_BASH_PREVIEW = 120
 # which are far less frequent than bash commands.
 WEB_HISTORY_MAX = 75
 _WEB_HISTORY_EVICT = 15
-# Length of the URL preview persisted in session JSON.  200 covers any
-# realistic page URL while keeping the per-entry footprint predictable.
-_MAX_WEB_URL_PREVIEW = 200
+# Length of the URL preview persisted in session JSON.  100 chars is enough
+# to identify any URL (hostname + path) while halving per-entry storage vs 200.
+_MAX_WEB_URL_PREVIEW = 100
 
 # Maximum number of grep entries retained per session.  Grep calls accumulate
 # across the session; without a cap the greps list grows without bound.
@@ -1421,10 +1421,9 @@ def mark_file_read(
     return _commit_mutation(cache, now)
 
 
-# 1024 is well above any realistic grep pattern (~200 chars max in practice) but still
-# blocks regex-bomb-sized strings from a malformed harness payload inflating every
-# session JSON write.
-_MAX_GREP_PATTERN_LEN = 1024
+# 200 chars covers any realistic grep pattern while blocking regex-bomb-sized
+# strings from a malformed harness payload inflating every session JSON write.
+_MAX_GREP_PATTERN_LEN = 200
 
 # Maximum length of a symbol name stored in the session cache.  Symbol names come from
 # harness tool_input (via ``token-goat read file::symbol``) and are later embedded in
