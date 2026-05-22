@@ -440,6 +440,51 @@ def _handle_grep_dedup(payload: HookPayload) -> HookResponse | None:
     return pre_tool_use_with_context(str(hint))
 
 
+def _handle_grep_written_not_read(payload: HookPayload) -> HookResponse | None:
+    """Hint when Grep targets a single file written this session but not yet read back.
+
+    When ``path`` resolves to a file that was written (Edit/Write/MultiEdit)
+    this session and has never been read back, the content the agent wrote may
+    still be visible in context from the Write/Edit tool result — making a Grep
+    redundant.  Only fires when ``path`` is a specific file (not a directory);
+    directory-scoped Greps are let through without a hint.
+    """
+    from . import session  # noqa: PLC0415
+
+    session_id, _cwd = get_session_context(payload)
+    if not session_id:
+        return None
+
+    tool_input = get_tool_input(payload)
+    path = tool_input.get("path")
+    if not isinstance(path, str) or not path:
+        return None
+
+    try:
+        cache = session.load(session_id)
+    except (OSError, ValueError):
+        return None
+
+    _written_key = session._normalize_path(path)  # type: ignore[attr-defined]
+    _edited: dict[str, int] = cache.edited_files if isinstance(cache.edited_files, dict) else {}
+    _edit_count = _edited.get(_written_key, 0)
+    if _edit_count < 1 or _written_key in cache.files:
+        return None
+
+    fname = sanitize_log_str(Path(path).name, max_len=256)
+    hint_text = (
+        f"Note: `{fname}` was written {_edit_count}x this session and not yet read back. "
+        f"The content you wrote may still be in context from the tool result — "
+        f"check there before grepping. For a specific symbol use "
+        f"`token-goat read \"{path}::SymbolName\"`."
+    )
+    _LOG.debug(
+        "pre-read: grep written-not-read hint for %s (edit_count=%d)",
+        sanitize_log_str(path), _edit_count,
+    )
+    return pre_tool_use_with_context(hint_text)
+
+
 def _handle_glob_dedup(payload: HookPayload) -> HookResponse | None:
     """Return a dedup hint when the same Glob pattern just ran in this session.
 
@@ -565,6 +610,9 @@ def pre_read(payload: HookPayload) -> HookResponse:
         dedup = _handle_grep_dedup(payload)
         if dedup is not None:
             return dedup
+        written = _handle_grep_written_not_read(payload)
+        if written is not None:
+            return written
         return CONTINUE()
 
     if tool_name == "Glob":

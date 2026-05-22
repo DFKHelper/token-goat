@@ -432,3 +432,75 @@ class TestWrittenNotReadHint:
         assert "hookSpecificOutput" in result
         ctx = result["hookSpecificOutput"]["additionalContext"]
         assert "3" in ctx
+
+
+# ---------------------------------------------------------------------------
+# Grep written-not-read hint tests
+# ---------------------------------------------------------------------------
+
+
+class TestGrepWrittenNotReadHint:
+    """pre_read emits a note when Grep targets a file written but never read."""
+
+    def _grep_payload(self, sid: str, path: str, pattern: str = "def ") -> dict:
+        return {
+            "session_id": sid,
+            "tool_name": "Grep",
+            "tool_input": {"pattern": pattern, "path": path},
+            "cwd": "/proj",
+        }
+
+    def test_grep_written_not_read_emits_hint(self, tmp_data_dir):
+        """Grep on a file written but never read → hint in additionalContext."""
+        sid = "grep-written-not-read"
+        path = "/proj/src/new_service.py"
+        session.mark_file_edited(sid, path)
+
+        result = hooks_cli.pre_read(self._grep_payload(sid, path))
+        _assert_continue(result)
+        assert "hookSpecificOutput" in result
+        ctx = result["hookSpecificOutput"]["additionalContext"]
+        assert "written" in ctx.lower()
+        assert "new_service.py" in ctx
+
+    def test_grep_after_read_no_hint(self, tmp_data_dir):
+        """Grep on a file that was already read → no written-not-read hint."""
+        sid = "grep-read-then-written"
+        path = "/proj/src/already_read.py"
+        session.mark_file_read(sid, path, offset=0, limit=200)
+        session.mark_file_edited(sid, path)
+
+        result = hooks_cli.pre_read(self._grep_payload(sid, path))
+        _assert_continue(result)
+        if "hookSpecificOutput" in result:
+            ctx = result["hookSpecificOutput"].get("additionalContext", "")
+            # written-not-read branch must not fire when file is in cache.files
+            assert "written" not in ctx.lower() or "cached" in ctx.lower()
+
+    def test_grep_no_path_no_hint(self, tmp_data_dir):
+        """Grep with no path parameter → no written-not-read hint."""
+        sid = "grep-no-path"
+        path = "/proj/src/written_file.py"
+        session.mark_file_edited(sid, path)
+
+        payload = {
+            "session_id": sid,
+            "tool_name": "Grep",
+            "tool_input": {"pattern": "def "},  # no path
+            "cwd": "/proj",
+        }
+        result = hooks_cli.pre_read(payload)
+        _assert_continue(result)
+        # No path means directory-wide grep; written-not-read must not fire
+        if "hookSpecificOutput" in result:
+            ctx = result["hookSpecificOutput"].get("additionalContext", "")
+            assert "written" not in ctx.lower()
+
+    def test_grep_never_written_no_hint(self, tmp_data_dir):
+        """Grep on a file with no session history → no hint."""
+        sid = "grep-pristine"
+        path = "/proj/src/untouched.py"
+
+        result = hooks_cli.pre_read(self._grep_payload(sid, path))
+        _assert_continue(result)
+        assert "hookSpecificOutput" not in result
