@@ -3851,3 +3851,73 @@ class TestGroupEditedByDir:
         # Line should be capped or have overflow marker
         assert len(line) <= 140 or "+more" in line, \
             f"Expected line length <= 140 or '+more' marker, got: {line}"
+
+
+# ---------------------------------------------------------------------------
+# build_manifest timeout guard tests
+# ---------------------------------------------------------------------------
+
+class TestBuildManifestTimeout:
+    """Test the wall-clock timeout guard in build_manifest()."""
+
+    def test_normal_session_completes_within_timeout(self, tmp_data_dir):
+        """A session with normal activity completes without timeout warning."""
+        sid = "normal-timeout-session"
+        # Add moderate activity
+        for i in range(5):
+            session.mark_file_read(sid, f"/proj/src/file{i}.py", offset=0, limit=100)
+            session.mark_file_edited(sid, f"/proj/src/file{i}.py")
+        session.mark_grep(sid, "test", "/proj/src")
+
+        result = compact.build_manifest(sid)
+        # Should not contain timeout warning
+        assert "timed out" not in result.lower(), \
+            "Normal session should not trigger timeout warning"
+        assert result != "", "Normal session should produce non-empty manifest"
+
+    def test_slow_git_diff_triggers_timeout_note(self, tmp_data_dir, monkeypatch):
+        """Monkeypatched slow git call triggers timeout note in output."""
+        sid = "slow-git-session"
+        session.mark_file_edited(sid, "/proj/src/slow.py")
+        session.mark_file_read(sid, "/proj/src/slow.py", offset=0, limit=50)
+
+        # Monkeypatch _get_git_diff_stat_summary to sleep, simulating slow git
+        original_func = compact._get_git_diff_stat_summary
+
+        def slow_git(*args, **kwargs):
+            time.sleep(9.0)  # Exceed the 8s timeout
+            return original_func(*args, **kwargs)
+
+        monkeypatch.setattr(compact, "_get_git_diff_stat_summary", slow_git)
+
+        result = compact.build_manifest(sid)
+        # Should contain timeout warning
+        assert "timed out" in result.lower(), \
+            f"Expected timeout warning in manifest, got: {result[-200:]}"
+        assert "output may be incomplete" in result.lower(), \
+            "Timeout note should indicate possible incompleteness"
+
+    def test_timeout_note_contains_elapsed_seconds(self, tmp_data_dir, monkeypatch):
+        """Timeout note shows elapsed seconds in human-readable format."""
+        sid = "timeout-format-session"
+        session.mark_file_edited(sid, "/proj/src/test.py")
+
+        # Monkeypatch _get_git_diff_stat_summary to sleep for ~9s
+        original_func = compact._get_git_diff_stat_summary
+
+        def slow_git(*args, **kwargs):
+            time.sleep(9.0)
+            return original_func(*args, **kwargs)
+
+        monkeypatch.setattr(compact, "_get_git_diff_stat_summary", slow_git)
+
+        result = compact.build_manifest(sid)
+        # Check that elapsed seconds are shown with .1f precision
+        import re
+        match = re.search(r"timed out after (\d+\.\d+)s", result)
+        assert match, \
+            f"Expected 'timed out after X.Xs' pattern in manifest, got: {result[-200:]}"
+        elapsed_str = match.group(1)
+        elapsed_float = float(elapsed_str)
+        assert elapsed_float >= 9.0, \
+            f"Expected elapsed >= 9.0s, got: {elapsed_float}s"
