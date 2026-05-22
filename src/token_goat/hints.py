@@ -935,6 +935,9 @@ def build_bash_dedup_hint(
 _BASH_DEDUP_MIN_BYTES: int = 200
 # Below this threshold use a compact one-liner hint to keep net savings positive.
 _BASH_DEDUP_LIGHT_MAX_BYTES: int = 999
+# At this size suggest --grep filtering; the output is large enough that loading
+# it whole when only a snippet is needed wastes significant context.
+_BASH_DEDUP_GREP_SUGGEST_BYTES: int = 5000
 
 
 def _build_bash_dedup_hint_inner(
@@ -985,20 +988,22 @@ def _build_bash_dedup_hint_inner(
         hint_text = f"`{cmd_short}` cached (age ~{int(age)}s, {total_bytes}B{exit_str}). `{recall_cmd}`"
         return ReadHint(hint_text, tokens_avoided)
 
+    grep_suffix = " (add --grep PATTERN to filter)" if total_bytes >= _BASH_DEDUP_GREP_SUGGEST_BYTES else ""
+
     if run_count >= 3:
         hint_text = (
             f"WARNING: `{cmd_short}` ran {run_count}x — loop? "
-            f"Cached: ({total_bytes:,}B{exit_str}): `{recall_cmd}`"
+            f"Cached: ({total_bytes:,}B{exit_str}): `{recall_cmd}`{grep_suffix}"
         )
     elif run_count == 2:
         hint_text = (
             f"`{cmd_short}` ran 2x — cached ({total_bytes:,}B{exit_str}, ~{tokens_avoided} tokens). "
-            f"`{recall_cmd}`"
+            f"`{recall_cmd}`{grep_suffix}"
         )
     else:
         hint_text = (
             f"`{cmd_short}` (age ~{int(age)}s): {total_bytes:,}B{exit_str} cached. "
-            f"`{recall_cmd}`"
+            f"`{recall_cmd}`{grep_suffix}"
         )
     return ReadHint(hint_text, tokens_avoided)
 
