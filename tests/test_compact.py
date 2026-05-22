@@ -3452,3 +3452,61 @@ class TestAllSectionsSimultaneous:
         result = compact.build_manifest(sid, max_tokens=max_tok)
         assert isinstance(result, str)
         assert compact.estimate_tokens(result) <= max_tok
+
+
+# ---------------------------------------------------------------------------
+# Safety trim path + glob budget floor
+# ---------------------------------------------------------------------------
+
+
+class TestSafetyTrimAndBudgetFloor:
+    """Reliability: safety trim in _render and glob floor in _section_budgets."""
+
+    def test_safety_trim_output_within_budget(self, tmp_data_dir):
+        """When assembled manifest would exceed max_tokens, safety trim brings it back."""
+        sid = "safety-trim-path"
+        # Populate enough data to produce a non-trivial manifest
+        session.mark_file_edited(sid, "src/token_goat/compact.py")
+        session.mark_file_edited(sid, "src/token_goat/session.py")
+        session.mark_file_edited(sid, "src/token_goat/hints.py")
+        for i in range(10):
+            session.mark_file_read(sid, f"src/module_{i}.py", 0, 200)
+        session.mark_bash_run(sid, "sha_cmd", "uv run pytest -q", "out_cmd", 1500, 800, 0, False)
+        session.mark_web_fetch(sid, "https://docs.python.org", "out_web", 2000, 200, 500, False)
+        cache = session.load(sid)
+        cache.created_ts = time.time() - 7200
+        session.save(cache)
+
+        # Very tight budget — forces safety trim into action
+        max_tok = 80
+        result = compact.build_manifest(sid, max_tokens=max_tok)
+        assert isinstance(result, str)
+        # Safety trim must keep result within budget
+        assert compact.estimate_tokens(result) <= max_tok
+
+    def test_glob_budget_floor_kicks_in_at_small_remaining(self):
+        """Glob 5% of a small remaining budget falls below floor; floor (20) should apply."""
+        # remaining = 200 → glob 5% = 10 < floor 20 → floor applies
+        budgets = compact._section_budgets(total_budget=200, edited_tokens=0)
+        assert budgets["glob"] == 20
+
+    def test_glob_budget_above_floor_for_large_remaining(self):
+        """Glob 5% of a large remaining budget exceeds floor; proportional value applies."""
+        # remaining = 800 → glob 5% = 40 > floor 20 → proportional
+        budgets = compact._section_budgets(total_budget=800, edited_tokens=0)
+        assert budgets["glob"] == 40
+
+    def test_section_budgets_floor_applied_to_all_sections_under_pressure(self):
+        """Under extreme budget pressure all sections should get at least floor tokens."""
+        # remaining = 50 → every section gets floor (20)
+        budgets = compact._section_budgets(total_budget=50, edited_tokens=0)
+        for key in ("symbols", "files", "greps", "bash", "web", "glob"):
+            assert budgets[key] >= 20, f"{key} budget {budgets[key]} is below floor"
+
+    def test_build_manifest_with_count_returns_nonzero_for_active_session(self, tmp_data_dir):
+        """build_manifest_with_count returns a positive files count for active sessions."""
+        sid = "bmwc-active"
+        session.mark_file_edited(sid, "src/main.py")
+        session.mark_file_read(sid, "src/lib.py", 0, 50, symbol="MyClass")
+        _, files_count = compact.build_manifest_with_count(sid)
+        assert files_count > 0
