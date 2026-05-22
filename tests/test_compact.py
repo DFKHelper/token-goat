@@ -2429,6 +2429,53 @@ class TestGetUncommittedChanges:
         result = compact._get_uncommitted_changes(str(git_repo))
         assert result is None
 
+    def test_caps_output_at_200_chars(self, monkeypatch):
+        """Combined output longer than 200 chars is truncated to a whole-line boundary."""
+        import subprocess as _subprocess  # noqa: PLC0415
+        import types  # noqa: PLC0415
+
+        # 8 lines of 35 chars each = 280 chars total, over the 200-char cap.
+        many_chars = "\n".join(f" file{i:02d}.py | {'+'*20}" for i in range(8))
+
+        def _fake_run(args, **kw):
+            if "diff" in args:
+                return types.SimpleNamespace(returncode=0, stdout=many_chars, stderr="")
+            return types.SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        monkeypatch.setattr(_subprocess, "run", _fake_run)
+        result = compact._get_uncommitted_changes("/some/repo")
+        assert result is not None
+        assert len(result) <= 200
+        # Result must end on a complete line (no mid-line truncation).
+        assert not result.endswith("|")
+
+    def test_nonzero_diff_exit_code_falls_back_to_status(self, monkeypatch):
+        """When git diff --stat fails, status-only output is still returned."""
+        import subprocess as _subprocess  # noqa: PLC0415
+        import types  # noqa: PLC0415
+
+        def _fake_run(args, **kw):
+            if "diff" in args:
+                return types.SimpleNamespace(returncode=128, stdout="", stderr="fatal: bad HEAD")
+            return types.SimpleNamespace(returncode=0, stdout="?? new.py\n", stderr="")
+
+        monkeypatch.setattr(_subprocess, "run", _fake_run)
+        result = compact._get_uncommitted_changes("/some/repo")
+        assert result is not None
+        assert "new.py" in result
+
+    def test_both_commands_fail_returns_none(self, monkeypatch):
+        """When both git commands return non-zero, None is returned."""
+        import subprocess as _subprocess  # noqa: PLC0415
+        import types  # noqa: PLC0415
+
+        def _fake_run(args, **kw):
+            return types.SimpleNamespace(returncode=128, stdout="", stderr="fatal")
+
+        monkeypatch.setattr(_subprocess, "run", _fake_run)
+        result = compact._get_uncommitted_changes("/some/repo")
+        assert result is None
+
 
 class TestUncommittedChangesManifestSection:
     """Tests for the ### Uncommitted Changes section in the manifest."""
