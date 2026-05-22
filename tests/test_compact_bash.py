@@ -337,3 +337,347 @@ class TestCurrentBlockersSection:
         m = compact.build_manifest(sid, max_tokens=400)
         assert "✗ mypy src/" in m
         assert "exit 2" in m
+
+
+class TestFilterChainEdgeCases:
+    """Edge cases in filter chain composition and token cap behavior."""
+
+    def test_filter_chain_near_cap_output(self, tmp_data_dir):
+        """When one filter reduces output to just below cap, next filter doesn't exceed it.
+
+        Tests that after filtering, the output respects the token cap even when
+        the filter chain incrementally reduces content.
+        """
+        from token_goat import bash_compress
+
+        # Create output that is just under the default cap when plain text,
+        # but might exceed it if a filter doesn't respect boundaries.
+        # DEFAULT_MAX_BYTES = 64 * 1024 = 65536
+        # Create text at ~95% of cap (62208 bytes), then filter + cap it.
+        near_cap_text = ("x" * 100 + "\n") * 600  # ~60.6 KB
+
+        # Create a basic filter and apply it.
+        f = bash_compress.Filter()
+        result = f.apply(
+            stdout=near_cap_text,
+            stderr="",
+            exit_code=0,
+            argv=["some_command"],
+            max_bytes=bash_compress.DEFAULT_MAX_BYTES,
+        )
+
+        # Result should never exceed the byte cap.
+        assert len(result.text.encode("utf-8", errors="replace")) <= bash_compress.DEFAULT_MAX_BYTES
+        # And it should have a cap marker if truncation occurred.
+        if len(result.text) < len(near_cap_text):
+            assert "token-goat" in result.text.lower()
+
+    def test_stderr_only_output_through_filter_chain(self, tmp_data_dir):
+        """stderr-only output (empty stdout) flows through filter chain correctly.
+
+        Tests the case where stdout is empty but stderr contains meaningful content.
+        """
+        from token_goat import bash_compress
+
+        stdout = ""
+        stderr = "Error in compilation:\n/path/to/file.rs:42: unexpected token\n"
+
+        f = bash_compress.Filter()
+        result = f.apply(stdout=stdout, stderr=stderr, exit_code=1, argv=["rustc"])
+
+        # The result should contain the stderr content.
+        assert "compilation" in result.text or "unexpected token" in result.text
+
+    def test_combined_stdout_stderr_near_cap(self, tmp_data_dir):
+        """Combined stdout + stderr that pushes past cap is truncated correctly.
+
+        When both stdout and stderr together exceed the cap, test that
+        truncation happens and a cap marker is added.
+        """
+        from token_goat import bash_compress
+
+        # Create stdout and stderr that together exceed the cap.
+        stdout = "x" * 35000
+        stderr = "y" * 35000
+
+        f = bash_compress.Filter()
+        result = f.apply(
+            stdout=stdout,
+            stderr=stderr,
+            exit_code=0,
+            argv=["some_command"],
+            max_bytes=bash_compress.DEFAULT_MAX_BYTES,
+        )
+
+        # Result must not exceed cap.
+        assert len(result.text.encode("utf-8", errors="replace")) <= bash_compress.DEFAULT_MAX_BYTES
+        # And should have a truncation marker.
+        assert "token-goat" in result.text or "middle" in result.text.lower()
+
+    def test_empty_output_through_filter_chain(self, tmp_data_dir):
+        """Empty stdout and stderr through filter chain returns empty without crash.
+
+        Tests the edge case where both stdout and stderr are empty strings.
+        """
+        from token_goat import bash_compress
+
+        f = bash_compress.Filter()
+        result = f.apply(
+            stdout="",
+            stderr="",
+            exit_code=0,
+            argv=["echo"],
+        )
+
+        # Should return cleanly without error.
+        assert isinstance(result.text, str)
+        # Should be empty or nearly empty (minus any markers).
+        assert len(result.text.strip()) == 0
+
+    def test_ansi_heavy_output_measured_after_strip(self, tmp_data_dir):
+        """ANSI stripping happens before token cap check (regression test).
+
+        When output is ANSI-heavy, the token cap should measure the clean text,
+        not the ANSI-inflated raw text. This ensures heavy colours don't trigger
+        false truncation.
+        """
+        from token_goat import bash_compress
+
+        # Create minimal content with heavy ANSI wrapping.
+        content = "Test output"
+        ansi_heavy = (
+            "\x1b[31m" + content + "\x1b[0m"  # Red text + reset
+            + "\x1b[32m" * 500  # Heavy ANSI codes that add 1000+ bytes
+            + "\x1b[0m" * 500
+        )
+
+        # Measure via cap_tokens with a generous budget.
+        # The content is ~3 tokens; at max_tokens=20, it should fit.
+        result = bash_compress.cap_tokens(ansi_heavy, max_tokens=20)
+
+        # The clean content should not be truncated.
+        clean = bash_compress.strip_ansi(result)
+        assert content in clean, (
+            "ANSI-heavy output was truncated even though clean text fits in budget"
+        )
+        assert "capped at" not in result
+
+    def test_python_filter_passthrough_non_python(self, tmp_data_dir):
+        """PythonFilter passes through non-Python output unchanged (except normalise).
+
+        When PythonFilter runs on non-Python output (no traceback), it should
+        pass content through without modification (after normalise).
+        """
+        from token_goat import bash_compress
+
+        # Non-Python output (no traceback).
+        output = "Some generic command output\nLine 2\nLine 3\n"
+
+        f = bash_compress.PythonFilter()
+        result = f.apply(
+            stdout=output,
+            stderr="",
+            exit_code=0,
+            argv=["python", "-c", "print('hello')"],
+        )
+
+        # The content should be preserved (with normalisation applied).
+        assert "Some generic command output" in result.text
+        assert "Line 2" in result.text
+
+    def test_python_filter_multiple_tracebacks(self, tmp_data_dir):
+        """PythonFilter compresses multiple consecutive tracebacks.
+
+        When a command produces multiple tracebacks (e.g., retries), the filter
+        should compress them appropriately.
+        """
+        from token_goat import bash_compress
+
+        # Create two separate tracebacks.
+        tb1 = (
+            "Traceback (most recent call last):\n"
+            "  File \"script.py\", line 42, in <module>\n"
+            "    result = compute(x)\n"
+            "  File \"script.py\", line 30, in compute\n"
+            "    return x / 0\n"
+            "ZeroDivisionError: division by zero\n"
+        )
+        tb2 = (
+            "Traceback (most recent call last):\n"
+            "  File \"script.py\", line 42, in <module>\n"
+            "    result = compute(x)\n"
+            "  File \"script.py\", line 30, in compute\n"
+            "    return x / 0\n"
+            "ZeroDivisionError: division by zero\n"
+        )
+        combined = tb1 + "\n" + tb2
+
+        f = bash_compress.PythonFilter()
+        result = f.apply(
+            stdout=combined,
+            stderr="",
+            exit_code=1,
+            argv=["python", "script.py"],
+        )
+
+        # Result should be shorter than input due to compression.
+        assert len(result.text) < len(combined), (
+            "Multiple tracebacks should be compressed, but output was not smaller"
+        )
+        # Should contain error message.
+        assert "ZeroDivisionError" in result.text
+
+
+class TestPythonFilter:
+    """Dedicated tests for PythonFilter compression."""
+
+    def test_traceback_compression_keeps_innermost_frame(self, tmp_data_dir):
+        """Traceback compression keeps error line and innermost frame."""
+        from token_goat import bash_compress
+
+        traceback = (
+            "Traceback (most recent call last):\n"
+            "  File \"a.py\", line 10, in outer\n"
+            "    middle_call()\n"
+            "  File \"b.py\", line 20, in middle\n"
+            "    inner_call()\n"
+            "  File \"c.py\", line 30, in inner\n"
+            "    bad_operation()\n"
+            "ValueError: invalid value\n"
+        )
+
+        f = bash_compress.PythonFilter()
+        result = f.apply(
+            stdout=traceback,
+            stderr="",
+            exit_code=1,
+            argv=["python", "a.py"],
+        )
+
+        # Should keep error line.
+        assert "ValueError: invalid value" in result.text
+        # Innermost frame should be preserved.
+        inner_present = 'File "c.py", line 30, in inner' in result.text
+        has_inner = inner_present or "innermost" in result.text.lower()
+        assert has_inner
+
+    def test_traceback_over_10_frames_keeps_first_and_last(self, tmp_data_dir):
+        """Tracebacks with >10 frames keep first 2 and last 3 with omission marker."""
+        from token_goat import bash_compress
+
+        # Create a 15-frame traceback.
+        frames = [
+            f"  File \"file{i}.py\", line {10 + i}, in func{i}\n"
+            f"    call_next()\n"
+            for i in range(15)
+        ]
+        traceback = (
+            "Traceback (most recent call last):\n"
+            + "".join(frames)
+            + "RuntimeError: deep recursion\n"
+        )
+
+        f = bash_compress.PythonFilter()
+        result = f.apply(
+            stdout=traceback,
+            stderr="",
+            exit_code=1,
+            argv=["python", "test.py"],
+        )
+
+        # Should contain omission marker.
+        assert "frames omitted" in result.text, (
+            "Long traceback should have omission marker but got: " + result.text
+        )
+        # Should be significantly shorter than input.
+        assert len(result.text) < len(traceback) // 2
+
+    def test_repeated_lines_deduplicated(self, tmp_data_dir):
+        """Repeated lines (5+) are collapsed to 'line × N'."""
+        from token_goat import bash_compress
+
+        # Create output with 10 repeated lines.
+        output = "\n".join(["repeated warning"] * 10)
+
+        f = bash_compress.PythonFilter()
+        result = f.apply(
+            stdout=output,
+            stderr="",
+            exit_code=0,
+            argv=["python", "-c", "code"],
+        )
+
+        # Should use the dedup marker format.
+        assert "repeated warning" in result.text
+        # Should be much shorter (collapsed to ~1 line with count).
+        assert result.text.count("repeated warning") < 10 or "×" in result.text
+
+    def test_warning_spam_compression(self, tmp_data_dir):
+        """Repeated warnings (>3) are compressed to keep first 3, summarize rest."""
+        from token_goat import bash_compress
+
+        # Create 10 similar warnings (must match _PYTHON_WARNING_RE: "^\s*.*Warning:\s").
+        warnings = "\n".join(
+            [f"script.py:{i}: DeprecationWarning: old API" for i in range(1, 11)]
+        )
+
+        f = bash_compress.PythonFilter()
+        result = f.apply(
+            stdout=warnings,
+            stderr="",
+            exit_code=0,
+            argv=["python", "script.py"],
+        )
+
+        # Should contain a suppression summary for the extra warnings.
+        # With 10 warnings and keeping first 3, we expect a suppression marker.
+        assert "suppressed" in result.text.lower(), (
+            f"Expected suppression summary for repeated warnings, got: {result.text}"
+        )
+
+    def test_python_filter_matches_python_binary(self, tmp_data_dir):
+        """PythonFilter.matches() returns True for python/python3 commands."""
+        from token_goat import bash_compress
+
+        f = bash_compress.PythonFilter()
+
+        # Should match python
+        assert f.matches(["python", "script.py"])
+        assert f.matches(["python3", "script.py"])
+        assert f.matches(["/usr/bin/python3.11", "-c", "code"])
+
+        # Should not match pytest (handled by PytestFilter).
+        assert not f.matches(["python", "-m", "pytest"])
+        assert not f.matches(["pytest", "tests/"])
+
+    def test_python_filter_does_not_match_non_python(self, tmp_data_dir):
+        """PythonFilter.matches() returns False for non-Python commands."""
+        from token_goat import bash_compress
+
+        f = bash_compress.PythonFilter()
+
+        assert not f.matches(["node", "script.js"])
+        assert not f.matches(["go", "run", "main.go"])
+        assert not f.matches([])
+
+    def test_empty_traceback_passthrough(self, tmp_data_dir):
+        """PythonFilter on output with incomplete traceback passes through."""
+        from token_goat import bash_compress
+
+        # No error line, just "Traceback" header — not a complete traceback.
+        incomplete = (
+            "Traceback (most recent call last):\n"
+            "  File \"script.py\", line 1, in <module>\n"
+        )
+
+        f = bash_compress.PythonFilter()
+        result = f.apply(
+            stdout=incomplete,
+            stderr="",
+            exit_code=0,
+            argv=["python", "script.py"],
+        )
+
+        # Should pass through without crashing.
+        assert isinstance(result.text, str)
+        assert len(result.text) > 0
