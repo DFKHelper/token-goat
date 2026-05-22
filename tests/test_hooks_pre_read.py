@@ -280,3 +280,87 @@ class TestRealWorldSpike:
         hint = result["hookSpecificOutput"]["additionalContext"]
         assert "cached" in hint
         assert "tokens" in hint
+
+
+# ---------------------------------------------------------------------------
+# Glob dispatch tests
+# ---------------------------------------------------------------------------
+
+
+class TestGlobDedup:
+    """pre_read dispatches Glob tool_name through _handle_glob_dedup."""
+
+    def _glob_payload(self, sid, pattern, path=None):
+        payload = {
+            "session_id": sid,
+            "tool_name": "Glob",
+            "tool_input": {"pattern": pattern},
+        }
+        if path is not None:
+            payload["tool_input"]["path"] = path
+        return payload
+
+    def test_first_glob_passes_through(self, tmp_data_dir):
+        """No prior glob recorded → CONTINUE with no hint."""
+        payload = self._glob_payload("glob-new", "**/*.py")
+        result = hooks_cli.dispatch("pre-read", payload)
+        _assert_continue(result)
+        assert "hookSpecificOutput" not in result
+
+    def test_glob_dedup_hit_injects_hint(self, tmp_data_dir):
+        """Same (pattern, path) re-run with sufficient results → hint injected."""
+        from token_goat.hints import _GLOB_DEDUP_MIN_RESULT_COUNT
+        sid = "glob-dedup-hit"
+        pattern = "**/*.py"
+        session.mark_glob_run(sid, pattern, result_count=_GLOB_DEDUP_MIN_RESULT_COUNT + 5)
+
+        result = hooks_cli.dispatch("pre-read", self._glob_payload(sid, pattern))
+        _assert_continue(result)
+        assert "hookSpecificOutput" in result
+        ctx = result["hookSpecificOutput"]["additionalContext"]
+        assert "Glob" in ctx
+        assert pattern in ctx
+
+    def test_glob_dedup_different_pattern_no_hint(self, tmp_data_dir):
+        """Prior glob with a different pattern → no hint for the new pattern."""
+        sid = "glob-diff-pattern"
+        session.mark_glob_run(sid, "**/*.ts", result_count=20)
+
+        result = hooks_cli.dispatch("pre-read", self._glob_payload(sid, "**/*.py"))
+        _assert_continue(result)
+        assert "hookSpecificOutput" not in result
+
+    def test_glob_dedup_below_threshold_no_hint(self, tmp_data_dir):
+        """Same pattern but result_count below threshold → suppressed."""
+        from token_goat.hints import _GLOB_DEDUP_MIN_RESULT_COUNT
+        sid = "glob-below-thresh"
+        pattern = "src/**/*.js"
+        session.mark_glob_run(sid, pattern, result_count=_GLOB_DEDUP_MIN_RESULT_COUNT - 1)
+
+        result = hooks_cli.dispatch("pre-read", self._glob_payload(sid, pattern))
+        _assert_continue(result)
+        assert "hookSpecificOutput" not in result
+
+    def test_glob_dedup_with_path_scope(self, tmp_data_dir):
+        """Dedup matches on (pattern, path) pair, not pattern alone."""
+        from token_goat.hints import _GLOB_DEDUP_MIN_RESULT_COUNT
+        sid = "glob-with-path"
+        pattern = "**/*.rs"
+        path = "src/"
+        session.mark_glob_run(sid, pattern, path=path, result_count=_GLOB_DEDUP_MIN_RESULT_COUNT + 3)
+
+        # Same pattern, same path → hit
+        result = hooks_cli.dispatch("pre-read", self._glob_payload(sid, pattern, path=path))
+        _assert_continue(result)
+        assert "hookSpecificOutput" in result
+
+    def test_glob_dedup_path_mismatch_no_hint(self, tmp_data_dir):
+        """Prior glob on src/ does not match re-run on tests/ for same pattern."""
+        from token_goat.hints import _GLOB_DEDUP_MIN_RESULT_COUNT
+        sid = "glob-path-mismatch"
+        pattern = "**/*.py"
+        session.mark_glob_run(sid, pattern, path="src/", result_count=_GLOB_DEDUP_MIN_RESULT_COUNT + 5)
+
+        result = hooks_cli.dispatch("pre-read", self._glob_payload(sid, pattern, path="tests/"))
+        _assert_continue(result)
+        assert "hookSpecificOutput" not in result
