@@ -281,3 +281,203 @@ class TestFormatWebEntry:
         )
         line = compact._format_web_entry(entry)
         assert "?" in line
+
+
+class TestGroupWebEntriesByDomain:
+    def test_single_url_unchanged(self):
+        """A single URL should be rendered in full format."""
+        from token_goat.session import WebEntry
+        entries = [
+            WebEntry(
+                url_sha="abc",
+                url_preview="https://docs.example.com/api",
+                output_id="web-abc",
+                ts=time.time(),
+                body_bytes=5_000,
+                status_code=200,
+            )
+        ]
+        lines = compact._group_web_entries_by_domain(entries)
+        assert len(lines) == 1
+        assert "🌐" in lines[0]
+        assert "docs.example.com/api" in lines[0]
+
+    def test_two_same_domain_grouped(self):
+        """Two URLs from same domain should be grouped."""
+        from token_goat.session import WebEntry
+        entries = [
+            WebEntry(
+                url_sha="abc",
+                url_preview="https://docs.anthropic.com/en/api/getting-started",
+                output_id="web-abc",
+                ts=time.time(),
+                body_bytes=5_000,
+                status_code=200,
+            ),
+            WebEntry(
+                url_sha="def",
+                url_preview="https://docs.anthropic.com/en/api/messages",
+                output_id="web-def",
+                ts=time.time(),
+                body_bytes=5_000,
+                status_code=200,
+            ),
+        ]
+        lines = compact._group_web_entries_by_domain(entries)
+        assert len(lines) == 1
+        assert "docs.anthropic.com" in lines[0]
+        assert "(2)" in lines[0]
+        assert "getting-started" in lines[0]
+        assert "messages" in lines[0]
+
+    def test_mixed_domains(self):
+        """URLs from different domains should not be grouped."""
+        from token_goat.session import WebEntry
+        entries = [
+            WebEntry(
+                url_sha="abc",
+                url_preview="https://docs.anthropic.com/en/api/getting-started",
+                output_id="web-abc",
+                ts=time.time(),
+                body_bytes=5_000,
+                status_code=200,
+            ),
+            WebEntry(
+                url_sha="def",
+                url_preview="https://github.com/anthropics/anthropic-sdk-python",
+                output_id="web-def",
+                ts=time.time(),
+                body_bytes=5_000,
+                status_code=200,
+            ),
+        ]
+        lines = compact._group_web_entries_by_domain(entries)
+        assert len(lines) == 2
+        assert any("docs.anthropic.com" in line for line in lines)
+        assert any("github.com" in line for line in lines)
+        # Single-domain entries should have "🌐" marker with full URL
+        anthropic_line = [line for line in lines if "docs.anthropic.com" in line][0]
+        assert "🌐" in anthropic_line
+
+    def test_many_urls_from_one_domain_truncated(self):
+        """Long aggregation of paths should be truncated."""
+        from token_goat.session import WebEntry
+        entries = [
+            WebEntry(
+                url_sha=f"sha{i}",
+                url_preview=f"https://docs.example.com/section{i}/page{i}/subsection{i}",
+                output_id=f"web-sha{i}",
+                ts=time.time(),
+                body_bytes=5_000,
+                status_code=200,
+            )
+            for i in range(6)
+        ]
+        lines = compact._group_web_entries_by_domain(entries)
+        assert len(lines) == 1
+        line = lines[0]
+        assert "docs.example.com" in line
+        assert "(6)" in line
+        # Should be truncated if too long
+        if len(line) > 100:  # Rough check for long path summary
+            assert "..." in line
+
+    def test_three_domains_mixed(self):
+        """Three separate domains should produce three groups."""
+        from token_goat.session import WebEntry
+        entries = [
+            WebEntry(
+                url_sha="a1",
+                url_preview="https://api1.example.com/endpoint",
+                output_id="web-a1",
+                ts=time.time(),
+                body_bytes=5_000,
+                status_code=200,
+            ),
+            WebEntry(
+                url_sha="a2",
+                url_preview="https://api1.example.com/docs",
+                output_id="web-a2",
+                ts=time.time(),
+                body_bytes=5_000,
+                status_code=200,
+            ),
+            WebEntry(
+                url_sha="b1",
+                url_preview="https://api2.example.com/v1",
+                output_id="web-b1",
+                ts=time.time(),
+                body_bytes=5_000,
+                status_code=200,
+            ),
+            WebEntry(
+                url_sha="c1",
+                url_preview="https://docs.other.io/guide",
+                output_id="web-c1",
+                ts=time.time(),
+                body_bytes=5_000,
+                status_code=200,
+            ),
+        ]
+        lines = compact._group_web_entries_by_domain(entries)
+        assert len(lines) == 3
+        # api1.example.com appears twice (grouped)
+        api1_line = [line for line in lines if "api1.example.com" in line][0]
+        assert "(2)" in api1_line
+        # api2 and docs.other.io appear once each
+        assert any("api2.example.com" in line for line in lines)
+        assert any("docs.other.io" in line for line in lines)
+
+    def test_empty_entries_list(self):
+        """Empty list should return empty result."""
+        lines = compact._group_web_entries_by_domain([])
+        assert lines == []
+
+    def test_malformed_url_handled_gracefully(self):
+        """Entry with invalid URL should be skipped gracefully."""
+        from token_goat.session import WebEntry
+        entries = [
+            WebEntry(
+                url_sha="bad",
+                url_preview="not a url at all",
+                output_id="web-bad",
+                ts=time.time(),
+                body_bytes=5_000,
+                status_code=200,
+            ),
+            WebEntry(
+                url_sha="good",
+                url_preview="https://good.com/page",
+                output_id="web-good",
+                ts=time.time(),
+                body_bytes=5_000,
+                status_code=200,
+            ),
+        ]
+        lines = compact._group_web_entries_by_domain(entries)
+        # Should handle gracefully and include the good one
+        assert len(lines) >= 1
+        assert any("good.com" in line for line in lines)
+
+
+class TestWebGroupingIntegration:
+    def test_grouped_entries_in_full_manifest(self, tmp_data_dir, make_session):
+        """End-to-end: multiple URLs from same domain appear grouped in manifest."""
+        sid = "wg-1"
+        make_session(
+            sid,
+            age_seconds=7200,
+            edits=1,
+            web_fetches={
+                "https://docs.anthropic.com/en/api/getting-started": 12_000,
+                "https://docs.anthropic.com/en/api/messages": 10_000,
+                "https://github.com/anthropics/anthropic-sdk-python": 8_000,
+            },
+        )
+        m = compact.build_manifest(sid, max_tokens=600)
+        assert "Web Fetches" in m
+        # docs.anthropic.com should appear once with (2)
+        assert "docs.anthropic.com" in m
+        assert "(2)" in m
+        # github.com should appear separately
+        assert "github.com" in m

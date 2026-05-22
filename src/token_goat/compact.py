@@ -23,6 +23,7 @@ from collections.abc import Callable
 from datetime import UTC, datetime
 from operator import attrgetter, itemgetter
 from typing import TYPE_CHECKING, Any, Final
+from urllib.parse import urlparse
 
 from . import session as session_mod
 from .hooks_common import sanitize_log_str
@@ -1027,6 +1028,72 @@ def _format_web_entry(entry: object) -> str:
     )
 
 
+def _group_web_entries_by_domain(entries: list[object]) -> list[str]:
+    """Group web entries by domain to save tokens in the manifest.
+
+    When multiple URLs share the same domain, they are grouped as:
+        → domain (N): path1, path2, ...
+
+    Single URLs per domain show the full path. Very long aggregations are
+    truncated with an indication of overflow.
+
+    Args:
+        entries: List of :class:`session.WebEntry` objects.
+
+    Returns:
+        List of formatted strings, one per domain or single-URL entry.
+    """
+    from collections import defaultdict
+
+    if not entries:
+        return []
+
+    # Group entries by netloc (domain)
+    domain_groups: dict[str, list[object]] = defaultdict(list)
+    for entry in entries:
+        url_preview = getattr(entry, "url_preview", "")
+        if not url_preview:
+            continue
+        try:
+            parsed = urlparse(url_preview)
+            netloc = parsed.netloc or "unknown"
+        except Exception:  # noqa: BLE001
+            netloc = "unknown"
+        domain_groups[netloc].append(entry)
+
+    result = []
+    for netloc in sorted(domain_groups.keys()):
+        group = domain_groups[netloc]
+        if len(group) == 1:
+            # Single URL: use full format
+            line = _format_web_entry(group[0])
+            result.append(line)
+        else:
+            # Multiple URLs from same domain: compact format
+            # Extract paths from each URL
+            paths = []
+            for entry in group:
+                url_preview = getattr(entry, "url_preview", "")
+                try:
+                    parsed = urlparse(url_preview)
+                    path = parsed.path or "/"
+                    if parsed.params or parsed.query:
+                        path += f"{parsed.params}{('?' + parsed.query) if parsed.query else ''}"
+                    paths.append(path)
+                except Exception:  # noqa: BLE001
+                    paths.append("?")
+
+            # Format as compact line: "→ domain (N): path1, path2, ..."
+            path_str = ", ".join(paths)
+            # Truncate if too long (keep to ~80 chars for path summary)
+            if len(path_str) > 80:
+                path_str = path_str[:77] + "..."
+            line = f"- 🌐 {netloc} ({len(group)}): {path_str}"
+            result.append(line)
+
+    return result
+
+
 def _select_top_glob_entries(glob_history: object) -> list[object]:
     """Pick up to :data:`_MAX_GLOB_ENTRIES` glob scans worth surfacing in the manifest.
 
@@ -1891,9 +1958,10 @@ def _render(cache: SessionCache, session_id: str, max_tokens: int) -> tuple[str,
     if web_entries:
         header = "### Web Fetches (cached body)"
         header_cost = _token_count(header)
+        # Group entries by domain to save tokens
+        grouped_lines = _group_web_entries_by_domain(web_entries)
         web_entries_for_section: list[str] = []
-        for we in web_entries:
-            line = _format_web_entry(we)
+        for line in grouped_lines:
             cost = _token_count(line)
             if web_used + header_cost + cost <= web_budget:
                 web_entries_for_section.append(line)
