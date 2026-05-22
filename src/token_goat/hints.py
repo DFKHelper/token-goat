@@ -468,6 +468,18 @@ def _hint_from_cache(
         # access pattern. Suppress entirely.
         return None
 
+    # Check for full-file collapse sentinel: line_ranges == [(0, 0)] means the file
+    # has been read 10+ times and all range tracking has been collapsed to save JSON
+    # space. This check must come before the working-file suppression so the sentinel
+    # can emit its own hint before generic suppression rules apply.
+    if entry.line_ranges == [(0, 0)]:
+        sym_suffix = _symbols_suffix(entry.symbols_read)
+        return ReadHint(
+            f"`{fname}` full file read {entry.read_count} times{sym_suffix}. "
+            f"File is likely in context; suppressing detailed range hints.",
+            0,  # No tokens saved — the file is in context; this is informational.
+        )
+
     # Suppress line-range dedup nags for "working files" — files the agent
     # has read so many times that the hint is clearly not changing behaviour.
     # At _SUPPRESS_HINT_AT_READ_COUNT reads the agent is iterating on this
