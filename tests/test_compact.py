@@ -3707,3 +3707,74 @@ class TestCapLine:
         result = compact._cap_line(very_long)
         assert len(result) == 120
         assert result == ("x" * 119) + "…"
+
+
+# ---------------------------------------------------------------------------
+# compact._dedup_grep_entries
+# ---------------------------------------------------------------------------
+
+
+class TestDedupGrepEntries:
+    """Tests for grep result deduplication in manifest: collapse repeated patterns."""
+
+    def test_single_entry_unchanged(self):
+        """A single grep entry is returned as-is."""
+        import types
+
+        entry = types.SimpleNamespace(pattern="find_fn", path="/proj/src", result_count=5, ts=time.time())
+        result = compact._dedup_grep_entries([entry])
+        assert len(result) == 1
+        assert result[0].pattern == "find_fn"
+
+    def test_two_identical_patterns_collapsed_with_times_two(self):
+        """Two identical patterns are collapsed into one with [×2] suffix."""
+        import types
+
+        now = time.time()
+        entry1 = types.SimpleNamespace(pattern="target", path="/proj/src", result_count=3, ts=now - 10)
+        entry2 = types.SimpleNamespace(pattern="target", path="/proj/tests", result_count=7, ts=now)
+        result = compact._dedup_grep_entries([entry1, entry2])
+        assert len(result) == 1
+        pattern = result[0].pattern
+        assert pattern == "target [×2]", f"Expected 'target [×2]', got '{pattern}'"
+
+    def test_three_identical_collapsed_with_times_three(self):
+        """Three identical patterns collapse into one with [×3] suffix."""
+        import types
+
+        now = time.time()
+        entry1 = types.SimpleNamespace(pattern="needle", path="/proj/src", result_count=1, ts=now - 20)
+        entry2 = types.SimpleNamespace(pattern="needle", path="/proj/tests", result_count=5, ts=now - 10)
+        entry3 = types.SimpleNamespace(pattern="needle", path="/proj/docs", result_count=2, ts=now)
+        result = compact._dedup_grep_entries([entry1, entry2, entry3])
+        assert len(result) == 1
+        pattern = result[0].pattern
+        assert pattern == "needle [×3]", f"Expected 'needle [×3]', got '{pattern}'"
+
+    def test_different_patterns_not_collapsed(self):
+        """Different patterns are preserved separately."""
+        import types
+
+        now = time.time()
+        entry1 = types.SimpleNamespace(pattern="alpha", path="/proj/src", result_count=3, ts=now)
+        entry2 = types.SimpleNamespace(pattern="beta", path="/proj/src", result_count=5, ts=now)
+        result = compact._dedup_grep_entries([entry1, entry2])
+        assert len(result) == 2
+        patterns = {e.pattern for e in result}
+        assert patterns == {"alpha", "beta"}, f"Expected {{'alpha', 'beta'}}, got {patterns}"
+
+    def test_mixed_dedup_some_dupes_some_unique(self):
+        """Mixed case: some patterns appear multiple times, others are unique."""
+        import types
+
+        now = time.time()
+        # Pattern "target" appears 2× (oldest and newest)
+        entry1 = types.SimpleNamespace(pattern="target", path="/proj/src", result_count=1, ts=now - 20)
+        entry2 = types.SimpleNamespace(pattern="target", path="/proj/tests", result_count=7, ts=now - 5)
+        # Pattern "unique" appears 1×
+        entry3 = types.SimpleNamespace(pattern="unique", path="/proj/src", result_count=3, ts=now)
+        result = compact._dedup_grep_entries([entry1, entry2, entry3])
+        assert len(result) == 2
+        patterns = {e.pattern for e in result}
+        assert "target [×2]" in patterns, f"Expected 'target [×2]' in {patterns}"
+        assert "unique" in patterns, f"Expected 'unique' in {patterns}"
