@@ -1162,15 +1162,22 @@ class TestReadCountSuppression:
         )
         assert hint is None
 
-    def test_read_count_10_returns_none(self, tmp_data_dir):
-        """read_count=10 still suppressed — threshold applies at all higher counts."""
+    def test_read_count_10_returns_sentinel_hint(self, tmp_data_dir):
+        """read_count=10 triggers full-file sentinel hint (not suppressed).
+
+        At read_count >= 10, line_ranges collapse to [(0, 0)] sentinel, which
+        generates a special summary hint instead of being suppressed.
+        """
         sid, path = "s_rc10", "C:/proj/rc10.py"
         self._make_entry_with_read_count(sid, path, 10)
 
         hint = build_read_hint(
             session_id=sid, file_path=path, offset=0, limit=200, cwd=None,
         )
-        assert hint is None
+        # Should emit sentinel hint, not suppress
+        assert hint is not None
+        assert "full file" in hint
+        assert "10" in hint
 
     def test_symbol_only_hint_not_suppressed_at_high_read_count(self, tmp_data_dir):
         """Symbol-only entries (no line_ranges) are not suppressed at read_count=5.
@@ -1547,3 +1554,34 @@ class TestHintThrottleByFileSize:
         assert hint is not None
         assert "cached" in hint
         assert "waste" in hint.lower()
+
+    def test_sentinel_full_file_hint(self, tmp_data_dir):
+        """Full-file collapse sentinel [(0, 0)] generates a summary hint."""
+        from token_goat import session as session_module
+
+        sid = "s_sentinel_hint"
+        path = "c:/proj/hotfile.py"  # Use lowercase drive on Windows
+        # Manually create a FileEntry with sentinel to test hint generation
+        cache = session_module.load(sid)
+        cache.files[path] = session_module.FileEntry(
+            rel_or_abs=path,
+            last_read_ts=time.time(),
+            read_count=15,
+            line_ranges=[(0, 0)],  # The sentinel
+            symbols_read=["func1", "func2"],
+        )
+        session_module.save(cache)
+
+        # Request any range on this file (use original path; normalization will match)
+        hint = build_read_hint(
+            session_id=sid,
+            file_path=path,
+            offset=0,
+            limit=50,
+            cwd=None,
+        )
+        # Should emit a full-file summary hint
+        assert hint is not None
+        assert "full file" in hint
+        assert "15" in hint  # read count
+        assert "func1" in hint or "func2" in hint  # symbols should be in suffix

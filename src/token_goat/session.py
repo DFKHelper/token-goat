@@ -303,6 +303,13 @@ _MAX_GLOB_PATTERN_LEN: int = 512
 # that sample a large file in many small offset-jumps.
 _MAX_LINE_RANGES_PER_FILE: Final[int] = 15
 
+# Read-count threshold for full-file collapse.  When a file has been read this many
+# times or more, its line_ranges list is replaced with a single sentinel [(0, 0)]
+# ("full file") to save JSON space and simplify hint generation.  A heavily-accessed
+# file is almost certainly in context; hints become noise at this point and the
+# savings in session JSON are worth the loss of granular range tracking.
+_READ_COUNT_FULL_FILE_THRESHOLD: Final[int] = 10
+
 # Maximum number of hint fingerprints retained per session.  The hints_seen set
 # tracks emitted hints to suppress duplicates within the same session; without a
 # cap it grows without bound.  When the cap is exceeded, the set is cleared
@@ -1419,16 +1426,28 @@ def mark_file_read(
         start = line_offset + 1  # Read tool's offset is 0-indexed; we store 1-indexed inclusive
         end = start + line_limit - 1 if line_limit else (start + _UNKNOWN_END_SENTINEL)
         prev_range_count = len(entry.line_ranges)
-        merged = _merge_ranges(entry.line_ranges + [(start, end)])
-        if len(merged) > _MAX_LINE_RANGES_PER_FILE:
-            # Collapse all spans into one spanning range to bound session JSON size.
-            merged = [(merged[0][0], merged[-1][1])]
+        # Check if we've hit the full-file collapse threshold BEFORE merging ranges.
+        # If read_count (already incremented above) meets the threshold, collapse to
+        # the sentinel [(0, 0)] to save JSON space. Do not merge further ranges.
+        if entry.read_count >= _READ_COUNT_FULL_FILE_THRESHOLD:
+            # Collapse to sentinel: (0, 0) means "full file tracked at high granularity".
+            entry.line_ranges = [(0, 0)]
             _LOG.debug(
-                "mark_file_read: line_ranges collapsed to spanning range for %s "
-                "(exceeded _MAX_LINE_RANGES_PER_FILE=%d)",
-                key, _MAX_LINE_RANGES_PER_FILE,
+                "mark_file_read: line_ranges collapsed to full-file sentinel for %s "
+                "(read_count=%d >= _READ_COUNT_FULL_FILE_THRESHOLD=%d)",
+                key, entry.read_count, _READ_COUNT_FULL_FILE_THRESHOLD,
             )
-        entry.line_ranges = merged
+        else:
+            merged = _merge_ranges(entry.line_ranges + [(start, end)])
+            if len(merged) > _MAX_LINE_RANGES_PER_FILE:
+                # Collapse all spans into one spanning range to bound session JSON size.
+                merged = [(merged[0][0], merged[-1][1])]
+                _LOG.debug(
+                    "mark_file_read: line_ranges collapsed to spanning range for %s "
+                    "(exceeded _MAX_LINE_RANGES_PER_FILE=%d)",
+                    key, _MAX_LINE_RANGES_PER_FILE,
+                )
+            entry.line_ranges = merged
         new_range_count = len(entry.line_ranges)
         if new_range_count < prev_range_count + 1:
             _LOG.debug(
