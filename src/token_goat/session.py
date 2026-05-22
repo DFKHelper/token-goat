@@ -116,6 +116,10 @@ class FileEntry:
     shifts every subsequent line number), so the dedup hint should suppress the
     "you already read lines X-Y" claim — that range may point at different code now.
     Default 0.0 means "never edited this session".
+
+    ``symbols_ts`` maps symbol name → unix timestamp of access. Used by the
+    compaction manifest to rank symbols by recency: recently-accessed symbols
+    appear first in the Symbols Accessed section.
     """
 
     rel_or_abs: str  # path as Claude requested it (relative or absolute)
@@ -124,6 +128,7 @@ class FileEntry:
     line_ranges: list[tuple[int, int]]  # [(start, end), ...] of read ranges, 1-indexed inclusive
     symbols_read: list[str]  # via token-goat read file::symbol
     last_edit_ts: float = 0.0  # unix ts of last edit; 0.0 = never edited this session
+    symbols_ts: dict[str, float] = field(default_factory=dict)  # symbol → unix timestamp
 
 
 @dataclass
@@ -602,6 +607,7 @@ def _serialize_file_entry(entry: FileEntry) -> _FileEntryDict:
 
     Skip-if-default rules (reduce JSON verbosity on entries read without symbol access):
     - ``symbols_read`` is omitted when empty (default []).
+    - ``symbols_ts`` is omitted when empty (default {}).
     - ``line_ranges`` is omitted when empty (default []).
     - ``last_edit_ts`` is omitted when 0.0 (default; means "never edited this session").
 
@@ -617,6 +623,10 @@ def _serialize_file_entry(entry: FileEntry) -> _FileEntryDict:
         d["line_ranges"] = [list(r) for r in entry.line_ranges]
     if entry.symbols_read:
         d["symbols_read"] = list(entry.symbols_read)
+    # Serialize symbols_ts, rounding timestamp values
+    symbols_ts = getattr(entry, 'symbols_ts', None)
+    if symbols_ts:
+        d["symbols_ts"] = {k: _round_ts(v) for k, v in symbols_ts.items()}
     if entry.last_edit_ts:
         d["last_edit_ts"] = _round_ts(entry.last_edit_ts)
     return d
@@ -750,6 +760,15 @@ def _parse_file_entry(key: str, v: dict[str, Any], now: float) -> FileEntry | No
         except (TypeError, ValueError):
             last_edit_ts = 0.0
 
+        # ``symbols_ts`` is optional: maps symbol name → unix timestamp.
+        # Backwards compatible with older session files that predate this field.
+        raw_symbols_ts = v.get("symbols_ts", {})
+        symbols_ts: dict[str, float] = {}
+        if isinstance(raw_symbols_ts, dict):
+            for sym_name, sym_ts in raw_symbols_ts.items():
+                if isinstance(sym_name, str) and isinstance(sym_ts, (int, float)):
+                    symbols_ts[sym_name] = float(sym_ts)
+
         return FileEntry(
             rel_or_abs=str(v.get("rel_or_abs", key)),
             last_read_ts=float(v.get("last_read_ts", now)),
@@ -757,6 +776,7 @@ def _parse_file_entry(key: str, v: dict[str, Any], now: float) -> FileEntry | No
             line_ranges=line_ranges,
             symbols_read=symbols_read,
             last_edit_ts=last_edit_ts,
+            symbols_ts=symbols_ts,
         )
     except (TypeError, ValueError, KeyError) as exc:
         _LOG.debug(
@@ -919,8 +939,8 @@ def _parse_bash_entry(v: dict[str, Any]) -> BashEntry | None:
 class _FileEntryDict(TypedDict, total=False):
     """Wire format of a single FileEntry as it appears in the session JSON.
 
-    ``last_edit_ts`` is optional (``total=False``) for backwards compat with
-    session caches written by token-goat versions that predate the field.
+    ``last_edit_ts`` and ``symbols_ts`` are optional (``total=False``) for backwards compat with
+    session caches written by token-goat versions that predate these fields.
     """
 
     rel_or_abs: str
@@ -928,6 +948,7 @@ class _FileEntryDict(TypedDict, total=False):
     read_count: int
     line_ranges: list[list[int]]
     symbols_read: list[str]
+    symbols_ts: dict[str, float]
     last_edit_ts: float
 
 
@@ -1381,8 +1402,17 @@ def mark_file_read(
                 key,
                 len(entry.symbols_read),
             )
-        else:
-            _LOG.debug("mark_file_read: symbol %r already tracked in %s", symbol, key)
+        # Record or update the timestamp for this symbol (even if already known,
+        # update ts to the latest access time for recency-based ranking).
+        if not hasattr(entry, 'symbols_ts') or entry.symbols_ts is None:
+            entry.symbols_ts = {}
+        entry.symbols_ts[symbol] = now
+        _LOG.debug(
+            "mark_file_read: symbol %r timestamp recorded/updated to %.1f in %s",
+            symbol,
+            now,
+            key,
+        )
     else:
         line_offset = min(max(0, int(offset)), _MAX_LINE_NUMBER) if offset is not None else 0
         line_limit = min(max(0, int(limit)), _MAX_LINE_NUMBER) if limit is not None else 0

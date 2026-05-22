@@ -897,6 +897,41 @@ def _select_top_entries(
     return heapq.nlargest(max_n, candidates, key=lambda e: getattr(e, "ts", 0.0))
 
 
+def _rank_symbols_by_recency(entry: FileEntry, now: float) -> list[str]:
+    """Return symbols from *entry* ranked by recency (most recent first).
+
+    Uses exponential decay with a 5-minute, 30-minute, and open-ended tiers:
+    - Accessed within last 5 minutes: 1.5× recency multiplier
+    - Accessed within last 30 minutes: 1.2× multiplier
+    - Accessed earlier: 1.0× multiplier
+
+    Symbols without timestamps (from legacy sessions) fall back to 1.0×.
+    """
+    # Backwards compatibility: symbols_ts may not exist on old entries
+    symbols_ts = getattr(entry, 'symbols_ts', None)
+    if not symbols_ts:
+        # No timestamp info; return symbols in original order
+        return entry.symbols_read
+
+    # Build (symbol, score) pairs using recency multiplier
+    scored_symbols: list[tuple[str, float, float]] = []
+    for symbol in entry.symbols_read:
+        ts = symbols_ts.get(symbol, 0.0)
+        age_seconds = max(0.0, now - ts)
+        # Tier-based multiplier: recent symbols rank first
+        if age_seconds < 300:  # < 5 minutes
+            multiplier = 1.5
+        elif age_seconds < 1800:  # < 30 minutes
+            multiplier = 1.2
+        else:
+            multiplier = 1.0
+        scored_symbols.append((symbol, multiplier, ts))
+
+    # Sort by tier desc, then raw timestamp desc (most recent within same tier first)
+    scored_symbols.sort(key=lambda x: (x[1], x[2]), reverse=True)
+    return [item[0] for item in scored_symbols]
+
+
 def _select_top_bash_entries(bash_history: object) -> list[object]:
     """Pick up to :data:`_MAX_BASH_ENTRIES` cached Bash runs worth surfacing."""
     return _select_top_entries(
@@ -1858,8 +1893,10 @@ def _render(cache: SessionCache, session_id: str, max_tokens: int) -> tuple[str,
         header_cost = _token_count(header)
         sym_entries_for_section: list[str] = []
         for entry in files_with_symbols:
-            syms = [sanitize_log_str(s, max_len=80) for s in entry.symbols_read[:_MAX_SYMBOLS_PER_FILE_ENTRY]]
-            overflow = len(entry.symbols_read) - _MAX_SYMBOLS_PER_FILE_ENTRY
+            # Rank symbols by recency: recently-accessed symbols appear first
+            ranked_symbols = _rank_symbols_by_recency(entry, now_for_scoring)
+            syms = [sanitize_log_str(s, max_len=80) for s in ranked_symbols[:_MAX_SYMBOLS_PER_FILE_ENTRY]]
+            overflow = len(ranked_symbols) - _MAX_SYMBOLS_PER_FILE_ENTRY
             sym_str = ", ".join(syms) + (f" +{overflow}" if overflow > 0 else "")
             line = f"- {_short_path(entry.rel_or_abs)} → {sym_str}"
             cost = _token_count(line)
