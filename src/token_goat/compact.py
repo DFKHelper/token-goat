@@ -44,6 +44,13 @@ if TYPE_CHECKING:
 
 _LOG = logging.getLogger("token_goat.compact")
 
+# Wall-clock timeout for build_manifest() to prevent the PreCompact hook from stalling.
+# The function makes git subprocess calls which may hang on network mounts or large repos.
+# This is a belt-and-suspenders guard: individual git subprocesses have their own 2-5s
+# timeouts, but the overall function has an 8s wall-clock limit so the hook always
+# returns within a reasonable time, even if multiple git calls run sequentially.
+_MANIFEST_TIMEOUT_SECS: Final[float] = 8.0
+
 # Maximum files listed in the "files read" section of the manifest.  The compaction
 # LLM needs the most-accessed files to know what context mattered, but listing every
 # file read in a long session would blow the token budget.  10 covers the handful of
@@ -1658,6 +1665,9 @@ def _build_manifest_from_cache(
 
     Separated from :func:`build_manifest` so :func:`build_manifest_with_count`
     can share the render + log path without a second disk load.
+
+    Wall-clock timeout: if manifest construction exceeds _MANIFEST_TIMEOUT_SECS,
+    returns what has been assembled so far with a note appended.
     """
     clamped = max(1, min(max_tokens, _MAX_MANIFEST_TOKENS_CAP))
     if clamped != max_tokens:
@@ -1668,9 +1678,20 @@ def _build_manifest_from_cache(
             clamped,
         )
     max_tokens = clamped
-    t0 = time.monotonic()
+    start = time.monotonic()
     result, files_with_symbols_count = _render(cache, session_id, max_tokens)
-    elapsed = time.monotonic() - t0
+    elapsed = time.monotonic() - start
+
+    # Check if we exceeded the wall-clock timeout
+    if elapsed > _MANIFEST_TIMEOUT_SECS:
+        result += f"\n\n⚠ manifest build timed out after {elapsed:.1f}s — output may be incomplete"
+        _LOG.warning(
+            "build_manifest: timeout exceeded for session=%s (%.1fs > %.1fs)",
+            session_id[:8],
+            elapsed,
+            _MANIFEST_TIMEOUT_SECS,
+        )
+
     token_estimate = estimate_tokens(result)
     _LOG.info(
         "build_manifest: session=%s edited_files=%d files_read=%d symbols_files=%d "
