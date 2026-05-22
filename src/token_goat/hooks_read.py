@@ -651,6 +651,27 @@ def pre_read(payload: HookPayload) -> HookResponse:
                 context_parts.append(hint_text)
                 cache.mark_hint_seen(fingerprint)
 
+    # File written this session but never read back — the content the model
+    # wrote may still be in context from the Write/Edit tool result, making a
+    # full re-read redundant.  Only fires when no other hint was emitted, so
+    # it never shadows a more specific diff-hint or cache-overlap hint.
+    if not context_parts:
+        _written_key = session._normalize_path(file_path)  # type: ignore[attr-defined]
+        _edited: dict[str, int] = cache.edited_files if isinstance(cache.edited_files, dict) else {}
+        _edit_count = _edited.get(_written_key, 0)
+        if _edit_count >= 1 and _written_key not in cache.files:
+            _fname = sanitize_log_str(Path(file_path).name, max_len=256)
+            context_parts.append(
+                f"Note: `{_fname}` was written {_edit_count}x this session and not yet read back. "
+                f"The content you wrote may still be in context from the tool result — "
+                f"verify there rather than re-reading. For a specific symbol use "
+                f"`token-goat read \"{file_path}::SymbolName\"`."
+            )
+            _LOG.debug(
+                "pre-read: written-not-read hint for %s (edit_count=%d)",
+                sanitize_log_str(file_path), _edit_count,
+            )
+
     # Append git commit history for the file (always, when available).
     git_ctx = _build_git_hint(cwd, file_path)
     if git_ctx:
