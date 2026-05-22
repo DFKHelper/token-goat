@@ -480,19 +480,22 @@ def _hint_from_cache(
             0,  # No tokens saved — the file is in context; this is informational.
         )
 
-    # Suppress line-range dedup nags for "working files" — files the agent
-    # has read so many times that the hint is clearly not changing behaviour.
-    # At _SUPPRESS_HINT_AT_READ_COUNT reads the agent is iterating on this
-    # file; continuing to nag wastes tokens without reducing re-reads.
-    # Only suppress the line-range hint; the symbol-only hint (below) is a
-    # suggestion, not a nag, so it is left intact regardless of read_count.
+    # Frequently-read files: emit a one-time surgical-read nudge instead of
+    # repeating the line-range nag on every re-read.  The hint text is stable
+    # (does not include the dynamic read count) so the fingerprint dedup in
+    # pre_read suppresses it after the first injection — the model hears the
+    # suggestion exactly once and is not nagged on subsequent accesses.
     if entry.read_count >= _SUPPRESS_HINT_AT_READ_COUNT and entry.line_ranges:
+        sym_suffix = _symbols_suffix(entry.symbols_read)
         _LOG.debug(
-            "_hint_from_cache: suppressing line-range hint for %s "
-            "(working file: read_count=%d >= %d)",
-            fname, entry.read_count, _SUPPRESS_HINT_AT_READ_COUNT,
+            "_hint_from_cache: surgical-read nudge for %s (working file: read_count=%d)",
+            fname, entry.read_count,
         )
-        return None
+        return ReadHint(
+            f"`{fname}` is frequently re-read this session{sym_suffix}. "
+            f"Consider `token-goat read \"{file_path}::SymbolName\"` for surgical access.",
+            0,
+        )
 
     # Suppress hints for very small files (< 30 lines) with only a single prior read.
     # The hint text itself (~25 tokens) costs almost as much as the saving it advertises,
