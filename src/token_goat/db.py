@@ -607,8 +607,43 @@ def _ensure_project_schema(conn: sqlite3.Connection, *, db_path: Path | None = N
                 "INSERT OR IGNORE INTO meta (key, value) VALUES ('embeddings_disabled', '1')"
             )
 # ---------------------------------------------------------------------------
-# Internal helper
+# Internal helpers
 # ---------------------------------------------------------------------------
+
+def _open_with_retry(
+    path: Path,
+    *,
+    load_vec: bool = True,
+    max_attempts: int = 3,
+    base_delay: float = 0.1,
+) -> sqlite3.Connection:
+    """Attempt _open_with_rebuild() with exponential backoff on transient locks.
+
+    Only ``sqlite3.OperationalError`` messages containing "locked" or "busy"
+    are retried — genuine corruption errors propagate immediately so the
+    caller's quarantine-and-rebuild logic still fires.
+    """
+    last_exc: sqlite3.OperationalError | None = None
+    for attempt in range(max_attempts):
+        try:
+            return _open_with_rebuild(path, load_vec=load_vec)
+        except sqlite3.OperationalError as exc:
+            msg = str(exc).lower()
+            if "locked" not in msg and "busy" not in msg:
+                raise
+            last_exc = exc
+            delay = base_delay * (2 ** attempt)
+            _LOG.warning(
+                "db locked (%s), retrying in %.2fs (attempt %d/%d)",
+                exc,
+                delay,
+                attempt + 1,
+                max_attempts,
+            )
+            time.sleep(delay)
+    # All retries exhausted — raise the last lock error.
+    raise last_exc  # type: ignore[misc]
+
 
 def _open_with_rebuild(path: Path, *, load_vec: bool = True) -> sqlite3.Connection:
     """Try _connect(); on DatabaseError, quarantine and retry once.
@@ -682,7 +717,7 @@ def open_global() -> Iterator[sqlite3.Connection]:
     path = paths.global_db_path()
     t0 = time.monotonic()
     _LOG.debug("opening global db: %s", path)
-    conn = _open_with_rebuild(path)
+    conn = _open_with_retry(path)
     try:
         conn = _repair_if_corrupt(conn, path)
         _ensure_global_schema(conn)
@@ -735,7 +770,7 @@ def open_project(project_hash: str) -> Iterator[sqlite3.Connection]:
     path = paths.project_db_path(project_hash)
     t0 = time.monotonic()
     _LOG.debug("opening project db: %s (hash=%s)", path, project_hash)
-    conn = _open_with_rebuild(path)
+    conn = _open_with_retry(path)
     try:
         conn = _repair_if_corrupt(conn, path)
         _ensure_project_schema(conn, db_path=path)
