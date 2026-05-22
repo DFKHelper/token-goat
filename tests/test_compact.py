@@ -3058,3 +3058,198 @@ class TestManifestRenderingEdgeCases:
         manifest = compact._build_manifest_from_cache(cache, sid, 400)
         # Young tier skips web
         assert "Web Fetches" not in manifest, "Young tier should skip web section"
+
+
+# ---------------------------------------------------------------------------
+# Test Gap 1: All-empty session manifest rendering
+# ---------------------------------------------------------------------------
+
+
+class TestEmptySessionManifestRendering:
+    """Test that build_manifest gracefully handles completely empty sessions."""
+
+    def test_completely_empty_session_returns_empty_string(self, tmp_data_dir):
+        """Empty session should return empty string, not crash."""
+        sid = "totally-empty-session-xyz"
+        result = compact.build_manifest(sid)
+        assert result == ""
+        assert isinstance(result, str)
+
+    def test_completely_empty_session_no_section_headers(self, tmp_data_dir):
+        """Empty session should suppress all section headers."""
+        sid = "empty-no-headers-abc"
+        result = compact.build_manifest(sid)
+        # Even the header "## Token-Goat Session Manifest" should not appear
+        assert "Token-Goat Session Manifest" not in result
+        assert "Files Edited" not in result
+        assert "Symbols Accessed" not in result
+        assert "Key Files Read" not in result
+        assert "Commands Run" not in result
+        assert "Web Fetches" not in result
+        assert "Grep Patterns" not in result
+
+    def test_empty_session_with_high_token_budget(self, tmp_data_dir):
+        """Empty session with any budget should still return empty string."""
+        sid = "empty-high-budget-xyz"
+        result = compact.build_manifest(sid, max_tokens=10000)
+        assert result == ""
+
+    def test_empty_session_with_minimal_token_budget(self, tmp_data_dir):
+        """Empty session with minimal budget should still return empty string."""
+        sid = "empty-minimal-budget-abc"
+        result = compact.build_manifest(sid, max_tokens=1)
+        assert result == ""
+
+    def test_build_manifest_with_count_empty_session(self, tmp_data_dir):
+        """build_manifest_with_count should return ("", 0) for empty session."""
+        sid = "empty-count-session-xyz"
+        manifest, event_count = compact.build_manifest_with_count(sid)
+        assert manifest == ""
+        assert event_count == 0
+
+    def test_empty_session_with_none_session_id_guard(self, tmp_data_dir):
+        """Calling with invalid session_id should gracefully return empty string."""
+        # session_id validation should catch this or _load_session_cache should handle it
+        result = compact.build_manifest("x" * 300)  # Too long, validation fails
+        assert result == ""
+
+    def test_render_directly_with_empty_cache(self, tmp_data_dir):
+        """_render with an empty SessionCache should return empty string."""
+        from token_goat.session import SessionCache
+        ts = time.time()
+        empty_cache = SessionCache(
+            session_id="test-render-empty",
+            started_ts=ts,
+            last_activity_ts=ts,
+            created_ts=ts,
+            files={},
+            edited_files={},
+            greps=[],
+        )
+        result, symbols_count = compact._render(empty_cache, "test-render-empty", 400)
+        assert result == ""
+        assert symbols_count == 0
+
+    def test_empty_session_returns_zero_event_count(self, tmp_data_dir):
+        """Empty session should have zero event count."""
+        sid = "empty-event-count-abc"
+        count = compact.event_count(sid)
+        assert count == 0
+
+
+# ---------------------------------------------------------------------------
+# Test Gap 2: PreCompact hook fail-soft with missing/corrupt session JSON
+# ---------------------------------------------------------------------------
+
+
+class TestPreCompactHookFailSoft:
+    """Test that PreCompact hook gracefully handles missing/corrupt session JSON."""
+
+    def _make_payload(self, session_id: str, trigger: str = "manual") -> dict:
+        return {"session_id": session_id, "trigger": trigger}
+
+    def test_missing_session_json_returns_continue(self, tmp_data_dir, tmp_path, monkeypatch):
+        """When session JSON file is deleted mid-session, hook should return continue:true."""
+        from token_goat import paths
+        cfg_path = tmp_path / "config.toml"
+        cfg_path.write_text("[compact_assist]\nenabled = true\nmin_events = 0\n", encoding="utf-8")
+        monkeypatch.setattr(paths, "config_path", lambda: cfg_path)
+        monkeypatch.delenv("TOKEN_GOAT_COMPACT_ASSIST", raising=False)
+
+        sid = "missing-json-session-xyz"
+        # Don't create any session data, so session JSON never exists
+        result = hooks_cli.pre_compact(self._make_payload(sid))
+
+        # Must return continue:true, not crash
+        assert result.get("continue") is True
+        # No systemMessage because session cache load returns empty cache
+        # (empty cache → no events → build_manifest_with_count returns ("", 0))
+
+    def test_corrupt_session_json_returns_continue(self, tmp_data_dir, tmp_path, monkeypatch):
+        """When session JSON is corrupted, hook should return continue:true."""
+        from token_goat import paths
+        cfg_path = tmp_path / "config.toml"
+        cfg_path.write_text("[compact_assist]\nenabled = true\nmin_events = 0\n", encoding="utf-8")
+        monkeypatch.setattr(paths, "config_path", lambda: cfg_path)
+        monkeypatch.delenv("TOKEN_GOAT_COMPACT_ASSIST", raising=False)
+
+        sid = "corrupt-json-session-abc"
+        # Create a session cache file with invalid JSON
+        session_path = paths.session_cache_path(sid)
+        session_path.parent.mkdir(parents=True, exist_ok=True)
+        session_path.write_text("{ this is not valid json }{{{", encoding="utf-8")
+
+        # Hook should catch the JSON error and return continue:true
+        result = hooks_cli.pre_compact(self._make_payload(sid))
+        assert result.get("continue") is True
+
+    def test_valid_session_json_emits_system_message(self, tmp_data_dir, tmp_path, monkeypatch):
+        """Positive test: valid session with activity should emit systemMessage."""
+        from token_goat import paths
+        cfg_path = tmp_path / "config.toml"
+        cfg_path.write_text("[compact_assist]\nenabled = true\nmin_events = 1\n", encoding="utf-8")
+        monkeypatch.setattr(paths, "config_path", lambda: cfg_path)
+        monkeypatch.delenv("TOKEN_GOAT_COMPACT_ASSIST", raising=False)
+
+        sid = "valid-session-with-activity"
+        session.mark_file_edited(sid, "/proj/app.py")
+        session.mark_file_read(sid, "/proj/lib.py", offset=0, limit=100)
+
+        result = hooks_cli.pre_compact(self._make_payload(sid))
+        assert result.get("continue") is True
+        assert "systemMessage" in result
+        assert isinstance(result["systemMessage"], str)
+        assert len(result["systemMessage"]) > 0
+
+    def test_empty_session_with_min_events_zero_returns_continue(self, tmp_data_dir, tmp_path, monkeypatch):
+        """Empty session with min_events=0 should return continue (not emit empty manifest)."""
+        from token_goat import paths
+        cfg_path = tmp_path / "config.toml"
+        cfg_path.write_text("[compact_assist]\nenabled = true\nmin_events = 0\n", encoding="utf-8")
+        monkeypatch.setattr(paths, "config_path", lambda: cfg_path)
+        monkeypatch.delenv("TOKEN_GOAT_COMPACT_ASSIST", raising=False)
+
+        sid = "empty-min-zero-session"
+        result = hooks_cli.pre_compact(self._make_payload(sid))
+
+        # build_manifest_with_count returns ("", 0) for empty session
+        # Even though min_events=0, the manifest is empty string, so no systemMessage
+        assert result.get("continue") is True
+        assert "systemMessage" not in result
+
+    def test_build_manifest_handles_missing_session_file(self, tmp_data_dir):
+        """build_manifest should return empty string for non-existent session."""
+        sid = "nonexistent-session-xyz"
+        result = compact.build_manifest(sid)
+        assert result == ""
+
+    def test_build_manifest_with_count_missing_file(self, tmp_data_dir):
+        """build_manifest_with_count should return ("", 0) for missing session."""
+        sid = "nonexistent-count-session-abc"
+        manifest, count = compact.build_manifest_with_count(sid)
+        assert manifest == ""
+        assert count == 0
+
+    def test_build_manifest_graceful_catch_in_load_session_cache(self, tmp_data_dir):
+        """_load_session_cache catches exceptions and returns None."""
+        from token_goat import compact as compact_mod
+        # Invalid session ID (too long)
+        result = compact_mod._load_session_cache("x" * 300, "test")
+        assert result is None
+
+    def test_corrupt_json_caught_by_session_load(self, tmp_data_dir, tmp_path, monkeypatch):
+        """Corrupt JSON in session file should be caught by session.load()."""
+        from token_goat import paths
+        from token_goat import session as session_mod
+
+        sid = "corrupt-caught-session-xyz"
+        session_path = paths.session_cache_path(sid)
+        session_path.parent.mkdir(parents=True, exist_ok=True)
+        session_path.write_text("{ malformed json }", encoding="utf-8")
+
+        # session.load() should catch the JSONDecodeError and return a fresh cache
+        cache = session_mod.load(sid)
+        assert isinstance(cache, session_mod.SessionCache)
+        # Fresh cache should be empty
+        assert len(cache.files) == 0
+        assert len(cache.edited_files) == 0
