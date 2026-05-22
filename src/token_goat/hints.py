@@ -45,6 +45,18 @@ def _hint_fingerprint(hint_text: str) -> str:
     return digest[:12]
 
 
+def _hint_content_hash(hint_text: str) -> str:
+    """Return a short MD5 hash (first 8 hex chars) of hint text for dedup.
+
+    Used as secondary dedup to suppress hints with identical rendered content
+    even when the fingerprint differs (e.g., same semantic content with slightly
+    different line ranges). The 8-char prefix balances collision risk against
+    session JSON size and is sufficient for content dedup within a session.
+    """
+    digest = hashlib.md5(hint_text.encode("utf-8")).hexdigest()
+    return digest[:8]
+
+
 def _sanitize_hint_path(p: str) -> str:
     """Strip newlines/CRs and cap length for a path embedded in an LLM hint string.
 
@@ -293,7 +305,7 @@ def build_read_hint(
     pre-read hook always continues regardless of hint-generation failures.
     """
     try:
-        return _build_read_hint_inner(
+        hint = _build_read_hint_inner(
             session_id=session_id,
             file_path=file_path,
             offset=offset,
@@ -301,6 +313,16 @@ def build_read_hint(
             cwd=cwd,
             cache=cache,
         )
+        # Secondary dedup: suppress if the rendered hint content was already seen.
+        if hint is not None and session_id and cache:
+            content_hash = _hint_content_hash(str(hint))
+            if content_hash in cache.hints_seen:
+                _LOG.debug(
+                    "build_read_hint: suppressed (content hash %s already seen)",
+                    content_hash,
+                )
+                return None
+        return hint
     except Exception as exc:  # noqa: BLE001
         _LOG.warning(
             "build_read_hint: unexpected error for %r (session=%s): %s",

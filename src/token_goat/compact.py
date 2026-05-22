@@ -1637,19 +1637,23 @@ def _render(cache: SessionCache, session_id: str, max_tokens: int) -> tuple[str,
     if files_with_symbols:
         header = "### Symbols Accessed"
         header_cost = _token_count(header)
-        if sym_used + header_cost <= sym_budget:
-            sym_lines.append(header)
-            sym_used += header_cost
+        sym_entries_for_section: list[str] = []
         for entry in files_with_symbols:
             syms = [sanitize_log_str(s, max_len=80) for s in entry.symbols_read[:_MAX_SYMBOLS_PER_FILE_ENTRY]]
             overflow = len(entry.symbols_read) - _MAX_SYMBOLS_PER_FILE_ENTRY
             sym_str = ", ".join(syms) + (f" +{overflow}" if overflow > 0 else "")
             line = f"- {_short_path(entry.rel_or_abs)} → {sym_str}"
             cost = _token_count(line)
-            if sym_used + cost > sym_budget:
+            if sym_used + header_cost + cost <= sym_budget:
+                sym_entries_for_section.append(line)
+                sym_used += cost
+            else:
                 break
-            sym_lines.append(line)
-            sym_used += cost
+        # Only emit header if we have entries to show
+        if sym_entries_for_section:
+            sym_lines.append(header)
+            sym_lines.extend(sym_entries_for_section)
+            sym_used += header_cost
 
     # ── 3. Bash history — up to 15 % of remaining budget ─────────────────────
     # (built before files so bash is never crowded out by the files section)
@@ -1667,16 +1671,20 @@ def _render(cache: SessionCache, session_id: str, max_tokens: int) -> tuple[str,
     if bash_entries:
         header = "### Commands Run (cached output)"
         header_cost = _token_count(header)
-        if bash_used + header_cost <= bash_budget:
-            bash_lines.append(header)
-            bash_used += header_cost
+        bash_entries_for_section: list[str] = []
         for be in bash_entries:
             line = _format_bash_entry(be)
             cost = _token_count(line)
-            if bash_used + cost > bash_budget:
+            if bash_used + header_cost + cost <= bash_budget:
+                bash_entries_for_section.append(line)
+                bash_used += cost
+            else:
                 break
-            bash_lines.append(line)
-            bash_used += cost
+        # Only emit header if we have entries to show
+        if bash_entries_for_section:
+            bash_lines.append(header)
+            bash_lines.extend(bash_entries_for_section)
+            bash_used += header_cost
 
     # Cold outputs are grouped with bash history (same budget slice).
     # Skip for young sessions — same rationale as bash_entries above.
@@ -1731,16 +1739,20 @@ def _render(cache: SessionCache, session_id: str, max_tokens: int) -> tuple[str,
     if web_entries:
         header = "### Web Fetches (cached body)"
         header_cost = _token_count(header)
-        if web_used + header_cost <= web_budget:
-            web_lines.append(header)
-            web_used += header_cost
+        web_entries_for_section: list[str] = []
         for we in web_entries:
             line = _format_web_entry(we)
             cost = _token_count(line)
-            if web_used + cost > web_budget:
+            if web_used + header_cost + cost <= web_budget:
+                web_entries_for_section.append(line)
+                web_used += cost
+            else:
                 break
-            web_lines.append(line)
-            web_used += cost
+        # Only emit header if we have entries to show
+        if web_entries_for_section:
+            web_lines.append(header)
+            web_lines.extend(web_entries_for_section)
+            web_used += header_cost
 
     # ── 4. Grep patterns — up to 15 % of remaining budget ────────────────────
     grep_budget = sec_budgets["greps"]
@@ -1750,24 +1762,28 @@ def _render(cache: SessionCache, session_id: str, max_tokens: int) -> tuple[str,
     if grep_entries:
         header = "### Patterns Searched"
         header_cost = _token_count(header)
-        if grep_used + header_cost <= grep_budget:
-            grep_lines.append(header)
-            grep_used += header_cost
+        grep_entries_for_section: list[str] = []
         included_greps = 0
         for ge in grep_entries:
             line = _format_grep_entry(ge)
             cost = _token_count(line)
-            if grep_used + cost > grep_budget:
+            if grep_used + header_cost + cost <= grep_budget:
+                grep_entries_for_section.append(line)
+                grep_used += cost
+                included_greps += 1
+            else:
                 break
-            grep_lines.append(line)
-            grep_used += cost
-            included_greps += 1
-        distinct_patterns = len({getattr(g, "pattern", "") for g in raw_greps})
-        dropped_greps = distinct_patterns - included_greps
-        if dropped_greps > 0:
-            overflow_line = f"- …+{dropped_greps} more patterns"
-            if grep_used + _token_count(overflow_line) <= grep_budget:
-                grep_lines.append(overflow_line)
+        # Only emit header if we have entries to show
+        if grep_entries_for_section:
+            grep_lines.append(header)
+            grep_lines.extend(grep_entries_for_section)
+            grep_used += header_cost
+            distinct_patterns = len({getattr(g, "pattern", "") for g in raw_greps})
+            dropped_greps = distinct_patterns - included_greps
+            if dropped_greps > 0:
+                overflow_line = f"- …+{dropped_greps} more patterns"
+                if grep_used + _token_count(overflow_line) <= grep_budget:
+                    grep_lines.append(overflow_line)
 
     # ── 5. Key files read — up to 30 % of remaining budget ───────────────────
     files_budget = sec_budgets["files"]
@@ -1778,9 +1794,7 @@ def _render(cache: SessionCache, session_id: str, max_tokens: int) -> tuple[str,
     if top_files:
         header = "### Key Files Read"
         header_cost = _token_count(header)
-        if files_used + header_cost <= files_budget:
-            files_lines.append(header)
-            files_used += header_cost
+        files_entries_for_section: list[str] = []
 
         # Hot files (≥ threshold reads) get a single consolidated summary line.
         hot_files = [e for e in top_files if e.read_count >= _HOT_FILE_READ_THRESHOLD]
@@ -1803,8 +1817,8 @@ def _render(cache: SessionCache, session_id: str, max_tokens: int) -> tuple[str,
                 hot_line_text += f" +{overflow} more"
             hot_line = f"- → {hot_line_text}"
             cost = _token_count(hot_line)
-            if files_used + cost <= files_budget:
-                files_lines.append(hot_line)
+            if files_used + header_cost + cost <= files_budget:
+                files_entries_for_section.append(hot_line)
                 files_used += cost
                 included_top_files.extend(shown)
 
@@ -1812,11 +1826,17 @@ def _render(cache: SessionCache, session_id: str, max_tokens: int) -> tuple[str,
             ranges_str = _format_ranges(entry.line_ranges)
             line = f"- → {_short_path(entry.rel_or_abs)}{_count_suffix(entry.read_count)}{ranges_str}"
             cost = _token_count(line)
-            if files_used + cost > files_budget:
+            if files_used + header_cost + cost > files_budget:
                 break
-            files_lines.append(line)
+            files_entries_for_section.append(line)
             files_used += cost
             included_top_files.append(entry)
+
+        # Only emit header if we have entries to show
+        if files_entries_for_section:
+            files_lines.append(header)
+            files_lines.extend(files_entries_for_section)
+            files_used += header_cost
 
     # ── Legend — only list markers that actually appear above ─────────────────
     has_edit = bool(edited_clean)

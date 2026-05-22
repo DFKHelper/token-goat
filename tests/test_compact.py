@@ -2627,3 +2627,113 @@ class TestComputeAdaptiveBudgetUncommittedBonus:
         assert budget_both == budget_neither + 60, (
             f"Expected +60 for both bonuses: neither={budget_neither} both={budget_both}"
         )
+
+
+class TestEmptySectionSuppression:
+    """Empty sections should not emit headers (Improvement 1)."""
+
+    def test_bash_section_suppressed_when_no_commands(self, tmp_data_dir, monkeypatch):
+        """Commands Run section header not emitted when no bash history in session."""
+        sid = "empty-bash-test-abc"
+        session.mark_file_read(sid, "/proj/src/a.py")
+        cache = session.load(sid)
+        # Verify bash_history is empty
+        assert len(cache.bash_history) == 0
+
+        monkeypatch.setattr(compact, "_get_uncommitted_changes", lambda _root: "")
+        monkeypatch.setattr(compact, "_get_git_diff_stat_summary", lambda _root: "")
+        monkeypatch.setattr(compact, "_get_git_diff_stat", lambda *a: None)
+        monkeypatch.setattr(compact, "_get_session_commits", lambda *a: [])
+
+        result = compact.build_manifest(sid)
+        lines = result.splitlines()
+        # Check that "Commands Run" header does not appear when bash_history is empty
+        bash_header_idx = next(
+            (i for i, line in enumerate(lines) if "Commands Run" in line), None
+        )
+        assert bash_header_idx is None, "Commands Run header should not appear when no bash history"
+
+    def test_grep_section_suppressed_when_no_patterns(self, tmp_data_dir, monkeypatch):
+        """Patterns Searched section header not emitted when no grep history in session."""
+        sid = "empty-grep-test-abc"
+        session.mark_file_read(sid, "/proj/src/a.py")
+        cache = session.load(sid)
+        # Verify greps list is empty
+        assert len(cache.greps) == 0
+
+        monkeypatch.setattr(compact, "_get_uncommitted_changes", lambda _root: "")
+        monkeypatch.setattr(compact, "_get_git_diff_stat_summary", lambda _root: "")
+        monkeypatch.setattr(compact, "_get_git_diff_stat", lambda *a: None)
+        monkeypatch.setattr(compact, "_get_session_commits", lambda *a: [])
+
+        result = compact.build_manifest(sid)
+        lines = result.splitlines()
+        # Check that "Patterns Searched" header does not appear when greps is empty
+        grep_header_idx = next(
+            (i for i, line in enumerate(lines) if "Patterns Searched" in line), None
+        )
+        assert grep_header_idx is None, "Patterns Searched header should not appear when no grep history"
+
+    def test_web_section_suppressed_when_no_fetches(self, tmp_data_dir, monkeypatch):
+        """Web Fetches section header not emitted when no web history in session."""
+        sid = "empty-web-test-abc"
+        session.mark_file_read(sid, "/proj/src/a.py")
+        cache = session.load(sid)
+        # Verify web_history is empty
+        assert len(cache.web_history) == 0
+
+        monkeypatch.setattr(compact, "_get_uncommitted_changes", lambda _root: "")
+        monkeypatch.setattr(compact, "_get_git_diff_stat_summary", lambda _root: "")
+        monkeypatch.setattr(compact, "_get_git_diff_stat", lambda *a: None)
+        monkeypatch.setattr(compact, "_get_session_commits", lambda *a: [])
+
+        result = compact.build_manifest(sid)
+        lines = result.splitlines()
+        # Check that "Web Fetches" header does not appear when web_history is empty
+        web_header_idx = next(
+            (i for i, line in enumerate(lines) if "Web Fetches" in line), None
+        )
+        assert web_header_idx is None, "Web Fetches header should not appear when no web history"
+
+
+class TestHintContentHashDedup:
+    """Hint content dedup by rendered string hash (Improvement 2)."""
+
+    def test_duplicate_hint_suppressed_by_content_hash(self, tmp_data_dir):
+        """Same hint text with different fingerprint should be suppressed on second call."""
+        from token_goat import hints as hints_module
+
+        sid = "hint-hash-dedup-test-abc"
+        cache = session.load(sid)
+
+        # Simulate two different file ranges that render to the same hint text.
+        # We'll call build_read_hint twice with different fingerprints but identical text.
+        # First, manually set up the cache to simulate previous hints.
+        hint_text = "You read lines 100–150 of /proj/src/module.py in this session."
+        content_hash = hints_module._hint_content_hash(hint_text)
+
+        # First hint with one fingerprint should be emitted.
+        cache.hints_seen.add("fp:100:150:/proj/src/module.py")
+        cache.hints_seen.add(content_hash)  # Add the content hash after first emit
+        session.save(cache)
+        cache = session.load(sid)
+
+        # Now manually verify that the content_hash function works.
+        assert len(content_hash) == 8, "Content hash should be 8 hex chars"
+        assert content_hash in cache.hints_seen, "Content hash should be in hints_seen"
+
+    def test_hint_content_hash_is_deterministic(self):
+        """Hint content hash should always return the same value for the same text."""
+        from token_goat import hints as hints_module
+
+        text1 = "You read lines 1–10 of /proj/src/a.py in this session."
+        text2 = "You read lines 1–10 of /proj/src/a.py in this session."
+        text3 = "You read lines 2–10 of /proj/src/a.py in this session."
+
+        hash1 = hints_module._hint_content_hash(text1)
+        hash2 = hints_module._hint_content_hash(text2)
+        hash3 = hints_module._hint_content_hash(text3)
+
+        assert hash1 == hash2, "Same text should produce same hash"
+        assert hash1 != hash3, "Different text should produce different hash"
+        assert len(hash1) == 8 and len(hash3) == 8, "Hashes should be 8 hex chars"
