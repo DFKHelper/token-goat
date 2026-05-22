@@ -858,32 +858,41 @@ def _format_blocker_entry(entry: object) -> str:
     return f"- ✗ {cmd_preview}  (exit {exit_code})"
 
 
-def _select_top_bash_entries(bash_history: object) -> list[object]:
-    """Pick up to :data:`_MAX_BASH_ENTRIES` cached Bash runs worth surfacing.
+def _select_top_entries(
+    history: object,
+    min_bytes: int,
+    size_fn: Callable[[object], int],
+    max_n: int,
+    exclude_fn: Callable[[object], bool] | None = None,
+) -> list[object]:
+    """Recency-ranked selector shared by bash and web history dicts.
 
-    Filters out entries below :data:`_MIN_BASH_BYTES_FOR_MANIFEST` (the dedup
-    hint would suppress them anyway), no-op commands (git status, pwd, etc.),
-    and ranks by recency — the most recent runs are the ones whose output drives
-    the next agent turn.  Accepts the ``bash_history`` attribute typed as
-    ``object`` so the helper is safe to call on legacy SessionCache instances
-    written by token-goat versions that predate the field (``None`` / missing →
-    empty list).
-
-    Returns an iterable suitable for unpacking; entries are
-    :class:`session.BashEntry` instances but the helper does not import that
-    type to keep this module light at hook-cold-start time.
+    Filters *history* values whose size (per *size_fn*) is below *min_bytes*,
+    optionally excludes entries where *exclude_fn* returns True, and returns
+    the *max_n* most-recent survivors.  Safe on legacy or missing fields
+    (``None`` / non-dict input → empty list).
     """
-    if not isinstance(bash_history, dict) or not bash_history:
+    if not isinstance(history, dict) or not history:
         return []
     candidates = [
-        e for e in bash_history.values()
-        if (getattr(e, "stdout_bytes", 0) + getattr(e, "stderr_bytes", 0))
-        >= _MIN_BASH_BYTES_FOR_MANIFEST
-        and not _is_noop_bash_command(e)
+        e for e in history.values()
+        if size_fn(e) >= min_bytes
+        and (exclude_fn is None or not exclude_fn(e))
     ]
     if not candidates:
         return []
-    return heapq.nlargest(_MAX_BASH_ENTRIES, candidates, key=_BY_BASH_TS)
+    return heapq.nlargest(max_n, candidates, key=lambda e: getattr(e, "ts", 0.0))
+
+
+def _select_top_bash_entries(bash_history: object) -> list[object]:
+    """Pick up to :data:`_MAX_BASH_ENTRIES` cached Bash runs worth surfacing."""
+    return _select_top_entries(
+        bash_history,
+        min_bytes=_MIN_BASH_BYTES_FOR_MANIFEST,
+        size_fn=lambda e: getattr(e, "stdout_bytes", 0) + getattr(e, "stderr_bytes", 0),
+        max_n=_MAX_BASH_ENTRIES,
+        exclude_fn=_is_noop_bash_command,
+    )
 
 
 def _format_bash_entry(entry: object) -> str:
@@ -916,26 +925,13 @@ def _format_bash_entry(entry: object) -> str:
 
 
 def _select_top_web_entries(web_history: object) -> list[object]:
-    """Pick up to :data:`_MAX_WEB_ENTRIES` web fetches worth surfacing in the manifest.
-
-    Filters entries below :data:`_MIN_WEB_BYTES_FOR_MANIFEST` (tiny redirects
-    and empty responses provide no recoverable context) and ranks by recency —
-    the most recently fetched pages are the ones whose content is most likely
-    to drive the next agent turn.
-
-    Accepts ``web_history`` typed as ``object`` to remain safe on legacy
-    SessionCache instances that predate the field (``None`` / missing → empty list).
-    Entries are :class:`session.WebEntry` instances accessed via :func:`getattr`.
-    """
-    if not isinstance(web_history, dict) or not web_history:
-        return []
-    candidates = [
-        e for e in web_history.values()
-        if getattr(e, "body_bytes", 0) >= _MIN_WEB_BYTES_FOR_MANIFEST
-    ]
-    if not candidates:
-        return []
-    return heapq.nlargest(_MAX_WEB_ENTRIES, candidates, key=lambda e: getattr(e, "ts", 0.0))
+    """Pick up to :data:`_MAX_WEB_ENTRIES` web fetches worth surfacing in the manifest."""
+    return _select_top_entries(
+        web_history,
+        min_bytes=_MIN_WEB_BYTES_FOR_MANIFEST,
+        size_fn=lambda e: getattr(e, "body_bytes", 0),
+        max_n=_MAX_WEB_ENTRIES,
+    )
 
 
 def _format_web_entry(entry: object) -> str:
