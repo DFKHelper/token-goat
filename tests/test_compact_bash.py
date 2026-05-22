@@ -859,3 +859,49 @@ class TestSelectTopEntries:
             min_bytes=0, size_fn=lambda e: getattr(e, "size", 0), max_n=1,
         )
         assert result[0] is with_ts
+
+
+class TestMiddleTruncate:
+    """Unit tests for compact._middle_truncate."""
+
+    def test_short_text_unchanged(self):
+        """Text with fewer lines than max_lines is returned verbatim."""
+        text = "\n".join(f"line {i}" for i in range(10))
+        assert compact._middle_truncate(text, max_lines=20) == text
+
+    def test_exact_max_lines_unchanged(self):
+        """Text with exactly max_lines lines is returned verbatim."""
+        text = "\n".join(f"line {i}" for i in range(20))
+        assert compact._middle_truncate(text, max_lines=20) == text
+
+    def test_long_output_truncated(self):
+        """Text exceeding max_lines is truncated to fewer lines than the original."""
+        text = "\n".join(f"line {i}" for i in range(50))
+        result = compact._middle_truncate(text, max_lines=20)
+        assert len(result.splitlines()) < 50
+
+    def test_omission_marker_present(self):
+        """Middle-truncated output contains the omission marker."""
+        text = "\n".join(f"line {i}" for i in range(50))
+        result = compact._middle_truncate(text, max_lines=20)
+        assert "lines omitted" in result
+
+    def test_first_and_last_lines_preserved(self):
+        """The very first and very last lines of the input survive truncation."""
+        lines = [f"line {i}" for i in range(50)]
+        text = "\n".join(lines)
+        result = compact._middle_truncate(text, max_lines=20)
+        result_lines = result.splitlines()
+        assert result_lines[0] == lines[0]
+        assert result_lines[-1] == lines[-1]
+
+    def test_omitted_count_correct(self):
+        """The marker accurately reports how many lines were dropped."""
+        n = 50
+        max_lines = 20
+        import math
+        keep = math.ceil(max_lines * 0.4)
+        expected_omitted = n - keep * 2
+        text = "\n".join(f"line {i}" for i in range(n))
+        result = compact._middle_truncate(text, max_lines=max_lines)
+        assert f"[{expected_omitted} lines omitted]" in result

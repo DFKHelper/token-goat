@@ -907,6 +907,39 @@ def _select_top_bash_entries(bash_history: object) -> list[object]:
     )
 
 
+def _middle_truncate(text: str, max_lines: int = 20) -> str:
+    """Return *text* middle-truncated to at most *max_lines* lines.
+
+    When the line count is within *max_lines* the text is returned unchanged.
+    Otherwise the first ``ceil(max_lines * 0.4)`` lines and the last
+    ``ceil(max_lines * 0.4)`` lines are kept, with a human-readable omission
+    marker inserted between them::
+
+        line 1
+        line 2
+        ... [8 lines omitted] ...
+        line 11
+        line 12
+
+    The split is intentionally biased toward showing both the beginning (which
+    usually contains the command header / test summary) and the end (which
+    usually contains the final error or result), dropping the noisy middle.
+
+    *max_lines* must be >= 2; values below 2 are clamped to 2.
+    """
+    if max_lines < 2:
+        max_lines = 2
+    lines = text.splitlines()
+    if len(lines) <= max_lines:
+        return text
+    keep = math.ceil(max_lines * 0.4)
+    head = lines[:keep]
+    tail = lines[-keep:]
+    omitted = len(lines) - keep * 2
+    marker = f"... [{omitted} lines omitted] ..."
+    return "\n".join(head + [marker] + tail)
+
+
 def _format_bash_entry(entry: object) -> str:
     """Render one :class:`session.BashEntry` as a single manifest line.
 
@@ -915,6 +948,11 @@ def _format_bash_entry(entry: object) -> str:
         - $ pytest -v tests/  (exit 1, 12.3KB, id=abc123def...)
         - $ pytest -v tests/  [×3] (exit 1, 12.3KB, id=abc123def...)
 
+    When a cached output body is available it is loaded from disk, passed
+    through :func:`_middle_truncate` (keeping the first+last ~40 % of lines),
+    and appended as an indented block so the compaction LLM can see both the
+    header and tail of long outputs without paying for the noisy middle.
+
     The cache ID is included so the compaction LLM hands the agent something
     actionable — the agent can call ``token-goat bash-output <id>`` to recover
     the full body instead of re-running.  Byte counts use a compact human
@@ -922,6 +960,8 @@ def _format_bash_entry(entry: object) -> str:
     glance-level summary.  ``[×N]`` appears when the command was retried (same
     SHA, run_count > 1) so retry loops are immediately visible.
     """
+    from . import bash_cache as bash_cache_mod
+
     cmd_preview = sanitize_log_str(getattr(entry, "cmd_preview", ""), max_len=80)
     total = int(getattr(entry, "stdout_bytes", 0)) + int(getattr(entry, "stderr_bytes", 0))
     exit_code = getattr(entry, "exit_code", None)
@@ -930,10 +970,26 @@ def _format_bash_entry(entry: object) -> str:
     run_count = int(getattr(entry, "run_count", 1))
     run_count_marker = f" [×{run_count}]" if run_count > 1 else ""
     exit_str = "exit ?" if exit_code is None else f"exit {exit_code}"
-    return (
+    header = (
         f"- $ {cmd_preview}{run_count_marker}  "
         f"({exit_str}, {_humanize_bytes(total)}{truncated_marker}, id={output_id})"
     )
+
+    # Attempt to load cached output for inline snippet.  Failures are silently
+    # ignored — the metadata line is always emitted even without the body.
+    snippet: str | None = None
+    if output_id:
+        try:
+            raw = bash_cache_mod.load_output(output_id)
+            if raw and raw.strip():
+                snippet = _middle_truncate(raw.strip(), max_lines=20)
+        except Exception:  # noqa: BLE001
+            pass
+
+    if snippet:
+        indented = "\n".join(f"  {line}" for line in snippet.splitlines())
+        return f"{header}\n{indented}"
+    return header
 
 
 def _select_top_web_entries(web_history: object) -> list[object]:
