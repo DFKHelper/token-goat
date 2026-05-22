@@ -478,8 +478,7 @@ def _get_git_diff_stat_summary(root: object) -> str:
     if root is None:
         return ""
     try:
-        from pathlib import Path as _Path  # noqa: PLC0415
-        root_str = str(_Path(root)) if not isinstance(root, str) else root
+        root_str = root if isinstance(root, str) else str(root)
         result = subprocess.run(
             ["git", "diff", "--no-color", "--stat", "HEAD"],
             cwd=root_str,
