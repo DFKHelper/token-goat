@@ -62,6 +62,7 @@ __all__ = [
     "set_snapshot_sha",
     "validate_session_id",
     # Serialization helpers exposed for testing
+    "_migrate_session",
     "_parse_file_entry",
     "_parse_glob_entry",
     "_round_ts",
@@ -1136,6 +1137,42 @@ def _resolve_cache(session_id: str, cache: SessionCache | None) -> SessionCache:
     return load(session_id)
 
 
+def _migrate_session(data: dict[str, Any]) -> dict[str, Any]:
+    """Add missing top-level and nested fields to a session dict with safe defaults.
+
+    This function ensures backwards compatibility when loading session JSON files
+    written by older token-goat versions that predate new fields.  It runs before
+    SessionCache.from_dict() so the dataclass constructor always sees complete fields.
+
+    Top-level migrations:
+    - ``edited_files``: defaults to ``{}`` (dict[str, int])
+    - ``glob_history``: defaults to ``[]`` (list[GlobEntry])
+    - ``cwd``: defaults to ``None`` (optional working directory)
+
+    Per-FileEntry migrations (nested):
+    - ``symbols_ts``: defaults to ``{}`` (dict[str, float] mapping symbol → unix ts)
+    - ``last_edit_ts``: defaults to ``0.0`` (unix ts; 0.0 = "never edited this session")
+    """
+    # Top-level defaults
+    if "edited_files" not in data:
+        data["edited_files"] = {}
+    if "glob_history" not in data:
+        data["glob_history"] = []
+    if "cwd" not in data:
+        data["cwd"] = None
+
+    # Per-file-entry defaults for nested objects
+    for _file_key, file_entry in data.get("files", {}).items():
+        if not isinstance(file_entry, dict):
+            continue
+        if "symbols_ts" not in file_entry:
+            file_entry["symbols_ts"] = {}
+        if "last_edit_ts" not in file_entry:
+            file_entry["last_edit_ts"] = 0.0
+
+    return data
+
+
 def load(session_id: str) -> SessionCache:
     """Load the on-disk session cache for *session_id*, or create a fresh one.
 
@@ -1168,7 +1205,10 @@ def load(session_id: str) -> SessionCache:
             read_error = exc
             continue
         try:
-            cache = SessionCache.from_dict(json.loads(raw))
+            data = json.loads(raw)
+            # Migrate missing fields before constructing SessionCache
+            data = _migrate_session(data)
+            cache = SessionCache.from_dict(data)
         except (json.JSONDecodeError, KeyError, TypeError, ValueError) as e:
             _LOG.warning("session cache corrupted (%s); resetting", e)
             return _fresh_cache(session_id)
