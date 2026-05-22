@@ -47,6 +47,69 @@ class TestSessionCacheBasics:
         assert fresh.files == {}
         assert fresh.greps == []
 
+    def test_atomic_save_no_tmp_artifact(self, tmp_data_dir):
+        """Normal save produces no .tmp artifact on disk."""
+        session_id = "atomic_save_test"
+        session.load(session_id)
+        session.mark_file_read(session_id, "src/test.py", offset=0, limit=50)
+        # After save, check that no .tmp files exist in the session dir
+        session_path = session.paths.session_cache_path(session_id)
+        parent_dir = session_path.parent
+        tmp_files = list(parent_dir.glob(f"{session_path.name}*.tmp"))
+        assert tmp_files == [], f"Unexpected .tmp artifacts: {tmp_files}"
+
+    def test_atomic_save_tmp_cleanup_on_write_failure(self, tmp_data_dir, monkeypatch):
+        """Write failure to .tmp file cleans up the temporary file."""
+        import json as json_module
+
+        session_id = "atomic_fail_test"
+        cache = session.load(session_id)
+        session.mark_file_read(session_id, "src/fail.py", offset=0, limit=25)
+
+        # Mock json.dumps to raise an exception on the first call
+        original_dumps = json_module.dumps
+        call_count = [0]
+
+        def failing_dumps(*args, **kwargs):
+            call_count[0] += 1
+            if call_count[0] == 1:
+                raise OSError("Simulated write failure")
+            return original_dumps(*args, **kwargs)
+
+        monkeypatch.setattr(json_module, "dumps", failing_dumps)
+
+        session_path = session.paths.session_cache_path(session_id)
+        parent_dir = session_path.parent
+
+        import contextlib
+
+        # Attempt to save again — should fail but clean up .tmp
+        with contextlib.suppress(Exception):
+            session.save(cache)
+
+        # Verify no .tmp files remain
+        tmp_files = list(parent_dir.glob(f"{session_path.name}*.tmp"))
+        assert tmp_files == [], f"Temporary files not cleaned up: {tmp_files}"
+
+    def test_atomic_save_roundtrip_loads_correctly(self, tmp_data_dir):
+        """Session loaded after atomic save reads correctly."""
+        session_id = "atomic_roundtrip_test"
+        # Create initial session and add data
+        session.mark_file_read(session_id, "src/app.py", offset=0, limit=100)
+        session.mark_file_read(session_id, "src/utils.py", offset=50, limit=75)
+        session.mark_grep(session_id, "pattern", path="src/app.py", result_count=10)
+
+        # Load and verify
+        loaded = session.load(session_id)
+        assert "src/app.py" in loaded.files
+        assert loaded.files["src/app.py"].read_count == 1
+        assert loaded.files["src/app.py"].line_ranges == [(1, 100)]
+        assert "src/utils.py" in loaded.files
+        assert loaded.files["src/utils.py"].line_ranges == [(51, 125)]
+        assert len(loaded.greps) == 1
+        assert loaded.greps[0].pattern == "pattern"
+        assert loaded.greps[0].result_count == 10
+
 
 class TestLineRanges:
     """Line range merging."""
