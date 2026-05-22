@@ -1271,3 +1271,168 @@ class TestComputeStaleThreshold:
             session_id=sid, file_path=path, offset=0, limit=200, cwd=None,
         )
         assert hint is None, "Read 1000s ago in 1h session should be stale (threshold=900s)"
+
+
+# ---------------------------------------------------------------------------
+# Edge cases: hints.py
+# ---------------------------------------------------------------------------
+
+
+class TestHintsEdgeCases:
+    """Edge cases for hint generation: empty sessions, long paths, glob with 0 results."""
+
+    def test_empty_session_first_read_returns_none(self, tmp_data_dir):
+        """On first read of a file in a fresh session, build_read_hint returns None."""
+
+        sid = "fresh_session_edge"
+        # Don't mark anything — the file has never been read
+        path = "src/never_read.py"
+        hint = build_read_hint(
+            session_id=sid, file_path=path, offset=0, limit=100, cwd="/tmp",
+        )
+        # File is not in session cache, not indexed, and not large → no hint
+        assert hint is None
+
+    def test_file_read_once_emits_hint_on_second_read(self, tmp_data_dir):
+        """After one read, a second read of the same file emits a dedup hint."""
+
+        sid = "second_read_edge"
+        path = "src/test.py"
+
+        # First read
+        session.mark_file_read(sid, path, offset=0, limit=100)
+
+        # Second read of the same range
+        hint = build_read_hint(
+            session_id=sid, file_path=path, offset=0, limit=100, cwd="/tmp",
+        )
+        # Should emit an exact-match hint
+        assert hint is not None
+        assert "cached" in str(hint)
+        assert hint.tokens_saved > 0
+
+    def test_very_long_file_path_in_hint(self, tmp_data_dir):
+        """A 200-char file path should be sanitized and not crash hint generation."""
+
+        sid = "long_path_edge"
+        # Create a 200-char path
+        long_path = "src/" + "a" * 180 + "/file.py"
+        assert len(long_path) > 180
+
+        session.mark_file_read(sid, long_path, offset=0, limit=50)
+
+        # Second read with a different range to get a partial-overlap hint
+        # (same range as before would be exact-match which might be suppressed for surgical intent)
+        hint = build_read_hint(
+            session_id=sid, file_path=long_path, offset=0, limit=100, cwd="/tmp",
+        )
+        # Should not crash, may or may not produce a hint depending on overlap logic
+        # Main test: ensure no exception is raised and path is sanitized
+        if hint is not None:
+            # The hint text should be reasonable size (sanitized/truncated)
+            assert len(str(hint)) < 1000
+        # Even if no hint, the function should complete without crashing
+
+    def test_glob_dedup_hint_zero_results_suppressed(self, tmp_data_dir):
+        """A glob with 0 results should not emit a hint (no dedup value)."""
+        from token_goat.hints import build_glob_dedup_hint
+
+        sid = "glob_zero_results"
+
+        # Record a glob with 0 results
+        session.mark_glob_run(sid, "**/*.nonexistent", result_count=0)
+
+        # Try to build a hint for the same glob
+        hint = build_glob_dedup_hint(session_id=sid, pattern="**/*.nonexistent", path=None)
+
+        # Should be suppressed because result_count (0) < _GLOB_DEDUP_MIN_RESULT_COUNT (5)
+        assert hint is None
+
+    def test_glob_dedup_hint_with_special_regex_chars(self, tmp_data_dir):
+        """A glob pattern with special regex chars should not crash."""
+        from token_goat.hints import build_glob_dedup_hint
+
+        sid = "glob_special_chars"
+
+        # A pattern with regex-special chars: [, ], *, +, ?, etc.
+        pattern = "**/[test_]+([a-z]*).py"
+        session.mark_glob_run(sid, pattern, path="src/", result_count=10)
+
+        # Should not crash
+        hint = build_glob_dedup_hint(session_id=sid, pattern=pattern, path="src/")
+
+        # Should emit a hint (10 >= 5)
+        assert hint is not None
+        assert "Glob" in str(hint)
+
+    def test_glob_dedup_hint_exact_threshold_boundary(self, tmp_data_dir):
+        """A glob with exactly _GLOB_DEDUP_MIN_RESULT_COUNT results emits hint."""
+        from token_goat.hints import _GLOB_DEDUP_MIN_RESULT_COUNT, build_glob_dedup_hint
+
+        sid = "glob_boundary"
+        pattern = "**/*.py"
+
+        # Record exactly at threshold
+        session.mark_glob_run(sid, pattern, result_count=_GLOB_DEDUP_MIN_RESULT_COUNT)
+
+        hint = build_glob_dedup_hint(session_id=sid, pattern=pattern, path=None)
+
+        # Should emit (not suppressed)
+        assert hint is not None
+        assert str(_GLOB_DEDUP_MIN_RESULT_COUNT) in str(hint)
+
+    def test_glob_dedup_hint_one_below_threshold_suppressed(self, tmp_data_dir):
+        """A glob with _GLOB_DEDUP_MIN_RESULT_COUNT - 1 results is suppressed."""
+        from token_goat.hints import _GLOB_DEDUP_MIN_RESULT_COUNT, build_glob_dedup_hint
+
+        sid = "glob_below_threshold"
+        pattern = "**/*.txt"
+
+        session.mark_glob_run(sid, pattern, result_count=_GLOB_DEDUP_MIN_RESULT_COUNT - 1)
+
+        hint = build_glob_dedup_hint(session_id=sid, pattern=pattern, path=None)
+
+        # Should be suppressed (below threshold)
+        assert hint is None
+
+    def test_build_read_hint_empty_session_cache_object(self, tmp_data_dir):
+        """Pass an empty SessionCache object directly to build_read_hint."""
+
+        sid = "explicit_empty_cache"
+        path = "src/file.py"
+
+        # Create an empty cache object
+        empty_cache = session.load(sid)
+        assert empty_cache.files == {}
+
+        # Try to build a hint with this empty cache
+        hint = build_read_hint(
+            session_id=sid,
+            file_path=path,
+            offset=0,
+            limit=100,
+            cwd="/tmp",
+            cache=empty_cache,
+        )
+        # No hint because file was never read
+        assert hint is None
+
+    def test_build_read_hint_cache_with_edited_but_unread_file(self, tmp_data_dir):
+        """A file marked as edited but never read should not emit a cached hint."""
+
+        sid = "edited_unread"
+        path = "src/edited.py"
+
+        # Mark file as edited without reading
+        session.mark_file_edited(sid, path)
+
+        # Try to build a hint for a read
+        hint = build_read_hint(
+            session_id=sid,
+            file_path=path,
+            offset=0,
+            limit=100,
+            cwd="/tmp",
+        )
+        # No hint because file was never read (only edited)
+        assert hint is None
