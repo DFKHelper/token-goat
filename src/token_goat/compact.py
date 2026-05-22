@@ -12,6 +12,7 @@ __all__ = [
     "compute_adaptive_budget",
     "event_count",
     "is_noise_path",
+    "_dedup_grep_entries",
 ]
 
 import heapq
@@ -1309,6 +1310,82 @@ def _select_top_grep_entries(greps: list[object]) -> list[object]:
     return heapq.nlargest(_MAX_GREP_ENTRIES, fresh, key=lambda g: _grep_sort_key(g, now_ts))
 
 
+def _dedup_grep_entries(entries: list[object]) -> list[object]:
+    """Deduplicate and annotate grep entries: group by pattern, keep best representative.
+
+    When the same grep pattern appears multiple times in the entries list,
+    this function collapses them into a single entry and appends " [×N]"
+    to the pattern string where N is the count.  The entry with the most
+    matches (or the latest timestamp if counts tie) is chosen as the
+    representative.
+
+    Args:
+        entries: List of grep entry objects.
+
+    Returns:
+        A deduplicated list where each unique pattern appears once,
+        with the pattern field annotated with a count suffix when N > 1.
+    """
+    if not entries:
+        return []
+
+    # Group entries by pattern text
+    pattern_groups: dict[str, tuple[object, int]] = {}
+    for entry in entries:
+        pattern = getattr(entry, "pattern", "")
+        if not pattern:
+            continue
+
+        result_count = getattr(entry, "result_count", None)
+        ts = getattr(entry, "ts", 0.0)
+
+        if pattern not in pattern_groups:
+            # First occurrence: store entry and count
+            pattern_groups[pattern] = (entry, 1)
+        else:
+            # Subsequent occurrence: increment count and possibly replace entry
+            existing_entry, count = pattern_groups[pattern]
+            existing_count = getattr(existing_entry, "result_count", None)
+            existing_ts = getattr(existing_entry, "ts", 0.0)
+
+            # Prefer entry with more matches; on tie, prefer more recent
+            should_replace = False
+            if result_count is not None and existing_count is not None:
+                should_replace = result_count > existing_count
+            elif result_count is not None or ts > existing_ts:
+                should_replace = True
+
+            if should_replace:
+                pattern_groups[pattern] = (entry, count + 1)
+            else:
+                pattern_groups[pattern] = (existing_entry, count + 1)
+
+    # Build result: create modified entries with annotated patterns when count > 1
+    result: list[object] = []
+    for pattern, (entry, count) in pattern_groups.items():
+        if count == 1:
+            # Single occurrence: return as-is
+            result.append(entry)
+        else:
+            # Multiple occurrences: create a wrapper object with modified pattern
+            # We use a simple namespace-like object to avoid mutation
+            class _AugmentedEntry:
+                """Wrapper object that adds a count suffix to the pattern."""
+                def __init__(self, orig: object, new_pattern: str) -> None:
+                    self._orig = orig
+                    self._pattern = new_pattern
+
+                def __getattr__(self, name: str) -> Any:
+                    if name == "pattern":
+                        return self._pattern
+                    return getattr(self._orig, name)
+
+            annotated_pattern = f"{pattern} [×{count}]"
+            result.append(_AugmentedEntry(entry, annotated_pattern))
+
+    return result
+
+
 def _format_grep_entry(entry: object) -> str:
     """Render one :class:`session.GrepEntry` as a single manifest line.
 
@@ -2038,6 +2115,7 @@ def _render(cache: SessionCache, session_id: str, max_tokens: int) -> tuple[str,
     grep_lines: list[str] = []
     grep_used = 0
     grep_entries = _select_top_grep_entries(raw_greps)
+    grep_entries = _dedup_grep_entries(grep_entries)
     if grep_entries:
         header = "### Patterns Searched"
         header_cost = _token_count(header)
