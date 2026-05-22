@@ -1953,3 +1953,37 @@ def test_cleanup_on_startup_includes_project_wal_bytes_reclaimed(tmp_data_dir, m
     stats = worker.cleanup_on_startup()
     assert "project_wal_bytes_reclaimed" in stats
     assert stats["project_wal_bytes_reclaimed"] == 42
+
+
+# ---------------------------------------------------------------------------
+# Dirty-queue deduplication
+# ---------------------------------------------------------------------------
+
+def test_drain_dirty_queue_dedup_same_path(tmp_data_dir):
+    """5 entries for the same (project_hash, path) should drain as 1 entry."""
+    for _ in range(5):
+        worker.enqueue_dirty("src/foo.ts", project_hash="aaa111")
+
+    entries = worker.drain_dirty_queue()
+    assert entries is not None
+    assert len(entries) == 1
+    assert entries[0]["path"] == "src/foo.ts"
+    assert entries[0]["project_hash"] == "aaa111"
+
+
+def test_drain_dirty_queue_dedup_unique_paths(tmp_data_dir):
+    """3 distinct paths should all survive deduplication — no entries dropped."""
+    worker.enqueue_dirty("src/a.py", project_hash="bbb222")
+    worker.enqueue_dirty("src/b.py", project_hash="bbb222")
+    worker.enqueue_dirty("src/c.py", project_hash="bbb222")
+
+    entries = worker.drain_dirty_queue()
+    assert entries is not None
+    assert len(entries) == 3
+    assert {e["path"] for e in entries} == {"src/a.py", "src/b.py", "src/c.py"}
+
+
+def test_drain_dirty_queue_dedup_empty_queue(tmp_data_dir):
+    """Empty queue returns an empty list — dedup path must not raise."""
+    entries = worker.drain_dirty_queue()
+    assert entries == []
