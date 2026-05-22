@@ -28,6 +28,8 @@ __all__ = [
     "EDITED_FILES_MAX",
     "FILES_MAX",
     "FileEntry",
+    "GLOB_HISTORY_MAX",
+    "GlobEntry",
     "GrepEntry",
     "GREPS_HISTORY_MAX",
     "HINTS_SEEN_MAX",
@@ -46,10 +48,12 @@ __all__ = [
     "list_touched",
     "load",
     "lookup_bash_entry",
+    "lookup_glob_entry",
     "lookup_web_entry",
     "mark_bash_run",
     "mark_file_edited",
     "mark_file_read",
+    "mark_glob_run",
     "mark_grep",
     "mark_web_fetch",
     "put_result_cache",
@@ -59,9 +63,11 @@ __all__ = [
     "validate_session_id",
     # Serialization helpers exposed for testing
     "_parse_file_entry",
+    "_parse_glob_entry",
     "_round_ts",
     "_serialize_bash_entry",
     "_serialize_file_entry",
+    "_serialize_glob_entry",
     "_serialize_grep_entry",
     "_serialize_result_cache_entry",
     "_serialize_web_entry",
@@ -132,6 +138,20 @@ class GrepEntry:
     path: str | None
     ts: float
     result_count: int | None = None  # if known
+
+
+@dataclass
+class GlobEntry:
+    """Tracks a Glob call (pattern + optional path scope).
+
+    Recorded to detect repeated Glob calls with the same pattern in the same session,
+    enabling nudges toward reusing earlier results instead of re-scanning the tree.
+    """
+
+    pattern: str
+    path: str | None
+    ts: float
+    result_count: int | None = None  # number of matching paths, if known
 
 
 @dataclass
@@ -259,6 +279,14 @@ _MAX_WEB_URL_PREVIEW = 200
 GREPS_HISTORY_MAX: Final[int] = 200
 _GREPS_HISTORY_EVICT: Final[int] = 50
 
+# Maximum number of glob entries retained per session.  Glob calls are typically
+# less frequent than Grep calls, so a cap of 20 is sufficient; FIFO eviction keeps
+# the most recent patterns, which are the ones most likely to be repeated.
+GLOB_HISTORY_MAX: Final[int] = 20
+_GLOB_HISTORY_EVICT: Final[int] = 5
+# Cap glob pattern length before storage to keep session JSON bounded.
+_MAX_GLOB_PATTERN_LEN: int = 512
+
 # Maximum number of hint fingerprints retained per session.  The hints_seen set
 # tracks emitted hints to suppress duplicates within the same session; without a
 # cap it grows without bound.  When the cap is exceeded, the set is cleared
@@ -318,6 +346,11 @@ class SessionCache:
     # Insertion-ordered dict; FIFO eviction at BASH_HISTORY_MAX prevents growth
     # in tight retry loops.
     bash_history: dict[str, BashEntry] = field(default_factory=dict)
+    # Per-session glob history: list of GlobEntry objects in chronological order.
+    # Used by the pre-Glob dedup hint to detect repeated directory scans with
+    # the same pattern.  FIFO-evicted at GLOB_HISTORY_MAX (much smaller than
+    # grep/bash history because glob patterns recur less frequently).
+    glob_history: list[GlobEntry] = field(default_factory=list)
     # Per-session web-fetch history keyed by short SHA of the URL.  Used by
     # the pre-WebFetch dedup hint and by ``token-goat web-history`` for
     # listing.  Same FIFO + cap semantics as bash_history.
@@ -365,6 +398,7 @@ class SessionCache:
                 k: _serialize_bash_entry(v)
                 for k, v in self.bash_history.items()
             },
+            glob_history=[_serialize_glob_entry(g) for g in self.glob_history],
             web_history={
                 k: _serialize_web_entry(v)
                 for k, v in self.web_history.items()
@@ -399,6 +433,10 @@ class SessionCache:
     def is_greps_empty(self) -> bool:
         """Return True if greps is empty or not available."""
         return not self.greps
+
+    def is_glob_history_empty(self) -> bool:
+        """Return True if glob_history is empty or not available."""
+        return not self.glob_history
 
     def has_hint_fingerprint(self, fingerprint: str) -> bool:
         """Check if a hint fingerprint was already seen this session.
@@ -496,6 +534,14 @@ class SessionCache:
             if be_entry is not None:
                 bash_history[k] = be_entry
 
+        glob_history: list[GlobEntry] = []
+        for g in d.get("glob_history", []):
+            if not isinstance(g, dict):
+                continue
+            glob_entry = _parse_glob_entry(g)
+            if glob_entry is not None:
+                glob_history.append(glob_entry)
+
         web_history: dict[str, WebEntry] = {}
         for k, v in d.get("web_history", {}).items():
             if not isinstance(v, dict) or not isinstance(k, str):
@@ -533,6 +579,7 @@ class SessionCache:
             edited_files=edited_files,
             result_cache=result_cache,
             bash_history=bash_history,
+            glob_history=glob_history,
             web_history=web_history,
             snapshot_shas=snapshot_shas,
             hints_seen=hints_seen,
@@ -574,6 +621,48 @@ def _serialize_grep_entry(entry: GrepEntry) -> _GrepEntryDict:
     if entry.result_count is not None:
         d["result_count"] = entry.result_count
     return d
+
+
+def _serialize_glob_entry(entry: GlobEntry) -> _GlobEntryDict:
+    """Serialize a GlobEntry to its wire dict with rounded timestamp."""
+    d = _GlobEntryDict(
+        pattern=entry.pattern,
+        path=entry.path,
+        ts=_round_ts(entry.ts),
+    )
+    if entry.result_count is not None:
+        d["result_count"] = entry.result_count
+    return d
+
+
+def _parse_glob_entry(g: dict[str, Any]) -> GlobEntry | None:
+    """Deserialize one glob-entry dict from JSON, returning None on any parse error.
+
+    Narrows each field to the expected type before constructing ``GlobEntry`` so
+    that unexpected JSON types don't silently become wrong-typed attributes.
+    """
+    try:
+        raw_pattern = g.get("pattern", "")
+        raw_path = g.get("path")
+        raw_ts = g.get("ts", 0.0)
+        raw_result_count = g.get("result_count")
+        return GlobEntry(
+            pattern=str(raw_pattern) if isinstance(raw_pattern, (str, int, float)) else "",
+            path=str(raw_path) if isinstance(raw_path, str) else None,
+            ts=float(raw_ts) if isinstance(raw_ts, (int, float)) else 0.0,
+            result_count=(
+                int(raw_result_count)
+                if is_real_int(raw_result_count)
+                else None
+            ),
+        )
+    except (TypeError, ValueError, KeyError) as exc:
+        _LOG.debug(
+            "session: skipping corrupted glob entry (%s): %s",
+            exc,
+            sanitize_log_str(repr(g)[:120]),
+        )
+        return None
 
 
 def _serialize_result_cache_entry(entry: ResultCacheEntry) -> _ResultCacheEntryDict:
@@ -840,6 +929,15 @@ class _GrepEntryDict(TypedDict, total=False):
     result_count: int | None
 
 
+class _GlobEntryDict(TypedDict, total=False):
+    """Wire format of a single GlobEntry as it appears in the session JSON."""
+
+    pattern: str
+    path: str | None
+    ts: float
+    result_count: int | None
+
+
 class _SessionDict(TypedDict, total=False):
     """Wire format of a serialized SessionCache (written to / read from JSON on disk).
 
@@ -861,6 +959,7 @@ class _SessionDict(TypedDict, total=False):
     edited_files: dict[str, int]
     result_cache: dict[str, _ResultCacheEntryDict]
     bash_history: dict[str, _BashEntryDict]
+    glob_history: list[_GlobEntryDict]
     web_history: dict[str, _WebEntryDict]
     snapshot_shas: dict[str, str]
     hints_seen: list[str]
@@ -1363,6 +1462,66 @@ def mark_grep(
         len(cache.greps),
     )
     return _commit_mutation(cache, now)
+
+
+def mark_glob_run(
+    session_id: str,
+    pattern: str,
+    path: str | None = None,
+    result_count: int | None = None,
+    *,
+    cache: SessionCache | None = None,
+) -> SessionCache:
+    """Record a Glob call. Returns the updated cache.
+
+    Stores the pattern (capped at :data:`_MAX_GLOB_PATTERN_LEN` to bound session
+    JSON size) along with the optional scoping *path* and the number of matches.
+    FIFO eviction keeps the :data:`GLOB_HISTORY_MAX` most recent entries.
+    """
+    cache = _resolve_cache(session_id, cache)
+    if cache.unavailable:
+        return cache
+    now = time.time()
+    safe_pattern = pattern[:_MAX_GLOB_PATTERN_LEN] if len(pattern) > _MAX_GLOB_PATTERN_LEN else pattern
+    cache.glob_history.append(GlobEntry(pattern=safe_pattern, path=path, ts=now, result_count=result_count))
+    # Enforce GLOB_HISTORY_MAX by keeping only the most recent entries (FIFO eviction)
+    if len(cache.glob_history) > GLOB_HISTORY_MAX:
+        cache.glob_history = cache.glob_history[-GLOB_HISTORY_MAX:]
+    _LOG.debug(
+        "mark_glob_run: pattern=%r path=%r results=%s (session=%s total_globs=%d)",
+        sanitize_log_str(safe_pattern[:60], max_len=_MAX_LOG_STR),
+        path,
+        result_count,
+        session_id[:16],
+        len(cache.glob_history),
+    )
+    return _commit_mutation(cache, now)
+
+
+def lookup_glob_entry(
+    session_id: str,
+    pattern: str,
+    path: str | None = None,
+    *,
+    cache: SessionCache | None = None,
+) -> GlobEntry | None:
+    """Return the most recent GlobEntry for *pattern* in this session, or None.
+
+    Scans ``glob_history`` in reverse-chronological order so the most recent
+    matching entry is found first.  Matches on both *pattern* and *path* so
+    ``Glob("**/*.py")`` and ``Glob("**/*.py", path="src/")`` are tracked
+    independently.  Returns ``None`` when no prior run is recorded.
+    """
+    try:
+        cache = _resolve_cache(session_id, cache)
+    except ValueError:
+        return None
+    if cache.unavailable or not cache.glob_history:
+        return None
+    for entry in reversed(cache.glob_history):
+        if entry.pattern == pattern and entry.path == path:
+            return entry
+    return None
 
 
 def _merge_ranges(ranges: list[tuple[int, int]]) -> list[tuple[int, int]]:

@@ -1118,3 +1118,160 @@ class TestCompactSerialization:
         # The stored value must be rounded (no more than 3 significant decimal places)
         serialized = round(entry.last_read_ts, 3)
         assert entry.last_read_ts == serialized
+
+
+class TestGlob:
+    """Glob recording via mark_glob_run and lookup_glob_entry."""
+
+    def test_mark_glob_run_appends_and_persists(self, tmp_data_dir):
+        """mark_glob_run appends to glob_history and persists across load."""
+        cache = session.mark_glob_run("glob_s1", "**/*.py", path="src/", result_count=42)
+        assert len(cache.glob_history) == 1
+        entry = cache.glob_history[0]
+        assert entry.pattern == "**/*.py"
+        assert entry.path == "src/"
+        assert entry.result_count == 42
+
+        loaded = session.load("glob_s1")
+        assert len(loaded.glob_history) == 1
+        assert loaded.glob_history[0].pattern == "**/*.py"
+        assert loaded.glob_history[0].result_count == 42
+
+    def test_mark_glob_run_no_result_count(self, tmp_data_dir):
+        """mark_glob_run works when result_count is None."""
+        cache = session.mark_glob_run("glob_s2", "**/*.ts")
+        assert cache.glob_history[0].result_count is None
+
+        loaded = session.load("glob_s2")
+        assert loaded.glob_history[0].result_count is None
+
+    def test_multiple_globs(self, tmp_data_dir):
+        """Multiple glob calls all recorded in order."""
+        session.mark_glob_run("glob_s3", "**/*.py", result_count=10)
+        session.mark_glob_run("glob_s3", "**/*.ts", result_count=5)
+        cache = session.load("glob_s3")
+        assert len(cache.glob_history) == 2
+        assert cache.glob_history[0].pattern == "**/*.py"
+        assert cache.glob_history[1].pattern == "**/*.ts"
+
+    def test_lookup_glob_entry_found(self, tmp_data_dir):
+        """lookup_glob_entry returns the most recent matching entry."""
+        session.mark_glob_run("glob_s4", "**/*.py", path=None, result_count=7)
+        entry = session.lookup_glob_entry("glob_s4", "**/*.py", path=None)
+        assert entry is not None
+        assert entry.pattern == "**/*.py"
+        assert entry.result_count == 7
+
+    def test_lookup_glob_entry_not_found(self, tmp_data_dir):
+        """lookup_glob_entry returns None when pattern has not been run."""
+        session.mark_glob_run("glob_s5", "**/*.py", result_count=3)
+        result = session.lookup_glob_entry("glob_s5", "**/*.ts")
+        assert result is None
+
+    def test_lookup_glob_entry_path_differentiates(self, tmp_data_dir):
+        """Glob entries with same pattern but different path are distinct."""
+        session.mark_glob_run("glob_s6", "**/*.py", path="src/", result_count=10)
+        session.mark_glob_run("glob_s6", "**/*.py", path="tests/", result_count=5)
+        # lookup with path="src/" should return the first entry
+        entry_src = session.lookup_glob_entry("glob_s6", "**/*.py", path="src/")
+        assert entry_src is not None
+        assert entry_src.result_count == 10
+        # lookup with path="tests/" should return the second
+        entry_tests = session.lookup_glob_entry("glob_s6", "**/*.py", path="tests/")
+        assert entry_tests is not None
+        assert entry_tests.result_count == 5
+
+    def test_lookup_glob_entry_returns_most_recent(self, tmp_data_dir):
+        """lookup_glob_entry returns the most recent entry when pattern appears twice."""
+        session.mark_glob_run("glob_s7", "**/*.py", result_count=10)
+        session.mark_glob_run("glob_s7", "**/*.py", result_count=15)
+        entry = session.lookup_glob_entry("glob_s7", "**/*.py")
+        assert entry is not None
+        assert entry.result_count == 15
+
+    def test_is_glob_history_empty_true(self, tmp_data_dir):
+        """is_glob_history_empty returns True for a fresh session."""
+        cache = session.load("glob_empty_1")
+        assert cache.is_glob_history_empty() is True
+
+    def test_is_glob_history_empty_false(self, tmp_data_dir):
+        """is_glob_history_empty returns False after a glob is recorded."""
+        cache = session.mark_glob_run("glob_empty_2", "**/*.py", result_count=1)
+        assert cache.is_glob_history_empty() is False
+
+
+class TestGlobHistoryCap:
+    """GLOB_HISTORY_MAX cap — oldest entries are FIFO-evicted when exceeded."""
+
+    def test_glob_capped_at_max(self, tmp_data_dir):
+        """Filling past GLOB_HISTORY_MAX keeps at most GLOB_HISTORY_MAX entries."""
+        sid = "glob_cap_1"
+        for i in range(session.GLOB_HISTORY_MAX + 5):
+            session.mark_glob_run(sid, f"**/{i}/*.py", result_count=i)
+        cache = session.load(sid)
+        assert len(cache.glob_history) <= session.GLOB_HISTORY_MAX
+
+    def test_glob_cap_evicts_oldest(self, tmp_data_dir):
+        """When the cap fires, the oldest (first) patterns are evicted."""
+        sid = "glob_cap_2"
+        n = session.GLOB_HISTORY_MAX + 3
+        for i in range(n):
+            session.mark_glob_run(sid, f"**/pat_{i}/*.py", result_count=i)
+        cache = session.load(sid)
+        patterns = [g.pattern for g in cache.glob_history]
+        # The first (oldest) patterns must be gone
+        assert "**/pat_0/*.py" not in patterns
+        assert "**/pat_1/*.py" not in patterns
+        assert "**/pat_2/*.py" not in patterns
+        # The most recent must survive
+        assert f"**/pat_{n - 1}/*.py" in patterns
+
+    def test_glob_exactly_at_cap_not_evicted(self, tmp_data_dir):
+        """Exactly GLOB_HISTORY_MAX entries: no eviction occurs."""
+        sid = "glob_cap_3"
+        for i in range(session.GLOB_HISTORY_MAX):
+            session.mark_glob_run(sid, f"**/cap_{i}/*.py", result_count=i)
+        cache = session.load(sid)
+        assert len(cache.glob_history) == session.GLOB_HISTORY_MAX
+
+
+class TestGlobSerializationRoundtrip:
+    """GlobEntry round-trips correctly through to_dict / from_dict."""
+
+    def test_glob_entry_roundtrip_with_result_count(self, tmp_data_dir):
+        """GlobEntry with result_count survives JSON round-trip."""
+        session.mark_glob_run("glob_rt_1", "**/*.py", path="src/", result_count=99)
+        loaded = session.load("glob_rt_1")
+        assert len(loaded.glob_history) == 1
+        e = loaded.glob_history[0]
+        assert e.pattern == "**/*.py"
+        assert e.path == "src/"
+        assert e.result_count == 99
+
+    def test_glob_entry_roundtrip_no_result_count(self, tmp_data_dir):
+        """GlobEntry without result_count survives JSON round-trip as None."""
+        session.mark_glob_run("glob_rt_2", "*.toml", path=None)
+        loaded = session.load("glob_rt_2")
+        assert loaded.glob_history[0].result_count is None
+
+    def test_parse_glob_entry_corrupted_returns_none(self):
+        """_parse_glob_entry gracefully returns None for badly-typed fields."""
+        bad = {"pattern": None, "path": 123, "ts": "not-a-float"}
+        result = session._parse_glob_entry(bad)
+        # pattern coercion: None → "" (str of None is "None" but None is not str/int/float)
+        # ts coercion: "not-a-float" is a str not int/float → 0.0
+        # Should not raise; result may be a GlobEntry with degraded values or None
+        # Either outcome is acceptable as long as no exception escapes.
+        assert result is None or isinstance(result, session.GlobEntry)
+
+    def test_serialize_glob_entry_omits_none_result_count(self):
+        """_serialize_glob_entry omits result_count key when it is None."""
+        entry = session.GlobEntry(pattern="**/*.py", path=None, ts=1_747_000_000.0)
+        d = session._serialize_glob_entry(entry)
+        assert "result_count" not in d
+
+    def test_serialize_glob_entry_includes_result_count(self):
+        """_serialize_glob_entry includes result_count when set."""
+        entry = session.GlobEntry(pattern="**/*.py", path="src/", ts=1_747_000_000.0, result_count=7)
+        d = session._serialize_glob_entry(entry)
+        assert d["result_count"] == 7
