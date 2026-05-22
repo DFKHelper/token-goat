@@ -245,11 +245,12 @@ def _round_ts(ts: float) -> float:
 # dozen distinct (file, symbol) slices.  When the cap is hit we evict the oldest
 # entries (FIFO via dict insertion order) so a long-running session does not
 # bloat session JSON without bound.
-RESULT_CACHE_MAX = 100
+RESULT_CACHE_MAX = 50
 # Number of entries to evict at once when the cap is hit.  Batch eviction
-# (25 at a time) amortises the dict-rewrite cost across many cache inserts
-# rather than reshuffling on every single insertion above the cap.
-_RESULT_CACHE_EVICT = 25
+# amortises the dict-rewrite cost across many cache inserts rather than
+# reshuffling on every single insertion above the cap.  10 at a time keeps
+# ~80 % of entries after eviction (at cap=50, 50→40 after a batch evict).
+_RESULT_CACHE_EVICT = 10
 
 # Maximum number of bash-history entries retained per session.  Each entry is
 # tiny (well under 200 bytes), so 200 is comfortable; the cap exists to keep
