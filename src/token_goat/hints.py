@@ -985,29 +985,39 @@ def _build_bash_dedup_hint_inner(
 
     tokens_avoided = _est_tokens_from_chars(total_bytes)
     cmd_short = _sanitize_hint_path(command)
-    exit_str = "" if entry.exit_code is None else f" exit={entry.exit_code}"
     run_count = getattr(entry, "run_count", 1)
     recall_cmd = f"token-goat bash-output {entry.output_id}"
 
+    # Front-load failure signal so the agent sees it immediately.
+    # When the prefix carries the exit code, drop it from the body to avoid
+    # repeating it twice.
+    is_failed = entry.exit_code is not None and entry.exit_code != 0
+    if is_failed:
+        fail_prefix = f"FAILED (exit={entry.exit_code}): "
+        exit_str = ""
+    else:
+        fail_prefix = ""
+        exit_str = "" if entry.exit_code is None else f" exit={entry.exit_code}"
+
     if total_bytes <= _BASH_DEDUP_LIGHT_MAX_BYTES:
-        hint_text = f"`{cmd_short}` cached (age ~{int(age)}s, {total_bytes}B{exit_str}). `{recall_cmd}`"
+        hint_text = f"{fail_prefix}`{cmd_short}` cached (age ~{int(age)}s, {total_bytes}B{exit_str}). `{recall_cmd}`"
         return ReadHint(hint_text, tokens_avoided)
 
     grep_suffix = " (add --grep PATTERN to filter)" if total_bytes >= _BASH_DEDUP_GREP_SUGGEST_BYTES else ""
 
     if run_count >= 3:
         hint_text = (
-            f"WARNING: `{cmd_short}` ran {run_count}x — loop? "
+            f"{fail_prefix}WARNING: `{cmd_short}` ran {run_count}x — loop? "
             f"Cached: ({total_bytes:,}B{exit_str}): `{recall_cmd}`{grep_suffix}"
         )
     elif run_count == 2:
         hint_text = (
-            f"`{cmd_short}` ran 2x — cached ({total_bytes:,}B{exit_str}, ~{tokens_avoided} tokens). "
+            f"{fail_prefix}`{cmd_short}` ran 2x — cached ({total_bytes:,}B{exit_str}, ~{tokens_avoided} tokens). "
             f"`{recall_cmd}`{grep_suffix}"
         )
     else:
         hint_text = (
-            f"`{cmd_short}` (age ~{int(age)}s): {total_bytes:,}B{exit_str} cached. "
+            f"{fail_prefix}`{cmd_short}` (age ~{int(age)}s): {total_bytes:,}B{exit_str} cached. "
             f"`{recall_cmd}`{grep_suffix}"
         )
     return ReadHint(hint_text, tokens_avoided)
