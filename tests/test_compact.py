@@ -3303,3 +3303,70 @@ class TestPreCompactHookFailSoft:
         # Fresh cache should be empty
         assert len(cache.files) == 0
         assert len(cache.edited_files) == 0
+
+
+# ---------------------------------------------------------------------------
+# Glob section in full manifest
+# ---------------------------------------------------------------------------
+
+
+class TestGlobManifestSection:
+    """build_manifest includes Directory Scans when glob history is present."""
+
+    def _mature_session(self, sid):
+        """Push session created_ts back 2 hours so it's not 'young'."""
+        cache = session.load(sid)
+        cache.created_ts = time.time() - 7200
+        session.save(cache)
+
+    def test_glob_section_appears_with_qualifying_entry(self, tmp_data_dir):
+        """A glob with sufficient result_count appears as Directory Scans."""
+        from token_goat.hints import _GLOB_DEDUP_MIN_RESULT_COUNT
+        sid = "glob-manifest-appears"
+        session.mark_file_edited(sid, "src/main.py")
+        session.mark_glob_run(sid, "**/*.py", result_count=_GLOB_DEDUP_MIN_RESULT_COUNT + 10)
+        self._mature_session(sid)
+
+        result = compact.build_manifest(sid, max_tokens=400)
+        assert "Directory Scans" in result
+        assert "**/*.py" in result
+
+    def test_glob_section_absent_when_history_empty(self, tmp_data_dir):
+        """No glob history → no Directory Scans section."""
+        sid = "glob-manifest-absent"
+        session.mark_file_edited(sid, "src/main.py")
+        self._mature_session(sid)
+
+        result = compact.build_manifest(sid, max_tokens=400)
+        assert "Directory Scans" not in result
+
+    def test_glob_trivial_pattern_not_shown(self, tmp_data_dir):
+        """Trivial pattern (**) is filtered and doesn't appear in manifest."""
+        sid = "glob-manifest-trivial"
+        session.mark_file_edited(sid, "src/main.py")
+        session.mark_glob_run(sid, "**", result_count=100)
+        self._mature_session(sid)
+
+        result = compact.build_manifest(sid, max_tokens=400)
+        assert "Directory Scans" not in result
+
+    def test_glob_section_absent_in_young_session(self, tmp_data_dir):
+        """Young sessions (< 10 min old) skip the glob section."""
+        sid = "glob-manifest-young"
+        session.mark_file_edited(sid, "src/main.py")
+        session.mark_glob_run(sid, "**/*.py", result_count=50)
+        # Do NOT call _mature_session — let it stay young (default created_ts ≈ now)
+
+        result = compact.build_manifest(sid, max_tokens=400)
+        assert "Directory Scans" not in result
+
+    def test_glob_section_shows_path_scope(self, tmp_data_dir):
+        """Glob with path scope shows the scope in the manifest line."""
+        from token_goat.hints import _GLOB_DEDUP_MIN_RESULT_COUNT
+        sid = "glob-manifest-scope"
+        session.mark_file_edited(sid, "src/main.py")
+        session.mark_glob_run(sid, "**/*.rs", path="src/", result_count=_GLOB_DEDUP_MIN_RESULT_COUNT + 5)
+        self._mature_session(sid)
+
+        result = compact.build_manifest(sid, max_tokens=400)
+        assert "src/" in result
