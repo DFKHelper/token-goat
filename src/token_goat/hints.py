@@ -19,6 +19,7 @@ __all__ = [
     "ReadHint",
     "build_bash_dedup_hint",
     "build_diff_hint",
+    "build_glob_dedup_hint",
     "build_grep_dedup_hint",
     "build_read_hint",
     "build_web_dedup_hint",
@@ -1057,6 +1058,96 @@ def _build_grep_dedup_hint_inner(
             tokens_avoided,
         )
     return None
+
+
+# ---------------------------------------------------------------------------
+# Glob dedup hint
+# ---------------------------------------------------------------------------
+
+# Minimum result count before the glob dedup hint fires.  A glob returning
+# fewer than this many paths is cheap enough to re-run that the hint preamble
+# would approach the saving.  5 paths × ~60 B each ≈ 300 B ≈ 75 tokens;
+# the hint itself costs ~25 tokens, so this threshold gives a clear positive margin.
+_GLOB_DEDUP_MIN_RESULT_COUNT: int = 5
+
+# Rough bytes-per-Glob-result estimate.  Each result is a file path — typically
+# 40–80 bytes on real projects.  60 is a reasonable mid-point used solely for
+# the tokens-avoided estimate quoted in the hint.
+_GLOB_AVG_BYTES_PER_RESULT: int = 60
+
+
+def build_glob_dedup_hint(
+    *,
+    session_id: str,
+    pattern: str,
+    path: str | None,
+    cache: session.SessionCache | None = None,
+) -> ReadHint | None:
+    """Return a hint when the same Glob pattern was already run in this session.
+
+    Mirrors :func:`build_grep_dedup_hint` for the Glob tool surface: a repeat
+    invocation with the same ``(pattern, path)`` pair within
+    :data:`STALE_READ_AGE_SECONDS` produces a "this just ran, reuse the prior
+    response" advisory.  The hint quotes the previous result count so the agent
+    knows whether a re-run would produce different results.
+
+    Returns ``None`` (no hint) when:
+
+    * no session_id is provided
+    * no prior Glob with the same pattern has been recorded
+    * the previous result count was below :data:`_GLOB_DEDUP_MIN_RESULT_COUNT`
+    * the previous run is older than :data:`STALE_READ_AGE_SECONDS`
+
+    Never raises; any unexpected exception is caught and the hint is suppressed
+    (the pre-Glob path must stay fail-soft).
+    """
+    return _failsoft_dedup_hint(
+        lambda: _build_glob_dedup_hint_inner(
+            session_id=session_id, pattern=pattern, path=path, cache=cache,
+        ),
+        caller="build_glob_dedup_hint",
+        session_id=session_id,
+    )
+
+
+def _build_glob_dedup_hint_inner(
+    *,
+    session_id: str,
+    pattern: str,
+    path: str | None,
+    cache: session.SessionCache | None,
+) -> ReadHint | None:
+    """Inner implementation of :func:`build_glob_dedup_hint`; may raise.
+
+    Delegates lookup to :func:`session.lookup_glob_entry` which walks the
+    glob_history list in reverse-chronological order for the matching
+    ``(pattern, path)`` pair.
+    """
+    if not session_id or not pattern:
+        return None
+    if cache is None:
+        cache = session.load(session_id)
+    if cache.unavailable or cache.is_glob_history_empty():
+        return None
+
+    entry = session.lookup_glob_entry(session_id, pattern, path, cache=cache)
+    if entry is None:
+        return None
+
+    age = time.time() - entry.ts
+    if age > STALE_READ_AGE_SECONDS:
+        return None
+    if entry.result_count is None or entry.result_count < _GLOB_DEDUP_MIN_RESULT_COUNT:
+        return None
+
+    bytes_avoided = entry.result_count * _GLOB_AVG_BYTES_PER_RESULT
+    tokens_avoided = _est_tokens_from_chars(bytes_avoided)
+    pattern_short = _sanitize_hint_path(pattern)
+    path_str = f" in `{_sanitize_hint_path(path)}`" if path else ""
+    return ReadHint(
+        f"Glob `{pattern_short}`{path_str} (age ~{int(age)}s): {entry.result_count} results, ~{tokens_avoided} tokens.",
+        tokens_avoided,
+    )
 
 
 # ---------------------------------------------------------------------------

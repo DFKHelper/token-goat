@@ -795,8 +795,10 @@ def _hooks_block(binary: str | None = None) -> dict[str, list[_HookMatcherEntry]
                 # dedupes warnings, and surfaces failures first.  Disabled by
                 # setting TOKEN_GOAT_BASH_COMPRESS=0.  ``Grep`` is included so
                 # the pre-Grep dedup hint fires on repeat ``(pattern, path)``
-                # invocations within the staleness window.
-                "matcher": "Read|Grep|Bash",
+                # invocations within the staleness window.  ``Glob`` is included
+                # so the pre-Glob dedup hint fires when the same glob pattern is
+                # re-scanned within the session.
+                "matcher": "Read|Grep|Glob|Bash",
                 "hooks": [
                     {
                         "type": "command",

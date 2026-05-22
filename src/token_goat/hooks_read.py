@@ -440,6 +440,47 @@ def _handle_grep_dedup(payload: HookPayload) -> HookResponse | None:
     return pre_tool_use_with_context(str(hint))
 
 
+def _handle_glob_dedup(payload: HookPayload) -> HookResponse | None:
+    """Return a dedup hint when the same Glob pattern just ran in this session.
+
+    Mirrors :func:`_handle_grep_dedup` for the Glob tool surface.  Returns
+    ``None`` to let the hook fall through to ``CONTINUE`` when no dedup hit
+    is available — we never deny a Glob call, only suggest the agent reuse
+    the prior result.
+    """
+    from . import session  # noqa: PLC0415
+    from .hints import build_glob_dedup_hint  # noqa: PLC0415
+
+    session_id, _cwd = get_session_context(payload)
+    if not session_id:
+        return None
+
+    tool_input = get_tool_input(payload)
+    pattern = tool_input.get("pattern")
+    if not isinstance(pattern, str) or not pattern:
+        return None
+    path = tool_input.get("path")
+    if path is not None and not isinstance(path, str):
+        path = None
+
+    try:
+        cache = session.load(session_id)
+    except (OSError, ValueError):
+        return None
+
+    hint = build_glob_dedup_hint(
+        session_id=session_id, pattern=pattern, path=path, cache=cache,
+    )
+    if hint is None:
+        return None
+
+    record_hint_stat_pair("glob_dedup_hint", hint, sanitize_log_str(pattern, max_len=200))
+    _LOG.info(
+        "pre-read: glob-dedup hint injected (tokens_saved=%d)", hint.tokens_saved,
+    )
+    return pre_tool_use_with_context(str(hint))
+
+
 def _handle_bash_dedup(payload: HookPayload) -> HookResponse | None:
     """Return a dedup hint when this exact Bash command ran earlier in the session.
 
@@ -522,6 +563,12 @@ def pre_read(payload: HookPayload) -> HookResponse:
 
     if tool_name == "Grep":
         dedup = _handle_grep_dedup(payload)
+        if dedup is not None:
+            return dedup
+        return CONTINUE()
+
+    if tool_name == "Glob":
+        dedup = _handle_glob_dedup(payload)
         if dedup is not None:
             return dedup
         return CONTINUE()
@@ -669,9 +716,19 @@ def post_read(payload: HookPayload) -> HookResponse:
     elif tool_name == "Glob":
         pattern = tool_input.get("pattern")
         path = tool_input.get("path")
-        # Sanitize user-controlled strings before logging to prevent log injection
-        # via embedded newlines that would forge additional log records.
-        _LOG.debug("post-read: Glob pattern=%s path=%s", sanitize_opt(pattern), sanitize_opt(path))
+        if pattern:
+            # Derive result_count from the tool response: the Glob output is a
+            # newline-separated list of matching file paths.  Count non-empty lines.
+            raw_output = payload.get("tool_response")
+            output_text = _coerce_text(raw_output)
+            glob_result_count: int | None = None
+            if output_text:
+                glob_result_count = sum(1 for ln in output_text.splitlines() if ln.strip())
+            session.mark_glob_run(session_id, pattern, path, glob_result_count, cache=cache)
+            _LOG.debug(
+                "post-read: recorded Glob pattern=%s path=%s result_count=%s",
+                sanitize_opt(pattern), sanitize_opt(path), glob_result_count,
+            )
 
     return CONTINUE()
 
