@@ -613,10 +613,20 @@ class TestHintFromIndexEdgeCases:
 
         Previously this returned None (no hint at all), letting the agent load
         hundreds of tokens silently.  Now it emits a chunk-read suggestion.
+
+        The file must be large enough (>= LARGE_FILE_LINE_THRESHOLD * 75 bytes)
+        to pass the stat fast-path, so we write lines of 80 characters each.
         """
+        from token_goat.hints import _BYTES_PER_LINE_ESTIMATE  # type: ignore[attr-defined]
+
         (tmp_path / ".git").mkdir()
         src = tmp_path / "big_data.json"
-        _make_large_file(src, n_lines=LARGE_FILE_LINE_THRESHOLD + 50)
+        # Write lines long enough to exceed the stat threshold.
+        n_lines = LARGE_FILE_LINE_THRESHOLD + 50
+        line = "x" * (_BYTES_PER_LINE_ESTIMATE + 5)  # 80 chars → safely above 75B/line estimate
+        src.parent.mkdir(parents=True, exist_ok=True)
+        src.write_text("\n".join(line for _ in range(n_lines)), encoding="utf-8")
+        assert src.stat().st_size >= LARGE_FILE_LINE_THRESHOLD * _BYTES_PER_LINE_ESTIMATE
 
         from token_goat.project import find_project
         proj = find_project(tmp_path)
@@ -643,6 +653,37 @@ class TestHintFromIndexEdgeCases:
         assert "limit" in hint
         # Should NOT suggest token-goat read (no symbol to target)
         assert "token-goat read" not in hint
+
+    def test_small_file_stat_skips_index_lookup(self, tmp_data_dir, tmp_path):
+        """Files smaller than LARGE_FILE_LINE_THRESHOLD*75 bytes skip _hint_from_index.
+
+        The stat fast-path avoids the project-find + DB round-trip for small
+        files.  We verify by patching _hint_from_index to raise if called —
+        the test must pass without triggering it.
+        """
+        from token_goat.hints import (  # type: ignore[attr-defined]
+            _BYTES_PER_LINE_ESTIMATE,
+            LARGE_FILE_LINE_THRESHOLD,
+        )
+
+        (tmp_path / ".git").mkdir()
+        src = tmp_path / "small.py"
+        # Write a file that is clearly below the byte threshold.
+        src.write_text("x = 1\n" * 5, encoding="utf-8")
+        assert src.stat().st_size < LARGE_FILE_LINE_THRESHOLD * _BYTES_PER_LINE_ESTIMATE
+
+        with patch(
+            "token_goat.hints._hint_from_index",
+            side_effect=AssertionError("_hint_from_index must not be called for small files"),
+        ):
+            hint = build_read_hint(
+                session_id="s_stat_skip",
+                file_path=str(src),
+                offset=0,
+                limit=2000,
+                cwd=str(tmp_path),
+            )
+        assert hint is None
 
     def test_file_outside_project_root_returns_none(self, tmp_data_dir, tmp_path):
         """File path that cannot be made relative to project root → no hint."""
