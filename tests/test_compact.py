@@ -1362,18 +1362,18 @@ class TestCommonPrefixStripping:
             assert "token_goat/hints.py" not in line
 
     def test_manifest_strips_common_prefix_when_3plus_paths(self, tmp_data_dir):
-        """Manifest strips prefix when 3+ files share a common directory."""
+        """Manifest groups files when 3+ share a common directory, avoiding need for prefix stripping."""
         sid = "prefix-strip-session-abc"
         # Add 3+ files in the same directory
         session.mark_file_edited(sid, "/proj/src/token_goat/compact.py")
         session.mark_file_edited(sid, "/proj/src/token_goat/hints.py")
         session.mark_file_edited(sid, "/proj/src/token_goat/session.py")
         result = compact.build_manifest(sid)
-        # Manifest should contain the prefix stripping header with relative-to format
+        # Manifest should group the files under the directory with (3 files) header
+        assert "(3 files)" in result
         assert "token_goat/" in result
-        assert "relative to" in result
-        # Paths should be shortened (no "token_goat/" prefix on each line)
-        assert "- ✎ compact.py" in result or "- ✎ hints.py" in result
+        # Files should be listed in the grouped format
+        assert "compact.py" in result and "hints.py" in result and "session.py" in result
 
     def test_manifest_no_strip_when_fewer_than_3_paths(self, tmp_data_dir):
         """Manifest does not strip prefix when fewer than 3 files."""
@@ -3778,3 +3778,76 @@ class TestDedupGrepEntries:
         patterns = {e.pattern for e in result}
         assert "target [×2]" in patterns, f"Expected 'target [×2]' in {patterns}"
         assert "unique" in patterns, f"Expected 'unique' in {patterns}"
+
+
+# ---------------------------------------------------------------------------
+# compact._group_edited_by_dir
+# ---------------------------------------------------------------------------
+
+
+class TestGroupEditedByDir:
+    """Tests for directory grouping of edited files in the manifest."""
+
+    def test_three_files_same_dir_grouped(self):
+        """Three files from the same directory are grouped under one header."""
+        entries = [
+            ("src/token_goat/compact.py", 3),
+            ("src/token_goat/session.py", 2),
+            ("src/token_goat/hints.py", 1),
+        ]
+        result = compact._group_edited_by_dir(entries)
+        # Should produce a grouped line, not three separate lines
+        assert len(result) == 1
+        line = result[0]
+        assert "(3 files)" in line, f"Expected '(3 files)' in: {line}"
+        assert "compact.py" in line
+        assert "session.py" in line
+        assert "hints.py" in line
+
+    def test_two_files_same_dir_not_grouped(self):
+        """Two files in the same directory remain on separate lines (below threshold)."""
+        entries = [
+            ("src/compact.py", 2),
+            ("src/hints.py", 1),
+        ]
+        result = compact._group_edited_by_dir(entries)
+        # Two files should not be grouped — threshold is 3
+        assert len(result) == 2
+        assert all(line.startswith("- ✎") for line in result), \
+            f"Expected two single-line entries, got: {result}"
+
+    def test_mixed_dirs_each_separate(self):
+        """Files from different directories are not grouped together."""
+        entries = [
+            ("src/token_goat/compact.py", 2),
+            ("tests/test_compact.py", 1),
+        ]
+        result = compact._group_edited_by_dir(entries)
+        # Two different directories → two separate lines
+        assert len(result) == 2
+        assert all(line.startswith("- ✎") for line in result)
+
+    def test_single_file_unchanged(self):
+        """A single file is rendered as a plain line."""
+        entries = [("src/main.py", 5)]
+        result = compact._group_edited_by_dir(entries)
+        assert len(result) == 1
+        assert "main.py" in result[0]
+        assert "×5" in result[0]
+
+    def test_grouped_line_respects_line_cap(self):
+        """A grouped line that exceeds 120 chars is truncated with overflow marker."""
+        # Create many files in the same directory with long names
+        entries = [
+            ("src/very_long_directory_name/very_long_file_name_1.py", 5),
+            ("src/very_long_directory_name/very_long_file_name_2.py", 4),
+            ("src/very_long_directory_name/very_long_file_name_3.py", 3),
+            ("src/very_long_directory_name/very_long_file_name_4.py", 2),
+            ("src/very_long_directory_name/very_long_file_name_5.py", 1),
+        ]
+        result = compact._group_edited_by_dir(entries)
+        assert len(result) == 1
+        line = result[0]
+        # Line should be capped or have overflow marker
+        assert len(line) <= 140 or "+more" in line, \
+            f"Expected line length <= 140 or '+more' marker, got: {line}"

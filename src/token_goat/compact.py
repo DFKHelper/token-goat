@@ -539,6 +539,69 @@ def _count_suffix(n: int) -> str:
     return f"  ×{n}" if n > 1 else ""
 
 
+def _group_edited_by_dir(
+    entries: list[tuple[str, int]],
+) -> list[str]:
+    """Group edited files by directory when 3+ files share the same parent.
+
+    When multiple files share a common parent directory, group them under one
+    directory header to save tokens. Single-file or two-file directories remain
+    on their own lines (grouping overhead is not justified).
+
+    Args:
+        entries: List of (path, edit_count) tuples, already sorted by edit count descending.
+
+    Returns:
+        A list of formatted strings ready for the manifest. Each string is either:
+        - A single-file line: "- ✎ path/to/file.py  ×N"
+        - A grouped line: "  path/to/dir/ (3 files):  file1.py ×2, file2.py ×1, file3.py"
+    """
+    import os
+    from collections import defaultdict
+
+    if not entries:
+        return []
+
+    # Group by directory
+    dir_groups: dict[str, list[tuple[str, int]]] = defaultdict(list)
+    for path, count in entries:
+        dirname = os.path.dirname(path) or "."
+        basename = os.path.basename(path)
+        dir_groups[dirname].append((basename, count))
+
+    result: list[str] = []
+    for dirname in sorted(dir_groups.keys()):
+        group = dir_groups[dirname]
+
+        if len(group) < 3:
+            # Below threshold: list each file on its own line
+            for basename, count in group:
+                full_path = os.path.join(dirname, basename) if dirname != "." else basename
+                result.append(f"- ✎ {_short_path(full_path)}{_count_suffix(count)}")
+        else:
+            # 3+ files: use grouped format
+            # Sort files within the group by edit count descending, maintaining relative order
+            group_sorted = sorted(group, key=lambda x: x[1], reverse=True)
+            file_parts = [f"{basename}{_count_suffix(count)}" for basename, count in group_sorted]
+            files_str = ", ".join(file_parts)
+
+            # Cap the grouped line to fit within reasonable manifest bounds (~120 chars)
+            display_dir = _short_path(dirname + "/") if dirname != "." else ""
+            line = f"  {display_dir} ({len(group)} files):  {files_str}"
+
+            if len(line) > 120:
+                # If too long, truncate the file list
+                files_str = ", ".join(file_parts[:2])
+                overflow = len(group_sorted) - 2
+                if overflow > 0:
+                    files_str += f", +{overflow} more"
+                line = f"  {display_dir} ({len(group)} files):  {files_str}"
+
+            result.append(line)
+
+    return result
+
+
 def _format_duration(seconds: float) -> str:
     """Format a duration in seconds as a compact human-readable string.
 
@@ -1935,8 +1998,9 @@ def _render(cache: SessionCache, session_id: str, max_tokens: int) -> tuple[str,
         sorted_edited = sorted(edited_clean.items(), key=_BY_EDIT_COUNT, reverse=True)
         shown_edited = sorted_edited[:_MAX_EDITED_FILES_SHOWN]
         overflow_edited = len(sorted_edited) - len(shown_edited)
-        for path, count in shown_edited:
-            edited_lines.append(f"- ✎ {_short_path(path)}{_count_suffix(count)}")
+        # Group files by directory when 3+ share the same parent
+        grouped_lines = _group_edited_by_dir(shown_edited)
+        edited_lines.extend(grouped_lines)
         if overflow_edited > 0:
             edited_lines.append(f"- …+{overflow_edited} more edited")
 
