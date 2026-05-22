@@ -38,8 +38,10 @@ __all__ = [
     "SessionCache",
     "WEB_HISTORY_MAX",
     "WebEntry",
+    "cleanup_stale",
     "get_file_entry",
     "get_result_cache",
+    "get_snapshot_sha",
     "list_edited",
     "list_touched",
     "load",
@@ -53,6 +55,7 @@ __all__ = [
     "put_result_cache",
     "reset_session",
     "save",
+    "set_snapshot_sha",
     "validate_session_id",
     # Serialization helpers exposed for testing
     "_parse_file_entry",
@@ -384,6 +387,18 @@ class SessionCache:
     def _invalidate_json_cache(self) -> None:
         """Invalidate the serialization cache after any mutation."""
         self._json_cache = None
+
+    def is_bash_history_empty(self) -> bool:
+        """Return True if bash_history is empty or not available."""
+        return not self.bash_history
+
+    def is_web_history_empty(self) -> bool:
+        """Return True if web_history is empty or not available."""
+        return not self.web_history
+
+    def is_greps_empty(self) -> bool:
+        """Return True if greps is empty or not available."""
+        return not self.greps
 
     def has_hint_fingerprint(self, fingerprint: str) -> bool:
         """Check if a hint fingerprint was already seen this session.
