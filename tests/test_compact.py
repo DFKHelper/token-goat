@@ -3578,6 +3578,84 @@ class TestStaleReadFilesSection:
         assert "Outdated File Snapshots" not in result
 
 
+class TestSymbolRecencyRanking:
+    """Tests for _rank_symbols_by_recency: recent symbols appear first."""
+
+    def test_most_recent_symbol_ranks_first_when_sizes_equal(self, tmp_data_dir):
+        """When all symbols have same size, most recently accessed appears first."""
+        sid = "symbol-recency-recent-first"
+
+        # Mark two symbols with different timestamps
+        session.mark_file_read(sid, "/proj/parser.py", symbol="parse_expr")
+        time.sleep(0.1)  # Ensure timestamp separation
+        session.mark_file_read(sid, "/proj/parser.py", symbol="parse_stmt")
+
+        cache = session.load(sid)
+        entry = cache.files["/proj/parser.py"]
+
+        # Rank by recency
+        ranked = compact._rank_symbols_by_recency(entry, time.time())
+
+        # Most recent (parse_stmt) should come before parse_expr
+        assert ranked[0] == "parse_stmt"
+        assert ranked[1] == "parse_expr"
+
+    def test_old_symbol_ranks_last(self, tmp_data_dir):
+        """Symbols accessed far in the past get multiplier 1.0, rank lower."""
+        sid = "symbol-recency-old"
+        now = time.time()
+
+        session.mark_file_read(sid, "/proj/lib.py", symbol="old_func")
+        cache = session.load(sid)
+        entry = cache.files["/proj/lib.py"]
+
+        # Manually set an old timestamp (1 hour ago)
+        entry.symbols_ts["old_func"] = now - 3600
+
+        ranked = compact._rank_symbols_by_recency(entry, now)
+        assert ranked == ["old_func"]  # Only one symbol
+
+    def test_recency_tiers_applied_correctly(self, tmp_data_dir):
+        """Recency multipliers: <5min=1.5x, <30min=1.2x, else=1.0x."""
+        sid = "symbol-recency-tiers"
+        now = time.time()
+
+        session.mark_file_read(sid, "/proj/core.py", symbol="very_recent")
+        session.mark_file_read(sid, "/proj/core.py", symbol="recent")
+        session.mark_file_read(sid, "/proj/core.py", symbol="old")
+
+        cache = session.load(sid)
+        entry = cache.files["/proj/core.py"]
+
+        # Set specific timestamps
+        entry.symbols_ts["very_recent"] = now - 60  # < 5 min → 1.5x
+        entry.symbols_ts["recent"] = now - 600  # < 30 min → 1.2x
+        entry.symbols_ts["old"] = now - 3600  # > 30 min → 1.0x
+
+        ranked = compact._rank_symbols_by_recency(entry, now)
+
+        # Expected order: very_recent (1.5x), recent (1.2x), old (1.0x)
+        assert ranked == ["very_recent", "recent", "old"]
+
+    def test_missing_ts_field_falls_back_gracefully(self, tmp_data_dir):
+        """Entries without symbols_ts dict fall back to original order."""
+        sid = "symbol-recency-legacy"
+
+        session.mark_file_read(sid, "/proj/compat.py", symbol="func1")
+        session.mark_file_read(sid, "/proj/compat.py", symbol="func2")
+
+        cache = session.load(sid)
+        entry = cache.files["/proj/compat.py"]
+
+        # Simulate legacy entry without symbols_ts
+        entry.symbols_ts = {}
+
+        ranked = compact._rank_symbols_by_recency(entry, time.time())
+
+        # Should return symbols in original order when no timestamps
+        assert ranked == entry.symbols_read
+
+
 class TestEstimateTokensDirect:
     """estimate_tokens is the global budget guardian — test it directly."""
 
