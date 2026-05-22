@@ -19,9 +19,10 @@ import logging
 import math
 import subprocess
 import time
+from collections.abc import Callable
 from datetime import UTC, datetime
 from operator import attrgetter, itemgetter
-from typing import TYPE_CHECKING, Final
+from typing import TYPE_CHECKING, Any, Final
 
 from . import session as session_mod
 from .hooks_common import sanitize_log_str
@@ -1371,6 +1372,36 @@ def build_manifest_with_count(
     return manifest, n_events
 
 
+def _render_section(
+    header: str,
+    entries: list[Any],
+    fmt: Callable[[Any], str],
+) -> list[str]:
+    """Render a manifest section as a list of lines.
+
+    Returns an empty list when *entries* is empty (so the caller can safely
+    concatenate with ``+`` without adding a blank section).  Lines produced by
+    *fmt* that are themselves empty strings are silently skipped.
+
+    This covers the common section shape::
+
+        ### Header
+        - line_1
+        - line_2
+
+    Sections with token-budget loops, sub-sections, or non-trivial formatting
+    keep their own inline implementation in :func:`_render`.
+    """
+    if not entries:
+        return []
+    lines: list[str] = [f"### {header}"]
+    for entry in entries:
+        line = fmt(entry)
+        if line:
+            lines.append(line)
+    return lines
+
+
 def _render(cache: SessionCache, session_id: str, max_tokens: int) -> tuple[str, int]:
     """Build the Markdown session manifest string from *cache* for the PreCompact hook.
 
@@ -1554,11 +1585,7 @@ def _render(cache: SessionCache, session_id: str, max_tokens: int) -> tuple[str,
     # Young sessions are included here too — a failure is critical regardless of age.
     now_ts_for_blockers = time.time()
     blocker_entries = _select_failed_bash_entries(raw_bash, now_ts_for_blockers)
-    blocker_lines: list[str] = []
-    if blocker_entries:
-        blocker_lines.append("### Current Blockers")
-        for be in blocker_entries:
-            blocker_lines.append(_format_blocker_entry(be))
+    blocker_lines = _render_section("Current Blockers", blocker_entries, _format_blocker_entry)
 
     # ── 0b. Uncommitted Changes — git diff --stat + status --short ───────────
     # Ground-truth picture of what's on disk regardless of which tool made the
@@ -1611,11 +1638,11 @@ def _render(cache: SessionCache, session_id: str, max_tokens: int) -> tuple[str,
                 edited_lines.extend(session_commits)
 
     # ── 1d. Stale file snapshots ──────────────────────────────────────────────
-    stale_lines: list[str] = []
-    if stale_read_files:
-        stale_lines.append("### Outdated File Snapshots")
-        for path in stale_read_files[:6]:
-            stale_lines.append(f"- ⚠ {_short_path(path)}")
+    stale_lines = _render_section(
+        "Outdated File Snapshots",
+        stale_read_files[:6],
+        lambda path: f"- ⚠ {_short_path(path)}",
+    )
 
     # Measure the "fixed" cost (header + blockers + uncommitted + edited + stale)
     # to derive per-section budgets.  Blocker lines are small (≤3 lines) so they
