@@ -150,6 +150,12 @@ _SUPPRESS_HINT_AT_READ_COUNT: Final[int] = 5
 # move in lockstep if MIN_OVERLAP_TO_WARN is ever retuned.
 _NARROW_EXPLICIT_READ_LINES = MIN_OVERLAP_TO_WARN
 
+# Minimum line count for a file to warrant an "already read" hint.
+# Tiny files (< 30 lines) are cheap to re-read; the hint itself (~25 tokens)
+# costs almost as much as the saving it advertises, making the nudge net-negative.
+# Skip hints entirely for small files with only a single prior read.
+_MIN_LINES_FOR_HINT = 30
+
 
 class ReadHint(str):
     """A pre-read hint string carrying the genuine token saving it represents.
@@ -475,6 +481,20 @@ def _hint_from_cache(
             fname, entry.read_count, _SUPPRESS_HINT_AT_READ_COUNT,
         )
         return None
+
+    # Suppress hints for very small files (< 30 lines) with only a single prior read.
+    # The hint text itself (~25 tokens) costs almost as much as the saving it advertises,
+    # making the nudge net-negative. Tiny files are cheap to re-read.
+    if entry.line_ranges and entry.read_count == 1:
+        # Compute the max line number across all cached ranges.
+        max_line = max(cached_end for cached_start, cached_end in entry.line_ranges)
+        if max_line < _MIN_LINES_FOR_HINT:
+            _LOG.debug(
+                "_hint_from_cache: suppressing hint for %s "
+                "(small file: %d lines, read_count=1)",
+                fname, max_line,
+            )
+            return None
 
     # Case: file accessed only via token-goat read <file>::<symbol>.
     # A suggestion, not a realized saving → tokens_saved=0.
