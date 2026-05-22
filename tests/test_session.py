@@ -1789,3 +1789,134 @@ class TestSessionSchemaMigration:
         migrated = session._migrate_session(old_data)
         cache = session.SessionCache.from_dict(migrated)
         assert cache.edited_files == {}
+
+
+class TestSharedHistoryHelpers:
+    """Tests for _append_to_dict_history and _append_to_list_history helpers."""
+
+    def test_dict_history_evicts_at_cap_plus_one(self, tmp_data_dir):
+        """Dict history evicts oldest batch when exceeding cap (new key triggers eviction)."""
+        sid = "dict_evict_1"
+        cache = session.load(sid)
+        # Fill bash_history to BASH_HISTORY_MAX with new keys
+        for i in range(session.BASH_HISTORY_MAX):
+            session.mark_bash_run(
+                sid,
+                f"sha_{i}",
+                f"cmd_{i}",
+                f"out_{i}",
+                100,
+                0,
+                0,
+                False,
+                cache=cache,
+            )
+        cache = session.load(sid)
+        assert len(cache.bash_history) == session.BASH_HISTORY_MAX
+        # Adding one more (cap+1) triggers eviction: oldest batch is removed
+        session.mark_bash_run(
+            sid, "sha_final", "cmd_final", "out_final", 100, 0, 0, False
+        )
+        cache = session.load(sid)
+        # Should have evicted _BASH_HISTORY_EVICT oldest entries, then added 1 new
+        assert len(cache.bash_history) <= session.BASH_HISTORY_MAX
+
+    def test_dict_history_batch_eviction_respects_batch_size(self, tmp_data_dir):
+        """Dict history evicts exactly batch_size entries at a time."""
+        sid = "dict_batch_1"
+        cache = session.load(sid)
+        # Fill to capacity
+        for i in range(session.BASH_HISTORY_MAX):
+            session.mark_bash_run(
+                sid,
+                f"sha_{i}",
+                f"cmd_{i}",
+                f"out_{i}",
+                100,
+                0,
+                0,
+                False,
+                cache=cache,
+            )
+        cache = session.load(sid)
+        initial_count = len(cache.bash_history)
+        # Add one more to trigger eviction
+        session.mark_bash_run(
+            sid, f"sha_{session.BASH_HISTORY_MAX}", "cmd_new", "out_new", 100, 0, 0, False
+        )
+        cache = session.load(sid)
+        # Count should be: initial - evict_batch + 1 new = initial - (batch - 1)
+        expected = initial_count - (session._BASH_HISTORY_EVICT - 1)
+        assert len(cache.bash_history) == expected
+
+    def test_list_history_evicts_at_cap_plus_one(self, tmp_data_dir):
+        """List history keeps only max_size entries when exceeding cap."""
+        sid = "list_evict_1"
+        cache = session.load(sid)
+        # Fill grep history to GREPS_HISTORY_MAX
+        for i in range(session.GREPS_HISTORY_MAX):
+            session.mark_grep(sid, f"pattern_{i}", "/src", cache=cache)
+        cache = session.load(sid)
+        assert len(cache.greps) == session.GREPS_HISTORY_MAX
+        # Adding one more should evict oldest to keep at max
+        session.mark_grep(sid, "pattern_final", "/src")
+        cache = session.load(sid)
+        assert len(cache.greps) == session.GREPS_HISTORY_MAX
+
+    def test_list_history_keeps_most_recent(self, tmp_data_dir):
+        """List history evicts oldest entries, keeping most recent entries."""
+        sid = "list_recent_1"
+        # Add more than GREPS_HISTORY_MAX entries
+        for i in range(session.GREPS_HISTORY_MAX + 5):
+            session.mark_grep(sid, f"pattern_{i}", "/src")
+        cache = session.load(sid)
+        patterns = [g.pattern for g in cache.greps]
+        # Oldest patterns should be gone
+        assert "pattern_0" not in patterns
+        assert "pattern_1" not in patterns
+        # Most recent should exist
+        assert f"pattern_{session.GREPS_HISTORY_MAX + 4}" in patterns
+
+    def test_web_history_uses_dict_helper(self, tmp_data_dir):
+        """Web history uses _append_to_dict_history and respects caps like bash."""
+        sid = "web_dict_1"
+        cache = session.load(sid)
+        # Fill web_history
+        for i in range(session.WEB_HISTORY_MAX):
+            session.mark_web_fetch(
+                sid,
+                f"sha_{i}",
+                f"http://example.com/{i}",
+                f"out_{i}",
+                1000,
+                200,
+                False,
+                cache=cache,
+            )
+        cache = session.load(sid)
+        assert len(cache.web_history) == session.WEB_HISTORY_MAX
+        # Add one more to trigger eviction
+        session.mark_web_fetch(
+            sid,
+            "sha_final",
+            "http://example.com/final",
+            "out_final",
+            1000,
+            200,
+            False,
+        )
+        cache = session.load(sid)
+        assert len(cache.web_history) <= session.WEB_HISTORY_MAX
+
+    def test_glob_history_uses_list_helper(self, tmp_data_dir):
+        """Glob history uses _append_to_list_history and keeps most recent."""
+        sid = "glob_list_1"
+        # Add more than GLOB_HISTORY_MAX
+        for i in range(session.GLOB_HISTORY_MAX + 3):
+            session.mark_glob_run(sid, f"**/{i}/*.py", result_count=i)
+        cache = session.load(sid)
+        assert len(cache.glob_history) == session.GLOB_HISTORY_MAX
+        # Oldest should be evicted
+        patterns = [g.pattern for g in cache.glob_history]
+        assert "**/0/*.py" not in patterns
+        assert f"**/{session.GLOB_HISTORY_MAX + 2}/*.py" in patterns

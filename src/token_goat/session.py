@@ -1077,6 +1077,51 @@ def _evict_oldest(mapping: dict, cap: int, evict_n: int, label: str, session_id:
     _LOG.debug("%s: evicted %d entries (cap=%d) for session=%s", label, evict_n, cap, session_id[:16])
 
 
+def _append_to_dict_history(
+    history_dict: dict,
+    key: str,
+    entry: Any,
+    max_size: int,
+    batch_size: int,
+    label: str,
+    session_id: str,
+) -> None:
+    """Append an entry to a dict-based history, evicting oldest if needed.
+
+    Shared logic for bash_history and web_history: check if key exists before
+    evicting (new keys trigger eviction, updates preserve insertion order),
+    then store the entry.  Modifies history_dict in place.
+    """
+    if key not in history_dict:
+        _evict_oldest(history_dict, max_size, batch_size, label, session_id)
+    history_dict[key] = entry
+
+
+def _append_to_list_history(
+    history_list: list,
+    entry: Any,
+    max_size: int,
+    batch_size: int,
+    label: str,
+    session_id: str,
+) -> None:
+    """Append an entry to a list-based history, evicting oldest if needed.
+
+    Shared logic for greps and glob_history: append entry, then slice to keep
+    only the most recent max_size entries.  Modifies history_list in place.
+    """
+    history_list.append(entry)
+    if len(history_list) > max_size:
+        history_list[:] = history_list[-max_size:]
+        _LOG.debug(
+            "%s: evicted %d entries (cap=%d) for session=%s",
+            label,
+            batch_size,
+            max_size,
+            session_id[:16],
+        )
+
+
 def validate_session_id(session_id: str) -> None:
     """Validate session_id to prevent path traversal attacks. Raises ValueError on invalid input.
 
@@ -1557,10 +1602,15 @@ def mark_grep(
     # Cap pattern length before storage: an unbounded pattern from a harness
     # payload could inflate the session JSON file on every Grep call.
     safe_pattern = pattern[:_MAX_GREP_PATTERN_LEN] if len(pattern) > _MAX_GREP_PATTERN_LEN else pattern
-    cache.greps.append(GrepEntry(pattern=safe_pattern, path=path, ts=now, result_count=result_count))
-    # Enforce GREPS_HISTORY_MAX by keeping only the most recent entries (FIFO eviction)
-    if len(cache.greps) > GREPS_HISTORY_MAX:
-        cache.greps = cache.greps[-GREPS_HISTORY_MAX:]
+    entry = GrepEntry(pattern=safe_pattern, path=path, ts=now, result_count=result_count)
+    _append_to_list_history(
+        cache.greps,
+        entry,
+        GREPS_HISTORY_MAX,
+        _GREPS_HISTORY_EVICT,
+        "greps",
+        session_id,
+    )
     _LOG.debug(
         "mark_grep: pattern=%r path=%r results=%s (session=%s total_greps=%d)",
         sanitize_log_str(safe_pattern[:60], max_len=_MAX_LOG_STR),
@@ -1591,10 +1641,15 @@ def mark_glob_run(
         return cache
     now = time.time()
     safe_pattern = pattern[:_MAX_GLOB_PATTERN_LEN] if len(pattern) > _MAX_GLOB_PATTERN_LEN else pattern
-    cache.glob_history.append(GlobEntry(pattern=safe_pattern, path=path, ts=now, result_count=result_count))
-    # Enforce GLOB_HISTORY_MAX by keeping only the most recent entries (FIFO eviction)
-    if len(cache.glob_history) > GLOB_HISTORY_MAX:
-        cache.glob_history = cache.glob_history[-GLOB_HISTORY_MAX:]
+    entry = GlobEntry(pattern=safe_pattern, path=path, ts=now, result_count=result_count)
+    _append_to_list_history(
+        cache.glob_history,
+        entry,
+        GLOB_HISTORY_MAX,
+        _GLOB_HISTORY_EVICT,
+        "glob_history",
+        session_id,
+    )
     _LOG.debug(
         "mark_glob_run: pattern=%r path=%r results=%s (session=%s total_globs=%d)",
         sanitize_log_str(safe_pattern[:60], max_len=_MAX_LOG_STR),
@@ -1891,14 +1946,8 @@ def mark_bash_run(
     safe_preview = sanitize_log_str(cmd_preview, max_len=_MAX_BASH_PREVIEW)
 
     now = time.time()
-    # Evict oldest entries when at capacity — but only when adding a new key.
-    # Updates to an existing cmd_sha keep their original insertion slot so the
-    # eviction order reflects "first seen, first evicted".
-    if cmd_sha not in cache.bash_history:
-        _evict_oldest(cache.bash_history, BASH_HISTORY_MAX, _BASH_HISTORY_EVICT, "bash_history", session_id)
-
     prior_run_count = cache.bash_history[cmd_sha].run_count if cmd_sha in cache.bash_history else 0
-    cache.bash_history[cmd_sha] = BashEntry(
+    entry = BashEntry(
         cmd_sha=cmd_sha,
         cmd_preview=safe_preview,
         output_id=output_id,
@@ -1908,6 +1957,15 @@ def mark_bash_run(
         exit_code=exit_code if is_real_int(exit_code) else None,
         truncated=bool(truncated),
         run_count=prior_run_count + 1,
+    )
+    _append_to_dict_history(
+        cache.bash_history,
+        cmd_sha,
+        entry,
+        BASH_HISTORY_MAX,
+        _BASH_HISTORY_EVICT,
+        "bash_history",
+        session_id,
     )
     return _commit_mutation(cache, now)
 
@@ -1959,10 +2017,7 @@ def mark_web_fetch(
     safe_preview = sanitize_log_str(url_preview, max_len=_MAX_WEB_URL_PREVIEW)
 
     now = time.time()
-    if url_sha not in cache.web_history:
-        _evict_oldest(cache.web_history, WEB_HISTORY_MAX, _WEB_HISTORY_EVICT, "web_history", session_id)
-
-    cache.web_history[url_sha] = WebEntry(
+    entry = WebEntry(
         url_sha=url_sha,
         url_preview=safe_preview,
         output_id=output_id,
@@ -1974,6 +2029,15 @@ def mark_web_fetch(
             else None
         ),
         truncated=bool(truncated),
+    )
+    _append_to_dict_history(
+        cache.web_history,
+        url_sha,
+        entry,
+        WEB_HISTORY_MAX,
+        _WEB_HISTORY_EVICT,
+        "web_history",
+        session_id,
     )
     return _commit_mutation(cache, now)
 
