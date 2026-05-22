@@ -530,6 +530,22 @@ class TestResultCache:
         assert got is not None
         assert got["text"] == "updated"
 
+    def test_cap_is_50(self):
+        """RESULT_CACHE_MAX == 50 — keeps session JSON compact per design."""
+        assert session.RESULT_CACHE_MAX == 50
+
+    def test_eviction_retains_most_entries(self, tmp_data_dir):
+        """After one eviction batch, at least 80 % of cap entries remain."""
+        sid = "rc_session_retain"
+        # Trigger eviction exactly once by filling to cap + 1
+        for i in range(session.RESULT_CACHE_MAX + 1):
+            session.put_result_cache(
+                sid, f"g{i}.py", "y", "symbol", "sha", {"text": f"r{i}"}
+            )
+        cache = session.load(sid)
+        min_retained = int(session.RESULT_CACHE_MAX * 0.8)
+        assert len(cache.result_cache) >= min_retained
+
     def test_roundtrip_persists_across_loads(self, tmp_data_dir):
         """A stored result survives a load() round-trip."""
         sid = "rc_session_6"
