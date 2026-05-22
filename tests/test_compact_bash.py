@@ -21,20 +21,26 @@ class TestEventCountIncludesBash:
 class TestManifestBashSection:
     def test_bash_section_emitted(self, tmp_data_dir, make_session):
         sid = "mb-1"
-        # Add some non-bash activity so the manifest renders normally.
+        # A failed run goes to "Current Blockers"; a successful run goes to
+        # "Commands Run". Both must appear for this test to pass.
         make_session(
             sid,
             age_seconds=7200,
             edits=1,
-            bash_runs={"pytest -v tests/": (12000, 1)},
+            bash_runs={
+                "pytest -v tests/": (12000, 1),    # failed → Current Blockers
+                "uv run ruff check src/": (5000, 0),  # success → Commands Run
+            },
         )
-        m = compact.build_manifest(sid, max_tokens=400)
-        assert "Commands Run" in m
+        m = compact.build_manifest(sid, max_tokens=600)
+        assert "Current Blockers" in m
         assert "pytest -v tests/" in m
         assert "exit 1" in m
-        # Cache ID is included so the agent can retrieve the body.
+        assert "Commands Run" in m
+        assert "ruff check" in m
+        # Cache ID appears in Commands Run for the successful run.
         from token_goat import bash_cache
-        assert f"id=out-{bash_cache.command_hash('pytest -v tests/')}" in m
+        assert f"id=out-{bash_cache.command_hash('uv run ruff check src/')}" in m
 
     def test_tiny_bash_skipped(self, tmp_data_dir, make_session):
         sid = "mb-2"

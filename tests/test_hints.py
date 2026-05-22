@@ -31,9 +31,13 @@ def _mark(tmp_data_dir, sid: str, path: str, *, offset=0, limit=100, symbol=None
 
 
 def _make_large_file(path: Path, n_lines: int = LARGE_FILE_LINE_THRESHOLD + 10) -> None:
-    """Write a file with `n_lines` simple lines."""
+    """Write a file with `n_lines` lines long enough to exceed the stat fast-path threshold.
+
+    Each line is ~76 bytes so LARGE_FILE_LINE_THRESHOLD lines ≈ 38 KB, clearing the
+    LARGE_FILE_LINE_THRESHOLD * _BYTES_PER_LINE_ESTIMATE byte threshold in build_read_hint.
+    """
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text("\n".join(f"line {i}" for i in range(1, n_lines + 1)), encoding="utf-8")
+    path.write_text("\n".join(f"x = {'x' * 70}  # {i:05d}" for i in range(1, n_lines + 1)), encoding="utf-8")
 
 
 # ---------------------------------------------------------------------------
@@ -469,9 +473,11 @@ class TestReadHintTokensSaved:
         (proj_root / ".git").mkdir()  # so build_read_hint's find_project detects it
         big = proj_root / "big.py"
         # Give it an indexed symbol so _hint_from_index has something to show.
+        # Lines must be long enough to exceed the stat fast-path threshold
+        # (LARGE_FILE_LINE_THRESHOLD * _BYTES_PER_LINE_ESTIMATE bytes).
         big.write_text(
             "def indexed_marker():\n    return 1\n"
-            + "\n".join(f"# line {i}" for i in range(LARGE_FILE_LINE_THRESHOLD + 50)),
+            + "\n".join(f"# {'-' * 72} {i:04d}" for i in range(LARGE_FILE_LINE_THRESHOLD + 50)),
             encoding="utf-8",
         )
         proj = make_project_at(proj_root)
