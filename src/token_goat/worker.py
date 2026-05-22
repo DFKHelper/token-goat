@@ -532,7 +532,7 @@ def drain_dirty_queue() -> list[DirtyQueueEntry] | None:
                 last_replace_err,
             )
 
-    entries: list[DirtyQueueEntry] = []
+    raw_entries: list[DirtyQueueEntry] = []
     malformed_count = 0
     for line in raw_lines:
         line = line.strip()
@@ -544,13 +544,32 @@ def drain_dirty_queue() -> list[DirtyQueueEntry] | None:
                 _LOG.warning("dirty queue entry is not a dict: %s", line[:120])
                 malformed_count += 1
                 continue
-            entries.append(cast(DirtyQueueEntry, entry))
+            raw_entries.append(cast(DirtyQueueEntry, entry))
         except json.JSONDecodeError:
             _LOG.warning("bad dirty queue entry (not valid JSON): %s", line[:120])
             malformed_count += 1
+
+    # Deduplicate by (project_hash, path): rapid auto-save / format-on-save
+    # events append the same path many times in one poll cycle, but re-indexing
+    # the current file state once is enough.  dict.fromkeys preserves insertion
+    # order (first occurrence wins) so the project-root/marker metadata carried
+    # by the first entry for each project is retained.
+    seen: dict[tuple[str, str], None] = {}
+    entries: list[DirtyQueueEntry] = []
+    for entry in raw_entries:
+        key = (entry.get("project_hash", ""), entry.get("path", ""))
+        if key not in seen:
+            seen[key] = None
+            entries.append(entry)
+    dupes = len(raw_entries) - len(entries)
+
     if entries:
-        _LOG.info("drained dirty queue: %d valid entries%s", len(entries),
-                  f", {malformed_count} malformed" if malformed_count else "")
+        _LOG.info(
+            "drained dirty queue: %d valid entries%s%s",
+            len(entries),
+            f" ({dupes} dupes removed)" if dupes else "",
+            f", {malformed_count} malformed" if malformed_count else "",
+        )
         return entries
     if deferred:
         # No entries and the live queue couldn't be claimed — return None so the caller knows work is still pending and doesn't count this as an idle cycle.
