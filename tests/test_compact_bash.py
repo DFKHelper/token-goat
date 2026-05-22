@@ -720,3 +720,71 @@ class TestFormatBashEntryRunCount:
         marker_pos = line.index("[×5]")
         paren_pos = line.index("(exit 1")
         assert marker_pos < paren_pos
+
+
+class TestSelectTopGlobEntries:
+    """_select_top_glob_entries filters trivials and caps at _MAX_GLOB_ENTRIES."""
+
+    def _make_entry(self, pattern, ts=0.0, path=None, result_count=None):
+        return session.GlobEntry(pattern=pattern, path=path, ts=ts, result_count=result_count)
+
+    def test_empty_list_returns_empty(self):
+        assert compact._select_top_glob_entries([]) == []
+
+    def test_none_returns_empty(self):
+        assert compact._select_top_glob_entries(None) == []  # type: ignore[arg-type]
+
+    def test_trivial_patterns_excluded(self):
+        entries = [
+            self._make_entry("*", ts=1.0),
+            self._make_entry("**", ts=2.0),
+            self._make_entry("", ts=3.0),
+        ]
+        assert compact._select_top_glob_entries(entries) == []
+
+    def test_non_trivial_patterns_included(self):
+        entries = [self._make_entry("**/*.py", ts=1.0)]
+        result = compact._select_top_glob_entries(entries)
+        assert len(result) == 1
+        assert result[0].pattern == "**/*.py"
+
+    def test_caps_at_max_glob_entries(self):
+        entries = [self._make_entry(f"**/*.ext{i}", ts=float(i)) for i in range(10)]
+        result = compact._select_top_glob_entries(entries)
+        assert len(result) == compact._MAX_GLOB_ENTRIES
+
+    def test_returns_most_recent(self):
+        entries = [self._make_entry("src/**/*.py", ts=float(i)) for i in range(5)]
+        result = compact._select_top_glob_entries(entries)
+        # All have same pattern but different timestamps; most-recent ts=4.0 must be present
+        tss = [e.ts for e in result]
+        assert 4.0 in tss
+
+
+class TestFormatGlobEntry:
+    """_format_glob_entry renders pattern, scope, and file count."""
+
+    def _make_entry(self, pattern, path=None, result_count=None):
+        return session.GlobEntry(pattern=pattern, path=path, ts=0.0, result_count=result_count)
+
+    def test_pattern_only(self):
+        line = compact._format_glob_entry(self._make_entry("**/*.py"))
+        assert "**/*.py" in line
+        assert "📂" in line
+
+    def test_with_path_scope(self):
+        line = compact._format_glob_entry(self._make_entry("**/*.ts", path="src/"))
+        assert "src/" in line
+
+    def test_with_result_count(self):
+        line = compact._format_glob_entry(self._make_entry("**/*.rs", result_count=42))
+        assert "42 files" in line
+
+    def test_with_path_and_count(self):
+        line = compact._format_glob_entry(self._make_entry("*.toml", path=".", result_count=5))
+        assert "." in line
+        assert "5 files" in line
+
+    def test_no_count_when_none(self):
+        line = compact._format_glob_entry(self._make_entry("**/*.go"))
+        assert "files" not in line

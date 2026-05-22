@@ -85,6 +85,10 @@ _HOT_FILE_READ_THRESHOLD: Final[int] = 5
 # Beyond this, a "+N more" suffix is appended so the line stays compact.
 _HOT_FILE_MAX_SHOWN: Final[int] = 6
 
+# Maximum glob patterns listed in the "Directory Scans" section.  Three entries
+# cover the typical file-discovery queries without crowding higher-priority sections.
+_MAX_GLOB_ENTRIES: Final[int] = 3
+
 # Maximum grep patterns listed in the "Patterns Searched" section.  Grep entries
 # give the compaction LLM context about what the user was investigating, but beyond
 # 5 patterns the list becomes noise — the most-recently-searched ones dominate anyway.
@@ -959,6 +963,45 @@ def _format_web_entry(entry: object) -> str:
     )
 
 
+def _select_top_glob_entries(glob_history: object) -> list[object]:
+    """Pick up to :data:`_MAX_GLOB_ENTRIES` glob scans worth surfacing in the manifest.
+
+    Filters trivially broad patterns (``*``, ``**``, empty) that carry no useful
+    context for the compaction LLM, and returns the most recent survivors.
+    Accepts ``glob_history`` typed as ``object`` for defensive compatibility with
+    legacy SessionCache instances (``None`` / non-list → empty list).
+    """
+    if not isinstance(glob_history, list) or not glob_history:
+        return []
+    _TRIVIAL = {"", "*", "**"}
+    candidates = [
+        e for e in glob_history
+        if sanitize_log_str(getattr(e, "pattern", ""), max_len=256).strip() not in _TRIVIAL
+    ]
+    if not candidates:
+        return []
+    return heapq.nlargest(_MAX_GLOB_ENTRIES, candidates, key=lambda e: getattr(e, "ts", 0.0))
+
+
+def _format_glob_entry(entry: object) -> str:
+    """Render one :class:`session.GlobEntry` as a single manifest line.
+
+    Format::
+
+        - 📂 **/*.py  (src/, 42 files)
+        - 📂 tests/**  (27 files)
+        - 📂 src/**/*.ts
+
+    Scope path is omitted when ``None``; file count omitted when not recorded.
+    """
+    pattern = sanitize_log_str(getattr(entry, "pattern", ""), max_len=80)
+    path = getattr(entry, "path", None)
+    count = getattr(entry, "result_count", None)
+    scope = f"  ({path}" if path else ""
+    hits = (f", {count} files)" if scope else f"  ({count} files)") if isinstance(count, int) else (")" if scope else "")
+    return f"- 📂 {pattern}{scope}{hits}"
+
+
 def _token_count(text: str) -> int:
     """Rough token estimate: 1 token ≈ 4 characters.
 
@@ -1000,11 +1043,12 @@ def _section_budgets(total_budget: int, edited_tokens: int) -> dict[str, int]:
 
     # Proportions must sum to 1.0.
     proportions: dict[str, float] = {
-        "symbols": 0.40,
-        "files":   0.25,
+        "symbols": 0.38,
+        "files":   0.22,
         "greps":   0.15,
         "bash":    0.10,
         "web":     0.10,
+        "glob":    0.05,
     }
     budgets: dict[str, int] = {}
     for name, ratio in proportions.items():
@@ -1829,6 +1873,22 @@ def _render(cache: SessionCache, session_id: str, max_tokens: int) -> tuple[str,
                 if grep_used + _token_count(overflow_line) <= grep_budget:
                     grep_lines.append(overflow_line)
 
+    # ── 4b. Glob scans — up to 5 % of remaining budget ───────────────────────
+    glob_budget = sec_budgets["glob"]
+    glob_lines: list[str] = []
+    glob_used = 0
+    glob_entries = (
+        _select_top_glob_entries(getattr(cache, "glob_history", None))
+        if age_tier != "young"
+        else []
+    )
+    glob_lines = _render_section("Directory Scans", glob_entries, _format_glob_entry)
+    if glob_lines:
+        glob_used = _token_count("\n".join(glob_lines))
+        if glob_used > glob_budget:
+            glob_lines = []
+            glob_used = 0
+
     # ── 5. Key files read — up to 30 % of remaining budget ───────────────────
     files_budget = sec_budgets["files"]
     files_lines: list[str] = []
@@ -1905,6 +1965,7 @@ def _render(cache: SessionCache, session_id: str, max_tokens: int) -> tuple[str,
     #   2. Bash history       — current work context (what was just run)
     #   3. Symbols accessed   — precise code read
     #   4. Web fetches        — reference material
+    #   4b. Glob scans        — directory scan history
     #   5. Grep patterns      — investigation history (least critical)
     #   6. Key files read     — broader context
     sections: list[str] = (
@@ -1916,6 +1977,7 @@ def _render(cache: SessionCache, session_id: str, max_tokens: int) -> tuple[str,
         + bash_lines
         + sym_lines
         + web_lines
+        + glob_lines
         + grep_lines
         + files_lines
     )
@@ -1938,9 +2000,9 @@ def _render(cache: SessionCache, session_id: str, max_tokens: int) -> tuple[str,
     token_count = estimate_tokens(result)
     _LOG.debug(
         "_render: manifest assembled for session=%s; ~%d tokens (budget=%d) "
-        "sym=%d bash=%d web=%d grep=%d files=%d",
+        "sym=%d bash=%d web=%d glob=%d grep=%d files=%d",
         session_id[:8], token_count, max_tokens,
-        sym_used, bash_used, web_used, grep_used, files_used,
+        sym_used, bash_used, web_used, glob_used, grep_used, files_used,
     )
 
     # Safety net: per-section budgets use _token_count (len//4, conservative) while
