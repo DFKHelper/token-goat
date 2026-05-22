@@ -364,3 +364,71 @@ class TestGlobDedup:
         result = hooks_cli.dispatch("pre-read", self._glob_payload(sid, pattern, path="tests/"))
         _assert_continue(result)
         assert "hookSpecificOutput" not in result
+
+
+# ---------------------------------------------------------------------------
+# Written-not-read hint tests
+# ---------------------------------------------------------------------------
+
+
+class TestWrittenNotReadHint:
+    """pre_read emits a note when a file was written this session but never read."""
+
+    def _read_payload(self, sid: str, path: str) -> dict:
+        return {
+            "session_id": sid,
+            "tool_name": "Read",
+            "tool_input": {"file_path": path, "offset": 0, "limit": 100},
+            "cwd": "/proj",
+        }
+
+    def test_written_not_read_emits_hint(self, tmp_data_dir):
+        """File written but never read → hint injected into additionalContext."""
+        sid = "written-not-read-hint"
+        path = "/proj/src/new_module.py"
+        session.mark_file_edited(sid, path)
+
+        result = hooks_cli.pre_read(self._read_payload(sid, path))
+        _assert_continue(result)
+        assert "hookSpecificOutput" in result
+        ctx = result["hookSpecificOutput"]["additionalContext"]
+        assert "written" in ctx.lower()
+        assert "new_module.py" in ctx
+
+    def test_read_before_write_no_extra_hint(self, tmp_data_dir):
+        """File was read before being written → existing diff/cache hint path, not written-not-read."""
+        sid = "read-then-written"
+        path = "/proj/src/existing.py"
+        session.mark_file_read(sid, path, offset=0, limit=200)
+        session.mark_file_edited(sid, path)
+
+        result = hooks_cli.pre_read(self._read_payload(sid, path))
+        _assert_continue(result)
+        # The file IS in cache.files (was read), so the written-not-read branch
+        # does not fire. Some other hint (cache overlap or diff) may appear,
+        # but the written-not-read text should not.
+        if "hookSpecificOutput" in result:
+            ctx = result["hookSpecificOutput"].get("additionalContext", "")
+            assert "written" not in ctx.lower() or "cached" in ctx.lower()
+
+    def test_never_written_never_read_no_hint(self, tmp_data_dir):
+        """File with no session history → no hint at all."""
+        sid = "pristine-session"
+        path = "/proj/src/pristine.py"
+
+        result = hooks_cli.pre_read(self._read_payload(sid, path))
+        _assert_continue(result)
+        assert "hookSpecificOutput" not in result
+
+    def test_written_multiple_times_count_in_hint(self, tmp_data_dir):
+        """Edit count reflected in the hint when file written 3× but never read."""
+        sid = "multi-write"
+        path = "/proj/src/hotfile.py"
+        for _ in range(3):
+            session.mark_file_edited(sid, path)
+
+        result = hooks_cli.pre_read(self._read_payload(sid, path))
+        _assert_continue(result)
+        assert "hookSpecificOutput" in result
+        ctx = result["hookSpecificOutput"]["additionalContext"]
+        assert "3" in ctx
