@@ -253,23 +253,23 @@ RESULT_CACHE_MAX = 50
 _RESULT_CACHE_EVICT = 10
 
 # Maximum number of bash-history entries retained per session.  Each entry is
-# tiny (well under 200 bytes), so 200 is comfortable; the cap exists to keep
-# the session JSON size predictable in pathological loops (e.g. a watch-mode
-# rerunning every few seconds).  FIFO eviction discards the oldest first.
-BASH_HISTORY_MAX = 200
-_BASH_HISTORY_EVICT = 50
+# tiny (well under 200 bytes), so 75 keeps the session JSON small while still
+# covering a full work session; the cap exists to keep size predictable in
+# pathological loops (e.g. a watch-mode rerunning every few seconds).
+# FIFO eviction discards the oldest first.
+BASH_HISTORY_MAX = 75
+_BASH_HISTORY_EVICT = 15
 # Length of the bash command preview persisted in session JSON.  Long enough
 # to identify a command across re-runs ("pytest tests/test_x.py -k foo") but
 # short enough to keep the manifest output bounded.
 _MAX_BASH_PREVIEW = 120
 
 # Maximum number of web-history entries retained per session, with the same
-# FIFO-eviction semantics as bash history.  Web sessions tend to involve
-# fewer distinct URLs than commands but bigger payloads on disk; the cap is
-# chosen to mirror BASH_HISTORY_MAX so the operational mental model stays
-# uniform between the two caches.
-WEB_HISTORY_MAX = 200
-_WEB_HISTORY_EVICT = 50
+# FIFO-eviction semantics as bash history.  75 is more than enough for any
+# real session; the prior value of 200 was over-allocated for web fetches,
+# which are far less frequent than bash commands.
+WEB_HISTORY_MAX = 75
+_WEB_HISTORY_EVICT = 15
 # Length of the URL preview persisted in session JSON.  200 covers any
 # realistic page URL while keeping the per-entry footprint predictable.
 _MAX_WEB_URL_PREVIEW = 200
@@ -277,8 +277,8 @@ _MAX_WEB_URL_PREVIEW = 200
 # Maximum number of grep entries retained per session.  Grep calls accumulate
 # across the session; without a cap the greps list grows without bound.
 # FIFO eviction (keep most recent) prevents unbounded growth in long sessions.
-GREPS_HISTORY_MAX: Final[int] = 200
-_GREPS_HISTORY_EVICT: Final[int] = 50
+GREPS_HISTORY_MAX: Final[int] = 75
+_GREPS_HISTORY_EVICT: Final[int] = 15
 
 # Maximum number of glob entries retained per session.  Glob calls are typically
 # less frequent than Grep calls, so a cap of 20 is sufficient; FIFO eviction keeps
