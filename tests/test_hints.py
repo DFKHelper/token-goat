@@ -608,6 +608,42 @@ class TestHintFromIndexEdgeCases:
         assert hint is not None
         assert "token-goat read" in hint
 
+    def test_large_file_no_symbols_emits_chunk_hint(self, tmp_data_dir, tmp_path):
+        """Large indexed file with no symbols gets a 'read in chunks' hint.
+
+        Previously this returned None (no hint at all), letting the agent load
+        hundreds of tokens silently.  Now it emits a chunk-read suggestion.
+        """
+        (tmp_path / ".git").mkdir()
+        src = tmp_path / "big_data.json"
+        _make_large_file(src, n_lines=LARGE_FILE_LINE_THRESHOLD + 50)
+
+        from token_goat.project import find_project
+        proj = find_project(tmp_path)
+        assert proj is not None
+
+        with db.open_project(proj.hash) as conn:
+            conn.execute(
+                "INSERT OR IGNORE INTO files (rel_path, language, size, mtime, content_sha256, indexed_at) "
+                "VALUES (?, ?, ?, ?, ?, ?)",
+                ("big_data.json", "json", 80000, 0.0, "abc", 0),
+            )
+            # No symbols inserted — simulate a structured-data file or a language
+            # whose parser extracts no named symbols.
+
+        hint = build_read_hint(
+            session_id="s_no_sym",
+            file_path=str(src),
+            offset=0,
+            limit=2000,
+            cwd=str(tmp_path),
+        )
+        assert hint is not None
+        assert "offset" in hint
+        assert "limit" in hint
+        # Should NOT suggest token-goat read (no symbol to target)
+        assert "token-goat read" not in hint
+
     def test_file_outside_project_root_returns_none(self, tmp_data_dir, tmp_path):
         """File path that cannot be made relative to project root → no hint."""
         (tmp_path / ".git").mkdir()

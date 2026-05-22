@@ -658,15 +658,6 @@ def _hint_from_index(
     if estimated_lines is None:
         _LOG.debug("_hint_from_index: %s not in project index (no file row)", fname)
         return None
-    if not symbols:
-        _LOG.info(
-            "_hint_from_index: %s is in the index but has no symbols "
-            "(estimated %s lines, project=%s) — no surgical-read hint possible",
-            rel,
-            estimated_lines,
-            project.hash[:8],
-        )
-        return None
 
     n_lines = _confirmed_line_count(estimated_lines, line_count_is_exact, abs_path)
     if n_lines is None:
@@ -674,6 +665,20 @@ def _hint_from_index(
         return None
 
     full_tokens = _est_tokens_from_lines(n_lines)
+
+    if not symbols:
+        _LOG.info(
+            "_hint_from_index: %s is large (%d lines) but has no indexed symbols "
+            "(project=%s) — emitting chunk-read hint",
+            rel, n_lines, project.hash[:8],
+        )
+        return ReadHint(
+            f"`{fname}`: {n_lines} lines (~{full_tokens} tokens). "
+            f"No indexed symbols — use `offset` and `limit` to read in chunks "
+            f"rather than loading the full file.",
+            0,
+        )
+
     n_total = len(symbols)
     # Sanitize symbol names: they come from source-file content stored in the DB
     # and could contain embedded newlines if the parser extracted a multi-line token.
