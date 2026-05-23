@@ -188,6 +188,11 @@ _DIFF_STAT_SUMMARY_TTL: Final[float] = 30.0
 # Cache: {cwd_str → (result, monotonic_timestamp)}
 _diff_stat_summary_cache: dict[str | None, tuple[str, float]] = {}
 
+# Parallel cache for `_get_uncommitted_changes` (two git subprocesses per call,
+# called from both compute_adaptive_budget and _render during the same manifest
+# build). Same TTL semantics as the diff-stat cache above.
+_uncommitted_changes_cache: dict[str | None, tuple[str | None, float]] = {}
+
 # Maximum number of failed bash commands surfaced in the "Current Blockers" section.
 # Three is enough to identify the active failure without crowding the header.
 _MAX_BLOCKER_ENTRIES: Final[int] = 3
@@ -402,6 +407,16 @@ def _get_uncommitted_changes(project_root: str | None) -> str | None:
     if project_root is None:
         return None
     try:
+        # Process-level cache: skip the subprocesses when called again within TTL.
+        # build_manifest_adaptive calls this once for the budget calculation and
+        # _render calls it again to emit the section, both within the same
+        # manifest build — without the cache, that doubles the four git
+        # subprocess invocations needed.
+        now = time.monotonic()
+        cached = _uncommitted_changes_cache.get(project_root)
+        if cached is not None and now - cached[1] < _DIFF_STAT_SUMMARY_TTL:
+            return cached[0]
+
         # Run git diff --stat HEAD to see tracked file changes with +/- counts.
         diff_result = subprocess.run(
             ["git", "diff", "--no-color", "--stat", "HEAD"],
@@ -436,6 +451,7 @@ def _get_uncommitted_changes(project_root: str | None) -> str | None:
             ]
 
         if not diff_lines and not status_lines:
+            _uncommitted_changes_cache[project_root] = (None, now)
             return None
 
         # Prefer diff --stat lines (they include +/- counts which are more
@@ -458,6 +474,7 @@ def _get_uncommitted_changes(project_root: str | None) -> str | None:
                 combined.append(sl)
 
         if not combined:
+            _uncommitted_changes_cache[project_root] = (None, now)
             return None
 
         # Truncate to 8 lines and cap total chars at 200.
@@ -465,7 +482,9 @@ def _get_uncommitted_changes(project_root: str | None) -> str | None:
         output = "\n".join(lines)
         if len(output) > 200:
             output = output[:200].rsplit("\n", 1)[0]
-        return output if output.strip() else None
+        result = output if output.strip() else None
+        _uncommitted_changes_cache[project_root] = (result, now)
+        return result
     except Exception:  # noqa: BLE001
         return None
 

@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import time
 
+import pytest
 from hook_helpers import assert_continue as _assert_continue
 
 from token_goat import compact, config, hooks_cli, session
@@ -2279,6 +2280,16 @@ class TestYoungSessionOmitsBashSection:
 
 class TestGetUncommittedChanges:
     """Unit tests for compact._get_uncommitted_changes()."""
+
+    @pytest.fixture(autouse=True)
+    def _clear_uncommitted_cache(self):
+        # _get_uncommitted_changes now has a process-level cache keyed by path
+        # (mirrors the diff-stat summary cache). Tests that monkeypatch
+        # subprocess.run with different fakes for the same path otherwise see
+        # the previous test's cached result. Clear before and after each test.
+        compact._uncommitted_changes_cache.clear()
+        yield
+        compact._uncommitted_changes_cache.clear()
 
     def test_returns_none_when_project_root_is_none(self):
         """None project_root must return None immediately without calling git."""
