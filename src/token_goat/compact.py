@@ -220,6 +220,8 @@ _NOISE_EXTS: Final[frozenset[str]] = frozenset({
     ".log",                            # log files
     ".tmp", ".temp", ".swp", ".swo",  # editor / scratch files
     ".bak",                            # backup files
+    ".pid",                            # daemon/process id files
+    ".lock",                           # generic lockfiles (worker locks, etc.)
 })
 _NOISE_BASENAMES: Final[frozenset[str]] = frozenset({
     ".ds_store", "thumbs.db", "desktop.ini",  # OS metadata
@@ -227,6 +229,7 @@ _NOISE_BASENAMES: Final[frozenset[str]] = frozenset({
     "poetry.lock", "uv.lock", "pdm.lock",                # Python lockfiles
     "cargo.lock",                                         # Rust lockfile
     "composer.lock", "gemfile.lock",                      # PHP/Ruby lockfiles
+    "coverage.xml", ".coverage", "lcov.info",            # coverage artifacts
 })
 # Path-substring noise markers — any normalized path containing one of these
 # segments is considered noise.  Forward-slash form because _short_path already
@@ -237,6 +240,16 @@ _NOISE_SEGMENTS: Final[tuple[str, ...]] = (
     "/dist/", "/build/", "/.mypy_cache/", "/.pytest_cache/", "/.ruff_cache/",
     "/appdata/local/temp/", "/appdata/roaming/",
     "/tmp/",  # Unix temp dir — ephemeral files (improve_commit_msg, etc.)
+    # Frontend build outputs and framework caches
+    "/.next/", "/.nuxt/", "/.svelte-kit/", "/.turbo/", "/.parcel-cache/",
+    # General-purpose cache dirs (one level up from .pytest_cache etc.)
+    "/.cache/", "/.tox/",
+    # Coverage outputs
+    "/coverage/", "/.nyc_output/",
+    # Python virtualenv / package payloads installed under the project tree
+    "/site-packages/", ".egg-info/",
+    # Rust / JVM compiled output
+    "/target/",
 )
 
 
