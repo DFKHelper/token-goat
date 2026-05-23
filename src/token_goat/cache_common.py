@@ -16,6 +16,7 @@ __all__ = [
     "safe_join_output_id",
     "safe_session_fragment",
     "truncate_tail_preserve",
+    "write_sidecar_metadata",
 ]
 
 import json
@@ -181,6 +182,44 @@ def load_sidecar_json(path: Path) -> dict[str, Any] | None:
     if not isinstance(data, dict):
         return None
     return data
+
+
+def write_sidecar_metadata(
+    sidecar_path: Path | None,
+    meta: Any,
+    *,
+    log: logging.Logger,
+    log_prefix: str,
+) -> None:
+    """Persist ``meta`` (a dataclass instance) as a JSON sidecar at *sidecar_path*.
+
+    Both bash_cache.write_sidecar and web_cache.write_sidecar previously
+    duplicated this exact wrapping: build the path, json-encode the asdict
+    payload via the atomic-write helper, and log on OSError. Centralising the
+    body keeps the call sites to one line each and ensures any future hardening
+    (compression, schema-version stamp, etc.) lands in one place.
+
+    ``log_prefix`` is the human-readable cache name surfaced in the debug log
+    (``"bash_cache"`` or ``"web_cache"``) so the merged log stream still tells
+    you which cache failed.
+    """
+    from dataclasses import asdict  # noqa: PLC0415
+
+    if sidecar_path is None:
+        return
+    try:
+        from . import paths as _paths  # noqa: PLC0415
+        _paths.atomic_write_text(
+            sidecar_path,
+            json.dumps(asdict(meta), ensure_ascii=False),
+        )
+    except OSError as exc:
+        log.debug(
+            "%s: sidecar write failed for %s: %s",
+            log_prefix,
+            getattr(meta, "output_id", "?"),
+            exc,
+        )
 
 
 def truncate_tail_preserve(

@@ -37,10 +37,9 @@ __all__ = [
 ]
 
 import hashlib
-import json
 import logging
 import time
-from dataclasses import asdict, dataclass
+from dataclasses import dataclass
 from pathlib import Path
 from typing import TypedDict
 
@@ -54,6 +53,7 @@ from .cache_common import (
     load_sidecar_json,
     safe_join_output_id,
     safe_session_fragment,
+    write_sidecar_metadata,
 )
 from .hooks_common import sanitize_log_str
 
@@ -297,13 +297,12 @@ def sidecar_meta_path(output_id: str) -> Path | None:
 
 def write_sidecar(meta: BashOutputMeta) -> None:
     """Persist *meta* as a JSON sidecar next to its output file (best-effort)."""
-    p = sidecar_meta_path(meta.output_id)
-    if p is None:
-        return
-    try:
-        paths.atomic_write_text(p, json.dumps(asdict(meta), ensure_ascii=False))
-    except OSError as exc:
-        _LOG.debug("bash_cache: sidecar write failed for %s: %s", meta.output_id, exc)
+    write_sidecar_metadata(
+        sidecar_meta_path(meta.output_id),
+        meta,
+        log=_LOG,
+        log_prefix="bash_cache",
+    )
 
 
 def read_sidecar(output_id: str) -> BashOutputMeta | None:
