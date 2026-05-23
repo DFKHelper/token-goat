@@ -183,7 +183,7 @@ def _connect(db_path: Path, *, load_vec: bool = True) -> sqlite3.Connection:
     paths; any write attempt will fail with "attempt to write a readonly
     database", which is the correct behaviour for a sandboxed read-only caller.
     """
-    db_path.parent.mkdir(parents=True, exist_ok=True)
+    paths.ensure_dir(db_path.parent)
     conn = sqlite3.connect(str(db_path), isolation_level=None, timeout=10.0)
     conn.row_factory = sqlite3.Row
     try:
@@ -888,7 +888,7 @@ def project_writer_lock(project_hash: str, timeout_sec: float = 5.0) -> Iterator
 
     _validate_project_hash(project_hash)
     lock_path = paths.locks_dir() / f"{project_hash}.lock"
-    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    paths.ensure_dir(lock_path.parent)
     deadline = time.monotonic() + timeout_sec
     pid = os.getpid()
 

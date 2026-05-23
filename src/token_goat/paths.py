@@ -11,6 +11,7 @@ __all__ = [
     "config_path",
     "data_dir",
     "dirty_queue_path",
+    "ensure_dir",
     "ensure_dirs",
     "gdrive_cache_dir",
     "gdrive_creds_path",
@@ -344,6 +345,18 @@ def claude_skills_dir() -> Path:
 def claude_plugins_dir() -> Path:
     """Path to Claude Code plugins directory (~/.claude/plugins)."""
     return claude_config_dir() / "plugins"
+
+
+def ensure_dir(path: Path) -> Path:
+    """Create the directory (and any missing parents) and return it.
+
+    Centralises the `path.mkdir(parents=True, exist_ok=True)` boilerplate
+    that several modules repeat. Returns the same path so callers can
+    chain on a single line:
+        cache_dir = paths.ensure_dir(paths.image_cache_dir())
+    """
+    path.mkdir(parents=True, exist_ok=True)
+    return path
 
 
 def ensure_dirs() -> None:

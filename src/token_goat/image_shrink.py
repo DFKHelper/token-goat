@@ -335,8 +335,7 @@ def shrink(src_path: Path) -> Path | None:
     if src_size <= SIZE_THRESHOLD_BYTES:
         return None
 
-    cache_dir = paths.image_cache_dir()
-    cache_dir.mkdir(parents=True, exist_ok=True)
+    paths.ensure_dir(paths.image_cache_dir())
 
     stem = _cache_path_for(src_path)  # e.g. .../abc123.shrunk
     # Check for already-cached variants in any supported output format.  The
