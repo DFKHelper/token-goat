@@ -9,6 +9,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 import pytest
+from conftest import make_git_repo
 
 from token_goat.git_history import (
     _MAX_COMMIT_AGE_DAYS,
@@ -311,19 +312,15 @@ class TestIndexProjectHistory:
     @pytest.fixture()
     def git_repo(self, tmp_path: Path):
         """Create a minimal git repo with two commits."""
-        import subprocess as sp
-        repo = tmp_path / "repo"
-        repo.mkdir()
-        sp.run(["git", "init", "-b", "main"], cwd=repo, check=True, capture_output=True)
-        sp.run(["git", "config", "user.email", "t@t.com"], cwd=repo, check=True, capture_output=True)
-        sp.run(["git", "config", "user.name", "Test"], cwd=repo, check=True, capture_output=True)
-        (repo / "a.py").write_text("x = 1")
-        sp.run(["git", "add", "a.py"], cwd=repo, check=True, capture_output=True)
-        sp.run(["git", "commit", "-m", "add a module"], cwd=repo, check=True, capture_output=True)
-        (repo / "b.py").write_text("y = 2")
-        sp.run(["git", "add", "b.py"], cwd=repo, check=True, capture_output=True)
-        sp.run(["git", "commit", "-m", "add b module"], cwd=repo, check=True, capture_output=True)
-        return repo
+        return make_git_repo(
+            tmp_path,
+            init_branch="main",
+            user="Test",
+            commits=[
+                ({"a.py": "x = 1"}, "add a module"),
+                ({"b.py": "y = 2"}, "add b module"),
+            ],
+        )
 
     def test_indexes_commits_and_writes_meta(self, git_repo: Path, tmp_path: Path):
         """index_project_history stores commits and updates last_indexed_at."""
