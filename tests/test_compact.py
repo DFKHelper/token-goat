@@ -914,6 +914,7 @@ class TestGitDiffStat:
         # Same as above — integration test would be better.
         pass
 
+    @pytest.mark.slow
     def test_git_diff_stat_helper_integration(self, tmp_path):
         """Integration test: _get_git_diff_stat helper returns diff output from git."""
         git_repo = make_git_repo(tmp_path, files={"myfile.py": "line1\n"})
@@ -964,6 +965,7 @@ class TestGetGitDiffStatSummary:
         result = compact._get_git_diff_stat_summary("/some/path")
         assert result == ""
 
+    @pytest.mark.slow
     def test_integration_with_real_git_repo(self, tmp_path):
         """Integration: returns non-empty output when there are uncommitted changes."""
         git_repo = make_git_repo(tmp_path, files={"foo.py": "line1\n"})
@@ -975,6 +977,7 @@ class TestGetGitDiffStatSummary:
         assert result != "", "expected non-empty stat for dirty working tree"
         assert "foo.py" in result, f"expected file name in output: {result!r}"
 
+    @pytest.mark.slow
     def test_integration_clean_repo_returns_empty(self, tmp_path):
         """Integration: clean repo (no pending changes) returns ''."""
         git_repo = make_git_repo(tmp_path, "clean", files={"bar.py": "x\n"})
@@ -1694,6 +1697,7 @@ class TestSessionCommits:
         result = compact._get_session_commits("/nonexistent/path/to/repo", time.time() - 3600)
         assert result == []
 
+    @pytest.mark.slow
     def test_get_session_commits_returns_commits_when_available(self, tmp_path):
         """_get_session_commits returns formatted commit lines from a real git repo."""
         repo_path = make_git_repo(
@@ -2400,6 +2404,7 @@ class TestGetUncommittedChanges:
         # "bar.py" appears at most once in the combined output
         assert result.count("bar.py") == 1
 
+    @pytest.mark.slow
     def test_integration_with_real_git_repo(self, tmp_path):
         """Integration: returns non-None when there are uncommitted changes."""
         git_repo = make_git_repo(tmp_path, files={"foo.py": "line1\n"})
@@ -2410,6 +2415,7 @@ class TestGetUncommittedChanges:
         assert result is not None
         assert "foo.py" in result
 
+    @pytest.mark.slow
     def test_integration_untracked_file(self, tmp_path):
         """Integration: returns non-None for a new untracked file."""
         git_repo = make_git_repo(tmp_path, "repo2", files={"base.py": "x\n"})
@@ -2421,6 +2427,7 @@ class TestGetUncommittedChanges:
         assert result is not None
         assert "untracked.py" in result
 
+    @pytest.mark.slow
     def test_integration_clean_repo_returns_none(self, tmp_path):
         """Integration: clean repo (no pending changes) returns None."""
         git_repo = make_git_repo(tmp_path, "clean", files={"bar.py": "x\n"})

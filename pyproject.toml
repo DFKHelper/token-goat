@@ -92,6 +92,9 @@ ignore = ["E501"]
 testpaths = ["tests"]
 pythonpath = ["tests"]
 addopts = "-rfe --strict-markers -n auto"
+markers = [
+    "slow: integration tests that spawn real git repos or other slow subprocess work; opt in via `-m slow` or run the full suite with no -m filter (default)",
+]
 
 [tool.mypy]
 python_version = "3.11"
