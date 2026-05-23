@@ -324,12 +324,18 @@ def _get_model(model_name: str = DEFAULT_MODEL) -> TextEmbedding:
 
 
 def is_available() -> bool:
-    """Quick check — does not download or load the model."""
-    try:
-        import fastembed  # noqa: F401, PLC0415
-        return True
-    except ImportError:
-        return False
+    """Quick check — does not download or load the model.
+
+    Uses ``importlib.util.find_spec`` rather than a real ``import fastembed``
+    so the check is side-effect free and immune to transient runtime errors
+    from fastembed's heavy dependency chain (onnxruntime, huggingface_hub,
+    requests). Under heavy xdist parallel load, executing fastembed's
+    top-level imports was occasionally raising — making this gate lie about
+    availability — even when the package was correctly installed.
+    """
+    import importlib.util  # noqa: PLC0415
+
+    return importlib.util.find_spec("fastembed") is not None
 
 
 def embed_texts(

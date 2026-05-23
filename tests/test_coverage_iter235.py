@@ -353,12 +353,19 @@ class TestEmbeddingsUnavailable:
             _get_model("BAAI/bge-small-en-v1.5")
 
     def test_is_available_returns_false_when_no_fastembed(self):
-        def fake_import(name, *args, **kwargs):
-            if name == "fastembed":
-                raise ImportError("no fastembed")
-            return __import__(name, *args, **kwargs)
+        # is_available() now uses importlib.util.find_spec for a side-effect-free
+        # check (avoids transient errors from fastembed's heavy dep chain on
+        # parallel test workers). Patch find_spec to simulate the missing dep.
+        import importlib.util
 
-        with patch("builtins.__import__", side_effect=fake_import):
+        original_find_spec = importlib.util.find_spec
+
+        def fake_find_spec(name, *args, **kwargs):
+            if name == "fastembed":
+                return None
+            return original_find_spec(name, *args, **kwargs)
+
+        with patch("importlib.util.find_spec", side_effect=fake_find_spec):
             result = is_available()
         assert result is False
 
