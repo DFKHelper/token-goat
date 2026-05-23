@@ -492,8 +492,8 @@ def _hint_from_cache(
     if entry.line_ranges == [(0, 0)]:
         sym_suffix = _symbols_suffix(entry.symbols_read)
         return ReadHint(
-            f"`{fname}` full file read {entry.read_count} times{sym_suffix}. "
-            f"File is likely in context; suppressing detailed range hints.",
+            f"`{fname}` full file ×{entry.read_count}{sym_suffix}. "
+            f"In context; range hints suppressed.",
             0,  # No tokens saved — the file is in context; this is informational.
         )
 
@@ -509,8 +509,8 @@ def _hint_from_cache(
             fname, entry.read_count,
         )
         return ReadHint(
-            f"`{fname}` is frequently re-read this session{sym_suffix}. "
-            f"Consider `token-goat read \"{file_path}::SymbolName\"` for surgical access.",
+            f"`{fname}` re-read often{sym_suffix}. "
+            f"Use `token-goat read \"{file_path}::sym\"` for surgical access.",
             0,
         )
 
