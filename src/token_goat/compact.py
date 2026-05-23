@@ -1425,6 +1425,15 @@ def _select_top_grep_entries(greps: list[object]) -> list[object]:
     if not candidates:
         return []
 
+    # Step 1b: Drop zero-result greps — searches that found nothing carry no
+    # context the compaction LLM should preserve. If every grep was zero-result
+    # (the user is exploring blindly and nothing matches yet), keep them all so
+    # the section still surfaces — better to show "looking for X, no hits yet"
+    # than nothing.
+    with_hits = [g for g in candidates if (getattr(g, "result_count", 0) or 0) > 0]
+    if with_hits:
+        candidates = with_hits
+
     # Step 2: Staleness filter — drop entries older than _GREP_STALE_SECS.
     now_ts = time.time()
     fresh = [g for g in candidates if (now_ts - getattr(g, "ts", 0.0)) < _GREP_STALE_SECS]
