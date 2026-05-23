@@ -1150,12 +1150,23 @@ def _format_bash_entry(entry: object) -> str:
 
 
 def _select_top_web_entries(web_history: object) -> list[object]:
-    """Pick up to :data:`_MAX_WEB_ENTRIES` web fetches worth surfacing in the manifest."""
+    """Pick up to :data:`_MAX_WEB_ENTRIES` web fetches worth surfacing in the manifest.
+
+    Filters out dead-end fetches:
+    - HTTP errors (4xx, 5xx status codes) carry no useful content
+    - Bodies below :data:`_MIN_WEB_BYTES_FOR_MANIFEST` threshold are filtered by _select_top_entries
+    """
+    def is_dead_end(entry: object) -> bool:
+        """Return True if this web fetch is a dead-end (error or worthless)."""
+        status_code = getattr(entry, "status_code", None)
+        return status_code is not None and status_code >= 400
+
     return _select_top_entries(
         web_history,
         min_bytes=_MIN_WEB_BYTES_FOR_MANIFEST,
         size_fn=lambda e: getattr(e, "body_bytes", 0),
         max_n=_MAX_WEB_ENTRIES,
+        exclude_fn=is_dead_end,
     )
 
 

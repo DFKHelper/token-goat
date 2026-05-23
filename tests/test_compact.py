@@ -4041,6 +4041,163 @@ class TestBuildManifestTimeout:
 
 
 # ---------------------------------------------------------------------------
+# compact._select_top_web_entries — filter dead-end fetches
+# ---------------------------------------------------------------------------
+
+
+class TestSelectTopWebEntries:
+    """Dead-end web fetches (4xx/5xx errors, tiny bodies) are filtered out."""
+
+    def test_http_404_error_is_filtered_out(self, tmp_data_dir, make_session):
+        """Web fetch with status_code=404 must NOT appear in manifest."""
+        sid = "web-404-test"
+        # Create a mature session with one 404 and one 200 fetch
+        cache = session.load(sid)
+
+        # Add a 404 error fetch (should be filtered)
+        import hashlib
+        url_404 = "https://example.com/not-found"
+        url_sha_404 = hashlib.sha256(url_404.encode()).hexdigest()[:12]
+        session.mark_web_fetch(
+            session_id=sid,
+            url_sha=url_sha_404,
+            url_preview=url_404,
+            output_id=f"web-404-{url_sha_404}",
+            body_bytes=500,  # Substantial body, but error status
+            status_code=404,
+            truncated=False,
+        )
+
+        # Add a good 200 fetch for comparison
+        url_good = "https://docs.example.com/api"
+        url_sha_good = hashlib.sha256(url_good.encode()).hexdigest()[:12]
+        session.mark_web_fetch(
+            session_id=sid,
+            url_sha=url_sha_good,
+            url_preview=url_good,
+            output_id=f"web-good-{url_sha_good}",
+            body_bytes=5000,
+            status_code=200,
+            truncated=False,
+        )
+
+        # Make the session mature so web section appears
+        cache = session.load(sid)
+        cache.created_ts = time.time() - 7200  # 2 hours old
+        session.save(cache)
+
+        cache = session.load(sid)
+        manifest = compact._build_manifest_from_cache(cache, sid, 400)
+        # 404 should be filtered out; only 200 OK should appear
+        assert "example.com/api" in manifest, "200 OK fetch should be in manifest"
+        assert "not-found" not in manifest, "404 error fetch should be filtered out"
+
+    def test_http_500_error_is_filtered_out(self, tmp_data_dir):
+        """Web fetch with status_code=500 must NOT appear in manifest."""
+        import hashlib
+
+        sid = "web-500-test"
+        session.mark_file_edited(sid, "/proj/app.py")
+
+        # Add a 500 error fetch
+        url_500 = "https://api.example.com/v1/data"
+        url_sha_500 = hashlib.sha256(url_500.encode()).hexdigest()[:12]
+        session.mark_web_fetch(
+            session_id=sid,
+            url_sha=url_sha_500,
+            url_preview=url_500,
+            output_id=f"web-500-{url_sha_500}",
+            body_bytes=1000,
+            status_code=500,
+            truncated=False,
+        )
+
+        # Make mature
+        cache = session.load(sid)
+        cache.created_ts = time.time() - 7200
+        session.save(cache)
+
+        cache = session.load(sid)
+        manifest = compact._build_manifest_from_cache(cache, sid, 400)
+        # 500 error should not appear
+        assert "api.example.com" not in manifest, "500 error fetch should be filtered out"
+
+    def test_small_body_below_threshold_is_filtered(self, tmp_data_dir):
+        """Web fetch with body_bytes < _MIN_WEB_BYTES_FOR_MANIFEST is filtered."""
+        import hashlib
+
+        sid = "web-tiny-test"
+        session.mark_file_edited(sid, "/proj/app.py")
+
+        # Add a tiny fetch (below threshold)
+        url_tiny = "https://example.com/redirect"
+        url_sha_tiny = hashlib.sha256(url_tiny.encode()).hexdigest()[:12]
+        session.mark_web_fetch(
+            session_id=sid,
+            url_sha=url_sha_tiny,
+            url_preview=url_tiny,
+            output_id=f"web-tiny-{url_sha_tiny}",
+            body_bytes=50,  # Below _MIN_WEB_BYTES_FOR_MANIFEST (200)
+            status_code=200,
+            truncated=False,
+        )
+
+        # Add a good substantial fetch
+        url_good = "https://docs.example.com/guide"
+        url_sha_good = hashlib.sha256(url_good.encode()).hexdigest()[:12]
+        session.mark_web_fetch(
+            session_id=sid,
+            url_sha=url_sha_good,
+            url_preview=url_good,
+            output_id=f"web-good-{url_sha_good}",
+            body_bytes=5000,
+            status_code=200,
+            truncated=False,
+        )
+
+        # Make mature
+        cache = session.load(sid)
+        cache.created_ts = time.time() - 7200
+        session.save(cache)
+
+        cache = session.load(sid)
+        manifest = compact._build_manifest_from_cache(cache, sid, 400)
+        # Small body should be filtered; large body should appear
+        assert "docs.example.com" in manifest, "Substantial fetch should be in manifest"
+        assert "redirect" not in manifest, "Tiny fetch should be filtered out"
+
+    def test_normal_fetch_passes_filter(self, tmp_data_dir):
+        """Web fetch with 200 status and body >= threshold passes the filter."""
+        import hashlib
+
+        sid = "web-normal-test"
+        session.mark_file_edited(sid, "/proj/app.py")
+
+        # Add a normal, healthy fetch
+        url = "https://docs.python.org/3/library/json.html"
+        url_sha = hashlib.sha256(url.encode()).hexdigest()[:12]
+        session.mark_web_fetch(
+            session_id=sid,
+            url_sha=url_sha,
+            url_preview=url,
+            output_id=f"web-{url_sha}",
+            body_bytes=10000,
+            status_code=200,
+            truncated=False,
+        )
+
+        # Make mature
+        cache = session.load(sid)
+        cache.created_ts = time.time() - 7200
+        session.save(cache)
+
+        cache = session.load(sid)
+        manifest = compact._build_manifest_from_cache(cache, sid, 400)
+        # Normal fetch should be included
+        assert "python.org" in manifest, "Normal 200 OK fetch should be in manifest"
+
+
+# ---------------------------------------------------------------------------
 # compact._get_git_diff_stat_summary — process-level cache
 # ---------------------------------------------------------------------------
 
