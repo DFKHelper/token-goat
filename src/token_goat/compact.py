@@ -2114,7 +2114,7 @@ def _render(cache: SessionCache, session_id: str, max_tokens: int) -> tuple[str,
     pending_diff_stat: str = _get_git_diff_stat_summary(cwd)
 
     if edited_clean:
-        edited_lines.append("### Files Edited (preserve in summary)")
+        edited_lines.append("### Files Edited (preserve)")
         # Sort by edit count descending so the most-touched files appear first.
         sorted_edited = sorted(edited_clean.items(), key=_BY_EDIT_COUNT, reverse=True)
         shown_edited = sorted_edited[:_MAX_EDITED_FILES_SHOWN]
@@ -2130,7 +2130,7 @@ def _render(cache: SessionCache, session_id: str, max_tokens: int) -> tuple[str,
         # LLM sees the scope and magnitude of in-flight work alongside the list of
         # edited files.  Omitted entirely when there are no uncommitted changes.
         if pending_diff_stat:
-            edited_lines.append("### Pending Changes (git diff --stat)")
+            edited_lines.append("### Pending Changes")
             for line in pending_diff_stat.splitlines():
                 edited_lines.append(f"  {line}")
 
