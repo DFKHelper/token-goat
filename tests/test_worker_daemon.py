@@ -84,6 +84,13 @@ def test_run_daemon_logs_startup_cleanup(tmp_data_dir):
         # and a handler that does sys.exit(0) takes the worker down hard before
         # execnet can flush its IPC channel ("node down: Not properly terminated").
         patch.object(daemon, "_install_signal_handlers"),
+        # _try_claim_worker_slot is patched to return integer 3 as a sentinel,
+        # but the daemon's finally-block then does os.close(3). Under xdist that
+        # fd is execnet's IPC channel — closing it crashes the worker even
+        # though contextlib.suppress(OSError) catches the resulting bad-fd
+        # error. Patch os.close to a no-op so the sentinel cannot collide with
+        # a real fd.
+        patch("os.close"),
         patch("time.sleep"),
     ):
         daemon.run_daemon(stop_event=stop)
