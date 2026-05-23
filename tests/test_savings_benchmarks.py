@@ -153,33 +153,45 @@ def test_write_file_index_transactional_speed(tmp_data_dir) -> None:
     """Pin the BEGIN/COMMIT-wrapped insert budget.
 
     Pre-fix (autocommit) cost ~840 ms per file with ~100 symbol+ref rows;
-    post-fix ~10 ms per file.  Assert 200 ms wall-time for a 100-row payload
-    — generous enough for slow CI runners, still ~4x below the regression
-    threshold and ~400x below the autocommit baseline.
+    post-fix ~10 ms per file.  Time only the write_file_index call (not the
+    db.open_project setup, which carries one-time schema creation and PRAGMA
+    cost) and run a warm-up write first so the schema is materialised before
+    the measurement begins. The budget asserts the steady-state hot-path cost
+    — the previous flat 200 ms ceiling included open + first-write overhead,
+    which on a heavily-loaded xdist worker drifted past the limit even when
+    the actual transactional write was well under it.
     """
     from token_goat import db
     from token_goat.parser import FileIndex, Ref, Symbol, write_file_index
 
-    fi = FileIndex(
-        rel_path="bench/sample.py",
-        language="python",
-        size=1234,
-        line_count=120,
-        mtime=time.time(),
-        content_sha256="0" * 64,
-        symbols=[
-            Symbol(name=f"sym_{i}", kind="function", line=i + 1, signature="()")
-            for i in range(60)
-        ],
-        refs=[Ref(name=f"ref_{i}", line=i + 1) for i in range(40)],
-    )
+    def _make_fi(name: str) -> FileIndex:
+        return FileIndex(
+            rel_path=f"bench/{name}.py",
+            language="python",
+            size=1234,
+            line_count=120,
+            mtime=time.time(),
+            content_sha256="0" * 64,
+            symbols=[
+                Symbol(name=f"sym_{i}", kind="function", line=i + 1, signature="()")
+                for i in range(60)
+            ],
+            refs=[Ref(name=f"ref_{i}", line=i + 1) for i in range(40)],
+        )
+
     # SHA1-shaped lowercase hex digest — db._validate_project_hash rejects
     # anything else.  Synthetic value, never collides with real projects.
     project_hash = "0" * 39 + "1"
-    t0 = time.monotonic()
     with db.open_project(project_hash) as conn:
+        # Warm-up write: materialise the schema, prepare statements, and let
+        # SQLite stretch its WAL so the measured write below isn't paying for
+        # one-time setup cost.
+        write_file_index(conn, _make_fi("warmup"))
+        # Now time the steady-state transactional write.
+        fi = _make_fi("sample")
+        t0 = time.monotonic()
         write_file_index(conn, fi)
-    elapsed = time.monotonic() - t0
+        elapsed = time.monotonic() - t0
     assert elapsed < 0.200, (
         f"write_file_index regressed: {elapsed * 1000:.1f} ms for 100 rows "
         "(budget 200 ms — autocommit path is ~800 ms)"
