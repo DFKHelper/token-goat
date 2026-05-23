@@ -79,6 +79,11 @@ def test_run_daemon_logs_startup_cleanup(tmp_data_dir):
         patch.object(worker, "_clear_pid"),
         patch.object(worker, "_write_pid"),
         patch.object(worker, "_register_autostart"),
+        # Don't let the daemon install real SIGTERM/SIGINT handlers — under xdist
+        # the worker subprocess receives SIGTERM from the controller at shutdown,
+        # and a handler that does sys.exit(0) takes the worker down hard before
+        # execnet can flush its IPC channel ("node down: Not properly terminated").
+        patch.object(daemon, "_install_signal_handlers"),
         patch("time.sleep"),
     ):
         daemon.run_daemon(stop_event=stop)

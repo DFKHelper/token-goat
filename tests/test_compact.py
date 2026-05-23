@@ -3958,11 +3958,13 @@ class TestBuildManifestTimeout:
         session.mark_file_edited(sid, "/proj/src/slow.py")
         session.mark_file_read(sid, "/proj/src/slow.py", offset=0, limit=50)
 
-        # Monkeypatch _get_git_diff_stat_summary to sleep, simulating slow git
+        # Shrink the wall-clock budget so the test doesn't have to sleep 9s.
+        monkeypatch.setattr(compact, "_MANIFEST_TIMEOUT_SECS", 0.1)
+
         original_func = compact._get_git_diff_stat_summary
 
         def slow_git(*args, **kwargs):
-            time.sleep(9.0)  # Exceed the 8s timeout
+            time.sleep(0.3)  # Exceed the shrunk timeout
             return original_func(*args, **kwargs)
 
         monkeypatch.setattr(compact, "_get_git_diff_stat_summary", slow_git)
@@ -3979,11 +3981,12 @@ class TestBuildManifestTimeout:
         sid = "timeout-format-session"
         session.mark_file_edited(sid, "/proj/src/test.py")
 
-        # Monkeypatch _get_git_diff_stat_summary to sleep for ~9s
+        monkeypatch.setattr(compact, "_MANIFEST_TIMEOUT_SECS", 0.1)
+
         original_func = compact._get_git_diff_stat_summary
 
         def slow_git(*args, **kwargs):
-            time.sleep(9.0)
+            time.sleep(0.3)
             return original_func(*args, **kwargs)
 
         monkeypatch.setattr(compact, "_get_git_diff_stat_summary", slow_git)
@@ -3996,8 +3999,8 @@ class TestBuildManifestTimeout:
             f"Expected 'timed out after X.Xs' pattern in manifest, got: {result[-200:]}"
         elapsed_str = match.group(1)
         elapsed_float = float(elapsed_str)
-        assert elapsed_float >= 9.0, \
-            f"Expected elapsed >= 9.0s, got: {elapsed_float}s"
+        assert elapsed_float >= 0.3, \
+            f"Expected elapsed >= 0.3s, got: {elapsed_float}s"
 
 
 # ---------------------------------------------------------------------------
