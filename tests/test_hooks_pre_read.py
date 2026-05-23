@@ -279,7 +279,10 @@ class TestRealWorldSpike:
         assert "hookSpecificOutput" in result
         hint = result["hookSpecificOutput"]["additionalContext"]
         assert "cached" in hint
-        assert "tokens" in hint
+        # The re-read hint carries a wasted-tokens estimate; we trimmed
+        # "tokens wasted" to "Nt wasted" for token savings — assert the
+        # "wasted" concept, not the word "tokens" that no longer appears.
+        assert "wasted" in hint
 
 
 # ---------------------------------------------------------------------------
