@@ -80,6 +80,60 @@ def make_project_from_root(root: Path) -> Project:
     return Project(root=canon, hash=project_hash(canon), marker=".git")
 
 
+def make_git_repo(
+    parent: Path,
+    name: str = "repo",
+    *,
+    files: dict[str, str] | None = None,
+    email: str = "t@t.com",
+    user: str = "T",
+    commit_message: str = "init",
+) -> Path:
+    """Create a minimal git repo under ``parent/name`` and return its path.
+
+    Consolidates the ``git init`` + two ``git config`` calls (plus an optional
+    initial add + commit when ``files`` is provided) that test_compact.py and
+    test_git_history.py would otherwise repeat across every integration site —
+    each site previously expanded to ~7 subprocess invocations. Pair with the
+    session-scoped ``_disable_user_git_hooks`` fixture (also in this conftest)
+    so the call chain doesn't fire any global lefthook on each commit.
+    """
+    import subprocess
+    repo = parent / name
+    repo.mkdir()
+    subprocess.run(["git", "init"], cwd=repo, capture_output=True, check=True)
+    subprocess.run(
+        ["git", "config", "user.email", email],
+        cwd=repo,
+        capture_output=True,
+        check=True,
+    )
+    subprocess.run(
+        ["git", "config", "user.name", user],
+        cwd=repo,
+        capture_output=True,
+        check=True,
+    )
+    if files:
+        for rel, content in files.items():
+            path = repo / rel
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(content)
+        subprocess.run(
+            ["git", "add", "."],
+            cwd=repo,
+            capture_output=True,
+            check=True,
+        )
+        subprocess.run(
+            ["git", "commit", "-m", commit_message],
+            cwd=repo,
+            capture_output=True,
+            check=True,
+        )
+    return repo
+
+
 # Expose as fixture for use in test files
 @pytest.fixture
 def make_project(tmp_data_dir):
