@@ -306,6 +306,7 @@ class TestBuildHint:
 # index_project_history  (integration — requires a real temp git repo)
 # ---------------------------------------------------------------------------
 
+@pytest.mark.slow
 class TestIndexProjectHistory:
     @pytest.fixture()
     def git_repo(self, tmp_path: Path):
