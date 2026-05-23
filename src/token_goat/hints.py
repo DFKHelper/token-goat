@@ -584,7 +584,7 @@ def _hint_from_cache(
         sym_suffix = _symbols_suffix(entry.symbols_read)
         return ReadHint(
             f"`{fname}` L{req_start}-{req_end} cached (L{cached_summary}{extra}){sym_suffix}. "
-            f"~{wasted} tokens wasted — different offset/limit needed.",
+            f"~{wasted}t wasted — adjust offset/limit.",
             wasted,
         )
 
@@ -598,8 +598,8 @@ def _hint_from_cache(
         resume_offset = last_cached_end
         sym_suffix = _symbols_suffix(entry.symbols_read)
         return ReadHint(
-            f"`{fname}` cached at L{cached_summary}{extra}{sym_suffix}. "
-            f"Overlap: {overlap_lines} lines (~{wasted} tokens) — use `offset={resume_offset}`.",
+            f"`{fname}` cached L{cached_summary}{extra}{sym_suffix}. "
+            f"Overlap: {overlap_lines}L (~{wasted}t) — use `offset={resume_offset}`.",
             wasted,
         )
 
