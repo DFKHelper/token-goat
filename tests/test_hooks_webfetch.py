@@ -180,13 +180,16 @@ class TestPreFetchWebFetchDedup:
 
     def test_cache_hit_hint_mentions_age(self, tmp_data_dir):
         """Hint text must tell the model how long ago the fetch happened."""
+        import re as _re
         sid = "dedup-test-session"
         _seed_web_session(sid)
 
         result = hooks_cli.pre_fetch(self._payload())
 
         ctx = result.get("hookSpecificOutput", {}).get("additionalContext", "")
-        assert "age ~" in ctx
+        # Assert the age-suffix concept (Ns inside parens), not the exact
+        # "age ~Ns" wording — that prefix was trimmed for token savings.
+        assert _re.search(r"\(\d+s\):", ctx), f"expected '(Ns):' age suffix in hint: {ctx!r}"
 
     def test_cache_hit_hint_mentions_byte_size(self, tmp_data_dir):
         """Hint text must include body size so model can judge recall value."""

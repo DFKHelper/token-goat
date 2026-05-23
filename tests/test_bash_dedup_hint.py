@@ -143,7 +143,8 @@ class TestBashDedupHintFiresOnRepeat:
         assert "5x" in ctx
 
     def test_single_run_hint_unchanged(self, tmp_data_dir):
-        """First-time dedup hint (run_count==1) uses '(age ~Ns)' format."""
+        """First-time dedup hint (run_count==1) carries an age suffix and a 'cached' marker."""
+        import re as _re
         cmd = "find /var -name '*.pid'"
         _seed_history("rc-single", cmd)
         payload = {
@@ -154,7 +155,12 @@ class TestBashDedupHintFiresOnRepeat:
         result = hooks_read.pre_read(payload)
         _assert_continue(result)
         ctx = result.get("hookSpecificOutput", {}).get("additionalContext", "")
-        assert "age ~" in ctx
+        # Assert the age-suffix concept (Ns inside parens after the command),
+        # not the exact "(age ~Ns)" wording — that prefix was trimmed for
+        # token savings. Accepts either '(Ns,' (light format) or '(Ns):' (full).
+        assert _re.search(r"\(\d+s[,):]", ctx), (
+            f"expected '(Ns)' or '(Ns,' age suffix in hint: {ctx!r}"
+        )
         assert "cached" in ctx
         assert "WARNING" not in ctx
         assert "2x" not in ctx
