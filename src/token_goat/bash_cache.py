@@ -110,9 +110,7 @@ class _OutputStatDict(TypedDict, total=False):
 
 def _bash_outputs_dir() -> Path:
     """Return ``data_dir() / "bash_outputs"`` and create it on first use."""
-    d = paths.data_dir() / "bash_outputs"
-    d.mkdir(parents=True, exist_ok=True)
-    return d
+    return paths.ensure_dir(paths.data_dir() / "bash_outputs")
 
 
 def command_hash(command: str) -> str:

@@ -302,7 +302,7 @@ def _get_model(model_name: str = DEFAULT_MODEL) -> TextEmbedding:
     try:
         # Point fastembed at our model cache dir
         os.environ.setdefault("FASTEMBED_CACHE_PATH", str(paths.models_dir()))
-        paths.models_dir().mkdir(parents=True, exist_ok=True)
+        paths.ensure_dir(paths.models_dir())
         from fastembed import TextEmbedding  # noqa: PLC0415
         _LOG.info(
             "loading fastembed model %s (cache=%s)", model_name, paths.models_dir()
