@@ -1028,7 +1028,7 @@ def _build_bash_dedup_hint_inner(
         )
     elif run_count == 2:
         hint_text = (
-            f"{fail_prefix}`{cmd_short}` ran 2x — cached ({total_bytes:,}B{exit_str}, ~{tokens_avoided} tokens). "
+            f"{fail_prefix}`{cmd_short}` ran 2x — cached ({total_bytes:,}B{exit_str}, ~{tokens_avoided}t). "
             f"`{recall_cmd}`{grep_suffix}"
         )
     else:
@@ -1132,7 +1132,7 @@ def _build_grep_dedup_hint_inner(
         pattern_short = _sanitize_hint_path(pattern)
         path_str = f" in `{_sanitize_hint_path(path)}`" if path else ""
         return ReadHint(
-            f"Grep `{pattern_short}`{path_str} ({int(age)}s): {entry.result_count} matches, ~{tokens_avoided} tokens.",
+            f"Grep `{pattern_short}`{path_str} ({int(age)}s): {entry.result_count} matches, ~{tokens_avoided}t.",
             tokens_avoided,
         )
     return None
@@ -1223,7 +1223,7 @@ def _build_glob_dedup_hint_inner(
     pattern_short = _sanitize_hint_path(pattern)
     path_str = f" in `{_sanitize_hint_path(path)}`" if path else ""
     return ReadHint(
-        f"Glob `{pattern_short}`{path_str} ({int(age)}s): {entry.result_count} results, ~{tokens_avoided} tokens.",
+        f"Glob `{pattern_short}`{path_str} ({int(age)}s): {entry.result_count} results, ~{tokens_avoided}t.",
         tokens_avoided,
     )
 
@@ -1308,7 +1308,7 @@ def _build_web_dedup_hint_inner(
         f" status={entry.status_code}" if entry.status_code is not None else ""
     )
     return ReadHint(
-        f"URL ({int(age)}s): {entry.body_bytes:,}B{status_str}, ~{tokens_avoided} tokens. "
+        f"URL ({int(age)}s): {entry.body_bytes:,}B{status_str}, ~{tokens_avoided}t. "
         f"`token-goat web-output {entry.output_id}`",
         tokens_avoided,
     )
