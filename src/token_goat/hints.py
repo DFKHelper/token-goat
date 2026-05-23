@@ -1023,7 +1023,7 @@ def _build_bash_dedup_hint_inner(
 
     if run_count >= 3:
         hint_text = (
-            f"{fail_prefix}WARNING: `{cmd_short}` ran {run_count}x — loop? "
+            f"{fail_prefix}⚠ `{cmd_short}` ran {run_count}x — loop? "
             f"Cached: ({total_bytes:,}B{exit_str}): `{recall_cmd}`{grep_suffix}"
         )
     elif run_count == 2:

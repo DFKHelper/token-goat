@@ -109,7 +109,7 @@ class TestBashDedupHintFiresOnRepeat:
         assert "token-goat bash-output" in ctx
 
     def test_hint_text_run_count_3(self, tmp_data_dir):
-        """At run_count>=3 the hint fires a WARNING about looping."""
+        """At run_count>=3 the hint flags a loop with a leading alert glyph."""
         cmd = "find /tmp -name '*.tmp'"
         _seed_history("rc-3a", cmd)
         _seed_history("rc-3a", cmd)
@@ -122,12 +122,15 @@ class TestBashDedupHintFiresOnRepeat:
         result = hooks_read.pre_read(payload)
         _assert_continue(result)
         ctx = result.get("hookSpecificOutput", {}).get("additionalContext", "")
-        assert "WARNING" in ctx
+        # The verbose "WARNING:" prefix was tightened to a "⚠" glyph for token
+        # savings; assert the actionable concept (loop detection) which still
+        # appears in the hint body.
+        assert "loop" in ctx
         assert "3x" in ctx
         assert "token-goat bash-output" in ctx
 
     def test_hint_text_run_count_5(self, tmp_data_dir):
-        """run_count>3 still uses the WARNING path with the correct count."""
+        """run_count>3 still uses the loop-detection path with the correct count."""
         cmd = "find /etc -name '*.conf'"
         for _ in range(5):
             _seed_history("rc-5a", cmd)
@@ -139,7 +142,8 @@ class TestBashDedupHintFiresOnRepeat:
         result = hooks_read.pre_read(payload)
         _assert_continue(result)
         ctx = result.get("hookSpecificOutput", {}).get("additionalContext", "")
-        assert "WARNING" in ctx
+        # See test_hint_text_run_count_3 for why "WARNING" → loop-concept check.
+        assert "loop" in ctx
         assert "5x" in ctx
 
     def test_single_run_hint_unchanged(self, tmp_data_dir):
