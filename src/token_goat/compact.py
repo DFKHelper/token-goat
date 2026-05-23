@@ -21,6 +21,7 @@ import math
 import subprocess
 import time
 from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime
 from operator import attrgetter, itemgetter
 from typing import TYPE_CHECKING, Any, Final
@@ -2133,19 +2134,32 @@ def _render(cache: SessionCache, session_id: str, max_tokens: int) -> tuple[str,
             for line in pending_diff_stat.splitlines():
                 edited_lines.append(f"  {line}")
 
-        # ── 1b. Diff summary — show git changes for edited files ──────────────
-        diff_stat = _get_git_diff_stat(list(edited_clean.keys()), cwd)
+        # ── 1b. Diff summary + Commits this session ───────────────────────────
+        # Both helpers spawn their own git subprocesses (capped at 2-5 s each)
+        # and are completely independent — their outputs feed different
+        # manifest sections. Run them on a 2-worker pool so a slow git on one
+        # call doesn't block the other; both are already wrapped in try/except
+        # internally and never raise, so the parallel version inherits the
+        # same fail-soft posture.
+        edited_paths = list(edited_clean.keys())
+        with ThreadPoolExecutor(max_workers=2) as ex:
+            diff_fut = ex.submit(_get_git_diff_stat, edited_paths, cwd)
+            commits_fut = (
+                ex.submit(_get_session_commits, cwd, created_ts)
+                if created_ts > 0
+                else None
+            )
+            diff_stat = diff_fut.result()
+            session_commits = commits_fut.result() if commits_fut is not None else []
+
         if diff_stat:
             edited_lines.append("### Diff Summary")
             for line in diff_stat.splitlines():
                 edited_lines.append(f"- {line}")
 
-        # ── 1b. Commits this session ──────────────────────────────────────────
-        if created_ts > 0:
-            session_commits = _get_session_commits(cwd, created_ts)
-            if session_commits:
-                edited_lines.append("### Commits This Session")
-                edited_lines.extend(session_commits)
+        if session_commits:
+            edited_lines.append("### Commits This Session")
+            edited_lines.extend(session_commits)
 
     # ── 1d. Stale file snapshots ──────────────────────────────────────────────
     stale_lines = _render_section(
