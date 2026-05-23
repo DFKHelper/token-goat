@@ -85,9 +85,11 @@ def make_git_repo(
     name: str = "repo",
     *,
     files: dict[str, str] | None = None,
+    commits: list[tuple[dict[str, str], str]] | None = None,
     email: str = "t@t.com",
     user: str = "T",
     commit_message: str = "init",
+    init_branch: str | None = None,
 ) -> Path:
     """Create a minimal git repo under ``parent/name`` and return its path.
 
@@ -97,11 +99,23 @@ def make_git_repo(
     each site previously expanded to ~7 subprocess invocations. Pair with the
     session-scoped ``_disable_user_git_hooks`` fixture (also in this conftest)
     so the call chain doesn't fire any global lefthook on each commit.
+
+    Two ways to seed history:
+    - ``files`` + ``commit_message``: single commit with the given content
+    - ``commits``: list of ``(files_dict, commit_message)`` tuples — each
+      becomes a separate commit so the resulting repo has multi-commit history
+      (used by tests that exercise git-log walking)
+
+    ``init_branch`` lets tests pin the initial branch name (e.g. ``"main"``)
+    so they don't depend on the user's global init.defaultBranch.
     """
     import subprocess
     repo = parent / name
     repo.mkdir()
-    subprocess.run(["git", "init"], cwd=repo, capture_output=True, check=True)
+    init_cmd = ["git", "init"]
+    if init_branch:
+        init_cmd += ["-b", init_branch]
+    subprocess.run(init_cmd, cwd=repo, capture_output=True, check=True)
     subprocess.run(
         ["git", "config", "user.email", email],
         cwd=repo,
@@ -114,23 +128,24 @@ def make_git_repo(
         capture_output=True,
         check=True,
     )
-    if files:
-        for rel, content in files.items():
+
+    def _stage_and_commit(payload: dict[str, str], msg: str) -> None:
+        for rel, content in payload.items():
             path = repo / rel
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text(content)
         subprocess.run(
-            ["git", "add", "."],
-            cwd=repo,
-            capture_output=True,
-            check=True,
+            ["git", "add", "."], cwd=repo, capture_output=True, check=True,
         )
         subprocess.run(
-            ["git", "commit", "-m", commit_message],
-            cwd=repo,
-            capture_output=True,
-            check=True,
+            ["git", "commit", "-m", msg], cwd=repo, capture_output=True, check=True,
         )
+
+    if commits is not None:
+        for payload, msg in commits:
+            _stage_and_commit(payload, msg)
+    elif files:
+        _stage_and_commit(files, commit_message)
     return repo
 
 
