@@ -691,8 +691,7 @@ def _hint_from_index(
         )
         return ReadHint(
             f"`{fname}`: {n_lines} lines (~{full_tokens} tokens). "
-            f"No indexed symbols — use `offset` and `limit` to read in chunks "
-            f"rather than loading the full file.",
+            f"No symbols indexed. Use `offset`/`limit` to read chunks.",
             0,
         )
 
