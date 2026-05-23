@@ -13,6 +13,7 @@ from token_goat.cache_common import (
     evict_cache_dir,
     load_sidecar_json,
     safe_session_fragment,
+    truncate_tail_preserve,
 )
 
 
@@ -571,3 +572,56 @@ class TestEvictCacheDir:
         removed = web_cache.evict_old_entries(max_total_bytes=50)
         assert removed == 2
         assert list(d.glob("*.txt")) == []
+
+
+class TestTruncateTailPreserve:
+    """truncate_tail_preserve: tail-keep + marker for content above the byte cap."""
+
+    _MARKER = "[truncated; kept {n} of {total} bytes]\n"
+
+    def test_under_limit_returns_content_unchanged(self) -> None:
+        content = "hello world"
+        stored, truncated = truncate_tail_preserve(
+            content, max_bytes=100, marker_template=self._MARKER,
+        )
+        assert stored == content
+        assert truncated is False
+
+    def test_exactly_at_limit_returns_unchanged(self) -> None:
+        content = "x" * 50
+        stored, truncated = truncate_tail_preserve(
+            content, max_bytes=50, marker_template=self._MARKER,
+        )
+        assert stored == content
+        assert truncated is False
+
+    def test_over_limit_keeps_tail_and_prepends_marker(self) -> None:
+        content = "first chunk\n" + ("y" * 200)
+        stored, truncated = truncate_tail_preserve(
+            content, max_bytes=50, marker_template=self._MARKER,
+        )
+        assert truncated is True
+        # Marker prepended with the original byte total
+        assert "[truncated; kept 50 of " in stored
+        # Tail kept (last 50 chars of original content)
+        assert stored.endswith("y" * 50)
+        # Head dropped — "first chunk" must not appear
+        assert "first chunk" not in stored
+
+    def test_byte_length_counts_utf8(self) -> None:
+        """Multi-byte chars should count in the threshold, not codepoint length."""
+        # Each "é" is 2 bytes in utf-8; 40 codepoints * 2 = 80 bytes
+        content = "é" * 40
+        stored, truncated = truncate_tail_preserve(
+            content, max_bytes=50, marker_template=self._MARKER,
+        )
+        assert truncated is True
+        # Marker reports the true byte total, not codepoint count
+        assert "of 80 bytes" in stored
+
+    def test_marker_template_formats_with_n_and_total(self) -> None:
+        content = "z" * 100
+        stored, _ = truncate_tail_preserve(
+            content, max_bytes=20, marker_template="MARK n={n} total={total}\n",
+        )
+        assert stored.startswith("MARK n=20 total=100\n")
