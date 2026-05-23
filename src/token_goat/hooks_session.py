@@ -196,7 +196,7 @@ def _build_recovery_hint(session_id: str) -> str | None:
 
     # 1. Recently-touched files — the agent will likely want these back.
     if files_keep:
-        lines = ["**Recently-read files**:"]
+        lines = ["**Files**:"]
         for entry in files_keep:
             sym_count = len(entry.symbols_read)
             if sym_count > 3:
@@ -208,12 +208,12 @@ def _build_recovery_hint(session_id: str) -> str | None:
             lines.append(f"- {entry.rel_or_abs}{sym_str}")
         dropped = len(files_all) - len(files_keep)
         if dropped > 0:
-            lines.append(f"- …+{dropped} more files")
+            lines.append(f"- +{dropped} more")
         sections.append("\n".join(lines))
 
     # 2. Recent Bash output IDs — the most likely "I had this in context" data.
     if bash_entries:
-        lines = ["**Recent Bash outputs**:"]
+        lines = ["**Bash**:"]
         for be in bash_entries:
             exit_str = "" if be.exit_code is None else f" exit={be.exit_code}"
             total = be.stdout_bytes + be.stderr_bytes
@@ -222,12 +222,12 @@ def _build_recovery_hint(session_id: str) -> str | None:
             )
         dropped = len(bash_all) - len(bash_entries)
         if dropped > 0:
-            lines.append(f"- …+{dropped} more cached bash outputs")
+            lines.append(f"- +{dropped} more")
         sections.append("\n".join(lines))
 
     # 3. Recent WebFetch outputs — same idea for network results.
     if web_entries:
-        lines = ["**Recent WebFetch responses**:"]
+        lines = ["**Web**:"]
         for we in web_entries:
             status_str = "" if we.status_code is None else f" status={we.status_code}"
             lines.append(
@@ -235,13 +235,13 @@ def _build_recovery_hint(session_id: str) -> str | None:
             )
         dropped = len(web_all) - len(web_entries)
         if dropped > 0:
-            lines.append(f"- …+{dropped} more cached web responses")
+            lines.append(f"- +{dropped} more")
         sections.append("\n".join(lines))
 
     if not sections:
         return None
 
-    parts = ["## Token-Goat Post-Compact Recovery"]
+    parts = ["## Post-Compact Recovery"]
     # Name the recall command only for sections that actually appear.
     recall = []
     if bash_entries:
@@ -249,7 +249,7 @@ def _build_recovery_hint(session_id: str) -> str | None:
     if web_entries:
         recall.append("`token-goat web-output <id>`")
     if recall:
-        parts.append("Recall cached output with " + " / ".join(recall) + ".")
+        parts.append("Recall: " + " / ".join(recall) + ".")
     parts.extend(sections)
     return "\n\n".join(parts)
 

@@ -116,7 +116,7 @@ class TestRecoveryHintContent:
         })
         _assert_continue(result)
         ctx = result["hookSpecificOutput"]["additionalContext"]
-        assert "…+18 more files" in ctx, (
+        assert "+18 more" in ctx, (
             f"expected dropped-files signal in hint, got:\n{ctx}"
         )
 

@@ -81,16 +81,18 @@ class TestRecoveryHintBudget:
         hint = hooks_session._build_recovery_hint(sid)
 
         assert hint is not None, "saturated session must produce a hint"
-        assert hint.startswith("## Token-Goat Post-Compact Recovery"), (
+        assert hint.startswith("## Post-Compact Recovery"), (
             f"hint header changed: {hint[:80]!r}"
         )
         # All three sections should fire since each is saturated past its floor.
-        assert "Recently-read files" in hint
-        assert "Recent Bash outputs" in hint
-        assert "Recent WebFetch responses" in hint
+        # Headers were trimmed for token savings; assert on the concept (markdown
+        # bold header for each section kind) rather than the verbose old wording.
+        assert "**Files**" in hint
+        assert "**Bash**" in hint
+        assert "**Web**" in hint
         # Truncation tail signal must appear for at least one section.
-        assert "…+" in hint and "more" in hint, (
-            f"expected `…+N more` truncation signal in hint:\n{hint}"
+        assert "+" in hint and "more" in hint, (
+            f"expected `+N more` truncation signal in hint:\n{hint}"
         )
 
         tokens = estimate_tokens(hint)
@@ -113,16 +115,16 @@ class TestRecoveryHintBudget:
         hint = hooks_session._build_recovery_hint(sid)
 
         assert hint is not None
-        assert "Recently-read files" in hint
-        assert "Recent Bash outputs" not in hint, (
+        assert "**Files**" in hint
+        assert "**Bash**" not in hint, (
             "bash section rendered despite no bash history"
         )
-        assert "Recent WebFetch" not in hint, (
+        assert "**Web**" not in hint, (
             "web section rendered despite no web history"
         )
 
         # Ceiling for files is 12, so 30 - 12 = 18 dropped.
-        assert "…+18 more files" in hint
+        assert "+18 more" in hint
 
         tokens = estimate_tokens(hint)
         assert tokens <= _RECOVERY_HINT_LOPSIDED_BUDGET, (
