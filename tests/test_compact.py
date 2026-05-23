@@ -702,21 +702,53 @@ class TestGrepSection:
 
         sid = "grep-match-rank-abc"
 
-        # Two searches at nearly the same time; one has many matches, one has none.
+        # Two searches at nearly the same time; rich one has many matches, low
+        # one has a single hit. Zero-result greps are now filtered as noise, so
+        # use 1 hit instead of 0 to keep both in the manifest for the ordering
+        # assertion below.
         session.mark_grep(sid, "rich_search", "/proj/src", result_count=50)
         _time.sleep(0.01)
-        session.mark_grep(sid, "empty_search", "/proj/src", result_count=0)
+        session.mark_grep(sid, "thin_search", "/proj/src", result_count=1)
 
         result = compact.build_manifest(sid)
 
-        # Both should appear (different patterns, both fresh).
+        # Both should appear (different patterns, both fresh, both have hits).
         assert "rich_search" in result, f"high-match search missing:\n{result}"
-        assert "empty_search" in result, f"zero-match search missing:\n{result}"
+        assert "thin_search" in result, f"low-match search missing:\n{result}"
 
-        # "rich_search" should appear before "empty_search" because its composite score
-        # (recency × match_count factor) is higher.
-        assert result.index("rich_search") < result.index("empty_search"), (
-            f"high-match search should rank before zero-match search:\n{result}"
+        # "rich_search" should appear before "thin_search" because its composite
+        # score (recency × match_count factor) is higher.
+        assert result.index("rich_search") < result.index("thin_search"), (
+            f"high-match search should rank before low-match search:\n{result}"
+        )
+
+    def test_grep_zero_results_filtered_out(self, tmp_data_dir):
+        """Zero-result greps are noise — they should not appear in the manifest
+        when other (non-empty) searches exist to surface."""
+        sid = "grep-zero-filter-abc"
+
+        session.mark_grep(sid, "real_pattern", "/proj/src", result_count=5)
+        session.mark_grep(sid, "dead_pattern", "/proj/src", result_count=0)
+
+        result = compact.build_manifest(sid)
+
+        assert "real_pattern" in result, f"hit search missing:\n{result}"
+        assert "dead_pattern" not in result, (
+            f"zero-result search should be filtered out:\n{result}"
+        )
+
+    def test_grep_all_zero_results_still_surface(self, tmp_data_dir):
+        """When EVERY grep is zero-result, surface them so the section is not silently empty
+        (the same fail-soft posture used for the all-stale case)."""
+        sid = "grep-all-zero-abc"
+
+        session.mark_grep(sid, "blank_one", "/proj/src", result_count=0)
+        session.mark_grep(sid, "blank_two", "/proj/src", result_count=0)
+
+        result = compact.build_manifest(sid)
+
+        assert "blank_one" in result or "blank_two" in result, (
+            f"at least one zero-result grep should surface when all are zero:\n{result}"
         )
 
 
