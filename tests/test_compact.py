@@ -4,6 +4,7 @@ from __future__ import annotations
 import time
 
 import pytest
+from conftest import make_git_repo
 from hook_helpers import assert_continue as _assert_continue
 
 from token_goat import compact, config, hooks_cli, session
@@ -915,19 +916,7 @@ class TestGitDiffStat:
 
     def test_git_diff_stat_helper_integration(self, tmp_path):
         """Integration test: _get_git_diff_stat helper returns diff output from git."""
-        import subprocess
-        git_repo = tmp_path / "repo"
-        git_repo.mkdir()
-
-        # Initialize repo
-        subprocess.run(["git", "init"], cwd=git_repo, capture_output=True, check=True)
-        subprocess.run(["git", "config", "user.email", "test@ex.com"], cwd=git_repo, capture_output=True, check=True)
-        subprocess.run(["git", "config", "user.name", "Test"], cwd=git_repo, capture_output=True, check=True)
-
-        # Create initial file and commit
-        (git_repo / "myfile.py").write_text("line1\n")
-        subprocess.run(["git", "add", "myfile.py"], cwd=git_repo, capture_output=True, check=True)
-        subprocess.run(["git", "commit", "-m", "init"], cwd=git_repo, capture_output=True, check=True)
+        git_repo = make_git_repo(tmp_path, files={"myfile.py": "line1\n"})
 
         # Modify file so git diff shows changes
         (git_repo / "myfile.py").write_text("line1\nline2\nline3\n")
@@ -977,17 +966,7 @@ class TestGetGitDiffStatSummary:
 
     def test_integration_with_real_git_repo(self, tmp_path):
         """Integration: returns non-empty output when there are uncommitted changes."""
-        import subprocess as _subprocess  # noqa: PLC0415
-
-        git_repo = tmp_path / "repo"
-        git_repo.mkdir()
-        _subprocess.run(["git", "init"], cwd=git_repo, capture_output=True, check=True)
-        _subprocess.run(["git", "config", "user.email", "t@t.com"], cwd=git_repo, capture_output=True, check=True)
-        _subprocess.run(["git", "config", "user.name", "T"], cwd=git_repo, capture_output=True, check=True)
-
-        (git_repo / "foo.py").write_text("line1\n")
-        _subprocess.run(["git", "add", "foo.py"], cwd=git_repo, capture_output=True, check=True)
-        _subprocess.run(["git", "commit", "-m", "init"], cwd=git_repo, capture_output=True, check=True)
+        git_repo = make_git_repo(tmp_path, files={"foo.py": "line1\n"})
 
         # Modify so there is a diff vs HEAD
         (git_repo / "foo.py").write_text("line1\nline2\nline3\n")
@@ -998,17 +977,7 @@ class TestGetGitDiffStatSummary:
 
     def test_integration_clean_repo_returns_empty(self, tmp_path):
         """Integration: clean repo (no pending changes) returns ''."""
-        import subprocess as _subprocess  # noqa: PLC0415
-
-        git_repo = tmp_path / "clean"
-        git_repo.mkdir()
-        _subprocess.run(["git", "init"], cwd=git_repo, capture_output=True, check=True)
-        _subprocess.run(["git", "config", "user.email", "t@t.com"], cwd=git_repo, capture_output=True, check=True)
-        _subprocess.run(["git", "config", "user.name", "T"], cwd=git_repo, capture_output=True, check=True)
-
-        (git_repo / "bar.py").write_text("x\n")
-        _subprocess.run(["git", "add", "bar.py"], cwd=git_repo, capture_output=True, check=True)
-        _subprocess.run(["git", "commit", "-m", "init"], cwd=git_repo, capture_output=True, check=True)
+        git_repo = make_git_repo(tmp_path, "clean", files={"bar.py": "x\n"})
 
         # No further changes — working tree is clean
         result = compact._get_git_diff_stat_summary(str(git_repo))
@@ -1727,48 +1696,13 @@ class TestSessionCommits:
 
     def test_get_session_commits_returns_commits_when_available(self, tmp_path):
         """_get_session_commits returns formatted commit lines from a real git repo."""
-        import subprocess
-
-        # Create a minimal git repo with a commit
-        repo_path = tmp_path / "test_repo"
-        repo_path.mkdir()
-
-        # Initialize git repo
-        subprocess.run(
-            ["git", "init"],
-            cwd=str(repo_path),
-            capture_output=True,
-            check=True,
-        )
-
-        # Configure git user
-        subprocess.run(
-            ["git", "config", "user.email", "test@example.com"],
-            cwd=str(repo_path),
-            capture_output=True,
-            check=True,
-        )
-        subprocess.run(
-            ["git", "config", "user.name", "Test User"],
-            cwd=str(repo_path),
-            capture_output=True,
-            check=True,
-        )
-
-        # Create a commit
-        test_file = repo_path / "test.txt"
-        test_file.write_text("content")
-        subprocess.run(
-            ["git", "add", "test.txt"],
-            cwd=str(repo_path),
-            capture_output=True,
-            check=True,
-        )
-        subprocess.run(
-            ["git", "commit", "-m", "test commit"],
-            cwd=str(repo_path),
-            capture_output=True,
-            check=True,
+        repo_path = make_git_repo(
+            tmp_path,
+            "test_repo",
+            files={"test.txt": "content"},
+            email="test@example.com",
+            user="Test User",
+            commit_message="test commit",
         )
 
         # Call _get_session_commits with a timestamp from before the commit
@@ -2468,22 +2402,7 @@ class TestGetUncommittedChanges:
 
     def test_integration_with_real_git_repo(self, tmp_path):
         """Integration: returns non-None when there are uncommitted changes."""
-        import subprocess as _subprocess  # noqa: PLC0415
-
-        git_repo = tmp_path / "repo"
-        git_repo.mkdir()
-        _subprocess.run(["git", "init"], cwd=git_repo, capture_output=True, check=True)
-        _subprocess.run(
-            ["git", "config", "user.email", "t@t.com"], cwd=git_repo, capture_output=True, check=True
-        )
-        _subprocess.run(
-            ["git", "config", "user.name", "T"], cwd=git_repo, capture_output=True, check=True
-        )
-        (git_repo / "foo.py").write_text("line1\n")
-        _subprocess.run(["git", "add", "foo.py"], cwd=git_repo, capture_output=True, check=True)
-        _subprocess.run(
-            ["git", "commit", "-m", "init"], cwd=git_repo, capture_output=True, check=True
-        )
+        git_repo = make_git_repo(tmp_path, files={"foo.py": "line1\n"})
 
         # Modify tracked file
         (git_repo / "foo.py").write_text("line1\nline2\n")
@@ -2493,22 +2412,8 @@ class TestGetUncommittedChanges:
 
     def test_integration_untracked_file(self, tmp_path):
         """Integration: returns non-None for a new untracked file."""
-        import subprocess as _subprocess  # noqa: PLC0415
+        git_repo = make_git_repo(tmp_path, "repo2", files={"base.py": "x\n"})
 
-        git_repo = tmp_path / "repo2"
-        git_repo.mkdir()
-        _subprocess.run(["git", "init"], cwd=git_repo, capture_output=True, check=True)
-        _subprocess.run(
-            ["git", "config", "user.email", "t@t.com"], cwd=git_repo, capture_output=True, check=True
-        )
-        _subprocess.run(
-            ["git", "config", "user.name", "T"], cwd=git_repo, capture_output=True, check=True
-        )
-        (git_repo / "base.py").write_text("x\n")
-        _subprocess.run(["git", "add", "base.py"], cwd=git_repo, capture_output=True, check=True)
-        _subprocess.run(
-            ["git", "commit", "-m", "init"], cwd=git_repo, capture_output=True, check=True
-        )
         # Add an untracked file (not staged, not committed)
         (git_repo / "untracked.py").write_text("new\n")
 
@@ -2518,22 +2423,8 @@ class TestGetUncommittedChanges:
 
     def test_integration_clean_repo_returns_none(self, tmp_path):
         """Integration: clean repo (no pending changes) returns None."""
-        import subprocess as _subprocess  # noqa: PLC0415
+        git_repo = make_git_repo(tmp_path, "clean", files={"bar.py": "x\n"})
 
-        git_repo = tmp_path / "clean"
-        git_repo.mkdir()
-        _subprocess.run(["git", "init"], cwd=git_repo, capture_output=True, check=True)
-        _subprocess.run(
-            ["git", "config", "user.email", "t@t.com"], cwd=git_repo, capture_output=True, check=True
-        )
-        _subprocess.run(
-            ["git", "config", "user.name", "T"], cwd=git_repo, capture_output=True, check=True
-        )
-        (git_repo / "bar.py").write_text("x\n")
-        _subprocess.run(["git", "add", "bar.py"], cwd=git_repo, capture_output=True, check=True)
-        _subprocess.run(
-            ["git", "commit", "-m", "init"], cwd=git_repo, capture_output=True, check=True
-        )
         result = compact._get_uncommitted_changes(str(git_repo))
         assert result is None
 
