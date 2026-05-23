@@ -182,6 +182,41 @@ def isolate_worker_autostart(monkeypatch):
     yield
 
 
+@pytest.fixture(autouse=True, scope="session")
+def _disable_user_git_hooks(tmp_path_factory):
+    """Stop the user's global ``core.hooksPath`` from firing on every test git call.
+
+    Many test files spin up real git repos (`git init`, `git commit`, ...). If the
+    user has ``core.hookspath`` set globally (e.g. to a lefthook wrapper), each
+    `git` invocation triggers that hook — adding 20-30 s per call on Windows.
+    The whole test_compact integration suite balloons to several minutes from
+    this alone.
+
+    We inject an override via the ``GIT_CONFIG_*`` env-var protocol that points
+    ``core.hooksPath`` at an empty directory. The override applies for the
+    pytest session, is undone on teardown, and doesn't require monkeypatching
+    every test that touches git.
+    """
+    import os
+
+    empty_hooks = tmp_path_factory.mktemp("empty_git_hooks")
+    overrides = {
+        "GIT_CONFIG_COUNT": "1",
+        "GIT_CONFIG_KEY_0": "core.hooksPath",
+        "GIT_CONFIG_VALUE_0": str(empty_hooks),
+    }
+    saved = {k: os.environ.get(k) for k in overrides}
+    os.environ.update(overrides)
+    try:
+        yield
+    finally:
+        for k, prev in saved.items():
+            if prev is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = prev
+
+
 @pytest.fixture(autouse=True)
 def isolate_hook_logging(monkeypatch):
     """Stop hook handlers from writing to the production log file during tests.
