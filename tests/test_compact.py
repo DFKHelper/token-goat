@@ -323,6 +323,32 @@ class TestNoisePathFilter:
         assert compact.is_noise_path("/proj/.venv/lib/site-packages/x.py") is True
         assert compact.is_noise_path("/proj/.mypy_cache/x.json") is True
 
+    def test_extended_build_dirs_are_noise(self):
+        """Framework build outputs and language-specific compile dirs."""
+        assert compact.is_noise_path("/proj/.next/server/chunks/0.js") is True
+        assert compact.is_noise_path("/proj/.nuxt/dist/app.mjs") is True
+        assert compact.is_noise_path("/proj/.svelte-kit/output/app.js") is True
+        assert compact.is_noise_path("/proj/.turbo/log") is True
+        assert compact.is_noise_path("/proj/target/debug/foo") is True
+
+    def test_extended_cache_dirs_are_noise(self):
+        assert compact.is_noise_path("/proj/.tox/py311/lib/x.py") is True
+        assert compact.is_noise_path("/proj/.cache/pip/wheels/x.whl") is True
+        assert compact.is_noise_path("/proj/.parcel-cache/abc.json") is True
+        assert compact.is_noise_path("/proj/coverage/lcov.info") is True
+        assert compact.is_noise_path("/proj/.nyc_output/123.json") is True
+
+    def test_egg_info_and_site_packages_are_noise(self):
+        assert compact.is_noise_path("/proj/mypkg.egg-info/PKG-INFO") is True
+        assert compact.is_noise_path("/proj/venv/lib/site-packages/numpy/x.py") is True
+
+    def test_coverage_and_pidlock_files_are_noise(self):
+        assert compact.is_noise_path("/proj/.coverage") is True
+        assert compact.is_noise_path("/proj/coverage.xml") is True
+        assert compact.is_noise_path("/proj/lcov.info") is True
+        assert compact.is_noise_path("/proj/worker.pid") is True
+        assert compact.is_noise_path("/proj/projects/abc.lock") is True
+
     def test_real_source_files_pass(self):
         assert compact.is_noise_path("/proj/src/auth.py") is False
         assert compact.is_noise_path("/proj/tests/test_x.py") is False
