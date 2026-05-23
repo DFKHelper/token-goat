@@ -1017,7 +1017,7 @@ def _build_bash_dedup_hint_inner(
         exit_str = "" if entry.exit_code is None else f" exit={entry.exit_code}"
 
     if total_bytes <= _BASH_DEDUP_LIGHT_MAX_BYTES:
-        hint_text = f"{fail_prefix}`{cmd_short}` cached (age ~{int(age)}s, {total_bytes}B{exit_str}). `{recall_cmd}`"
+        hint_text = f"{fail_prefix}`{cmd_short}` cached ({int(age)}s, {total_bytes}B{exit_str}). `{recall_cmd}`"
         return ReadHint(hint_text, tokens_avoided)
 
     grep_suffix = " (add --grep PATTERN to filter)" if total_bytes >= _BASH_DEDUP_GREP_SUGGEST_BYTES else ""
@@ -1034,7 +1034,7 @@ def _build_bash_dedup_hint_inner(
         )
     else:
         hint_text = (
-            f"{fail_prefix}`{cmd_short}` (age ~{int(age)}s): {total_bytes:,}B{exit_str} cached. "
+            f"{fail_prefix}`{cmd_short}` ({int(age)}s): {total_bytes:,}B{exit_str} cached. "
             f"`{recall_cmd}`{grep_suffix}"
         )
     return ReadHint(hint_text, tokens_avoided)
@@ -1133,7 +1133,7 @@ def _build_grep_dedup_hint_inner(
         pattern_short = _sanitize_hint_path(pattern)
         path_str = f" in `{_sanitize_hint_path(path)}`" if path else ""
         return ReadHint(
-            f"Grep `{pattern_short}`{path_str} (age ~{int(age)}s): {entry.result_count} matches, ~{tokens_avoided} tokens.",
+            f"Grep `{pattern_short}`{path_str} ({int(age)}s): {entry.result_count} matches, ~{tokens_avoided} tokens.",
             tokens_avoided,
         )
     return None
@@ -1224,7 +1224,7 @@ def _build_glob_dedup_hint_inner(
     pattern_short = _sanitize_hint_path(pattern)
     path_str = f" in `{_sanitize_hint_path(path)}`" if path else ""
     return ReadHint(
-        f"Glob `{pattern_short}`{path_str} (age ~{int(age)}s): {entry.result_count} results, ~{tokens_avoided} tokens.",
+        f"Glob `{pattern_short}`{path_str} ({int(age)}s): {entry.result_count} results, ~{tokens_avoided} tokens.",
         tokens_avoided,
     )
 
@@ -1309,7 +1309,7 @@ def _build_web_dedup_hint_inner(
         f" status={entry.status_code}" if entry.status_code is not None else ""
     )
     return ReadHint(
-        f"URL (age ~{int(age)}s): {entry.body_bytes:,}B{status_str}, ~{tokens_avoided} tokens. "
+        f"URL ({int(age)}s): {entry.body_bytes:,}B{status_str}, ~{tokens_avoided} tokens. "
         f"`token-goat web-output {entry.output_id}`",
         tokens_avoided,
     )
