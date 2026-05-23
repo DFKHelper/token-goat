@@ -69,6 +69,7 @@ from .cache_common import (
     load_sidecar_json,
     safe_join_output_id,
     safe_session_fragment,
+    truncate_tail_preserve,
 )
 from .hooks_common import sanitize_log_str
 
@@ -196,13 +197,9 @@ def store_output(
             return None
 
         body_bytes = len(body.encode("utf-8", errors="replace"))
-        truncated = False
-        if body_bytes > _MAX_STORED_BYTES:
-            keep = body[-_MAX_STORED_BYTES:]
-            stored = _TRUNC_MARKER.format(n=_MAX_STORED_BYTES, total=body_bytes) + keep
-            truncated = True
-        else:
-            stored = body
+        stored, truncated = truncate_tail_preserve(
+            body, _MAX_STORED_BYTES, marker_template=_TRUNC_MARKER,
+        )
 
         paths.atomic_write_text(path, stored)
 
