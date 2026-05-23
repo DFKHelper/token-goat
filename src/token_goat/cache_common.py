@@ -15,6 +15,7 @@ __all__ = [
     "load_sidecar_json",
     "safe_join_output_id",
     "safe_session_fragment",
+    "truncate_tail_preserve",
 ]
 
 import json
@@ -180,6 +181,31 @@ def load_sidecar_json(path: Path) -> dict[str, Any] | None:
     if not isinstance(data, dict):
         return None
     return data
+
+
+def truncate_tail_preserve(
+    content: str,
+    max_bytes: int,
+    *,
+    marker_template: str,
+) -> tuple[str, bool]:
+    """Tail-preserve *content* if its utf-8 byte length exceeds ``max_bytes``.
+
+    Returns ``(stored, was_truncated)``. When the content fits, returns the
+    content unchanged and ``False``. When it doesn't, returns the last
+    ``max_bytes`` characters with ``marker_template`` (a format string accepting
+    ``{n}`` for the kept size and ``{total}`` for the original byte count)
+    prepended, and ``True``.
+
+    Both bash_cache and web_cache pages favour the tail because page footers,
+    JSON response bodies, error stack traces, and the latest portion of test
+    output all tend to live there.
+    """
+    body_bytes = len(content.encode("utf-8", errors="replace"))
+    if body_bytes <= max_bytes:
+        return content, False
+    keep = content[-max_bytes:]
+    return marker_template.format(n=max_bytes, total=body_bytes) + keep, True
 
 
 def safe_session_fragment(session_id: str) -> str:
