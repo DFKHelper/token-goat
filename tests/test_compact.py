@@ -5371,3 +5371,168 @@ class TestColdOutputsMatureOnly:
         session.save(cache)
         manifest = compact._build_manifest_from_cache(cache, sid, 800)
         assert "Cold Outputs" not in manifest
+
+
+# ---------------------------------------------------------------------------
+# #7 — inline diff for top-2 edited files
+# ---------------------------------------------------------------------------
+
+
+class TestInlineDiffForTop2Edited:
+    """Manifest inlines short diffs for top-2 edited files; falls back on large diffs."""
+
+    def _make_two_edited_session(self, sid: str) -> None:
+        session.mark_file_edited(sid, "src/foo.py")
+        session.mark_file_edited(sid, "src/foo.py")
+        session.mark_file_edited(sid, "src/bar.py")
+        session.mark_file_read(sid, "src/foo.py", offset=0, limit=50)
+        session.mark_file_read(sid, "src/bar.py", offset=0, limit=50)
+        session.mark_file_read(sid, "src/baz.py", offset=0, limit=50)
+
+    def test_small_diffs_are_inlined(self, tmp_data_dir, monkeypatch):
+        """When git diff returns small output for top-2 files, manifest includes inline diff."""
+        sid = "inline-diff-small-abc"
+        self._make_two_edited_session(sid)
+
+        small_diff = "--- a/src/foo.py\n+++ b/src/foo.py\n@@ -1 +1 @@\n-old\n+new"
+        assert len(small_diff) < 500
+
+        monkeypatch.setattr(compact, "_get_inline_diff_for_file", lambda path, cwd: small_diff)
+        monkeypatch.setattr(compact, "_get_whole_repo_diff", lambda cwd: None)
+        monkeypatch.setattr(compact, "_get_git_diff_stat_summary", lambda cwd: "")
+        monkeypatch.setattr(compact, "_get_git_diff_stat", lambda paths, cwd: None)
+        monkeypatch.setattr(compact, "_get_session_commits", lambda cwd, ts: [])
+
+        cache = session.load(sid)
+        cache.cwd = "/proj"  # must be set so _render activates the inline-diff path
+        session.save(cache)
+        manifest = compact._build_manifest_from_cache(cache, sid, 800)
+        assert "inline diff" in manifest
+        assert "-old" in manifest or "+new" in manifest
+
+    def test_large_diff_falls_back_to_entry(self, tmp_data_dir, monkeypatch):
+        """When git diff returns None (too large), regular grouped entry is used instead."""
+        sid = "inline-diff-large-abc"
+        self._make_two_edited_session(sid)
+
+        monkeypatch.setattr(compact, "_get_inline_diff_for_file", lambda path, cwd: None)
+        monkeypatch.setattr(compact, "_get_whole_repo_diff", lambda cwd: None)
+        monkeypatch.setattr(compact, "_get_git_diff_stat_summary", lambda cwd: "")
+        monkeypatch.setattr(compact, "_get_git_diff_stat", lambda paths, cwd: None)
+        monkeypatch.setattr(compact, "_get_session_commits", lambda cwd, ts: [])
+
+        cache = session.load(sid)
+        cache.cwd = "/proj"
+        session.save(cache)
+        manifest = compact._build_manifest_from_cache(cache, sid, 800)
+        assert "inline diff" not in manifest
+        assert "Files Edited" in manifest
+
+    def test_total_inline_cap_limits_second_file(self, tmp_data_dir, monkeypatch):
+        """When first file returns None from helper, second file is still attempted."""
+        sid = "inline-diff-cap-abc"
+        self._make_two_edited_session(sid)
+
+        # foo.py returns None (too large per-file), bar.py is small → bar.py should inline
+        small_second = "--- a/src/bar.py\n+++ b/src/bar.py\n@@ -1 +1 @@\n-a\n+b"
+
+        def _fake_inline(path: str, cwd: str):
+            if "foo.py" in path:
+                return None  # too large → helper returns None
+            return small_second
+
+        monkeypatch.setattr(compact, "_get_inline_diff_for_file", _fake_inline)
+        monkeypatch.setattr(compact, "_get_whole_repo_diff", lambda cwd: None)
+        monkeypatch.setattr(compact, "_get_git_diff_stat_summary", lambda cwd: "")
+        monkeypatch.setattr(compact, "_get_git_diff_stat", lambda paths, cwd: None)
+        monkeypatch.setattr(compact, "_get_session_commits", lambda cwd, ts: [])
+
+        cache = session.load(sid)
+        cache.cwd = "/proj"
+        session.save(cache)
+        manifest = compact._build_manifest_from_cache(cache, sid, 800)
+        assert "Files Edited" in manifest
+        assert "inline diff" in manifest  # bar.py inlined
+        assert "bar.py" in manifest
+
+
+# ---------------------------------------------------------------------------
+# #17 — single-file whole-repo inline diff
+# ---------------------------------------------------------------------------
+
+
+class TestSingleFileInlineDiff:
+    """When exactly one file is edited and whole-repo diff fits, inline it."""
+
+    def _make_single_edited_session(self, sid: str) -> None:
+        session.mark_file_edited(sid, "src/only.py")
+        session.mark_file_read(sid, "src/only.py", offset=0, limit=50)
+        session.mark_file_read(sid, "src/util.py", offset=0, limit=50)
+        session.mark_file_read(sid, "src/main.py", offset=0, limit=50)
+
+    def test_single_file_small_diff_inlined(self, tmp_data_dir, monkeypatch):
+        """One edited file + small whole-repo diff replaces list entry with inline diff."""
+        sid = "single-inline-small-abc"
+        self._make_single_edited_session(sid)
+
+        small = "--- a/src/only.py\n+++ b/src/only.py\n@@ -1 +1 @@\n-x=1\n+x=2"
+        assert len(small) < 400
+
+        monkeypatch.setattr(compact, "_get_whole_repo_diff", lambda cwd: small)
+        monkeypatch.setattr(compact, "_get_inline_diff_for_file", lambda path, cwd: None)
+        monkeypatch.setattr(compact, "_get_git_diff_stat_summary", lambda cwd: "")
+        monkeypatch.setattr(compact, "_get_git_diff_stat", lambda paths, cwd: None)
+        monkeypatch.setattr(compact, "_get_session_commits", lambda cwd, ts: [])
+
+        cache = session.load(sid)
+        cache.cwd = "/proj"
+        session.save(cache)
+        manifest = compact._build_manifest_from_cache(cache, sid, 800)
+        assert "inline diff" in manifest
+        assert "-x=1" in manifest or "+x=2" in manifest
+
+    def test_single_file_large_diff_not_inlined(self, tmp_data_dir, monkeypatch):
+        """One edited file but whole-repo diff too big → falls back to grouped entry."""
+        sid = "single-inline-large-abc"
+        self._make_single_edited_session(sid)
+
+        monkeypatch.setattr(compact, "_get_whole_repo_diff", lambda cwd: None)
+        monkeypatch.setattr(compact, "_get_inline_diff_for_file", lambda path, cwd: None)
+        monkeypatch.setattr(compact, "_get_git_diff_stat_summary", lambda cwd: "")
+        monkeypatch.setattr(compact, "_get_git_diff_stat", lambda paths, cwd: None)
+        monkeypatch.setattr(compact, "_get_session_commits", lambda cwd, ts: [])
+
+        cache = session.load(sid)
+        cache.cwd = "/proj"
+        session.save(cache)
+        manifest = compact._build_manifest_from_cache(cache, sid, 800)
+        assert "inline diff" not in manifest
+        assert "Files Edited" in manifest
+
+    def test_two_files_skips_single_file_path(self, tmp_data_dir, monkeypatch):
+        """Two edited files → _get_whole_repo_diff never called (single-file path skipped)."""
+        sid = "two-files-no-single-abc"
+        session.mark_file_edited(sid, "src/a.py")
+        session.mark_file_edited(sid, "src/b.py")
+        session.mark_file_read(sid, "src/a.py", offset=0, limit=50)
+        session.mark_file_read(sid, "src/b.py", offset=0, limit=50)
+        session.mark_file_read(sid, "src/c.py", offset=0, limit=50)
+
+        whole_diff_called = {"n": 0}
+
+        def _fake_whole(cwd: str):
+            whole_diff_called["n"] += 1
+            return "--- a\n+++ b\n@@ -1 +1 @@\n-x\n+y"
+
+        monkeypatch.setattr(compact, "_get_whole_repo_diff", _fake_whole)
+        monkeypatch.setattr(compact, "_get_inline_diff_for_file", lambda path, cwd: None)
+        monkeypatch.setattr(compact, "_get_git_diff_stat_summary", lambda cwd: "")
+        monkeypatch.setattr(compact, "_get_git_diff_stat", lambda paths, cwd: None)
+        monkeypatch.setattr(compact, "_get_session_commits", lambda cwd, ts: [])
+
+        cache = session.load(sid)
+        cache.cwd = "/proj"
+        session.save(cache)
+        manifest = compact._build_manifest_from_cache(cache, sid, 800)
+        assert whole_diff_called["n"] == 0
+        assert "Files Edited" in manifest
