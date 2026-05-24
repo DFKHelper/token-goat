@@ -80,6 +80,30 @@ def make_project_from_root(root: Path) -> Project:
     return Project(root=canon, hash=project_hash(canon), marker=".git")
 
 
+def make_fake_git_repo(parent: Path, name: str = "repo") -> Path:
+    """Create a minimal fake git repo under ``parent/name`` without spawning any subprocess.
+
+    Creates only the directory structure needed for ``project.find_project()`` to
+    detect the directory as a git repo: a ``.git/`` subdirectory and a ``HEAD`` file
+    pointing at ``refs/heads/main``.  No git binary is invoked, so this is ~3–7x
+    faster than :func:`make_git_repo` for tests that only need the marker to exist.
+
+    Use this instead of ``make_git_repo`` when the test:
+
+    * only calls ``find_project()`` or checks that the project is detected
+    * does NOT run ``git status``, ``git log``, ``git diff``, or ``git commit``
+    * does NOT need real commit history, staged files, or a usable worktree
+
+    Returns the repo root path (``parent/name``).
+    """
+    repo = parent / name
+    repo.mkdir()
+    git_dir = repo / ".git"
+    git_dir.mkdir()
+    (git_dir / "HEAD").write_text("ref: refs/heads/main\n", encoding="utf-8")
+    return repo
+
+
 def make_git_repo(
     parent: Path,
     name: str = "repo",
