@@ -255,7 +255,11 @@ def _merge_session_caches(local: SessionCache, remote: SessionCache) -> SessionC
     merged = remote
 
     # --- sets ---
+    # Union can exceed the per-session cap; mirror the clear-on-overflow
+    # strategy used in has_hint_fingerprint() so the set stays bounded.
     merged.hints_seen = local.hints_seen | remote.hints_seen
+    if len(merged.hints_seen) > HINTS_SEEN_MAX:
+        merged.hints_seen = set()
     merged.bash_dedup_emitted_ids = local.bash_dedup_emitted_ids | remote.bash_dedup_emitted_ids
 
     # --- dicts: merge local into remote (local ts wins per-key when both have it) ---
@@ -303,18 +307,20 @@ def _merge_session_caches(local: SessionCache, remote: SessionCache) -> SessionC
     remote.snapshot_shas.update(local.snapshot_shas)
     merged.snapshot_shas = remote.snapshot_shas
 
-    # greps / glob_history: append local entries not already in remote.
+    # greps / glob_history: append local entries not already in remote, then
+    # re-apply the size cap so repeated CAS merges cannot grow these lists
+    # beyond their documented maximums.
     remote_grep_keys = {(grep.pattern, grep.path) for grep in remote.greps}
     for grep in local.greps:
         if (grep.pattern, grep.path) not in remote_grep_keys:
             remote.greps.append(grep)
-    merged.greps = remote.greps
+    merged.greps = remote.greps[-GREPS_HISTORY_MAX:]
 
     remote_glob_keys = {(glob.pattern, glob.path) for glob in remote.glob_history}
     for glob in local.glob_history:
         if (glob.pattern, glob.path) not in remote_glob_keys:
             remote.glob_history.append(glob)
-    merged.glob_history = remote.glob_history
+    merged.glob_history = remote.glob_history[-GLOB_HISTORY_MAX:]
 
     # --- counts: max ---
     merged.hints_emitted = max(local.hints_emitted, remote.hints_emitted)
@@ -322,11 +328,13 @@ def _merge_session_caches(local: SessionCache, remote: SessionCache) -> SessionC
     merged.structured_hints_emitted = max(local.structured_hints_emitted, remote.structured_hints_emitted)
     merged.index_only_hints_emitted = max(local.index_only_hints_emitted, remote.index_only_hints_emitted)
 
-    # --- lists: take the longer one ---
+    # --- lists: take the longer one, capped ---
+    # recent_hints cap is 3 (enforced in from_dict); re-apply after merge so
+    # a union of two near-full lists cannot silently double the size.
     merged.recent_hints = (
         local.recent_hints if len(local.recent_hints) >= len(remote.recent_hints)
         else remote.recent_hints
-    )
+    )[-3:]
 
     # --- scalars: max ---
     merged.last_activity_ts = max(local.last_activity_ts, remote.last_activity_ts)

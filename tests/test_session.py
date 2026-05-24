@@ -2469,3 +2469,99 @@ class TestSessionCAS:
         assert merged.hints_ignored == 4
         assert merged.structured_hints_emitted == 6
         assert merged.index_only_hints_emitted == 1
+
+    def test_merge_greps_respects_cap(self, tmp_data_dir):
+        """After CAS merge, greps must not exceed GREPS_HISTORY_MAX."""
+        from token_goat.session import (
+            GREPS_HISTORY_MAX,
+            GrepEntry,
+            _merge_session_caches,
+        )
+
+        sid = "cas_merge_greps_cap"
+        ts = 1_700_000_000.0
+
+        # Local: 70 unique entries (below cap but near it)
+        local = session.load(sid)
+        local.greps = [GrepEntry(pattern=f"local_{i}", path=None, ts=ts + i) for i in range(70)]
+
+        # Remote: 70 unique entries, 10 overlap with local (same pattern)
+        remote = session.load(sid)
+        remote.greps = [GrepEntry(pattern=f"remote_{i}", path=None, ts=ts + i) for i in range(60)] + [
+            GrepEntry(pattern=f"local_{i}", path=None, ts=ts + i) for i in range(10)
+        ]
+
+        merged = _merge_session_caches(local, remote)
+
+        # Unique entries = 60 remote-only + 10 shared + 60 local-only = 130 total before cap
+        assert len(merged.greps) <= GREPS_HISTORY_MAX, (
+            f"greps grew to {len(merged.greps)} after merge, cap is {GREPS_HISTORY_MAX}"
+        )
+
+    def test_merge_glob_history_respects_cap(self, tmp_data_dir):
+        """After CAS merge, glob_history must not exceed GLOB_HISTORY_MAX."""
+        from token_goat.session import (
+            GLOB_HISTORY_MAX,
+            GlobEntry,
+            _merge_session_caches,
+        )
+
+        sid = "cas_merge_glob_cap"
+        ts = 1_700_000_000.0
+
+        # Local: near cap (18 entries)
+        local = session.load(sid)
+        local.glob_history = [GlobEntry(pattern=f"local_{i}/**", path=None, ts=ts + i) for i in range(18)]
+
+        # Remote: near cap (18 entries), 2 overlapping
+        remote = session.load(sid)
+        remote.glob_history = (
+            [GlobEntry(pattern=f"remote_{i}/**", path=None, ts=ts + i) for i in range(16)]
+            + [GlobEntry(pattern=f"local_{i}/**", path=None, ts=ts + i) for i in range(2)]
+        )
+
+        merged = _merge_session_caches(local, remote)
+
+        # Unique = 16 remote-only + 2 shared + 16 local-only = 34 before cap
+        assert len(merged.glob_history) <= GLOB_HISTORY_MAX, (
+            f"glob_history grew to {len(merged.glob_history)} after merge, cap is {GLOB_HISTORY_MAX}"
+        )
+
+    def test_merge_recent_hints_respects_cap(self, tmp_data_dir):
+        """After CAS merge, recent_hints must not exceed 3 entries."""
+        from token_goat.session import _merge_session_caches
+
+        sid = "cas_merge_recent_hints_cap"
+        ts = 1_700_000_000.0
+
+        local = session.load(sid)
+        local.recent_hints = [("a.py", ts), ("b.py", ts + 1), ("c.py", ts + 2)]
+
+        remote = session.load(sid)
+        remote.recent_hints = [("d.py", ts + 3), ("e.py", ts + 4), ("f.py", ts + 5)]
+
+        merged = _merge_session_caches(local, remote)
+
+        assert len(merged.recent_hints) <= 3, (
+            f"recent_hints grew to {len(merged.recent_hints)} after merge, cap is 3"
+        )
+
+    def test_merge_hints_seen_respects_cap(self, tmp_data_dir):
+        """After CAS merge, hints_seen set must not exceed HINTS_SEEN_MAX."""
+        from token_goat.session import HINTS_SEEN_MAX, _merge_session_caches
+
+        sid = "cas_merge_hints_seen_cap"
+
+        # Each side has HINTS_SEEN_MAX - 1 fully disjoint entries so the union
+        # would be ~2 * HINTS_SEEN_MAX, well over the cap.
+        local = session.load(sid)
+        local.hints_seen = {f"local_{i}" for i in range(HINTS_SEEN_MAX - 1)}
+
+        remote = session.load(sid)
+        remote.hints_seen = {f"remote_{i}" for i in range(HINTS_SEEN_MAX - 1)}
+
+        merged = _merge_session_caches(local, remote)
+
+        assert len(merged.hints_seen) <= HINTS_SEEN_MAX, (
+            f"hints_seen grew to {len(merged.hints_seen)} after merge, cap is {HINTS_SEEN_MAX}"
+        )
