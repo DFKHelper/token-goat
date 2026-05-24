@@ -6,6 +6,7 @@ __all__ = [
     "CompactAssistConfig",
     "Config",
     "SessionBriefConfig",
+    "SkillPreservationConfig",
     "CONFIG_SCHEMA_VERSION",
     "load",
     "save",
@@ -25,6 +26,7 @@ _ENV_COMPACT_ASSIST: Final[str] = "TOKEN_GOAT_COMPACT_ASSIST"  # set to "0"/"fal
 _ENV_COMPACT_ASSIST_LEGACY: Final[str] = "TOKENWISE_COMPACT_ASSIST"  # backward-compat alias
 _ENV_BASH_COMPRESS: Final[str] = "TOKEN_GOAT_BASH_COMPRESS"  # set to "0"/"false"/"no"/"off" to disable
 _ENV_SESSION_BRIEF: Final[str] = "TOKEN_GOAT_SESSION_BRIEF"  # set to "0"/"false"/"no"/"off" to disable
+_ENV_SKILL_PRESERVATION: Final[str] = "TOKEN_GOAT_SKILL_PRESERVATION"  # set to "0"/"false"/"no"/"off" to disable
 
 CONFIG_SCHEMA_VERSION: Final[int] = 1
 
@@ -56,6 +58,13 @@ class _SessionBriefToml(TypedDict, total=False):
     enabled: bool
 
 
+class _SkillPreservationToml(TypedDict, total=False):
+    """Expected shape of the [skill_preservation] TOML section."""
+
+    enabled: bool
+    max_cache_bytes: int
+
+
 class _ConfigToml(TypedDict, total=False):
     """Expected shape of the token-goat config TOML file."""
 
@@ -63,6 +72,7 @@ class _ConfigToml(TypedDict, total=False):
     compact_assist: _CompactAssistToml
     bash_compress: _BashCompressToml
     session_brief: _SessionBriefToml
+    skill_preservation: _SkillPreservationToml
 
 
 @dataclass
@@ -155,6 +165,36 @@ class SessionBriefConfig:
 
 
 @dataclass
+class SkillPreservationConfig:
+    """Configuration for the skill-preservation feature.
+
+    When enabled, token-goat captures every Skill tool invocation to a
+    persistent on-disk cache so the agent can recall the full skill body
+    after a compaction event without re-invoking the skill.  The compaction
+    manifest also lists every loaded skill as a hint to the compaction LLM
+    that this content is load-bearing and should not be summarised away.
+
+    Solves the "I forgot parts of the skill after compaction" problem: skill
+    bodies (Ralph's DoD gates, /improve's iteration sequence, etc.) are
+    typically multi-thousand-token prose blocks that the compaction LLM
+    aggressively trims; this feature preserves them as an external pointer
+    while keeping the conversation lean.
+
+    Attributes:
+        enabled: Master on/off switch.  Can also be disabled at runtime by
+            setting ``TOKEN_GOAT_SKILL_PRESERVATION=0`` (or
+            ``false``/``no``/``off``).
+        max_cache_bytes: Total byte budget for the on-disk skill cache.  When
+            exceeded, oldest entries are evicted until the cap is met.
+            Default 5 MB holds dozens of skill bodies; raise for environments
+            that load very large skills repeatedly.
+    """
+
+    enabled: bool = True
+    max_cache_bytes: int = 5 * 1024 * 1024
+
+
+@dataclass
 class Config:
     """Top-level token-goat configuration.
 
@@ -166,6 +206,7 @@ class Config:
     compact_assist: CompactAssistConfig = field(default_factory=CompactAssistConfig)
     bash_compress: BashCompressConfig = field(default_factory=BashCompressConfig)
     session_brief: SessionBriefConfig = field(default_factory=SessionBriefConfig)
+    skill_preservation: SkillPreservationConfig = field(default_factory=SkillPreservationConfig)
 
 
 # ---------------------------------------------------------------------------
@@ -356,10 +397,31 @@ def load() -> Config:
         )
         sb.enabled = False
 
+    sp_raw: _SkillPreservationToml = cast("_SkillPreservationToml", raw.get("skill_preservation", {}))
+    sp = SkillPreservationConfig(
+        enabled=_validated_bool(sp_raw.get("enabled", True), True, "skill_preservation.enabled"),
+        max_cache_bytes=_validated_int(
+            sp_raw.get("max_cache_bytes", 5 * 1024 * 1024),
+            5 * 1024 * 1024,
+            64 * 1024,           # 64 KB floor — must hold at least one tiny skill
+            512 * 1024 * 1024,   # 512 MB ceiling — generous; skills are not that big
+            "skill_preservation.max_cache_bytes",
+        ),
+    )
+    env_skill = os.environ.get(_ENV_SKILL_PRESERVATION, "").strip().lower()
+    if env_skill in ("0", "false", "no", "off"):
+        _LOG.info(
+            "skill_preservation disabled by environment variable (%s=%s)",
+            _ENV_SKILL_PRESERVATION,
+            env_skill,
+        )
+        sp.enabled = False
+
     _LOG.debug(
         "config resolved: compact_assist enabled=%s triggers=%s min_events=%d max_tokens=%d; "
         "bash_compress enabled=%s disabled_filters=%s max_lines=%d max_bytes=%d timeout=%d; "
-        "session_brief enabled=%s",
+        "session_brief enabled=%s; "
+        "skill_preservation enabled=%s max_cache_bytes=%d",
         ca.enabled,
         ca.triggers,
         ca.min_events,
@@ -370,8 +432,12 @@ def load() -> Config:
         bc.max_bytes,
         bc.timeout_seconds,
         sb.enabled,
+        sp.enabled,
+        sp.max_cache_bytes,
     )
-    return Config(compact_assist=ca, bash_compress=bc, session_brief=sb)
+    return Config(
+        compact_assist=ca, bash_compress=bc, session_brief=sb, skill_preservation=sp,
+    )
 
 
 def save(config: Config) -> None:
@@ -383,6 +449,7 @@ def save(config: Config) -> None:
     ca = config.compact_assist
     bc = config.bash_compress
     sb = config.session_brief
+    sp = config.skill_preservation
     data: _ConfigToml = {
         "schema_version": CONFIG_SCHEMA_VERSION,
         "compact_assist": {
@@ -400,6 +467,10 @@ def save(config: Config) -> None:
         },
         "session_brief": {
             "enabled": sb.enabled,
+        },
+        "skill_preservation": {
+            "enabled": sp.enabled,
+            "max_cache_bytes": sp.max_cache_bytes,
         },
     }
     try:

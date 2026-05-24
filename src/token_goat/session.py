@@ -34,10 +34,12 @@ __all__ = [
     "GREPS_HISTORY_MAX",
     "HINTS_SEEN_MAX",
     "RESULT_CACHE_MAX",
+    "SKILL_HISTORY_MAX",
     "SNAPSHOT_SHAS_MAX",
     "ResultCacheEntry",
     "SESSION_SCHEMA_VERSION",
     "SessionCache",
+    "SkillEntry",
     "WEB_HISTORY_MAX",
     "WebEntry",
     "cleanup_stale",
@@ -49,12 +51,14 @@ __all__ = [
     "load",
     "lookup_bash_entry",
     "lookup_glob_entry",
+    "lookup_skill_entry",
     "lookup_web_entry",
     "mark_bash_run",
     "mark_file_edited",
     "mark_file_read",
     "mark_glob_run",
     "mark_grep",
+    "mark_skill_loaded",
     "mark_web_fetch",
     "put_result_cache",
     "reset_session",
@@ -71,6 +75,7 @@ __all__ = [
     "_serialize_glob_entry",
     "_serialize_grep_entry",
     "_serialize_result_cache_entry",
+    "_serialize_skill_entry",
     "_serialize_web_entry",
 ]
 
@@ -213,6 +218,33 @@ class BashEntry:
 
 
 @dataclass
+class SkillEntry:
+    """Tracks one Skill tool invocation within a session.
+
+    Stored in :attr:`SessionCache.skill_history` keyed by skill name (the
+    short form Claude Code presents, e.g. ``"ralph"`` or ``"plugin:skill"``)
+    so the compaction manifest and post-compact recovery hint can list every
+    skill the agent has loaded.  The body itself lives on disk under the
+    skill-cache directory and is referenced here only by ``output_id``.
+
+    ``content_sha`` lets the renderer distinguish "same skill, same content"
+    (a duplicate load) from "same skill, new content" (the skill was updated
+    between loads — keep both entries addressable).  ``body_bytes`` is the
+    *original* body size before any cache truncation so the manifest can
+    report the real footprint.
+    """
+
+    skill_name: str
+    output_id: str
+    content_sha: str
+    ts: float
+    body_bytes: int
+    truncated: bool = False
+    run_count: int = 1
+    source_path: str = ""  # best-effort filesystem path for the skill body
+
+
+@dataclass
 class ResultCacheEntry:
     """A cached read_symbol/read_section result, keyed elsewhere by (rel_path, item).
 
@@ -279,6 +311,16 @@ _WEB_HISTORY_EVICT = 15
 # Length of the URL preview persisted in session JSON.  100 chars is enough
 # to identify any URL (hostname + path) while halving per-entry storage vs 200.
 _MAX_WEB_URL_PREVIEW = 100
+
+# Maximum number of skill-history entries retained per session, with the same
+# FIFO-eviction semantics as bash history.  Skills are typically loaded a few
+# times per session at most (Ralph + improve + a few specialist skills); 20 is
+# enough to cover any realistic session and keeps the manifest section bounded.
+SKILL_HISTORY_MAX: Final[int] = 20
+_SKILL_HISTORY_EVICT: Final[int] = 5
+# Length of the skill name persisted per entry — long enough for any realistic
+# Claude Code skill including the ``plugin:skill`` namespaced form.
+_MAX_SKILL_NAME_LEN: Final[int] = 128
 
 # Maximum number of grep entries retained per session.  Grep calls accumulate
 # across the session; without a cap the greps list grows without bound.
@@ -379,6 +421,14 @@ class SessionCache:
     # the pre-WebFetch dedup hint and by ``token-goat web-history`` for
     # listing.  Same FIFO + cap semantics as bash_history.
     web_history: dict[str, WebEntry] = field(default_factory=dict)
+    # Per-session skill-load history keyed by skill name.  Populated by the
+    # PostToolUse(Skill) hook; consumed by the compaction manifest's "Active
+    # Skills" section and the post-compact recovery hint.  Same FIFO + cap
+    # semantics as bash_history but with a much smaller cap (skills are loaded
+    # rarely, dozens at most per session).  Repeat loads of the same skill
+    # increment ``run_count`` and update ``ts`` rather than allocating a new
+    # entry, so the history naturally deduplicates by name.
+    skill_history: dict[str, SkillEntry] = field(default_factory=dict)
     # Per-session content snapshots used by the diff-aware re-read hint.  Maps
     # normalized file path → SHA of the snapshot bytes stored on disk under
     # ``data_dir() / "session_snapshots" / <session_short> / <pathhash>.bin``.
@@ -427,6 +477,10 @@ class SessionCache:
                 k: _serialize_web_entry(v)
                 for k, v in self.web_history.items()
             },
+            skill_history={
+                k: _serialize_skill_entry(v)
+                for k, v in self.skill_history.items()
+            },
             snapshot_shas=dict(self.snapshot_shas),
             hints_seen=sorted(self.hints_seen),  # sorted list for stable JSON
         )
@@ -461,6 +515,10 @@ class SessionCache:
     def is_glob_history_empty(self) -> bool:
         """Return True if glob_history is empty or not available."""
         return not self.glob_history
+
+    def is_skill_history_empty(self) -> bool:
+        """Return True if skill_history is empty or not available."""
+        return not self.skill_history
 
     def has_hint_fingerprint(self, fingerprint: str) -> bool:
         """Check if a hint fingerprint was already seen this session.
@@ -574,6 +632,14 @@ class SessionCache:
             if we_entry is not None:
                 web_history[k] = we_entry
 
+        skill_history: dict[str, SkillEntry] = {}
+        for k, v in d.get("skill_history", {}).items():
+            if not isinstance(v, dict) or not isinstance(k, str):
+                continue
+            sk_entry = _parse_skill_entry(v)
+            if sk_entry is not None:
+                skill_history[k] = sk_entry
+
         # snapshot_shas: dict[str, str] — coerce values defensively so a
         # malformed entry written by a future version (e.g. structured object)
         # is dropped silently rather than poisoning the lookup path.
@@ -605,6 +671,7 @@ class SessionCache:
             bash_history=bash_history,
             glob_history=glob_history,
             web_history=web_history,
+            skill_history=skill_history,
             snapshot_shas=snapshot_shas,
             hints_seen=hints_seen,
         )
@@ -730,6 +797,51 @@ def _serialize_web_entry(entry: WebEntry) -> _WebEntryDict:
         status_code=entry.status_code,
         truncated=entry.truncated,
     )
+
+
+def _serialize_skill_entry(entry: SkillEntry) -> _SkillEntryDict:
+    """Serialize a SkillEntry to its wire dict with rounded timestamp.
+
+    Omits ``source_path`` when empty (the default) to keep the JSON compact
+    for the typical case where we did not resolve a filesystem path.
+    """
+    d = _SkillEntryDict(
+        skill_name=entry.skill_name,
+        output_id=entry.output_id,
+        content_sha=entry.content_sha,
+        ts=_round_ts(entry.ts),
+        body_bytes=entry.body_bytes,
+        truncated=entry.truncated,
+        run_count=entry.run_count,
+    )
+    if entry.source_path:
+        d["source_path"] = entry.source_path
+    return d
+
+
+def _parse_skill_entry(v: dict[str, Any]) -> SkillEntry | None:
+    """Deserialize one skill-history dict from JSON, returning None on parse error.
+
+    Coerces every field defensively: the session JSON is user-readable on disk
+    and could be corrupted, partially upgraded, or hand-edited.  A bad entry
+    is dropped (logged at debug) rather than crashing the load path.
+    """
+    try:
+        raw_run_count = v.get("run_count", 1)
+        run_count = max(1, int(raw_run_count)) if isinstance(raw_run_count, (int, float)) else 1
+        return SkillEntry(
+            skill_name=str(v.get("skill_name", "")),
+            output_id=str(v.get("output_id", "")),
+            content_sha=str(v.get("content_sha", "")),
+            ts=float(v.get("ts", 0.0)) if isinstance(v.get("ts", 0.0), (int, float)) else 0.0,
+            body_bytes=max(0, int(v.get("body_bytes", 0))),
+            truncated=bool(v.get("truncated", False)),
+            run_count=run_count,
+            source_path=str(v.get("source_path", "")),
+        )
+    except (TypeError, ValueError, KeyError) as exc:
+        _LOG.debug("session: skipping corrupted skill entry: %s", exc)
+        return None
 
 
 def _parse_file_entry(key: str, v: dict[str, Any], now: float) -> FileEntry | None:
@@ -888,6 +1000,24 @@ class _WebEntryDict(TypedDict, total=False):
     truncated: bool
 
 
+class _SkillEntryDict(TypedDict, total=False):
+    """Wire format of a single SkillEntry as it appears in the session JSON.
+
+    ``source_path`` is optional (``total=False``) because it is only populated
+    when the post-skill hook successfully resolves a filesystem path for the
+    skill body — the common case (plugin-served skills) omits it.
+    """
+
+    skill_name: str
+    output_id: str
+    content_sha: str
+    ts: float
+    body_bytes: int
+    truncated: bool
+    run_count: int
+    source_path: str
+
+
 def _parse_web_entry(v: dict[str, Any]) -> WebEntry | None:
     """Deserialize one web-history dict from JSON, returning None on parse error.
 
@@ -1001,6 +1131,7 @@ class _SessionDict(TypedDict, total=False):
     bash_history: dict[str, _BashEntryDict]
     glob_history: list[_GlobEntryDict]
     web_history: dict[str, _WebEntryDict]
+    skill_history: dict[str, _SkillEntryDict]
     snapshot_shas: dict[str, str]
     hints_seen: list[str]
 
@@ -1203,6 +1334,8 @@ def _migrate_session(data: dict[str, Any]) -> dict[str, Any]:
         data["edited_files"] = {}
     if "glob_history" not in data:
         data["glob_history"] = []
+    if "skill_history" not in data:
+        data["skill_history"] = {}
     if "cwd" not in data:
         data["cwd"] = None
 
@@ -2053,6 +2186,83 @@ def lookup_web_entry(
     if cache.unavailable:
         return None
     return cache.web_history.get(url_sha)
+
+
+def mark_skill_loaded(
+    session_id: str,
+    skill_name: str,
+    output_id: str,
+    content_sha: str,
+    body_bytes: int,
+    truncated: bool,
+    *,
+    source_path: str = "",
+    cache: SessionCache | None = None,
+) -> SessionCache:
+    """Record a Skill tool load in the per-session history.
+
+    Keyed by *skill_name* so repeat loads of the same skill update the existing
+    entry (incrementing ``run_count``, refreshing ``ts``) rather than allocating
+    a new slot.  When the cached body is replaced (``content_sha`` changed
+    because the underlying skill file was updated between loads), the new
+    ``output_id`` overwrites the old one — the most recent body wins.
+
+    FIFO eviction batches removals at ``_SKILL_HISTORY_EVICT`` so a degenerate
+    loop that loads many distinct skills never rewrites the dict on every
+    insert.
+    """
+    try:
+        cache = _resolve_cache(session_id, cache)
+    except ValueError as exc:
+        _LOG.warning("mark_skill_loaded: invalid session_id (%s); skipping", exc)
+        return cache or _fresh_cache(session_id)
+    if cache.unavailable:
+        return cache
+
+    safe_name = sanitize_log_str(skill_name, max_len=_MAX_SKILL_NAME_LEN)
+    if not safe_name:
+        _LOG.debug("mark_skill_loaded: skill_name sanitized to empty; skipping")
+        return cache
+
+    now = time.time()
+    prior_run_count = (
+        cache.skill_history[safe_name].run_count
+        if safe_name in cache.skill_history
+        else 0
+    )
+    entry = SkillEntry(
+        skill_name=safe_name,
+        output_id=output_id,
+        content_sha=content_sha,
+        ts=now,
+        body_bytes=max(0, int(body_bytes)),
+        truncated=bool(truncated),
+        run_count=prior_run_count + 1,
+        source_path=source_path,
+    )
+    _append_to_dict_history(
+        cache.skill_history,
+        safe_name,
+        entry,
+        SKILL_HISTORY_MAX,
+        _SKILL_HISTORY_EVICT,
+        "skill_history",
+        session_id,
+    )
+    return _commit_mutation(cache, now)
+
+
+def lookup_skill_entry(
+    session_id: str, skill_name: str, *, cache: SessionCache | None = None
+) -> SkillEntry | None:
+    """Return the :class:`SkillEntry` for *skill_name* in *session_id*, or None."""
+    try:
+        cache = _resolve_cache(session_id, cache)
+    except ValueError:
+        return None
+    if cache.unavailable:
+        return None
+    return cache.skill_history.get(skill_name)
 
 
 def set_snapshot_sha(

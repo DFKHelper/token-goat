@@ -1569,6 +1569,156 @@ def cmd_bash_history(
         typer.echo(f"{oid}  {size:>10,}B  {age:>6}s ago{exit_str}  {cmd_str}")
 
 
+@app.command("skill-body", rich_help_panel="Core")
+def cmd_skill_body(
+    name: str = typer.Argument(..., help="Skill name (e.g. 'ralph', 'plugin:improve')."),
+    head: int = typer.Option(0, "--head", help="Show first N lines (0 = no head limit)"),
+    tail: int = typer.Option(0, "--tail", help="Show last N lines (0 = no tail limit)"),
+    grep: str | None = typer.Option(None, "--grep", "-g", help="Show only lines matching the (case-sensitive) substring"),
+    full: bool = typer.Option(False, "--full", help="Return the entire cached body (disables smart-default head+tail)"),
+    json_output: bool = _OPT_JSON,
+) -> None:
+    """Retrieve a sliced view of a cached Skill body.
+
+    The PostToolUse(Skill) hook stores each loaded skill body to disk under
+    ``data_dir() / "skills"``.  After a compaction event, use this command
+    to recall the full skill text (Ralph's DoD gates, /improve's iteration
+    sequence, etc.) without re-invoking the skill — which would replay any
+    side effects and pollute the conversation with a fresh tool-result block.
+
+    Looks the skill up by name, picking the most-recent cached entry across
+    all sessions.  When the on-disk cache has been evicted but the original
+    skill file is still resolvable (e.g. ``~/.claude/skills/<name>/SKILL.md``),
+    falls back to reading it from there.
+
+    By default (no flags), large bodies are trimmed to the first 30 lines and
+    last 80 lines with an elision marker.  Pass ``--full`` to get everything.
+    Combine ``--head``, ``--tail``, and ``--grep`` to narrow further.
+    """
+    from . import db as _db  # noqa: PLC0415
+    from . import skill_cache  # noqa: PLC0415
+
+    meta = skill_cache.lookup_by_name(name)
+    body: str | None = None
+    source_label = "cache"
+    if meta is not None:
+        body = skill_cache.load_output(meta.output_id)
+        if body is None and meta.source_path:
+            # Cache file evicted but the source path was recorded — read it back.
+            try:
+                from pathlib import Path  # noqa: PLC0415
+
+                body = Path(meta.source_path).read_text(encoding="utf-8", errors="replace")
+                source_label = f"source:{meta.source_path}"
+            except OSError:
+                body = None
+
+    if body is None:
+        _error(f"no cached body for skill: {name}")
+        raise typer.Exit(1)
+
+    lines = body.splitlines()
+    _slicing_requested = grep or head > 0 or tail > 0
+    if grep:
+        lines = [ln for ln in lines if grep in ln]
+    if head > 0:
+        lines = lines[: head]
+    if tail > 0:
+        lines = lines[-tail :]
+    if not _slicing_requested and not full:
+        lines = _apply_smart_default(lines)
+    sliced = "\n".join(lines)
+
+    # Record a recall stat so `token-goat stats` reflects the value of avoiding
+    # a re-load (and the side effects + tool-result block that come with it).
+    body_bytes = len(body.encode())
+    returned_bytes = len(sliced.encode())
+    saved_bytes = max(0, body_bytes - returned_bytes)
+    _db.record_stat(
+        None,
+        "skill_body_recall",
+        bytes_saved=saved_bytes,
+        tokens_saved=saved_bytes // 4,
+        detail=name[:64],
+    )
+
+    if json_output:
+        original_lines = body.splitlines()
+        original_index: dict[str, int] = {}
+        for i, ln in enumerate(original_lines, start=1):
+            if ln not in original_index:
+                original_index[ln] = i
+        numbered: list[dict[str, object]] = [
+            {"lineno": original_index.get(ln, 0), "text": ln}
+            for ln in lines
+        ]
+        payload: dict[str, object] = {
+            "skill_name": name,
+            "source": source_label,
+            "text": sliced,
+            "lines": len(lines),
+            "numbered_lines": numbered,
+            "total_lines": len(original_lines),
+            "body_bytes": body_bytes,
+        }
+        if meta is not None:
+            payload["output_id"] = meta.output_id
+            payload["content_sha"] = meta.content_sha
+            payload["ts"] = meta.ts
+            payload["truncated"] = meta.truncated
+            payload["source_path"] = meta.source_path
+        typer.echo(json.dumps(payload, ensure_ascii=False, separators=(",", ":")))
+        return
+
+    typer.echo(sliced)
+
+
+@app.command("skill-history", rich_help_panel="Core")
+def cmd_skill_history(
+    json_output: bool = _OPT_JSON,
+    limit: int = typer.Option(20, "--limit", "-n", help="Maximum entries to show (newest first)"),
+) -> None:
+    """List cached Skill bodies, newest first.
+
+    Each row shows the skill name, byte size, age, and (if a sidecar is
+    present) the truncation flag and source path.  Use the name with
+    ``token-goat skill-body <name>`` to retrieve the body.
+    """
+    from . import skill_cache  # noqa: PLC0415
+
+    entries = skill_cache.list_outputs()
+    if limit > 0:
+        entries = entries[:limit]
+
+    if json_output:
+        out: list[dict[str, object]] = []
+        for e in entries:
+            sidecar = skill_cache.read_sidecar(str(e["output_id"]))
+            row = dict(e)
+            if sidecar is not None:
+                row["skill_name"] = sidecar.skill_name
+                row["body_bytes"] = sidecar.body_bytes
+                row["truncated"] = sidecar.truncated
+                row["source_path"] = sidecar.source_path
+            out.append(row)
+        typer.echo(json.dumps(out, ensure_ascii=False, separators=(",", ":")))
+        return
+
+    if not entries:
+        typer.echo("(no cached Skill bodies)")
+        return
+
+    now = time.time()
+    for e in entries:
+        oid = str(e["output_id"])
+        size = int(cast(int, e["size_bytes"]))
+        age = int(now - float(cast(float, e["mtime"])))
+        sidecar = skill_cache.read_sidecar(oid)
+        name_str = sidecar.skill_name if sidecar is not None else "(no sidecar)"
+        trunc_str = " (truncated)" if sidecar is not None and sidecar.truncated else ""
+        typer.echo(f"{oid}  {size:>10,}B  {age:>6}s ago  {name_str}{trunc_str}")
+
+
 @app.command(rich_help_panel="Install")
 def doctor(  # noqa: C901
     fix: bool = typer.Option(  # noqa: B008

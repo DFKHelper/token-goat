@@ -185,43 +185,59 @@ class TestRecoverySlotAllocator:
     """
 
     def test_saturated_matches_floors(self):
-        # Plenty of items everywhere → each section gets exactly its floor;
-        # the floors sum to the total budget so no reallocation happens.
-        assert _allocate_recovery_slots(50, 50, 50) == (6, 4, 4)
+        # Plenty of items in files/bash/web, no skills → each section gets its
+        # floor; skills contributes 0; the unused 4 skill-floor slots flow to
+        # files (priority order) which expands to its ceiling.
+        # Floors (6,4,4,0) sum to 14; budget is 18 so 4 slack slots remain.
+        # Greedy expansion: skill_n=0 so skills stay 0; files gets +4 → 10.
+        files, bash, web, skill = _allocate_recovery_slots(50, 50, 50)
+        assert (files, bash, web, skill) == (10, 4, 4, 0)
 
     def test_web_empty_expands_files_and_bash(self):
-        # 30 files, 30 bash, 0 web: web's 4-slot floor is unused.  The 4 slots
-        # are handed to files first (priority order).  Result: (10, 4, 0).
-        assert _allocate_recovery_slots(30, 30, 0) == (10, 4, 0)
+        # 30 files, 30 bash, 0 web, 0 skills: floors (6,4,0,0)=10, budget 18
+        # leaves 8 slack. files (ceil 12) absorbs 6 to reach ceiling; bash
+        # absorbs the remaining 2 (ceil 10 still has 6 headroom but is satisfied).
+        assert _allocate_recovery_slots(30, 30, 0) == (12, 6, 0, 0)
 
     def test_all_files_fills_to_ceiling(self):
-        # 30 files, 0 bash, 0 web: 8 unused slots from bash+web flow to files
-        # which expands to its 12-slot ceiling (the remaining 2 slots have
-        # nowhere to go).
-        assert _allocate_recovery_slots(30, 0, 0) == (12, 0, 0)
+        # 30 files only: floors (6,0,0,0)=6, budget 18 leaves 12 slack.
+        # files ceiling is 12, so 6 of the slack flows to files reaching its
+        # ceiling; the remaining 6 has nowhere to go (no bash/web/skill items).
+        assert _allocate_recovery_slots(30, 0, 0) == (12, 0, 0, 0)
 
     def test_files_empty_redistributes_to_bash_and_web(self):
-        # 0 files, 20 bash, 20 web: floor pass yields (0,4,4)=8, leaving 6.
-        # Priority order routes everything through bash first (headroom=6),
-        # which absorbs the full remainder.  Result: (0, 10, 4).
-        assert _allocate_recovery_slots(0, 20, 20) == (0, 10, 4)
+        # 0 files, 20 bash, 20 web, 0 skills: floors (0,4,4,0)=8, leaves 10.
+        # Priority: skills (0 candidates → skip), files (0 candidates → skip),
+        # bash absorbs +6 to its ceiling (10), web absorbs remaining +4 to its
+        # ceiling (8).  Final: (0, 10, 8, 0).
+        assert _allocate_recovery_slots(0, 20, 20) == (0, 10, 8, 0)
 
     def test_under_floor_only_takes_what_exists(self):
-        # 2 files, 1 bash, 1 web: each section caps at its true item count,
-        # not its floor, so the sum is 4 rather than 14.
-        assert _allocate_recovery_slots(2, 1, 1) == (2, 1, 1)
+        # 2 files, 1 bash, 1 web, 0 skills: each section caps at its true item
+        # count, so the sum is 4 rather than 18.
+        assert _allocate_recovery_slots(2, 1, 1) == (2, 1, 1, 0)
 
     def test_zero_input_returns_zeros(self):
-        assert _allocate_recovery_slots(0, 0, 0) == (0, 0, 0)
+        assert _allocate_recovery_slots(0, 0, 0) == (0, 0, 0, 0)
 
     def test_total_never_exceeds_budget(self):
         # Stress: every section has unlimited items.  Sum must equal the total
-        # budget (14) regardless of how greedy the expansion gets.
-        files, bash, web = _allocate_recovery_slots(100, 100, 100)
-        assert files + bash + web == hooks_session._RECOVERY_TOTAL_ITEMS
+        # budget regardless of how greedy the expansion gets.
+        files, bash, web, skill = _allocate_recovery_slots(100, 100, 100, 100)
+        assert files + bash + web + skill == hooks_session._RECOVERY_TOTAL_ITEMS
         assert files <= hooks_session._RECOVERY_FILES_CEILING
         assert bash <= hooks_session._RECOVERY_BASH_CEILING
         assert web <= hooks_session._RECOVERY_WEB_CEILING
+        assert skill <= hooks_session._RECOVERY_SKILL_CEILING
+
+    def test_skills_get_priority_when_present(self):
+        # With items in every section, skills (highest priority) claim their
+        # floor first and then get expanded from slack.  Files still gets
+        # ceiling-pinned because its ceiling is highest.
+        files, bash, web, skill = _allocate_recovery_slots(50, 50, 50, 50)
+        # Total still bounded:
+        assert files + bash + web + skill == hooks_session._RECOVERY_TOTAL_ITEMS
+        assert skill >= hooks_session._RECOVERY_MAX_SKILL
 
 
 class TestRecoveryStatAccounting:
