@@ -779,7 +779,7 @@ def index_project(
     files = list(iter_source_files(project))
     n_total = len(files)
     if n_total == 0:
-        _LOG.warning(
+        _LOG.debug(
             "index_project: no source files found under %s — check project root and SKIP_DIRS",
             project.root,
         )
