@@ -67,15 +67,22 @@ __all__ = [
     "safe_load",
     "validate_session_id",
     # Internal helpers exposed for testing
+    "_coerce_nonneg_int",
+    "_coerce_ts",
+    "_lookup_in_cache",
     "_merge_session_caches",
     "_migrate_session",
     "_parse_file_entry",
     "_parse_glob_entry",
+    "_parse_grep_entry",
+    "_parse_pattern_entry_fields",
     "_round_ts",
+    "_safe_parse",
     "_serialize_bash_entry",
     "_serialize_file_entry",
     "_serialize_glob_entry",
     "_serialize_grep_entry",
+    "_serialize_pattern_entry",
     "_serialize_result_cache_entry",
     "_serialize_skill_entry",
     "_serialize_web_entry",
@@ -90,17 +97,47 @@ import stat as _stat_module
 import sys
 import threading
 import time
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from itertools import islice
 from operator import attrgetter
 from pathlib import Path
-from typing import Any, Final, TypedDict
+from typing import Any, Final, TypedDict, TypeVar
 
 from . import paths
 from .hooks_common import is_real_int, sanitize_log_str
 from .util import get_logger
 
 _LOG = get_logger("session")
+
+_T = TypeVar("_T")
+
+
+def _coerce_ts(raw: Any) -> float:
+    """Return *raw* as float if it is numeric, else 0.0."""
+    return float(raw) if isinstance(raw, (int, float)) else 0.0
+
+
+def _coerce_nonneg_int(raw: Any, default: int = 0) -> int:
+    """Return ``int(raw)`` clamped to ≥ 0, or *default* on error."""
+    try:
+        return max(0, int(raw))
+    except (TypeError, ValueError):
+        return default
+
+
+def _safe_parse(
+    factory: Callable[[dict[str, Any]], _T],
+    data: dict[str, Any],
+    label: str,
+) -> _T | None:
+    """Call *factory(data)*, logging and returning None on any parse error."""
+    try:
+        return factory(data)
+    except (TypeError, ValueError, KeyError) as exc:
+        _LOG.debug("session: skipping corrupted %s entry: %s", label, exc)
+        return None
+
 
 SESSION_SCHEMA_VERSION = 1
 _FILE_LOCK = threading.Lock()  # in-process; multi-process safe enough via atomic write
@@ -957,15 +994,11 @@ class SessionCache:
                     bash_dedup_emitted_ids.add(oid)
 
         # hints_emitted / hints_ignored: int counters, default 0 for older sessions.
-        raw_hints_emitted = d.get("hints_emitted", 0)
-        hints_emitted = max(0, int(raw_hints_emitted)) if isinstance(raw_hints_emitted, (int, float)) else 0
-        raw_hints_ignored = d.get("hints_ignored", 0)
-        hints_ignored = max(0, int(raw_hints_ignored)) if isinstance(raw_hints_ignored, (int, float)) else 0
+        hints_emitted = _coerce_nonneg_int(d.get("hints_emitted", 0))
+        hints_ignored = _coerce_nonneg_int(d.get("hints_ignored", 0))
         # Per-kind hint counters for budget enforcement (new fields, default 0 for older sessions).
-        raw_structured = d.get("structured_hints_emitted", 0)
-        structured_hints_emitted = max(0, int(raw_structured)) if isinstance(raw_structured, (int, float)) else 0
-        raw_index_only = d.get("index_only_hints_emitted", 0)
-        index_only_hints_emitted = max(0, int(raw_index_only)) if isinstance(raw_index_only, (int, float)) else 0
+        structured_hints_emitted = _coerce_nonneg_int(d.get("structured_hints_emitted", 0))
+        index_only_hints_emitted = _coerce_nonneg_int(d.get("index_only_hints_emitted", 0))
 
         # recent_hints: list[[path, ts]], stored as list[list[str|float]] for JSON.
         # Cap to 3 entries for safety; drop malformed entries silently.
@@ -1001,8 +1034,8 @@ class SessionCache:
             index_only_hints_emitted=index_only_hints_emitted,
             recent_hints=recent_hints,
             last_manifest_sha=str(d.get("last_manifest_sha", "")),
-            last_manifest_ts=float(d.get("last_manifest_ts", 0.0)) if isinstance(d.get("last_manifest_ts"), (int, float)) else 0.0,
-            version=max(0, int(d.get("version", 0))) if isinstance(d.get("version"), (int, float)) else 0,
+            last_manifest_ts=_coerce_ts(d.get("last_manifest_ts", 0.0)),
+            version=_coerce_nonneg_int(d.get("version", 0)) if isinstance(d.get("version"), (int, float)) else 0,
         )
 
 
@@ -1036,58 +1069,63 @@ def _serialize_file_entry(entry: FileEntry) -> _FileEntryDict:
     return d
 
 
-def _serialize_grep_entry(entry: GrepEntry) -> _GrepEntryDict:
-    """Serialize a GrepEntry to its wire dict with rounded timestamp."""
-    d = _GrepEntryDict(
-        pattern=entry.pattern,
-        path=entry.path,
-        ts=_round_ts(entry.ts),
-    )
+def _serialize_pattern_entry(entry: GrepEntry | GlobEntry) -> dict[str, Any]:
+    """Serialize a GrepEntry or GlobEntry to its wire dict with rounded timestamp."""
+    d: dict[str, Any] = {
+        "pattern": entry.pattern,
+        "path": entry.path,
+        "ts": _round_ts(entry.ts),
+    }
     if entry.result_count is not None:
         d["result_count"] = entry.result_count
     return d
+
+
+def _serialize_grep_entry(entry: GrepEntry) -> _GrepEntryDict:
+    """Serialize a GrepEntry to its wire dict with rounded timestamp."""
+    return _serialize_pattern_entry(entry)  # type: ignore[return-value]
 
 
 def _serialize_glob_entry(entry: GlobEntry) -> _GlobEntryDict:
     """Serialize a GlobEntry to its wire dict with rounded timestamp."""
-    d = _GlobEntryDict(
-        pattern=entry.pattern,
-        path=entry.path,
-        ts=_round_ts(entry.ts),
-    )
-    if entry.result_count is not None:
-        d["result_count"] = entry.result_count
-    return d
+    return _serialize_pattern_entry(entry)  # type: ignore[return-value]
 
 
-def _parse_glob_entry(g: dict[str, Any]) -> GlobEntry | None:
-    """Deserialize one glob-entry dict from JSON, returning None on any parse error.
+def _parse_pattern_entry_fields(
+    g: dict[str, Any],
+    factory: Callable[..., _T],
+    label: str,
+) -> _T | None:
+    """Parse a grep-or-glob entry dict, constructing the dataclass via *factory*.
 
-    Narrows each field to the expected type before constructing ``GlobEntry`` so
-    that unexpected JSON types don't silently become wrong-typed attributes.
+    Shared by :func:`_parse_grep_entry` and :func:`_parse_glob_entry` — they
+    differ only in the dataclass constructor (*factory*) and the *label* string
+    used in debug log messages.
     """
     try:
         raw_pattern = g.get("pattern", "")
         raw_path = g.get("path")
         raw_ts = g.get("ts", 0.0)
         raw_result_count = g.get("result_count")
-        return GlobEntry(
+        return factory(
             pattern=str(raw_pattern) if isinstance(raw_pattern, (str, int, float)) else "",
             path=str(raw_path) if isinstance(raw_path, str) else None,
-            ts=float(raw_ts) if isinstance(raw_ts, (int, float)) else 0.0,
-            result_count=(
-                int(raw_result_count)
-                if is_real_int(raw_result_count)
-                else None
-            ),
+            ts=_coerce_ts(raw_ts),
+            result_count=(int(raw_result_count) if is_real_int(raw_result_count) else None),
         )
     except (TypeError, ValueError, KeyError) as exc:
         _LOG.debug(
-            "session: skipping corrupted glob entry (%s): %s",
+            "session: skipping corrupted %s entry (%s): %s",
+            label,
             exc,
             sanitize_log_str(repr(g)[:120]),
         )
         return None
+
+
+def _parse_glob_entry(g: dict[str, Any]) -> GlobEntry | None:
+    """Deserialize one glob-entry dict from JSON, returning None on any parse error."""
+    return _parse_pattern_entry_fields(g, GlobEntry, "glob")
 
 
 def _serialize_result_cache_entry(entry: ResultCacheEntry) -> _ResultCacheEntryDict:
@@ -1155,22 +1193,20 @@ def _parse_skill_entry(v: dict[str, Any]) -> SkillEntry | None:
     and could be corrupted, partially upgraded, or hand-edited.  A bad entry
     is dropped (logged at debug) rather than crashing the load path.
     """
-    try:
-        raw_run_count = v.get("run_count", 1)
+    def _inner(d: dict[str, Any]) -> SkillEntry:
+        raw_run_count = d.get("run_count", 1)
         run_count = max(1, int(raw_run_count)) if isinstance(raw_run_count, (int, float)) else 1
         return SkillEntry(
-            skill_name=str(v.get("skill_name", "")),
-            output_id=str(v.get("output_id", "")),
-            content_sha=str(v.get("content_sha", "")),
-            ts=float(v.get("ts", 0.0)) if isinstance(v.get("ts", 0.0), (int, float)) else 0.0,
-            body_bytes=max(0, int(v.get("body_bytes", 0))),
-            truncated=bool(v.get("truncated", False)),
+            skill_name=str(d.get("skill_name", "")),
+            output_id=str(d.get("output_id", "")),
+            content_sha=str(d.get("content_sha", "")),
+            ts=_coerce_ts(d.get("ts", 0.0)),
+            body_bytes=_coerce_nonneg_int(d.get("body_bytes", 0)),
+            truncated=bool(d.get("truncated", False)),
             run_count=run_count,
-            source_path=str(v.get("source_path", "")),
+            source_path=str(d.get("source_path", "")),
         )
-    except (TypeError, ValueError, KeyError) as exc:
-        _LOG.debug("session: skipping corrupted skill entry: %s", exc)
-        return None
+    return _safe_parse(_inner, v, "skill")
 
 
 def _parse_file_entry(key: str, v: dict[str, Any], now: float) -> FileEntry | None:
@@ -1221,7 +1257,7 @@ def _parse_file_entry(key: str, v: dict[str, Any], now: float) -> FileEntry | No
         return FileEntry(
             rel_or_abs=str(v.get("rel_or_abs", key)),
             last_read_ts=float(v.get("last_read_ts", now)),
-            read_count=max(0, int(v.get("read_count", 0))),
+            read_count=_coerce_nonneg_int(v.get("read_count", 0)),
             line_ranges=line_ranges,
             symbols_read=symbols_read,
             last_edit_ts=last_edit_ts,
@@ -1237,33 +1273,8 @@ def _parse_file_entry(key: str, v: dict[str, Any], now: float) -> FileEntry | No
 
 
 def _parse_grep_entry(g: dict[str, Any]) -> GrepEntry | None:
-    """Deserialize one grep-entry dict from JSON, returning None on any parse error.
-
-    Narrows each field to the expected type before constructing ``GrepEntry`` so
-    that unexpected JSON types don't silently become wrong-typed attributes.
-    """
-    try:
-        raw_pattern = g.get("pattern", "")
-        raw_path = g.get("path")
-        raw_ts = g.get("ts", 0.0)
-        raw_result_count = g.get("result_count")
-        return GrepEntry(
-            pattern=str(raw_pattern) if isinstance(raw_pattern, (str, int, float)) else "",
-            path=str(raw_path) if isinstance(raw_path, str) else None,
-            ts=float(raw_ts) if isinstance(raw_ts, (int, float)) else 0.0,
-            result_count=(
-                int(raw_result_count)
-                if is_real_int(raw_result_count)
-                else None
-            ),
-        )
-    except (TypeError, ValueError, KeyError) as exc:
-        _LOG.debug(
-            "session: skipping corrupted grep entry (%s): %s",
-            exc,
-            sanitize_log_str(repr(g)[:120]),
-        )
-        return None
+    """Deserialize one grep-entry dict from JSON, returning None on any parse error."""
+    return _parse_pattern_entry_fields(g, GrepEntry, "grep")
 
 
 def _parse_result_cache_entry(v: dict[str, Any]) -> ResultCacheEntry | None:
@@ -1274,11 +1285,11 @@ def _parse_result_cache_entry(v: dict[str, Any]) -> ResultCacheEntry | None:
     or malformed entries are dropped silently — a stale cache miss is harmless
     (the slow path recomputes), while a corrupted entry could crash the hot path.
     """
-    try:
-        raw_sha = v.get("file_sha", "")
-        raw_kind = v.get("kind", "")
-        raw_result = v.get("result", {})
-        raw_ts = v.get("ts", 0.0)
+    def _inner(d: dict[str, Any]) -> ResultCacheEntry | None:
+        raw_sha = d.get("file_sha", "")
+        raw_kind = d.get("kind", "")
+        raw_result = d.get("result", {})
+        raw_ts = d.get("ts", 0.0)
         if not isinstance(raw_result, dict):
             return None
         if not isinstance(raw_kind, str) or raw_kind not in ("symbol", "section"):
@@ -1287,11 +1298,9 @@ def _parse_result_cache_entry(v: dict[str, Any]) -> ResultCacheEntry | None:
             file_sha=str(raw_sha) if isinstance(raw_sha, (str, int, float)) else "",
             kind=raw_kind,
             result=dict(raw_result),  # shallow copy — JSON values are immutable scalars/dicts
-            ts=float(raw_ts) if isinstance(raw_ts, (int, float)) else 0.0,
+            ts=_coerce_ts(raw_ts),
         )
-    except (TypeError, ValueError, KeyError) as exc:
-        _LOG.debug("session: skipping corrupted result cache entry: %s", exc)
-        return None
+    return _safe_parse(_inner, v, "result_cache")
 
 
 class _ResultCacheEntryDict(TypedDict, total=False):
@@ -1354,23 +1363,21 @@ def _parse_web_entry(v: dict[str, Any]) -> WebEntry | None:
     could be corrupted, partially upgraded, or hand-edited.  A bad entry is
     dropped at debug level rather than crashing the session-load path.
     """
-    try:
-        raw_status = v.get("status_code")
+    def _inner(d: dict[str, Any]) -> WebEntry:
+        raw_status = d.get("status_code")
         status_code: int | None = None
         if is_real_int(raw_status):
             status_code = raw_status
         return WebEntry(
-            url_sha=str(v.get("url_sha", "")),
-            url_preview=str(v.get("url_preview", "")),
-            output_id=str(v.get("output_id", "")),
-            ts=float(v.get("ts", 0.0)) if isinstance(v.get("ts", 0.0), (int, float)) else 0.0,
-            body_bytes=max(0, int(v.get("body_bytes", 0))),
+            url_sha=str(d.get("url_sha", "")),
+            url_preview=str(d.get("url_preview", "")),
+            output_id=str(d.get("output_id", "")),
+            ts=_coerce_ts(d.get("ts", 0.0)),
+            body_bytes=_coerce_nonneg_int(d.get("body_bytes", 0)),
             status_code=status_code,
-            truncated=bool(v.get("truncated", False)),
+            truncated=bool(d.get("truncated", False)),
         )
-    except (TypeError, ValueError, KeyError) as exc:
-        _LOG.debug("session: skipping corrupted web entry: %s", exc)
-        return None
+    return _safe_parse(_inner, v, "web")
 
 
 def _parse_bash_entry(v: dict[str, Any]) -> BashEntry | None:
@@ -1380,27 +1387,25 @@ def _parse_bash_entry(v: dict[str, Any]) -> BashEntry | None:
     disk and could be corrupted, partially upgraded, or hand-edited.  A bad
     entry is dropped (logged at debug) rather than crashing the load path.
     """
-    try:
-        raw_exit = v.get("exit_code")
+    def _inner(d: dict[str, Any]) -> BashEntry:
+        raw_exit = d.get("exit_code")
         exit_code: int | None = None
         if is_real_int(raw_exit):
             exit_code = raw_exit
-        raw_run_count = v.get("run_count", 1)
+        raw_run_count = d.get("run_count", 1)
         run_count = max(1, int(raw_run_count)) if isinstance(raw_run_count, (int, float)) else 1
         return BashEntry(
-            cmd_sha=str(v.get("cmd_sha", "")),
-            cmd_preview=str(v.get("cmd_preview", "")),
-            output_id=str(v.get("output_id", "")),
-            ts=float(v.get("ts", 0.0)) if isinstance(v.get("ts", 0.0), (int, float)) else 0.0,
-            stdout_bytes=max(0, int(v.get("stdout_bytes", 0))),
-            stderr_bytes=max(0, int(v.get("stderr_bytes", 0))),
+            cmd_sha=str(d.get("cmd_sha", "")),
+            cmd_preview=str(d.get("cmd_preview", "")),
+            output_id=str(d.get("output_id", "")),
+            ts=_coerce_ts(d.get("ts", 0.0)),
+            stdout_bytes=_coerce_nonneg_int(d.get("stdout_bytes", 0)),
+            stderr_bytes=_coerce_nonneg_int(d.get("stderr_bytes", 0)),
             exit_code=exit_code,
-            truncated=bool(v.get("truncated", False)),
+            truncated=bool(d.get("truncated", False)),
             run_count=run_count,
         )
-    except (TypeError, ValueError, KeyError) as exc:
-        _LOG.debug("session: skipping corrupted bash entry: %s", exc)
-        return None
+    return _safe_parse(_inner, v, "bash")
 
 
 class _FileEntryDict(TypedDict, total=False):
@@ -2572,17 +2577,32 @@ def mark_bash_run(
     return _commit_mutation(cache, now)
 
 
-def lookup_bash_entry(
-    session_id: str, cmd_sha: str, *, cache: SessionCache | None = None
-) -> BashEntry | None:
-    """Return the :class:`BashEntry` for *cmd_sha* in *session_id*, or None."""
+def _lookup_in_cache(
+    session_id: str,
+    accessor: Callable[[SessionCache], dict[str, Any]],
+    key: str,
+    cache: SessionCache | None,
+) -> Any | None:
+    """Resolve *session_id*, guard on unavailable, then return ``accessor(cache).get(key)``.
+
+    Shared by :func:`lookup_bash_entry`, :func:`lookup_web_entry`, and
+    :func:`lookup_skill_entry` — they differ only in which dict field is accessed.
+    Returns ``None`` on invalid session_id (ValueError) or unavailable cache.
+    """
     try:
         cache = _resolve_cache(session_id, cache)
     except ValueError:
         return None
     if cache.unavailable:
         return None
-    return cache.bash_history.get(cmd_sha)
+    return accessor(cache).get(key)
+
+
+def lookup_bash_entry(
+    session_id: str, cmd_sha: str, *, cache: SessionCache | None = None
+) -> BashEntry | None:
+    """Return the :class:`BashEntry` for *cmd_sha* in *session_id*, or None."""
+    return _lookup_in_cache(session_id, lambda c: c.bash_history, cmd_sha, cache)
 
 
 def mark_web_fetch(
@@ -2648,13 +2668,7 @@ def lookup_web_entry(
     session_id: str, url_sha: str, *, cache: SessionCache | None = None
 ) -> WebEntry | None:
     """Return the :class:`WebEntry` for *url_sha* in *session_id*, or None."""
-    try:
-        cache = _resolve_cache(session_id, cache)
-    except ValueError:
-        return None
-    if cache.unavailable:
-        return None
-    return cache.web_history.get(url_sha)
+    return _lookup_in_cache(session_id, lambda c: c.web_history, url_sha, cache)
 
 
 def mark_skill_loaded(
@@ -2725,13 +2739,7 @@ def lookup_skill_entry(
     session_id: str, skill_name: str, *, cache: SessionCache | None = None
 ) -> SkillEntry | None:
     """Return the :class:`SkillEntry` for *skill_name* in *session_id*, or None."""
-    try:
-        cache = _resolve_cache(session_id, cache)
-    except ValueError:
-        return None
-    if cache.unavailable:
-        return None
-    return cache.skill_history.get(skill_name)
+    return _lookup_in_cache(session_id, lambda c: c.skill_history, skill_name, cache)
 
 
 def set_snapshot_sha(
