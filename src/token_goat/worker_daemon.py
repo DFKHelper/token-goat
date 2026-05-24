@@ -15,7 +15,9 @@ hook process for two reasons:
 """
 from __future__ import annotations
 
+import atexit
 import contextlib
+import ctypes
 import os
 import signal
 import sys
@@ -55,6 +57,55 @@ def _install_signal_handlers() -> None:
         if hasattr(signal, sig.name):
             with contextlib.suppress(ValueError, AttributeError):
                 signal.signal(sig, lambda *_: sys.exit(0))
+
+
+def _install_windows_console_handler(stop_event=None) -> None:
+    """Register a Windows console-control handler via SetConsoleCtrlHandler.
+
+    Handles CTRL_CLOSE_EVENT (2) and CTRL_SHUTDOWN_EVENT (6).  On either event
+    the handler sets *stop_event* (if provided) so the main loop can exit
+    gracefully, then calls _clear_pid() directly as a belt-and-suspenders
+    cleanup.  Returning True from the callback gives Windows up to 5 s of grace
+    before it force-terminates the process.
+
+    The entire registration is wrapped in try/except so that environments that
+    don't support the call (e.g. no console attached under pythonw.exe) fall
+    back silently rather than breaking the daemon.
+    """
+    _CTRL_CLOSE_EVENT = 2
+    _CTRL_SHUTDOWN_EVENT = 6
+
+    # HandlerRoutine prototype: BOOL WINAPI HandlerRoutine(DWORD dwCtrlType)
+    _HandlerProto = ctypes.WINFUNCTYPE(ctypes.c_bool, ctypes.c_ulong)
+
+    def _handler(ctrl_type: int) -> bool:
+        if ctrl_type in (_CTRL_CLOSE_EVENT, _CTRL_SHUTDOWN_EVENT):
+            _LOG.debug(
+                "Windows console-control event %d received; initiating clean shutdown",
+                ctrl_type,
+            )
+            if stop_event is not None:
+                stop_event.set()
+            with contextlib.suppress(Exception):
+                _worker._clear_pid()
+            return True  # handled — gives up to 5 s before forced kill
+        return False  # not handled — pass to next handler
+
+    try:
+        _cb = _HandlerProto(_handler)
+        result = ctypes.windll.kernel32.SetConsoleCtrlHandler(_cb, True)
+        if result:
+            # Keep the callback object alive for the process lifetime to prevent
+            # the GC from collecting the ctypes function pointer while it is still
+            # registered with the OS.
+            _install_windows_console_handler._keepalive = _cb  # type: ignore[attr-defined]
+            _LOG.debug("Windows console-control handler registered")
+        else:
+            _LOG.debug(
+                "SetConsoleCtrlHandler returned 0 (no console attached or permission denied); skipping"
+            )
+    except Exception:  # noqa: BLE001
+        _LOG.debug("Windows console-control handler registration failed; falling back to no-op")
 
 
 def _timed_cycle(label: str, fn: Callable[[], None]) -> None:
@@ -140,6 +191,11 @@ def run_daemon(stop_event=None) -> None:
         _LOG.info("another worker holds the slot; exiting")
         return
 
+    # Belt-and-suspenders: ensure the PID file is removed even if the process is
+    # killed via a signal path that bypasses the try/finally below (e.g. pythonw.exe
+    # CTRL_CLOSE_EVENT with a very short grace window, or SIGKILL on POSIX).
+    atexit.register(_worker._clear_pid)
+
     # try/finally so the claim file is always released, even if startup raises before the main loop.
     restart_for_upgrade = False
     try:
@@ -172,6 +228,8 @@ def run_daemon(stop_event=None) -> None:
             return stop_event is not None and stop_event.is_set()
 
         _install_signal_handlers()
+        if sys.platform == "win32":
+            _install_windows_console_handler(stop_event=stop_event)
         _LOG.info("worker started, pid=%s", os.getpid())
 
         while not should_stop():

@@ -1,6 +1,8 @@
 """Tests for worker_daemon — loop-level branches not covered by test_worker.py."""
 from __future__ import annotations
 
+import ctypes
+import sys
 import threading
 from unittest.mock import patch
 
@@ -340,4 +342,169 @@ def test_run_daemon_deferred_drain_does_not_accumulate_backoff(tmp_data_dir):
     assert poll_args, "loop never ran"
     assert all(n == 0 for n in poll_args), (
         f"deferred drains accumulated idle back-off instead of resetting it: {poll_args}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Windows console-control handler
+# ---------------------------------------------------------------------------
+
+
+def _capture_ctrl_handler(fake_set_ctrl_handler):
+    """Helper: call _install_windows_console_handler with the given fake and return captured cb."""
+    captured = []
+
+    def _spy(cb, add):
+        captured.append(cb)
+        return fake_set_ctrl_handler(cb, add)
+
+    with patch.object(ctypes.windll.kernel32, "SetConsoleCtrlHandler", _spy):
+        return captured
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows-only: SetConsoleCtrlHandler")
+def test_windows_console_handler_ctrl_close_sets_stop_event(tmp_data_dir):
+    """CTRL_CLOSE_EVENT (2) sets stop_event and calls _clear_pid."""
+    _CTRL_CLOSE_EVENT = 2
+    stop = threading.Event()
+    captured_callback = []
+
+    def _fake_set_ctrl_handler(cb, add):
+        captured_callback.append(cb)
+        return 1
+
+    # Keep the _clear_pid patch active while invoking the callback — the handler
+    # closes over _worker._clear_pid at call time, so the patch must still be in effect.
+    with (
+        patch.object(ctypes.windll.kernel32, "SetConsoleCtrlHandler", _fake_set_ctrl_handler),
+        patch.object(worker, "_clear_pid") as mock_clear,
+    ):
+        daemon._install_windows_console_handler(stop_event=stop)
+        assert captured_callback, "SetConsoleCtrlHandler was never called"
+        result = captured_callback[0](ctypes.c_ulong(_CTRL_CLOSE_EVENT))
+        assert result is True, "handler must return True to signal the event was handled"
+        assert stop.is_set(), "stop_event must be set on CTRL_CLOSE_EVENT"
+        mock_clear.assert_called()
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows-only: SetConsoleCtrlHandler")
+def test_windows_console_handler_ctrl_shutdown_sets_stop_event(tmp_data_dir):
+    """CTRL_SHUTDOWN_EVENT (6) sets stop_event and calls _clear_pid."""
+    _CTRL_SHUTDOWN_EVENT = 6
+    stop = threading.Event()
+    captured_callback = []
+
+    def _fake_set_ctrl_handler(cb, add):
+        captured_callback.append(cb)
+        return 1
+
+    with (
+        patch.object(ctypes.windll.kernel32, "SetConsoleCtrlHandler", _fake_set_ctrl_handler),
+        patch.object(worker, "_clear_pid") as mock_clear,
+    ):
+        daemon._install_windows_console_handler(stop_event=stop)
+        assert captured_callback, "SetConsoleCtrlHandler was never called"
+        result = captured_callback[0](ctypes.c_ulong(_CTRL_SHUTDOWN_EVENT))
+        assert result is True, "handler must return True to signal the event was handled"
+        assert stop.is_set(), "stop_event must be set on CTRL_SHUTDOWN_EVENT"
+        mock_clear.assert_called()
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows-only: SetConsoleCtrlHandler")
+def test_windows_console_handler_unhandled_event_returns_false(tmp_data_dir):
+    """Unrecognised ctrl events (e.g. CTRL_C_EVENT=0) return False to pass to next handler."""
+    _CTRL_C_EVENT = 0
+    captured_callback = []
+
+    def _fake_set_ctrl_handler(cb, add):
+        captured_callback.append(cb)
+        return 1
+
+    with patch.object(ctypes.windll.kernel32, "SetConsoleCtrlHandler", _fake_set_ctrl_handler):
+        daemon._install_windows_console_handler()
+        assert captured_callback
+        result = captured_callback[0](ctypes.c_ulong(_CTRL_C_EVENT))
+        assert result is False, "unhandled events must return False"
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows-only: SetConsoleCtrlHandler")
+def test_windows_console_handler_registration_failure_is_silent(tmp_data_dir):
+    """If SetConsoleCtrlHandler raises (e.g. no console under pythonw.exe), no exception escapes."""
+    with patch.object(
+        ctypes.windll.kernel32,
+        "SetConsoleCtrlHandler",
+        side_effect=OSError("no console"),
+    ):
+        daemon._install_windows_console_handler()  # must not raise
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows-only: SetConsoleCtrlHandler")
+def test_windows_console_handler_returns_zero_is_silent(tmp_data_dir):
+    """If SetConsoleCtrlHandler returns 0 (failed), the function completes without raising."""
+    with patch.object(ctypes.windll.kernel32, "SetConsoleCtrlHandler", return_value=0):
+        daemon._install_windows_console_handler()  # must not raise
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows-only: SetConsoleCtrlHandler")
+def test_windows_console_handler_no_stop_event_still_calls_clear_pid(tmp_data_dir):
+    """When stop_event=None, CTRL_CLOSE_EVENT still calls _clear_pid directly."""
+    _CTRL_CLOSE_EVENT = 2
+    captured_callback = []
+
+    def _fake_set_ctrl_handler(cb, add):
+        captured_callback.append(cb)
+        return 1
+
+    with (
+        patch.object(ctypes.windll.kernel32, "SetConsoleCtrlHandler", _fake_set_ctrl_handler),
+        patch.object(worker, "_clear_pid") as mock_clear,
+    ):
+        daemon._install_windows_console_handler(stop_event=None)
+        assert captured_callback
+        captured_callback[0](ctypes.c_ulong(_CTRL_CLOSE_EVENT))
+        mock_clear.assert_called()
+
+
+# ---------------------------------------------------------------------------
+# atexit registration in run_daemon
+# ---------------------------------------------------------------------------
+
+
+def test_run_daemon_registers_atexit_clear_pid(tmp_data_dir):
+    """run_daemon registers _clear_pid with atexit unconditionally (POSIX + Windows).
+
+    Patches token_goat.worker_daemon.atexit (the module-level name used in run_daemon)
+    rather than the stdlib atexit module directly, so the spy sees the call.
+    The assertion checks that atexit.register was called with whatever object is
+    currently bound to worker._clear_pid at run time (real function or mock).
+    """
+    stop = threading.Event()
+    stop.set()
+
+    registered_funcs: list = []
+
+    def _spy_register(fn, *args, **kwargs):
+        registered_funcs.append(fn)
+
+    with (
+        patch("token_goat.worker_daemon.atexit") as mock_atexit,
+        patch.object(worker, "cleanup_on_startup", return_value={}),
+        patch.object(worker, "drain_dirty_queue", return_value=[]),
+        patch.object(worker, "_heartbeat"),
+        patch.object(worker, "_try_claim_worker_slot", return_value=3),
+        patch.object(worker, "_write_pid"),
+        patch.object(worker, "_register_autostart"),
+        patch.object(daemon, "_install_signal_handlers"),
+        patch.object(daemon, "_install_windows_console_handler"),
+        patch("os.close"),
+        patch("time.sleep"),
+    ):
+        mock_atexit.register.side_effect = _spy_register
+        # Capture whatever _clear_pid resolves to inside the patch context
+        # (could be a mock from a prior patch layer or the real function).
+        expected_clear_pid = worker._clear_pid
+        daemon.run_daemon(stop_event=stop)
+
+    assert expected_clear_pid in registered_funcs, (
+        "run_daemon must register _clear_pid with atexit on all platforms"
     )
