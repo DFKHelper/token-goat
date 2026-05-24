@@ -762,6 +762,12 @@ class SessionCache:
     # and writes version N+2 (or N+1 if the first also wrote N+1 before the
     # merge).
     version: int = 0
+    # Deferred recovery injection flag (item 2).  Set to True by the pre-read
+    # hook after it injects the pending recovery sidecar.  Prevents the hook
+    # from injecting the hint a second time if the session JSON is reloaded in
+    # the same process.  Not persisted to disk — the sidecar file is the
+    # durable source of truth; this flag is an in-process guard only.
+    recovery_injected: bool = field(default=False, repr=False, compare=False)
     unavailable: bool = field(default=False, repr=False, compare=False)
     # Internal: cached JSON string from last serialization — invalidated by any mutation.
     # Avoids O(N) re-serialization of files/greps dicts on every hook invocation when

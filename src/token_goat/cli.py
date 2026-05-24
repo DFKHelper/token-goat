@@ -1726,6 +1726,14 @@ def cmd_skill_body(
     grep: str | None = _OPT_GREP,
     full: bool = _OPT_FULL,
     json_output: bool = _OPT_JSON,
+    section: str | None = typer.Option(
+        None,
+        "--section",
+        help=(
+            "Extract only the named H2 section from the skill body (case-insensitive prefix match). "
+            "When absent, all available section headings are listed below the body output."
+        ),
+    ),
 ) -> None:
     """Retrieve a sliced view of a cached Skill body.
 
@@ -1743,6 +1751,11 @@ def cmd_skill_body(
     By default (no flags), large bodies are trimmed to the first 30 lines and
     last 80 lines with an elision marker.  Pass ``--full`` to get everything.
     Combine ``--head``, ``--tail``, and ``--grep`` to narrow further.
+
+    Use ``--section DoD`` to extract only the ``## DoD`` section, saving
+    thousands of tokens when only one section of a large skill is needed.
+    When ``--section`` is absent and the body has H2 headings, the command
+    appends a ``**Sections available:** ...`` line listing them.
     """
     from . import db as _db  # noqa: PLC0415
     from . import skill_cache  # noqa: PLC0415
@@ -1766,8 +1779,54 @@ def cmd_skill_body(
         _error(f"no cached body for skill: {name}")
         raise typer.Exit(1)
 
+    # --section: extract a single named H2 section from the body.
+    if section:
+        section_text = skill_cache.extract_named_section(body, section)
+        if section_text is None:
+            headings = skill_cache.extract_h2_headings(body)
+            if headings:
+                _error(
+                    f"section {section!r} not found in skill {name!r}. "
+                    f"Available: {', '.join(headings)}"
+                )
+            else:
+                _error(f"section {section!r} not found in skill {name!r} (no H2 sections detected)")
+            raise typer.Exit(1)
+        sliced = section_text
+        # Record stat for the bytes saved vs. full body.
+        body_bytes = len(body.encode())
+        returned_bytes = len(sliced.encode())
+        saved_bytes = max(0, body_bytes - returned_bytes)
+        _db.record_stat(
+            None,
+            "skill_body_recall",
+            bytes_saved=saved_bytes,
+            tokens_saved=saved_bytes // 4,
+            detail=f"{name[:48]}::{section[:16]}",
+        )
+        if json_output:
+            payload: dict[str, object] = {
+                "skill_name": name,
+                "section": section,
+                "source": source_label,
+                "text": sliced,
+                "body_bytes": body_bytes,
+            }
+            if meta is not None:
+                payload["output_id"] = meta.output_id
+            typer.echo(json.dumps(payload, ensure_ascii=False, separators=(",", ":")))
+        else:
+            typer.echo(sliced)
+        return
+
     lines = _apply_recall_filters(body.splitlines(), head=head, tail=tail, grep=grep, full=full)
     sliced = "\n".join(lines)
+
+    # Append a sections-available line when H2 headings exist and we're in text mode.
+    if not json_output and not section:
+        headings = skill_cache.extract_h2_headings(body)
+        if headings:
+            sliced = sliced + "\n\n**Sections available:** " + ", ".join(headings)
 
     # Record a recall stat so `token-goat stats` reflects the value of avoiding
     # a re-load (and the side effects + tool-result block that come with it).
@@ -1842,6 +1901,75 @@ def cmd_skill_history(
         json_sidecar_fields=_json_fields,
         format_entry=_fmt,
     )
+
+
+@app.command("resume", rich_help_panel="Core")
+def cmd_resume(
+    session_id: str = typer.Argument(
+        ...,
+        help=(
+            "Session ID (or 8-char short form) to restore context from. "
+            "Shown in the recovery hint as 'token-goat resume <short_id>'."
+        ),
+    ),
+) -> None:
+    """Emit a single-command post-compact restoration packet.
+
+    Assembles in one call what the agent would otherwise retrieve via 5–10
+    separate round-trips after a compaction event:
+
+    \\b
+    1. Skill checklists inline (up to 3 skills, ≤ 400 chars each).
+    2. Last 2 Bash outputs — first 20 + last 20 lines with a gap marker.
+    3. Per-file diffs for the top 2 edited files.
+    4. Current git diff stat summary.
+
+    Each section is annotated with an ``as of HH:MM`` freshness timestamp.
+    Total output is hard-capped at ~2000 tokens so one command cannot
+    balloon the context window.
+
+    The session ID is the full UUID from the session JSON filename, or the
+    8-char prefix shown in the post-compact recovery hint.
+    """
+    from . import db as _db  # noqa: PLC0415
+    from . import resume as _resume  # noqa: PLC0415
+
+    # Resolve partial (short) session IDs by scanning the sessions directory.
+    resolved_id: str | None = None
+    if len(session_id) >= 32:
+        # Full ID — use directly.
+        resolved_id = session_id
+    else:
+        # Short prefix — find the first session file matching it.
+        try:
+            from . import paths as _paths  # noqa: PLC0415
+
+            sessions_dir = _paths.data_dir() / "sessions"
+            for f in sessions_dir.glob(f"{session_id}*.json"):
+                candidate = f.stem  # strip .json
+                resolved_id = candidate
+                break
+        except Exception:  # noqa: BLE001
+            pass
+        if resolved_id is None:
+            _error(f"no session found for short id: {session_id!r}")
+            raise typer.Exit(1)
+
+    packet = _resume.build_resume_packet(resolved_id)
+    if not packet:
+        _warn(f"session {session_id!r} has no recoverable state (empty or unavailable)")
+        raise typer.Exit(0)
+
+    # Record a stat so `token-goat stats` can show resume usage.
+    _db.record_stat(
+        None,
+        "resume_packet",
+        bytes_saved=0,
+        tokens_saved=0,
+        detail=resolved_id[:32],
+    )
+
+    typer.echo(packet)
 
 
 @app.command(rich_help_panel="Install")

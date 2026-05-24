@@ -3,8 +3,15 @@ from __future__ import annotations
 
 from hook_helpers import assert_continue as _assert_continue
 
-from token_goat import hooks_session, session, skill_cache
+from token_goat import hooks_session, paths, session, skill_cache
 from token_goat.hooks_session import _allocate_recovery_slots
+
+
+def _read_sidecar(sid: str) -> str:
+    """Return sidecar content for *sid*, asserting it exists."""
+    sidecar = paths.recovery_pending_path(sid)
+    assert sidecar.exists(), f"recovery sidecar not found for session {sid!r}"
+    return sidecar.read_text(encoding="utf-8")
 
 
 def _seed_state(sid: str) -> None:
@@ -72,6 +79,7 @@ class TestSourceDetection:
 
 class TestRecoveryHintContent:
     def test_emits_files_bash_web_sections(self, tmp_data_dir):
+        """Compact SessionStart writes hint to sidecar; sidecar contains expected content."""
         sid = "rec-4"
         _seed_state(sid)
         result = hooks_session.session_start({
@@ -80,9 +88,14 @@ class TestRecoveryHintContent:
             "cwd": "/proj",
         })
         _assert_continue(result)
-        hso = result.get("hookSpecificOutput")
-        assert hso is not None
-        ctx = hso.get("additionalContext", "")
+        # Item 2: hint is now deferred — no additionalContext at SessionStart.
+        assert "hookSpecificOutput" not in result, (
+            "compact SessionStart must not inject hint inline (deferred sidecar model)"
+        )
+        # The sidecar must exist with the expected content.
+        sidecar = paths.recovery_pending_path(sid)
+        assert sidecar.exists(), "recovery sidecar must be written on compact SessionStart"
+        ctx = sidecar.read_text(encoding="utf-8")
         assert "Post-Compact Recovery" in ctx
         assert "/proj/src/auth.py" in ctx
         # CS20 collapses green pytest entries to "✓ pytest passed @ HH:MM"
@@ -124,7 +137,7 @@ class TestRecoveryHintContent:
             "cwd": "/proj",
         })
         _assert_continue(result)
-        ctx = result["hookSpecificOutput"]["additionalContext"]
+        ctx = _read_sidecar(sid)
         assert "+18 more" in ctx, (
             f"expected dropped-files signal in hint, got:\n{ctx}"
         )
@@ -142,7 +155,7 @@ class TestRecoveryHintContent:
             "cwd": "/proj",
         })
         _assert_continue(result)
-        ctx = result["hookSpecificOutput"]["additionalContext"]
+        ctx = _read_sidecar(sid)
         assert "syms=sym1,sym2,sym3+4" in ctx, (
             f"expected truncated symbol preview with +4 suffix, got:\n{ctx}"
         )
@@ -159,7 +172,7 @@ class TestRecoveryHintContent:
             "cwd": "/proj",
         })
         _assert_continue(result)
-        ctx = result["hookSpecificOutput"]["additionalContext"]
+        ctx = _read_sidecar(sid)
         assert "syms=alpha,beta,gamma" in ctx
         assert "+0" not in ctx, f"unexpected +0 artifact in hint:\n{ctx}"
 
@@ -181,8 +194,11 @@ class TestRecoveryHintContent:
             "source": "compact",
         })
         _assert_continue(result)
-        # No file activity, only one tiny bash entry → no hint emitted.
+        # No file activity, only one tiny bash entry → no hint emitted; no sidecar.
         assert "hookSpecificOutput" not in result
+        assert not paths.recovery_pending_path(sid).exists(), (
+            "sidecar must not be created when hint is suppressed"
+        )
 
 
 class TestRecoverySlotAllocator:
@@ -269,7 +285,7 @@ class TestRecoverySkillChecklist:
             "cwd": "/proj",
         })
         _assert_continue(result)
-        ctx = result["hookSpecificOutput"]["additionalContext"]
+        ctx = _read_sidecar(sid)
         # Checklist content must be inlined.
         assert "All tests pass" in ctx, f"DoD text missing from hint:\n{ctx}"
         assert "Lint clean" in ctx
@@ -294,7 +310,7 @@ class TestRecoverySkillChecklist:
             "cwd": "/proj",
         })
         _assert_continue(result)
-        ctx = result["hookSpecificOutput"]["additionalContext"]
+        ctx = _read_sidecar(sid)
         assert "ralph" in ctx
         assert "token-goat skill-body ralph" in ctx, (
             f"fallback recall command missing for skill without checklist:\n{ctx}"
@@ -311,7 +327,7 @@ class TestRecoverySkillChecklist:
             "cwd": "/proj",
         })
         _assert_continue(result)
-        ctx = result["hookSpecificOutput"]["additionalContext"]
+        ctx = _read_sidecar(sid)
         assert "ralph" in ctx
         assert "token-goat skill-body ralph" in ctx
 
@@ -433,10 +449,10 @@ class TestRecoveryStatAccounting:
     """
 
     def test_overhead_row_recorded_when_hint_fires(self, tmp_data_dir):
-        """When _try_recovery_response emits a hint it must write a negative
-        compact_recovery_overhead row whose bytes_saved and tokens_saved are
-        both negative and non-zero."""
-        from token_goat import db
+        """compact_recovery base row appears after session_start; overhead row
+        appears only after the sidecar is consumed by _check_recovery_pending
+        (i.e. on the first pre-read after compaction)."""
+        from token_goat import db, hooks_read
 
         sid = "rec-overhead-1"
         _seed_state(sid)
@@ -446,6 +462,24 @@ class TestRecoveryStatAccounting:
             "cwd": "/proj",
         })
 
+        # After session_start the base row is present but overhead is deferred.
+        with db.open_global() as conn:
+            after_start = {r["kind"] for r in conn.execute(
+                "SELECT kind FROM stats"
+                " WHERE kind IN ('compact_recovery', 'compact_recovery_overhead')"
+            ).fetchall()}
+        assert "compact_recovery" in after_start, "base row must be present after session_start"
+        assert "compact_recovery_overhead" not in after_start, (
+            "overhead row must NOT appear until sidecar is consumed by pre_read"
+        )
+
+        # Trigger pre_read on any file — the sidecar is consumed and overhead recorded.
+        hooks_read.pre_read({
+            "session_id": sid,
+            "tool_name": "Read",
+            "tool_input": {"file_path": "/proj/src/auth.py"},
+        })
+
         with db.open_global() as conn:
             rows = conn.execute(
                 "SELECT kind, bytes_saved, tokens_saved FROM stats"
@@ -453,9 +487,8 @@ class TestRecoveryStatAccounting:
             ).fetchall()
 
         by_kind = {r["kind"]: r for r in rows}
-        assert "compact_recovery" in by_kind, "base row must be present"
         assert "compact_recovery_overhead" in by_kind, (
-            "overhead row must be present — compact_recovery injects real tokens"
+            "overhead row must be present after sidecar consumed by pre_read"
         )
         overhead = by_kind["compact_recovery_overhead"]
         assert overhead["bytes_saved"] < 0, "overhead bytes_saved must be negative"
