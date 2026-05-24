@@ -2133,9 +2133,9 @@ def _build_manifest_from_cache(
 
     # Check if we exceeded the wall-clock timeout
     if elapsed > _MANIFEST_TIMEOUT_SECS:
-        result += f"\n\n⚠ manifest build timed out after {elapsed:.1f}s — output may be incomplete"
+        result += f"\n\n⚠ manifest build timed out after {elapsed:.2f}s — output may be incomplete"
         _LOG.warning(
-            "build_manifest: timeout exceeded for session=%s (%.1fs > %.1fs)",
+            "build_manifest: timeout exceeded for session=%s (%.2fs > %.2fs)",
             session_id[:8],
             elapsed,
             _MANIFEST_TIMEOUT_SECS,

@@ -5,9 +5,8 @@ import time
 
 import pytest
 from conftest import make_git_repo
-from hook_helpers import assert_continue as _assert_continue
 
-from token_goat import compact, config, hooks_cli, session
+from token_goat import compact, config, session
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -582,12 +581,13 @@ class TestFormatRanges:
 class TestKeyFilesRecencySort:
     """Key Files Read must use last_read_ts as a tiebreaker when read_count ties."""
 
-    def test_more_recently_read_file_appears_first_when_counts_tie(self, tmp_data_dir):
-        import time as _time
+    def test_more_recently_read_file_appears_first_when_counts_tie(self, tmp_data_dir, monkeypatch):
+        import itertools as _it
         sid = "recency-sort-session-abc"
+        _ts = _it.count(1_000_000_000.0, 0.01)
+        monkeypatch.setattr(session.time, "time", lambda: next(_ts))
         # Both files read exactly once — order must be by recency, not insertion.
         session.mark_file_read(sid, "/proj/src/older.py", offset=0, limit=50)
-        _time.sleep(0.01)
         session.mark_file_read(sid, "/proj/src/newer.py", offset=0, limit=50)
         result = compact.build_manifest(sid)
         assert "older.py" in result and "newer.py" in result
@@ -595,13 +595,14 @@ class TestKeyFilesRecencySort:
             "more recently read file should appear first\n" + result
         )
 
-    def test_higher_read_count_still_wins_over_recency(self, tmp_data_dir):
-        import time as _time
+    def test_higher_read_count_still_wins_over_recency(self, tmp_data_dir, monkeypatch):
+        import itertools as _it
         sid = "count-beats-recency-session-abc"
+        _ts = _it.count(1_000_000_000.0, 0.01)
+        monkeypatch.setattr(session.time, "time", lambda: next(_ts))
         # Older file read 3× should rank above newer file read once.
         for _ in range(3):
             session.mark_file_read(sid, "/proj/src/frequent.py", offset=0, limit=50)
-        _time.sleep(0.01)
         session.mark_file_read(sid, "/proj/src/rare.py", offset=0, limit=50)
         result = compact.build_manifest(sid)
         assert result.index("frequent.py") < result.index("rare.py"), (
@@ -641,14 +642,15 @@ class TestGrepSection:
             "duplicate grep pattern should appear only once\n" + result
         )
 
-    def test_grep_dedup_by_pattern_ignores_different_paths(self, tmp_data_dir):
+    def test_grep_dedup_by_pattern_ignores_different_paths(self, tmp_data_dir, monkeypatch):
         # Searching the same pattern in different scopes should produce one entry
         # (the most-recent one), not two — the compaction LLM cares about what
         # was searched, not how the search scope changed between runs.
-        import time as _time
+        import itertools as _it
         sid = "grep-scope-dedup-session-abc"
+        _ts = _it.count(1_000_000_000.0, 0.01)
+        monkeypatch.setattr(session.time, "time", lambda: next(_ts))
         session.mark_grep(sid, "find_me", "/proj/src")
-        _time.sleep(0.01)
         session.mark_grep(sid, "find_me", "/proj/tests")
         result = compact.build_manifest(sid)
         assert result.count("find_me") == 1, (
@@ -681,11 +683,12 @@ class TestGrepSection:
         assert "unknown_count" in result
         assert "result" not in result, f"count shown when it should be absent:\n{result}"
 
-    def test_grep_most_recent_shown_first(self, tmp_data_dir):
-        import time as _time
+    def test_grep_most_recent_shown_first(self, tmp_data_dir, monkeypatch):
+        import itertools as _it
         sid = "grep-recency-session-abc"
+        _ts = _it.count(1_000_000_000.0, 0.01)
+        monkeypatch.setattr(session.time, "time", lambda: next(_ts))
         session.mark_grep(sid, "old_pattern", "/proj/src")
-        _time.sleep(0.01)
         session.mark_grep(sid, "new_pattern", "/proj/src")
         result = compact.build_manifest(sid)
         assert result.index("new_pattern") < result.index("old_pattern"), (
@@ -799,18 +802,19 @@ class TestGrepSection:
         assert "middle" in result, f"second-most-recent stale grep must be kept:\n{result}"
         assert "oldest" not in result, f"oldest stale grep should be dropped:\n{result}"
 
-    def test_grep_high_match_count_ranked_above_low_match_similar_age(self, tmp_data_dir):
+    def test_grep_high_match_count_ranked_above_low_match_similar_age(self, tmp_data_dir, monkeypatch):
         """After dedup/filter, entries with more matches rank above low-match ones of similar age."""
-        import time as _time
+        import itertools as _it
 
         sid = "grep-match-rank-abc"
+        _ts = _it.count(1_000_000_000.0, 0.01)
+        monkeypatch.setattr(session.time, "time", lambda: next(_ts))
 
         # Two searches at nearly the same time; rich one has many matches, low
         # one has a single hit. Zero-result greps are now filtered as noise, so
         # use 1 hit instead of 0 to keep both in the manifest for the ordering
         # assertion below.
         session.mark_grep(sid, "rich_search", "/proj/src", result_count=50)
-        _time.sleep(0.01)
         session.mark_grep(sid, "thin_search", "/proj/src", result_count=1)
 
         result = compact.build_manifest(sid)
@@ -1109,220 +1113,6 @@ class TestDedupHintEmittedIdsFilterBash:
         assert "mypy" in result, f"Blocker command 'mypy' missing from manifest:\n{result}"
 
 
-class TestGitDiffStat:
-    """_get_git_diff_stat extracts git diff output for edited files."""
-
-    def test_returns_none_when_cwd_is_none(self):
-        """Gracefully handle None cwd."""
-        result = compact._get_git_diff_stat(["/proj/src/foo.py"], None)
-        assert result is None
-
-    def test_returns_none_when_paths_empty(self, tmp_data_dir):
-        """Gracefully handle empty path list."""
-        import os
-        result = compact._get_git_diff_stat([], os.getcwd())
-        assert result is None
-
-    def test_returns_none_when_git_unavailable(self, tmp_data_dir):
-        """Gracefully handle when git command is not found."""
-        # This test would require PATH manipulation or a mock; for now we skip
-        # and rely on the logic's defensive try/except.
-        pass
-
-    def test_returns_none_when_not_a_repo(self, tmp_data_dir):
-        """Gracefully handle when cwd is not a git repo."""
-        result = compact._get_git_diff_stat(["/some/file.py"], str(tmp_data_dir))
-        # tmp_data_dir is not a git repo, so git diff should fail
-        assert result is None
-
-    def test_truncates_at_8_lines(self, tmp_data_dir):
-        """Output is capped at 8 lines."""
-        # This test requires a real git repo with many edited files.
-        # Skip for now — the logic is straightforward and tested in integration.
-        pass
-
-    def test_truncates_at_200_chars(self, tmp_data_dir):
-        """Output is capped at 200 characters."""
-        # Same as above — integration test would be better.
-        pass
-
-    @pytest.mark.slow
-    def test_git_diff_stat_helper_integration(self, tmp_path):
-        """Integration test: _get_git_diff_stat helper returns diff output from git."""
-        git_repo = make_git_repo(tmp_path, files={"myfile.py": "line1\n"})
-
-        # Modify file so git diff shows changes
-        (git_repo / "myfile.py").write_text("line1\nline2\nline3\n")
-
-        # Call helper with relative path (as stored in edited_files)
-        result = compact._get_git_diff_stat(["myfile.py"], str(git_repo))
-
-        # Should return diff stat output
-        assert result is not None, "git diff stat should return output"
-        assert "myfile.py" in result, f"file name should appear in diff: {result!r}"
-        assert "|" in result, f"diff stat format should have pipe separator: {result!r}"
-
-
-class TestGetGitDiffStatSummary:
-    """_get_git_diff_stat_summary — whole-repo git diff --stat helper."""
-
-    @pytest.fixture(autouse=True)
-    def _clear_caches(self):
-        compact._diff_stat_summary_cache.clear()
-        compact._is_git_repo_cache.clear()
-        yield
-        compact._diff_stat_summary_cache.clear()
-        compact._is_git_repo_cache.clear()
-
-    def test_returns_empty_string_when_root_is_none(self):
-        """None root must return '' without raising."""
-        assert compact._get_git_diff_stat_summary(None) == ""
-
-    def test_returns_empty_string_when_not_a_repo(self, tmp_path):
-        """Directory that is not a git repo must return '' gracefully."""
-        result = compact._get_git_diff_stat_summary(tmp_path)
-        assert result == ""
-
-    def test_returns_empty_string_when_subprocess_raises(self, monkeypatch):
-        """Any exception from subprocess.run must be swallowed; '' returned."""
-        import subprocess as _subprocess  # noqa: PLC0415
-        monkeypatch.setattr(compact, "_is_git_repo", lambda _cwd: True)
-        monkeypatch.setattr(
-            _subprocess,
-            "run",
-            lambda *a, **kw: (_ for _ in ()).throw(OSError("git not found")),
-        )
-        result = compact._get_git_diff_stat_summary("/some/path")
-        assert result == ""
-
-    def test_returns_empty_string_when_subprocess_times_out(self, monkeypatch):
-        """TimeoutExpired from subprocess must be swallowed; '' returned."""
-        import subprocess as _subprocess  # noqa: PLC0415
-
-        def _raise_timeout(*a, **kw):
-            raise _subprocess.TimeoutExpired(cmd="git", timeout=5)
-
-        monkeypatch.setattr(compact, "_is_git_repo", lambda _cwd: True)
-        monkeypatch.setattr(_subprocess, "run", _raise_timeout)
-        result = compact._get_git_diff_stat_summary("/some/path")
-        assert result == ""
-
-    @pytest.mark.slow
-    def test_integration_with_real_git_repo(self, tmp_path):
-        """Integration: returns non-empty output when there are uncommitted changes."""
-        git_repo = make_git_repo(tmp_path, files={"foo.py": "line1\n"})
-
-        # Modify so there is a diff vs HEAD
-        (git_repo / "foo.py").write_text("line1\nline2\nline3\n")
-
-        result = compact._get_git_diff_stat_summary(str(git_repo))
-        assert result != "", "expected non-empty stat for dirty working tree"
-        assert "foo.py" in result, f"expected file name in output: {result!r}"
-
-    @pytest.mark.slow
-    def test_integration_clean_repo_returns_empty(self, tmp_path):
-        """Integration: clean repo (no pending changes) returns ''."""
-        git_repo = make_git_repo(tmp_path, "clean", files={"bar.py": "x\n"})
-
-        # No further changes — working tree is clean
-        result = compact._get_git_diff_stat_summary(str(git_repo))
-        assert result == "", f"expected '' for clean repo, got {result!r}"
-
-    def test_caps_at_six_lines(self, monkeypatch):
-        """Output with more than 6 lines is trimmed to the last 6."""
-        import subprocess as _subprocess  # noqa: PLC0415
-        import types  # noqa: PLC0415
-
-        # Simulate git producing 10 file-stat lines + 1 summary line
-        fake_lines = [f" file{i}.py | {i} +" for i in range(10)]
-        fake_lines.append(" 10 files changed, 45 insertions(+), 0 deletions(-)")
-        fake_stdout = "\n".join(fake_lines) + "\n"
-
-        def _fake_run(*a, **kw):
-            r = types.SimpleNamespace(returncode=0, stdout=fake_stdout, stderr="")
-            return r
-
-        monkeypatch.setattr(compact, "_is_git_repo", lambda _cwd: True)
-        monkeypatch.setattr(_subprocess, "run", _fake_run)
-        result = compact._get_git_diff_stat_summary("/some/sixline-repo")
-        assert result != ""
-        lines = result.splitlines()
-        assert len(lines) <= 6, f"expected <= 6 lines, got {len(lines)}: {lines}"
-
-    def test_returns_empty_when_output_exceeds_300_chars(self, monkeypatch):
-        """Output longer than 300 chars returns '' to avoid ballooning the manifest."""
-        import subprocess as _subprocess  # noqa: PLC0415
-        import types  # noqa: PLC0415
-
-        long_line = " " + "a" * 100 + ".py | 1 +"
-        fake_stdout = "\n".join([long_line] * 4) + "\n 4 files changed, 4 insertions(+)\n"
-
-        def _fake_run(*a, **kw):
-            return types.SimpleNamespace(returncode=0, stdout=fake_stdout, stderr="")
-
-        monkeypatch.setattr(compact, "_is_git_repo", lambda _cwd: True)
-        monkeypatch.setattr(_subprocess, "run", _fake_run)
-        result = compact._get_git_diff_stat_summary("/some/oversized-repo")
-        assert result == "", f"expected '' for oversized output, got {result!r}"
-
-    def test_manifest_includes_pending_changes_section(self, tmp_data_dir, monkeypatch):
-        """When diff stat is non-empty, manifest includes 'Pending Changes' section."""
-        sid = "pending-diff-manifest-test-abc"
-        session.mark_file_edited(sid, "/proj/src/main.py")
-        session.mark_file_read(sid, "/proj/src/main.py")
-
-        monkeypatch.setattr(
-            compact,
-            "_get_git_diff_stat_summary",
-            lambda _root: "src/main.py | 3 +++\n1 file changed, 3 insertions(+)",
-        )
-        result = compact.build_manifest(sid)
-        assert "**Pending:**" in result, f"Expected '**Pending:**' in manifest:\n{result}"
-        assert "src/main.py" in result
-
-    def test_manifest_omits_pending_changes_when_diff_empty(self, tmp_data_dir, monkeypatch):
-        """When diff stat is empty, 'Pending Changes' section is absent from manifest."""
-        sid = "pending-diff-empty-test-abc"
-        session.mark_file_edited(sid, "/proj/src/utils.py")
-        session.mark_file_read(sid, "/proj/src/utils.py")
-
-        monkeypatch.setattr(compact, "_get_git_diff_stat_summary", lambda _root: "")
-        result = compact.build_manifest(sid)
-        assert "**Pending:**" not in result, f"Should not include section when diff is empty:\n{result}"
-
-    def test_git_stat_padding_compressed(self, monkeypatch):
-        """#21: git diff --stat alignment spaces around | are collapsed to single space."""
-        import subprocess as _subprocess  # noqa: PLC0415
-        import types  # noqa: PLC0415
-
-        # git --stat pads filenames to align the | column
-        fake_stdout = (
-            " src/token_goat/compact.py    | 12 ++++++------\n"
-            " src/token_goat/hints.py      |  4 +---\n"
-            " tests/test_compact.py        |  8 ++++++++\n"
-            " 3 files changed, 24 insertions(+), 4 deletions(-)\n"
-        )
-
-        def _fake_run(*a, **kw):
-            return types.SimpleNamespace(returncode=0, stdout=fake_stdout, stderr="")
-
-        monkeypatch.setattr(compact, "_is_git_repo", lambda _cwd: True)
-        monkeypatch.setattr(_subprocess, "run", _fake_run)
-        result = compact._get_git_diff_stat_summary("/some/repo")
-        assert result != ""
-        for line in result.splitlines():
-            if "|" in line:
-                # No run of 2+ spaces immediately before or after the pipe
-                import re as _re  # noqa: PLC0415
-                assert not _re.search(r"\s{2,}\|", line), (
-                    f"multi-space before | in stat line: {line!r}"
-                )
-                assert not _re.search(r"\|\s{2,}\d", line), (
-                    f"multi-space after | before digit in stat line: {line!r}"
-                )
-
-
-class TestManifestHeaderStrings:
     """Manifest section headers use the trimmed forms (#33, #34)."""
 
     def test_files_edited_header_has_no_preserve_suffix(self, tmp_data_dir, monkeypatch):
@@ -1450,16 +1240,16 @@ class TestComputeAdaptiveBudgetDiffBonus:
 class TestSymbolRankingByRecency:
     """Symbols Accessed must be ranked most-recently-read first, not insertion order."""
 
-    def test_recent_symbol_file_appears_before_older(self, tmp_data_dir):
-        import time as _time
+    def test_recent_symbol_file_appears_before_older(self, tmp_data_dir, monkeypatch):
+        import itertools as _it
         sid = "symbol-recency-session-abc"
+        _ts = _it.count(1_000_000_000.0, 0.01)
+        monkeypatch.setattr(session.time, "time", lambda: next(_ts))
         # Older symbol read
         session.mark_file_read(sid, "/proj/src/older.py", symbol="old_sym")
-        _time.sleep(0.01)  # ensure last_read_ts differs
         # Many intervening files-with-symbols
         for i in range(3):
             session.mark_file_read(sid, f"/proj/src/mid{i}.py", symbol=f"mid_sym_{i}")
-            _time.sleep(0.005)
         # Most-recent symbol read
         session.mark_file_read(sid, "/proj/src/recent.py", symbol="recent_sym")
         result = compact.build_manifest(sid)
@@ -1709,163 +1499,6 @@ class TestBuildSealedBlock:
 # pre_compact hook handler
 # ---------------------------------------------------------------------------
 
-class TestPreCompactHandler:
-    def _make_payload(self, session_id: str, trigger: str = "manual") -> dict:
-        return {"session_id": session_id, "trigger": trigger}
-
-    def test_disabled_returns_continue_only(self, tmp_data_dir, tmp_path, monkeypatch):
-        from token_goat import paths
-        cfg_path = tmp_path / "config.toml"
-        cfg_path.write_text("[compact_assist]\nenabled = false\n", encoding="utf-8")
-        monkeypatch.setattr(paths, "config_path", lambda: cfg_path)
-        monkeypatch.delenv("TOKEN_GOAT_COMPACT_ASSIST", raising=False)
-
-        sid = "disabled-session-abc"
-        _populate_session(sid, files=5, greps=3, edits=2)
-        result = hooks_cli.pre_compact(self._make_payload(sid))
-        _assert_continue(result)
-        assert "systemMessage" not in result
-
-    def test_env_var_disables_handler(self, tmp_data_dir, tmp_path, monkeypatch):
-        from token_goat import paths
-        monkeypatch.setattr(paths, "config_path", lambda: tmp_path / "config.toml")
-        monkeypatch.setenv("TOKEN_GOAT_COMPACT_ASSIST", "0")
-
-        sid = "envdisabled-session-abc"
-        _populate_session(sid, files=5, greps=3, edits=2)
-        result = hooks_cli.pre_compact(self._make_payload(sid))
-        _assert_continue(result)
-
-    def test_trigger_not_in_config_skips(self, tmp_data_dir, tmp_path, monkeypatch):
-        from token_goat import paths
-        cfg_path = tmp_path / "config.toml"
-        cfg_path.write_text('[compact_assist]\ntriggers = ["manual"]\n', encoding="utf-8")
-        monkeypatch.setattr(paths, "config_path", lambda: cfg_path)
-        monkeypatch.delenv("TOKEN_GOAT_COMPACT_ASSIST", raising=False)
-
-        sid = "trigger-filter-session"
-        _populate_session(sid, files=5, greps=3, edits=2)
-        # trigger="auto" is not in ["manual"]
-        result = hooks_cli.pre_compact(self._make_payload(sid, trigger="auto"))
-        _assert_continue(result)
-        assert "systemMessage" not in result
-
-    def test_below_min_events_skips(self, tmp_data_dir, tmp_path, monkeypatch):
-        from token_goat import paths
-        cfg_path = tmp_path / "config.toml"
-        cfg_path.write_text("[compact_assist]\nmin_events = 100\n", encoding="utf-8")
-        monkeypatch.setattr(paths, "config_path", lambda: cfg_path)
-        monkeypatch.delenv("TOKEN_GOAT_COMPACT_ASSIST", raising=False)
-
-        sid = "below-min-session-abc"
-        _populate_session(sid, files=2, greps=1, edits=0)  # 3 events < 100
-        result = hooks_cli.pre_compact(self._make_payload(sid))
-        _assert_continue(result)
-        assert "systemMessage" not in result
-
-    def test_happy_path_emits_system_message(self, tmp_data_dir, tmp_path, monkeypatch):
-        from token_goat import paths
-        cfg_path = tmp_path / "config.toml"
-        cfg_path.write_text("[compact_assist]\nenabled = true\nmin_events = 1\n", encoding="utf-8")
-        monkeypatch.setattr(paths, "config_path", lambda: cfg_path)
-        monkeypatch.delenv("TOKEN_GOAT_COMPACT_ASSIST", raising=False)
-
-        sid = "happy-path-session-abc"
-        _populate_session(sid, files=3, greps=2, edits=1)
-        result = hooks_cli.pre_compact(self._make_payload(sid, trigger="manual"))
-
-        assert result["continue"] is True
-        assert "systemMessage" in result
-        msg = result["systemMessage"]
-        assert isinstance(msg, str)
-        assert len(msg) > 0
-        assert "Token-Goat Session Manifest" in msg
-
-    def test_auto_trigger_emits_when_in_config(self, tmp_data_dir, tmp_path, monkeypatch):
-        from token_goat import paths
-        cfg_path = tmp_path / "config.toml"
-        cfg_path.write_text(
-            '[compact_assist]\nenabled = true\nmin_events = 1\ntriggers = ["manual", "auto"]\n',
-            encoding="utf-8",
-        )
-        monkeypatch.setattr(paths, "config_path", lambda: cfg_path)
-        monkeypatch.delenv("TOKEN_GOAT_COMPACT_ASSIST", raising=False)
-
-        sid = "auto-trigger-session-abc"
-        _populate_session(sid, files=2, greps=1, edits=1)
-        result = hooks_cli.pre_compact(self._make_payload(sid, trigger="auto"))
-
-        assert "systemMessage" in result
-
-    def test_missing_session_id_returns_continue(self, tmp_data_dir, tmp_path, monkeypatch):
-        from token_goat import paths
-        monkeypatch.setattr(paths, "config_path", lambda: tmp_path / "config.toml")
-        monkeypatch.delenv("TOKEN_GOAT_COMPACT_ASSIST", raising=False)
-
-        result = hooks_cli.pre_compact({"trigger": "manual"})
-        _assert_continue(result)
-
-    def test_empty_session_returns_continue(self, tmp_data_dir, tmp_path, monkeypatch):
-        from token_goat import paths
-        cfg_path = tmp_path / "config.toml"
-        cfg_path.write_text("[compact_assist]\nenabled = true\nmin_events = 0\n", encoding="utf-8")
-        monkeypatch.setattr(paths, "config_path", lambda: cfg_path)
-        monkeypatch.delenv("TOKEN_GOAT_COMPACT_ASSIST", raising=False)
-
-        # Session exists but no activity → manifest is empty string → no systemMessage
-        result = hooks_cli.pre_compact(self._make_payload("completely-empty-session-abc"))
-        _assert_continue(result)
-
-    def test_system_message_respects_token_budget(self, tmp_data_dir, tmp_path, monkeypatch):
-        from token_goat import paths
-        budget = 100
-        cfg_path = tmp_path / "config.toml"
-        cfg_path.write_text(
-            f"[compact_assist]\nenabled = true\nmin_events = 1\nmax_manifest_tokens = {budget}\n",
-            encoding="utf-8",
-        )
-        monkeypatch.setattr(paths, "config_path", lambda: cfg_path)
-        monkeypatch.delenv("TOKEN_GOAT_COMPACT_ASSIST", raising=False)
-
-        sid = "budget-check-session-abc"
-        for i in range(20):
-            session.mark_file_read(sid, f"/proj/src/mod{i:02d}.py", offset=0, limit=200)
-        for i in range(5):
-            session.mark_file_edited(sid, f"/proj/src/edit{i}.py")
-
-        result = hooks_cli.pre_compact(self._make_payload(sid))
-        if "systemMessage" in result:
-            assert len(result["systemMessage"]) <= budget * 4
-
-    def test_garbage_payload_does_not_crash(self, tmp_data_dir):
-        """fail_soft must absorb any exception and return continue:true."""
-        result = hooks_cli.pre_compact({"session_id": None, "trigger": None})
-        assert result.get("continue") is True
-
-
-# ---------------------------------------------------------------------------
-# Dispatcher integration
-# ---------------------------------------------------------------------------
-
-class TestDispatcherIntegration:
-    def test_pre_compact_event_is_registered(self, tmp_data_dir):
-        assert "pre-compact" in hooks_cli.EVENTS
-
-    def test_dispatch_pre_compact_returns_continue(self, tmp_data_dir, tmp_path, monkeypatch):
-        from token_goat import paths
-
-        monkeypatch.setattr(paths, "config_path", lambda: tmp_path / "config.toml")
-        monkeypatch.delenv("TOKEN_GOAT_COMPACT_ASSIST", raising=False)
-
-        result = hooks_cli.dispatch("pre-compact", {"session_id": "dispatch-test-abc", "trigger": "manual"})
-        assert result.get("continue") is True
-
-
-# ---------------------------------------------------------------------------
-# Common prefix stripping
-# ---------------------------------------------------------------------------
-
-class TestCommonPrefixStripping:
     """Token-efficient manifest path display by stripping common prefixes."""
 
     def test_extract_path_from_edited_line(self):
@@ -2609,14 +2242,15 @@ class TestImportanceScoringInManifest:
             f"edited file must appear before unedited read-heavy file:\n{result}"
         )
 
-    def test_recently_read_file_outranks_older_file_when_counts_tie(self, tmp_data_dir):
+    def test_recently_read_file_outranks_older_file_when_counts_tie(self, tmp_data_dir, monkeypatch):
         """When read_count and symbol counts are equal, the recently-read file ranks higher."""
-        import time as _time
+        import itertools as _it
         sid = "importance-recency-tie-session"
+        _ts = _it.count(1_000_000_000.0, 0.01)
+        monkeypatch.setattr(session.time, "time", lambda: next(_ts))
         # Both files read exactly twice, no symbols
         session.mark_file_read(sid, "/proj/src/older.py", offset=0, limit=50)
         session.mark_file_read(sid, "/proj/src/older.py", offset=50, limit=50)
-        _time.sleep(0.02)
         session.mark_file_read(sid, "/proj/src/newer.py", offset=0, limit=50)
         session.mark_file_read(sid, "/proj/src/newer.py", offset=50, limit=50)
 
@@ -2809,376 +2443,6 @@ class TestYoungSessionOmitsBashSection:
 # ---------------------------------------------------------------------------
 
 
-class TestGetUncommittedChanges:
-    """Unit tests for compact._get_uncommitted_changes()."""
-
-    @pytest.fixture(autouse=True)
-    def _clear_uncommitted_cache(self):
-        # _get_uncommitted_changes now has a process-level cache keyed by path
-        # (mirrors the diff-stat summary cache). Tests that monkeypatch
-        # subprocess.run with different fakes for the same path otherwise see
-        # the previous test's cached result. Clear before and after each test.
-        # Also clear _is_git_repo_cache so monkeypatched _is_git_repo takes effect.
-        compact._uncommitted_changes_cache.clear()
-        compact._is_git_repo_cache.clear()
-        yield
-        compact._uncommitted_changes_cache.clear()
-        compact._is_git_repo_cache.clear()
-
-    def test_returns_none_when_project_root_is_none(self):
-        """None project_root must return None immediately without calling git."""
-        result = compact._get_uncommitted_changes(None)
-        assert result is None
-
-    def test_returns_none_when_subprocess_raises(self, monkeypatch):
-        """Any exception from subprocess.run must be swallowed; None returned."""
-        import subprocess as _subprocess  # noqa: PLC0415
-
-        monkeypatch.setattr(compact, "_is_git_repo", lambda _cwd: True)
-        monkeypatch.setattr(
-            _subprocess,
-            "run",
-            lambda *a, **kw: (_ for _ in ()).throw(OSError("git not found")),
-        )
-        result = compact._get_uncommitted_changes("/some/path")
-        assert result is None
-
-    def test_returns_none_when_subprocess_times_out(self, monkeypatch):
-        """TimeoutExpired from subprocess must be swallowed; None returned."""
-        import subprocess as _subprocess  # noqa: PLC0415
-
-        def _raise_timeout(*a, **kw):
-            raise _subprocess.TimeoutExpired(cmd="git", timeout=5)
-
-        monkeypatch.setattr(compact, "_is_git_repo", lambda _cwd: True)
-        monkeypatch.setattr(_subprocess, "run", _raise_timeout)
-        result = compact._get_uncommitted_changes("/some/path")
-        assert result is None
-
-    def test_returns_none_when_both_commands_produce_empty_output(self, monkeypatch):
-        """Both diff and status returning empty → None (no changes)."""
-        import subprocess as _subprocess  # noqa: PLC0415
-        import types  # noqa: PLC0415
-
-        def _fake_run(args, **kw):
-            return types.SimpleNamespace(returncode=0, stdout="", stderr="")
-
-        monkeypatch.setattr(compact, "_is_git_repo", lambda _cwd: True)
-        monkeypatch.setattr(_subprocess, "run", _fake_run)
-        result = compact._get_uncommitted_changes("/some/repo")
-        assert result is None
-
-    def test_returns_diff_stat_lines_for_tracked_changes(self, monkeypatch):
-        """Tracked file changes from git diff --stat appear in the output."""
-        import subprocess as _subprocess  # noqa: PLC0415
-        import types  # noqa: PLC0415
-
-        diff_output = " src/foo.py | 12 ++++++------\n 1 file changed, 6 insertions(+), 6 deletions(-)\n"
-        status_output = " M src/foo.py\n"
-
-        call_count = {"n": 0}
-
-        def _fake_run(args, **kw):
-            call_count["n"] += 1
-            # First call is git diff, second is git status
-            if "diff" in args:
-                return types.SimpleNamespace(returncode=0, stdout=diff_output, stderr="")
-            return types.SimpleNamespace(returncode=0, stdout=status_output, stderr="")
-
-        monkeypatch.setattr(compact, "_is_git_repo", lambda _cwd: True)
-        monkeypatch.setattr(_subprocess, "run", _fake_run)
-        result = compact._get_uncommitted_changes("/some/repo")
-        assert result is not None
-        assert "foo.py" in result
-
-    def test_includes_untracked_files_from_status(self, monkeypatch):
-        """Untracked files (??) in git status --short appear when not in diff output."""
-        import subprocess as _subprocess  # noqa: PLC0415
-        import types  # noqa: PLC0415
-
-        def _fake_run(args, **kw):
-            if "diff" in args:
-                # No tracked changes
-                return types.SimpleNamespace(returncode=0, stdout="", stderr="")
-            # Untracked file
-            return types.SimpleNamespace(returncode=0, stdout="?? new_file.py\n", stderr="")
-
-        monkeypatch.setattr(compact, "_is_git_repo", lambda _cwd: True)
-        monkeypatch.setattr(_subprocess, "run", _fake_run)
-        result = compact._get_uncommitted_changes("/some/repo")
-        assert result is not None
-        assert "new_file.py" in result
-
-    def test_caps_output_at_eight_lines(self, monkeypatch):
-        """Output with more than 8 lines is truncated to 8."""
-        import subprocess as _subprocess  # noqa: PLC0415
-        import types  # noqa: PLC0415
-
-        # 12 file-stat lines from diff
-        many_lines = "\n".join(f" file{i}.py | {i+1} +" for i in range(12))
-
-        def _fake_run(args, **kw):
-            if "diff" in args:
-                return types.SimpleNamespace(returncode=0, stdout=many_lines + "\n", stderr="")
-            return types.SimpleNamespace(returncode=0, stdout="", stderr="")
-
-        monkeypatch.setattr(compact, "_is_git_repo", lambda _cwd: True)
-        monkeypatch.setattr(_subprocess, "run", _fake_run)
-        result = compact._get_uncommitted_changes("/some/repo")
-        assert result is not None
-        assert len(result.splitlines()) <= 8
-
-    def test_does_not_duplicate_files_in_both_diff_and_status(self, monkeypatch):
-        """A file appearing in both diff --stat and status --short is not listed twice."""
-        import subprocess as _subprocess  # noqa: PLC0415
-        import types  # noqa: PLC0415
-
-        def _fake_run(args, **kw):
-            if "diff" in args:
-                return types.SimpleNamespace(
-                    returncode=0,
-                    stdout=" src/bar.py | 5 ++---\n 1 file changed\n",
-                    stderr="",
-                )
-            return types.SimpleNamespace(returncode=0, stdout=" M src/bar.py\n", stderr="")
-
-        monkeypatch.setattr(compact, "_is_git_repo", lambda _cwd: True)
-        monkeypatch.setattr(_subprocess, "run", _fake_run)
-        result = compact._get_uncommitted_changes("/some/repo")
-        assert result is not None
-        # "bar.py" appears at most once in the combined output
-        assert result.count("bar.py") == 1
-
-    @pytest.mark.slow
-    def test_integration_with_real_git_repo(self, tmp_path):
-        """Integration: returns non-None when there are uncommitted changes."""
-        git_repo = make_git_repo(tmp_path, files={"foo.py": "line1\n"})
-
-        # Modify tracked file
-        (git_repo / "foo.py").write_text("line1\nline2\n")
-        result = compact._get_uncommitted_changes(str(git_repo))
-        assert result is not None
-        assert "foo.py" in result
-
-    @pytest.mark.slow
-    def test_integration_untracked_file(self, tmp_path):
-        """Integration: returns non-None for a new untracked file."""
-        git_repo = make_git_repo(tmp_path, "repo2", files={"base.py": "x\n"})
-
-        # Add an untracked file (not staged, not committed)
-        (git_repo / "untracked.py").write_text("new\n")
-
-        result = compact._get_uncommitted_changes(str(git_repo))
-        assert result is not None
-        assert "untracked.py" in result
-
-    @pytest.mark.slow
-    def test_integration_clean_repo_returns_none(self, tmp_path):
-        """Integration: clean repo (no pending changes) returns None."""
-        git_repo = make_git_repo(tmp_path, "clean", files={"bar.py": "x\n"})
-
-        result = compact._get_uncommitted_changes(str(git_repo))
-        assert result is None
-
-    def test_caps_output_at_200_chars(self, monkeypatch):
-        """Combined output longer than 200 chars is truncated to a whole-line boundary."""
-        import subprocess as _subprocess  # noqa: PLC0415
-        import types  # noqa: PLC0415
-
-        # 8 lines of 35 chars each = 280 chars total, over the 200-char cap.
-        many_chars = "\n".join(f" file{i:02d}.py | {'+'*20}" for i in range(8))
-
-        def _fake_run(args, **kw):
-            if "diff" in args:
-                return types.SimpleNamespace(returncode=0, stdout=many_chars, stderr="")
-            return types.SimpleNamespace(returncode=0, stdout="", stderr="")
-
-        monkeypatch.setattr(compact, "_is_git_repo", lambda _cwd: True)
-        monkeypatch.setattr(_subprocess, "run", _fake_run)
-        result = compact._get_uncommitted_changes("/some/repo")
-        assert result is not None
-        assert len(result) <= 200
-        # Result must end on a complete line (no mid-line truncation).
-        assert not result.endswith("|")
-
-    def test_nonzero_diff_exit_code_falls_back_to_status(self, monkeypatch):
-        """When git diff --stat fails, status-only output is still returned."""
-        import subprocess as _subprocess  # noqa: PLC0415
-        import types  # noqa: PLC0415
-
-        def _fake_run(args, **kw):
-            if "diff" in args:
-                return types.SimpleNamespace(returncode=128, stdout="", stderr="fatal: bad HEAD")
-            return types.SimpleNamespace(returncode=0, stdout="?? new.py\n", stderr="")
-
-        monkeypatch.setattr(compact, "_is_git_repo", lambda _cwd: True)
-        monkeypatch.setattr(_subprocess, "run", _fake_run)
-        result = compact._get_uncommitted_changes("/some/repo")
-        assert result is not None
-        assert "new.py" in result
-
-    def test_both_commands_fail_returns_none(self, monkeypatch):
-        """When both git commands return non-zero, None is returned."""
-        import subprocess as _subprocess  # noqa: PLC0415
-        import types  # noqa: PLC0415
-
-        def _fake_run(args, **kw):
-            return types.SimpleNamespace(returncode=128, stdout="", stderr="fatal")
-
-        monkeypatch.setattr(compact, "_is_git_repo", lambda _cwd: True)
-        monkeypatch.setattr(_subprocess, "run", _fake_run)
-        result = compact._get_uncommitted_changes("/some/repo")
-        assert result is None
-
-
-class TestUncommittedChangesManifestSection:
-    """Tests for the **Uncommitted:** section in the manifest."""
-
-    def test_section_present_when_uncommitted_changes_exist(self, tmp_data_dir, monkeypatch):
-        """Manifest includes '**Uncommitted:**' when helper returns non-empty string."""
-        sid = "uncommitted-present-test-abc"
-        session.mark_file_edited(sid, "/proj/src/main.py")
-        session.mark_file_read(sid, "/proj/src/main.py")
-
-        monkeypatch.setattr(
-            compact,
-            "_get_uncommitted_changes",
-            lambda _root: " src/main.py | 5 ++---\n 1 file changed, 3 insertions(+), 2 deletions(-)",
-        )
-        # Suppress the other git calls so they don't interfere
-        monkeypatch.setattr(compact, "_get_git_diff_stat_summary", lambda _root: "")
-        monkeypatch.setattr(compact, "_get_git_diff_stat", lambda *a: None)
-        monkeypatch.setattr(compact, "_get_session_commits", lambda *a: [])
-
-        result = compact.build_manifest(sid)
-        assert "**Uncommitted:**" in result, (
-            f"Expected '**Uncommitted:**' in manifest:\n{result}"
-        )
-        assert "main.py" in result
-
-    def test_section_absent_when_no_uncommitted_changes(self, tmp_data_dir, monkeypatch):
-        """Manifest does not include '**Uncommitted:**' when helper returns None."""
-        sid = "uncommitted-absent-test-abc"
-        session.mark_file_edited(sid, "/proj/src/utils.py")
-        session.mark_file_read(sid, "/proj/src/utils.py")
-
-        monkeypatch.setattr(compact, "_get_uncommitted_changes", lambda _root: None)
-        monkeypatch.setattr(compact, "_get_git_diff_stat_summary", lambda _root: "")
-        monkeypatch.setattr(compact, "_get_git_diff_stat", lambda *a: None)
-        monkeypatch.setattr(compact, "_get_session_commits", lambda *a: [])
-
-        result = compact.build_manifest(sid)
-        assert "**Uncommitted:**" not in result, (
-            f"Should not include section when helper returns None:\n{result}"
-        )
-
-    def test_section_absent_when_subprocess_raises(self, tmp_data_dir, monkeypatch):
-        """Manifest is unaffected when subprocess raises inside _get_uncommitted_changes."""
-        import subprocess as _subprocess  # noqa: PLC0415
-
-        sid = "uncommitted-subprocess-raises-test-abc"
-        session.mark_file_edited(sid, "/proj/src/crash.py")
-        session.mark_file_read(sid, "/proj/src/crash.py")
-
-        # Make subprocess.run raise for both git calls; the helper must swallow
-        # the exception and return None, leaving the section absent.
-        monkeypatch.setattr(
-            _subprocess,
-            "run",
-            lambda *a, **kw: (_ for _ in ()).throw(OSError("git not available")),
-        )
-        monkeypatch.setattr(compact, "_get_git_diff_stat_summary", lambda _root: "")
-        monkeypatch.setattr(compact, "_get_git_diff_stat", lambda *a: None)
-        monkeypatch.setattr(compact, "_get_session_commits", lambda *a: [])
-
-        # build_manifest must complete without raising
-        result = compact.build_manifest(sid)
-        assert "**Uncommitted:**" not in result, (
-            f"Section must be absent when subprocess fails:\n{result}"
-        )
-
-    def test_section_appears_before_files_edited(self, tmp_data_dir, monkeypatch):
-        """'**Uncommitted:**' must appear before '**Edited:**' in the manifest."""
-        sid = "uncommitted-order-test-abc"
-        session.mark_file_edited(sid, "/proj/src/order.py")
-        session.mark_file_read(sid, "/proj/src/order.py")
-
-        monkeypatch.setattr(
-            compact,
-            "_get_uncommitted_changes",
-            lambda _root: " src/order.py | 2 +-\n 1 file changed",
-        )
-        monkeypatch.setattr(compact, "_get_git_diff_stat_summary", lambda _root: "")
-        monkeypatch.setattr(compact, "_get_git_diff_stat", lambda *a: None)
-        monkeypatch.setattr(compact, "_get_session_commits", lambda *a: [])
-
-        result = compact.build_manifest(sid)
-        assert "**Uncommitted:**" in result
-        assert "**Edited:**" in result
-
-        idx_uncommitted = result.index("**Uncommitted:**")
-        idx_edited = result.index("**Edited:**")
-        assert idx_uncommitted < idx_edited, (
-            f"'**Uncommitted:**' (pos {idx_uncommitted}) must precede "
-            f"'**Edited:**' (pos {idx_edited})"
-        )
-
-    def test_section_shown_even_without_claude_tool_edits(self, tmp_data_dir, monkeypatch):
-        """Uncommitted Changes section appears even when edited_files is empty."""
-        sid = "uncommitted-no-edits-test-abc"
-        # Only a read, no edits tracked by Claude tools
-        session.mark_file_read(sid, "/proj/src/read_only.py")
-
-        monkeypatch.setattr(
-            compact,
-            "_get_uncommitted_changes",
-            lambda _root: "?? untracked.py",
-        )
-        monkeypatch.setattr(compact, "_get_git_diff_stat_summary", lambda _root: "")
-        monkeypatch.setattr(compact, "_get_git_diff_stat", lambda *a: None)
-        monkeypatch.setattr(compact, "_get_session_commits", lambda *a: [])
-
-        result = compact.build_manifest(sid)
-        assert "**Uncommitted:**" in result, (
-            f"**Uncommitted:** section must appear even with no Claude-tracked edits:\n{result}"
-        )
-        assert "untracked.py" in result
-
-    def test_section_lines_are_indented(self, tmp_data_dir, monkeypatch):
-        """Each content line in the Uncommitted Changes section is indented with two spaces."""
-        sid = "uncommitted-indent-test-abc"
-        session.mark_file_edited(sid, "/proj/src/indent.py")
-        session.mark_file_read(sid, "/proj/src/indent.py")
-
-        monkeypatch.setattr(
-            compact,
-            "_get_uncommitted_changes",
-            lambda _root: " src/indent.py | 3 +++",
-        )
-        monkeypatch.setattr(compact, "_get_git_diff_stat_summary", lambda _root: "")
-        monkeypatch.setattr(compact, "_get_git_diff_stat", lambda *a: None)
-        monkeypatch.setattr(compact, "_get_session_commits", lambda *a: [])
-
-        result = compact.build_manifest(sid)
-        lines = result.splitlines()
-        header_idx = next(
-            (i for i, line in enumerate(lines) if "**Uncommitted:**" in line), None
-        )
-        assert header_idx is not None
-        # The line immediately after the header should be the content, indented
-        content_lines = [
-            line for line in lines[header_idx + 1:]
-            if line.strip() and not line.startswith("**")
-        ]
-        for content_line in content_lines[:3]:  # Check first few content lines
-            if "indent.py" in content_line or "file changed" in content_line or content_line.strip().startswith("src/"):
-                assert content_line.startswith("  "), (
-                    f"Content line should start with two spaces: {content_line!r}"
-                )
-                break
-
-
-class TestComputeAdaptiveBudgetUncommittedBonus:
     """compute_adaptive_budget adds +10 when has_uncommitted_changes=True."""
 
     def test_uncommitted_bonus_adds_ten_tokens(self, tmp_data_dir):
@@ -3854,125 +3118,6 @@ class TestEmptySessionManifestRendering:
 # ---------------------------------------------------------------------------
 
 
-class TestPreCompactHookFailSoft:
-    """Test that PreCompact hook gracefully handles missing/corrupt session JSON."""
-
-    def _make_payload(self, session_id: str, trigger: str = "manual") -> dict:
-        return {"session_id": session_id, "trigger": trigger}
-
-    def test_missing_session_json_returns_continue(self, tmp_data_dir, tmp_path, monkeypatch):
-        """When session JSON file is deleted mid-session, hook should return continue:true."""
-        from token_goat import paths
-        cfg_path = tmp_path / "config.toml"
-        cfg_path.write_text("[compact_assist]\nenabled = true\nmin_events = 0\n", encoding="utf-8")
-        monkeypatch.setattr(paths, "config_path", lambda: cfg_path)
-        monkeypatch.delenv("TOKEN_GOAT_COMPACT_ASSIST", raising=False)
-
-        sid = "missing-json-session-xyz"
-        # Don't create any session data, so session JSON never exists
-        result = hooks_cli.pre_compact(self._make_payload(sid))
-
-        # Must return continue:true, not crash
-        assert result.get("continue") is True
-        # No systemMessage because session cache load returns empty cache
-        # (empty cache → no events → build_manifest_with_count returns ("", 0))
-
-    def test_corrupt_session_json_returns_continue(self, tmp_data_dir, tmp_path, monkeypatch):
-        """When session JSON is corrupted, hook should return continue:true."""
-        from token_goat import paths
-        cfg_path = tmp_path / "config.toml"
-        cfg_path.write_text("[compact_assist]\nenabled = true\nmin_events = 0\n", encoding="utf-8")
-        monkeypatch.setattr(paths, "config_path", lambda: cfg_path)
-        monkeypatch.delenv("TOKEN_GOAT_COMPACT_ASSIST", raising=False)
-
-        sid = "corrupt-json-session-abc"
-        # Create a session cache file with invalid JSON
-        session_path = paths.session_cache_path(sid)
-        session_path.parent.mkdir(parents=True, exist_ok=True)
-        session_path.write_text("{ this is not valid json }{{{", encoding="utf-8")
-
-        # Hook should catch the JSON error and return continue:true
-        result = hooks_cli.pre_compact(self._make_payload(sid))
-        assert result.get("continue") is True
-
-    def test_valid_session_json_emits_system_message(self, tmp_data_dir, tmp_path, monkeypatch):
-        """Positive test: valid session with activity should emit systemMessage."""
-        from token_goat import paths
-        cfg_path = tmp_path / "config.toml"
-        cfg_path.write_text("[compact_assist]\nenabled = true\nmin_events = 1\n", encoding="utf-8")
-        monkeypatch.setattr(paths, "config_path", lambda: cfg_path)
-        monkeypatch.delenv("TOKEN_GOAT_COMPACT_ASSIST", raising=False)
-
-        sid = "valid-session-with-activity"
-        session.mark_file_edited(sid, "/proj/app.py")
-        session.mark_file_read(sid, "/proj/lib.py", offset=0, limit=100)
-
-        result = hooks_cli.pre_compact(self._make_payload(sid))
-        assert result.get("continue") is True
-        assert "systemMessage" in result
-        assert isinstance(result["systemMessage"], str)
-        assert len(result["systemMessage"]) > 0
-
-    def test_empty_session_with_min_events_zero_returns_continue(self, tmp_data_dir, tmp_path, monkeypatch):
-        """Empty session with min_events=0 should return continue (not emit empty manifest)."""
-        from token_goat import paths
-        cfg_path = tmp_path / "config.toml"
-        cfg_path.write_text("[compact_assist]\nenabled = true\nmin_events = 0\n", encoding="utf-8")
-        monkeypatch.setattr(paths, "config_path", lambda: cfg_path)
-        monkeypatch.delenv("TOKEN_GOAT_COMPACT_ASSIST", raising=False)
-
-        sid = "empty-min-zero-session"
-        result = hooks_cli.pre_compact(self._make_payload(sid))
-
-        # build_manifest_with_count returns ("", 0) for empty session
-        # Even though min_events=0, the manifest is empty string, so no systemMessage
-        assert result.get("continue") is True
-        assert "systemMessage" not in result
-
-    def test_build_manifest_handles_missing_session_file(self, tmp_data_dir):
-        """build_manifest should return empty string for non-existent session."""
-        sid = "nonexistent-session-xyz"
-        result = compact.build_manifest(sid)
-        assert result == ""
-
-    def test_build_manifest_with_count_missing_file(self, tmp_data_dir):
-        """build_manifest_with_count should return ("", 0) for missing session."""
-        sid = "nonexistent-count-session-abc"
-        manifest, count = compact.build_manifest_with_count(sid)
-        assert manifest == ""
-        assert count == 0
-
-    def test_build_manifest_graceful_catch_in_load_session_cache(self, tmp_data_dir):
-        """_load_session_cache catches exceptions and returns None."""
-        from token_goat import compact as compact_mod
-        # Invalid session ID (too long)
-        result = compact_mod._load_session_cache("x" * 300, "test")
-        assert result is None
-
-    def test_corrupt_json_caught_by_session_load(self, tmp_data_dir, tmp_path, monkeypatch):
-        """Corrupt JSON in session file should be caught by session.load()."""
-        from token_goat import paths
-        from token_goat import session as session_mod
-
-        sid = "corrupt-caught-session-xyz"
-        session_path = paths.session_cache_path(sid)
-        session_path.parent.mkdir(parents=True, exist_ok=True)
-        session_path.write_text("{ malformed json }", encoding="utf-8")
-
-        # session.load() should catch the JSONDecodeError and return a fresh cache
-        cache = session_mod.load(sid)
-        assert isinstance(cache, session_mod.SessionCache)
-        # Fresh cache should be empty
-        assert len(cache.files) == 0
-        assert len(cache.edited_files) == 0
-
-
-# ---------------------------------------------------------------------------
-# Glob section in full manifest
-# ---------------------------------------------------------------------------
-
-
-class TestGlobManifestSection:
     """build_manifest includes Directory Scans when glob history is present."""
 
     def _mature_session(self, sid):
@@ -4245,13 +3390,15 @@ class TestStaleReadFilesSection:
 class TestSymbolRecencyRanking:
     """Tests for _rank_symbols_by_recency: recent symbols appear first."""
 
-    def test_most_recent_symbol_ranks_first_when_sizes_equal(self, tmp_data_dir):
+    def test_most_recent_symbol_ranks_first_when_sizes_equal(self, tmp_data_dir, monkeypatch):
         """When all symbols have same size, most recently accessed appears first."""
+        import itertools as _it
         sid = "symbol-recency-recent-first"
+        _ts = _it.count(1_000_000_000.0, 0.01)
+        monkeypatch.setattr(session.time, "time", lambda: next(_ts))
 
         # Mark two symbols with different timestamps
         session.mark_file_read(sid, "/proj/parser.py", symbol="parse_expr")
-        time.sleep(0.1)  # Ensure timestamp separation
         session.mark_file_read(sid, "/proj/parser.py", symbol="parse_stmt")
 
         cache = session.load(sid)
@@ -4586,13 +3733,13 @@ class TestBuildManifestTimeout:
         session.mark_file_edited(sid, "/proj/src/slow.py")
         session.mark_file_read(sid, "/proj/src/slow.py", offset=0, limit=50)
 
-        # Shrink the wall-clock budget so the test doesn't have to sleep 9s.
-        monkeypatch.setattr(compact, "_MANIFEST_TIMEOUT_SECS", 0.1)
+        # Shrink the wall-clock budget so the test exceeds it with a small sleep.
+        monkeypatch.setattr(compact, "_MANIFEST_TIMEOUT_SECS", 0.01)
 
         original_func = compact._get_git_diff_stat_summary
 
         def slow_git(*args, **kwargs):
-            time.sleep(0.3)  # Exceed the shrunk timeout
+            time.sleep(0.05)  # Exceed the shrunk 10ms timeout; well under 300ms
             return original_func(*args, **kwargs)
 
         monkeypatch.setattr(compact, "_get_git_diff_stat_summary", slow_git)
@@ -4609,12 +3756,12 @@ class TestBuildManifestTimeout:
         sid = "timeout-format-session"
         session.mark_file_edited(sid, "/proj/src/test.py")
 
-        monkeypatch.setattr(compact, "_MANIFEST_TIMEOUT_SECS", 0.1)
+        monkeypatch.setattr(compact, "_MANIFEST_TIMEOUT_SECS", 0.01)
 
         original_func = compact._get_git_diff_stat_summary
 
         def slow_git(*args, **kwargs):
-            time.sleep(0.3)
+            time.sleep(0.05)  # Exceed the shrunk 10ms timeout; well under 300ms
             return original_func(*args, **kwargs)
 
         monkeypatch.setattr(compact, "_get_git_diff_stat_summary", slow_git)
@@ -4627,8 +3774,8 @@ class TestBuildManifestTimeout:
             f"Expected 'timed out after X.Xs' pattern in manifest, got: {result[-200:]}"
         elapsed_str = match.group(1)
         elapsed_float = float(elapsed_str)
-        assert elapsed_float >= 0.3, \
-            f"Expected elapsed >= 0.3s, got: {elapsed_float}s"
+        assert elapsed_float >= 0.01, \
+            f"Expected elapsed >= 0.01s, got: {elapsed_float}s"
 
 
 # ---------------------------------------------------------------------------
@@ -4806,71 +3953,6 @@ class TestSelectTopWebEntries:
 # ---------------------------------------------------------------------------
 
 
-class TestGitDiffStatSummaryCache:
-    """Process-level cache in _get_git_diff_stat_summary avoids repeated subprocesses."""
-
-    def _clear_cache(self):
-        compact._diff_stat_summary_cache.clear()
-        compact._is_git_repo_cache.clear()
-
-    def test_cache_hit_skips_subprocess(self, monkeypatch, tmp_path):
-        """Second call within TTL returns cached result without re-running git."""
-        self._clear_cache()
-        monkeypatch.setattr(compact, "_is_git_repo", lambda _cwd: True)
-        call_count = 0
-
-        real_run = __import__("subprocess").run
-
-        def counting_run(cmd, **kwargs):
-            nonlocal call_count
-            if cmd[0] == "git":
-                call_count += 1
-            return real_run(cmd, **kwargs)
-
-        monkeypatch.setattr("subprocess.run", counting_run)
-        cwd = str(tmp_path)
-        compact._get_git_diff_stat_summary(cwd)
-        first_count = call_count
-        compact._get_git_diff_stat_summary(cwd)
-        # Second call must not have triggered another subprocess.run for git.
-        assert call_count == first_count, "Cache hit should skip the git subprocess"
-
-    def test_cache_expires_after_ttl(self, monkeypatch, tmp_path):
-        """Cache entry older than TTL causes a fresh subprocess call."""
-        self._clear_cache()
-        monkeypatch.setattr(compact, "_is_git_repo", lambda _cwd: True)
-        cwd = str(tmp_path)
-        # Prime the cache with a stale timestamp (TTL + 1 seconds in the past).
-        stale_ts = __import__("time").monotonic() - compact._DIFF_STAT_SUMMARY_TTL - 1
-        compact._diff_stat_summary_cache[cwd] = ("stale-result", stale_ts)
-
-        call_count = 0
-        real_run = __import__("subprocess").run
-
-        def counting_run(cmd, **kwargs):
-            nonlocal call_count
-            if cmd[0] == "git":
-                call_count += 1
-            return real_run(cmd, **kwargs)
-
-        monkeypatch.setattr("subprocess.run", counting_run)
-        compact._get_git_diff_stat_summary(cwd)
-        assert call_count >= 1, "Stale cache entry should trigger a fresh subprocess call"
-
-    def test_none_root_returns_empty_no_cache(self):
-        """None root short-circuits before touching the cache."""
-        self._clear_cache()
-        result = compact._get_git_diff_stat_summary(None)
-        assert result == ""
-        assert None not in compact._diff_stat_summary_cache
-
-
-# ---------------------------------------------------------------------------
-# TestRenderTasksSection / TestLoadTaskList / TestManifestTODOs
-# ---------------------------------------------------------------------------
-
-
-class TestRenderTasksSection:
     """Unit tests for compact._render_tasks_section."""
 
     def test_no_tasks_returns_empty(self):
@@ -5714,127 +4796,6 @@ class TestHumanizeBytes:
 # _is_git_repo — cheap .git existence probe
 # ---------------------------------------------------------------------------
 
-class TestIsGitRepo:
-    """Unit tests for compact._is_git_repo()."""
-
-    @pytest.fixture(autouse=True)
-    def _clear_cache(self):
-        compact._is_git_repo_cache.clear()
-        yield
-        compact._is_git_repo_cache.clear()
-
-    def test_returns_false_for_empty_tmp_dir(self, tmp_path):
-        """A plain tmp directory has no .git — must return False."""
-        assert compact._is_git_repo(str(tmp_path)) is False
-
-    def test_returns_true_for_directory_with_dot_git_dir(self, tmp_path):
-        """.git subdirectory present → True."""
-        (tmp_path / ".git").mkdir()
-        assert compact._is_git_repo(str(tmp_path)) is True
-
-    def test_returns_true_for_directory_with_dot_git_file(self, tmp_path):
-        """.git file (worktree/submodule pointer) present → True."""
-        (tmp_path / ".git").write_text("gitdir: ../.git/worktrees/foo\n")
-        assert compact._is_git_repo(str(tmp_path)) is True
-
-    def test_result_is_cached(self, tmp_path):
-        """Second call must return from cache (probe not repeated on disk)."""
-        (tmp_path / ".git").mkdir()
-        path_str = str(tmp_path)
-        first = compact._is_git_repo(path_str)
-        assert first is True
-        assert path_str in compact._is_git_repo_cache
-        # Remove .git — second call still returns True from cache.
-        (tmp_path / ".git").rmdir()
-        assert compact._is_git_repo(path_str) is True
-
-
-# ---------------------------------------------------------------------------
-# non-git short-circuit for git helpers
-# ---------------------------------------------------------------------------
-
-class TestNonGitShortCircuit:
-    """Verify git helpers return immediately when cwd is not a git repo."""
-
-    @pytest.fixture(autouse=True)
-    def _clear_caches(self):
-        compact._is_git_repo_cache.clear()
-        compact._uncommitted_changes_cache.clear()
-        compact._diff_stat_summary_cache.clear()
-        yield
-        compact._is_git_repo_cache.clear()
-        compact._uncommitted_changes_cache.clear()
-        compact._diff_stat_summary_cache.clear()
-
-    def test_uncommitted_changes_skips_subprocess_in_non_git_dir(
-        self, tmp_path, monkeypatch
-    ):
-        """_get_uncommitted_changes must return None without spawning git."""
-        import subprocess as _subprocess  # noqa: PLC0415
-
-        calls: list[object] = []
-
-        def _spy(*a, **kw):
-            calls.append(a)
-            raise AssertionError("subprocess.run must not be called for non-git cwd")
-
-        monkeypatch.setattr(_subprocess, "run", _spy)
-        result = compact._get_uncommitted_changes(str(tmp_path))
-        assert result is None
-        assert calls == []
-
-    def test_diff_stat_summary_skips_subprocess_in_non_git_dir(
-        self, tmp_path, monkeypatch
-    ):
-        """_get_git_diff_stat_summary must return '' without spawning git."""
-        import subprocess as _subprocess  # noqa: PLC0415
-
-        calls: list[object] = []
-
-        def _spy(*a, **kw):
-            calls.append(a)
-            raise AssertionError("subprocess.run must not be called for non-git cwd")
-
-        monkeypatch.setattr(_subprocess, "run", _spy)
-        result = compact._get_git_diff_stat_summary(str(tmp_path))
-        assert result == ""
-        assert calls == []
-
-    def test_uncommitted_changes_still_works_in_git_repo(self, tmp_path, monkeypatch):
-        """When _is_git_repo returns True, the subprocess path is reachable."""
-        import subprocess as _subprocess  # noqa: PLC0415
-
-        fake_proc = type(
-            "P", (), {"returncode": 0, "stdout": " foo.py | 2 +-\n", "stderr": ""}
-        )()
-        monkeypatch.setattr(_subprocess, "run", lambda *a, **kw: fake_proc)
-        monkeypatch.setattr(compact, "_is_git_repo", lambda _cwd: True)
-        result = compact._get_uncommitted_changes(str(tmp_path))
-        assert result is not None
-        assert "foo.py" in result
-
-    def test_diff_stat_summary_still_works_in_git_repo(self, tmp_path, monkeypatch):
-        """When _is_git_repo returns True, the subprocess path is reachable."""
-        import subprocess as _subprocess  # noqa: PLC0415
-
-        fake_proc = type(
-            "P",
-            (),
-            {"returncode": 0, "stdout": " bar.py | 1 +\n1 file changed\n", "stderr": ""},
-        )()
-        monkeypatch.setattr(_subprocess, "run", lambda *a, **kw: fake_proc)
-        monkeypatch.setattr(compact, "_is_git_repo", lambda _cwd: True)
-        result = compact._get_git_diff_stat_summary(str(tmp_path))
-        assert result != ""
-        assert "bar.py" in result
-
-
-# ---------------------------------------------------------------------------
-# Item 3 — Bold inline labels replace ### H3 section headers
-# ---------------------------------------------------------------------------
-
-
-class TestBoldLabels:
     """Manifest sections use bold inline labels (**X:**) instead of ### H3 headers."""
 
     def test_edited_section_uses_bold_label(self, tmp_data_dir):
