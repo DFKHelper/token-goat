@@ -795,18 +795,22 @@ class TestColdOutputs:
         """A bash entry with exit_code=0 that is >30 min old SHOULD appear in Cold Outputs."""
         sid = "cold-success-session-abc"
 
-        # Add an old bash output with zero exit code (successful command)
+        # Add two old bash outputs (min_lines=2: Cold Outputs only emits with ≥2 entries)
         old_ts = time.time() - 1801  # 30 minutes + 1 second, exceeds cold threshold
-        session.mark_bash_run(
-            sid,
-            "cmd_sha_success",
-            "pytest",
-            "success_id_001",
-            stdout_bytes=1000,
-            stderr_bytes=0,
-            exit_code=0,  # SUCCESS
-            truncated=False,
-        )
+        for sha, cmd, oid in [
+            ("cmd_sha_success", "pytest", "success_id_001"),
+            ("cmd_sha_success2", "ruff check", "success_id_002"),
+        ]:
+            session.mark_bash_run(
+                sid,
+                sha,
+                cmd,
+                oid,
+                stdout_bytes=1000,
+                stderr_bytes=0,
+                exit_code=0,  # SUCCESS
+                truncated=False,
+            )
 
         # Manually adjust the timestamp to simulate age; set session to mature so
         # bash sections are not suppressed by the young-tier guard.
@@ -814,11 +818,10 @@ class TestColdOutputs:
         cache.created_ts = time.time() - 7200  # 2 hours old → mature tier
         if cache.bash_history:
             for bash_entry in cache.bash_history.values():
-                if getattr(bash_entry, "output_id", None) == "success_id_001":
-                    bash_entry.ts = old_ts
+                bash_entry.ts = old_ts
         session.save(cache)
 
-        result = compact.build_manifest(sid)
+        result = compact.build_manifest(sid, max_tokens=800)
 
         # Successful command SHOULD appear in Cold Outputs section (short id form)
         assert "Cold Outputs" in result, f"cold outputs section missing:\n{result}"
@@ -2997,6 +3000,121 @@ class TestEmptySectionSuppression:
         )
         assert web_header_idx is None, "Web Fetches header should not appear when no web history"
 
+    def test_web_section_suppressed_when_only_one_entry(self, tmp_data_dir):
+        """Web Fetches section header not emitted when only one web entry (min_lines=2)."""
+        import time as _time
+        sid = "single-web-test-abc"
+        session.mark_file_edited(sid, "/proj/app.py")
+        # mark_web_fetch args: (sid, url_sha, url_preview, output_id, body_bytes, status_code, truncated)
+        session.mark_web_fetch(sid, "sha_1", "https://example.com/docs", "out_id_1", 500, 200, False)
+
+        cache = session.load(sid)
+        # Mature session so web section is not skipped by age-tier guard
+        cache.created_ts = _time.time() - 4000
+        session.save(cache)
+        cache = session.load(sid)
+
+        manifest = compact._build_manifest_from_cache(cache, sid, 800)
+        assert "Web Fetches" not in manifest, (
+            "Web Fetches header should be suppressed with only one entry (min_lines=2)"
+        )
+
+    def test_web_section_present_when_two_domain_entries(self, tmp_data_dir):
+        """Web Fetches section emitted when two different domains produce two output lines."""
+        import time as _time
+        sid = "two-web-test-abc"
+        session.mark_file_edited(sid, "/proj/app.py")
+        # Two different domains → two grouped lines → min_lines=2 satisfied.
+        # mark_web_fetch args: (sid, url_sha, url_preview, output_id, body_bytes, status_code, truncated)
+        # url_preview must be a proper URL so domain grouping works correctly.
+        session.mark_web_fetch(
+            sid, "sha_a", "https://example.com/page", "out_id_a", 500, 200, False
+        )
+        session.mark_web_fetch(
+            sid, "sha_b", "https://otherdomain.org/docs", "out_id_b", 500, 200, False
+        )
+
+        cache = session.load(sid)
+        # Mature session so web section is not skipped by age-tier guard
+        cache.created_ts = _time.time() - 4000
+        session.save(cache)
+        cache = session.load(sid)
+
+        manifest = compact._build_manifest_from_cache(cache, sid, 800)
+        assert "Web Fetches" in manifest, (
+            "Web Fetches header should appear when two different-domain entries exist"
+        )
+
+
+class TestShortPathProjectStripping:
+    """_short_path strips the project basename when project_root is provided."""
+
+    def test_strips_project_name_non_src_path(self):
+        """Path with project basename but no /src/ component is stripped."""
+        result = compact._short_path(
+            "token-goat/lib/foo.py",
+            project_root="/Projects/token-goat",
+        )
+        assert result == "lib/foo.py", f"Expected 'lib/foo.py', got {result!r}"
+
+    def test_strips_project_name_with_windows_root(self):
+        """Works with Windows-style absolute project_root, non-src path."""
+        result = compact._short_path(
+            "token-goat/render/panel.py",
+            project_root="C:/Projects/token-goat",
+        )
+        assert result == "render/panel.py", f"Expected 'render/panel.py', got {result!r}"
+
+    def test_keeps_other_project_name(self):
+        """Path from a different project keeps its leading component (no /src/)."""
+        result = compact._short_path(
+            "other-project/lib/bar.py",
+            project_root="/Projects/token-goat",
+        )
+        assert result == "other-project/lib/bar.py", (
+            f"Expected 'other-project/lib/bar.py', got {result!r}"
+        )
+
+    def test_no_stripping_without_project_root(self):
+        """Without project_root a non-src path is returned as-is."""
+        result = compact._short_path("token-goat/lib/foo.py")
+        assert result == "token-goat/lib/foo.py", (
+            f"Expected 'token-goat/lib/foo.py', got {result!r}"
+        )
+
+    def test_src_prefix_still_wins_for_absolute_paths(self):
+        """The /src/ prefix strip handles absolute paths regardless of project_root."""
+        result = compact._short_path(
+            "/Projects/token-goat/src/foo.py",
+            project_root="/Projects/token-goat",
+        )
+        assert result == "src/foo.py", f"Expected 'src/foo.py', got {result!r}"
+
+    def test_manifest_edited_file_strips_project_name(self, tmp_data_dir, monkeypatch):
+        """End-to-end: edited file path has project name stripped in manifest.
+
+        cwd is not persisted to disk (set by hooks at runtime), so we use
+        _build_manifest_from_cache with the in-memory cache — the same pattern
+        used by other manifest tests that need a specific cwd.
+        """
+        sid = "path-norm-edited-abc"
+        session.mark_file_edited(sid, "token-goat/render/panel.py")
+        cache = session.load(sid)
+        # Use a non-src path so project-name stripping is clearly exercised
+        # (the /src/ prefix strip would otherwise shadow the result).
+        cache.cwd = "/Projects/token-goat"
+
+        monkeypatch.setattr(compact, "_get_uncommitted_changes", lambda _root: "")
+        monkeypatch.setattr(compact, "_get_git_diff_stat_summary", lambda _root: "")
+        monkeypatch.setattr(compact, "_get_git_diff_stat", lambda *a: None)
+        monkeypatch.setattr(compact, "_get_session_commits", lambda *a: [])
+
+        result = compact._build_manifest_from_cache(cache, sid, 400)
+        assert "render/panel.py" in result, "Project name should be stripped from edited path"
+        assert "token-goat/render/panel.py" not in result, (
+            "Full project-prefixed path should not appear in manifest"
+        )
+
 
 class TestHintContentHashDedup:
     """Hint content dedup by rendered string hash (Improvement 2)."""
@@ -3572,11 +3690,13 @@ class TestGlobManifestSection:
         session.save(cache)
 
     def test_glob_section_appears_with_qualifying_entry(self, tmp_data_dir):
-        """A glob with sufficient result_count appears as Directory Scans."""
+        """Two globs with sufficient result_count appear as Directory Scans."""
         from token_goat.hints import _GLOB_DEDUP_MIN_RESULT_COUNT
         sid = "glob-manifest-appears"
         session.mark_file_edited(sid, "src/main.py")
+        # min_lines=2: Directory Scans only emits when ≥2 content lines are present
         session.mark_glob_run(sid, "**/*.py", result_count=_GLOB_DEDUP_MIN_RESULT_COUNT + 10)
+        session.mark_glob_run(sid, "**/*.ts", result_count=_GLOB_DEDUP_MIN_RESULT_COUNT + 5)
         self._mature_session(sid)
 
         result = compact.build_manifest(sid, max_tokens=400)
@@ -4247,18 +4367,22 @@ class TestSelectTopWebEntries:
             truncated=False,
         )
 
-        # Add a good 200 fetch for comparison
-        url_good = "https://docs.example.com/api"
-        url_sha_good = hashlib.sha256(url_good.encode()).hexdigest()[:12]
-        session.mark_web_fetch(
-            session_id=sid,
-            url_sha=url_sha_good,
-            url_preview=url_good,
-            output_id=f"web-good-{url_sha_good}",
-            body_bytes=5000,
-            status_code=200,
-            truncated=False,
-        )
+        # Add two good 200 fetches from different domains (min_lines=2: Web Fetches
+        # requires ≥2 domain-grouped lines to emit the section header)
+        for url_good, extra_bytes in [
+            ("https://docs.example.com/api", 5000),
+            ("https://otherdocs.example.org/guide", 4000),
+        ]:
+            url_sha_good = hashlib.sha256(url_good.encode()).hexdigest()[:12]
+            session.mark_web_fetch(
+                session_id=sid,
+                url_sha=url_sha_good,
+                url_preview=url_good,
+                output_id=f"web-good-{url_sha_good}",
+                body_bytes=extra_bytes,
+                status_code=200,
+                truncated=False,
+            )
 
         # Make the session mature so web section appears
         cache = session.load(sid)
@@ -4267,8 +4391,8 @@ class TestSelectTopWebEntries:
 
         cache = session.load(sid)
         manifest = compact._build_manifest_from_cache(cache, sid, 400)
-        # 404 should be filtered out; only 200 OK should appear
-        assert "example.com/api" in manifest, "200 OK fetch should be in manifest"
+        # 404 should be filtered out; only 200 OK fetches should appear
+        assert "docs.example.com" in manifest, "200 OK fetch should be in manifest"
         assert "not-found" not in manifest, "404 error fetch should be filtered out"
 
     def test_http_500_error_is_filtered_out(self, tmp_data_dir):
@@ -4321,18 +4445,21 @@ class TestSelectTopWebEntries:
             truncated=False,
         )
 
-        # Add a good substantial fetch
-        url_good = "https://docs.example.com/guide"
-        url_sha_good = hashlib.sha256(url_good.encode()).hexdigest()[:12]
-        session.mark_web_fetch(
-            session_id=sid,
-            url_sha=url_sha_good,
-            url_preview=url_good,
-            output_id=f"web-good-{url_sha_good}",
-            body_bytes=5000,
-            status_code=200,
-            truncated=False,
-        )
+        # Add two good substantial fetches from different domains (min_lines=2)
+        for url_good in [
+            "https://docs.example.com/guide",
+            "https://otherdocs.example.org/ref",
+        ]:
+            url_sha_good = hashlib.sha256(url_good.encode()).hexdigest()[:12]
+            session.mark_web_fetch(
+                session_id=sid,
+                url_sha=url_sha_good,
+                url_preview=url_good,
+                output_id=f"web-good-{url_sha_good}",
+                body_bytes=5000,
+                status_code=200,
+                truncated=False,
+            )
 
         # Make mature
         cache = session.load(sid)
@@ -4340,30 +4467,35 @@ class TestSelectTopWebEntries:
         session.save(cache)
 
         cache = session.load(sid)
-        manifest = compact._build_manifest_from_cache(cache, sid, 400)
-        # Small body should be filtered; large body should appear
+        # Use 800-token budget: web gets 10% = ~80 tokens, enough for 2 domain lines.
+        manifest = compact._build_manifest_from_cache(cache, sid, 800)
+        # Small body should be filtered; large bodies should appear
         assert "docs.example.com" in manifest, "Substantial fetch should be in manifest"
         assert "redirect" not in manifest, "Tiny fetch should be filtered out"
 
     def test_normal_fetch_passes_filter(self, tmp_data_dir):
-        """Web fetch with 200 status and body >= threshold passes the filter."""
+        """Web fetches with 200 status and body >= threshold pass the filter."""
         import hashlib
 
         sid = "web-normal-test"
         session.mark_file_edited(sid, "/proj/app.py")
 
-        # Add a normal, healthy fetch
-        url = "https://docs.python.org/3/library/json.html"
-        url_sha = hashlib.sha256(url.encode()).hexdigest()[:12]
-        session.mark_web_fetch(
-            session_id=sid,
-            url_sha=url_sha,
-            url_preview=url,
-            output_id=f"web-{url_sha}",
-            body_bytes=10000,
-            status_code=200,
-            truncated=False,
-        )
+        # Add two normal healthy fetches from different domains (min_lines=2: Web Fetches
+        # section requires ≥2 grouped domain lines to emit the header)
+        for url in [
+            "https://docs.python.org/3/library/json.html",
+            "https://sqlite.org/json1.html",
+        ]:
+            url_sha = hashlib.sha256(url.encode()).hexdigest()[:12]
+            session.mark_web_fetch(
+                session_id=sid,
+                url_sha=url_sha,
+                url_preview=url,
+                output_id=f"web-{url_sha}",
+                body_bytes=10000,
+                status_code=200,
+                truncated=False,
+            )
 
         # Make mature
         cache = session.load(sid)
@@ -4371,8 +4503,9 @@ class TestSelectTopWebEntries:
         session.save(cache)
 
         cache = session.load(sid)
-        manifest = compact._build_manifest_from_cache(cache, sid, 400)
-        # Normal fetch should be included
+        # Use 800-token budget: web gets 10% = ~80 tokens, enough for 2 domain lines.
+        manifest = compact._build_manifest_from_cache(cache, sid, 800)
+        # Normal fetches should be included
         assert "python.org" in manifest, "Normal 200 OK fetch should be in manifest"
 
 

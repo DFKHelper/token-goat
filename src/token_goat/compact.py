@@ -614,6 +614,7 @@ def _count_suffix(n: int) -> str:
 
 def _group_edited_by_dir(
     entries: list[tuple[str, int]],
+    project_root: str | None = None,
 ) -> list[str]:
     """Group edited files by directory when 3+ files share the same parent.
 
@@ -650,7 +651,7 @@ def _group_edited_by_dir(
             # Below threshold: list each file on its own line
             for basename, count in group:
                 full_path = os.path.join(dirname, basename) if dirname != "." else basename
-                result.append(f"- ✎ {_short_path(full_path)}{_count_suffix(count)}")
+                result.append(f"- ✎ {_short_path(full_path, project_root=project_root)}{_count_suffix(count)}")
         else:
             # 3+ files: use grouped format
             # Sort files within the group by edit count descending, maintaining relative order
@@ -659,7 +660,7 @@ def _group_edited_by_dir(
             files_str = ", ".join(file_parts)
 
             # Cap the grouped line to fit within reasonable manifest bounds (~120 chars)
-            display_dir = _short_path(dirname + "/") if dirname != "." else ""
+            display_dir = _short_path(dirname + "/", project_root=project_root) if dirname != "." else ""
             line = f"  {display_dir} ({len(group)} files):  {files_str}"
 
             if len(line) > 120:
@@ -688,7 +689,7 @@ def _format_duration(seconds: float) -> str:
     return f"{hours}h {mins}m" if mins > 0 else f"{hours}h"
 
 
-def _short_path(p: str, max_len: int = 70) -> str:
+def _short_path(p: str, max_len: int = 70, project_root: str | None = None) -> str:
     """Return a compact display representation of a file path.
 
     Normalises backslashes to forward slashes, strips the leading
@@ -698,6 +699,12 @@ def _short_path(p: str, max_len: int = 70) -> str:
     and sanitizes embedded newlines/CRs to prevent log/manifest injection.
     Falls back to tail-truncation with an ellipsis if the path is still over
     *max_len* after stripping (e.g. deeply nested monorepo paths).
+
+    If *project_root* is provided and the path starts with the project
+    basename as its first component (e.g. ``token-goat/src/file.py``), that
+    leading component is stripped so the manifest shows ``src/file.py`` rather
+    than ``token-goat/src/file.py``.  Paths from other projects keep their
+    leading component intact.
     """
     # Sanitize before any further processing: paths come from harness payloads
     # and session cache entries written by hooks, both of which accept arbitrary
@@ -710,6 +717,17 @@ def _short_path(p: str, max_len: int = 70) -> str:
         idx = p.find(prefix)
         if idx >= 0:
             return p[idx + 1:]
+    # Strip the project basename when it's the first path component.
+    # E.g. with project_root="/Projects/token-goat", a path that after the
+    # above stripping starts with "token-goat/" becomes just the remainder.
+    # Only applies to the *current* project — other projects keep their name.
+    if project_root:
+        import os as _os
+        proj_name = _os.path.basename(project_root.rstrip("/\\"))
+        if proj_name:
+            prefix_check = proj_name + "/"
+            if p.startswith(prefix_check):
+                p = p[len(prefix_check):]
     if len(p) > max_len:
         return "…" + p[-(max_len - 1):]
     return p
@@ -2017,6 +2035,7 @@ def _render_budget_lines(
     header: str,
     lines: list[str],
     budget: int,
+    min_lines: int = 1,
 ) -> tuple[list[str], int]:
     """Emit header + as many pre-formatted lines as fit within *budget* tokens.
 
@@ -2024,6 +2043,11 @@ def _render_budget_lines(
     nothing fits.  Callers pre-format their entries so this helper owns only
     the header-gating and budget-loop logic, eliminating the repeated 15-line
     pattern across the symbols / bash / web / grep sections of :func:`_render`.
+
+    *min_lines* (default 1): the minimum number of content lines required for
+    the section to be emitted at all.  Sections like ``### Web Fetches`` and
+    ``### Directory Scans`` with only one entry are rarely worth the header
+    overhead; pass ``min_lines=2`` for those callers.
     """
     if not lines:
         return [], 0
@@ -2037,7 +2061,7 @@ def _render_budget_lines(
             used += cost
         else:
             break
-    if not out:
+    if len(out) < min_lines:
         return [], 0
     return [header] + out, used + header_cost
 
@@ -2346,7 +2370,7 @@ def _render(cache: SessionCache, session_id: str, max_tokens: int) -> tuple[str,
         shown_edited = sorted_edited[:_MAX_EDITED_FILES_SHOWN]
         overflow_edited = len(sorted_edited) - len(shown_edited)
         # Group files by directory when 3+ share the same parent
-        grouped_lines = _group_edited_by_dir(shown_edited)
+        grouped_lines = _group_edited_by_dir(shown_edited, project_root=cwd)
         edited_lines.extend(grouped_lines)
         if overflow_edited > 0:
             edited_lines.append(f"- …+{overflow_edited} more edited")
@@ -2391,7 +2415,7 @@ def _render(cache: SessionCache, session_id: str, max_tokens: int) -> tuple[str,
     stale_lines = _render_section(
         "Outdated File Snapshots",
         stale_read_files[:6],
-        lambda path: f"- ⚠ {_short_path(path)}",
+        lambda path: f"- ⚠ {_short_path(path, project_root=cwd)}",
     )
 
     # Measure the "fixed" cost (header + blockers + uncommitted + edited + stale)
@@ -2417,7 +2441,7 @@ def _render(cache: SessionCache, session_id: str, max_tokens: int) -> tuple[str,
         syms = [sanitize_log_str(s, max_len=80) for s in ranked_symbols[:_MAX_SYMBOLS_PER_FILE_ENTRY]]
         overflow = len(ranked_symbols) - _MAX_SYMBOLS_PER_FILE_ENTRY
         sym_str = ", ".join(syms) + (f" +{overflow}" if overflow > 0 else "")
-        sym_formatted.append(f"- {_short_path(entry.rel_or_abs)} → {sym_str}")
+        sym_formatted.append(f"- {_short_path(entry.rel_or_abs, project_root=cwd)} → {sym_str}")
     sym_lines, sym_used = _render_budget_lines("### Symbols Accessed", sym_formatted, sym_budget)
 
     # ── 3. Bash history — up to 15 % of remaining budget ─────────────────────
@@ -2484,8 +2508,10 @@ def _render(cache: SessionCache, session_id: str, max_tokens: int) -> tuple[str,
         cold_header = "### Cold Outputs (evict — recall via `token-goat bash-output <id>`)"
         cold_header_cost = _token_count(cold_header)
         if bash_used + cold_header_cost <= bash_budget:
-            bash_lines.append(cold_header)
-            bash_used += cold_header_cost
+            # Collect content lines first; emit header only when ≥2 entries fit
+            # (min_lines=2: a single cold-output row isn't worth the header cost).
+            cold_content_lines: list[str] = []
+            cold_content_used = 0
             for be in cold_candidates[:_MAX_COLD_OUTPUTS]:
                 age_min = int((now_ts - getattr(be, "ts", now_ts)) / 60)
                 total = getattr(be, "stdout_bytes", 0) + getattr(be, "stderr_bytes", 0)
@@ -2493,16 +2519,21 @@ def _render(cache: SessionCache, session_id: str, max_tokens: int) -> tuple[str,
                 prev = sanitize_log_str(getattr(be, "cmd_preview", "?"), max_len=60)
                 line = f"- ❄ `{prev}` ({_humanize_bytes(total)}, {age_min}min old) `{oid}`"
                 cost = _token_count(line)
-                if bash_used + cost > bash_budget:
+                if bash_used + cold_header_cost + cold_content_used + cost > bash_budget:
                     break
-                bash_lines.append(line)
-                bash_used += cost
+                cold_content_lines.append(line)
+                cold_content_used += cost
                 cold_outputs.append(be)
-            dropped_cold = len(cold_candidates) - len(cold_outputs)
-            if dropped_cold > 0 and bash_used < bash_budget:
-                overflow_line = f"- …+{dropped_cold} more cold outputs"
-                if bash_used + _token_count(overflow_line) <= bash_budget:
-                    bash_lines.append(overflow_line)
+            if len(cold_outputs) >= 2:
+                bash_lines.append(cold_header)
+                bash_used += cold_header_cost
+                bash_lines.extend(cold_content_lines)
+                bash_used += cold_content_used
+                dropped_cold = len(cold_candidates) - len(cold_outputs)
+                if dropped_cold > 0 and bash_used < bash_budget:
+                    overflow_line = f"- …+{dropped_cold} more cold outputs"
+                    if bash_used + _token_count(overflow_line) <= bash_budget:
+                        bash_lines.append(overflow_line)
 
     # ── 3b. Web fetches — up to 10 % of remaining budget ─────────────────────
     # Young sessions skip web sections — same rationale as bash_entries above.
@@ -2516,6 +2547,7 @@ def _render(cache: SessionCache, session_id: str, max_tokens: int) -> tuple[str,
         "### Web Fetches (cached body)",
         _group_web_entries_by_domain(web_entries) if web_entries else [],
         web_budget,
+        min_lines=2,
     )
 
     # ── 4. Grep patterns — up to 15 % of remaining budget ────────────────────
@@ -2546,10 +2578,17 @@ def _render(cache: SessionCache, session_id: str, max_tokens: int) -> tuple[str,
     )
     glob_lines = _render_section("Directory Scans", glob_entries, _format_glob_entry)
     if glob_lines:
-        glob_used = _token_count("\n".join(glob_lines))
-        if glob_used > glob_budget:
+        # min_lines=2: a single-entry Directory Scans section is rarely worth the
+        # header overhead — suppress it the same way _render_budget_lines does.
+        content_lines = len(glob_lines) - 1  # index 0 is the header
+        if content_lines < 2:
             glob_lines = []
             glob_used = 0
+        else:
+            glob_used = _token_count("\n".join(glob_lines))
+            if glob_used > glob_budget:
+                glob_lines = []
+                glob_used = 0
 
     # ── 5. Key files read — up to 30 % of remaining budget ───────────────────
     files_budget = sec_budgets["files"]
@@ -2590,7 +2629,7 @@ def _render(cache: SessionCache, session_id: str, max_tokens: int) -> tuple[str,
 
         for entry in normal_files:
             ranges_str = _format_ranges(entry.line_ranges)
-            line = f"- → {_short_path(entry.rel_or_abs)}{_count_suffix(entry.read_count)}{ranges_str}"
+            line = f"- → {_short_path(entry.rel_or_abs, project_root=cwd)}{_count_suffix(entry.read_count)}{ranges_str}"
             cost = _token_count(line)
             if files_used + header_cost + cost > files_budget:
                 break
