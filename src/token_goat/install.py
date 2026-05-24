@@ -803,150 +803,65 @@ def _hook_runner_command(*subcommand: str) -> str:
     return paths.python_runner_command(*subcommand)
 
 
-def _hooks_block(binary: str | None = None) -> dict[str, list[_HookMatcherEntry]]:
-    """Build the hooks structure token-goat wants to install.
+def _build_hooks_block(
+    runner: Callable[..., str],
+    *,
+    codex: bool,
+) -> dict[str, list[_HookMatcherEntry]]:
+    """Derive a hooks structure from :mod:`hook_registry`.
 
-    The ``binary`` parameter is kept for backwards compatibility but unused;
-    commands now invoke ``pythonw.exe -m token_goat.cli`` via the persistent
-    wrapper at ``data_dir/bin/tg-hook.cmd``.  See ``paths.hook_wrapper_path``
-    for why a wrapper is needed.  See ``paths.python_runner_command`` for the
-    AV/EDR rationale behind ``pythonw -m`` over ``.exe`` shims.
+    Drives both ``_hooks_block`` (Claude wire format) and ``_codex_hooks_block``
+    (Codex wire format) from the single registry source of truth so adding a
+    new hook event only requires editing one place — see
+    :mod:`token_goat.hook_registry` for the rationale.
+
+    Args:
+        runner: Callable that builds a command string for a hook subcommand.
+            For Claude this is the persistent ``tg-hook.cmd`` wrapper; for
+            Codex it's the direct ``pythonw -m token_goat.cli`` form (Codex's
+            config.toml does not need the wrapper because Codex re-invokes
+            hooks through a different code path).
+        codex: When True, build the Codex ``config.toml`` shape and append the
+            ``--harness codex`` flag to every command.  When False, build the
+            Claude ``settings.json`` shape with no extra flags.
     """
-    runner = _hook_runner_command
-    return {
-        "SessionStart": [
-            {
-                "matcher": "*",
-                "hooks": [
-                    {
-                        "type": "command",
-                        "command": runner("hook", "session-start"),
-                        "timeout": 30000,
-                    }
-                ],
-            }
-        ],
-        "PreToolUse": [
-            {
-                # ``Bash`` is included so token-goat can rewrite noisy commands
-                # (pytest, npm install, docker build, ...) to flow through
-                # ``token-goat compress``, which captures stdout/stderr and
-                # emits a per-tool compressed view that strips progress bars,
-                # dedupes warnings, and surfaces failures first.  Disabled by
-                # setting TOKEN_GOAT_BASH_COMPRESS=0.  ``Grep`` is included so
-                # the pre-Grep dedup hint fires on repeat ``(pattern, path)``
-                # invocations within the staleness window.  ``Glob`` is included
-                # so the pre-Glob dedup hint fires when the same glob pattern is
-                # re-scanned within the session.
-                "matcher": "Read|Grep|Glob|Bash",
-                "hooks": [
-                    {
-                        "type": "command",
-                        "command": runner("hook", "pre-read"),
-                        "timeout": 5000,
-                    }
-                ],
-            },
-            {
-                "matcher": "mcp__claude_ai_Google_Drive__.*|WebFetch",
-                "hooks": [
-                    {
-                        "type": "command",
-                        "command": runner("hook", "pre-fetch"),
-                        "timeout": 2000,
-                    }
-                ],
-            },
-        ],
-        "PostToolUse": [
-            {
-                "matcher": "Edit|Write|MultiEdit",
-                "hooks": [
-                    {
-                        "type": "command",
-                        "command": runner("hook", "post-edit"),
-                        "timeout": 2000,
-                    }
-                ],
-            },
-            {
-                "matcher": "Read|Grep|Glob",
-                "hooks": [
-                    {
-                        "type": "command",
-                        "command": runner("hook", "post-read"),
-                        "timeout": 2000,
-                    }
-                ],
-            },
-            {
-                "matcher": "Bash",
-                "hooks": [
-                    {
-                        "type": "command",
-                        "command": runner("hook", "post-bash"),
-                        "timeout": 3000,
-                    }
-                ],
-            },
-            {
-                "matcher": "WebFetch",
-                "hooks": [
-                    {
-                        "type": "command",
-                        "command": runner("hook", "post-fetch"),
-                        "timeout": 3000,
-                    }
-                ],
-            },
-            {
-                "matcher": "Skill",
-                "hooks": [
-                    {
-                        "type": "command",
-                        "command": runner("hook", "post-skill"),
-                        "timeout": 3000,
-                    }
-                ],
-            },
-        ],
-        "UserPromptSubmit": [
-            {
-                "matcher": "*",
-                "hooks": [
-                    {
-                        "type": "command",
-                        "command": runner("hook", "user-prompt-submit"),
-                        "timeout": 5000,
-                    }
-                ],
-            }
-        ],
-        "SubagentStop": [
-            {
-                "matcher": "*",
-                "hooks": [
-                    {
-                        "type": "command",
-                        "command": runner("hook", "subagent-stop"),
-                        "timeout": 5000,
-                    }
-                ],
-            }
-        ],
-        "PreCompact": [
-            {
-                "matcher": "*",
-                "hooks": [
-                    {
-                        "type": "command",
-                        "command": runner("hook", "pre-compact"),
-                        "timeout": 5000,
-                    }
-                ],
-            }
-        ],
-    }
+    from . import hook_registry  # noqa: PLC0415
+
+    block: dict[str, list[_HookMatcherEntry]] = {}
+    events = hook_registry.codex_events() if codex else hook_registry.claude_events()
+    for ev in events:
+        top_event = ev.codex_event if codex else ev.claude_event
+        matcher = ev.codex_matcher if codex else ev.claude_matcher
+        timeout = ev.codex_timeout_ms if codex else ev.claude_timeout_ms
+        if not top_event:
+            continue
+        # Codex hooks need the explicit harness flag so the dispatcher knows
+        # which wire format to use for the response.
+        cmd = (
+            runner("hook", ev.name, "--harness", "codex")
+            if codex
+            else runner("hook", ev.name)
+        )
+        entry: _HookMatcherEntry = {
+            "matcher": matcher,
+            "hooks": [{"type": "command", "command": cmd, "timeout": timeout}],
+        }
+        block.setdefault(top_event, []).append(entry)
+    return block
+
+
+def _hooks_block(binary: str | None = None) -> dict[str, list[_HookMatcherEntry]]:
+    """Build the Claude Code settings.json hooks structure.
+
+    Derived from :data:`token_goat.hook_registry.HOOK_EVENTS` — see
+    :func:`_build_hooks_block` for the shared implementation.  The ``binary``
+    parameter is kept for backwards compatibility but unused; commands now
+    invoke ``pythonw.exe -m token_goat.cli`` via the persistent wrapper at
+    ``data_dir/bin/tg-hook.cmd``.  See ``paths.hook_wrapper_path`` for why a
+    wrapper is needed.  See ``paths.python_runner_command`` for the AV/EDR
+    rationale behind ``pythonw -m`` over ``.exe`` shims.
+    """
+    return _build_hooks_block(_hook_runner_command, codex=False)
 
 
 # Substrings that identify a hook command as belonging to token-goat.
@@ -1469,79 +1384,11 @@ def codex_agents_path() -> Path:
 def _codex_hooks_block(binary: str | None = None) -> dict[str, list[_HookMatcherEntry]]:
     """The hooks structure for Codex's config.toml.
 
-    The ``binary`` parameter is kept for backwards compatibility but unused.
+    Derived from :data:`token_goat.hook_registry.HOOK_EVENTS` — see
+    :func:`_build_hooks_block` for the shared implementation.  The ``binary``
+    parameter is kept for backwards compatibility but unused.
     """
-    runner = paths.python_runner_command
-    return {
-        "SessionStart": [
-            {
-                "matcher": "*",
-                "hooks": [
-                    {
-                        "type": "command",
-                        "command": runner("hook", "session-start", "--harness", "codex"),
-                        "timeout": 30000,
-                    }
-                ],
-            }
-        ],
-        "PreToolUse": [
-            {
-                "matcher": "view_image|Bash",
-                "hooks": [
-                    {
-                        "type": "command",
-                        "command": runner("hook", "pre-read", "--harness", "codex"),
-                        "timeout": 5000,
-                    }
-                ],
-            },
-            {
-                "matcher": "mcp__claude_ai_Google_Drive__.*|web_search",
-                "hooks": [
-                    {
-                        "type": "command",
-                        "command": runner("hook", "pre-fetch", "--harness", "codex"),
-                        "timeout": 2000,
-                    }
-                ],
-            },
-        ],
-        "PostToolUse": [
-            {
-                "matcher": "apply_patch",
-                "hooks": [
-                    {
-                        "type": "command",
-                        "command": runner("hook", "post-edit", "--harness", "codex"),
-                        "timeout": 2000,
-                    }
-                ],
-            },
-            {
-                "matcher": "Bash",
-                "hooks": [
-                    {
-                        "type": "command",
-                        "command": runner("hook", "post-bash", "--harness", "codex"),
-                        "timeout": 3000,
-                    }
-                ],
-            },
-        ],
-        "PreCompact": [
-            {
-                "matcher": "*",
-                "hooks": [
-                    {
-                        "type": "command",
-                        "command": runner("hook", "pre-compact", "--harness", "codex"),
-                        "timeout": 5000,
-                    }
-                ],
-            }
-        ],
-    }
+    return _build_hooks_block(paths.python_runner_command, codex=True)
 
 
 def patch_codex_config(binary: str) -> str:

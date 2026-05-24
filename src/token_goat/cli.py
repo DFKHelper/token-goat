@@ -2899,5 +2899,41 @@ def cmd_clean_cache(
             typer.echo(f"  {target}: ERROR — {info.get('error', 'unknown')}")
 
 
+# ---------------------------------------------------------------------------
+# Hook-registry startup assertion
+# ---------------------------------------------------------------------------
+# Runs after every ``@hook_app.command`` decorator has registered its
+# subcommand.  Raises ImportError if any event declared in
+# :data:`token_goat.hook_registry.HOOK_EVENTS` lacks a matching typer
+# subcommand — the package fails to import on drift, so a missing decorator
+# can never reach production silently.  See the module docstring on
+# :mod:`token_goat.hook_registry` for the bug class this prevents.
+def _assert_hook_registry_aligned() -> None:
+    """Verify every registry event has a matching ``@hook_app.command``.
+
+    Uses ``builtins.set`` because the ``config`` subcommand at module scope
+    shadows the built-in ``set`` name — without the explicit lookup this
+    function would resolve ``set()`` to the typer command.
+    """
+    import builtins  # noqa: PLC0415
+
+    from . import hook_registry  # noqa: PLC0415
+
+    registered: builtins.set[str] = builtins.set()
+    for info in hook_app.registered_commands:
+        # Typer auto-derives subcommand names by replacing underscores with
+        # hyphens in the callback's ``__name__`` unless the decorator passed
+        # an explicit ``name``; mirror that resolution here.
+        explicit_name = info.name
+        if explicit_name:
+            registered.add(explicit_name)
+        elif info.callback is not None:
+            registered.add(info.callback.__name__.replace("_", "-"))
+    hook_registry.assert_typer_subcommands_aligned(registered)
+
+
+_assert_hook_registry_aligned()
+
+
 if __name__ == "__main__":
     app()
