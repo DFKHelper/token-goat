@@ -325,7 +325,7 @@ class TestIndexFileEdgeCases:
 
     def test_extractor_crash_returns_none(self, tmp_path, tmp_data_dir):
         """If the tree-sitter extractor raises, index_file must return None."""
-        from token_goat.parser import index_file
+        from token_goat.parser import _RESULT_CACHE, index_file
 
         proj = self._make_project(tmp_path, tmp_data_dir)
         target = proj.root / "crash.py"
@@ -334,6 +334,9 @@ class TestIndexFileEdgeCases:
         def bad_extractor(raw, rel):
             raise RuntimeError("parser segfault simulation")
 
+        # Clear the result cache before patching so a prior test's cache hit
+        # for this content+language cannot bypass get_extractor entirely.
+        _RESULT_CACHE.clear()
         with patch("token_goat.parser.get_extractor", return_value=bad_extractor):
             result = index_file(proj, target)
 
