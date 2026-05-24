@@ -2477,6 +2477,15 @@ def subagent_stop(
     hooks_cli.safe_run("subagent-stop", input_file, _parse_harness(harness))
 
 
+@hook_app.command("post-skill", context_settings=_HOOK_CTX)
+def post_skill(
+    input_file: Path | None = _INPUT_OPT,
+    harness: str = _HARNESS_OPT,
+) -> None:
+    """Hook: post-skill event (caches loaded skill bodies for post-compact recall)."""
+    hooks_cli.safe_run("post-skill", input_file, _parse_harness(harness))
+
+
 @app.command("compact-hint", rich_help_panel="Advanced")
 def compact_hint(
     session_id: str = typer.Option(..., "--session-id", "-s", help="Claude session_id"),

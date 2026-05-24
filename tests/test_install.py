@@ -1169,3 +1169,64 @@ def test_write_hook_wrapper_creates_file_with_expected_content(tmp_path, monkeyp
     body = target.read_text(encoding="utf-8")
     assert '{"continue":true}' in body
     assert "token_goat.cli" in body
+
+
+# ---------------------------------------------------------------------------
+# Hook-registration alignment — every event in settings.json must have a
+# matching @hook_app.command decorator, or BLOCKING hook events
+# (UserPromptSubmit, PostToolUse:Skill) abort the user's operation.
+# ---------------------------------------------------------------------------
+
+
+def test_hooks_block_events_have_typer_subcommands_registered():
+    """Every event in ``_hooks_block`` must be a registered ``hook_app`` subcommand.
+
+    Recurring bug class: new hook events get added to ``_hooks_block`` (which
+    writes settings.json) and the ``_LAZY_HOOK_HANDLERS`` proxy table in
+    ``hooks_cli.py`` without the matching ``@hook_app.command`` decorator in
+    ``cli.py``.  Settings.json fires the hook, typer exits 2 with "No such
+    command", and Claude Code BLOCKS the operation for events where nonzero
+    is treated as blocking (UserPromptSubmit, PostToolUse:Skill, etc.).
+
+    Two prior incidents:
+      - user-prompt-submit + subagent-stop (fixed in e53d553)
+      - post-skill (fixed in the same series)
+    """
+    from token_goat.cli import hook_app  # noqa: PLC0415
+
+    # All subcommand names registered with hook_app (typer auto-derives hyphens
+    # from underscores in function names; we use the explicit name when given).
+    registered: set[str] = set()
+    for info in hook_app.registered_commands:
+        name = info.name or (info.callback.__name__.replace("_", "-") if info.callback else "")
+        if name:
+            registered.add(name)
+
+    # Extract all event names from the commands _hooks_block produces.
+    block = install._hooks_block()
+    referenced: set[str] = set()
+    for entries in block.values():
+        for entry in entries:
+            for h in entry.get("hooks", []):
+                cmd = h.get("command", "")
+                # Forms we need to parse:
+                #   "C:/.../pythonw.exe" -m token_goat.cli hook session-start
+                #   "C:/.../tg-hook.cmd" hook session-start
+                # Find the literal token "hook" and take the next whitespace-
+                # separated arg as the event name.
+                parts = cmd.split()
+                for i, p in enumerate(parts):
+                    if p == "hook" and i + 1 < len(parts):
+                        ev = parts[i + 1].strip('"').strip("'")
+                        referenced.add(ev)
+                        break
+
+    missing = referenced - registered
+    assert not missing, (
+        f"Hook event(s) referenced in _hooks_block but NOT registered as "
+        f"@hook_app.command in cli.py: {sorted(missing)}. "
+        f"Add `@hook_app.command(\"<name>\", context_settings=_HOOK_CTX)` "
+        f"decorators in cli.py. Settings.json fires these hooks but typer "
+        f"will exit 2 with 'No such command' — BLOCKING for "
+        f"UserPromptSubmit / PostToolUse:Skill / etc."
+    )
