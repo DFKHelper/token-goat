@@ -2176,3 +2176,57 @@ class TestHintBudgetCounters:
         raw = json.loads(cache.to_json())
         assert raw["structured_hints_emitted"] == 3
         assert raw["index_only_hints_emitted"] == 5
+
+
+# ---------------------------------------------------------------------------
+# last_manifest_sha / last_manifest_ts round-trip (item #19)
+# ---------------------------------------------------------------------------
+
+class TestLastManifestFields:
+    """Verify the two manifest delta-cache fields survive a save/load round-trip."""
+
+    def test_default_values(self, tmp_data_dir):
+        cache = session.load("mf_defaults")
+        assert cache.last_manifest_sha == ""
+        assert cache.last_manifest_ts == 0.0
+
+    def test_round_trip_persists_fields(self, tmp_data_dir):
+        sid = "mf_roundtrip"
+        cache = session.load(sid)
+        cache.last_manifest_sha = "abcd1234abcd1234"
+        cache.last_manifest_ts = 1_700_000_000.0
+        cache._invalidate_json_cache()
+        session.save(cache)
+
+        reloaded = session.load(sid)
+        assert reloaded.last_manifest_sha == "abcd1234abcd1234"
+        assert reloaded.last_manifest_ts == pytest.approx(1_700_000_000.0)
+
+    def test_legacy_session_missing_fields_defaults_to_zero(self, tmp_data_dir):
+        """Older session JSON without the new fields deserializes cleanly."""
+        import json
+
+        from token_goat.session import SessionCache
+
+        sid = "mf_legacy"
+        cache = session.load(sid)
+        raw = json.loads(cache.to_json())
+        raw.pop("last_manifest_sha", None)
+        raw.pop("last_manifest_ts", None)
+
+        restored = SessionCache.from_dict(raw)
+        assert restored.last_manifest_sha == ""
+        assert restored.last_manifest_ts == 0.0
+
+    def test_fields_present_in_to_json(self, tmp_data_dir):
+        import json
+
+        sid = "mf_json_keys"
+        cache = session.load(sid)
+        cache.last_manifest_sha = "ff00ff00ff00ff00"
+        cache.last_manifest_ts = 12345.6
+        cache._invalidate_json_cache()
+
+        raw = json.loads(cache.to_json())
+        assert raw["last_manifest_sha"] == "ff00ff00ff00ff00"
+        assert raw["last_manifest_ts"] == pytest.approx(12345.6)

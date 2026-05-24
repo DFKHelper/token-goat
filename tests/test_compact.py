@@ -121,6 +121,101 @@ class TestBuildManifest:
         assert isinstance(result, str)
 
 
+# ---------------------------------------------------------------------------
+# compact.build_manifest — delta-cache (item #19)
+# ---------------------------------------------------------------------------
+
+class TestManifestDeltaCache:
+    """First call always returns the full manifest; subsequent calls within
+    the TTL window return a lightweight stub when nothing has changed.
+
+    The delta-cache uses a process-local guard set to distinguish between:
+    - Same-process repeated calls (e.g. tests): guard prevents false stubs.
+    - Cross-process calls (production hook model): guard is empty on load,
+      so a SHA already on disk triggers the stub correctly.
+
+    To test the cross-process cache-hit path, tests simulate it by clearing
+    the process-local guard between the "write" and "read" invocations.
+    """
+
+    def _clear_process_guard(self, sid: str) -> None:
+        """Simulate a new process starting by removing sid from the guard set."""
+        compact._manifest_sha_written_this_process.discard(sid)
+
+    def test_first_call_returns_full_manifest(self, tmp_data_dir):
+        sid = "delta-first-call"
+        session.mark_file_edited(sid, "/proj/src/auth.py")
+        result = compact.build_manifest(sid)
+        assert "## Token-Goat Session Manifest" in result
+        # SHA must be recorded after first call
+        cache = session.load(sid)
+        assert cache.last_manifest_sha != ""
+        assert cache.last_manifest_ts > 0.0
+
+    def test_second_call_no_changes_returns_stub(self, tmp_data_dir):
+        sid = "delta-no-change"
+        session.mark_file_edited(sid, "/proj/src/utils.py")
+        first = compact.build_manifest(sid)
+        assert "## Token-Goat Session Manifest" in first
+        # Simulate a new hook process: clear the process-local guard, then call again.
+        self._clear_process_guard(sid)
+        second = compact.build_manifest(sid)
+        assert "unchanged since" in second
+        assert "## Token-Goat Session Manifest" not in second
+
+    def test_second_call_with_new_edit_returns_full(self, tmp_data_dir):
+        sid = "delta-with-edit"
+        session.mark_file_edited(sid, "/proj/src/api.py")
+        first = compact.build_manifest(sid)
+        assert "## Token-Goat Session Manifest" in first
+        # Add a new edit — manifest content will differ regardless of the guard
+        session.mark_file_edited(sid, "/proj/src/new_file.py")
+        self._clear_process_guard(sid)
+        second = compact.build_manifest(sid)
+        assert "## Token-Goat Session Manifest" in second
+        assert "unchanged since" not in second
+
+    def test_second_call_after_ttl_returns_full(self, tmp_data_dir):
+        sid = "delta-ttl-expired"
+        session.mark_file_edited(sid, "/proj/src/worker.py")
+        first = compact.build_manifest(sid)
+        assert "## Token-Goat Session Manifest" in first
+        # Backdate last_manifest_ts to simulate TTL expiry
+        cache = session.load(sid)
+        cache.last_manifest_ts = time.time() - 700.0  # 700s > 600s TTL
+        cache._invalidate_json_cache()
+        session.save(cache)
+        # Clear process guard, same content but stale timestamp → full rebuild
+        self._clear_process_guard(sid)
+        second = compact.build_manifest(sid)
+        assert "## Token-Goat Session Manifest" in second
+        assert "unchanged since" not in second
+
+    def test_stub_records_age_in_seconds(self, tmp_data_dir):
+        sid = "delta-age-text"
+        session.mark_file_read(sid, "/proj/src/db.py", offset=0, limit=50)
+        compact.build_manifest(sid)
+        self._clear_process_guard(sid)
+        stub = compact.build_manifest(sid)
+        # Stub should contain a non-negative integer age
+        assert "ago" in stub
+
+    def test_same_process_second_call_returns_full_not_stub(self, tmp_data_dir):
+        """Within a single process, two successive calls always return full manifests.
+
+        This is the guard's primary purpose: prevent test false-positives and the
+        edge case where a caller invokes build_manifest twice in one hook process.
+        """
+        sid = "delta-same-process"
+        session.mark_file_edited(sid, "/proj/src/api.py")
+        first = compact.build_manifest(sid)
+        assert "## Token-Goat Session Manifest" in first
+        # No guard clear: second call in same process returns full manifest
+        second = compact.build_manifest(sid)
+        assert "## Token-Goat Session Manifest" in second
+        assert "unchanged since" not in second
+
+
 class TestComputeAdaptiveBudget:
     """Tests for compute_adaptive_budget function.
 
