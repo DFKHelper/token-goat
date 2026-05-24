@@ -2063,3 +2063,54 @@ def test_enqueue_dirty_concurrent_writes(tmp_data_dir):
             assert "ts" in entry, f"Line {i} missing 'ts' key"
         except json.JSONDecodeError as e:
             raise AssertionError(f"Line {i} is malformed JSON (interleaving detected): {line!r}") from e
+
+
+# ---------------------------------------------------------------------------
+# OSError handling in psutil Process queries (Item 8 reliability fix)
+# ---------------------------------------------------------------------------
+
+
+def test_proc_create_time_oserror_returns_none(tmp_data_dir, monkeypatch):
+    """_proc_create_time must catch OSError and return None, not raise.
+
+    On Windows, psutil.Process(pid).create_time() can raise OSError if the
+    handle is closed during the call. The function must treat OSError like
+    NoSuchProcess/AccessDenied and return None.
+    """
+    class FakeProcess:
+        def create_time(self) -> float:
+            raise OSError("handle closed during call")
+
+    monkeypatch.setattr("psutil.Process", lambda pid: FakeProcess())
+    result = worker._proc_create_time(1)
+    assert result is None
+
+
+def test_is_process_recent_oserror_returns_false(tmp_data_dir, monkeypatch):
+    """_is_process_recent must catch OSError and return False, not raise.
+
+    The function is called during worker startup checks; an OSError must not
+    break the worker's ability to start.
+    """
+    class FakeProcess:
+        def create_time(self) -> float:
+            raise OSError("permission denied")
+
+    monkeypatch.setattr("psutil.Process", lambda pid: FakeProcess())
+    result = worker._is_process_recent(1)
+    assert result is False
+
+
+def test_is_token_goat_worker_oserror_returns_false(tmp_data_dir, monkeypatch):
+    """_is_token_goat_worker must catch OSError and return False, not raise.
+
+    The function guards against PID recycling; an OSError querying cmdline must
+    not prevent the worker from starting or reaping old processes.
+    """
+    class FakeProcess:
+        def cmdline(self) -> list[str]:
+            raise OSError("access denied")
+
+    monkeypatch.setattr("psutil.Process", lambda pid: FakeProcess())
+    result = worker._is_token_goat_worker(1)
+    assert result is False
