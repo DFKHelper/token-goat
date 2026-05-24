@@ -26,7 +26,15 @@ def _make_run_side_effect(
             result.stdout = branch + "\n"
         elif "status" in cmd:
             result.returncode = status_rc
-            result.stdout = status_output
+            # New code uses `git status -z -b` (single round-trip). Synthesize the
+            # -z -b NUL-separated format: `## <branch>\0XY file1\0XY file2\0...`.
+            # Older mocks passed newline-separated porcelain; convert here so existing
+            # `status_output` fixtures keep working with the new parser.
+            if "-z" in cmd and "-b" in cmd:
+                entries = [line for line in status_output.splitlines() if line]
+                result.stdout = "\0".join([f"## {branch}", *entries]) + "\0"
+            else:
+                result.stdout = status_output
         elif "log" in cmd:
             result.returncode = log_rc
             result.stdout = log_output

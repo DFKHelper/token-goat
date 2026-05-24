@@ -330,7 +330,12 @@ class TestSessionBriefSkipsLogOnCleanMain:
         import token_goat.hooks_session as hs_mod
         brief = hs_mod._build_session_brief(str(tmp_path))
         assert brief is not None
-        assert "Recent:" in brief
+        # New single-line format uses an em-dash before commits; the SHA prefix
+        # is the unambiguous marker that the log section made it into the brief.
+        assert " — " in brief
+        # The mock's log handler returns the hardcoded "abc1234 some commit"
+        # line, which is the unambiguous marker that the log section landed.
+        assert "abc1234" in brief
 
     def test_feature_branch_includes_log(self, monkeypatch, tmp_path):
         """Non-main branch → skip logic never fires; log always included."""
@@ -342,7 +347,10 @@ class TestSessionBriefSkipsLogOnCleanMain:
         import token_goat.hooks_session as hs_mod
         brief = hs_mod._build_session_brief(str(tmp_path))
         assert brief is not None
-        assert "Recent:" in brief
+        assert " — " in brief
+        # The mock's log handler returns the hardcoded "abc1234 some commit"
+        # line, which is the unambiguous marker that the log section landed.
+        assert "abc1234" in brief
 
 
 # ---------------------------------------------------------------------------
