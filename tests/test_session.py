@@ -2118,3 +2118,61 @@ class TestCuratorSessionFields:
         assert isinstance(entry, list)
         assert entry[0] == "/proj/x.py"
         assert isinstance(entry[1], float)
+
+
+# ---------------------------------------------------------------------------
+# TestHintBudgetCounters — structured/index_only counters round-trip through JSON
+# ---------------------------------------------------------------------------
+
+
+class TestHintBudgetCounters:
+    """structured_hints_emitted and index_only_hints_emitted persist and reload correctly."""
+
+    def test_structured_hints_emitted_defaults_to_zero(self, tmp_data_dir):
+        cache = session.load("hb_ct_default")
+        assert cache.structured_hints_emitted == 0
+        assert cache.index_only_hints_emitted == 0
+
+    def test_structured_hints_emitted_roundtrip(self, tmp_data_dir):
+        """structured_hints_emitted and index_only_hints_emitted persist across save/load."""
+        sid = "hb_ct_roundtrip"
+        cache = session.load(sid)
+        cache.structured_hints_emitted = 7
+        cache.index_only_hints_emitted = 13
+        cache._invalidate_json_cache()
+        session.save(cache)
+
+        reloaded = session.load(sid)
+        assert reloaded.structured_hints_emitted == 7
+        assert reloaded.index_only_hints_emitted == 13
+
+    def test_missing_counters_deserialize_as_zero(self, tmp_data_dir):
+        """Older session JSON without the new fields deserializes with counter = 0."""
+        import json
+
+        from token_goat.session import SessionCache
+
+        sid = "hb_ct_legacy"
+        cache = session.load(sid)
+        # Serialize, then strip the new fields to simulate an older session file.
+        raw = json.loads(cache.to_json())
+        raw.pop("structured_hints_emitted", None)
+        raw.pop("index_only_hints_emitted", None)
+
+        restored = SessionCache.from_dict(raw)
+        assert restored.structured_hints_emitted == 0
+        assert restored.index_only_hints_emitted == 0
+
+    def test_counters_in_json_output(self, tmp_data_dir):
+        """to_json() includes both new counters."""
+        import json
+
+        sid = "hb_ct_json"
+        cache = session.load(sid)
+        cache.structured_hints_emitted = 3
+        cache.index_only_hints_emitted = 5
+        cache._invalidate_json_cache()
+
+        raw = json.loads(cache.to_json())
+        assert raw["structured_hints_emitted"] == 3
+        assert raw["index_only_hints_emitted"] == 5

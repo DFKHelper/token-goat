@@ -30,6 +30,12 @@ __all__ = [
     "build_unchanged_file_hint",
     "build_web_dedup_hint",
     "compute_stale_threshold",
+    "_hint_budget_check",
+    "_record_structured_hint_emitted",
+    "_record_index_only_hint_emitted",
+    "_HINT_KIND_DEDUP",
+    "_HINT_KIND_STRUCTURED",
+    "_HINT_KIND_INDEX_ONLY",
 ]
 
 # ---------------------------------------------------------------------------
@@ -423,6 +429,9 @@ def _build_read_hint_inner(
     if entry is not None:
         # Curator: if the agent has been ignoring re-read dedup hints, stop emitting them.
         if not _curator_should_emit(cache):
+            return None
+        # Budget: hard cap on total dedup hints for the session.
+        if cache is not None and not _hint_budget_check(cache, _HINT_KIND_DEDUP):
             return None
         hint = _hint_from_cache(
             entry, req_start, req_end, file_path,
@@ -994,6 +1003,66 @@ def _record_hint_emitted(
 
 
 # ---------------------------------------------------------------------------
+# Hint budget check — hard cap on total hints per session
+# ---------------------------------------------------------------------------
+
+_HINT_KIND_DEDUP: Final[str] = "dedup"
+_HINT_KIND_STRUCTURED: Final[str] = "structured"
+_HINT_KIND_INDEX_ONLY: Final[str] = "index_only"
+
+
+def _hint_budget_check(cache: session.SessionCache, hint_kind: str) -> bool:
+    """Return False (suppress) when the session has exhausted the budget for *hint_kind*.
+
+    Three independent budgets:
+    - ``"dedup"``       — checked against ``cache.hints_emitted`` vs ``max_per_session``
+    - ``"structured"``  — checked against ``cache.structured_hints_emitted`` vs ``max_structured_per_session``
+    - ``"index_only"``  — checked against ``cache.index_only_hints_emitted`` vs ``max_index_only_per_session``
+
+    Returns True (emit) when the config feature is disabled, the kind is unknown,
+    or the relevant counter is below the cap.  Never raises.
+    """
+    try:
+        from . import config as _config  # noqa: PLC0415
+
+        cfg = _config.load().hint_budget
+        if not cfg.enabled:
+            return True
+
+        if hint_kind == _HINT_KIND_DEDUP:
+            over = cache.hints_emitted >= cfg.max_per_session
+        elif hint_kind == _HINT_KIND_STRUCTURED:
+            over = cache.structured_hints_emitted >= cfg.max_structured_per_session
+        elif hint_kind == _HINT_KIND_INDEX_ONLY:
+            over = cache.index_only_hints_emitted >= cfg.max_index_only_per_session
+        else:
+            return True  # unknown kind — don't suppress
+
+        if over:
+            _LOG.debug(
+                "_hint_budget_check: suppressing %s hint (budget exhausted for kind=%s)",
+                hint_kind,
+                hint_kind,
+            )
+            return False
+        return True
+    except Exception:  # noqa: BLE001 — fail-soft
+        return True
+
+
+def _record_structured_hint_emitted(cache: session.SessionCache) -> None:
+    """Increment structured_hints_emitted counter on *cache*. Never raises."""
+    cache.structured_hints_emitted += 1
+    cache._invalidate_json_cache()
+
+
+def _record_index_only_hint_emitted(cache: session.SessionCache) -> None:
+    """Increment index_only_hints_emitted counter on *cache*. Never raises."""
+    cache.index_only_hints_emitted += 1
+    cache._invalidate_json_cache()
+
+
+# ---------------------------------------------------------------------------
 # Shared fail-soft wrapper for all dedup hint builders
 # ---------------------------------------------------------------------------
 
@@ -1094,6 +1163,8 @@ def _build_bash_dedup_hint_inner(
     if not session_id or not command:
         return None
     if cache is not None and not _curator_should_emit(cache):
+        return None
+    if cache is not None and not _hint_budget_check(cache, _HINT_KIND_DEDUP):
         return None
 
     from . import bash_cache  # noqa: PLC0415
@@ -1246,6 +1317,8 @@ def _build_grep_dedup_hint_inner(
         return None
     if not _curator_should_emit(cache):
         return None
+    if not _hint_budget_check(cache, _HINT_KIND_DEDUP):
+        return None
 
     now = time.time()
     for entry in reversed(cache.greps):
@@ -1346,6 +1419,8 @@ def _build_glob_dedup_hint_inner(
         return None
     if not _curator_should_emit(cache):
         return None
+    if not _hint_budget_check(cache, _HINT_KIND_DEDUP):
+        return None
 
     entry = session.lookup_glob_entry(session_id, pattern, path, cache=cache)
     if entry is None:
@@ -1429,6 +1504,8 @@ def _build_web_dedup_hint_inner(
     if not session_id or not url:
         return None
     if cache is not None and not _curator_should_emit(cache):
+        return None
+    if cache is not None and not _hint_budget_check(cache, _HINT_KIND_DEDUP):
         return None
 
     from . import web_cache  # noqa: PLC0415

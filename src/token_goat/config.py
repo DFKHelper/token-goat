@@ -6,6 +6,7 @@ __all__ = [
     "CompactAssistConfig",
     "Config",
     "CuratorConfig",
+    "HintBudgetConfig",
     "ImageShrinkConfig",
     "SessionBriefConfig",
     "SkillPreservationConfig",
@@ -31,6 +32,7 @@ _ENV_SESSION_BRIEF: Final[str] = "TOKEN_GOAT_SESSION_BRIEF"  # set to "0"/"false
 _ENV_SKILL_PRESERVATION: Final[str] = "TOKEN_GOAT_SKILL_PRESERVATION"  # set to "0"/"false"/"no"/"off" to disable
 _ENV_PREFER_AVIF: Final[str] = "TOKEN_GOAT_PREFER_AVIF"  # set to "0"/"false"/"no"/"off" to force JPEG/WebP
 _ENV_CURATOR: Final[str] = "TOKEN_GOAT_CURATOR"  # set to "0"/"false"/"no"/"off" to disable
+_ENV_HINT_BUDGET: Final[str] = "TOKEN_GOAT_HINT_BUDGET"  # set to "0"/"false"/"no"/"off" to disable
 
 CONFIG_SCHEMA_VERSION: Final[int] = 1
 
@@ -85,6 +87,15 @@ class _CuratorToml(TypedDict, total=False):
     threshold_pct: int
 
 
+class _HintBudgetToml(TypedDict, total=False):
+    """Expected shape of the [hint_budget] TOML section."""
+
+    enabled: bool
+    max_per_session: int
+    max_structured_per_session: int
+    max_index_only_per_session: int
+
+
 class _ConfigToml(TypedDict, total=False):
     """Expected shape of the token-goat config TOML file."""
 
@@ -95,6 +106,7 @@ class _ConfigToml(TypedDict, total=False):
     skill_preservation: _SkillPreservationToml
     image_shrink: _ImageShrinkToml
     curator: _CuratorToml
+    hint_budget: _HintBudgetToml
 
 
 @dataclass
@@ -243,6 +255,45 @@ class CuratorConfig:
 
 
 @dataclass
+class HintBudgetConfig:
+    """Hard cap on total hints emitted per session to bound cumulative overhead.
+
+    In long sessions (100 k+ tokens) dedup hints can accumulate to hundreds of
+    tokens even after the curator has done its work.  ``HintBudgetConfig`` adds
+    an absolute ceiling: once a counter reaches its limit every subsequent hint
+    of that kind is silently suppressed for the rest of the session.
+
+    Three independent counters guard three hint categories:
+
+    * *max_per_session* — dedup-style hints (re-read, grep-dedup, bash-dedup,
+      web-dedup, glob-dedup).  These share the single ``hints_emitted`` counter
+      already tracked on ``SessionCache``.
+    * *max_structured_per_session* — structured-file hints (CSV/JSON/log).
+    * *max_index_only_per_session* — index-only / lockfile / bundle hints.
+
+    Structured and index-only hints each have their own counter in
+    ``SessionCache`` (``structured_hints_emitted`` / ``index_only_hints_emitted``)
+    so the budgets are independent: hitting the dedup ceiling does not suppress
+    the two higher-value hint families, and vice versa.
+
+    Setting any limit to 0 disables that hint kind for the whole session.
+    Setting *enabled* to ``False`` (or ``TOKEN_GOAT_HINT_BUDGET=0``) disables
+    all budget enforcement while leaving the curator logic intact.
+
+    Attributes:
+        enabled: Master on/off switch.  Defaults to ``True``.
+        max_per_session: Max dedup hints emitted per session.  Default 100.
+        max_structured_per_session: Max structured-file hints per session.  Default 30.
+        max_index_only_per_session: Max index-only hints per session.  Default 30.
+    """
+
+    enabled: bool = True
+    max_per_session: int = 100
+    max_structured_per_session: int = 30
+    max_index_only_per_session: int = 30
+
+
+@dataclass
 class ImageShrinkConfig:
     """Configuration for the image-shrink feature.
 
@@ -289,6 +340,7 @@ class Config:
     skill_preservation: SkillPreservationConfig = field(default_factory=SkillPreservationConfig)
     image_shrink: ImageShrinkConfig = field(default_factory=ImageShrinkConfig)
     curator: CuratorConfig = field(default_factory=CuratorConfig)
+    hint_budget: HintBudgetConfig = field(default_factory=HintBudgetConfig)
 
 
 # ---------------------------------------------------------------------------
@@ -529,13 +581,36 @@ def load() -> Config:
         )
         cur.enabled = False
 
+    hb_raw: _HintBudgetToml = cast("_HintBudgetToml", raw.get("hint_budget", {}))
+    hb = HintBudgetConfig(
+        enabled=_validated_bool(hb_raw.get("enabled", True), True, "hint_budget.enabled"),
+        max_per_session=_validated_int(
+            hb_raw.get("max_per_session", 100), 100, 0, 1_000_000, "hint_budget.max_per_session",
+        ),
+        max_structured_per_session=_validated_int(
+            hb_raw.get("max_structured_per_session", 30), 30, 0, 1_000_000, "hint_budget.max_structured_per_session",
+        ),
+        max_index_only_per_session=_validated_int(
+            hb_raw.get("max_index_only_per_session", 30), 30, 0, 1_000_000, "hint_budget.max_index_only_per_session",
+        ),
+    )
+    env_hint_budget = os.environ.get(_ENV_HINT_BUDGET, "").strip().lower()
+    if env_hint_budget in ("0", "false", "no", "off"):
+        _LOG.info(
+            "hint_budget disabled by environment variable (%s=%s)",
+            _ENV_HINT_BUDGET,
+            env_hint_budget,
+        )
+        hb.enabled = False
+
     _LOG.debug(
         "config resolved: compact_assist enabled=%s triggers=%s min_events=%d max_tokens=%d; "
         "bash_compress enabled=%s disabled_filters=%s max_lines=%d max_bytes=%d timeout=%d; "
         "session_brief enabled=%s; "
         "skill_preservation enabled=%s max_cache_bytes=%d; "
         "image_shrink prefer_avif=%s avif_quality=%d jpeg_quality=%d; "
-        "curator enabled=%s min_samples=%d threshold_pct=%d",
+        "curator enabled=%s min_samples=%d threshold_pct=%d; "
+        "hint_budget enabled=%s max=%d max_structured=%d max_index_only=%d",
         ca.enabled,
         ca.triggers,
         ca.min_events,
@@ -554,10 +629,14 @@ def load() -> Config:
         cur.enabled,
         cur.min_samples,
         cur.threshold_pct,
+        hb.enabled,
+        hb.max_per_session,
+        hb.max_structured_per_session,
+        hb.max_index_only_per_session,
     )
     return Config(
         compact_assist=ca, bash_compress=bc, session_brief=sb, skill_preservation=sp,
-        image_shrink=is_cfg, curator=cur,
+        image_shrink=is_cfg, curator=cur, hint_budget=hb,
     )
 
 
@@ -573,6 +652,7 @@ def save(config: Config) -> None:
     sp = config.skill_preservation
     is_cfg = config.image_shrink
     cur = config.curator
+    hb = config.hint_budget
     data: _ConfigToml = {
         "schema_version": CONFIG_SCHEMA_VERSION,
         "compact_assist": {
@@ -604,6 +684,12 @@ def save(config: Config) -> None:
             "enabled": cur.enabled,
             "min_samples": cur.min_samples,
             "threshold_pct": cur.threshold_pct,
+        },
+        "hint_budget": {
+            "enabled": hb.enabled,
+            "max_per_session": hb.max_per_session,
+            "max_structured_per_session": hb.max_structured_per_session,
+            "max_index_only_per_session": hb.max_index_only_per_session,
         },
     }
     try:

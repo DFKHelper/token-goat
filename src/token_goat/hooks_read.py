@@ -381,9 +381,23 @@ def _handle_index_only_file(
         )
         return None
 
+    # Budget: hard cap on index-only hints per session.
+    from . import session as _session  # noqa: PLC0415
+    from .hints import (  # noqa: PLC0415
+        _HINT_KIND_INDEX_ONLY,
+        _hint_budget_check,
+        _record_index_only_hint_emitted,
+    )
+    if isinstance(cache, _session.SessionCache) and not _hint_budget_check(cache, _HINT_KIND_INDEX_ONLY):
+        _LOG.debug("pre-read: index-only hint budget exhausted for %s", sanitize_log_str(file_path))
+        return None
+
     mark_seen = getattr(cache, "mark_hint_seen", None)
     if callable(mark_seen):
         mark_seen(fingerprint)
+
+    if isinstance(cache, _session.SessionCache):
+        _record_index_only_hint_emitted(cache)
 
     record_hint_stat_pair("index_only_hint", hint, sanitize_log_str(file_path, max_len=512))
     _LOG.info(
@@ -431,9 +445,23 @@ def _handle_structured_file(
         )
         return None
 
+    # Budget: hard cap on structured-file hints per session.
+    from . import session as _session  # noqa: PLC0415
+    from .hints import (  # noqa: PLC0415
+        _HINT_KIND_STRUCTURED,
+        _hint_budget_check,
+        _record_structured_hint_emitted,
+    )
+    if isinstance(cache, _session.SessionCache) and not _hint_budget_check(cache, _HINT_KIND_STRUCTURED):
+        _LOG.debug("pre-read: structured-file hint budget exhausted for %s", sanitize_log_str(file_path))
+        return None
+
     mark_seen = getattr(cache, "mark_hint_seen", None)
     if callable(mark_seen):
         mark_seen(fingerprint)
+
+    if isinstance(cache, _session.SessionCache):
+        _record_structured_hint_emitted(cache)
 
     record_hint_stat_pair("structured_file_hint", hint, sanitize_log_str(file_path, max_len=512))
     _LOG.info(
