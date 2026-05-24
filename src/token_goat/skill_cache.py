@@ -32,6 +32,7 @@ __all__ = [
     "content_hash",
     "evict_old_entries",
     "extract_checklist_section",
+    "list_by_session",
     "list_outputs",
     "load_output",
     "load_output_meta",
@@ -364,6 +365,56 @@ def lookup_by_name(skill_name: str) -> SkillMeta | None:
         if meta.ts > best_ts:
             best, best_ts = meta, meta.ts
     return best
+
+
+def list_by_session(session_id: str) -> list[SkillMeta]:
+    """Return lightweight SkillMeta stubs for every cached entry in *session_id*.
+
+    The ``output_id`` filename encodes ``{session_prefix}-{skill_name}-{sha}``.
+    We parse it directly (no sidecar needed — ``store_output`` does not write
+    sidecars) so that callers can discover whether the same skill was stored
+    with multiple distinct ``content_sha`` values during one session (i.e. the
+    skill body changed between loads).
+
+    Fields populated: ``output_id``, ``skill_name``, ``content_sha``.
+    Fields left at defaults: ``body_bytes=0``, ``ts=0.0``, ``truncated=False``.
+    Entries that do not match the expected 3-segment format are skipped.
+
+    ``list_outputs()`` returns entries newest-first by mtime; that order is
+    preserved so callers iterating for "most recent sha" get it first.
+    """
+    prefix = safe_session_fragment(session_id)
+    # prefix is 16 chars; output_id is "{prefix}-{safe_name}-{sha16}".
+    # Split off the prefix+dash, then split on "-" from the right to extract sha.
+    prefix_dash = prefix + "-"
+    results: list[SkillMeta] = []
+    for entry in list_outputs():
+        oid = entry.get("output_id")
+        if not oid or not oid.startswith(prefix_dash):
+            continue
+        # Strip session prefix, leaving "{safe_name}-{sha16}".
+        remainder = oid[len(prefix_dash):]
+        # sha is always the last 16-char hex segment after the final "-".
+        dash_pos = remainder.rfind("-")
+        if dash_pos < 1:
+            continue
+        safe_name = remainder[:dash_pos]
+        sha = remainder[dash_pos + 1:]
+        if not safe_name or not sha:
+            continue
+        # Restore ":" from "_" in plugin-namespaced names (best-effort; may be
+        # ambiguous if the skill name itself contains underscores, but the
+        # consumer only needs this for grouping, not exact round-tripping).
+        skill_name = safe_name  # keep as-is for grouping; exact form in session
+        results.append(SkillMeta(
+            output_id=oid,
+            skill_name=skill_name,
+            content_sha=sha,
+            body_bytes=0,
+            ts=float(entry.get("mtime", 0.0)),
+            truncated=False,
+        ))
+    return results
 
 
 def sidecar_meta_path(output_id: str) -> Path | None:
