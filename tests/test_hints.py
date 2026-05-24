@@ -2124,3 +2124,131 @@ class TestCuratorEmissionGating:
         assert "/proj/file_3.py" in paths
         assert "/proj/file_4.py" in paths
         assert "/proj/file_0.py" not in paths
+
+
+# ---------------------------------------------------------------------------
+# TestHintBudgetCheck — _hint_budget_check enforces per-session hard caps
+# ---------------------------------------------------------------------------
+
+
+class TestHintBudgetCheck:
+    """_hint_budget_check suppresses hints once session counters hit their cap."""
+
+    def _make_cache(self, sid: str, tmp_data_dir) -> session.SessionCache:
+        cache = session.load(sid)
+        session.save(cache)
+        return session.load(sid)
+
+    def test_dedup_99th_hint_still_fires(self, tmp_data_dir):
+        """With 99 hints emitted (cap=100), the 99th check passes."""
+        from token_goat.config import HintBudgetConfig
+        from token_goat.hints import _HINT_KIND_DEDUP, _hint_budget_check
+
+        cache = self._make_cache("hb_dedup_99", tmp_data_dir)
+        cache.hints_emitted = 99
+
+        cfg = HintBudgetConfig(enabled=True, max_per_session=100)
+        with patch("token_goat.config.load") as mock_load:
+            mock_load.return_value = type("C", (), {"hint_budget": cfg})()
+            result = _hint_budget_check(cache, _HINT_KIND_DEDUP)
+        assert result is True, "99th hint should still be allowed (cap=100)"
+
+    def test_dedup_100th_hint_is_suppressed(self, tmp_data_dir):
+        """Once hints_emitted reaches the cap, _hint_budget_check returns False."""
+        from token_goat.config import HintBudgetConfig
+        from token_goat.hints import _HINT_KIND_DEDUP, _hint_budget_check
+
+        cache = self._make_cache("hb_dedup_100", tmp_data_dir)
+        cache.hints_emitted = 100  # at cap
+
+        cfg = HintBudgetConfig(enabled=True, max_per_session=100)
+        with patch("token_goat.config.load") as mock_load:
+            mock_load.return_value = type("C", (), {"hint_budget": cfg})()
+            result = _hint_budget_check(cache, _HINT_KIND_DEDUP)
+        assert result is False, "100th hint (== cap) should be suppressed"
+
+    def test_structured_budget_independent_of_dedup(self, tmp_data_dir):
+        """Structured-file budget uses its own counter; exhausting dedup does not suppress structured."""
+        from token_goat.config import HintBudgetConfig
+        from token_goat.hints import _HINT_KIND_DEDUP, _HINT_KIND_STRUCTURED, _hint_budget_check
+
+        cache = self._make_cache("hb_structured_indep", tmp_data_dir)
+        cache.hints_emitted = 200          # dedup exhausted
+        cache.structured_hints_emitted = 5  # structured has room
+
+        cfg = HintBudgetConfig(enabled=True, max_per_session=100, max_structured_per_session=30)
+        with patch("token_goat.config.load") as mock_load:
+            mock_load.return_value = type("C", (), {"hint_budget": cfg})()
+            dedup_ok = _hint_budget_check(cache, _HINT_KIND_DEDUP)
+            structured_ok = _hint_budget_check(cache, _HINT_KIND_STRUCTURED)
+        assert dedup_ok is False, "Dedup budget should be exhausted"
+        assert structured_ok is True, "Structured budget should still be open"
+
+    def test_index_only_budget_independent_of_dedup(self, tmp_data_dir):
+        """Index-only budget uses its own counter; exhausting dedup does not suppress index-only."""
+        from token_goat.config import HintBudgetConfig
+        from token_goat.hints import _HINT_KIND_DEDUP, _HINT_KIND_INDEX_ONLY, _hint_budget_check
+
+        cache = self._make_cache("hb_index_indep", tmp_data_dir)
+        cache.hints_emitted = 200           # dedup exhausted
+        cache.index_only_hints_emitted = 2  # index-only has room
+
+        cfg = HintBudgetConfig(enabled=True, max_per_session=100, max_index_only_per_session=30)
+        with patch("token_goat.config.load") as mock_load:
+            mock_load.return_value = type("C", (), {"hint_budget": cfg})()
+            dedup_ok = _hint_budget_check(cache, _HINT_KIND_DEDUP)
+            index_only_ok = _hint_budget_check(cache, _HINT_KIND_INDEX_ONLY)
+        assert dedup_ok is False
+        assert index_only_ok is True
+
+    def test_structured_cap_enforced(self, tmp_data_dir):
+        """Once structured_hints_emitted reaches its cap, structured hints are suppressed."""
+        from token_goat.config import HintBudgetConfig
+        from token_goat.hints import _HINT_KIND_STRUCTURED, _hint_budget_check
+
+        cache = self._make_cache("hb_structured_cap", tmp_data_dir)
+        cache.structured_hints_emitted = 30  # at cap
+
+        cfg = HintBudgetConfig(enabled=True, max_structured_per_session=30)
+        with patch("token_goat.config.load") as mock_load:
+            mock_load.return_value = type("C", (), {"hint_budget": cfg})()
+            result = _hint_budget_check(cache, _HINT_KIND_STRUCTURED)
+        assert result is False
+
+    def test_disabled_budget_always_emits(self, tmp_data_dir):
+        """When hint_budget.enabled=False, _hint_budget_check always returns True."""
+        from token_goat.config import HintBudgetConfig
+        from token_goat.hints import _HINT_KIND_DEDUP, _hint_budget_check
+
+        cache = self._make_cache("hb_disabled", tmp_data_dir)
+        cache.hints_emitted = 9999  # way over any cap
+
+        cfg = HintBudgetConfig(enabled=False, max_per_session=10)
+        with patch("token_goat.config.load") as mock_load:
+            mock_load.return_value = type("C", (), {"hint_budget": cfg})()
+            result = _hint_budget_check(cache, _HINT_KIND_DEDUP)
+        assert result is True, "Disabled budget should never suppress"
+
+    def test_curator_and_budget_both_apply(self, tmp_data_dir):
+        """Curator suppression and budget cap are both enforced — whichever fires first wins."""
+        from token_goat.config import CuratorConfig, HintBudgetConfig
+        from token_goat.hints import _HINT_KIND_DEDUP, _curator_should_emit, _hint_budget_check
+
+        cache = self._make_cache("hb_curator_combined", tmp_data_dir)
+        # Both curator and budget would suppress.
+        cache.hints_emitted = 200   # budget: over cap
+        cache.hints_ignored = 190   # curator: only 5% acceptance, well below 20% threshold
+
+        # Curator check.
+        cur_cfg = CuratorConfig(enabled=True, min_samples=10, threshold_pct=20)
+        with patch("token_goat.config.load") as mock_load:
+            mock_load.return_value = type("C", (), {"curator": cur_cfg})()
+            curator_ok = _curator_should_emit(cache)
+        assert curator_ok is False, "Curator should suppress at 5% acceptance"
+
+        # Budget check.
+        hb_cfg = HintBudgetConfig(enabled=True, max_per_session=100)
+        with patch("token_goat.config.load") as mock_load:
+            mock_load.return_value = type("C", (), {"hint_budget": hb_cfg})()
+            budget_ok = _hint_budget_check(cache, _HINT_KIND_DEDUP)
+        assert budget_ok is False, "Budget should also suppress at 200 hints"

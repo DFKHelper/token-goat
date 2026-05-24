@@ -453,6 +453,10 @@ class SessionCache:
     # for the rest of the session, saving the ~25-token hint injection overhead.
     hints_emitted: int = 0
     hints_ignored: int = 0
+    # Per-kind counters for structured-file and index-only hints.  Independent of
+    # hints_emitted so the hint_budget caps for each category are separate.
+    structured_hints_emitted: int = 0
+    index_only_hints_emitted: int = 0
     # Ring buffer of (normalized_path, emit_ts) for paths recently hinted.
     # Capped at 3 entries; used by post-read to detect ignored hints.
     # Serialized as list[list[str|float]] for JSON; parsed back to list[tuple[str, float]].
@@ -504,6 +508,8 @@ class SessionCache:
             bash_dedup_emitted_ids=sorted(self.bash_dedup_emitted_ids),  # sorted list for stable JSON
             hints_emitted=self.hints_emitted,
             hints_ignored=self.hints_ignored,
+            structured_hints_emitted=self.structured_hints_emitted,
+            index_only_hints_emitted=self.index_only_hints_emitted,
             recent_hints=[[p, t] for p, t in self.recent_hints],
         )
 
@@ -695,6 +701,11 @@ class SessionCache:
         hints_emitted = max(0, int(raw_hints_emitted)) if isinstance(raw_hints_emitted, (int, float)) else 0
         raw_hints_ignored = d.get("hints_ignored", 0)
         hints_ignored = max(0, int(raw_hints_ignored)) if isinstance(raw_hints_ignored, (int, float)) else 0
+        # Per-kind hint counters for budget enforcement (new fields, default 0 for older sessions).
+        raw_structured = d.get("structured_hints_emitted", 0)
+        structured_hints_emitted = max(0, int(raw_structured)) if isinstance(raw_structured, (int, float)) else 0
+        raw_index_only = d.get("index_only_hints_emitted", 0)
+        index_only_hints_emitted = max(0, int(raw_index_only)) if isinstance(raw_index_only, (int, float)) else 0
 
         # recent_hints: list[[path, ts]], stored as list[list[str|float]] for JSON.
         # Cap to 3 entries for safety; drop malformed entries silently.
@@ -726,6 +737,8 @@ class SessionCache:
             bash_dedup_emitted_ids=bash_dedup_emitted_ids,
             hints_emitted=hints_emitted,
             hints_ignored=hints_ignored,
+            structured_hints_emitted=structured_hints_emitted,
+            index_only_hints_emitted=index_only_hints_emitted,
             recent_hints=recent_hints,
         )
 
@@ -1190,6 +1203,8 @@ class _SessionDict(TypedDict, total=False):
     bash_dedup_emitted_ids: list[str]
     hints_emitted: int
     hints_ignored: int
+    structured_hints_emitted: int
+    index_only_hints_emitted: int
     recent_hints: list[list[object]]
 
 
