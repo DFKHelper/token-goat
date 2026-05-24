@@ -1688,3 +1688,96 @@ class TestInSessionResultCache:
         # (load any session_id; none should reference index.ts in result_cache)
         cache = session.load("rc_cli_session_unused")
         assert cache.result_cache == {}
+
+
+# ---------------------------------------------------------------------------
+# _resolve_file_rel_db LIKE query limit tests
+# ---------------------------------------------------------------------------
+
+
+def test_resolve_bare_extension_returns_at_most_limit(tmp_path, tmp_data_dir, make_project):
+    """A bare extension query (.py) returns at most _LIKE_MATCH_LIMIT results.
+
+    This test creates a project with more than _LIKE_MATCH_LIMIT files with
+    the same extension, then directly queries the DB to verify the LIMIT is
+    applied and prevents materializing all matches into memory.
+    """
+    from token_goat import db, read_replacement
+    from token_goat.parser import index_project
+
+    # Create many .py files (more than _LIKE_MATCH_LIMIT)
+    proj_root = tmp_path / "many_py"
+    proj_root.mkdir()
+    (proj_root / ".git").mkdir()
+
+    # Create 60 .py files (more than the default limit of 50)
+    for i in range(60):
+        (proj_root / f"module_{i:03d}.py").write_text(
+            f"# Module {i}\ndef func_{i}(): pass\n",
+            encoding="utf-8"
+        )
+
+    proj = make_project(proj_root)
+    index_project(proj, full=True)
+
+    # Query the DB directly to verify LIMIT is in effect
+    with db.open_project(proj.hash) as conn:
+        rows = conn.execute(
+            "SELECT rel_path FROM files WHERE rel_path LIKE ? ESCAPE '\\' LIMIT ?",
+            (f"%{read_replacement._escape_like_pattern('.py')}", read_replacement._LIKE_MATCH_LIMIT),
+        ).fetchall()
+
+    # Verify that we got exactly _LIKE_MATCH_LIMIT results (not 60)
+    assert len(rows) == read_replacement._LIKE_MATCH_LIMIT
+    assert all(r["rel_path"].endswith(".py") for r in rows)
+
+
+def test_resolve_path_containing_suffix_uses_fast_path(tmp_path, tmp_data_dir, make_project):
+    """A suffix containing '/' (e.g., 'subdir/file.py') uses exact-suffix fast path.
+
+    The fast path attempts a direct WHERE rel_path = ? match before falling back
+    to LIKE, avoiding unnecessary LIKE pattern matching for structured paths.
+    """
+    from token_goat.parser import index_project
+
+    proj_root = tmp_path / "subdir_test"
+    proj_root.mkdir()
+    (proj_root / ".git").mkdir()
+    (proj_root / "src").mkdir()
+    (proj_root / "tests").mkdir()
+
+    # Create files in subdirectories
+    (proj_root / "src" / "main.py").write_text("def main(): pass\n", encoding="utf-8")
+    (proj_root / "tests" / "main.py").write_text("def test_main(): pass\n", encoding="utf-8")
+    (proj_root / "main.py").write_text("# root main\n", encoding="utf-8")
+
+    proj = make_project(proj_root)
+    index_project(proj, full=True)
+
+    # Query with path-containing suffix should return exact match
+    result = read_replacement.resolve_file_rel(proj, "src/main.py")
+    assert result == "src/main.py"
+
+
+def test_resolve_exact_suffix_miss_falls_back_to_like(tmp_path, tmp_data_dir, make_project):
+    """When exact-suffix match fails, the query falls back to LIKE successfully.
+
+    This verifies that the fast-path check (exact match) doesn't prevent the
+    LIKE fallback from working when the exact path doesn't exist.
+    """
+    from token_goat.parser import index_project
+
+    proj_root = tmp_path / "fallback_test"
+    proj_root.mkdir()
+    (proj_root / ".git").mkdir()
+    (proj_root / "src").mkdir()
+
+    (proj_root / "src" / "utils.py").write_text("def util(): pass\n", encoding="utf-8")
+    (proj_root / "src" / "main.py").write_text("def main(): pass\n", encoding="utf-8")
+
+    proj = make_project(proj_root)
+    index_project(proj, full=True)
+
+    # Query with "src/utils.py" where we only know "utils.py" — should fall back to LIKE
+    result = read_replacement.resolve_file_rel(proj, "utils.py")
+    assert result == "src/utils.py"

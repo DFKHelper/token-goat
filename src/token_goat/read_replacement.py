@@ -40,6 +40,11 @@ _MAX_READ_BYTES = 2_000_000  # 2 MB — keep in sync with parser.MAX_FILE_SIZE
 # log message as an unbounded heap allocation.
 _MAX_SYMBOL_LEN: int = 1_024  # 1 KiB
 
+# Maximum number of LIKE pattern matches to return in _resolve_file_rel_db.
+# Prevents unbounded memory allocation when querying bare extensions (e.g., ".py")
+# against projects with many files.
+_LIKE_MATCH_LIMIT: int = 50
+
 _LOG = get_logger("read_replacement")
 
 
@@ -431,17 +436,28 @@ def _resolve_file_rel_db(project: Project, file_part: str) -> str | None:
             except OSError as e:
                 _LOG.debug("resolve_file_rel: could not resolve absolute path %s: %s", file_part, e)
 
-        # 3. Endswith match — handles bare filename or partial path
+        # 3. Fast path for path-containing suffixes: try exact-suffix match first.
+        #    If the suffix contains a path separator, attempt a direct match on the
+        #    canonical form. Only fall through to LIKE if the exact match fails.
+        if "/" in file_part:
+            row = conn.execute(
+                "SELECT rel_path FROM files WHERE rel_path = ?", (file_part,)
+            ).fetchone()
+            if row:
+                return row["rel_path"]
+
+        # 4. Endswith match — handles bare filename or partial path
+        #    LIMIT prevents unbounded materialization for bare extensions like ".py".
         rows = conn.execute(
-            "SELECT rel_path FROM files WHERE rel_path LIKE ? ESCAPE '\\'",
-            (f"%{_escape_like_pattern(file_part)}",),
+            "SELECT rel_path FROM files WHERE rel_path LIKE ? ESCAPE '\\' LIMIT ?",
+            (f"%{_escape_like_pattern(file_part)}", _LIKE_MATCH_LIMIT),
         ).fetchall()
         if not rows:
             return None
         if len(rows) == 1:
             return rows[0]["rel_path"]
 
-        # Multiple candidates — try to pick the most specific one before raising
+        # 5. Multiple candidates — try to pick the most specific one before raising
         candidate_paths = [r["rel_path"] for r in rows]
         best = _pick_best_match(file_part, candidate_paths)
         if best is not None:
