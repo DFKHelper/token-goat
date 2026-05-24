@@ -11,7 +11,7 @@ import subprocess
 from pathlib import Path
 
 import pytest
-from conftest import make_git_repo
+from conftest import make_fake_git_repo, make_git_repo
 
 
 @pytest.mark.slow
@@ -79,3 +79,42 @@ class TestMakeGitRepo:
             cwd=repo, capture_output=True, text=True, check=True,
         ).stdout.strip()
         assert branch == "main"
+
+
+class TestMakeFakeGitRepo:
+    """make_fake_git_repo: subprocess-free .git marker for project-detection tests."""
+
+    def test_creates_git_directory(self, tmp_path: Path) -> None:
+        repo = make_fake_git_repo(tmp_path)
+        assert (repo / ".git").is_dir()
+
+    def test_creates_head_file(self, tmp_path: Path) -> None:
+        repo = make_fake_git_repo(tmp_path)
+        head = (repo / ".git" / "HEAD").read_text(encoding="utf-8")
+        assert head == "ref: refs/heads/main\n"
+
+    def test_default_name_is_repo(self, tmp_path: Path) -> None:
+        repo = make_fake_git_repo(tmp_path)
+        assert repo.name == "repo"
+        assert repo.parent == tmp_path
+
+    def test_custom_name(self, tmp_path: Path) -> None:
+        repo = make_fake_git_repo(tmp_path, "my-project")
+        assert repo.name == "my-project"
+        assert repo.is_dir()
+
+    def test_multiple_repos_in_same_parent(self, tmp_path: Path) -> None:
+        repo_a = make_fake_git_repo(tmp_path, "a")
+        repo_b = make_fake_git_repo(tmp_path, "b")
+        assert repo_a != repo_b
+        assert (repo_a / ".git").is_dir()
+        assert (repo_b / ".git").is_dir()
+
+    def test_find_project_detects_it(self, tmp_path: Path) -> None:
+        """project.find_project() must recognise a fake repo as a project root."""
+        from token_goat.project import find_project
+
+        repo = make_fake_git_repo(tmp_path)
+        proj = find_project(repo)
+        assert proj is not None
+        assert proj.root == repo
