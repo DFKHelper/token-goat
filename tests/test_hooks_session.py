@@ -377,3 +377,102 @@ class TestDeferredImports:
         assert "token_goat.cache_common" not in sys.modules, (
             "cache_common was imported during a non-compact SessionStart — deferred import missing"
         )
+
+
+# ---------------------------------------------------------------------------
+# compact-skip sentinel: written when pre_compact skips due to low activity
+# ---------------------------------------------------------------------------
+
+
+class TestCompactSkipSentinelWrite:
+    """Verify that pre_compact writes the sentinel when the manifest is skipped."""
+
+    def test_sentinel_written_when_no_session(self, tmp_data_dir, monkeypatch):
+        """pre_compact writes sentinel when session_id is present but session is empty."""
+        from unittest.mock import MagicMock, patch
+
+        from token_goat import hooks_cli, paths
+
+        session_id = "sentinel_session_empty"
+
+        # Stub config to enable compact_assist with a high min_events floor so
+        # build_manifest_with_count returns (manifest, 0) and triggers the skip.
+        fake_cfg = MagicMock()
+        fake_cfg.compact_assist.enabled = True
+        fake_cfg.compact_assist.triggers = ["auto"]
+        fake_cfg.compact_assist.max_manifest_tokens = 400
+        fake_cfg.compact_assist.min_events = 5  # floor above 0 events → skip
+
+        with patch("token_goat.config.load", return_value=fake_cfg), \
+             patch("token_goat.session.safe_load", return_value=MagicMock()), \
+             patch("token_goat.compact.build_manifest_with_count", return_value=("", 0)):
+
+            payload = {"session_id": session_id, "trigger": "auto"}
+            result = hooks_cli.pre_compact(payload)
+
+        assert result.get("continue") is True
+
+        # The sentinel file must now exist.
+        sentinel = paths.compact_skip_sentinel_path(session_id)
+        assert sentinel.exists(), (
+            f"compact-skip sentinel not written after low-activity skip; expected {sentinel}"
+        )
+
+    def test_sentinel_written_when_manifest_empty(self, tmp_data_dir, monkeypatch):
+        """pre_compact writes sentinel when build_manifest_with_count returns empty string."""
+        from unittest.mock import MagicMock, patch
+
+        from token_goat import hooks_cli, paths
+
+        session_id = "sentinel_session_manifest_empty"
+
+        fake_cfg = MagicMock()
+        fake_cfg.compact_assist.enabled = True
+        fake_cfg.compact_assist.triggers = ["auto"]
+        fake_cfg.compact_assist.max_manifest_tokens = 400
+        fake_cfg.compact_assist.min_events = 0  # below floor → reaches manifest check
+
+        with patch("token_goat.config.load", return_value=fake_cfg), \
+             patch("token_goat.session.safe_load", return_value=MagicMock()), \
+             patch("token_goat.compact.build_manifest_with_count", return_value=("", 0)):
+
+            payload = {"session_id": session_id, "trigger": "auto"}
+            result = hooks_cli.pre_compact(payload)
+
+        assert result.get("continue") is True
+
+        sentinel = paths.compact_skip_sentinel_path(session_id)
+        assert sentinel.exists(), (
+            f"compact-skip sentinel not written after empty manifest; expected {sentinel}"
+        )
+
+    def test_sentinel_not_written_when_manifest_emitted(self, tmp_data_dir):
+        """pre_compact does NOT write sentinel when a real manifest is injected."""
+        from unittest.mock import MagicMock, patch
+
+        from token_goat import hooks_cli, paths
+
+        session_id = "sentinel_session_real_manifest"
+
+        fake_cfg = MagicMock()
+        fake_cfg.compact_assist.enabled = True
+        fake_cfg.compact_assist.triggers = ["auto"]
+        fake_cfg.compact_assist.max_manifest_tokens = 400
+        fake_cfg.compact_assist.min_events = 0
+
+        real_manifest = "## Manifest\n- src/foo.py\n"
+
+        with patch("token_goat.config.load", return_value=fake_cfg), \
+             patch("token_goat.session.safe_load", return_value=MagicMock()), \
+             patch("token_goat.compact.build_manifest_with_count", return_value=(real_manifest, 10)):
+
+            payload = {"session_id": session_id, "trigger": "auto"}
+            result = hooks_cli.pre_compact(payload)
+
+        assert result.get("continue") is True
+        assert result.get("systemMessage") == real_manifest
+
+        sentinel = paths.compact_skip_sentinel_path(session_id)
+        assert not sentinel.exists(), (
+            "compact-skip sentinel must NOT be written when a real manifest is injected"
+        )
