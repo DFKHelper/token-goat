@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 __all__ = [
+    "HOOKS_STDERR_LOG_MAX_BYTES",
     "LOG_FILE_MAX_BYTES",
     "atomic_write_bytes",
     "atomic_write_text",
@@ -16,6 +17,7 @@ __all__ = [
     "gdrive_cache_dir",
     "gdrive_creds_path",
     "global_db_path",
+    "hooks_stderr_log_path",
     "image_cache_dir",
     "is_safe_rel_path",
     "locks_dir",
@@ -50,6 +52,19 @@ _LOG = get_logger("paths")
 # loop) could still bloat one file. Rolling it over to a .prev.log sibling caps
 # any one day's footprint.
 LOG_FILE_MAX_BYTES = 5_000_000
+
+# Size cap for the hooks crash-sink log. Hook processes cannot write to the
+# daily log when _setup_logging has not been called (e.g. they crash during
+# payload parsing), and their stderr is normally redirected to nul:/dev/null
+# by the harness — so the trace would be lost entirely. hooks-stderr.log is a
+# dedicated append-only crash sink for that window. Rolled at 1 MB (same
+# threshold as the worker's stderr sink) so a broken plugin cannot flood disk.
+HOOKS_STDERR_LOG_MAX_BYTES = 1_000_000
+
+
+def hooks_stderr_log_path() -> Path:
+    """Path to the hook-process crash sink: ``logs/hooks-stderr.log``."""
+    return logs_dir() / "hooks-stderr.log"
 
 
 def python_runner_argv(*subcommand: str) -> list[str]:
