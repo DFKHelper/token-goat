@@ -62,12 +62,14 @@ from .cache_common import (
     OutputStatDict,
     build_output_id,
     evict_cache_dir,
+    get_cache_dir,
     list_cache_outputs,
     load_output_meta_stat,
     load_output_text,
     load_sidecar_json,
     safe_join_output_id,
     short_content_hash,
+    sidecar_path_for,
     truncate_tail_preserve,
     write_sidecar_metadata,
 )
@@ -118,9 +120,7 @@ class WebOutputMeta:
 
 def _web_outputs_dir() -> Path:
     """Return ``data_dir() / "web_outputs"`` and create it on first use."""
-    d = paths.data_dir() / "web_outputs"
-    d.mkdir(parents=True, exist_ok=True)
-    return d
+    return get_cache_dir("web_outputs")
 
 
 def url_hash(url: str) -> str:
@@ -235,7 +235,7 @@ def sidecar_meta_path(output_id: str) -> Path | None:
     base = safe_join_output_id(output_id, _web_outputs_dir, "web_cache")
     if base is None:
         return None
-    return base.with_suffix(".json")
+    return sidecar_path_for(base)
 
 
 def write_sidecar(meta: WebOutputMeta) -> None:

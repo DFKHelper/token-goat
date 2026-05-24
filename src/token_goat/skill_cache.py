@@ -54,6 +54,7 @@ from .cache_common import (
     OUTPUT_FILENAME_RE,
     OutputStatDict,
     evict_cache_dir,
+    get_cache_dir,
     list_cache_outputs,
     load_output_meta_stat,
     load_output_text,
@@ -61,6 +62,7 @@ from .cache_common import (
     safe_join_output_id,
     safe_session_fragment,
     short_content_hash,
+    sidecar_path_for,
     truncate_tail_preserve,
     write_sidecar_metadata,
 )
@@ -114,7 +116,7 @@ class SkillMeta:
 
 def _skill_outputs_dir() -> Path:
     """Return ``data_dir() / "skills"`` and create it on first use."""
-    return paths.ensure_dir(paths.data_dir() / "skills")
+    return get_cache_dir("skills")
 
 
 def content_hash(content: str) -> str:
@@ -410,7 +412,7 @@ def sidecar_meta_path(output_id: str) -> Path | None:
     base = safe_join_output_id(output_id, _skill_outputs_dir, "skill_cache")
     if base is None:
         return None
-    return base.with_suffix(".json")
+    return sidecar_path_for(base)
 
 
 def write_sidecar(meta: SkillMeta) -> None:
