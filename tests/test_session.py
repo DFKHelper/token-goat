@@ -2565,3 +2565,325 @@ class TestSessionCAS:
         assert len(merged.hints_seen) <= HINTS_SEEN_MAX, (
             f"hints_seen grew to {len(merged.hints_seen)} after merge, cap is {HINTS_SEEN_MAX}"
         )
+
+
+# ---------------------------------------------------------------------------
+# Cross-process session lockfile tests (item #10)
+# ---------------------------------------------------------------------------
+
+
+class TestSessionLockfile:
+    """Unit tests for the sidecar lockfile helpers in session.py."""
+
+    def test_lock_path_is_adjacent_to_json(self, tmp_data_dir):
+        """Lock path is <session>.json.lock, adjacent to the session JSON."""
+        from token_goat.session import _session_lock_path
+
+        lp = _session_lock_path("lock_path_test")
+        json_path = session.paths.session_cache_path("lock_path_test")
+        assert lp.parent == json_path.parent
+        assert lp.name == json_path.name + ".lock"
+
+    def test_acquire_and_release_creates_and_removes_lockfile(self, tmp_data_dir):
+        """Acquiring the lock creates the sidecar file; releasing removes it."""
+        from token_goat.session import (
+            _acquire_session_lock,
+            _release_session_lock,
+            _session_lock_path,
+        )
+
+        sid = "lock_basic"
+        lock_path = _session_lock_path(sid)
+        assert not lock_path.exists()
+
+        fd = _acquire_session_lock(sid)
+        assert fd is not None, "expected lock to be acquired"
+        assert lock_path.exists(), "lockfile must exist while held"
+
+        _release_session_lock(sid, fd)
+        assert not lock_path.exists(), "lockfile must be removed after release"
+
+    def test_acquire_writes_pid_to_lockfile(self, tmp_data_dir):
+        """The lockfile contains the acquiring process's PID."""
+        import os as _os
+
+        from token_goat.session import (
+            _acquire_session_lock,
+            _release_session_lock,
+            _session_lock_path,
+        )
+
+        sid = "lock_pid"
+        fd = _acquire_session_lock(sid)
+        assert fd is not None
+        try:
+            content = _session_lock_path(sid).read_text(encoding="utf-8").strip()
+            assert content == str(_os.getpid())
+        finally:
+            _release_session_lock(sid, fd)
+
+    def test_lock_is_stale_absent_file_returns_true(self, tmp_data_dir):
+        """A lockfile that does not exist is treated as stale (already gone)."""
+        from token_goat.session import _lock_is_stale, _session_lock_path
+
+        lp = _session_lock_path("stale_absent")
+        assert not lp.exists()
+        assert _lock_is_stale(lp) is True
+
+    def test_lock_is_stale_old_file_returns_true(self, tmp_data_dir):
+        """A lockfile older than _LOCK_STALE_SECS with a live PID is still stale by age."""
+        import os as _os
+        import time as _time
+
+        from token_goat.session import (
+            _LOCK_STALE_SECS,
+            _lock_is_stale,
+            _session_lock_path,
+        )
+
+        sid = "stale_old"
+        lp = _session_lock_path(sid)
+        lp.parent.mkdir(parents=True, exist_ok=True)
+        lp.write_text(str(_os.getpid()), encoding="utf-8")
+
+        # Back-date mtime beyond stale threshold.
+        old_mtime = _time.time() - _LOCK_STALE_SECS - 5
+        _os.utime(lp, (old_mtime, old_mtime))
+
+        assert _lock_is_stale(lp) is True
+        lp.unlink(missing_ok=True)
+
+    def test_lock_is_stale_fresh_live_pid_returns_false(self, tmp_data_dir):
+        """A lockfile with a live PID and recent mtime is not stale."""
+        import os as _os
+
+        from token_goat.session import _lock_is_stale, _session_lock_path
+
+        sid = "stale_live"
+        lp = _session_lock_path(sid)
+        lp.parent.mkdir(parents=True, exist_ok=True)
+        lp.write_text(str(_os.getpid()), encoding="utf-8")
+
+        assert _lock_is_stale(lp) is False
+        lp.unlink(missing_ok=True)
+
+    def test_lock_is_stale_dead_pid_returns_true(self, tmp_data_dir):
+        """A lockfile whose PID no longer exists is stale regardless of mtime."""
+        import subprocess as _subprocess
+
+        from token_goat.session import _lock_is_stale, _session_lock_path
+
+        sid = "stale_dead_pid"
+        lp = _session_lock_path(sid)
+        lp.parent.mkdir(parents=True, exist_ok=True)
+
+        # Spawn a short-lived process and collect its PID after it has exited,
+        # guaranteeing the PID is definitely dead (not just unreachable).
+        proc = _subprocess.Popen([sys.executable, "-c", "import sys; sys.exit(0)"])
+        dead_pid = proc.pid
+        proc.wait(timeout=5)
+        # Give the OS a moment to release the PID entry.
+        time.sleep(0.05)
+
+        lp.write_text(str(dead_pid), encoding="utf-8")
+
+        # On most platforms a recently-exited PID is immediately gone; on some
+        # systems it may linger briefly as a zombie.  Skip rather than flake if
+        # the OS is still holding the PID.
+        try:
+            import os as _os
+            _os.kill(dead_pid, 0)
+            # If kill(0) succeeds the PID is still live (zombie or reused) — skip.
+            pytest.skip("dead PID was reused or still a zombie; cannot test stale-check")
+        except (ProcessLookupError, OSError):
+            pass  # PID is genuinely gone — proceed
+
+        assert _lock_is_stale(lp) is True
+        lp.unlink(missing_ok=True)
+
+    def test_second_acquire_returns_none_within_timeout(self, tmp_data_dir):
+        """A second acquire attempt while the lock is held returns None (timeout)."""
+        import os as _os
+        import time as _time
+
+        from token_goat.session import (
+            _LOCK_POLL_SECS,
+            _LOCK_TIMEOUT_SECS,
+            _acquire_session_lock,
+            _session_lock_path,
+        )
+
+        sid = "lock_contention"
+        lp = _session_lock_path(sid)
+        lp.parent.mkdir(parents=True, exist_ok=True)
+
+        # Write a "live" lockfile manually (our own PID, fresh mtime).
+        lp.write_text(str(_os.getpid()), encoding="utf-8")
+
+        # Second acquire should time out.
+        t0 = _time.monotonic()
+        fd = _acquire_session_lock(sid)
+        elapsed = _time.monotonic() - t0
+
+        # Must have timed out.
+        assert fd is None, "expected None when lock is already held"
+        # Must not have spun far beyond the configured timeout.
+        assert elapsed < _LOCK_TIMEOUT_SECS + _LOCK_POLL_SECS * 5 + 0.5
+
+        lp.unlink(missing_ok=True)
+
+    def test_stale_lock_is_reclaimed_automatically(self, tmp_data_dir):
+        """A stale lockfile is reclaimed transparently; acquire succeeds."""
+        import os as _os
+        import time as _time
+
+        from token_goat.session import (
+            _LOCK_STALE_SECS,
+            _acquire_session_lock,
+            _release_session_lock,
+            _session_lock_path,
+        )
+
+        sid = "lock_stale_reclaim"
+        lp = _session_lock_path(sid)
+        lp.parent.mkdir(parents=True, exist_ok=True)
+
+        # Plant a stale lockfile: dead PID, old mtime.
+        lp.write_text("99999999", encoding="utf-8")
+        old_mtime = _time.time() - _LOCK_STALE_SECS - 10
+        _os.utime(lp, (old_mtime, old_mtime))
+
+        # Acquire must succeed despite the pre-existing stale file.
+        fd = _acquire_session_lock(sid)
+        assert fd is not None, "expected stale lock to be reclaimed and acquire to succeed"
+        _release_session_lock(sid, fd)
+
+    def test_save_holds_lock_during_write(self, tmp_data_dir):
+        """save() holds the sidecar lock while writing (lock exists during atomic rename)."""
+        from token_goat.session import _session_lock_path
+
+        sid = "lock_during_save"
+        lock_path = _session_lock_path(sid)
+        observed_during_write: list[bool] = []
+
+        original_atomic_write = session.paths.atomic_write_text
+
+        def spy_atomic_write(path, text):
+            # Record whether the lock exists during the write.
+            observed_during_write.append(lock_path.exists())
+            return original_atomic_write(path, text)
+
+        # Patch atomic_write_text on the paths module as seen from session.py.
+        import token_goat.paths as _paths
+        original = _paths.atomic_write_text
+        _paths.atomic_write_text = spy_atomic_write
+        try:
+            c = session.load(sid)
+            session.mark_file_edited(sid, "/proj/locked.py", cache=c)
+        finally:
+            _paths.atomic_write_text = original
+
+        assert any(observed_during_write), "lock was never observed held during write"
+
+
+# ---------------------------------------------------------------------------
+# Cross-process concurrent write regression test (item #10)
+# ---------------------------------------------------------------------------
+
+
+class TestSessionLockfileConcurrent:
+    """Verify that two OS-level processes can both mark_file_edited without losing writes."""
+
+    @staticmethod
+    def _worker_script(data_dir_path: str, session_id: str, n_edits: int) -> str:
+        """Return a self-contained Python script for a subprocess worker.
+
+        Each worker writes N distinct paths of the form /proc/<pid>/<i>.py so
+        that 2 workers × N edits = 2N unique keys in edited_files.
+        """
+        return (
+            "import sys, os\n"
+            "from pathlib import Path\n"
+            "import token_goat.paths as _p\n"
+            f"_p._DATA_DIR_CACHE = Path({data_dir_path!r})\n"
+            "from token_goat import session as _s\n"
+            f"sid = {session_id!r}\n"
+            f"n = {n_edits}\n"
+            "pid = os.getpid()\n"
+            "for i in range(n):\n"
+            "    _s.mark_file_edited(sid, '/proc/' + str(pid) + '/' + str(i) + '.py')\n"
+            "sys.exit(0)\n"
+        )
+
+    def test_two_processes_200_edits_no_loss(self, tmp_data_dir, tmp_path):
+        """Two parallel subprocesses each writing 100 edits produce 200 unique entries."""
+        import json
+        import subprocess
+        import sys
+
+        sid = "lockfile_concurrent_200"
+
+        # Pre-create the session file so both workers start from a known base.
+        session.save(session.load(sid))
+
+        script = self._worker_script(str(tmp_data_dir), sid, 100)
+
+        p1 = subprocess.Popen([sys.executable, "-c", script])
+        p2 = subprocess.Popen([sys.executable, "-c", script])
+
+        rc1 = p1.wait(timeout=60)
+        rc2 = p2.wait(timeout=60)
+
+        assert rc1 == 0, f"worker 1 exited with {rc1}"
+        assert rc2 == 0, f"worker 2 exited with {rc2}"
+
+        # Reload the session and check that all 200 unique paths are present.
+        final = session.load(sid)
+        total_edits = len(final.edited_files)
+        assert total_edits == 200, (
+            f"expected 200 unique edited files, got {total_edits}. "
+            f"edited_files keys: {sorted(final.edited_files)[:20]}..."
+        )
+
+        # Verify the session JSON is still valid (no torn writes).
+        json_path = session.paths.session_cache_path(sid)
+        raw = json_path.read_text(encoding="utf-8")
+        parsed = json.loads(raw)  # would raise JSONDecodeError on torn write
+        assert parsed["session_id"] == sid
+
+    def test_concurrent_threads_100_edits_no_loss(self, tmp_data_dir):
+        """Thread-level variant: 2 threads × 100 mark_file_edited = 200 unique entries.
+
+        Exercises the _FILE_LOCK + sidecar-lockfile stack from multiple threads
+        within the same process (the lock must still serialise correctly).
+        """
+        import threading
+
+        sid = "lockfile_threads_200"
+        session.save(session.load(sid))
+
+        errors: list[Exception] = []
+        barrier = threading.Barrier(2)
+
+        def worker(pid_tag: int) -> None:
+            try:
+                barrier.wait(timeout=10)
+                for i in range(100):
+                    session.mark_file_edited(sid, f"/thread/{pid_tag}/file_{i}.py")
+            except Exception as exc:  # noqa: BLE001
+                errors.append(exc)
+
+        t1 = threading.Thread(target=worker, args=(1,))
+        t2 = threading.Thread(target=worker, args=(2,))
+        t1.start()
+        t2.start()
+        t1.join(timeout=30)
+        t2.join(timeout=30)
+
+        assert not errors, f"thread errors: {errors}"
+
+        final = session.load(sid)
+        total = len(final.edited_files)
+        assert total == 200, (
+            f"expected 200 unique edited files, got {total}"
+        )
