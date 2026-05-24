@@ -35,6 +35,7 @@ from urllib.parse import urlparse
 from . import session as session_mod
 from .cache_common import short_output_id as _short_id
 from .hooks_common import sanitize_log_str
+from .util import _humanize_bytes
 
 
 def estimate_tokens(text: str) -> int:
@@ -1662,25 +1663,6 @@ def _section_budgets(total_budget: int, edited_tokens: int) -> dict[str, int]:
     for name, ratio in proportions.items():
         budgets[name] = max(_MIN_SECTION_TOKENS, int(remaining * ratio))
     return budgets
-
-
-def _humanize_bytes(n: int) -> str:
-    """Return a short human-readable byte count: ``1.2KB``, ``3.4MB``, ``120B``.
-
-    Compact (no spaces, two significant digits) so it fits inside a manifest
-    line without competing with the command preview for visual space.  Sizes
-    below 1024 use plain bytes; above that we step through KB/MB at 1024-byte
-    boundaries.  GB is not represented because the on-disk store caps each
-    entry at 2 MB before any truncation marker is applied — values higher than
-    a few MB indicate the *original* output size, not the stored bytes, but
-    even then GB-scale captures are not realistic for a Bash command surfaced
-    in the manifest.
-    """
-    if n < 1024:
-        return f"{n}B"
-    if n < 1024 * 1024:
-        return f"{n / 1024:.1f}KB"
-    return f"{n / (1024 * 1024):.1f}MB"
 
 
 def _grep_sort_key(entry: object, now_ts: float) -> float:
