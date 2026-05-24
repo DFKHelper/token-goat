@@ -16,11 +16,13 @@ __all__ = [
     "_build_sealed_block",
     "_get_inline_diff_for_file",
     "_get_whole_repo_diff",
+    "_WIDE_SESSION_THRESHOLD",
 ]
 
 import heapq
 import io
 import math
+import os
 import re
 import subprocess
 import time
@@ -231,6 +233,16 @@ _MAX_COLD_OUTPUTS: Final[int] = 4
 # load a handful of skills at most (Ralph + improve + a few specialist skills);
 # 6 covers any realistic session without crowding higher-priority blockers.
 _MAX_ACTIVE_SKILLS: Final[int] = 6
+
+# Item #24 — Wide-session threshold.  When the session has accessed at least
+# this many unique files, the per-file Symbols Accessed section is replaced by
+# a single "N files accessed — use token-goat map --compact" pointer.  This
+# prevents the symbols section from consuming 200–300 tokens on wide orientation
+# sessions where the compaction LLM can't usefully retain the full symbol list.
+# Configurable via env TOKEN_GOAT_WIDE_SESSION_THRESHOLD.
+_WIDE_SESSION_THRESHOLD: Final[int] = int(
+    os.environ.get("TOKEN_GOAT_WIDE_SESSION_THRESHOLD", "15")
+)
 
 # Minimum weighted activity score required to emit a full session manifest.
 # Below this floor the manifest is suppressed entirely (or replaced by a 1-line
@@ -2655,12 +2667,36 @@ def _render(cache: SessionCache, session_id: str, max_tokens: int) -> tuple[str,
     # LLM aggressively summarises, dropping load-bearing rules.  Listing every
     # loaded skill with a recall hint tells the compaction LLM "preserve these"
     # and gives the post-compact agent an exact command to re-fetch the body.
+    #
+    # Item #9 — collapse to summary line when recovery hint will also fire.
+    # The recovery hint inlines the per-skill checklist and recall commands;
+    # repeating the full per-skill listing here wastes 15–25 tokens per skill.
+    # Collapse when: skill_history non-empty AND session activity >= _ACTIVITY_FLOOR
+    # (same gate that controls recovery hint emission).
+    # Fall back to full listing when activity is low (recovery hint won't fire).
     skill_entries = _select_top_skill_entries(raw_skills)
-    skill_lines = _render_section("**Skills:**", skill_entries, _format_skill_entry)
-    if skill_entries:
+    _activity_score_for_skills = _session_activity_score(cache)
+    _skills_collapse = bool(raw_skills) and _activity_score_for_skills >= _ACTIVITY_FLOOR
+    if _skills_collapse and skill_entries:
+        # Build summary: "ralph ×3, improve ×1 — recall via token-goat skill-body <name>"
+        _skill_parts = []
+        for _se in skill_entries:
+            _sname = sanitize_log_str(getattr(_se, "skill_name", ""), max_len=40)
+            _src = int(getattr(_se, "run_count", 1))
+            _skill_parts.append(f"{_sname} ×{_src}" if _src > 1 else _sname)
         overflow_skills = len(raw_skills) - len(skill_entries)
         if overflow_skills > 0:
-            skill_lines.append(f"- …+{overflow_skills} more loaded")
+            _skill_parts.append(f"+{overflow_skills} more")
+        _skills_summary = ", ".join(_skill_parts)
+        skill_lines = [
+            f"**Skills:** {_skills_summary} — recall via `token-goat skill-body <name>`"
+        ]
+    else:
+        skill_lines = _render_section("**Skills:**", skill_entries, _format_skill_entry)
+        if skill_entries:
+            overflow_skills = len(raw_skills) - len(skill_entries)
+            if overflow_skills > 0:
+                skill_lines.append(f"- …+{overflow_skills} more loaded")
 
     # ── 0b. Uncommitted Changes — git diff --stat + status --short ───────────
     # Ground-truth picture of what's on disk regardless of which tool made the
@@ -2800,19 +2836,33 @@ def _render(cache: SessionCache, session_id: str, max_tokens: int) -> tuple[str,
 
     # ── 2. Symbols accessed — up to 40 % of remaining budget ─────────────────
     sym_budget = sec_budgets["symbols"]
-    sym_formatted: list[str] = []
-    for entry in files_with_symbols:
-        ranked_symbols = _rank_symbols_by_recency(entry, now_for_scoring)
-        # Item #11: dedup consecutive/repeated symbols before rendering (order-preserving).
-        _seen_syms: set[str] = set()
-        deduped_symbols = [s for s in ranked_symbols if not (_seen_syms.__contains__(s) or _seen_syms.add(s))]  # type: ignore[func-returns-value]
-        dupes_removed = len(ranked_symbols) - len(deduped_symbols)
-        syms = [sanitize_log_str(s, max_len=80) for s in deduped_symbols[:_MAX_SYMBOLS_PER_FILE_ENTRY]]
-        overflow = len(deduped_symbols) - _MAX_SYMBOLS_PER_FILE_ENTRY
-        dupe_note = f" (+{dupes_removed} dupes removed)" if dupes_removed >= 3 else ""
-        sym_str = ", ".join(syms) + (f" +{overflow}" if overflow > 0 else "") + dupe_note
-        sym_formatted.append(f"- {_short_path(entry.rel_or_abs, project_root=cwd)} → {sym_str}")
-    sym_lines, sym_used = _render_budget_lines("**Syms:**", sym_formatted, sym_budget)
+    # Item #24 — Wide session: replace per-file symbol list with map pointer.
+    # When the session has accessed >= _WIDE_SESSION_THRESHOLD unique files,
+    # the per-file symbol listing consumes 200–300 tokens the compaction LLM
+    # can't usefully retain.  Emit a single actionable pointer instead.
+    _wide_session = len(cache.files) >= _WIDE_SESSION_THRESHOLD
+    if _wide_session:
+        _wide_line = (
+            f"**Syms:** {len(cache.files)} files accessed"
+            " — use `token-goat map --compact` to re-orient."
+        )
+        _wide_cost = _token_count(_wide_line)
+        sym_lines: list[str] = [_wide_line] if _wide_cost <= sym_budget else []
+        sym_used: int = _wide_cost if sym_lines else 0
+    else:
+        sym_formatted: list[str] = []
+        for entry in files_with_symbols:
+            ranked_symbols = _rank_symbols_by_recency(entry, now_for_scoring)
+            # Item #11: dedup consecutive/repeated symbols before rendering (order-preserving).
+            _seen_syms: set[str] = set()
+            deduped_symbols = [s for s in ranked_symbols if not (_seen_syms.__contains__(s) or _seen_syms.add(s))]  # type: ignore[func-returns-value]
+            dupes_removed = len(ranked_symbols) - len(deduped_symbols)
+            syms = [sanitize_log_str(s, max_len=80) for s in deduped_symbols[:_MAX_SYMBOLS_PER_FILE_ENTRY]]
+            overflow = len(deduped_symbols) - _MAX_SYMBOLS_PER_FILE_ENTRY
+            dupe_note = f" (+{dupes_removed} dupes removed)" if dupes_removed >= 3 else ""
+            sym_str = ", ".join(syms) + (f" +{overflow}" if overflow > 0 else "") + dupe_note
+            sym_formatted.append(f"- {_short_path(entry.rel_or_abs, project_root=cwd)} → {sym_str}")
+        sym_lines, sym_used = _render_budget_lines("**Syms:**", sym_formatted, sym_budget)
 
     # ── 3. Bash history — up to 15 % of remaining budget ─────────────────────
     # Young sessions (< 10 min) skip bash/web sections: few commands have run
@@ -3047,6 +3097,83 @@ def _render(cache: SessionCache, session_id: str, max_tokens: int) -> tuple[str,
     # after the budgeted sections are assembled.
     raw_tasks = _load_task_list(session_id)
     todo_lines = _render_tasks_section(raw_tasks)
+
+    # ── Item #16 — Merge Files Edited + Key Files Read when overlap >= 50% ──────
+    # When many of the same paths appear in both the Edited and Files sections,
+    # collapsing them into one "**Files:**" section saves one section header plus
+    # one listing per overlapping path (~13 tokens/path).  The merged section uses
+    # a combined "✎×N →×M" annotation so the compaction LLM still distinguishes
+    # edited paths from read-only ones.
+    #
+    # Overlap ratio = |edited ∩ all_reads| / max(|edited|, 1).
+    # We compare against files_clean (the full read map including edited files —
+    # edited files are explicitly excluded from key_files_candidates so they never
+    # appear in included_top_files, but they were still read by the session).
+    # Only merge when ratio >= 0.5 AND both the Edited section and Files section
+    # have content (so we are not collapsing a section that doesn't exist yet).
+    _all_read_paths_norm = {
+        key.replace("\\", "/").lower()
+        for key in files_clean
+    }
+    _edited_paths_norm = {p.replace("\\", "/").lower(): p for p in edited_clean}
+    _overlap_set = set(_edited_paths_norm.keys()) & _all_read_paths_norm
+    _overlap_ratio = len(_overlap_set) / max(len(edited_clean), 1)
+    _do_merge = (
+        _overlap_ratio >= 0.5
+        and bool(edited_clean)
+        and bool(included_top_files)
+        and not _inline_diffs_were_emitted  # keep inline diffs — higher value than merge savings
+    )
+    if _do_merge:
+        # Build a merged **Files:** section.
+        # Collect all unique paths: edited paths first (preserving edit-count order),
+        # then read-only top-files not in edited.
+        merged_entries: list[str] = []
+        _read_count_map = {
+            entry.rel_or_abs.replace("\\", "/").lower(): entry
+            for entry in included_top_files
+        }
+        # Also check files_clean for read counts of edited paths.
+        _files_clean_norm = {
+            key.replace("\\", "/").lower(): entry
+            for key, entry in files_clean.items()
+        }
+        # Sort edited paths by edit count descending (same as current edited section).
+        for _ep, _ec in sorted(edited_clean.items(), key=_BY_EDIT_COUNT, reverse=True):
+            _ep_norm = _ep.replace("\\", "/").lower()
+            # Prefer read-count from included_top_files; fall back to files_clean.
+            _re = _read_count_map.get(_ep_norm) or _files_clean_norm.get(_ep_norm)
+            _rc = _re.read_count if _re else 0
+            _annotation = f"✎×{_ec}" if _ec > 1 else "✎"
+            if _rc > 0:
+                _annotation += f" →×{_rc}"
+            merged_entries.append(f"- {_short_path(_ep, project_root=cwd)} {_annotation}")
+        # Add read-only top-files not in edited_clean.
+        _edited_norm_set = set(_edited_paths_norm.keys())
+        for _re in included_top_files:
+            _rp_norm = _re.rel_or_abs.replace("\\", "/").lower()
+            if _rp_norm not in _edited_norm_set:
+                _rc = _re.read_count
+                _annotation = f"→×{_rc}" if _rc > 1 else "→"
+                merged_entries.append(
+                    f"- {_short_path(_re.rel_or_abs, project_root=cwd)} {_annotation}"
+                )
+        # Replace both edited_lines and files_lines with the merged section.
+        # Drop the existing edited content (header + file list) and files_lines.
+        # Keep only the non-file sub-sections from edited_lines: diff, commits, pending.
+        # The merged block goes where edited_lines was; files_lines is suppressed.
+        _merged_section_lines = ["**Files:**"] + merged_entries
+        # Preserve diff/commit/pending sub-sections that were appended after the file list.
+        # These start with "**Pending:**", "### Diff Summary", "### Commits This Session".
+        _edited_subsections: list[str] = []
+        _in_subsection = False
+        for _el in edited_lines:
+            if _el.startswith(("**Pending:**", "### Diff Summary", "### Commits This Session")):
+                _in_subsection = True
+            if _in_subsection:
+                _edited_subsections.append(_el)
+        edited_lines = _merged_section_lines + _edited_subsections
+        files_lines = []  # suppressed — merged into edited_lines
 
     # ── Legend — only list markers that actually appear above ─────────────────
     has_edit = bool(edited_clean)
