@@ -8,8 +8,10 @@ __all__ = [
     "CuratorConfig",
     "HintBudgetConfig",
     "ImageShrinkConfig",
+    "RepomapConfig",
     "SessionBriefConfig",
     "SkillPreservationConfig",
+    "StatsConfig",
     "CONFIG_SCHEMA_VERSION",
     "load",
     "save",
@@ -104,6 +106,12 @@ class _RepomapToml(TypedDict, total=False):
     compact_file_threshold: int
 
 
+class _StatsToml(TypedDict, total=False):
+    """Expected shape of the [stats] TOML section."""
+
+    record_zero_savings: bool
+
+
 class _ConfigToml(TypedDict, total=False):
     """Expected shape of the token-goat config TOML file."""
 
@@ -116,6 +124,7 @@ class _ConfigToml(TypedDict, total=False):
     curator: _CuratorToml
     hint_budget: _HintBudgetToml
     repomap: _RepomapToml
+    stats: _StatsToml
 
 
 @dataclass
@@ -364,6 +373,25 @@ class RepomapConfig:
 
 
 @dataclass
+class StatsConfig:
+    """Configuration for stats recording.
+
+    Controls whether and how token-goat records statistics about hints and
+    dedup operations to the database.
+
+    Attributes:
+        record_zero_savings: When False (default), ``record_hint_stat_pair``
+            skips writing stat rows for hints with zero tokens saved and zero
+            injection cost (suggestion-only hints like large-file nudges).
+            This reduces SQLite write overhead on the hot pre-read path
+            (~0.5–1 ms per skipped write). When True, all stat rows are written
+            as before, preserving complete hint history for analysis.
+    """
+
+    record_zero_savings: bool = False
+
+
+@dataclass
 class Config:
     """Top-level token-goat configuration.
 
@@ -380,6 +408,7 @@ class Config:
     curator: CuratorConfig = field(default_factory=CuratorConfig)
     hint_budget: HintBudgetConfig = field(default_factory=HintBudgetConfig)
     repomap: RepomapConfig = field(default_factory=RepomapConfig)
+    stats: StatsConfig = field(default_factory=StatsConfig)
 
 
 # ---------------------------------------------------------------------------
@@ -664,6 +693,13 @@ def load() -> Config:
         parsed_threshold = _validated_int(env_rm_threshold, 50, 0, 100_000, "repomap.compact_file_threshold(env)")
         rm.compact_file_threshold = parsed_threshold
 
+    stats_raw: _StatsToml = cast("_StatsToml", raw.get("stats", {}))
+    stats = StatsConfig(
+        record_zero_savings=_validated_bool(
+            stats_raw.get("record_zero_savings", False), False, "stats.record_zero_savings"
+        ),
+    )
+
     _LOG.debug(
         "config resolved: compact_assist enabled=%s triggers=%s min_events=%d max_tokens=%d; "
         "bash_compress enabled=%s disabled_filters=%s max_lines=%d max_bytes=%d timeout=%d; "
@@ -672,7 +708,8 @@ def load() -> Config:
         "image_shrink prefer_avif=%s avif_quality=%d jpeg_quality=%d max_image_pixels=%d; "
         "curator enabled=%s min_samples=%d threshold_pct=%d; "
         "hint_budget enabled=%s max=%d max_structured=%d max_index_only=%d; "
-        "repomap compact_file_threshold=%d",
+        "repomap compact_file_threshold=%d; "
+        "stats record_zero_savings=%s",
         ca.enabled,
         ca.triggers,
         ca.min_events,
@@ -697,10 +734,11 @@ def load() -> Config:
         hb.max_structured_per_session,
         hb.max_index_only_per_session,
         rm.compact_file_threshold,
+        stats.record_zero_savings,
     )
     return Config(
         compact_assist=ca, bash_compress=bc, session_brief=sb, skill_preservation=sp,
-        image_shrink=is_cfg, curator=cur, hint_budget=hb, repomap=rm,
+        image_shrink=is_cfg, curator=cur, hint_budget=hb, repomap=rm, stats=stats,
     )
 
 
@@ -717,6 +755,7 @@ def save(config: Config) -> None:
     is_cfg = config.image_shrink
     cur = config.curator
     hb = config.hint_budget
+    stats = config.stats
     data: _ConfigToml = {
         "schema_version": CONFIG_SCHEMA_VERSION,
         "compact_assist": {
@@ -758,6 +797,9 @@ def save(config: Config) -> None:
         },
         "repomap": {
             "compact_file_threshold": config.repomap.compact_file_threshold,
+        },
+        "stats": {
+            "record_zero_savings": stats.record_zero_savings,
         },
     }
     try:

@@ -337,12 +337,21 @@ def record_hint_stat_pair(kind: str, hint: object, detail: str) -> None:
                 URL, or command preview).  Callers are responsible for
                 sanitising it before passing — use :func:`sanitize_log_str`.
     """
-    from . import db  # noqa: PLC0415
+    from . import config, db  # noqa: PLC0415
     from .hints import CHARS_PER_TOKEN  # noqa: PLC0415
 
     realized_tokens: int = getattr(hint, "tokens_saved", 0)
     injection_bytes: int = len(hint)  # type: ignore[arg-type]
     injection_cost_tokens = max(1, int(injection_bytes / CHARS_PER_TOKEN))
+
+    # Skip writing stat rows for zero-saving hints (large-file nudges, lockfile
+    # hints) unless explicitly enabled via config. These hint types don't realize
+    # any token savings and are purely advisory; recording them adds SQLite write
+    # overhead (~0.5–1 ms each) on the hot pre-read path without actionable signal.
+    # Session-level hint count is tracked separately in session.hints_emitted.
+    if realized_tokens == 0 and injection_bytes == 0 and not config.load().stats.record_zero_savings:
+        return
+
     db.record_stat(
         None,
         kind,
