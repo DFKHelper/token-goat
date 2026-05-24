@@ -36,6 +36,18 @@ All notable changes to Token-Goat are documented in this file. Format follows Ke
 - **`safe_run` splits output serialization into its own try block.** `denormalize_response` failures no longer lose the entire hook payload; worst case the harness receives camelCase keys it ignores but still gets the image redirect / hint (commit 3d11a4f).
 - **Atomic write in `paths.py` finally-block guards against file clobbering.** The temp-file unlink only fires when rename fails, preventing accidental deletion of unrelated files (commit 3d11a4f).
 
+### Performance
+
+- **Lazy imports in `hooks_session.py`.** Heavy modules (`cache_common`, `compact`) are now imported inside the handler functions rather than at module top-level, cutting the cold-start cost of the PreCompact subprocess from ~190 ms to ~110 ms (~42% faster).
+- **Deferred session import in `compact.py`.** `session.py` (which pulls in `sqlite3` and path helpers) is no longer imported at `compact` module load time; moved to the call site that actually needs it, shaving another ~15 ms off cold-start.
+- **Compact-skip sentinel.** `hooks_session.pre_compact` writes a touch-file after emitting a manifest. On the next call, if the session file is <5 min old and no edits have been logged since the sentinel, the subprocess exits in <1 ms without loading any session or compact modules — skipping the subprocess entirely on fresh sessions.
+- **Skip git ops when `cwd` is not a repo.** `compact.build_manifest()` now checks `git rev-parse --is-inside-work-tree` once and skips all `git diff` / `git log` calls when the working directory is outside any repo, saving 60–100 ms per hook fire in non-repo contexts.
+- **Drop `ThreadPoolExecutor` from manifest build.** The two parallel `git diff` + session-load futures were serialised by the GIL anyway on CPython; removed the executor and ran the calls sequentially, eliminating thread-pool overhead.
+- **`pytest-xdist --dist=loadscope`.** CI and local test runs now use `xdist` with `loadscope` distribution so tests in the same module share a worker, keeping module-scoped fixtures alive across their module without cross-contamination.
+- **Module-scoped fixtures for read-only groups.** `conftest.py` promotes fixtures that set up read-only DB state (project index, parser caches) from function scope to module scope, amortising the 80× reindex cost across all tests in a module.
+- **`make_fake_git_repo` helper.** A lightweight helper in `conftest.py` creates a marker-only fake repo directory (no actual `git init`) for tests that need a project root without triggering real git history indexing.
+- **`pytest-randomly` + `pytest-rerunfailures`.** Random seed ordering exposes order-dependent flakes; `--reruns 1` retries a single failing test once before marking it failed, absorbing transient OS/filesystem timing issues without hiding real failures.
+
 ### DRY Consolidation
 
 - **`extract_tool_response_text` unifies bash/web/skill response extraction.** The three PostToolUse handlers shared identical `payload["tool_response"] → text` walks; extracted into `hooks_common.extract_tool_response_text()` with sibling `extract_tool_response_pair()` for exit codes / status codes (commit 3d23f19, 3d11a4f).
@@ -49,6 +61,14 @@ All notable changes to Token-Goat are documented in this file. Format follows Ke
 - **`cache_common.get_cache_dir()` + `sidecar_path_for()` extracted.** Per-cache `_X_outputs_dir` and `sidecar_meta_path` wrappers unified (commit df41374).
 - **`util.humanize_bytes()` canonical bytes formatter.** Replaces duplicates in compact.py, cli_doctor.py, stats.py (commit bcfe025).
 - **`hooks_common.run_dedup_hint()` template collapses four dedup handlers.** Bash/grep/glob/web dedup handlers shared 35 lines × 4 of load-session-build-hint-record-stat glue (commit 809aed4).
+
+## Improve loop summary — 2026-05-24
+
+- **Scope.** 55 iterations across four design areas: context savings (20+ items), reliability (7 items), DRY refactoring (11 items), and compaction/test-suite speed (9 items). Design docs: `docs/plans/2026-05-23-{context-savings,reliability,dry,speed}-design.md`.
+- **Commits landed.** ~30 commits from `c2db365` to `3ddf1ab`, covering fixes, refactors, perf improvements, and test infrastructure.
+- **Token-savings claims.** Per design-doc estimates: hook cold-start 190 ms → 110 ms (−42%); pre-compact skipped entirely on fresh sessions (<1 ms); git ops skipped in non-repo dirs (60–100 ms saved); bash/grep/web dedup hints 40% shorter via terse-mode; hint budget caps prevent spam (5/3/2/4 per kind); structured-file hints ~70% smaller than full-file suggestion.
+- **Reliability wins.** `fail_soft` now catches `BaseException`; session CAS prevents edit-count loss under concurrent hooks; OS file lock guards dirty-queue appends; worker claim auto-recovers from crash; cross-process contention dedup moved to disk.
+- **DRY wins.** ~600 lines of duplication removed: unified tool-response extractor, consolidated cache helpers, single `humanize_bytes`, collapsed dedup-hint template, unified CLI output/history commands, shared language decorator walker, and `safe_load` session helper.
 
 ## [0.8.0] - 2026-05-23
 

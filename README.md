@@ -83,6 +83,11 @@ The fastest way to reduce Claude Code token costs is fixing these four, not writ
 | Dirty queue appends corrupt on concurrent writes | OS file lock (fcntl/msvcrt) prevents torn JSON lines |
 | Worker claim file blocks all re-spawns on crash | Mtime staleness check (>60s) auto-recovers zombie claim files |
 | DRY consolidation — 600+ lines duplicated | Tool-response extractor unified; cache helpers (`_safe_join`, `OutputStatDict`) consolidated; dedup-hint template collapsed; CLI output/history commands unified; `humanize_bytes` centralized in `render/ansi` |
+| Compaction hook subprocess ~190 ms cold | Lazy imports of heavy modules in `hooks_session` and `compact`; compaction path ~110 ms cold (~42% faster) |
+| Pre-compact subprocess runs on every session | Compact-skip sentinel on disk: if session file is <5 min old and no edits logged, subprocess exits in <1 ms |
+| Git ops slow manifest build in non-repo dirs | `git diff` / `git log` calls skipped when `cwd` is not inside a git repo (saves 60–100 ms per hook fire) |
+| Test suite slow on multi-core machines | `pytest-xdist --dist=loadscope` + module-scoped fixtures for read-only groups; parallel workers cut wall time |
+| Flaky tests fail the whole run | `pytest-rerunfailures` auto-retries once before failing; `pytest-randomly` seeds expose order-dependent flakes |
 
 > Two snapshots from the author's machine: **v0.1 after four hours**, and the **current build after several days** of real sessions.
 
