@@ -4,6 +4,28 @@ All notable changes to Token-Goat are documented in this file. Format follows Ke
 
 ## [Unreleased]
 
+### Added
+
+- **Terse-mode hint substitution.** All `session_hint`, `diff_hint`, `bash_dedup_hint`, `grep_dedup_hint`, and `web_dedup_hint` text is processed through terse-mode character replacements (logical units compacted to abbreviations) to reduce token overhead while preserving readability.
+- **Output ID suffix in hints and manifest.** Bash, web, and skill cache IDs are rendered as 8-char suffixes in hints and manifest sections (e.g. `b4a2f7d1`) instead of full paths, 60% shorter without loss of clarity or discoverability.
+- **Manifest MUST_PRESERVE sealed block.** The compaction manifest prepends a `### MUST_PRESERVE` section sealing critical context that must survive compaction — edited files, key symbols, recent test outcomes — so the summarizer LLM treats it as a load-bearing invariant.
+- **Bash dedup-vs-hint filtering.** `token-goat compress` now acts as a filter between dedup hints and command execution: when a cached output exists, the filter surfaces `token-goat bash-output <id>` without re-running the command. One-call access to either cached copy or fresh output.
+- **Inline skill checklist in recovery hint.** The post-compaction recovery hint now lists loaded skills inline with a checkbox-style format (🧠 skill_name) so the agent can quickly verify which skills are available for recall.
+- **Skip bash snippet when recall available.** When a cached bash output qualifies for the recovery hint, the old bash-snippet copy is omitted and a single `token-goat bash-output <id>` reference is injected instead, cutting noise.
+- **Pre-Read structured-file hint.** CSV, JSON, JSONL, and log files now produce a format-aware hint on re-read (e.g. CSV headers, JSON top-level keys, log entry count) instead of a full-file suggestion, ~70% smaller.
+- **Pre-Read index-only file suppression.** Lockfiles (`package-lock.json`, `yarn.lock`, etc.), source maps (`*.map`), and build artifacts (`dist/*`, `build/*`) are flagged with a Pre-Read hint that skips file content unless explicitly edited.
+- **AVIF image-shrink support.** When Pillow includes libaom, the image-shrink pipeline produces AVIF instead of WebP on suitable content (~15% smaller than WebP); WebP fallback for older builds.
+- **Hint fingerprint includes file path.** Session-level dedup hints now incorporate the file path in the fingerprint, preventing false positives when the same range is accessed in different files.
+- **What Worked section in manifest.** The compaction manifest gains a `### What Worked` section listing the most recent green test runs (up to 2), surface to the summarizer that prior turns succeeded and context should preserve recent successful patterns.
+- **Curator pass skips dedup when ignored.** When the agent's preceding sequence of actions indicates it will ignore dedup hints (e.g., proceeding to re-read immediately after a warning), the curator pass suppresses the hint to save tokens.
+- **3-item bundle for cold outputs.** The recovery hint aggregates three categories of activity: (1) activity floor (at least 1 per kind), (2) cap at 12 total items, (3) mature cold outputs (bash/web/skill cache entries with zero recent access). Bundles together related cache hits.
+- **Session-level hint budget caps.** Hard per-kind ceilings on re-read hints (5 files max), bash dedup (3 max), web dedup (2 max), skill recalls (4 max). Prevents hint spam while prioritizing the highest-value hints.
+- **Inline git diffs + skip git log on clean main.** The compaction manifest now embeds `git diff HEAD` output when files differ from the last commit; when on a clean main branch, git history is entirely skipped.
+- **Token-savings benchmark.** A new regression test suite (`test_savings_benchmarks.py`, slow-marked) measures concrete wins: WebP compression ratio, repomap density, hook cold-start latency, DB reindex speed, and manifest coverage. Locks in evidence before release.
+- **TODOs section from TaskList.** The compaction manifest now surfaces outstanding tasks from Claude Code's TaskList (`### TODOs`) so the summarizer knows which work is pending and can preserve context around in-flight tasks.
+- **Semantic compact output mode.** `token-goat map` defaults to semantic mode (one result per line, ranked by importance) and preserves the old `--full` format for verbosity; applies to `compact-hint` and other list-like outputs for consistency.
+- **Unchanged-file Pre-Read short-circuit.** When a file's content SHA matches the cached value, the Pre-Read hook skips hint generation entirely and lets the Read proceed without noise — saves tokens on stable working files.
+
 ## [0.8.0] - 2026-05-23
 
 ### Added
