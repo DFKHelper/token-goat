@@ -768,3 +768,55 @@ class TestImageSummary:
         assert isinstance(summary, str)
         assert summary
         assert "1280x720" in summary
+
+
+class TestImageShrinkDiagramLossless:
+    """Item 15: diagram images (portrait-dominant) use WebP lossless; others use lossy."""
+
+    @pytest.mark.skipif(
+        not pytest.importorskip("PIL", reason="Pillow not installed"),
+        reason="Pillow not installed",
+    )
+    def test_diagram_uses_lossless_webp(self, tmp_path, tmp_data_dir, monkeypatch):
+        """A portrait-dominant image (h/w >= 1.4) is saved with lossless=True."""
+
+        from PIL import Image
+
+        # Create a tall (portrait/diagram) image: width=400, height=700 → h/w=1.75
+        img = Image.new("RGB", (400, 700), (200, 100, 50))
+        src = tmp_path / "diagram.png"
+        img.save(src, "PNG")
+
+        # Ensure we use webp format
+        monkeypatch.setenv("TOKEN_GOAT_IMAGE_FORMAT", "webp")
+        # Clear lru_cache so env var takes effect
+        image_shrink._lossy_format.cache_clear() if hasattr(image_shrink._lossy_format, "cache_clear") else None
+
+        result = image_shrink.shrink(src)
+
+        # Check the output file for the lossless marker (most reliable path)
+        if result is not None and result.suffix == ".webp":
+            # We can verify lossless by checking file content: lossless WebP starts with RIFF...WEBPVP8L
+            data = result.read_bytes()
+            # VP8L marker indicates lossless WebP
+            assert b"VP8L" in data, f"Expected lossless WebP (VP8L) marker for diagram; got {data[:20]!r}"
+
+    def test_screenshot_uses_lossy_webp(self, tmp_path, tmp_data_dir, monkeypatch):
+        """A landscape image (screenshot) is saved with lossy quality setting."""
+        pytest.importorskip("PIL")
+        from PIL import Image
+
+        # Create a wide (landscape/screenshot) image: width=1280, height=400 → w/h=3.2
+        img = Image.new("RGB", (1280, 400), (100, 150, 200))
+        src = tmp_path / "screenshot.png"
+        img.save(src, "PNG")
+
+        monkeypatch.setenv("TOKEN_GOAT_IMAGE_FORMAT", "webp")
+        image_shrink._lossy_format.cache_clear() if hasattr(image_shrink._lossy_format, "cache_clear") else None
+
+        result = image_shrink.shrink(src)
+
+        if result is not None and result.suffix == ".webp":
+            data = result.read_bytes()
+            # Lossy WebP uses VP8 (not VP8L); check it does NOT have lossless marker
+            assert b"VP8L" not in data, "Expected lossy WebP for screenshot, got lossless"

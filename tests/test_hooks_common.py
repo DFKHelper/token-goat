@@ -472,3 +472,55 @@ def test_record_hint_stat_pair_zero_savings_with_config_override(monkeypatch):
 
         # With record_zero_savings=True override and zero savings, both rows should be written
         assert mock_record_stat.call_count == 2
+
+
+def _quiet_hours_at(hhmm: str, quiet_hours: str) -> bool:
+    """Call _is_quiet_hours with a fake current time given as 'HH:MM'."""
+    import datetime
+    from unittest.mock import patch
+
+    from token_goat.hooks_common import _is_quiet_hours
+
+    h, m = int(hhmm[:2]), int(hhmm[3:])
+    fake_now = datetime.datetime(2026, 1, 1, h, m)
+    with patch("datetime.datetime") as mock_dt:
+        mock_dt.now.return_value = fake_now
+        return _is_quiet_hours(quiet_hours)
+
+
+class TestQuietHours:
+    """Item 16: _is_quiet_hours returns True when current time is in the window."""
+
+    def test_empty_string_never_quiet(self):
+        from token_goat.hooks_common import _is_quiet_hours
+        assert _is_quiet_hours("") is False
+
+    def test_malformed_string_never_quiet(self):
+        from token_goat.hooks_common import _is_quiet_hours
+        assert _is_quiet_hours("not-a-time") is False
+        assert _is_quiet_hours("25:00-26:00") is False
+        assert _is_quiet_hours("9-17") is False
+
+    def test_normal_range_inside(self):
+        """Time clearly inside a normal (non-wrapping) range returns True."""
+        assert _quiet_hours_at("14:30", "09:00-17:00") is True
+
+    def test_normal_range_outside_before(self):
+        """Time before the normal range returns False."""
+        assert _quiet_hours_at("08:00", "09:00-17:00") is False
+
+    def test_normal_range_outside_after(self):
+        """Time after the normal range returns False."""
+        assert _quiet_hours_at("18:00", "09:00-17:00") is False
+
+    def test_midnight_wrap_inside_evening(self):
+        """Time after start of midnight-crossing range (e.g. 23:00) returns True."""
+        assert _quiet_hours_at("23:00", "22:00-07:00") is True
+
+    def test_midnight_wrap_inside_early_morning(self):
+        """Early morning inside midnight-crossing range returns True."""
+        assert _quiet_hours_at("03:00", "22:00-07:00") is True
+
+    def test_midnight_wrap_outside(self):
+        """Time clearly outside a midnight-crossing range (noon) returns False."""
+        assert _quiet_hours_at("12:00", "22:00-07:00") is False

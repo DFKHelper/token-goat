@@ -61,6 +61,7 @@ __all__ = [
     "mark_skill_loaded",
     "mark_web_fetch",
     "put_result_cache",
+    "record_hint_category",
     "reset_session",
     "save",
     "set_snapshot_sha",
@@ -69,6 +70,7 @@ __all__ = [
     # Internal helpers exposed for testing
     "_coerce_nonneg_int",
     "_coerce_ts",
+    "_hint_category_should_suppress",
     "_lookup_in_cache",
     "_merge_session_caches",
     "_migrate_session",
@@ -643,6 +645,10 @@ _READ_COUNT_FULL_FILE_THRESHOLD: Final[int] = 10
 # optimization, not a correctness requirement).
 HINTS_SEEN_MAX: Final[int] = 500
 
+# Per-category hint history ring buffer size.  10 entries per category is
+# enough to detect a stable ignore streak without retaining stale signal.
+_HINT_CAT_HISTORY_MAX: Final[int] = 10
+
 # Maximum number of unique file entries tracked per session (files dict).  An
 # agent that reads hundreds of files in a single session would otherwise grow
 # the session JSON without bound.  FIFO eviction drops the least-recently-inserted
@@ -741,6 +747,12 @@ class SessionCache:
     # Capped at 3 entries; used by post-read to detect ignored hints.
     # Serialized as list[list[str|float]] for JSON; parsed back to list[tuple[str, float]].
     recent_hints: list[tuple[str, float]] = field(default_factory=list)
+    # Per-hint-category acceptance history for adaptive suppression (item 7).
+    # Maps category name (e.g. "session_hint", "bash_dedup_hint") → list of bool
+    # where True = accepted (agent did not re-read), False = ignored.
+    # Capped at _HINT_CAT_HISTORY_MAX entries per category (FIFO).
+    # Serialized as dict[str, list[int]] (0/1) in JSON for forward compatibility.
+    hint_category_history: dict[str, list[bool]] = field(default_factory=dict)
     # Working directory at session start, used by git diff operations in the manifest.
     # Optional — may be None if the session was created before this field was added.
     cwd: str | None = None
@@ -827,6 +839,7 @@ class SessionCache:
             last_manifest_sha=self.last_manifest_sha,
             last_manifest_ts=self.last_manifest_ts,
             version=self.version,
+            hint_category_history={k: [1 if v else 0 for v in lst] for k, lst in self.hint_category_history.items()},
         )
 
     def to_json(self) -> str:
@@ -1056,6 +1069,17 @@ class SessionCache:
                         recent_hints.append((p, float(t)))
             recent_hints = recent_hints[-3:]  # cap at 3
 
+        # hint_category_history: dict[str, list[int]] (0/1) on disk → dict[str, list[bool]] in memory.
+        hint_category_history: dict[str, list[bool]] = {}
+        raw_cat_hist = d.get("hint_category_history", {})
+        if isinstance(raw_cat_hist, dict):
+            for cat_key, cat_vals in raw_cat_hist.items():
+                if not isinstance(cat_key, str) or not isinstance(cat_vals, list):
+                    continue
+                bools: list[bool] = [bool(v) for v in cat_vals if isinstance(v, (int, bool))]
+                if bools:
+                    hint_category_history[cat_key] = bools[-_HINT_CAT_HISTORY_MAX:]
+
         return cls(
             session_id=session_id,
             started_ts=float(d.get("started_ts", now)),
@@ -1080,6 +1104,7 @@ class SessionCache:
             last_manifest_sha=str(d.get("last_manifest_sha", "")),
             last_manifest_ts=_coerce_ts(d.get("last_manifest_ts", 0.0)),
             version=_coerce_nonneg_int(d.get("version", 0)) if isinstance(d.get("version"), (int, float)) else 0,
+            hint_category_history=hint_category_history,
         )
 
 
@@ -1521,6 +1546,7 @@ class _SessionDict(TypedDict, total=False):
     last_manifest_sha: str
     last_manifest_ts: float
     version: int
+    hint_category_history: dict[str, list[int]]
 
 
 def _fresh_cache(session_id: str, *, unavailable: bool = False) -> SessionCache:
@@ -1755,6 +1781,8 @@ def _migrate_session(data: dict[str, Any]) -> dict[str, Any]:
         data["hints_ignored"] = 0
     if "recent_hints" not in data:
         data["recent_hints"] = []
+    if "hint_category_history" not in data:
+        data["hint_category_history"] = {}
     if "version" not in data:
         data["version"] = 0
 
@@ -2894,3 +2922,54 @@ def cleanup_stale(max_age_hours: float = 24.0) -> int:
         examined, removed, max_age_hours,
     )
     return removed
+
+
+# ---------------------------------------------------------------------------
+# Item 7: Adaptive hint suppression per category
+# ---------------------------------------------------------------------------
+
+def record_hint_category(cache: SessionCache, category: str, accepted: bool) -> None:
+    """Record whether a hint in *category* was accepted (True) or ignored (False).
+
+    Appends to the ring buffer for *category* in ``cache.hint_category_history``,
+    capping at ``_HINT_CAT_HISTORY_MAX`` entries via FIFO eviction.  The buffer
+    is not saved to disk here — callers must call ``save()`` when appropriate
+    (the normal post-read save path handles this).
+
+    Args:
+        cache:    The live in-memory SessionCache to mutate.
+        category: Hint category key (e.g. ``"session_hint"``, ``"bash_dedup_hint"``).
+        accepted: True when the agent appeared to heed the hint (did not re-read
+                  the hinted path in the next few tool calls); False otherwise.
+    """
+    if cache.unavailable:
+        return
+    hist = cache.hint_category_history.setdefault(category, [])
+    hist.append(accepted)
+    if len(hist) > _HINT_CAT_HISTORY_MAX:
+        # FIFO: drop oldest entries from the front
+        cache.hint_category_history[category] = hist[-_HINT_CAT_HISTORY_MAX:]
+    cache._invalidate_json_cache()
+
+
+def _hint_category_should_suppress(cache: SessionCache, category: str, threshold: int = 5) -> bool:
+    """Return True when the last *threshold* hints in *category* were all ignored.
+
+    Used by pre-read hook to skip emitting a hint whose category has a track
+    record of being ignored.  Returns False (never suppress) when:
+    - *threshold* <= 0 (feature disabled via config)
+    - fewer than *threshold* entries exist for this category yet
+    - any of the last *threshold* entries was accepted (True)
+
+    Args:
+        cache:     Live in-memory SessionCache.
+        category:  Hint category key to check.
+        threshold: Number of consecutive False entries required to suppress.
+                   Defaults to 5; pass ``config.hints.suppress_after_ignored``.
+    """
+    if threshold <= 0:
+        return False
+    hist = cache.hint_category_history.get(category, [])
+    if len(hist) < threshold:
+        return False
+    return not any(hist[-threshold:])

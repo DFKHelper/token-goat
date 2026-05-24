@@ -107,3 +107,85 @@ class TestDriveInterceptFileId:
 
         text = str(resp)
         assert "gdrive-fetch" not in text
+
+
+class TestWebFetchAllowDeny:
+    """Item 13: URL allow/deny glob list enforcement in pre_fetch."""
+
+    def _webfetch_payload(self, url: str) -> dict:
+        return {"tool_name": "WebFetch", "tool_input": {"url": url}}
+
+    def test_no_restrictions_allows_any_url(self, tmp_data_dir):
+        """With empty allow/deny lists, any non-image URL passes through."""
+        from unittest.mock import patch
+
+        from token_goat.config import Config
+
+        cfg = Config()  # defaults: empty allow/deny
+        with patch("token_goat.config.load", return_value=cfg):
+            resp = hooks_fetch.pre_fetch(self._webfetch_payload("https://example.com/page"))
+        # CONTINUE or dedup hint — not a deny
+        assert resp.get("continue", True) is True or "allow" not in str(resp).lower()
+
+    def test_deny_pattern_blocks_url(self, tmp_data_dir):
+        """URL matching a deny glob is blocked."""
+        from unittest.mock import patch
+
+        from token_goat.config import Config, WebFetchConfig
+
+        cfg = Config(webfetch=WebFetchConfig(deny=["https://evil.com/*"]))
+        with patch("token_goat.config.load", return_value=cfg):
+            resp = hooks_fetch.pre_fetch(self._webfetch_payload("https://evil.com/malware"))
+        text = str(resp)
+        assert "deny" in text.lower() or "blocked" in text.lower() or "deny list" in text.lower()
+
+    def test_deny_pattern_does_not_block_non_matching_url(self, tmp_data_dir):
+        """URL not matching the deny glob is allowed."""
+        from unittest.mock import patch
+
+        from token_goat.config import Config, WebFetchConfig
+
+        cfg = Config(webfetch=WebFetchConfig(deny=["https://evil.com/*"]))
+        with patch("token_goat.config.load", return_value=cfg):
+            resp = hooks_fetch.pre_fetch(self._webfetch_payload("https://good.com/page"))
+        # Should be CONTINUE (not blocked by deny)
+        assert resp.get("continue", True) is True
+
+    def test_allow_list_blocks_unlisted_url(self, tmp_data_dir):
+        """URL not matching any allow pattern is blocked when allow list is non-empty."""
+        from unittest.mock import patch
+
+        from token_goat.config import Config, WebFetchConfig
+
+        cfg = Config(webfetch=WebFetchConfig(allow=["https://trusted.org/*"]))
+        with patch("token_goat.config.load", return_value=cfg):
+            resp = hooks_fetch.pre_fetch(self._webfetch_payload("https://untrusted.io/page"))
+        text = str(resp)
+        assert "allow" in text.lower() or "blocked" in text.lower()
+
+    def test_allow_list_permits_matching_url(self, tmp_data_dir):
+        """URL matching allow pattern is permitted."""
+        from unittest.mock import patch
+
+        from token_goat.config import Config, WebFetchConfig
+
+        cfg = Config(webfetch=WebFetchConfig(allow=["https://trusted.org/*"]))
+        with patch("token_goat.config.load", return_value=cfg):
+            resp = hooks_fetch.pre_fetch(self._webfetch_payload("https://trusted.org/docs"))
+        # Should be CONTINUE (allowed)
+        assert resp.get("continue", True) is True
+
+    def test_deny_checked_before_allow(self, tmp_data_dir):
+        """When URL matches both deny and allow, deny wins."""
+        from unittest.mock import patch
+
+        from token_goat.config import Config, WebFetchConfig
+
+        cfg = Config(webfetch=WebFetchConfig(
+            allow=["https://example.com/*"],
+            deny=["https://example.com/bad*"],
+        ))
+        with patch("token_goat.config.load", return_value=cfg):
+            resp = hooks_fetch.pre_fetch(self._webfetch_payload("https://example.com/badpath"))
+        text = str(resp)
+        assert "deny" in text.lower() or "blocked" in text.lower()

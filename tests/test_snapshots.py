@@ -150,3 +150,97 @@ class TestPostReadSnapshots:
         }
         _assert_continue(hooks_read.post_read(payload))
         assert snapshots.load("post-read-snap-2", str(src)) is None
+
+
+class TestPredictiveSnapshot:
+    """Item 17: post_edit pre-snapshots locally imported modules for .py files."""
+
+    def test_relative_import_creates_snapshot(self, tmp_path, tmp_data_dir):
+        """Editing a .py file with a relative import pre-snapshots the imported module."""
+        import time
+
+        from token_goat import hooks_edit
+
+        # Create two files: main.py imports .util
+        util_py = tmp_path / "util.py"
+        util_py.write_text("def helper(): pass\n", encoding="utf-8")
+
+        main_py = tmp_path / "main.py"
+        main_py.write_text("from .util import helper\n\ndef main(): pass\n", encoding="utf-8")
+
+        sid = "pred-snap-rel-01" * 2
+        payload = {
+            "session_id": sid,
+            "tool_name": "Write",
+            "tool_input": {"file_path": str(main_py)},
+            "tool_response": "ok",
+            "cwd": str(tmp_path),
+        }
+        _assert_continue(hooks_edit.post_edit(payload))
+
+        # Give the daemon thread time to complete
+        time.sleep(0.3)
+
+        stored = snapshots.load(sid, str(util_py))
+        assert stored == util_py.read_bytes(), (
+            "Expected util.py to be pre-snapshotted after editing main.py"
+        )
+
+    def test_non_python_file_no_snapshot(self, tmp_path, tmp_data_dir):
+        """post_edit on a non-.py file does not trigger predictive snapshots."""
+        import time
+
+        from token_goat import hooks_edit
+
+        ts_file = tmp_path / "component.ts"
+        ts_file.write_text("import { foo } from './bar';\n", encoding="utf-8")
+
+        sid = "pred-snap-ts-01" * 2
+        payload = {
+            "session_id": sid,
+            "tool_name": "Write",
+            "tool_input": {"file_path": str(ts_file)},
+            "tool_response": "ok",
+            "cwd": str(tmp_path),
+        }
+        _assert_continue(hooks_edit.post_edit(payload))
+        time.sleep(0.15)
+
+        # No snapshots should have been created for this session
+        session_dir_base = snapshots._session_dir(sid)
+        if session_dir_base and session_dir_base.exists():
+            files = list(session_dir_base.iterdir())
+            assert len(files) == 0, f"Expected no snapshots for non-.py edit, got {files}"
+
+    def test_cap_at_three_imports(self, tmp_path, tmp_data_dir):
+        """Predictive snapshot caps at 3 imports per post_edit."""
+        import time
+
+        from token_goat import hooks_edit
+
+        # Create 5 sibling modules
+        for i in range(5):
+            (tmp_path / f"mod{i}.py").write_text(f"# mod{i}\n", encoding="utf-8")
+
+        imports = "\n".join(f"from .mod{i} import x" for i in range(5))
+        main_py = tmp_path / "main.py"
+        main_py.write_text(imports + "\n\ndef run(): pass\n", encoding="utf-8")
+
+        sid = "pred-snap-cap-01" * 2
+        payload = {
+            "session_id": sid,
+            "tool_name": "Write",
+            "tool_input": {"file_path": str(main_py)},
+            "tool_response": "ok",
+            "cwd": str(tmp_path),
+        }
+        _assert_continue(hooks_edit.post_edit(payload))
+        time.sleep(0.4)
+
+        # Count how many mod*.py files got snapshotted
+        snap_count = sum(
+            1 for i in range(5)
+            if snapshots.load(sid, str(tmp_path / f"mod{i}.py")) is not None
+        )
+        assert snap_count <= 3, f"Expected at most 3 pre-snapshots, got {snap_count}"
+        assert snap_count >= 1, "Expected at least 1 pre-snapshot to have been taken"

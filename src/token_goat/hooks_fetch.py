@@ -158,6 +158,53 @@ def _handle_web_dedup(payload: HookPayload, url: str) -> HookResponse | None:
     )
 
 
+def _check_url_allowdeny(url: str) -> HookResponse | None:
+    """Check *url* against the configured deny/allow glob lists.
+
+    Returns a ``HookResponse`` (deny) when the URL should be blocked, or
+    ``None`` when the URL is permitted to proceed.
+
+    Logic:
+    1. Deny list is checked first.  A match → block immediately.
+    2. Allow list: if non-empty, URL must match at least one pattern or it is blocked.
+    3. Empty allow list → allow everything not denied.
+
+    Patterns are matched via :func:`fnmatch.fnmatch` against the full URL string.
+    """
+    import fnmatch  # noqa: PLC0415
+
+    from . import config as _config  # noqa: PLC0415
+
+    cfg = _config.load().webfetch
+    url_str = url
+
+    for pat in cfg.deny:
+        if fnmatch.fnmatch(url_str, pat):
+            _LOG.info("pre-fetch: URL blocked by deny pattern %r: %s", pat, sanitize_log_str(url_str, max_len=200))
+            return deny_redirect(
+                reason=f"token-goat webfetch deny list blocked this URL (pattern: {pat!r})",
+                context=(
+                    "The URL matches a deny pattern in your token-goat config [webfetch] deny list. "
+                    "If this was unintentional, update config.toml to remove the pattern."
+                ),
+            )
+
+    if cfg.allow:
+        for pat in cfg.allow:
+            if fnmatch.fnmatch(url_str, pat):
+                return None  # explicitly allowed
+        _LOG.info("pre-fetch: URL not in allow list, blocking: %s", sanitize_log_str(url_str, max_len=200))
+        return deny_redirect(
+            reason="token-goat webfetch allow list: URL did not match any allowed pattern",
+            context=(
+                "The URL did not match any pattern in your token-goat config [webfetch] allow list. "
+                "Add a matching pattern to allow it."
+            ),
+        )
+
+    return None  # no restrictions
+
+
 def pre_fetch(payload: HookPayload) -> HookResponse:
     """Deny Drive/WebFetch image tools and dedup repeat text WebFetch calls."""
     tool_name = payload.get("tool_name", "")
@@ -201,6 +248,11 @@ def pre_fetch(payload: HookPayload) -> HookResponse:
         url = tool_input.get("url")
         if not url or not isinstance(url, str):
             return CONTINUE()
+
+        # Check allow/deny lists before anything else.
+        allowdeny = _check_url_allowdeny(url)
+        if allowdeny is not None:
+            return allowdeny
 
         from . import webfetch  # noqa: PLC0415
 

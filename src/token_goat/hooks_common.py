@@ -46,6 +46,7 @@ __all__ = [
     "record_cached_stat",
     "record_hint_stat_pair",
     "run_dedup_hint",
+    "_is_quiet_hours",
     "sanitize_log_str",
     "sanitize_opt",
     "validate_cwd",
@@ -325,6 +326,42 @@ def bytes_to_tokens(byte_count: int) -> int:
     return max(1, int(byte_count / CHARS_PER_TOKEN))
 
 
+def _is_quiet_hours(quiet_hours: str) -> bool:
+    """Return True when the current local time falls within the *quiet_hours* window.
+
+    *quiet_hours* must be a non-empty string in ``"HH:MM-HH:MM"`` 24-hour format.
+    Midnight wrap-around is supported: ``"22:00-07:00"`` suppresses from 10 pm
+    to 7 am (crossing midnight).  Returns False for empty / malformed strings so
+    the feature is a no-op when not configured.
+    """
+    import datetime  # noqa: PLC0415
+    import re as _re  # noqa: PLC0415
+
+    if not quiet_hours:
+        return False
+    m = _re.fullmatch(r"(\d{1,2}):(\d{2})-(\d{1,2}):(\d{2})", quiet_hours.strip())
+    if not m:
+        return False
+    try:
+        start_h, start_m, end_h, end_m = int(m.group(1)), int(m.group(2)), int(m.group(3)), int(m.group(4))
+        if not (0 <= start_h < 24 and 0 <= start_m < 60 and 0 <= end_h < 24 and 0 <= end_m < 60):
+            return False
+    except ValueError:
+        return False
+
+    now = datetime.datetime.now()
+    current = now.hour * 60 + now.minute
+    start = start_h * 60 + start_m
+    end = end_h * 60 + end_m
+
+    if start <= end:
+        # Normal range: e.g. 09:00-17:00
+        return start <= current < end
+    else:
+        # Midnight-crossing range: e.g. 22:00-07:00
+        return current >= start or current < end
+
+
 def record_hint_stat_pair(kind: str, hint: object, detail: str) -> None:
     """Record a matched-pair of stat rows for a hint: the gross saving plus the injection overhead.
 
@@ -353,6 +390,14 @@ def record_hint_stat_pair(kind: str, hint: object, detail: str) -> None:
     """
     from . import config, db  # noqa: PLC0415
 
+    cfg = config.load()
+
+    # Item 16: quiet-hours suppression.  When the current local time falls
+    # inside the configured quiet window, skip the stat-record (the hint was
+    # already suppressed upstream; this just avoids the SQLite write overhead).
+    if _is_quiet_hours(cfg.hints.quiet_hours):
+        return
+
     realized_tokens: int = getattr(hint, "tokens_saved", 0)
     injection_bytes: int = len(hint)  # type: ignore[arg-type]
     injection_cost_tokens = bytes_to_tokens(injection_bytes)
@@ -362,7 +407,7 @@ def record_hint_stat_pair(kind: str, hint: object, detail: str) -> None:
     # any token savings and are purely advisory; recording them adds SQLite write
     # overhead (~0.5–1 ms each) on the hot pre-read path without actionable signal.
     # Session-level hint count is tracked separately in session.hints_emitted.
-    if realized_tokens == 0 and injection_bytes == 0 and not config.load().stats.record_zero_savings:
+    if realized_tokens == 0 and injection_bytes == 0 and not cfg.stats.record_zero_savings:
         return
 
     db.record_stat(

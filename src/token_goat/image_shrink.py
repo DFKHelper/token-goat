@@ -501,15 +501,31 @@ def shrink(src_path: Path) -> Path | None:
                     fmt = _lossy_format()
                     if fmt == "webp":
                         final_path = stem.with_suffix(".webp")
-                        # method=6 is the slowest/best encoder setting — at 1024 px
-                        # this still completes in well under 100 ms on commodity
-                        # hardware, comfortably inside the hook budget.
-                        img.save(
-                            final_path,
-                            "WEBP",
-                            quality=WEBP_QUALITY,
-                            method=WEBP_METHOD,
-                        )
+                        # Diagrams (portrait-dominant images classified by extract_image_summary)
+                        # contain sharp lines, text labels, and hard colour boundaries that
+                        # degrade visibly under lossy WebP.  Use lossless encoding for these
+                        # so the model can read diagram annotations accurately.
+                        # For all other images (screenshots, photos) lossy quality=WEBP_QUALITY
+                        # gives the best size reduction with negligible fidelity loss.
+                        _w, _h = img.size
+                        _is_diagram = _h > 0 and _w > 0 and (_h / _w) >= 1.4
+                        if _is_diagram:
+                            img.save(
+                                final_path,
+                                "WEBP",
+                                lossless=True,
+                                method=WEBP_METHOD,
+                            )
+                        else:
+                            # method=6 is the slowest/best encoder setting — at 1024 px
+                            # this still completes in well under 100 ms on commodity
+                            # hardware, comfortably inside the hook budget.
+                            img.save(
+                                final_path,
+                                "WEBP",
+                                quality=WEBP_QUALITY,
+                                method=WEBP_METHOD,
+                            )
                     else:
                         final_path = stem.with_suffix(".jpg")
                         img.save(final_path, "JPEG", quality=_cfg.image_shrink.jpeg_quality, optimize=True)
