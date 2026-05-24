@@ -572,6 +572,47 @@ class TestSessionIdValidation:
         session.reset_session("valid-session-id")  # no error
 
 
+class TestSafeLoad:
+    """session.safe_load returns None on invalid/failing IDs, cache on success."""
+
+    def test_returns_none_for_invalid_id(self, tmp_data_dir):
+        """Path-traversal session_id must return None, not raise."""
+        result = session.safe_load("../../etc/passwd")
+        assert result is None
+
+    def test_returns_none_for_empty_id(self, tmp_data_dir):
+        result = session.safe_load("")
+        assert result is None
+
+    def test_returns_none_for_too_long_id(self, tmp_data_dir):
+        result = session.safe_load("a" * 300)
+        assert result is None
+
+    def test_returns_cache_for_valid_id(self, tmp_data_dir):
+        """Valid session ID returns a SessionCache (new or existing)."""
+        result = session.safe_load("valid-safe-load-id")
+        assert result is not None
+        assert result.session_id == "valid-safe-load-id"
+
+    def test_caller_label_accepted(self, tmp_data_dir):
+        """caller kwarg is accepted and does not affect return value."""
+        result = session.safe_load("valid-safe-load-id2", caller="test-caller")
+        assert result is not None
+
+    def test_returns_existing_cache(self, tmp_data_dir):
+        """safe_load returns the same data as load() for a written session."""
+        sid = "safe-load-existing"
+        cache = session.load(sid)
+        session.mark_file_read(sid, "/some/file.py", None, None, cache=cache)
+        session.save(cache)
+
+        result = session.safe_load(sid)
+        assert result is not None
+        assert "/some/file.py" in result.files or any(
+            "/some/file.py" in k for k in result.files
+        )
+
+
 class TestResultCache:
     """In-session result cache for read_symbol/read_section."""
 
