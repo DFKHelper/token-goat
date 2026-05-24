@@ -1,0 +1,103 @@
+"""Tests for config.py — process-level mtime cache (item 1)."""
+from __future__ import annotations
+
+
+class TestConfigMtimeCache:
+    """Item 1: config.load() uses a process-level mtime cache.
+
+    Repeated calls within the same process pay only one os.stat instead of
+    stat + read_text + tomllib.loads on every invocation.
+    """
+
+    def _reset_cache(self) -> None:
+        """Clear the module-level cache between test cases."""
+        import token_goat.config as cfg_mod
+        cfg_mod._config_mtime_cache = None
+
+    def test_repeated_calls_return_same_object(self, tmp_path, monkeypatch):
+        """Second call returns the cached Config object (identity check)."""
+        self._reset_cache()
+        import token_goat.config as cfg_mod
+        import token_goat.paths as paths_mod
+
+        monkeypatch.setattr(paths_mod, "config_path", lambda: tmp_path / "config.toml")
+        c1 = cfg_mod.load()
+        c2 = cfg_mod.load()
+        assert c1 is c2, "Second load() should return the cached Config object"
+
+    def test_cache_miss_on_mtime_change(self, tmp_path, monkeypatch):
+        """Writing the config file invalidates the cache (mtime changes)."""
+        import token_goat.config as cfg_mod
+        import token_goat.paths as paths_mod
+
+        config_file = tmp_path / "config.toml"
+        monkeypatch.setattr(paths_mod, "config_path", lambda: config_file)
+        self._reset_cache()
+
+        c1 = cfg_mod.load()
+
+        # Write a config file that changes a value
+        config_file.write_text(
+            '[compact_assist]\nmin_events = 7\n', encoding="utf-8"
+        )
+        # Ensure mtime differs (some filesystems have 1s resolution)
+        import os
+        new_mtime = config_file.stat().st_mtime + 1
+        os.utime(config_file, (new_mtime, new_mtime))
+
+        c2 = cfg_mod.load()
+        assert c1 is not c2, "Config changed on disk — cache must be invalidated"
+        assert c2.compact_assist.min_events == 7
+
+    def test_absent_file_cached_too(self, tmp_path, monkeypatch):
+        """Absent config file also produces a cached result (mtime == 0.0)."""
+        import token_goat.config as cfg_mod
+        import token_goat.paths as paths_mod
+
+        monkeypatch.setattr(paths_mod, "config_path", lambda: tmp_path / "no_config.toml")
+        self._reset_cache()
+
+        c1 = cfg_mod.load()
+        c2 = cfg_mod.load()
+        assert c1 is c2
+
+    def test_five_calls_use_single_parse(self, tmp_path, monkeypatch):
+        """Five consecutive calls should all return the same cached object."""
+        import token_goat.config as cfg_mod
+        import token_goat.paths as paths_mod
+
+        monkeypatch.setattr(paths_mod, "config_path", lambda: tmp_path / "config.toml")
+        self._reset_cache()
+
+        results = [cfg_mod.load() for _ in range(5)]
+        assert all(r is results[0] for r in results[1:])
+
+    def test_save_invalidates_cache(self, tmp_path, monkeypatch):
+        """config.save() must clear the cache so the next load() re-reads."""
+        import token_goat.config as cfg_mod
+        import token_goat.paths as paths_mod
+
+        config_file = tmp_path / "config.toml"
+        monkeypatch.setattr(paths_mod, "config_path", lambda: config_file)
+        self._reset_cache()
+
+        c1 = cfg_mod.load()
+        cfg_mod.save(c1)
+        assert cfg_mod._config_mtime_cache is None, "save() must clear _config_mtime_cache"
+
+    def test_cache_tuple_has_four_fields(self, tmp_path, monkeypatch):
+        """Cache entry is (Config, mtime_float, env_fingerprint_str, monotonic_float)."""
+        import token_goat.config as cfg_mod
+        import token_goat.paths as paths_mod
+
+        monkeypatch.setattr(paths_mod, "config_path", lambda: tmp_path / "config.toml")
+        self._reset_cache()
+
+        cfg_mod.load()
+        assert cfg_mod._config_mtime_cache is not None
+        assert len(cfg_mod._config_mtime_cache) == 4
+        cfg_obj, mtime_val, env_fp, mono_val = cfg_mod._config_mtime_cache
+        assert isinstance(mtime_val, float)
+        assert isinstance(env_fp, str)
+        assert isinstance(mono_val, float)
+        assert mono_val > 0

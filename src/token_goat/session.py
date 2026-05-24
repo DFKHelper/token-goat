@@ -767,6 +767,19 @@ class SessionCache:
     # Avoids O(N) re-serialization of files/greps dicts on every hook invocation when
     # the cache is loaded, mutated once, and immediately saved.  Not persisted to disk.
     _json_cache: str | None = field(default=None, repr=False, compare=False)
+    # Disk-state fingerprint recorded by load() so save() can skip the CAS
+    # from_dict round-trip when no concurrent writer has changed the file.
+    # Both fields are 0.0/0 for freshly-created (unsaved) caches.  Not persisted.
+    _disk_mtime: float = field(default=0.0, repr=False, compare=False)
+    _disk_size: int = field(default=0, repr=False, compare=False)
+    # Dirty flag set by mark_hint_seen() to defer its save() until the next
+    # post-read/post-bash/post-edit save() picks it up.  Not persisted.
+    _pending_hint_save: bool = field(default=False, repr=False, compare=False)
+    # Sorted-list caches for hints_seen and bash_dedup_emitted_ids.  Avoids
+    # repeated sorted() calls in to_dict() when neither set has changed.
+    # Invalidated by _invalidate_json_cache() on any mutation.  Not persisted.
+    _hints_seen_sorted_cache: list[str] | None = field(default=None, repr=False, compare=False)
+    _bash_dedup_sorted_cache: list[str] | None = field(default=None, repr=False, compare=False)
 
     def to_dict(self) -> _SessionDict:
         """Serialize to dict for JSON."""
@@ -798,8 +811,8 @@ class SessionCache:
                 for k, v in self.skill_history.items()
             },
             snapshot_shas=dict(self.snapshot_shas),
-            hints_seen=sorted(self.hints_seen),  # sorted list for stable JSON
-            bash_dedup_emitted_ids=sorted(self.bash_dedup_emitted_ids),  # sorted list for stable JSON
+            hints_seen=self._get_hints_seen_sorted(),
+            bash_dedup_emitted_ids=self._get_bash_dedup_sorted(),
             hints_emitted=self.hints_emitted,
             hints_ignored=self.hints_ignored,
             structured_hints_emitted=self.structured_hints_emitted,
@@ -824,6 +837,20 @@ class SessionCache:
     def _invalidate_json_cache(self) -> None:
         """Invalidate the serialization cache after any mutation."""
         self._json_cache = None
+        self._hints_seen_sorted_cache = None
+        self._bash_dedup_sorted_cache = None
+
+    def _get_hints_seen_sorted(self) -> list[str]:
+        """Return a cached sorted list of hints_seen, recomputing only on invalidation."""
+        if self._hints_seen_sorted_cache is None:
+            self._hints_seen_sorted_cache = sorted(self.hints_seen)
+        return self._hints_seen_sorted_cache
+
+    def _get_bash_dedup_sorted(self) -> list[str]:
+        """Return a cached sorted list of bash_dedup_emitted_ids, recomputing only on invalidation."""
+        if self._bash_dedup_sorted_cache is None:
+            self._bash_dedup_sorted_cache = sorted(self.bash_dedup_emitted_ids)
+        return self._bash_dedup_sorted_cache
 
     def is_bash_history_empty(self) -> bool:
         """Return True if bash_history is empty or not available."""
@@ -853,9 +880,20 @@ class SessionCache:
         return fingerprint in self.hints_seen
 
     def mark_hint_seen(self, fingerprint: str) -> None:
-        """Record a hint fingerprint as seen this session, persisting to disk.
+        """Record a hint fingerprint as seen this session.
 
-        Invalidates the JSON cache and persists to disk since we've mutated hints_seen.
+        Defers the disk write: sets ``_pending_hint_save = True`` instead of
+        calling ``save()`` inline.  The pending write is flushed by the next
+        ``mark_file_read`` / ``mark_bash_run`` / ``mark_grep`` / etc. that
+        calls ``save()`` at the end of the same hook invocation.  For hooks
+        that emit a hint but have no subsequent save (e.g. Glob dedup), the
+        dispatch layer in ``hooks_cli.py`` checks ``_pending_hint_save`` after
+        the handler returns and calls ``save()`` then.
+
+        If the hint fires in pre-read but the process exits before any
+        post-read save (harness crash, tool denied), the fingerprint is lost
+        and the same hint re-fires on the next invocation — a benign
+        false-positive, not data loss.
         """
         if fingerprint not in self.hints_seen:
             self.hints_seen.add(fingerprint)
@@ -866,7 +904,7 @@ class SessionCache:
                 self.hints_seen.clear()
             self.last_activity_ts = time.time()
             self._invalidate_json_cache()
-            save(self)
+            self._pending_hint_save = True
 
     @classmethod
     def from_dict(cls, d: dict[str, Any]) -> SessionCache:
@@ -1766,6 +1804,14 @@ def load(session_id: str) -> SessionCache:
             _LOG.warning("session cache corrupted (%s); resetting", e)
             return _fresh_cache(session_id)
         cache.unavailable = False
+        # Record the on-disk fingerprint so save() can skip the CAS from_dict
+        # round-trip when no concurrent writer has touched the file.
+        try:
+            st = p.stat()
+            cache._disk_mtime = st.st_mtime
+            cache._disk_size = st.st_size
+        except OSError:
+            pass  # benign — save() falls back to full CAS if fingerprint is missing
         elapsed_ms = (time.monotonic() - t0) * 1000
         _LOG.info(
             "session opened: %s (resuming, %d files tracked, %d edited, %.1fms)",
@@ -1842,17 +1888,30 @@ def save(cache: SessionCache) -> None:
             lock_fd = _acquire_session_lock(cache.session_id)
             try:
                 # CAS: re-read on-disk state inside the lock.
+                # Fast path: if the file's mtime+size match the fingerprint we
+                # recorded at load(), no concurrent writer has touched it — skip
+                # the from_dict round-trip and write directly.
                 disk_cache: SessionCache | None = None
                 p = paths.session_cache_path(cache.session_id)
-                try:
-                    if p.exists():
-                        raw = p.read_text(encoding="utf-8")
-                        data = json.loads(raw)
-                        data = _migrate_session(data)
-                        disk_cache = SessionCache.from_dict(data)
-                except (OSError, json.JSONDecodeError, KeyError, TypeError, ValueError):
-                    # On-disk file unreadable — treat as empty (will overwrite).
-                    disk_cache = None
+                _skip_cas = False
+                if cache._disk_mtime != 0.0 or cache._disk_size != 0:
+                    try:
+                        st = os.stat(p)
+                        if st.st_mtime == cache._disk_mtime and st.st_size == cache._disk_size:
+                            _skip_cas = True
+                    except OSError:
+                        pass  # file may not exist yet; fall through to full CAS
+
+                if not _skip_cas:
+                    try:
+                        if p.exists():
+                            raw = p.read_text(encoding="utf-8")
+                            data = json.loads(raw)
+                            data = _migrate_session(data)
+                            disk_cache = SessionCache.from_dict(data)
+                    except (OSError, json.JSONDecodeError, KeyError, TypeError, ValueError):
+                        # On-disk file unreadable — treat as empty (will overwrite).
+                        disk_cache = None
 
                 # Merge if another process wrote a newer version since we loaded.
                 if disk_cache is not None and disk_cache.version > cache.version:
@@ -1868,6 +1927,14 @@ def save(cache: SessionCache) -> None:
 
                 try:
                     paths.atomic_write_text(p, cache.to_json())
+                    # Update fingerprint so subsequent saves in the same process
+                    # also benefit from the fast-path skip.
+                    try:
+                        st2 = os.stat(p)
+                        cache._disk_mtime = st2.st_mtime
+                        cache._disk_size = st2.st_size
+                    except OSError:
+                        pass
                 except OSError as exc:
                     last_exc = exc
                     continue

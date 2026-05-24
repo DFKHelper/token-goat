@@ -141,3 +141,6 @@ class StatsData:
     # callers / cached snapshots built before this field shipped still load; the
     # renderer omits the version suffix when it is empty.
     version: str = ""
+    # Human-readable window label, e.g. "last 30 days" or "all time".  Defaults
+    # to "" so older callers / cached snapshots still load without modification.
+    window_label: str = ""
