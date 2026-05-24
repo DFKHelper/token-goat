@@ -419,6 +419,69 @@ class TestSafeRun:
             f"expected sentinel in output; got: {parsed}"
         )
 
+    def test_safe_run_crash_writes_hooks_stderr_log(self, tmp_path, capsys, monkeypatch):
+        """A crash in safe_run must write msg + traceback to hooks-stderr.log.
+
+        Contract:
+        - {"continue": true} is still emitted (fail-soft preserved).
+        - hooks-stderr.log is created in logs_dir() with a line matching the
+          expected pattern (event name + exception type).
+        """
+        import json
+
+        from token_goat import hooks_cli as hc
+        from token_goat import paths
+
+        # Redirect logs_dir() to a tmp directory so the test is isolated.
+        monkeypatch.setattr(paths, "logs_dir", lambda: tmp_path / "logs")
+
+        # Force a crash by making dispatch raise unconditionally.
+        monkeypatch.setattr(hc, "dispatch", lambda event, payload: (_ for _ in ()).throw(RuntimeError("boom")))
+
+        payload_file = tmp_path / "payload.json"
+        payload_file.write_text('{"session_id": "crash-test"}', encoding="utf-8")
+        hc.safe_run("pre-read", input_file=payload_file)
+
+        # Fail-soft contract: continue:true must still be emitted.
+        out = capsys.readouterr().out
+        parsed = json.loads(out)
+        assert parsed["continue"] is True
+
+        # Crash sink must exist and contain the diagnostic line.
+        sink = tmp_path / "logs" / "hooks-stderr.log"
+        assert sink.exists(), "hooks-stderr.log was not created"
+        content = sink.read_text(encoding="utf-8")
+        assert "pre-read" in content, f"event name missing from crash log: {content[:200]}"
+        assert "RuntimeError" in content, f"exception type missing from crash log: {content[:200]}"
+
+    def test_safe_run_crash_log_rolls_over_when_oversized(self, tmp_path, monkeypatch):
+        """hooks-stderr.log must roll to hooks-stderr.prev.log once it exceeds the size cap.
+
+        Fill the log past HOOKS_STDERR_LOG_MAX_BYTES via repeated crashes, then
+        trigger one more crash and verify a .prev.log sibling was created.
+        """
+        from token_goat import hooks_cli as hc
+        from token_goat import paths
+
+        monkeypatch.setattr(paths, "logs_dir", lambda: tmp_path / "logs")
+        monkeypatch.setattr(hc, "dispatch", lambda event, payload: (_ for _ in ()).throw(ValueError("x")))
+
+        log_dir = tmp_path / "logs"
+        log_dir.mkdir(parents=True, exist_ok=True)
+        sink = log_dir / "hooks-stderr.log"
+
+        # Pre-fill the log past the 1 MB threshold so the very next crash triggers rollover.
+        sink.write_bytes(b"x" * (paths.HOOKS_STDERR_LOG_MAX_BYTES + 1))
+
+        payload_file = tmp_path / "payload.json"
+        payload_file.write_text('{"session_id": "rollover-test"}', encoding="utf-8")
+        hc.safe_run("pre-read", input_file=payload_file)
+
+        prev_log = log_dir / "hooks-stderr.prev.log"
+        assert prev_log.exists(), (
+            "hooks-stderr.prev.log was not created after exceeding size cap"
+        )
+
 
 # ---------------------------------------------------------------------------
 # normalize_payload — codex harness path (line 60-62)

@@ -22,6 +22,7 @@ import json
 import logging
 import sys
 import time
+import traceback
 from collections.abc import Callable
 from datetime import datetime
 from pathlib import Path
@@ -234,6 +235,20 @@ def safe_run(event: str, input_file: Path | None = None, harness: Harness = "cla
             # Attempt to persist to log file even if normal setup failed.
             _setup_logging()
             _LOG.error("%s", msg, exc_info=True)
+        # Dedicated crash sink: append msg + traceback to hooks-stderr.log so
+        # hook crashes are not silently lost when the harness redirects stderr
+        # to nul:/dev/null.  This must never raise — any write failure is
+        # swallowed so the fail-soft contract (always returns continue:true)
+        # is preserved.
+        try:
+            sink = paths.hooks_stderr_log_path()
+            sink.parent.mkdir(parents=True, exist_ok=True)
+            paths.roll_log_if_oversized(sink, paths.HOOKS_STDERR_LOG_MAX_BYTES)
+            tb = traceback.format_exc()
+            with sink.open("a", encoding="utf-8") as fh:
+                fh.write(msg + "\n" + tb)
+        except Exception:  # noqa: BLE001
+            pass
         emit(result)
         return
     else:
