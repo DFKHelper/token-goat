@@ -437,10 +437,63 @@ def _try_recovery_response(session_id: str | None, source: str) -> HookResponse 
     }
 
 
+def _parse_status_z_b(output: str) -> tuple[str, list[str]]:
+    """Parse the NUL-separated output of ``git status -z -b``.
+
+    The ``-b`` flag prepends a branch header as the first NUL-terminated field::
+
+        ## main...origin/main\\0XY file1\\0XY file2\\0...
+
+    For detached HEAD git emits ``## HEAD (no branch)`` or ``## HEAD``.
+    For a new repo with no commits: ``## No commits yet on main``.
+
+    Returns ``(branch, status_lines)`` where *status_lines* is a list of
+    ``"XY filename"`` strings (the same shape as ``--porcelain`` output) capped
+    at 20 entries, and *branch* is the short branch name (or ``"unknown"``).
+
+    Rename entries in ``-z`` format are two consecutive NUL fields
+    (``"XY new\\0old\\0"``); we surface only the *new* name (the first field)
+    for counting purposes, matching what the old ``--porcelain`` parser did.
+    """
+    if not output:
+        return "unknown", []
+
+    # Fields are separated by NUL; trailing NUL produces an empty final field.
+    fields = output.split("\0")
+
+    branch = "unknown"
+    status_lines: list[str] = []
+
+    for _i, field in enumerate(fields):
+        if not field:
+            continue
+        if field.startswith("## "):
+            # Branch header: "## main...origin/main" or "## HEAD (no branch)"
+            # or "## No commits yet on main"
+            header = field[3:]  # strip "## "
+            # Extract just the local branch name (before "...")
+            local = header.split("...")[0].strip()
+            if local.startswith("No commits yet on "):
+                local = local[len("No commits yet on "):].strip()
+            if local and local not in ("HEAD (no branch)", "HEAD"):
+                branch = local
+            elif local in ("HEAD (no branch)", "HEAD"):
+                branch = "HEAD"
+        elif len(field) >= 3 and field[2] == " ":
+            # Porcelain v1-style "XY filename"; for renames the *next* field is
+            # the old name — skip it (we only count the destination).
+            status_lines.append(field)
+            if len(status_lines) >= 20:
+                break
+
+    return branch, status_lines
+
+
 def _build_session_brief(cwd: str) -> str | None:
     """Build a compact git orientation brief for the session start context.
 
-    Runs ``git status --porcelain`` and ``git log --oneline -5`` in *cwd*.
+    Runs ``git --no-optional-locks status -z -b`` (branch + status in one
+    round-trip) and ``git log --oneline -5`` in *cwd*.
     Returns a short Markdown block (under 80 tokens) or ``None`` when:
 
     - The directory is not a git repo or git is not available
@@ -495,42 +548,32 @@ def _build_session_brief(cwd: str) -> str | None:
         "capture_output": True,
         "text": True,
     }
-    # Whole-brief wall-clock budget: the three git calls share one deadline so a slow repo can't stack three 2 s timeouts into a 6 s session-start pause.
+    # Whole-brief wall-clock budget: the git calls share one deadline so a slow repo can't stack timeouts into a long session-start pause.
     deadline = time.monotonic() + 2.5
 
     def _remaining() -> float:
         return deadline - time.monotonic()
 
-    # Determine current branch
+    # Single-call refactor (Option A): `git --no-optional-locks status -z -b`
+    # returns branch + porcelain status in one round-trip, eliminating a
+    # separate `rev-parse --abbrev-ref HEAD` call and closing the file-handle
+    # leak on TimeoutExpired (design doc item #9).  The `-z -b` format is
+    # stable since git 1.7.11 and covers every field the old two-call path used.
     branch = "unknown"
+    status_lines: list[str] = []
     try:
-        br = subprocess.run(
-            ["git", "rev-parse", "--abbrev-ref", "HEAD"],
+        sz = subprocess.run(
+            ["git", "--no-optional-locks", "status", "-z", "-b"],
             timeout=max(0.1, min(2.0, _remaining())),
             **common_kwargs,
         )
-        if br.returncode == 0:
-            branch = br.stdout.strip() or "unknown"
-        elif br.returncode == 128:
+        if sz.returncode == 128:
             # Not a git repo
             return None
+        if sz.returncode == 0:
+            branch, status_lines = _parse_status_z_b(sz.stdout)
     except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
         return None
-
-    # git status --porcelain — cap at 20 lines
-    status_lines: list[str] = []
-    status_budget = _remaining()
-    if status_budget > 0.1:
-        try:
-            st = subprocess.run(
-                ["git", "status", "--porcelain"],
-                timeout=status_budget,
-                **common_kwargs,
-            )
-            if st.returncode == 0:
-                status_lines = st.stdout.splitlines()[:20]
-        except (subprocess.TimeoutExpired, OSError):
-            pass
 
     # git log --oneline -5
     # Skip when we're on clean main/master and local HEAD is in sync with
