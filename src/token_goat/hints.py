@@ -23,6 +23,7 @@ __all__ = [
     "build_grep_dedup_hint",
     "build_read_hint",
     "build_structured_file_hint",
+    "build_unchanged_file_hint",
     "build_web_dedup_hint",
     "compute_stale_threshold",
 ]
@@ -1363,6 +1364,143 @@ def _build_web_dedup_hint_inner(
             f"`token-goat web-output {_cc.short_output_id(entry.output_id)}`"
         ),
         tokens_avoided,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Content-unchanged short-circuit hint
+# ---------------------------------------------------------------------------
+
+# Maximum age of a snapshot before the "unchanged since your edit" hint is
+# suppressed.  Beyond this the file may have been modified externally (another
+# process, a git operation) in a way our snapshot would miss.  10 minutes is
+# conservative; the common case is a same-turn re-read seconds after an edit.
+_UNCHANGED_MAX_AGE_SECONDS: int = 10 * 60
+
+# Minimum file size (bytes) before the unchanged hint fires.  For tiny files
+# the full-file read is cheap and the hint text itself approaches the saving.
+_UNCHANGED_MIN_BYTES: int = 800
+
+
+def build_unchanged_file_hint(
+    *,
+    session_id: str,
+    file_path: str,
+    cache: session.SessionCache | None = None,
+) -> ReadHint | None:
+    """Return a hint when a file's on-disk content matches its session snapshot.
+
+    Fires when ALL of the following hold:
+
+    * A snapshot exists for ``(session_id, file_path)`` — written by
+      ``post_read._try_snapshot`` after the agent last read the file.
+    * The file was edited in this session after it was last read
+      (``entry.last_edit_ts > entry.last_read_ts``).
+    * The current on-disk SHA matches the snapshot SHA — meaning no external
+      change has landed since the agent's edit.
+    * The snapshot is fresh enough (< :data:`_UNCHANGED_MAX_AGE_SECONDS`).
+
+    When all conditions hold the agent's edit IS the current content.  The file
+    it is about to re-read contains exactly the bytes it already wrote, which
+    are still visible in context from the Edit/Write tool result.  A full Read
+    would duplicate those bytes for zero new information.
+
+    Returns a :class:`ReadHint` (tokens_saved > 0) or ``None`` (no hint).
+    Never raises; any I/O error is caught and the hint is suppressed.
+    """
+    try:
+        return _build_unchanged_file_hint_inner(
+            session_id=session_id, file_path=file_path, cache=cache,
+        )
+    except Exception:  # noqa: BLE001 — fail-soft for the hot pre-read path
+        _LOG.debug(
+            "build_unchanged_file_hint: unexpected error for %r",
+            file_path, exc_info=True,
+        )
+        return None
+
+
+def _build_unchanged_file_hint_inner(
+    *,
+    session_id: str,
+    file_path: str,
+    cache: session.SessionCache | None,
+) -> ReadHint | None:
+    """Inner implementation; may raise."""
+    import hashlib as _hashlib  # noqa: PLC0415 — avoid top-level cost on hot path
+    import time as _time  # noqa: PLC0415
+
+    if not session_id or not file_path:
+        return None
+
+    if cache is None:
+        cache = session.load(session_id)
+    if cache.unavailable:
+        return None
+
+    # Require that the file was read AND subsequently edited this session.
+    # Without that edit signal there is nothing new to short-circuit; the
+    # normal diff/session-hint path already handles the pure-re-read case.
+    entry = session.get_file_entry(session_id, file_path, cache=cache)
+    if entry is None or entry.last_edit_ts <= entry.last_read_ts:
+        return None
+
+    # Snapshot must exist — it was written right after the last Read.
+    stored_sha = session.get_snapshot_sha(session_id, file_path, cache=cache)
+    if not stored_sha:
+        return None
+
+    # Snapshot age check: if the snapshot is stale the file may have changed
+    # via an external process our hook wouldn't have caught.
+    snapshot_age = _time.time() - entry.last_read_ts
+    if snapshot_age > _UNCHANGED_MAX_AGE_SECONDS:
+        _LOG.debug(
+            "build_unchanged_file_hint: snapshot too old (%.0fs > %ds) for %s",
+            snapshot_age, _UNCHANGED_MAX_AGE_SECONDS, _sanitize_hint_path(file_path),
+        )
+        return None
+
+    # Read the current file and compute its SHA.  Limit to MAX_SNAPSHOT_BYTES
+    # so we never spend time hashing a huge file — if it's over the cap the
+    # snapshot wouldn't exist anyway (store() rejects oversized files).
+    try:
+        with Path(file_path).open("rb") as fh:
+            current_bytes = fh.read(snapshots.MAX_SNAPSHOT_BYTES + 1)
+    except OSError as exc:
+        _LOG.debug(
+            "build_unchanged_file_hint: cannot read %s: %s",
+            _sanitize_hint_path(file_path), exc,
+        )
+        return None
+
+    if len(current_bytes) > snapshots.MAX_SNAPSHOT_BYTES:
+        # File grown past snapshot cap — can't compare.
+        return None
+
+    if len(current_bytes) < _UNCHANGED_MIN_BYTES:
+        return None
+
+    current_sha = _hashlib.sha256(current_bytes).hexdigest()
+    if current_sha != stored_sha:
+        # Content changed on disk since the snapshot — let diff-hint handle it.
+        return None
+
+    # SHA matches: the file is byte-for-byte identical to when it was last read.
+    # The agent's subsequent edit(s) are what produced the current content, and
+    # that content is already visible in the Edit/Write tool results in context.
+    fname = _sanitize_hint_path(Path(file_path).name)
+    safe_path = _sanitize_hint_path(file_path)
+    age_s = int(snapshot_age)
+    full_tokens = _est_tokens_from_chars(len(current_bytes))
+
+    return ReadHint(
+        _apply_terse(
+            f"`{fname}` unchanged since your edit ({age_s}s ago, ~{full_tokens}t). "
+            f"Content already in context from Edit result. "
+            f"Re-read only if you need line numbers. "
+            f"For a symbol use `token-goat read \"{safe_path}::Symbol\"`."
+        ),
+        full_tokens,
     )
 
 

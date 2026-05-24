@@ -407,6 +407,51 @@ def _record_session_hint_impact(file_path: str, hint: str) -> None:
     record_hint_stat_pair("session_hint", hint, sanitize_log_str(file_path, max_len=512))
 
 
+def _try_unchanged_file_hint(
+    session_id: str,
+    file_path: str,
+    tool_input: dict[str, object],
+    cache: object,
+) -> HookResponse | None:
+    """Return a hint when the file content matches its session snapshot.
+
+    Fires only for full-file reads (no offset AND no limit supplied) because a
+    surgical read with explicit bounds is intentional — the agent wants a
+    specific slice, not the whole file, and the short-circuit advice would be
+    misleading.
+
+    Returns None when:
+    * the agent supplied offset or limit (surgical intent)
+    * no snapshot SHA is stored for this (session, file)
+    * the file was not edited after the last read in this session
+    * the current SHA differs from the stored snapshot SHA (content changed)
+    * the snapshot is older than the staleness cap
+    * the file is too small to be worth a hint
+    """
+    from .hints import build_unchanged_file_hint  # noqa: PLC0415
+
+    # Only short-circuit full reads.  offset OR limit present → let through.
+    offset = tool_input.get("offset")
+    limit = tool_input.get("limit")
+    if offset is not None or limit is not None:
+        return None
+
+    hint = build_unchanged_file_hint(
+        session_id=session_id, file_path=file_path, cache=cache,
+    )
+    if hint is None:
+        return None
+
+    record_hint_stat_pair(
+        "unchanged_file_hint", hint, sanitize_log_str(file_path, max_len=512)
+    )
+    _LOG.info(
+        "pre-read: unchanged-file hint injected for %s (tokens_saved=%d)",
+        sanitize_log_str(file_path), hint.tokens_saved,
+    )
+    return pre_tool_use_with_context(str(hint))
+
+
 def _try_diff_hint(
     session_id: str, file_path: str
 ) -> HookResponse | None:
@@ -704,6 +749,18 @@ def pre_read(payload: HookPayload) -> HookResponse:
 
     # Collect context parts from all hint sources; combine and return once.
     context_parts: list[str] = []
+
+    # Content-unchanged short-circuit: file was edited in this session AND the
+    # current on-disk SHA matches the snapshot taken after the last Read.  This
+    # means the agent's edit IS the current file content — a full re-read
+    # returns bytes already visible in the Edit tool result.  Fires before the
+    # diff-hint path because SHA-match is a stronger signal (no diff to show).
+    # Only fires for unscooped full reads (no offset/limit).
+    unchanged_response = _try_unchanged_file_hint(
+        session_id, file_path, tool_input, cache
+    )
+    if unchanged_response is not None:
+        return unchanged_response
 
     # Diff-aware path: file was read AND edited in this session AND we have
     # a snapshot to compare against.  When applicable, the diff hint replaces

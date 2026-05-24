@@ -629,3 +629,177 @@ class TestStructuredFileHint:
         assert "jsonl" in ctx.lower()
         # Tabular hint suggests offset/limit row-slice, NOT jq.
         assert "jq" not in ctx
+
+
+# ---------------------------------------------------------------------------
+# Content-unchanged short-circuit hint tests
+# ---------------------------------------------------------------------------
+
+
+class TestUnchangedFileHint:
+    """pre_read emits an 'unchanged since edit' hint when SHA matches snapshot."""
+
+    def _make_file(self, tmp_path, name: str, content: bytes | None = None) -> str:
+        """Write a file large enough to pass _UNCHANGED_MIN_BYTES threshold."""
+        p = tmp_path / name
+        if content is None:
+            content = b"x = 1\n" * 200  # ~1200 bytes, well above 800-byte floor
+        p.write_bytes(content)
+        return str(p)
+
+    def _read_payload(self, sid: str, path: str, offset=None, limit=None) -> dict:
+        tool_input: dict = {"file_path": path}
+        if offset is not None:
+            tool_input["offset"] = offset
+        if limit is not None:
+            tool_input["limit"] = limit
+        return {
+            "session_id": sid,
+            "tool_name": "Read",
+            "tool_input": tool_input,
+            "cwd": str(path),
+        }
+
+    def test_unchanged_hint_fires_after_edit(self, tmp_data_dir, tmp_path):
+        """Read → Edit → Re-Read with same content → unchanged hint injected."""
+        from token_goat import snapshots
+
+        sid = "unchanged-basic"
+        fpath = self._make_file(tmp_path, "mod.py")
+        with open(fpath, "rb") as _f:
+            content = _f.read()
+
+        # Simulate post_read recording the file and snapshot.
+        session.mark_file_read(sid, fpath, offset=None, limit=None)
+        snapshots.store(sid, fpath, content)
+        session.set_snapshot_sha(sid, fpath, __import__("hashlib").sha256(content).hexdigest())
+
+        # Simulate an edit happening after the read.
+        session.mark_file_edited(sid, fpath)
+
+        result = hooks_cli.pre_read(self._read_payload(sid, fpath))
+        _assert_continue(result)
+        assert "hookSpecificOutput" in result
+        ctx = result["hookSpecificOutput"]["additionalContext"]
+        assert "unchanged" in ctx.lower()
+        assert "mod.py" in ctx
+
+    def test_unchanged_hint_carries_token_saving(self, tmp_data_dir, tmp_path):
+        """Hint must have tokens_saved > 0 (it's a realized saving, not a suggestion)."""
+        from token_goat import snapshots
+        from token_goat.hints import build_unchanged_file_hint
+
+        sid = "unchanged-tokens"
+        fpath = self._make_file(tmp_path, "big.py")
+        with open(fpath, "rb") as _f:
+            content = _f.read()
+
+        session.mark_file_read(sid, fpath, offset=None, limit=None)
+        snapshots.store(sid, fpath, content)
+        session.set_snapshot_sha(sid, fpath, __import__("hashlib").sha256(content).hexdigest())
+        session.mark_file_edited(sid, fpath)
+
+        hint = build_unchanged_file_hint(session_id=sid, file_path=fpath)
+        assert hint is not None
+        assert hint.tokens_saved > 0
+
+    def test_no_hint_when_offset_supplied(self, tmp_data_dir, tmp_path):
+        """Surgical read with offset → unchanged hint must NOT fire."""
+        from token_goat import snapshots
+
+        sid = "unchanged-offset"
+        fpath = self._make_file(tmp_path, "partial.py")
+        with open(fpath, "rb") as _f:
+            content = _f.read()
+
+        session.mark_file_read(sid, fpath, offset=None, limit=None)
+        snapshots.store(sid, fpath, content)
+        session.set_snapshot_sha(sid, fpath, __import__("hashlib").sha256(content).hexdigest())
+        session.mark_file_edited(sid, fpath)
+
+        result = hooks_cli.pre_read(self._read_payload(sid, fpath, offset=10))
+        _assert_continue(result)
+        # No unchanged hint — offset present means surgical intent.
+        if "hookSpecificOutput" in result:
+            ctx = result["hookSpecificOutput"].get("additionalContext", "")
+            assert "unchanged" not in ctx.lower()
+
+    def test_no_hint_when_limit_supplied(self, tmp_data_dir, tmp_path):
+        """Surgical read with limit → unchanged hint must NOT fire."""
+        from token_goat import snapshots
+
+        sid = "unchanged-limit"
+        fpath = self._make_file(tmp_path, "sliced.py")
+        with open(fpath, "rb") as _f:
+            content = _f.read()
+
+        session.mark_file_read(sid, fpath, offset=None, limit=None)
+        snapshots.store(sid, fpath, content)
+        session.set_snapshot_sha(sid, fpath, __import__("hashlib").sha256(content).hexdigest())
+        session.mark_file_edited(sid, fpath)
+
+        result = hooks_cli.pre_read(self._read_payload(sid, fpath, limit=50))
+        _assert_continue(result)
+        if "hookSpecificOutput" in result:
+            ctx = result["hookSpecificOutput"].get("additionalContext", "")
+            assert "unchanged" not in ctx.lower()
+
+    def test_no_hint_when_content_changed(self, tmp_data_dir, tmp_path):
+        """File mutated on disk after snapshot → SHA mismatch → no unchanged hint."""
+        from token_goat import snapshots
+
+        sid = "unchanged-mutated"
+        fpath = self._make_file(tmp_path, "mutated.py")
+        with open(fpath, "rb") as _f:
+            original = _f.read()
+
+        session.mark_file_read(sid, fpath, offset=None, limit=None)
+        snapshots.store(sid, fpath, original)
+        session.set_snapshot_sha(sid, fpath, __import__("hashlib").sha256(original).hexdigest())
+        session.mark_file_edited(sid, fpath)
+
+        # Mutate the file externally.
+        with open(fpath, "ab") as fh:
+            fh.write(b"\n# external change\n")
+
+        result = hooks_cli.pre_read(self._read_payload(sid, fpath))
+        _assert_continue(result)
+        # SHA mismatch → unchanged hint must NOT fire.
+        if "hookSpecificOutput" in result:
+            ctx = result["hookSpecificOutput"].get("additionalContext", "")
+            assert "unchanged" not in ctx.lower()
+
+    def test_no_hint_when_no_snapshot(self, tmp_data_dir, tmp_path):
+        """No snapshot stored for file → unchanged hint must not fire."""
+        sid = "unchanged-no-snap"
+        fpath = self._make_file(tmp_path, "nosnap.py")
+
+        session.mark_file_read(sid, fpath, offset=None, limit=None)
+        # Deliberately no snapshots.store() or set_snapshot_sha() call.
+        session.mark_file_edited(sid, fpath)
+
+        result = hooks_cli.pre_read(self._read_payload(sid, fpath))
+        _assert_continue(result)
+        if "hookSpecificOutput" in result:
+            ctx = result["hookSpecificOutput"].get("additionalContext", "")
+            assert "unchanged" not in ctx.lower()
+
+    def test_no_hint_when_not_edited(self, tmp_data_dir, tmp_path):
+        """File read but never edited → unchanged hint must not fire (no edit signal)."""
+        from token_goat import snapshots
+
+        sid = "unchanged-no-edit"
+        fpath = self._make_file(tmp_path, "noedit.py")
+        with open(fpath, "rb") as _f:
+            content = _f.read()
+
+        session.mark_file_read(sid, fpath, offset=None, limit=None)
+        snapshots.store(sid, fpath, content)
+        session.set_snapshot_sha(sid, fpath, __import__("hashlib").sha256(content).hexdigest())
+        # No mark_file_edited → last_edit_ts == 0 <= last_read_ts
+
+        result = hooks_cli.pre_read(self._read_payload(sid, fpath))
+        _assert_continue(result)
+        if "hookSpecificOutput" in result:
+            ctx = result["hookSpecificOutput"].get("additionalContext", "")
+            assert "unchanged" not in ctx.lower()
