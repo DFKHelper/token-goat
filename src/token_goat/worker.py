@@ -12,10 +12,15 @@ import subprocess
 import sys
 import threading
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from datetime import datetime
 from pathlib import Path
 from typing import IO, TypedDict, cast
+
+if sys.platform == "win32":
+    import msvcrt
+else:
+    import fcntl
 
 try:
     import psutil
@@ -418,6 +423,72 @@ def _try_claim_worker_slot() -> int | None:
 # Dirty queue
 # ---------------------------------------------------------------------------
 
+
+@contextlib.contextmanager
+def _dirty_queue_lock(lock_path: Path) -> Iterator[None]:
+    """Context manager for acquiring an exclusive lock on the dirty queue.
+
+    Uses OS-level locking (fcntl.flock on POSIX, msvcrt.locking on Windows).
+    On timeout, logs a warning but yields anyway (best-effort fallback).
+    """
+    fd = None
+    lock_acquired = False
+
+    try:
+        # Ensure lock file exists
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+        lock_path.touch(exist_ok=True)
+
+        if sys.platform == "win32":
+            # Windows: LK_NBLCK with retry loop and 200 ms timeout.
+            end_time = time.time() + 0.2
+            while True:
+                try:
+                    fd = os.open(str(lock_path), os.O_RDWR)
+                    try:
+                        msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)
+                        lock_acquired = True
+                        break
+                    except OSError:
+                        os.close(fd)
+                        fd = None
+                        if time.time() >= end_time:
+                            _LOG.debug("dirty queue lock timeout; writing unlocked (best-effort)")
+                            break
+                        time.sleep(0.001)
+                except OSError as e:
+                    if time.time() >= end_time:
+                        _LOG.debug("failed to open dirty queue lock file: %s (best-effort)", e)
+                        break
+                    time.sleep(0.001)
+        else:
+            # POSIX: fcntl.flock (blocking).
+            try:
+                fd = os.open(str(lock_path), os.O_RDWR | os.O_CREAT, 0o666)
+                fcntl.flock(fd, fcntl.LOCK_EX)
+                lock_acquired = True
+            except OSError as e:
+                _LOG.debug("fcntl.flock on dirty queue failed: %s; writing unlocked (best-effort)", e)
+
+        yield  # Perform the write under lock (or best-effort)
+
+    finally:
+        if lock_acquired and fd is not None:
+            try:
+                if sys.platform == "win32":
+                    msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
+                else:
+                    fcntl.flock(fd, fcntl.LOCK_UN)
+            except OSError:
+                pass
+            finally:
+                with contextlib.suppress(OSError):
+                    os.close(fd)
+        elif fd is not None:
+            with contextlib.suppress(OSError):
+                os.close(fd)
+
+
 def enqueue_dirty(
     rel_path: str,
     project_hash: str | None = None,
@@ -430,6 +501,9 @@ def enqueue_dirty(
     The optional *project_root* and *project_marker* fields are written when
     the caller has already resolved the project (e.g. the post-edit hook).
     When omitted the worker resolves the project itself from *project_hash*.
+
+    Uses an OS-level lock (fcntl.flock on POSIX, msvcrt.locking on Windows)
+    to ensure the JSON line is written atomically without interleaving.
     """
     paths.dirty_queue_path().parent.mkdir(parents=True, exist_ok=True)
     entry: dict[str, object] = {"path": rel_path, "project_hash": project_hash, "ts": time.time()}
@@ -438,7 +512,9 @@ def enqueue_dirty(
     if project_marker is not None:
         entry["project_marker"] = project_marker
     line = json.dumps(entry)
-    with paths.dirty_queue_path().open("a", encoding="utf-8") as f:
+
+    lock_path = paths.dirty_queue_path().parent / ".dirty_queue.lock"
+    with _dirty_queue_lock(lock_path), paths.dirty_queue_path().open("a", encoding="utf-8") as f:
         f.write(line + "\n")
 
 
