@@ -5,6 +5,7 @@ import difflib
 import hashlib
 import json
 import sqlite3
+import sys
 from collections import defaultdict, deque
 from collections.abc import Callable, Sequence
 from pathlib import Path
@@ -440,6 +441,29 @@ def _resolve_file_target(file_part: str) -> _FileTarget:
     return _FileTarget(project=None, rel_path=None, current_project=proj)
 
 
+def _emit_text_result(
+    text: str,
+    rel_path: str,
+    item: str,
+    separator_label: str,
+    no_header: bool,
+) -> None:
+    """Emit *text* to stdout, optionally prefixed with a ``## …`` header (Item 15).
+
+    The header ``## {rel_path} — {separator_label}: {item}`` is emitted when:
+    - ``no_header`` is False, AND
+    - stdout is a TTY (interactive terminal).
+
+    In agent / pipe / capture contexts (``isatty() == False``) the header is
+    suppressed by default so callers do not pay ~10 tokens per surgical read.
+    Pass ``--header`` (``no_header=False`` with explicit override) or redirect
+    to a TTY to restore it; pass ``--no-header`` to force suppression.
+    """
+    if not no_header and sys.stdout.isatty():
+        typer.echo(f"## {rel_path} — {separator_label}: {item}")
+    typer.echo(text)
+
+
 def _run_read_like_command(
     *,
     target: str,
@@ -450,6 +474,7 @@ def _run_read_like_command(
     missing_label: str,
     stat_kind: str,
     reader: _ReaderCallable,
+    no_header: bool = False,
 ) -> None:
     """Unified handler for read/section/deps CLI commands.
 
@@ -468,6 +493,8 @@ def _run_read_like_command(
         reader: Callable matching :class:`_ReaderCallable` — takes ``(project, rel_path,
             item, *, context_lines)`` and returns a ``SymbolResult``, ``SectionResult``,
             or ``None``.
+        no_header: When True, suppress the ``## path — label: item`` header line.
+            Defaults to False; auto-suppressed in non-TTY contexts (Item 15).
     """
     if "::" not in target:
         _emit_read_error(
@@ -531,7 +558,7 @@ def _run_read_like_command(
             out = {k: v for k, v in cached_result.items() if k not in ("bytes_total", "bytes_extracted")}
             typer.echo(json.dumps(out, separators=(",", ":")))
         else:
-            typer.echo(cached_result["text"])
+            _emit_text_result(cached_result["text"], file_target.rel_path, item_part, separator_label, no_header)
         return
 
     result = reader(file_target.project, file_target.rel_path, item_part, context_lines=context_lines)
@@ -601,7 +628,7 @@ def _run_read_like_command(
         out = {k: v for k, v in result.items() if k not in ("bytes_total", "bytes_extracted")}
         typer.echo(json.dumps(out, separators=(",", ":")))
         return
-    typer.echo(result["text"])
+    _emit_text_result(result["text"], file_target.rel_path, item_part, separator_label, no_header)
 
 
 def deps(
@@ -707,8 +734,16 @@ def read(
     session_id: str | None = typer.Option(None, "--session-id", "-s"),
     json_output: bool = typer.Option(False, "--json"),
     context_lines: int = typer.Option(0, "--context", "-c", help="Extra lines before/after"),
+    no_header: bool = typer.Option(False, "--no-header", help="Suppress the '## path — symbol: name' header line (auto-suppressed in non-TTY contexts)"),
+    header: bool = typer.Option(False, "--header", help="Force the '## path — symbol: name' header even in non-TTY contexts"),
 ) -> None:
-    """Read just <symbol> from <file>, not the whole file."""
+    """Read just <symbol> from <file>, not the whole file.
+
+    In agent/capture contexts (non-TTY stdout) the path header is suppressed
+    by default to avoid paying ~10 tokens per call for information the agent
+    already has.  Pass ``--header`` to force it on, or ``--no-header`` to
+    force it off regardless of TTY state.
+    """
     _run_read_like_command(
         target=target,
         session_id=session_id,
@@ -718,6 +753,7 @@ def read(
         missing_label="Symbol",
         stat_kind="read_replacement",
         reader=read_replacement.read_symbol,
+        no_header=no_header or not header and not sys.stdout.isatty(),
     )
 
 
@@ -726,8 +762,16 @@ def section(
     session_id: str | None = typer.Option(None, "--session-id", "-s"),
     json_output: bool = typer.Option(False, "--json"),
     context_lines: int = typer.Option(0, "--context", "-c", help="Extra lines before/after"),
+    no_header: bool = typer.Option(False, "--no-header", help="Suppress the '## path — heading: name' header line (auto-suppressed in non-TTY contexts)"),
+    header: bool = typer.Option(False, "--header", help="Force the '## path — heading: name' header even in non-TTY contexts"),
 ) -> None:
-    """Extract just <heading> section from <file>, not the whole file."""
+    """Extract just <heading> section from <file>, not the whole file.
+
+    In agent/capture contexts (non-TTY stdout) the path header is suppressed
+    by default to avoid paying ~10 tokens per call for information the agent
+    already has.  Pass ``--header`` to force it on, or ``--no-header`` to
+    force it off regardless of TTY state.
+    """
     _run_read_like_command(
         target=target,
         session_id=session_id,
@@ -737,6 +781,7 @@ def section(
         missing_label="Section",
         stat_kind="section_replacement",
         reader=read_replacement.read_section,
+        no_header=no_header or not header and not sys.stdout.isatty(),
     )
 
 
