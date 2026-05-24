@@ -61,6 +61,20 @@ if TYPE_CHECKING:
 
 
 # ---------------------------------------------------------------------------
+# Session-brief TTL cache (item 5)
+# ---------------------------------------------------------------------------
+
+# Module-level cache for _build_session_brief results.
+# Key: cwd (str)
+# Value: (brief: str | None, mtime_editmsg: float, mtime_index: float, mono_ts: float)
+# TTL is 60 s (primary expiry).  Two mtime fields form a cheap git-state
+# fingerprint: if either changes (new commit, staged change), the cache is
+# invalidated on the next call without waiting for TTL expiry.
+_BRIEF_CACHE_TTL_SECS: Final[float] = 60.0
+_brief_cache: dict[str, tuple[str | None, float, float, float]] = {}
+
+
+# ---------------------------------------------------------------------------
 # Pytest-collapse helpers for the recovery hint bash section
 # ---------------------------------------------------------------------------
 
@@ -587,6 +601,32 @@ def _build_session_brief(cwd: str) -> str | None:
     except Exception:  # noqa: BLE001
         return None
 
+    # --- Git-state fingerprint (two stat calls, ~0.2 ms total) ---
+    # Stat .git/COMMIT_EDITMSG and .git/index to detect new commits or
+    # staged changes without running any git subprocess.
+    import contextlib  # noqa: PLC0415
+    _git_dir = cwd_path / ".git"
+    _mtime_editmsg = 0.0
+    _mtime_index = 0.0
+    with contextlib.suppress(OSError):
+        _mtime_editmsg = (_git_dir / "COMMIT_EDITMSG").stat().st_mtime
+    with contextlib.suppress(OSError):
+        _mtime_index = (_git_dir / "index").stat().st_mtime
+
+    # --- TTL + fingerprint cache check ---
+    _now_mono = time.monotonic()
+    _cached = _brief_cache.get(cwd)
+    if _cached is not None:
+        _cached_brief, _cached_em, _cached_idx, _cached_ts = _cached
+        _age = _now_mono - _cached_ts
+        if (
+            _age < _BRIEF_CACHE_TTL_SECS
+            and _mtime_editmsg == _cached_em
+            and _mtime_index == _cached_idx
+        ):
+            _LOG.debug("session-start: brief cache hit for %s (age=%.1fs)", cwd, _age)
+            return _cached_brief
+
     common_kwargs: dict = {
         "cwd": cwd,
         "capture_output": True,
@@ -612,7 +652,8 @@ def _build_session_brief(cwd: str) -> str | None:
             **common_kwargs,
         )
         if sz.returncode == 128:
-            # Not a git repo
+            # Not a git repo — cache the None so repeated calls skip subprocesses
+            _brief_cache[cwd] = (None, _mtime_editmsg, _mtime_index, _now_mono)
             return None
         if sz.returncode == 0:
             branch, status_lines = _parse_status_z_b(sz.stdout)
@@ -675,6 +716,7 @@ def _build_session_brief(cwd: str) -> str | None:
 
     # Skip entirely if nothing to report (clean + no commits)
     if not status_lines and not log_lines:
+        _brief_cache[cwd] = (None, _mtime_editmsg, _mtime_index, _now_mono)
         return None
 
     # Build single-line brief: branch [| status] [— commits]
@@ -712,6 +754,7 @@ def _build_session_brief(cwd: str) -> str | None:
 
     brief = " ".join(parts)
     _LOG.debug("session-start: orientation brief built (%d chars)", len(brief))
+    _brief_cache[cwd] = (brief, _mtime_editmsg, _mtime_index, _now_mono)
     return brief
 
 

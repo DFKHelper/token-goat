@@ -718,6 +718,25 @@ def _handle_bash_dedup(payload: HookPayload) -> HookResponse | None:
     )
 
 
+def _flush_pending_hint_save(cache: object) -> None:
+    """Flush a deferred mark_hint_seen save if _pending_hint_save is set.
+
+    mark_hint_seen() sets ``_pending_hint_save = True`` instead of calling
+    save() inline (item 4 optimisation).  This helper is called at every
+    early-return point in pre_read() that follows a hint emission so that
+    the fingerprint is persisted before the hook process exits, even when
+    no post-read save follows in the same process.  Fail-soft: any exception
+    is swallowed so a flush failure never breaks the hook response.
+    """
+    try:
+        if getattr(cache, "_pending_hint_save", False):
+            cache._pending_hint_save = False  # type: ignore[union-attr]
+            from . import session as _sess  # noqa: PLC0415
+            _sess.save(cache)  # type: ignore[arg-type]
+    except Exception:  # noqa: BLE001
+        pass
+
+
 def pre_read(payload: HookPayload) -> HookResponse:
     """Pre-read hook: image shrinking, dedup hints, and diff-aware re-read hints.
 
@@ -805,6 +824,7 @@ def pre_read(payload: HookPayload) -> HookResponse:
     # hint saves thousands of tokens per avoided read.
     index_only_response = _handle_index_only_file(session_id, file_path, tool_input, cache)
     if index_only_response is not None:
+        _flush_pending_hint_save(cache)
         return index_only_response
 
     # Structured-file hint: fires before session/diff hints so a first-time read
@@ -812,6 +832,7 @@ def pre_read(payload: HookPayload) -> HookResponse:
     # the caller already uses offset+limit (surgical intent) or the file is small.
     structured_response = _handle_structured_file(session_id, file_path, tool_input, cache)
     if structured_response is not None:
+        _flush_pending_hint_save(cache)
         return structured_response
 
     # Collect context parts from all hint sources; combine and return once.
@@ -910,6 +931,7 @@ def pre_read(payload: HookPayload) -> HookResponse:
         _LOG.debug("pre-read: no hint for %s", sanitize_log_str(file_path))
         return CONTINUE()
 
+    _flush_pending_hint_save(cache)
     return pre_tool_use_with_context("\n\n".join(context_parts))
 
 

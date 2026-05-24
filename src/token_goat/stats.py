@@ -618,6 +618,7 @@ def _to_stats_data(summary: StatsSummary) -> StatsData:
         by_project=by_project,
         by_source=by_source,
         version=__version__,
+        window_label="all time" if summary.window_days == 0 else f"last {summary.window_days} days",
     )
 
 

@@ -2887,3 +2887,178 @@ class TestSessionLockfileConcurrent:
         assert total == 200, (
             f"expected 200 unique edited files, got {total}"
         )
+
+
+class TestDiskMtimeFingerprint:
+    """Item 2: save() skips from_dict round-trip on uncontended path.
+
+    SessionCache._disk_mtime and _disk_size are populated by load() and
+    updated after each successful save(), allowing save() to skip the
+    CAS from_dict deserialization when no concurrent writer has changed
+    the file.
+    """
+
+    def test_load_sets_disk_fingerprint(self, tmp_data_dir):
+        """load() populates _disk_mtime and _disk_size after reading the file."""
+        from token_goat import paths as tg_paths
+        sid = "aabbcc" * 6
+        cache = session.load(sid)
+        session.mark_file_read(sid, "/tmp/foo.py", None, None, cache=cache)
+
+        reloaded = session.load(sid)
+        p = tg_paths.session_cache_path(sid)
+        st = p.stat()
+        assert reloaded._disk_mtime == st.st_mtime
+        assert reloaded._disk_size == st.st_size
+
+    def test_fresh_cache_has_zero_fingerprint(self, tmp_data_dir):
+        """A brand-new (unsaved) cache has _disk_mtime == 0.0 and _disk_size == 0."""
+        sid = "ccddee" * 6
+        cache = session.load(sid)
+        # File doesn't exist yet — fingerprint stays zero
+        assert cache._disk_mtime == 0.0
+        assert cache._disk_size == 0
+
+    def test_save_updates_fingerprint(self, tmp_data_dir):
+        """After save(), _disk_mtime and _disk_size reflect the written file."""
+        from token_goat import paths as tg_paths
+        sid = "ddeeff" * 6
+        cache = session.load(sid)
+        session.mark_file_read(sid, "/tmp/bar.py", None, None, cache=cache)
+
+        p = tg_paths.session_cache_path(sid)
+        st = p.stat()
+        assert cache._disk_mtime == st.st_mtime
+        assert cache._disk_size == st.st_size
+
+    def test_cas_merge_still_fires_on_concurrent_write(self, tmp_data_dir):
+        """When another process writes the file, the CAS merge path still runs."""
+        sid = "eeff00" * 6
+        cache1 = session.load(sid)
+        # Simulate concurrent write by a second process
+        cache2 = session.load(sid)
+        session.mark_file_read(sid, "/tmp/from_p2.py", None, None, cache=cache2)
+        # Now save cache1 (which has stale fingerprint relative to cache2's write)
+        session.mark_file_read(sid, "/tmp/from_p1.py", None, None, cache=cache1)
+        # Both paths should be present after the CAS merge
+        final = session.load(sid)
+        norm1 = session._normalize_path("/tmp/from_p1.py")
+        norm2 = session._normalize_path("/tmp/from_p2.py")
+        assert norm1 in final.files
+        assert norm2 in final.files
+
+
+class TestSortedListCache:
+    """Item 3: to_dict() avoids repeated sorted() calls via cached sorted lists.
+
+    _hints_seen_sorted_cache and _bash_dedup_sorted_cache are populated lazily
+    and cleared by _invalidate_json_cache().
+    """
+
+    def test_sorted_cache_populated_on_to_dict(self, tmp_data_dir):
+        """After to_dict(), _hints_seen_sorted_cache is populated."""
+        sid = "aabb11" * 6
+        cache = session.load(sid)
+        cache.hints_seen = {"z-fp", "a-fp", "m-fp"}
+        cache._invalidate_json_cache()
+        cache.to_dict()
+        assert cache._hints_seen_sorted_cache is not None
+        assert cache._hints_seen_sorted_cache == ["a-fp", "m-fp", "z-fp"]
+
+    def test_sorted_cache_cleared_on_invalidate(self, tmp_data_dir):
+        """_invalidate_json_cache() clears both sorted caches."""
+        sid = "bbcc22" * 6
+        cache = session.load(sid)
+        cache.hints_seen = {"fp1"}
+        cache.bash_dedup_emitted_ids = {"id1"}
+        cache.to_dict()  # populate caches
+        assert cache._hints_seen_sorted_cache is not None
+        assert cache._bash_dedup_sorted_cache is not None
+        cache._invalidate_json_cache()
+        assert cache._hints_seen_sorted_cache is None
+        assert cache._bash_dedup_sorted_cache is None
+
+    def test_sorted_cache_reused_without_mutation(self, tmp_data_dir):
+        """Multiple to_dict() calls without mutation reuse the same sorted list object."""
+        sid = "ccdd33" * 6
+        cache = session.load(sid)
+        cache.hints_seen = {"fp-x", "fp-a"}
+        cache._invalidate_json_cache()
+        cache.to_dict()
+        first_list = cache._hints_seen_sorted_cache
+        cache.to_dict()
+        second_list = cache._hints_seen_sorted_cache
+        assert first_list is second_list
+
+    def test_bash_dedup_sorted_cache(self, tmp_data_dir):
+        """bash_dedup_emitted_ids sorted cache works symmetrically."""
+        sid = "ddee44" * 6
+        cache = session.load(sid)
+        cache.bash_dedup_emitted_ids = {"z-id", "a-id"}
+        cache._invalidate_json_cache()
+        d = cache.to_dict()
+        assert d["bash_dedup_emitted_ids"] == ["a-id", "z-id"]
+        assert cache._bash_dedup_sorted_cache == ["a-id", "z-id"]
+
+    def test_hints_seen_output_is_sorted_list(self, tmp_data_dir):
+        """to_dict() still produces a sorted list for hints_seen (JSON stability)."""
+        sid = "eeff55" * 6
+        cache = session.load(sid)
+        cache.hints_seen = {"z", "a", "m"}
+        cache._invalidate_json_cache()
+        d = cache.to_dict()
+        assert d["hints_seen"] == sorted(["z", "a", "m"])
+
+
+class TestPendingHintSave:
+    """Item 4: mark_hint_seen defers save() via _pending_hint_save flag.
+
+    The flag is set instead of calling save() inline.  The hint is NOT on
+    disk until another save() runs (e.g. mark_file_read in post-read).
+    """
+
+    def test_mark_hint_seen_sets_flag(self, tmp_data_dir):
+        """mark_hint_seen sets _pending_hint_save without calling save()."""
+        sid = "ff0011" * 6
+        cache = session.load(sid)
+        cache.mark_hint_seen("test-fingerprint")
+        assert cache._pending_hint_save is True
+
+    def test_hint_not_on_disk_until_save(self, tmp_data_dir):
+        """After mark_hint_seen, the fingerprint is in-memory but not yet on disk."""
+        sid = "001122" * 6
+        cache = session.load(sid)
+        cache.mark_hint_seen("pending-fp")
+        assert cache._pending_hint_save is True
+
+        # Load fresh copy from disk — hint should NOT be there yet
+        on_disk = session.load(sid)
+        # File may not even exist yet for a new session
+        from token_goat import paths as tg_paths
+        p = tg_paths.session_cache_path(sid)
+        if p.exists():
+            assert "pending-fp" not in on_disk.hints_seen
+        # In-memory cache has it
+        assert "pending-fp" in cache.hints_seen
+
+    def test_hint_persisted_after_mark_file_read(self, tmp_data_dir):
+        """mark_file_read triggers save() which flushes the pending hint."""
+        sid = "112233" * 6
+        cache = session.load(sid)
+        cache.mark_hint_seen("flush-via-file-read")
+        assert cache._pending_hint_save is True
+
+        # mark_file_read calls save() internally — flush happens
+        session.mark_file_read(sid, "/tmp/example.py", None, None, cache=cache)
+
+        on_disk = session.load(sid)
+        assert "flush-via-file-read" in on_disk.hints_seen
+
+    def test_duplicate_fingerprint_does_not_set_flag(self, tmp_data_dir):
+        """mark_hint_seen is a no-op for already-seen fingerprints."""
+        sid = "223344" * 6
+        cache = session.load(sid)
+        cache.mark_hint_seen("already-seen")
+        cache._pending_hint_save = False  # reset
+        cache.mark_hint_seen("already-seen")  # second call — no-op
+        assert cache._pending_hint_save is False

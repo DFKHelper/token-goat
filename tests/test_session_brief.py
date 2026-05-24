@@ -507,3 +507,157 @@ class TestBriefLatencyBudget:
         assert elapsed < 3.0, (
             f"session brief took {elapsed:.2f}s — the git calls are not sharing a deadline"
         )
+
+
+class TestBriefCache:
+    """Item 5: _build_session_brief uses a module-level TTL + mtime cache.
+
+    Cache key: cwd.  Cache invalidates when COMMIT_EDITMSG or index mtime
+    changes, or when the TTL (60 s) expires.
+    """
+
+    def _clear_cache(self) -> None:
+        import token_goat.hooks_session as hs
+        hs._brief_cache.clear()
+
+    def test_cache_hit_skips_subprocess(self, tmp_path):
+        """Second call with identical git-state fingerprint returns cached value."""
+        self._clear_cache()
+
+        call_count = {"n": 0}
+        original_run = subprocess.run
+
+        def counting_run(cmd, **kwargs):
+            call_count["n"] += 1
+            return original_run(cmd, **kwargs)
+
+        side_effect = _make_run_side_effect(
+            branch="main",
+            status_output=" M src/foo.py",
+            log_output="abc1234 fix auth",
+        )
+
+        with patch("subprocess.run", side_effect=side_effect):
+            r1 = _build_session_brief(str(tmp_path))
+
+        # Second call — cache should hit, no subprocess
+        with patch("subprocess.run", side_effect=side_effect) as mock_run2:
+            r2 = _build_session_brief(str(tmp_path))
+            assert mock_run2.call_count == 0, (
+                "Cache hit must not call subprocess.run"
+            )
+
+        assert r1 == r2
+
+    def test_cache_bust_on_editmsg_mtime_change(self, tmp_path):
+        """Changing COMMIT_EDITMSG mtime forces a cache miss."""
+        import os
+
+        self._clear_cache()
+
+        git_dir = tmp_path / ".git"
+        git_dir.mkdir()
+        editmsg = git_dir / "COMMIT_EDITMSG"
+        editmsg.write_text("first commit\n")
+        (git_dir / "index").write_text("")
+
+        side_effect = _make_run_side_effect(
+            branch="main",
+            status_output=" M src/foo.py",
+            log_output="abc1234 fix auth",
+        )
+        with patch("subprocess.run", side_effect=side_effect):
+            _build_session_brief(str(tmp_path))
+
+        # Advance COMMIT_EDITMSG mtime to simulate a new commit
+        new_mtime = editmsg.stat().st_mtime + 2
+        os.utime(editmsg, (new_mtime, new_mtime))
+
+        with patch("subprocess.run", side_effect=side_effect) as mock_run:
+            _build_session_brief(str(tmp_path))
+            assert mock_run.call_count > 0, (
+                "Mtime change must bust the cache and call subprocess.run"
+            )
+
+    def test_cache_bust_on_index_mtime_change(self, tmp_path):
+        """Changing .git/index mtime forces a cache miss."""
+        import os
+
+        self._clear_cache()
+
+        git_dir = tmp_path / ".git"
+        git_dir.mkdir()
+        (git_dir / "COMMIT_EDITMSG").write_text("msg\n")
+        index_file = git_dir / "index"
+        index_file.write_text("")
+
+        side_effect = _make_run_side_effect(
+            branch="feature",
+            status_output=" M src/bar.py",
+            log_output="def5678 add tests",
+        )
+        with patch("subprocess.run", side_effect=side_effect):
+            _build_session_brief(str(tmp_path))
+
+        # Advance index mtime to simulate a staged change
+        new_mtime = index_file.stat().st_mtime + 2
+        os.utime(index_file, (new_mtime, new_mtime))
+
+        with patch("subprocess.run", side_effect=side_effect) as mock_run:
+            _build_session_brief(str(tmp_path))
+            assert mock_run.call_count > 0, (
+                "Index mtime change must bust the cache"
+            )
+
+    def test_none_result_is_cached(self, tmp_path):
+        """A None return (clean repo, no commits) is also cached."""
+        self._clear_cache()
+
+        def no_output_run(cmd, **kwargs):
+            result = MagicMock()
+            if "status" in cmd:
+                result.returncode = 0
+                if "-z" in cmd and "-b" in cmd:
+                    result.stdout = "## main\0"
+                else:
+                    result.stdout = ""
+            elif "log" in cmd:
+                result.returncode = 0
+                result.stdout = ""
+            elif "rev-parse" in cmd:
+                result.returncode = 0
+                result.stdout = "a" * 40 + "\n"
+            return result
+
+        with patch("subprocess.run", side_effect=no_output_run):
+            r1 = _build_session_brief(str(tmp_path))
+
+        assert r1 is None
+
+        with patch("subprocess.run", side_effect=no_output_run) as mock_run:
+            r2 = _build_session_brief(str(tmp_path))
+            assert mock_run.call_count == 0, "None result should be cached too"
+
+        assert r2 is None
+
+    def test_cache_key_is_cwd(self, tmp_path):
+        """Different cwd values have independent cache entries."""
+        import token_goat.hooks_session as hs
+        self._clear_cache()
+
+        dir_a = tmp_path / "repo_a"
+        dir_b = tmp_path / "repo_b"
+        dir_a.mkdir()
+        dir_b.mkdir()
+
+        side_effect_a = _make_run_side_effect(branch="main", status_output=" M a.py", log_output="aaa fix")
+        side_effect_b = _make_run_side_effect(branch="dev", status_output=" M b.py", log_output="bbb feat")
+
+        with patch("subprocess.run", side_effect=side_effect_a):
+            ra = _build_session_brief(str(dir_a))
+        with patch("subprocess.run", side_effect=side_effect_b):
+            rb = _build_session_brief(str(dir_b))
+
+        assert ra != rb  # different repos, different briefs
+        assert str(dir_a) in hs._brief_cache
+        assert str(dir_b) in hs._brief_cache

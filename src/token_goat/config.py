@@ -18,6 +18,7 @@ __all__ = [
 ]
 
 import os
+import time
 import tomllib
 from dataclasses import dataclass, field
 from typing import Any, Final, TypedDict, cast
@@ -26,6 +27,45 @@ from . import paths
 from .util import get_logger
 
 _LOG = get_logger("config")
+
+# Process-level config cache: (Config, mtime, env_fingerprint, monotonic_ts) or None.
+# The cache is keyed by (config_file_mtime, env_fingerprint) so it invalidates on
+# file edits AND on env-var changes (common in tests that monkeypatch TOKEN_GOAT_*).
+# Type annotation uses Any to avoid forward-referencing Config before it is defined.
+_config_mtime_cache: tuple[Any, float, str, float] | None = None
+
+
+# Env vars that affect the parsed Config result.  Changes to any of these bust
+# the process-level cache even when the TOML file has not changed on disk.
+_CONFIG_ENV_KEYS: tuple[str, ...] = (
+    "TOKEN_GOAT_COMPACT_ASSIST",
+    "TOKENWISE_COMPACT_ASSIST",
+    "TOKEN_GOAT_BASH_COMPRESS",
+    "TOKEN_GOAT_SESSION_BRIEF",
+    "TOKEN_GOAT_SKILL_PRESERVATION",
+    "TOKEN_GOAT_PREFER_AVIF",
+    "TOKEN_GOAT_CURATOR",
+    "TOKEN_GOAT_HINT_BUDGET",
+    "TOKEN_GOAT_REPOMAP_COMPACT_THRESHOLD",
+)
+
+
+def _config_env_fingerprint() -> str:
+    """Return a short string that encodes the current values of all config env vars.
+
+    Used as a secondary cache key so that test monkeypatching (or a user exporting
+    TOKEN_GOAT_* between hook calls) busts the process-level cache without requiring
+    a file-system change.  The string is constructed by joining ``key=value`` pairs
+    for every config env var that is set; unset vars are omitted.  Collision
+    resistance is not required — correctness only needs the fingerprint to differ
+    when any relevant env var has a different value.
+    """
+    parts = []
+    for key in _CONFIG_ENV_KEYS:
+        val = os.environ.get(key)
+        if val is not None:
+            parts.append(f"{key}={val}")
+    return "|".join(parts)
 
 _ENV_COMPACT_ASSIST: Final[str] = "TOKEN_GOAT_COMPACT_ASSIST"  # set to "0"/"false"/"no"/"off" to disable
 _ENV_COMPACT_ASSIST_LEGACY: Final[str] = "TOKENWISE_COMPACT_ASSIST"  # backward-compat alias
@@ -524,8 +564,27 @@ def _validated_triggers(val: object, default: list[str]) -> list[str]:
 # ---------------------------------------------------------------------------
 
 def load() -> Config:
-    """Load config from TOML. Returns defaults if file is absent or unreadable."""
+    """Load config from TOML. Returns defaults if file is absent or unreadable.
+
+    A process-level mtime cache avoids re-parsing the TOML file on every call.
+    The first call per process pays full cost; subsequent calls within the same
+    process pay one ``os.stat`` (~0.1 ms) instead of stat + read_text + tomllib.loads.
+    The cache is invalidated when the config file's mtime changes, so edits
+    take effect on the next hook subprocess invocation.
+    """
+    global _config_mtime_cache  # noqa: PLW0603
     p = paths.config_path()
+    # Fast path: check (mtime, env_fingerprint) against cached values.
+    try:
+        current_mtime: float = os.stat(p).st_mtime
+    except OSError:
+        current_mtime = 0.0
+    current_env_fp = _config_env_fingerprint()
+    if _config_mtime_cache is not None:
+        cached_cfg, cached_mtime, cached_env_fp, _ = _config_mtime_cache
+        if current_mtime == cached_mtime and current_env_fp == cached_env_fp:
+            return cached_cfg  # type: ignore[return-value]
+
     raw: _ConfigToml = cast("_ConfigToml", {})
     if p.exists():
         try:
@@ -702,14 +761,17 @@ def load() -> Config:
         rm.compact_file_threshold,
         stats.record_zero_savings,
     )
-    return Config(
+    result = Config(
         compact_assist=ca, bash_compress=bc, session_brief=sb, skill_preservation=sp,
         image_shrink=is_cfg, curator=cur, hint_budget=hb, repomap=rm, stats=stats,
     )
+    _config_mtime_cache = (result, current_mtime, current_env_fp, time.monotonic())
+    return result
 
 
 def save(config: Config) -> None:
     """Persist config to TOML atomically, creating parent dirs as needed."""
+    global _config_mtime_cache  # noqa: PLW0603
     import tomli_w  # noqa: PLC0415
 
     p = paths.config_path()
@@ -772,5 +834,8 @@ def save(config: Config) -> None:
         # _ConfigToml is a TypedDict — a subtype of dict — so tomli_w.dumps
         # (which accepts Mapping[str, Any]) does not require a cast here.
         paths.atomic_write_bytes(p, tomli_w.dumps(data).encode("utf-8"))
+        # Invalidate the process-level cache so the next load() re-reads the
+        # file we just wrote rather than serving the pre-save cached value.
+        _config_mtime_cache = None
     except OSError as e:
         _LOG.warning("config save failed: %s", e)

@@ -71,13 +71,18 @@ class TestSessionCacheHintMethods:
         assert len(cache.hints_seen) == 1
 
     def test_mark_hint_seen_persists_to_disk(self, tmp_data_dir) -> None:
-        """mark_hint_seen saves cache to disk and can be reloaded."""
+        """mark_hint_seen updates in-memory state; save() flushes to disk."""
         session_id = "test_session_persist"
 
-        # Create and mark hint
+        # Create and mark hint — sets _pending_hint_save but does NOT write yet
         cache1 = session.SessionCache(session_id, 0, 0)
         fp = "abc123def456"
         cache1.mark_hint_seen(fp)
+        assert cache1._pending_hint_save, "Flag must be set after mark_hint_seen"
+
+        # Explicitly flush (simulates what pre_read or mark_file_read does)
+        cache1._pending_hint_save = False
+        session.save(cache1)
 
         # Reload from disk
         cache2 = session.load(session_id)
@@ -201,6 +206,9 @@ class TestHintsSeenLifecycle:
 
         assert not cache.has_hint_fingerprint(fp)
         cache.mark_hint_seen(fp)
+        # mark_hint_seen now defers the save; flush explicitly for persistence test
+        cache._pending_hint_save = False
+        session.save(cache)
 
         cache = session.load(session_id)
 
