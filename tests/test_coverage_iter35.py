@@ -327,7 +327,7 @@ class TestRenderManifest:
 
     def test_edited_files_in_manifest(self):
         result, _ = _render(self._cache_with_edits(), "aabbccdd1234", 400)
-        assert "Files Edited" in result
+        assert "**Edited:**" in result
         assert "foo.py" in result or "bar.py" in result
 
     def test_edit_count_suffix(self):
@@ -336,7 +336,9 @@ class TestRenderManifest:
 
     def test_key_files_section(self):
         result, _ = _render(self._cache_with_file_reads(), "aabbccdd1234", 400)
-        assert "Key Files Read" in result
+        # When only file reads exist (no edits), section title is **Files:** —
+        # the merged Edited+Read header introduced in the manifest tightening pass.
+        assert "**Files:**" in result or "**Read:**" in result
 
     def test_token_budget_trims(self):
         """When result exceeds max_tokens, it is trimmed."""

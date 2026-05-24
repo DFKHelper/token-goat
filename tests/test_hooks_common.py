@@ -1,6 +1,7 @@
 """Tests for hooks_common helpers: extract_tool_response_text, run_dedup_hint."""
 from __future__ import annotations
 
+from token_goat.hooks_cli import denormalize_response
 from token_goat.hooks_common import extract_tool_response_text, run_dedup_hint
 
 # ---------------------------------------------------------------------------
@@ -284,3 +285,103 @@ def test_run_dedup_hint_builder_receives_session_id_and_cache(monkeypatch):
 
     assert captured["sid"] == "test-builder-args"
     assert captured["cache"] is fake_cache
+
+
+# ---------------------------------------------------------------------------
+# denormalize_response fast-path optimization
+# ---------------------------------------------------------------------------
+
+
+def test_denormalize_response_continue_only_claude():
+    """Response {"continue": True} on Claude harness returns same dict (no copy)."""
+    resp = {"continue": True}
+    result = denormalize_response(resp, harness="claude")
+    assert result is resp  # Same object, not a copy
+
+
+def test_denormalize_response_with_system_message_claude():
+    """Response with camelCase keys (Claude format) returns same dict on Claude harness."""
+    resp = {"continue": True, "systemMessage": "test context", "hookSpecificOutput": {}}
+    result = denormalize_response(resp, harness="claude")
+    assert result is resp
+
+
+def test_denormalize_response_camel_case_no_hso():
+    """Response with continue but no hookSpecificOutput returns dict unchanged."""
+    resp = {"continue": True}
+    result = denormalize_response(resp, harness="codex")
+    assert result is resp
+
+
+def test_denormalize_response_slow_path_has_snake_keys():
+    """Slow-path triggers when snake_case keys are present in hookSpecificOutput.
+
+    Snake_case input keys are left untouched (not in the camelCase->snake_case mapping),
+    while any camelCase keys present are translated.
+    """
+    resp = {
+        "continue": True,
+        "hookSpecificOutput": {
+            "hook_event_name": "PreToolUse",  # snake_case key (not in mapping, stays)
+            "additionalContext": "will translate",  # camelCase (in mapping, becomes snake_case)
+        },
+    }
+    result = denormalize_response(resp, harness="codex")
+    # Slow path was triggered (snake_case present), so copy is made.
+    assert result is not resp
+    hso = result["hookSpecificOutput"]
+    assert "hook_event_name" in hso  # Untouched (was snake_case)
+    assert "additional_context" in hso  # Translated from camelCase
+
+
+def test_denormalize_response_mixed_keys_triggers_slow_path():
+    """Presence of any snake_case key in hookSpecificOutput triggers the slow-path remap."""
+    resp = {
+        "continue": True,
+        "hookSpecificOutput": {
+            "hookEventName": "PreToolUse",  # camelCase — gets translated
+            "additional_context": "mixed",  # snake_case — triggers slow-path, stays as-is
+        },
+    }
+    result = denormalize_response(resp, harness="codex")
+    # Should remap the camelCase key.
+    assert result is not resp
+    hso = result["hookSpecificOutput"]
+    assert "hook_event_name" in hso  # hookEventName translated
+    assert "additional_context" in hso  # Stayed as-is (already snake_case)
+    assert "hookEventName" not in hso  # Original camelCase removed
+
+
+def test_denormalize_response_translates_updated_input_for_codex():
+    """updatedInput must translate to updated_input for Codex wire format."""
+    resp = {
+        "continue": True,
+        "hookSpecificOutput": {
+            "hookEventName": "PreToolUse",
+            "updatedInput": {"file_path": "/shrunk.png"},
+            "additionalContext": "image shrunk",
+        },
+    }
+    result = denormalize_response(resp, harness="codex")
+    hso = result["hookSpecificOutput"]
+    assert "updated_input" in hso
+    assert "additional_context" in hso
+    assert hso["updated_input"] == {"file_path": "/shrunk.png"}
+
+
+def test_denormalize_response_translates_permission_decision_for_codex():
+    """permissionDecision must translate to permission_decision for Codex wire format."""
+    resp = {
+        "continue": False,
+        "hookSpecificOutput": {
+            "hookEventName": "PreToolUse",
+            "permissionDecision": "deny",
+            "permissionDecisionReason": "blocked",
+            "additionalContext": "denied",
+        },
+    }
+    result = denormalize_response(resp, harness="codex")
+    hso = result["hookSpecificOutput"]
+    assert "permission_decision" in hso
+    assert "permission_decision_reason" in hso
+    assert hso["permission_decision"] == "deny"
