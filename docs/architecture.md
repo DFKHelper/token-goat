@@ -40,6 +40,18 @@ The latest iteration (v0.9.0-unreleased) added 20 context-savings refinements:
 
 See `docs/plans/2026-05-23-context-savings-design.md` for the design rationale behind each feature.
 
+### Recent perf work (speed iterations, May 2026)
+
+The compaction hook subprocess is the most latency-sensitive path in token-goat because it fires on every `/compact` and blocks the compaction LLM from starting. Two complementary techniques cut cold-start cost from ~190 ms to ~110 ms:
+
+**Lazy imports.** `hooks_session.py` and `compact.py` previously imported `cache_common`, `session`, and each other at module top-level. Moving those imports inside the handler functions that need them means the Python interpreter only pays the import cost on paths that actually execute, not on every subprocess spawn. The pattern is: `def pre_compact(payload): import compact; ...` — one line, no abstraction needed.
+
+**Compact-skip sentinel.** After emitting a manifest, `pre_compact` writes a touch-file to `data_dir()/sentinels/compact_skip_{session_id}`. On the next subprocess spawn, a tiny early-exit check reads only that file: if it exists, is <5 min old, and the session's `edited_files` list is empty, the subprocess prints nothing and exits in <1 ms — the entire hook payload is skipped without loading SQLite, session JSON, or git. The sentinel is invalidated by any `PostToolUse(Edit|Write|MultiEdit)` event.
+
+**Git ops guarded by repo check.** `compact.build_manifest()` calls `git diff` and `git log` unconditionally, which stalls ~60–100 ms when `cwd` is outside any git repo (common in scratch dirs and `/tmp`). A single upfront `git rev-parse --is-inside-work-tree` short-circuits all git calls when the check fails.
+
+**Test-suite speed.** The test suite uses `pytest-xdist --dist=loadscope` so tests in the same module share a worker process, keeping module-scoped fixtures (DB state, parser caches) alive across the module without cross-worker contamination. A `make_fake_git_repo` conftest helper creates marker-only project dirs without `git init`, keeping git-dependent tests confined to the `slow` marker group. `pytest-randomly` seeds expose order-dependent flakes; `pytest-rerunfailures` retries once before failing to absorb transient OS timing issues.
+
 ### Hook event flow
 
 | Event | Fired by | Handles |
