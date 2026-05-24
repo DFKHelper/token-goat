@@ -586,9 +586,8 @@ def run_dedup_hint(
     if not session_id:
         return None
 
-    try:
-        cache = session.load(session_id)
-    except (OSError, ValueError):
+    cache = session.safe_load(session_id, caller="run_dedup_hint")
+    if cache is None:
         return None
 
     hint = builder(session_id, cache)

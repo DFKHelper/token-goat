@@ -1847,17 +1847,13 @@ def _format_grep_entry(entry: object) -> str:
 def _load_session_cache(session_id: str, caller: str) -> SessionCache | None:
     """Validate *session_id* and load the session cache, returning ``None`` on any failure.
 
-    Both :func:`event_count` and :func:`build_manifest` need the same
-    validate → load → except sequence.  Extracting it here avoids duplicating
-    the exception-handling logic and the truncated-ID formatting in log messages.
-
-    *caller* is a short label (e.g. ``"event_count"``) used in the log message
-    so callers remain distinguishable in the log output without duplicating
-    the full message string.
+    Thin shim over :func:`session_mod.safe_load` that adds a structured debug
+    log line with file/grep/edit counts on success.  The four
+    ``build_manifest*`` / ``event_count`` callers each pass a distinct *caller*
+    label so log lines remain distinguishable.
     """
-    try:
-        session_mod.validate_session_id(session_id)
-        cache = session_mod.load(session_id)
+    cache = session_mod.safe_load(session_id, caller=caller)
+    if cache is not None:
         _LOG.debug(
             "%s: session=%s loaded (files=%d greps=%d edited=%d)",
             caller,
@@ -1866,14 +1862,7 @@ def _load_session_cache(session_id: str, caller: str) -> SessionCache | None:
             len(cache.greps),
             len(cache.edited_files),
         )
-        return cache
-    except ValueError as exc:
-        _LOG.warning("%s: invalid session_id: %s", caller, exc)
-        return None
-    except Exception as e:  # noqa: BLE001 — session load can fail for many reasons (missing file, corrupt JSON, etc.)
-        sid_short = session_id[:8] if session_id else "<empty>"
-        _LOG.debug("%s(%s) failed: %s", caller, sid_short, e, exc_info=True)
-        return None
+    return cache
 
 
 def _session_age_tier(age_seconds: float) -> str:

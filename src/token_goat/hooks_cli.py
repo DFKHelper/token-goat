@@ -425,10 +425,7 @@ def pre_compact(payload: HookPayload) -> HookResponse:
 
     from . import session as session_mod  # noqa: PLC0415
 
-    try:
-        session_mod.validate_session_id(session_id)
-    except ValueError as exc:
-        _LOG.warning("pre-compact: invalid session_id rejected: %s", exc)
+    if session_mod.safe_load(session_id, caller="pre-compact") is None:
         return CONTINUE()
 
     manifest, n_events = compact_mod.build_manifest_with_count(

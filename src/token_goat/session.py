@@ -64,6 +64,7 @@ __all__ = [
     "reset_session",
     "save",
     "set_snapshot_sha",
+    "safe_load",
     "validate_session_id",
     # Internal helpers exposed for testing
     "_merge_session_caches",
@@ -1762,6 +1763,39 @@ def load(session_id: str) -> SessionCache:
         _LOG.debug("session cache unavailable (%s); returning empty cache", read_error)
         _record_cache_contention(session_id, "load", read_error)
     return _fresh_cache(session_id, unavailable=True)
+
+
+def safe_load(session_id: str, *, caller: str = "safe_load") -> SessionCache | None:
+    """Validate *session_id* and load its cache, returning ``None`` on any failure.
+
+    Wraps :func:`validate_session_id` + :func:`load` with a catch-all so callers
+    that want to silently skip invalid or unreadable sessions do not need to
+    replicate the try/except pattern.
+
+    Parameters
+    ----------
+    session_id:
+        The session identifier to validate and load.
+    caller:
+        Short label used in log messages so different call sites are
+        distinguishable (e.g. ``"pre-compact"``, ``"hint-builder"``).
+
+    Returns
+    -------
+    SessionCache | None
+        The loaded cache, or ``None`` if *session_id* is invalid or loading
+        raises an unexpected exception.
+    """
+    try:
+        validate_session_id(session_id)
+        return load(session_id)
+    except ValueError as exc:
+        _LOG.warning("%s: invalid session_id rejected: %s", caller, exc)
+        return None
+    except Exception as exc:  # noqa: BLE001
+        sid_short = session_id[:8] if session_id else "<empty>"
+        _LOG.debug("%s(%s) failed: %s", caller, sid_short, exc, exc_info=True)
+        return None
 
 
 def save(cache: SessionCache) -> None:
