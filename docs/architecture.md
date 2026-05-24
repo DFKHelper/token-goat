@@ -40,6 +40,17 @@ The latest iteration (v0.9.0-unreleased) added 20 context-savings refinements:
 
 See `docs/plans/2026-05-23-context-savings-design.md` for the design rationale behind each feature.
 
+#### 68-iter additions (May 2026)
+
+- **Manifest bold-label format.** The manifest no longer uses H3 headers (`### Edited:`) for its internal sections; each section now opens with an inline bold label (`**Edited:**`, `**Syms:**`, `**Bash:**` etc.), saving ~4 tokens per heading while keeping the structure parseable by the compaction LLM.
+- **Manifest SHA sidecar cache.** After emitting a manifest, `pre_compact` writes `sentinels/manifest_sha_<session_id>` containing the SHA of the serialised manifest. On the next invocation the manifest is rebuilt only when that SHA differs from the current session state, making redundant compaction calls near-zero cost.
+- **`extract_image_summary` helper.** `image_shrink.py` exposes `extract_image_summary(path) -> dict` returning `{width, height, format, bytes, sha}`. The pre-read hook calls this to inject a lean alt-text block instead of redirecting to the raw (shrunk) path, enabling the model to reason about image metadata without loading pixels.
+- **Cross-session grep dedup via `global.db`.** `hooks_read.py` records `(pattern, path_hash, session_id)` rows in a new `grep_patterns` table in `global.db`. On a repeat `Grep`, the pre-read handler checks this table for prior matches across all sessions and surfaces a dedup hint even when the current session has no prior record.
+- **`hooks-stderr.log` crash sink.** A bootstrap wrapper in `hooks.py` routes unhandled hook subprocess exceptions to `data_dir()/hooks-stderr.log` (100 KB cap, `.prev` sibling rotation). The log path is reported by `token-goat doctor`.
+- **Ruff filter.** `bash_compress.py` gained `RuffFilter` — groups `ruff check` output by rule code, keeps ≤3 examples per code, and formats a summary line matching the existing eslint/mypy filter shape.
+- **AVIF support.** `image_shrink.py` probes for libaom at startup; when available, images are encoded as AVIF (~15% smaller than WebP). WebP remains the fallback.
+- **Compact-speed cache fields.** `session.py` carries three private fields (`_disk_mtime`, `_pending_hint_save`, `_brief_cache`) that the PreCompact path reads without a disk round-trip. `_disk_mtime` tracks the last-written mtime to detect external changes; `_brief_cache` avoids recomputing the session-brief git fragment; `_pending_hint_save` batches hint-seen writes.
+
 ### Recent perf work (speed iterations, May 2026)
 
 The compaction hook subprocess is the most latency-sensitive path in token-goat because it fires on every `/compact` and blocks the compaction LLM from starting. Two complementary techniques cut cold-start cost from ~190 ms to ~110 ms:
