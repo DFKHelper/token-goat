@@ -13,6 +13,7 @@ __all__ = [
     "event_count",
     "is_noise_path",
     "_dedup_grep_entries",
+    "_build_sealed_block",
 ]
 
 import heapq
@@ -1954,6 +1955,75 @@ def _render_budget_lines(
     return [header] + out, used + header_cost
 
 
+def _build_sealed_block(
+    edited_clean: dict[str, int],
+    blocker_entries: list[object],
+    raw_skills: dict,
+) -> list[str]:
+    """Build the above-the-fold sealed block prepended before the main manifest body.
+
+    Format::
+
+        <<MUST_PRESERVE>>
+        ✎ auth.py×3  db.py  session.py
+        ⛔ pytest tests/  (exit 1)
+        🧠 ralph  plugin:improve
+        <</MUST_PRESERVE>>
+
+    The block is omitted entirely (empty list) when all three slots are empty.
+    Content is bounded at 80 tokens (≤ 320 characters).  The explicit XML-like
+    markers are chosen so compaction LLMs are unlikely to summarise them away.
+    """
+    import os
+
+    # Slot (a): ≤3 edited basenames with edit counts
+    edit_slot = ""
+    if edited_clean:
+        # Sort by edit count descending, take top 3
+        top_edits = sorted(edited_clean.items(), key=_BY_EDIT_COUNT, reverse=True)[:3]
+        parts = []
+        for path, count in top_edits:
+            basename = sanitize_log_str(os.path.basename(path) or path, max_len=40)
+            parts.append(f"{basename}×{count}" if count > 1 else basename)
+        edit_slot = "✎ " + "  ".join(parts)
+
+    # Slot (b): most-recent blocker (truncated to 80 chars)
+    blocker_slot = ""
+    if blocker_entries:
+        most_recent = max(blocker_entries, key=lambda e: getattr(e, "ts", 0.0))
+        cmd = sanitize_log_str(getattr(most_recent, "cmd_preview", ""), max_len=70)
+        exit_code = getattr(most_recent, "exit_code", "?")
+        raw = f"⛔ {cmd}  (exit {exit_code})"
+        blocker_slot = raw[:80]
+
+    # Slot (c): ≤2 active skill names
+    skill_slot = ""
+    if raw_skills:
+        top_skills = heapq.nlargest(
+            2, raw_skills.values(), key=lambda e: getattr(e, "ts", 0.0)
+        )
+        names = [sanitize_log_str(getattr(e, "skill_name", ""), max_len=40) for e in top_skills]
+        names = [n for n in names if n]
+        if names:
+            skill_slot = "🧠 " + "  ".join(names)
+
+    # Skip the entire block when all three slots are empty
+    if not edit_slot and not blocker_slot and not skill_slot:
+        return []
+
+    inner = [s for s in (edit_slot, blocker_slot, skill_slot) if s]
+    block = ["<<MUST_PRESERVE>>"] + inner + ["<</MUST_PRESERVE>>"]
+
+    # Enforce 80-token cap: if the block is too large, truncate inner content
+    block_text = "\n".join(block)
+    if _token_count(block_text) > 80:
+        # Trim each inner line to fit; if still over, drop skill_slot first
+        inner_trimmed = [line[:60] for line in inner]
+        block = ["<<MUST_PRESERVE>>"] + inner_trimmed + ["<</MUST_PRESERVE>>"]
+
+    return block
+
+
 def _render(cache: SessionCache, session_id: str, max_tokens: int) -> tuple[str, int]:
     """Build the Markdown session manifest string from *cache* for the PreCompact hook.
 
@@ -2440,9 +2510,17 @@ def _render(cache: SessionCache, session_id: str, max_tokens: int) -> tuple[str,
     if has_skill:
         legend_parts.append("skill=🧠")
 
+    # ── Sealed above-the-fold block — survives aggressive compaction ─────────
+    # Built last so it has access to all three inputs (edited_clean, blocker_entries,
+    # raw_skills).  Prepended before the header so it appears at the very top of the
+    # manifest — compaction LLMs attend most to the top of long documents, and the
+    # explicit <<MUST_PRESERVE>> markers are unlikely to be summarised away.
+    sealed_block = _build_sealed_block(edited_clean, blocker_entries, raw_skills)
+
     # Assemble the final manifest in inverted-pyramid order: most critical first
     # so that if the manifest is truncated mid-token the surviving content is
     # the highest-value information for the compaction LLM.
+    #   [sealed] Above-the-fold MUST_PRESERVE block — edited files, blocker, skills
     #   0. Current Blockers  — active failures the agent must know about
     #   1. Files Edited       — ongoing work (must survive compaction)
     #   2. Bash history       — current work context (what was just run)
@@ -2452,7 +2530,8 @@ def _render(cache: SessionCache, session_id: str, max_tokens: int) -> tuple[str,
     #   5. Grep patterns      — investigation history (least critical)
     #   6. Key files read     — broader context
     sections: list[str] = (
-        header_lines
+        sealed_block
+        + header_lines
         + blocker_lines
         + skill_lines
         + uncommitted_lines
