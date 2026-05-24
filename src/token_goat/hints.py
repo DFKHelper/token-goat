@@ -1530,13 +1530,16 @@ def _build_web_dedup_hint_inner(
         f" status={entry.status_code}" if entry.status_code is not None else ""
     )
     from . import cache_common as _cc  # noqa: PLC0415
+
+    grep_suffix = " (add --grep PATTERN to filter)" if entry.body_bytes >= _BASH_DEDUP_GREP_SUGGEST_BYTES else ""
+
     # Curator: record emission keyed on url_sha (web dedup is URL-keyed, not file-keyed).
     if cache is not None:
         _record_hint_emitted(cache, f"web:{url_sha}")
     return ReadHint(
         _apply_terse(
             f"URL ({int(age)}s): {entry.body_bytes:,}B{status_str}, ~{tokens_avoided}t. "
-            f"`token-goat web-output {_cc.short_output_id(entry.output_id)}`"
+            f"`token-goat web-output {_cc.short_output_id(entry.output_id)}`{grep_suffix}"
         ),
         tokens_avoided,
     )

@@ -2252,3 +2252,66 @@ class TestHintBudgetCheck:
             mock_load.return_value = type("C", (), {"hint_budget": hb_cfg})()
             budget_ok = _hint_budget_check(cache, _HINT_KIND_DEDUP)
         assert budget_ok is False, "Budget should also suppress at 200 hints"
+
+
+# ---------------------------------------------------------------------------
+# TestWebDedupGrepSuggest — large cached responses include --grep suggestion
+# ---------------------------------------------------------------------------
+
+
+class TestWebDedupGrepSuggest:
+    """Large cached web responses include a --grep PATTERN suggestion in the hint.
+
+    At _BASH_DEDUP_GREP_SUGGEST_BYTES (5000) the response is ~1250 tokens.
+    Loading it whole when only a few lines are needed wastes significant
+    context; the --grep suffix costs ~8 tokens and can save hundreds.
+    """
+
+    def _record(self, sid: str, url: str, *, body_bytes: int) -> None:
+        from token_goat import web_cache
+
+        url_sha = web_cache.url_hash(url)
+        output_id = f"web-{url_sha[:8]}"
+        session.mark_web_fetch(
+            sid,
+            url_sha,
+            url[:200],
+            output_id,
+            body_bytes=body_bytes,
+            status_code=200,
+            truncated=False,
+        )
+
+    def test_below_grep_threshold_no_grep_suffix(self, tmp_data_dir):
+        """Responses below 5000 bytes do not include --grep suggestion."""
+        from token_goat.hints import _BASH_DEDUP_GREP_SUGGEST_BYTES, build_web_dedup_hint
+
+        sid = "s_web_grep_below"
+        url = "https://example.com/api/data"
+        self._record(sid, url, body_bytes=_BASH_DEDUP_GREP_SUGGEST_BYTES - 1)
+        hint = build_web_dedup_hint(session_id=sid, url=url)
+        assert hint is not None
+        assert "--grep" not in hint
+
+    def test_at_grep_threshold_includes_grep_suffix(self, tmp_data_dir):
+        """Responses at exactly 5000 bytes include --grep suggestion."""
+        from token_goat.hints import _BASH_DEDUP_GREP_SUGGEST_BYTES, build_web_dedup_hint
+
+        sid = "s_web_grep_at"
+        url = "https://api.github.com/repos/owner/repo"
+        self._record(sid, url, body_bytes=_BASH_DEDUP_GREP_SUGGEST_BYTES)
+        hint = build_web_dedup_hint(session_id=sid, url=url)
+        assert hint is not None
+        assert "--grep" in hint
+        assert "PATTERN" in hint
+
+    def test_above_grep_threshold_includes_grep_suffix(self, tmp_data_dir):
+        """Responses well above 5000 bytes also include --grep suggestion."""
+        from token_goat.hints import build_web_dedup_hint
+
+        sid = "s_web_grep_above"
+        url = "https://example.com/large-doc"
+        self._record(sid, url, body_bytes=50000)
+        hint = build_web_dedup_hint(session_id=sid, url=url)
+        assert hint is not None
+        assert "--grep" in hint
