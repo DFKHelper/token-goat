@@ -42,6 +42,43 @@ def test_fail_soft_swallows_exceptions(monkeypatch):
     assert "RuntimeError" in result["_tg_error"]
 
 
+def test_fail_soft_catches_base_exception_memory_error():
+    """BaseException subclasses like MemoryError must also be caught."""
+
+    @hooks_cli.fail_soft
+    def explode(_payload):
+        raise MemoryError("out of memory")
+
+    result = explode({"any": "payload"})
+    assert result.get("continue") is True
+    assert "MemoryError" in result["_tg_error"]
+
+
+def test_fail_soft_re_raises_system_exit():
+    """SystemExit must propagate (explicit user intent / process control)."""
+    import pytest
+
+    @hooks_cli.fail_soft
+    def quit_now(_payload):
+        raise SystemExit(7)
+
+    with pytest.raises(SystemExit) as exc_info:
+        quit_now({"any": "payload"})
+    assert exc_info.value.code == 7
+
+
+def test_fail_soft_re_raises_keyboard_interrupt():
+    """KeyboardInterrupt must propagate (user Ctrl+C)."""
+    import pytest
+
+    @hooks_cli.fail_soft
+    def interrupted(_payload):
+        raise KeyboardInterrupt()
+
+    with pytest.raises(KeyboardInterrupt):
+        interrupted({"any": "payload"})
+
+
 def test_read_payload_from_file(tmp_path):
     f = tmp_path / "payload.json"
     f.write_text('{"session_id": "abc", "tool_name": "Read"}')
