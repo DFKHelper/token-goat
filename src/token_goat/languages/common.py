@@ -13,6 +13,7 @@ __all__ = [
     "build_signature",
     "collect_symbols_and_refs",
     "decode_source_text",
+    "extend_starts_for_decorators",
     "extract_and_finalize_html_sections",
     "extract_html_headings",
     "extract_refs_from_source",
@@ -545,6 +546,57 @@ def collect_symbols_and_refs(
     refs: list[Ref] = extract_refs_from_source(source, call_re, call_noise)
 
     return symbols, imp_exp, seen_names, refs, result
+
+
+def extend_starts_for_decorators(
+    symbols: list[Symbol],
+    source: bytes,
+    *,
+    eligible_kinds: frozenset[str],
+    walk_fn: Callable[[list[str], int], int],
+) -> None:
+    """Walk each symbol's start_line back over leading decorators/modifiers.
+
+    Extracted common shell shared by the Python and TypeScript adapters.
+    Both adapters have a post-pass that adjusts ``symbol.line`` to include
+    preceding decorator lines that tree-sitter excludes from the symbol span.
+    The outer iteration logic (decode source, filter by kind, call walker,
+    mutate) is identical in both adapters; only the inner walk algorithm
+    differs (Python uses a simple regex; TypeScript uses bracket-balance
+    tracking for multi-line decorator argument lists).
+
+    Parameters
+    ----------
+    symbols:
+        Mutable list of :class:`~token_goat.parser.Symbol` objects.  Symbols
+        whose ``kind`` is in *eligible_kinds* are candidates; others are
+        skipped.
+    source:
+        Raw file bytes.  Decoded once with ``utf-8/replace`` and split into
+        lines before walking.
+    eligible_kinds:
+        The set of symbol kinds to consider.  Python uses
+        ``frozenset({"function", "method", "class"})``;  TypeScript uses
+        ``frozenset({"class", "interface", "function", "method"})``.
+    walk_fn:
+        ``(text_lines, def_line_1based) -> new_start_1based`` — a
+        language-specific function that scans *text_lines* upward from
+        ``text_lines[def_line_1based - 2]`` and returns the earliest
+        1-based line number that includes all preceding decorators (or
+        *def_line_1based* itself when none are found).
+    """
+    try:
+        text_lines = source.decode("utf-8", errors="replace").splitlines()
+    except (UnicodeDecodeError, AttributeError):
+        return
+    if not text_lines:
+        return
+    for sym in symbols:
+        if sym.kind not in eligible_kinds:
+            continue
+        new_start = walk_fn(text_lines, sym.line)
+        if new_start != sym.line:
+            sym.line = new_start
 
 
 def build_line_index(text: str) -> list[int]:

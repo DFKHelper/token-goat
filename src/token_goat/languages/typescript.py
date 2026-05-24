@@ -95,8 +95,11 @@ def _decorator_block_start(text_lines: list[str], def_line_1based: int) -> int:
     return new_start
 
 
+_TS_ELIGIBLE_KINDS: frozenset[str] = frozenset({"class", "interface", "function", "method"})
+
+
 def _extend_starts_for_decorators(symbols: list[Symbol], source: bytes) -> None:
-    """Mirror of the Python adapter's decorator post-pass for TypeScript.
+    """Walk each class/function/method symbol's start_line back over leading decorators.
 
     Tree-sitter reports the ``class``/``function``/method line as the symbol
     start, dropping any preceding decorators (``@Component``, ``@Injectable``,
@@ -105,22 +108,17 @@ def _extend_starts_for_decorators(symbols: list[Symbol], source: bytes) -> None:
     decorated class loses the decorator's configuration object — exactly the
     metadata that explains how the class is wired into the application.
 
+    Delegates to :func:`common.extend_starts_for_decorators` with the
+    TypeScript-specific bracket-balanced walker :func:`_decorator_block_start`.
     Only ``class``, ``interface``, ``function``, and ``method`` kinds are
     walked back; const/var/type/enum exports cannot be decorated.
     """
-    try:
-        text_lines = source.decode("utf-8", errors="replace").splitlines()
-    except (UnicodeDecodeError, AttributeError):
-        return
-    if not text_lines:
-        return
-    eligible = {"class", "interface", "function", "method"}
-    for sym in symbols:
-        if sym.kind not in eligible:
-            continue
-        new_start = _decorator_block_start(text_lines, sym.line)
-        if new_start != sym.line:
-            sym.line = new_start
+    common.extend_starts_for_decorators(
+        symbols,
+        source,
+        eligible_kinds=_TS_ELIGIBLE_KINDS,
+        walk_fn=_decorator_block_start,
+    )
 
 
 # ---------------------------------------------------------------------------

@@ -22,51 +22,64 @@ _LOG = logging.getLogger("token_goat.languages.python")
 _DECORATOR_LINE_RE = re.compile(r"^\s*@[A-Za-z_]")
 
 
+_PY_ELIGIBLE_KINDS: frozenset[str] = frozenset({"function", "method", "class"})
+
+
+def _py_decorator_walk(text_lines: list[str], def_line_1based: int) -> int:
+    """Walk *def_line_1based* upward over consecutive Python decorator lines.
+
+    Tolerates at most one blank line between stacked decorators (a common
+    style seen with grouped ``@pytest.mark.*`` chains) but stops at any
+    non-decorator, non-blank line.
+
+    Returns the earliest 1-based line number that includes all preceding
+    ``@decorator`` lines, or *def_line_1based* itself when no decorators
+    precede the definition.
+    """
+    n_lines = len(text_lines)
+    if def_line_1based <= 1 or def_line_1based > n_lines:
+        return def_line_1based
+    new_start = def_line_1based
+    i = def_line_1based - 2  # 0-based index of the line directly above the def
+    saw_decorator = False
+    while i >= 0:
+        line = text_lines[i]
+        if _DECORATOR_LINE_RE.match(line):
+            new_start = i + 1  # 1-based line number
+            saw_decorator = True
+            i -= 1
+            continue
+        if saw_decorator and not line.strip():
+            # blank gap between decorators — keep looking one line further
+            i -= 1
+            continue
+        break
+    return new_start
+
+
 def _extend_starts_for_decorators(symbols: list[Symbol], source: bytes) -> None:
     """Walk each function/class/method symbol's start_line back over leading decorators.
 
-    Tree-sitter reports the `def`/`class` line as the symbol start, which excludes
-    any preceding ``@decorator`` lines.  An agent asking for the function body via
-    ``token-goat read "file.py::func"`` loses crucial information when decorators
-    are stripped (``@property``, ``@cache``, ``@app.route("/path")``, ``@pytest.fixture``
-    all change the meaning of the function).
+    Tree-sitter reports the ``def``/``class`` line as the symbol start, which
+    excludes any preceding ``@decorator`` lines.  An agent asking for the
+    function body via ``token-goat read "file.py::func"`` loses crucial
+    information when decorators are stripped (``@property``, ``@cache``,
+    ``@app.route("/path")``, ``@pytest.fixture`` all change the meaning of
+    the function).
 
-    This pass scans backward from ``symbol.line - 1`` while the line above is a
-    decorator line (or a blank line directly between decorators is tolerated, as
-    is sometimes seen with grouped decorators).  Mutates symbols in-place.
+    Delegates to :func:`common.extend_starts_for_decorators` with the
+    Python-specific walker :func:`_py_decorator_walk`.  Mutates symbols
+    in-place.
 
     Only applied to ``function``, ``method``, and ``class`` kinds — decorators
     never appear on ``var`` / ``const`` symbols.
     """
-    try:
-        text_lines = source.decode("utf-8", errors="replace").splitlines()
-    except (UnicodeDecodeError, AttributeError):
-        return
-    n_lines = len(text_lines)
-    for sym in symbols:
-        if sym.kind not in ("function", "method", "class"):
-            continue
-        if sym.line <= 1 or sym.line > n_lines:
-            continue
-        new_start = sym.line
-        # Walk upward over consecutive decorator lines (allow at most one blank
-        # line gap between decorators, but never cross a non-decorator code line).
-        i = sym.line - 2  # 0-based index of the line directly above sym.line
-        saw_decorator = False
-        while i >= 0:
-            line = text_lines[i]
-            if _DECORATOR_LINE_RE.match(line):
-                new_start = i + 1  # 1-based line number
-                saw_decorator = True
-                i -= 1
-                continue
-            if saw_decorator and not line.strip():
-                # blank gap between decorators — keep looking one line further
-                i -= 1
-                continue
-            break
-        if new_start != sym.line:
-            sym.line = new_start
+    common.extend_starts_for_decorators(
+        symbols,
+        source,
+        eligible_kinds=_PY_ELIGIBLE_KINDS,
+        walk_fn=_py_decorator_walk,
+    )
 
 
 _CALL_NOISE = frozenset([
