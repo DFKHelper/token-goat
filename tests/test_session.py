@@ -2017,3 +2017,104 @@ class TestSharedHistoryHelpers:
         patterns = [g.pattern for g in cache.glob_history]
         assert "**/0/*.py" not in patterns
         assert f"**/{session.GLOB_HISTORY_MAX + 2}/*.py" in patterns
+
+
+class TestCuratorSessionFields:
+    """Round-trip and migration tests for hints_emitted / hints_ignored / recent_hints."""
+
+    def test_hints_emitted_ignored_default_zero(self, tmp_data_dir):
+        """Fresh session has hints_emitted=0 and hints_ignored=0."""
+        cache = session.load("curator_fresh_1")
+        assert cache.hints_emitted == 0
+        assert cache.hints_ignored == 0
+
+    def test_recent_hints_default_empty(self, tmp_data_dir):
+        """Fresh session has recent_hints=[]."""
+        cache = session.load("curator_fresh_2")
+        assert cache.recent_hints == []
+
+    def test_roundtrip_hints_emitted_ignored(self, tmp_data_dir):
+        """hints_emitted and hints_ignored survive save/load round-trip."""
+        sid = "curator_rt_1"
+        cache = session.load(sid)
+        cache.hints_emitted = 15
+        cache.hints_ignored = 7
+        cache._invalidate_json_cache()
+        session.save(cache)
+        reloaded = session.load(sid)
+        assert reloaded.hints_emitted == 15
+        assert reloaded.hints_ignored == 7
+
+    def test_roundtrip_recent_hints(self, tmp_data_dir):
+        """recent_hints survives save/load round-trip with correct types."""
+        import time as _time
+
+        sid = "curator_rt_2"
+        cache = session.load(sid)
+        ts1 = _time.time()
+        ts2 = ts1 + 1.5
+        cache.recent_hints = [("/proj/a.py", ts1), ("/proj/b.py", ts2)]
+        cache._invalidate_json_cache()
+        session.save(cache)
+        reloaded = session.load(sid)
+        assert len(reloaded.recent_hints) == 2
+        paths = [p for p, _ in reloaded.recent_hints]
+        assert "/proj/a.py" in paths
+        assert "/proj/b.py" in paths
+
+    def test_recent_hints_capped_at_3_on_load(self, tmp_data_dir):
+        """recent_hints is capped at 3 entries during deserialization."""
+        import json
+        import time as _time
+
+        from token_goat import paths
+
+        sid = "curator_cap_1"
+        cache = session.load(sid)
+        now = _time.time()
+        # Manually write a session JSON with 5 recent_hints entries.
+        raw = json.loads(cache.to_json())
+        raw["recent_hints"] = [[f"/proj/file_{i}.py", now + i] for i in range(5)]
+        p = paths.session_cache_path(sid)
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(json.dumps(raw), encoding="utf-8")
+        reloaded = session.load(sid)
+        assert len(reloaded.recent_hints) <= 3
+
+    def test_migration_adds_missing_fields(self, tmp_data_dir):
+        """A session JSON missing curator fields loads with defaults via migration."""
+        import json
+
+        from token_goat import paths
+
+        sid = "curator_migrate_1"
+        cache = session.load(sid)
+        raw = json.loads(cache.to_json())
+        raw.pop("hints_emitted", None)
+        raw.pop("hints_ignored", None)
+        raw.pop("recent_hints", None)
+        p = paths.session_cache_path(sid)
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(json.dumps(raw), encoding="utf-8")
+        reloaded = session.load(sid)
+        assert reloaded.hints_emitted == 0
+        assert reloaded.hints_ignored == 0
+        assert reloaded.recent_hints == []
+
+    def test_serialized_recent_hints_shape(self, tmp_data_dir):
+        """recent_hints serializes as list[list[str, float]] in JSON."""
+        import json
+        import time as _time
+
+        sid = "curator_serial_1"
+        cache = session.load(sid)
+        now = _time.time()
+        cache.recent_hints = [("/proj/x.py", now)]
+        cache._invalidate_json_cache()
+        raw = json.loads(cache.to_json())
+        assert isinstance(raw["recent_hints"], list)
+        assert len(raw["recent_hints"]) == 1
+        entry = raw["recent_hints"][0]
+        assert isinstance(entry, list)
+        assert entry[0] == "/proj/x.py"
+        assert isinstance(entry[1], float)

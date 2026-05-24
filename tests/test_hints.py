@@ -2003,3 +2003,124 @@ class TestShortOutputIdInHints:
         from token_goat.cache_common import short_output_id
         assert short_output_id("abc123") == "abc123"
         assert short_output_id("abcd1234") == "abcd1234"
+
+
+# ---------------------------------------------------------------------------
+# TestCuratorEmissionGating — _curator_should_emit suppresses when rate low
+# ---------------------------------------------------------------------------
+
+
+class TestCuratorEmissionGating:
+    """Curator suppresses dedup hints when hint-acceptance rate is too low."""
+
+    def _make_cache(self, sid: str, tmp_data_dir, *, emitted: int, ignored: int) -> object:
+        """Return a loaded session cache with preset curator counters."""
+        cache = session.load(sid)
+        cache.hints_emitted = emitted
+        cache.hints_ignored = ignored
+        cache._invalidate_json_cache()
+        session.save(cache)
+        return session.load(sid)
+
+    def test_below_min_samples_always_emits(self, tmp_data_dir):
+        """With fewer than min_samples hints emitted, curator always returns True."""
+        from token_goat.hints import _curator_should_emit
+
+        cache = self._make_cache("curator_gate_1", tmp_data_dir, emitted=5, ignored=5)
+        # 5 < default min_samples (10), so should still emit
+        assert _curator_should_emit(cache) is True
+
+    def test_high_acceptance_rate_emits(self, tmp_data_dir):
+        """15 emitted, 5 ignored → 66% acceptance → hint fires (above 20% threshold)."""
+        from token_goat.hints import _curator_should_emit
+
+        cache = self._make_cache("curator_gate_2", tmp_data_dir, emitted=15, ignored=5)
+        assert _curator_should_emit(cache) is True
+
+    def test_low_acceptance_rate_suppresses(self, tmp_data_dir):
+        """15 emitted, 13 ignored → 13% acceptance → hint suppressed (below 20% threshold)."""
+        from token_goat.hints import _curator_should_emit
+
+        cache = self._make_cache("curator_gate_3", tmp_data_dir, emitted=15, ignored=13)
+        assert _curator_should_emit(cache) is False
+
+    def test_exactly_at_threshold_emits(self, tmp_data_dir):
+        """Exactly 20% acceptance (10 emitted, 8 ignored) is NOT suppressed (threshold is strict <)."""
+        from token_goat.hints import _curator_should_emit
+
+        cache = self._make_cache("curator_gate_4", tmp_data_dir, emitted=10, ignored=8)
+        # acceptance = 2/10 * 100 = 20.0 — exactly at threshold, NOT below, so emits
+        assert _curator_should_emit(cache) is True
+
+    def test_bash_dedup_hint_suppressed_at_low_rate(self, tmp_data_dir):
+        """build_bash_dedup_hint returns None when curator suppresses."""
+        from token_goat import bash_cache
+
+        sid = "curator_bash_1"
+        cmd = "uv run pytest tests/"
+        cmd_sha = bash_cache.command_hash(cmd)
+        session.mark_bash_run(
+            sid, cmd_sha, cmd[:120], "output-id-1",
+            stdout_bytes=2000, stderr_bytes=0, exit_code=0, truncated=False,
+        )
+        cache = session.load(sid)
+        cache.hints_emitted = 15
+        cache.hints_ignored = 13  # 13% acceptance → suppress
+        cache._invalidate_json_cache()
+        session.save(cache)
+        cache = session.load(sid)
+
+        hint = build_bash_dedup_hint(session_id=sid, command=cmd, cache=cache)
+        assert hint is None, "curator should suppress bash dedup hint at low acceptance rate"
+
+    def test_bash_dedup_hint_fires_at_high_rate(self, tmp_data_dir):
+        """build_bash_dedup_hint returns a hint when acceptance rate is high."""
+        from token_goat import bash_cache
+
+        sid = "curator_bash_2"
+        cmd = "uv run pytest tests/ -q"
+        cmd_sha = bash_cache.command_hash(cmd)
+        session.mark_bash_run(
+            sid, cmd_sha, cmd[:120], "output-id-2",
+            stdout_bytes=2000, stderr_bytes=0, exit_code=0, truncated=False,
+        )
+        cache = session.load(sid)
+        cache.hints_emitted = 15
+        cache.hints_ignored = 5  # 66% acceptance → emit
+        cache._invalidate_json_cache()
+        session.save(cache)
+        cache = session.load(sid)
+
+        hint = build_bash_dedup_hint(session_id=sid, command=cmd, cache=cache)
+        assert hint is not None, "curator should allow bash dedup hint at high acceptance rate"
+
+    def test_record_hint_emitted_increments_and_tracks_path(self, tmp_data_dir):
+        """_record_hint_emitted increments hints_emitted and appends to recent_hints."""
+        from token_goat.hints import _record_hint_emitted
+
+        sid = "curator_record_1"
+        cache = session.load(sid)
+        assert cache.hints_emitted == 0
+        assert cache.recent_hints == []
+
+        _record_hint_emitted(cache, "/proj/foo.py")
+        assert cache.hints_emitted == 1
+        assert len(cache.recent_hints) == 1
+        assert cache.recent_hints[0][0] == "/proj/foo.py"
+
+    def test_record_hint_emitted_caps_ring_buffer(self, tmp_data_dir):
+        """_record_hint_emitted caps recent_hints at 3 entries (oldest dropped)."""
+        from token_goat.hints import _record_hint_emitted
+
+        sid = "curator_record_2"
+        cache = session.load(sid)
+        for i in range(5):
+            _record_hint_emitted(cache, f"/proj/file_{i}.py")
+        assert cache.hints_emitted == 5
+        assert len(cache.recent_hints) == 3
+        # Most recent 3 paths are kept
+        paths = [p for p, _ in cache.recent_hints]
+        assert "/proj/file_2.py" in paths
+        assert "/proj/file_3.py" in paths
+        assert "/proj/file_4.py" in paths
+        assert "/proj/file_0.py" not in paths

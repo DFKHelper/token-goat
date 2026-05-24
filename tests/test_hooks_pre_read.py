@@ -910,3 +910,80 @@ class TestUnchangedFileHint:
         if "hookSpecificOutput" in result:
             ctx = result["hookSpecificOutput"].get("additionalContext", "")
             assert "unchanged" not in ctx.lower()
+
+
+# ---------------------------------------------------------------------------
+# Curator: ignored-hint counting via _check_ignored_hint
+# ---------------------------------------------------------------------------
+
+
+class TestCuratorIgnoredHintCounting:
+    """_check_ignored_hint increments hints_ignored when Read fires for hinted path."""
+
+    def test_hint_then_read_increments_ignored(self, tmp_data_dir):
+        """If a path is in recent_hints and then Read fires for it, hints_ignored++."""
+        import time
+
+        from token_goat.hooks_read import _check_ignored_hint
+
+        sid = "curator_ignored_1"
+        cache = session.load(sid)
+        norm_path = "/proj/foo.py"
+        # Simulate a hint having been emitted for this path.
+        cache.recent_hints = [(norm_path, time.time())]
+        cache.hints_emitted = 1
+        cache.hints_ignored = 0
+        cache._invalidate_json_cache()
+
+        _check_ignored_hint(cache, norm_path)
+
+        assert cache.hints_ignored == 1
+        # Path should be removed from ring buffer after counting.
+        assert all(p != norm_path for p, _ in cache.recent_hints)
+
+    def test_no_hint_for_path_does_not_increment(self, tmp_data_dir):
+        """If the path was not recently hinted, hints_ignored stays at 0."""
+        from token_goat.hooks_read import _check_ignored_hint
+
+        sid = "curator_ignored_2"
+        cache = session.load(sid)
+        cache.recent_hints = [("/proj/other.py", 0.0)]
+        cache.hints_ignored = 0
+        cache._invalidate_json_cache()
+
+        _check_ignored_hint(cache, "/proj/foo.py")
+
+        assert cache.hints_ignored == 0
+
+    def test_empty_recent_hints_does_not_increment(self, tmp_data_dir):
+        """Empty recent_hints → hints_ignored unchanged."""
+        from token_goat.hooks_read import _check_ignored_hint
+
+        sid = "curator_ignored_3"
+        cache = session.load(sid)
+        cache.hints_ignored = 0
+
+        _check_ignored_hint(cache, "/proj/foo.py")
+
+        assert cache.hints_ignored == 0
+
+    def test_second_read_same_path_does_not_double_count(self, tmp_data_dir):
+        """After the first Read removes the path from ring buffer, second Read does not increment again."""
+        import time
+
+        from token_goat.hooks_read import _check_ignored_hint
+
+        sid = "curator_ignored_4"
+        cache = session.load(sid)
+        norm_path = "/proj/bar.py"
+        cache.recent_hints = [(norm_path, time.time())]
+        cache.hints_emitted = 1
+        cache.hints_ignored = 0
+        cache._invalidate_json_cache()
+
+        _check_ignored_hint(cache, norm_path)
+        assert cache.hints_ignored == 1
+
+        # Second call — path was already removed from ring buffer.
+        _check_ignored_hint(cache, norm_path)
+        assert cache.hints_ignored == 1  # still 1, not 2

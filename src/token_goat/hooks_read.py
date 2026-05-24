@@ -905,6 +905,46 @@ def pre_read(payload: HookPayload) -> HookResponse:
     return pre_tool_use_with_context("\n\n".join(context_parts))
 
 
+def _check_ignored_hint(cache: object, file_path: str) -> None:
+    """Increment hints_ignored when a Read fires for a recently-hinted path.
+
+    When the agent was told "you already read <path>, ~N tokens wasted" and then
+    immediately reads the file anyway, the hint had no effect.  We record that
+    as an ignored hint so the curator can suppress future hints once the ignore
+    rate exceeds the configured threshold.
+
+    A hint is considered "recent" when the path appears in ``cache.recent_hints``
+    (the last 3 emitted hint paths tracked by ``_record_hint_emitted``).  The
+    ring buffer is small enough that a linear scan is O(3) = O(1).
+
+    Fail-soft: any attribute access error or unexpected exception is swallowed
+    silently — the hook must never fail due to curator bookkeeping.
+    """
+    try:
+        from . import session as _sess  # noqa: PLC0415
+
+        recent_hints = getattr(cache, "recent_hints", [])
+        if not recent_hints:
+            return
+        norm = _sess._normalize_path(file_path)  # type: ignore[attr-defined]
+        for hint_path, _ts in recent_hints:
+            if hint_path == norm:
+                cache.hints_ignored += 1  # type: ignore[union-attr, attr-defined]
+                cache._invalidate_json_cache()  # type: ignore[union-attr, attr-defined]
+                # Remove from ring buffer so a second Read doesn't double-count.
+                cache.recent_hints = [  # type: ignore[union-attr, attr-defined]
+                    (p, t) for p, t in cache.recent_hints  # type: ignore[union-attr, attr-defined]
+                    if p != norm
+                ]
+                _LOG.debug(
+                    "curator: hints_ignored++ for %s (total=%d)",
+                    sanitize_log_str(file_path), cache.hints_ignored,  # type: ignore[union-attr, attr-defined]
+                )
+                break
+    except Exception:  # noqa: BLE001 — fail-soft
+        pass
+
+
 def post_read(payload: HookPayload) -> HookResponse:
     """Post-read hook: record file/symbol accesses to session cache.
 
@@ -935,6 +975,9 @@ def post_read(payload: HookPayload) -> HookResponse:
                 "post-read: recorded Read file=%s offset=%s limit=%s",
                 sanitize_log_str(file_path), offset, limit,
             )
+            # Curator: check if this Read is for a path that was recently hinted.
+            # If the agent reads the file anyway within the hint window, it ignored the hint.
+            _check_ignored_hint(cache, file_path)
             # Capture a content snapshot so a future re-read after an edit can
             # be served as a small unified diff instead of a full-file Read.
             # Best-effort — snapshot failures never block the hook.
