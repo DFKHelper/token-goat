@@ -1831,6 +1831,23 @@ def load(session_id: str) -> SessionCache:
             continue
         try:
             data = json.loads(raw)
+            # Schema version guard: drop any cache that wasn't written by the
+            # current schema.  Mismatched caches are stale (too old) or from a
+            # newer binary running alongside this one — either way the safe move
+            # is to start fresh rather than silently misinterpret fields.
+            cached_v = data.get("schema_version", 0)
+            try:
+                cached_v_int = int(cached_v) if cached_v else 0
+            except (TypeError, ValueError):
+                cached_v_int = 0
+            if cached_v_int != SESSION_SCHEMA_VERSION:
+                _LOG.info(
+                    "session %s: schema_version %s != %s; dropping stale cache",
+                    session_id[:16],
+                    sanitize_log_str(str(cached_v), max_len=_MAX_LOG_STR),
+                    SESSION_SCHEMA_VERSION,
+                )
+                return _fresh_cache(session_id)
             # Migrate missing fields before constructing SessionCache
             data = _migrate_session(data)
             cache = SessionCache.from_dict(data)

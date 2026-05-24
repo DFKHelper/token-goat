@@ -3146,3 +3146,67 @@ class TestAdaptiveHintSuppression:
         for _ in range(10):
             session.record_hint_category(cache, "cat", accepted=False)
         assert session._hint_category_should_suppress(cache, "cat", threshold=0) is False
+
+
+class TestSchemaVersioning:
+    """Schema version field: presence, serialization, and stale-cache drop."""
+
+    def test_schema_version_present_in_serialized_dict(self, tmp_data_dir):
+        """to_dict() must include schema_version equal to SESSION_SCHEMA_VERSION."""
+        sid = "schema-ver-test-" + "a" * 18
+        cache = session.load(sid)
+        d = cache.to_dict()
+        assert "schema_version" in d
+        assert d["schema_version"] == session.SESSION_SCHEMA_VERSION
+
+    def test_schema_version_mismatch_drops_cache(self, tmp_data_dir):
+        """A cache file with a schema_version that differs from SESSION_SCHEMA_VERSION
+        must be silently dropped and replaced with an empty cache on load."""
+        import json as _json
+
+        sid = "schema-mismatch-" + "b" * 16
+        cache_path = session.paths.session_cache_path(sid)
+        cache_path.parent.mkdir(parents=True, exist_ok=True)
+
+        stale_data = {
+            "schema_version": 999,
+            "session_id": sid,
+            "started_ts": 1.0,
+            "last_activity_ts": 1.0,
+            "created_ts": 1.0,
+            "files": {"stale/file.py": {"rel_or_abs": "stale/file.py", "read_count": 5}},
+            "greps": [],
+            "edited_files": {},
+            "created_by": "token-goat",
+        }
+        cache_path.write_text(_json.dumps(stale_data), encoding="utf-8")
+
+        loaded = session.load(sid)
+        # Must return an empty cache, not crash
+        assert loaded.session_id == sid
+        assert loaded.files == {}, "stale cache fields must not bleed into fresh cache"
+        assert loaded.greps == []
+
+    def test_schema_version_missing_drops_cache(self, tmp_data_dir):
+        """A cache file with no schema_version field (version=0) is dropped."""
+        import json as _json
+
+        sid = "schema-missing-" + "c" * 17
+        cache_path = session.paths.session_cache_path(sid)
+        cache_path.parent.mkdir(parents=True, exist_ok=True)
+
+        old_data = {
+            # schema_version intentionally absent
+            "session_id": sid,
+            "started_ts": 1.0,
+            "last_activity_ts": 1.0,
+            "created_ts": 1.0,
+            "files": {"old/file.py": {"rel_or_abs": "old/file.py", "read_count": 3}},
+            "greps": [],
+            "edited_files": {},
+        }
+        cache_path.write_text(_json.dumps(old_data), encoding="utf-8")
+
+        loaded = session.load(sid)
+        assert loaded.session_id == sid
+        assert loaded.files == {}, "old cache without schema_version must be dropped"
