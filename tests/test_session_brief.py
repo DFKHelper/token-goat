@@ -52,10 +52,12 @@ class TestBriefInjectedWhenDirty:
             brief = _build_session_brief(str(tmp_path))
 
         assert brief is not None
-        assert "## Session Context" in brief
+        assert "## Session Context" not in brief
         assert "main" in brief
         # Should mention modified or untracked
         assert "modified" in brief or "untracked" in brief or "staged" in brief
+        # Should be single line (no newlines)
+        assert "\n" not in brief
 
     def test_brief_contains_recent_commits(self, tmp_path):
         """Brief includes recent commit hashes from git log."""
@@ -68,7 +70,8 @@ class TestBriefInjectedWhenDirty:
         assert brief is not None
         assert "abc1234" in brief
         assert "def5678" in brief
-        assert "Recent:" in brief
+        assert "Recent:" not in brief  # "Recent:" label removed
+        assert " — " in brief  # em-dash separator instead
 
     def test_brief_includes_staged_count(self, tmp_path):
         """Staged files (X != ' ' or '?') appear in the status summary."""
@@ -101,12 +104,13 @@ class TestBriefSkippedWhenClean:
             status_output="",  # no changes
             log_output="abc1234 fix auth",
         )):
-            # Clean repo with commits — brief is NOT skipped (commits are useful)
+            # Clean repo with commits — brief is returned (commits are useful)
             brief = _build_session_brief(str(tmp_path))
-        # The brief is still returned because log_lines is non-empty — the skip
+        # The brief is returned because log_lines is non-empty — the skip
         # logic requires BOTH empty status AND empty log.
         assert brief is not None
-        assert "clean" in brief
+        # Should not have "clean" label in the new format; should have em-dash + commit
+        assert " — abc1234" in brief
 
     def test_skipped_when_clean_and_no_commits(self, tmp_path):
         """Empty status + empty log = nothing to report, skip the brief."""
@@ -302,14 +306,14 @@ class TestSessionStartIntegration:
         monkeypatch.setattr(worker, "ensure_running", lambda: 1)
 
         with patch("token_goat.hooks_session._build_session_brief") as mock_brief:
-            mock_brief.return_value = "## Session Context\nBranch: main | 1 modified\nRecent: abc1234 fix"
+            mock_brief.return_value = "main | 1 modified — abc1234 fix"
             with patch("token_goat.hooks_session._detect", return_value=None):
                 payload = {"session_id": "brief_test_01", "cwd": str(tmp_path), "source": "startup"}
                 result = hooks_cli.session_start(payload)
 
         assert result.get("continue") is True
         assert "systemMessage" in result
-        assert "Session Context" in result["systemMessage"]
+        assert "main | 1 modified" in result["systemMessage"]
 
     def test_session_start_no_brief_when_none(self, tmp_data_dir, tmp_path, monkeypatch):
         """session_start returns plain continue when brief is None."""
@@ -333,7 +337,7 @@ class TestSessionStartIntegration:
         monkeypatch.setattr(worker, "ensure_running", lambda: 1)
 
         with patch("token_goat.hooks_session._build_session_brief") as mock_brief:
-            mock_brief.return_value = "## Session Context\nBranch: main | 1 modified"
+            mock_brief.return_value = "main | 1 modified"
             with (
                 patch("token_goat.hooks_session._detect", return_value=None),
                 patch("token_goat.hooks_session._try_recovery_response", return_value=None),
@@ -351,6 +355,114 @@ class TestSessionStartIntegration:
 # ---------------------------------------------------------------------------
 # Latency budget — the three git calls share one wall-clock deadline
 # ---------------------------------------------------------------------------
+
+
+class TestBriefFormatRegression:
+    """Regression: brief format is one-line with em-dash separator, no headers/labels."""
+
+    def test_brief_no_header(self, tmp_path):
+        """Brief does NOT contain '## Session Context' header."""
+        with patch("subprocess.run", side_effect=_make_run_side_effect(
+            status_output=" M foo.py",
+            log_output="abc1234 fix",
+        )):
+            brief = _build_session_brief(str(tmp_path))
+
+        assert brief is not None
+        assert "## Session Context" not in brief
+
+    def test_brief_no_branch_label(self, tmp_path):
+        """Brief does NOT contain 'Branch:' label."""
+        with patch("subprocess.run", side_effect=_make_run_side_effect(
+            status_output=" M foo.py",
+        )):
+            brief = _build_session_brief(str(tmp_path))
+
+        assert brief is not None
+        assert "Branch:" not in brief
+
+    def test_brief_no_recent_label(self, tmp_path):
+        """Brief does NOT contain 'Recent:' label."""
+        with patch("subprocess.run", side_effect=_make_run_side_effect(
+            status_output=" M foo.py",
+            log_output="abc1234 fix",
+        )):
+            brief = _build_session_brief(str(tmp_path))
+
+        assert brief is not None
+        assert "Recent:" not in brief
+
+    def test_brief_single_line(self, tmp_path):
+        """Brief is a single line (no newlines)."""
+        with patch("subprocess.run", side_effect=_make_run_side_effect(
+            status_output=" M foo.py",
+            log_output="abc1234 fix auth\ndef5678 add tests",
+        )):
+            brief = _build_session_brief(str(tmp_path))
+
+        assert brief is not None
+        assert "\n" not in brief
+
+    def test_brief_branch_status_commits_format(self, tmp_path):
+        """Brief follows format: branch | status — commits."""
+        with patch("subprocess.run", side_effect=_make_run_side_effect(
+            branch="main",
+            status_output=" M foo.py\n?? new.py",
+            log_output="abc1234 fix auth\ndef5678 add tests",
+        )):
+            brief = _build_session_brief(str(tmp_path))
+
+        assert brief is not None
+        # Should start with branch name
+        assert brief.startswith("main")
+        # Should have pipe separator for status
+        assert " | " in brief
+        # Should have em-dash separator for commits
+        assert " — " in brief
+        # Order should be: branch | status — commits
+        pipe_idx = brief.index(" | ")
+        dash_idx = brief.index(" — ")
+        assert pipe_idx < dash_idx
+
+    def test_brief_branch_only_when_clean_no_commits(self, tmp_path):
+        """Brief is just branch name when status is clean and no commits."""
+        with patch("subprocess.run", side_effect=_make_run_side_effect(
+            branch="main",
+            status_output="",
+            log_output="",
+        )):
+            brief = _build_session_brief(str(tmp_path))
+
+        # Should be skipped entirely (nothing to report)
+        assert brief is None
+
+    def test_brief_branch_status_when_no_commits(self, tmp_path):
+        """Brief is 'branch | status' when commits are empty."""
+        with patch("subprocess.run", side_effect=_make_run_side_effect(
+            branch="main",
+            status_output=" M foo.py\n?? new.py",
+            log_output="",
+        )):
+            brief = _build_session_brief(str(tmp_path))
+
+        assert brief is not None
+        assert " — " not in brief  # no em-dash when no commits
+        assert " | " in brief
+        assert brief.startswith("main")
+
+    def test_brief_branch_commits_when_clean(self, tmp_path):
+        """Brief is 'branch — commits' when status is clean."""
+        with patch("subprocess.run", side_effect=_make_run_side_effect(
+            branch="feature/x",
+            status_output="",
+            log_output="abc1234 fix auth",
+        )):
+            brief = _build_session_brief(str(tmp_path))
+
+        assert brief is not None
+        assert " | " not in brief  # no pipe when status is empty
+        assert " — " in brief
+        assert brief.startswith("feature/x")
 
 
 class TestBriefLatencyBudget:

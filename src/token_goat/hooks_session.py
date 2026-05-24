@@ -494,7 +494,7 @@ def _build_session_brief(cwd: str) -> str | None:
 
     Runs ``git --no-optional-locks status -z -b`` (branch + status in one
     round-trip) and ``git log --oneline -5`` in *cwd*.
-    Returns a short Markdown block (under 80 tokens) or ``None`` when:
+    Returns a single-line summary (under 80 tokens) or ``None`` when:
 
     - The directory is not a git repo or git is not available
     - Both status and log are empty (clean repo with no commits)
@@ -505,11 +505,16 @@ def _build_session_brief(cwd: str) -> str | None:
     tree is clean, and local HEAD matches ``origin/<branch>`` — a session at
     a stable baseline gains nothing from the log (#26).
 
-    The brief format::
+    The brief format (single line, em-dash-separated)::
 
-        ## Session Context
-        Branch: main | 2 modified, 1 untracked
-        Recent: abc1234 fix auth | def5678 add tests | ghi9012 init
+        main | 2 modified, 1 untracked — abc1234 fix auth | def5678 add tests
+        main — abc1234 fix auth | def5678 add tests
+        main | 2 modified, 1 untracked
+        main
+
+    When status is empty (clean repo): branch — commits.
+    When commits are empty: branch | status.
+    When both empty: branch only.
 
     The ``source`` guard (only fires on non-compact starts) is enforced by the
     caller.  This function just builds the string; it has no knowledge of
@@ -633,9 +638,10 @@ def _build_session_brief(cwd: str) -> str | None:
     if not status_lines and not log_lines:
         return None
 
-    # Build status summary
-    parts: list[str] = []
+    # Build single-line brief: branch [| status] [— commits]
+    parts: list[str] = [branch]
 
+    # Add status if there are any changes
     if status_lines:
         # XY format: X is index (staged), Y is work-tree
         staged = sum(1 for line in status_lines if line[:1] not in (" ", "?", "!"))
@@ -649,10 +655,9 @@ def _build_session_brief(cwd: str) -> str | None:
         if untracked:
             counts.append(f"{untracked} untracked")
         status_str = ", ".join(counts) if counts else "changes"
-        parts.append(f"Branch: {branch} | {status_str}")
-    else:
-        parts.append(f"Branch: {branch} | clean")
+        parts.append(f"| {status_str}")
 
+    # Add recent commits if present (em-dash separator)
     if log_lines:
         # Each commit: "abc1234 message" — keep short (hash + 40 chars max per entry)
         short_commits: list[str] = []
@@ -664,9 +669,9 @@ def _build_session_brief(cwd: str) -> str | None:
                 short_commits.append(f"{h} {msg}")
             else:
                 short_commits.append(entry[:50])
-        parts.append("Recent: " + " | ".join(short_commits))
+        parts.append("— " + " | ".join(short_commits))
 
-    brief = "## Session Context\n" + "\n".join(parts)
+    brief = " ".join(parts)
     _LOG.debug("session-start: orientation brief built (%d chars)", len(brief))
     return brief
 
