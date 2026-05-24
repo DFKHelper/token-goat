@@ -2230,3 +2230,173 @@ class TestLastManifestFields:
         raw = json.loads(cache.to_json())
         assert raw["last_manifest_sha"] == "ff00ff00ff00ff00"
         assert raw["last_manifest_ts"] == pytest.approx(12345.6)
+
+
+# ---------------------------------------------------------------------------
+# Optimistic CAS / concurrent-write tests (item #2)
+# ---------------------------------------------------------------------------
+
+class TestSessionCAS:
+    """Verify optimistic CAS prevents lost updates from concurrent hook processes."""
+
+    def test_version_field_default_zero(self, tmp_data_dir):
+        """Fresh session starts at version 0."""
+        cache = session.load("cas_v0")
+        assert cache.version == 0
+
+    def test_version_increments_on_save(self, tmp_data_dir):
+        """Each save increments the version monotonically."""
+        sid = "cas_incr"
+        c = session.load(sid)
+        assert c.version == 0
+        session.save(c)
+        c2 = session.load(sid)
+        assert c2.version == 1
+        session.save(c2)
+        c3 = session.load(sid)
+        assert c3.version == 2
+
+    def test_version_survives_round_trip(self, tmp_data_dir):
+        """version field serialises to JSON and deserialises correctly."""
+        import json as _json
+
+        sid = "cas_rt"
+        c = session.load(sid)
+        session.save(c)
+        raw = _json.loads(session.load(sid).to_json())
+        assert raw["version"] == 1
+
+    def test_legacy_json_missing_version_defaults_to_zero(self, tmp_data_dir):
+        """Old session JSON without version deserialises cleanly."""
+        import json as _json
+
+        from token_goat.session import SessionCache
+
+        sid = "cas_legacy"
+        c = session.load(sid)
+        raw = _json.loads(c.to_json())
+        raw.pop("version", None)
+        restored = SessionCache.from_dict(raw)
+        assert restored.version == 0
+
+    def test_concurrent_threads_both_edits_preserved(self, tmp_data_dir):
+        """Two threads that concurrently load+mark_file_edited both persist their edit."""
+        import threading
+
+        sid = "cas_concurrent_edit"
+        # Pre-create so both threads start from the same on-disk state.
+        session.save(session.load(sid))
+
+        errors: list[Exception] = []
+        barrier = threading.Barrier(2)
+
+        def worker(path: str) -> None:
+            try:
+                c = session.load(sid)
+                barrier.wait(timeout=5)  # sync both threads to maximise race window
+                session.mark_file_edited(sid, path, cache=c)
+            except Exception as exc:  # noqa: BLE001
+                errors.append(exc)
+
+        t1 = threading.Thread(target=worker, args=("/thread/file_a.py",))
+        t2 = threading.Thread(target=worker, args=("/thread/file_b.py",))
+        t1.start()
+        t2.start()
+        t1.join(timeout=10)
+        t2.join(timeout=10)
+
+        assert not errors, f"thread errors: {errors}"
+
+        final = session.load(sid)
+        assert "/thread/file_a.py" in final.edited_files, "file_a lost"
+        assert "/thread/file_b.py" in final.edited_files, "file_b lost"
+
+    def test_concurrent_threads_hints_emitted_not_lost(self, tmp_data_dir):
+        """Two threads incrementing hints_emitted must not drop the winner's write.
+
+        The CAS merge strategy for integer counters is max(local, remote), which
+        prevents the classic lost-update scenario where the later writer silently
+        overwrites the earlier one with a stale (lower) value.  It does not sum
+        independent increments from the same base — that would require a CRDT
+        counter.  The guarantee here is: the final value is at least as large as
+        the highest value either thread wrote.  Starting from 0 with both threads
+        writing 1, the result is at least 1 (never 0).
+        """
+        import threading
+
+        sid = "cas_hints_counter"
+        session.save(session.load(sid))
+
+        errors: list[Exception] = []
+        barrier = threading.Barrier(2)
+
+        def worker() -> None:
+            try:
+                c = session.load(sid)
+                barrier.wait(timeout=5)
+                c.hints_emitted += 1
+                c.last_activity_ts = time.time()
+                c._invalidate_json_cache()
+                session.save(c)
+            except Exception as exc:  # noqa: BLE001
+                errors.append(exc)
+
+        t1 = threading.Thread(target=worker)
+        t2 = threading.Thread(target=worker)
+        t1.start()
+        t2.start()
+        t1.join(timeout=10)
+        t2.join(timeout=10)
+
+        assert not errors, f"thread errors: {errors}"
+
+        final = session.load(sid)
+        # max-merge guarantees: result >= max(local, remote) — never regresses to 0.
+        assert final.hints_emitted >= 1, (
+            f"expected hints_emitted >= 1 (no lost write), got {final.hints_emitted}"
+        )
+
+    def test_merge_session_caches_unions_sets(self, tmp_data_dir):
+        """_merge_session_caches unions hints_seen from both sides."""
+        from token_goat.session import _merge_session_caches
+
+        sid = "cas_merge_sets"
+        base = session.load(sid)
+        base.version = 5
+
+        local = session.load(sid)
+        local.version = 3
+        local.hints_seen = {"a", "b"}
+        local.bash_dedup_emitted_ids = {"x"}
+
+        remote = session.load(sid)
+        remote.version = 5
+        remote.hints_seen = {"b", "c"}
+        remote.bash_dedup_emitted_ids = {"y"}
+
+        merged = _merge_session_caches(local, remote)
+        assert merged.hints_seen == {"a", "b", "c"}
+        assert merged.bash_dedup_emitted_ids == {"x", "y"}
+
+    def test_merge_session_caches_max_counts(self, tmp_data_dir):
+        """_merge_session_caches takes max for integer counters."""
+        from token_goat.session import _merge_session_caches
+
+        sid = "cas_merge_counts"
+        local = session.load(sid)
+        local.hints_emitted = 7
+        local.hints_ignored = 2
+        local.structured_hints_emitted = 3
+        local.index_only_hints_emitted = 1
+
+        remote = session.load(sid)
+        remote.hints_emitted = 5
+        remote.hints_ignored = 4
+        remote.structured_hints_emitted = 6
+        remote.index_only_hints_emitted = 0
+
+        merged = _merge_session_caches(local, remote)
+        assert merged.hints_emitted == 7
+        assert merged.hints_ignored == 4
+        assert merged.structured_hints_emitted == 6
+        assert merged.index_only_hints_emitted == 1
