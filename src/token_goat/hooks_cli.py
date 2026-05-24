@@ -284,7 +284,14 @@ def fail_soft(handler: _HookHandler) -> _HookHandler:
         """
         try:
             return handler(payload)
-        except Exception as exc:  # noqa: BLE001 — fail-soft is the entire point
+        except (KeyboardInterrupt, SystemExit):
+            # User Ctrl+C and explicit sys.exit() respect Python convention —
+            # let those propagate so the subprocess can terminate cleanly.
+            raise
+        except BaseException as exc:  # noqa: BLE001 — fail-soft is the entire point
+            # Broaden from Exception → BaseException so MemoryError,
+            # GeneratorExit, and other rare BaseException subclasses also
+            # honour the fail-soft contract (matches safe_run above).
             handler_name = getattr(handler, "__name__", repr(handler))
             err_summary = f"{type(exc).__name__}: {exc}"
             session_tag, cwd_tag = _build_handler_log_tags(payload)
