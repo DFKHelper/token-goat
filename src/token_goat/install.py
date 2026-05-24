@@ -870,6 +870,30 @@ def _hooks_block(binary: str | None = None) -> dict[str, list[_HookMatcherEntry]
                 ],
             },
         ],
+        "UserPromptSubmit": [
+            {
+                "matcher": "*",
+                "hooks": [
+                    {
+                        "type": "command",
+                        "command": runner("hook", "user-prompt-submit"),
+                        "timeout": 5000,
+                    }
+                ],
+            }
+        ],
+        "SubagentStop": [
+            {
+                "matcher": "*",
+                "hooks": [
+                    {
+                        "type": "command",
+                        "command": runner("hook", "subagent-stop"),
+                        "timeout": 5000,
+                    }
+                ],
+            }
+        ],
         "PreCompact": [
             {
                 "matcher": "*",
@@ -1680,6 +1704,43 @@ def _check_codex_config() -> str:
         return f"error reading codex config ({cfg_path}): {e}"
     hooks: dict[str, object] = data.get("hooks", {})
     return "installed" if _hooks_contain_token_goat(hooks) else "not installed"
+
+
+def detect_harnesses() -> list[str]:
+    """Return a list of harness names that appear to be present on this machine.
+
+    Detection is purely heuristic — a harness is "detected" when one of its
+    well-known environment variables or directories is present.  The list is
+    ordered for display: Claude Code first (always present when token-goat is
+    in use), then others alphabetically.
+
+    Harnesses checked:
+    - ``claude`` — always present (token-goat only makes sense inside Claude Code).
+    - ``codex``  — detected when ``CODEX_HOME`` env var is set OR ``~/.codex/``
+                   exists (Codex CLI stores its config there).
+    - ``opencode`` — detected when the opencode plugins dir exists.
+    - ``openclaw`` — detected when ``~/.openclaw/`` exists.
+    """
+    found: list[str] = ["claude"]  # always present
+
+    # Codex: env var takes precedence; fall back to directory probe.
+    codex_home_env = os.environ.get("CODEX_HOME", "")
+    codex_dir_exists = codex_dir().exists()
+    if codex_home_env or codex_dir_exists:
+        found.append("codex")
+
+    # opencode: plugin directory presence
+    try:
+        from . import bridges as _br  # noqa: PLC0415
+
+        if _br.opencode_plugins_dir().parent.exists():
+            found.append("opencode")
+        if (Path.home() / ".openclaw").exists():
+            found.append("openclaw")
+    except Exception:  # noqa: BLE001
+        pass
+
+    return found
 
 
 def check_status() -> dict[str, str]:

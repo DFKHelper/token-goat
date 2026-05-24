@@ -65,12 +65,18 @@ def doctor(  # noqa: C901
     fix: bool = typer.Option(  # noqa: B008
         False, "--fix", help="Clear stale index-spawn markers that doctor flags."
     ),
+    crashes: bool = typer.Option(  # noqa: B008
+        False, "--crashes", help="Show the last 5 hook crash entries from hooks-stderr.log."
+    ),
 ) -> None:
     """Diagnose indexing health.
 
     Pass ``--fix`` to also clear the stale ``.indexing`` spawn markers doctor
     flags — the same reaping the worker does on startup, available on demand
     for when the worker is down.
+
+    Pass ``--crashes`` to tail the last 5 entries from hooks-stderr.log so
+    hook crash backtraces are visible without manually opening the log file.
     """
     import importlib
     import subprocess
@@ -112,6 +118,17 @@ def doctor(  # noqa: C901
         ok("uv", uv_out.stdout.strip() or "installed")
     except (FileNotFoundError, OSError, subprocess.TimeoutExpired):
         flag("uv", "not found", warn=True)
+
+    # ------------------------------------------------------------------
+    # 1b. Detected harnesses
+    # ------------------------------------------------------------------
+    try:
+        from . import install as _install  # noqa: PLC0415
+
+        harnesses = _install.detect_harnesses()
+        ok("harnesses detected", ", ".join(harnesses) if harnesses else "none")
+    except Exception as _e:  # noqa: BLE001
+        flag("harnesses detected", f"error — {_e}", warn=True)
 
     # ------------------------------------------------------------------
     # 2. Paths
@@ -500,5 +517,72 @@ def doctor(  # noqa: C901
         ok("(none)", "no recorded savings yet")
     except Exception as e:  # noqa: BLE001
         flag("stats", str(e), warn=True)
+
+    # ------------------------------------------------------------------
+    # 14b. Cumulative-savings projection (item 11)
+    # ------------------------------------------------------------------
+    # Estimate monthly cost savings assuming $3/1M input tokens and reading
+    # the cumulative tokens_saved + the age of the oldest stats row.
+    # This is intentionally a rough projection — the point is a ballpark
+    # "are you getting value?" number, not an invoice.
+    _COST_PER_1M_TOKENS: float = 3.0  # USD, conservative Claude input price
+    try:
+        with _db.open_global_readonly() as _proj_conn:
+            # Oldest stats row gives elapsed time; sum gives total savings.
+            _proj_row = _proj_conn.execute(
+                "SELECT SUM(tokens_saved), MIN(ts), MAX(ts) FROM stats"
+            ).fetchone()
+        if _proj_row and _proj_row[0] and _proj_row[1] and _proj_row[2]:
+            _total_tokens = int(_proj_row[0])
+            _oldest_ts = float(_proj_row[1])
+            _newest_ts = float(_proj_row[2])
+            _elapsed_days = (_newest_ts - _oldest_ts) / 86400.0
+            if _elapsed_days >= 1.0:
+                _tokens_per_day = _total_tokens / _elapsed_days
+                _tokens_per_month = _tokens_per_day * 30
+                _usd_per_month = (_tokens_per_month / 1_000_000) * _COST_PER_1M_TOKENS
+                ok(
+                    "projected savings",
+                    f"${_usd_per_month:.2f}/month at current rate "
+                    f"({_tokens_per_month:,.0f} tokens/month, ${_COST_PER_1M_TOKENS}/1M)",
+                )
+            else:
+                ok("projected savings", "< 1 day of data — check back tomorrow")
+    except FileNotFoundError:
+        pass
+    except Exception:  # noqa: BLE001
+        pass
+
+    # ------------------------------------------------------------------
+    # 15. Recent hook crashes (item 9) — only shown with --crashes
+    # ------------------------------------------------------------------
+    if crashes:
+        typer.echo("\nRecent hook crashes")
+        try:
+            crash_log = paths.hooks_stderr_log_path()
+            if not crash_log.exists():
+                ok("(none)", "hooks-stderr.log not found")
+            else:
+                raw_text = crash_log.read_text(encoding="utf-8", errors="replace")
+                # Each crash is a block starting with "token-goat hook" and
+                # followed by a traceback. Split on that prefix to get blocks.
+                blocks = [b.strip() for b in raw_text.split("\ntoken-goat hook") if b.strip()]
+                # Re-add the stripped prefix to all but the first block.
+                if raw_text.startswith("token-goat hook"):
+                    # First block already has the prefix
+                    display_blocks = [("token-goat hook " + b if i > 0 else b) for i, b in enumerate(blocks)]
+                else:
+                    display_blocks = [("token-goat hook " + b) for b in blocks]
+                last_5 = display_blocks[-5:] if len(display_blocks) > 5 else display_blocks
+                if not last_5:
+                    ok("(none)", "log exists but contains no crash entries")
+                else:
+                    typer.echo(f"  (showing last {len(last_5)} of {len(display_blocks)} crash block(s))")
+                    for block in last_5:
+                        for line in block.splitlines()[:6]:
+                            typer.echo(f"  {line}")
+                        typer.echo("  ---")
+        except Exception as e:  # noqa: BLE001
+            flag("crashes", str(e), warn=True)
 
     typer.echo("")

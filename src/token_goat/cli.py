@@ -1620,6 +1620,7 @@ def _run_history_listing_command(
     empty_msg: str,
     json_sidecar_fields: Callable[[object], dict[str, object]],
     format_entry: Callable[[str, int, int, object], str],
+    since_secs: float | None = None,
 ) -> None:
     """Shared implementation for bash-history, web-history, and skill-history.
 
@@ -1632,11 +1633,17 @@ def _run_history_listing_command(
 
     ``format_entry(oid, size, age_secs, sidecar)`` produces the human-readable
     line for one entry (sidecar may be ``None``).
+
+    ``since_secs``: when set, only entries whose ``mtime`` is within the last
+    ``since_secs`` seconds are returned (applied before the ``limit`` cap).
     """
     list_outputs = cache_module.list_outputs  # type: ignore[attr-defined]
     read_sidecar = cache_module.read_sidecar  # type: ignore[attr-defined]
 
     entries = list_outputs()
+    if since_secs is not None:
+        cutoff = time.time() - since_secs
+        entries = [e for e in entries if float(cast(float, e["mtime"])) >= cutoff]
     if limit > 0:
         entries = entries[:limit]
 
@@ -1695,10 +1702,47 @@ def cmd_web_history(
     )
 
 
+def _parse_since_duration(since: str) -> float | None:
+    """Parse a human duration string (e.g. ``'30m'``, ``'2h'``, ``'1d'``) into seconds.
+
+    Returns the number of seconds represented, or ``None`` when the string is
+    not recognised.  Accepted suffixes (case-insensitive): ``s`` (seconds),
+    ``m`` (minutes), ``h`` (hours), ``d`` (days).  A bare integer is treated as
+    seconds.
+
+    >>> _parse_since_duration("30m")
+    1800.0
+    >>> _parse_since_duration("2h")
+    7200.0
+    """
+    since = since.strip().lower()
+    _multipliers = {"s": 1.0, "m": 60.0, "h": 3600.0, "d": 86400.0}
+    suffix = since[-1] if since else ""
+    multiplier = _multipliers.get(suffix)
+    if multiplier is not None:
+        try:
+            return float(since[:-1]) * multiplier
+        except ValueError:
+            return None
+    # Bare number — treat as seconds
+    try:
+        return float(since)
+    except ValueError:
+        return None
+
+
 @app.command("bash-history", rich_help_panel="Core")
 def cmd_bash_history(
     json_output: bool = _OPT_JSON,
     limit: int = typer.Option(20, "--limit", "-n", help="Maximum entries to show (newest first)"),
+    since: str | None = typer.Option(  # noqa: B008
+        None,
+        "--since",
+        help=(
+            "Only show entries newer than this duration (e.g. '30m', '2h', '1d'). "
+            "Accepts s/m/h/d suffixes or a bare integer (seconds)."
+        ),
+    ),
 ) -> None:
     """List cached Bash outputs, newest first.
 
@@ -1706,8 +1750,17 @@ def cmd_bash_history(
     re-running it.  Each row shows the cache ID, byte size, age, and (if a
     sidecar file is present) the command preview and exit code.  Use the ID
     with ``token-goat bash-output <id>`` to retrieve the body.
+
+    Use ``--since 30m`` to show only entries from the last 30 minutes.
     """
     from . import bash_cache  # noqa: PLC0415
+
+    since_secs: float | None = None
+    if since is not None:
+        since_secs = _parse_since_duration(since)
+        if since_secs is None:
+            _error(f"unrecognised --since value: {since!r}  (expected e.g. '30m', '2h', '1d')")
+            raise typer.Exit(2)
 
     def _json_fields(s: object) -> dict[str, object]:
         return {"cmd_preview": s.cmd_preview, "exit_code": s.exit_code, "truncated": s.truncated}  # type: ignore[attr-defined]
@@ -1724,6 +1777,7 @@ def cmd_bash_history(
         empty_msg="(no cached Bash outputs)",
         json_sidecar_fields=_json_fields,
         format_entry=_fmt,
+        since_secs=since_secs,
     )
 
 
@@ -2512,6 +2566,115 @@ def config_list(
         typer.echo(f"{marker} {key_fmt:<{col_key + 9}} {cur_fmt}  (default: {dflt_str})")
 
 
+@config_app.command(name="validate")
+def config_validate(
+    json_output: bool = _OPT_JSON,
+) -> None:
+    """Validate config.toml and report unknown keys with did-you-mean suggestions.
+
+    Parses the raw TOML file and compares every top-level key against the set of
+    known sections.  Unknown keys are reported with the closest matching known key
+    so a typo (``compac_assist``) produces a helpful ``did you mean: compact_assist``
+    suggestion.
+    """
+    import difflib  # noqa: PLC0415
+    import tomllib  # noqa: PLC0415
+
+    from . import paths as _paths  # noqa: PLC0415
+
+    # Known top-level section keys from _ConfigToml
+    _KNOWN_TOP_LEVEL: frozenset[str] = frozenset({
+        "schema_version",
+        "compact_assist",
+        "bash_compress",
+        "session_brief",
+        "skill_preservation",
+        "image_shrink",
+        "curator",
+        "hint_budget",
+        "repomap",
+        "stats",
+    })
+
+    # Known keys per section (from the TypedDict definitions in config.py)
+    _KNOWN_SECTION_KEYS: dict[str, frozenset[str]] = {
+        "compact_assist": frozenset({"enabled", "triggers", "min_events", "max_manifest_tokens"}),
+        "bash_compress": frozenset({"enabled", "disabled_filters", "max_lines", "max_bytes", "timeout_seconds"}),
+        "session_brief": frozenset({"enabled"}),
+        "skill_preservation": frozenset({"enabled", "max_cache_bytes"}),
+        "image_shrink": frozenset({"prefer_avif", "avif_quality", "jpeg_quality", "max_image_pixels"}),
+        "curator": frozenset({"enabled", "min_samples", "threshold_pct"}),
+        "hint_budget": frozenset({"enabled", "max_per_session", "max_structured_per_session", "max_index_only_per_session"}),
+        "repomap": frozenset({"compact_file_threshold"}),
+        "stats": frozenset({"record_zero_savings"}),
+    }
+
+    cfg_path = _paths.config_path()
+    issues: list[dict[str, object]] = []
+
+    if not cfg_path.exists():
+        if json_output:
+            typer.echo(json.dumps({"ok": True, "issues": [], "note": "config file not found (defaults in use)"}, separators=(",", ":")))
+        else:
+            typer.echo("config file not found — defaults in use, nothing to validate")
+        return
+
+    try:
+        raw = tomllib.loads(cfg_path.read_text(encoding="utf-8"))
+    except tomllib.TOMLDecodeError as exc:
+        issue = {"path": str(cfg_path), "error": f"TOML parse error: {exc}"}
+        if json_output:
+            typer.echo(json.dumps({"ok": False, "issues": [issue]}, separators=(",", ":")))
+        else:
+            _error(f"TOML parse error in {cfg_path}: {exc}")
+        raise typer.Exit(1) from None
+
+    def _closest(key: str, known: frozenset[str]) -> str | None:
+        matches = difflib.get_close_matches(key, sorted(known), n=1, cutoff=0.6)
+        return matches[0] if matches else None
+
+    # Check top-level keys
+    for key in raw:
+        if key not in _KNOWN_TOP_LEVEL:
+            suggestion = _closest(key, _KNOWN_TOP_LEVEL)
+            issue: dict[str, object] = {"path": str(cfg_path), "key": key, "message": f"unknown top-level key: '{key}'"}
+            if suggestion:
+                issue["suggestion"] = f"did you mean: {suggestion}"
+            issues.append(issue)
+
+    # Check per-section keys
+    for section_key, known_section_keys in _KNOWN_SECTION_KEYS.items():
+        section_val = raw.get(section_key)
+        if not isinstance(section_val, dict):
+            continue
+        for sub_key in section_val:
+            if sub_key not in known_section_keys:
+                suggestion = _closest(sub_key, known_section_keys)
+                issue = {"path": str(cfg_path), "key": f"{section_key}.{sub_key}", "message": f"unknown key: '{section_key}.{sub_key}'"}
+                if suggestion:
+                    issue["suggestion"] = f"did you mean: {section_key}.{suggestion}"
+                issues.append(issue)
+
+    ok = len(issues) == 0
+    if json_output:
+        typer.echo(json.dumps({"ok": ok, "issues": issues, "config_path": str(cfg_path)}, separators=(",", ":")))
+        if not ok:
+            raise typer.Exit(1)
+        return
+
+    if ok:
+        typer.echo(f"config OK: {cfg_path}")
+        return
+
+    for issue in issues:
+        line = f"  [UNKNOWN] {issue['key']}"
+        if "suggestion" in issue:
+            line += f"  ({issue['suggestion']})"
+        typer.echo(line)
+    typer.echo(f"\n{len(issues)} issue(s) found in {cfg_path}")
+    raise typer.Exit(1)
+
+
 @config_app.command()
 def get(key: str) -> None:
     """Get config value."""
@@ -2545,6 +2708,74 @@ def set(key: str, value: str) -> None:
     if is_dataclass(updated) and not isinstance(updated, type):
         updated = asdict(updated)
     typer.echo(json.dumps(updated, ensure_ascii=False, separators=(",", ":")))
+
+
+@app.command("clean-cache", rich_help_panel="Advanced")
+def cmd_clean_cache(
+    images: bool = typer.Option(False, "--images", help="Prune the image shrink cache to its configured floor."),  # noqa: B008
+    json_output: bool = _OPT_JSON,
+) -> None:
+    """Prune on-disk caches to their configured floor.
+
+    Currently supported targets:
+
+    ``--images``: Prune the image shrink cache (``images/`` under the data dir)
+    so its total size falls at or below the configured LRU floor.  Uses the
+    same eviction logic as the background worker — oldest files first.
+
+    At least one target flag (``--images``) must be specified.
+    """
+    if not images:
+        _error("specify at least one cache target: --images")
+        raise typer.Exit(2)
+
+    results: dict[str, object] = {}
+
+    if images:
+        try:
+            from . import paths as _paths  # noqa: PLC0415
+            from . import worker as _worker  # noqa: PLC0415
+
+            cache_dir = _paths.image_cache_dir()
+            if not cache_dir.exists():
+                results["images"] = {"status": "skipped", "reason": "cache dir does not exist"}
+            else:
+                # Gather current size before eviction
+                before_bytes = sum(
+                    f.stat().st_size
+                    for f in cache_dir.iterdir()
+                    if f.is_file() and not f.is_symlink()
+                )
+                bytes_freed, files_evicted = _worker.evict_image_cache_if_over_limit()
+                after_bytes = before_bytes - bytes_freed
+                results["images"] = {
+                    "status": "ok",
+                    "evicted_files": files_evicted,
+                    "before_bytes": before_bytes,
+                    "after_bytes": after_bytes,
+                    "freed_bytes": bytes_freed,
+                }
+        except Exception as exc:  # noqa: BLE001
+            results["images"] = {"status": "error", "error": str(exc)}
+
+    if json_output:
+        typer.echo(json.dumps(results, ensure_ascii=False, separators=(",", ":")))
+        return
+
+    for target, info in results.items():
+        if not isinstance(info, dict):
+            typer.echo(f"  {target}: {info}")
+            continue
+        status = info.get("status", "?")
+        if status == "ok":
+            freed = int(info.get("freed_bytes", 0))
+            evicted_count = info.get("evicted_files", 0)
+            after = int(info.get("after_bytes", 0))
+            typer.echo(f"  {target}: evicted {evicted_count} file(s), freed {freed:,} bytes  (cache now {after:,} bytes)")
+        elif status == "skipped":
+            typer.echo(f"  {target}: skipped — {info.get('reason', '')}")
+        else:
+            typer.echo(f"  {target}: ERROR — {info.get('error', 'unknown')}")
 
 
 if __name__ == "__main__":

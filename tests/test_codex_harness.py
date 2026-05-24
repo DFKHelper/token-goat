@@ -195,3 +195,66 @@ def test_cli_pre_read_codex_image_snake_case(tmp_path):
         assert "hookEventName" not in hso, "camelCase key leaked into Codex output"
         assert "updatedInput" not in hso, "camelCase key leaked into Codex output"
         assert "additionalContext" not in hso, "camelCase key leaked into Codex output"
+
+
+# ---------------------------------------------------------------------------
+# 9. denormalize_response: nested dict inside hookSpecificOutput is recursively
+#    translated (item 1 — recursive _translate_hso_to_codex)
+# ---------------------------------------------------------------------------
+
+
+def test_denormalize_nested_dict_in_hso():
+    """Nested dicts inside hookSpecificOutput must also have camelCase keys translated."""
+    response = {
+        "continue": True,
+        "hookSpecificOutput": {
+            "additionalContext": "outer hint",
+            "updatedInput": {
+                "filePath": "/tmp/img.png",
+                "hookEventName": "nested-event",
+                "nestedDict": {
+                    "permissionDecision": "allow",
+                },
+            },
+        },
+    }
+    result = hooks_cli.denormalize_response(response, harness="codex")
+    hso = result["hookSpecificOutput"]
+    # Top-level translation
+    assert "additional_context" in hso
+    assert "additionalContext" not in hso
+    # First-level nested dict
+    updated = hso["updated_input"]
+    assert isinstance(updated, dict)
+    assert "hook_event_name" in updated, "nested camelCase key not translated"
+    assert "hookEventName" not in updated
+    # Second-level nested dict
+    nested = updated["nestedDict"]
+    assert isinstance(nested, dict)
+    assert "permission_decision" in nested, "doubly-nested camelCase key not translated"
+    assert "permissionDecision" not in nested
+
+
+def test_denormalize_nested_dict_non_mapped_keys_preserved():
+    """Keys not in the camelCase map must be preserved unchanged, even nested."""
+    response = {
+        "continue": True,
+        "hookSpecificOutput": {
+            "customField": "value",
+            "innerData": {
+                "myCustomKey": 42,
+                "additionalContext": "nested hint",
+            },
+        },
+    }
+    result = hooks_cli.denormalize_response(response, harness="codex")
+    hso = result["hookSpecificOutput"]
+    # Non-mapped top-level key preserved as-is
+    assert hso.get("customField") == "value"
+    inner = hso.get("innerData")
+    assert isinstance(inner, dict)
+    # Non-mapped key inside nested dict preserved
+    assert inner.get("myCustomKey") == 42
+    # Mapped key inside nested dict translated
+    assert "additional_context" in inner
+    assert "additionalContext" not in inner

@@ -918,3 +918,168 @@ def session_start(payload: HookPayload) -> HookResponse:
         return resp
 
     return CONTINUE()
+
+
+# ---------------------------------------------------------------------------
+# UserPromptSubmit: inject 1-line session-context summary
+# ---------------------------------------------------------------------------
+
+
+def user_prompt_submit(payload: HookPayload) -> HookResponse:
+    """UserPromptSubmit hook: inject a 1-line session-context summary.
+
+    Injects a compact line showing the current git branch, how many files
+    have been edited this session, and the last Bash exit code.  This gives
+    the model instant orientation without burning a tool call.
+
+    Format: ``[branch: main | edits: 3 | last_exit: 0]``
+
+    All errors are swallowed — the hook must never block prompt submission.
+    """
+    session_id, cwd = get_session_context(payload)
+    if not session_id:
+        return CONTINUE()
+
+    parts: list[str] = []
+
+    # Git branch — fast, reads .git/HEAD via subprocess
+    if cwd:
+        try:
+            import subprocess  # noqa: PLC0415
+
+            r = subprocess.run(
+                ["git", "-C", cwd, "rev-parse", "--abbrev-ref", "HEAD"],
+                capture_output=True,
+                text=True,
+                timeout=3,
+            )
+            branch = r.stdout.strip()
+            if branch:
+                parts.append(f"branch: {branch}")
+        except Exception:  # noqa: BLE001
+            pass
+
+    # Edit count and last bash exit from session cache
+    cache = None
+    try:
+        from . import session as _session  # noqa: PLC0415
+
+        cache = _session.safe_load(session_id, caller="user-prompt-submit")
+        if cache is not None:
+            edit_count = len(getattr(cache, "edited_files", set()))
+            parts.append(f"edits: {edit_count}")
+    except Exception:  # noqa: BLE001
+        pass
+
+    # Last Bash exit code from session cache bash history
+    try:
+        if cache is not None:
+            bash_hist = getattr(cache, "bash_history", {})
+            if bash_hist:
+                latest = max(bash_hist.values(), key=lambda e: getattr(e, "ts", 0), default=None)
+                if latest is not None:
+                    exit_code = getattr(latest, "exit_code", None)
+                    if exit_code is not None:
+                        parts.append(f"last_exit: {exit_code}")
+    except Exception:  # noqa: BLE001
+        pass
+
+    if not parts:
+        return CONTINUE()
+
+    summary = "[" + " | ".join(parts) + "]"
+    _LOG.debug("user-prompt-submit: injecting context summary: %s", summary)
+    return {
+        "continue": True,
+        "hookSpecificOutput": {
+            "hookEventName": "UserPromptSubmit",
+            "additionalContext": summary,
+        },
+    }
+
+
+# ---------------------------------------------------------------------------
+# SubagentStop: detect subagent hallucination (claimed work but no disk changes)
+# ---------------------------------------------------------------------------
+
+# Sidecar filename written inside sessions_dir() when a suspicious stop fires.
+_SUBAGENT_HALLUCINATION_SIDECAR = "subagent_hallucination_flags.jsonl"
+
+
+def subagent_stop(payload: HookPayload) -> HookResponse:
+    """SubagentStop hook: detect when a subagent claimed work but left no disk changes.
+
+    Runs ``git status --porcelain`` in the session's cwd.  If the output is
+    empty (no staged, unstaged, or untracked changes) while the session cache
+    records at least one edited file, appends a JSON flag record to a per-session
+    sidecar so the orchestrator can surface it.
+
+    Flag record shape::
+
+        {"ts": <unix_float>, "session_id": "...", "cwd": "...", "trigger": "SubagentStop"}
+
+    Fail-soft: every error is swallowed so the hook never blocks the harness.
+    """
+    session_id, cwd = get_session_context(payload)
+    if not session_id or not cwd:
+        return CONTINUE()
+
+    # Only flag when the session cache records edited files — a subagent that
+    # didn't claim edits doesn't need scrutiny.
+    try:
+        from . import session as _session  # noqa: PLC0415
+
+        cache = _session.safe_load(session_id, caller="subagent-stop")
+        if cache is None:
+            return CONTINUE()
+        edited = getattr(cache, "edited_files", set())
+        if not edited:
+            return CONTINUE()
+    except Exception:  # noqa: BLE001
+        return CONTINUE()
+
+    # Run git status --porcelain to check for actual disk changes.
+    try:
+        import subprocess  # noqa: PLC0415
+
+        r = subprocess.run(
+            ["git", "-C", cwd, "status", "--porcelain"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        git_output = r.stdout.strip()
+    except Exception:  # noqa: BLE001
+        return CONTINUE()
+
+    if git_output:
+        # Disk changes present — subagent did real work, no flag needed.
+        return CONTINUE()
+
+    # No disk changes but session cache has edited_files → possible hallucination.
+    _LOG.warning(
+        "subagent-stop: possible hallucination — session=%s recorded %d edit(s) but git status is clean",
+        sanitize_opt(session_id),
+        len(edited),
+    )
+    try:
+        import json as _json  # noqa: PLC0415
+        import time as _time  # noqa: PLC0415
+
+        from . import paths as _paths  # noqa: PLC0415
+
+        sidecar_dir = _paths.data_dir() / "sessions"
+        sidecar_dir.mkdir(parents=True, exist_ok=True)
+        sidecar_path = sidecar_dir / _SUBAGENT_HALLUCINATION_SIDECAR
+        record = _json.dumps({
+            "ts": _time.time(),
+            "session_id": session_id,
+            "cwd": cwd,
+            "trigger": "SubagentStop",
+        })
+        with sidecar_path.open("a", encoding="utf-8") as fh:
+            fh.write(record + "\n")
+    except Exception:  # noqa: BLE001
+        pass
+
+    return CONTINUE()
