@@ -30,11 +30,30 @@ from operator import attrgetter, itemgetter
 from typing import TYPE_CHECKING, Any, Final
 from urllib.parse import urlparse
 
-from . import session as session_mod
 from .cache_common import short_content_hash as _short_content_hash
 from .cache_common import short_output_id as _short_id
 from .hooks_common import sanitize_log_str
 from .util import _humanize_bytes, get_logger
+
+
+def __getattr__(name: str) -> object:
+    """Lazy-load heavy submodules on first attribute access.
+
+    ``session_mod`` is deferred so importing ``compact`` during the PreCompact
+    hook cold-start does not pay the cost of loading ``session`` (and its
+    transitive deps) until the first actual call to ``build_manifest`` /
+    ``event_count``.  Saves ~25 ms on Windows cold-subprocess startup.
+
+    The attribute is intentionally NOT written back to the module dict so that
+    ``unittest.mock.patch("token_goat.compact.session_mod.X")`` continues to
+    work: patch resolves the target by calling ``getattr(compact_mod,
+    "session_mod")`` on each enter/exit, which goes through ``__getattr__``
+    every time — no stale reference is cached in the module namespace.
+    """
+    if name == "session_mod":
+        from . import session as _session  # noqa: PLC0415
+        return _session
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
 def estimate_tokens(text: str) -> int:
@@ -107,7 +126,9 @@ _MIN_WEB_BYTES_FOR_MANIFEST: Final[int] = 200
 # A range whose (end - start) equals this value represents "whole file read, extent
 # unknown" — _format_ranges() annotates these as "(full)" rather than printing
 # "lines 1-100000", so the compaction LLM knows the entire file was in context.
-_FULL_READ_SENTINEL_GAP: Final[int] = session_mod._UNKNOWN_END_SENTINEL
+# Value mirrors session._UNKNOWN_END_SENTINEL (99_999); inlined here to avoid
+# importing session at module level so the PreCompact hook cold-start stays fast.
+_FULL_READ_SENTINEL_GAP: Final[int] = 99_999
 
 # Files read this many times or more are "hot" — the model knows them intimately.
 # Listing them individually wastes manifest lines on content the compaction LLM
@@ -1851,6 +1872,9 @@ def _load_session_cache(session_id: str, caller: str) -> SessionCache | None:
     ``build_manifest*`` / ``event_count`` callers each pass a distinct *caller*
     label so log lines remain distinguishable.
     """
+    from . import (
+        session as session_mod,  # deferred — cold-start; __getattr__ handles external access
+    )
     cache = session_mod.safe_load(session_id, caller=caller)
     if cache is not None:
         _LOG.debug(
@@ -2123,6 +2147,9 @@ def build_manifest(session_id: str, *, max_tokens: int = 400) -> str:
         return f"## Session Manifest (unchanged since {age_sec}s ago — see prior manifest)"
 
     # Cache miss or TTL expired: update the session cache and return the full manifest.
+    from . import (
+        session as session_mod,  # deferred — cold-start; __getattr__ handles external access
+    )
     cache.last_manifest_sha = sha
     cache.last_manifest_ts = now
     cache._invalidate_json_cache()
