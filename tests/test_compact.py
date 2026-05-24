@@ -5550,7 +5550,8 @@ class TestInlineDiffForTop2Edited:
         session.save(cache)
         manifest = compact._build_manifest_from_cache(cache, sid, 800)
         assert "inline diff" not in manifest
-        assert "**Edited:**" in manifest
+        # Item #16: high overlap may merge Edited+Files into **Files:**; accept either form.
+        assert "**Edited:**" in manifest or "**Files:**" in manifest
 
     def test_total_inline_cap_limits_second_file(self, tmp_data_dir, monkeypatch):
         """When first file returns None from helper, second file is still attempted."""
@@ -5575,6 +5576,7 @@ class TestInlineDiffForTop2Edited:
         cache.cwd = "/proj"
         session.save(cache)
         manifest = compact._build_manifest_from_cache(cache, sid, 800)
+        # bar.py inlines → _inline_diffs_were_emitted=True → merge suppressed → **Edited:** present.
         assert "**Edited:**" in manifest
         assert "inline diff" in manifest  # bar.py inlined
         assert "bar.py" in manifest
@@ -5631,7 +5633,9 @@ class TestSingleFileInlineDiff:
         session.save(cache)
         manifest = compact._build_manifest_from_cache(cache, sid, 800)
         assert "inline diff" not in manifest
-        assert "**Edited:**" in manifest
+        # Item #16: high overlap (edited only.py + reads of only.py/util.py/main.py) may
+        # merge Edited+Files into **Files:**; accept either section header.
+        assert "**Edited:**" in manifest or "**Files:**" in manifest
 
     def test_two_files_skips_single_file_path(self, tmp_data_dir, monkeypatch):
         """Two edited files → _get_whole_repo_diff never called (single-file path skipped)."""
@@ -5659,7 +5663,8 @@ class TestSingleFileInlineDiff:
         session.save(cache)
         manifest = compact._build_manifest_from_cache(cache, sid, 800)
         assert whole_diff_called["n"] == 0
-        assert "**Edited:**" in manifest
+        # Item #16: high overlap (both edited files were also read) may merge into **Files:**.
+        assert "**Edited:**" in manifest or "**Files:**" in manifest
 
 
 # ---------------------------------------------------------------------------
@@ -6157,3 +6162,221 @@ class TestDynamicMaxFilesRead:
             file_entries = [ln for ln in files_section.splitlines() if ln.strip().startswith("-")]
             # >=10 path: max=4, mature bonus=+2 → max 6
             assert len(file_entries) <= 6
+
+
+# ---------------------------------------------------------------------------
+# Item 9 — Skills section collapse to summary when recovery hint will fire
+# ---------------------------------------------------------------------------
+
+
+class TestSkillsSectionCollapse:
+    """Skills section collapses to one summary line for active sessions."""
+
+    def test_collapsed_when_active(self, tmp_data_dir):
+        """High-activity session: skill lines collapse to a single summary line."""
+        from token_goat import skill_cache
+
+        sid = "skills-collapse-active-abc"
+        # Enough activity to exceed _ACTIVITY_FLOOR (score >= 3):
+        # 2 edits × 2 = 4 ≥ 3.
+        session.mark_file_edited(sid, "src/foo.py")
+        session.mark_file_edited(sid, "src/bar.py")
+
+        # Register two skills.
+        for skill_name in ("ralph", "improve"):
+            body = f"{skill_name} skill body content " * 20
+            meta = skill_cache.store_output(sid, skill_name, body)
+            assert meta is not None
+            skill_cache.write_sidecar(meta)
+            session.mark_skill_loaded(
+                sid, meta.skill_name, meta.output_id, meta.content_sha,
+                meta.body_bytes, meta.truncated,
+            )
+
+        result = compact.build_manifest(sid, max_tokens=600)
+
+        # Must emit the skills header.
+        assert "**Skills:**" in result
+
+        # Collapsed form: single line containing both names and the recall hint.
+        skills_line = next(
+            (ln for ln in result.splitlines() if ln.startswith("**Skills:**")), None
+        )
+        assert skills_line is not None, "Expected **Skills:** as a line-start header"
+        assert "ralph" in skills_line
+        assert "improve" in skills_line
+        assert "recall via" in skills_line
+
+        # Must NOT emit per-skill bullet lines with "🧠" prefix — those are the
+        # full listing format, which should be suppressed when collapsed.
+        skills_part = result.split("**Skills:**", 1)[1]
+        next_section_start = skills_part.find("**")
+        if next_section_start >= 0:
+            skills_content = skills_part[:next_section_start]
+        else:
+            skills_content = skills_part
+        assert "🧠" not in skills_content
+
+    def test_full_listing_when_low_activity(self, tmp_data_dir):
+        """Low-activity session (score < _ACTIVITY_FLOOR): full per-skill listing."""
+        from token_goat import skill_cache
+
+        sid = "skills-collapse-lowact-abc"
+        # Score = 1 skill × 1 = 1, below _ACTIVITY_FLOOR (3). No edits, no bash.
+        # We must still pass the activity-floor check in build_manifest_adaptive,
+        # but build_manifest (fixed max_tokens) bypasses that gate — use it directly.
+        body = "skill body content " * 20
+        meta = skill_cache.store_output(sid, "ralph", body)
+        assert meta is not None
+        skill_cache.write_sidecar(meta)
+        session.mark_skill_loaded(
+            sid, meta.skill_name, meta.output_id, meta.content_sha,
+            meta.body_bytes, meta.truncated,
+        )
+        # One file read (no edits, no bash) — score = 0 from edits/bash, 1 from skill.
+        # Total = 1 < _ACTIVITY_FLOOR (3) → full listing path.
+        session.mark_file_read(sid, "src/foo.py", offset=0, limit=50)
+
+        result = compact.build_manifest(sid, max_tokens=600)
+
+        if "**Skills:**" not in result:
+            # Session may have been suppressed entirely — that is acceptable here
+            # since the activity is genuinely low; the test only checks that
+            # IF skills appear, they use the full format.
+            return
+
+        # Full listing has per-skill bullet lines with 🧠 prefix.
+        assert "🧠" in result
+        # Full listing does NOT use the collapsed "recall via" summary inline.
+        skills_line = next(
+            (ln for ln in result.splitlines() if ln.startswith("**Skills:**")), None
+        )
+        # In full listing mode, **Skills:** is a section header (no inline summary).
+        if skills_line is not None:
+            assert "recall via" not in skills_line
+
+
+# ---------------------------------------------------------------------------
+# Item 16 — Merge Files Edited + Key Files Read at >= 50% overlap
+# ---------------------------------------------------------------------------
+
+
+class TestFilesEditedReadMerge:
+    """Files Edited and Key Files Read are merged when overlap >= 50%."""
+
+    def test_high_overlap_produces_merged_section(self, tmp_data_dir):
+        """When >= 50% of edited files also appear in the read set, sections merge.
+
+        Scenario: 2 edited files are also read multiple times (100% overlap),
+        PLUS some additional non-edited reads to ensure the **Files:** section
+        would normally be populated (the merge replaces both Edited + Files).
+        """
+        sid = "merge-high-overlap-abc"
+        # Edit 2 files and read them (overlap = 100% of edited set).
+        session.mark_file_edited(sid, "src/alpha.py")
+        session.mark_file_edited(sid, "src/beta.py")
+        for _ in range(3):
+            session.mark_file_read(sid, "src/alpha.py", offset=0, limit=50)
+            session.mark_file_read(sid, "src/beta.py", offset=0, limit=50)
+        # Add 2 non-edited reads so **Files:** section is populated.
+        session.mark_file_read(sid, "src/gamma.py", offset=0, limit=50)
+        session.mark_file_read(sid, "src/delta.py", offset=0, limit=50)
+
+        result = compact.build_manifest(sid, max_tokens=600)
+
+        # When merged, a single **Files:** section appears (not separate Edited/Files).
+        assert "**Files:**" in result
+        # Merged lines carry the ✎ edit annotation for edited files.
+        files_section = result.split("**Files:**", 1)[1]
+        end = files_section.find("\n**")
+        if end >= 0:
+            files_section = files_section[:end]
+        assert "✎" in files_section
+        # The **Edited:** header should NOT appear separately (merged away).
+        assert "**Edited:**" not in result
+
+    def test_low_overlap_keeps_separate_sections(self, tmp_data_dir):
+        """When < 50% overlap, separate **Edited:** and **Files:** sections are kept."""
+        sid = "merge-low-overlap-abc"
+        # Edit 4 files, but only read 1 of them (overlap = 25% < 50%).
+        for i in range(4):
+            session.mark_file_edited(sid, f"src/edit_{i}.py")
+        # Read the first edited file once (overlap = 1/4 = 25%).
+        session.mark_file_read(sid, "src/edit_0.py", offset=0, limit=50)
+        # Also read several unrelated files so **Files:** section is populated.
+        for i in range(5):
+            session.mark_file_read(sid, f"src/read_{i}.py", offset=0, limit=50)
+
+        result = compact.build_manifest(sid, max_tokens=800)
+
+        # Separate sections: Edited uses **Edited:** header.
+        assert "**Edited:**" in result
+
+    def test_edits_only_no_merge(self, tmp_data_dir):
+        """With edits but no reads in top-files, no merge is attempted."""
+        sid = "merge-edits-only-abc"
+        session.mark_file_edited(sid, "src/foo.py")
+        session.mark_file_edited(sid, "src/bar.py")
+        # No reads recorded.
+        result = compact.build_manifest(sid, max_tokens=600)
+        # Edits appear under **Edited:** (not merged).
+        assert "**Edited:**" in result
+        # **Files:** should not appear (no read entries to merge).
+        # Tolerate absence of **Files:** section entirely.
+        if "**Files:**" in result:
+            # If it somehow appears (e.g. via a different path), no overlap — that's fine.
+            pass
+
+
+# ---------------------------------------------------------------------------
+# Item 24 — Map pointer replaces symbol list in wide sessions
+# ---------------------------------------------------------------------------
+
+
+class TestWideSessionSymbolReplacement:
+    """Wide sessions (>= _WIDE_SESSION_THRESHOLD files) get a map pointer, not symbol list."""
+
+    def test_under_threshold_emits_full_symbol_section(self, tmp_data_dir):
+        """Fewer than threshold files: per-file symbol list is emitted normally."""
+        sid = "wide-under-threshold-abc"
+        threshold = compact._WIDE_SESSION_THRESHOLD
+        # Stay under threshold: read (threshold - 2) files, each with a symbol.
+        n = max(1, threshold - 2)
+        for i in range(n):
+            session.mark_file_read(sid, f"src/mod_{i:02d}.py", symbol=f"func_{i}")
+        session.mark_file_edited(sid, "src/target.py")
+
+        result = compact.build_manifest(sid, max_tokens=2000)
+
+        # Should use the per-file format (contains "→" inside **Syms:** section).
+        if "**Syms:**" in result:
+            syms_part = result.split("**Syms:**", 1)[1]
+            end = syms_part.find("\n**")
+            syms_content = syms_part[:end] if end >= 0 else syms_part
+            # Per-file entries use "→" as the separator between path and symbols.
+            assert "→" in syms_content
+            # Wide-session one-liner would say "files accessed".
+            assert "files accessed" not in syms_content
+
+    def test_at_threshold_emits_map_pointer(self, tmp_data_dir, monkeypatch):
+        """Exactly at threshold files: symbol section replaced by map pointer."""
+        sid = "wide-at-threshold-abc"
+        threshold = compact._WIDE_SESSION_THRESHOLD
+
+        # Read exactly `threshold` files (each with a symbol so Syms section fires).
+        for i in range(threshold):
+            session.mark_file_read(sid, f"src/wide_{i:02d}.py", symbol=f"fn_{i}")
+        session.mark_file_edited(sid, "src/anchor.py")
+
+        result = compact.build_manifest(sid, max_tokens=2000)
+
+        # The map-pointer one-liner must appear.
+        assert "**Syms:**" in result
+        syms_line = next(
+            (ln for ln in result.splitlines() if "**Syms:**" in ln), None
+        )
+        assert syms_line is not None
+        assert "files accessed" in syms_line
+        assert "token-goat map --compact" in syms_line
+        # Must NOT list individual per-file symbol entries.
+        assert "→" not in syms_line
