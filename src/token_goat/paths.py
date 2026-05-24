@@ -467,6 +467,7 @@ def _atomic_write_core(path: Path, content: str | bytes, mode: Literal["w", "wb"
     """
     tmp = path.with_name(f"{path.name}.{threading.get_ident()}.{time.monotonic_ns()}.tmp")
     path.parent.mkdir(parents=True, exist_ok=True)
+    renamed = False
     try:
         fd = _open_restricted(tmp)
         try:
@@ -481,8 +482,17 @@ def _atomic_write_core(path: Path, content: str | bytes, mode: Literal["w", "wb"
             _LOG.warning("atomic write failed for %s: %s", path.name, _write_err)
             raise
         _rename_with_retry(tmp, path)
+        renamed = True
     finally:
-        tmp.unlink(missing_ok=True)
+        # Only unlink when the rename did not succeed — on POSIX the rename
+        # atomically removes the source name so tmp no longer exists after a
+        # successful rename, and calling unlink() on a stale path could
+        # theoretically hit a different file that reused the same name.  On
+        # Windows the same applies: the rename consumed tmp, so we only need to
+        # clean up when we still own it (i.e. the rename was never reached or
+        # raised).
+        if not renamed:
+            tmp.unlink(missing_ok=True)
 
 
 def atomic_write_text(path: Path, content: str) -> None:

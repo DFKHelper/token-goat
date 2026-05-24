@@ -108,7 +108,31 @@ _FILE_LOCK = threading.Lock()  # in-process; multi-process safe enough via atomi
 # This dedup is per-process only — a fresh hook process (each tool call spawns one)
 # starts with an empty set, so a single row per (session_id, phase) per process is
 # recorded rather than strictly one row per session lifetime.
-_REPORTED_CONTENTION: set[tuple[str, str]] = set()
+# ---------------------------------------------------------------------------
+# Disk-based contention dedup
+# ---------------------------------------------------------------------------
+# _REPORTED_CONTENTION used to be a module-level set — but each hook spawns a
+# fresh process (~50 ms lifetime), so the set was always empty on entry and the
+# "dedup" recorded one stat row per (session_id, phase) per hook process.
+# Under disk pressure this flooded global.db with thousands of identical rows.
+#
+# Replaced with touch-files under data_dir()/contention_marks/.  The directory
+# is created lazily on first use.  Worker maintenance sweeps marks older than
+# _CONTENTION_MARK_TTL_SECS on each maintenance cycle.
+
+
+def _contention_mark_path(session_id: str, phase: str) -> Path:
+    """Return the touch-file path for a (session_id, phase) contention record."""
+    from . import paths as _paths  # noqa: PLC0415
+
+    # Use first 32 chars of session_id to keep filenames sane on any FS.
+    safe_sid = session_id[:32].replace("/", "_").replace("\\", "_")
+    safe_phase = phase.replace("/", "_").replace("\\", "_")
+    return _paths.data_dir() / "contention_marks" / f"{safe_sid}_{safe_phase}.mark"
+
+
+# Touch-files older than this are considered expired and may be swept by the worker.
+_CONTENTION_MARK_TTL_SECS: Final[float] = 3600.0
 
 # ---------------------------------------------------------------------------
 # Cross-process session lockfile helpers
@@ -590,10 +614,8 @@ _EDITED_FILES_EVICT: Final[int] = 50
 SNAPSHOT_SHAS_MAX: Final[int] = 200
 _SNAPSHOT_SHAS_EVICT: Final[int] = 50
 
-# Maximum size of the module-level _REPORTED_CONTENTION set.  One entry per
-# (session_id, phase) pair that logged a contention warning; cleared when the
-# set grows past this threshold to prevent unbounded growth in the worker process.
-_CONTENTION_MAX: Final[int] = 1_000
+# _CONTENTION_MAX / _REPORTED_CONTENTION removed — replaced by disk touch-files.
+# See _contention_mark_path() and _record_cache_contention().
 
 
 @dataclass
@@ -1583,13 +1605,35 @@ def validate_session_id(session_id: str) -> None:
 
 
 def _record_cache_contention(session_id: str, phase: str, exc: OSError) -> None:
-    """Record a best-effort telemetry row when the session cache is locked."""
-    key = (session_id, phase)
-    if key in _REPORTED_CONTENTION:
+    """Record a best-effort telemetry row when the session cache is locked.
+
+    Uses a disk touch-file under ``data_dir()/contention_marks/`` as the dedup
+    token so the "already reported" check survives across processes.  Each hook
+    spawns a fresh process, so an in-memory set was always empty on entry and
+    effectively recorded one stat row *per hook call* rather than one per
+    session lifetime.  The touch-file approach limits it to one row per
+    (session_id, phase) until the worker sweeps marks older than
+    ``_CONTENTION_MARK_TTL_SECS``.
+    """
+    mark = _contention_mark_path(session_id, phase)
+    try:
+        # Cheap existence check — one stat() per contention event.
+        if mark.exists():
+            return
+        mark.parent.mkdir(parents=True, exist_ok=True)
+        # O_CREAT|O_EXCL is atomic: the process that wins the create records
+        # the stat row; concurrent losers see the file on the next stat().
+        fd = os.open(str(mark), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+        os.close(fd)
+    except FileExistsError:
+        # Another process created the mark between our exists() check and
+        # our O_EXCL open — treat as already reported.
         return
-    if len(_REPORTED_CONTENTION) >= _CONTENTION_MAX:
-        _REPORTED_CONTENTION.clear()
-    _REPORTED_CONTENTION.add(key)
+    except OSError:
+        # Cannot create the mark file (e.g. read-only FS, quota exceeded).
+        # Fall through and record the stat row anyway; duplicates are
+        # acceptable in edge cases.
+        pass
     try:
         from . import db  # noqa: PLC0415
 

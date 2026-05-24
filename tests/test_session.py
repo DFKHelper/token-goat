@@ -1106,46 +1106,74 @@ class TestWebHistoryMaxEviction:
         assert cache.web_history["sha_0"].output_id == "out_0_retry"
 
 
-class TestContentionMaxClear:
-    """_CONTENTION_MAX: _REPORTED_CONTENTION is cleared when the cap is hit."""
+class TestContentionDiskDedup:
+    """_record_cache_contention uses disk touch-files for cross-process dedup."""
 
-    def test_contention_set_cleared_at_cap(self, tmp_data_dir, monkeypatch):
-        """When _REPORTED_CONTENTION reaches _CONTENTION_MAX, the next call clears it
-        then re-adds the new key, leaving the set with exactly 1 entry."""
-        # Fill _REPORTED_CONTENTION to exactly _CONTENTION_MAX via direct mutation
-        # (bypassing DB writes) so the test stays fast and DB-free.
-        fake_set: set[tuple[str, str]] = set()
-        for i in range(session._CONTENTION_MAX):
-            fake_set.add((f"session_{i}", "load"))
-        monkeypatch.setattr(session, "_REPORTED_CONTENTION", fake_set)
-
-        # Stub out db.record_stat so no real DB write happens.
+    def test_first_call_records_stat_and_creates_mark(self, tmp_data_dir, monkeypatch):
+        """The first contention call creates a touch-file and records one stat row."""
         import token_goat.db as _db
-        monkeypatch.setattr(_db, "record_stat", lambda *a, **kw: None)
 
-        # _record_cache_contention with a brand-new key must trigger the clear.
+        calls: list[tuple] = []
+        monkeypatch.setattr(_db, "record_stat", lambda *a, **kw: calls.append((a, kw)))
+
         exc = OSError("simulated contention")
-        session._record_cache_contention("new_session_id", "load", exc)
+        session._record_cache_contention("sess_first", "load", exc)
 
-        # After the call: set was cleared then the new (session_id, phase) was added.
-        assert len(session._REPORTED_CONTENTION) == 1
-        assert ("new_session_id", "load") in session._REPORTED_CONTENTION
+        # One stat row recorded.
+        assert len(calls) == 1
+        # Touch-file exists on disk.
+        mark = session._contention_mark_path("sess_first", "load")
+        assert mark.exists()
 
-    def test_contention_set_not_cleared_below_cap(self, tmp_data_dir, monkeypatch):
-        """Below the cap, _REPORTED_CONTENTION grows normally without being cleared."""
-        fake_set: set[tuple[str, str]] = set()
-        monkeypatch.setattr(session, "_REPORTED_CONTENTION", fake_set)
-
+    def test_second_call_deduped_by_touch_file(self, tmp_data_dir, monkeypatch):
+        """Subsequent calls for the same (session_id, phase) are deduped via the mark file."""
         import token_goat.db as _db
-        monkeypatch.setattr(_db, "record_stat", lambda *a, **kw: None)
+
+        calls: list[tuple] = []
+        monkeypatch.setattr(_db, "record_stat", lambda *a, **kw: calls.append((a, kw)))
+
+        exc = OSError("contention again")
+        # First call — should record.
+        session._record_cache_contention("sess_dedup", "save", exc)
+        assert len(calls) == 1
+
+        # Second call — mark file exists; should be deduped.
+        session._record_cache_contention("sess_dedup", "save", exc)
+        assert len(calls) == 1, "second call must not record another stat row"
+
+    def test_different_phases_each_get_own_mark(self, tmp_data_dir, monkeypatch):
+        """(session_id, 'load') and (session_id, 'save') are independent."""
+        import token_goat.db as _db
+
+        calls: list[tuple] = []
+        monkeypatch.setattr(_db, "record_stat", lambda *a, **kw: calls.append((a, kw)))
 
         exc = OSError("contention")
-        session._record_cache_contention("sess_a", "load", exc)
-        session._record_cache_contention("sess_b", "save", exc)
+        session._record_cache_contention("sess_phases", "load", exc)
+        session._record_cache_contention("sess_phases", "save", exc)
 
-        # Both entries must be present — no clear fired.
-        assert ("sess_a", "load") in fake_set
-        assert ("sess_b", "save") in fake_set
+        # Two distinct mark files, two stat rows.
+        assert len(calls) == 2
+        assert session._contention_mark_path("sess_phases", "load").exists()
+        assert session._contention_mark_path("sess_phases", "save").exists()
+
+    def test_mark_file_race_fileexists_handled(self, tmp_data_dir, monkeypatch):
+        """FileExistsError on O_EXCL open (concurrent process won) is handled silently."""
+        import token_goat.db as _db
+
+        calls: list[tuple] = []
+        monkeypatch.setattr(_db, "record_stat", lambda *a, **kw: calls.append((a, kw)))
+
+        # Pre-create the mark file to simulate another process already wrote it.
+        mark = session._contention_mark_path("sess_race", "load")
+        mark.parent.mkdir(parents=True, exist_ok=True)
+        mark.touch()
+
+        exc = OSError("contention")
+        session._record_cache_contention("sess_race", "load", exc)
+
+        # Mark existed → deduped, no stat row written.
+        assert len(calls) == 0
 
 
 class TestCompactSerialization:

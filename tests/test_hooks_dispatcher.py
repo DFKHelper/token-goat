@@ -386,6 +386,39 @@ class TestSafeRun:
         parsed = json.loads(out)
         assert parsed["continue"] is True
 
+    def test_safe_run_denormalize_failure_emits_dispatch_output(self, tmp_path, capsys, monkeypatch):
+        """If denormalize_response raises, safe_run must still emit the dispatch output.
+
+        A bug in _translate_hso_to_codex must not silently drop the real hook
+        payload — the un-denormalized dict is acceptable fallback output.
+        """
+        import json
+
+        from token_goat import hooks_cli as hc
+
+        sentinel_value = "sentinel-abc"
+
+        def patched_dispatch(event, payload):
+            return {"continue": True, "hookSpecificOutput": {"my_key": sentinel_value}}
+
+        def broken_denormalize(response, harness):
+            raise RuntimeError("denormalize exploded")
+
+        monkeypatch.setattr(hc, "dispatch", patched_dispatch)
+        monkeypatch.setattr(hc, "denormalize_response", broken_denormalize)
+
+        payload_file = tmp_path / "payload.json"
+        payload_file.write_text('{"session_id": "z"}', encoding="utf-8")
+        hc.safe_run("pre-read", input_file=payload_file, harness="codex")
+
+        out = capsys.readouterr().out
+        parsed = json.loads(out)
+        # The raw dispatch output must be present (not bare {"continue": true}).
+        hso = parsed.get("hookSpecificOutput", {})
+        assert hso.get("my_key") == sentinel_value, (
+            f"expected sentinel in output; got: {parsed}"
+        )
+
 
 # ---------------------------------------------------------------------------
 # normalize_payload — codex harness path (line 60-62)
