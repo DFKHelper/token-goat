@@ -28,6 +28,7 @@ from .hooks_common import (
     get_session_context,
     get_tool_input,
     is_real_int,
+    record_cached_stat,
     sanitize_log_str,
 )
 from .hooks_common import (
@@ -313,7 +314,7 @@ def post_fetch(payload: HookPayload) -> HookResponse:
         )
         return CONTINUE()
 
-    from . import db, session, web_cache  # noqa: PLC0415
+    from . import session, web_cache  # noqa: PLC0415
 
     meta = web_cache.store_output(session_id, url, body, status_code)
     if meta is None:
@@ -335,14 +336,7 @@ def post_fetch(payload: HookPayload) -> HookResponse:
 
     # Informational stat row — no saving claimed at capture time; the saving
     # is realized when (and if) the agent later avoids a re-fetch.
-    try:
-        db.record_stat(
-            None, "web_output_cached",
-            bytes_saved=0, tokens_saved=0,
-            detail=sanitize_log_str(url, max_len=200),
-        )
-    except Exception:  # noqa: BLE001
-        _LOG.debug("post-fetch: stat record failed", exc_info=True)
+    record_cached_stat("web_output_cached", sanitize_log_str(url, max_len=200))
 
     _LOG.info(
         "post-fetch: cached body id=%s bytes=%d status=%s truncated=%s",
