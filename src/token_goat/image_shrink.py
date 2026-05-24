@@ -337,7 +337,7 @@ def _ensure_rgb(img: _PilImage.Image, Image_module: types.ModuleType) -> _PilIma
     return bg
 
 
-def shrink(src_path: Path) -> tuple[Path, str] | None:
+def shrink(src_path: Path) -> Path | None:
     """Compress and cache a large image; return the cached output path, or None on failure.
 
     Processing pipeline:
@@ -355,8 +355,9 @@ def shrink(src_path: Path) -> tuple[Path, str] | None:
     6. Log size reduction percentage for telemetry.
 
     Returns ``None`` (never raises) on any PIL, OS, or memory error. Callers treat
-    ``None`` as "use original path". On success returns ``(cached_path, summary)``
-    where ``summary`` is a short alt-text string from :func:`extract_image_summary`.
+    ``None`` as "use original path". On success returns the cached output ``Path``.
+    Callers that want an alt-text summary should reopen the result with PIL and
+    pass it to :func:`extract_image_summary`.
     """
     t0 = time.time()
     # Validate input path for safety
@@ -408,15 +409,7 @@ def shrink(src_path: Path) -> tuple[Path, str] | None:
                     os.utime(candidate, (now, now))
             except OSError:
                 pass  # Benign — cache still works, just loses a little LRU fidelity
-            # Build summary from the cached image dimensions.
-            _summary = ""
-            try:
-                from PIL import Image as _PIL_Image  # noqa: PLC0415
-                with _PIL_Image.open(candidate) as _cached_img:
-                    _summary = extract_image_summary(src_path, _cached_img)
-            except Exception:  # noqa: BLE001
-                pass
-            return candidate, _summary
+            return candidate
 
     try:
         from PIL import Image, ImageOps  # noqa: PLC0415
@@ -430,7 +423,6 @@ def shrink(src_path: Path) -> tuple[Path, str] | None:
         # Image.open returns ImageFile; downstream resize/convert/paste return
         # Image. Annotate broadly so reassignment doesn't trip the type checker.
         img: Image.Image
-        _shrink_summary = ""
         with Image.open(src_path) as img:
             # Warn when the decoded bitmap is large enough to be a memory concern,
             # even though it falls within the Pillow cap.  Half of _MAX_PIXELS is
@@ -522,9 +514,6 @@ def shrink(src_path: Path) -> tuple[Path, str] | None:
                         final_path = stem.with_suffix(".jpg")
                         img.save(final_path, "JPEG", quality=_cfg.image_shrink.jpeg_quality, optimize=True)
 
-            # Capture summary while img is still open (size/EXIF accessible).
-            _shrink_summary = extract_image_summary(src_path, img)
-
         out_size = final_path.stat().st_size
         savings_pct = 100.0 * (1.0 - out_size / src_size) if src_size > 0 else 0.0
         elapsed = time.time() - t0
@@ -537,7 +526,7 @@ def shrink(src_path: Path) -> tuple[Path, str] | None:
             savings_pct,
             elapsed,
         )
-        return final_path, _shrink_summary
+        return final_path
     except Exception as e:  # noqa: BLE001 — PIL raises many undocumented exception subclasses
         elapsed = time.time() - t0
         _LOG.warning(
@@ -624,9 +613,9 @@ def shrink_if_image(path: Path) -> Path:
     # Fast pre-check: should_shrink() does extension + size check without PIL.
     # This avoids calling shrink() on small files or non-image types.
     if should_shrink(path):
-        result = shrink(path)
-        if result is not None:
-            return result[0]
+        shrunken = shrink(path)
+        if shrunken is not None:
+            return shrunken
         _LOG.debug("shrink_if_image: shrink returned None for %s, using original path", path.name)
     return path
 
