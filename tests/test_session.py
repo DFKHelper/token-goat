@@ -272,13 +272,14 @@ class TestPathNormalization:
 class TestListTouched:
     """List touched files."""
 
-    def test_list_touched_sorted_by_timestamp(self, tmp_data_dir):
+    def test_list_touched_sorted_by_timestamp(self, tmp_data_dir, monkeypatch):
         """list_touched returns entries sorted by last_read_ts desc."""
+        import itertools as _it
         s_id = "s12"
+        _ts = _it.count(1_000_000_000.0, 0.01)
+        monkeypatch.setattr(session.time, "time", lambda: next(_ts))
         session.mark_file_read(s_id, "a.py")
-        time.sleep(0.01)
         session.mark_file_read(s_id, "b.py")
-        time.sleep(0.01)
         session.mark_file_read(s_id, "c.py")
 
         entries = session.list_touched(s_id)
@@ -471,22 +472,26 @@ class TestFullFileCollapseThreshold:
 class TestTimestampTracking:
     """Timestamp tracking."""
 
-    def test_last_activity_ts_updated(self, tmp_data_dir):
+    def test_last_activity_ts_updated(self, tmp_data_dir, monkeypatch):
         """last_activity_ts is updated on each mark_* call."""
+        import itertools as _it
         s_id = "s15"
+        _ts = _it.count(1_000_000_000.0, 0.01)
+        monkeypatch.setattr(session.time, "time", lambda: next(_ts))
         c1 = session.mark_file_read(s_id, "f.py")
         t1 = c1.last_activity_ts
-        time.sleep(0.01)
         c2 = session.mark_file_read(s_id, "g.py")
         t2 = c2.last_activity_ts
         assert t2 > t1
 
-    def test_file_entry_last_read_ts(self, tmp_data_dir):
+    def test_file_entry_last_read_ts(self, tmp_data_dir, monkeypatch):
         """FileEntry.last_read_ts is updated on each read."""
+        import itertools as _it
         s_id = "s16"
+        _ts = _it.count(1_000_000_000.0, 0.01)
+        monkeypatch.setattr(session.time, "time", lambda: next(_ts))
         c1 = session.mark_file_read(s_id, "f.py")
         t1 = c1.files["f.py"].last_read_ts
-        time.sleep(0.01)
         c2 = session.mark_file_read(s_id, "f.py")
         t2 = c2.files["f.py"].last_read_ts
         assert t2 > t1

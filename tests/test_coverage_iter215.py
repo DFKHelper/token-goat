@@ -489,7 +489,7 @@ def _make_file_entry(path: str, read_count: int = 1):
 class TestBuildManifestEdited:
     """build_manifest produces an 'Edited files' section when edited_files is set."""
 
-    def test_edited_files_section_present(self):
+    def test_edited_files_section_present(self, tmp_data_dir):
         from token_goat.compact import build_manifest
 
         session_id = "manifest_edit_test_215"
@@ -535,7 +535,7 @@ class TestBuildManifestEdited:
             result = build_manifest(session_id, max_tokens=_MAX_MANIFEST_TOKENS_CAP * 10)
         assert isinstance(result, str)
 
-    def test_manifest_contains_edited_filename(self):
+    def test_manifest_contains_edited_filename(self, tmp_data_dir):
         from token_goat.compact import build_manifest
 
         cache = _make_session_cache(edited_files={"src/worker.py": 3})

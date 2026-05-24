@@ -33,7 +33,6 @@ from __future__ import annotations
 
 __all__ = ["post_bash", "post_read", "pre_read"]
 
-import os
 from pathlib import Path
 
 from .hooks_common import (
@@ -68,6 +67,8 @@ def _bash_compress_enabled() -> bool:
     immediately, and an opt-out path is available for users who want the
     raw output (e.g. debugging a filter that strips too much).
     """
+    import os  # noqa: PLC0415 — lazy: only the Bash hook path reads this env var
+
     val = os.environ.get(_ENV_BASH_COMPRESS, "").strip().lower()
     return val not in ("0", "false", "no", "off")
 

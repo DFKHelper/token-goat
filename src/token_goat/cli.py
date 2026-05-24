@@ -1494,17 +1494,26 @@ def _run_output_recall_command(
         for i, ln in enumerate(original_lines, start=1):
             if ln not in original_index:
                 original_index[ln] = i
+        # The text-mode "Match count:" header and footer are presentation-only
+        # for terminal readers; JSON consumers get the count as a structured
+        # field instead, with numbered_lines holding only real matches.
+        json_lines = [
+            ln for ln in lines
+            if not ln.startswith("Match count: ") and ln != _grep_footer
+        ]
         numbered: list[dict[str, object]] = [
             {"lineno": original_index.get(ln, 0), "text": ln}
-            for ln in lines
+            for ln in json_lines
         ]
         payload: dict[str, object] = {
             "output_id": output_id,
             "text": sliced,
-            "lines": len(lines),
+            "lines": len(json_lines),
             "numbered_lines": numbered,
             "total_lines": len(original_lines),
         }
+        if grep:
+            payload["match_count"] = len([ln for ln in original_lines if grep in ln])
         payload.update(meta)
         if sidecar is not None:
             payload.update(vars(sidecar))

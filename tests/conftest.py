@@ -7,7 +7,6 @@ from unittest.mock import patch
 import pytest
 
 import token_goat.paths as paths
-from token_goat.parser import index_project
 from token_goat.project import Project, canonicalize, project_hash
 from token_goat.session import SessionCache
 
@@ -382,6 +381,9 @@ def _make_sample_project(tmp_path: Path, tmp_data_dir, make_project, sample_path
     (proj_root / ".git").mkdir(exist_ok=True)
     proj = make_project(proj_root)
     if indexed:
+        from token_goat.parser import (
+            index_project,  # noqa: PLC0415 — deferred to avoid loading tree-sitter on every worker
+        )
         index_project(proj, full=True)
     return (proj_root, proj) if indexed else proj
 
@@ -481,6 +483,9 @@ def _make_sample_project_module(tmp_path_factory, sample_path: Path):
     data_dir.mkdir()
     with patch.object(paths, "data_dir", return_value=data_dir):
         proj = make_project_from_root(proj_root)
+        from token_goat.parser import (
+            index_project,  # noqa: PLC0415 — deferred to avoid loading tree-sitter on every worker
+        )
         index_project(proj, full=True)
     return proj_root, proj, data_dir
 
