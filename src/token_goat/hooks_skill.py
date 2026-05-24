@@ -49,46 +49,16 @@ _SKILL_CACHE_MIN_BYTES: int = 256
 def _extract_skill_body(payload: HookPayload) -> str:
     """Pull the skill body text from a PostToolUse(Skill) payload.
 
-    Defensive about payload-shape drift: the tool_response may be a raw string
-    (the most common case — Claude Code returns the SKILL.md body verbatim),
-    a dict with a body/text/content/output key, or an MCP-style content array
-    of ``{"type": "text", "text": ...}`` items.  Returns ``""`` when nothing
-    decodable is present — the caller treats an empty body as "nothing to
-    cache" and degrades silently.
+    Delegates to :func:`hooks_common.extract_tool_response_text` which handles
+    all payload shapes (bare string, MCP content array, named-field dict).
+    Returns ``""`` when nothing decodable is present — the caller treats an
+    empty body as "nothing to cache" and degrades silently.
     """
-    raw_resp: object = payload.get("tool_response") if isinstance(payload, dict) else None
-    if raw_resp is None and isinstance(payload, dict):
-        raw_resp = payload.get("tool_result") or payload.get("response")
-
-    if isinstance(raw_resp, str):
-        return raw_resp
-
-    if isinstance(raw_resp, dict):
-        for key in ("output", "text", "body", "content", "response"):
-            val = raw_resp.get(key)
-            if isinstance(val, str):
-                return val
-            if isinstance(val, list):
-                parts: list[str] = []
-                for item in val:
-                    if isinstance(item, dict) and isinstance(item.get("text"), str):
-                        parts.append(item["text"])
-                    elif isinstance(item, str):
-                        parts.append(item)
-                if parts:
-                    return "".join(parts)
-        return ""
-
-    if isinstance(raw_resp, list):
-        parts = []
-        for item in raw_resp:
-            if isinstance(item, dict) and isinstance(item.get("text"), str):
-                parts.append(item["text"])
-            elif isinstance(item, str):
-                parts.append(item)
-        return "".join(parts)
-
-    return ""
+    from .hooks_common import extract_tool_response_text  # noqa: PLC0415
+    return extract_tool_response_text(
+        payload,
+        text_keys=("output", "text", "body", "content", "response"),
+    )
 
 
 def _resolve_skill_body_path(skill_name: str) -> str:

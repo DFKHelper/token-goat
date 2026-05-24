@@ -1175,13 +1175,21 @@ def _extract_bash_response(payload: HookPayload) -> tuple[str, str, int | None]:
 
     The function also probes ``tool_result``, ``response``, ``output``, and
     the top-level payload itself for stdout (in that order) so a harness
-    version that promotes the result to the top-level still works.  Every
-    coercion routes through :func:`_coerce_text` so an unexpected shape can
-    never raise — the hook stays fail-soft for any input.
+    version that promotes the result to the top-level still works.  stdout
+    extraction is delegated to :func:`hooks_common.extract_tool_response_text`;
+    stderr and exit_code are Bash-specific and extracted here directly.
     """
-    # Step 1: locate the response container.  Newer payloads nest it under
-    # ``tool_response``; older ones use ``tool_result`` or ``response``; some
-    # MCP relays put it at the top level under ``output``.
+    from .hooks_common import extract_tool_response_text  # noqa: PLC0415
+
+    # stdout: use the common extractor (handles str / list / dict shapes).
+    # Bash payloads use "stdout" as the primary key, then fall back to the
+    # generic "output"/"text"/"content" keys used by other tools.
+    stdout = extract_tool_response_text(
+        payload,
+        text_keys=("stdout", "output", "text", "content"),
+    )
+
+    # stderr and exit_code are Bash-specific — extract them from the raw dict.
     raw_resp: object = (
         payload.get("tool_response")
         if isinstance(payload, dict) else None
@@ -1189,26 +1197,10 @@ def _extract_bash_response(payload: HookPayload) -> tuple[str, str, int | None]:
     if raw_resp is None and isinstance(payload, dict):
         raw_resp = payload.get("tool_result") or payload.get("response")
 
-    stdout = ""
     stderr = ""
     exit_val: object = None
 
-    if isinstance(raw_resp, str):
-        # Whole response was a bare string — treat as combined stdout.
-        stdout = raw_resp
-    elif isinstance(raw_resp, list):
-        # MCP content-array style at the top level (no surrounding dict).
-        stdout = _coerce_text(raw_resp)
-    elif isinstance(raw_resp, dict):
-        # Named-field style.  Probe in priority order so the most-specific
-        # field wins when a shape carries multiple at once.
-        stdout_raw = (
-            raw_resp.get("stdout")
-            or raw_resp.get("output")
-            or raw_resp.get("text")
-            or raw_resp.get("content")
-        )
-        stdout = _coerce_text(stdout_raw)
+    if isinstance(raw_resp, dict):
         stderr_raw = raw_resp.get("stderr") or raw_resp.get("err")
         stderr = _coerce_text(stderr_raw)
         exit_val = (
@@ -1219,12 +1211,7 @@ def _extract_bash_response(payload: HookPayload) -> tuple[str, str, int | None]:
             else raw_resp.get("exit")
         )
 
-    # When nothing came back from the structured shapes, fall back to a
-    # top-level ``output``/``stdout`` field.  This covers the rare harness
-    # where the result is flattened onto the payload itself rather than
-    # nested under ``tool_response``.  Note ``exit_code`` uses explicit-
-    # membership checks rather than ``a or b`` because ``0`` is a perfectly
-    # valid (and common) exit code that would otherwise be filtered out.
+    # Top-level fallbacks for flattened harness shapes.
     if not stdout and isinstance(payload, dict):
         stdout = _coerce_text(payload.get("stdout") or payload.get("output"))
     if not stderr and isinstance(payload, dict):
