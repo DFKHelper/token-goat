@@ -1257,6 +1257,15 @@ _GREP_DEDUP_MIN_RESULT_COUNT: int = 8
 # hint quotes back to the agent.
 _GREP_AVG_BYTES_PER_RESULT: int = 120
 
+# Cross-session grep dedup: minimum number of sessions in which the pattern
+# must have been seen before the cross-session hint fires.
+_GREP_CROSS_SESSION_MIN_COUNT: int = 3
+
+# Cross-session grep dedup: maximum age (seconds) of last_ts for the cross-
+# session hint to fire.  Patterns last seen >1 hour ago are considered stale
+# (the agent is probably exploring fresh code), so the hint is suppressed.
+_GREP_CROSS_SESSION_STALE_SECS: float = 3600.0
+
 
 def build_grep_dedup_hint(
     *,
@@ -1313,14 +1322,28 @@ def _build_grep_dedup_hint_inner(
         return None
     if cache is None:
         cache = session.load(session_id)
-    if cache.unavailable or not cache.greps:
+    if cache.unavailable:
+        return None
+
+    now = time.time()
+    # Cross-session hint: fires even when the session has no prior greps yet,
+    # because the pattern may be a frequent exploratory query run at session
+    # start (where cache.greps is still empty).  Check this before the
+    # intra-session guard so new sessions benefit from cross-session dedup.
+    if _curator_should_emit(cache) and _hint_budget_check(cache, _HINT_KIND_DEDUP):
+        cross_session_hint = _build_grep_cross_session_hint(pattern, now)
+        if cross_session_hint is not None:
+            _record_hint_emitted(cache, f"grep_xsess:{pattern}")
+            return cross_session_hint
+
+    # Intra-session scan: requires at least one prior grep in this session.
+    if not cache.greps:
         return None
     if not _curator_should_emit(cache):
         return None
     if not _hint_budget_check(cache, _HINT_KIND_DEDUP):
         return None
 
-    now = time.time()
     for entry in reversed(cache.greps):
         if entry.pattern != pattern:
             continue
@@ -1346,6 +1369,51 @@ def _build_grep_dedup_hint_inner(
             tokens_avoided,
         )
     return None
+
+
+def _build_grep_cross_session_hint(pattern: str, now: float) -> ReadHint | None:
+    """Query global.db for cross-session grep frequency and emit a hint if warranted.
+
+    Returns a hint when:
+
+    * The pattern has been seen in >= ``_GREP_CROSS_SESSION_MIN_COUNT`` sessions.
+    * The most recent occurrence (``last_ts``) is within
+      ``_GREP_CROSS_SESSION_STALE_SECS`` (pattern is a recent recurrence, not an
+      ancient one).
+
+    The hint nudges the agent toward ``token-goat semantic`` for results already
+    indexed.  Returns ``None`` on any DB error (fail-soft: never block the grep
+    path).
+    """
+    pattern_hash = hashlib.sha1(  # noqa: S324
+        pattern.encode("utf-8", errors="replace")
+    ).hexdigest()
+    try:
+        with db.open_global() as conn:
+            row = conn.execute(
+                "SELECT count, last_ts FROM grep_patterns WHERE pattern_hash = ?",
+                (pattern_hash,),
+            ).fetchone()
+    except Exception:  # noqa: BLE001
+        return None
+    if row is None:
+        return None
+    count = int(row[0])
+    last_ts = float(row[1])
+    if count < _GREP_CROSS_SESSION_MIN_COUNT:
+        return None
+    age = now - last_ts
+    if age > _GREP_CROSS_SESSION_STALE_SECS:
+        return None
+    # Pattern is frequent and recent — nudge toward semantic search.
+    pattern_short = _sanitize_hint_path(pattern)
+    return ReadHint(
+        _apply_terse(
+            f"Grep `{pattern_short}` is a frequent pattern ({count} sessions). "
+            f"Try: token-goat semantic '{pattern_short}'"
+        ),
+        0,
+    )
 
 
 # ---------------------------------------------------------------------------

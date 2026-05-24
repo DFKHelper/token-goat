@@ -49,6 +49,7 @@ __all__ = [
     "project_writer_lock",
     "record_stat",
     "touch_project_last_seen",
+    "update_global_grep_pattern",
 ]
 
 import contextlib
@@ -337,6 +338,17 @@ def _get_meta(conn: sqlite3.Connection, key: str) -> str | None:
 
 
 _GLOBAL_TABLES = """
+-- Cross-session Grep pattern frequency index.  One row per unique pattern hash;
+-- updated (amortized) by session.mark_grep so hints.py can nudge toward semantic
+-- search for patterns seen across N sessions.
+CREATE TABLE IF NOT EXISTS grep_patterns (
+    pattern_hash  TEXT    PRIMARY KEY,  -- SHA1 hex of the raw pattern string
+    first_pattern TEXT    NOT NULL,     -- original pattern text (truncated to 200 chars)
+    last_ts       REAL    NOT NULL,     -- Unix timestamp of last seen occurrence
+    count         INTEGER NOT NULL DEFAULT 1
+);
+CREATE INDEX IF NOT EXISTS idx_grep_patterns_last_ts ON grep_patterns(last_ts);
+
 -- Registry of every project token-goat has indexed, keyed by SHA1(canonical_path).
 CREATE TABLE IF NOT EXISTS projects (
     hash       TEXT    PRIMARY KEY,
@@ -1117,6 +1129,51 @@ def index_health(project_hash: str) -> dict[str, object]:
 
 _MAX_STAT_KIND_LEN: int = 64
 _MAX_STAT_DETAIL_LEN: int = 512
+
+# Amortization threshold: only update global.db when the stored last_ts is
+# older than this many seconds.  Prevents hot-path writes on every grep call
+# for frequently repeated patterns (e.g. `rg "TODO"` at session start).
+_GREP_PATTERN_WRITE_STALE_SECS: Final[float] = 24 * 3600  # 24 hours
+
+
+def update_global_grep_pattern(pattern_hash: str, pattern_text: str, now: float) -> None:
+    """Upsert a grep pattern row in global.db::grep_patterns, amortized.
+
+    Only writes when the pattern is new OR the stored ``last_ts`` is more than
+    ``_GREP_PATTERN_WRITE_STALE_SECS`` old.  This amortizes the write cost to
+    ~1 write per day per unique pattern, keeping the hot pre-Grep hook path fast.
+
+    The caller is responsible for filtering out low-result patterns before
+    calling this function (gate on ``result_count >= _GREP_DEDUP_MIN_RESULT_COUNT``
+    in session.mark_grep).
+
+    Best-effort: any DB error is swallowed so a broken global.db cannot
+    interrupt the agent's Grep call.
+    """
+    def _do() -> None:
+        with open_global() as conn:
+            row = conn.execute(
+                "SELECT last_ts FROM grep_patterns WHERE pattern_hash = ?",
+                (pattern_hash,),
+            ).fetchone()
+            if row is not None:
+                age = now - float(row[0])
+                if age < _GREP_PATTERN_WRITE_STALE_SECS:
+                    # Recent enough — skip the write entirely.
+                    return
+            # UPSERT: insert new row or refresh last_ts and increment count.
+            conn.execute(
+                """
+                INSERT INTO grep_patterns (pattern_hash, first_pattern, last_ts, count)
+                VALUES (?, ?, ?, 1)
+                ON CONFLICT(pattern_hash) DO UPDATE SET
+                    last_ts = excluded.last_ts,
+                    count   = grep_patterns.count + 1
+                """,
+                (pattern_hash, pattern_text, now),
+            )
+
+    _best_effort_write(_do, "update_global_grep_pattern")
 
 
 def record_stat(

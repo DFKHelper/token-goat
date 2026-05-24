@@ -683,3 +683,112 @@ def test_write_file_index_uses_transaction(tmp_data_dir):
     # Without the transaction (autocommit), this would routinely exceed 1s
     # on Windows with WAL fsync on every statement.
     assert elapsed < 1.0, f"write_file_index too slow: {elapsed:.3f}s"
+
+
+# ---------------------------------------------------------------------------
+# grep_patterns table — migration and update_global_grep_pattern
+# ---------------------------------------------------------------------------
+
+
+def test_grep_patterns_table_created_on_fresh_global_db(tmp_data_dir):
+    """A fresh global.db must include the grep_patterns table."""
+    with db.open_global() as conn:
+        tables = _table_names(conn)
+    assert "grep_patterns" in tables, "grep_patterns table missing from fresh global.db"
+
+
+def test_grep_patterns_index_present(tmp_data_dir):
+    """idx_grep_patterns_last_ts index must exist for efficient age-range queries."""
+    with db.open_global() as conn:
+        rows = conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='index' AND name='idx_grep_patterns_last_ts'"
+        ).fetchall()
+    assert rows, "idx_grep_patterns_last_ts index missing"
+
+
+def test_update_global_grep_pattern_inserts_new_row(tmp_data_dir):
+    """Calling update_global_grep_pattern for a new pattern inserts a row with count=1."""
+    pattern = "def test_"
+    pattern_hash = "aabbcc001"
+    now = time.time()
+
+    db.update_global_grep_pattern(pattern_hash, pattern, now)
+
+    with db.open_global() as conn:
+        row = conn.execute(
+            "SELECT first_pattern, count, last_ts FROM grep_patterns WHERE pattern_hash = ?",
+            (pattern_hash,),
+        ).fetchone()
+    assert row is not None
+    assert row["first_pattern"] == pattern
+    assert row["count"] == 1
+    assert abs(row["last_ts"] - now) < 1.0
+
+
+def test_update_global_grep_pattern_increments_count_after_stale(tmp_data_dir):
+    """A second call >24h after the first must increment count and refresh last_ts."""
+    pattern = "TODO"
+    pattern_hash = "aabbcc002"
+    old_ts = time.time() - (25 * 3600)  # 25 hours ago — beyond the 24h amortization window
+
+    # Seed an old row directly so we bypass the amortization guard.
+    with db.open_global() as conn:
+        conn.execute(
+            "INSERT INTO grep_patterns (pattern_hash, first_pattern, last_ts, count) VALUES (?,?,?,?)",
+            (pattern_hash, pattern, old_ts, 2),
+        )
+
+    new_ts = time.time()
+    db.update_global_grep_pattern(pattern_hash, pattern, new_ts)
+
+    with db.open_global() as conn:
+        row = conn.execute(
+            "SELECT count, last_ts FROM grep_patterns WHERE pattern_hash = ?",
+            (pattern_hash,),
+        ).fetchone()
+    assert row["count"] == 3, f"expected count=3, got {row['count']}"
+    assert row["last_ts"] >= new_ts - 1.0
+
+
+def test_update_global_grep_pattern_skips_write_when_recent(tmp_data_dir):
+    """A call within the 24h amortization window must NOT increment count."""
+    pattern = "import pytest"
+    pattern_hash = "aabbcc003"
+    recent_ts = time.time() - 3600  # 1 hour ago — within the 24h window
+
+    with db.open_global() as conn:
+        conn.execute(
+            "INSERT INTO grep_patterns (pattern_hash, first_pattern, last_ts, count) VALUES (?,?,?,?)",
+            (pattern_hash, pattern, recent_ts, 5),
+        )
+
+    db.update_global_grep_pattern(pattern_hash, pattern, time.time())
+
+    with db.open_global() as conn:
+        row = conn.execute(
+            "SELECT count FROM grep_patterns WHERE pattern_hash = ?",
+            (pattern_hash,),
+        ).fetchone()
+    assert row["count"] == 5, "count must not change within the amortization window"
+
+
+def test_update_global_grep_pattern_three_distinct_sessions(tmp_data_dir):
+    """Simulating 3 sessions each inserting the pattern produces count == 3."""
+    import hashlib  # noqa: PLC0415
+
+    pattern = "rg 'def test_'"
+    pattern_hash = hashlib.sha1(pattern.encode()).hexdigest()  # noqa: S324
+    # Session 1 — new pattern.
+    db.update_global_grep_pattern(pattern_hash, pattern, 1_000_000.0)
+    # Session 2 — simulate >24h later.
+    db.update_global_grep_pattern(pattern_hash, pattern, 1_000_000.0 + 86401)
+    # Session 3 — simulate another >24h later.
+    db.update_global_grep_pattern(pattern_hash, pattern, 1_000_000.0 + 2 * 86401)
+
+    with db.open_global() as conn:
+        row = conn.execute(
+            "SELECT count FROM grep_patterns WHERE pattern_hash = ?",
+            (pattern_hash,),
+        ).fetchone()
+    assert row is not None
+    assert row["count"] == 3, f"expected count=3 after 3 sessions, got {row['count']}"

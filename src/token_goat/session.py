@@ -82,6 +82,7 @@ __all__ = [
 ]
 
 import contextlib
+import hashlib
 import json
 import os
 import re
@@ -2162,6 +2163,24 @@ _MAX_LINE_NUMBER = 100_000_000
 # realistic grep hit count (a repo-wide search rarely exceeds tens of thousands).
 _MAX_RESULT_COUNT = 1_000_000
 
+# Minimum result_count threshold mirrored from hints._GREP_DEDUP_MIN_RESULT_COUNT.
+# Defined here as a local constant to avoid importing hints at module level
+# (which would create a circular import: hints → session → hints).
+# Keep in sync with hints._GREP_DEDUP_MIN_RESULT_COUNT.
+_GREP_GLOBAL_MIN_RESULT_COUNT: int = 8
+
+
+def _grep_pattern_hash(pattern: str) -> str:
+    """Return a stable SHA-1 hex digest for *pattern*.
+
+    Used as the primary key in global.db::grep_patterns.  SHA-1 is sufficient
+    for collision-resistance at the scale of unique grep patterns (~thousands
+    per project); storing a hash avoids using the raw pattern (up to
+    ``_MAX_GREP_PATTERN_LEN`` = 200 chars) as the primary key.
+    """
+    return hashlib.sha1(pattern.encode("utf-8", errors="replace")).hexdigest()  # noqa: S324
+
+
 def mark_grep(
     session_id: str,
     pattern: str,
@@ -2195,6 +2214,13 @@ def mark_grep(
         session_id[:16],
         len(cache.greps),
     )
+    # Cross-session dedup: update global.db grep_patterns when result_count
+    # meets the dedup threshold.  The write is amortized (~1/day per unique
+    # pattern) inside db.update_global_grep_pattern.  Use a lazy import to
+    # avoid the circular dependency (hints → session → hints at module level).
+    if result_count is not None and result_count >= _GREP_GLOBAL_MIN_RESULT_COUNT:
+        from . import db as _db  # noqa: PLC0415
+        _db.update_global_grep_pattern(_grep_pattern_hash(safe_pattern), safe_pattern, now)
     return _commit_mutation(cache, now)
 
 

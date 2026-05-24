@@ -2315,3 +2315,161 @@ class TestWebDedupGrepSuggest:
         hint = build_web_dedup_hint(session_id=sid, url=url)
         assert hint is not None
         assert "--grep" in hint
+
+
+# ---------------------------------------------------------------------------
+# Cross-session Grep dedup hint
+# ---------------------------------------------------------------------------
+
+
+class TestCrossSessionGrepDedup:
+    """Tests for the global.db-backed cross-session grep frequency hint."""
+
+    _PATTERN = "def test_login"
+
+    @staticmethod
+    def _pattern_hash(pattern: str) -> str:
+        import hashlib  # noqa: PLC0415
+        return hashlib.sha1(pattern.encode("utf-8", errors="replace")).hexdigest()  # noqa: S324
+
+    def _seed_global(self, tmp_data_dir, count: int, last_ts: float, pattern: str | None = None) -> None:
+        """Directly insert a grep_patterns row, bypassing amortization logic."""
+        pat = pattern if pattern is not None else self._PATTERN
+        pat_hash = self._pattern_hash(pat)
+        with db.open_global() as conn:
+            conn.execute(
+                "INSERT OR REPLACE INTO grep_patterns "
+                "(pattern_hash, first_pattern, last_ts, count) VALUES (?,?,?,?)",
+                (pat_hash, pat, last_ts, count),
+            )
+
+    def _hint(self, tmp_data_dir, sid: str = "xsess_sid_001") -> str | None:
+        """Run build_grep_dedup_hint for the test pattern (no prior session greps)."""
+        from token_goat.hints import build_grep_dedup_hint
+        return build_grep_dedup_hint(session_id=sid, pattern=self._PATTERN, path=None)
+
+    # --- cross-session hint fires ----------------------------------------
+
+    def test_cross_session_hint_fires_when_count_gte_3_and_recent(self, tmp_data_dir):
+        """Hint fires when count == 3 and last_ts is within 1 hour."""
+        now = time.time()
+        self._seed_global(tmp_data_dir, count=3, last_ts=now - 60)  # 1 minute ago
+        hint = self._hint(tmp_data_dir)
+        assert hint is not None
+        assert "frequent" in hint.lower() or "semantic" in hint.lower()
+
+    def test_cross_session_hint_fires_when_count_above_3(self, tmp_data_dir):
+        """Hint fires when count > 3 (e.g. 10 sessions)."""
+        now = time.time()
+        self._seed_global(tmp_data_dir, count=10, last_ts=now - 300)
+        hint = self._hint(tmp_data_dir)
+        assert hint is not None
+        assert "token-goat semantic" in hint
+
+    def test_cross_session_hint_includes_pattern_text(self, tmp_data_dir):
+        """The hint text must reference the searched pattern."""
+        now = time.time()
+        self._seed_global(tmp_data_dir, count=5, last_ts=now - 10)
+        hint = self._hint(tmp_data_dir)
+        assert hint is not None
+        assert "test_login" in hint
+
+    # --- cross-session hint suppressed -----------------------------------
+
+    def test_cross_session_hint_suppressed_when_count_lt_3(self, tmp_data_dir):
+        """Hint must NOT fire when count == 2 (below the 3-session threshold)."""
+        now = time.time()
+        self._seed_global(tmp_data_dir, count=2, last_ts=now - 60)
+        hint = self._hint(tmp_data_dir)
+        # No prior intra-session grep → no hint at all from either path.
+        assert hint is None
+
+    def test_cross_session_hint_suppressed_when_last_ts_stale(self, tmp_data_dir):
+        """Hint must NOT fire when last_ts is older than 1 hour (stale pattern)."""
+        now = time.time()
+        stale_ts = now - 3601  # just over 1 hour
+        self._seed_global(tmp_data_dir, count=10, last_ts=stale_ts)
+        hint = self._hint(tmp_data_dir)
+        assert hint is None
+
+    def test_cross_session_hint_suppressed_when_no_global_row(self, tmp_data_dir):
+        """Hint must not fire when the pattern has never been seen before."""
+        hint = self._hint(tmp_data_dir)
+        assert hint is None
+
+    def test_cross_session_hint_suppressed_at_exactly_1h_boundary(self, tmp_data_dir):
+        """last_ts exactly 3600 s ago is considered stale (age > threshold)."""
+        now = time.time()
+        self._seed_global(tmp_data_dir, count=5, last_ts=now - 3600)
+        hint = self._hint(tmp_data_dir)
+        assert hint is None
+
+    # --- low-result patterns not written to global.db ---------------------
+
+    def test_low_result_count_not_written_to_global_db(self, tmp_data_dir):
+        """mark_grep with result_count below threshold must not write to global.db."""
+        from token_goat.hints import _GREP_DEDUP_MIN_RESULT_COUNT
+
+        sid = "xsess_low_results"
+        # result_count is one below the threshold — must NOT write to global.db.
+        session.mark_grep(sid, self._PATTERN, result_count=_GREP_DEDUP_MIN_RESULT_COUNT - 1)
+
+        with db.open_global() as conn:
+            row = conn.execute(
+                "SELECT count FROM grep_patterns WHERE first_pattern = ?",
+                (self._PATTERN,),
+            ).fetchone()
+        assert row is None, "low-result pattern must not be written to global.db"
+
+    def test_none_result_count_not_written_to_global_db(self, tmp_data_dir):
+        """mark_grep with result_count=None must not write to global.db."""
+        sid = "xsess_none_results"
+        session.mark_grep(sid, self._PATTERN, result_count=None)
+
+        with db.open_global() as conn:
+            row = conn.execute(
+                "SELECT count FROM grep_patterns WHERE first_pattern = ?",
+                (self._PATTERN,),
+            ).fetchone()
+        assert row is None, "None result_count must not be written to global.db"
+
+    def test_sufficient_result_count_written_to_global_db(self, tmp_data_dir):
+        """mark_grep with result_count >= threshold must write to global.db."""
+        from token_goat.hints import _GREP_DEDUP_MIN_RESULT_COUNT
+
+        sid = "xsess_sufficient_results"
+        session.mark_grep(sid, self._PATTERN, result_count=_GREP_DEDUP_MIN_RESULT_COUNT)
+
+        with db.open_global() as conn:
+            row = conn.execute(
+                "SELECT count FROM grep_patterns WHERE first_pattern = ?",
+                (self._PATTERN,),
+            ).fetchone()
+        assert row is not None, "pattern meeting threshold must be written to global.db"
+        assert row["count"] == 1
+
+    # --- three-session simulation ----------------------------------------
+
+    def test_three_sessions_produce_count_3(self, tmp_data_dir):
+        """Simulating 3 distinct sessions calling mark_grep produces count == 3 globally.
+
+        Each session is simulated by calling db.update_global_grep_pattern directly
+        with a >24h gap between calls (bypassing the amortization guard).
+        """
+        from token_goat import db as _db
+
+        pattern = "rg 'class Auth'"
+        pattern_hash = self._pattern_hash(pattern)
+
+        t0 = 1_000_000.0
+        _db.update_global_grep_pattern(pattern_hash, pattern, t0)
+        _db.update_global_grep_pattern(pattern_hash, pattern, t0 + 86401)
+        _db.update_global_grep_pattern(pattern_hash, pattern, t0 + 2 * 86401)
+
+        with db.open_global() as conn:
+            row = conn.execute(
+                "SELECT count FROM grep_patterns WHERE pattern_hash = ?",
+                (pattern_hash,),
+            ).fetchone()
+        assert row is not None
+        assert row["count"] == 3
