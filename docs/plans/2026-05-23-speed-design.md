@@ -1,3 +1,5 @@
+> **STATUS (2026-05-24):** All items pending; planned for batches 7-8 (speed, iter 46–55).
+
 # Speed Design — 2026-05-23
 
 Two-track speed work: the PreCompact hook (user-visible blocking call before

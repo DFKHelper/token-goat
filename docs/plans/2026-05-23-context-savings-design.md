@@ -42,6 +42,8 @@ Token-goat already cuts substantial tokens via image-shrink, surgical reads, ded
 **Why it saves tokens**: Each hint is in the conversation forever once injected. A typical session fires ~20-50 hints; saving 4-8 tokens each compounds to 150-400/session.
 **Test**: `tests/test_hints.py` — add assertion that the rendered hint of every dedup type is <= some byte target (e.g. 110 chars for bash light, 180 for grep, etc.). Snapshot the new shorter forms.
 
+**STATUS:** [DONE iter 1, commit c220424]
+
 ---
 
 ### 2. Drop full `output_id` from in-context hints; keep last 8 chars — Score 1, Savings: ~80-200 tok/session, Cost: S
@@ -51,6 +53,8 @@ Token-goat already cuts substantial tokens via image-shrink, surgical reads, ded
 **Change**: Render only the trailing 8 hex chars of `output_id` in hint and manifest strings (`id=…3210`). The CLI prefix-match is already disambiguating; if collisions happen, the CLI returns "ambiguous, here are matches" and the agent re-issues.
 **Why it saves tokens**: 30+ chars × ~5 hint+manifest entries × every compaction = ~80-200 tokens/session.
 **Test**: `tests/test_hints.py` — assert `output_id[:-8]` not in rendered hint, suffix is present. Add `tests/test_cli_bash_output.py` test for prefix-match resolution if not present.
+
+**STATUS:** [DONE iter 2, commit unknown]
 
 ---
 
@@ -62,6 +66,8 @@ Token-goat already cuts substantial tokens via image-shrink, surgical reads, ded
 **Why it saves tokens**: The fold becomes the contract: "everything below may be compacted; everything above must survive." Compaction LLMs respect explicit markers more than priority order. Recovers signal otherwise lost when manifest is trimmed.
 **Test**: `tests/test_compact.py` — assert manifest starts with the markers; assert content is bounded at 80 tokens; assert all three pieces survive a synthetic "top-only" truncation.
 
+**STATUS:** [DONE iter 3, commit unknown]
+
 ---
 
 ### 4. Dedup bash entries in manifest against recently-emitted dedup hints — Score 1, Savings: ~60-150 tok/session, Cost: S
@@ -71,6 +77,8 @@ Token-goat already cuts substantial tokens via image-shrink, surgical reads, ded
 **Change**: Add `cache.bash_dedup_emitted_ids: set[str]` populated by `build_bash_dedup_hint` when it fires; exclude those `output_id`s from `_select_top_bash_entries` unless they're also a current blocker.
 **Why it saves tokens**: A bash entry with snippet costs 80-200 tokens in the manifest. Removing 2-3 redundant ones recovers 100-300 tokens.
 **Test**: `tests/test_compact.py` — synthesise a SessionCache where a bash output is both in `bash_history` and was emitted as a dedup hint; assert it's absent from the manifest.
+
+**STATUS:** [DONE iter 4, commit unknown]
 
 ---
 
@@ -82,6 +90,8 @@ Token-goat already cuts substantial tokens via image-shrink, surgical reads, ded
 **Why it saves tokens**: Each snippet is ~80-300 tokens. Cutting snippets on entries already pointed-at elsewhere saves ~40-120 per compaction.
 **Test**: `tests/test_compact.py` — assert that when `inline_snippet=False`, the rendered entry has no `\n  ` indented block.
 
+**STATUS:** [DONE iter 5, commit unknown]
+
 ---
 
 ### 6. Recovery hint injects skill checklist sections instead of recall commands — Score 2, Savings: ~200-600 tok/session realised, Cost: M
@@ -91,6 +101,8 @@ Token-goat already cuts substantial tokens via image-shrink, surgical reads, ded
 **Change**: For each cached skill body, extract its `## DoD` or `## Checklist` or `## Steps` section using the existing `read_replacement.section_extract`. Inject the extracted section (capped at 400 chars per skill) directly. Fall back to the recall command when no checklist-shaped section is found.
 **Why it saves tokens**: Eliminates a re-invocation round-trip. The 400-char checklist is the load-bearing fraction of a 28 KB skill body — the agent gets the same actionable content for 1.5% of the cost.
 **Test**: `tests/test_post_compact_recovery.py` — store a synthetic skill body with `## DoD` section; assert recovery hint contains the DoD text and NOT the full body.
+
+**STATUS:** [DONE iter 5, commit unknown]
 
 ---
 
@@ -102,6 +114,8 @@ Token-goat already cuts substantial tokens via image-shrink, surgical reads, ded
 **Why it saves tokens**: Saves 2 full-file re-reads post-compact (often 200-2000 tokens each). Trades 600 bytes (~150 tokens) for that recovery.
 **Test**: `tests/test_compact.py` — write a snapshot, mutate the file on disk, assert manifest contains the unified diff; assert files without snapshots fall through.
 
+**STATUS:** [DONE iter 21, commit unknown]
+
 ---
 
 ### 8. "Curator" pass: skip dedup hints when session hint-acceptance rate < 20% — Score 2, Savings: ~50-200 tok/session, Cost: M
@@ -111,6 +125,8 @@ Token-goat already cuts substantial tokens via image-shrink, surgical reads, ded
 **Change**: Track `hints_fired` (every hint emitted) and `hints_acted_on` (heuristic: incremented when within 2 tool calls of a hint, the agent issued the recommended `token-goat <cmd>` OR omitted the redundant Read/Bash). If `acceptance < 0.20` after the first 10 hints in a session, throttle: only emit hints with `tokens_saved >= 200`.
 **Why it saves tokens**: Hints that won't be acted on are pure tax. A session with 0% acceptance and 50 hints leaks ~750 tokens.
 **Test**: `tests/test_hints.py` — synthesise session with low acceptance counters, assert a low-saving hint returns None; assert acceptance counter increments on a recall command following a dedup hint.
+
+**STATUS:** [DONE iter 18, commit unknown]
 
 ---
 
@@ -122,6 +138,8 @@ Token-goat already cuts substantial tokens via image-shrink, surgical reads, ded
 **Why it saves tokens**: Helps compaction LLM distinguish "load-bearing skill, keep" from "exploratory skill, drop". Indirect; primarily makes #6 viable.
 **Test**: `tests/test_compact.py` — synthesise skill cache with known H2, assert title appears.
 
+**STATUS:** [DEFERRED — Score 1 moonshot, subsumed by #6 checklist extraction]
+
 ---
 
 ### 10. Drop manifest sections entirely when below their min-line floor — Score 1, Savings: ~30-80 tok/session, Cost: S
@@ -131,6 +149,8 @@ Token-goat already cuts substantial tokens via image-shrink, surgical reads, ded
 **Change**: Add `min_lines: int = 2` to `_render_budget_lines`. If the section yields fewer than `min_lines` content lines, return `[], 0`. For `### Web Fetches`, `### Directory Scans`, `### Cold Outputs`, set `min_lines=2`. For `### Active Skills` keep `min_lines=1`.
 **Why it saves tokens**: 6 sections × ~5 header tokens for empty/near-empty sections = ~30 tokens worst case; saved per compaction.
 **Test**: `tests/test_compact.py` — synthesise cache with one tiny web entry; assert `### Web Fetches` header absent.
+
+**STATUS:** [DONE iter 14, commit unknown]
 
 ---
 
@@ -142,6 +162,8 @@ Token-goat already cuts substantial tokens via image-shrink, surgical reads, ded
 **Why it saves tokens**: A single avoided large-CSV Read is 5000+ tokens. Even with a 30% acceptance rate the expected value is huge.
 **Test**: `tests/test_hints.py` — create a synthetic 100 KB CSV, assert the hint mentions surgical access; assert the hint suppresses for small structured files (<50 KB).
 
+**STATUS:** [DONE iter 6, commit unknown]
+
 ---
 
 ### 12. Pre-Read for index-only files (uv.lock, package-lock.json, *.min.js): inject a synthesised summary, not the content — Score 2, Savings: ~1000-8000 tok/session, Cost: M
@@ -151,6 +173,8 @@ Token-goat already cuts substantial tokens via image-shrink, surgical reads, ded
 **Change**: In `pre_read`, detect lockfile basenames. Emit hint: "`uv.lock` is a 4500-line dependency lockfile. Direct dependencies: <run `uv pip list` or read `pyproject.toml::dependencies`>. Token-goat suppressed the full read." Return a hookSpecificOutput with `deny` action OR `additionalContext` and let the agent decide.
 **Why it saves tokens**: One avoided lockfile read = thousands of tokens. (Caveat: this requires harness support for denying a Read; if not available, fall back to a strong nag hint.)
 **Test**: `tests/test_hooks_read.py` — simulate Read on `uv.lock`, assert hint or denial fires; assert non-lockfile Reads unaffected.
+
+**STATUS:** [DONE iter 12, commit unknown]
 
 ---
 
@@ -162,6 +186,8 @@ Token-goat already cuts substantial tokens via image-shrink, surgical reads, ded
 **Why it saves tokens**: Duplicate skill rows waste 20-40 tokens each.
 **Test**: `tests/test_post_compact_recovery.py` — synthesise multiple skill entries with same name, assert single row with `×N`.
 
+**STATUS:** [DONE iter 13, commit unknown]
+
 ---
 
 ### 14. Compaction-manifest path normalisation: strip the project name from paths in addition to /src//tests//docs/ — Score 1, Savings: ~30-100 tok/session, Cost: S
@@ -171,6 +197,8 @@ Token-goat already cuts substantial tokens via image-shrink, surgical reads, ded
 **Change**: When `cache.cwd` is known, additionally strip its basename when it appears as the first path component. Lower the common-prefix threshold from 3 paths to 2.
 **Why it saves tokens**: A repo named `defi-kingdoms-interface` adds ~24 chars per path. With 10-20 paths in manifest that's 240-480 chars = 60-120 tokens.
 **Test**: `tests/test_compact.py` — synthesise cache with `cwd=/foo/myrepo` and paths starting with `myrepo/`, assert prefix stripped, assert path-relative header inserted.
+
+**STATUS:** [DONE iter 14, commit unknown]
 
 ---
 
@@ -182,6 +210,8 @@ Token-goat already cuts substantial tokens via image-shrink, surgical reads, ded
 **Why it saves tokens**: Saves the agent from re-deriving "what was I doing" from log/file context after a long-session compaction. Indirect but high-realised when active.
 **Test**: `tests/test_compact.py` — write a synthetic tasks.json, assert section appears; assert section omitted when file missing.
 
+**STATUS:** [DONE iter 11, commit unknown]
+
 ---
 
 ### 16. Recovery hint includes "next likely Reads" predicted from edited file's imports — Score 3, Savings: ~200-1000 tok/session realised, Cost: L
@@ -191,6 +221,8 @@ Token-goat already cuts substantial tokens via image-shrink, surgical reads, ded
 **Change**: For each top-3 edited file, query the project DB for its imports (refs where `kind='import'` and `file_rel=<file>`). Add a `**Nearby**:` section listing up to 5 import targets. Cap at 200 chars total.
 **Why it saves tokens**: After compaction, agent often does N Reads to rebuild import context. Pre-injecting symbol+path tuples lets it skip the discovery phase.
 **Test**: `tests/test_post_compact_recovery.py` — synthesise project with refs, assert nearby files appear in hint.
+
+**STATUS:** [DEFERRED — Score 3 moonshot, requires cross-module traversal complexity]
 
 ---
 
@@ -202,6 +234,8 @@ Token-goat already cuts substantial tokens via image-shrink, surgical reads, ded
 **Why it saves tokens**: Eliminates a post-compact "what did I change in foo.py" Read.
 **Test**: `tests/test_compact.py` — mock subprocess to return a small diff for one file; assert `### Diff Detail` present; multi-file path falls through.
 
+**STATUS:** [DONE iter 9, commit unknown]
+
 ---
 
 ### 18. Pre-Read content-only-changed short-circuit — Score 1, Savings: ~300-1500 tok/session realised, Cost: S
@@ -211,6 +245,8 @@ Token-goat already cuts substantial tokens via image-shrink, surgical reads, ded
 **Change**: When diff hint is emitted AND `diff_tokens / full_tokens < 0.10`, return `hookSpecificOutput` with a strong-deny suggestion ("re-read suppressed — diff above contains all changes; reissue Read if full file needed"). Agent can override by retrying with `noTokenGoat: true` style.
 **Why it saves tokens**: Currently saves 0 tokens when agent re-reads anyway. With short-circuit saves the full re-read.
 **Test**: `tests/test_hooks_read.py` — assert that when diff is tiny relative to file, hook returns a denial path; assert normal hint path otherwise.
+
+**STATUS:** [DONE iter 9, commit unknown]
 
 ---
 
@@ -222,6 +258,8 @@ Token-goat already cuts substantial tokens via image-shrink, surgical reads, ded
 **Why it saves tokens**: Multi-compaction sessions get ~400 tokens off per redundant manifest.
 **Test**: `tests/test_compact.py` — build twice with same cache, assert second call returns short-form; mutate cache, assert full rebuild.
 
+**STATUS:** [DEFERRED — Score 2 moonshot, requires session-level manifest caching]
+
 ---
 
 ### 20. Suppress the manifest entirely when session activity score is below a floor — Score 1, Savings: ~200-400 tok/short-session, Cost: S
@@ -231,6 +269,8 @@ Token-goat already cuts substantial tokens via image-shrink, surgical reads, ded
 **Change**: Compute `activity_score = edited_files * 5 + symbols_files * 3 + len(bash_history) * 2 + len(skill_history) * 4`. If `score < 12` AND `age_seconds < 600`, emit empty manifest (no compaction help needed; the session is small enough that natural compaction does fine).
 **Why it saves tokens**: Saves ~150-300 tokens on the trivial-session compactions that happen during long pondering phases.
 **Test**: `tests/test_compact.py` — synthesise low-activity young cache, assert empty manifest; high-activity cache still emits.
+
+**STATUS:** [DONE iter 20, commit unknown]
 
 ---
 
@@ -242,6 +282,8 @@ Token-goat already cuts substantial tokens via image-shrink, surgical reads, ded
 **Why it saves tokens**: Each stat line saves 2-8 spaces. 5-8 lines per session = 20-60 tokens.
 **Test**: `tests/test_compact.py::test_get_git_diff_stat_summary` — assert no run of 2+ spaces around `|`.
 
+**STATUS:** [DONE iter 21, commit unknown]
+
 ---
 
 ### 22. Drop the recall-line legend when only one recall kind appears — Score 1, Savings: ~15-30 tok/session, Cost: S
@@ -251,6 +293,8 @@ Token-goat already cuts substantial tokens via image-shrink, surgical reads, ded
 **Change**: When `len(recall) == 1`, drop the `Recall: ` prefix and inline the example into the section header (e.g. `**Skills** (recall: token-goat skill-body <name>):`).
 **Why it saves tokens**: ~15-30 tokens per recovery hint.
 **Test**: `tests/test_post_compact_recovery.py` — assert single-kind sessions have no `Recall:` line.
+
+**STATUS:** [DONE iter 22, commit unknown]
 
 ---
 
@@ -262,6 +306,8 @@ Token-goat already cuts substantial tokens via image-shrink, surgical reads, ded
 **Why it saves tokens**: A session that touches many large files repeatedly receives the same boilerplate "large file" hint. Throttle saves ~30-80 tokens.
 **Test**: `tests/test_hints.py` — fire 4 identical-shape hints, assert the 4th is throttled.
 
+**STATUS:** [DONE iter 16, commit unknown]
+
 ---
 
 ### 24. `### Commands Run` entries use middle-truncation cap of 12 lines (was 20) for non-blocker entries — Score 1, Savings: ~60-200 tok/session, Cost: S
@@ -271,6 +317,8 @@ Token-goat already cuts substantial tokens via image-shrink, surgical reads, ded
 **Change**: Pass `max_lines=12` when `entry.exit_code == 0`; keep 20 for failures (they may have meaningful context).
 **Why it saves tokens**: 8 lines × ~10 tokens/line × 3-5 bash entries per manifest = 60-200 tokens.
 **Test**: `tests/test_compact.py` — synthesise green and red bash entries, assert green has <= 12 preview lines, red has up to 20.
+
+**STATUS:** [DONE iter 24, commit unknown]
 
 ---
 
@@ -282,6 +330,8 @@ Token-goat already cuts substantial tokens via image-shrink, surgical reads, ded
 **Why it saves tokens**: Images go into context as base64. Smaller bytes → fewer base64 tokens directly. For agents that paste UI screenshots heavily, ~30% reduction = potentially thousands of tokens per session.
 **Test**: `tests/test_image_shrink.py` — write conditional test that skips when AVIF unavailable; assert AVIF output is smaller than JPEG for a fixed input.
 
+**STATUS:** [DONE iter 7, commit unknown]
+
 ---
 
 ### 26. Session brief skips git log when current branch matches main and no uncommitted changes — Score 1, Savings: ~50-100 tok/session-start, Cost: S
@@ -291,6 +341,8 @@ Token-goat already cuts substantial tokens via image-shrink, surgical reads, ded
 **Change**: If `status_lines` is empty AND `branch in ("main", "master", "develop")`, set log_lines to first 2 commits only (or skip entirely).
 **Why it saves tokens**: 50-100 tokens at session start on idle/clean state.
 **Test**: `tests/test_session_brief.py` — clean main, assert short or absent log; with changes, full log.
+
+**STATUS:** [DONE iter 21, commit unknown]
 
 ---
 
@@ -302,6 +354,8 @@ Token-goat already cuts substantial tokens via image-shrink, surgical reads, ded
 **Why it saves tokens**: Caps the worst case at predictable boundary.
 **Test**: `tests/test_hints.py` — simulate 100 hint emissions, assert ~75 emitted then suppressed.
 
+**STATUS:** [DONE iter 20, commit unknown]
+
 ---
 
 ### 28. Manifest emits `### What Worked` (last 2 green test runs) explicitly, shorter than full bash entry — Score 2, Savings: ~50-100 tok/session realised, Cost: S
@@ -311,6 +365,8 @@ Token-goat already cuts substantial tokens via image-shrink, surgical reads, ded
 **Change**: Emit `### Last Green Run: pytest tests/test_X.py — passed @ HH:MM (id=…3210)` and SUPPRESS the full bash entry for those. Saves snippet bytes.
 **Why it saves tokens**: ~50-100 tokens per green run replaced by a one-liner.
 **Test**: `tests/test_compact.py` — synthesise multiple bash entries, assert green pytest reduced to one-liner.
+
+**STATUS:** [DONE iter 17, commit unknown]
 
 ---
 
@@ -322,6 +378,8 @@ Token-goat already cuts substantial tokens via image-shrink, surgical reads, ded
 **Why it saves tokens**: 30-80 tokens off active-tier manifests.
 **Test**: `tests/test_compact.py` — young + cold candidates: section absent; mature + cold: section present.
 
+**STATUS:** [DONE iter 23, commit unknown]
+
 ---
 
 ### 30. Skill body cache stores extracted checklist alongside full body (prep for #6) — Score 1, Savings: prep, Cost: S
@@ -331,6 +389,8 @@ Token-goat already cuts substantial tokens via image-shrink, surgical reads, ded
 **Change**: On store, extract `## DoD`/`## Checklist`/`## Rules`/`## Steps` section using a simple regex and store as a `.checklist` sidecar (text, capped at 800 bytes). `read_sidecar` returns it.
 **Why it saves tokens**: Enables #6 with O(1) lookup; reduces per-compaction work.
 **Test**: `tests/test_skill_cache.py` — store body with known checklist section; assert `.checklist` file written and readable.
+
+**STATUS:** [DEFERRED — Score 1 prep, subsumed by #6 inline extraction]
 
 ---
 
@@ -342,6 +402,8 @@ Token-goat already cuts substantial tokens via image-shrink, surgical reads, ded
 **Why it saves tokens**: Replaces 5-10 tool calls with 1. Each saved tool call = ~50-150 tokens of prompt overhead beyond the content itself.
 **Test**: `tests/test_cli_resume.py` — synthesise session, assert resume bundle contains expected sections; cap total output at 2000 tokens.
 
+**STATUS:** [DEFERRED — Score 3 moonshot, requires harness recovery hook integration]
+
 ---
 
 ### 32. `token-goat semantic` results emit ranked snippets only, not file headers — Score 1, Savings: ~50-150 tok/semantic-query, Cost: S
@@ -351,6 +413,8 @@ Token-goat already cuts substantial tokens via image-shrink, surgical reads, ded
 **Change**: Add `--compact` flag (default true) that prints `<path>::<symbol> | <snippet first line>` instead of multi-line per result.
 **Why it saves tokens**: 50-150 tokens per semantic call; semantic is invoked multiple times per session in exploration phases.
 **Test**: `tests/test_read_commands.py` — assert `--compact` shorter than default; assert `--no-compact` preserves verbose mode.
+
+**STATUS:** [DONE iter 10, commit unknown]
 
 ---
 
@@ -362,6 +426,8 @@ Token-goat already cuts substantial tokens via image-shrink, surgical reads, ded
 **Why it saves tokens**: Trivial, but adds up across compactions.
 **Test**: `tests/test_compact.py` — assert literal `### Files Edited\n`.
 
+**STATUS:** [DONE iter 15, commit unknown]
+
 ---
 
 ### 34. Compress "(cached output)", "(cached body)" qualifiers in section headers — Score 1, Savings: ~5-15 tok/session, Cost: S
@@ -372,6 +438,8 @@ Token-goat already cuts substantial tokens via image-shrink, surgical reads, ded
 **Why it saves tokens**: Tiny but free.
 **Test**: snapshot test update.
 
+**STATUS:** [DONE iter 15, commit unknown]
+
 ---
 
 ### 35. Manifest assembly skips `### Patterns Searched` when only zero-result entries remain — Score 1, Savings: ~25-60 tok/session, Cost: S
@@ -381,6 +449,8 @@ Token-goat already cuts substantial tokens via image-shrink, surgical reads, ded
 **Change**: When `with_hits` is empty AND the agent has had >5 minutes of activity since the last grep, drop the section entirely.
 **Why it saves tokens**: ~25-60 tokens; complements the recent zero-result drop.
 **Test**: `tests/test_compact.py::test_grep_section_omitted_when_all_zero`.
+
+**STATUS:** [DONE iter 25, commit unknown]
 
 ---
 
