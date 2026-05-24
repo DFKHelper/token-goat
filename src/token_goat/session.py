@@ -443,6 +443,20 @@ class SessionCache:
     # Serialized as a sorted list[str] in JSON for stability; parsed back to set[str].
     # Used by compact.py to skip manifest entries that the agent already saw via hint.
     bash_dedup_emitted_ids: set[str] = field(default_factory=set)
+    # Curator: tracks how often dedup hints are emitted vs. ignored by the agent.
+    # ``hints_emitted`` is incremented each time a dedup hint fires.
+    # ``hints_ignored`` is incremented when a Read fires for a path that was
+    # recently hinted (within the last 3 tool calls) — indicating the agent
+    # read the file anyway, ignoring the hint.
+    # When the ignore rate drops below config threshold (default 20%) AND
+    # the sample is large enough (default 10), future dedup hints are suppressed
+    # for the rest of the session, saving the ~25-token hint injection overhead.
+    hints_emitted: int = 0
+    hints_ignored: int = 0
+    # Ring buffer of (normalized_path, emit_ts) for paths recently hinted.
+    # Capped at 3 entries; used by post-read to detect ignored hints.
+    # Serialized as list[list[str|float]] for JSON; parsed back to list[tuple[str, float]].
+    recent_hints: list[tuple[str, float]] = field(default_factory=list)
     # Working directory at session start, used by git diff operations in the manifest.
     # Optional — may be None if the session was created before this field was added.
     cwd: str | None = None
@@ -488,6 +502,9 @@ class SessionCache:
             snapshot_shas=dict(self.snapshot_shas),
             hints_seen=sorted(self.hints_seen),  # sorted list for stable JSON
             bash_dedup_emitted_ids=sorted(self.bash_dedup_emitted_ids),  # sorted list for stable JSON
+            hints_emitted=self.hints_emitted,
+            hints_ignored=self.hints_ignored,
+            recent_hints=[[p, t] for p, t in self.recent_hints],
         )
 
     def to_json(self) -> str:
@@ -673,6 +690,24 @@ class SessionCache:
                 if isinstance(oid, str) and oid:
                     bash_dedup_emitted_ids.add(oid)
 
+        # hints_emitted / hints_ignored: int counters, default 0 for older sessions.
+        raw_hints_emitted = d.get("hints_emitted", 0)
+        hints_emitted = max(0, int(raw_hints_emitted)) if isinstance(raw_hints_emitted, (int, float)) else 0
+        raw_hints_ignored = d.get("hints_ignored", 0)
+        hints_ignored = max(0, int(raw_hints_ignored)) if isinstance(raw_hints_ignored, (int, float)) else 0
+
+        # recent_hints: list[[path, ts]], stored as list[list[str|float]] for JSON.
+        # Cap to 3 entries for safety; drop malformed entries silently.
+        recent_hints: list[tuple[str, float]] = []
+        raw_recent = d.get("recent_hints", [])
+        if isinstance(raw_recent, list):
+            for item in raw_recent:
+                if isinstance(item, (list, tuple)) and len(item) == 2:
+                    p, t = item
+                    if isinstance(p, str) and isinstance(t, (int, float)):
+                        recent_hints.append((p, float(t)))
+            recent_hints = recent_hints[-3:]  # cap at 3
+
         return cls(
             session_id=session_id,
             started_ts=float(d.get("started_ts", now)),
@@ -689,6 +724,9 @@ class SessionCache:
             snapshot_shas=snapshot_shas,
             hints_seen=hints_seen,
             bash_dedup_emitted_ids=bash_dedup_emitted_ids,
+            hints_emitted=hints_emitted,
+            hints_ignored=hints_ignored,
+            recent_hints=recent_hints,
         )
 
 
@@ -1150,6 +1188,9 @@ class _SessionDict(TypedDict, total=False):
     snapshot_shas: dict[str, str]
     hints_seen: list[str]
     bash_dedup_emitted_ids: list[str]
+    hints_emitted: int
+    hints_ignored: int
+    recent_hints: list[list[object]]
 
 
 def _fresh_cache(session_id: str, *, unavailable: bool = False) -> SessionCache:
@@ -1356,6 +1397,12 @@ def _migrate_session(data: dict[str, Any]) -> dict[str, Any]:
         data["cwd"] = None
     if "bash_dedup_emitted_ids" not in data:
         data["bash_dedup_emitted_ids"] = []
+    if "hints_emitted" not in data:
+        data["hints_emitted"] = 0
+    if "hints_ignored" not in data:
+        data["hints_ignored"] = 0
+    if "recent_hints" not in data:
+        data["recent_hints"] = []
 
     # Per-file-entry defaults for nested objects
     for _file_key, file_entry in data.get("files", {}).items():

@@ -5,6 +5,7 @@ __all__ = [
     "BashCompressConfig",
     "CompactAssistConfig",
     "Config",
+    "CuratorConfig",
     "ImageShrinkConfig",
     "SessionBriefConfig",
     "SkillPreservationConfig",
@@ -29,6 +30,7 @@ _ENV_BASH_COMPRESS: Final[str] = "TOKEN_GOAT_BASH_COMPRESS"  # set to "0"/"false
 _ENV_SESSION_BRIEF: Final[str] = "TOKEN_GOAT_SESSION_BRIEF"  # set to "0"/"false"/"no"/"off" to disable
 _ENV_SKILL_PRESERVATION: Final[str] = "TOKEN_GOAT_SKILL_PRESERVATION"  # set to "0"/"false"/"no"/"off" to disable
 _ENV_PREFER_AVIF: Final[str] = "TOKEN_GOAT_PREFER_AVIF"  # set to "0"/"false"/"no"/"off" to force JPEG/WebP
+_ENV_CURATOR: Final[str] = "TOKEN_GOAT_CURATOR"  # set to "0"/"false"/"no"/"off" to disable
 
 CONFIG_SCHEMA_VERSION: Final[int] = 1
 
@@ -75,6 +77,14 @@ class _ImageShrinkToml(TypedDict, total=False):
     jpeg_quality: int
 
 
+class _CuratorToml(TypedDict, total=False):
+    """Expected shape of the [curator] TOML section."""
+
+    enabled: bool
+    min_samples: int
+    threshold_pct: int
+
+
 class _ConfigToml(TypedDict, total=False):
     """Expected shape of the token-goat config TOML file."""
 
@@ -84,6 +94,7 @@ class _ConfigToml(TypedDict, total=False):
     session_brief: _SessionBriefToml
     skill_preservation: _SkillPreservationToml
     image_shrink: _ImageShrinkToml
+    curator: _CuratorToml
 
 
 @dataclass
@@ -206,6 +217,32 @@ class SkillPreservationConfig:
 
 
 @dataclass
+class CuratorConfig:
+    """Configuration for the curator pass — skip dedup hints when ignored.
+
+    When the agent repeatedly ignores dedup hints (reads the same file after
+    being told it was already in context), those hints cost tokens without
+    providing value.  The curator tracks the ignore rate and suppresses future
+    dedup hints for the session once the rate falls below *threshold_pct* with
+    a sufficient *min_samples* sample size.
+
+    Attributes:
+        enabled: Master on/off switch.  Can also be disabled at runtime by
+            setting ``TOKEN_GOAT_CURATOR=0`` (or ``false``/``no``/``off``).
+        min_samples: Minimum number of emitted hints before the rate is evaluated.
+            Below this threshold all hints fire unconditionally (no data to decide).
+            Default 10.
+        threshold_pct: If hints_ignored/hints_emitted * 100 falls below this value
+            AND hints_emitted >= min_samples, future dedup hints are suppressed.
+            Default 20 (i.e. suppress when fewer than 20% of hints were acted on).
+    """
+
+    enabled: bool = True
+    min_samples: int = 10
+    threshold_pct: int = 20
+
+
+@dataclass
 class ImageShrinkConfig:
     """Configuration for the image-shrink feature.
 
@@ -251,6 +288,7 @@ class Config:
     session_brief: SessionBriefConfig = field(default_factory=SessionBriefConfig)
     skill_preservation: SkillPreservationConfig = field(default_factory=SkillPreservationConfig)
     image_shrink: ImageShrinkConfig = field(default_factory=ImageShrinkConfig)
+    curator: CuratorConfig = field(default_factory=CuratorConfig)
 
 
 # ---------------------------------------------------------------------------
@@ -476,12 +514,28 @@ def load() -> Config:
         )
         is_cfg.prefer_avif = False
 
+    cur_raw: _CuratorToml = cast("_CuratorToml", raw.get("curator", {}))
+    cur = CuratorConfig(
+        enabled=_validated_bool(cur_raw.get("enabled", True), True, "curator.enabled"),
+        min_samples=_validated_int(cur_raw.get("min_samples", 10), 10, 1, 10_000, "curator.min_samples"),
+        threshold_pct=_validated_int(cur_raw.get("threshold_pct", 20), 20, 0, 100, "curator.threshold_pct"),
+    )
+    env_curator = os.environ.get(_ENV_CURATOR, "").strip().lower()
+    if env_curator in ("0", "false", "no", "off"):
+        _LOG.info(
+            "curator disabled by environment variable (%s=%s)",
+            _ENV_CURATOR,
+            env_curator,
+        )
+        cur.enabled = False
+
     _LOG.debug(
         "config resolved: compact_assist enabled=%s triggers=%s min_events=%d max_tokens=%d; "
         "bash_compress enabled=%s disabled_filters=%s max_lines=%d max_bytes=%d timeout=%d; "
         "session_brief enabled=%s; "
         "skill_preservation enabled=%s max_cache_bytes=%d; "
-        "image_shrink prefer_avif=%s avif_quality=%d jpeg_quality=%d",
+        "image_shrink prefer_avif=%s avif_quality=%d jpeg_quality=%d; "
+        "curator enabled=%s min_samples=%d threshold_pct=%d",
         ca.enabled,
         ca.triggers,
         ca.min_events,
@@ -497,9 +551,13 @@ def load() -> Config:
         is_cfg.prefer_avif,
         is_cfg.avif_quality,
         is_cfg.jpeg_quality,
+        cur.enabled,
+        cur.min_samples,
+        cur.threshold_pct,
     )
     return Config(
-        compact_assist=ca, bash_compress=bc, session_brief=sb, skill_preservation=sp, image_shrink=is_cfg,
+        compact_assist=ca, bash_compress=bc, session_brief=sb, skill_preservation=sp,
+        image_shrink=is_cfg, curator=cur,
     )
 
 
@@ -514,6 +572,7 @@ def save(config: Config) -> None:
     sb = config.session_brief
     sp = config.skill_preservation
     is_cfg = config.image_shrink
+    cur = config.curator
     data: _ConfigToml = {
         "schema_version": CONFIG_SCHEMA_VERSION,
         "compact_assist": {
@@ -540,6 +599,11 @@ def save(config: Config) -> None:
             "prefer_avif": is_cfg.prefer_avif,
             "avif_quality": is_cfg.avif_quality,
             "jpeg_quality": is_cfg.jpeg_quality,
+        },
+        "curator": {
+            "enabled": cur.enabled,
+            "min_samples": cur.min_samples,
+            "threshold_pct": cur.threshold_pct,
         },
     }
     try:

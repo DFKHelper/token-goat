@@ -14,6 +14,9 @@ from . import db, session, snapshots
 from .hooks_common import sanitize_log_str, validate_cwd
 from .project import find_project
 
+# Maximum entries in the recent_hints ring buffer stored per session.
+_RECENT_HINTS_MAX: int = 3
+
 __all__ = [
     "DIFF_HINT_MAX_BYTES",
     "ReadHint",
@@ -362,6 +365,11 @@ def build_read_hint(
                     content_hash,
                 )
                 return None
+            # Curator: record this file-level dedup hint emission.
+            if hint.tokens_saved > 0:
+                from . import session as _sess  # noqa: PLC0415
+                norm_path = _sess._normalize_path(file_path)  # type: ignore[attr-defined]
+                _record_hint_emitted(cache, norm_path)
         return hint
     except Exception as exc:  # noqa: BLE001
         _LOG.warning(
@@ -413,6 +421,9 @@ def _build_read_hint_inner(
         cache = session.load(session_id)
     entry = session.get_file_entry(session_id, file_path, cache=cache)
     if entry is not None:
+        # Curator: if the agent has been ignoring re-read dedup hints, stop emitting them.
+        if not _curator_should_emit(cache):
+            return None
         hint = _hint_from_cache(
             entry, req_start, req_end, file_path,
             fname=fname, has_explicit_limit=has_explicit_limit,
@@ -923,6 +934,66 @@ def _build_diff_hint_inner(
 
 
 # ---------------------------------------------------------------------------
+# Curator pass: suppress dedup hints when the agent ignores them
+# ---------------------------------------------------------------------------
+
+
+def _curator_should_emit(cache: session.SessionCache) -> bool:
+    """Return False when the session's hint-acceptance rate is too low.
+
+    The curator suppresses future dedup hints once:
+    - ``cache.hints_emitted >= cfg.min_samples`` (enough data to decide), AND
+    - ``cache.hints_ignored / cache.hints_emitted * 100 < cfg.threshold_pct``
+      (the agent accepted fewer than threshold_pct% of hinted suppressions).
+
+    Returns True (emit the hint) in all other cases, including when the config
+    feature is disabled or the cache is unavailable.  Never raises.
+    """
+    try:
+        from . import config as _config  # noqa: PLC0415
+
+        cfg = _config.load().curator
+        if not cfg.enabled:
+            return True
+
+        emitted = cache.hints_emitted
+        if emitted < cfg.min_samples:
+            return True  # Not enough data yet — keep emitting
+
+        ignored = cache.hints_ignored
+        acceptance_pct = (emitted - ignored) / emitted * 100
+        if acceptance_pct < cfg.threshold_pct:
+            _LOG.debug(
+                "_curator_should_emit: suppressing dedup hints (acceptance=%.1f%% < %d%%, "
+                "emitted=%d, ignored=%d)",
+                acceptance_pct, cfg.threshold_pct, emitted, ignored,
+            )
+            return False
+        return True
+    except Exception:  # noqa: BLE001 — fail-soft
+        return True
+
+
+def _record_hint_emitted(
+    cache: session.SessionCache,
+    norm_path: str,
+) -> None:
+    """Increment hints_emitted and add *norm_path* to the recent_hints ring buffer.
+
+    Called immediately after a dedup hint is about to be returned (non-None).
+    Mutates *cache* in place; caller is responsible for persisting via save().
+    The ring buffer is capped at _RECENT_HINTS_MAX entries (oldest dropped first).
+    """
+    import time as _time  # noqa: PLC0415
+
+    cache.hints_emitted += 1
+    cache.recent_hints.append((norm_path, _time.time()))
+    if len(cache.recent_hints) > _RECENT_HINTS_MAX:
+        cache.recent_hints = cache.recent_hints[-_RECENT_HINTS_MAX:]
+    cache._invalidate_json_cache()
+
+
+# ---------------------------------------------------------------------------
 # Shared fail-soft wrapper for all dedup hint builders
 # ---------------------------------------------------------------------------
 
@@ -1022,6 +1093,8 @@ def _build_bash_dedup_hint_inner(
     """
     if not session_id or not command:
         return None
+    if cache is not None and not _curator_should_emit(cache):
+        return None
 
     from . import bash_cache  # noqa: PLC0415
 
@@ -1068,6 +1141,8 @@ def _build_bash_dedup_hint_inner(
         if cache is not None and entry.output_id:
             cache.bash_dedup_emitted_ids.add(entry.output_id)
             cache._invalidate_json_cache()
+        if cache is not None:
+            _record_hint_emitted(cache, cmd_sha)
         return ReadHint(_apply_terse(hint_text), tokens_avoided)
 
     grep_suffix = " (add --grep PATTERN to filter)" if total_bytes >= _BASH_DEDUP_GREP_SUGGEST_BYTES else ""
@@ -1090,6 +1165,8 @@ def _build_bash_dedup_hint_inner(
     if cache is not None and entry.output_id:
         cache.bash_dedup_emitted_ids.add(entry.output_id)
         cache._invalidate_json_cache()
+    if cache is not None:
+        _record_hint_emitted(cache, cmd_sha)
     return ReadHint(_apply_terse(hint_text), tokens_avoided)
 
 
@@ -1167,6 +1244,8 @@ def _build_grep_dedup_hint_inner(
         cache = session.load(session_id)
     if cache.unavailable or not cache.greps:
         return None
+    if not _curator_should_emit(cache):
+        return None
 
     now = time.time()
     for entry in reversed(cache.greps):
@@ -1185,6 +1264,8 @@ def _build_grep_dedup_hint_inner(
         tokens_avoided = _est_tokens_from_chars(bytes_avoided)
         pattern_short = _sanitize_hint_path(pattern)
         path_str = f" in `{_sanitize_hint_path(path)}`" if path else ""
+        # Curator: record emission keyed on the pattern (grep has no file path).
+        _record_hint_emitted(cache, f"grep:{pattern}")
         return ReadHint(
             _apply_terse(
                 f"Grep `{pattern_short}`{path_str} ({int(age)}s): {entry.result_count} matches, ~{tokens_avoided}t."
@@ -1263,6 +1344,8 @@ def _build_glob_dedup_hint_inner(
         cache = session.load(session_id)
     if cache.unavailable or cache.is_glob_history_empty():
         return None
+    if not _curator_should_emit(cache):
+        return None
 
     entry = session.lookup_glob_entry(session_id, pattern, path, cache=cache)
     if entry is None:
@@ -1278,6 +1361,8 @@ def _build_glob_dedup_hint_inner(
     tokens_avoided = _est_tokens_from_chars(bytes_avoided)
     pattern_short = _sanitize_hint_path(pattern)
     path_str = f" in `{_sanitize_hint_path(path)}`" if path else ""
+    # Curator: record emission keyed on the pattern (glob has no file path).
+    _record_hint_emitted(cache, f"glob:{pattern}")
     return ReadHint(
         _apply_terse(
             f"Glob `{pattern_short}`{path_str} ({int(age)}s): {entry.result_count} results, ~{tokens_avoided}t."
@@ -1343,6 +1428,8 @@ def _build_web_dedup_hint_inner(
     """
     if not session_id or not url:
         return None
+    if cache is not None and not _curator_should_emit(cache):
+        return None
 
     from . import web_cache  # noqa: PLC0415
 
@@ -1366,6 +1453,9 @@ def _build_web_dedup_hint_inner(
         f" status={entry.status_code}" if entry.status_code is not None else ""
     )
     from . import cache_common as _cc  # noqa: PLC0415
+    # Curator: record emission keyed on url_sha (web dedup is URL-keyed, not file-keyed).
+    if cache is not None:
+        _record_hint_emitted(cache, f"web:{url_sha}")
     return ReadHint(
         _apply_terse(
             f"URL ({int(age)}s): {entry.body_bytes:,}B{status_str}, ~{tokens_avoided}t. "
