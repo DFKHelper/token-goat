@@ -2552,11 +2552,14 @@ def _render(cache: SessionCache, session_id: str, max_tokens: int) -> tuple[str,
         if age_tier != "young"
         else []
     )
+    # min_lines=1: a single fetched URL is genuine signal (the agent did one
+    # WebFetch and that URL is worth surfacing); min_lines=2 here hid useful
+    # entries.  Cold Outputs and Directory Scans keep min_lines=2 because a
+    # single stale/empty-ish entry is genuinely noisy there.
     web_lines, web_used = _render_budget_lines(
         "### Web Fetches",
         _group_web_entries_by_domain(web_entries) if web_entries else [],
         web_budget,
-        min_lines=2,
     )
 
     # ── 4. Grep patterns — up to 15 % of remaining budget ────────────────────

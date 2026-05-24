@@ -267,10 +267,24 @@ class TestCompactStaleAndCold:
         from token_goat import compact
 
         # bash output that is 40 minutes old (> _COLD_OUTPUT_AGE_SECS = 1800)
+        # min_lines=2 applies: add second entry so Cold Outputs section renders
         cache = self._make_cache(
             edited={"src/x.py": 1},
             bash_ts_offset=2400,
         )
+        # Add a second cold bash entry manually
+        import time
+        be2 = cache.bash_history.copy()
+        from types import SimpleNamespace
+        be = SimpleNamespace()
+        be.ts = time.time() - 2400
+        be.stdout_bytes = 500
+        be.stderr_bytes = 0
+        be.output_id = "test-output-id-2"
+        be.cmd_preview = "ruff check src/"
+        be.exit_code = 0
+        be.truncated = False
+        cache.bash_history = {"x": be2["x"], "y": be}
         # Use 800 tokens so the bash budget slice (10%) is wide enough to hold
         # both the "Commands Run" header+entry AND the "Cold Outputs" block.
         with patch("token_goat.compact.estimate_tokens", return_value=1):

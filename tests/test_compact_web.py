@@ -10,11 +10,15 @@ from token_goat import compact, session
 class TestWebSection:
     def test_web_section_emitted_for_mature_session(self, tmp_data_dir, make_session):
         sid = "wm-1"
+        # min_lines=2 applies: single entry would be suppressed; add two to render section
+        # Use a separate session without edits to avoid budget pressure
         make_session(
             sid,
             age_seconds=7200,
-            edits=1,
-            web_fetches={"https://docs.example.com/api": 12_000},
+            web_fetches={
+                "https://docs.example.com/api": 12_000,
+                "https://api.other.com/reference": 10_000,
+            },
         )
         m = compact.build_manifest(sid, max_tokens=400)
         assert "Web Fetches" in m
@@ -60,11 +64,14 @@ class TestWebSection:
 
     def test_web_section_shows_status_code(self, tmp_data_dir, make_session):
         sid = "wm-5"
+        # min_lines=2 applies: add second entry so Web Fetches section renders
         make_session(
             sid,
             age_seconds=7200,
-            edits=1,
-            web_fetches={"https://api.example.com/gone": 500},
+            web_fetches={
+                "https://api.example.com/gone": 500,
+                "https://status.other.com/check": 1_000,
+            },
         )
         m = compact.build_manifest(sid, max_tokens=400)
         assert "404" in m or "200" in m
@@ -82,11 +89,15 @@ class TestWebSection:
 
     def test_web_and_bash_coexist(self, tmp_data_dir, make_session):
         sid = "wm-7"
+        # min_lines=2 applies: add second web fetch so Web Fetches section renders
         make_session(
             sid,
             age_seconds=7200,
             bash_runs={"pytest -v tests/": (8_000, 0)},
-            web_fetches={"https://docs.example.com/api": 10_000},
+            web_fetches={
+                "https://docs.example.com/api": 10_000,
+                "https://guide.other.com/intro": 8_000,
+            },
         )
         m = compact.build_manifest(sid, max_tokens=600)
         assert "Commands Run" in m
