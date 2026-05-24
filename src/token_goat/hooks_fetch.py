@@ -244,42 +244,26 @@ def _extract_web_response(payload: HookPayload) -> tuple[str, int | None]:
     """Pull (body, status_code) from a PostToolUse WebFetch payload.
 
     Defensive about payload-shape drift between harness versions.  The text
-    body is read at multiple plausible keys (``output``, ``text``, ``body``,
-    ``content``) and falls back to a bare string when ``tool_response`` is
-    itself a string.  Status code is read at ``status``, ``status_code``,
-    or ``code`` and coerced via int — string-typed codes are accepted to
-    handle harnesses that surface them as ``"200"``.
+    body is extracted via :func:`hooks_common.extract_tool_response_text` which
+    handles all shapes (bare string, MCP content array, named-field dict).
+    Status code is read at ``status_code``, ``status``, or ``code`` and coerced
+    via int — string-typed codes are accepted to handle harnesses that surface
+    them as ``"200"``.
     """
+    from .hooks_common import extract_tool_response_text  # noqa: PLC0415
+
+    body = extract_tool_response_text(
+        payload,
+        text_keys=("output", "text", "body", "content", "response"),
+    )
+
+    # Status code lives in the raw dict only — extract it separately.
     raw_resp: object = payload.get("tool_response") if isinstance(payload, dict) else None
     if raw_resp is None and isinstance(payload, dict):
         raw_resp = payload.get("tool_result") or payload.get("response")
 
-    body = ""
     status_val: object = None
-
-    if isinstance(raw_resp, str):
-        body = raw_resp
-    elif isinstance(raw_resp, dict):
-        body_raw = (
-            raw_resp.get("output")
-            or raw_resp.get("text")
-            or raw_resp.get("body")
-            or raw_resp.get("content")
-            or raw_resp.get("response")
-        )
-        if isinstance(body_raw, str):
-            body = body_raw
-        elif isinstance(body_raw, list):
-            # MCP CallToolResult content array — concatenate text items.
-            parts: list[str] = []
-            for item in body_raw:
-                if isinstance(item, dict) and isinstance(item.get("text"), str):
-                    parts.append(item["text"])
-                elif isinstance(item, str):
-                    parts.append(item)
-            body = "".join(parts)
-        else:
-            body = str(body_raw) if body_raw is not None else ""
+    if isinstance(raw_resp, dict):
         status_val = (
             raw_resp.get("status_code")
             if "status_code" in raw_resp

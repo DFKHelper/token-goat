@@ -34,6 +34,7 @@ __all__ = [
     "HookSpecificOutputUpdate",
     "LOG",
     "deny_redirect",
+    "extract_tool_response_text",
     "get_session_context",
     "get_tool_input",
     "is_real_int",
@@ -470,3 +471,71 @@ def is_real_int(value: object) -> TypeGuard[int]:
     returns ``True``.
     """
     return isinstance(value, int) and not isinstance(value, bool)
+
+
+def _coerce_content_array(items: list[object]) -> str:
+    """Concatenate text from an MCP-style ``content`` array.
+
+    Each item is either a ``{"type": "text", "text": "..."}`` dict or a bare
+    string.  Non-text items are silently skipped.
+    """
+    parts: list[str] = []
+    for item in items:
+        if isinstance(item, dict):
+            txt = item.get("text") if item.get("type") == "text" else None
+            if txt is None:
+                txt = item.get("text")
+            if isinstance(txt, str):
+                parts.append(txt)
+        elif isinstance(item, str):
+            parts.append(item)
+    return "".join(parts)
+
+
+def extract_tool_response_text(
+    payload: HookPayload,
+    *,
+    text_keys: tuple[str, ...] = ("output", "text", "body", "content", "response"),
+) -> str:
+    """Extract the primary text body from a PostToolUse payload.
+
+    Handles every shape the harness and MCP adapters produce:
+
+    1. ``payload["tool_response"]`` is a **str** — returned as-is.
+    2. ``payload["tool_response"]`` is a **list** — treated as an MCP
+       ``content`` array of ``{"type": "text", "text": "..."}`` items.
+    3. ``payload["tool_response"]`` is a **dict** — probed at each key in
+       *text_keys* in order; the first str value wins.  If a key yields a
+       list it is treated as an MCP content array.
+    4. Fallbacks: ``tool_result``, ``response`` at the top level (older
+       harness builds that promote the result up one level).
+
+    Returns ``""`` when nothing decodable is present — callers that need a
+    minimum-size guard compare ``len(result) >= min_bytes`` themselves.
+
+    This helper eliminates the near-identical walking logic that previously
+    lived in ``hooks_read._extract_bash_response``,
+    ``hooks_fetch._extract_web_response``, and
+    ``hooks_skill._extract_skill_body``.
+    """
+    raw_resp: object = payload.get("tool_response") if isinstance(payload, dict) else None
+    if raw_resp is None and isinstance(payload, dict):
+        raw_resp = payload.get("tool_result") or payload.get("response")
+
+    if isinstance(raw_resp, str):
+        return raw_resp
+
+    if isinstance(raw_resp, list):
+        return _coerce_content_array(raw_resp)
+
+    if isinstance(raw_resp, dict):
+        for key in text_keys:
+            val = raw_resp.get(key)
+            if isinstance(val, str):
+                return val
+            if isinstance(val, list):
+                result = _coerce_content_array(val)
+                if result:
+                    return result
+
+    return ""
