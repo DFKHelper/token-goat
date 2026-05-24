@@ -278,14 +278,27 @@ class TestSessionBriefSkipsLogOnCleanMain:
     REAL_SHA = "a" * 40  # valid 40-char hex string
 
     def _make_fake_run(self, branch: str, status_out: str, local_sha: str, origin_sha: str):
-        """Build a subprocess.run stub that returns proper SHAs for rev-parse calls."""
+        """Build a subprocess.run stub that handles the single `status -z -b` call.
+
+        *status_out* is still passed in ``--porcelain`` line format for
+        readability; this helper converts it to NUL-separated ``-z -b`` format.
+        """
+        def _porcelain_to_z_b(porcelain: str, br: str) -> str:
+            """Convert newline-separated porcelain lines to NUL-separated -z -b output."""
+            header = f"## {br}"
+            parts = [header]
+            for line in porcelain.splitlines():
+                line = line.rstrip("\n")
+                if line:
+                    parts.append(line)
+            return "\0".join(parts) + ("\0" if len(parts) > 1 else "")
+
         def _fake_run(cmd, **kwargs):
             r = type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})()
             cmd_str = " ".join(cmd)
-            if "--abbrev-ref" in cmd_str:
-                r.stdout = branch + "\n"
-            elif "--porcelain" in cmd_str:
-                r.stdout = status_out
+            if "-z" in cmd_str and "-b" in cmd_str:
+                # New single-call path: git --no-optional-locks status -z -b
+                r.stdout = _porcelain_to_z_b(status_out, branch)
             elif "rev-parse" in cmd_str and "origin/" in cmd_str:
                 r.stdout = origin_sha + "\n"
             elif "rev-parse" in cmd_str:
@@ -330,6 +343,115 @@ class TestSessionBriefSkipsLogOnCleanMain:
         brief = hs_mod._build_session_brief(str(tmp_path))
         assert brief is not None
         assert "Recent:" in brief
+
+
+# ---------------------------------------------------------------------------
+# Item #9 — _parse_status_z_b unit tests
+# ---------------------------------------------------------------------------
+
+
+class TestParseStatusZB:
+    """Unit tests for the ``-z -b`` output parser covering the same fields the
+    old two-call (rev-parse + --porcelain) path used."""
+
+    def test_clean_repo(self):
+        """Clean working tree: only header field, no status entries."""
+        import token_goat.hooks_session as hs_mod
+        branch, lines = hs_mod._parse_status_z_b("## main...origin/main\0")
+        assert branch == "main"
+        assert lines == []
+
+    def test_branch_with_untracked_and_modified(self):
+        """Branch header plus 1 untracked and 1 modified file."""
+        import token_goat.hooks_session as hs_mod
+        # -z output: header\0XY file\0XY file\0
+        output = "## feature/foo...origin/feature/foo\0?? new_file.py\0 M src/bar.py\0"
+        branch, lines = hs_mod._parse_status_z_b(output)
+        assert branch == "feature/foo"
+        assert len(lines) == 2
+        assert any(ln.startswith("??") for ln in lines)
+        assert any(ln[1:2] == "M" for ln in lines)
+
+    def test_detached_head(self):
+        """Detached HEAD: branch reported as 'HEAD'."""
+        import token_goat.hooks_session as hs_mod
+        output = "## HEAD (no branch)\0 M src/foo.py\0"
+        branch, lines = hs_mod._parse_status_z_b(output)
+        assert branch == "HEAD"
+        assert len(lines) == 1
+
+    def test_no_commits_yet(self):
+        """New repo with no commits: 'No commits yet on <branch>'."""
+        import token_goat.hooks_session as hs_mod
+        output = "## No commits yet on main\0"
+        branch, lines = hs_mod._parse_status_z_b(output)
+        assert branch == "main"
+        assert lines == []
+
+    def test_capped_at_20_entries(self):
+        """Status entries are capped at 20 regardless of output length."""
+        import token_goat.hooks_session as hs_mod
+        entries = "".join(f"?? file{i}.py\0" for i in range(30))
+        output = f"## main\0{entries}"
+        branch, lines = hs_mod._parse_status_z_b(output)
+        assert branch == "main"
+        assert len(lines) == 20
+
+    def test_empty_output(self):
+        """Empty string (git not a repo / failure) returns safe defaults."""
+        import token_goat.hooks_session as hs_mod
+        branch, lines = hs_mod._parse_status_z_b("")
+        assert branch == "unknown"
+        assert lines == []
+
+    def test_staged_file(self):
+        """Staged (index-modified) file is correctly detected."""
+        import token_goat.hooks_session as hs_mod
+        output = "## main\0M  src/staged.py\0"
+        branch, lines = hs_mod._parse_status_z_b(output)
+        assert branch == "main"
+        assert len(lines) == 1
+        assert lines[0][:1] == "M"  # staged in index
+
+
+# ---------------------------------------------------------------------------
+# Item #9 — TimeoutExpired regression: _build_session_brief returns None
+# ---------------------------------------------------------------------------
+
+
+class TestSessionBriefTimeoutReturnsNone:
+    """Regression: when subprocess.run raises TimeoutExpired on the combined
+    ``status -z -b`` call, _build_session_brief must return None without
+    raising and without leaking open file objects."""
+
+    def test_timeout_returns_none(self, monkeypatch, tmp_path):
+        """TimeoutExpired on the status call → None, no exception escapes."""
+        import subprocess
+
+        import token_goat.hooks_session as hs_mod
+
+        def _raise_timeout(cmd, **kwargs):
+            raise subprocess.TimeoutExpired(cmd, timeout=2.0)
+
+        monkeypatch.setattr(subprocess, "run", _raise_timeout)
+        result = hs_mod._build_session_brief(str(tmp_path))
+        assert result is None
+
+    def test_timeout_no_exception_propagates(self, monkeypatch, tmp_path):
+        """Confirm no exception type escapes — not just TimeoutExpired."""
+        import subprocess
+
+        import token_goat.hooks_session as hs_mod
+
+        def _raise_timeout(cmd, **kwargs):
+            raise subprocess.TimeoutExpired(cmd, timeout=0.1)
+
+        monkeypatch.setattr(subprocess, "run", _raise_timeout)
+        # Must not raise anything at all
+        try:
+            hs_mod._build_session_brief(str(tmp_path))
+        except Exception as exc:  # noqa: BLE001
+            raise AssertionError(f"_build_session_brief raised {exc!r} on timeout") from exc
 
 
 # ---------------------------------------------------------------------------
