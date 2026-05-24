@@ -45,6 +45,7 @@ from .hooks_common import (
     is_real_int,
     pre_tool_use_with_context,
     pre_tool_use_with_update,
+    record_cached_stat,
     record_hint_stat_pair,
     sanitize_log_str,
     sanitize_opt,
@@ -1254,7 +1255,7 @@ def post_bash(payload: HookPayload) -> HookResponse:
         _LOG.debug("post-bash: no session_id; output not cached")
         return CONTINUE()
 
-    from . import bash_cache, db, session  # noqa: PLC0415
+    from . import bash_cache, session  # noqa: PLC0415
 
     # Hash and preview the *original* command so reruns of the same logical
     # invocation (whether wrapped or not) collide on the same cache entry.
@@ -1279,18 +1280,9 @@ def post_bash(payload: HookPayload) -> HookResponse:
     except (ValueError, OSError) as exc:
         _LOG.debug("post-bash: session record failed: %s", exc)
 
-    # Record a stat row for observability.  We do NOT claim a saving here:
-    # the saving is realized when (and if) the agent later avoids a re-run.
-    # The "bash_output_cached" kind is informational only — stats.py groups
-    # it under a non-saving bucket so it never inflates the headline number.
-    try:
-        db.record_stat(
-            None, "bash_output_cached",
-            bytes_saved=0, tokens_saved=0,
-            detail=sanitize_log_str(display_cmd, max_len=200),
-        )
-    except Exception:  # noqa: BLE001 — stat logging is best-effort
-        _LOG.debug("post-bash: stat record failed", exc_info=True)
+    # Record a stat row for observability.  No saving is claimed here — the
+    # saving is realized when (and if) the agent later avoids a re-run.
+    record_cached_stat("bash_output_cached", sanitize_log_str(display_cmd, max_len=200))
 
     _LOG.info(
         "post-bash: cached output id=%s bytes=%d exit=%s truncated=%s",

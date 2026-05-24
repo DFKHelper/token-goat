@@ -40,6 +40,7 @@ __all__ = [
     "is_real_int",
     "pre_tool_use_with_context",
     "pre_tool_use_with_update",
+    "record_cached_stat",
     "record_hint_stat_pair",
     "run_dedup_hint",
     "sanitize_log_str",
@@ -355,6 +356,37 @@ def record_hint_stat_pair(kind: str, hint: object, detail: str) -> None:
         tokens_saved=-injection_cost_tokens,
         detail=detail,
     )
+
+
+def record_cached_stat(kind: str, detail: str) -> None:
+    """Record an informational stat row for a cache-capture event (bash/web/skill).
+
+    All three post-capture handlers (``hooks_read``, ``hooks_fetch``,
+    ``hooks_skill``) previously duplicated the same five-line pattern::
+
+        try:
+            db.record_stat(None, kind, bytes_saved=0, tokens_saved=0, detail=...)
+        except Exception:
+            _LOG.debug("...: stat record failed", exc_info=True)
+
+    No saving is claimed at capture time — the saving is realized later when
+    (and if) the agent avoids a re-run/re-fetch/re-load.  These rows are
+    therefore informational only; ``stats.py`` groups them under a
+    non-saving bucket so they never inflate the headline number.
+
+    Args:
+        kind:   Stat kind string (e.g. ``"bash_output_cached"``,
+                ``"web_output_cached"``, ``"skill_cached"``).
+        detail: Short sanitised label for triage (command preview, URL, skill
+                name).  Callers must sanitise with :func:`sanitize_log_str`
+                before passing.
+    """
+    try:
+        from . import db  # noqa: PLC0415
+
+        db.record_stat(None, kind, bytes_saved=0, tokens_saved=0, detail=detail)
+    except Exception:  # noqa: BLE001
+        LOG.debug("record_cached_stat(%s): stat record failed", kind, exc_info=True)
 
 
 def pre_tool_use_with_update(updated_input: dict[str, object], additional_context: str) -> HookResponse:

@@ -18,7 +18,6 @@ __all__ = [
     "_get_whole_repo_diff",
 ]
 
-import hashlib
 import heapq
 import logging
 import math
@@ -33,6 +32,7 @@ from typing import TYPE_CHECKING, Any, Final
 from urllib.parse import urlparse
 
 from . import session as session_mod
+from .cache_common import short_content_hash as _short_content_hash
 from .cache_common import short_output_id as _short_id
 from .hooks_common import sanitize_log_str
 from .util import _humanize_bytes
@@ -2100,7 +2100,7 @@ def build_manifest(session_id: str, *, max_tokens: int = 400) -> str:
     if not full_manifest:
         return full_manifest
 
-    sha = hashlib.sha256(full_manifest.encode()).hexdigest()[:16]
+    sha = _short_content_hash(full_manifest)
     now = time.time()
     age = now - cache.last_manifest_ts
 

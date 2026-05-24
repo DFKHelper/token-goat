@@ -35,6 +35,7 @@ from .hooks_common import (
     HookResponse,
     get_session_context,
     get_tool_input,
+    record_cached_stat,
     sanitize_log_str,
 )
 
@@ -137,7 +138,7 @@ def post_skill(payload: HookPayload) -> HookResponse:
 
     source_path = _resolve_skill_body_path(skill_name)
 
-    from . import db, session, skill_cache  # noqa: PLC0415
+    from . import session, skill_cache  # noqa: PLC0415
 
     meta = skill_cache.store_output(
         session_id, skill_name, body,
@@ -161,14 +162,7 @@ def post_skill(payload: HookPayload) -> HookResponse:
     except (ValueError, OSError) as exc:
         _LOG.debug("post-skill: session record failed: %s", exc)
 
-    try:
-        db.record_stat(
-            None, "skill_cached",
-            bytes_saved=0, tokens_saved=0,
-            detail=sanitize_log_str(skill_name, max_len=200),
-        )
-    except Exception:  # noqa: BLE001
-        _LOG.debug("post-skill: stat record failed", exc_info=True)
+    record_cached_stat("skill_cached", sanitize_log_str(skill_name, max_len=200))
 
     _LOG.info(
         "post-skill: cached skill name=%s bytes=%d truncated=%s source=%s",
