@@ -365,7 +365,7 @@ class TestSelectFilter:
 
     def test_ruff(self):
         f = bc.select_filter(["ruff", "check", "src/"])
-        assert f is not None and f.name == "linter"
+        assert f is not None and f.name == "ruff"
 
     def test_mypy(self):
         f = bc.select_filter(["mypy", "src/"])
@@ -684,10 +684,15 @@ class TestAwsFilter:
 
 class TestLinterFilter:
     def test_ruff_dedupes_by_rule(self):
-        text = "\n".join([f"src/foo.py:{i}:1: F401 imported but unused" for i in range(20)])
-        f = bc.LinterFilter()
+        # ruff is now handled by RuffFilter; verify RuffFilter collapses repeated
+        # violations across multiple files into a summary line.
+        lines = [f"src/mod_{i}.py:1:1: F401 imported but unused" for i in range(20)]
+        text = "\n".join(lines)
+        f = bc.RuffFilter()
         result = f.apply(text, "", 1, ["ruff", "check"])
-        assert "+17 more matching F401" in result.text
+        f401_lines = [ln for ln in result.text.splitlines() if "F401" in ln]
+        assert len(f401_lines) == 1
+        assert "20 occurrences" in f401_lines[0]
 
     def test_eslint_per_file_dedupe(self):
         text = (
@@ -1497,3 +1502,195 @@ class TestGenericFilterCapTokens:
         assert result.compressed_bytes < len((stdout + stderr).encode("utf-8"))
         # Should indicate it was capped.
         assert "output capped at" in result.text
+
+
+# ---------------------------------------------------------------------------
+# RuffFilter
+# ---------------------------------------------------------------------------
+
+def _make_ruff_stdout(
+    *,
+    e501_files: int = 10,
+    e501_per_file: int = 5,
+    extra_codes: list[str] | None = None,
+) -> str:
+    """Build synthetic ruff stdout with E501 violations across many files
+    plus optional one-off violations for other codes."""
+    lines: list[str] = []
+    for f_idx in range(e501_files):
+        for ln in range(1, e501_per_file + 1):
+            lines.append(
+                f"src/module_{f_idx}.py:{ln}:101: E501 Line too long (120 > 100)"
+            )
+    for code in (extra_codes or []):
+        lines.append(f"src/special.py:1:1: {code} Some message for {code}")
+    lines.append(f"Found {len(lines)} errors.")
+    return "\n".join(lines)
+
+
+class TestRuffFilter:
+    """Tests for RuffFilter."""
+
+    def test_high_frequency_rule_collapsed_to_summary(self) -> None:
+        """E501 across 10 files (50 lines) collapses to one summary line."""
+        stdout = _make_ruff_stdout(e501_files=10, e501_per_file=5)
+        f = bc.RuffFilter()
+        result = f.apply(stdout, "", 1, ["ruff", "check", "src/"])
+        text = result.text
+        # Only one line for E501, not 50.
+        e501_lines = [ln for ln in text.splitlines() if "E501" in ln]
+        assert len(e501_lines) == 1
+        assert "50 occurrences" in e501_lines[0]
+        assert "10 files" in e501_lines[0]
+        assert "example:" in e501_lines[0]
+
+    def test_unique_codes_preserved(self) -> None:
+        """Codes with < 3 occurrences are kept verbatim."""
+        extra = ["F401", "W291", "E302", "B006", "N801"]
+        stdout = _make_ruff_stdout(e501_files=10, e501_per_file=5, extra_codes=extra)
+        f = bc.RuffFilter()
+        result = f.apply(stdout, "", 1, ["ruff", "check", "src/"])
+        text = result.text
+        for code in extra:
+            assert code in text, f"Expected {code} to be preserved"
+
+    def test_footer_preserved(self) -> None:
+        """'Found N errors' footer line is always kept."""
+        stdout = _make_ruff_stdout(e501_files=10, e501_per_file=5)
+        f = bc.RuffFilter()
+        result = f.apply(stdout, "", 1, ["ruff", "check", "src/"])
+        assert "Found" in result.text and "errors" in result.text
+
+    def test_output_is_smaller_than_input(self) -> None:
+        """Compressed output is substantially smaller than raw input."""
+        stdout = _make_ruff_stdout(e501_files=10, e501_per_file=5)
+        f = bc.RuffFilter()
+        result = f.apply(stdout, "", 1, ["ruff", "check", "src/"])
+        assert result.compressed_bytes < len(stdout.encode())
+
+    def test_low_frequency_rule_not_summarised(self) -> None:
+        """A rule with only 2 occurrences in 1 file is not summarised."""
+        lines = [
+            "src/foo.py:1:1: E711 Comparison to None",
+            "src/foo.py:2:1: E711 Comparison to None",
+            "Found 2 errors.",
+        ]
+        stdout = "\n".join(lines)
+        f = bc.RuffFilter()
+        result = f.apply(stdout, "", 1, ["ruff"])
+        e711_lines = [ln for ln in result.text.splitlines() if "E711" in ln]
+        # Both kept verbatim (2 occurrences, same file — below threshold).
+        assert len(e711_lines) == 2
+
+    def test_three_occurrences_one_file_not_summarised(self) -> None:
+        """3+ occurrences but only in 1 file should not be summarised."""
+        lines = [
+            "src/foo.py:1:1: E501 Line too long",
+            "src/foo.py:2:1: E501 Line too long",
+            "src/foo.py:3:1: E501 Line too long",
+            "Found 3 errors.",
+        ]
+        stdout = "\n".join(lines)
+        f = bc.RuffFilter()
+        result = f.apply(stdout, "", 1, ["ruff"])
+        e501_lines = [ln for ln in result.text.splitlines() if "E501" in ln]
+        # All 3 kept (same file).
+        assert len(e501_lines) == 3
+
+    def test_empty_stdout(self) -> None:
+        """Empty stdout produces empty (or whitespace-only) output without error."""
+        f = bc.RuffFilter()
+        result = f.apply("", "", 0, ["ruff", "check"])
+        assert result.text.strip() == ""
+
+    def test_matches_ruff_binary(self) -> None:
+        """RuffFilter.matches returns True for ruff and False for pytest."""
+        f = bc.RuffFilter()
+        assert f.matches(["ruff", "check", "src/"])
+        assert not f.matches(["pytest"])
+
+    def test_select_filter_returns_ruff_filter(self) -> None:
+        """select_filter dispatches ruff commands to RuffFilter, not LinterFilter."""
+        f = bc.select_filter(["ruff", "check", "src/"])
+        assert isinstance(f, bc.RuffFilter)
+
+
+# ---------------------------------------------------------------------------
+# MypyFilter — additional edge-case tests
+# ---------------------------------------------------------------------------
+
+class TestMypyFilterExtra:
+    """Additional edge cases for MypyFilter not covered by existing tests."""
+
+    def test_multiple_success_lines_deduplicated(self) -> None:
+        """Multiple 'Success: no issues found' lines are all kept (MypyFilter
+        passes non-diagnostic lines through unchanged; deduplication is not
+        its job — but the filter must not crash on them)."""
+        lines = [
+            "src/a.py:1: error: Incompatible return value",
+            "src/b.py:2: error: Argument missing",
+            "Success: no issues found",
+            "Success: no issues found",
+            "Success: no issues found",
+            "Success: no issues found",
+            "Found 2 errors in 2 files (checked 10 source files)",
+        ]
+        stdout = "\n".join(lines)
+        f = bc.MypyFilter()
+        result = f.apply(stdout, "", 1, ["mypy", "src/"])
+        text = result.text
+        # Error lines must be present.
+        assert "Incompatible return value" in text
+        assert "Argument missing" in text
+        # Summary line must be present.
+        assert "Found 2 errors" in text
+
+    def test_per_file_errors_kept(self) -> None:
+        """Error lines from distinct files are all kept."""
+        files = [f"src/mod_{i}.py" for i in range(3)]
+        lines = [f"{f}:{i + 1}: error: Some error" for i, f in enumerate(files)]
+        lines.append("Found 3 errors in 3 files (checked 3 source files)")
+        stdout = "\n".join(lines)
+        f = bc.MypyFilter()
+        result = f.apply(stdout, "", 1, ["mypy"])
+        for fn in files:
+            assert fn in result.text
+
+    def test_empty_stdout(self) -> None:
+        """Empty stdout produces empty output without error."""
+        f = bc.MypyFilter()
+        result = f.apply("", "", 0, ["mypy"])
+        assert result.text.strip() == ""
+
+    def test_select_filter_returns_mypy_filter(self) -> None:
+        """select_filter dispatches mypy to MypyFilter."""
+        f = bc.select_filter(["mypy", "src/"])
+        assert isinstance(f, bc.MypyFilter)
+
+
+# ---------------------------------------------------------------------------
+# Edge cases: empty stdout / binary not in FILTERS
+# ---------------------------------------------------------------------------
+
+class TestFilterDispatchEdgeCases:
+    """Edge cases for filter dispatch and empty-input handling."""
+
+    def test_unknown_binary_returns_none(self) -> None:
+        """select_filter returns None for an unrecognised binary."""
+        assert bc.select_filter(["unknowntool", "--flag"]) is None
+
+    def test_empty_argv_returns_none(self) -> None:
+        """select_filter returns None for empty argv."""
+        assert bc.select_filter([]) is None
+
+    def test_ruff_empty_input_no_crash(self) -> None:
+        """RuffFilter.apply does not crash on empty stdout+stderr."""
+        f = bc.RuffFilter()
+        result = f.apply("", "", 0, ["ruff"])
+        assert isinstance(result.text, str)
+
+    def test_mypy_empty_input_no_crash(self) -> None:
+        """MypyFilter.apply does not crash on empty stdout+stderr."""
+        f = bc.MypyFilter()
+        result = f.apply("", "", 0, ["mypy"])
+        assert isinstance(result.text, str)
