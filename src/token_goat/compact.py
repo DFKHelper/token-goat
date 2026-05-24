@@ -77,6 +77,14 @@ _MAX_SYMBOLS_PER_FILE_ENTRY: Final[int] = 6
 # covers the typical iterate-test-fix-test-commit cycle without dominating the
 # budget — most sessions accumulate fewer than that.
 _MAX_BASH_ENTRIES: Final[int] = 6
+# Maximum pending/in-progress TaskList entries shown in the ### TODOs section.
+# Five covers the typical feature-branch task list without consuming too much of
+# the manifest budget; additional tasks get an overflow note.
+_MAX_TODO_ENTRIES: Final[int] = 5
+# Max characters for a task subject in the manifest.  Subjects are user-authored
+# strings of arbitrary length; truncating at 60 chars keeps each line short
+# enough to fit the compact token budget without losing the essential meaning.
+_MAX_TODO_SUBJECT_CHARS: Final[int] = 60
 # Smallest cached Bash output worth surfacing in the manifest.  Below ~400 bytes
 # the dedup hint suppresses on size anyway, and the manifest line itself costs
 # tokens that would not be paid back even if the agent acted on the hint.
@@ -1901,6 +1909,77 @@ def _cap_line(line: str, max_len: int = 120) -> str:
     return line[: max_len - 1] + "…"
 
 
+def _load_task_list(session_id: str) -> list[dict[str, str]]:
+    """Load TaskList entries for *session_id* from ``~/.claude/tasks/<session_id>/``.
+
+    Claude Code persists each task as a separate JSON file named ``<id>.json``
+    inside a per-session subdirectory.  We read every ``*.json`` file in that
+    directory, parse the ``id``, ``subject``, and ``status`` fields, and return
+    the raw list (unsorted, unfiltered — callers apply their own predicate).
+
+    Returns an empty list on any error (missing directory, permission denied,
+    malformed JSON) so callers never need to handle exceptions.
+    """
+    import json as _json  # noqa: PLC0415
+
+    from . import paths as paths_mod  # noqa: PLC0415
+
+    tasks_dir = paths_mod.claude_config_dir() / "tasks" / session_id
+    if not tasks_dir.is_dir():
+        return []
+
+    results: list[dict[str, str]] = []
+    try:
+        for p in tasks_dir.glob("*.json"):
+            try:
+                raw = p.read_text(encoding="utf-8", errors="replace")
+                data = _json.loads(raw)
+                if not isinstance(data, dict):
+                    continue
+                task_id = str(data.get("id", p.stem))
+                subject = str(data.get("subject", "")).strip()
+                status = str(data.get("status", "")).strip().lower()
+                if subject and status:
+                    results.append({"id": task_id, "subject": subject, "status": status})
+            except Exception:  # noqa: BLE001
+                _LOG.debug("_load_task_list: skipping malformed task file %s", p)
+    except Exception:  # noqa: BLE001
+        _LOG.debug("_load_task_list: error reading tasks dir %s", tasks_dir)
+    return results
+
+
+def _render_tasks_section(tasks: list[dict[str, str]]) -> list[str]:
+    """Render a ``### TODOs`` manifest section from a raw task list.
+
+    Filters to ``pending`` and ``in_progress`` (``in-progress``) tasks, caps at
+    :data:`_MAX_TODO_ENTRIES`, truncates subjects to :data:`_MAX_TODO_SUBJECT_CHARS`
+    chars, and returns an empty list when no qualifying tasks remain.
+
+    The status prefix uses ``[ ]`` for pending and ``[→]`` for in-progress so
+    the compaction LLM can distinguish work not yet started from work underway.
+    """
+    active_statuses = {"pending", "in_progress", "in-progress"}
+    active = [t for t in tasks if t.get("status", "") in active_statuses]
+    if not active:
+        return []
+
+    lines: list[str] = ["### TODOs"]
+    shown = active[:_MAX_TODO_ENTRIES]
+    for t in shown:
+        subject = t["subject"]
+        if len(subject) > _MAX_TODO_SUBJECT_CHARS:
+            subject = subject[:_MAX_TODO_SUBJECT_CHARS - 1] + "…"
+        status = t.get("status", "pending")
+        marker = "[→]" if status in ("in_progress", "in-progress") else "[ ]"
+        lines.append(f"- {marker} {subject}")
+
+    overflow = len(active) - len(shown)
+    if overflow > 0:
+        lines.append(f"- …+{overflow} more")
+
+    return lines
+
+
 def _render_section(
     header: str,
     entries: list[Any],
@@ -2051,6 +2130,10 @@ def _render(cache: SessionCache, session_id: str, max_tokens: int) -> tuple[str,
     4. **Web fetches** — reference material loaded mid-session, capped at 10 %.
     5. **Grep history** — recent search patterns, capped at 15 % of remaining budget.
     6. **Key files read** — top files by ``read_count`` (most re-read first), capped at 30 %.
+    6b.**TODOs** — pending/in-progress TaskList entries read from
+       ``~/.claude/tasks/<session_id>/``.  No budget slice — the section is small
+       (≤5 lines) and uses overall headroom.  Omitted when the task directory is
+       absent or all tasks are completed.
 
     Budget allocation via :func:`_section_budgets`: the edited-files block is rendered
     first and its token cost is subtracted from the global budget before the remaining
@@ -2521,6 +2604,14 @@ def _render(cache: SessionCache, session_id: str, max_tokens: int) -> tuple[str,
             files_lines.extend(files_entries_for_section)
             files_used += header_cost
 
+    # ── 6b. TODOs — pending/in-progress TaskList entries (no budget slice) ──────
+    # TaskList state is persisted by the harness at ~/.claude/tasks/<session_id>/.
+    # Loading it is a fast local disk read; the section is small (≤5 lines) so it
+    # does not need a dedicated budget slice — it comes out of the overall headroom
+    # after the budgeted sections are assembled.
+    raw_tasks = _load_task_list(session_id)
+    todo_lines = _render_tasks_section(raw_tasks)
+
     # ── Legend — only list markers that actually appear above ─────────────────
     has_edit = bool(edited_clean)
     has_read = bool(included_top_files or sym_lines)
@@ -2558,6 +2649,7 @@ def _render(cache: SessionCache, session_id: str, max_tokens: int) -> tuple[str,
     #   4b. Glob scans        — directory scan history
     #   5. Grep patterns      — investigation history (least critical)
     #   6. Key files read     — broader context
+    #   6b. TODOs             — pending/in-progress TaskList entries
     sections: list[str] = (
         sealed_block
         + header_lines
@@ -2572,6 +2664,7 @@ def _render(cache: SessionCache, session_id: str, max_tokens: int) -> tuple[str,
         + glob_lines
         + grep_lines
         + files_lines
+        + todo_lines
     )
     if legend_parts:
         sections.append("Legend: " + "  ".join(legend_parts))
