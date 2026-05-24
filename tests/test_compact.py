@@ -833,13 +833,21 @@ class TestDedupAcrossSections:
 
     def test_edited_file_not_repeated_in_key_files_read(self, tmp_data_dir):
         sid = "dedup-session-abc"
-        # Same file edited AND read many times — should appear once, under Edited
+        # Same file edited AND read many times — should appear in Edited section,
+        # but NOT duplicated under Key Files Read.
         for _ in range(5):
             session.mark_file_read(sid, "/proj/src/shared.py", offset=0, limit=100)
         session.mark_file_edited(sid, "/proj/src/shared.py")
         result = compact.build_manifest(sid)
-        # Count occurrences of "shared.py" — should be exactly 1
-        assert result.count("shared.py") == 1, f"expected 1, got {result.count('shared.py')}\n{result}"
+        # The sealed block may also mention shared.py; strip it before counting
+        # occurrences in the body sections.  The dedup invariant is: the file must
+        # not appear in BOTH "Files Edited" AND "Key Files Read" body sections.
+        body = result
+        if "<<MUST_PRESERVE>>" in result and "<</MUST_PRESERVE>>" in result:
+            body = result[result.index("<</MUST_PRESERVE>>") + len("<</MUST_PRESERVE>>"):]
+        assert body.count("shared.py") == 1, (
+            f"expected 1 in body sections, got {body.count('shared.py')}\n{result}"
+        )
 
 
 class TestBlockerDedupFromBashHistory:
@@ -1161,6 +1169,169 @@ class TestConfigLoad:
         monkeypatch.delenv("TOKEN_GOAT_COMPACT_ASSIST", raising=False)
         cfg = config.load()
         assert cfg.compact_assist.enabled is True  # fell back to default
+
+
+# ---------------------------------------------------------------------------
+# _build_sealed_block — above-the-fold MUST_PRESERVE block
+# ---------------------------------------------------------------------------
+
+
+class TestBuildSealedBlock:
+    """Unit tests for compact._build_sealed_block."""
+
+    import types as _types
+
+    def _make_bash_entry(self, cmd: str, exit_code: int, ts: float):
+        import types
+        return types.SimpleNamespace(
+            cmd_preview=cmd,
+            exit_code=exit_code,
+            ts=ts,
+            output_id="",
+            stdout_bytes=500,
+            stderr_bytes=0,
+        )
+
+    def _make_skill_entry(self, name: str, ts: float):
+        import types
+        return types.SimpleNamespace(
+            skill_name=name,
+            ts=ts,
+            body_bytes=1024,
+            run_count=1,
+            truncated=False,
+        )
+
+    def test_empty_inputs_returns_empty_list(self):
+        """All three slots empty → no block emitted."""
+        result = compact._build_sealed_block({}, [], {})
+        assert result == []
+
+    def test_block_present_when_edited_files(self):
+        """Edited files alone trigger the block."""
+        result = compact._build_sealed_block({"/proj/src/auth.py": 2}, [], {})
+        assert result != []
+        text = "\n".join(result)
+        assert "<<MUST_PRESERVE>>" in text
+        assert "<</MUST_PRESERVE>>" in text
+
+    def test_block_present_when_blocker(self):
+        """A recent failure alone triggers the block."""
+        entry = self._make_bash_entry("pytest tests/", 1, time.time())
+        result = compact._build_sealed_block({}, [entry], {})
+        text = "\n".join(result)
+        assert "<<MUST_PRESERVE>>" in text
+        assert "pytest" in text
+
+    def test_block_present_when_skills(self):
+        """Active skills alone trigger the block."""
+        skill = self._make_skill_entry("ralph", time.time())
+        result = compact._build_sealed_block({}, [], {"ralph": skill})
+        text = "\n".join(result)
+        assert "<<MUST_PRESERVE>>" in text
+        assert "ralph" in text
+
+    def test_edit_slot_shows_at_most_three_files(self):
+        """Only the top-3 most-edited files appear in the edit slot."""
+        edited = {
+            "/proj/a.py": 5,
+            "/proj/b.py": 3,
+            "/proj/c.py": 2,
+            "/proj/d.py": 1,
+        }
+        result = compact._build_sealed_block(edited, [], {})
+        text = "\n".join(result)
+        # a, b, c should appear; d should not (only top 3)
+        assert "a.py" in text
+        assert "b.py" in text
+        assert "c.py" in text
+        assert "d.py" not in text
+
+    def test_edit_slot_includes_count_suffix_when_gt_one(self):
+        """Files edited more than once show a ×N suffix."""
+        edited = {"/proj/src/compact.py": 4}
+        result = compact._build_sealed_block(edited, [], {})
+        text = "\n".join(result)
+        assert "×4" in text
+
+    def test_blocker_slot_uses_most_recent_failure(self):
+        """Most-recent (by ts) blocker is picked, not the first one."""
+        now = time.time()
+        older = self._make_bash_entry("make build", 2, now - 120)
+        newer = self._make_bash_entry("pytest tests/compact", 1, now - 10)
+        result = compact._build_sealed_block({}, [older, newer], {})
+        text = "\n".join(result)
+        assert "pytest" in text
+
+    def test_skill_slot_shows_at_most_two_skills(self):
+        """Only ≤2 skills appear in the skill slot."""
+        now = time.time()
+        skills = {
+            "ralph": self._make_skill_entry("ralph", now - 10),
+            "improve": self._make_skill_entry("improve", now - 20),
+            "superman": self._make_skill_entry("superman", now - 30),
+        }
+        result = compact._build_sealed_block({}, [], skills)
+        text = "\n".join(result)
+        # ralph and improve (more recent) should appear; superman should not
+        assert "ralph" in text
+        assert "improve" in text
+        assert "superman" not in text
+
+    def test_block_bounded_at_80_tokens(self):
+        """Sealed block is always ≤ 80 tokens (≤ 320 chars)."""
+        now = time.time()
+        edited = {f"/proj/src/very_long_filename_{i:03d}.py": i + 1 for i in range(5)}
+        entry = self._make_bash_entry("pytest --timeout=60 tests/test_very_long_module.py", 1, now)
+        skills = {
+            "ralph": self._make_skill_entry("ralph", now),
+            "improve": self._make_skill_entry("improve", now - 5),
+        }
+        result = compact._build_sealed_block(edited, [entry], skills)
+        text = "\n".join(result)
+        assert len(text) <= 320, f"Block too long ({len(text)} chars): {text!r}"
+
+    def test_all_three_slots_survive_top_only_truncation(self):
+        """If only the sealed block survives (rest trimmed), all three pieces are present."""
+        now = time.time()
+        edited = {"/proj/src/auth.py": 3}
+        entry = self._make_bash_entry("pytest tests/", 1, now)
+        skills = {"ralph": self._make_skill_entry("ralph", now)}
+        block_lines = compact._build_sealed_block(edited, [entry], skills)
+        # Simulate "top-only" truncation: keep only the sealed block lines
+        text = "\n".join(block_lines)
+        assert "auth.py" in text, "edit slot must be in block"
+        assert "pytest" in text, "blocker slot must be in block"
+        assert "ralph" in text, "skill slot must be in block"
+
+    def test_manifest_starts_with_sealed_block_when_data_present(self, tmp_data_dir):
+        """Full manifest starts with <<MUST_PRESERVE>> when edited files exist."""
+        sid = "sealed-block-manifest-test-abc"
+        session.mark_file_edited(sid, "/proj/src/auth.py")
+        result = compact.build_manifest(sid)
+        assert result.startswith("<<MUST_PRESERVE>>"), (
+            f"Manifest should start with sealed block, got:\n{result[:200]}"
+        )
+
+    def test_manifest_omits_sealed_block_when_no_data(self, tmp_data_dir):
+        """When session has only file reads (no edits, no failures, no skills),
+        the sealed block is omitted entirely."""
+        sid = "sealed-block-absent-test-abc"
+        session.mark_file_read(sid, "/proj/src/db.py", offset=0, limit=100)
+        result = compact.build_manifest(sid)
+        assert "<<MUST_PRESERVE>>" not in result, (
+            f"No sealed block expected for read-only session:\n{result[:300]}"
+        )
+
+    def test_files_edited_section_still_present_with_sealed_block(self, tmp_data_dir):
+        """The 'Files Edited (preserve)' detail section coexists with the sealed block."""
+        sid = "sealed-coexist-test-abc"
+        session.mark_file_edited(sid, "/proj/src/compact.py")
+        result = compact.build_manifest(sid)
+        assert "<<MUST_PRESERVE>>" in result
+        assert "Files Edited" in result, (
+            f"Detail section should still appear alongside sealed block:\n{result}"
+        )
 
     def test_save_and_reload(self, tmp_path, monkeypatch):
         from token_goat import paths
