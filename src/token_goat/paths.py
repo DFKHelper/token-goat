@@ -28,6 +28,8 @@ __all__ = [
     "python_runner_command",
     "open_log_file",
     "roll_log_if_oversized",
+    "manifest_sha_sidecar_path",
+    "sentinels_dir",
     "session_cache_path",
     "web_cache_dir",
     "worker_heartbeat_path",
@@ -373,6 +375,41 @@ def compact_skip_sentinel_path(session_id: str) -> Path:
     except ValueError as exc:
         raise ValueError(
             f"session_id produces a path outside the compact_skip directory: {session_id!r}"
+        ) from exc
+    return candidate
+
+
+def sentinels_dir() -> Path:
+    """Path to ``sentinels/`` — general-purpose small sidecar files.
+
+    Used for manifest SHA sidecars (``manifest_sha_{session_id}``) and any
+    future lightweight cross-invocation state that does not belong in the
+    session JSON (which would force a full deserialise/serialise round-trip).
+    Created on first access by callers; no explicit setup required.
+    """
+    return data_dir() / "sentinels"
+
+
+def manifest_sha_sidecar_path(session_id: str) -> Path:
+    """Path to the manifest-SHA sidecar for *session_id*.
+
+    The sidecar stores ``sha256(manifest_text)|fingerprint|emit_ts`` so the
+    next PreCompact can detect an unchanged session without rendering the full
+    manifest.  Written atomically after every full manifest emit; read at the
+    start of every PreCompact before calling ``_render``.
+
+    Raises ``ValueError`` if *session_id* contains a null byte or would
+    produce a path outside the ``sentinels/`` directory.
+    """
+    if "\x00" in session_id:
+        raise ValueError(f"session_id contains null byte: {session_id!r}")
+    base = sentinels_dir()
+    candidate = (base / f"manifest_sha_{session_id}").resolve()
+    try:
+        candidate.relative_to(base.resolve())
+    except ValueError as exc:
+        raise ValueError(
+            f"session_id produces a path outside the sentinels directory: {session_id!r}"
         ) from exc
     return candidate
 
