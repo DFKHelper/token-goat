@@ -606,3 +606,117 @@ class TestCompactSkipSentinelWrite:
         assert not sentinel.exists(), (
             "compact-skip sentinel must NOT be written when a real manifest is injected"
         )
+
+
+class TestRecoveryHintPytestCollapse:
+    """_build_recovery_hint collapses green pytest entries when edits are present."""
+
+    # Shared output_id template — short enough for short_output_id to produce
+    # a compact suffix, real enough to survive _RECOVERY_MIN_BYTES filtering.
+    _OUTPUT_BYTES = 1000  # above _RECOVERY_MIN_BYTES (400)
+
+    def _make_bash_entry(
+        self,
+        sid: str,
+        cmd_preview: str,
+        exit_code: int,
+        output_id: str | None = None,
+    ) -> None:
+        """Seed a BashEntry into the session via mark_bash_run."""
+        oid = output_id or f"{sid[:16]}-0000000000001-abc123def45678"
+        session.mark_bash_run(
+            session_id=sid,
+            cmd_sha="abc123def4567890",
+            cmd_preview=cmd_preview,
+            output_id=oid,
+            stdout_bytes=self._OUTPUT_BYTES,
+            stderr_bytes=0,
+            exit_code=exit_code,
+            truncated=False,
+        )
+
+    def test_green_pytest_with_edits_collapses(self, tmp_data_dir):
+        """Green pytest + edited file → collapsed '✓ pytest passed @ HH:MM' line."""
+        from token_goat import hooks_session
+
+        sid = "pytest-collapse-1"
+        self._make_bash_entry(sid, "pytest tests/", exit_code=0)
+        session.mark_file_edited(sid, "/proj/src/foo.py")
+
+        hint = hooks_session._build_recovery_hint(sid)
+        assert hint is not None
+        assert "✓ pytest passed @" in hint, f"Expected collapsed line:\n{hint}"
+        assert "token-goat bash-output" in hint, f"Recall pointer missing:\n{hint}"
+        # Must NOT show the raw cmd_preview in the collapsed form
+        assert "`pytest tests/`" not in hint, f"Raw cmd_preview leaked into collapsed line:\n{hint}"
+
+    def test_green_pytest_no_edits_full_pointer(self, tmp_data_dir):
+        """Green pytest but NO edited files → full pointer (not collapsed)."""
+        from token_goat import hooks_session
+
+        sid = "pytest-collapse-2"
+        self._make_bash_entry(sid, "pytest tests/", exit_code=0)
+        # No mark_file_edited call — edited_files stays empty.
+
+        hint = hooks_session._build_recovery_hint(sid)
+        assert hint is not None
+        assert "✓ pytest passed @" not in hint, f"Should not collapse without edits:\n{hint}"
+        assert "`pytest tests/`" in hint, f"Full pointer missing:\n{hint}"
+
+    def test_red_pytest_with_edits_full_pointer(self, tmp_data_dir):
+        """Failed pytest (exit_code=1) + edits → full pointer, not collapsed."""
+        from token_goat import hooks_session
+
+        sid = "pytest-collapse-3"
+        self._make_bash_entry(sid, "pytest tests/", exit_code=1)
+        session.mark_file_edited(sid, "/proj/src/foo.py")
+
+        hint = hooks_session._build_recovery_hint(sid)
+        assert hint is not None
+        assert "✓ pytest passed @" not in hint, f"Collapsed a failing pytest:\n{hint}"
+        assert "`pytest tests/`" in hint, f"Full pointer missing:\n{hint}"
+
+    def test_non_pytest_with_edits_full_pointer(self, tmp_data_dir):
+        """Non-pytest bash command + edits → always full pointer."""
+        from token_goat import hooks_session
+
+        sid = "pytest-collapse-4"
+        self._make_bash_entry(sid, "npm run build", exit_code=0)
+        session.mark_file_edited(sid, "/proj/src/foo.py")
+
+        hint = hooks_session._build_recovery_hint(sid)
+        assert hint is not None
+        assert "✓ pytest passed @" not in hint, f"Collapsed a non-pytest command:\n{hint}"
+        assert "`npm run build`" in hint, f"Full pointer missing:\n{hint}"
+
+    def test_all_three_prefix_variants_collapse(self, tmp_data_dir):
+        """All three pytest prefix variants collapse when green + edits present."""
+
+        from token_goat import hooks_session
+
+        prefixes = [
+            "pytest tests/",
+            "uv run pytest tests/",
+            "python -m pytest tests/",
+        ]
+        for i, prefix in enumerate(prefixes):
+            sid = f"pytest-collapse-prefix-{i}"
+            # Use distinct output_ids so mark_bash_run doesn't overwrite via same sha key.
+            oid = f"{sid[:16]}-000000000000{i+1}-abc123def45678{i}"
+            session.mark_bash_run(
+                session_id=sid,
+                cmd_sha=f"sha{i:016d}",
+                cmd_preview=prefix,
+                output_id=oid,
+                stdout_bytes=self._OUTPUT_BYTES,
+                stderr_bytes=0,
+                exit_code=0,
+                truncated=False,
+            )
+            session.mark_file_edited(sid, "/proj/src/foo.py")
+
+            hint = hooks_session._build_recovery_hint(sid)
+            assert hint is not None, f"No hint for prefix {prefix!r}"
+            assert "✓ pytest passed @" in hint, (
+                f"Prefix {prefix!r} not collapsed:\n{hint}"
+            )
