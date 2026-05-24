@@ -28,6 +28,7 @@ from typing import TYPE_CHECKING, Any, Final
 from urllib.parse import urlparse
 
 from . import session as session_mod
+from .cache_common import short_output_id as _short_id
 from .hooks_common import sanitize_log_str
 
 
@@ -1135,7 +1136,7 @@ def _format_bash_entry(entry: object) -> str:
     exit_str = "exit ?" if exit_code is None else f"exit {exit_code}"
     header = (
         f"- $ {cmd_preview}{run_count_marker}  "
-        f"({exit_str}, {_humanize_bytes(total)}{truncated_marker}, id={output_id})"
+        f"({exit_str}, {_humanize_bytes(total)}{truncated_marker}, id={_short_id(output_id)})"
     )
 
     # Attempt to load cached output for inline snippet.  Failures are silently
@@ -1197,7 +1198,7 @@ def _format_web_entry(entry: object) -> str:
     status_str = str(status_code) if status_code is not None else "?"
     return (
         f"- 🌐 {url_preview}  "
-        f"({status_str}, {_humanize_bytes(body_bytes)}{truncated_marker}, id={output_id})"
+        f"({status_str}, {_humanize_bytes(body_bytes)}{truncated_marker}, id={_short_id(output_id)})"
     )
 
 
@@ -2306,7 +2307,7 @@ def _render(cache: SessionCache, session_id: str, max_tokens: int) -> tuple[str,
             for be in cold_candidates[:_MAX_COLD_OUTPUTS]:
                 age_min = int((now_ts - getattr(be, "ts", now_ts)) / 60)
                 total = getattr(be, "stdout_bytes", 0) + getattr(be, "stderr_bytes", 0)
-                oid = sanitize_log_str(getattr(be, "output_id", "?"), max_len=24)
+                oid = _short_id(sanitize_log_str(getattr(be, "output_id", "?"), max_len=64))
                 prev = sanitize_log_str(getattr(be, "cmd_preview", "?"), max_len=60)
                 line = f"- ❄ `{prev}` ({_humanize_bytes(total)}, {age_min}min old) `{oid}`"
                 cost = _token_count(line)

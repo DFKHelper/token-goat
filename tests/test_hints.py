@@ -1937,3 +1937,69 @@ class TestBashDedupFailedExitCode:
         assert hint is not None
         assert "FAILED" not in hint
         assert "x=" not in hint  # terse form of "exit=" — must be absent for None exit code
+
+
+# ---------------------------------------------------------------------------
+# TestShortOutputIdInHints — hints render …<last8> not the full output_id
+# ---------------------------------------------------------------------------
+
+
+class TestShortOutputIdInHints:
+    """Bash and web dedup hints render the trailing 8 chars of output_id.
+
+    This keeps hint strings compact (~13 chars for the id vs 40+) while still
+    giving the agent an unambiguous suffix to pass to bash-output/web-output.
+    """
+
+    def _record_bash(self, sid: str, cmd: str, output_id: str, *, stdout_bytes: int) -> None:
+        from token_goat import bash_cache
+
+        cmd_sha = bash_cache.command_hash(cmd)
+        session.mark_bash_run(
+            sid, cmd_sha, cmd[:120], output_id,
+            stdout_bytes=stdout_bytes, stderr_bytes=0,
+            exit_code=0, truncated=False,
+        )
+
+    def test_bash_hint_uses_short_id(self, tmp_data_dir):
+        """Bash dedup hint contains …<last8> not the full output_id."""
+        sid = "s_shortid_bash"
+        cmd = "uv run pytest tests/ -q"
+        full_id = "ses-abc123-0000000000001-deadbeef12345678"
+        self._record_bash(sid, cmd, full_id, stdout_bytes=2000)
+        hint = build_bash_dedup_hint(session_id=sid, command=cmd)
+        assert hint is not None
+        # Short suffix must appear
+        assert "…12345678" in hint
+        # Full id must NOT appear
+        assert full_id not in hint
+
+    def test_web_hint_uses_short_id(self, tmp_data_dir):
+        """Web dedup hint contains …<last8> not the full output_id."""
+        from token_goat import web_cache
+        from token_goat.hints import build_web_dedup_hint
+
+        sid = "s_shortid_web"
+        url = "https://docs.example.com/api/reference"
+        full_id = "ses-abc123-0000000000002-cafebabe87654321"
+        url_sha = web_cache.url_hash(url)
+        session.mark_web_fetch(
+            sid, url_sha, url[:200], full_id,
+            body_bytes=5000, status_code=200, truncated=False,
+        )
+        hint = build_web_dedup_hint(session_id=sid, url=url)
+        assert hint is not None
+        assert "…87654321" in hint
+        assert full_id not in hint
+
+    def test_short_id_helper_ellipsis_prefix(self):
+        """short_output_id renders …<last8> for ids longer than 8 chars."""
+        from token_goat.cache_common import short_output_id
+        full = "ses-abc-0000000000001-abcd1234"
+        assert short_output_id(full) == "…abcd1234"
+
+    def test_short_id_helper_passthrough_for_short(self):
+        """short_output_id returns full id unchanged when <= 8 chars."""
+        from token_goat.cache_common import short_output_id
+        assert short_output_id("abc123") == "abc123"
+        assert short_output_id("abcd1234") == "abcd1234"

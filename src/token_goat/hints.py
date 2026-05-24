@@ -1039,7 +1039,8 @@ def _build_bash_dedup_hint_inner(
     tokens_avoided = _est_tokens_from_chars(total_bytes)
     cmd_short = _sanitize_hint_path(command)
     run_count = getattr(entry, "run_count", 1)
-    recall_cmd = f"token-goat bash-output {entry.output_id}"
+    from . import cache_common as _cc  # noqa: PLC0415
+    recall_cmd = f"token-goat bash-output {_cc.short_output_id(entry.output_id)}"
 
     # Front-load failure signal so the agent sees it immediately.
     # When the prefix carries the exit code, drop it from the body to avoid
@@ -1348,10 +1349,11 @@ def _build_web_dedup_hint_inner(
     status_str = (
         f" status={entry.status_code}" if entry.status_code is not None else ""
     )
+    from . import cache_common as _cc  # noqa: PLC0415
     return ReadHint(
         _apply_terse(
             f"URL ({int(age)}s): {entry.body_bytes:,}B{status_str}, ~{tokens_avoided}t. "
-            f"`token-goat web-output {entry.output_id}`"
+            f"`token-goat web-output {_cc.short_output_id(entry.output_id)}`"
         ),
         tokens_avoided,
     )

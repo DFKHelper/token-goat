@@ -175,7 +175,9 @@ class TestPreFetchWebFetchDedup:
         # Hook must continue (not deny) but include an advisory hint
         assert result.get("continue") is True
         ctx = result.get("hookSpecificOutput", {}).get("additionalContext", "")
-        assert output_id in ctx, f"output_id {output_id!r} not in hint: {ctx!r}"
+        # Hint renders the short id (…<last8>), not the full output_id
+        from token_goat.cache_common import short_output_id
+        assert short_output_id(output_id) in ctx, f"short id for {output_id!r} not in hint: {ctx!r}"
         assert "token-goat web-output" in ctx
 
     def test_cache_hit_hint_mentions_age(self, tmp_data_dir):
