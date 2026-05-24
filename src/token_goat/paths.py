@@ -29,6 +29,7 @@ __all__ = [
     "open_log_file",
     "roll_log_if_oversized",
     "manifest_sha_sidecar_path",
+    "recovery_pending_path",
     "sentinels_dir",
     "session_cache_path",
     "web_cache_dir",
@@ -390,6 +391,22 @@ def sentinels_dir() -> Path:
     Created on first access by callers; no explicit setup required.
     """
     return data_dir() / "sentinels"
+
+
+def recovery_pending_path(session_id: str) -> Path:
+    """Path to ``sentinels/recovery_pending_{session_id}``.
+
+    Written by the SessionStart handler when ``source == "compact"`` so that
+    the pre-read hook can inject the recovery hint on the first actual Read or
+    Bash tool call rather than at session-start time (item 2 — deferred recovery).
+
+    The file stores the recovery hint text as UTF-8.  The pre-read hook reads
+    and deletes it on first hit, injecting the payload as ``additionalContext``.
+
+    Raises ``ValueError`` if *session_id* contains a null byte or escapes the
+    ``sentinels/`` directory.
+    """
+    return _safe_child_path(sentinels_dir(), f"recovery_pending_{session_id}", "", "session_id")
 
 
 def manifest_sha_sidecar_path(session_id: str) -> Path:

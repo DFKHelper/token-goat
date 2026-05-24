@@ -32,6 +32,8 @@ __all__ = [
     "content_hash",
     "evict_old_entries",
     "extract_checklist_section",
+    "extract_h2_headings",
+    "extract_named_section",
     "list_by_session",
     "list_outputs",
     "load_output",
@@ -239,6 +241,66 @@ def extract_checklist_section(body: str) -> str | None:
         text = text[:cut].rstrip() + "…"
 
     return text
+
+
+def extract_h2_headings(body: str) -> list[str]:
+    """Return a list of all ``##``-level heading texts found in *body*.
+
+    Used by ``token-goat skill-body --section`` to list available sections when
+    the ``--section`` flag is absent so the agent can discover section names
+    before deciding which to fetch.
+
+    Returns an empty list when *body* is empty or contains no ``##`` headings.
+    """
+    if not body:
+        return []
+    headings: list[str] = []
+    for line in body.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("## ") and len(stripped) > 3:
+            headings.append(stripped[3:].strip())
+    return headings
+
+
+def extract_named_section(body: str, heading: str) -> str | None:
+    """Return the content of the ``##``-level section matching *heading*, or ``None``.
+
+    Case-insensitive prefix match on the heading text (after stripping the
+    ``## `` prefix).  Collects lines from the line after the matched heading
+    up to the next ``##``-level heading or end of file.  Returns ``None`` when
+    no matching heading is found or the extracted content is empty after
+    stripping.
+
+    This is the in-memory equivalent of ``read_replacement.read_section`` for
+    skill bodies, which are not indexed in the project DB.
+    """
+    if not body or not heading:
+        return None
+
+    heading_lower = heading.strip().lower()
+    lines = body.splitlines()
+    n = len(lines)
+    match_start = -1
+
+    for i, raw_line in enumerate(lines):
+        stripped = raw_line.strip()
+        if stripped.startswith("## "):
+            section_title = stripped[3:].strip().lower()
+            if section_title.startswith(heading_lower):
+                match_start = i
+                break
+
+    if match_start == -1:
+        return None
+
+    body_lines: list[str] = []
+    for j in range(match_start + 1, n):
+        if lines[j].strip().startswith("## "):
+            break
+        body_lines.append(lines[j])
+
+    text = "\n".join(body_lines).strip()
+    return text if text else None
 
 
 def store_output(

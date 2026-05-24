@@ -30,11 +30,14 @@ __all__ = [
     "BashOutputMeta",
     "command_hash",
     "evict_old_entries",
+    "glob_hash",
     "load_output",
     "load_output_meta",
     "output_id_for",
     "read_sidecar",
     "sidecar_meta_path",
+    "store_glob_result",
+    "load_glob_result",
     "store_output",
     "write_sidecar",
 ]
@@ -115,6 +118,82 @@ def command_hash(command: str) -> str:
     passes the hash independently of the output ID.
     """
     return short_content_hash(command)
+
+
+def glob_hash(pattern: str, path: str | None) -> str:
+    """Return a content hash for a (pattern, path) Glob call key.
+
+    Used by :func:`store_glob_result` and :func:`load_glob_result` to derive
+    a stable, filesystem-safe cache key for a specific Glob invocation.
+    The ``path`` component is normalised to the empty string when ``None`` so
+    ``glob_hash("**/*.py", None)`` and ``glob_hash("**/*.py", "")`` collide
+    intentionally — they represent the same unbounded pattern.
+    """
+    canonical = f"{pattern}\x00{path or ''}"
+    return short_content_hash(canonical)
+
+
+# Glob result cache: entries stored under bash_outputs dir with a "glob_" prefix
+# in the output_id so they can be distinguished from real bash outputs.
+# The stored body is the newline-separated list of matching paths (tool_response
+# text), exactly as the Glob tool would have returned it.  The staleness check
+# is enforced by the caller (pre_read) via STALE_READ_AGE_SECONDS.
+
+_GLOB_RESULT_PREFIX = "glob_"
+
+
+def store_glob_result(
+    session_id: str,
+    pattern: str,
+    path: str | None,
+    result_text: str,
+    *,
+    max_total_bytes: int = DEFAULT_MAX_TOTAL_BYTES,
+) -> str | None:
+    """Cache the text result of a Glob call and return the output_id, or None on error.
+
+    *result_text* is the raw text response from the Glob tool (newline-separated
+    file paths).  The cached entry lives in the bash_outputs directory under an
+    ID prefixed with ``glob_`` so it is distinguishable from bash outputs and
+    not surfaced by ``token-goat bash-history``.
+
+    Eviction is shared with bash outputs: the oldest entries are removed first
+    regardless of whether they are bash or glob entries.
+    """
+    try:
+        g_hash = glob_hash(pattern, path)
+        # Build a stable output_id: glob_ prefix + session fragment + hash.
+        from .cache_common import safe_session_fragment  # noqa: PLC0415
+        out_id = f"{_GLOB_RESULT_PREFIX}{safe_session_fragment(session_id)}-{g_hash}"
+        cache_path = safe_join_output_id(out_id, _bash_outputs_dir, "bash_cache")
+        if cache_path is None:
+            return None
+        paths.atomic_write_text(cache_path, result_text)
+        evict_old_entries(max_total_bytes=max_total_bytes)
+        _LOG.debug("bash_cache: stored glob result id=%s pattern=%s", out_id, sanitize_log_str(pattern))
+        return out_id
+    except OSError as exc:
+        _LOG.debug("bash_cache: glob store failed: %s", exc)
+        return None
+
+
+def load_glob_result(
+    session_id: str,
+    pattern: str,
+    path: str | None,
+) -> str | None:
+    """Return the cached Glob result text for *(session_id, pattern, path)*, or None.
+
+    Returns None when no cached entry exists (first call, or evicted).  The
+    staleness / age check is the caller's responsibility.
+    """
+    try:
+        g_hash = glob_hash(pattern, path)
+        from .cache_common import safe_session_fragment  # noqa: PLC0415
+        out_id = f"{_GLOB_RESULT_PREFIX}{safe_session_fragment(session_id)}-{g_hash}"
+        return load_output_text(out_id, _bash_outputs_dir, "bash_cache")
+    except Exception:  # noqa: BLE001
+        return None
 
 
 def output_id_for(session_id: str, command: str, ts: float | None = None) -> str:

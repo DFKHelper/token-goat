@@ -662,14 +662,18 @@ def _handle_grep_written_not_read(payload: HookPayload) -> HookResponse | None:
 
 
 def _handle_glob_dedup(payload: HookPayload) -> HookResponse | None:
-    """Return a dedup hint when the same Glob pattern just ran in this session.
+    """Return cached Glob results or a dedup hint when the same pattern ran recently.
 
-    Mirrors :func:`_handle_grep_dedup` for the Glob tool surface.  Returns
-    ``None`` to let the hook fall through to ``CONTINUE`` when no dedup hit
-    is available — we never deny a Glob call, only suggest the agent reuse
-    the prior result.
+    When a cached result exists in ``bash_cache`` for this (session, pattern, path)
+    and the entry is within :data:`hints.STALE_READ_AGE_SECONDS`, the cached
+    file list is injected as ``additionalContext`` so the agent receives the
+    result without the Glob tool running again.  This converts the advisory
+    hint into a real result dedup — the agent sees the matching paths inline.
+
+    Falls back to the standard advisory dedup hint when no cached result exists.
+    Returns ``None`` when no dedup applies (first run, or cache evicted).
     """
-    from .hints import build_glob_dedup_hint  # noqa: PLC0415
+    from .hints import STALE_READ_AGE_SECONDS, build_glob_dedup_hint  # noqa: PLC0415
     from .hooks_common import run_dedup_hint  # noqa: PLC0415
 
     tool_input = get_tool_input(payload)
@@ -679,6 +683,43 @@ def _handle_glob_dedup(payload: HookPayload) -> HookResponse | None:
     path = tool_input.get("path")
     if path is not None and not isinstance(path, str):
         path = None
+
+    session_id, _cwd = get_session_context(payload)
+    if not session_id:
+        return None
+
+    # Check for a cached result in bash_cache (item 19).
+    # Only serve the cached result when the glob entry is in the session history
+    # AND is recent enough (within STALE_READ_AGE_SECONDS).
+    try:
+        from . import bash_cache as _bc  # noqa: PLC0415
+        from . import session as _sess  # noqa: PLC0415
+
+        cache = _sess.load(session_id)
+        # Find the most recent GlobEntry for this (pattern, path).
+        glob_entry = _sess.lookup_glob_entry(session_id, pattern, path, cache=cache)
+        if glob_entry is not None:
+            import time as _time  # noqa: PLC0415
+            age = _time.time() - glob_entry.ts
+            if age <= STALE_READ_AGE_SECONDS:
+                cached_result = _bc.load_glob_result(session_id, pattern, path)
+                if cached_result is not None:
+                    path_label = f" in {path!r}" if path else ""
+                    hint_text = (
+                        f"Note: Glob `{sanitize_log_str(pattern, max_len=100)}`{path_label} "
+                        f"ran {int(age)}s ago — cached result ({glob_entry.result_count or '?'} paths):\n"
+                        f"{cached_result}\n"
+                        "(Serving from cache. Run without hints to force a fresh scan.)"
+                    )
+                    from .hooks_common import record_cached_stat  # noqa: PLC0415
+                    record_cached_stat("glob_result_cache_hit", sanitize_log_str(pattern, max_len=200))
+                    _LOG.info(
+                        "pre-read: glob result cache hit for pattern=%s (age=%ds)",
+                        sanitize_log_str(pattern, max_len=100), int(age),
+                    )
+                    return pre_tool_use_with_context(hint_text)
+    except Exception:  # noqa: BLE001
+        _LOG.debug("pre-read: glob result cache check failed", exc_info=True)
 
     return run_dedup_hint(
         payload,
@@ -716,6 +757,59 @@ def _handle_bash_dedup(payload: HookPayload) -> HookResponse | None:
         detail=sanitize_log_str(command, max_len=200),
         log_label="pre-read",
     )
+
+
+def _check_recovery_pending(session_id: str, cache: object) -> str | None:
+    """Return the deferred recovery hint text and consume the sidecar, or None.
+
+    Called once per session on the first pre-read (Read or Bash) after a
+    compaction event.  The sidecar ``sentinels/recovery_pending_{session_id}``
+    is written by the SessionStart handler when ``source == "compact"``.  On
+    first hit we read the payload, delete the sidecar, and mark the session so
+    subsequent calls in the same process skip the disk check.
+
+    Fail-soft: any I/O error returns None so a missing or unreadable sidecar
+    never blocks the hook.
+    """
+    # Fast path: already injected in this process (in-memory flag).
+    if getattr(cache, "recovery_injected", False):
+        return None
+    try:
+        from . import paths as _paths  # noqa: PLC0415
+
+        sidecar = _paths.recovery_pending_path(session_id)
+        if not sidecar.exists():
+            return None
+        hint = sidecar.read_text(encoding="utf-8")
+        sidecar.unlink(missing_ok=True)
+        # Mark in-process so we don't re-check on subsequent calls.
+        try:  # noqa: SIM105
+            cache.recovery_injected = True  # type: ignore[union-attr]
+        except Exception:  # noqa: BLE001
+            pass
+        _LOG.info(
+            "pre-read: deferred recovery hint injected for session=%s (%d chars)",
+            session_id[:16], len(hint),
+        )
+        # Record injection overhead now that the hint is actually being used.
+        try:
+            from . import db as _db  # noqa: PLC0415
+            from .hooks_common import bytes_to_tokens  # noqa: PLC0415
+
+            injection_bytes = len(hint.encode("utf-8"))
+            _db.record_stat(
+                None,
+                "compact_recovery_overhead",
+                bytes_saved=-injection_bytes,
+                tokens_saved=-bytes_to_tokens(injection_bytes),
+                detail=session_id[:32],
+            )
+        except Exception:  # noqa: BLE001
+            pass
+        return hint
+    except Exception:  # noqa: BLE001
+        _LOG.debug("pre-read: recovery sidecar check failed", exc_info=True)
+        return None
 
 
 def _flush_pending_hint_save(cache: object) -> None:
@@ -756,6 +850,17 @@ def pre_read(payload: HookPayload) -> HookResponse:
     tool_name = payload.get("tool_name")
 
     if tool_name == "Bash":
+        # Deferred recovery hint: inject on the first Bash call after compaction
+        # if a recovery sidecar exists.  We need a session_id for this so pull
+        # it early; if unavailable, fall through without the recovery check.
+        _bash_session_id, _bash_cwd = get_session_context(payload)
+        if _bash_session_id:
+            from . import session as _sess_mod  # noqa: PLC0415
+            _bash_cache = _sess_mod.load(_bash_session_id)
+            _recovery_text = _check_recovery_pending(_bash_session_id, _bash_cache)
+            if _recovery_text:
+                return pre_tool_use_with_context(_recovery_text)
+
         # Step 1: detect duplicate Bash command from this session.  This must
         # happen *before* the read-equivalent dispatch because re-running
         # `cat file.py` after editing should pull the cached output rather
@@ -817,6 +922,13 @@ def pre_read(payload: HookPayload) -> HookResponse:
     from . import session  # noqa: PLC0415
 
     cache = session.load(session_id)
+
+    # Deferred recovery hint: inject on the first Read after compaction.
+    # This fires before all other hints so the recovery context is the first
+    # additionalContext the agent receives in its new post-compact window.
+    _recovery_text = _check_recovery_pending(session_id, cache)
+    if _recovery_text:
+        return pre_tool_use_with_context(_recovery_text)
 
     # Index-only file hint: fires first so machine-generated lockfiles and bundles
     # (uv.lock, package-lock.json, *.min.js, *.map, …) are intercepted before any
@@ -1040,6 +1152,13 @@ def post_read(payload: HookPayload) -> HookResponse:
             if output_text:
                 glob_result_count = sum(1 for ln in output_text.splitlines() if ln.strip())
             session.mark_glob_run(session_id, pattern, path, glob_result_count, cache=cache)
+            # Item 19: persist glob result to bash_cache for dedup serving.
+            if output_text:
+                try:
+                    from . import bash_cache as _bc  # noqa: PLC0415
+                    _bc.store_glob_result(session_id, pattern, path, output_text)
+                except Exception:  # noqa: BLE001
+                    pass
             _LOG.debug(
                 "post-read: recorded Glob pattern=%s path=%s result_count=%s",
                 sanitize_opt(pattern), sanitize_opt(path), glob_result_count,

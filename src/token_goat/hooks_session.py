@@ -422,7 +422,10 @@ def _build_recovery_hint(session_id: str) -> str | None:
         return None
 
     parts = ["## Post-Compact Recovery"]
-    # Name the recall command only for sections that actually appear.
+    # One-shot restoration shortcut: emit the resume pointer first so the agent
+    # can use a single command instead of individual recall calls.
+    parts.append(f"**Quick restore:** `token-goat resume {session_id[:8]}`")
+    # Name the individual recall commands for sections that actually appear.
     recall = []
     if skill_entries:
         recall.append("`token-goat skill-body <name>`")
@@ -432,17 +435,31 @@ def _build_recovery_hint(session_id: str) -> str | None:
         recall.append("`token-goat web-output <id>`")
     if recall:
         parts.append("Recall: " + " / ".join(recall) + ".")
+    # Tip: surface the --section flag for skill bodies so agents know they can
+    # fetch just a DoD/Steps/Checklist section without pulling the full body.
+    if skill_entries:
+        parts.append(
+            "_Tip: use `token-goat skill-body <name> --section DoD` to fetch only one section._"
+        )
     parts.extend(sections)
     return "\n\n".join(parts)
 
 
 def _try_recovery_response(session_id: str | None, source: str) -> HookResponse | None:
-    """Build a recovery-hint response when *source* is "compact" and state exists.
+    """Defer a recovery hint by writing a sidecar when *source* is "compact".
 
-    Returns ``None`` when the recovery path does not apply — caller should
-    fall through to the normal session-start flow.  This isolates the
-    source-string check from the hint builder so each is independently
-    testable.
+    Instead of injecting the recovery hint immediately at SessionStart, this
+    function writes the hint text to a ``sentinels/recovery_pending_{session_id}``
+    sidecar file and returns ``None`` (CONTINUE).  The pre-read hook in
+    ``hooks_read.py`` checks for this sidecar on the first ``PreToolUse(Read)``
+    or ``PreToolUse(Bash)`` after compaction, injects it there, and deletes the
+    file.  This defers the token cost to the moment when the agent actually
+    needs the context (item 2 — deferred recovery hint).
+
+    Returns ``None`` in all cases so the caller always falls through to the
+    normal session-start flow.  A writing failure is logged but does not
+    prevent the session from continuing — the recovery hint is advisory and
+    its loss is benign.
     """
     if source != "compact" or not session_id:
         return None
@@ -450,44 +467,30 @@ def _try_recovery_response(session_id: str | None, source: str) -> HookResponse 
     if not hint:
         return None
 
-    # Record an observability stat row so the recovery path shows up in
-    # ``token-goat stats`` if anyone is monitoring whether the feature fires.
-    # No saving claimed: the actual saving is realised only when the agent
-    # uses the cached IDs from the hint, and those usages are accounted
-    # under their own kinds (bash_dedup_hint, web_dedup_hint).
-    #
-    # Record the injection overhead separately so honest accounting matches
-    # the session_hint / diff_hint / bash_dedup_hint siblings.  The recovery
-    # hint has a real injection cost even though its realized saving is
-    # attributed to the downstream recall kinds.
+    # Write the hint to a sidecar file for deferred injection.
+    try:
+        from . import paths  # noqa: PLC0415
+
+        sidecar = paths.recovery_pending_path(session_id)
+        sidecar.parent.mkdir(parents=True, exist_ok=True)
+        sidecar.write_text(hint, encoding="utf-8")
+        _LOG.info(
+            "session-start: compact-recovery hint deferred to sidecar for session=%s (%d chars)",
+            session_id[:16], len(hint),
+        )
+    except Exception:  # noqa: BLE001
+        _LOG.debug("recovery hint: sidecar write failed", exc_info=True)
+
+    # Stats: record that the compact event fired; overhead is deferred until
+    # the hook actually injects (see pre_read in hooks_read.py).
     try:
         from . import db  # noqa: PLC0415
-        from .hooks_common import bytes_to_tokens  # noqa: PLC0415
 
-        injection_bytes = len(hint.encode("utf-8"))
-        injection_cost_tokens = bytes_to_tokens(injection_bytes)
         db.record_stat(None, "compact_recovery", bytes_saved=0, tokens_saved=0, detail=session_id[:32])
-        db.record_stat(
-            None,
-            "compact_recovery_overhead",
-            bytes_saved=-injection_bytes,
-            tokens_saved=-injection_cost_tokens,
-            detail=session_id[:32],
-        )
     except Exception:  # noqa: BLE001
         _LOG.debug("recovery hint: stat record failed", exc_info=True)
 
-    _LOG.info(
-        "session-start: compact-recovery hint emitted for session=%s (%d chars)",
-        session_id[:16], len(hint),
-    )
-    return {
-        "continue": True,
-        "hookSpecificOutput": {
-            "hookEventName": "SessionStart",
-            "additionalContext": hint,
-        },
-    }
+    return None
 
 
 def _parse_status_z_b(output: str) -> tuple[str, list[str]]:
@@ -858,7 +861,7 @@ def session_start(payload: HookPayload) -> HookResponse:
         sanitize_opt(session_id), sanitize_opt(cwd), sanitize_opt(source),
     )
 
-    recovery = _try_recovery_response(session_id, source)
+    _try_recovery_response(session_id, source)
     # Project detection and worker watchdog must run in both branches —
     # ``source == "compact"`` doesn't change the fact that the worker may
     # have died, or that the project root may need its last-seen bumped.
@@ -871,8 +874,11 @@ def session_start(payload: HookPayload) -> HookResponse:
         _auto_index_if_needed(proj)
     _ensure_worker_running()
 
-    if recovery is not None:
-        return recovery
+    if source == "compact":
+        # Compact path: cache is preserved; sidecar was already written by
+        # _try_recovery_response.  Return immediately — skip the cache reset
+        # and git-brief that belong only to the non-compact branch.
+        return CONTINUE()
 
     # Non-compact branch: cache reset happens here, AFTER recovery has had
     # a chance to fire (so a misdetection of source can't both reset the
