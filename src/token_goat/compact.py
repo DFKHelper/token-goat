@@ -14,6 +14,8 @@ __all__ = [
     "is_noise_path",
     "_dedup_grep_entries",
     "_build_sealed_block",
+    "_get_inline_diff_for_file",
+    "_get_whole_repo_diff",
 ]
 
 import heapq
@@ -429,6 +431,69 @@ def _get_git_diff_stat(
         return None
     except Exception as e:  # noqa: BLE001
         _LOG.debug("_get_git_diff_stat: error running git diff: %s", e)
+        return None
+
+
+_INLINE_DIFF_MAX_BYTES: Final[int] = 500  # per-file diff size gate (#7)
+_INLINE_DIFF_TOTAL_CAP: Final[int] = 800  # total inlined diff bytes in manifest (#7)
+_SINGLE_FILE_DIFF_CAP: Final[int] = 400  # whole-repo diff cap for single-file replace (#17)
+
+
+def _get_inline_diff_for_file(path: str, cwd: str) -> str | None:
+    """Return ``git diff HEAD <path>`` if the output is small enough to inline.
+
+    Used by the edited-files section (#7) to replace the bare "edited Nx" note
+    with the actual diff when it fits within *_INLINE_DIFF_MAX_BYTES*.  Falls
+    back to ``None`` (caller uses the regular entry) on any failure or when the
+    diff is too large.
+
+    Timeout: 1.5 s (must not stall the PreCompact hook).
+    """
+    if not cwd or not path:
+        return None
+    try:
+        result = subprocess.run(
+            ["git", "diff", "--no-color", "HEAD", "--", path],
+            cwd=cwd,
+            capture_output=True,
+            text=True,
+            timeout=1.5,
+        )
+        if result.returncode != 0 or not result.stdout.strip():
+            return None
+        diff = result.stdout.strip()
+        if len(diff) > _INLINE_DIFF_MAX_BYTES:
+            return None
+        return diff
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _get_whole_repo_diff(cwd: str) -> str | None:
+    """Return ``git diff HEAD`` for the whole repo if under *_SINGLE_FILE_DIFF_CAP* bytes.
+
+    Used by the single-file inline path (#17).  Returns ``None`` on any failure
+    or when the diff exceeds the cap.
+
+    Timeout: 1.5 s.
+    """
+    if not cwd:
+        return None
+    try:
+        result = subprocess.run(
+            ["git", "diff", "--no-color", "HEAD"],
+            cwd=cwd,
+            capture_output=True,
+            text=True,
+            timeout=1.5,
+        )
+        if result.returncode != 0 or not result.stdout.strip():
+            return None
+        diff = result.stdout.strip()
+        if len(diff) > _SINGLE_FILE_DIFF_CAP:
+            return None
+        return diff
+    except Exception:  # noqa: BLE001
         return None
 
 
@@ -2535,9 +2600,50 @@ def _render(cache: SessionCache, session_id: str, max_tokens: int) -> tuple[str,
         sorted_edited = sorted(edited_clean.items(), key=_BY_EDIT_COUNT, reverse=True)
         shown_edited = sorted_edited[:_MAX_EDITED_FILES_SHOWN]
         overflow_edited = len(sorted_edited) - len(shown_edited)
-        # Group files by directory when 3+ share the same parent
-        grouped_lines = _group_edited_by_dir(shown_edited, project_root=cwd)
-        edited_lines.extend(grouped_lines)
+
+        # ── #17: single-file inline diff ─────────────────────────────────────
+        # When there is exactly one edited file AND the whole-repo diff is small
+        # (<= _SINGLE_FILE_DIFF_CAP bytes), replace the file-list entry with the
+        # inline diff so the compaction LLM has the exact change without a
+        # round-trip.  Only attempted when cwd is available.
+        _single_file_diff_used = False
+        if len(edited_clean) == 1 and cwd:
+            _only_path, _only_count = shown_edited[0]
+            _whole_diff = _get_whole_repo_diff(cwd)
+            if _whole_diff:
+                edited_lines.append(f"#### {_short_path(_only_path, project_root=cwd)} (inline diff)")
+                for _dl in _whole_diff.splitlines():
+                    edited_lines.append(f"  {_dl}")
+                _single_file_diff_used = True
+
+        if not _single_file_diff_used:
+            # ── #7: per-file inline diffs for top 2 ──────────────────────────
+            # For the top-2 most-edited files, attempt to inline git diff HEAD
+            # output when the diff is small (< _INLINE_DIFF_MAX_BYTES).  Fall
+            # back to the grouped directory format when diff is too large or git
+            # is unavailable.  Total inlined bytes are capped at _INLINE_DIFF_TOTAL_CAP.
+            _inline_budget = _INLINE_DIFF_TOTAL_CAP
+            _inlined_paths: set[str] = set()
+            if cwd and len(shown_edited) >= 1:
+                for _ip, _ic in shown_edited[:2]:
+                    if _inline_budget <= 0:
+                        break
+                    _idiff = _get_inline_diff_for_file(_ip, cwd)
+                    if _idiff and len(_idiff) <= _inline_budget:
+                        edited_lines.append(
+                            f"#### {_short_path(_ip, project_root=cwd)}{_count_suffix(_ic)} (inline diff)"
+                        )
+                        for _dl in _idiff.splitlines():
+                            edited_lines.append(f"  {_dl}")
+                        _inlined_paths.add(_ip)
+                        _inline_budget -= len(_idiff)
+
+            # Remaining files (not inlined) use the grouped directory format.
+            remaining_shown = [item for item in shown_edited if item[0] not in _inlined_paths]
+            if remaining_shown:
+                grouped_lines = _group_edited_by_dir(remaining_shown, project_root=cwd)
+                edited_lines.extend(grouped_lines)
+
         if overflow_edited > 0:
             edited_lines.append(f"- …+{overflow_edited} more edited")
 

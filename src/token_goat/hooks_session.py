@@ -447,6 +447,10 @@ def _build_session_brief(cwd: str) -> str | None:
     - Any subprocess call times out or raises
     - The feature is disabled via env var or config
 
+    Git log is skipped when the branch is ``main`` or ``master``, the working
+    tree is clean, and local HEAD matches ``origin/<branch>`` — a session at
+    a stable baseline gains nothing from the log (#26).
+
     The brief format::
 
         ## Session Context
@@ -528,9 +532,48 @@ def _build_session_brief(cwd: str) -> str | None:
             pass
 
     # git log --oneline -5
+    # Skip when we're on clean main/master and local HEAD is in sync with
+    # origin/<branch> — the session is at a stable baseline and the recent
+    # commit list adds no actionable signal (#26).
+    # Guard: we only skip when the SHA values look like real git SHAs (40 hex
+    # chars) so that test stubs returning branch-name strings don't accidentally
+    # trigger the skip.
     log_lines: list[str] = []
+    _skip_log = False
+    if branch in ("main", "master") and not status_lines:
+        _log_skip_budget = _remaining()
+        if _log_skip_budget > 0.1:
+            try:
+                _local = subprocess.run(
+                    ["git", "rev-parse", "HEAD"],
+                    timeout=max(0.1, min(0.8, _log_skip_budget)),
+                    **common_kwargs,
+                )
+                _origin = subprocess.run(
+                    ["git", "rev-parse", f"origin/{branch}"],
+                    timeout=max(0.1, min(0.8, _remaining())),
+                    **common_kwargs,
+                )
+                _local_sha = _local.stdout.strip() if _local.returncode == 0 else ""
+                _origin_sha = _origin.stdout.strip() if _origin.returncode == 0 else ""
+                # Only skip when both SHAs look like real git object hashes
+                # (40 hex characters).  Branch-name strings from test stubs or
+                # partial refs never satisfy this predicate.
+                import re as _re  # noqa: PLC0415
+                _sha_re = _re.compile(r"^[0-9a-f]{40}$")
+                if (
+                    _local_sha
+                    and _origin_sha
+                    and _sha_re.match(_local_sha)
+                    and _sha_re.match(_origin_sha)
+                    and _local_sha == _origin_sha
+                ):
+                    _skip_log = True
+            except (subprocess.TimeoutExpired, OSError):
+                pass  # fail-open: if we can't check, emit the log
+
     log_budget = _remaining()
-    if log_budget > 0.1:
+    if log_budget > 0.1 and not _skip_log:
         try:
             lg = subprocess.run(
                 ["git", "log", "--oneline", "-5"],

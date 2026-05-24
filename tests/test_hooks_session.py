@@ -264,3 +264,69 @@ class TestCliCommands:
         result = runner.invoke(app, ["session-touched", "-s", "empty"])
         assert result.exit_code == 0
         assert "(no files touched in this session)" in result.stdout
+
+
+# ---------------------------------------------------------------------------
+# #26 — skip git log when on clean main
+# ---------------------------------------------------------------------------
+
+
+class TestSessionBriefSkipsLogOnCleanMain:
+    """_build_session_brief skips git log when branch is clean main synced to origin."""
+
+    # Real 40-char hex SHAs are required to satisfy the SHA-guard in _build_session_brief
+    REAL_SHA = "a" * 40  # valid 40-char hex string
+
+    def _make_fake_run(self, branch: str, status_out: str, local_sha: str, origin_sha: str):
+        """Build a subprocess.run stub that returns proper SHAs for rev-parse calls."""
+        def _fake_run(cmd, **kwargs):
+            r = type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})()
+            cmd_str = " ".join(cmd)
+            if "--abbrev-ref" in cmd_str:
+                r.stdout = branch + "\n"
+            elif "--porcelain" in cmd_str:
+                r.stdout = status_out
+            elif "rev-parse" in cmd_str and "origin/" in cmd_str:
+                r.stdout = origin_sha + "\n"
+            elif "rev-parse" in cmd_str:
+                r.stdout = local_sha + "\n"
+            elif "log" in cmd_str:
+                r.stdout = "abc1234 some commit\n"
+            return r
+        return _fake_run
+
+    def test_clean_main_synced_to_origin_skips_log(self, monkeypatch, tmp_path):
+        """Clean main branch matching origin with real SHAs → log not included."""
+        import subprocess
+        monkeypatch.setattr(
+            subprocess, "run",
+            self._make_fake_run("main", "", self.REAL_SHA, self.REAL_SHA),
+        )
+        import token_goat.hooks_session as hs_mod
+        brief = hs_mod._build_session_brief(str(tmp_path))
+        # Clean main at origin → brief is None (nothing to report) or no Recent: line
+        assert brief is None or "Recent:" not in (brief or "")
+
+    def test_dirty_main_includes_log(self, monkeypatch, tmp_path):
+        """Dirty working tree on main → skip logic does not fire; log IS included."""
+        import subprocess
+        monkeypatch.setattr(
+            subprocess, "run",
+            self._make_fake_run("main", " M src/foo.py\n", self.REAL_SHA, self.REAL_SHA),
+        )
+        import token_goat.hooks_session as hs_mod
+        brief = hs_mod._build_session_brief(str(tmp_path))
+        assert brief is not None
+        assert "Recent:" in brief
+
+    def test_feature_branch_includes_log(self, monkeypatch, tmp_path):
+        """Non-main branch → skip logic never fires; log always included."""
+        import subprocess
+        monkeypatch.setattr(
+            subprocess, "run",
+            self._make_fake_run("feature/my-branch", "", self.REAL_SHA, self.REAL_SHA),
+        )
+        import token_goat.hooks_session as hs_mod
+        brief = hs_mod._build_session_brief(str(tmp_path))
+        assert brief is not None
+        assert "Recent:" in brief
