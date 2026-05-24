@@ -5009,3 +5009,174 @@ class TestMinLinesSuppressionRegression:
         m = compact.build_manifest(sid, max_tokens=600)
         assert "Web Fetches" in m
         assert "docs.example.com" in m
+
+
+class TestWhatWorkedSection:
+    """Tests for the ### What Worked manifest section (item #28)."""
+
+    def _make_bash_entry(self, cmd: str, exit_code: int, ts: float, output_id: str = ""):
+        import types
+        return types.SimpleNamespace(
+            cmd_preview=cmd,
+            exit_code=exit_code,
+            ts=ts,
+            output_id=output_id or f"out-{abs(hash(cmd)) % 100000:05d}",
+            stdout_bytes=800,
+            stderr_bytes=0,
+            truncated=False,
+            run_count=1,
+        )
+
+    def test_single_green_test_run_appears(self):
+        """One green test run → section appears with 1 entry."""
+        import time as _time
+        now = _time.time()
+        entry = self._make_bash_entry("pytest tests/unit/", 0, now - 120, "abc111")
+        result = compact._select_what_worked({"abc111": entry}, set())
+        assert len(result) == 1
+        assert result[0].cmd_preview == "pytest tests/unit/"
+
+    def test_five_green_runs_yields_two_most_recent(self):
+        """Five green test runs → section has 2 most recent only."""
+        import time as _time
+        now = _time.time()
+        history = {}
+        for i in range(5):
+            e = self._make_bash_entry(f"pytest tests/module{i}.py", 0, now - (i + 1) * 300, f"id{i:04d}")
+            history[f"id{i:04d}"] = e
+        result = compact._select_what_worked(history, set())
+        assert len(result) == 2
+        # Most recent two: i=0 (now-300) and i=1 (now-600)
+        cmds = {r.cmd_preview for r in result}
+        assert "pytest tests/module0.py" in cmds
+        assert "pytest tests/module1.py" in cmds
+
+    def test_non_test_green_command_excluded(self):
+        """A green non-test command (e.g. git push) is NOT included."""
+        import time as _time
+        now = _time.time()
+        history = {
+            "gitpush": self._make_bash_entry("git push origin main", 0, now - 60, "gitpush"),
+            "lscmd": self._make_bash_entry("ls -la", 0, now - 30, "lscmd"),
+        }
+        result = compact._select_what_worked(history, set())
+        assert result == []
+
+    def test_failed_test_run_excluded(self):
+        """A failed (exit_code != 0) test run is NOT included."""
+        import time as _time
+        now = _time.time()
+        entry = self._make_bash_entry("pytest tests/", 1, now - 60, "failid")
+        result = compact._select_what_worked({"failid": entry}, set())
+        assert result == []
+
+    def test_blocker_id_excluded_even_if_green(self):
+        """An entry whose output_id is in blocker_ids is excluded even if exit_code==0."""
+        import time as _time
+        now = _time.time()
+        entry = self._make_bash_entry("pytest tests/", 0, now - 60, "blockerid")
+        result = compact._select_what_worked({"blockerid": entry}, {"blockerid"})
+        assert result == []
+
+    def test_no_green_runs_no_section(self):
+        """No green test runs → _render_what_worked_section returns empty list."""
+        result = compact._render_what_worked_section([], 0.0)
+        assert result == []
+
+    def test_render_section_header_and_format(self):
+        """render emits ### What Worked header and ✅-prefixed lines."""
+        import time as _time
+        now = _time.time()
+        entries = [self._make_bash_entry("pytest tests/unit/", 0, now - 180, "abc999")]
+        lines = compact._render_what_worked_section(entries, now)
+        assert lines[0] == "### What Worked"
+        assert len(lines) == 2
+        assert "✅" in lines[1]
+        assert "pytest tests/unit/" in lines[1]
+        assert "3 min ago" in lines[1]
+
+    def test_render_cmd_truncated_at_60_chars(self):
+        """cmd_preview longer than 60 chars is truncated with ellipsis."""
+        import time as _time
+        now = _time.time()
+        long_cmd = "pytest " + "x" * 60
+        entries = [self._make_bash_entry(long_cmd, 0, now - 60, "longid")]
+        lines = compact._render_what_worked_section(entries, now)
+        content = lines[1]
+        # The backtick-wrapped cmd must be at most 60 chars + "..."
+        import re
+        m = re.search(r"`([^`]+)`", content)
+        assert m is not None
+        cmd_in_line = m.group(1)
+        assert len(cmd_in_line) <= 60
+
+    def test_what_worked_in_full_manifest(self, tmp_data_dir):
+        """End-to-end: green pytest in bash_history appears as ### What Worked in manifest."""
+        import time as _time
+
+        from token_goat import session
+        sid = "what-worked-e2e-test"
+        session.mark_file_edited(sid, "/proj/src/app.py")
+        from token_goat import bash_cache
+        cmd = "pytest tests/unit/"
+        cmd_sha = bash_cache.command_hash(cmd)
+        session.mark_bash_run(
+            session_id=sid,
+            cmd_sha=cmd_sha,
+            cmd_preview=cmd,
+            output_id=f"out-{cmd_sha}",
+            stdout_bytes=900,
+            stderr_bytes=0,
+            exit_code=0,
+            truncated=False,
+        )
+        cache = session.load(sid)
+        cache.created_ts = _time.time() - 3600  # mature session
+        session.save(cache)
+        manifest = compact._build_manifest_from_cache(cache, sid, 800)
+        assert "What Worked" in manifest
+        assert "pytest tests/unit/" in manifest
+
+    def test_what_worked_absent_when_only_failures(self, tmp_data_dir):
+        """No ### What Worked section when only failed runs exist."""
+        import time as _time
+
+        from token_goat import session
+        sid = "what-worked-failures-only"
+        session.mark_file_edited(sid, "/proj/src/app.py")
+        from token_goat import bash_cache
+        cmd = "pytest tests/"
+        cmd_sha = bash_cache.command_hash(cmd)
+        session.mark_bash_run(
+            session_id=sid,
+            cmd_sha=cmd_sha,
+            cmd_preview=cmd,
+            output_id=f"out-{cmd_sha}",
+            stdout_bytes=900,
+            stderr_bytes=0,
+            exit_code=1,
+            truncated=False,
+        )
+        cache = session.load(sid)
+        cache.created_ts = _time.time() - 3600
+        session.save(cache)
+        manifest = compact._build_manifest_from_cache(cache, sid, 800)
+        assert "What Worked" not in manifest
+
+    def test_various_test_runner_prefixes(self):
+        """All supported test runner prefixes are recognised as test commands."""
+        import time as _time
+        now = _time.time()
+        runners = [
+            "uv run pytest -m 'not slow'",
+            "npm test",
+            "cargo test --release",
+            "go test ./...",
+            "jest --coverage",
+            "mocha test/",
+            "make test",
+        ]
+        for cmd in runners:
+            entry = self._make_bash_entry(cmd, 0, now - 60, f"id-{abs(hash(cmd))}")
+            result = compact._select_what_worked({entry.output_id: entry}, set())
+            assert len(result) == 1, f"Expected {cmd!r} to be recognised as a test command"

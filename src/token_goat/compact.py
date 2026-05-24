@@ -1107,6 +1107,96 @@ def _select_top_bash_entries(bash_history: object) -> list[object]:
     )
 
 
+# Prefixes that identify test-runner commands eligible for the "What Worked" section.
+# The heuristic matches the command preview string (lowercased, leading whitespace stripped)
+# against this tuple using str.startswith — any command that begins with one of these
+# is considered a test run.  Keep the list conservative: false positives (e.g. surfacing
+# a non-test command as "What Worked") are more confusing than false negatives.
+_TEST_COMMAND_PREFIXES: Final[tuple[str, ...]] = (
+    "pytest",
+    "uv run pytest",
+    "python -m pytest",
+    "npm test",
+    "npm run test",
+    "yarn test",
+    "cargo test",
+    "go test",
+    "mocha",
+    "jest",
+    "make test",
+    "make check",
+)
+
+
+def _is_test_command(entry: object) -> bool:
+    """Return True when *entry*'s cmd_preview looks like a test-runner invocation.
+
+    Matches against :data:`_TEST_COMMAND_PREFIXES` (case-insensitive prefix check).
+    Short or empty previews never match.
+    """
+    cmd = getattr(entry, "cmd_preview", "").strip().lower()
+    if not cmd:
+        return False
+    return any(cmd.startswith(prefix) for prefix in _TEST_COMMAND_PREFIXES)
+
+
+def _select_what_worked(bash_history: object, blocker_ids: set[object]) -> list[object]:
+    """Return at most 2 most-recent green (exit 0) test runs from *bash_history*.
+
+    Criteria:
+    - ``exit_code == 0`` (green pass)
+    - ``cmd_preview`` matches a test-runner prefix (see :data:`_TEST_COMMAND_PREFIXES`)
+    - ``output_id`` not in *blocker_ids* — don't surface the passing version of a
+      command that is currently blocking (defensive: the current state is what matters)
+
+    Results are returned most-recent-first.  Returns an empty list when no
+    qualifying entries exist.
+
+    *bash_history* is typed as ``object`` for the same defensive reason as
+    :func:`_select_top_bash_entries` — legacy/test fixtures may not supply a dict.
+    """
+    if not isinstance(bash_history, dict) or not bash_history:
+        return []
+    candidates = [
+        e for e in bash_history.values()
+        if getattr(e, "exit_code", None) == 0
+        and _is_test_command(e)
+        and getattr(e, "output_id", None) not in blocker_ids
+    ]
+    if not candidates:
+        return []
+    return heapq.nlargest(2, candidates, key=_BY_BASH_TS)
+
+
+def _render_what_worked_section(entries: list[object], now_ts: float) -> list[str]:
+    """Render a ``### What Worked`` section listing at most 2 recent green test runs.
+
+    Format::
+
+        ### What Worked
+        - ✅ `pytest tests/unit/ -x` (3 min ago) `abc123`
+        - ✅ `uv run pytest -m "not slow"` (12 min ago) `def456`
+
+    The cmd_preview is truncated to 60 characters.  Age is expressed in whole
+    minutes (rounded down).  The output_id suffix is the short form from
+    :func:`cache_common.short_output_id` so the agent can recall the full
+    output via ``token-goat bash-output <id>`` if needed.
+
+    Returns an empty list when *entries* is empty (no section emitted).
+    """
+    if not entries:
+        return []
+    lines: list[str] = ["### What Worked"]
+    for entry in entries:
+        raw_cmd = sanitize_log_str(getattr(entry, "cmd_preview", ""), max_len=200)
+        cmd = raw_cmd[:57] + "..." if len(raw_cmd) > 60 else raw_cmd
+        ts = getattr(entry, "ts", now_ts)
+        age_min = max(0, int((now_ts - ts) / 60))
+        oid = _short_id(sanitize_log_str(getattr(entry, "output_id", ""), max_len=64))
+        lines.append(f"- ✅ `{cmd}` ({age_min} min ago) `{oid}`")
+    return lines
+
+
 def _middle_truncate(text: str, max_lines: int = 20) -> str:
     """Return *text* middle-truncated to at most *max_lines* lines.
 
@@ -2497,6 +2587,18 @@ def _render(cache: SessionCache, session_id: str, max_tokens: int) -> tuple[str,
         bash_budget,
     )
 
+    # ── 3a. What Worked — last 2 green test runs ──────────────────────────────
+    # A dedicated curated section so the compaction LLM (and post-compact agent)
+    # knows "tests passed as of N minutes ago" without re-running them.
+    # Uses the same _blocker_ids set as the Commands Run exclusion above so we
+    # never surface the passing version of a command that is currently blocking.
+    # Also excludes _dedup_emitted_ids so an entry the agent already received a
+    # recall pointer for is not re-surfaced via this different section path.
+    _what_worked_exclude = _blocker_ids | _dedup_emitted_ids
+    _what_worked_entries = _select_what_worked(raw_bash, _what_worked_exclude)
+    now_ts_for_worked = time.time()
+    what_worked_lines = _render_what_worked_section(_what_worked_entries, now_ts_for_worked)
+
     # Cold outputs are grouped with bash history (same budget slice).
     # Skip for young sessions — same rationale as bash_entries above.
     now_ts = time.time()
@@ -2703,6 +2805,7 @@ def _render(cache: SessionCache, session_id: str, max_tokens: int) -> tuple[str,
     #   0. Current Blockers  — active failures the agent must know about
     #   1. Files Edited       — ongoing work (must survive compaction)
     #   2. Bash history       — current work context (what was just run)
+    #   2a.What Worked        — last 2 green test runs (curated "good state" pointer)
     #   3. Symbols accessed   — precise code read
     #   4. Web fetches        — reference material
     #   4b. Glob scans        — directory scan history
@@ -2718,6 +2821,7 @@ def _render(cache: SessionCache, session_id: str, max_tokens: int) -> tuple[str,
         + edited_lines
         + stale_lines
         + bash_lines
+        + what_worked_lines
         + sym_lines
         + web_lines
         + glob_lines
