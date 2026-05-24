@@ -91,7 +91,7 @@ ignore = ["E501"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["tests"]
-addopts = "-rfe --strict-markers -n auto --dist=loadscope"
+addopts = "-rfe --strict-markers -n auto --dist=loadscope --reruns 1 --reruns-delay 0.5"
 markers = [
     "slow: integration tests that spawn real git repos or other slow subprocess work; opt in via `-m slow` or run the full suite with no -m filter (default)",
 ]
@@ -138,4 +138,6 @@ ignore_missing_imports = true
 dev = [
     "pytest-timeout>=2.4.0",
     "pytest-xdist>=3.8.0",
+    "pytest-randomly>=3.15.0",
+    "pytest-rerunfailures>=14.0",
 ]
