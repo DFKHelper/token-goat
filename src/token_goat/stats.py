@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, TypedDict
 
 from . import db
+from .render.ansi import fmt_bytes as _fmt_bytes
 from .render.ansi import strip_ansi as _strip_ansi
 
 if TYPE_CHECKING:
@@ -500,16 +501,6 @@ def _accumulate(row: sqlite3.Row, by_kind: dict[str, _StatsBucket], by_day: dict
             return
         _ts_to_date_cache[raw_ts] = date_str
     _inc_bucket(by_day[date_str], bs, ts)
-
-
-def _fmt_bytes(n: int) -> str:
-    """Format byte count as human-readable (B/KB/MB/GB/TB/PB)."""
-    value: float = float(n)
-    for unit in ("B", "KB", "MB", "GB", "TB"):
-        if abs(value) < 1024:
-            return f"{int(value)}{unit}" if unit == "B" else f"{value:.1f}{unit}"
-        value = value / 1024
-    return f"{value:.1f}PB"
 
 
 def _fmt_tokens(n: int) -> str:
