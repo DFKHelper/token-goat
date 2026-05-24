@@ -8,6 +8,7 @@ import os
 import sqlite3
 import sys
 import time
+from collections.abc import Callable
 from dataclasses import asdict, is_dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, cast, get_args
@@ -1467,6 +1468,58 @@ def cmd_web_output(
     )
 
 
+def _run_history_listing_command(
+    cache_module: object,
+    *,
+    json_output: bool,
+    limit: int,
+    empty_msg: str,
+    json_sidecar_fields: Callable[[object], dict[str, object]],
+    format_entry: Callable[[str, int, int, object], str],
+) -> None:
+    """Shared implementation for bash-history, web-history, and skill-history.
+
+    ``cache_module`` must expose ``list_outputs()``, which returns a list of
+    dicts with at least ``output_id``, ``size_bytes``, and ``mtime`` keys, and
+    ``read_sidecar(output_id)`` which returns a sidecar dataclass or ``None``.
+
+    ``json_sidecar_fields`` converts a non-None sidecar into extra key/value
+    pairs that are merged into each JSON row.
+
+    ``format_entry(oid, size, age_secs, sidecar)`` produces the human-readable
+    line for one entry (sidecar may be ``None``).
+    """
+    list_outputs = cache_module.list_outputs  # type: ignore[attr-defined]
+    read_sidecar = cache_module.read_sidecar  # type: ignore[attr-defined]
+
+    entries = list_outputs()
+    if limit > 0:
+        entries = entries[:limit]
+
+    if json_output:
+        out: list[dict[str, object]] = []
+        for e in entries:
+            sidecar = read_sidecar(str(e["output_id"]))
+            row = dict(e)
+            if sidecar is not None:
+                row.update(json_sidecar_fields(sidecar))
+            out.append(row)
+        typer.echo(json.dumps(out, ensure_ascii=False, separators=(",", ":")))
+        return
+
+    if not entries:
+        typer.echo(empty_msg)
+        return
+
+    now = time.time()
+    for e in entries:
+        oid = str(e["output_id"])
+        size = int(cast(int, e["size_bytes"]))
+        age = int(now - float(cast(float, e["mtime"])))
+        sidecar = read_sidecar(oid)
+        typer.echo(format_entry(oid, size, age, sidecar))
+
+
 @app.command("web-history", rich_help_panel="Core")
 def cmd_web_history(
     json_output: bool = _OPT_JSON,
@@ -1480,40 +1533,22 @@ def cmd_web_history(
     """
     from . import web_cache  # noqa: PLC0415
 
-    entries = web_cache.list_outputs()
-    if limit > 0:
-        entries = entries[:limit]
+    def _json_fields(s: object) -> dict[str, object]:
+        return {"url_preview": s.url_preview, "status_code": s.status_code, "truncated": s.truncated}  # type: ignore[attr-defined]
 
-    if json_output:
-        out: list[dict[str, object]] = []
-        for e in entries:
-            sidecar = web_cache.read_sidecar(str(e["output_id"]))
-            row = dict(e)
-            if sidecar is not None:
-                row["url_preview"] = sidecar.url_preview
-                row["status_code"] = sidecar.status_code
-                row["truncated"] = sidecar.truncated
-            out.append(row)
-        typer.echo(json.dumps(out, ensure_ascii=False, separators=(",", ":")))
-        return
+    def _fmt(oid: str, size: int, age: int, s: object) -> str:
+        url_str = s.url_preview if s is not None else "(no sidecar)"  # type: ignore[attr-defined]
+        status_str = f" status={s.status_code}" if s is not None and s.status_code is not None else ""  # type: ignore[attr-defined]
+        return f"{oid}  {size:>10,}B  {age:>6}s ago{status_str}  {url_str}"
 
-    if not entries:
-        typer.echo("(no cached WebFetch responses)")
-        return
-
-    now = time.time()
-    for e in entries:
-        oid = str(e["output_id"])
-        size = int(cast(int, e["size_bytes"]))
-        age = int(now - float(cast(float, e["mtime"])))
-        sidecar = web_cache.read_sidecar(oid)
-        url_str = sidecar.url_preview if sidecar is not None else "(no sidecar)"
-        status_str = (
-            f" status={sidecar.status_code}"
-            if sidecar is not None and sidecar.status_code is not None
-            else ""
-        )
-        typer.echo(f"{oid}  {size:>10,}B  {age:>6}s ago{status_str}  {url_str}")
+    _run_history_listing_command(
+        web_cache,
+        json_output=json_output,
+        limit=limit,
+        empty_msg="(no cached WebFetch responses)",
+        json_sidecar_fields=_json_fields,
+        format_entry=_fmt,
+    )
 
 
 @app.command("bash-history", rich_help_panel="Core")
@@ -1530,40 +1565,22 @@ def cmd_bash_history(
     """
     from . import bash_cache  # noqa: PLC0415
 
-    entries = bash_cache.list_outputs()
-    if limit > 0:
-        entries = entries[:limit]
+    def _json_fields(s: object) -> dict[str, object]:
+        return {"cmd_preview": s.cmd_preview, "exit_code": s.exit_code, "truncated": s.truncated}  # type: ignore[attr-defined]
 
-    if json_output:
-        out: list[dict[str, object]] = []
-        for e in entries:
-            sidecar = bash_cache.read_sidecar(str(e["output_id"]))
-            row = dict(e)
-            if sidecar is not None:
-                row["cmd_preview"] = sidecar.cmd_preview
-                row["exit_code"] = sidecar.exit_code
-                row["truncated"] = sidecar.truncated
-            out.append(row)
-        typer.echo(json.dumps(out, ensure_ascii=False, separators=(",", ":")))
-        return
+    def _fmt(oid: str, size: int, age: int, s: object) -> str:
+        cmd_str = s.cmd_preview if s is not None else "(no sidecar)"  # type: ignore[attr-defined]
+        exit_str = f" exit={s.exit_code}" if s is not None and s.exit_code is not None else ""  # type: ignore[attr-defined]
+        return f"{oid}  {size:>10,}B  {age:>6}s ago{exit_str}  {cmd_str}"
 
-    if not entries:
-        typer.echo("(no cached Bash outputs)")
-        return
-
-    now = time.time()
-    for e in entries:
-        oid = str(e["output_id"])
-        size = int(cast(int, e["size_bytes"]))
-        age = int(now - float(cast(float, e["mtime"])))
-        sidecar = bash_cache.read_sidecar(oid)
-        cmd_str = sidecar.cmd_preview if sidecar is not None else "(no sidecar)"
-        exit_str = (
-            f" exit={sidecar.exit_code}"
-            if sidecar is not None and sidecar.exit_code is not None
-            else ""
-        )
-        typer.echo(f"{oid}  {size:>10,}B  {age:>6}s ago{exit_str}  {cmd_str}")
+    _run_history_listing_command(
+        bash_cache,
+        json_output=json_output,
+        limit=limit,
+        empty_msg="(no cached Bash outputs)",
+        json_sidecar_fields=_json_fields,
+        format_entry=_fmt,
+    )
 
 
 @app.command("skill-body", rich_help_panel="Core")
@@ -1683,37 +1700,22 @@ def cmd_skill_history(
     """
     from . import skill_cache  # noqa: PLC0415
 
-    entries = skill_cache.list_outputs()
-    if limit > 0:
-        entries = entries[:limit]
+    def _json_fields(s: object) -> dict[str, object]:
+        return {"skill_name": s.skill_name, "body_bytes": s.body_bytes, "truncated": s.truncated, "source_path": s.source_path}  # type: ignore[attr-defined]
 
-    if json_output:
-        out: list[dict[str, object]] = []
-        for e in entries:
-            sidecar = skill_cache.read_sidecar(str(e["output_id"]))
-            row = dict(e)
-            if sidecar is not None:
-                row["skill_name"] = sidecar.skill_name
-                row["body_bytes"] = sidecar.body_bytes
-                row["truncated"] = sidecar.truncated
-                row["source_path"] = sidecar.source_path
-            out.append(row)
-        typer.echo(json.dumps(out, ensure_ascii=False, separators=(",", ":")))
-        return
+    def _fmt(oid: str, size: int, age: int, s: object) -> str:
+        name_str = s.skill_name if s is not None else "(no sidecar)"  # type: ignore[attr-defined]
+        trunc_str = " (truncated)" if s is not None and s.truncated else ""  # type: ignore[attr-defined]
+        return f"{oid}  {size:>10,}B  {age:>6}s ago  {name_str}{trunc_str}"
 
-    if not entries:
-        typer.echo("(no cached Skill bodies)")
-        return
-
-    now = time.time()
-    for e in entries:
-        oid = str(e["output_id"])
-        size = int(cast(int, e["size_bytes"]))
-        age = int(now - float(cast(float, e["mtime"])))
-        sidecar = skill_cache.read_sidecar(oid)
-        name_str = sidecar.skill_name if sidecar is not None else "(no sidecar)"
-        trunc_str = " (truncated)" if sidecar is not None and sidecar.truncated else ""
-        typer.echo(f"{oid}  {size:>10,}B  {age:>6}s ago  {name_str}{trunc_str}")
+    _run_history_listing_command(
+        skill_cache,
+        json_output=json_output,
+        limit=limit,
+        empty_msg="(no cached Skill bodies)",
+        json_sidecar_fields=_json_fields,
+        format_entry=_fmt,
+    )
 
 
 @app.command(rich_help_panel="Install")
