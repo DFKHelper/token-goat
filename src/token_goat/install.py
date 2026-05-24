@@ -765,14 +765,54 @@ def _check_linux_update_cron() -> str:
 # ---------------------------------------------------------------------------
 
 
+def _write_hook_wrapper() -> Path:
+    """Write the persistent hook wrapper script to ``{data_dir}/bin/``.
+
+    The wrapper bridges the ``uv tool install --reinstall`` race window where
+    the venv's ``token_goat`` site-packages is briefly absent.  See
+    ``paths.hook_wrapper_path`` for full rationale.
+
+    Called from ``install_all`` before ``patch_settings_json`` so the wrapper
+    exists by the time hook commands are written.  Idempotent — rewriting is
+    safe and picks up any change in the interpreter path.
+    """
+    wrapper_path = paths.hook_wrapper_path()
+    wrapper_path.parent.mkdir(parents=True, exist_ok=True)
+    content = paths.hook_wrapper_content()
+    paths.atomic_write_text(wrapper_path, content)
+    if sys.platform != "win32":
+        wrapper_path.chmod(0o755)
+    _LOG.info("install step: hook wrapper — %s", wrapper_path)
+    return wrapper_path
+
+
+def _hook_runner_command(*subcommand: str) -> str:
+    """Return the hook command for ``settings.json``.
+
+    Prefers the persistent wrapper (data_dir/bin/tg-hook.cmd) when it exists,
+    so a ``uv tool install --reinstall`` mid-session does not surface a
+    transient ``ModuleNotFoundError`` to the user.  Falls back to direct
+    ``pythonw -m token_goat.cli`` invocation when the wrapper is absent
+    (e.g. first install, or wrapper manually deleted).
+    """
+    wrapper = paths.hook_wrapper_path()
+    if wrapper.exists():
+        wrapper_str = str(wrapper).replace("\\", "/")
+        quoted_args = " ".join(f'"{a}"' if " " in a else a for a in subcommand)
+        return f'"{wrapper_str}" {quoted_args}' if subcommand else f'"{wrapper_str}"'
+    return paths.python_runner_command(*subcommand)
+
+
 def _hooks_block(binary: str | None = None) -> dict[str, list[_HookMatcherEntry]]:
     """Build the hooks structure token-goat wants to install.
 
     The ``binary`` parameter is kept for backwards compatibility but unused;
-    commands now invoke ``pythonw.exe -m token_goat.cli`` directly. See
-    ``paths.python_runner_command`` for why (AV/EDR launcher-binary flagging).
+    commands now invoke ``pythonw.exe -m token_goat.cli`` via the persistent
+    wrapper at ``data_dir/bin/tg-hook.cmd``.  See ``paths.hook_wrapper_path``
+    for why a wrapper is needed.  See ``paths.python_runner_command`` for the
+    AV/EDR rationale behind ``pythonw -m`` over ``.exe`` shims.
     """
-    runner = paths.python_runner_command
+    runner = _hook_runner_command
     return {
         "SessionStart": [
             {
@@ -909,6 +949,18 @@ def _hooks_block(binary: str | None = None) -> dict[str, list[_HookMatcherEntry]
     }
 
 
+# Substrings that identify a hook command as belonging to token-goat.
+# - "token_goat" matches the legacy direct ``pythonw -m token_goat.cli`` form.
+# - "tg-hook" matches the persistent wrapper at ``data_dir/bin/tg-hook.cmd``
+#   (or ``tg-hook.sh`` on POSIX).
+_TOKEN_GOAT_HOOK_MARKERS = ("token_goat", "tg-hook")
+
+
+def _is_token_goat_hook(command: str) -> bool:
+    """Return True when *command* is one of our hook commands."""
+    return any(marker in command for marker in _TOKEN_GOAT_HOOK_MARKERS)
+
+
 def _strip_token_goat_entries(entries: list[dict[str, object]]) -> list[dict[str, object]]:
     """Remove hook entries belonging to token-goat (for idempotent re-install)."""
     kept: list[dict[str, object]] = []
@@ -917,7 +969,7 @@ def _strip_token_goat_entries(entries: list[dict[str, object]]) -> list[dict[str
         hook_list: list[dict[str, object]] = raw_hooks if isinstance(raw_hooks, list) else []
         surviving_hooks = [
             h for h in hook_list
-            if isinstance(h, dict) and "token_goat" not in str(h.get("command", ""))
+            if isinstance(h, dict) and not _is_token_goat_hook(str(h.get("command", "")))
         ]
         if surviving_hooks:
             kept.append({"matcher": entry.get("matcher", "*"), "hooks": surviving_hooks})
@@ -1606,7 +1658,7 @@ def _hooks_contain_token_goat(hooks: dict[str, object]) -> bool:
             if not isinstance(entry, dict):
                 continue
             for h in (entry.get("hooks", []) or []):
-                if isinstance(h, dict) and "token_goat" in str(h.get("command", "")):
+                if isinstance(h, dict) and _is_token_goat_hook(str(h.get("command", ""))):
                     return True
     return False
 
@@ -1871,7 +1923,7 @@ def _settings_json_token_goat_count() -> int:
             if not isinstance(entry, dict):
                 continue
             for h in (entry.get("hooks", []) or []):
-                if isinstance(h, dict) and "token_goat" in str(h.get("command", "")):
+                if isinstance(h, dict) and _is_token_goat_hook(str(h.get("command", ""))):
                     count += 1
     return count
 
@@ -2200,6 +2252,14 @@ def install_all(
     )
     paths.ensure_dirs()
     result: dict[str, str] = {}
+
+    # Write the hook wrapper FIRST so patch_settings_json() picks it up.
+    try:
+        wrapper_path = _write_hook_wrapper()
+        result["hook wrapper"] = _ok_fail(True, str(wrapper_path))
+    except Exception as e:  # noqa: BLE001
+        result["hook wrapper"] = f"FAIL — {e}"
+        _LOG.warning("install step: hook wrapper — FAIL: %s", e)
 
     settings_ok, settings_detail = patch_settings_json()
     result["settings.json"] = _ok_fail(settings_ok, settings_detail)

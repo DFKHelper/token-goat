@@ -2459,6 +2459,24 @@ def pre_compact(
     hooks_cli.safe_run("pre-compact", input_file, _parse_harness(harness))
 
 
+@hook_app.command("user-prompt-submit", context_settings=_HOOK_CTX)
+def user_prompt_submit(
+    input_file: Path | None = _INPUT_OPT,
+    harness: str = _HARNESS_OPT,
+) -> None:
+    """Hook: user-prompt-submit event."""
+    hooks_cli.safe_run("user-prompt-submit", input_file, _parse_harness(harness))
+
+
+@hook_app.command("subagent-stop", context_settings=_HOOK_CTX)
+def subagent_stop(
+    input_file: Path | None = _INPUT_OPT,
+    harness: str = _HARNESS_OPT,
+) -> None:
+    """Hook: subagent-stop event."""
+    hooks_cli.safe_run("subagent-stop", input_file, _parse_harness(harness))
+
+
 @app.command("compact-hint", rich_help_panel="Advanced")
 def compact_hint(
     session_id: str = typer.Option(..., "--session-id", "-s", help="Claude session_id"),
