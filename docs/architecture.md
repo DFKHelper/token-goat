@@ -1,5 +1,75 @@
 # Architecture
 
-This file used to hold a public sketch of token-goat internals. That sketch has moved to a private implementation plan on the maintainer's machine and is no longer published here.
+This file holds design notes and high-level patterns that drive token-goat's implementation. Detailed technical architecture has moved to `docs/plans/`.
+
+For installation and usage, see the [README](../README.md).
+
+## Design notes
+
+Token-goat's approach to context-saving rests on four pillars.
+
+### 1. Image compression
+
+The image-shrink pipeline intercepts full-resolution screenshots and documents in the `PreToolUse(Read|Glob|WebFetch)` hook, re-encodes to WebP (or AVIF when libaom is available), and substitutes the compressed copy before it reaches the model. Typical compression: 97.4% smaller than PNG, 39% smaller than JPEG. The cache is keyed on content SHA so identical images reused across prompts hit once.
+
+### 2. Surgical reads
+
+Instead of reading entire files, `token-goat symbol`, `token-goat read`, and `token-goat section` extract one function, class, or Markdown section — typically 85–97% smaller. The `Pre-Read` hook emits hints suggesting surgical reads on large files, and the `post-edit` hook tracks which edits were made so a follow-up read can be answered with a unified diff instead of a full-file re-read.
+
+### 3. Compaction manifest
+
+Before Claude Code summarizes a long session, the `PreCompact` hook injects a structured manifest listing edited files, accessed symbols, recent test outcomes, and git diffs. The manifest stays under a configurable token budget (default 400) and includes a `### MUST_PRESERVE` sealed block so the compaction LLM treats critical context as load-bearing. Post-compaction, the `SessionStart` hook emits a recovery hint listing cached Bash outputs, WebFetch responses, and skill bodies so the agent can recall prior work without re-running or re-fetching.
+
+### 4. Output caching and dedup
+
+Every `Bash`, `WebFetch`, and `Skill` invocation is cached. On a repeat, the `Pre-*` hook emits a dedup hint pointing at `token-goat bash-output <id>`, `token-goat web-output <id>`, or `token-goat skill-body <name>` instead of re-executing. The cache is byte-capped with LRU eviction and oldest-first expiry.
+
+## Recent improvements (22 iterations, May 2026)
+
+The latest iteration (v0.9.0-unreleased) added 20 context-savings refinements:
+
+- **Hint compaction.** Terse-mode substitution and 8-char output IDs cut injection overhead by ~40%.
+- **Hint intelligence.** Curator pass skips dedup hints when ignored; fingerprinting prevents false-positive dedup across files; unchanged-file short-circuit avoids hint noise on stable content.
+- **Hint budgeting.** Hard per-kind ceilings (files=5, bash=3, web=2, skills=4) prevent hint spam.
+- **Structured-file hints.** CSV headers, JSON keys, and log formats summarized instead of full-file suggestion.
+- **Manifest hygiene.** MUST_PRESERVE sealed block, What Worked section, inline git diffs, TODOs from TaskList, project-path stripping.
+- **Image formats.** AVIF support via libaom; WebP fallback; codec auto-detection.
+- **Recovery density.** Inline skill checklists, bash-snippet skip when cached, 3-item activity-aware bundling.
+- **Semantic output.** Compact mode (one line per result) for map, compact-hint, and list-like outputs.
+- **Benchmarking.** Token-savings regression suite locks in measured wins.
+
+See `docs/plans/2026-05-23-context-savings-design.md` for the design rationale behind each feature.
+
+### Hook event flow
+
+| Event | Fired by | Handles |
+|-------|----------|---------|
+| `SessionStart` | Claude Code on every session open | Detect post-compaction recovery; inject git brief; start background worker |
+| `PreToolUse(Read\|Grep\|Bash)` | Before read-like operations | Emit session hints; compress bash output; suggest surgical reads |
+| `PreToolUse(WebFetch)` | Before URL fetch | Shrink images; suggest cached responses on repeat fetch |
+| `PostToolUse(Edit\|Write\|MultiEdit)` | After file write | Mark file as edited; enqueue for incremental reindex; record content snapshot |
+| `PostToolUse(Read\|Grep\|Glob)` | After read-like operations | Update session cache with file accesses; emit diff hints |
+| `PostToolUse(Bash)` | After command execution | Cache stdout/stderr for later recall |
+| `PostToolUse(WebFetch)` | After URL fetch | Cache response body; persist images to shrink cache |
+| `PostToolUse(Skill)` | After skill invocation | Cache skill body for post-compaction recall without re-invoke |
+| `PreCompact` | Before conversation summary | Build and inject structured manifest |
+
+### Data flow
+
+1. **Indexing** — `parser.py` walks the project, extracts symbols/refs/sections via tree-sitter language adapters, stores rows in the per-project SQLite DB. `embeddings.py` chunks content and stores 384-dim vectors (sqlite-vec).
+2. **Incremental updates** — `post-edit` appends touched paths to `queue/dirty.txt`. `worker.py` drains this queue every 2–10 s (adaptive backoff), SHA-checks each file, and reindexes only changed files.
+3. **Session cache** — `session.py` writes a JSON file keyed by Claude session ID. The pre-read hook reads this to emit "already read" hints. Post-read hook updates it; post-edit hook marks edits.
+4. **Output cache** — `bash_cache.py`, `web_cache.py`, and `skill_cache.py` store outputs under `data_dir()` with byte caps and LRU eviction. On repeat operation, the pre-* hook surfaces `token-goat <type>-output <id>`.
+5. **Compaction assist** — `PreCompact` hook calls `compact.build_manifest()` to emit <400 tokens of structured summary, injected as `systemMessage` before compaction LLM runs. Post-compaction recovery hint lists cached entries under `**Skills**:`, `**Bash:**`, `**Web:**`, so the agent can recall without re-invoke.
+6. **CLI reads** — `token-goat symbol`, `token-goat read`, `token-goat section`, `token-goat semantic` query the indexed DBs and return narrow slices.
+
+## Design documents
+
+Internal design rationale for each pillar:
+
+- **Context savings** — `docs/plans/2026-05-23-context-savings-design.md` (40 KB). Covers hint system, compaction manifest, output caching, dedup filtering, and benchmarking.
+- **DRY refactoring** — `docs/plans/2026-05-23-dry-design.md` (23 KB). Documents shared patterns across install, languages, bridges, and hooks.
+- **Reliability** — `docs/plans/2026-05-23-reliability-design.md` (23 KB). Covers fail-soft patterns, corruption recovery, and WAL management.
+- **Speed** — `docs/plans/2026-05-23-speed-design.md` (17 KB). Latency budgets, adaptive backoff, and read-only fast paths.
 
 For installation and usage, see the [README](../README.md).

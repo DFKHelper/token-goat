@@ -65,6 +65,19 @@ The fastest way to reduce Claude Code token costs is fixing these four, not writ
 | Same bash command runs 3+ times in one session | Escalating warning: "ran 2×" on repeat, "WARNING: ran N×" by the third; output always cached |
 | Agent starts cold with no git context in a dirty repo | Branch, change counts, and 5 recent commits injected at startup (~50 tokens) |
 | Re-read hint shows only the line range | Hint includes previously-accessed symbol names: `[symbols: login, refresh, …]` |
+| Manifest too large or unstructured after compaction | Manifest gains `### MUST_PRESERVE` sealed block, `### What Worked` (last 2 green test runs), inline git diffs, and `### TODOs` from TaskList |
+| CSV/JSON/JSONL/log file re-read when only structure changed | Pre-Read hint for structured files (CSV headers, JSON keys, log format), ~70% smaller than full read |
+| Index-only files (lockfiles, source maps, bundles) read on every session | Pre-Read suppression for read-only files (package-lock.json, *.map, dist/), skipped unless explicitly edited |
+| Unchanged files produce duplicate hints across sessions | Hint fingerprint includes file path; unchanged-file short-circuit skips re-read pre-check entirely |
+| Dedup hints fire even when agent ignores them | Curator pass skips dedup hints when the agent's preceding action pattern suggests they'll be ignored |
+| Bash dedup hints conflict with other compression | `token-goat compress` can be called as dedup-vs-hint filter; one-call access to cached output |
+| Large manifest sections with no useful signal | Drop empty sections, strip project name from paths (cleaner relative paths in manifest) |
+| Manifest git-history section loses signal on clean main | Inline git diffs + skip git log when on clean main branch; session-awareness improves manifest hygiene |
+| Skill body lost after compaction but recovery too verbose | Recovery hint deduped skills by content_sha (same skill loaded twice = one entry); inline skill checklist |
+| Recovery hints omit critical paths when space is tight | Hint budget hard caps per kind (files=5, bash=3, web=2, skills=4); skip bash snippet when recall available |
+| `token-goat map` outputs without rank context | Semantic compact mode outputs one result per line; `--full` for old format |
+| AVIF format not supported despite better compression | AVIF image-shrink (when Pillow has libaom); WebP fallback; codec auto-detection in docker |
+| Token-savings invisible until you run `stats` | Token-savings benchmark (slow-marked test suite) locks in measured wins; `token-goat stats` reports net-positive impact |
 
 > Two snapshots from the author's machine: **v0.1 after four hours**, and the **current build after several days** of real sessions.
 
