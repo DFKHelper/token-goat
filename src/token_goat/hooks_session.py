@@ -38,7 +38,7 @@ from __future__ import annotations
 
 __all__ = ["session_start"]
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Final
 
 from .hooks_common import (
     CONTINUE,
@@ -57,6 +57,34 @@ if TYPE_CHECKING:
     # which are only needed when ``session-start`` actually fires.  The other
     # five hook events never touch this module's helpers, so defer the import.
     from .project import Project
+    from .session import BashEntry
+
+
+# ---------------------------------------------------------------------------
+# Pytest-collapse helpers for the recovery hint bash section
+# ---------------------------------------------------------------------------
+
+# Case-insensitive prefix patterns that identify a pytest invocation.
+# Matched after strip() so leading whitespace is ignored.
+_PYTEST_PREFIXES: Final[tuple[str, ...]] = (
+    "pytest",
+    "uv run pytest",
+    "python -m pytest",
+)
+
+
+def _is_green_pytest(entry: BashEntry) -> bool:
+    """Return True when *entry* is a successful pytest run.
+
+    A "green pytest" is defined as:
+    - ``exit_code == 0`` (test run passed)
+    - ``cmd_preview`` starts with one of :data:`_PYTEST_PREFIXES`
+      (case-insensitive, after stripping leading whitespace)
+    """
+    if entry.exit_code != 0:
+        return False
+    preview = entry.cmd_preview.strip().lower()
+    return any(preview.startswith(p) for p in _PYTEST_PREFIXES)
 
 
 def _reset_session_cache(session_id: str | None) -> None:
@@ -340,13 +368,24 @@ def _build_recovery_hint(session_id: str) -> str | None:
 
     # 2. Recent Bash output IDs — the most likely "I had this in context" data.
     if bash_entries:
+        import datetime  # noqa: PLC0415
+
+        has_edits = bool(getattr(cache, "edited_files", None))
         lines = ["**Bash**:"]
         for be in bash_entries:
-            exit_str = "" if be.exit_code is None else f" exit={be.exit_code}"
-            total = be.stdout_bytes + be.stderr_bytes
-            lines.append(
-                f"- `{be.cmd_preview}` ({_humanize_bytes(total)}{exit_str}) `{_short_id(be.output_id)}`"
-            )
+            if _is_green_pytest(be) and has_edits:
+                # Collapsed format: green pytest with edits in context.
+                ts_str = datetime.datetime.fromtimestamp(be.ts).strftime("%H:%M")
+                lines.append(
+                    f"- ✓ pytest passed @ {ts_str}"
+                    f" (token-goat bash-output {_short_id(be.output_id)} for details)"
+                )
+            else:
+                exit_str = "" if be.exit_code is None else f" exit={be.exit_code}"
+                total = be.stdout_bytes + be.stderr_bytes
+                lines.append(
+                    f"- `{be.cmd_preview}` ({_humanize_bytes(total)}{exit_str}) `{_short_id(be.output_id)}`"
+                )
         dropped = len(bash_all) - len(bash_entries)
         if dropped > 0:
             lines.append(f"- +{dropped} more")
