@@ -295,7 +295,8 @@ def _is_process_recent(pid: int) -> bool:
         p = psutil.Process(pid)
         age = time.time() - p.create_time()
         return age <= WORKER_STARTUP_GRACE
-    except (psutil.NoSuchProcess, psutil.AccessDenied):
+    except (psutil.NoSuchProcess, psutil.AccessDenied, OSError) as exc:
+        _LOG.debug("_is_process_recent pid=%s err=%s", pid, exc)
         return False
 
 
@@ -350,7 +351,8 @@ def _proc_create_time(pid: int) -> float | None:
     """Return the process creation time, or None if the process is gone."""
     try:
         return psutil.Process(pid).create_time()
-    except (psutil.NoSuchProcess, psutil.AccessDenied):
+    except (psutil.NoSuchProcess, psutil.AccessDenied, OSError) as exc:
+        _LOG.debug("_proc_create_time pid=%s err=%s", pid, exc)
         return None
 
 
@@ -1317,7 +1319,8 @@ def _is_token_goat_worker(pid: int) -> bool:
     """
     try:
         cmdline = " ".join(psutil.Process(pid).cmdline()).lower()
-    except (psutil.NoSuchProcess, psutil.AccessDenied):
+    except (psutil.NoSuchProcess, psutil.AccessDenied, OSError) as exc:
+        _LOG.debug("_is_token_goat_worker pid=%s err=%s", pid, exc)
         return False
     return "token_goat" in cmdline and "worker" in cmdline
 
