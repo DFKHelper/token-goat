@@ -136,6 +136,14 @@ CLAUDE_VISION_PIXELS_PER_TOKEN = 750
 # far better than PNG regardless of its palette.
 _SCREENSHOT_MAX_EDGE_PX = 1500
 
+# Hard pixel-count cap applied at module load time.  A 90 KB JPEG can decode to
+# a 200 MB+ bitmap; without a cap the hook process RSS spikes silently on tight-
+# memory machines.  Pillow raises DecompressionBombWarning (and then
+# DecompressionBombError) when MAX_IMAGE_PIXELS is exceeded, so we catch it in
+# shrink() and return None (skip) rather than crashing the hook.
+# Override with TOKEN_GOAT_MAX_IMAGE_PIXELS=<n> (set to 0 to disable the cap).
+_MAX_PIXELS = int(os.getenv("TOKEN_GOAT_MAX_IMAGE_PIXELS", "16000000"))
+
 # Recognized image extensions — the pre-read hook uses this list to decide
 # whether to attempt shrinking before the image is read into context.
 IMAGE_EXTENSIONS = frozenset(
@@ -403,10 +411,30 @@ def shrink(src_path: Path) -> Path | None:
     try:
         from PIL import Image, ImageOps  # noqa: PLC0415
 
+        # Apply the pixel cap each time PIL is imported in this process.
+        # Setting MAX_IMAGE_PIXELS to None disables Pillow's bomb guard entirely,
+        # so we only set it when _MAX_PIXELS > 0 (i.e. the cap is active).
+        if _MAX_PIXELS > 0:
+            Image.MAX_IMAGE_PIXELS = _MAX_PIXELS
+
         # Image.open returns ImageFile; downstream resize/convert/paste return
         # Image. Annotate broadly so reassignment doesn't trip the type checker.
         img: Image.Image
         with Image.open(src_path) as img:
+            # Warn when the decoded bitmap is large enough to be a memory concern,
+            # even though it falls within the Pillow cap.  Half of _MAX_PIXELS is
+            # the threshold — anything above it is "large but still allowed".
+            _pixel_count = img.size[0] * img.size[1]
+            if _MAX_PIXELS > 0 and _pixel_count > _MAX_PIXELS // 2:
+                _LOG.debug(
+                    "shrink: large bitmap %s (%d×%d = %d pixels, cap=%d)",
+                    src_path.name,
+                    img.size[0],
+                    img.size[1],
+                    _pixel_count,
+                    _MAX_PIXELS,
+                )
+
             # Preserve EXIF orientation — some cameras embed rotation metadata
             # rather than rotating pixels; ignoring this produces upside-down output.
             # Suppress only the documented failure modes of exif_transpose:
@@ -587,6 +615,8 @@ def stats_for(src_path: Path, shrunken_path: Path, src_size_bytes: int | None = 
             # Import PIL once and reuse it for both image opens; avoids the
             # per-call import overhead in the next-exception path.
             from PIL import Image  # noqa: PLC0415
+            if _MAX_PIXELS > 0:
+                Image.MAX_IMAGE_PIXELS = _MAX_PIXELS
             try:
                 with Image.open(src_path) as img:
                     orig_w, orig_h = img.size

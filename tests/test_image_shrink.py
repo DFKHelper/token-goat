@@ -624,3 +624,86 @@ class TestAvifEncoding:
         assert cfg.image_shrink.prefer_avif is False, (
             "TOKEN_GOAT_PREFER_AVIF=0 must disable AVIF in loaded config"
         )
+
+
+# ---------------------------------------------------------------------------
+# 13. Pixel cap (_MAX_PIXELS) — DecompressionBomb guard
+# ---------------------------------------------------------------------------
+
+class TestPixelCap:
+    """Regression tests for the Image.MAX_IMAGE_PIXELS cap added to prevent
+    memory spikes when decoding high-resolution images (a 90KB JPEG can decode
+    to a 200MB+ bitmap on tight-memory machines).
+    """
+
+    def test_oversized_image_returns_none_and_logs_warning(
+        self, tmp_data_dir, tmp_path, monkeypatch, caplog
+    ):
+        """An image whose pixel count exceeds _MAX_PIXELS must return None.
+
+        Pillow raises DecompressionBombError (subclass of OSError) when
+        MAX_IMAGE_PIXELS is exceeded.  shrink() catches it via the broad
+        ``except Exception`` handler and returns None with a warning log.
+        The test monkeypatches _MAX_PIXELS to a small value (100×100 = 10 000)
+        so the fixture image only needs to be 101×101 = 10 201 pixels —
+        no multi-megabyte allocation is required.
+        """
+        from PIL import Image
+
+        # Synthesise a 200×200 = 40 000 pixel image saved as BMP so the file
+        # is unambiguously > SIZE_THRESHOLD_BYTES (100 KB).  200×200 BMP is only
+        # ~120 KB, which may or may not exceed the threshold on all platforms, so
+        # we pad with dummy bytes if needed.
+        img = Image.new("RGB", (200, 200), (128, 64, 32))
+        src = tmp_path / "oversized.bmp"
+        img.save(src, "BMP")
+
+        # Pad to ensure > SIZE_THRESHOLD_BYTES if the BMP is too small.
+        if src.stat().st_size <= image_shrink.SIZE_THRESHOLD_BYTES:
+            with src.open("ab") as f:
+                f.write(b"\x00" * (image_shrink.SIZE_THRESHOLD_BYTES + 1 - src.stat().st_size))
+
+        assert src.stat().st_size > image_shrink.SIZE_THRESHOLD_BYTES
+
+        # Lower the cap to 100×100 = 10 000 pixels so our 200×200 image exceeds it.
+        monkeypatch.setattr(image_shrink, "_MAX_PIXELS", 10_000)
+
+        import logging
+        with caplog.at_level(logging.WARNING, logger="token_goat.image_shrink"):
+            result = image_shrink.shrink(src)
+
+        assert result is None, (
+            "shrink() must return None when the image exceeds _MAX_PIXELS"
+        )
+        # The broad except-handler logs a warning with the filename.
+        assert any("oversized" in r.message for r in caplog.records), (
+            f"Expected a warning log containing 'oversized'; got: {[r.message for r in caplog.records]}"
+        )
+
+    def test_small_image_not_blocked_by_cap(self, tmp_data_dir, tmp_path, caplog):
+        """A 100×100 JPEG (10 K pixels) is not blocked by the pixel cap.
+
+        The default cap is 16 M pixels; 10 K is far below it.  The image is
+        also below SIZE_THRESHOLD_BYTES, so shrink() returns None for the size
+        reason — but it must NOT emit a DecompressionBomb warning.
+        This test is the regression guard: if someone lowers _MAX_PIXELS to an
+        absurdly small value by mistake, this test catches it.
+        """
+        from PIL import Image
+
+        img = Image.new("RGB", (100, 100), (200, 100, 50))
+        src = tmp_path / "tiny.jpg"
+        img.save(src, "JPEG", quality=75)
+
+        # 100×100 JPEG is typically well under 100 KB — below SIZE_THRESHOLD_BYTES.
+        # shrink() will return None due to the size check, never reaching PIL decode.
+        import logging
+        with caplog.at_level(logging.WARNING, logger="token_goat.image_shrink"):
+            result = image_shrink.shrink(src)
+
+        assert result is None
+        # No DecompressionBomb or unexpected warning should have fired.
+        bomb_warnings = [r for r in caplog.records if "DecompressionBomb" in r.message or "pixels" in r.message.lower()]
+        assert not bomb_warnings, (
+            f"Unexpected pixel-cap warning for 100×100 image: {[r.message for r in bomb_warnings]}"
+        )

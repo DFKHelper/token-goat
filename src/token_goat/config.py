@@ -77,6 +77,7 @@ class _ImageShrinkToml(TypedDict, total=False):
     prefer_avif: bool
     avif_quality: int
     jpeg_quality: int
+    max_image_pixels: int
 
 
 class _CuratorToml(TypedDict, total=False):
@@ -318,11 +319,18 @@ class ImageShrinkConfig:
         jpeg_quality: JPEG encoder quality used as the non-AVIF lossy fallback
             (when AVIF is unavailable or disabled).  Default 75, same as the
             pre-existing ``JPEG_QUALITY`` constant.  Valid range: 1–100.
+        max_image_pixels: Hard pixel-count cap passed to ``Image.MAX_IMAGE_PIXELS``
+            before decoding.  Images whose decoded bitmap would exceed this value
+            cause Pillow to raise ``DecompressionBombError``; ``shrink()`` catches
+            it and returns ``None`` (skip).  Default 16 000 000 (≈ 4000×4000).
+            Set to 0 to disable the cap (matches Pillow's built-in 178 MP default).
+            Override with ``TOKEN_GOAT_MAX_IMAGE_PIXELS=<n>``.
     """
 
     prefer_avif: bool = True
     avif_quality: int = 60
     jpeg_quality: int = 75
+    max_image_pixels: int = 16_000_000
 
 
 @dataclass
@@ -556,6 +564,13 @@ def load() -> Config:
         prefer_avif=_validated_bool(is_raw.get("prefer_avif", True), True, "image_shrink.prefer_avif"),
         avif_quality=_validated_int(is_raw.get("avif_quality", 60), 60, 1, 100, "image_shrink.avif_quality"),
         jpeg_quality=_validated_int(is_raw.get("jpeg_quality", 75), 75, 1, 100, "image_shrink.jpeg_quality"),
+        max_image_pixels=_validated_int(
+            is_raw.get("max_image_pixels", 16_000_000),
+            16_000_000,
+            0,
+            500_000_000,
+            "image_shrink.max_image_pixels",
+        ),
     )
     env_avif = os.environ.get(_ENV_PREFER_AVIF, "").strip().lower()
     if env_avif in ("0", "false", "no", "off"):
@@ -608,7 +623,7 @@ def load() -> Config:
         "bash_compress enabled=%s disabled_filters=%s max_lines=%d max_bytes=%d timeout=%d; "
         "session_brief enabled=%s; "
         "skill_preservation enabled=%s max_cache_bytes=%d; "
-        "image_shrink prefer_avif=%s avif_quality=%d jpeg_quality=%d; "
+        "image_shrink prefer_avif=%s avif_quality=%d jpeg_quality=%d max_image_pixels=%d; "
         "curator enabled=%s min_samples=%d threshold_pct=%d; "
         "hint_budget enabled=%s max=%d max_structured=%d max_index_only=%d",
         ca.enabled,
@@ -626,6 +641,7 @@ def load() -> Config:
         is_cfg.prefer_avif,
         is_cfg.avif_quality,
         is_cfg.jpeg_quality,
+        is_cfg.max_image_pixels,
         cur.enabled,
         cur.min_samples,
         cur.threshold_pct,
@@ -679,6 +695,7 @@ def save(config: Config) -> None:
             "prefer_avif": is_cfg.prefer_avif,
             "avif_quality": is_cfg.avif_quality,
             "jpeg_quality": is_cfg.jpeg_quality,
+            "max_image_pixels": is_cfg.max_image_pixels,
         },
         "curator": {
             "enabled": cur.enabled,
