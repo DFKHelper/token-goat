@@ -26,6 +26,29 @@ __all__ = [
     "compute_stale_threshold",
 ]
 
+# ---------------------------------------------------------------------------
+# Terse-mode substitution table
+# ---------------------------------------------------------------------------
+# Applied at the end of every hint constructor via _apply_terse().  Each entry
+# replaces a verbose phrase with a compact token-saving equivalent.  Order
+# matters: longer/more-specific patterns must precede shorter ones that share
+# a prefix (e.g. "exit=" before "exit" if both were present).
+#
+# Savings per hint: ~4-8 chars saved × ~20-50 hints/session ≈ 150-400 tokens.
+_TERSE: dict[str, str] = {
+    "cached": "⌘",
+    "exit=": "x=",
+    "ran ": "×",
+    "use `offset=": "→offset=",
+}
+
+
+def _apply_terse(text: str) -> str:
+    """Apply all _TERSE substitutions to *text* and return the result."""
+    for verbose, terse in _TERSE.items():
+        text = text.replace(verbose, terse)
+    return text
+
 _LOG = logging.getLogger("token_goat.hints")
 
 # Max length for a file path embedded in an LLM-context hint string.
@@ -492,8 +515,10 @@ def _hint_from_cache(
     if entry.line_ranges == [(0, 0)]:
         sym_suffix = _symbols_suffix(entry.symbols_read)
         return ReadHint(
-            f"`{fname}` full file ×{entry.read_count}{sym_suffix}. "
-            f"In context; range hints suppressed.",
+            _apply_terse(
+                f"`{fname}` full file ×{entry.read_count}{sym_suffix}. "
+                f"In context; range hints suppressed."
+            ),
             0,  # No tokens saved — the file is in context; this is informational.
         )
 
@@ -509,8 +534,10 @@ def _hint_from_cache(
             fname, entry.read_count,
         )
         return ReadHint(
-            f"`{fname}` re-read often{sym_suffix}. "
-            f"Use `token-goat read \"{file_path}::sym\"` for surgical access.",
+            _apply_terse(
+                f"`{fname}` re-read often{sym_suffix}. "
+                f"Use `token-goat read \"{file_path}::sym\"` for surgical access."
+            ),
             0,
         )
 
@@ -535,8 +562,10 @@ def _hint_from_cache(
         sym_list = ", ".join(f"`{s}`" for s in entry.symbols_read[:3])
         more = f" +{n_syms - 3}" if n_syms > 3 else ""
         return ReadHint(
-            f"`{fname}` read via `token-goat read`: {sym_list}{more}. "
-            f"Use `token-goat read \"{file_path}::symbol\"` for more.",
+            _apply_terse(
+                f"`{fname}` read via `token-goat read`: {sym_list}{more}. "
+                f"Use `token-goat read \"{file_path}::symbol\"` for more."
+            ),
             0,
         )
 
@@ -583,8 +612,10 @@ def _hint_from_cache(
         wasted = _est_tokens_from_lines(requested_lines)
         sym_suffix = _symbols_suffix(entry.symbols_read)
         return ReadHint(
-            f"`{fname}` L{req_start}-{req_end} cached (L{cached_summary}{extra}){sym_suffix}. "
-            f"~{wasted}t wasted — adjust offset/limit.",
+            _apply_terse(
+                f"`{fname}` L{req_start}-{req_end} cached (L{cached_summary}{extra}){sym_suffix}. "
+                f"~{wasted}t wasted — adjust offset/limit."
+            ),
             wasted,
         )
 
@@ -598,8 +629,10 @@ def _hint_from_cache(
         resume_offset = last_cached_end
         sym_suffix = _symbols_suffix(entry.symbols_read)
         return ReadHint(
-            f"`{fname}` cached L{cached_summary}{extra}{sym_suffix}. "
-            f"Overlap: {overlap_lines}L (~{wasted}t) — use `offset={resume_offset}`.",
+            _apply_terse(
+                f"`{fname}` cached L{cached_summary}{extra}{sym_suffix}. "
+                f"Overlap: {overlap_lines}L (~{wasted}t) — use `offset={resume_offset}`."
+            ),
             wasted,
         )
 
@@ -690,8 +723,10 @@ def _hint_from_index(
             rel, n_lines, project.hash[:8],
         )
         return ReadHint(
-            f"`{fname}`: {n_lines} lines (~{full_tokens} tokens). "
-            f"No symbols indexed. Use `offset`/`limit` to read chunks.",
+            _apply_terse(
+                f"`{fname}`: {n_lines} lines (~{full_tokens} tokens). "
+                f"No symbols indexed. Use `offset`/`limit` to read chunks."
+            ),
             0,
         )
 
@@ -717,9 +752,11 @@ def _hint_from_index(
     # conversation, so it carries one example command rather than enumerating
     # every indexed symbol (`token-goat symbol`/`map` cover that on demand).
     return ReadHint(
-        f"`{fname}`: {n_lines} lines (~{full_tokens} tokens). "
-        f"{sym_clause}"
-        f"Use `token-goat read \"{rel}::{first_sym_name}\"` (~85% faster).",
+        _apply_terse(
+            f"`{fname}`: {n_lines} lines (~{full_tokens} tokens). "
+            f"{sym_clause}"
+            f"Use `token-goat read \"{rel}::{first_sym_name}\"` (~85% faster)."
+        ),
         0,
     )
 
@@ -869,8 +906,8 @@ def _build_diff_hint_inner(
         return None
 
     return ReadHint(
-        f"`{fname}` diff (~{tokens_saved} tokens saved):\n"
-        f"```diff\n{diff_text}\n```\n",
+        _apply_terse(f"`{fname}` diff (~{tokens_saved} tokens saved):\n")
+        + f"```diff\n{diff_text}\n```\n",
         tokens_saved,
     )
 
@@ -1017,7 +1054,7 @@ def _build_bash_dedup_hint_inner(
 
     if total_bytes <= _BASH_DEDUP_LIGHT_MAX_BYTES:
         hint_text = f"{fail_prefix}`{cmd_short}` cached ({int(age)}s, {total_bytes}B{exit_str}). `{recall_cmd}`"
-        return ReadHint(hint_text, tokens_avoided)
+        return ReadHint(_apply_terse(hint_text), tokens_avoided)
 
     grep_suffix = " (add --grep PATTERN to filter)" if total_bytes >= _BASH_DEDUP_GREP_SUGGEST_BYTES else ""
 
@@ -1036,7 +1073,7 @@ def _build_bash_dedup_hint_inner(
             f"{fail_prefix}`{cmd_short}` ({int(age)}s): {total_bytes:,}B{exit_str} cached. "
             f"`{recall_cmd}`{grep_suffix}"
         )
-    return ReadHint(hint_text, tokens_avoided)
+    return ReadHint(_apply_terse(hint_text), tokens_avoided)
 
 
 # ---------------------------------------------------------------------------
@@ -1132,7 +1169,9 @@ def _build_grep_dedup_hint_inner(
         pattern_short = _sanitize_hint_path(pattern)
         path_str = f" in `{_sanitize_hint_path(path)}`" if path else ""
         return ReadHint(
-            f"Grep `{pattern_short}`{path_str} ({int(age)}s): {entry.result_count} matches, ~{tokens_avoided}t.",
+            _apply_terse(
+                f"Grep `{pattern_short}`{path_str} ({int(age)}s): {entry.result_count} matches, ~{tokens_avoided}t."
+            ),
             tokens_avoided,
         )
     return None
@@ -1223,7 +1262,9 @@ def _build_glob_dedup_hint_inner(
     pattern_short = _sanitize_hint_path(pattern)
     path_str = f" in `{_sanitize_hint_path(path)}`" if path else ""
     return ReadHint(
-        f"Glob `{pattern_short}`{path_str} ({int(age)}s): {entry.result_count} results, ~{tokens_avoided}t.",
+        _apply_terse(
+            f"Glob `{pattern_short}`{path_str} ({int(age)}s): {entry.result_count} results, ~{tokens_avoided}t."
+        ),
         tokens_avoided,
     )
 
@@ -1308,8 +1349,10 @@ def _build_web_dedup_hint_inner(
         f" status={entry.status_code}" if entry.status_code is not None else ""
     )
     return ReadHint(
-        f"URL ({int(age)}s): {entry.body_bytes:,}B{status_str}, ~{tokens_avoided}t. "
-        f"`token-goat web-output {entry.output_id}`",
+        _apply_terse(
+            f"URL ({int(age)}s): {entry.body_bytes:,}B{status_str}, ~{tokens_avoided}t. "
+            f"`token-goat web-output {entry.output_id}`"
+        ),
         tokens_avoided,
     )
 

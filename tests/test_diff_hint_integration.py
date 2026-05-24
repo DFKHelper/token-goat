@@ -68,7 +68,7 @@ class TestDiffHintEndToEnd:
         hso = result.get("hookSpecificOutput")
         assert hso is not None
         ctx = hso.get("additionalContext", "")
-        # The standard cache hint mentions "cached" / "already read" — distinct from
-        # the diff hint's "edited in this session" wording.
-        assert "cached" in ctx or "already read" in ctx or "previously read" in ctx
+        # The standard cache hint uses "⌘" (terse for "cached") / "already read" —
+        # distinct from the diff hint's "edited in this session" wording.
+        assert "⌘" in ctx or "already read" in ctx or "previously read" in ctx
         assert "```diff" not in ctx
