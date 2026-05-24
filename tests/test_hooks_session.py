@@ -330,3 +330,50 @@ class TestSessionBriefSkipsLogOnCleanMain:
         brief = hs_mod._build_session_brief(str(tmp_path))
         assert brief is not None
         assert "Recent:" in brief
+
+
+# ---------------------------------------------------------------------------
+# Deferred import isolation — compact/cache_common must not load on SessionStart
+# ---------------------------------------------------------------------------
+
+
+class TestDeferredImports:
+    """Heavy modules (compact, cache_common) must not be imported during a
+    plain SessionStart (non-compact source).  They are only needed when the
+    recovery-hint path runs, i.e. source == "compact" with a live session."""
+
+    def test_compact_not_imported_on_session_start(self, tmp_data_dir, monkeypatch):
+        """compact module is NOT imported as a side-effect of importing hooks_session."""
+        # Remove cached modules so we get a clean import slate for hooks_session.
+        # We do NOT remove hooks_session itself — the module may already be loaded
+        # by other tests.  What matters is that compact stays absent unless the
+        # compact path runs.
+        import sys
+        for mod in list(sys.modules):
+            if mod in ("token_goat.compact", "token_goat.cache_common"):
+                del sys.modules[mod]
+
+        # Re-import hooks_session to ensure module-level code re-runs cleanly.
+        import importlib
+
+        import token_goat.hooks_session as hs_mod
+        importlib.reload(hs_mod)
+
+        # Now fire a plain startup — should NOT trigger compact or cache_common.
+        payload = {"session_id": "deferred_test_1", "cwd": str(tmp_data_dir), "source": "startup"}
+        result = hs_mod.session_start(payload)
+        assert result.get("continue") is True
+
+        # compact and cache_common must still be absent (or at most absent — another
+        # test in the same process may have loaded them, so we only assert they were
+        # not loaded as a direct consequence of this code path when starting clean).
+        # The reliable check: reload drops them, session_start with source=startup
+        # must not re-introduce them.  We verify by checking sys.modules AFTER the
+        # fresh reload + startup call.  If they appear now, they were pulled in by
+        # the startup path.
+        assert "token_goat.compact" not in sys.modules, (
+            "compact was imported during a non-compact SessionStart — deferred import missing"
+        )
+        assert "token_goat.cache_common" not in sys.modules, (
+            "cache_common was imported during a non-compact SessionStart — deferred import missing"
+        )
