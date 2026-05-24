@@ -292,7 +292,7 @@ class TestManifestActiveSkillsSection:
             meta.body_bytes, meta.truncated,
         )
         m = compact.build_manifest(sid, max_tokens=600)
-        assert "### Active Skills" in m
+        assert "**Skills:**" in m
         assert "ralph" in m
         assert "token-goat skill-body ralph" in m
 

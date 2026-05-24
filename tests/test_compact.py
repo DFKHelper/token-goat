@@ -71,21 +71,21 @@ class TestBuildManifest:
         session.mark_file_read(sid, "/proj/src/auth.py", offset=0, limit=50)
         # read + edited = 2 events >= min_events=0 for manifest; but build_manifest has no min
         result = compact.build_manifest(sid)
-        assert "Files Edited" in result
+        assert "**Edited:**" in result
         assert "auth.py" in result
 
     def test_symbols_section_present(self, tmp_data_dir):
         sid = "symbols-session-abc"
         session.mark_file_read(sid, "/proj/src/parser.py", symbol="index_project")
         result = compact.build_manifest(sid)
-        assert "Symbols Accessed" in result
+        assert "**Syms:**" in result
         assert "index_project" in result
 
     def test_key_files_section_present(self, tmp_data_dir):
         sid = "keyfiles-session-abc"
         session.mark_file_read(sid, "/proj/src/db.py", offset=0, limit=200)
         result = compact.build_manifest(sid)
-        assert "Key Files Read" in result
+        assert "**Files:**" in result
         assert "db.py" in result
 
     def test_manifest_respects_token_budget(self, tmp_data_dir):
@@ -611,14 +611,14 @@ class TestGrepSection:
         sid = "grep-section-session-abc"
         session.mark_grep(sid, "mark_file_read", "/proj/src")
         result = compact.build_manifest(sid)
-        assert "Patterns Searched" in result
+        assert "**Grep:**" in result
         assert "mark_file_read" in result
 
     def test_grep_section_absent_when_no_greps(self, tmp_data_dir):
         sid = "no-grep-session-abc"
         session.mark_file_read(sid, "/proj/src/db.py", offset=0, limit=100)
         result = compact.build_manifest(sid)
-        assert "Patterns Searched" not in result
+        assert "**Grep:**" not in result
 
     def test_grep_section_includes_path_scope(self, tmp_data_dir):
         sid = "grep-path-session-abc"
@@ -868,7 +868,7 @@ class TestGrepSection:
 
         result = compact.build_manifest(sid)
 
-        assert "Patterns Searched" not in result, (
+        assert "**Grep:**" not in result, (
             f"All-zero grep section should be dropped for mature sessions:\n{result}"
         )
 
@@ -886,7 +886,7 @@ class TestGrepSection:
         result = compact.build_manifest(sid)
 
         # The section should still appear for young sessions.
-        assert "Patterns Searched" in result, (
+        assert "**Grep:**" in result, (
             f"All-zero grep section should be kept for young sessions:\n{result}"
         )
 
@@ -1272,7 +1272,7 @@ class TestGetGitDiffStatSummary:
             lambda _root: "src/main.py | 3 +++\n1 file changed, 3 insertions(+)",
         )
         result = compact.build_manifest(sid)
-        assert "Pending Changes" in result, f"Expected 'Pending Changes' in manifest:\n{result}"
+        assert "**Pending:**" in result, f"Expected '**Pending:**' in manifest:\n{result}"
         assert "src/main.py" in result
 
     def test_manifest_omits_pending_changes_when_diff_empty(self, tmp_data_dir, monkeypatch):
@@ -1283,7 +1283,7 @@ class TestGetGitDiffStatSummary:
 
         monkeypatch.setattr(compact, "_get_git_diff_stat_summary", lambda _root: "")
         result = compact.build_manifest(sid)
-        assert "Pending Changes" not in result, f"Should not include section when diff is empty:\n{result}"
+        assert "**Pending:**" not in result, f"Should not include section when diff is empty:\n{result}"
 
     def test_git_stat_padding_compressed(self, monkeypatch):
         """#21: git diff --stat alignment spaces around | are collapsed to single space."""
@@ -1327,10 +1327,10 @@ class TestManifestHeaderStrings:
         monkeypatch.setattr(compact, "_get_git_diff_stat_summary", lambda _root: "")
         monkeypatch.setattr(compact, "_get_git_diff_stat", lambda *a: None)
         result = compact.build_manifest(sid)
-        assert "### Files Edited\n" in result or result.startswith("### Files Edited"), (
-            f"Expected bare '### Files Edited' header, got something else:\n{result}"
+        assert "**Edited:**\n" in result or "**Edited:**" in result, (
+            f"Expected '**Edited:**' header, got something else:\n{result}"
         )
-        assert "### Files Edited (preserve)" not in result, (
+        assert "**Edited:** (preserve)" not in result, (
             f"'(preserve)' suffix must be dropped:\n{result}"
         )
 
@@ -1354,7 +1354,7 @@ class TestManifestHeaderStrings:
         monkeypatch.setattr(compact, "_get_git_diff_stat_summary", lambda _root: "")
         monkeypatch.setattr(compact, "_get_git_diff_stat", lambda *a: None)
         result = compact.build_manifest(sid)
-        assert "Commands Run" in result, f"Commands Run section missing:\n{result}"
+        assert "**Ran:**" in result, f"Commands Run section missing:\n{result}"
         assert "(cached output)" not in result, (
             f"'(cached output)' qualifier must be dropped:\n{result}"
         )
@@ -1374,7 +1374,7 @@ class TestManifestHeaderStrings:
         monkeypatch.setattr(compact, "_get_git_diff_stat_summary", lambda _root: "")
         monkeypatch.setattr(compact, "_get_git_diff_stat", lambda *a: None)
         result = compact.build_manifest(sid)
-        assert "Web Fetches" in result, f"Web Fetches section missing:\n{result}"
+        assert "**Web:**" in result, f"Web Fetches section missing:\n{result}"
         assert "(cached body)" not in result, (
             f"'(cached body)' qualifier must be dropped:\n{result}"
         )
@@ -1459,10 +1459,10 @@ class TestSymbolRankingByRecency:
         session.mark_file_read(sid, "/proj/src/recent.py", symbol="recent_sym")
         result = compact.build_manifest(sid)
         # In Symbols Accessed section, recent.py should appear before older.py
-        symbols_section = result.split("### Symbols Accessed")[1] if "### Symbols Accessed" in result else result
+        symbols_section = result.split("**Syms:**")[1] if "**Syms:**" in result else result
         # Truncate to next section if present, so older.py listed in Key Files Read
         # doesn't fool the index check
-        symbols_section = symbols_section.split("###")[0]
+        symbols_section = symbols_section.split("**")[0]
         assert "recent.py" in symbols_section
         assert "older.py" in symbols_section
         assert symbols_section.index("recent.py") < symbols_section.index("older.py")
@@ -1680,7 +1680,7 @@ class TestBuildSealedBlock:
         session.mark_file_edited(sid, "/proj/src/compact.py")
         result = compact.build_manifest(sid)
         assert "<<MUST_PRESERVE>>" in result
-        assert "Files Edited" in result, (
+        assert "**Edited:**" in result, (
             f"Detail section should still appear alongside sealed block:\n{result}"
         )
 
@@ -2425,7 +2425,7 @@ class TestSectionBudgets:
         session.save(cache)
 
         result = compact.build_manifest(sid, max_tokens=400)
-        assert "Commands Run" in result, (
+        assert "**Ran:**" in result, (
             f"bash section missing when files section is small:\n{result}"
         )
         assert estimate_tokens(result) <= 400
@@ -2595,9 +2595,9 @@ class TestImportanceScoringInManifest:
         result = compact.build_manifest(sid)
         assert "edited_once.py" in result
         assert "read_heavy.py" in result
-        # "Files Edited" section must appear before "Key Files Read"
-        assert result.index("Files Edited") < result.index("Key Files Read"), (
-            f"'Files Edited' must precede 'Key Files Read':\n{result}"
+        # "**Edited:**" section must appear before "**Files:**"
+        assert result.index("**Edited:**") < result.index("**Files:**"), (
+            f"'**Edited:**' must precede '**Files:**':\n{result}"
         )
         # Edited file must appear before read-heavy file
         assert result.index("edited_once.py") < result.index("read_heavy.py"), (
@@ -2620,8 +2620,8 @@ class TestImportanceScoringInManifest:
         assert "newer.py" in result
 
         # Find the Key Files Read section to check ordering there
-        if "### Key Files Read" in result:
-            key_section = result.split("### Key Files Read")[1]
+        if "**Files:**" in result:
+            key_section = result.split("**Files:**")[1]
             assert key_section.index("newer.py") < key_section.index("older.py"), (
                 f"recently-read file should rank higher in Key Files Read:\n{result}"
             )
@@ -2747,7 +2747,7 @@ class TestYoungSessionOmitsBashSection:
 
         result = compact.build_manifest(sid)
 
-        assert "Commands Run" not in result, (
+        assert "**Ran:**" not in result, (
             f"bash section must be absent for young session:\n{result}"
         )
 
@@ -2794,7 +2794,7 @@ class TestYoungSessionOmitsBashSection:
 
         result = compact.build_manifest(sid)
 
-        assert "Commands Run" in result, (
+        assert "**Ran:**" in result, (
             f"bash section must be present for mature session:\n{result}"
         )
 
@@ -3027,10 +3027,10 @@ class TestGetUncommittedChanges:
 
 
 class TestUncommittedChangesManifestSection:
-    """Tests for the ### Uncommitted Changes section in the manifest."""
+    """Tests for the **Uncommitted:** section in the manifest."""
 
     def test_section_present_when_uncommitted_changes_exist(self, tmp_data_dir, monkeypatch):
-        """Manifest includes '### Uncommitted Changes' when helper returns non-empty string."""
+        """Manifest includes '**Uncommitted:**' when helper returns non-empty string."""
         sid = "uncommitted-present-test-abc"
         session.mark_file_edited(sid, "/proj/src/main.py")
         session.mark_file_read(sid, "/proj/src/main.py")
@@ -3046,13 +3046,13 @@ class TestUncommittedChangesManifestSection:
         monkeypatch.setattr(compact, "_get_session_commits", lambda *a: [])
 
         result = compact.build_manifest(sid)
-        assert "Uncommitted Changes" in result, (
-            f"Expected '### Uncommitted Changes' in manifest:\n{result}"
+        assert "**Uncommitted:**" in result, (
+            f"Expected '**Uncommitted:**' in manifest:\n{result}"
         )
         assert "main.py" in result
 
     def test_section_absent_when_no_uncommitted_changes(self, tmp_data_dir, monkeypatch):
-        """Manifest does not include '### Uncommitted Changes' when helper returns None."""
+        """Manifest does not include '**Uncommitted:**' when helper returns None."""
         sid = "uncommitted-absent-test-abc"
         session.mark_file_edited(sid, "/proj/src/utils.py")
         session.mark_file_read(sid, "/proj/src/utils.py")
@@ -3063,7 +3063,7 @@ class TestUncommittedChangesManifestSection:
         monkeypatch.setattr(compact, "_get_session_commits", lambda *a: [])
 
         result = compact.build_manifest(sid)
-        assert "Uncommitted Changes" not in result, (
+        assert "**Uncommitted:**" not in result, (
             f"Should not include section when helper returns None:\n{result}"
         )
 
@@ -3088,12 +3088,12 @@ class TestUncommittedChangesManifestSection:
 
         # build_manifest must complete without raising
         result = compact.build_manifest(sid)
-        assert "Uncommitted Changes" not in result, (
+        assert "**Uncommitted:**" not in result, (
             f"Section must be absent when subprocess fails:\n{result}"
         )
 
     def test_section_appears_before_files_edited(self, tmp_data_dir, monkeypatch):
-        """'### Uncommitted Changes' must appear before '### Files Edited' in the manifest."""
+        """'**Uncommitted:**' must appear before '**Edited:**' in the manifest."""
         sid = "uncommitted-order-test-abc"
         session.mark_file_edited(sid, "/proj/src/order.py")
         session.mark_file_read(sid, "/proj/src/order.py")
@@ -3108,14 +3108,14 @@ class TestUncommittedChangesManifestSection:
         monkeypatch.setattr(compact, "_get_session_commits", lambda *a: [])
 
         result = compact.build_manifest(sid)
-        assert "Uncommitted Changes" in result
-        assert "Files Edited" in result
+        assert "**Uncommitted:**" in result
+        assert "**Edited:**" in result
 
-        idx_uncommitted = result.index("Uncommitted Changes")
-        idx_edited = result.index("Files Edited")
+        idx_uncommitted = result.index("**Uncommitted:**")
+        idx_edited = result.index("**Edited:**")
         assert idx_uncommitted < idx_edited, (
-            f"'Uncommitted Changes' (pos {idx_uncommitted}) must precede "
-            f"'Files Edited' (pos {idx_edited})"
+            f"'**Uncommitted:**' (pos {idx_uncommitted}) must precede "
+            f"'**Edited:**' (pos {idx_edited})"
         )
 
     def test_section_shown_even_without_claude_tool_edits(self, tmp_data_dir, monkeypatch):
@@ -3134,8 +3134,8 @@ class TestUncommittedChangesManifestSection:
         monkeypatch.setattr(compact, "_get_session_commits", lambda *a: [])
 
         result = compact.build_manifest(sid)
-        assert "Uncommitted Changes" in result, (
-            f"Uncommitted Changes section must appear even with no Claude-tracked edits:\n{result}"
+        assert "**Uncommitted:**" in result, (
+            f"**Uncommitted:** section must appear even with no Claude-tracked edits:\n{result}"
         )
         assert "untracked.py" in result
 
@@ -3157,13 +3157,13 @@ class TestUncommittedChangesManifestSection:
         result = compact.build_manifest(sid)
         lines = result.splitlines()
         header_idx = next(
-            (i for i, line in enumerate(lines) if "Uncommitted Changes" in line), None
+            (i for i, line in enumerate(lines) if "**Uncommitted:**" in line), None
         )
         assert header_idx is not None
         # The line immediately after the header should be the content, indented
         content_lines = [
             line for line in lines[header_idx + 1:]
-            if line.strip() and not line.startswith("#")
+            if line.strip() and not line.startswith("**")
         ]
         for content_line in content_lines[:3]:  # Check first few content lines
             if "indent.py" in content_line or "file changed" in content_line or content_line.strip().startswith("src/"):
@@ -3243,14 +3243,14 @@ class TestEmptySectionSuppression:
 
         result = compact.build_manifest(sid)
         lines = result.splitlines()
-        # Check that "Commands Run" header does not appear when bash_history is empty
+        # Check that "**Ran:**" header does not appear when bash_history is empty
         bash_header_idx = next(
-            (i for i, line in enumerate(lines) if "Commands Run" in line), None
+            (i for i, line in enumerate(lines) if "**Ran:**" in line), None
         )
-        assert bash_header_idx is None, "Commands Run header should not appear when no bash history"
+        assert bash_header_idx is None, "**Ran:** header should not appear when no bash history"
 
     def test_grep_section_suppressed_when_no_patterns(self, tmp_data_dir, monkeypatch):
-        """Patterns Searched section header not emitted when no grep history in session."""
+        """**Grep:** section header not emitted when no grep history in session."""
         sid = "empty-grep-test-abc"
         session.mark_file_read(sid, "/proj/src/a.py")
         cache = session.load(sid)
@@ -3264,14 +3264,14 @@ class TestEmptySectionSuppression:
 
         result = compact.build_manifest(sid)
         lines = result.splitlines()
-        # Check that "Patterns Searched" header does not appear when greps is empty
+        # Check that "**Grep:**" header does not appear when greps is empty
         grep_header_idx = next(
-            (i for i, line in enumerate(lines) if "Patterns Searched" in line), None
+            (i for i, line in enumerate(lines) if "**Grep:**" in line), None
         )
-        assert grep_header_idx is None, "Patterns Searched header should not appear when no grep history"
+        assert grep_header_idx is None, "**Grep:** header should not appear when no grep history"
 
     def test_web_section_suppressed_when_no_fetches(self, tmp_data_dir, monkeypatch):
-        """Web Fetches section header not emitted when no web history in session."""
+        """**Web:** section header not emitted when no web history in session."""
         sid = "empty-web-test-abc"
         session.mark_file_read(sid, "/proj/src/a.py")
         cache = session.load(sid)
@@ -3285,11 +3285,11 @@ class TestEmptySectionSuppression:
 
         result = compact.build_manifest(sid)
         lines = result.splitlines()
-        # Check that "Web Fetches" header does not appear when web_history is empty
+        # Check that "**Web:**" header does not appear when web_history is empty
         web_header_idx = next(
-            (i for i, line in enumerate(lines) if "Web Fetches" in line), None
+            (i for i, line in enumerate(lines) if "**Web:**" in line), None
         )
-        assert web_header_idx is None, "Web Fetches header should not appear when no web history"
+        assert web_header_idx is None, "**Web:** header should not appear when no web history"
 
     def test_web_section_rendered_with_single_entry(self, tmp_data_dir):
         """A single web fetch IS rendered — one fetched URL is genuine signal."""
@@ -3304,10 +3304,10 @@ class TestEmptySectionSuppression:
         cache = session.load(sid)
 
         manifest = compact._build_manifest_from_cache(cache, sid, 800)
-        assert "Web Fetches" in manifest
+        assert "**Web:**" in manifest
 
     def test_web_section_present_when_two_domain_entries(self, tmp_data_dir):
-        """Web Fetches section emitted when two different domains produce two output lines."""
+        """**Web:** section emitted when two different domains produce two output lines."""
         import time as _time
         sid = "two-web-test-abc"
         session.mark_file_edited(sid, "/proj/app.py")
@@ -3328,8 +3328,8 @@ class TestEmptySectionSuppression:
         cache = session.load(sid)
 
         manifest = compact._build_manifest_from_cache(cache, sid, 800)
-        assert "Web Fetches" in manifest, (
-            "Web Fetches header should appear when two different-domain entries exist"
+        assert "**Web:**" in manifest, (
+            "**Web:** header should appear when two different-domain entries exist"
         )
 
 
@@ -3530,7 +3530,7 @@ class TestSessionAgeTierBoundaries:
         # Build manifest with young tier
         manifest = compact._build_manifest_from_cache(cache, sid, 400)
         # Young sessions skip bash section
-        assert "Commands Run" not in manifest, "Young sessions should not show bash section"
+        assert "**Ran:**" not in manifest, "Young sessions should not show bash section"
 
     def test_active_tier_includes_bash_section(self, tmp_data_dir):
         """Active tier sessions should include bash section."""
@@ -3691,7 +3691,7 @@ class TestManifestRenderingEdgeCases:
         manifest = compact._build_manifest_from_cache(cache, sid, 400)
 
         # Bash section should not appear
-        assert "Commands Run" not in manifest
+        assert "**Ran:**" not in manifest
 
     def test_render_with_no_web_history(self, tmp_data_dir):
         """Manifest should skip web section when no fetches exist."""
@@ -3703,7 +3703,7 @@ class TestManifestRenderingEdgeCases:
         manifest = compact._build_manifest_from_cache(cache, sid, 400)
 
         # Web section should not appear
-        assert "Web Fetches" not in manifest
+        assert "**Web:**" not in manifest
 
     def test_render_with_no_symbols_accessed(self, tmp_data_dir):
         """Manifest should skip symbols section when no symbols read."""
@@ -3715,7 +3715,7 @@ class TestManifestRenderingEdgeCases:
         manifest = compact._build_manifest_from_cache(cache, sid, 400)
 
         # Symbols section should not appear
-        assert "Symbols Accessed" not in manifest
+        assert "**Syms:**" not in manifest
 
     def test_render_all_sections_empty(self, tmp_data_dir):
         """Manifest should return empty string when all activity is absent."""
@@ -4094,7 +4094,7 @@ class TestAllSectionsSimultaneous:
         sid = "all-sections-edited"
         self._build_full_session(sid)
         result = compact.build_manifest(sid, max_tokens=800)
-        assert "Files Edited" in result or "compact.py" in result
+        assert "**Edited:**" in result or "compact.py" in result
 
     def test_all_sections_glob_present_in_mature_session(self, tmp_data_dir):
         """Directory Scans section must appear for a mature session with glob history."""
@@ -4885,7 +4885,7 @@ class TestRenderTasksSection:
             {"id": "3", "subject": "Done already", "status": "completed"},
         ]
         lines = compact._render_tasks_section(tasks)
-        assert lines[0] == "### TODOs"
+        assert lines[0] == "**TODOs:**"
         assert any("Fix the bug" in ln for ln in lines)
         assert any("Write tests" in ln for ln in lines)
         # Completed task must not appear
@@ -4950,7 +4950,7 @@ class TestRenderTasksSection:
     def test_header_is_first_line(self):
         tasks = [{"id": "1", "subject": "Do something", "status": "pending"}]
         lines = compact._render_tasks_section(tasks)
-        assert lines[0] == "### TODOs"
+        assert lines[0] == "**TODOs:**"
 
 
 class TestLoadTaskList:
@@ -5042,7 +5042,7 @@ class TestManifestTODOs:
         _populate_session(sid)
         result = compact.build_manifest(sid)
 
-        assert "### TODOs" in result
+        assert "**TODOs:**" in result
         assert "Alpha task" in result
         assert "Beta task" in result
         assert "Gamma task" in result
@@ -5056,7 +5056,7 @@ class TestManifestTODOs:
         _populate_session(sid)
         result = compact.build_manifest(sid)
 
-        assert "### TODOs" not in result
+        assert "**TODOs:**" not in result
 
     def test_manifest_no_todos_when_all_completed(self, tmp_data_dir, monkeypatch, tmp_path):
         """Completed-only task list emits no ### TODOs section."""
@@ -5076,7 +5076,7 @@ class TestManifestTODOs:
         _populate_session(sid)
         result = compact.build_manifest(sid)
 
-        assert "### TODOs" not in result
+        assert "**TODOs:**" not in result
 
     def test_manifest_todos_capped_at_5_with_overflow(self, tmp_data_dir, monkeypatch, tmp_path):
         """10 pending tasks → max 5 shown + overflow note."""
@@ -5097,7 +5097,7 @@ class TestManifestTODOs:
         _populate_session(sid)
         result = compact.build_manifest(sid)
 
-        assert "### TODOs" in result
+        assert "**TODOs:**" in result
         assert "+5 more" in result
 
 
@@ -5116,7 +5116,7 @@ class TestMinLinesSuppressionRegression:
             web_fetches={"https://docs.example.com/api": 12_000},
         )
         m = compact.build_manifest(sid, max_tokens=400)
-        assert "Web Fetches" in m
+        assert "**Web:**" in m
 
     def test_two_web_fetches_section_appears(self, tmp_data_dir, make_session):
         """Two Web Fetches from different domains render normally."""
@@ -5131,7 +5131,7 @@ class TestMinLinesSuppressionRegression:
             },
         )
         m = compact.build_manifest(sid, max_tokens=600)
-        assert "Web Fetches" in m
+        assert "**Web:**" in m
         assert "docs.example.com" in m
 
 
@@ -5213,7 +5213,7 @@ class TestWhatWorkedSection:
         now = _time.time()
         entries = [self._make_bash_entry("pytest tests/unit/", 0, now - 180, "abc999")]
         lines = compact._render_what_worked_section(entries, now)
-        assert lines[0] == "### What Worked"
+        assert lines[0] == "**Passed:**"
         assert len(lines) == 2
         assert "✅" in lines[1]
         assert "pytest tests/unit/" in lines[1]
@@ -5258,7 +5258,7 @@ class TestWhatWorkedSection:
         cache.created_ts = _time.time() - 3600  # mature session
         session.save(cache)
         manifest = compact._build_manifest_from_cache(cache, sid, 800)
-        assert "What Worked" in manifest
+        assert "**Passed:**" in manifest
         assert "pytest tests/unit/" in manifest
 
     def test_what_worked_absent_when_only_failures(self, tmp_data_dir):
@@ -5285,7 +5285,7 @@ class TestWhatWorkedSection:
         cache.created_ts = _time.time() - 3600
         session.save(cache)
         manifest = compact._build_manifest_from_cache(cache, sid, 800)
-        assert "What Worked" not in manifest
+        assert "**Passed:**" not in manifest
 
     def test_various_test_runner_prefixes(self):
         """All supported test runner prefixes are recognised as test commands."""
@@ -5370,7 +5370,7 @@ class TestActivityFloorSuppression:
             session.mark_file_edited(sid, f"/proj/src/file{i}.py")
         result = compact.build_manifest_adaptive(sid)
         assert "Token-Goat Session Manifest" in result
-        assert "Files Edited" in result
+        assert "**Edited:**" in result
 
 
 # ---------------------------------------------------------------------------
@@ -5550,7 +5550,7 @@ class TestInlineDiffForTop2Edited:
         session.save(cache)
         manifest = compact._build_manifest_from_cache(cache, sid, 800)
         assert "inline diff" not in manifest
-        assert "Files Edited" in manifest
+        assert "**Edited:**" in manifest
 
     def test_total_inline_cap_limits_second_file(self, tmp_data_dir, monkeypatch):
         """When first file returns None from helper, second file is still attempted."""
@@ -5575,7 +5575,7 @@ class TestInlineDiffForTop2Edited:
         cache.cwd = "/proj"
         session.save(cache)
         manifest = compact._build_manifest_from_cache(cache, sid, 800)
-        assert "Files Edited" in manifest
+        assert "**Edited:**" in manifest
         assert "inline diff" in manifest  # bar.py inlined
         assert "bar.py" in manifest
 
@@ -5631,7 +5631,7 @@ class TestSingleFileInlineDiff:
         session.save(cache)
         manifest = compact._build_manifest_from_cache(cache, sid, 800)
         assert "inline diff" not in manifest
-        assert "Files Edited" in manifest
+        assert "**Edited:**" in manifest
 
     def test_two_files_skips_single_file_path(self, tmp_data_dir, monkeypatch):
         """Two edited files → _get_whole_repo_diff never called (single-file path skipped)."""
@@ -5659,7 +5659,7 @@ class TestSingleFileInlineDiff:
         session.save(cache)
         manifest = compact._build_manifest_from_cache(cache, sid, 800)
         assert whole_diff_called["n"] == 0
-        assert "Files Edited" in manifest
+        assert "**Edited:**" in manifest
 
 
 # ---------------------------------------------------------------------------
@@ -5817,3 +5817,326 @@ class TestNonGitShortCircuit:
         result = compact._get_git_diff_stat_summary(str(tmp_path))
         assert result != ""
         assert "bar.py" in result
+
+
+# ---------------------------------------------------------------------------
+# Item 3 — Bold inline labels replace ### H3 section headers
+# ---------------------------------------------------------------------------
+
+
+class TestBoldLabels:
+    """Manifest sections use bold inline labels (**X:**) instead of ### H3 headers."""
+
+    def test_edited_section_uses_bold_label(self, tmp_data_dir):
+        sid = "bold-edited-abc"
+        session.mark_file_edited(sid, "src/foo.py")
+        result = compact.build_manifest(sid)
+        assert "**Edited:**" in result
+        assert "### Files Edited" not in result
+
+    def test_syms_section_uses_bold_label(self, tmp_data_dir):
+        sid = "bold-syms-abc"
+        session.mark_file_read(sid, "src/foo.py", symbol="my_func")
+        session.mark_file_edited(sid, "src/foo.py")
+        result = compact.build_manifest(sid)
+        assert "**Syms:**" in result
+        assert "### Symbols Accessed" not in result
+
+    def test_ran_section_uses_bold_label(self, tmp_data_dir, make_session):
+        sid = "bold-ran-abc"
+        make_session(sid, age_seconds=7200, edits=1, bash_runs={"pytest tests/": (12_000, 0)})
+        result = compact.build_manifest(sid)
+        assert "**Ran:**" in result
+        assert "### Commands Run" not in result
+
+    def test_grep_section_uses_bold_label(self, tmp_data_dir):
+        sid = "bold-grep-abc"
+        session.mark_file_edited(sid, "src/foo.py")
+        session.mark_grep(sid, "my_pattern", "/proj/src")
+        session.mark_grep(sid, "another_pattern", "/proj/src")
+        result = compact.build_manifest(sid)
+        assert "**Grep:**" in result
+        assert "### Patterns Searched" not in result
+
+    def test_web_section_uses_bold_label(self, tmp_data_dir, make_session):
+        sid = "bold-web-abc"
+        make_session(sid, age_seconds=7200, edits=1,
+                     web_fetches={"https://docs.example.com/api": 12_000})
+        result = compact.build_manifest(sid)
+        assert "**Web:**" in result
+        assert "### Web Fetches" not in result
+
+    def test_files_section_uses_bold_label(self, tmp_data_dir):
+        sid = "bold-files-abc"
+        session.mark_file_edited(sid, "src/foo.py")
+        session.mark_file_read(sid, "src/bar.py", offset=0, limit=50)
+        result = compact.build_manifest(sid)
+        assert "**Files:**" in result
+        assert "### Key Files Read" not in result
+
+    def test_blocked_section_uses_bold_label(self, tmp_data_dir, make_session):
+        sid = "bold-blocked-abc"
+        make_session(sid, age_seconds=7200, edits=1,
+                     bash_runs={"pytest tests/": (12_000, 1)})
+        result = compact.build_manifest(sid)
+        assert "**Blocked:**" in result
+        assert "### Current Blockers" not in result
+
+    def test_no_h3_headers_in_manifest(self, tmp_data_dir, make_session):
+        """No ### H3 section headers (other than MUST_PRESERVE and the top-level ##) appear."""
+        sid = "bold-no-h3-abc"
+        make_session(sid, age_seconds=7200, edits=1,
+                     bash_runs={"pytest tests/": (12_000, 0)})
+        session.mark_file_read(sid, "src/foo.py", offset=0, limit=50)
+        result = compact.build_manifest(sid)
+        h3_lines = [ln for ln in result.splitlines() if ln.startswith("### ")]
+        assert h3_lines == [], f"unexpected ### headers: {h3_lines}"
+
+    def test_skills_section_uses_bold_label(self, tmp_data_dir):
+        """**Skills:** label is emitted when a skill is recorded."""
+        from token_goat import skill_cache
+        sid = "bold-skills-abc"
+        session.mark_file_edited(sid, "src/foo.py")
+        body = "skill body content " * 20
+        meta = skill_cache.store_output(sid, "myskill", body)
+        assert meta is not None
+        skill_cache.write_sidecar(meta)
+        session.mark_skill_loaded(sid, meta.skill_name, meta.output_id, meta.content_sha,
+                                  meta.body_bytes, meta.truncated)
+        result = compact.build_manifest(sid, max_tokens=600)
+        assert "**Skills:**" in result
+        assert "### Active Skills" not in result
+
+
+# ---------------------------------------------------------------------------
+# Item 11 — Order-preserving symbol dedup with (+N dupes removed) annotation
+# ---------------------------------------------------------------------------
+
+
+class TestSymbolDedup:
+    """Duplicate symbols are removed order-preservingly; annotation appears when N>=3."""
+
+    def test_dedup_removes_duplicates(self, tmp_data_dir):
+        sid = "dedup-basic-abc"
+        # Read the same symbol 4 times — should appear once
+        for _ in range(4):
+            session.mark_file_read(sid, "src/foo.py", symbol="my_func")
+        session.mark_file_edited(sid, "src/foo.py")
+        result = compact.build_manifest(sid)
+        # my_func should appear exactly once in the symbols section
+        assert result.count("my_func") <= 2  # once in Syms, possibly once in Edited
+
+    def test_dedup_preserves_order(self, tmp_data_dir):
+        sid = "dedup-order-abc"
+        session.mark_file_read(sid, "src/foo.py", symbol="alpha_func")
+        session.mark_file_read(sid, "src/foo.py", symbol="beta_func")
+        session.mark_file_read(sid, "src/foo.py", symbol="alpha_func")  # dupe
+        session.mark_file_read(sid, "src/foo.py", symbol="gamma_func")
+        session.mark_file_edited(sid, "src/foo.py")
+        result = compact.build_manifest(sid)
+        # alpha before beta before gamma in the syms line
+        if "alpha_func" in result and "beta_func" in result and "gamma_func" in result:
+            alpha_pos = result.index("alpha_func")
+            beta_pos = result.index("beta_func")
+            gamma_pos = result.index("gamma_func")
+            assert alpha_pos < beta_pos < gamma_pos
+
+    def test_dupe_annotation_appears_when_three_or_more_removed(self, tmp_data_dir):
+        sid = "dedup-annotate-abc"
+        # Add 4 reads of same symbol → 3 dupes removed
+        session.mark_file_read(sid, "src/foo.py", symbol="dup_func")
+        session.mark_file_read(sid, "src/foo.py", symbol="dup_func")
+        session.mark_file_read(sid, "src/foo.py", symbol="dup_func")
+        session.mark_file_read(sid, "src/foo.py", symbol="dup_func")
+        session.mark_file_edited(sid, "src/foo.py")
+        result = compact.build_manifest(sid)
+        assert "dupes removed" in result
+
+    def test_dupe_annotation_absent_when_fewer_than_three_removed(self, tmp_data_dir):
+        sid = "dedup-no-annotate-abc"
+        # 2 reads → 1 dupe removed (< 3 threshold)
+        session.mark_file_read(sid, "src/foo.py", symbol="unique_func")
+        session.mark_file_read(sid, "src/foo.py", symbol="unique_func")
+        session.mark_file_edited(sid, "src/foo.py")
+        result = compact.build_manifest(sid)
+        assert "dupes removed" not in result
+
+    def test_no_dupes_no_annotation(self, tmp_data_dir):
+        sid = "dedup-clean-abc"
+        session.mark_file_read(sid, "src/foo.py", symbol="func_a")
+        session.mark_file_read(sid, "src/foo.py", symbol="func_b")
+        session.mark_file_read(sid, "src/foo.py", symbol="func_c")
+        session.mark_file_edited(sid, "src/foo.py")
+        result = compact.build_manifest(sid)
+        assert "dupes removed" not in result
+
+
+# ---------------------------------------------------------------------------
+# Item 13 — Skip **Pending:** when nearly all files have inline diffs
+# ---------------------------------------------------------------------------
+
+
+class TestSkipPendingChangesWhenInline:
+    """**Pending:** is suppressed when inline diffs cover all (or all-but-one) edited files."""
+
+    def _make_one_edit_session(self, sid: str) -> None:
+        session.mark_file_edited(sid, "src/only.py")
+        session.mark_file_read(sid, "src/only.py", offset=0, limit=50)
+
+    def test_pending_suppressed_when_single_file_inlined(self, tmp_data_dir, monkeypatch):
+        """Single-file session with inline diff → **Pending:** suppressed."""
+        sid = "skip-pending-single-abc"
+        self._make_one_edit_session(sid)
+        small = "--- a/src/only.py\n+++ b/src/only.py\n@@ -1 +1 @@\n-x=1\n+x=2"
+        monkeypatch.setattr(compact, "_get_whole_repo_diff", lambda cwd: small)
+        monkeypatch.setattr(compact, "_get_inline_diff_for_file", lambda path, cwd: None)
+        monkeypatch.setattr(compact, "_get_git_diff_stat_summary", lambda cwd: "1 file changed")
+        monkeypatch.setattr(compact, "_get_git_diff_stat", lambda paths, cwd: None)
+        monkeypatch.setattr(compact, "_get_session_commits", lambda cwd, ts: [])
+        cache = session.load(sid)
+        cache.cwd = "/proj"
+        session.save(cache)
+        manifest = compact._build_manifest_from_cache(cache, sid, 800)
+        assert "**Pending:**" not in manifest
+
+    def test_pending_present_when_no_inline_diff(self, tmp_data_dir, monkeypatch):
+        """No inline diff → **Pending:** appears when there are uncommitted changes."""
+        sid = "skip-pending-no-inline-abc"
+        self._make_one_edit_session(sid)
+        monkeypatch.setattr(compact, "_get_whole_repo_diff", lambda cwd: None)
+        monkeypatch.setattr(compact, "_get_inline_diff_for_file", lambda path, cwd: None)
+        monkeypatch.setattr(compact, "_get_git_diff_stat_summary", lambda cwd: "1 file changed")
+        monkeypatch.setattr(compact, "_get_git_diff_stat", lambda paths, cwd: "src/only.py | 1 +")
+        monkeypatch.setattr(compact, "_get_session_commits", lambda cwd, ts: [])
+        cache = session.load(sid)
+        cache.cwd = "/proj"
+        session.save(cache)
+        manifest = compact._build_manifest_from_cache(cache, sid, 800)
+        assert "**Pending:**" in manifest
+
+    def test_pending_suppressed_when_multi_file_all_inlined(self, tmp_data_dir, monkeypatch):
+        """Two edited files, both inlined → **Pending:** suppressed."""
+        sid = "skip-pending-multi-all-abc"
+        session.mark_file_edited(sid, "src/a.py")
+        session.mark_file_edited(sid, "src/b.py")
+        session.mark_file_read(sid, "src/a.py", offset=0, limit=50)
+        session.mark_file_read(sid, "src/b.py", offset=0, limit=50)
+        small_a = "--- a/src/a.py\n+++ b/src/a.py\n@@ -1 +1 @@\n-x\n+y"
+        small_b = "--- a/src/b.py\n+++ b/src/b.py\n@@ -1 +1 @@\n-p\n+q"
+
+        def _fake_inline(path: str, cwd: str):
+            if "a.py" in path:
+                return small_a
+            return small_b
+
+        monkeypatch.setattr(compact, "_get_inline_diff_for_file", _fake_inline)
+        monkeypatch.setattr(compact, "_get_whole_repo_diff", lambda cwd: None)
+        monkeypatch.setattr(compact, "_get_git_diff_stat_summary", lambda cwd: "2 files changed")
+        monkeypatch.setattr(compact, "_get_git_diff_stat", lambda paths, cwd: None)
+        monkeypatch.setattr(compact, "_get_session_commits", lambda cwd, ts: [])
+        cache = session.load(sid)
+        cache.cwd = "/proj"
+        session.save(cache)
+        manifest = compact._build_manifest_from_cache(cache, sid, 800)
+        assert "**Pending:**" not in manifest
+
+
+# ---------------------------------------------------------------------------
+# Item 21 — StringIO write-buffer for manifest assembly
+# ---------------------------------------------------------------------------
+
+
+class TestStringIOAssembly:
+    """Manifest text assembled via io.StringIO produces identical output to join approach."""
+
+    def test_manifest_has_no_leading_trailing_whitespace(self, tmp_data_dir):
+        sid = "sio-trim-abc"
+        session.mark_file_edited(sid, "src/foo.py")
+        result = compact.build_manifest(sid)
+        if result:
+            assert result == result.strip()
+
+    def test_manifest_sections_separated_by_single_newline(self, tmp_data_dir, make_session):
+        sid = "sio-newline-abc"
+        make_session(sid, age_seconds=7200, edits=1,
+                     bash_runs={"pytest tests/": (12_000, 0)})
+        result = compact.build_manifest(sid)
+        # No double-blank lines should appear (StringIO assembly joins with \n)
+        assert "\n\n\n" not in result
+
+    def test_manifest_nonempty_for_active_session(self, tmp_data_dir):
+        sid = "sio-nonempty-abc"
+        session.mark_file_edited(sid, "src/foo.py")
+        result = compact.build_manifest(sid)
+        assert isinstance(result, str)
+        assert len(result) > 0
+
+    def test_manifest_empty_for_empty_session(self, tmp_data_dir):
+        sid = "sio-empty-abc"
+        result = compact.build_manifest(sid)
+        assert result == ""
+
+
+# ---------------------------------------------------------------------------
+# Item 23 — Dynamic max_files_read based on edited file count
+# ---------------------------------------------------------------------------
+
+
+class TestDynamicMaxFilesRead:
+    """max_key_files shrinks when many files are edited (inverted-pyramid priority)."""
+
+    def test_ten_or_more_edits_limits_key_files_to_four(self, tmp_data_dir):
+        sid = "dynmax-10-abc"
+        # 10 edited files → dynamic max = 4
+        for i in range(10):
+            session.mark_file_edited(sid, f"src/edit_{i:02d}.py")
+        # Add many plain reads so the Files section would normally be large
+        for i in range(12):
+            session.mark_file_read(sid, f"src/read_{i:02d}.py", offset=0, limit=50)
+        result = compact.build_manifest(sid, max_tokens=2000)
+        # Count entries under **Files:**
+        if "**Files:**" in result:
+            files_section = result.split("**Files:**")[1].split("**")[0]
+            file_entries = [ln for ln in files_section.splitlines() if ln.strip().startswith("-")]
+            assert len(file_entries) <= 6  # 4 + 2 mature bonus max
+
+    def test_five_to_nine_edits_limits_key_files_to_six(self, tmp_data_dir):
+        sid = "dynmax-5-abc"
+        # 7 edited files → dynamic max = 6
+        for i in range(7):
+            session.mark_file_edited(sid, f"src/edit_{i:02d}.py")
+        for i in range(12):
+            session.mark_file_read(sid, f"src/read_{i:02d}.py", offset=0, limit=50)
+        result = compact.build_manifest(sid, max_tokens=2000)
+        if "**Files:**" in result:
+            files_section = result.split("**Files:**")[1].split("**")[0]
+            file_entries = [ln for ln in files_section.splitlines() if ln.strip().startswith("-")]
+            assert len(file_entries) <= 8  # 6 + 2 mature bonus max
+
+    def test_fewer_than_five_edits_uses_default_max(self, tmp_data_dir):
+        sid = "dynmax-few-abc"
+        # 2 edited files → dynamic max = _MAX_FILES_READ (10)
+        for i in range(2):
+            session.mark_file_edited(sid, f"src/edit_{i:02d}.py")
+        for i in range(15):
+            session.mark_file_read(sid, f"src/read_{i:02d}.py", offset=0, limit=50)
+        result = compact.build_manifest(sid, max_tokens=3000)
+        if "**Files:**" in result:
+            files_section = result.split("**Files:**")[1].split("**")[0]
+            file_entries = [ln for ln in files_section.splitlines() if ln.strip().startswith("-")]
+            # With default max (10) + mature bonus (2), up to 12 entries are allowed
+            assert len(file_entries) <= 12
+
+    def test_dynamic_max_constant_boundary_ten(self, tmp_data_dir):
+        """Exactly 10 edited files hits the >=10 branch (max=4), not the >=5 branch (max=6)."""
+        sid = "dynmax-boundary-abc"
+        for i in range(10):
+            session.mark_file_edited(sid, f"src/e_{i:02d}.py")
+        for i in range(15):
+            session.mark_file_read(sid, f"src/r_{i:02d}.py", offset=0, limit=50)
+        result = compact.build_manifest(sid, max_tokens=2000)
+        if "**Files:**" in result:
+            files_section = result.split("**Files:**")[1].split("**")[0]
+            file_entries = [ln for ln in files_section.splitlines() if ln.strip().startswith("-")]
+            # >=10 path: max=4, mature bonus=+2 → max 6
+            assert len(file_entries) <= 6

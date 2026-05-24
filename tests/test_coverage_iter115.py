@@ -441,7 +441,7 @@ class TestCompactHeapqNlargest:
 
         sid, cache = self._make_session_with_many_files(tmp_data_dir, count=20)
         manifest, _ = _render(cache, sid, max_tokens=5000)
-        key_files_section = manifest.split("### Key Files Read")[-1] if "### Key Files Read" in manifest else ""
+        key_files_section = manifest.split("**Files:**")[-1] if "**Files:**" in manifest else ""
         # Count how many "file_NNN" entries are in the Key Files section
         import re
         entries = re.findall(r"file_\d{3}", key_files_section)
@@ -453,7 +453,7 @@ class TestCompactHeapqNlargest:
 
         sid, cache = self._make_session_with_many_files(tmp_data_dir, count=_MAX_FILES_READ)
         manifest, _ = _render(cache, sid, max_tokens=2000)
-        assert "Key Files Read" in manifest
+        assert "**Files:**" in manifest
 
 
 # ---------------------------------------------------------------------------
