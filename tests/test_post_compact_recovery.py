@@ -332,6 +332,95 @@ class TestRecoverySkillChecklist:
         assert hint.count("criterion item") < 50, "DoD section not capped in recovery hint"
 
 
+class TestSkillDedup:
+    """Recovery hint deduplicates skill bodies by content_sha across loads."""
+
+    def test_same_sha_three_loads_shows_count_badge(self, tmp_data_dir):
+        """3 loads of same skill body → ONE entry with ×3 badge, not 3 lines."""
+        sid = "dedup-same-sha-1"
+        body = "# ralph\n\n## Overview\n\nJust an overview.\n" + ("x" * 300)
+        # Store once — same sha means same output_id (idempotent).
+        meta = skill_cache.store_output(sid, "ralph", body)
+        assert meta is not None
+        # Simulate 3 loads: mark_skill_loaded increments run_count each time.
+        for _ in range(3):
+            session.mark_skill_loaded(
+                sid, meta.skill_name, meta.output_id, meta.content_sha,
+                meta.body_bytes, meta.truncated,
+            )
+        hint = hooks_session._build_recovery_hint(sid)
+        assert hint is not None
+        # ×3 badge must appear exactly once.
+        assert "×3" in hint, f"Expected ×3 count badge:\n{hint}"
+        # Should not appear as three separate ralph lines.
+        ralph_lines = [ln for ln in hint.splitlines() if "ralph" in ln and ln.strip().startswith("-")]
+        assert len(ralph_lines) == 1, f"Expected 1 ralph line, got {len(ralph_lines)}:\n{hint}"
+
+    def test_different_sha_shows_both_with_sha8_suffix(self, tmp_data_dir):
+        """2 loads of same skill with different sha → BOTH listed with sha[:8] suffix."""
+        sid = "dedup-diff-sha-1"
+        body_v1 = "# ralph\n\n## Overview\n\nVersion 1 body.\n" + ("a" * 300)
+        body_v2 = "# ralph\n\n## Overview\n\nVersion 2 body.\n" + ("b" * 300)
+        meta1 = skill_cache.store_output(sid, "ralph", body_v1)
+        meta2 = skill_cache.store_output(sid, "ralph", body_v2)
+        assert meta1 is not None
+        assert meta2 is not None
+        assert meta1.content_sha != meta2.content_sha
+
+        # Simulate v1 load then v2 load — session keeps latest (meta2).
+        session.mark_skill_loaded(sid, "ralph", meta1.output_id, meta1.content_sha, meta1.body_bytes, meta1.truncated)
+        session.mark_skill_loaded(sid, "ralph", meta2.output_id, meta2.content_sha, meta2.body_bytes, meta2.truncated)
+
+        hint = hooks_session._build_recovery_hint(sid)
+        assert hint is not None
+        # Both sha8 prefixes must appear.
+        assert meta1.content_sha[:8] in hint, f"sha8 of v1 missing:\n{hint}"
+        assert meta2.content_sha[:8] in hint, f"sha8 of v2 missing:\n{hint}"
+        # Both should be listed as ralph entries.
+        ralph_lines = [ln for ln in hint.splitlines() if "ralph" in ln and ln.strip().startswith("-")]
+        assert len(ralph_lines) == 2, f"Expected 2 ralph lines (one per sha), got {len(ralph_lines)}:\n{hint}"
+
+    def test_single_load_no_count_badge(self, tmp_data_dir):
+        """1 load → no ×N suffix in the hint."""
+        sid = "dedup-single-1"
+        body = "# improve\n\n## Overview\n\nContent.\n" + ("y" * 300)
+        meta = skill_cache.store_output(sid, "improve", body)
+        assert meta is not None
+        session.mark_skill_loaded(sid, meta.skill_name, meta.output_id, meta.content_sha, meta.body_bytes, meta.truncated)
+        hint = hooks_session._build_recovery_hint(sid)
+        assert hint is not None
+        assert "×" not in hint, f"Unexpected ×N badge for single load:\n{hint}"
+        assert "improve" in hint
+
+    def test_mixed_two_skills_one_dup_one_single(self, tmp_data_dir):
+        """2 skills: ralph loaded 2× (same sha), improve loaded 1× → 2 entries total."""
+        sid = "dedup-mixed-1"
+        body_r = "# ralph\n\n## Overview\n\nRalph body.\n" + ("r" * 300)
+        body_i = "# improve\n\n## Overview\n\nImprove body.\n" + ("i" * 300)
+        meta_r = skill_cache.store_output(sid, "ralph", body_r)
+        meta_i = skill_cache.store_output(sid, "improve", body_i)
+        assert meta_r is not None and meta_i is not None
+
+        # ralph loaded twice (same sha).
+        session.mark_skill_loaded(sid, "ralph", meta_r.output_id, meta_r.content_sha, meta_r.body_bytes, meta_r.truncated)
+        session.mark_skill_loaded(sid, "ralph", meta_r.output_id, meta_r.content_sha, meta_r.body_bytes, meta_r.truncated)
+        # improve loaded once.
+        session.mark_skill_loaded(sid, "improve", meta_i.output_id, meta_i.content_sha, meta_i.body_bytes, meta_i.truncated)
+
+        hint = hooks_session._build_recovery_hint(sid)
+        assert hint is not None
+        # ralph must show ×2; improve must appear without badge.
+        assert "ralph" in hint
+        assert "improve" in hint
+        ralph_lines = [ln for ln in hint.splitlines() if "ralph" in ln and ln.strip().startswith("-")]
+        improve_lines = [ln for ln in hint.splitlines() if "improve" in ln and ln.strip().startswith("-")]
+        assert len(ralph_lines) == 1, f"Expected 1 ralph line, got {len(ralph_lines)}:\n{hint}"
+        assert len(improve_lines) == 1, f"Expected 1 improve line, got {len(improve_lines)}:\n{hint}"
+        # ralph must have ×2 badge somewhere on its line or nearby.
+        ralph_block = "\n".join(ralph_lines)
+        assert "×2" in ralph_block, f"×2 badge missing from ralph block:\n{hint}"
+
+
 class TestRecoveryStatAccounting:
     """compact_recovery must record its injection overhead like sibling hint kinds.
 
