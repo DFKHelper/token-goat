@@ -61,14 +61,21 @@ _LOG = logging.getLogger("token_goat.hints")
 _MAX_HINT_PATH_LEN = 300
 
 
-def _hint_fingerprint(hint_text: str) -> str:
-    """Return a stable SHA256 fingerprint (first 12 hex chars) of hint text.
+def _hint_fingerprint(hint_text: str, path: str = "") -> str:
+    """Return a stable SHA256 fingerprint (first 12 hex chars) of hint text + path.
+
+    The fingerprint includes the file path so that two different files that
+    produce identical hint text (e.g. a short "loop?" nudge) are not incorrectly
+    treated as duplicates.  Passing ``path`` is optional for backwards compatibility
+    with callers that have no file context, but all Read/Grep hook call sites
+    should pass it.
 
     Used to suppress duplicate hints within the same session.  The 12-char
     prefix is a balance between collision risk (negligible at this length)
     and token overhead in session JSON (fingerprints stored in hints_seen set).
     """
-    digest = hashlib.sha256(hint_text.encode("utf-8")).hexdigest()
+    key = f"{path}|{hint_text}" if path else hint_text
+    digest = hashlib.sha256(key.encode("utf-8")).hexdigest()
     return digest[:12]
 
 

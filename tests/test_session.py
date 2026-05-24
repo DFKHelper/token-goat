@@ -816,6 +816,61 @@ class TestHintsSeenCap:
         assert len(reloaded.hints_seen) == 10
 
 
+class TestHintFingerprintIncludesPath:
+    """Fingerprint dedup is per-path: same text on different files both fire."""
+
+    def test_same_text_different_paths_both_fire(self, tmp_data_dir):
+        """Two files that generate identical hint text must NOT suppress each other."""
+        from token_goat.hints import _hint_fingerprint
+
+        hint_text = "Use token-goat read instead of reading the full file."
+        fp_a = _hint_fingerprint(hint_text, path="/proj/file_a.py")
+        fp_b = _hint_fingerprint(hint_text, path="/proj/file_b.py")
+
+        assert fp_a != fp_b, (
+            "Fingerprints for the same hint text on different paths must differ "
+            "so the second hint is not falsely suppressed."
+        )
+
+    def test_same_text_same_path_deduped(self, tmp_data_dir):
+        """Same hint text + same path produces identical fingerprint (dedup still works)."""
+        from token_goat.hints import _hint_fingerprint
+
+        hint_text = "Use token-goat read instead of reading the full file."
+        path = "/proj/file_a.py"
+        assert _hint_fingerprint(hint_text, path=path) == _hint_fingerprint(hint_text, path=path)
+
+    def test_session_dedup_respects_path(self, tmp_data_dir):
+        """mark_hint_seen + has_hint_fingerprint correctly dedup per (path, text) pair."""
+        from token_goat.hints import _hint_fingerprint
+
+        sid = "hint_fp_path_1"
+        cache = session.load(sid)
+
+        hint_text = "loop hint"
+        fp_a = _hint_fingerprint(hint_text, path="/proj/a.py")
+        fp_b = _hint_fingerprint(hint_text, path="/proj/b.py")
+
+        # Initially neither is seen.
+        assert not cache.has_hint_fingerprint(fp_a)
+        assert not cache.has_hint_fingerprint(fp_b)
+
+        # Mark only file_a as seen.
+        cache.mark_hint_seen(fp_a)
+
+        # file_a is deduped; file_b is still allowed through.
+        assert cache.has_hint_fingerprint(fp_a)
+        assert not cache.has_hint_fingerprint(fp_b)
+
+    def test_no_path_fallback_still_works(self, tmp_data_dir):
+        """Calling _hint_fingerprint without path is still valid (backwards compat)."""
+        from token_goat.hints import _hint_fingerprint
+
+        fp = _hint_fingerprint("some hint text")
+        assert len(fp) == 12
+        assert fp == _hint_fingerprint("some hint text")
+
+
 class TestBashDedupEmittedIds:
     """Round-trip and migration tests for bash_dedup_emitted_ids."""
 
