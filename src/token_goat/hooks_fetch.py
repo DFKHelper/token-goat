@@ -28,8 +28,6 @@ from .hooks_common import (
     get_session_context,
     get_tool_input,
     is_real_int,
-    pre_tool_use_with_context,
-    record_hint_stat_pair,
     sanitize_log_str,
 )
 from .hooks_common import (
@@ -145,29 +143,18 @@ def _handle_web_dedup(payload: HookPayload, url: str) -> HookResponse | None:
     Returns ``None`` to let the hook continue to its existing image-redirect
     path or pass through unchanged.
     """
-    from . import session  # noqa: PLC0415
     from .hints import build_web_dedup_hint  # noqa: PLC0415
+    from .hooks_common import run_dedup_hint  # noqa: PLC0415
 
-    session_id, _cwd = get_session_context(payload)
-    if not session_id:
-        return None
-
-    try:
-        cache = session.load(session_id)
-    except (OSError, ValueError):
-        return None
-
-    hint = build_web_dedup_hint(
-        session_id=session_id, url=url, cache=cache,
+    return run_dedup_hint(
+        payload,
+        builder=lambda sid, cache: build_web_dedup_hint(
+            session_id=sid, url=url, cache=cache,
+        ),
+        stat_kind="web_dedup_hint",
+        detail=sanitize_log_str(url, max_len=200),
+        log_label="pre-fetch",
     )
-    if hint is None:
-        return None
-
-    record_hint_stat_pair("web_dedup_hint", hint, sanitize_log_str(url, max_len=200))
-    _LOG.info(
-        "pre-fetch: web-dedup hint injected (tokens_saved=%d)", hint.tokens_saved,
-    )
-    return pre_tool_use_with_context(str(hint))
 
 
 def pre_fetch(payload: HookPayload) -> HookResponse:

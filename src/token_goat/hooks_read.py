@@ -581,12 +581,8 @@ def _handle_grep_dedup(payload: HookPayload) -> HookResponse | None:
     hit is available — we never deny a Grep call, only suggest the agent
     reuse the prior result.
     """
-    from . import session  # noqa: PLC0415
     from .hints import build_grep_dedup_hint  # noqa: PLC0415
-
-    session_id, _cwd = get_session_context(payload)
-    if not session_id:
-        return None
+    from .hooks_common import run_dedup_hint  # noqa: PLC0415
 
     tool_input = get_tool_input(payload)
     pattern = tool_input.get("pattern")
@@ -596,22 +592,15 @@ def _handle_grep_dedup(payload: HookPayload) -> HookResponse | None:
     if path is not None and not isinstance(path, str):
         path = None
 
-    try:
-        cache = session.load(session_id)
-    except (OSError, ValueError):
-        return None
-
-    hint = build_grep_dedup_hint(
-        session_id=session_id, pattern=pattern, path=path, cache=cache,
+    return run_dedup_hint(
+        payload,
+        builder=lambda sid, cache: build_grep_dedup_hint(
+            session_id=sid, pattern=pattern, path=path, cache=cache,
+        ),
+        stat_kind="grep_dedup_hint",
+        detail=sanitize_log_str(pattern, max_len=200),
+        log_label="pre-read",
     )
-    if hint is None:
-        return None
-
-    record_hint_stat_pair("grep_dedup_hint", hint, sanitize_log_str(pattern, max_len=200))
-    _LOG.info(
-        "pre-read: grep-dedup hint injected (tokens_saved=%d)", hint.tokens_saved,
-    )
-    return pre_tool_use_with_context(str(hint))
 
 
 def _handle_grep_written_not_read(payload: HookPayload) -> HookResponse | None:
@@ -667,12 +656,8 @@ def _handle_glob_dedup(payload: HookPayload) -> HookResponse | None:
     is available — we never deny a Glob call, only suggest the agent reuse
     the prior result.
     """
-    from . import session  # noqa: PLC0415
     from .hints import build_glob_dedup_hint  # noqa: PLC0415
-
-    session_id, _cwd = get_session_context(payload)
-    if not session_id:
-        return None
+    from .hooks_common import run_dedup_hint  # noqa: PLC0415
 
     tool_input = get_tool_input(payload)
     pattern = tool_input.get("pattern")
@@ -682,22 +667,15 @@ def _handle_glob_dedup(payload: HookPayload) -> HookResponse | None:
     if path is not None and not isinstance(path, str):
         path = None
 
-    try:
-        cache = session.load(session_id)
-    except (OSError, ValueError):
-        return None
-
-    hint = build_glob_dedup_hint(
-        session_id=session_id, pattern=pattern, path=path, cache=cache,
+    return run_dedup_hint(
+        payload,
+        builder=lambda sid, cache: build_glob_dedup_hint(
+            session_id=sid, pattern=pattern, path=path, cache=cache,
+        ),
+        stat_kind="glob_dedup_hint",
+        detail=sanitize_log_str(pattern, max_len=200),
+        log_label="pre-read",
     )
-    if hint is None:
-        return None
-
-    record_hint_stat_pair("glob_dedup_hint", hint, sanitize_log_str(pattern, max_len=200))
-    _LOG.info(
-        "pre-read: glob-dedup hint injected (tokens_saved=%d)", hint.tokens_saved,
-    )
-    return pre_tool_use_with_context(str(hint))
 
 
 def _handle_bash_dedup(payload: HookPayload) -> HookResponse | None:
@@ -708,34 +686,23 @@ def _handle_bash_dedup(payload: HookPayload) -> HookResponse | None:
     rather than re-running.  Returns ``None`` to let the hook fall through to
     the normal bash-as-read handling when no dedup hit is available.
     """
-    from . import session  # noqa: PLC0415
     from .hints import build_bash_dedup_hint  # noqa: PLC0415
-
-    session_id, _cwd = get_session_context(payload)
-    if not session_id:
-        return None
+    from .hooks_common import run_dedup_hint  # noqa: PLC0415
 
     tool_input = get_tool_input(payload)
     command = tool_input.get("command")
     if not isinstance(command, str) or not command:
         return None
 
-    try:
-        cache = session.load(session_id)
-    except (OSError, ValueError):
-        return None
-
-    hint = build_bash_dedup_hint(
-        session_id=session_id, command=command, cache=cache,
+    return run_dedup_hint(
+        payload,
+        builder=lambda sid, cache: build_bash_dedup_hint(
+            session_id=sid, command=command, cache=cache,
+        ),
+        stat_kind="bash_dedup_hint",
+        detail=sanitize_log_str(command, max_len=200),
+        log_label="pre-read",
     )
-    if hint is None:
-        return None
-
-    record_hint_stat_pair("bash_dedup_hint", hint, sanitize_log_str(command, max_len=200))
-    _LOG.info(
-        "pre-read: bash-dedup hint injected (tokens_saved=%d)", hint.tokens_saved,
-    )
-    return pre_tool_use_with_context(str(hint))
 
 
 def pre_read(payload: HookPayload) -> HookResponse:

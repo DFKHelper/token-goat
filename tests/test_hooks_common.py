@@ -1,7 +1,7 @@
-"""Tests for hooks_common.extract_tool_response_text."""
+"""Tests for hooks_common helpers: extract_tool_response_text, run_dedup_hint."""
 from __future__ import annotations
 
-from token_goat.hooks_common import extract_tool_response_text
+from token_goat.hooks_common import extract_tool_response_text, run_dedup_hint
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -153,3 +153,134 @@ def test_custom_text_keys_ordering():
     payload = _payload({"body": "body text", "output": "output text"})
     result = extract_tool_response_text(payload, text_keys=("body", "output"))
     assert result == "body text"
+
+
+# ---------------------------------------------------------------------------
+# run_dedup_hint
+# ---------------------------------------------------------------------------
+
+
+def _sid_payload(session_id: str, tool_name: str = "Bash") -> dict:
+    return {"session_id": session_id, "tool_name": tool_name, "tool_input": {}}
+
+
+class _FakeHint:
+    """Minimal hint object with tokens_saved and __str__ / __len__."""
+
+    def __init__(self, text: str, tokens_saved: int = 10) -> None:
+        self._text = text
+        self.tokens_saved = tokens_saved
+
+    def __str__(self) -> str:
+        return self._text
+
+    def __len__(self) -> int:
+        return len(self._text)
+
+
+def test_run_dedup_hint_returns_none_when_builder_returns_none(tmp_path, monkeypatch):
+    """Builder returning None → run_dedup_hint returns None (no hint injected)."""
+    import token_goat.hooks_common as hc
+
+    # Patch session.load to return a fake cache.
+    fake_cache = object()
+    monkeypatch.setattr(hc, "_run_dedup_hint_session", None, raising=False)
+
+    import token_goat.session as _session  # noqa: PLC0415
+    monkeypatch.setattr(_session, "load", lambda sid: fake_cache)
+
+    # Patch db.record_stat to no-op so no DB is needed.
+    import token_goat.db as _db  # noqa: PLC0415
+    monkeypatch.setattr(_db, "record_stat", lambda *a, **kw: None)
+
+    payload = _sid_payload("test-no-hint")
+    result = run_dedup_hint(
+        payload,
+        builder=lambda sid, cache: None,
+        stat_kind="bash_dedup_hint",
+        detail="pytest",
+    )
+    assert result is None
+
+
+def test_run_dedup_hint_returns_context_when_builder_returns_hint(monkeypatch):
+    """Builder returning a hint → response with additionalContext set."""
+    import token_goat.db as _db  # noqa: PLC0415
+    import token_goat.hints as _hints  # noqa: PLC0415
+    import token_goat.session as _session  # noqa: PLC0415
+
+    fake_cache = object()
+    monkeypatch.setattr(_session, "load", lambda sid: fake_cache)
+    monkeypatch.setattr(_db, "record_stat", lambda *a, **kw: None)
+    monkeypatch.setattr(_hints, "CHARS_PER_TOKEN", 4)
+
+    hint = _FakeHint("reuse cached output (bash_dedup)", tokens_saved=20)
+
+    payload = _sid_payload("test-hint-injected")
+    result = run_dedup_hint(
+        payload,
+        builder=lambda sid, cache: hint,
+        stat_kind="bash_dedup_hint",
+        detail="pytest --tb=short",
+    )
+    assert result is not None
+    assert result.get("continue") is True
+    hso = result.get("hookSpecificOutput", {})
+    assert isinstance(hso, dict)
+    assert "reuse cached output" in hso.get("additionalContext", "")
+
+
+def test_run_dedup_hint_returns_none_when_no_session_id():
+    """Missing session_id in payload → returns None without touching session."""
+    payload = {"tool_name": "Bash", "tool_input": {}}  # no session_id
+    result = run_dedup_hint(
+        payload,
+        builder=lambda sid, cache: _FakeHint("should not appear"),
+        stat_kind="bash_dedup_hint",
+        detail="cmd",
+    )
+    assert result is None
+
+
+def test_run_dedup_hint_returns_none_on_session_load_error(monkeypatch):
+    """OSError from session.load → returns None (fail-soft)."""
+    import token_goat.session as _session  # noqa: PLC0415
+
+    def _raise(sid: str) -> object:
+        raise OSError("disk full")
+
+    monkeypatch.setattr(_session, "load", _raise)
+
+    payload = _sid_payload("test-load-error")
+    result = run_dedup_hint(
+        payload,
+        builder=lambda sid, cache: _FakeHint("irrelevant"),
+        stat_kind="bash_dedup_hint",
+        detail="cmd",
+    )
+    assert result is None
+
+
+def test_run_dedup_hint_builder_receives_session_id_and_cache(monkeypatch):
+    """Builder is called with the correct (session_id, cache) arguments."""
+    import token_goat.db as _db  # noqa: PLC0415
+    import token_goat.hints as _hints  # noqa: PLC0415
+    import token_goat.session as _session  # noqa: PLC0415
+
+    fake_cache = object()
+    captured: dict = {}
+
+    monkeypatch.setattr(_session, "load", lambda sid: fake_cache)
+    monkeypatch.setattr(_db, "record_stat", lambda *a, **kw: None)
+    monkeypatch.setattr(_hints, "CHARS_PER_TOKEN", 4)
+
+    def _builder(sid: str, cache: object) -> _FakeHint:
+        captured["sid"] = sid
+        captured["cache"] = cache
+        return _FakeHint("hint text")
+
+    payload = _sid_payload("test-builder-args")
+    run_dedup_hint(payload, builder=_builder, stat_kind="grep_dedup_hint", detail="pat")
+
+    assert captured["sid"] == "test-builder-args"
+    assert captured["cache"] is fake_cache
