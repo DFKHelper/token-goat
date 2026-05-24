@@ -7,11 +7,13 @@ __all__ = [
     "Config",
     "CuratorConfig",
     "HintBudgetConfig",
+    "HintsConfig",
     "ImageShrinkConfig",
     "RepomapConfig",
     "SessionBriefConfig",
     "SkillPreservationConfig",
     "StatsConfig",
+    "WebFetchConfig",
     "CONFIG_SCHEMA_VERSION",
     "load",
     "save",
@@ -168,6 +170,20 @@ class _StatsToml(TypedDict, total=False):
     record_zero_savings: bool
 
 
+class _HintsToml(TypedDict, total=False):
+    """Expected shape of the [hints] TOML section."""
+
+    suppress_after_ignored: int
+    quiet_hours: str
+
+
+class _WebFetchToml(TypedDict, total=False):
+    """Expected shape of the [webfetch] TOML section."""
+
+    allow: list[str]
+    deny: list[str]
+
+
 class _ConfigToml(TypedDict, total=False):
     """Expected shape of the token-goat config TOML file."""
 
@@ -181,6 +197,8 @@ class _ConfigToml(TypedDict, total=False):
     hint_budget: _HintBudgetToml
     repomap: _RepomapToml
     stats: _StatsToml
+    hints: _HintsToml
+    webfetch: _WebFetchToml
 
 
 @dataclass
@@ -448,6 +466,42 @@ class StatsConfig:
 
 
 @dataclass
+class HintsConfig:
+    """Configuration for adaptive hint suppression and quiet-hours.
+
+    Attributes:
+        suppress_after_ignored: How many consecutive ignored hints for a category
+            before that category is suppressed for the rest of the session.
+            Default 5. Set to 0 to disable adaptive suppression.
+        quiet_hours: Time range in local time during which hints are suppressed,
+            in "HH:MM-HH:MM" format (24-hour clock). Empty string disables.
+            Example: "22:00-07:00" suppresses hints from 10pm to 7am.
+            Midnight wrap-around is supported.
+    """
+
+    suppress_after_ignored: int = 5
+    quiet_hours: str = ""
+
+
+@dataclass
+class WebFetchConfig:
+    """Configuration for pre-WebFetch URL allowlist and denylist.
+
+    Patterns are Unix-style globs matched against the full URL.  The denylist
+    is checked first; if the URL matches any deny pattern the fetch is blocked.
+    If the allowlist is non-empty the URL must match at least one allow pattern
+    to proceed.  Empty allowlist means "allow everything not denied".
+
+    Attributes:
+        allow: List of glob patterns; if non-empty, only matching URLs are allowed.
+        deny: List of glob patterns; matching URLs are blocked before allow check.
+    """
+
+    allow: list[str] = field(default_factory=list)
+    deny: list[str] = field(default_factory=list)
+
+
+@dataclass
 class Config:
     """Top-level token-goat configuration.
 
@@ -465,6 +519,8 @@ class Config:
     hint_budget: HintBudgetConfig = field(default_factory=HintBudgetConfig)
     repomap: RepomapConfig = field(default_factory=RepomapConfig)
     stats: StatsConfig = field(default_factory=StatsConfig)
+    hints: HintsConfig = field(default_factory=HintsConfig)
+    webfetch: WebFetchConfig = field(default_factory=WebFetchConfig)
 
 
 # ---------------------------------------------------------------------------
@@ -725,6 +781,20 @@ def load() -> Config:
         ),
     )
 
+    hints_raw: _HintsToml = cast("_HintsToml", raw.get("hints", {}))
+    hints_cfg = HintsConfig(
+        suppress_after_ignored=_validated_int(
+            hints_raw.get("suppress_after_ignored", 5), 5, 0, 1000, "hints.suppress_after_ignored"
+        ),
+        quiet_hours=str(hints_raw.get("quiet_hours", "")).strip(),
+    )
+
+    wf_raw: _WebFetchToml = cast("_WebFetchToml", raw.get("webfetch", {}))
+    wf_cfg = WebFetchConfig(
+        allow=_validated_str_list(wf_raw.get("allow", []), [], "webfetch.allow"),
+        deny=_validated_str_list(wf_raw.get("deny", []), [], "webfetch.deny"),
+    )
+
     _LOG.debug(
         "config resolved: compact_assist enabled=%s triggers=%s min_events=%d max_tokens=%d; "
         "bash_compress enabled=%s disabled_filters=%s max_lines=%d max_bytes=%d timeout=%d; "
@@ -734,7 +804,9 @@ def load() -> Config:
         "curator enabled=%s min_samples=%d threshold_pct=%d; "
         "hint_budget enabled=%s max=%d max_structured=%d max_index_only=%d; "
         "repomap compact_file_threshold=%d; "
-        "stats record_zero_savings=%s",
+        "stats record_zero_savings=%s; "
+        "hints suppress_after_ignored=%d quiet_hours=%r; "
+        "webfetch allow=%s deny=%s",
         ca.enabled,
         ca.triggers,
         ca.min_events,
@@ -760,10 +832,15 @@ def load() -> Config:
         hb.max_index_only_per_session,
         rm.compact_file_threshold,
         stats.record_zero_savings,
+        hints_cfg.suppress_after_ignored,
+        hints_cfg.quiet_hours,
+        wf_cfg.allow,
+        wf_cfg.deny,
     )
     result = Config(
         compact_assist=ca, bash_compress=bc, session_brief=sb, skill_preservation=sp,
         image_shrink=is_cfg, curator=cur, hint_budget=hb, repomap=rm, stats=stats,
+        hints=hints_cfg, webfetch=wf_cfg,
     )
     _config_mtime_cache = (result, current_mtime, current_env_fp, time.monotonic())
     return result
@@ -828,6 +905,14 @@ def save(config: Config) -> None:
         },
         "stats": {
             "record_zero_savings": stats.record_zero_savings,
+        },
+        "hints": {
+            "suppress_after_ignored": config.hints.suppress_after_ignored,
+            "quiet_hours": config.hints.quiet_hours,
+        },
+        "webfetch": {
+            "allow": config.webfetch.allow,
+            "deny": config.webfetch.deny,
         },
     }
     try:

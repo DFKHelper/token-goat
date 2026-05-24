@@ -3067,3 +3067,82 @@ class TestPendingHintSave:
         cache._pending_hint_save = False  # reset
         cache.mark_hint_seen("already-seen")  # second call — no-op
         assert cache._pending_hint_save is False
+
+
+class TestAdaptiveHintSuppression:
+    """Item 7: per-category hint history and suppression helper."""
+
+    def test_no_history_never_suppresses(self, tmp_data_dir):
+        """_hint_category_should_suppress returns False when no history exists."""
+        sid = "aabbcc" * 6
+        cache = session.load(sid)
+        assert session._hint_category_should_suppress(cache, "session_hint") is False
+
+    def test_emits_when_accepted(self, tmp_data_dir):
+        """After accepted entries, suppression does not trigger."""
+        sid = "bbccdd" * 6
+        cache = session.load(sid)
+        # Record 5 accepted (True) entries
+        for _ in range(5):
+            session.record_hint_category(cache, "session_hint", accepted=True)
+        assert session._hint_category_should_suppress(cache, "session_hint") is False
+
+    def test_suppresses_after_n_ignored(self, tmp_data_dir):
+        """After 5 consecutive False entries the category is suppressed."""
+        sid = "ccddeeff" * 4
+        cache = session.load(sid)
+        for _ in range(5):
+            session.record_hint_category(cache, "bash_dedup_hint", accepted=False)
+        assert session._hint_category_should_suppress(cache, "bash_dedup_hint") is True
+
+    def test_threshold_configurable(self, tmp_data_dir):
+        """Threshold parameter controls how many ignores trigger suppression."""
+        sid = "ddeeff00" * 4
+        cache = session.load(sid)
+        # Record 3 False entries
+        for _ in range(3):
+            session.record_hint_category(cache, "web_dedup_hint", accepted=False)
+        # threshold=5 → not yet suppressed
+        assert session._hint_category_should_suppress(cache, "web_dedup_hint", threshold=5) is False
+        # threshold=3 → suppressed
+        assert session._hint_category_should_suppress(cache, "web_dedup_hint", threshold=3) is True
+
+    def test_mixed_history_not_suppressed(self, tmp_data_dir):
+        """A True in the last N entries prevents suppression."""
+        sid = "eeff0011" * 4
+        cache = session.load(sid)
+        # 4 False, then 1 True: last 5 are not all False
+        for _ in range(4):
+            session.record_hint_category(cache, "session_hint", accepted=False)
+        session.record_hint_category(cache, "session_hint", accepted=True)
+        assert session._hint_category_should_suppress(cache, "session_hint") is False
+
+    def test_ring_buffer_capped(self, tmp_data_dir):
+        """Ring buffer stays at _HINT_CAT_HISTORY_MAX entries."""
+        sid = "ff001122" * 4
+        cache = session.load(sid)
+        for i in range(20):
+            session.record_hint_category(cache, "cat", accepted=bool(i % 2))
+        hist = cache.hint_category_history.get("cat", [])
+        assert len(hist) <= session._HINT_CAT_HISTORY_MAX
+
+    def test_roundtrip_serialization(self, tmp_data_dir):
+        """hint_category_history survives a to_dict / from_dict round-trip."""
+        sid = "001122334455667788990011223344556677889900112233"[:36]
+        # Use a valid session id (32+ alphanum chars)
+        sid = "a0b1c2d3" * 4 + "a0b1"
+        cache = session.load(sid)
+        session.record_hint_category(cache, "bash_dedup_hint", accepted=False)
+        session.record_hint_category(cache, "bash_dedup_hint", accepted=False)
+        session.save(cache)
+        loaded = session.load(sid)
+        assert "bash_dedup_hint" in loaded.hint_category_history
+        assert loaded.hint_category_history["bash_dedup_hint"] == [False, False]
+
+    def test_zero_threshold_never_suppresses(self, tmp_data_dir):
+        """threshold=0 disables suppression entirely."""
+        sid = "b1c2d3e4" * 4 + "b1c2"
+        cache = session.load(sid)
+        for _ in range(10):
+            session.record_hint_category(cache, "cat", accepted=False)
+        assert session._hint_category_should_suppress(cache, "cat", threshold=0) is False

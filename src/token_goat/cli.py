@@ -1966,6 +1966,100 @@ def cmd_skill_history(
     )
 
 
+@app.command("skill-diff", rich_help_panel="Core")
+def cmd_skill_diff(
+    name: str = typer.Argument(..., help="Skill name to diff (e.g. 'ralph', 'plugin:improve')."),
+) -> None:
+    """Show a unified diff between the two most recent cached versions of a Skill.
+
+    When a skill is updated between loads within a session, token-goat stores
+    each distinct body as a separate cache entry.  This command finds all
+    entries for *name* across all sessions, sorts them by modification time
+    newest-first, and diffs the two most recent using ``difflib.unified_diff``.
+
+    If only one version is cached, a brief message is printed instead.
+    Colour is applied when the terminal supports it: ``-`` lines are red,
+    ``+`` lines are green, header lines are bold.
+    """
+    import difflib  # noqa: PLC0415
+    import sys  # noqa: PLC0415
+
+    from . import skill_cache  # noqa: PLC0415
+
+    # Collect all cached versions for this skill name, newest first.
+    all_entries = skill_cache.list_outputs()
+    safe_name = name.replace(":", "_")
+
+    # Filter by matching skill name embedded in output_id (last segment before sha is safe_name).
+    # Fall back to sidecar skill_name comparison for entries with sidecars.
+    matching: list[tuple[float, str]] = []  # (mtime, output_id)
+    for entry in all_entries:
+        oid = entry.get("output_id", "")
+        if not oid:
+            continue
+        # Try fast path: output_id = {session}-{safe_name}-{sha16}
+        # Find whether safe_name appears as a middle segment.
+        parts = oid.split("-")
+        # session prefix is 16 chars; sha is last 16 chars; middle is skill name.
+        if len(parts) >= 3:
+            # middle segments joined (safe_name may contain underscores, not hyphens)
+            mid = "-".join(parts[1:-1])
+            if mid == safe_name:
+                matching.append((float(entry.get("mtime", 0.0)), oid))
+                continue
+        # Fallback: check sidecar
+        meta = skill_cache.read_sidecar(oid)
+        if meta is not None and meta.skill_name == name:
+            matching.append((float(entry.get("mtime", 0.0)), oid))
+
+    # Sort newest first
+    matching.sort(key=lambda t: t[0], reverse=True)
+
+    if not matching:
+        _error(f"no cached versions found for skill: {name}")
+        raise typer.Exit(1)
+
+    if len(matching) == 1:
+        typer.echo(f"Only one cached version of '{name}' found — nothing to diff.")
+        raise typer.Exit(0)
+
+    # Load the two most recent bodies
+    newer_oid = matching[0][1]
+    older_oid = matching[1][1]
+    newer_body = skill_cache.load_output(newer_oid) or ""
+    older_body = skill_cache.load_output(older_oid) or ""
+
+    newer_lines = newer_body.splitlines(keepends=True)
+    older_lines = older_body.splitlines(keepends=True)
+
+    diff = list(difflib.unified_diff(
+        older_lines,
+        newer_lines,
+        fromfile=f"{name} (older: {older_oid[-16:]})",
+        tofile=f"{name} (newer: {newer_oid[-16:]})",
+        lineterm="",
+    ))
+
+    if not diff:
+        typer.echo(f"No differences between the two most recent cached versions of '{name}'.")
+        raise typer.Exit(0)
+
+    # Apply colour when stdout is a TTY
+    use_colour = sys.stdout.isatty()
+    for line in diff:
+        if use_colour:
+            if line.startswith("+++") or line.startswith("---") or line.startswith("@@"):
+                typer.echo(typer.style(line, bold=True))
+            elif line.startswith("+"):
+                typer.echo(typer.style(line, fg=typer.colors.GREEN))
+            elif line.startswith("-"):
+                typer.echo(typer.style(line, fg=typer.colors.RED))
+            else:
+                typer.echo(line)
+        else:
+            typer.echo(line)
+
+
 @app.command("resume", rich_help_panel="Core")
 def cmd_resume(
     session_id: str = typer.Argument(
