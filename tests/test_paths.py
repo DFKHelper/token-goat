@@ -301,3 +301,59 @@ class TestSessionCachePathTraversal:
         # Choosing a multi-level traversal that definitely escapes the directory.
         with pytest.raises(ValueError, match="outside the sessions directory"):
             paths.session_cache_path("../../leaked")
+
+
+class TestAtomicWriteCore:
+    """_atomic_write_core finally-block: tmp file is only unlinked when rename failed."""
+
+    def test_successful_write_removes_no_file(self, tmp_path):
+        """After a successful rename the tmp file no longer exists (consumed by rename).
+
+        Verifying that the finally block does NOT call unlink on a path that
+        doesn't exist (missing_ok=True swallows FileNotFoundError anyway, but
+        this confirms we aren't touching stale paths unnecessarily).
+        """
+        target = tmp_path / "out.txt"
+        paths.atomic_write_text(target, "hello")
+        assert target.read_text(encoding="utf-8") == "hello"
+        # No .tmp file should linger.
+        leftover = list(tmp_path.glob("*.tmp"))
+        assert leftover == [], f"unexpected tmp files: {leftover}"
+
+    def test_failed_rename_cleans_up_tmp(self, tmp_path, monkeypatch):
+        """When _rename_with_retry raises, the tmp file must be unlinked."""
+        def failing_rename(src: Path, dest: Path) -> None:
+            raise PermissionError("rename blocked")
+
+        monkeypatch.setattr(paths, "_rename_with_retry", failing_rename)
+
+        target = tmp_path / "out.txt"
+        with pytest.raises(PermissionError):
+            paths.atomic_write_text(target, "data")
+
+        # The target was never created.
+        assert not target.exists()
+        # No tmp files should remain (finally-block cleaned up).
+        leftover = list(tmp_path.glob("*.tmp"))
+        assert leftover == [], f"tmp file not cleaned up: {leftover}"
+
+    def test_successful_rename_no_unlink_called(self, tmp_path, monkeypatch):
+        """After a successful rename, unlink must NOT be called on any path.
+
+        Guards against the fragile-finally pattern where unlink fires even when
+        the rename already consumed the source name.
+        """
+        unlink_calls: list[Path] = []
+        original_unlink = Path.unlink
+
+        def tracking_unlink(self: Path, missing_ok: bool = False) -> None:  # type: ignore[override]
+            unlink_calls.append(self)
+            original_unlink(self, missing_ok=missing_ok)
+
+        monkeypatch.setattr(Path, "unlink", tracking_unlink)
+
+        target = tmp_path / "out.txt"
+        paths.atomic_write_text(target, "content")
+
+        # The rename succeeded; no unlink should have been called.
+        assert unlink_calls == [], f"unexpected unlink calls: {unlink_calls}"

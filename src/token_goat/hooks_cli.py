@@ -221,7 +221,6 @@ def safe_run(event: str, input_file: Path | None = None, harness: Harness = "cla
         raw = read_payload(input_file)
         payload = normalize_payload(raw, harness)
         dispatched = dispatch(event, payload)
-        result = dict(denormalize_response(dispatched, harness))
     except (KeyboardInterrupt, SystemExit):
         # Process-control signals must propagate so the harness can terminate
         # cleanly (e.g. Ctrl+C, or sys.exit() from an internal subprocess).
@@ -234,7 +233,24 @@ def safe_run(event: str, input_file: Path | None = None, harness: Harness = "cla
             # Attempt to persist to log file even if normal setup failed.
             _setup_logging()
             _LOG.error("%s", msg, exc_info=True)
-        result = dict(CONTINUE())
+        emit(result)
+        return
+    else:
+        # Dispatch succeeded — attempt output translation.  A bug in
+        # denormalize_response (e.g. a future field that triggers TypeError in
+        # _translate_hso_to_codex) must not discard the real dispatch output.
+        # If translation fails, emit the un-denormalized dict: the harness sees
+        # unexpected keys and ignores them — still better than bare CONTINUE.
+        try:
+            result = dict(denormalize_response(dispatched, harness))
+        except Exception as _denorm_exc:  # noqa: BLE001
+            _LOG.warning(
+                "denormalize_response failed for %s (%s): %s — emitting raw dispatch output",
+                event,
+                harness,
+                _denorm_exc,
+            )
+            result = dict(dispatched)
     emit(result)
 
 
