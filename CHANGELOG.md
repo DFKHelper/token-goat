@@ -2,7 +2,56 @@
 
 All notable changes to Token-Goat are documented in this file. Format follows Keep a Changelog. Token-Goat follows Semantic Versioning starting at 1.0.
 
-## [Unreleased]
+## [Unreleased] — 68-iteration loop (2026-05-24)
+
+### Security
+
+- **webfetch sidecar path-traversal fix.** `webfetch.py` now validates that `shrunk_path` resolves inside the cache roots before writing or serving the sidecar, closing a path-escape vector on redirect chains (`2bc071b`).
+
+### Reliability
+
+- **PIL decode-bomb cap.** `image_shrink.py` sets `PIL.Image.MAX_IMAGE_PIXELS` to prevent multi-gigapixel decompression bombs from crashing the hook subprocess (`608080f`).
+- **Worker OSError broadening.** `psutil` calls in `worker.py` now catch `OSError` in addition to `psutil.NoSuchProcess` (`dc7b7ce`).
+- **Session CAS re-applies size caps after merge.** `session.py` enforces byte caps after every optimistic-CAS merge so a race cannot inflate the JSON beyond limits (`040c36c`).
+- **Windows console-ctrl handler.** `worker_daemon.py` installs a `SetConsoleCtrlHandler` callback (with `atexit` fallback) so the daemon flushes state cleanly on Ctrl-C / service stop (`08028c0`).
+- **Hook crash log.** All hook subprocesses now persist uncaught exceptions to `hooks-stderr.log` (100 KB cap, `.prev` rotation), making silent failures diagnosable (`a6a7057`).
+- **Concurrent dirty-queue write coverage.** New test covers cross-process `fcntl`/`msvcrt` lock contention on `dirty.txt` (`b96fbc8`).
+
+### Token Savings — compaction / hints / manifest
+
+- **Manifest bold-label bundle.** H3 headers inside the manifest (`### Edited:` etc.) replaced with inline bold labels (`**Edited:**`, `**Syms:**`), saving ~4 tokens per section heading (`de96cd1`, `0b632e3`).
+- **Manifest SHA sidecar cache.** `pre_compact` writes a `sentinels/manifest_sha_<session>` sidecar; the manifest is rebuilt only when the session SHA differs, cutting redundant manifest work to near zero (`e1fcbb0`).
+- **Manifest tightening bundles.** Two passes removed redundant framing tokens, collapsed multi-line stat rows, and tightened section separators (`04dd25d`, `825312b`).
+- **Cross-session grep dedup.** `hooks_read.py` records grep patterns in `global.db::grep_patterns`; repeat patterns across sessions surface a dedup hint without a live session match (`803789b`).
+- **`extract_image_summary` helper.** `image_shrink.py` gained `extract_image_summary(path)` returning a structured alt-text dict (dimensions, format, byte size, SHA) so hooks inject a lean summary instead of a raw path (`5ace3a9`, `272ab20`).
+- **Ruff filter for bash compression.** `bash_compress.py` gained a `RuffFilter` compressing `ruff check` output to per-rule summaries (≤3 examples each), matching the eslint/mypy filter shape (`d3435d2`).
+- **Web dedup `--grep` nudge.** Dedup hint for cached responses ≥5 KB appends a `--grep PATTERN` usage example (`98dbcc6`).
+- **Session brief collapsed to one-liner.** Drops the `##` header and `Branch`/`Recent` labels, saving ~6 tokens per session start; git status + branch merged into a single `git status -z -b` call (`105ec45`, `4325849`).
+- **Precision recall flags.** `bash-output`, `web-output`, `skill-body`, `read`, and `section` gained `--offset`/`--limit` flags for line-range recall (`3745514`).
+
+### Performance
+
+- **Compact-speed 5-item bundle.** Session JSON carries three new cache fields (`_disk_mtime`, `_pending_hint_save`, `_brief_cache`) eliminating redundant disk round-trips in the hot PreCompact path; manifest skipped when SHA sidecar matches (`dbd1244`).
+- **`_resolve_file_rel_db` LIKE cap + suffix fast-path.** Caps LIKE query at 50 rows and adds basename-suffix index probe, cutting worst-case lookup from O(N) to O(log N) (`569b284`).
+- **Embeddings chunk-hash scoped to file subset.** `_load_existing_chunk_hashes` filters by `file_id` before loading, avoiding a full-table scan on large DBs (`608080f`).
+- **Zero-saving stat rows skipped.** `hooks_common.py` skips the SQLite write when both `tokens_saved` and `bytes_saved` are zero (`04dd25d`).
+
+### DRY
+
+- **`session.py` 6-item bundle.** Extracted `safe_load`, `_merge_lists`, `_cap_dict`, `_bump_read_count`, `_session_path`, and `_atomic_write` helpers from repeated inline patterns (`2f240d3`).
+- **paths / config / cli / render / compact bundle.** Deduplicated `_data_root` resolution, `_config_singleton`, CLI option constants, render palette entries, and `_manifest_preamble` fragments (`6943b61`).
+
+### Tests
+
+- Aligned mock stubs and assertions to bold-label manifest format and `-z -b` session brief shape (`0b632e3`).
+
+### Docs
+
+- README top section rewritten for new-user readability; install-first flow and before/after comparison moved above the fold (`6d21153`).
+
+---
+
+## [Unreleased] — prior iteration batch (55-iter baseline)
 
 ### Added
 
