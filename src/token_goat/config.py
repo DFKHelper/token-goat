@@ -5,6 +5,7 @@ __all__ = [
     "BashCompressConfig",
     "CompactAssistConfig",
     "Config",
+    "ImageShrinkConfig",
     "SessionBriefConfig",
     "SkillPreservationConfig",
     "CONFIG_SCHEMA_VERSION",
@@ -27,6 +28,7 @@ _ENV_COMPACT_ASSIST_LEGACY: Final[str] = "TOKENWISE_COMPACT_ASSIST"  # backward-
 _ENV_BASH_COMPRESS: Final[str] = "TOKEN_GOAT_BASH_COMPRESS"  # set to "0"/"false"/"no"/"off" to disable
 _ENV_SESSION_BRIEF: Final[str] = "TOKEN_GOAT_SESSION_BRIEF"  # set to "0"/"false"/"no"/"off" to disable
 _ENV_SKILL_PRESERVATION: Final[str] = "TOKEN_GOAT_SKILL_PRESERVATION"  # set to "0"/"false"/"no"/"off" to disable
+_ENV_PREFER_AVIF: Final[str] = "TOKEN_GOAT_PREFER_AVIF"  # set to "0"/"false"/"no"/"off" to force JPEG/WebP
 
 CONFIG_SCHEMA_VERSION: Final[int] = 1
 
@@ -65,6 +67,14 @@ class _SkillPreservationToml(TypedDict, total=False):
     max_cache_bytes: int
 
 
+class _ImageShrinkToml(TypedDict, total=False):
+    """Expected shape of the [image_shrink] TOML section."""
+
+    prefer_avif: bool
+    avif_quality: int
+    jpeg_quality: int
+
+
 class _ConfigToml(TypedDict, total=False):
     """Expected shape of the token-goat config TOML file."""
 
@@ -73,6 +83,7 @@ class _ConfigToml(TypedDict, total=False):
     bash_compress: _BashCompressToml
     session_brief: _SessionBriefToml
     skill_preservation: _SkillPreservationToml
+    image_shrink: _ImageShrinkToml
 
 
 @dataclass
@@ -195,6 +206,38 @@ class SkillPreservationConfig:
 
 
 @dataclass
+class ImageShrinkConfig:
+    """Configuration for the image-shrink feature.
+
+    When ``prefer_avif`` is ``True`` and the runtime Pillow has AVIF encoder
+    support (requires libaom; available in Pillow ≥ 10.x with AVIF build),
+    large images (> SIZE_THRESHOLD_BYTES) are encoded as AVIF instead of WebP
+    or JPEG.  AVIF at quality 60 is perceptually equivalent to JPEG at quality
+    85 while producing files that are typically 30–50% smaller, yielding a
+    further token-budget reduction on top of the existing resize step.
+
+    Images with transparency (RGBA/LA mode) always stay as PNG regardless of
+    this setting, since lossy AVIF/JPEG on transparent screenshots produces
+    visible artefacts on sharp edges.
+
+    Attributes:
+        prefer_avif: Enable AVIF output when Pillow supports it.  Can also be
+            disabled at runtime by setting ``TOKEN_GOAT_PREFER_AVIF=0``
+            (or ``false``/``no``/``off``).  Defaults to ``True``.
+        avif_quality: AVIF encoder quality (1 = worst, 100 = best).  Default
+            60 is perceptually equivalent to JPEG quality 85 and typically
+            30–50% smaller.  Valid range: 1–100.
+        jpeg_quality: JPEG encoder quality used as the non-AVIF lossy fallback
+            (when AVIF is unavailable or disabled).  Default 75, same as the
+            pre-existing ``JPEG_QUALITY`` constant.  Valid range: 1–100.
+    """
+
+    prefer_avif: bool = True
+    avif_quality: int = 60
+    jpeg_quality: int = 75
+
+
+@dataclass
 class Config:
     """Top-level token-goat configuration.
 
@@ -207,6 +250,7 @@ class Config:
     bash_compress: BashCompressConfig = field(default_factory=BashCompressConfig)
     session_brief: SessionBriefConfig = field(default_factory=SessionBriefConfig)
     skill_preservation: SkillPreservationConfig = field(default_factory=SkillPreservationConfig)
+    image_shrink: ImageShrinkConfig = field(default_factory=ImageShrinkConfig)
 
 
 # ---------------------------------------------------------------------------
@@ -417,11 +461,27 @@ def load() -> Config:
         )
         sp.enabled = False
 
+    is_raw: _ImageShrinkToml = cast("_ImageShrinkToml", raw.get("image_shrink", {}))
+    is_cfg = ImageShrinkConfig(
+        prefer_avif=_validated_bool(is_raw.get("prefer_avif", True), True, "image_shrink.prefer_avif"),
+        avif_quality=_validated_int(is_raw.get("avif_quality", 60), 60, 1, 100, "image_shrink.avif_quality"),
+        jpeg_quality=_validated_int(is_raw.get("jpeg_quality", 75), 75, 1, 100, "image_shrink.jpeg_quality"),
+    )
+    env_avif = os.environ.get(_ENV_PREFER_AVIF, "").strip().lower()
+    if env_avif in ("0", "false", "no", "off"):
+        _LOG.info(
+            "image_shrink.prefer_avif disabled by environment variable (%s=%s)",
+            _ENV_PREFER_AVIF,
+            env_avif,
+        )
+        is_cfg.prefer_avif = False
+
     _LOG.debug(
         "config resolved: compact_assist enabled=%s triggers=%s min_events=%d max_tokens=%d; "
         "bash_compress enabled=%s disabled_filters=%s max_lines=%d max_bytes=%d timeout=%d; "
         "session_brief enabled=%s; "
-        "skill_preservation enabled=%s max_cache_bytes=%d",
+        "skill_preservation enabled=%s max_cache_bytes=%d; "
+        "image_shrink prefer_avif=%s avif_quality=%d jpeg_quality=%d",
         ca.enabled,
         ca.triggers,
         ca.min_events,
@@ -434,9 +494,12 @@ def load() -> Config:
         sb.enabled,
         sp.enabled,
         sp.max_cache_bytes,
+        is_cfg.prefer_avif,
+        is_cfg.avif_quality,
+        is_cfg.jpeg_quality,
     )
     return Config(
-        compact_assist=ca, bash_compress=bc, session_brief=sb, skill_preservation=sp,
+        compact_assist=ca, bash_compress=bc, session_brief=sb, skill_preservation=sp, image_shrink=is_cfg,
     )
 
 
@@ -450,6 +513,7 @@ def save(config: Config) -> None:
     bc = config.bash_compress
     sb = config.session_brief
     sp = config.skill_preservation
+    is_cfg = config.image_shrink
     data: _ConfigToml = {
         "schema_version": CONFIG_SCHEMA_VERSION,
         "compact_assist": {
@@ -471,6 +535,11 @@ def save(config: Config) -> None:
         "skill_preservation": {
             "enabled": sp.enabled,
             "max_cache_bytes": sp.max_cache_bytes,
+        },
+        "image_shrink": {
+            "prefer_avif": is_cfg.prefer_avif,
+            "avif_quality": is_cfg.avif_quality,
+            "jpeg_quality": is_cfg.jpeg_quality,
         },
     }
     try:

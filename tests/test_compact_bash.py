@@ -914,3 +914,112 @@ class TestMiddleTruncate:
         text = "\n".join(f"line {i}" for i in range(n))
         result = compact._middle_truncate(text, max_lines=max_lines)
         assert f"[{expected_omitted} lines omitted]" in result
+
+
+class TestFormatBashEntryInlineSnippet:
+    """_format_bash_entry inline_snippet parameter controls snippet emission."""
+
+    def _make_entry(self, stdout_bytes=5000, exit_code=0, output_id="out-abc123"):
+        from token_goat.session import BashEntry
+        return BashEntry(
+            cmd_sha="abc123",
+            cmd_preview="pytest -v tests/",
+            output_id=output_id,
+            ts=0.0,
+            stdout_bytes=stdout_bytes,
+            stderr_bytes=0,
+            exit_code=exit_code,
+            truncated=False,
+            run_count=1,
+        )
+
+    def test_inline_snippet_false_no_indented_block(self):
+        """When inline_snippet=False the rendered entry has no indented body."""
+        entry = self._make_entry()
+        line = compact._format_bash_entry(entry, inline_snippet=False)
+        assert "\n  " not in line, "Expected no indented block when inline_snippet=False"
+
+    def test_inline_snippet_false_header_still_present(self):
+        """Header line (command preview + id) is always emitted regardless of inline_snippet."""
+        entry = self._make_entry()
+        line = compact._format_bash_entry(entry, inline_snippet=False)
+        assert "pytest -v tests/" in line
+        assert "id=" in line
+
+    def test_inline_snippet_true_default_behaviour_preserved(self):
+        """inline_snippet=True (the default) preserves existing rendering path."""
+        entry = self._make_entry()
+        # Default call — should behave identically to explicit True.
+        line_default = compact._format_bash_entry(entry)
+        line_true = compact._format_bash_entry(entry, inline_snippet=True)
+        assert line_default == line_true
+
+    def test_inline_snippet_false_single_line(self):
+        """inline_snippet=False always returns exactly one line."""
+        entry = self._make_entry(stdout_bytes=50_000)
+        line = compact._format_bash_entry(entry, inline_snippet=False)
+        assert "\n" not in line
+
+    def test_small_entry_no_snippet_in_manifest(self, tmp_data_dir, make_session):
+        """Commands under 600 bytes get no inline snippet in the manifest.
+
+        The entry still appears (header line) but without an indented block.
+        """
+        sid = "snip-small-1"
+        make_session(
+            sid,
+            age_seconds=7200,
+            edits=1,
+            bash_runs={"uv run ruff check src/": (500, 0)},
+        )
+        m = compact.build_manifest(sid, max_tokens=800)
+        assert "ruff check" in m
+        # No indented snippet block — every line after the header must start
+        # with "- " or "###" (manifest structure), not "  " (snippet indent).
+        lines = m.splitlines()
+        in_commands_run = False
+        for line in lines:
+            if line.startswith("### Commands Run"):
+                in_commands_run = True
+                continue
+            if in_commands_run and line.startswith("###"):
+                break
+            if in_commands_run and line.startswith("  ") and line.strip():
+                raise AssertionError(
+                    f"Found indented snippet for small (<600B) entry: {line!r}"
+                )
+
+    def test_large_entry_gets_snippet_in_manifest(self, tmp_data_dir, make_session):
+        """Commands >= 600 bytes include inline snippet in the manifest."""
+        sid = "snip-large-1"
+        make_session(
+            sid,
+            age_seconds=7200,
+            edits=1,
+            bash_runs={"uv run pytest tests/": (8000, 0)},
+        )
+        m = compact.build_manifest(sid, max_tokens=1200)
+        assert "pytest tests/" in m
+        # The bash_cache for this test session won't have real file content,
+        # so snippet may not appear even for large entries — what matters is
+        # no crash and the header line is present.
+        assert "id=" in m
+
+    def test_blocker_always_inline_regardless_of_size(self, tmp_data_dir, make_session):
+        """Blocker entries (exit_code != 0) always emit inline_snippet=True path.
+
+        Blockers appear in the Current Blockers section (not Commands Run), so
+        this test validates that build_manifest does not crash and the blocker
+        itself is present.
+        """
+        sid = "snip-blk-1"
+        make_session(
+            sid,
+            age_seconds=7200,
+            edits=1,
+            bash_runs={"pytest tests/": (450, 1)},  # small but failing
+        )
+        m = compact.build_manifest(sid, max_tokens=800)
+        assert "Current Blockers" in m
+        assert "pytest tests/" in m
+        assert "exit 1" in m

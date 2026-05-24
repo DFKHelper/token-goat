@@ -893,6 +893,76 @@ class TestBlockerDedupFromBashHistory:
         )
 
 
+class TestDedupHintEmittedIdsFilterBash:
+    """Bash entries whose output_id was already surfaced in a dedup hint are excluded from
+    the manifest 'Commands Run' section, unless they are also current blockers."""
+
+    def test_dedup_hinted_entry_absent_from_manifest(self, tmp_data_dir):
+        """An entry in bash_dedup_emitted_ids (and not a blocker) is dropped from Commands Run."""
+        from token_goat import bash_cache
+
+        sid = "dedup-hint-filter-session"
+        cmd = "uv run pytest tests/test_compact.py -x"
+        cmd_sha = bash_cache.command_hash(cmd)
+        output_id = f"out_{cmd_sha[:8]}"
+
+        # Record a successful large run.
+        session.mark_bash_run(
+            sid,
+            cmd_sha,
+            cmd,
+            output_id,
+            stdout_bytes=3000,
+            stderr_bytes=0,
+            exit_code=0,
+            truncated=False,
+        )
+        # Simulate the hint having fired — mark the output_id as emitted.
+        cache = session.load(sid)
+        cache.bash_dedup_emitted_ids.add(output_id)
+        session.save(cache)
+        # Give the session some edited-file age so bash section is included.
+        session.mark_file_edited(sid, "/proj/src/main.py")
+
+        result = compact.build_manifest(sid)
+        # The command preview text should not appear in Commands Run.
+        from token_goat.cache_common import short_output_id
+        short_id = short_output_id(output_id)
+        assert short_id not in result, (
+            f"short output_id '{short_id}' should be absent (dedup-hinted) but found:\n{result}"
+        )
+
+    def test_dedup_hinted_but_blocker_still_present(self, tmp_data_dir):
+        """An entry in bash_dedup_emitted_ids that is ALSO a current blocker must still appear."""
+        from token_goat import bash_cache
+
+        sid = "dedup-hint-blocker-session"
+        cmd = "uv run mypy src --strict"
+        cmd_sha = bash_cache.command_hash(cmd)
+        output_id = f"out_{cmd_sha[:8]}"
+
+        # Record a recent failure with enough output to qualify for Blockers.
+        session.mark_bash_run(
+            sid,
+            cmd_sha,
+            cmd,
+            output_id,
+            stdout_bytes=2000,
+            stderr_bytes=0,
+            exit_code=1,
+            truncated=False,
+        )
+        # Mark as dedup-hint emitted.
+        cache = session.load(sid)
+        cache.bash_dedup_emitted_ids.add(output_id)
+        session.save(cache)
+        session.mark_file_edited(sid, "/proj/src/main.py")
+
+        result = compact.build_manifest(sid)
+        # The command must still appear in Current Blockers.
+        assert "mypy" in result, f"Blocker command 'mypy' missing from manifest:\n{result}"
+
+
 class TestGitDiffStat:
     """_get_git_diff_stat extracts git diff output for edited files."""
 

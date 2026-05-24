@@ -816,6 +816,48 @@ class TestHintsSeenCap:
         assert len(reloaded.hints_seen) == 10
 
 
+class TestBashDedupEmittedIds:
+    """Round-trip and migration tests for bash_dedup_emitted_ids."""
+
+    def test_roundtrip_preserves_ids(self, tmp_data_dir):
+        """bash_dedup_emitted_ids survives a save/load round-trip."""
+        sid = "bash_dedup_rt_1"
+        cache = session.load(sid)
+        cache.bash_dedup_emitted_ids.add("abc123")
+        cache.bash_dedup_emitted_ids.add("def456")
+        cache._invalidate_json_cache()
+        session.save(cache)
+        reloaded = session.load(sid)
+        assert reloaded.bash_dedup_emitted_ids == {"abc123", "def456"}
+
+    def test_missing_field_migrates_to_empty_set(self, tmp_data_dir):
+        """A session JSON without bash_dedup_emitted_ids loads as empty set (backwards compat)."""
+        sid = "bash_dedup_migrate_1"
+        cache = session.load(sid)
+        # Save a cache that has the field, then manually strip it from JSON to
+        # simulate an old session file written before this field existed.
+        import json
+
+        from token_goat import paths
+        raw = json.loads(cache.to_json())
+        raw.pop("bash_dedup_emitted_ids", None)
+        p = paths.session_cache_path(sid)
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(json.dumps(raw), encoding="utf-8")
+        reloaded = session.load(sid)
+        assert reloaded.bash_dedup_emitted_ids == set()
+
+    def test_serialized_as_sorted_list(self, tmp_data_dir):
+        """bash_dedup_emitted_ids is serialized as a sorted list for stable JSON."""
+        import json
+        sid = "bash_dedup_serial_1"
+        cache = session.load(sid)
+        cache.bash_dedup_emitted_ids = {"zzz", "aaa", "mmm"}
+        cache._invalidate_json_cache()
+        raw = json.loads(cache.to_json())
+        assert raw["bash_dedup_emitted_ids"] == ["aaa", "mmm", "zzz"]
+
+
 class TestFilesMaxEviction:
     """FILES_MAX FIFO eviction in mark_file_read."""
 

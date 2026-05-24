@@ -439,6 +439,10 @@ class SessionCache:
     # as list[str] for JSON serialization.  Cleared when session expires or approaches
     # time-to-live limits to avoid false-positive suppression on stale cached hints.
     hints_seen: set[str] = field(default_factory=set)
+    # Tracks which bash output_ids have been surfaced in a dedup hint this session.
+    # Serialized as a sorted list[str] in JSON for stability; parsed back to set[str].
+    # Used by compact.py to skip manifest entries that the agent already saw via hint.
+    bash_dedup_emitted_ids: set[str] = field(default_factory=set)
     # Working directory at session start, used by git diff operations in the manifest.
     # Optional — may be None if the session was created before this field was added.
     cwd: str | None = None
@@ -483,6 +487,7 @@ class SessionCache:
             },
             snapshot_shas=dict(self.snapshot_shas),
             hints_seen=sorted(self.hints_seen),  # sorted list for stable JSON
+            bash_dedup_emitted_ids=sorted(self.bash_dedup_emitted_ids),  # sorted list for stable JSON
         )
 
     def to_json(self) -> str:
@@ -659,6 +664,15 @@ class SessionCache:
                 if isinstance(h, str) and h:
                     hints_seen.add(h)
 
+        # bash_dedup_emitted_ids: list[str] (persisted) → set[str] (in-memory).
+        # Missing in older sessions → empty set (no ids were tracked).
+        bash_dedup_emitted_ids: set[str] = set()
+        raw_dedup = d.get("bash_dedup_emitted_ids", [])
+        if isinstance(raw_dedup, list):
+            for oid in raw_dedup:
+                if isinstance(oid, str) and oid:
+                    bash_dedup_emitted_ids.add(oid)
+
         return cls(
             session_id=session_id,
             started_ts=float(d.get("started_ts", now)),
@@ -674,6 +688,7 @@ class SessionCache:
             skill_history=skill_history,
             snapshot_shas=snapshot_shas,
             hints_seen=hints_seen,
+            bash_dedup_emitted_ids=bash_dedup_emitted_ids,
         )
 
 
@@ -1134,6 +1149,7 @@ class _SessionDict(TypedDict, total=False):
     skill_history: dict[str, _SkillEntryDict]
     snapshot_shas: dict[str, str]
     hints_seen: list[str]
+    bash_dedup_emitted_ids: list[str]
 
 
 def _fresh_cache(session_id: str, *, unavailable: bool = False) -> SessionCache:
@@ -1338,6 +1354,8 @@ def _migrate_session(data: dict[str, Any]) -> dict[str, Any]:
         data["skill_history"] = {}
     if "cwd" not in data:
         data["cwd"] = None
+    if "bash_dedup_emitted_ids" not in data:
+        data["bash_dedup_emitted_ids"] = []
 
     # Per-file-entry defaults for nested objects
     for _file_key, file_entry in data.get("files", {}).items():

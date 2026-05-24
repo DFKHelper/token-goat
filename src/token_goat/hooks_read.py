@@ -342,6 +342,56 @@ def _build_git_hint(cwd: str | None, file_path: str) -> str | None:
         return None
 
 
+def _handle_structured_file(
+    session_id: str,
+    file_path: str,
+    tool_input: dict[str, object],
+    cache: object,
+) -> HookResponse | None:
+    """Return a hint when Read targets a large structured data file (CSV/JSON/log).
+
+    Fires BEFORE session-hint and diff-hint paths so that a first-time Read of a
+    large CSV is intercepted immediately, not only on repeat reads.  Tracks the hint
+    in the session fingerprint set so it fires at most once per file per session.
+
+    Returns ``None`` when the file is small, not a structured type, or the caller
+    already scoped the read with offset AND limit (surgical intent).
+    """
+    from .hints import _hint_fingerprint, build_structured_file_hint  # noqa: PLC0415
+
+    offset = tool_input.get("offset")
+    limit = tool_input.get("limit")
+
+    hint = build_structured_file_hint(
+        file_path=file_path,
+        offset=offset,
+        limit=limit,
+    )
+    if hint is None:
+        return None
+
+    # Dedup: suppress if identical hint already seen this session.
+    fingerprint = _hint_fingerprint(str(hint))
+    has_seen = getattr(cache, "has_hint_fingerprint", lambda _: False)(fingerprint)  # type: ignore[arg-type]
+    if has_seen:
+        _LOG.debug(
+            "pre-read: structured-file hint already seen for %s; suppressing",
+            sanitize_log_str(file_path),
+        )
+        return None
+
+    mark_seen = getattr(cache, "mark_hint_seen", None)
+    if callable(mark_seen):
+        mark_seen(fingerprint)
+
+    record_hint_stat_pair("structured_file_hint", hint, sanitize_log_str(file_path, max_len=512))
+    _LOG.info(
+        "pre-read: structured-file hint injected for %s (%s)",
+        sanitize_log_str(file_path), hint[:60],
+    )
+    return pre_tool_use_with_context(str(hint))
+
+
 def _record_session_hint_impact(file_path: str, hint: str) -> None:
     """Record net impact of session hints: avoided re-reads minus injection overhead.
 
@@ -644,6 +694,13 @@ def pre_read(payload: HookPayload) -> HookResponse:
     from . import session  # noqa: PLC0415
 
     cache = session.load(session_id)
+
+    # Structured-file hint: fires before session/diff hints so a first-time read
+    # of a large CSV/JSON/log is intercepted immediately.  Short-circuits when
+    # the caller already uses offset+limit (surgical intent) or the file is small.
+    structured_response = _handle_structured_file(session_id, file_path, tool_input, cache)
+    if structured_response is not None:
+        return structured_response
 
     # Collect context parts from all hint sources; combine and return once.
     context_parts: list[str] = []

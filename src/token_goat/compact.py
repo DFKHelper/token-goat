@@ -1105,7 +1105,7 @@ def _middle_truncate(text: str, max_lines: int = 20) -> str:
     return "\n".join(head + [marker] + tail)
 
 
-def _format_bash_entry(entry: object) -> str:
+def _format_bash_entry(entry: object, inline_snippet: bool = True) -> str:
     """Render one :class:`session.BashEntry` as a single manifest line.
 
     Format::
@@ -1113,10 +1113,15 @@ def _format_bash_entry(entry: object) -> str:
         - $ pytest -v tests/  (exit 1, 12.3KB, id=abc123def...)
         - $ pytest -v tests/  [×3] (exit 1, 12.3KB, id=abc123def...)
 
-    When a cached output body is available it is loaded from disk, passed
-    through :func:`_middle_truncate` (keeping the first+last ~40 % of lines),
-    and appended as an indented block so the compaction LLM can see both the
-    header and tail of long outputs without paying for the noisy middle.
+    When *inline_snippet* is True and a cached output body is available it is
+    loaded from disk, passed through :func:`_middle_truncate` (keeping the
+    first+last ~40 % of lines), and appended as an indented block so the
+    compaction LLM can see both the header and tail of long outputs without
+    paying for the noisy middle.
+
+    When *inline_snippet* is False the header line only is returned.  The
+    ``id=`` suffix is still present so the agent can recover the full body on
+    demand via ``token-goat bash-output <id>`` without re-running the command.
 
     The cache ID is included so the compaction LLM hands the agent something
     actionable — the agent can call ``token-goat bash-output <id>`` to recover
@@ -1139,6 +1144,9 @@ def _format_bash_entry(entry: object) -> str:
         f"- $ {cmd_preview}{run_count_marker}  "
         f"({exit_str}, {_humanize_bytes(total)}{truncated_marker}, id={_short_id(output_id)})"
     )
+
+    if not inline_snippet:
+        return header
 
     # Attempt to load cached output for inline snippet.  Failures are silently
     # ignored — the metadata line is always emitted even without the body.
@@ -2341,14 +2349,35 @@ def _render(cache: SessionCache, session_id: str, max_tokens: int) -> tuple[str,
     # Exclude entries already listed in "Current Blockers" — showing a failed
     # command as both a brief blocker note and a full entry with output snippet
     # wastes manifest tokens on the same information twice.
+    # Also exclude entries whose output_id was already surfaced to the agent via
+    # a bash dedup hint earlier in the session — the agent has already seen a
+    # recall pointer; repeating the full snippet in the manifest is redundant.
+    # Blocker entries are exempt from the dedup-hint exclusion so a failing
+    # command always appears in the manifest regardless of prior hint exposure.
     _blocker_ids = {getattr(e, "output_id", None) for e in blocker_entries}
+    _dedup_emitted_ids: set[str] = getattr(cache, "bash_dedup_emitted_ids", set()) or set()
     bash_entries = [
         e for e in _all_bash_entries
         if getattr(e, "output_id", None) not in _blocker_ids
+        and getattr(e, "output_id", None) not in _dedup_emitted_ids
     ]
+    # Inline snippet only when the entry is large enough that the preview pays
+    # for itself (>= 600 bytes).  Small outputs are trivially recalled via
+    # `token-goat bash-output <id>`; emitting the snippet wastes manifest tokens.
+    # Blockers always get inline_snippet=True — their output is the most
+    # load-bearing content in the manifest and must be visible without a
+    # recall round-trip.
+    _blocker_ids_for_snippet = {getattr(e, "output_id", None) for e in blocker_entries}
+    def _should_inline(be: object) -> bool:
+        oid = getattr(be, "output_id", None)
+        if oid and oid in _blocker_ids_for_snippet:
+            return True
+        total = int(getattr(be, "stdout_bytes", 0)) + int(getattr(be, "stderr_bytes", 0))
+        return total >= 600
+
     bash_lines, bash_used = _render_budget_lines(
         "### Commands Run (cached output)",
-        [_format_bash_entry(be) for be in bash_entries],
+        [_format_bash_entry(be, inline_snippet=_should_inline(be)) for be in bash_entries],
         bash_budget,
     )
 

@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from hook_helpers import assert_continue as _assert_continue
 
-from token_goat import hooks_session, session
+from token_goat import hooks_session, session, skill_cache
 from token_goat.hooks_session import _allocate_recovery_slots
 
 
@@ -245,6 +245,91 @@ class TestRecoverySlotAllocator:
         # Total still bounded:
         assert files + bash + web + skill == hooks_session._RECOVERY_TOTAL_ITEMS
         assert skill >= hooks_session._RECOVERY_MAX_SKILL
+
+
+class TestRecoverySkillChecklist:
+    """Recovery hint inlines checklist sections instead of recall commands."""
+
+    def test_checklist_inlined_not_recall_command(self, tmp_data_dir):
+        """Store a skill body with ## DoD; recovery hint must contain DoD text, not just recall."""
+        sid = "rec-checklist-1"
+        dod_lines = "- All tests pass\n- Lint clean\n- Mypy clean"
+        body = f"# ralph\n\nIntro text here.\n\n## DoD\n\n{dod_lines}\n\n## Other\n\nnot this\n"
+        meta = skill_cache.store_output(sid, "ralph", body)
+        assert meta is not None
+        session.mark_skill_loaded(
+            sid, meta.skill_name, meta.output_id, meta.content_sha,
+            meta.body_bytes, meta.truncated,
+        )
+        result = hooks_session.session_start({
+            "session_id": sid,
+            "source": "compact",
+            "cwd": "/proj",
+        })
+        _assert_continue(result)
+        ctx = result["hookSpecificOutput"]["additionalContext"]
+        # Checklist content must be inlined.
+        assert "All tests pass" in ctx, f"DoD text missing from hint:\n{ctx}"
+        assert "Lint clean" in ctx
+        # Should NOT fall back to recall command for this entry.
+        assert "token-goat skill-body ralph" not in ctx, (
+            f"recall command leaked into hint that should have inline checklist:\n{ctx}"
+        )
+
+    def test_fallback_when_body_has_no_checklist(self, tmp_data_dir):
+        """Body stored with no ## DoD / ## Checklist — falls back to recall command."""
+        sid = "rec-checklist-2"
+        body = "# ralph\n\n## Overview\n\nJust an overview.\n\n## Usage\n\nUsage text.\n" + ("x" * 300)
+        meta = skill_cache.store_output(sid, "ralph", body)
+        assert meta is not None
+        session.mark_skill_loaded(
+            sid, meta.skill_name, meta.output_id, meta.content_sha,
+            meta.body_bytes, meta.truncated,
+        )
+        result = hooks_session.session_start({
+            "session_id": sid,
+            "source": "compact",
+            "cwd": "/proj",
+        })
+        _assert_continue(result)
+        ctx = result["hookSpecificOutput"]["additionalContext"]
+        assert "ralph" in ctx
+        assert "token-goat skill-body ralph" in ctx, (
+            f"fallback recall command missing for skill without checklist:\n{ctx}"
+        )
+
+    def test_fallback_when_no_body_stored(self, tmp_data_dir):
+        """Session has skill_history entry but no body in cache — falls back to recall."""
+        sid = "rec-checklist-3"
+        # Mark skill loaded with a bogus output_id (body never written to disk).
+        session.mark_skill_loaded(sid, "ralph", "nonexistent-id", "sha", 25_000, False)
+        result = hooks_session.session_start({
+            "session_id": sid,
+            "source": "compact",
+            "cwd": "/proj",
+        })
+        _assert_continue(result)
+        ctx = result["hookSpecificOutput"]["additionalContext"]
+        assert "ralph" in ctx
+        assert "token-goat skill-body ralph" in ctx
+
+    def test_checklist_capped_at_400_chars(self, tmp_data_dir):
+        """Long DoD sections are capped so the hint doesn't balloon."""
+        sid = "rec-checklist-4"
+        long_dod = "- criterion item\n" * 100  # >> 400 chars
+        body = f"# ralph\n\n## DoD\n\n{long_dod}\n## End\n"
+        meta = skill_cache.store_output(sid, "ralph", body)
+        assert meta is not None
+        session.mark_skill_loaded(
+            sid, meta.skill_name, meta.output_id, meta.content_sha,
+            meta.body_bytes, meta.truncated,
+        )
+        hint = hooks_session._build_recovery_hint(sid)
+        assert hint is not None
+        # Skill block should contain inlined content — count chars of that block.
+        assert "criterion item" in hint
+        # Full 100-item list (~1700 chars) must not be present.
+        assert hint.count("criterion item") < 50, "DoD section not capped in recovery hint"
 
 
 class TestRecoveryStatAccounting:

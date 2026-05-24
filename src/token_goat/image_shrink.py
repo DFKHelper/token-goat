@@ -13,6 +13,7 @@ one cache entry and are never re-compressed.
 from __future__ import annotations
 
 __all__ = [
+    "AVIF_QUALITY",
     "CACHE_KEY_VERSION",
     "CLAUDE_MAX_VISION_EDGE_PX",
     "CLAUDE_VISION_PIXELS_PER_TOKEN",
@@ -23,6 +24,7 @@ __all__ = [
     "SIZE_THRESHOLD_BYTES",
     "WEBP_METHOD",
     "WEBP_QUALITY",
+    "avif_supported",
     "ensure_cache_dir",
     "is_image_path",
     "should_shrink",
@@ -79,6 +81,13 @@ WEBP_QUALITY = 80
 # For 1024 px images this is still under 100 ms — well within the hook budget.
 WEBP_METHOD = 6
 
+# AVIF quality for output when Pillow has AVIF encoder support (libaom).
+# Quality 60 is perceptually equivalent to JPEG quality 85 and typically
+# 30–50% smaller, giving a further token-budget reduction on top of the
+# existing resize step.  Applied only to images > SIZE_THRESHOLD_BYTES and
+# only when avif_supported() returns True.
+AVIF_QUALITY = 60
+
 # Output format for lossy compression.  Defaults to WebP because it produces
 # meaningfully smaller files than JPEG on the typical content the hook sees
 # (screenshots, UI, diagrams with text).  Set TOKEN_GOAT_IMAGE_FORMAT=jpeg to
@@ -87,12 +96,32 @@ WEBP_METHOD = 6
 _ENV_IMAGE_FORMAT = "TOKEN_GOAT_IMAGE_FORMAT"
 _DEFAULT_LOSSY_FORMAT = "webp"
 
+@functools.lru_cache(maxsize=1)
+def avif_supported() -> bool:
+    """Return True if the runtime Pillow can encode AVIF images.
+
+    AVIF support requires Pillow built with libaom (the AV1 reference encoder).
+    Available in Pillow ≥ 10.x when the package was compiled with AVIF enabled.
+    The result is cached after the first call because ``Image.init()`` is not
+    free and the encoder set does not change at runtime.
+
+    Falls back gracefully to False on any import or attribute error so callers
+    can treat this as a capability probe without try/except at every call site.
+    """
+    try:
+        from PIL import Image  # noqa: PLC0415
+        Image.init()
+        return "AVIF" in Image.SAVE
+    except Exception:  # noqa: BLE001
+        return False
+
+
 # Cache key version.  Bumped whenever the compression pipeline changes in a way
 # that would produce different bytes for the same input — quality knobs, format
 # selection, downscale algorithm.  Included in the content hash so old cache
 # entries are silently superseded rather than serving stale (worse-compressed)
 # output indefinitely.
-CACHE_KEY_VERSION = 2
+CACHE_KEY_VERSION = 3
 
 # Claude vision API parameters (source: Anthropic docs).
 # Claude downscales images to fit within this many pixels on the long edge
@@ -168,12 +197,13 @@ def _cache_key(src_path: Path) -> str:
 def _cache_path_for(src_path: Path) -> Path:
     """Return the base cache path (stem only) for *src_path*.
 
-    The actual output file is one of ``<hash>.shrunk.webp`` (default lossy
-    output), ``<hash>.shrunk.jpg`` (JPEG fallback via ``TOKEN_GOAT_IMAGE_FORMAT``
-    or for paranoid-compatibility paths), or ``<hash>.shrunk.png`` (screenshots
-    with transparency).  Callers probe all three suffixes when checking for a
-    cache hit, so switching the lossy format at runtime via env var still
-    correctly re-uses an existing cached output if one is present in any format.
+    The actual output file is one of ``<hash>.shrunk.avif`` (AVIF when
+    supported and preferred), ``<hash>.shrunk.webp`` (default lossy output),
+    ``<hash>.shrunk.jpg`` (JPEG fallback via ``TOKEN_GOAT_IMAGE_FORMAT`` or for
+    paranoid-compatibility paths), or ``<hash>.shrunk.png`` (screenshots with
+    transparency).  Callers probe all four suffixes when checking for a cache
+    hit, so switching the lossy format at runtime still correctly re-uses an
+    existing cached output if one is present in any format.
     """
     key = _cache_key(src_path)
     return paths.image_cache_dir() / f"{key}.shrunk"
@@ -338,12 +368,13 @@ def shrink(src_path: Path) -> Path | None:
     paths.ensure_dir(paths.image_cache_dir())
 
     stem = _cache_path_for(src_path)  # e.g. .../abc123.shrunk
-    # Check for already-cached variants in any supported output format.  The
-    # configured lossy format is probed first; all other formats follow so a
-    # format switch via TOKEN_GOAT_IMAGE_FORMAT still finds existing cache entries.
+    # Check for already-cached variants in any supported output format.  AVIF
+    # is probed first when preferred; then the configured lossy format; all
+    # other formats follow so a format switch at runtime still finds existing
+    # cache entries in whichever format they were originally written.
     lossy_fmt = _lossy_format()
     lossy_suffix = f".{lossy_fmt}" if lossy_fmt != "jpeg" else ".jpg"
-    suffixes = [lossy_suffix] + [s for s in (".webp", ".jpg", ".png") if s != lossy_suffix]
+    suffixes = [".avif", lossy_suffix] + [s for s in (".webp", ".jpg", ".png") if s not in (".avif", lossy_suffix)]
 
     for suffix in suffixes:
         candidate = stem.with_suffix(suffix)
@@ -396,37 +427,61 @@ def shrink(src_path: Path) -> Path | None:
             # Choose output format based on image characteristics.
             # Screenshots with transparency keep PNG so sharp UI edges aren't
             # compressed into lossy blur artifacts.  Everything else flows to
-            # the configured lossy format (WebP by default — typically 30–50%
-            # smaller than JPEG at equivalent perceived quality on screenshot
-            # and UI content, and Claude's vision API accepts it natively).
+            # the best available lossy format:
+            #   1. AVIF (when prefer_avif=True and libaom is available) — 30–50%
+            #      smaller than JPEG at equivalent perceived quality; q60 ≈ JPEG q85.
+            #   2. WebP (default fallback) — typically 30–50% smaller than JPEG
+            #      on screenshot/UI content; accepted natively by Claude's vision API.
+            #   3. JPEG (TOKEN_GOAT_IMAGE_FORMAT=jpeg or TOKEN_GOAT_PREFER_AVIF=0).
             #
-            # WebP compression of RGBA is also supported, but we keep the PNG
-            # path for RGBA screenshots because alpha through WebP-lossy is
-            # quality-sensitive in ways PNG simply isn't, and screenshots are
-            # the workload where preserved fidelity matters most.
+            # WebP/AVIF compression of RGBA is supported by Pillow, but we keep the
+            # PNG path for RGBA screenshots because alpha through lossy encoders is
+            # quality-sensitive in ways lossless PNG simply isn't, and screenshots
+            # are the workload where preserved fidelity matters most.
             is_screenshot = _looks_like_screenshot_or_text(img)
             if is_screenshot and img.mode in ("RGBA", "LA"):
-                # Keep PNG with alpha for screenshots
+                # Keep PNG with alpha for screenshots — lossless, alpha-safe.
                 final_path = stem.with_suffix(".png")
                 img.save(final_path, "PNG", optimize=True)
             else:
-                # Flatten to RGB and emit the configured lossy format.
+                # Flatten to RGB and emit the best available lossy format.
                 img = _ensure_rgb(img, Image)
-                fmt = _lossy_format()
-                if fmt == "webp":
-                    final_path = stem.with_suffix(".webp")
-                    # method=6 is the slowest/best encoder setting — at 1024 px
-                    # this still completes in well under 100 ms on commodity
-                    # hardware, comfortably inside the hook budget.
-                    img.save(
-                        final_path,
-                        "WEBP",
-                        quality=WEBP_QUALITY,
-                        method=WEBP_METHOD,
-                    )
+
+                # Load config once per call to check AVIF preference.
+                # Import here (not module-level) to avoid circular import:
+                # config.py does not import image_shrink, but image_shrink importing
+                # config at module level would tie initialisation order tightly.
+                from .config import load as _load_config  # noqa: PLC0415
+                _cfg = _load_config()
+                # TOKEN_GOAT_IMAGE_FORMAT=jpeg is an explicit override that forces JPEG
+                # output and therefore disables AVIF — the env var expresses a downstream
+                # compatibility constraint that trumps the prefer_avif preference.
+                _explicit_fmt = _lossy_format()
+                use_avif = (
+                    _explicit_fmt != "jpeg"
+                    and _cfg.image_shrink.prefer_avif
+                    and avif_supported()
+                )
+
+                if use_avif:
+                    final_path = stem.with_suffix(".avif")
+                    img.save(final_path, "AVIF", quality=_cfg.image_shrink.avif_quality)
                 else:
-                    final_path = stem.with_suffix(".jpg")
-                    img.save(final_path, "JPEG", quality=JPEG_QUALITY, optimize=True)
+                    fmt = _lossy_format()
+                    if fmt == "webp":
+                        final_path = stem.with_suffix(".webp")
+                        # method=6 is the slowest/best encoder setting — at 1024 px
+                        # this still completes in well under 100 ms on commodity
+                        # hardware, comfortably inside the hook budget.
+                        img.save(
+                            final_path,
+                            "WEBP",
+                            quality=WEBP_QUALITY,
+                            method=WEBP_METHOD,
+                        )
+                    else:
+                        final_path = stem.with_suffix(".jpg")
+                        img.save(final_path, "JPEG", quality=_cfg.image_shrink.jpeg_quality, optimize=True)
 
         out_size = final_path.stat().st_size
         savings_pct = 100.0 * (1.0 - out_size / src_size) if src_size > 0 else 0.0

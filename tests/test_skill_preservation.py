@@ -317,6 +317,76 @@ class TestManifestActiveSkillsSection:
 
 
 # ---------------------------------------------------------------------------
+# skill_cache.extract_checklist_section
+# ---------------------------------------------------------------------------
+
+class TestExtractChecklistSection:
+    def test_dod_heading_extracted(self):
+        body = "# ralph\n\nIntro text.\n\n## DoD\n\n- All tests pass\n- Lint clean\n\n## Other\n\nNot this.\n"
+        result = skill_cache.extract_checklist_section(body)
+        assert result is not None
+        assert "All tests pass" in result
+        assert "Not this" not in result
+
+    def test_checklist_heading_extracted(self):
+        body = "# Skill\n\n## Checklist\n\n1. Step one\n2. Step two\n"
+        result = skill_cache.extract_checklist_section(body)
+        assert result is not None
+        assert "Step one" in result
+
+    def test_steps_heading_extracted(self):
+        body = "## Steps\n\n- do this\n- do that\n"
+        result = skill_cache.extract_checklist_section(body)
+        assert result is not None
+        assert "do this" in result
+
+    def test_dod_beats_steps_when_both_present(self):
+        """## DoD has higher priority than ## Steps."""
+        body = "## Steps\n\nstep content\n\n## DoD\n\ndod content\n"
+        result = skill_cache.extract_checklist_section(body)
+        assert result is not None
+        assert "dod content" in result
+        assert "step content" not in result
+
+    def test_no_matching_heading_returns_none(self):
+        body = "# Skill\n\n## Overview\n\nJust an overview.\n\n## Usage\n\nUsage text.\n"
+        assert skill_cache.extract_checklist_section(body) is None
+
+    def test_empty_body_returns_none(self):
+        assert skill_cache.extract_checklist_section("") is None
+
+    def test_matched_but_empty_section_returns_none(self):
+        body = "## DoD\n\n## Next Section\n"
+        assert skill_cache.extract_checklist_section(body) is None
+
+    def test_long_section_capped_at_400_chars(self):
+        long_content = "- item\n" * 200  # well over 400 chars
+        body = f"## DoD\n\n{long_content}\n## End\n"
+        result = skill_cache.extract_checklist_section(body)
+        assert result is not None
+        assert len(result) <= 410  # 400 + possible "…" suffix
+        assert result.endswith("…")
+
+    def test_case_insensitive_heading_match(self):
+        body = "## dod\n\n- lowercase dod\n"
+        result = skill_cache.extract_checklist_section(body)
+        assert result is not None
+        assert "lowercase dod" in result
+
+    def test_definition_of_done_heading(self):
+        body = "## Definition of Done\n\n- criterion one\n"
+        result = skill_cache.extract_checklist_section(body)
+        assert result is not None
+        assert "criterion one" in result
+
+    def test_quick_start_heading(self):
+        body = "## Quick Start\n\nrun this command\n"
+        result = skill_cache.extract_checklist_section(body)
+        assert result is not None
+        assert "run this command" in result
+
+
+# ---------------------------------------------------------------------------
 # hooks_session recovery hint
 # ---------------------------------------------------------------------------
 
@@ -328,9 +398,44 @@ class TestRecoveryHintSkills:
         assert hint is not None
         assert "**Skills**" in hint
         assert "ralph" in hint
+        # With no body stored, falls back to recall command format.
         assert "token-goat skill-body ralph" in hint
-        # Recall line must mention the skill-body command
         assert "token-goat skill-body <name>" in hint
+
+    def test_checklist_inlined_when_body_stored(self, tmp_data_dir):
+        """When a body with a ## DoD section is cached, recovery hint inlines it."""
+        sid = "session-recovery-checklist"
+        dod_text = "- All tests pass\n- Lint clean\n- Mypy clean"
+        body = f"# ralph\n\nIntro.\n\n## DoD\n\n{dod_text}\n\n## Other\n\nNot this.\n"
+        meta = skill_cache.store_output(sid, "ralph", body)
+        assert meta is not None
+        session.mark_skill_loaded(
+            sid, meta.skill_name, meta.output_id, meta.content_sha,
+            meta.body_bytes, meta.truncated,
+        )
+        hint = hooks_session._build_recovery_hint(sid)
+        assert hint is not None
+        assert "**Skills**" in hint
+        assert "ralph" in hint
+        # Checklist content must appear inline.
+        assert "All tests pass" in hint
+        # Should NOT fall back to recall command for this skill entry.
+        assert "token-goat skill-body ralph" not in hint
+
+    def test_fallback_when_no_checklist_in_body(self, tmp_data_dir):
+        """Body stored but no checklist heading → fall back to recall command."""
+        sid = "session-recovery-fallback"
+        body = "# ralph\n\n## Overview\n\nJust an overview.\n\n## Usage\n\nUsage.\n" + ("x" * 300)
+        meta = skill_cache.store_output(sid, "ralph", body)
+        assert meta is not None
+        session.mark_skill_loaded(
+            sid, meta.skill_name, meta.output_id, meta.content_sha,
+            meta.body_bytes, meta.truncated,
+        )
+        hint = hooks_session._build_recovery_hint(sid)
+        assert hint is not None
+        assert "ralph" in hint
+        assert "token-goat skill-body ralph" in hint
 
     def test_no_skills_no_block(self, tmp_data_dir):
         sid = "session-recovery-no-skill"

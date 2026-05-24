@@ -31,6 +31,7 @@ __all__ = [
     "SkillMeta",
     "content_hash",
     "evict_old_entries",
+    "extract_checklist_section",
     "list_outputs",
     "load_output",
     "load_output_meta",
@@ -170,6 +171,83 @@ def output_id_for(session_id: str, skill_name: str, content_sha: str) -> str:
 def _safe_join(output_id: str) -> Path | None:
     """Validate *output_id* and return the corresponding cache file path."""
     return safe_join_output_id(output_id, _skill_outputs_dir, "skill_cache")
+
+
+# Headings searched in priority order when looking for actionable checklist prose.
+# The first match wins.
+_CHECKLIST_HEADINGS = (
+    "## DoD",
+    "## Checklist",
+    "## Steps",
+    "## Definition of Done",
+    "## Process",
+    "## Quick Start",
+)
+
+# Maximum characters returned from a matched checklist section (per skill).
+_CHECKLIST_MAX_CHARS: int = 400
+
+
+def extract_checklist_section(body: str) -> str | None:
+    """Return the first checklist-shaped section from a skill body, or ``None``.
+
+    Walks *body* line by line and checks each ``##``-level heading against
+    :data:`_CHECKLIST_HEADINGS` (case-insensitive prefix match).  When a match
+    is found, collects lines until the next ``##``-level heading or end-of-file,
+    strips leading/trailing whitespace, and returns the result capped at
+    :data:`_CHECKLIST_MAX_CHARS` characters.  Returns ``None`` when no matching
+    heading is found or the extracted text is empty.
+    """
+    if not body:
+        return None
+
+    lines = body.splitlines()
+    n = len(lines)
+
+    # Build a lower-cased version of each target heading for fast comparison.
+    targets = tuple(h.lower() for h in _CHECKLIST_HEADINGS)
+
+    # Priority: return the match for the highest-priority heading found.
+    # We do a single pass recording the first-found position per heading, then
+    # return the match with the lowest priority index.
+    best_priority: int = len(targets)
+    best_start: int = -1
+
+    for i, raw_line in enumerate(lines):
+        stripped = raw_line.strip()
+        if not stripped.startswith("## "):
+            continue
+        low = stripped.lower()
+        for pri, target in enumerate(targets):
+            if pri >= best_priority:
+                break  # already have a better match
+            if low.startswith(target):
+                best_priority = pri
+                best_start = i
+                break  # each heading checked only once per line
+
+    if best_start == -1:
+        return None
+
+    # Collect body lines from the line after the heading up to the next ## heading.
+    body_lines: list[str] = []
+    for j in range(best_start + 1, n):
+        if lines[j].strip().startswith("## "):
+            break
+        body_lines.append(lines[j])
+
+    text = "\n".join(body_lines).strip()
+    if not text:
+        return None
+
+    # Cap at _CHECKLIST_MAX_CHARS; prefer breaking at a newline boundary.
+    if len(text) > _CHECKLIST_MAX_CHARS:
+        cut = text.rfind("\n", 0, _CHECKLIST_MAX_CHARS)
+        if cut <= 0:
+            cut = _CHECKLIST_MAX_CHARS
+        text = text[:cut].rstrip() + "…"
+
+    return text
 
 
 def store_output(

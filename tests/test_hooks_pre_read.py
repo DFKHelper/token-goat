@@ -507,3 +507,125 @@ class TestGrepWrittenNotReadHint:
         result = hooks_cli.pre_read(self._grep_payload(sid, path))
         _assert_continue(result)
         assert "hookSpecificOutput" not in result
+
+
+# ---------------------------------------------------------------------------
+# Structured-file hint tests
+# ---------------------------------------------------------------------------
+
+
+class TestStructuredFileHint:
+    """pre_read emits a structured-file hint for large CSV/JSON/log files."""
+
+    def _read_payload(self, sid: str, path: str, offset=None, limit=None) -> dict:
+        tool_input: dict = {"file_path": path}
+        if offset is not None:
+            tool_input["offset"] = offset
+        if limit is not None:
+            tool_input["limit"] = limit
+        return {
+            "session_id": sid,
+            "tool_name": "Read",
+            "tool_input": tool_input,
+            "cwd": "/proj",
+        }
+
+    def _make_large_file(self, path, ext: str, size_bytes: int = 100_000) -> str:
+        """Write a synthetic large file at path with the given extension."""
+        full = path / f"data{ext}"
+        # Build content that will give reasonable row estimates.
+        row = b"col1,col2,col3\n"
+        content = row * (size_bytes // len(row) + 1)
+        full.write_bytes(content[:size_bytes])
+        return str(full)
+
+    def test_large_csv_hint_fires(self, tmp_data_dir, tmp_path):
+        """100KB CSV with no offset/limit → structured-file hint injected."""
+        fpath = self._make_large_file(tmp_path, ".csv")
+        sid = "struct-csv"
+        result = hooks_cli.pre_read(self._read_payload(sid, fpath))
+        _assert_continue(result)
+        assert "hookSpecificOutput" in result
+        ctx = result["hookSpecificOutput"]["additionalContext"]
+        assert "csv" in ctx.lower()
+        assert "KB" in ctx
+        # Hint must suggest surgical access.
+        assert "offset" in ctx.lower() or "token-goat" in ctx.lower()
+
+    def test_large_json_hint_fires(self, tmp_data_dir, tmp_path):
+        """100KB JSON with no offset/limit → json-specific hint injected."""
+        fpath = self._make_large_file(tmp_path, ".json")
+        sid = "struct-json"
+        result = hooks_cli.pre_read(self._read_payload(sid, fpath))
+        _assert_continue(result)
+        assert "hookSpecificOutput" in result
+        ctx = result["hookSpecificOutput"]["additionalContext"]
+        assert "json" in ctx.lower()
+        assert "KB" in ctx
+        assert "jq" in ctx or "token-goat" in ctx
+
+    def test_large_log_hint_fires(self, tmp_data_dir, tmp_path):
+        """100KB .log file → log-specific hint injected."""
+        fpath = self._make_large_file(tmp_path, ".log")
+        sid = "struct-log"
+        result = hooks_cli.pre_read(self._read_payload(sid, fpath))
+        _assert_continue(result)
+        assert "hookSpecificOutput" in result
+        ctx = result["hookSpecificOutput"]["additionalContext"]
+        assert "log" in ctx.lower()
+        assert "KB" in ctx
+        # Log hint suggests tail/head/grep.
+        assert any(word in ctx.lower() for word in ("tail", "head", "grep"))
+
+    def test_surgical_read_no_hint(self, tmp_data_dir, tmp_path):
+        """offset AND limit both specified → caller is reading surgically; no hint."""
+        fpath = self._make_large_file(tmp_path, ".csv")
+        sid = "struct-surgical"
+        result = hooks_cli.pre_read(self._read_payload(sid, fpath, offset=10, limit=20))
+        _assert_continue(result)
+        # Structured-file hint must not fire when offset+limit are set.
+        if "hookSpecificOutput" in result:
+            ctx = result["hookSpecificOutput"].get("additionalContext", "")
+            assert "📊" not in ctx and "large" not in ctx.lower()
+
+    def test_small_file_no_hint(self, tmp_data_dir, tmp_path):
+        """1KB CSV → below size threshold; no structured-file hint."""
+        small = tmp_path / "tiny.csv"
+        small.write_bytes(b"a,b,c\n1,2,3\n")
+        sid = "struct-small"
+        result = hooks_cli.pre_read(self._read_payload(sid, str(small)))
+        _assert_continue(result)
+        if "hookSpecificOutput" in result:
+            ctx = result["hookSpecificOutput"].get("additionalContext", "")
+            assert "📊" not in ctx
+
+    def test_session_dedup_fires_only_once(self, tmp_data_dir, tmp_path):
+        """Same large CSV read twice in a session → hint fires only on first read."""
+        fpath = self._make_large_file(tmp_path, ".csv")
+        sid = "struct-dedup"
+        payload = self._read_payload(sid, fpath)
+
+        result1 = hooks_cli.pre_read(payload)
+        _assert_continue(result1)
+        assert "hookSpecificOutput" in result1
+
+        # Second read of same file same session → hint suppressed (fingerprint dedup).
+        result2 = hooks_cli.pre_read(payload)
+        _assert_continue(result2)
+        # The second result may have a different hint (session cache hint) or none,
+        # but the structured-file specific text must not repeat.
+        if "hookSpecificOutput" in result2:
+            ctx2 = result2["hookSpecificOutput"].get("additionalContext", "")
+            assert "📊" not in ctx2 and "large csv" not in ctx2.lower()
+
+    def test_jsonl_treated_as_tabular(self, tmp_data_dir, tmp_path):
+        """.jsonl is classified as tabular, not document-json."""
+        fpath = self._make_large_file(tmp_path, ".jsonl")
+        sid = "struct-jsonl"
+        result = hooks_cli.pre_read(self._read_payload(sid, fpath))
+        _assert_continue(result)
+        assert "hookSpecificOutput" in result
+        ctx = result["hookSpecificOutput"]["additionalContext"]
+        assert "jsonl" in ctx.lower()
+        # Tabular hint suggests offset/limit row-slice, NOT jq.
+        assert "jq" not in ctx

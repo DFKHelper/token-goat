@@ -22,6 +22,7 @@ __all__ = [
     "build_glob_dedup_hint",
     "build_grep_dedup_hint",
     "build_read_hint",
+    "build_structured_file_hint",
     "build_web_dedup_hint",
     "compute_stale_threshold",
 ]
@@ -1055,6 +1056,9 @@ def _build_bash_dedup_hint_inner(
 
     if total_bytes <= _BASH_DEDUP_LIGHT_MAX_BYTES:
         hint_text = f"{fail_prefix}`{cmd_short}` cached ({int(age)}s, {total_bytes}B{exit_str}). `{recall_cmd}`"
+        if cache is not None and entry.output_id:
+            cache.bash_dedup_emitted_ids.add(entry.output_id)
+            cache._invalidate_json_cache()
         return ReadHint(_apply_terse(hint_text), tokens_avoided)
 
     grep_suffix = " (add --grep PATTERN to filter)" if total_bytes >= _BASH_DEDUP_GREP_SUGGEST_BYTES else ""
@@ -1074,6 +1078,9 @@ def _build_bash_dedup_hint_inner(
             f"{fail_prefix}`{cmd_short}` ({int(age)}s): {total_bytes:,}B{exit_str} cached. "
             f"`{recall_cmd}`{grep_suffix}"
         )
+    if cache is not None and entry.output_id:
+        cache.bash_dedup_emitted_ids.add(entry.output_id)
+        cache._invalidate_json_cache()
     return ReadHint(_apply_terse(hint_text), tokens_avoided)
 
 
@@ -1356,5 +1363,141 @@ def _build_web_dedup_hint_inner(
             f"`token-goat web-output {_cc.short_output_id(entry.output_id)}`"
         ),
         tokens_avoided,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Structured-file hint
+# ---------------------------------------------------------------------------
+
+# File extensions considered structured data files.  These fall into three
+# flavours that each get their own hint wording:
+#   - tabular  (.csv, .tsv, .jsonl, .ndjson): row-slice suggestion
+#   - document (.json): key-path or jq suggestion
+#   - log      (.log): tail/head suggestion
+_STRUCTURED_EXT_TABULAR: frozenset[str] = frozenset({".csv", ".tsv", ".jsonl", ".ndjson"})
+_STRUCTURED_EXT_JSON: frozenset[str] = frozenset({".json"})
+_STRUCTURED_EXT_LOG: frozenset[str] = frozenset({".log"})
+
+# Minimum size in bytes before the structured-file hint fires.  Below this the
+# file is cheap to read whole and the hint would approach the saving it advertises.
+_STRUCTURED_FILE_MIN_BYTES: int = 50_000
+
+# Maximum bytes to read when counting newlines for the row estimate.
+# 32 KB is enough for a tight estimate at a cheap I/O cost.
+_STRUCTURED_NEWLINE_PROBE_BYTES: int = 32_768
+
+
+def _estimate_row_count(path: Path, file_size: int) -> int:
+    """Estimate rows/lines in a structured file from a 32 KB probe.
+
+    Reads the first _STRUCTURED_NEWLINE_PROBE_BYTES, counts newlines, and
+    extrapolates to the full file size.  Fast and cheap for the pre-read hot
+    path.  Returns a non-negative integer; never raises.
+    """
+    try:
+        with path.open("rb") as fh:
+            probe = fh.read(_STRUCTURED_NEWLINE_PROBE_BYTES)
+        if not probe:
+            return 0
+        probe_lines = probe.count(b"\n")
+        if len(probe) < _STRUCTURED_NEWLINE_PROBE_BYTES:
+            # Whole file fit in the probe — exact count.
+            return probe_lines
+        # Extrapolate: lines_per_byte × full_size.
+        return max(0, int(probe_lines * file_size / len(probe)))
+    except OSError:
+        return 0
+
+
+def build_structured_file_hint(
+    *,
+    file_path: str,
+    offset: object | None,
+    limit: object | None,
+) -> ReadHint | None:
+    """Return a hint when Read targets a large structured data file.
+
+    Fires when:
+    - The extension is one of the recognised structured types AND
+    - The file is larger than _STRUCTURED_FILE_MIN_BYTES AND
+    - The caller did NOT already specify both offset AND limit (surgical intent).
+
+    Returns ``None`` (no hint) for small files, non-structured extensions,
+    or when the caller already uses offset/limit.  Never raises.
+    """
+    try:
+        return _build_structured_file_hint_inner(
+            file_path=file_path, offset=offset, limit=limit,
+        )
+    except Exception:  # noqa: BLE001 — fail-soft for the hot pre-read path
+        _LOG.debug("build_structured_file_hint: unexpected error for %r", file_path, exc_info=True)
+        return None
+
+
+def _build_structured_file_hint_inner(
+    *,
+    file_path: str,
+    offset: object | None,
+    limit: object | None,
+) -> ReadHint | None:
+    """Inner implementation; may raise."""
+    # If the caller already scoped the read with both offset AND limit, they are
+    # reading surgically — do not nag them.
+    has_offset = offset is not None and isinstance(offset, int) and offset > 0
+    has_limit = limit is not None and isinstance(limit, int) and limit > 0
+    if has_offset and has_limit:
+        return None
+
+    path = Path(file_path)
+    ext = path.suffix.lower()
+
+    is_tabular = ext in _STRUCTURED_EXT_TABULAR
+    is_json = ext in _STRUCTURED_EXT_JSON
+    is_log = ext in _STRUCTURED_EXT_LOG
+
+    if not (is_tabular or is_json or is_log):
+        return None
+
+    # Cheap size check first — skip the row-count probe for small files.
+    try:
+        file_size = path.stat().st_size
+    except OSError:
+        return None
+
+    if file_size < _STRUCTURED_FILE_MIN_BYTES:
+        return None
+
+    size_kb = file_size // 1024
+    safe_path = _sanitize_hint_path(file_path)
+
+    if is_tabular:
+        row_count = _estimate_row_count(path, file_size)
+        row_str = f"~{row_count:,}rows" if row_count > 0 else "many rows"
+        return ReadHint(
+            _apply_terse(
+                f"📊 large {ext} ({size_kb}KB, {row_str}) — "
+                f"use offset/limit or `token-goat section \"{safe_path}::row N\"`"
+            ),
+            0,
+        )
+
+    if is_json:
+        return ReadHint(
+            _apply_terse(
+                f"📄 large json ({size_kb}KB) — "
+                f"use `token-goat read \"{safe_path}::Key.path\"` or jq"
+            ),
+            0,
+        )
+
+    # is_log
+    row_count = _estimate_row_count(path, file_size)
+    row_str = f"~{row_count:,}lines" if row_count > 0 else "many lines"
+    return ReadHint(
+        _apply_terse(
+            f"📜 log ({size_kb}KB, {row_str}) — use tail/head or grep instead of full Read"
+        ),
+        0,
     )
 

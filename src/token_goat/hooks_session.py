@@ -220,20 +220,37 @@ def _build_recovery_hint(session_id: str) -> str | None:
     sections: list[str] = []
 
     # 0. Loaded skills — first because they're the load-bearing protocol prose
-    #    the compaction LLM most aggressively trims.  Showing them up-top with
-    #    the recall command tells the post-compact agent exactly what was
-    #    active and how to retrieve the full body.
+    #    the compaction LLM most aggressively trims.  When a cached body is
+    #    available, we inline the first checklist/DoD section (≤400 chars) so
+    #    the agent gets the actionable fraction immediately without a follow-up
+    #    tool call.  Fall back to the recall command when no checklist is found
+    #    or the body can't be loaded.
     if skill_entries:
+        from . import skill_cache as _skill_cache  # noqa: PLC0415
+
         lines = ["**Skills**:"]
         for se in skill_entries:
             name = getattr(se, "skill_name", "?")
             body_bytes = int(getattr(se, "body_bytes", 0))
             run_count = int(getattr(se, "run_count", 1))
             count_str = f" ×{run_count}" if run_count > 1 else ""
-            lines.append(
-                f"- {name}{count_str} ({_humanize_bytes(body_bytes)}) — "
-                f"`token-goat skill-body {name}`"
-            )
+            output_id = getattr(se, "output_id", None)
+            checklist: str | None = None
+            if output_id:
+                body = _skill_cache.load_output(output_id)
+                if body:
+                    checklist = _skill_cache.extract_checklist_section(body)
+            if checklist:
+                # Indent each checklist line with "  > " for visual offset.
+                preview_lines = checklist.splitlines()[:3]
+                indented = "\n  > ".join(preview_lines)
+                lines.append(f"- \U0001f9e0 {name}{count_str}")
+                lines.append(f"  > {indented}")
+            else:
+                lines.append(
+                    f"- {name}{count_str} ({_humanize_bytes(body_bytes)}) — "
+                    f"`token-goat skill-body {name}`"
+                )
         dropped = len(skill_all) - len(skill_entries)
         if dropped > 0:
             lines.append(f"- +{dropped} more")
