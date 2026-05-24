@@ -278,7 +278,7 @@ class TestRealWorldSpike:
         _assert_continue(result)
         assert "hookSpecificOutput" in result
         hint = result["hookSpecificOutput"]["additionalContext"]
-        assert "cached" in hint
+        assert "⌘" in hint  # terse form of "cached"
         # The re-read hint carries a wasted-tokens estimate; we trimmed
         # "tokens wasted" to "Nt wasted" for token savings — assert the
         # "wasted" concept, not the word "tokens" that no longer appears.
@@ -412,7 +412,7 @@ class TestWrittenNotReadHint:
         # but the written-not-read text should not.
         if "hookSpecificOutput" in result:
             ctx = result["hookSpecificOutput"].get("additionalContext", "")
-            assert "written" not in ctx.lower() or "cached" in ctx.lower()
+            assert "written" not in ctx.lower() or "⌘" in ctx  # terse "cached"
 
     def test_never_written_never_read_no_hint(self, tmp_data_dir):
         """File with no session history → no hint at all."""
@@ -478,7 +478,7 @@ class TestGrepWrittenNotReadHint:
         if "hookSpecificOutput" in result:
             ctx = result["hookSpecificOutput"].get("additionalContext", "")
             # written-not-read branch must not fire when file is in cache.files
-            assert "written" not in ctx.lower() or "cached" in ctx.lower()
+            assert "written" not in ctx.lower() or "⌘" in ctx  # terse "cached"
 
     def test_grep_no_path_no_hint(self, tmp_data_dir):
         """Grep with no path parameter → no written-not-read hint."""

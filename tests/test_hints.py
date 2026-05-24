@@ -124,7 +124,7 @@ class TestCachedExactRange:
             cwd=None,
         )
         assert hint is not None
-        assert "cached" in hint
+        assert "⌘" in hint  # terse form of "cached"
         assert "waste" in hint.lower()
         expected_tokens = _est_tokens_from_lines(200)
         assert str(expected_tokens) in hint
@@ -145,7 +145,7 @@ class TestCachedExactRange:
             cwd=None,
         )
         assert hint is not None
-        assert "cached" in hint
+        assert "⌘" in hint  # terse form of "cached"
 
 
 # ---------------------------------------------------------------------------
@@ -804,7 +804,7 @@ class TestCachedStaleEntry:
             session_id=sid, file_path=path, offset=0, limit=200, cwd=None,
         )
         assert hint is not None
-        assert "cached" in hint
+        assert "⌘" in hint  # terse form of "cached"
 
     def test_stale_entry_suppresses_hint(self, tmp_data_dir):
         """A read older than STALE_READ_AGE_SECONDS is treated as out of context."""
@@ -928,7 +928,7 @@ class TestSurgicalReadSuppression:
             session_id=sid, file_path=path, offset=0, limit=500, cwd=None,
         )
         assert hint is not None
-        assert "cached" in hint
+        assert "⌘" in hint  # terse form of "cached"
 
     def test_narrow_implicit_reread_still_warns(self, tmp_data_dir):
         """No explicit limit → not surgical intent. Default-limit re-reads
@@ -943,7 +943,7 @@ class TestSurgicalReadSuppression:
             session_id=sid, file_path=path, offset=0, limit=None, cwd=None,
         )
         assert hint is not None
-        assert "cached" in hint
+        assert "⌘" in hint  # terse form of "cached"
 
     def test_at_threshold_explicit_reread_is_suppressed(self, tmp_data_dir):
         """Exactly _NARROW_EXPLICIT_READ_LINES with explicit limit → suppressed."""
@@ -970,7 +970,7 @@ class TestSurgicalReadSuppression:
             offset=10, limit=_NARROW_EXPLICIT_READ_LINES + 1, cwd=None,
         )
         assert hint is not None
-        assert "cached" in hint
+        assert "⌘" in hint  # terse form of "cached"
 
 
 # ---------------------------------------------------------------------------
@@ -993,7 +993,7 @@ class TestCacheHintSymbolSuffix:
             session_id=sid, file_path=path, offset=0, limit=200, cwd=None,
         )
         assert hint is not None
-        assert "cached" in hint
+        assert "⌘" in hint  # terse form of "cached"
         assert "login" in hint
         assert "validate_token" in hint
         assert "[symbols:" in hint
@@ -1239,7 +1239,7 @@ class TestReadCountSuppression:
             session_id=sid, file_path=path, offset=0, limit=200, cwd=None,
         )
         assert hint is not None
-        assert "cached" in hint
+        assert "⌘" in hint  # terse form of "cached"
 
     def test_read_count_5_emits_surgical_nudge(self, tmp_data_dir):
         """read_count=5 hits the threshold — surgical-read nudge emitted instead of nag."""
@@ -1362,7 +1362,7 @@ class TestComputeStaleThreshold:
             session_id=sid, file_path=path, offset=0, limit=200, cwd=None,
         )
         assert hint is not None, "Read 1000s ago in 4h session should still be fresh (threshold=1800s)"
-        assert "cached" in hint
+        assert "⌘" in hint  # terse form of "cached"
 
     def test_adaptive_threshold_suppresses_older_read_in_long_session(self, tmp_data_dir):
         """In a short session (1h), a read 1000s ago uses threshold=900s.
@@ -1421,7 +1421,7 @@ class TestHintsEdgeCases:
         )
         # Should emit an exact-match hint
         assert hint is not None
-        assert "cached" in str(hint)
+        assert "⌘" in str(hint)  # terse form of "cached"
         assert hint.tokens_saved > 0
 
     def test_very_long_file_path_in_hint(self, tmp_data_dir):
@@ -1604,7 +1604,7 @@ class TestHintThrottleByFileSize:
         )
         # Should emit overlap hint (read_count=3 so small-file check doesn't apply)
         assert hint is not None
-        assert "cached" in hint or "overlap" in hint.lower()
+        assert "⌘" in hint or "overlap" in hint.lower()  # terse "cached" or overlap warning
 
     def test_large_file_100_lines_emits_hint(self, tmp_data_dir):
         """A 100-line file with single read should emit a hint.
@@ -1627,7 +1627,7 @@ class TestHintThrottleByFileSize:
         )
         # Should emit hint for larger file even with single read
         assert hint is not None
-        assert "cached" in hint
+        assert "⌘" in hint  # terse form of "cached"
         assert "waste" in hint.lower()
 
     def test_exactly_30_lines_boundary_emits_hint(self, tmp_data_dir):
@@ -1658,7 +1658,7 @@ class TestHintThrottleByFileSize:
         )
         # Should emit exact-match hint (100 lines > NARROW_EXPLICIT_READ_LINES threshold)
         assert hint is not None
-        assert "cached" in hint
+        assert "⌘" in hint  # terse form of "cached"
         assert "waste" in hint.lower()
 
     def test_sentinel_full_file_hint(self, tmp_data_dir):
@@ -1745,7 +1745,7 @@ class TestBashDedupLightOutput:
         self._record(sid, cmd, stdout_bytes=_BASH_DEDUP_MIN_BYTES)
         hint = build_bash_dedup_hint(session_id=sid, command=cmd)
         assert hint is not None
-        assert "cached" in hint
+        assert "⌘" in hint  # terse form of "cached"
         assert "bash-output" in hint
 
     def test_light_hint_is_compact(self, tmp_data_dir):
@@ -1900,7 +1900,7 @@ class TestBashDedupFailedExitCode:
         hint = build_bash_dedup_hint(session_id=sid, command=cmd)
         assert hint is not None
         assert hint.startswith("FAILED")
-        assert "exit=1" in hint
+        assert "x=1" in hint  # terse form of "exit=1"
 
     def test_nonzero_exit_full_hint_has_prefix(self, tmp_data_dir):
         """Full hint for failed command starts with FAILED."""
@@ -1910,7 +1910,7 @@ class TestBashDedupFailedExitCode:
         hint = build_bash_dedup_hint(session_id=sid, command=cmd)
         assert hint is not None
         assert hint.startswith("FAILED")
-        assert "exit=2" in hint
+        assert "x=2" in hint  # terse form of "exit=2"
 
     def test_exit_code_not_duplicated_in_hint(self, tmp_data_dir):
         """Exit code appears exactly once — not in both prefix and body."""
@@ -1919,7 +1919,7 @@ class TestBashDedupFailedExitCode:
         self._record(sid, cmd, stdout_bytes=1500, exit_code=1)
         hint = build_bash_dedup_hint(session_id=sid, command=cmd)
         assert hint is not None
-        assert hint.count("exit=1") == 1
+        assert hint.count("x=1") == 1  # terse form of "exit=1", appears exactly once
 
     def test_none_exit_code_no_prefix(self, tmp_data_dir):
         """None exit code (unknown) produces no prefix and no exit string."""
@@ -1936,4 +1936,4 @@ class TestBashDedupFailedExitCode:
         hint = build_bash_dedup_hint(session_id=sid, command=cmd)
         assert hint is not None
         assert "FAILED" not in hint
-        assert "exit=" not in hint
+        assert "x=" not in hint  # terse form of "exit=" — must be absent for None exit code

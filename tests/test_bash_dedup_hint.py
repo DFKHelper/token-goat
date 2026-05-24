@@ -104,7 +104,7 @@ class TestBashDedupHintFiresOnRepeat:
         result = hooks_read.pre_read(payload)
         _assert_continue(result)
         ctx = result.get("hookSpecificOutput", {}).get("additionalContext", "")
-        assert "ran 2x" in ctx
+        assert "×2x" in ctx  # terse form of "ran 2x" (ran→×)
         assert "WARNING" not in ctx
         assert "token-goat bash-output" in ctx
 
@@ -165,7 +165,7 @@ class TestBashDedupHintFiresOnRepeat:
         assert _re.search(r"\(\d+s[,):]", ctx), (
             f"expected '(Ns)' or '(Ns,' age suffix in hint: {ctx!r}"
         )
-        assert "cached" in ctx
+        assert "⌘" in ctx  # terse form of "cached"
         assert "WARNING" not in ctx
         assert "2x" not in ctx
 
