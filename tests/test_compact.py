@@ -4435,3 +4435,244 @@ class TestGitDiffStatSummaryCache:
         result = compact._get_git_diff_stat_summary(None)
         assert result == ""
         assert None not in compact._diff_stat_summary_cache
+
+
+# ---------------------------------------------------------------------------
+# TestRenderTasksSection / TestLoadTaskList / TestManifestTODOs
+# ---------------------------------------------------------------------------
+
+
+class TestRenderTasksSection:
+    """Unit tests for compact._render_tasks_section."""
+
+    def test_no_tasks_returns_empty(self):
+        assert compact._render_tasks_section([]) == []
+
+    def test_all_completed_returns_empty(self):
+        tasks = [
+            {"id": "1", "subject": "Deploy to prod", "status": "completed"},
+            {"id": "2", "subject": "Write tests", "status": "completed"},
+        ]
+        assert compact._render_tasks_section(tasks) == []
+
+    def test_pending_tasks_appear(self):
+        tasks = [
+            {"id": "1", "subject": "Fix the bug", "status": "pending"},
+            {"id": "2", "subject": "Write tests", "status": "pending"},
+            {"id": "3", "subject": "Done already", "status": "completed"},
+        ]
+        lines = compact._render_tasks_section(tasks)
+        assert lines[0] == "### TODOs"
+        assert any("Fix the bug" in ln for ln in lines)
+        assert any("Write tests" in ln for ln in lines)
+        # Completed task must not appear
+        assert not any("Done already" in ln for ln in lines)
+
+    def test_in_progress_marker(self):
+        tasks = [{"id": "1", "subject": "Active task", "status": "in_progress"}]
+        lines = compact._render_tasks_section(tasks)
+        assert any("[→]" in ln for ln in lines)
+
+    def test_in_progress_hyphenated_marker(self):
+        tasks = [{"id": "1", "subject": "Active task", "status": "in-progress"}]
+        lines = compact._render_tasks_section(tasks)
+        assert any("[→]" in ln for ln in lines)
+
+    def test_pending_marker(self):
+        tasks = [{"id": "1", "subject": "Pending task", "status": "pending"}]
+        lines = compact._render_tasks_section(tasks)
+        assert any("[ ]" in ln for ln in lines)
+
+    def test_subject_truncated_at_60_chars(self):
+        long_subject = "A" * 80
+        tasks = [{"id": "1", "subject": long_subject, "status": "pending"}]
+        lines = compact._render_tasks_section(tasks)
+        # Find the task line (not the header)
+        task_lines = [ln for ln in lines if ln.startswith("- ")]
+        assert len(task_lines) == 1
+        # Subject portion of the line should end with ellipsis and be ≤60 chars
+        assert "…" in task_lines[0]
+        # Extract subject text after "- [ ] "
+        subject_text = task_lines[0][len("- [ ] "):]
+        assert len(subject_text) <= 60
+
+    def test_max_5_tasks_shown(self):
+        tasks = [
+            {"id": str(i), "subject": f"Task {i}", "status": "pending"}
+            for i in range(10)
+        ]
+        lines = compact._render_tasks_section(tasks)
+        task_lines = [ln for ln in lines if ln.startswith("- ") and "more" not in ln]
+        assert len(task_lines) == 5
+
+    def test_overflow_note_when_more_than_5(self):
+        tasks = [
+            {"id": str(i), "subject": f"Task {i}", "status": "pending"}
+            for i in range(10)
+        ]
+        lines = compact._render_tasks_section(tasks)
+        overflow_lines = [ln for ln in lines if "more" in ln]
+        assert len(overflow_lines) == 1
+        assert "+5 more" in overflow_lines[0]
+
+    def test_exactly_5_tasks_no_overflow(self):
+        tasks = [
+            {"id": str(i), "subject": f"Task {i}", "status": "pending"}
+            for i in range(5)
+        ]
+        lines = compact._render_tasks_section(tasks)
+        overflow_lines = [ln for ln in lines if "more" in ln]
+        assert overflow_lines == []
+
+    def test_header_is_first_line(self):
+        tasks = [{"id": "1", "subject": "Do something", "status": "pending"}]
+        lines = compact._render_tasks_section(tasks)
+        assert lines[0] == "### TODOs"
+
+
+class TestLoadTaskList:
+    """Unit tests for compact._load_task_list reading from a temp directory."""
+
+    def test_missing_directory_returns_empty(self, tmp_path, monkeypatch):
+        from token_goat import paths
+        monkeypatch.setattr(paths, "claude_config_dir", lambda: tmp_path / "claude")
+        result = compact._load_task_list("no-such-session")
+        assert result == []
+
+    def test_reads_pending_task(self, tmp_path, monkeypatch):
+        import json
+
+        from token_goat import paths
+        monkeypatch.setattr(paths, "claude_config_dir", lambda: tmp_path)
+        sid = "test-session-abc"
+        task_dir = tmp_path / "tasks" / sid
+        task_dir.mkdir(parents=True)
+        (task_dir / "1.json").write_text(
+            json.dumps({"id": "1", "subject": "Fix login", "status": "pending"}),
+            encoding="utf-8",
+        )
+        result = compact._load_task_list(sid)
+        assert len(result) == 1
+        assert result[0]["subject"] == "Fix login"
+        assert result[0]["status"] == "pending"
+
+    def test_reads_multiple_tasks(self, tmp_path, monkeypatch):
+        import json
+
+        from token_goat import paths
+        monkeypatch.setattr(paths, "claude_config_dir", lambda: tmp_path)
+        sid = "multi-task-session"
+        task_dir = tmp_path / "tasks" / sid
+        task_dir.mkdir(parents=True)
+        for i, status in enumerate(["pending", "in_progress", "completed"]):
+            (task_dir / f"{i}.json").write_text(
+                json.dumps({"id": str(i), "subject": f"Task {i}", "status": status}),
+                encoding="utf-8",
+            )
+        result = compact._load_task_list(sid)
+        assert len(result) == 3
+        statuses = {t["status"] for t in result}
+        assert statuses == {"pending", "in_progress", "completed"}
+
+    def test_skips_malformed_json(self, tmp_path, monkeypatch):
+        from token_goat import paths
+        monkeypatch.setattr(paths, "claude_config_dir", lambda: tmp_path)
+        sid = "malformed-session"
+        task_dir = tmp_path / "tasks" / sid
+        task_dir.mkdir(parents=True)
+        (task_dir / "bad.json").write_text("not-json{{{", encoding="utf-8")
+        result = compact._load_task_list(sid)
+        assert result == []
+
+    def test_skips_non_dict_json(self, tmp_path, monkeypatch):
+        import json
+
+        from token_goat import paths
+        monkeypatch.setattr(paths, "claude_config_dir", lambda: tmp_path)
+        sid = "non-dict-session"
+        task_dir = tmp_path / "tasks" / sid
+        task_dir.mkdir(parents=True)
+        (task_dir / "1.json").write_text(json.dumps([1, 2, 3]), encoding="utf-8")
+        result = compact._load_task_list(sid)
+        assert result == []
+
+
+class TestManifestTODOs:
+    """Integration tests: _render_tasks_section results appear in the full manifest."""
+
+    def test_manifest_has_todos_section_when_pending_tasks(self, tmp_data_dir, monkeypatch, tmp_path):
+        """A session with pending tasks emits ### TODOs in the manifest."""
+        import json
+
+        from token_goat import paths
+        monkeypatch.setattr(paths, "claude_config_dir", lambda: tmp_path)
+
+        sid = "todo-manifest-session"
+        task_dir = tmp_path / "tasks" / sid
+        task_dir.mkdir(parents=True)
+        for i, subject in enumerate(["Alpha task", "Beta task", "Gamma task"]):
+            (task_dir / f"{i}.json").write_text(
+                json.dumps({"id": str(i), "subject": subject, "status": "pending"}),
+                encoding="utf-8",
+            )
+
+        _populate_session(sid)
+        result = compact.build_manifest(sid)
+
+        assert "### TODOs" in result
+        assert "Alpha task" in result
+        assert "Beta task" in result
+        assert "Gamma task" in result
+
+    def test_manifest_no_todos_section_when_no_tasks(self, tmp_data_dir, monkeypatch, tmp_path):
+        """A session with no task directory emits no ### TODOs section."""
+        from token_goat import paths
+        monkeypatch.setattr(paths, "claude_config_dir", lambda: tmp_path)
+
+        sid = "no-todo-manifest-session"
+        _populate_session(sid)
+        result = compact.build_manifest(sid)
+
+        assert "### TODOs" not in result
+
+    def test_manifest_no_todos_when_all_completed(self, tmp_data_dir, monkeypatch, tmp_path):
+        """Completed-only task list emits no ### TODOs section."""
+        import json
+
+        from token_goat import paths
+        monkeypatch.setattr(paths, "claude_config_dir", lambda: tmp_path)
+
+        sid = "completed-todos-session"
+        task_dir = tmp_path / "tasks" / sid
+        task_dir.mkdir(parents=True)
+        (task_dir / "1.json").write_text(
+            json.dumps({"id": "1", "subject": "Already done", "status": "completed"}),
+            encoding="utf-8",
+        )
+
+        _populate_session(sid)
+        result = compact.build_manifest(sid)
+
+        assert "### TODOs" not in result
+
+    def test_manifest_todos_capped_at_5_with_overflow(self, tmp_data_dir, monkeypatch, tmp_path):
+        """10 pending tasks → max 5 shown + overflow note."""
+        import json
+
+        from token_goat import paths
+        monkeypatch.setattr(paths, "claude_config_dir", lambda: tmp_path)
+
+        sid = "many-todos-session"
+        task_dir = tmp_path / "tasks" / sid
+        task_dir.mkdir(parents=True)
+        for i in range(10):
+            (task_dir / f"{i}.json").write_text(
+                json.dumps({"id": str(i), "subject": f"Task {i}", "status": "pending"}),
+                encoding="utf-8",
+            )
+
+        _populate_session(sid)
+        result = compact.build_manifest(sid)
+
+        assert "### TODOs" in result
+        assert "+5 more" in result
