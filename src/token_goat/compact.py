@@ -197,6 +197,20 @@ _MAX_COLD_OUTPUTS: Final[int] = 4
 # 6 covers any realistic session without crowding higher-priority blockers.
 _MAX_ACTIVE_SKILLS: Final[int] = 6
 
+# Minimum weighted activity score required to emit a full session manifest.
+# Below this floor the manifest is suppressed entirely (or replaced by a 1-line
+# stub) because there is not enough session context worth preserving across a
+# compaction.  The weights are:
+#   edited_files  × 2  — edits are the most load-bearing signal
+#   bash_history  × 1  — commands run are secondary context
+#   web_history   × 1  — web fetches are secondary context
+#   skill_history × 1  — loaded skills are useful but lighter
+#   active blockers × 5  — a current failure is always worth surfacing
+# A score of 3 means roughly: 1 edit + 1 bash run, or 2 edits, or 3 fetches.
+# Short sessions (a single file read, no edits, no commands) score 0 and are
+# suppressed — there is nothing to preserve.
+_ACTIVITY_FLOOR: Final[int] = 3
+
 # TTL for the process-level git diff stat summary cache (seconds).
 # `_get_git_diff_stat_summary` runs two git subprocesses per call; caching
 # avoids repeated invocations when build_manifest is called in quick succession
@@ -1018,6 +1032,36 @@ def _select_failed_bash_entries(bash_history: object, now_ts: float) -> list[obj
     return heapq.nlargest(_MAX_BLOCKER_ENTRIES, candidates, key=_BY_BASH_TS)
 
 
+def _session_activity_score(cache: SessionCache) -> int:
+    """Compute a weighted activity score for the session.
+
+    Used by :func:`build_manifest_adaptive` to decide whether to emit a full
+    manifest or suppress it.  See :data:`_ACTIVITY_FLOOR` for weight rationale.
+
+    Returns a non-negative integer; higher means more session activity.
+    """
+    edited_count = len(cache.edited_files) if isinstance(cache.edited_files, dict) else 0
+    bash_count = len(getattr(cache, "bash_history", None) or {})
+    web_count = len(getattr(cache, "web_history", None) or {})
+    skill_count = len(getattr(cache, "skill_history", None) or {})
+
+    # Active blockers: recent failed bash commands
+    now_ts = time.time()
+    blocker_count = len(
+        _select_failed_bash_entries(
+            getattr(cache, "bash_history", None) or {}, now_ts
+        )
+    )
+
+    return (
+        edited_count * 2
+        + bash_count * 1
+        + web_count * 1
+        + skill_count * 1
+        + blocker_count * 5
+    )
+
+
 def _format_blocker_entry(entry: object) -> str:
     """Render one failed :class:`session.BashEntry` as a "Current Blockers" line.
 
@@ -1230,7 +1274,7 @@ def _middle_truncate(text: str, max_lines: int = 20) -> str:
     return "\n".join(head + [marker] + tail)
 
 
-def _format_bash_entry(entry: object, inline_snippet: bool = True) -> str:
+def _format_bash_entry(entry: object, inline_snippet: bool = True, *, is_blocker: bool = False) -> str:
     """Render one :class:`session.BashEntry` as a single manifest line.
 
     Format::
@@ -1254,6 +1298,10 @@ def _format_bash_entry(entry: object, inline_snippet: bool = True) -> str:
     suffix (KB/MB) because the raw integer (``12345``) is harder to scan in a
     glance-level summary.  ``[×N]`` appears when the command was retried (same
     SHA, run_count > 1) so retry loops are immediately visible.
+
+    *is_blocker* controls the inline snippet line cap: blocker entries keep 20
+    lines (failure context is load-bearing); non-blocker entries cap at 12 to
+    save ~60-200 tokens/session.
     """
     from . import bash_cache as bash_cache_mod
 
@@ -1275,12 +1323,16 @@ def _format_bash_entry(entry: object, inline_snippet: bool = True) -> str:
 
     # Attempt to load cached output for inline snippet.  Failures are silently
     # ignored — the metadata line is always emitted even without the body.
+    # Non-blocker entries are capped at 12 lines (was 20) to save ~60-200
+    # tokens/session; blocker entries keep 20 lines because failure output is
+    # the most load-bearing content in the manifest and needs more context.
     snippet: str | None = None
     if output_id:
         try:
             raw = bash_cache_mod.load_output(output_id)
             if raw and raw.strip():
-                snippet = _middle_truncate(raw.strip(), max_lines=20)
+                snippet_max_lines = 20 if is_blocker else 12
+                snippet = _middle_truncate(raw.strip(), max_lines=snippet_max_lines)
         except Exception:  # noqa: BLE001
             pass
 
@@ -1873,8 +1925,22 @@ def build_manifest_adaptive(session_id: str) -> str:
         has_pending_diff=bool(pending_diff),
         has_uncommitted_changes=bool(uncommitted),
     )
+    # Activity-floor suppression: if the session has too little activity, skip
+    # the full manifest.  A score below _ACTIVITY_FLOOR means essentially
+    # "session started but nothing worth preserving happened" — a single file
+    # read with no edits or commands is not worth injecting into the compaction.
+    activity_score = _session_activity_score(cache)
+    if activity_score < _ACTIVITY_FLOOR:
+        _LOG.info(
+            "build_manifest_adaptive: session=%s suppressed (activity_score=%d < floor=%d)",
+            session_id[:8],
+            activity_score,
+            _ACTIVITY_FLOOR,
+        )
+        return ""
+
     _LOG.debug(
-        "build_manifest_adaptive: session=%s budget=%d tier=%s (edited=%d symbols=%d bash=%s web=%s diff=%s uncommitted=%s)",
+        "build_manifest_adaptive: session=%s budget=%d tier=%s (edited=%d symbols=%d bash=%s web=%s diff=%s uncommitted=%s activity=%d)",
         session_id[:8],
         budget,
         _session_age_tier(age_seconds),
@@ -1884,6 +1950,7 @@ def build_manifest_adaptive(session_id: str) -> str:
         bool(getattr(cache, "web_history", None) and cache.web_history),
         bool(pending_diff),
         bool(uncommitted),
+        activity_score,
     )
     return _build_manifest_from_cache(cache, session_id, budget)
 
@@ -2600,9 +2667,13 @@ def _render(cache: SessionCache, session_id: str, max_tokens: int) -> tuple[str,
     what_worked_lines = _render_what_worked_section(_what_worked_entries, now_ts_for_worked)
 
     # Cold outputs are grouped with bash history (same budget slice).
-    # Skip for young sessions — same rationale as bash_entries above.
+    # Skip for young and active sessions — only emit for mature sessions (>60 min).
+    # Rationale: Cold Outputs advises the compaction LLM to evict old bash output
+    # from context.  For active sessions the outputs are still likely relevant and
+    # emitting the section wastes budget; for mature sessions the 30-min-old outputs
+    # are almost certainly stale and the eviction hint pays back its token cost.
     now_ts = time.time()
-    bash_hist_raw = getattr(cache, "bash_history", None) or {} if age_tier != "young" else {}
+    bash_hist_raw = getattr(cache, "bash_history", None) or {} if age_tier == "mature" else {}
     cold_candidates = sorted(
         [
             be for be in bash_hist_raw.values()
