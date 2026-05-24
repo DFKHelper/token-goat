@@ -5180,3 +5180,194 @@ class TestWhatWorkedSection:
             entry = self._make_bash_entry(cmd, 0, now - 60, f"id-{abs(hash(cmd))}")
             result = compact._select_what_worked({entry.output_id: entry}, set())
             assert len(result) == 1, f"Expected {cmd!r} to be recognised as a test command"
+
+
+# ---------------------------------------------------------------------------
+# #20 — Activity-floor suppression
+# ---------------------------------------------------------------------------
+
+
+class TestActivityFloorSuppression:
+    """build_manifest_adaptive returns empty string when session activity is below floor."""
+
+    def test_low_activity_session_suppressed(self, tmp_data_dir):
+        """A session with only 1 file read and no edits/bash scores below floor → suppressed."""
+        sid = "floor-low-activity-abc"
+        # score = 0 edits×2 + 0 bash×1 + 0 web×1 + 0 skills×1 + 0 blockers×5 = 0
+        session.mark_file_read(sid, "/proj/src/file.py", offset=0, limit=50)
+        result = compact.build_manifest_adaptive(sid)
+        assert result == ""
+
+    def test_single_edit_only_suppressed(self, tmp_data_dir):
+        """1 edit scores 2 < floor(3) → suppressed."""
+        sid = "floor-one-edit-abc"
+        session.mark_file_edited(sid, "/proj/src/foo.py")
+        # score = 1 edit × 2 = 2 < 3
+        result = compact.build_manifest_adaptive(sid)
+        assert result == ""
+
+    def test_two_edits_meets_floor(self, tmp_data_dir):
+        """2 edits score 4 >= floor(3) → full manifest emitted."""
+        sid = "floor-two-edits-abc"
+        session.mark_file_edited(sid, "/proj/src/foo.py")
+        session.mark_file_edited(sid, "/proj/src/bar.py")
+        # score = 2 edits × 2 = 4 >= 3
+        result = compact.build_manifest_adaptive(sid)
+        assert "Token-Goat Session Manifest" in result
+
+    def test_one_edit_plus_bash_meets_floor(self, tmp_data_dir):
+        """1 edit (×2) + 1 bash run (×1) = 3 >= floor(3) → manifest emitted."""
+        sid = "floor-edit-bash-abc"
+        session.mark_file_edited(sid, "/proj/src/app.py")
+        session.mark_bash_run(sid, "sha-abc", "pytest", "out-abc", 600, 0, 0, False)
+        # score = 1×2 + 1×1 = 3 >= 3
+        result = compact.build_manifest_adaptive(sid)
+        assert "Token-Goat Session Manifest" in result
+
+    def test_session_activity_score_weights(self, tmp_data_dir):
+        """_session_activity_score returns the expected weighted sum."""
+        sid = "score-weights-abc"
+        session.mark_file_edited(sid, "/proj/a.py")   # +2
+        session.mark_file_edited(sid, "/proj/b.py")   # +2
+        session.mark_bash_run(sid, "sha-w1", "pytest", "out-w1", 600, 0, 0, False)  # +1
+        cache = session.load(sid)
+        score = compact._session_activity_score(cache)
+        # 2 edits × 2 + 1 bash × 1 = 5
+        assert score == 5
+
+    def test_activity_floor_constant_is_three(self):
+        """_ACTIVITY_FLOOR must be 3 (documented contract)."""
+        assert compact._ACTIVITY_FLOOR == 3
+
+    def test_five_edits_well_above_floor(self, tmp_data_dir):
+        """5 edits score 10 — well above floor — manifest is full."""
+        sid = "floor-five-edits-abc"
+        for i in range(5):
+            session.mark_file_edited(sid, f"/proj/src/file{i}.py")
+        result = compact.build_manifest_adaptive(sid)
+        assert "Token-Goat Session Manifest" in result
+        assert "Files Edited" in result
+
+
+# ---------------------------------------------------------------------------
+# #24 — Middle-truncation cap 12 (non-blocker) vs 20 (blocker)
+# ---------------------------------------------------------------------------
+
+
+class TestMiddleTruncationCap:
+    """_format_bash_entry uses max_lines=12 for non-blockers, 20 for blockers."""
+
+    def test_middle_truncate_non_blocker_caps_at_12(self):
+        """Non-blocker with 30-line output → at most 12 visible lines in snippet."""
+        result = compact._middle_truncate("\n".join(f"line {i}" for i in range(30)), max_lines=12)
+        # With max_lines=12, keep=ceil(12*0.4)=5 head + 5 tail + 1 marker = 11 visible lines
+        lines = result.splitlines()
+        assert len(lines) <= 13  # head(5) + marker(1) + tail(5) = 11, well under 13
+        assert "omitted" in result
+
+    def test_middle_truncate_blocker_caps_at_20(self):
+        """Blocker with 30-line output → at most 20 visible lines in snippet."""
+        result = compact._middle_truncate("\n".join(f"line {i}" for i in range(30)), max_lines=20)
+        # With max_lines=20, keep=ceil(20*0.4)=8 head + 8 tail + 1 marker = 17 visible lines
+        lines = result.splitlines()
+        assert len(lines) <= 21  # 8 + 1 + 8 = 17, well under 21
+        assert "omitted" in result
+
+    def test_non_blocker_fewer_lines_than_blocker_for_same_input(self):
+        """Non-blocker snippet is shorter than blocker snippet for the same 30-line output."""
+        text = "\n".join(f"line {i}" for i in range(30))
+        non_blocker = compact._middle_truncate(text, max_lines=12)
+        blocker = compact._middle_truncate(text, max_lines=20)
+        assert len(non_blocker.splitlines()) < len(blocker.splitlines())
+
+    def test_format_bash_entry_is_blocker_parameter_exists(self):
+        """_format_bash_entry accepts is_blocker keyword argument."""
+        import types
+        entry = types.SimpleNamespace(
+            cmd_preview="pytest",
+            exit_code=0,
+            output_id="",
+            stdout_bytes=100,
+            stderr_bytes=0,
+            truncated=False,
+            run_count=1,
+        )
+        # Both calls must not raise; inline_snippet=False skips the disk load
+        line_normal = compact._format_bash_entry(entry, inline_snippet=False, is_blocker=False)
+        line_blocker = compact._format_bash_entry(entry, inline_snippet=False, is_blocker=True)
+        assert "pytest" in line_normal
+        assert "pytest" in line_blocker
+
+
+# ---------------------------------------------------------------------------
+# #29 — Cold Outputs opt-in for mature sessions only
+# ---------------------------------------------------------------------------
+
+
+class TestColdOutputsMatureOnly:
+    """Cold Outputs section appears only in mature-tier sessions."""
+
+    def _make_old_bash_entry(self, sid: str, age_secs: int = 2400) -> None:
+        """Add a bash entry old enough to qualify as a cold output (>30 min)."""
+        import time as _time
+        cmd_sha = f"sha-cold-{age_secs}"
+        session.mark_bash_run(
+            session_id=sid,
+            cmd_sha=cmd_sha,
+            cmd_preview="pytest tests/",
+            output_id=f"out-cold-{age_secs}",
+            stdout_bytes=800,
+            stderr_bytes=0,
+            exit_code=0,
+            truncated=False,
+        )
+        # Backdate the bash entry by patching the ts field in the session cache
+        cache = session.load(sid)
+        for entry in (cache.bash_history or {}).values():
+            if getattr(entry, "cmd_sha", "") == cmd_sha:
+                entry.ts = _time.time() - age_secs
+        session.save(cache)
+
+    def test_active_session_no_cold_outputs(self, tmp_data_dir):
+        """Active-tier session with old bash output → no Cold Outputs section."""
+        import time as _time
+        sid = "cold-active-session-abc"
+        # Provide enough activity to pass the floor
+        session.mark_file_edited(sid, "/proj/src/a.py")
+        session.mark_file_edited(sid, "/proj/src/b.py")
+        self._make_old_bash_entry(sid, age_secs=2400)  # 40 min old, > _COLD_OUTPUT_AGE_SECS
+        cache = session.load(sid)
+        # Set created_ts to make session active tier (10-60 min old)
+        cache.created_ts = _time.time() - 1800  # 30 min old → active
+        session.save(cache)
+        manifest = compact._build_manifest_from_cache(cache, sid, 800)
+        assert "Cold Outputs" not in manifest
+
+    def test_mature_session_has_cold_outputs(self, tmp_data_dir):
+        """Mature-tier session with old bash output → Cold Outputs section present."""
+        import time as _time
+        sid = "cold-mature-session-abc"
+        # Provide enough activity to pass the floor
+        session.mark_file_edited(sid, "/proj/src/a.py")
+        session.mark_file_edited(sid, "/proj/src/b.py")
+        self._make_old_bash_entry(sid, age_secs=2400)  # 40 min old
+        self._make_old_bash_entry(sid, age_secs=2500)  # second entry (need ≥2)
+        cache = session.load(sid)
+        # Set created_ts to make session mature (>60 min old)
+        cache.created_ts = _time.time() - 4000  # ~67 min old → mature
+        session.save(cache)
+        manifest = compact._build_manifest_from_cache(cache, sid, 800)
+        assert "Cold Outputs" in manifest
+
+    def test_young_session_no_cold_outputs(self, tmp_data_dir):
+        """Young-tier session → Cold Outputs suppressed (same as active)."""
+        import time as _time
+        sid = "cold-young-session-abc"
+        session.mark_file_edited(sid, "/proj/src/a.py")
+        session.mark_file_edited(sid, "/proj/src/b.py")
+        self._make_old_bash_entry(sid, age_secs=2400)
+        cache = session.load(sid)
+        cache.created_ts = _time.time() - 120  # 2 min old → young
+        session.save(cache)
+        manifest = compact._build_manifest_from_cache(cache, sid, 800)
+        assert "Cold Outputs" not in manifest
