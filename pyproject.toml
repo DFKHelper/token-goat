@@ -91,7 +91,7 @@ ignore = ["E501"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["tests"]
-addopts = "-rfe --strict-markers -n auto"
+addopts = "-rfe --strict-markers -n auto --dist=loadscope"
 markers = [
     "slow: integration tests that spawn real git repos or other slow subprocess work; opt in via `-m slow` or run the full suite with no -m filter (default)",
 ]

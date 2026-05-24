@@ -163,6 +163,24 @@ def make_project(tmp_data_dir):
     return make_project_from_root
 
 
+# ---------------------------------------------------------------------------
+# Module-scoped data-dir fixture
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture(scope="module")
+def module_tmp_data_dir(tmp_path_factory):
+    """Like tmp_data_dir but module-scoped: one patched data_dir per test module.
+
+    Use ONLY in read-only test groups where no test mutates the indexed DB in
+    a way that would corrupt later tests in the same module.  Tests that write
+    embeddings, re-index, or mutate project files must keep function scope.
+    """
+    tmp_path = tmp_path_factory.mktemp("module_data")
+    with patch.object(paths, "data_dir", return_value=tmp_path):
+        yield tmp_path
+
+
 class _FakeRegistryKey:
     """In-memory stand-in for an open registry key handle."""
 
@@ -415,6 +433,87 @@ def md_project(tmp_path, tmp_data_dir, make_project):
     """Copy md_sample to tmp dir, index it, return just the Project."""
     _, proj = _make_sample_project(tmp_path, tmp_data_dir, make_project, MD_SAMPLE, indexed=True)
     return proj
+
+
+# ---------------------------------------------------------------------------
+# Module-scoped project fixtures — index once per test module, not per test.
+# SAFE only for read-only test groups (no index_project re-runs, no DB writes,
+# no write_text on the project root that affects indexed content).
+# ---------------------------------------------------------------------------
+
+
+def _make_sample_project_module(tmp_path_factory, sample_path: Path):
+    """Build an indexed project under a single module-scoped temp dir.
+
+    Uses one tmp dir as both the data_dir and the parent for the project tree
+    to minimise mktemp calls.  Returns (proj_root, project, data_dir) so the
+    caller can hold the paths.data_dir patch open for the fixture's lifetime.
+    """
+    base = tmp_path_factory.mktemp(f"mod_{sample_path.name}")
+    proj_root = base / sample_path.name
+    shutil.copytree(sample_path, proj_root)
+    (proj_root / ".git").mkdir(exist_ok=True)
+    data_dir = base / "data"
+    data_dir.mkdir()
+    with patch.object(paths, "data_dir", return_value=data_dir):
+        proj = make_project_from_root(proj_root)
+        index_project(proj, full=True)
+    return proj_root, proj, data_dir
+
+
+@pytest.fixture(scope="module")
+def ts_project_module(tmp_path_factory):
+    """Module-scoped ts_sample project — indexed once per test module.
+
+    The fixture manages its own paths.data_dir context for the duration of the
+    module run.  Suitable for read-only symbol/section query tests.
+    """
+    proj_root, proj, data_dir = _make_sample_project_module(tmp_path_factory, TS_SAMPLE)
+    with patch.object(paths, "data_dir", return_value=data_dir):
+        yield proj
+
+
+@pytest.fixture(scope="module")
+def py_project_module(tmp_path_factory):
+    """Module-scoped py_sample project — indexed once per test module."""
+    proj_root, proj, data_dir = _make_sample_project_module(tmp_path_factory, PY_SAMPLE)
+    with patch.object(paths, "data_dir", return_value=data_dir):
+        yield proj
+
+
+@pytest.fixture(scope="module")
+def md_project_module(tmp_path_factory):
+    """Module-scoped md_sample project — indexed once per test module."""
+    proj_root, proj, data_dir = _make_sample_project_module(tmp_path_factory, MD_SAMPLE)
+    with patch.object(paths, "data_dir", return_value=data_dir):
+        yield proj
+
+
+@pytest.fixture(scope="module")
+def ts_project_tuple_module(tmp_path_factory):
+    """Module-scoped ts_sample project — returns (proj_root, project) tuple.
+
+    Module-scoped equivalent of ts_project_tuple.  Safe for read-only tests.
+    """
+    proj_root, proj, data_dir = _make_sample_project_module(tmp_path_factory, TS_SAMPLE)
+    with patch.object(paths, "data_dir", return_value=data_dir):
+        yield proj_root, proj
+
+
+@pytest.fixture(scope="module")
+def py_project_tuple_module(tmp_path_factory):
+    """Module-scoped py_sample project — returns (proj_root, project) tuple."""
+    proj_root, proj, data_dir = _make_sample_project_module(tmp_path_factory, PY_SAMPLE)
+    with patch.object(paths, "data_dir", return_value=data_dir):
+        yield proj_root, proj
+
+
+@pytest.fixture(scope="module")
+def md_project_tuple_module(tmp_path_factory):
+    """Module-scoped md_sample project — returns (proj_root, project) tuple."""
+    proj_root, proj, data_dir = _make_sample_project_module(tmp_path_factory, MD_SAMPLE)
+    with patch.object(paths, "data_dir", return_value=data_dir):
+        yield proj_root, proj
 
 
 # ============================================================================
