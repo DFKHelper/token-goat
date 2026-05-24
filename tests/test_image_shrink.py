@@ -707,3 +707,64 @@ class TestPixelCap:
         assert not bomb_warnings, (
             f"Unexpected pixel-cap warning for 100×100 image: {[r.message for r in bomb_warnings]}"
         )
+
+
+class TestImageSummary:
+    """Regression tests for ``extract_image_summary`` alt-text generation."""
+
+    def test_wide_image_classified_as_screenshot(self, tmp_path):
+        from PIL import Image
+
+        img = Image.new("RGB", (1280, 720), (10, 20, 30))
+        src = tmp_path / "wide.png"
+        img.save(src, "PNG")
+
+        summary = image_shrink.extract_image_summary(src, img)
+
+        assert "screenshot" in summary
+        assert "1280x720" in summary
+        assert "wide.png" in summary
+
+    def test_tall_image_classified_as_diagram(self, tmp_path):
+        from PIL import Image
+
+        img = Image.new("RGB", (720, 1280), (10, 20, 30))
+        src = tmp_path / "tall.png"
+        img.save(src, "PNG")
+
+        summary = image_shrink.extract_image_summary(src, img)
+
+        assert "diagram" in summary
+        assert "720x1280" in summary
+
+    def test_square_image_classified_as_image(self, tmp_path):
+        from PIL import Image
+
+        img = Image.new("RGB", (500, 500), (10, 20, 30))
+        src = tmp_path / "square.png"
+        img.save(src, "PNG")
+
+        summary = image_shrink.extract_image_summary(src, img)
+
+        assert "[Image:" in summary
+        assert "500x500" in summary
+        assert "screenshot" not in summary
+        assert "diagram" not in summary
+
+    def test_malformed_exif_does_not_raise(self, tmp_path):
+        from PIL import Image
+
+        img = Image.new("RGB", (1280, 720), (10, 20, 30))
+        src = tmp_path / "exif_broken.png"
+        img.save(src, "PNG")
+
+        def boom():
+            raise RuntimeError("exif parser exploded")
+
+        img._getexif = boom  # type: ignore[method-assign]
+
+        summary = image_shrink.extract_image_summary(src, img)
+
+        assert isinstance(summary, str)
+        assert summary
+        assert "1280x720" in summary

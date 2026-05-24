@@ -26,6 +26,7 @@ __all__ = [
     "WEBP_QUALITY",
     "avif_supported",
     "ensure_cache_dir",
+    "extract_image_summary",
     "is_image_path",
     "should_shrink",
     "shrink",
@@ -336,7 +337,7 @@ def _ensure_rgb(img: _PilImage.Image, Image_module: types.ModuleType) -> _PilIma
     return bg
 
 
-def shrink(src_path: Path) -> Path | None:
+def shrink(src_path: Path) -> tuple[Path, str] | None:
     """Compress and cache a large image; return the cached output path, or None on failure.
 
     Processing pipeline:
@@ -353,8 +354,9 @@ def shrink(src_path: Path) -> Path | None:
          are composited over a white background by _ensure_rgb() before JPEG save.
     6. Log size reduction percentage for telemetry.
 
-    Returns None (never raises) on any PIL, OS, or memory error. Callers treat None
-    as "use original path".
+    Returns ``None`` (never raises) on any PIL, OS, or memory error. Callers treat
+    ``None`` as "use original path". On success returns ``(cached_path, summary)``
+    where ``summary`` is a short alt-text string from :func:`extract_image_summary`.
     """
     t0 = time.time()
     # Validate input path for safety
@@ -406,7 +408,15 @@ def shrink(src_path: Path) -> Path | None:
                     os.utime(candidate, (now, now))
             except OSError:
                 pass  # Benign — cache still works, just loses a little LRU fidelity
-            return candidate
+            # Build summary from the cached image dimensions.
+            _summary = ""
+            try:
+                from PIL import Image as _PIL_Image  # noqa: PLC0415
+                with _PIL_Image.open(candidate) as _cached_img:
+                    _summary = extract_image_summary(src_path, _cached_img)
+            except Exception:  # noqa: BLE001
+                pass
+            return candidate, _summary
 
     try:
         from PIL import Image, ImageOps  # noqa: PLC0415
@@ -420,6 +430,7 @@ def shrink(src_path: Path) -> Path | None:
         # Image.open returns ImageFile; downstream resize/convert/paste return
         # Image. Annotate broadly so reassignment doesn't trip the type checker.
         img: Image.Image
+        _shrink_summary = ""
         with Image.open(src_path) as img:
             # Warn when the decoded bitmap is large enough to be a memory concern,
             # even though it falls within the Pillow cap.  Half of _MAX_PIXELS is
@@ -511,6 +522,9 @@ def shrink(src_path: Path) -> Path | None:
                         final_path = stem.with_suffix(".jpg")
                         img.save(final_path, "JPEG", quality=_cfg.image_shrink.jpeg_quality, optimize=True)
 
+            # Capture summary while img is still open (size/EXIF accessible).
+            _shrink_summary = extract_image_summary(src_path, img)
+
         out_size = final_path.stat().st_size
         savings_pct = 100.0 * (1.0 - out_size / src_size) if src_size > 0 else 0.0
         elapsed = time.time() - t0
@@ -523,7 +537,7 @@ def shrink(src_path: Path) -> Path | None:
             savings_pct,
             elapsed,
         )
-        return final_path
+        return final_path, _shrink_summary
     except Exception as e:  # noqa: BLE001 — PIL raises many undocumented exception subclasses
         elapsed = time.time() - t0
         _LOG.warning(
@@ -531,6 +545,47 @@ def shrink(src_path: Path) -> Path | None:
             src_path, type(e).__name__, e, elapsed, exc_info=True,
         )
         return None
+
+
+def extract_image_summary(src_path: Path, img: _PilImage.Image) -> str:
+    """Build a short textual summary of an image for use as alt-text context.
+
+    Returns a non-empty string of the form::
+
+        "[Image: screenshot ~1280x720, filename: foo.png]"
+
+    or, when an EXIF ImageDescription is present::
+
+        "Some description. [Image: screenshot ~1280x720, filename: foo.png]"
+
+    Classification:
+    - ``screenshot``: width/height ratio >= 1.4 (landscape-dominant)
+    - ``diagram``:    height/width ratio >= 1.4 (portrait-dominant)
+    - ``image``:      everything else (roughly square)
+
+    Never raises; EXIF errors are silently swallowed.
+    """
+    w, h = img.size
+    if h > 0 and w / h >= 1.4:
+        kind = "screenshot"
+    elif w > 0 and h / w >= 1.4:
+        kind = "diagram"
+    else:
+        kind = "image"
+
+    summary = f"[Image: {kind} ~{w}x{h}, filename: {src_path.name}]"
+
+    try:
+        exif = img._getexif()  # type: ignore[attr-defined]  # PIL private but stable
+        if exif:
+            # EXIF tag 270 = ImageDescription
+            description = exif.get(270)
+            if description and isinstance(description, str) and description.strip():
+                summary = f"{description.strip()}. {summary}"
+    except Exception:  # noqa: BLE001
+        pass
+
+    return summary
 
 
 def ensure_cache_dir(cache_dir: Path) -> Path:
@@ -569,9 +624,9 @@ def shrink_if_image(path: Path) -> Path:
     # Fast pre-check: should_shrink() does extension + size check without PIL.
     # This avoids calling shrink() on small files or non-image types.
     if should_shrink(path):
-        shrunken = shrink(path)
-        if shrunken is not None:
-            return shrunken
+        result = shrink(path)
+        if result is not None:
+            return result[0]
         _LOG.debug("shrink_if_image: shrink returned None for %s, using original path", path.name)
     return path
 

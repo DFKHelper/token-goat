@@ -220,9 +220,10 @@ def _try_shrink_image(
 
     try:
         src_path = Path(file_path)
-        shrunken = image_shrink.shrink(src_path)
-        if shrunken is None:
+        shrink_result = image_shrink.shrink(src_path)
+        if shrink_result is None:
             return None
+        shrunken, img_summary = shrink_result
 
         # Detect cache hit: if shrunken path is in the image cache directory and
         # matches the expected content-hash stem, it was served from cache (zero CPU cost).
@@ -258,15 +259,15 @@ def _try_shrink_image(
 
         shrink_response = dict(tool_input)
         shrink_response["file_path"] = str(shrunken)
-        return pre_tool_use_with_update(
-            shrink_response,
-            (
-                f"Note: image auto-shrunk by token-goat "
-                f"({img_stats['src_bytes']:,} → {img_stats['out_bytes']:,} bytes, "
-                f"~{img_stats['bytes_saved']:,} bytes saved). "
-                f"Original: {file_path}"
-            ),
+        note = (
+            f"Note: image auto-shrunk by token-goat "
+            f"({img_stats['src_bytes']:,} → {img_stats['out_bytes']:,} bytes, "
+            f"~{img_stats['bytes_saved']:,} bytes saved). "
+            f"Original: {file_path}"
         )
+        if img_summary:
+            note = f"{note}\n{img_summary}"
+        return pre_tool_use_with_update(shrink_response, note)
     except Exception:  # noqa: BLE001
         _LOG.exception("image-shrink failed during pre-read")
         return None
