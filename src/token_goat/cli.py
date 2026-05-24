@@ -734,6 +734,13 @@ def cmd_map(
         help="One line per file (no symbol detail). "
              "Auto-engages below ~300 token budget. Use to force on a larger budget.",
     ),
+    full: bool = typer.Option(
+        False,
+        "--full",
+        help="Restore the full per-file list even when --compact is active and the "
+             "project exceeds the compact_file_threshold. Overrides the 1-line "
+             "summary that compact mode emits for large projects.",
+    ),
 ) -> None:
     """Generate a PageRank-ranked, token-budgeted overview of the current project."""
     from . import repomap  # noqa: PLC0415
@@ -744,8 +751,8 @@ def cmd_map(
     )
 
     _LOG.info(
-        "map start: project=%s budget=%d json=%s compact=%s",
-        proj.root.name, budget, json_output, compact,
+        "map start: project=%s budget=%d json=%s compact=%s full=%s",
+        proj.root.name, budget, json_output, compact, full,
     )
     t0 = time.monotonic()
     try:
@@ -761,6 +768,7 @@ def cmd_map(
             proj,
             budget_tokens=budget,
             compact=True if compact else None,
+            full=full,
         )
         elapsed = time.monotonic() - t0
         _LOG.info("map complete: project=%s dur=%.3fs", proj.root.name, elapsed)
