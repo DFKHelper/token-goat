@@ -3170,24 +3170,20 @@ class TestEmptySectionSuppression:
         )
         assert web_header_idx is None, "Web Fetches header should not appear when no web history"
 
-    def test_web_section_suppressed_when_only_one_entry(self, tmp_data_dir):
-        """Web Fetches section header not emitted when only one web entry (min_lines=2)."""
+    def test_web_section_rendered_with_single_entry(self, tmp_data_dir):
+        """A single web fetch IS rendered — one fetched URL is genuine signal."""
         import time as _time
         sid = "single-web-test-abc"
         session.mark_file_edited(sid, "/proj/app.py")
-        # mark_web_fetch args: (sid, url_sha, url_preview, output_id, body_bytes, status_code, truncated)
-        session.mark_web_fetch(sid, "sha_1", "https://example.com/docs", "out_id_1", 500, 200, False)
+        session.mark_web_fetch(sid, "sha_1", "https://example.com/docs", "out_id_1", 12_000, 200, False)
 
         cache = session.load(sid)
-        # Mature session so web section is not skipped by age-tier guard
         cache.created_ts = _time.time() - 4000
         session.save(cache)
         cache = session.load(sid)
 
         manifest = compact._build_manifest_from_cache(cache, sid, 800)
-        assert "Web Fetches" not in manifest, (
-            "Web Fetches header should be suppressed with only one entry (min_lines=2)"
-        )
+        assert "Web Fetches" in manifest
 
     def test_web_section_present_when_two_domain_entries(self, tmp_data_dir):
         """Web Fetches section emitted when two different domains produce two output lines."""
@@ -4979,3 +4975,37 @@ class TestManifestTODOs:
 
         assert "### TODOs" in result
         assert "+5 more" in result
+
+
+class TestMinLinesSuppressionRegression:
+    """Regression tests: Cold Outputs and Directory Scans suppress single-entry sections
+    (min_lines=2); Web Fetches renders at min_lines=1 because a single fetched URL is
+    signal, not noise."""
+
+    def test_single_web_fetch_still_renders(self, tmp_data_dir, make_session):
+        """A single web fetch is genuine signal and should render."""
+        sid = "web-single-renders"
+        make_session(
+            sid,
+            age_seconds=7200,
+            edits=1,
+            web_fetches={"https://docs.example.com/api": 12_000},
+        )
+        m = compact.build_manifest(sid, max_tokens=400)
+        assert "Web Fetches" in m
+
+    def test_two_web_fetches_section_appears(self, tmp_data_dir, make_session):
+        """Two Web Fetches from different domains render normally."""
+        sid = "web-double-render"
+        make_session(
+            sid,
+            age_seconds=7200,
+            edits=1,
+            web_fetches={
+                "https://docs.example.com/api": 12_000,
+                "https://other.example.org/guide": 10_000,
+            },
+        )
+        m = compact.build_manifest(sid, max_tokens=600)
+        assert "Web Fetches" in m
+        assert "docs.example.com" in m
