@@ -468,6 +468,13 @@ class SessionCache:
     # For new sessions, defaults to time.time(); for legacy sessions loaded via from_dict,
     # defaults to the current time if the field is missing.
     created_ts: float = field(default_factory=time.time)
+    # Manifest delta-cache fields (item #19).  Populated by compact.build_manifest
+    # so subsequent PreCompact calls within the same session can skip rebuilding when
+    # nothing material has changed.  ``last_manifest_sha`` is the first 16 hex chars of
+    # the SHA-256 of the last-emitted manifest text; empty string means "no prior emit".
+    # ``last_manifest_ts`` is the epoch timestamp of that emit; 0.0 means not yet set.
+    last_manifest_sha: str = ""
+    last_manifest_ts: float = 0.0
     unavailable: bool = field(default=False, repr=False, compare=False)
     # Internal: cached JSON string from last serialization — invalidated by any mutation.
     # Avoids O(N) re-serialization of files/greps dicts on every hook invocation when
@@ -511,6 +518,8 @@ class SessionCache:
             structured_hints_emitted=self.structured_hints_emitted,
             index_only_hints_emitted=self.index_only_hints_emitted,
             recent_hints=[[p, t] for p, t in self.recent_hints],
+            last_manifest_sha=self.last_manifest_sha,
+            last_manifest_ts=self.last_manifest_ts,
         )
 
     def to_json(self) -> str:
@@ -740,6 +749,8 @@ class SessionCache:
             structured_hints_emitted=structured_hints_emitted,
             index_only_hints_emitted=index_only_hints_emitted,
             recent_hints=recent_hints,
+            last_manifest_sha=str(d.get("last_manifest_sha", "")),
+            last_manifest_ts=float(d.get("last_manifest_ts", 0.0)) if isinstance(d.get("last_manifest_ts"), (int, float)) else 0.0,
         )
 
 
@@ -1206,6 +1217,8 @@ class _SessionDict(TypedDict, total=False):
     structured_hints_emitted: int
     index_only_hints_emitted: int
     recent_hints: list[list[object]]
+    last_manifest_sha: str
+    last_manifest_ts: float
 
 
 def _fresh_cache(session_id: str, *, unavailable: bool = False) -> SessionCache:

@@ -18,6 +18,7 @@ __all__ = [
     "_get_whole_repo_diff",
 ]
 
+import hashlib
 import heapq
 import logging
 import math
@@ -153,6 +154,17 @@ _GREP_RECENCY_HALF_LIFE_SECS: Final[float] = 1800.0  # 30 minutes
 # causing the manifest construction pass to allocate and render all sections before
 # the trim loop brings it back down — a pointless memory/CPU spike with no benefit.
 _MAX_MANIFEST_TOKENS_CAP: Final[int] = 4_000
+# Manifest delta-cache TTL (item #19).  If less than this many seconds have elapsed
+# since the last emit AND the rendered text is byte-for-byte identical, return a
+# brief stub instead of rebuilding.  Force a full rebuild after 10 min regardless.
+_MANIFEST_CACHE_TTL_SECS: Final[float] = 600.0
+# Process-local set of session IDs for which we wrote a new manifest SHA this
+# process run.  On Windows Claude Code launches a fresh hook process per tool
+# call, so this set is always empty at the start of a hook invocation — the
+# cache-hit path is only reachable when the SHA was written by a *prior* process
+# (i.e., a prior PreCompact fire).  In tests (same process, multiple calls) the
+# set prevents a false stub on the call that immediately follows a write.
+_manifest_sha_written_this_process: set[str] = set()
 
 # Maximum number of edited files listed individually in the "Files Edited" section.
 # The section is documented as "uncapped — every edited file is must-preserve", but
@@ -2107,7 +2119,46 @@ def build_manifest(session_id: str, *, max_tokens: int = 400) -> str:
     cache = _load_session_cache(session_id, "build_manifest")
     if cache is None:
         return ""
-    return _build_manifest_from_cache(cache, session_id, max_tokens)
+
+    # --- Manifest delta-cache (item #19) ---
+    # Build the manifest text first, then check whether it differs from the
+    # last emitted version.  If identical AND within the TTL window, return a
+    # lightweight stub so the compaction LLM sees a clear "nothing changed"
+    # signal rather than a duplicate full manifest.
+    full_manifest = _build_manifest_from_cache(cache, session_id, max_tokens)
+    if not full_manifest:
+        return full_manifest
+
+    sha = hashlib.sha256(full_manifest.encode()).hexdigest()[:16]
+    now = time.time()
+    age = now - cache.last_manifest_ts
+
+    # Cache-hit: SHA matches, within TTL, AND the SHA was written by a prior
+    # process (not this one).  The process-local guard ensures that within a
+    # single process (e.g. tests calling build_manifest twice in a row) we
+    # never return a stub immediately after writing — the stub is only valid
+    # when a *separate* PreCompact process already emitted the full manifest.
+    sha_was_already_on_disk = (
+        cache.last_manifest_sha
+        and cache.last_manifest_sha == sha
+        and age < _MANIFEST_CACHE_TTL_SECS
+        and session_id not in _manifest_sha_written_this_process
+    )
+    if sha_was_already_on_disk:
+        age_sec = int(age)
+        _LOG.debug(
+            "build_manifest: cache-hit session=%s sha=%s age=%ds — returning stub",
+            session_id[:8], sha, age_sec,
+        )
+        return f"## Session Manifest (unchanged since {age_sec}s ago — see prior manifest)"
+
+    # Cache miss or TTL expired: update the session cache and return the full manifest.
+    cache.last_manifest_sha = sha
+    cache.last_manifest_ts = now
+    cache._invalidate_json_cache()
+    session_mod.save(cache)
+    _manifest_sha_written_this_process.add(session_id)
+    return full_manifest
 
 
 def build_manifest_with_count(
