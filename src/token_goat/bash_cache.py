@@ -39,7 +39,6 @@ __all__ = [
     "write_sidecar",
 ]
 
-import logging
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -61,8 +60,9 @@ from .cache_common import (
     write_sidecar_metadata,
 )
 from .hooks_common import sanitize_log_str
+from .util import get_logger
 
-_LOG = logging.getLogger("token_goat.bash_cache")
+_LOG = get_logger("bash_cache")
 
 # Total byte budget for the on-disk bash output store.  When exceeded, the
 # oldest entries (by mtime) are evicted until the cap is met.  16 MB is small

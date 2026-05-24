@@ -4,14 +4,14 @@ from __future__ import annotations
 __all__ = ["extract"]
 
 import json
-import logging
 import re
 from pathlib import Path
 
 from ..parser import ImpExp, Ref, Section, Symbol
+from ..util import get_logger
 from . import common
 
-_LOG = logging.getLogger("token_goat.languages.liquid")
+_LOG = get_logger("languages.liquid")
 
 # Regex for {% include 'snippet-name' %}, {% section 'name' %}, {% render 'name' %}
 _INCLUDE_RE = re.compile(r"{%\s*include\s+['\"]([^'\"]+)['\"]", re.IGNORECASE)

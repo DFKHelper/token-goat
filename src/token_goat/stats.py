@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import hashlib
-import logging
 import operator
 import sqlite3
 import time
@@ -16,6 +15,7 @@ from typing import TYPE_CHECKING, TypedDict
 from . import db
 from .render.ansi import fmt_bytes as _fmt_bytes
 from .render.ansi import strip_ansi as _strip_ansi
+from .util import get_logger
 
 if TYPE_CHECKING:
     from rich.table import Table as RichTable
@@ -132,7 +132,7 @@ class _StatsBucket(TypedDict):
     bytes_saved: int
     tokens_saved: int
 
-_LOG = logging.getLogger("token_goat.stats")
+_LOG = get_logger("stats")
 
 # Cache directory → inferred git root so we don't re-walk on every event.
 _git_root_cache: dict[str, str | None] = {}

@@ -40,7 +40,9 @@ import time
 from pathlib import Path
 from typing import Literal
 
-_LOG = logging.getLogger("token_goat.paths")
+from .util import get_logger
+
+_LOG = get_logger("paths")
 
 # Size cap for a structured daily log file. The daily logs are date-named and
 # age out via the worker's 7-day retention sweep, so they are already bounded

@@ -19,7 +19,6 @@ __all__ = [
 ]
 
 import heapq
-import logging
 import math
 import re
 import subprocess
@@ -35,7 +34,7 @@ from . import session as session_mod
 from .cache_common import short_content_hash as _short_content_hash
 from .cache_common import short_output_id as _short_id
 from .hooks_common import sanitize_log_str
-from .util import _humanize_bytes
+from .util import _humanize_bytes, get_logger
 
 
 def estimate_tokens(text: str) -> int:
@@ -50,7 +49,7 @@ def estimate_tokens(text: str) -> int:
 if TYPE_CHECKING:
     from .session import FileEntry, SessionCache
 
-_LOG = logging.getLogger("token_goat.compact")
+_LOG = get_logger("compact")
 
 # Wall-clock timeout for build_manifest() to prevent the PreCompact hook from stalling.
 # The function makes git subprocess calls which may hang on network mounts or large repos.

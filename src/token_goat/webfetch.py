@@ -25,7 +25,6 @@ import hashlib
 import html as _html_mod
 import ipaddress
 import json
-import logging
 import os
 import re as _re
 import socket
@@ -38,10 +37,11 @@ if TYPE_CHECKING:
 
 from . import image_shrink, paths
 from .hooks_common import sanitize_log_str
+from .util import get_logger
 
 __all__ = ["is_image_url", "is_image_content_type", "cleanup_stale_downloads", "fetch_url"]
 
-_LOG = logging.getLogger("token_goat.webfetch")
+_LOG = get_logger("webfetch")
 
 
 def _sanitize_header_value(value: str, max_len: int = 512) -> str:

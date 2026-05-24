@@ -37,7 +37,6 @@ __all__ = [
 import contextlib
 import functools
 import hashlib
-import logging
 import os
 import stat
 import time
@@ -50,8 +49,9 @@ if TYPE_CHECKING:
     from PIL import Image as _PilImage
 
 from . import paths
+from .util import get_logger
 
-_LOG = logging.getLogger("token_goat.image_shrink")
+_LOG = get_logger("image_shrink")
 
 # Maximum pixel count on the long axis after resizing.  1024 px keeps the image
 # legible for Claude while roughly halving token cost versus the Claude API's own

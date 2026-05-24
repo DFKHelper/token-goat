@@ -14,7 +14,6 @@ __all__ = [
     "resolve_file_rel",
 ]
 
-import logging
 import operator
 import sqlite3
 import time
@@ -26,6 +25,7 @@ from typing import Final, TypedDict
 from . import db
 from .paths import is_safe_rel_path as _is_safe_rel_path
 from .project import Project
+from .util import get_logger
 
 # Maximum file size allowed for symbol/section extraction.  Mirrors parser.MAX_FILE_SIZE
 # (2 MB) so a file that grew after indexing cannot cause an unbounded in-memory read
@@ -40,7 +40,7 @@ _MAX_READ_BYTES = 2_000_000  # 2 MB — keep in sync with parser.MAX_FILE_SIZE
 # log message as an unbounded heap allocation.
 _MAX_SYMBOL_LEN: int = 1_024  # 1 KiB
 
-_LOG = logging.getLogger("token_goat.read_replacement")
+_LOG = get_logger("read_replacement")
 
 
 class SymbolResult(TypedDict):

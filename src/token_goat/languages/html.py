@@ -3,13 +3,13 @@ from __future__ import annotations
 
 __all__ = ["extract"]
 
-import logging
 import re
 
 from ..parser import ImpExp, Ref, Section, Symbol
+from ..util import get_logger
 from . import common
 
-_LOG = logging.getLogger("token_goat.languages.html")
+_LOG = get_logger("languages.html")
 
 # id and class attributes
 _ID_RE = re.compile(r'id=["\']([^"\']+)["\']', re.IGNORECASE)

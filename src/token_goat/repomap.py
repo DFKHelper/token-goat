@@ -24,7 +24,6 @@ __all__ = [
 
 import contextlib
 import heapq
-import logging
 import sqlite3
 import time
 from collections import Counter, defaultdict
@@ -34,6 +33,7 @@ from functools import lru_cache
 from typing import TYPE_CHECKING, Final, Protocol, TypedDict
 
 from . import db
+from .util import get_logger
 
 if TYPE_CHECKING:
     from .project import Project
@@ -138,7 +138,7 @@ class FileMapItem(TypedDict):
     sections: list[str]
     approx_lines: int
 
-_LOG = logging.getLogger("token_goat.repomap")
+_LOG = get_logger("repomap")
 
 # Files below this approximate line count are structural noise (empty __init__.py stubs, etc.)
 _MIN_DISPLAY_LINES: Final[int] = 4

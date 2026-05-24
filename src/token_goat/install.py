@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import contextlib
 import json
-import logging
 import os
 import re
 import shutil
@@ -16,6 +15,7 @@ from pathlib import Path
 from typing import TypedDict, cast
 
 from . import paths
+from .util import get_logger
 
 
 class _HookCommandEntry(TypedDict):
@@ -47,7 +47,7 @@ class _HookMatcherEntry(TypedDict):
 CODEX_AGENTS_BEGIN = "<!-- token-goat-codex-begin -->"
 CODEX_AGENTS_END = "<!-- token-goat-codex-end -->"
 
-_LOG = logging.getLogger("token_goat.install")
+_LOG = get_logger("install")
 
 # Markers for idempotent CLAUDE.md patching
 CLAUDE_MD_BEGIN = "<!-- token-goat-begin -->"

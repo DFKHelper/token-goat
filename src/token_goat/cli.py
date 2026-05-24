@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import contextlib
 import json
-import logging
 import os
 import sqlite3
 import sys
@@ -30,8 +29,9 @@ import typer
 from . import config as config_mod
 from . import hooks_cli
 from .hooks_common import is_real_int
+from .util import get_logger
 
-_LOG = logging.getLogger(__name__)
+_LOG = get_logger("cli")
 
 
 def _error(msg: str) -> None:

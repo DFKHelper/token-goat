@@ -24,13 +24,14 @@ __all__ = [
 ]
 
 import json
-import logging
 import os
 import sys
 from pathlib import Path
 from typing import cast
 
-_LOG = logging.getLogger("token_goat.bridges")
+from .util import get_logger
+
+_LOG = get_logger("bridges")
 
 # Maximum size for user-controlled config files (openclaw.json, etc.).
 # Prevents OOM from a maliciously large or corrupted config file.

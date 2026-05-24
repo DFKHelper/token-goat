@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import difflib
 import hashlib
-import logging
 import sqlite3
 import time
 from collections.abc import Callable
@@ -13,6 +12,7 @@ from typing import Final, TypedDict
 from . import db, session, snapshots
 from .hooks_common import sanitize_log_str, validate_cwd
 from .project import find_project
+from .util import get_logger
 
 # Maximum entries in the recent_hints ring buffer stored per session.
 _RECENT_HINTS_MAX: int = 3
@@ -61,7 +61,7 @@ def _apply_terse(text: str) -> str:
         text = text.replace(verbose, terse)
     return text
 
-_LOG = logging.getLogger("token_goat.hints")
+_LOG = get_logger("hints")
 
 # Max length for a file path embedded in an LLM-context hint string.
 # Paths longer than this are tail-truncated; embedded newlines/CRs are always

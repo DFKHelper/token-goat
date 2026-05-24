@@ -45,13 +45,14 @@ __all__ = [
 
 import contextlib
 import json
-import logging
 import sqlite3
 import subprocess
 import time
 from pathlib import Path
 
-_LOG = logging.getLogger("token_goat.git_history")
+from .util import get_logger
+
+_LOG = get_logger("git_history")
 
 # Number of recent commits to index.
 _HISTORY_DEPTH: int = 200

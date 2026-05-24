@@ -41,7 +41,6 @@ from __future__ import annotations
 
 __all__ = ["run", "run_compressed", "DEFAULT_TIMEOUT_SECONDS", "MAX_CAPTURE_BYTES"]
 
-import logging
 import os
 import shlex
 import signal
@@ -54,8 +53,9 @@ from io import BytesIO
 from typing import IO, Final
 
 from . import bash_compress
+from .util import get_logger
 
-_LOG = logging.getLogger("token_goat.bash_runner")
+_LOG = get_logger("bash_runner")
 
 #: Per-stream byte cap.  Beyond this we stop appending to the in-memory buffer
 #: and discard the rest, so a runaway log can never OOM the wrapper.  32 MiB
