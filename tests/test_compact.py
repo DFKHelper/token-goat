@@ -437,8 +437,10 @@ class TestActivityMarkers:
         assert "- → " in result
 
     def test_manifest_has_legend(self, tmp_data_dir):
+        # Legend only appears when 2+ marker kinds are present (#22).
         sid = "legend-session-abc"
         session.mark_file_edited(sid, "/proj/src/auth.py")
+        session.mark_file_read(sid, "/proj/src/db.py")
         result = compact.build_manifest(sid)
         assert "Legend:" in result
 
@@ -750,6 +752,47 @@ class TestGrepSection:
 
         assert "blank_one" in result or "blank_two" in result, (
             f"at least one zero-result grep should surface when all are zero:\n{result}"
+        )
+
+    def test_grep_section_omitted_when_all_zero_and_session_mature(self, tmp_data_dir, monkeypatch):
+        """#35: When all grep entries are zero-result AND session is >5 min old,
+        drop the Patterns Searched section entirely — it carries no signal."""
+        import time as _time
+        sid = "grep-all-zero-mature-abc"
+
+        session.mark_grep(sid, "blank_alpha", "/proj/src", result_count=0)
+        session.mark_grep(sid, "blank_beta", "/proj/src", result_count=0)
+
+        # Age the session beyond 5 minutes
+        cache = session.load(sid)
+        cache.created_ts = _time.time() - 400  # 6 min 40 s old
+        session.save(cache)
+
+        monkeypatch.setattr(compact, "_get_git_diff_stat_summary", lambda _root: "")
+        monkeypatch.setattr(compact, "_get_git_diff_stat", lambda *a: None)
+
+        result = compact.build_manifest(sid)
+
+        assert "Patterns Searched" not in result, (
+            f"All-zero grep section should be dropped for mature sessions:\n{result}"
+        )
+
+    def test_grep_section_kept_when_all_zero_but_session_young(self, tmp_data_dir, monkeypatch):
+        """#35: Young sessions (<5 min) keep the all-zero section so the agent sees
+        that it already tried those patterns."""
+        sid = "grep-all-zero-young-abc"
+
+        session.mark_grep(sid, "blank_x", "/proj/src", result_count=0)
+
+        # Session is fresh — created_ts defaults to now, so age < 5 min.
+        monkeypatch.setattr(compact, "_get_git_diff_stat_summary", lambda _root: "")
+        monkeypatch.setattr(compact, "_get_git_diff_stat", lambda *a: None)
+
+        result = compact.build_manifest(sid)
+
+        # The section should still appear for young sessions.
+        assert "Patterns Searched" in result, (
+            f"All-zero grep section should be kept for young sessions:\n{result}"
         )
 
 
@@ -1134,6 +1177,133 @@ class TestGetGitDiffStatSummary:
         monkeypatch.setattr(compact, "_get_git_diff_stat_summary", lambda _root: "")
         result = compact.build_manifest(sid)
         assert "Pending Changes" not in result, f"Should not include section when diff is empty:\n{result}"
+
+    def test_git_stat_padding_compressed(self, monkeypatch):
+        """#21: git diff --stat alignment spaces around | are collapsed to single space."""
+        import subprocess as _subprocess  # noqa: PLC0415
+        import types  # noqa: PLC0415
+
+        # git --stat pads filenames to align the | column
+        fake_stdout = (
+            " src/token_goat/compact.py    | 12 ++++++------\n"
+            " src/token_goat/hints.py      |  4 +---\n"
+            " tests/test_compact.py        |  8 ++++++++\n"
+            " 3 files changed, 24 insertions(+), 4 deletions(-)\n"
+        )
+
+        def _fake_run(*a, **kw):
+            return types.SimpleNamespace(returncode=0, stdout=fake_stdout, stderr="")
+
+        monkeypatch.setattr(_subprocess, "run", _fake_run)
+        result = compact._get_git_diff_stat_summary("/some/repo")
+        assert result != ""
+        for line in result.splitlines():
+            if "|" in line:
+                # No run of 2+ spaces immediately before or after the pipe
+                import re as _re  # noqa: PLC0415
+                assert not _re.search(r"\s{2,}\|", line), (
+                    f"multi-space before | in stat line: {line!r}"
+                )
+                assert not _re.search(r"\|\s{2,}\d", line), (
+                    f"multi-space after | before digit in stat line: {line!r}"
+                )
+
+
+class TestManifestHeaderStrings:
+    """Manifest section headers use the trimmed forms (#33, #34)."""
+
+    def test_files_edited_header_has_no_preserve_suffix(self, tmp_data_dir, monkeypatch):
+        """#33: 'Files Edited' header must not contain '(preserve)'."""
+        sid = "header-no-preserve-abc"
+        session.mark_file_edited(sid, "/proj/src/compact.py")
+        monkeypatch.setattr(compact, "_get_git_diff_stat_summary", lambda _root: "")
+        monkeypatch.setattr(compact, "_get_git_diff_stat", lambda *a: None)
+        result = compact.build_manifest(sid)
+        assert "### Files Edited\n" in result or result.startswith("### Files Edited"), (
+            f"Expected bare '### Files Edited' header, got something else:\n{result}"
+        )
+        assert "### Files Edited (preserve)" not in result, (
+            f"'(preserve)' suffix must be dropped:\n{result}"
+        )
+
+    def test_commands_run_header_has_no_cached_qualifier(self, tmp_data_dir, monkeypatch):
+        """#34: 'Commands Run' header must not contain '(cached output)'."""
+        sid = "header-no-cached-output-abc"
+        from token_goat.session import BashEntry, SessionCache
+        cache = session.load(sid) or SessionCache(session_id=sid)
+        be = BashEntry(
+            cmd_sha="aabbccdd",
+            cmd_preview="pytest tests/",
+            output_id="aabbccdd",
+            ts=__import__("time").time() - 700,
+            exit_code=0,
+            stdout_bytes=1200,
+            stderr_bytes=0,
+        )
+        cache.bash_history = {"aabbccdd": be}
+        cache.created_ts = __import__("time").time() - 700
+        session.save(cache)
+        monkeypatch.setattr(compact, "_get_git_diff_stat_summary", lambda _root: "")
+        monkeypatch.setattr(compact, "_get_git_diff_stat", lambda *a: None)
+        result = compact.build_manifest(sid)
+        assert "Commands Run" in result, f"Commands Run section missing:\n{result}"
+        assert "(cached output)" not in result, (
+            f"'(cached output)' qualifier must be dropped:\n{result}"
+        )
+
+    def test_web_fetches_header_has_no_cached_qualifier(self, tmp_data_dir, monkeypatch):
+        """#34: 'Web Fetches' header must not contain '(cached body)'."""
+        import time as _time
+        sid = "header-no-cached-body-abc"
+        from token_goat.session import SessionCache, WebEntry
+        cache = session.load(sid) or SessionCache(session_id=sid)
+        now = _time.time()
+        cache.created_ts = now - 1200
+        we1 = WebEntry(url_sha="we000001", url_preview="https://docs.example.com/api", output_id="we000001", ts=now - 600, status_code=200, body_bytes=2000)
+        we2 = WebEntry(url_sha="we000002", url_preview="https://other.example.org/ref", output_id="we000002", ts=now - 500, status_code=200, body_bytes=1800)
+        cache.web_history = {"we000001": we1, "we000002": we2}
+        session.save(cache)
+        monkeypatch.setattr(compact, "_get_git_diff_stat_summary", lambda _root: "")
+        monkeypatch.setattr(compact, "_get_git_diff_stat", lambda *a: None)
+        result = compact.build_manifest(sid)
+        assert "Web Fetches" in result, f"Web Fetches section missing:\n{result}"
+        assert "(cached body)" not in result, (
+            f"'(cached body)' qualifier must be dropped:\n{result}"
+        )
+
+
+class TestLegendSuppression:
+    """#22: Legend prefix dropped when only one marker kind appears."""
+
+    def test_legend_prefix_dropped_for_single_marker_kind(self, tmp_data_dir, monkeypatch):
+        """Only edits → emit 'edited=✎' without the 'Legend:' prefix."""
+        sid = "legend-single-kind-abc"
+        session.mark_file_edited(sid, "/proj/src/foo.py")
+        monkeypatch.setattr(compact, "_get_git_diff_stat_summary", lambda _root: "")
+        monkeypatch.setattr(compact, "_get_git_diff_stat", lambda *a: None)
+        result = compact.build_manifest(sid)
+        # The edited file must appear
+        assert "foo.py" in result
+        # The marker itself must still appear (satisfies invariant tests)
+        assert "edited=✎" in result, (
+            f"Single-kind marker must still appear:\n{result}"
+        )
+        # But the "Legend:" prefix must be absent — saves 3-5 tokens
+        assert "Legend:" not in result, (
+            f"'Legend:' prefix must be dropped when only one marker kind appears:\n{result}"
+        )
+
+    def test_legend_present_for_multiple_marker_kinds(self, tmp_data_dir, monkeypatch):
+        """Edits + reads → full 'Legend: ...' line emitted."""
+        sid = "legend-multi-kind-abc"
+        session.mark_file_edited(sid, "/proj/src/bar.py")
+        session.mark_file_read(sid, "/proj/src/utils.py")
+        monkeypatch.setattr(compact, "_get_git_diff_stat_summary", lambda _root: "")
+        monkeypatch.setattr(compact, "_get_git_diff_stat", lambda *a: None)
+        result = compact.build_manifest(sid)
+        assert "Legend:" in result, (
+            f"Legend must appear when multiple marker kinds are present:\n{result}"
+        )
 
 
 class TestComputeAdaptiveBudgetDiffBonus:

@@ -19,6 +19,7 @@ __all__ = [
 import heapq
 import logging
 import math
+import re
 import subprocess
 import time
 from collections.abc import Callable
@@ -566,7 +567,15 @@ def _get_git_diff_stat_summary(root: object) -> str:
         # git --stat outputs file lines first then a summary line at the end; taking the
         # last 6 lines captures the summary and up to 5 file entries.
         last6 = lines[-6:]
-        output = "\n".join(last6)
+        # Drop alignment padding that git --stat adds for column alignment.
+        # "src/foo.py    | 12 +++--" → "src/foo.py | 12 +++--"
+        # Each stat line saves 2–8 spaces.  Summary line is unaffected (no "|").
+        compressed = []
+        for ln in last6:
+            ln = re.sub(r"\s{2,}\|", " |", ln)
+            ln = re.sub(r"\|\s{2,}(\d)", r"| \1", ln)
+            compressed.append(ln)
+        output = "\n".join(compressed)
         # Hard cap: if still too long, drop the manifest section entirely rather than
         # truncating mid-line (a partial diff stat is misleading).
         if len(output) > 300:
@@ -2364,7 +2373,7 @@ def _render(cache: SessionCache, session_id: str, max_tokens: int) -> tuple[str,
     pending_diff_stat: str = _get_git_diff_stat_summary(cwd)
 
     if edited_clean:
-        edited_lines.append("### Files Edited (preserve)")
+        edited_lines.append("### Files Edited")
         # Sort by edit count descending so the most-touched files appear first.
         sorted_edited = sorted(edited_clean.items(), key=_BY_EDIT_COUNT, reverse=True)
         shown_edited = sorted_edited[:_MAX_EDITED_FILES_SHOWN]
@@ -2483,7 +2492,7 @@ def _render(cache: SessionCache, session_id: str, max_tokens: int) -> tuple[str,
         return total >= 600
 
     bash_lines, bash_used = _render_budget_lines(
-        "### Commands Run (cached output)",
+        "### Commands Run",
         [_format_bash_entry(be, inline_snippet=_should_inline(be)) for be in bash_entries],
         bash_budget,
     )
@@ -2544,7 +2553,7 @@ def _render(cache: SessionCache, session_id: str, max_tokens: int) -> tuple[str,
         else []
     )
     web_lines, web_used = _render_budget_lines(
-        "### Web Fetches (cached body)",
+        "### Web Fetches",
         _group_web_entries_by_domain(web_entries) if web_entries else [],
         web_budget,
         min_lines=2,
@@ -2553,6 +2562,14 @@ def _render(cache: SessionCache, session_id: str, max_tokens: int) -> tuple[str,
     # ── 4. Grep patterns — up to 15 % of remaining budget ────────────────────
     grep_budget = sec_budgets["greps"]
     grep_entries = _dedup_grep_entries(_select_top_grep_entries(raw_greps))
+    # #35: when the all-zero fallback is active (every remaining entry has 0 hits)
+    # AND the session is older than 5 minutes, the section carries no useful signal —
+    # drop it entirely.  Young sessions keep the section so the agent sees it tried.
+    _all_grep_zero = bool(grep_entries) and all(
+        (getattr(g, "result_count", None) or 0) == 0 for g in grep_entries
+    )
+    if _all_grep_zero and age_secs > 300:
+        grep_entries = []
     grep_lines, grep_used = _render_budget_lines(
         "### Patterns Searched",
         [_format_grep_entry(ge) for ge in grep_entries],
@@ -2705,7 +2722,12 @@ def _render(cache: SessionCache, session_id: str, max_tokens: int) -> tuple[str,
         + files_lines
         + todo_lines
     )
-    if legend_parts:
+    # #22: When only one marker kind appears the verbose "Legend: key=symbol"
+    # prefix is self-evident — drop the "Legend: " label to save ~3-5 tokens.
+    # With two or more kinds the full legend is a useful key, so keep the prefix.
+    if len(legend_parts) == 1:
+        sections.append(legend_parts[0])
+    elif len(legend_parts) >= 2:
         sections.append("Legend: " + "  ".join(legend_parts))
 
     # ── Common prefix stripping — save tokens by detecting shared path prefixes ─
