@@ -24,6 +24,23 @@ def get_logger(name: str) -> Logger:
     return logging.getLogger(f"token_goat.{name}")
 
 
+def sanitize_surrogates(text: str) -> str:
+    """Replace lone surrogate characters (U+DC80–U+DCFF) with U+FFFD.
+
+    On Windows, subprocess.run can return stdout/stderr containing surrogate-escape
+    bytes (Python's mechanism for round-tripping non-UTF-8 bytes from the OS).
+    These ``\\udcXX`` code points are not valid Unicode and cause a
+    ``UnicodeEncodeError: 'utf-8' codec can't encode character`` when the string
+    is later serialised or printed (e.g. when persisting to the bash cache or
+    writing to a log).
+
+    This helper sanitises the string at the input boundary so no surrogate ever
+    propagates into the cache, session JSON, or log output.  Normal text (including
+    legitimate multi-byte Unicode) is returned unchanged.
+    """
+    return text.encode("utf-8", errors="replace").decode("utf-8", errors="replace")
+
+
 def _humanize_bytes(n: int) -> str:
     """Return a short human-readable byte count: ``1.2KB``, ``3.4MB``, ``120B``.
 
