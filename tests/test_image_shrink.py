@@ -8,6 +8,7 @@ from hook_helpers import make_large_jpeg as _make_large_jpeg
 from hook_helpers import make_small_jpeg as _make_small_jpeg
 
 from token_goat import image_shrink
+from token_goat.config import ImageShrinkConfig
 
 # ---------------------------------------------------------------------------
 # 1. is_image_path
@@ -269,8 +270,8 @@ class TestPngToJpeg:
 
         result = image_shrink.shrink(p)
         assert result is not None
-        assert result.suffix.lower() in (".webp", ".jpg"), (
-            f"Expected lossy format (.webp or .jpg) for RGB PNG photo, got {result.suffix}"
+        assert result.suffix.lower() in (".avif", ".webp", ".jpg"), (
+            f"Expected lossy format (.avif, .webp or .jpg) for RGB PNG photo, got {result.suffix}"
         )
 
     def test_jpeg_fallback_via_env_var(self, tmp_data_dir, tmp_path, monkeypatch):
@@ -338,12 +339,21 @@ class TestWebpCompressionRatio:
         img.save(src, "BMP")
         assert src.stat().st_size > image_shrink.SIZE_THRESHOLD_BYTES
 
-        # Compress under default (WebP)
+        # Compress under WebP — disable AVIF so this test isolates WebP vs JPEG.
         monkeypatch.delenv("TOKEN_GOAT_IMAGE_FORMAT", raising=False)
+        image_shrink.avif_supported.cache_clear()
+        from token_goat import config as _config_mod
+
+        def _fake_load_webp():
+            cfg = _config_mod.Config()
+            cfg.image_shrink.prefer_avif = False  # force WebP path for this benchmark
+            return cfg
+
+        monkeypatch.setattr(_config_mod, "load", _fake_load_webp)
         webp_out = image_shrink.shrink(src)
         assert webp_out is not None
         assert webp_out.suffix.lower() == ".webp", (
-            f"Expected .webp under default config, got {webp_out.suffix}"
+            f"Expected .webp with prefer_avif=False, got {webp_out.suffix}"
         )
         webp_bytes = webp_out.stat().st_size
 
@@ -395,4 +405,222 @@ class TestTokenSavings:
             f"Expected ≥1000 vision tokens saved; got {tokens_saved} "
             f"(orig={stats['orig_width']}×{stats['orig_height']}, "
             f"out={stats['out_width']}×{stats['out_height']})"
+        )
+
+
+# ---------------------------------------------------------------------------
+# 12. AVIF encoding path
+# ---------------------------------------------------------------------------
+
+def _make_config_with_avif(prefer_avif: bool = True, avif_quality: int = 60) -> ImageShrinkConfig:
+    """Return an ImageShrinkConfig with the given AVIF settings."""
+    return ImageShrinkConfig(prefer_avif=prefer_avif, avif_quality=avif_quality)
+
+
+class TestAvifEncoding:
+    """Tests for AVIF output path in shrink()."""
+
+    def test_avif_supported_returns_bool(self):
+        """avif_supported() must return a bool regardless of Pillow build."""
+        result = image_shrink.avif_supported()
+        assert isinstance(result, bool)
+
+    def test_avif_output_when_available(self, tmp_data_dir, tmp_path, monkeypatch):
+        """When AVIF is supported and prefer_avif=True, large image → .avif output."""
+        if not image_shrink.avif_supported():
+            pytest.skip("AVIF not available in this Pillow build")
+
+        # Clear lru_cache so monkeypatching config takes effect
+        image_shrink.avif_supported.cache_clear()
+
+        from token_goat import config as _config_mod
+
+        def _fake_load():
+            cfg = _config_mod.Config()
+            cfg.image_shrink.prefer_avif = True
+            cfg.image_shrink.avif_quality = 60
+            return cfg
+
+        monkeypatch.setattr(_config_mod, "load", _fake_load)
+
+        p = _make_large_jpeg(tmp_path)
+        result = image_shrink.shrink(p)
+
+        assert result is not None
+        assert result.suffix.lower() == ".avif", (
+            f"Expected .avif output when AVIF is available; got {result.suffix}"
+        )
+        assert result.exists()
+
+    def test_avif_smaller_than_jpeg_on_photographic_content(self, tmp_data_dir, tmp_path, monkeypatch):
+        """AVIF at q=60 produces smaller files than JPEG at q=75 on photographic content."""
+        if not image_shrink.avif_supported():
+            pytest.skip("AVIF not available in this Pillow build")
+
+        import random
+
+        from PIL import Image
+
+        # Synthesise a photographic-like RGB image (random pixels = high entropy = worst
+        # case for both codecs, but AVIF still consistently beats JPEG on these).
+        img = Image.new("RGB", (800, 600))
+        img.putdata([
+            (random.randint(0, 255), random.randint(0, 255), random.randint(0, 255))
+            for _ in range(800 * 600)
+        ])
+        # Use BMP as source so size is guaranteed > threshold and we're measuring
+        # encoder output, not source compression.
+        src = tmp_path / "photo.bmp"
+        img.save(src, "BMP")
+        assert src.stat().st_size > image_shrink.SIZE_THRESHOLD_BYTES
+
+        # Encode as AVIF
+        from token_goat import config as _config_mod
+        image_shrink.avif_supported.cache_clear()
+
+        def _fake_load_avif():
+            cfg = _config_mod.Config()
+            cfg.image_shrink.prefer_avif = True
+            cfg.image_shrink.avif_quality = 60
+            return cfg
+
+        monkeypatch.setattr(_config_mod, "load", _fake_load_avif)
+        avif_result = image_shrink.shrink(src)
+        assert avif_result is not None and avif_result.suffix == ".avif"
+        avif_size = avif_result.stat().st_size
+
+        # Encode as JPEG — use a different source so the cache key differs.
+        src2 = tmp_path / "photo2.bmp"
+        img.putpixel((0, 0), (1, 2, 3))
+        img.save(src2, "BMP")
+
+        def _fake_load_jpeg():
+            cfg = _config_mod.Config()
+            cfg.image_shrink.prefer_avif = False
+            return cfg
+
+        monkeypatch.setattr(_config_mod, "load", _fake_load_jpeg)
+        monkeypatch.setenv("TOKEN_GOAT_IMAGE_FORMAT", "jpeg")
+        jpeg_result = image_shrink.shrink(src2)
+        assert jpeg_result is not None and jpeg_result.suffix == ".jpg"
+        jpeg_size = jpeg_result.stat().st_size
+
+        assert avif_size < jpeg_size, (
+            f"AVIF ({avif_size}B) should be smaller than JPEG ({jpeg_size}B) at equivalent quality"
+        )
+
+    def test_fallback_to_webp_when_avif_unavailable(self, tmp_data_dir, tmp_path, monkeypatch):
+        """When AVIF is not available, prefer_avif=True falls back to WebP."""
+        # Monkeypatch avif_supported to return False regardless of actual Pillow build.
+        image_shrink.avif_supported.cache_clear()
+        monkeypatch.setattr(image_shrink, "avif_supported", lambda: False)
+
+        from token_goat import config as _config_mod
+
+        def _fake_load():
+            cfg = _config_mod.Config()
+            cfg.image_shrink.prefer_avif = True  # would prefer AVIF but it's unavailable
+            return cfg
+
+        monkeypatch.setattr(_config_mod, "load", _fake_load)
+        monkeypatch.delenv("TOKEN_GOAT_IMAGE_FORMAT", raising=False)
+
+        p = _make_large_jpeg(tmp_path)
+        result = image_shrink.shrink(p)
+
+        assert result is not None
+        # When AVIF is unavailable, falls back through to the WebP/JPEG path.
+        assert result.suffix.lower() in (".webp", ".jpg"), (
+            f"Expected WebP or JPEG fallback when AVIF unavailable; got {result.suffix}"
+        )
+
+    def test_prefer_avif_false_skips_avif(self, tmp_data_dir, tmp_path, monkeypatch):
+        """prefer_avif=False always uses WebP/JPEG even when AVIF is available."""
+        image_shrink.avif_supported.cache_clear()
+
+        from token_goat import config as _config_mod
+
+        def _fake_load():
+            cfg = _config_mod.Config()
+            cfg.image_shrink.prefer_avif = False
+            return cfg
+
+        monkeypatch.setattr(_config_mod, "load", _fake_load)
+        monkeypatch.delenv("TOKEN_GOAT_IMAGE_FORMAT", raising=False)
+
+        p = _make_large_jpeg(tmp_path)
+        result = image_shrink.shrink(p)
+
+        assert result is not None
+        assert result.suffix.lower() in (".webp", ".jpg"), (
+            f"Expected WebP or JPEG when prefer_avif=False; got {result.suffix}"
+        )
+        assert result.suffix.lower() != ".avif"
+
+    def test_small_image_not_avif_encoded(self, tmp_data_dir, tmp_path, monkeypatch):
+        """Images <= SIZE_THRESHOLD_BYTES are not compressed at all (return None from shrink)."""
+        image_shrink.avif_supported.cache_clear()
+
+        from token_goat import config as _config_mod
+
+        def _fake_load():
+            cfg = _config_mod.Config()
+            cfg.image_shrink.prefer_avif = True
+            return cfg
+
+        monkeypatch.setattr(_config_mod, "load", _fake_load)
+
+        p = _make_small_jpeg(tmp_path)
+        result = image_shrink.shrink(p)
+        # Small images are rejected before any encoding step.
+        assert result is None
+
+    def test_rgba_png_stays_png_even_with_avif_enabled(self, tmp_data_dir, tmp_path, monkeypatch):
+        """RGBA transparency screenshots stay as PNG regardless of AVIF availability."""
+        image_shrink.avif_supported.cache_clear()
+
+        from token_goat import config as _config_mod
+
+        def _fake_load():
+            cfg = _config_mod.Config()
+            cfg.image_shrink.prefer_avif = True
+            return cfg
+
+        monkeypatch.setattr(_config_mod, "load", _fake_load)
+
+        import random
+
+        from PIL import Image
+
+        p = tmp_path / "screenshot.png"
+        img = Image.new("RGBA", (800, 800), (100, 150, 200, 200))
+        pixels = [
+            (random.randint(0, 255), random.randint(0, 255), random.randint(0, 255), 200)
+            for _ in range(800 * 800)
+        ]
+        img.putdata(pixels)
+        img.save(p, "PNG")
+
+        if p.stat().st_size <= image_shrink.SIZE_THRESHOLD_BYTES:
+            pytest.skip("Could not synthesize large enough RGBA PNG for this test")
+
+        result = image_shrink.shrink(p)
+        assert result is not None
+        assert result.suffix.lower() == ".png", (
+            f"RGBA screenshot must stay as PNG even with AVIF enabled; got {result.suffix}"
+        )
+
+    def test_env_override_disables_avif(self, tmp_data_dir, tmp_path, monkeypatch):
+        """TOKEN_GOAT_PREFER_AVIF=0 disables AVIF even when Pillow supports it."""
+        image_shrink.avif_supported.cache_clear()
+
+        # Ensure the env var is seen by config.load() — the real load() reads the env.
+        monkeypatch.setenv("TOKEN_GOAT_PREFER_AVIF", "0")
+        monkeypatch.delenv("TOKEN_GOAT_IMAGE_FORMAT", raising=False)
+
+        # Let config.load() run for real — env override should set prefer_avif=False.
+        from token_goat import config as _config_mod
+        cfg = _config_mod.load()
+        assert cfg.image_shrink.prefer_avif is False, (
+            "TOKEN_GOAT_PREFER_AVIF=0 must disable AVIF in loaded config"
         )
