@@ -342,6 +342,57 @@ def _build_git_hint(cwd: str | None, file_path: str) -> str | None:
         return None
 
 
+def _handle_index_only_file(
+    session_id: str,
+    file_path: str,
+    tool_input: dict[str, object],
+    cache: object,
+) -> HookResponse | None:
+    """Return a hint when Read targets a machine-generated index-only file.
+
+    Fires BEFORE the structured-file branch so lockfiles and bundles are caught
+    immediately without falling through to the CSV/JSON/log heuristics.  Tracks
+    the hint in the session fingerprint set so it fires at most once per file
+    per session.
+
+    Returns ``None`` when the file is small, not an index-only type, or the
+    caller already scoped the read with offset AND limit (surgical intent).
+    """
+    from .hints import _hint_fingerprint, build_index_only_file_hint  # noqa: PLC0415
+
+    offset = tool_input.get("offset")
+    limit = tool_input.get("limit")
+
+    hint = build_index_only_file_hint(
+        file_path=file_path,
+        offset=offset,
+        limit=limit,
+    )
+    if hint is None:
+        return None
+
+    # Dedup: suppress if identical hint already seen this session.
+    fingerprint = _hint_fingerprint(str(hint))
+    has_seen = getattr(cache, "has_hint_fingerprint", lambda _: False)(fingerprint)  # type: ignore[arg-type]
+    if has_seen:
+        _LOG.debug(
+            "pre-read: index-only hint already seen for %s; suppressing",
+            sanitize_log_str(file_path),
+        )
+        return None
+
+    mark_seen = getattr(cache, "mark_hint_seen", None)
+    if callable(mark_seen):
+        mark_seen(fingerprint)
+
+    record_hint_stat_pair("index_only_hint", hint, sanitize_log_str(file_path, max_len=512))
+    _LOG.info(
+        "pre-read: index-only hint injected for %s (%s)",
+        sanitize_log_str(file_path), str(hint)[:60],
+    )
+    return pre_tool_use_with_context(str(hint))
+
+
 def _handle_structured_file(
     session_id: str,
     file_path: str,
@@ -739,6 +790,14 @@ def pre_read(payload: HookPayload) -> HookResponse:
     from . import session  # noqa: PLC0415
 
     cache = session.load(session_id)
+
+    # Index-only file hint: fires first so machine-generated lockfiles and bundles
+    # (uv.lock, package-lock.json, *.min.js, *.map, …) are intercepted before any
+    # other hint logic runs.  These files are never worth reading in full and the
+    # hint saves thousands of tokens per avoided read.
+    index_only_response = _handle_index_only_file(session_id, file_path, tool_input, cache)
+    if index_only_response is not None:
+        return index_only_response
 
     # Structured-file hint: fires before session/diff hints so a first-time read
     # of a large CSV/JSON/log is intercepted immediately.  Short-circuits when

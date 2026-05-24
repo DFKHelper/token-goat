@@ -632,6 +632,113 @@ class TestStructuredFileHint:
 
 
 # ---------------------------------------------------------------------------
+# Index-only file hint tests
+# ---------------------------------------------------------------------------
+
+
+class TestIndexOnlyFileHint:
+    """pre_read emits a 'machine-generated, do not read' hint for lockfiles and bundles."""
+
+    def _read_payload(self, session_id: str, file_path: str, offset=None, limit=None) -> dict:
+        inp: dict = {"file_path": file_path}
+        if offset is not None:
+            inp["offset"] = offset
+        if limit is not None:
+            inp["limit"] = limit
+        return {
+            "tool_name": "Read",
+            "tool_input": inp,
+            "session_id": session_id,
+            "cwd": "/proj",
+        }
+
+    def _make_lockfile(self, tmp_path, name: str, size_bytes: int = 60_000) -> str:
+        """Write a synthetic large lockfile."""
+        p = tmp_path / name
+        row = b"# dep entry\nname = \"foo\"\nversion = \"1.0.0\"\n"
+        content = row * (size_bytes // len(row) + 1)
+        p.write_bytes(content[:size_bytes])
+        return str(p)
+
+    def test_uv_lock_fires(self, tmp_data_dir, tmp_path):
+        """Pre-Read on a large uv.lock → index-only hint fires."""
+        fpath = self._make_lockfile(tmp_path, "uv.lock")
+        result = hooks_cli.pre_read(self._read_payload("io-uv", fpath))
+        _assert_continue(result)
+        assert "hookSpecificOutput" in result
+        ctx = result["hookSpecificOutput"]["additionalContext"]
+        assert "uv.lock" in ctx
+        assert "lockfile" in ctx.lower()
+
+    def test_package_lock_json_fires(self, tmp_data_dir, tmp_path):
+        """Pre-Read on a large package-lock.json → index-only hint fires."""
+        fpath = self._make_lockfile(tmp_path, "package-lock.json")
+        result = hooks_cli.pre_read(self._read_payload("io-pkglock", fpath))
+        _assert_continue(result)
+        assert "hookSpecificOutput" in result
+        ctx = result["hookSpecificOutput"]["additionalContext"]
+        assert "package-lock.json" in ctx
+        assert "lockfile" in ctx.lower()
+
+    def test_min_js_fires(self, tmp_data_dir, tmp_path):
+        """Pre-Read on a large *.min.js → index-only hint fires."""
+        p = tmp_path / "app.min.js"
+        p.write_bytes(b"!function(){}" * 1000)  # ~14 KB — above 5 KB floor
+        result = hooks_cli.pre_read(self._read_payload("io-minjs", str(p)))
+        _assert_continue(result)
+        assert "hookSpecificOutput" in result
+        ctx = result["hookSpecificOutput"]["additionalContext"]
+        assert "min" in ctx.lower() or "minified" in ctx.lower() or "bundle" in ctx.lower()
+
+    def test_regular_py_does_not_fire(self, tmp_data_dir, tmp_path):
+        """Pre-Read on a regular Python file → index-only hint must NOT fire."""
+        p = tmp_path / "regular.py"
+        p.write_bytes(b"def foo(): pass\n" * 5000)
+        result = hooks_cli.pre_read(self._read_payload("io-py", str(p)))
+        _assert_continue(result)
+        if "hookSpecificOutput" in result:
+            ctx = result["hookSpecificOutput"].get("additionalContext", "")
+            assert "lockfile" not in ctx.lower()
+            assert "minified" not in ctx.lower()
+
+    def test_surgical_read_no_hint(self, tmp_data_dir, tmp_path):
+        """offset AND limit both specified → surgical intent; no index-only hint."""
+        fpath = self._make_lockfile(tmp_path, "uv.lock")
+        result = hooks_cli.pre_read(self._read_payload("io-surgical", fpath, offset=10, limit=20))
+        _assert_continue(result)
+        if "hookSpecificOutput" in result:
+            ctx = result["hookSpecificOutput"].get("additionalContext", "")
+            assert "lockfile" not in ctx.lower()
+
+    def test_tiny_lockfile_no_hint(self, tmp_data_dir, tmp_path):
+        """A uv.lock smaller than 5KB → below threshold; no hint."""
+        p = tmp_path / "uv.lock"
+        p.write_bytes(b"# tiny\n" * 10)  # ~70 bytes
+        result = hooks_cli.pre_read(self._read_payload("io-tiny", str(p)))
+        _assert_continue(result)
+        if "hookSpecificOutput" in result:
+            ctx = result["hookSpecificOutput"].get("additionalContext", "")
+            assert "lockfile" not in ctx.lower()
+
+    def test_session_dedup_fires_only_once(self, tmp_data_dir, tmp_path):
+        """Same lockfile read twice in a session → index-only hint fires only on first read."""
+        fpath = self._make_lockfile(tmp_path, "cargo.lock")
+        payload = self._read_payload("io-dedup", fpath)
+
+        result1 = hooks_cli.pre_read(payload)
+        _assert_continue(result1)
+        assert "hookSpecificOutput" in result1
+        ctx1 = result1["hookSpecificOutput"]["additionalContext"]
+        assert "lockfile" in ctx1.lower()
+
+        result2 = hooks_cli.pre_read(payload)
+        _assert_continue(result2)
+        if "hookSpecificOutput" in result2:
+            ctx2 = result2["hookSpecificOutput"].get("additionalContext", "")
+            assert "lockfile" not in ctx2.lower()
+
+
+# ---------------------------------------------------------------------------
 # Content-unchanged short-circuit hint tests
 # ---------------------------------------------------------------------------
 

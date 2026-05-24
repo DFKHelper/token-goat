@@ -21,6 +21,7 @@ __all__ = [
     "build_diff_hint",
     "build_glob_dedup_hint",
     "build_grep_dedup_hint",
+    "build_index_only_file_hint",
     "build_read_hint",
     "build_structured_file_hint",
     "build_unchanged_file_hint",
@@ -1501,6 +1502,193 @@ def _build_unchanged_file_hint_inner(
             f"For a symbol use `token-goat read \"{safe_path}::Symbol\"`."
         ),
         full_tokens,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Index-only file hint
+# ---------------------------------------------------------------------------
+# Machine-generated files that are never intended to be read in full by a
+# human or an LLM.  Reading them burns thousands of tokens with zero benefit.
+#
+# Two categories:
+#   lockfiles  — dependency lockfiles produced by package managers
+#   bundles    — minified JS/CSS, source maps, TypeScript build info
+#
+# The hint fires (a) for files whose basename matches a known lockfile name OR
+# whose suffix matches a known bundle extension, (b) only when the file is
+# larger than _INDEX_ONLY_MIN_BYTES (avoids false positives on toy projects),
+# and (c) only when the caller did NOT supply BOTH offset and limit (surgical
+# intent guard — someone reading a 20-line slice of uv.lock knows what they
+# want).
+
+# Exact basenames that are always lockfiles, matched case-insensitively.
+_INDEX_ONLY_LOCKFILE_NAMES: frozenset[str] = frozenset({
+    "uv.lock",
+    "poetry.lock",
+    "cargo.lock",
+    "gemfile.lock",
+    "composer.lock",
+    "pnpm-lock.yaml",
+    "yarn.lock",
+    "package-lock.json",
+    "bun.lockb",
+})
+
+# Suffixes that indicate machine-generated bundles / artefacts.
+_INDEX_ONLY_BUNDLE_SUFFIXES: frozenset[str] = frozenset({
+    ".min.js",
+    ".min.css",
+    ".bundle.js",
+    ".bundle.css",
+    ".tsbuildinfo",
+    ".map",
+})
+
+# Minimum file size (bytes) before the index-only hint fires.
+# Below this the file is either tiny or a human-written file that happens to
+# share a name (e.g. an empty stub Cargo.lock in a test fixture).
+_INDEX_ONLY_MIN_BYTES: int = 5_000
+
+
+def _is_index_only_file(basename_lower: str) -> str | None:
+    """Return the category ('lockfile', 'bundle', 'map', 'buildinfo') or None.
+
+    Accepts the lowercased basename of the file.  Returns a short category
+    string used to pick the appropriate hint wording, or ``None`` when the
+    file does not match any index-only pattern.
+    """
+    if basename_lower in _INDEX_ONLY_LOCKFILE_NAMES:
+        return "lockfile"
+    # Multi-part suffix matching (.min.js, .bundle.css, …) — check for known
+    # two-part suffixes by scanning _INDEX_ONLY_BUNDLE_SUFFIXES.
+    for suffix in _INDEX_ONLY_BUNDLE_SUFFIXES:
+        if basename_lower.endswith(suffix):
+            if suffix == ".map":
+                return "map"
+            if suffix == ".tsbuildinfo":
+                return "buildinfo"
+            return "bundle"
+    return None
+
+
+def build_index_only_file_hint(
+    *,
+    file_path: str,
+    offset: object | None,
+    limit: object | None,
+) -> ReadHint | None:
+    """Return a hint when Read targets a machine-generated index-only file.
+
+    Fires when:
+    - The basename matches a known lockfile OR the extension matches a known
+      bundle/artefact pattern AND
+    - The file is larger than ``_INDEX_ONLY_MIN_BYTES`` AND
+    - The caller did NOT specify BOTH offset AND limit (surgical intent guard).
+
+    Returns ``None`` (no hint) for small files, unrecognised names, or when
+    the caller already scoped the read with offset+limit.  Never raises.
+    """
+    try:
+        return _build_index_only_file_hint_inner(
+            file_path=file_path, offset=offset, limit=limit,
+        )
+    except Exception:  # noqa: BLE001 — fail-soft for the hot pre-read path
+        _LOG.debug(
+            "build_index_only_file_hint: unexpected error for %r",
+            file_path, exc_info=True,
+        )
+        return None
+
+
+def _build_index_only_file_hint_inner(
+    *,
+    file_path: str,
+    offset: object | None,
+    limit: object | None,
+) -> ReadHint | None:
+    """Inner implementation; may raise."""
+    # Surgical guard: both offset AND limit present means intentional scoped read.
+    has_offset = offset is not None and isinstance(offset, int) and offset > 0
+    has_limit = limit is not None and isinstance(limit, int) and limit > 0
+    if has_offset and has_limit:
+        return None
+
+    path = Path(file_path)
+    basename_lower = path.name.lower()
+
+    category = _is_index_only_file(basename_lower)
+    if category is None:
+        return None
+
+    # Cheap size check — skip hint for tiny files.
+    try:
+        file_size = path.stat().st_size
+    except OSError:
+        return None
+
+    if file_size < _INDEX_ONLY_MIN_BYTES:
+        return None
+
+    size_kb = file_size // 1024
+    fname = _sanitize_hint_path(path.name)
+
+    if category == "lockfile":
+        # Identify the package manager and give a concrete alternative command.
+        if basename_lower == "uv.lock":
+            alt = f'`uv pip list` or `jq \'.package[] | select(.name=="NAME")\' {fname}`'
+        elif basename_lower in ("package-lock.json",):
+            alt = f'`npm ls` or `jq \'.dependencies.NAME\' {fname}`'
+        elif basename_lower in ("yarn.lock", "pnpm-lock.yaml"):
+            alt = "`yarn list` / `pnpm list` instead"
+        elif basename_lower == "cargo.lock":
+            alt = '`cargo tree` or `grep -A5 \'name = "NAME"\' ' + fname + "`"
+        elif basename_lower in ("gemfile.lock",):
+            alt = "`bundle list` instead"
+        elif basename_lower == "poetry.lock":
+            alt = '`poetry show` or `grep -A5 \'name = "NAME"\' ' + fname + "`"
+        else:
+            alt = f"`grep NAME {fname}` instead"
+        return ReadHint(
+            _apply_terse(
+                f"`{fname}` (lockfile, {size_kb}KB). "
+                f"Use {alt} — do not read {size_kb}K lines of pinned dep hashes."
+            ),
+            0,
+        )
+
+    if category == "map":
+        return ReadHint(
+            _apply_terse(
+                f"`{fname}` (source map, {size_kb}KB). "
+                f"Use browser devtools or source-map-cli; do not read in full."
+            ),
+            0,
+        )
+
+    if category == "buildinfo":
+        return ReadHint(
+            _apply_terse(
+                f"`{fname}` (TS incremental build cache, {size_kb}KB). "
+                f"Machine-only artefact — do not read."
+            ),
+            0,
+        )
+
+    # category == "bundle"
+    # Try to suggest the source equivalent.
+    if ".min.js" in basename_lower or ".bundle.js" in basename_lower:
+        src_hint = "Read the source in `src/` instead."
+    elif ".min.css" in basename_lower or ".bundle.css" in basename_lower:
+        src_hint = "Read the source SCSS/CSS in `src/` instead."
+    else:
+        src_hint = "Read the original source instead."
+    return ReadHint(
+        _apply_terse(
+            f"`{fname}` (minified bundle, {size_kb}KB). "
+            f"{src_hint}"
+        ),
+        0,
     )
 
 
