@@ -655,6 +655,14 @@ def semantic(
         "--no-rerank",
         help="Disable verbatim-token boost and generated-path demotion.",
     ),
+    compact: bool = typer.Option(
+        True,
+        "--compact/--full",
+        help=(
+            "Compact output: one line per result (<path>:<line>  <snippet>). "
+            "Use --full to restore verbose two-line output with kind and distance."
+        ),
+    ),
 ) -> None:
     """Semantic search using local embeddings (fastembed + sqlite-vec)."""
     from . import embeddings  # noqa: PLC0415
@@ -701,12 +709,18 @@ def semantic(
     if not hits:
         typer.echo("(no results)")
         return
-    for h in hits:
-        preview = h.text.replace("\n", " ")[:120]
-        typer.echo(
-            f"{h.file_rel}:{h.start_line}-{h.end_line} ({h.kind}, d={h.distance:.4f})"
-        )
-        typer.echo(f"  {preview}")
+
+    if compact:
+        for h in hits:
+            snippet = h.text.replace("\n", " ")[:100]
+            typer.echo(f"{h.file_rel}:{h.start_line}  {snippet}")
+    else:
+        for h in hits:
+            preview = h.text.replace("\n", " ")[:120]
+            typer.echo(
+                f"{h.file_rel}:{h.start_line}-{h.end_line} ({h.kind}, d={h.distance:.4f})"
+            )
+            typer.echo(f"  {preview}")
 
 
 @app.command("map", rich_help_panel="Core")

@@ -251,7 +251,7 @@ def test_cli_semantic_with_stub_embeddings(ts_project, monkeypatch):
     # threshold filter (covered separately).
     result = CliRunner().invoke(
         cli.app, ["semantic", "user service greeting", "-k", "3",
-                  "--max-distance", "99"],
+                  "--max-distance", "99", "--full"],
         catch_exceptions=False,
     )
     assert result.exit_code == 0
@@ -306,7 +306,7 @@ def test_cli_semantic_with_embeddings(ts_project, monkeypatch):
     result = runner.invoke(
         cli.app,
         ["semantic", "hello name greeting", "-k", "3",
-         "--max-distance", "99"],
+         "--max-distance", "99", "--full"],
         catch_exceptions=False,
     )
     assert result.exit_code == 0
