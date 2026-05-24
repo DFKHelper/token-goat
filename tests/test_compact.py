@@ -1161,6 +1161,14 @@ class TestGitDiffStat:
 class TestGetGitDiffStatSummary:
     """_get_git_diff_stat_summary — whole-repo git diff --stat helper."""
 
+    @pytest.fixture(autouse=True)
+    def _clear_caches(self):
+        compact._diff_stat_summary_cache.clear()
+        compact._is_git_repo_cache.clear()
+        yield
+        compact._diff_stat_summary_cache.clear()
+        compact._is_git_repo_cache.clear()
+
     def test_returns_empty_string_when_root_is_none(self):
         """None root must return '' without raising."""
         assert compact._get_git_diff_stat_summary(None) == ""
@@ -1173,6 +1181,7 @@ class TestGetGitDiffStatSummary:
     def test_returns_empty_string_when_subprocess_raises(self, monkeypatch):
         """Any exception from subprocess.run must be swallowed; '' returned."""
         import subprocess as _subprocess  # noqa: PLC0415
+        monkeypatch.setattr(compact, "_is_git_repo", lambda _cwd: True)
         monkeypatch.setattr(
             _subprocess,
             "run",
@@ -1188,6 +1197,7 @@ class TestGetGitDiffStatSummary:
         def _raise_timeout(*a, **kw):
             raise _subprocess.TimeoutExpired(cmd="git", timeout=5)
 
+        monkeypatch.setattr(compact, "_is_git_repo", lambda _cwd: True)
         monkeypatch.setattr(_subprocess, "run", _raise_timeout)
         result = compact._get_git_diff_stat_summary("/some/path")
         assert result == ""
@@ -1227,6 +1237,7 @@ class TestGetGitDiffStatSummary:
             r = types.SimpleNamespace(returncode=0, stdout=fake_stdout, stderr="")
             return r
 
+        monkeypatch.setattr(compact, "_is_git_repo", lambda _cwd: True)
         monkeypatch.setattr(_subprocess, "run", _fake_run)
         result = compact._get_git_diff_stat_summary("/some/sixline-repo")
         assert result != ""
@@ -1244,6 +1255,7 @@ class TestGetGitDiffStatSummary:
         def _fake_run(*a, **kw):
             return types.SimpleNamespace(returncode=0, stdout=fake_stdout, stderr="")
 
+        monkeypatch.setattr(compact, "_is_git_repo", lambda _cwd: True)
         monkeypatch.setattr(_subprocess, "run", _fake_run)
         result = compact._get_git_diff_stat_summary("/some/oversized-repo")
         assert result == "", f"expected '' for oversized output, got {result!r}"
@@ -1289,6 +1301,7 @@ class TestGetGitDiffStatSummary:
         def _fake_run(*a, **kw):
             return types.SimpleNamespace(returncode=0, stdout=fake_stdout, stderr="")
 
+        monkeypatch.setattr(compact, "_is_git_repo", lambda _cwd: True)
         monkeypatch.setattr(_subprocess, "run", _fake_run)
         result = compact._get_git_diff_stat_summary("/some/repo")
         assert result != ""
@@ -2800,9 +2813,12 @@ class TestGetUncommittedChanges:
         # (mirrors the diff-stat summary cache). Tests that monkeypatch
         # subprocess.run with different fakes for the same path otherwise see
         # the previous test's cached result. Clear before and after each test.
+        # Also clear _is_git_repo_cache so monkeypatched _is_git_repo takes effect.
         compact._uncommitted_changes_cache.clear()
+        compact._is_git_repo_cache.clear()
         yield
         compact._uncommitted_changes_cache.clear()
+        compact._is_git_repo_cache.clear()
 
     def test_returns_none_when_project_root_is_none(self):
         """None project_root must return None immediately without calling git."""
@@ -2813,6 +2829,7 @@ class TestGetUncommittedChanges:
         """Any exception from subprocess.run must be swallowed; None returned."""
         import subprocess as _subprocess  # noqa: PLC0415
 
+        monkeypatch.setattr(compact, "_is_git_repo", lambda _cwd: True)
         monkeypatch.setattr(
             _subprocess,
             "run",
@@ -2828,6 +2845,7 @@ class TestGetUncommittedChanges:
         def _raise_timeout(*a, **kw):
             raise _subprocess.TimeoutExpired(cmd="git", timeout=5)
 
+        monkeypatch.setattr(compact, "_is_git_repo", lambda _cwd: True)
         monkeypatch.setattr(_subprocess, "run", _raise_timeout)
         result = compact._get_uncommitted_changes("/some/path")
         assert result is None
@@ -2840,6 +2858,7 @@ class TestGetUncommittedChanges:
         def _fake_run(args, **kw):
             return types.SimpleNamespace(returncode=0, stdout="", stderr="")
 
+        monkeypatch.setattr(compact, "_is_git_repo", lambda _cwd: True)
         monkeypatch.setattr(_subprocess, "run", _fake_run)
         result = compact._get_uncommitted_changes("/some/repo")
         assert result is None
@@ -2861,6 +2880,7 @@ class TestGetUncommittedChanges:
                 return types.SimpleNamespace(returncode=0, stdout=diff_output, stderr="")
             return types.SimpleNamespace(returncode=0, stdout=status_output, stderr="")
 
+        monkeypatch.setattr(compact, "_is_git_repo", lambda _cwd: True)
         monkeypatch.setattr(_subprocess, "run", _fake_run)
         result = compact._get_uncommitted_changes("/some/repo")
         assert result is not None
@@ -2878,6 +2898,7 @@ class TestGetUncommittedChanges:
             # Untracked file
             return types.SimpleNamespace(returncode=0, stdout="?? new_file.py\n", stderr="")
 
+        monkeypatch.setattr(compact, "_is_git_repo", lambda _cwd: True)
         monkeypatch.setattr(_subprocess, "run", _fake_run)
         result = compact._get_uncommitted_changes("/some/repo")
         assert result is not None
@@ -2896,6 +2917,7 @@ class TestGetUncommittedChanges:
                 return types.SimpleNamespace(returncode=0, stdout=many_lines + "\n", stderr="")
             return types.SimpleNamespace(returncode=0, stdout="", stderr="")
 
+        monkeypatch.setattr(compact, "_is_git_repo", lambda _cwd: True)
         monkeypatch.setattr(_subprocess, "run", _fake_run)
         result = compact._get_uncommitted_changes("/some/repo")
         assert result is not None
@@ -2915,6 +2937,7 @@ class TestGetUncommittedChanges:
                 )
             return types.SimpleNamespace(returncode=0, stdout=" M src/bar.py\n", stderr="")
 
+        monkeypatch.setattr(compact, "_is_git_repo", lambda _cwd: True)
         monkeypatch.setattr(_subprocess, "run", _fake_run)
         result = compact._get_uncommitted_changes("/some/repo")
         assert result is not None
@@ -2965,6 +2988,7 @@ class TestGetUncommittedChanges:
                 return types.SimpleNamespace(returncode=0, stdout=many_chars, stderr="")
             return types.SimpleNamespace(returncode=0, stdout="", stderr="")
 
+        monkeypatch.setattr(compact, "_is_git_repo", lambda _cwd: True)
         monkeypatch.setattr(_subprocess, "run", _fake_run)
         result = compact._get_uncommitted_changes("/some/repo")
         assert result is not None
@@ -2982,6 +3006,7 @@ class TestGetUncommittedChanges:
                 return types.SimpleNamespace(returncode=128, stdout="", stderr="fatal: bad HEAD")
             return types.SimpleNamespace(returncode=0, stdout="?? new.py\n", stderr="")
 
+        monkeypatch.setattr(compact, "_is_git_repo", lambda _cwd: True)
         monkeypatch.setattr(_subprocess, "run", _fake_run)
         result = compact._get_uncommitted_changes("/some/repo")
         assert result is not None
@@ -2995,6 +3020,7 @@ class TestGetUncommittedChanges:
         def _fake_run(args, **kw):
             return types.SimpleNamespace(returncode=128, stdout="", stderr="fatal")
 
+        monkeypatch.setattr(compact, "_is_git_repo", lambda _cwd: True)
         monkeypatch.setattr(_subprocess, "run", _fake_run)
         result = compact._get_uncommitted_changes("/some/repo")
         assert result is None
@@ -4780,10 +4806,12 @@ class TestGitDiffStatSummaryCache:
 
     def _clear_cache(self):
         compact._diff_stat_summary_cache.clear()
+        compact._is_git_repo_cache.clear()
 
     def test_cache_hit_skips_subprocess(self, monkeypatch, tmp_path):
         """Second call within TTL returns cached result without re-running git."""
         self._clear_cache()
+        monkeypatch.setattr(compact, "_is_git_repo", lambda _cwd: True)
         call_count = 0
 
         real_run = __import__("subprocess").run
@@ -4805,6 +4833,7 @@ class TestGitDiffStatSummaryCache:
     def test_cache_expires_after_ttl(self, monkeypatch, tmp_path):
         """Cache entry older than TTL causes a fresh subprocess call."""
         self._clear_cache()
+        monkeypatch.setattr(compact, "_is_git_repo", lambda _cwd: True)
         cwd = str(tmp_path)
         # Prime the cache with a stale timestamp (TTL + 1 seconds in the past).
         stale_ts = __import__("time").monotonic() - compact._DIFF_STAT_SUMMARY_TTL - 1
@@ -5669,3 +5698,122 @@ class TestHumanizeBytes:
         from token_goat import compact
         from token_goat.util import _humanize_bytes
         assert compact._humanize_bytes is _humanize_bytes
+
+
+# ---------------------------------------------------------------------------
+# _is_git_repo — cheap .git existence probe
+# ---------------------------------------------------------------------------
+
+class TestIsGitRepo:
+    """Unit tests for compact._is_git_repo()."""
+
+    @pytest.fixture(autouse=True)
+    def _clear_cache(self):
+        compact._is_git_repo_cache.clear()
+        yield
+        compact._is_git_repo_cache.clear()
+
+    def test_returns_false_for_empty_tmp_dir(self, tmp_path):
+        """A plain tmp directory has no .git — must return False."""
+        assert compact._is_git_repo(str(tmp_path)) is False
+
+    def test_returns_true_for_directory_with_dot_git_dir(self, tmp_path):
+        """.git subdirectory present → True."""
+        (tmp_path / ".git").mkdir()
+        assert compact._is_git_repo(str(tmp_path)) is True
+
+    def test_returns_true_for_directory_with_dot_git_file(self, tmp_path):
+        """.git file (worktree/submodule pointer) present → True."""
+        (tmp_path / ".git").write_text("gitdir: ../.git/worktrees/foo\n")
+        assert compact._is_git_repo(str(tmp_path)) is True
+
+    def test_result_is_cached(self, tmp_path):
+        """Second call must return from cache (probe not repeated on disk)."""
+        (tmp_path / ".git").mkdir()
+        path_str = str(tmp_path)
+        first = compact._is_git_repo(path_str)
+        assert first is True
+        assert path_str in compact._is_git_repo_cache
+        # Remove .git — second call still returns True from cache.
+        (tmp_path / ".git").rmdir()
+        assert compact._is_git_repo(path_str) is True
+
+
+# ---------------------------------------------------------------------------
+# non-git short-circuit for git helpers
+# ---------------------------------------------------------------------------
+
+class TestNonGitShortCircuit:
+    """Verify git helpers return immediately when cwd is not a git repo."""
+
+    @pytest.fixture(autouse=True)
+    def _clear_caches(self):
+        compact._is_git_repo_cache.clear()
+        compact._uncommitted_changes_cache.clear()
+        compact._diff_stat_summary_cache.clear()
+        yield
+        compact._is_git_repo_cache.clear()
+        compact._uncommitted_changes_cache.clear()
+        compact._diff_stat_summary_cache.clear()
+
+    def test_uncommitted_changes_skips_subprocess_in_non_git_dir(
+        self, tmp_path, monkeypatch
+    ):
+        """_get_uncommitted_changes must return None without spawning git."""
+        import subprocess as _subprocess  # noqa: PLC0415
+
+        calls: list[object] = []
+
+        def _spy(*a, **kw):
+            calls.append(a)
+            raise AssertionError("subprocess.run must not be called for non-git cwd")
+
+        monkeypatch.setattr(_subprocess, "run", _spy)
+        result = compact._get_uncommitted_changes(str(tmp_path))
+        assert result is None
+        assert calls == []
+
+    def test_diff_stat_summary_skips_subprocess_in_non_git_dir(
+        self, tmp_path, monkeypatch
+    ):
+        """_get_git_diff_stat_summary must return '' without spawning git."""
+        import subprocess as _subprocess  # noqa: PLC0415
+
+        calls: list[object] = []
+
+        def _spy(*a, **kw):
+            calls.append(a)
+            raise AssertionError("subprocess.run must not be called for non-git cwd")
+
+        monkeypatch.setattr(_subprocess, "run", _spy)
+        result = compact._get_git_diff_stat_summary(str(tmp_path))
+        assert result == ""
+        assert calls == []
+
+    def test_uncommitted_changes_still_works_in_git_repo(self, tmp_path, monkeypatch):
+        """When _is_git_repo returns True, the subprocess path is reachable."""
+        import subprocess as _subprocess  # noqa: PLC0415
+
+        fake_proc = type(
+            "P", (), {"returncode": 0, "stdout": " foo.py | 2 +-\n", "stderr": ""}
+        )()
+        monkeypatch.setattr(_subprocess, "run", lambda *a, **kw: fake_proc)
+        monkeypatch.setattr(compact, "_is_git_repo", lambda _cwd: True)
+        result = compact._get_uncommitted_changes(str(tmp_path))
+        assert result is not None
+        assert "foo.py" in result
+
+    def test_diff_stat_summary_still_works_in_git_repo(self, tmp_path, monkeypatch):
+        """When _is_git_repo returns True, the subprocess path is reachable."""
+        import subprocess as _subprocess  # noqa: PLC0415
+
+        fake_proc = type(
+            "P",
+            (),
+            {"returncode": 0, "stdout": " bar.py | 1 +\n1 file changed\n", "stderr": ""},
+        )()
+        monkeypatch.setattr(_subprocess, "run", lambda *a, **kw: fake_proc)
+        monkeypatch.setattr(compact, "_is_git_repo", lambda _cwd: True)
+        result = compact._get_git_diff_stat_summary(str(tmp_path))
+        assert result != ""
+        assert "bar.py" in result
