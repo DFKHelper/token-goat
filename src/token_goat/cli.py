@@ -1299,6 +1299,13 @@ _SMART_DEFAULT_TAIL = 80
 # Outputs at or below this threshold are returned in full — no elision.
 _SMART_DEFAULT_THRESHOLD = _SMART_DEFAULT_HEAD + _SMART_DEFAULT_TAIL
 
+# --head-tail constants (Item 7): first+last N lines with an omission marker.
+_HEAD_TAIL_LINES = 20
+_HEAD_TAIL_THRESHOLD = _HEAD_TAIL_LINES * 2  # no-op when body <= this many lines
+
+# --grep-max default cap (Item 10).
+_GREP_MAX_DEFAULT = 20
+
 
 def _apply_smart_default(lines: list[str]) -> list[str]:
     """Return head+tail slice with an elision marker, or the original list unchanged."""
@@ -1308,6 +1315,41 @@ def _apply_smart_default(lines: list[str]) -> list[str]:
     elided = total - _SMART_DEFAULT_HEAD - _SMART_DEFAULT_TAIL
     marker = f"[token-goat: {elided} lines elided; pass --full for all {total} lines]"
     return [*lines[:_SMART_DEFAULT_HEAD], marker, *lines[-_SMART_DEFAULT_TAIL:]]
+
+
+def _apply_head_tail(lines: list[str]) -> list[str]:
+    """Return first + last _HEAD_TAIL_LINES with an omission marker (Item 7).
+
+    When the body has <= _HEAD_TAIL_THRESHOLD lines the list is returned
+    unchanged — the flag is a no-op for short outputs.
+    """
+    total = len(lines)
+    if total <= _HEAD_TAIL_THRESHOLD:
+        return lines
+    omitted = total - _HEAD_TAIL_LINES * 2
+    marker = f"--- {omitted} lines omitted ---"
+    return [*lines[:_HEAD_TAIL_LINES], marker, *lines[-_HEAD_TAIL_LINES:]]
+
+
+def _apply_grep_cap(
+    matched_lines: list[str],
+    grep_max: int,
+) -> tuple[list[str], str]:
+    """Cap grep results to *grep_max* and return a footer when truncated (Item 10).
+
+    Args:
+        matched_lines: Lines already filtered by the grep pattern.
+        grep_max: Maximum lines to return.  0 means no cap (current behaviour).
+
+    Returns:
+        ``(capped_lines, footer)`` where *footer* is an empty string when no
+        truncation occurred, or a hint string when matches were trimmed.
+    """
+    total = len(matched_lines)
+    if grep_max <= 0 or total <= grep_max:
+        return matched_lines, ""
+    footer = f"(use --grep-max 0 for all {total} matches)"
+    return matched_lines[:grep_max], footer
 
 
 def _run_output_recall_command(
@@ -1321,6 +1363,8 @@ def _run_output_recall_command(
     cache_module: object,
     stat_kind: str,
     not_found_msg: str,
+    head_tail: bool = False,
+    grep_max: int = _GREP_MAX_DEFAULT,
 ) -> None:
     """Shared implementation for bash-output and web-output recall commands.
 
@@ -1329,6 +1373,14 @@ def _run_output_recall_command(
     JSON payload verbatim, so bash and web sidecars each add their own fields
     (``cmd_preview``/``exit_code`` vs ``url_preview``/``status_code``) without
     any special-casing here.
+
+    Args:
+        head_tail: When True, emit the first + last ``_HEAD_TAIL_LINES`` lines
+            with an omission marker instead of the full body (Item 7).
+            No-op when the body has <= ``_HEAD_TAIL_THRESHOLD`` lines.
+        grep_max: Cap on grep-filtered results (Item 10).  Prepends a
+            ``Match count: N`` header and appends a truncation footer when the
+            cap fires.  ``0`` means no cap.
     """
     from . import db as _db  # noqa: PLC0415
 
@@ -1342,15 +1394,27 @@ def _run_output_recall_command(
         raise typer.Exit(1)
 
     lines = body.splitlines()
-    _slicing_requested = grep or head > 0 or tail > 0
+    _slicing_requested = grep or head > 0 or tail > 0 or head_tail
+    _grep_footer = ""
     if grep:
-        lines = [ln for ln in lines if grep in ln]
+        matched = [ln for ln in lines if grep in ln]
+        match_count = len(matched)
+        matched, _grep_footer = _apply_grep_cap(matched, grep_max)
+        lines = matched
+        # Prepend a match-count header so the agent knows the total even when
+        # results are truncated.
+        if match_count > 0:
+            lines = [f"Match count: {match_count}", *lines]
     if head > 0:
         lines = lines[:head]
     if tail > 0:
         lines = lines[-tail:]
+    if head_tail and not grep:
+        lines = _apply_head_tail(lines)
     if not _slicing_requested and not full:
         lines = _apply_smart_default(lines)
+    if _grep_footer:
+        lines = [*lines, _grep_footer]
     sliced = "\n".join(lines)
 
     # Record a recall stat so `token-goat stats` reflects the value of avoiding
@@ -1407,7 +1471,9 @@ def cmd_bash_output(
     head: int = typer.Option(0, "--head", help="Show first N lines (0 = no head limit)"),
     tail: int = typer.Option(0, "--tail", help="Show last N lines (0 = no tail limit)"),
     grep: str | None = typer.Option(None, "--grep", "-g", help="Show only lines matching the (case-sensitive) substring"),
+    grep_max: int = typer.Option(_GREP_MAX_DEFAULT, "--grep-max", help="Max matching lines to show with --grep (0 = no cap)"),
     full: bool = typer.Option(False, "--full", help="Return the entire cached output (disables smart-default head+tail)"),
+    head_tail: bool = typer.Option(False, "--head-tail", help="Emit first+last 20 lines with an omission marker instead of full body"),
     json_output: bool = _OPT_JSON,
 ) -> None:
     """Retrieve a sliced view of a cached Bash output.
@@ -1421,6 +1487,9 @@ def cmd_bash_output(
     30 lines and last 80 lines with an elision marker.  Pass ``--full`` to
     get everything.  Combine ``--head``, ``--tail``, and ``--grep`` to
     narrow further; those flags suppress the smart default automatically.
+    Use ``--head-tail`` to get just the first+last 20 lines (useful for large
+    outputs where you only need the gist).  Use ``--grep-max N`` to cap
+    the number of matching lines returned (default 20; 0 = no cap).
     JSON mode includes the full path and stored byte size.
     """
     from . import bash_cache  # noqa: PLC0415
@@ -1435,6 +1504,8 @@ def cmd_bash_output(
         cache_module=bash_cache,
         stat_kind="bash_output_recall",
         not_found_msg=f"no cached output for id: {output_id}",
+        head_tail=head_tail,
+        grep_max=grep_max,
     )
 
 
@@ -1444,7 +1515,9 @@ def cmd_web_output(
     head: int = typer.Option(0, "--head", help="Show first N lines (0 = no head limit)"),
     tail: int = typer.Option(0, "--tail", help="Show last N lines (0 = no tail limit)"),
     grep: str | None = typer.Option(None, "--grep", "-g", help="Show only lines matching the (case-sensitive) substring"),
+    grep_max: int = typer.Option(_GREP_MAX_DEFAULT, "--grep-max", help="Max matching lines to show with --grep (0 = no cap)"),
     full: bool = typer.Option(False, "--full", help="Return the entire cached output (disables smart-default head+tail)"),
+    head_tail: bool = typer.Option(False, "--head-tail", help="Emit first+last 20 lines with an omission marker instead of full body"),
     json_output: bool = _OPT_JSON,
 ) -> None:
     """Retrieve a sliced view of a cached WebFetch response body.
@@ -1458,6 +1531,9 @@ def cmd_web_output(
     30 lines and last 80 lines with an elision marker.  Pass ``--full`` to
     get everything.  Combine ``--head``, ``--tail``, and ``--grep`` to
     narrow further; those flags suppress the smart default automatically.
+    Use ``--head-tail`` to get just the first+last 20 lines (useful for large
+    documentation pages where you only need the gist).  Use ``--grep-max N``
+    to cap the number of matching lines returned (default 20; 0 = no cap).
     JSON mode includes the full path, stored byte size, status code, and a
     1-based ``numbered_lines`` list anchored to the original body.
     """
@@ -1473,6 +1549,8 @@ def cmd_web_output(
         cache_module=web_cache,
         stat_kind="web_output_recall",
         not_found_msg=f"no cached web output for id: {output_id}",
+        head_tail=head_tail,
+        grep_max=grep_max,
     )
 
 
