@@ -19,6 +19,12 @@ from .util import get_logger
 
 _LOG = get_logger("read_commands")
 
+#: Optional ``--session-id`` / ``-s`` Typer option — mirrors the definition in
+#: ``cli.py``.  Defined here to avoid a circular import (``cli`` lazily imports
+#: ``read_commands``; a top-level ``from .cli import _OPT_SESSION_ID`` would
+#: form a cycle at load time).
+_OPT_SESSION_ID: str | None = typer.Option(None, "--session-id", "-s")  # noqa: B008
+
 # Module-level key functions avoid allocating a new lambda object on every sort call.
 # Sorting dep maps is on the hot path when rendering large dependency graphs.
 def _key_dep_by_size(item: tuple[str, set[str]]) -> tuple[int, str]:
@@ -731,7 +737,7 @@ def deps(
 
 def read(
     target: str = typer.Argument(..., help="<file>::<symbol> — e.g., 'parser.py::index_project' or 'auth.py::Session.refresh' for a qualified method."),
-    session_id: str | None = typer.Option(None, "--session-id", "-s"),
+    session_id: str | None = _OPT_SESSION_ID,
     json_output: bool = typer.Option(False, "--json"),
     context_lines: int = typer.Option(0, "--context", "-c", help="Extra lines before/after"),
     no_header: bool = typer.Option(False, "--no-header", help="Suppress the '## path — symbol: name' header line (auto-suppressed in non-TTY contexts)"),
@@ -759,7 +765,7 @@ def read(
 
 def section(
     target: str = typer.Argument(..., help="<file>::<heading> — e.g., 'README.md::Install'. Append #N to disambiguate duplicate headings, e.g. 'doc.md::Setup#2'."),
-    session_id: str | None = typer.Option(None, "--session-id", "-s"),
+    session_id: str | None = _OPT_SESSION_ID,
     json_output: bool = typer.Option(False, "--json"),
     context_lines: int = typer.Option(0, "--context", "-c", help="Extra lines before/after"),
     no_header: bool = typer.Option(False, "--no-header", help="Suppress the '## path — heading: name' header line (auto-suppressed in non-TTY contexts)"),

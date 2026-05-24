@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import json
-import os
 import sys
 from re import sub as re_sub
 from typing import Any
@@ -10,6 +9,7 @@ from typing import Any
 import typer
 
 from . import stats as stats_mod
+from .render.ansi import color_stdout
 
 
 def _write_raw(text: str) -> None:
@@ -20,7 +20,7 @@ def _write_raw(text: str) -> None:
     The attribute accesses are guarded by ``hasattr`` so they are safe; we
     cannot express this precisely in mypy's type system without ``Any``.
     """
-    if os.environ.get("NO_COLOR") or not sys.stdout.isatty():
+    if not color_stdout():
         text = re_sub(r"\x1b\[[0-9;]*m", "", text)
 
     stream: Any = sys.stdout

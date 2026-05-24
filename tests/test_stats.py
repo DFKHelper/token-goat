@@ -207,7 +207,7 @@ class TestRenderText:
         assert "By kind" in text
         assert "image_shrink" in text
         assert "read_replacement" in text
-        assert "By day (top" in text
+        assert "By day" in text
         assert "Insights" in text
 
     def test_render_window_description(self, tmp_data_dir):

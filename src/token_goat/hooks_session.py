@@ -448,10 +448,10 @@ def _try_recovery_response(session_id: str | None, source: str) -> HookResponse 
     # attributed to the downstream recall kinds.
     try:
         from . import db  # noqa: PLC0415
-        from .hints import CHARS_PER_TOKEN  # noqa: PLC0415
+        from .hooks_common import bytes_to_tokens  # noqa: PLC0415
 
         injection_bytes = len(hint.encode("utf-8"))
-        injection_cost_tokens = max(1, int(injection_bytes / CHARS_PER_TOKEN))
+        injection_cost_tokens = bytes_to_tokens(injection_bytes)
         db.record_stat(None, "compact_recovery", bytes_saved=0, tokens_saved=0, detail=session_id[:32])
         db.record_stat(
             None,

@@ -12,7 +12,7 @@ Exports:
 """
 from __future__ import annotations
 
-__all__ = ["C", "RGB", "RESET", "USE_COLOR", "bg", "fg", "fmt_bytes", "lerp_rgb", "pad_l", "pad_r", "strip_ansi", "vlen"]
+__all__ = ["C", "RGB", "RESET", "USE_COLOR", "bg", "color_stderr", "color_stdout", "fg", "fmt_bytes", "lerp_rgb", "pad_l", "pad_r", "strip_ansi", "vlen"]
 
 import os
 import re
@@ -21,7 +21,29 @@ import sys
 # Requires a terminal with COLORTERM=truecolor (Windows Terminal, iTerm2,
 # Alacritty, kitty, WezTerm, and most modern terminal emulators).
 # Respects NO_COLOR — callers can check `USE_COLOR` before rendering.
-USE_COLOR: bool = not os.environ.get("NO_COLOR") and sys.stdout.isatty()
+
+
+def color_stdout() -> bool:
+    """Return True when stdout supports ANSI colour.
+
+    Checks both ``sys.stdout.isatty()`` and the ``NO_COLOR`` env-var per the
+    `no-color.org <https://no-color.org/>`_ convention.  Use for output written
+    to stdout (stats panels, map output, etc.).
+    """
+    return not os.environ.get("NO_COLOR") and sys.stdout.isatty()
+
+
+def color_stderr() -> bool:
+    """Return True when stderr supports ANSI colour.
+
+    Same logic as :func:`color_stdout` but tests ``sys.stderr.isatty()``.
+    Use for progress indicators, spinners, and diagnostic output written to
+    stderr.
+    """
+    return not os.environ.get("NO_COLOR") and sys.stderr.isatty()
+
+
+USE_COLOR: bool = color_stdout()
 
 RGB = tuple[int, int, int]
 

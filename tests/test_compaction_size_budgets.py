@@ -191,10 +191,10 @@ class TestManifestBudget:
         # get trimmed off the tail when the 400-token budget binds, which is the
         # correct trim-pass behaviour and not a regression — this test only
         # asserts the two sections that always survive regardless of budget pressure.
-        for header in ("**Edited:**", "**Syms:**"):
-            assert header in manifest, (
-                f"missing manifest section {header!r}; rendered:\n{manifest}"
-            )
+        # Item 16: when edited/read overlap >= 50%, both sections merge into **Files:**.
+        edited_present = "**Edited:**" in manifest or "**Files:**" in manifest
+        assert edited_present, f"missing edited/files section; rendered:\n{manifest}"
+        assert "**Syms:**" in manifest, f"missing **Syms:**; rendered:\n{manifest}"
 
         tokens = estimate_tokens(manifest)
         assert tokens <= _MANIFEST_BUDGET, (
@@ -268,7 +268,7 @@ class TestEditedFilesCap:
 
         manifest, _ = compact.build_manifest_with_count(sid, max_tokens=400)
 
-        assert "**Edited:**" in manifest
+        assert "**Edited:**" in manifest or "**Files:**" in manifest
         edit_lines = [ln for ln in manifest.splitlines() if ln.startswith("- ✎")]
         assert len(edit_lines) <= 20, (
             f"edited-files section listed {len(edit_lines)} files (cap=20);\n{manifest}"

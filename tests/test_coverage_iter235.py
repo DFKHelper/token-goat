@@ -197,19 +197,20 @@ class TestBuildManifest:
         # 50 tokens * ~4 chars/token upper bound
         assert len(result) <= 50 * 4
 
-    def test_manifest_with_edited_files_mentions_them(self):
+    def test_manifest_with_edited_files_mentions_them(self, tmp_data_dir):
         fake_cache = MagicMock()
         # edited_files is a dict {path: edit_count} in the real SessionCache.
         fake_cache.edited_files = {"src/foo.py": 1, "src/bar.py": 2}
         fake_cache.files = {}
         fake_cache.greps = []
         fake_cache.created_ts = 0.0
-
+        # tmp_data_dir isolates the manifest SHA sidecar so prior test runs
+        # don't return a stub here.
         with (
             patch.object(session_mod, "validate_session_id"),
             patch.object(session_mod, "load", return_value=fake_cache),
         ):
-            result = build_manifest("valid-session-id")
+            result = build_manifest("valid-session-id-mention-edits")
         # Manifest must mention at least one of the edited files.
         assert "foo.py" in result or "bar.py" in result
 

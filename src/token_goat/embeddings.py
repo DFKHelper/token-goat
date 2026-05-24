@@ -26,6 +26,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, TypedDict
 
 from . import db, paths
+from .util import get_logger
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Sequence
@@ -44,7 +45,7 @@ class EmbeddingsResult(TypedDict):
     duration_sec: float
     model: str
 
-_LOG = logging.getLogger("token_goat.embeddings")
+_LOG = get_logger("embeddings")
 
 # BAAI/bge-small-en-v1.5 is the smallest model in the BGE family that still
 # scores well on code-retrieval benchmarks.  At ~130 MB it downloads once and

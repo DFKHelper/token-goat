@@ -85,7 +85,9 @@ class TestRecoveryHintContent:
         ctx = hso.get("additionalContext", "")
         assert "Post-Compact Recovery" in ctx
         assert "/proj/src/auth.py" in ctx
-        assert "pytest -v tests/" in ctx
+        # CS20 collapses green pytest entries to "✓ pytest passed @ HH:MM"
+        # when the session has edits; fall back to the raw command otherwise.
+        assert "pytest" in ctx
         assert "https://docs.example/api" in ctx
         # The hint references the retrieval commands so the agent has
         # something actionable, not just an inventory.
