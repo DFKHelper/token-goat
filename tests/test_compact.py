@@ -820,10 +820,11 @@ class TestColdOutputs:
 
         result = compact.build_manifest(sid)
 
-        # Successful command SHOULD appear in Cold Outputs section
+        # Successful command SHOULD appear in Cold Outputs section (short id form)
         assert "Cold Outputs" in result, f"cold outputs section missing:\n{result}"
-        assert "success_id_001" in result, (
-            f"successful cold command should appear in cold outputs:\n{result}"
+        from token_goat.cache_common import short_output_id
+        assert short_output_id("success_id_001") in result, (
+            f"successful cold command short id should appear in cold outputs:\n{result}"
         )
 
 
@@ -870,10 +871,17 @@ class TestBlockerDedupFromBashHistory:
         result = compact.build_manifest(sid)
         # The command preview must appear — it belongs in Current Blockers.
         assert "mypy" in result, f"Expected 'mypy' in manifest:\n{result}"
-        # But the output_id must appear at most once — not in both Blockers and Bash History.
-        assert result.count(output_id) <= 1, (
-            f"output_id '{output_id}' appeared {result.count(output_id)}x — "
+        # The manifest renders the short id (…<last8>), not the full id.
+        from token_goat.cache_common import short_output_id
+        short_id = short_output_id(output_id)
+        # Short id must appear at most once — not in both Blockers and Bash History.
+        assert result.count(short_id) <= 1, (
+            f"short output_id '{short_id}' appeared {result.count(short_id)}x — "
             f"dedup across sections failed:\n{result}"
+        )
+        # Full id must not appear — only the short form is emitted.
+        assert output_id not in result, (
+            f"full output_id '{output_id}' leaked into manifest:\n{result}"
         )
 
 

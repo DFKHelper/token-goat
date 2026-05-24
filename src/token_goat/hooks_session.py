@@ -40,6 +40,7 @@ __all__ = ["session_start"]
 
 from typing import TYPE_CHECKING
 
+from .cache_common import short_output_id as _short_id
 from .compact import _humanize_bytes
 from .hooks_common import (
     CONTINUE,
@@ -262,7 +263,7 @@ def _build_recovery_hint(session_id: str) -> str | None:
             exit_str = "" if be.exit_code is None else f" exit={be.exit_code}"
             total = be.stdout_bytes + be.stderr_bytes
             lines.append(
-                f"- `{be.cmd_preview}` ({_humanize_bytes(total)}{exit_str}) `{be.output_id}`"
+                f"- `{be.cmd_preview}` ({_humanize_bytes(total)}{exit_str}) `{_short_id(be.output_id)}`"
             )
         dropped = len(bash_all) - len(bash_entries)
         if dropped > 0:
@@ -275,7 +276,7 @@ def _build_recovery_hint(session_id: str) -> str | None:
         for we in web_entries:
             status_str = "" if we.status_code is None else f" status={we.status_code}"
             lines.append(
-                f"- `{we.url_preview}` ({_humanize_bytes(we.body_bytes)}{status_str}) `{we.output_id}`"
+                f"- `{we.url_preview}` ({_humanize_bytes(we.body_bytes)}{status_str}) `{_short_id(we.output_id)}`"
             )
         dropped = len(web_all) - len(web_entries)
         if dropped > 0:

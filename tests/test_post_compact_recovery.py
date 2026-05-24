@@ -91,6 +91,13 @@ class TestRecoveryHintContent:
         # something actionable, not just an inventory.
         assert "token-goat bash-output" in ctx
         assert "token-goat web-output" in ctx
+        # Output IDs must appear in short form (…<last8>) — not the full 40+ char id.
+        bash_full_id = f"{sid[:16]}-0000000000001-abc123def4567890"
+        web_full_id  = f"{sid[:16]}-0000000000002-dead00beefca0fe1"
+        assert bash_full_id not in ctx, "full bash output_id leaked into recovery hint"
+        assert web_full_id  not in ctx, "full web output_id leaked into recovery hint"
+        assert "…f4567890" in ctx, "bash short id (…f4567890) missing from recovery hint"
+        assert "…efca0fe1" in ctx, "web short id (…efca0fe1) missing from recovery hint"
 
     def test_empty_session_no_hint(self, tmp_data_dir):
         """A compact on a session with no recorded state emits no hint."""

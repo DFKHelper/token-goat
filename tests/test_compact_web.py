@@ -32,7 +32,9 @@ class TestWebSection:
         )
         m = compact.build_manifest(sid, max_tokens=400)
         url_sha = hashlib.sha256(url.encode()).hexdigest()[:12]
-        assert f"id=web-{url_sha}" in m
+        # output_id is "web-<url_sha>" (16 chars); short form is …<last8>
+        from token_goat.cache_common import short_output_id
+        assert f"id={short_output_id(f'web-{url_sha}')}" in m
 
     def test_tiny_web_fetch_skipped(self, tmp_data_dir, make_session):
         sid = "wm-3"
@@ -253,7 +255,10 @@ class TestFormatWebEntry:
         assert "docs.example.com/api" in line
         assert "200" in line
         assert "14.0KB" in line
-        assert "web-abc123" in line
+        # output_id is rendered in short form (…<last8>)
+        from token_goat.cache_common import short_output_id
+        assert short_output_id("web-abc123") in line
+        assert "web-abc123" not in line  # full id must not appear
 
     def test_truncated_marker_included(self):
         from token_goat.session import WebEntry

@@ -38,9 +38,11 @@ class TestManifestBashSection:
         assert "exit 1" in m
         assert "Commands Run" in m
         assert "ruff check" in m
-        # Cache ID appears in Commands Run for the successful run.
+        # Cache ID appears in Commands Run for the successful run (short form).
         from token_goat import bash_cache
-        assert f"id=out-{bash_cache.command_hash('uv run ruff check src/')}" in m
+        from token_goat.cache_common import short_output_id
+        full_id = f"out-{bash_cache.command_hash('uv run ruff check src/')}"
+        assert f"id={short_output_id(full_id)}" in m
 
     def test_tiny_bash_skipped(self, tmp_data_dir, make_session):
         sid = "mb-2"
@@ -142,10 +144,11 @@ class TestNoopBashFiltering:
         # cat with large output passes the filter (may or may not appear based on budget)
         # The key is it's not filtered as a no-op
         from token_goat import bash_cache
+        from token_goat.cache_common import short_output_id
         cat_sha = bash_cache.command_hash("cat large_log.txt")
-        cat_id = f"id=out-{cat_sha}"
+        short_cat_id = f"id={short_output_id(f'out-{cat_sha}')}"
         # Either it appears or budget constraints exclude it, but not the no-op filter
-        assert "cat large_log.txt" in m or cat_id not in m  # Allow both outcomes
+        assert "cat large_log.txt" in m or short_cat_id not in m  # Allow both outcomes
 
 
 class TestAnsiStrippingInTokenCap:

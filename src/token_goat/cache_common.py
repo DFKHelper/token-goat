@@ -15,6 +15,7 @@ __all__ = [
     "load_sidecar_json",
     "safe_join_output_id",
     "safe_session_fragment",
+    "short_output_id",
     "truncate_tail_preserve",
     "write_sidecar_metadata",
 ]
@@ -299,10 +300,17 @@ def safe_join_output_id(
     byte.  The on-disk store sits next to other token-goat data; an
     attacker-influenced ID must not be able to walk out of it.
 
+    The returned path may or may not exist on disk; callers that need to
+    read an existing file should check ``path.exists()``.  The read path
+    (:func:`load_output_text`) adds a suffix-fallback scan for short ids;
+    the write path uses this function directly and always writes to the
+    full canonical path.
+
     Parameters
     ----------
     output_id:
-        The raw ID string to validate.
+        The raw ID string to validate (full id only; suffix resolution is
+        handled by :func:`load_output_text`).
     cache_dir_fn:
         Zero-argument callable that returns (and creates if absent) the cache
         directory.  Matches the ``_bash_outputs_dir`` / ``_web_outputs_dir``
@@ -312,8 +320,8 @@ def safe_join_output_id(
     """
     if not output_id:
         return None
-    name = f"{output_id}.txt"
     _log = logging.getLogger(f"token_goat.{log_name}")
+    name = f"{output_id}.txt"
     if not OUTPUT_FILENAME_RE.match(name):
         _log.warning("%s: rejected output_id with invalid chars: %r", log_name, output_id[:200])
         return None
@@ -327,6 +335,20 @@ def safe_join_output_id(
     return candidate
 
 
+def short_output_id(output_id: str) -> str:
+    """Return the display form of *output_id*: ``…<last8>`` (13 chars total).
+
+    Hints and manifests embed this short form so agents can copy-paste the
+    suffix into ``token-goat bash-output <suffix>`` or ``web-output <suffix>``.
+    The CLI resolves the suffix via :func:`safe_join_output_id`'s suffix fallback.
+
+    For ids shorter than 8 chars the full id is returned unchanged (no ellipsis).
+    """
+    if len(output_id) <= 8:
+        return output_id
+    return f"…{output_id[-8:]}"
+
+
 def load_output_text(
     output_id: str,
     cache_dir_fn: Callable[[], Path],
@@ -336,11 +358,38 @@ def load_output_text(
 
     Shared implementation for :func:`bash_cache.load_output` and
     :func:`web_cache.load_output`.
+
+    Accepts both full ids and trailing 8-char suffixes (as rendered by
+    :func:`short_output_id`).  When the exact file is not found, scans the
+    cache directory for any file whose stem ends with *output_id*.  If
+    exactly one match is found it is loaded; if zero or multiple are found
+    ``None`` is returned.
     """
-    path = safe_join_output_id(output_id, cache_dir_fn, log_name)
-    if path is None or not path.exists():
-        return None
     _log = logging.getLogger(f"token_goat.{log_name}")
+    path = safe_join_output_id(output_id, cache_dir_fn, log_name)
+    if path is None:
+        return None
+    if not path.exists():
+        # Suffix fallback: allow short (8-char) ids as rendered in hints.
+        base = cache_dir_fn()
+        if base.is_dir():
+            suffix = output_id.lower()
+            matches = [
+                p for p in base.iterdir()
+                if p.suffix == ".txt"
+                and OUTPUT_FILENAME_RE.match(p.name)
+                and p.stem.lower().endswith(suffix)
+            ]
+            if len(matches) == 1:
+                path = matches[0]
+            elif len(matches) > 1:
+                _log.warning(
+                    "%s: ambiguous suffix %r matches %d entries; pass a longer id",
+                    log_name, output_id[:200], len(matches),
+                )
+                return None
+            else:
+                return None
     try:
         return path.read_text(encoding="utf-8", errors="replace")
     except OSError as exc:
