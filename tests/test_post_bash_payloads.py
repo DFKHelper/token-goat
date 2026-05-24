@@ -221,6 +221,60 @@ class TestCompressWrapperUnwrap:
         assert _unwrap_compress_command(bad) == bad
 
 
+class TestSurrogateEscapeHandling:
+    """Surrogate-escape bytes from Windows subprocess must not crash the hook.
+
+    On Windows (cp1252 / cp437 console code pages), subprocess.run can return
+    stdout/stderr strings containing lone surrogate characters (U+DC80–U+DCFF).
+    These are valid in Python's surrogateescape error handler but are not valid
+    UTF-8 and crash with ``UnicodeEncodeError`` when the text is later
+    serialised to disk or written to a log.
+    """
+
+    def test_post_bash_handles_surrogate_escape_in_stdout(self, tmp_data_dir):
+        """Surrogates in stdout are replaced with U+FFFD; no exception is raised."""
+        # \udc8f is the Python surrogate-escape for the byte 0x8F (invalid UTF-8).
+        surrogate_stdout = "normal output\n\udc8fmore output\n" + "X" * 500
+        payload = {
+            "session_id": "surrogate-1",
+            "tool_name": "Bash",
+            "tool_input": {"command": "pytest"},
+            "tool_response": {"stdout": surrogate_stdout, "stderr": "", "exit_code": 0},
+        }
+        # Must not raise UnicodeEncodeError or any other exception.
+        _assert_continue(hooks_read.post_bash(payload))
+
+        # The cached output should have the replacement character instead of the surrogate.
+        from token_goat import bash_cache
+        cache = session.load("surrogate-1")
+        assert cache.bash_history, "expected a bash history entry to be recorded"
+        entry = next(iter(cache.bash_history.values()))
+        cached_body = bash_cache.load_output(entry.output_id)
+        assert cached_body is not None, "expected output to be cached"
+        # encode("utf-8", errors="replace") maps each lone surrogate to b"?"
+        assert "?" in cached_body, "expected ? replacement char in cached output"
+        assert "\udc8f" not in cached_body, "surrogate must not appear in cached output"
+
+    def test_post_bash_handles_surrogate_escape_in_stderr(self, tmp_data_dir):
+        """Surrogates in stderr are also sanitised without raising."""
+        surrogate_stderr = "error: bad byte \udcb0 here\n" + "E" * 500
+        payload = {
+            "session_id": "surrogate-2",
+            "tool_name": "Bash",
+            "tool_input": {"command": "make build"},
+            "tool_response": {"stdout": "X" * 500, "stderr": surrogate_stderr, "exit_code": 1},
+        }
+        _assert_continue(hooks_read.post_bash(payload))
+
+        from token_goat import bash_cache
+        cache = session.load("surrogate-2")
+        assert cache.bash_history
+        entry = next(iter(cache.bash_history.values()))
+        cached_body = bash_cache.load_output(entry.output_id)
+        assert cached_body is not None
+        assert "\udcb0" not in cached_body, "surrogate must not appear in cached output"
+
+
 class TestMisshapenInputs:
     def test_none_tool_response_no_crash(self, tmp_data_dir):
         _assert_continue(hooks_read.post_bash({

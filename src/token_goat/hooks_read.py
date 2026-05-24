@@ -52,6 +52,7 @@ from .hooks_common import (
 from .hooks_common import (
     LOG as _LOG,
 )
+from .util import sanitize_surrogates as _sanitize_surrogates
 
 # Environment variable that disables Bash output compression at the hook layer.
 # Recognised values: "0", "false", "no", "off" (case-insensitive).  Any other
@@ -1396,6 +1397,10 @@ def post_bash(payload: HookPayload) -> HookResponse:
     display_cmd = _unwrap_compress_command(command)
 
     stdout, stderr, exit_code = _extract_bash_response(payload)
+    # Sanitize at the boundary: Windows subprocess can produce surrogate-escape
+    # bytes (\udcXX) in stdout/stderr that crash utf-8 serialisation downstream.
+    stdout = _sanitize_surrogates(stdout)
+    stderr = _sanitize_surrogates(stderr)
     total_bytes = len(stdout.encode("utf-8", errors="replace")) + len(
         stderr.encode("utf-8", errors="replace")
     )
