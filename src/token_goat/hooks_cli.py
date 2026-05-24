@@ -100,11 +100,20 @@ _HSO_CAMEL_TO_SNAKE: dict[str, str] = {
 
 
 def _translate_hso_to_codex(hso: dict[str, object]) -> dict[str, object]:
-    """Convert camelCase hookSpecificOutput keys to snake_case for Codex wire format."""
-    translated = dict(hso)
-    for camel_key, snake_key in _HSO_CAMEL_TO_SNAKE.items():
-        if camel_key in translated:
-            translated[snake_key] = translated.pop(camel_key)
+    """Convert camelCase hookSpecificOutput keys to snake_case for Codex wire format.
+
+    Recursively translates nested dicts so that sub-objects inside
+    ``hookSpecificOutput`` (e.g. a nested ``updatedInput`` dict whose values
+    are themselves dicts) are also converted.  Non-dict values are left as-is.
+    """
+    translated: dict[str, object] = {}
+    for key, val in hso.items():
+        new_key = _HSO_CAMEL_TO_SNAKE.get(key, key)
+        # Recurse into nested dicts so translation applies at every level.
+        if isinstance(val, dict):
+            translated[new_key] = _translate_hso_to_codex(val)
+        else:
+            translated[new_key] = val
     return translated
 
 
@@ -357,6 +366,8 @@ def fail_soft(handler: _HookHandler) -> _HookHandler:
 # handler is cached so the import is paid at most once per process.
 _HANDLER_LOOKUP: dict[str, tuple[str, str]] = {
     "session-start": ("hooks_session", "session_start"),
+    "user-prompt-submit": ("hooks_session", "user_prompt_submit"),
+    "subagent-stop": ("hooks_session", "subagent_stop"),
     "pre-read": ("hooks_read", "pre_read"),
     "pre-fetch": ("hooks_fetch", "pre_fetch"),
     "post-edit": ("hooks_edit", "post_edit"),
@@ -397,6 +408,8 @@ def __getattr__(name: str) -> object:
     """
     event_map = {
         "session_start": "session-start",
+        "user_prompt_submit": "user-prompt-submit",
+        "subagent_stop": "subagent-stop",
         "pre_read": "pre-read",
         "pre_fetch": "pre-fetch",
         "post_edit": "post-edit",
@@ -543,6 +556,8 @@ def _make_lazy_proxy(event: str) -> Callable[[HookPayload], HookResponse]:
 # tests).  Each value is a lazy proxy that imports its submodule on first call.
 EVENTS: dict[str, Callable[[HookPayload], HookResponse]] = {
     "session-start": _make_lazy_proxy("session-start"),
+    "user-prompt-submit": _make_lazy_proxy("user-prompt-submit"),
+    "subagent-stop": _make_lazy_proxy("subagent-stop"),
     "pre-read": _make_lazy_proxy("pre-read"),
     "pre-fetch": _make_lazy_proxy("pre-fetch"),
     "post-edit": _make_lazy_proxy("post-edit"),

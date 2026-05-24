@@ -333,3 +333,38 @@ def test_uninstall_all_codex_flag(patched_home, monkeypatch, tmp_path):
     if md_path.exists():
         content = md_path.read_text(encoding="utf-8")
         assert install.CODEX_AGENTS_BEGIN not in content
+
+
+# ---------------------------------------------------------------------------
+# 11. detect_harnesses: codex detected when CODEX_HOME is set
+# ---------------------------------------------------------------------------
+
+
+def test_detect_harnesses_codex_home_env(monkeypatch):
+    """detect_harnesses should include 'codex' when CODEX_HOME env var is set."""
+    monkeypatch.setenv("CODEX_HOME", "/some/codex/path")
+    # Patch opencode/openclaw dirs so only the env-var path fires
+    monkeypatch.setattr(install, "codex_dir", lambda: Path("/nonexistent-codex-dir-xyz"))
+    result = install.detect_harnesses()
+    assert "claude" in result
+    assert "codex" in result
+
+
+def test_detect_harnesses_codex_dir_present(monkeypatch, tmp_path):
+    """detect_harnesses should include 'codex' when ~/.codex/ exists."""
+    monkeypatch.delenv("CODEX_HOME", raising=False)
+    codex_fake = tmp_path / ".codex"
+    codex_fake.mkdir()
+    monkeypatch.setattr(install, "codex_dir", lambda: codex_fake)
+    result = install.detect_harnesses()
+    assert "codex" in result
+
+
+def test_detect_harnesses_no_codex(monkeypatch, tmp_path):
+    """detect_harnesses should not include 'codex' when neither env var nor dir present."""
+    monkeypatch.delenv("CODEX_HOME", raising=False)
+    # Point codex_dir at a non-existent path
+    monkeypatch.setattr(install, "codex_dir", lambda: tmp_path / "no-such-dir")
+    result = install.detect_harnesses()
+    assert "claude" in result
+    assert "codex" not in result
