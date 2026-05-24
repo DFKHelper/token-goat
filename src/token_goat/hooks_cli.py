@@ -399,6 +399,48 @@ def __getattr__(name: str) -> object:
 
 # --- dispatcher entry point used by cli.py ---
 
+_COMPACT_SKIP_TTL_SECS: float = 300.0  # 5 minutes
+
+
+def _check_compact_skip_sentinel(session_id: str) -> bool:
+    """Return True if a fresh compact-skip sentinel exists for *session_id*.
+
+    Reads only ``paths`` (already imported at module load) — no other
+    token_goat module is touched.  The sentinel is considered fresh when its
+    mtime is within the last ``_COMPACT_SKIP_TTL_SECS`` seconds.
+
+    Any filesystem error (missing file, permission denied, stat failure)
+    returns False so the normal path runs.
+    """
+    import time  # already in stdlib cache — free  # noqa: PLC0415
+
+    try:
+        sentinel = paths.compact_skip_sentinel_path(session_id)
+    except ValueError:
+        return False
+    try:
+        age = time.time() - sentinel.stat().st_mtime
+        return 0 <= age < _COMPACT_SKIP_TTL_SECS
+    except OSError:
+        return False
+
+
+def _write_compact_skip_sentinel(session_id: str) -> None:
+    """Write (or touch) the compact-skip sentinel for *session_id*.
+
+    Creates the ``compact_skip/`` directory as needed.  Errors are silently
+    swallowed — a failure to write the sentinel only means the next call pays
+    the full import cost instead of taking the fast path; the hook still
+    returns ``{"continue": true}`` correctly.
+    """
+    try:
+        sentinel = paths.compact_skip_sentinel_path(session_id)
+        sentinel.parent.mkdir(parents=True, exist_ok=True)
+        sentinel.touch()
+    except Exception:  # noqa: BLE001
+        pass
+
+
 @fail_soft
 def pre_compact(payload: HookPayload) -> HookResponse:
     """PreCompact hook: inject a session manifest as systemMessage before compaction.
@@ -406,27 +448,42 @@ def pre_compact(payload: HookPayload) -> HookResponse:
     The compaction LLM receives the manifest in its context and includes it in
     the summary, so edited files and accessed symbols survive the compaction.
     Configurable via config.toml [compact_assist] or TOKEN_GOAT_COMPACT_ASSIST=0.
+
+    Fast path: when a fresh compact-skip sentinel exists for this session (written
+    on a previous call that determined the session had too little activity to
+    warrant a manifest), return immediately without importing any heavy modules.
+    This saves ~150 ms of Python import overhead on near-fresh sessions.
     """
+    # --- Sentinel fast-path (before any heavy imports) ---
+    session_id = payload.get("session_id")
+    if session_id and _check_compact_skip_sentinel(str(session_id)):
+        _LOG.debug("pre-compact: sentinel fast-path for session=%s", str(session_id)[:16])
+        return CONTINUE()
+
     from . import compact as compact_mod  # noqa: PLC0415
     from . import config as config_mod  # noqa: PLC0415
 
     cfg = config_mod.load().compact_assist
     if not cfg.enabled:
+        if session_id:
+            _write_compact_skip_sentinel(str(session_id))
         return CONTINUE()
 
     trigger_raw = payload.get("trigger", "manual")
     trigger = str(trigger_raw) if trigger_raw is not None else "manual"
     if not cfg.triggers or trigger not in cfg.triggers:
         _LOG.info("pre-compact: skipping (trigger=%s not in %s)", sanitize_log_str(trigger), cfg.triggers)
+        if session_id:
+            _write_compact_skip_sentinel(str(session_id))
         return CONTINUE()
 
-    session_id = payload.get("session_id")
     if not session_id:
         return CONTINUE()
 
     from . import session as session_mod  # noqa: PLC0415
 
     if session_mod.safe_load(session_id, caller="pre-compact") is None:
+        _write_compact_skip_sentinel(str(session_id))
         return CONTINUE()
 
     manifest, n_events = compact_mod.build_manifest_with_count(
@@ -434,9 +491,11 @@ def pre_compact(payload: HookPayload) -> HookResponse:
     )
     if n_events < cfg.min_events:
         _LOG.info("pre-compact: skipping manifest (events=%d < min=%d)", n_events, cfg.min_events)
+        _write_compact_skip_sentinel(str(session_id))
         return CONTINUE()
 
     if not manifest:
+        _write_compact_skip_sentinel(str(session_id))
         return CONTINUE()
 
     _LOG.info(

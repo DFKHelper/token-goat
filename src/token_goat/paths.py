@@ -334,6 +334,34 @@ def web_cache_dir() -> Path:
     return data_dir() / "web_cache"
 
 
+def compact_skip_sentinel_path(session_id: str) -> Path:
+    """Path to compact_skip/{session_id}.sentinel.
+
+    The sentinel file is written when the pre-compact hook determines that the
+    session has too little activity to warrant building a manifest (iter 19
+    activity-floor).  On subsequent calls the entry point reads this file
+    *before* importing any token_goat modules, exits immediately, and saves
+    ~150 ms of Python import overhead.
+
+    The sentinel auto-expires after 5 minutes (mtime check by the caller) —
+    no explicit cleanup is needed, and stale sentinels are silently ignored.
+
+    Raises ``ValueError`` if *session_id* contains a null byte or would
+    produce a path outside the ``compact_skip/`` subdirectory.
+    """
+    if "\x00" in session_id:
+        raise ValueError(f"session_id contains null byte: {session_id!r}")
+    base = data_dir() / "compact_skip"
+    candidate = (base / f"{session_id}.sentinel").resolve()
+    try:
+        candidate.relative_to(base.resolve())
+    except ValueError as exc:
+        raise ValueError(
+            f"session_id produces a path outside the compact_skip directory: {session_id!r}"
+        ) from exc
+    return candidate
+
+
 def claude_config_dir() -> Path:
     """Path to Claude Code's config directory (~/.claude)."""
     return Path.home() / ".claude"

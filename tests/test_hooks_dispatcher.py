@@ -607,3 +607,97 @@ def test_handler_lookup_caches_after_first_dispatch():
     hooks_cli.dispatch("pre-read", {"tool_name": "Other"})
     # Same object: no re-wrapping, no re-import.
     assert hooks_cli._HANDLER_CACHE["pre-read"] is cached_handler
+
+
+# ---------------------------------------------------------------------------
+# compact-skip sentinel fast-path (iter 48)
+# ---------------------------------------------------------------------------
+
+
+class TestCompactSkipSentinel:
+    """pre_compact sentinel fast-path: fresh sentinel skips heavy imports."""
+
+    def test_fresh_sentinel_skips_via_check_mock(self, tmp_path, monkeypatch):
+        """When _check_compact_skip_sentinel returns True, pre_compact returns CONTINUE
+        and does NOT call into compact/config (no heavy imports needed)."""
+        from unittest.mock import patch
+
+        from token_goat import hooks_cli as hc
+
+        # Intercept the sentinel check to return True (fast-path).
+        # Also intercept compact/config to detect if they are reached.
+        compact_called = []
+
+        with patch.object(hc, "_check_compact_skip_sentinel", return_value=True), \
+             patch("token_goat.compact.build_manifest_with_count",
+                   side_effect=lambda *a, **kw: compact_called.append(1) or ("", 0)):
+            payload = {"session_id": "sentinel_test_fresh", "trigger": "auto"}
+            result = hc.pre_compact(payload)
+
+        assert result.get("continue") is True
+        assert not compact_called, (
+            "compact.build_manifest_with_count was called despite a fresh sentinel"
+        )
+
+    def test_stale_sentinel_does_not_shortcut(self, tmp_path, monkeypatch):
+        """A sentinel older than 5 minutes must not trigger the fast-path."""
+        import os
+        import time
+
+        from token_goat import hooks_cli as hc
+        from token_goat import paths
+
+        # Patch data_dir first, THEN write the sentinel so both the write and the
+        # subsequent check resolve to the same tmp_path-rooted location.
+        monkeypatch.setattr(paths, "data_dir", lambda: tmp_path)
+
+        session_id = "sentinel_test_stale"
+        sentinel = paths.compact_skip_sentinel_path(session_id)
+        sentinel.parent.mkdir(parents=True, exist_ok=True)
+        sentinel.touch()
+        stale_mtime = time.time() - 361  # 6 min ago
+        os.utime(sentinel, (stale_mtime, stale_mtime))
+
+        # The stale sentinel must return False from the check.
+        assert hc._check_compact_skip_sentinel(session_id) is False
+
+    def test_missing_sentinel_returns_false(self, tmp_path, monkeypatch):
+        """No sentinel file → _check_compact_skip_sentinel returns False."""
+        from token_goat import hooks_cli as hc
+        from token_goat import paths
+
+        monkeypatch.setattr(paths, "data_dir", lambda: tmp_path)
+        assert hc._check_compact_skip_sentinel("no_such_session") is False
+
+    def test_write_sentinel_creates_file(self, tmp_path, monkeypatch):
+        """_write_compact_skip_sentinel creates the sentinel file."""
+        from token_goat import hooks_cli as hc
+        from token_goat import paths
+
+        monkeypatch.setattr(paths, "data_dir", lambda: tmp_path)
+
+        session_id = "sentinel_write_test"
+        hc._write_compact_skip_sentinel(session_id)
+
+        sentinel = paths.compact_skip_sentinel_path(session_id)
+        assert sentinel.exists(), "sentinel file was not created by _write_compact_skip_sentinel"
+
+    def test_check_sentinel_returns_true_for_fresh(self, tmp_path, monkeypatch):
+        """_check_compact_skip_sentinel returns True for a just-written sentinel."""
+        from token_goat import hooks_cli as hc
+        from token_goat import paths
+
+        # Patch first so write and check resolve to the same directory.
+        monkeypatch.setattr(paths, "data_dir", lambda: tmp_path)
+        session_id = "sentinel_fresh_check"
+        hc._write_compact_skip_sentinel(session_id)
+        assert hc._check_compact_skip_sentinel(session_id) is True
+
+    def test_pre_compact_no_session_id_no_crash(self, tmp_path, monkeypatch):
+        """pre_compact with no session_id must not crash and must return continue."""
+        from token_goat import hooks_cli as hc
+        from token_goat import paths
+
+        monkeypatch.setattr(paths, "data_dir", lambda: tmp_path)
+        result = hc.pre_compact({"trigger": "auto"})
+        assert result.get("continue") is True
