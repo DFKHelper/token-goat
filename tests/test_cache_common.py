@@ -10,9 +10,12 @@ import pytest
 
 from token_goat.cache_common import (
     OUTPUT_FILENAME_RE,
+    OutputStatDict,
+    build_output_id,
     evict_cache_dir,
     load_sidecar_json,
     safe_session_fragment,
+    short_content_hash,
     truncate_tail_preserve,
 )
 
@@ -625,3 +628,157 @@ class TestTruncateTailPreserve:
             content, max_bytes=20, marker_template="MARK n={n} total={total}\n",
         )
         assert stored.startswith("MARK n=20 total=100\n")
+
+
+class TestShortContentHash:
+    """short_content_hash: 16-hex SHA-256 truncation of any string."""
+
+    def test_returns_16_hex_chars(self) -> None:
+        result = short_content_hash("hello world")
+        assert len(result) == 16
+        assert all(c in "0123456789abcdef" for c in result)
+
+    def test_deterministic(self) -> None:
+        assert short_content_hash("echo hi") == short_content_hash("echo hi")
+
+    def test_distinct_inputs_produce_distinct_hashes(self) -> None:
+        assert short_content_hash("cmd_a") != short_content_hash("cmd_b")
+
+    def test_empty_string(self) -> None:
+        result = short_content_hash("")
+        assert len(result) == 16
+
+    def test_unicode_does_not_raise(self) -> None:
+        result = short_content_hash("héllo 中文 \x00\xff")
+        assert len(result) == 16
+
+    def test_matches_bash_cache_command_hash(self) -> None:
+        """bash_cache.command_hash must delegate to short_content_hash."""
+        from token_goat.bash_cache import command_hash
+        cmd = "pytest -v --tb=short"
+        assert command_hash(cmd) == short_content_hash(cmd)
+
+    def test_matches_web_cache_url_hash(self) -> None:
+        """web_cache.url_hash must delegate to short_content_hash."""
+        from token_goat.web_cache import url_hash
+        url = "https://example.com/page?q=1"
+        assert url_hash(url) == short_content_hash(url)
+
+    def test_matches_skill_cache_content_hash(self) -> None:
+        """skill_cache.content_hash must delegate to short_content_hash."""
+        from token_goat.skill_cache import content_hash
+        body = "# My Skill\nsome content here"
+        assert content_hash(body) == short_content_hash(body)
+
+
+class TestBuildOutputId:
+    """build_output_id: canonical {session_short}-{ms:013d}-{token} format."""
+
+    def test_format_structure(self) -> None:
+        # Use a session ID with no hyphens so split("-") yields exactly 3 parts.
+        result = build_output_id("mysessionid", "deadbeef01234567", ts=1_000.0)
+        parts = result.split("-")
+        # Exactly 3 parts: session_fragment, ms_timestamp, content_token
+        assert len(parts) == 3, f"expected 3 dash-separated parts, got: {parts!r}"
+        session_part, ms_part, token_part = parts
+        assert session_part == "mysessionid"
+        assert ms_part == f"{1_000_000:013d}", f"unexpected ms part: {ms_part!r}"
+        assert token_part == "deadbeef01234567"
+
+    def test_session_fragment_is_prefix(self) -> None:
+        result = build_output_id("abc-def-ghi-extra-long", "token123", ts=0.0)
+        frag = safe_session_fragment("abc-def-ghi-extra-long")
+        assert result.startswith(frag + "-")
+
+    def test_uses_current_time_when_ts_is_none(self) -> None:
+        before = int(time.time() * 1000)
+        result = build_output_id("sess", "tok")
+        after = int(time.time() * 1000)
+        # Extract ms component (second dash-separated segment)
+        parts = result.split("-")
+        ms_val = int(parts[1])
+        assert before <= ms_val <= after
+
+    def test_two_calls_with_same_ts_produce_same_id(self) -> None:
+        a = build_output_id("sess", "tok", ts=12345.678)
+        b = build_output_id("sess", "tok", ts=12345.678)
+        assert a == b
+
+    def test_different_ts_produces_different_id(self) -> None:
+        a = build_output_id("sess", "tok", ts=1.0)
+        b = build_output_id("sess", "tok", ts=2.0)
+        assert a != b
+
+    def test_result_matches_output_filename_re(self) -> None:
+        result = build_output_id("my-session", short_content_hash("cmd"), ts=42.0)
+        assert OUTPUT_FILENAME_RE.match(result + ".txt"), (
+            f"build_output_id result {result!r} is not a valid cache filename stem"
+        )
+
+    def test_matches_bash_cache_output_id_for_structure(self, monkeypatch) -> None:
+        """bash_cache.output_id_for must produce an id built by build_output_id."""
+        import pathlib
+        import tempfile
+
+        import token_goat.paths as _paths
+        with tempfile.TemporaryDirectory() as td:
+            monkeypatch.setattr(_paths, "data_dir", lambda: pathlib.Path(td))
+            from token_goat.bash_cache import command_hash, output_id_for
+            ts = 9999.0
+            cmd = "git status"
+            expected = build_output_id("sess-x", command_hash(cmd), ts=ts)
+            actual = output_id_for("sess-x", cmd, ts=ts)
+            assert actual == expected
+
+    def test_matches_web_cache_output_id_for_structure(self, monkeypatch) -> None:
+        """web_cache.output_id_for must produce an id built by build_output_id."""
+        import pathlib
+        import tempfile
+
+        import token_goat.paths as _paths
+        with tempfile.TemporaryDirectory() as td:
+            monkeypatch.setattr(_paths, "data_dir", lambda: pathlib.Path(td))
+            from token_goat.web_cache import output_id_for, url_hash
+            ts = 7777.0
+            url = "https://docs.example.com/"
+            expected = build_output_id("sess-y", url_hash(url), ts=ts)
+            actual = output_id_for("sess-y", url, ts=ts)
+            assert actual == expected
+
+
+class TestOutputStatDict:
+    """OutputStatDict is the canonical shared TypedDict for all three caches."""
+
+    def test_importable_from_cache_common(self) -> None:
+        from token_goat.cache_common import OutputStatDict as OSD
+        assert OSD is OutputStatDict
+
+    def test_bash_cache_uses_cache_common_type(self) -> None:
+        """bash_cache.load_output_meta return annotation uses OutputStatDict."""
+        from token_goat import bash_cache
+        hints = bash_cache.load_output_meta.__annotations__
+        ret = hints.get("return", "")
+        # The annotation should reference OutputStatDict (possibly as Optional)
+        assert "OutputStatDict" in str(ret)
+
+    def test_web_cache_uses_cache_common_type(self) -> None:
+        from token_goat import web_cache
+        hints = web_cache.load_output_meta.__annotations__
+        ret = hints.get("return", "")
+        assert "OutputStatDict" in str(ret)
+
+    def test_skill_cache_uses_cache_common_type(self) -> None:
+        from token_goat import skill_cache
+        hints = skill_cache.load_output_meta.__annotations__
+        ret = hints.get("return", "")
+        assert "OutputStatDict" in str(ret)
+
+    def test_no_local_outputstatdict_in_cache_modules(self) -> None:
+        """None of the three cache modules define their own _OutputStatDict."""
+        import token_goat.bash_cache as bc
+        import token_goat.skill_cache as sc
+        import token_goat.web_cache as wc
+        for mod in (bc, wc, sc):
+            assert not hasattr(mod, "_OutputStatDict"), (
+                f"{mod.__name__} still defines local _OutputStatDict"
+            )
