@@ -632,7 +632,28 @@ def fetch_url(
         # through to the slow path which re-hashes and re-shrinks.
         if shrink_if_image and (shrunk_pointer := meta.get("shrunk_path")):
             shrunk_path = Path(shrunk_pointer)
-            if shrunk_path.exists():
+            # Path containment check: a tampered sidecar could redirect to any
+            # file on disk (e.g. ~/.ssh/id_rsa).  Resolve symlinks then confirm
+            # the target lives under an allowed cache root before trusting it.
+            _allowed_roots = (paths.image_cache_dir().resolve(), paths.web_cache_dir().resolve())
+            try:
+                _resolved = shrunk_path.resolve()
+                _contained = any(
+                    _resolved == _root or str(_resolved).startswith(str(_root) + ("/" if str(_root)[-1] != "/" else ""))
+                    for _root in _allowed_roots
+                )
+                with contextlib.suppress(AttributeError):
+                    _contained = any(_resolved.is_relative_to(_root) for _root in _allowed_roots)
+            except (OSError, ValueError):
+                _contained = False
+            if not _contained:
+                _LOG.warning(
+                    "web cache: shrunk_path sidecar points outside allowed cache roots "
+                    "(possible tampered sidecar); ignoring pointer: %s",
+                    shrunk_path,
+                )
+                shrunk_path = None
+            if shrunk_path is not None and shrunk_path.exists():
                 _LOG.info("web cache hit (shrunk pointer): %s", shrunk_path.name)
                 return shrunk_path
         # Only revalidate when we actually have HTTP cache validators to send;

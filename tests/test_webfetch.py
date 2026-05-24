@@ -705,3 +705,75 @@ class TestStripHtmlToText:
         for bad in (b"", b"\xff\xfe\x00", b"<html>" + bytes(range(256)), b"\x00" * 1000):
             result = webfetch._strip_html_to_text(bad)
             assert isinstance(result, bytes)
+
+
+# ---------------------------------------------------------------------------
+# 14. fetch_url: tampered sidecar containment check
+# ---------------------------------------------------------------------------
+
+class TestFetchUrlTamperedSidecar:
+    """A tampered .meta sidecar pointing shrunk_path outside the cache roots must be rejected."""
+
+    def test_tampered_shrunk_path_is_rejected(self, tmp_path, caplog):
+        """shrunk_path pointing to a file outside cache roots must not be returned.
+
+        Construct a cached file + sidecar where shrunk_path has been tampered
+        to point at a sensitive file outside the cache directory.  The second
+        call to fetch_url (which hits the sidecar) must not return that path;
+        it must log a warning and fall through to the normal (no-shrink) path.
+        """
+        import contextlib
+        import json
+        import logging
+        from unittest.mock import patch
+
+        from token_goat import paths as _paths
+
+        url = "https://example.com/tampered-sidecar.png"
+        body = _make_png_bytes(64, 64)
+
+        # Create a fake "secret" file outside any cache root.
+        secret_file = tmp_path / "sensitive_data.txt"
+        secret_file.write_text("super secret content", encoding="utf-8")
+
+        # Set up a fake data dir so paths.web_cache_dir() / image_cache_dir()
+        # point into tmp_path, keeping them isolated from the real data dir.
+        fake_data = tmp_path / "fake_data"
+        fake_data.mkdir()
+
+        with patch.object(_paths, "data_dir", return_value=fake_data):
+            # First fetch: download and cache the file normally.
+            resp = _mock_http_response(body, "image/png")
+            client = _mock_client(resp)
+            with patch("httpx.Client", return_value=client):
+                cached = webfetch.fetch_url(url, shrink_if_image=False)
+
+            assert cached.exists()
+
+            # Tamper the sidecar: overwrite shrunk_path to point at our secret file.
+            meta_path = cached.with_suffix(cached.suffix + ".meta")
+            existing_meta: dict = {}
+            if meta_path.exists():
+                with contextlib.suppress(json.JSONDecodeError, OSError):
+                    existing_meta = json.loads(meta_path.read_text(encoding="utf-8"))
+            existing_meta["shrunk_path"] = str(secret_file)
+            meta_path.write_text(json.dumps(existing_meta), encoding="utf-8")
+
+            # Second fetch: should hit the sidecar, detect the tampered path,
+            # log a warning, and NOT return the secret file path.
+            with caplog.at_level(logging.WARNING, logger="token_goat.webfetch"):
+                result = webfetch.fetch_url(url, shrink_if_image=True)
+
+        # The returned path must not be the tampered secret file.
+        assert result != secret_file, (
+            "fetch_url returned the tampered shrunk_path pointing outside the cache roots"
+        )
+        assert result.resolve() != secret_file.resolve(), (
+            "fetch_url returned a path resolving to the tampered target"
+        )
+
+        # A warning must have been emitted.
+        warning_messages = [r.message for r in caplog.records if r.levelno >= logging.WARNING]
+        assert any("tampered" in str(m) or "outside allowed" in str(m) for m in warning_messages), (
+            f"Expected a containment-failure warning; got: {warning_messages}"
+        )
