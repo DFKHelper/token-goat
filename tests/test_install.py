@@ -1230,3 +1230,134 @@ def test_hooks_block_events_have_typer_subcommands_registered():
         f"will exit 2 with 'No such command' — BLOCKING for "
         f"UserPromptSubmit / PostToolUse:Skill / etc."
     )
+
+
+def test_hook_registry_alignment_across_all_tables():
+    """Every event in ``hook_registry.HOOK_EVENTS`` must appear in all 5 coupled tables.
+
+    The hook_registry consolidation (audit-2026-05-24) made HOOK_EVENTS the
+    single source of truth, but five tables still derive from it (or, in the
+    case of ``@hook_app.command`` decorators, must stay in sync with it).
+    This test verifies all five stay aligned:
+
+      1. ``install._hooks_block()`` — Claude settings.json
+      2. ``install._codex_hooks_block()`` — Codex config.toml (codex-only subset)
+      3. ``hooks_cli._HANDLER_LOOKUP`` — dispatcher
+      4. ``hooks_cli.__getattr__::event_map`` (lazy attr export)
+      5. ``@hook_app.command`` decorators in cli.py
+    """
+    from token_goat import hook_registry, hooks_cli  # noqa: PLC0415
+    from token_goat.cli import hook_app  # noqa: PLC0415
+
+    registry_events = set(hook_registry.all_events())
+    registry_claude = {e.name for e in hook_registry.claude_events()}
+    registry_codex = {e.name for e in hook_registry.codex_events()}
+
+    # --- Table 1: _hooks_block (Claude wire format) ---
+    claude_block = install._hooks_block()
+    claude_in_block: set[str] = set()
+    for entries in claude_block.values():
+        for entry in entries:
+            for h in entry.get("hooks", []):
+                parts = h.get("command", "").split()
+                for i, p in enumerate(parts):
+                    if p == "hook" and i + 1 < len(parts):
+                        claude_in_block.add(parts[i + 1].strip("\"'"))
+                        break
+    assert claude_in_block == registry_claude, (
+        f"_hooks_block events {sorted(claude_in_block)} differ from "
+        f"registry.claude_events {sorted(registry_claude)}"
+    )
+
+    # --- Table 2: _codex_hooks_block (Codex wire format) ---
+    codex_block = install._codex_hooks_block()
+    codex_in_block: set[str] = set()
+    for entries in codex_block.values():
+        for entry in entries:
+            for h in entry.get("hooks", []):
+                parts = h.get("command", "").split()
+                for i, p in enumerate(parts):
+                    if p == "hook" and i + 1 < len(parts):
+                        codex_in_block.add(parts[i + 1].strip("\"'"))
+                        break
+    assert codex_in_block == registry_codex, (
+        f"_codex_hooks_block events {sorted(codex_in_block)} differ from "
+        f"registry.codex_events {sorted(registry_codex)}"
+    )
+
+    # --- Table 3: _HANDLER_LOOKUP (dispatcher) ---
+    # Excludes pre-compact whose handler lives in hooks_cli itself.
+    handler_keys = set(hooks_cli._HANDLER_LOOKUP.keys())
+    expected_handler_keys = registry_events - {"pre-compact"}
+    assert handler_keys == expected_handler_keys, (
+        f"hooks_cli._HANDLER_LOOKUP keys {sorted(handler_keys)} differ from "
+        f"registry events (excluding pre-compact) {sorted(expected_handler_keys)}"
+    )
+
+    # --- Table 4: __getattr__ event_map (lazy attr export) ---
+    lazy_map = hook_registry.lazy_attr_map()
+    # Verify every event with a submodule handler is exported by name.
+    for ev in hook_registry.HOOK_EVENTS:
+        if ev.module == "hooks_cli":
+            continue  # pre-compact: already a module attr, no lazy export needed
+        assert ev.typer_func in lazy_map, (
+            f"event {ev.name!r} not in __getattr__ event_map; "
+            f"typer_func {ev.typer_func!r} is missing"
+        )
+        # Verify the lazy export actually resolves (forces the import path).
+        resolved = getattr(hooks_cli, ev.typer_func, None)
+        assert resolved is not None, (
+            f"hooks_cli.{ev.typer_func} did not resolve via __getattr__; "
+            f"check that {ev.module}.{ev.attr} exists"
+        )
+
+    # --- Table 5: @hook_app.command decorators in cli.py ---
+    registered: set[str] = set()
+    for info in hook_app.registered_commands:
+        if info.name:
+            registered.add(info.name)
+        elif info.callback is not None:
+            registered.add(info.callback.__name__.replace("_", "-"))
+    assert registry_events <= registered, (
+        f"Events in hook_registry but missing @hook_app.command in cli.py: "
+        f"{sorted(registry_events - registered)}"
+    )
+
+
+def test_hook_registry_codex_subset_of_claude():
+    """Every Codex event must also have a definition in the registry.
+
+    Codex events are a *subset* of Claude events (Codex has no Skill tool,
+    no UserPromptSubmit equivalent, etc.).  Ensure no codex_event refers to a
+    name that isn't a registry event at all.
+    """
+    from token_goat import hook_registry  # noqa: PLC0415
+
+    claude_events = {e.name for e in hook_registry.claude_events()}
+    codex_events = {e.name for e in hook_registry.codex_events()}
+    assert codex_events <= claude_events, (
+        f"Codex events {sorted(codex_events - claude_events)} not declared as "
+        f"Claude events; registry inconsistent."
+    )
+
+
+def test_hook_registry_startup_assertion_catches_drift():
+    """Simulating a missing typer subcommand must raise ImportError.
+
+    The startup assertion in cli.py runs once at import time.  Verify the
+    same check rejects an obviously-broken state — gives us a fast failure
+    if the package is ever imported with a missing decorator.
+    """
+    import pytest  # noqa: PLC0415
+
+    from token_goat import hook_registry  # noqa: PLC0415
+
+    # Empty registered set must trigger ImportError naming the missing events.
+    with pytest.raises(ImportError, match="hook_registry drift"):
+        hook_registry.assert_typer_subcommands_aligned(set())
+
+    # Subset that drops just one event must also raise, naming that event.
+    all_evts = set(hook_registry.all_events())
+    one_missing = all_evts - {"post-skill"}
+    with pytest.raises(ImportError, match="post-skill"):
+        hook_registry.assert_typer_subcommands_aligned(one_missing)

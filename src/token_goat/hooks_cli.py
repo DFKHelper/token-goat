@@ -364,18 +364,13 @@ def fail_soft(handler: _HookHandler) -> _HookHandler:
 # ``(submodule_name, attribute_name)`` pairs; ``_resolve_handler`` imports the
 # submodule on demand and wraps the bare handler in ``fail_soft``.  The wrapped
 # handler is cached so the import is paid at most once per process.
-_HANDLER_LOOKUP: dict[str, tuple[str, str]] = {
-    "session-start": ("hooks_session", "session_start"),
-    "user-prompt-submit": ("hooks_session", "user_prompt_submit"),
-    "subagent-stop": ("hooks_session", "subagent_stop"),
-    "pre-read": ("hooks_read", "pre_read"),
-    "pre-fetch": ("hooks_fetch", "pre_fetch"),
-    "post-edit": ("hooks_edit", "post_edit"),
-    "post-read": ("hooks_read", "post_read"),
-    "post-bash": ("hooks_read", "post_bash"),
-    "post-fetch": ("hooks_fetch", "post_fetch"),
-    "post-skill": ("hooks_skill", "post_skill"),
-}
+#
+# Derived from :mod:`token_goat.hook_registry` — the single source of truth
+# for hook event names, handler modules, and CLI wiring.  Adding a new event
+# only requires editing ``hook_registry.HOOK_EVENTS``.
+from . import hook_registry as _hook_registry  # noqa: E402
+
+_HANDLER_LOOKUP: dict[str, tuple[str, str]] = _hook_registry.handler_lookup()
 
 _HANDLER_CACHE: dict[str, Callable[[HookPayload], HookResponse]] = {}
 
@@ -406,18 +401,10 @@ def __getattr__(name: str) -> object:
     ``_resolve_handler`` so the relevant submodule is imported only when the
     attribute is first accessed — the dispatcher path itself never reads them.
     """
-    event_map = {
-        "session_start": "session-start",
-        "user_prompt_submit": "user-prompt-submit",
-        "subagent_stop": "subagent-stop",
-        "pre_read": "pre-read",
-        "pre_fetch": "pre-fetch",
-        "post_edit": "post-edit",
-        "post_read": "post-read",
-        "post_bash": "post-bash",
-        "post_fetch": "post-fetch",
-        "post_skill": "post-skill",
-    }
+    # Derived from :mod:`token_goat.hook_registry` so this map stays in sync
+    # with ``_HANDLER_LOOKUP`` automatically.  See module docstring on
+    # :mod:`hook_registry` for why this matters.
+    event_map = _hook_registry.lazy_attr_map()
     if name in event_map:
         handler = _resolve_handler(event_map[name])
         if handler is not None:
@@ -553,20 +540,17 @@ def _make_lazy_proxy(event: str) -> Callable[[HookPayload], HookResponse]:
 
 
 # ``EVENTS`` is a plain dict for backwards compatibility (mock.patch.dict, in
-# tests).  Each value is a lazy proxy that imports its submodule on first call.
+# tests).  Each value is a lazy proxy that imports its submodule on first call;
+# ``pre-compact`` is the exception — its handler lives in this module directly,
+# so we register the real function (no lazy proxy needed).
+#
+# Derived from :mod:`token_goat.hook_registry` so adding a new event only
+# requires editing one place.  See the module docstring on
+# :mod:`hook_registry` for context.
 EVENTS: dict[str, Callable[[HookPayload], HookResponse]] = {
-    "session-start": _make_lazy_proxy("session-start"),
-    "user-prompt-submit": _make_lazy_proxy("user-prompt-submit"),
-    "subagent-stop": _make_lazy_proxy("subagent-stop"),
-    "pre-read": _make_lazy_proxy("pre-read"),
-    "pre-fetch": _make_lazy_proxy("pre-fetch"),
-    "post-edit": _make_lazy_proxy("post-edit"),
-    "post-read": _make_lazy_proxy("post-read"),
-    "post-bash": _make_lazy_proxy("post-bash"),
-    "post-fetch": _make_lazy_proxy("post-fetch"),
-    "post-skill": _make_lazy_proxy("post-skill"),
-    "pre-compact": pre_compact,
+    name: _make_lazy_proxy(name) for name in _HANDLER_LOOKUP
 }
+EVENTS["pre-compact"] = pre_compact
 
 
 def dispatch(event: str, payload: HookPayload) -> dict[str, object]:
