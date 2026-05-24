@@ -385,3 +385,90 @@ def test_denormalize_response_translates_permission_decision_for_codex():
     assert "permission_decision" in hso
     assert "permission_decision_reason" in hso
     assert hso["permission_decision"] == "deny"
+
+
+# ---------------------------------------------------------------------------
+# record_hint_stat_pair: zero-saving guard and config gate
+# ---------------------------------------------------------------------------
+
+
+def test_record_hint_stat_pair_zero_savings_skips_writes(monkeypatch):
+    """record_hint_stat_pair with tokens_saved=0 and injection_bytes=0 should skip DB writes."""
+    from unittest.mock import patch
+
+    from token_goat import config as _config
+    from token_goat.hooks_common import record_hint_stat_pair
+
+    # Mock a hint with zero tokens saved and zero injection bytes
+    class MockHint:
+        tokens_saved = 0
+
+        def __len__(self):
+            return 0
+
+    # Mock db.record_stat to track calls inside the function
+    with patch("token_goat.db.record_stat") as mock_record_stat:
+        # Mock config.load() to return default config (record_zero_savings=False)
+        mock_config = _config.Config()
+        monkeypatch.setattr(_config, "load", lambda: mock_config)
+
+        hint = MockHint()
+        record_hint_stat_pair("test_hint", hint, "detail")
+
+        # With default config (record_zero_savings=False) and zero savings, no writes should occur
+        assert mock_record_stat.call_count == 0
+
+
+def test_record_hint_stat_pair_nonzero_savings_writes(monkeypatch):
+    """record_hint_stat_pair with tokens_saved>0 should write both stat rows."""
+    from unittest.mock import patch
+
+    from token_goat import config as _config
+    from token_goat.hooks_common import record_hint_stat_pair
+
+    # Mock a hint with 10 tokens saved
+    class MockHint:
+        tokens_saved = 10
+
+        def __len__(self):
+            return 50  # 50 bytes
+
+    # Mock db.record_stat to track calls inside the function
+    with patch("token_goat.db.record_stat") as mock_record_stat:
+        # Mock config.load() to return default config
+        mock_config = _config.Config()
+        monkeypatch.setattr(_config, "load", lambda: mock_config)
+
+        hint = MockHint()
+        record_hint_stat_pair("test_hint", hint, "detail")
+
+        # With tokens_saved>0, both rows should be written
+        assert mock_record_stat.call_count == 2
+
+
+def test_record_hint_stat_pair_zero_savings_with_config_override(monkeypatch):
+    """record_hint_stat_pair with record_zero_savings=True should write zero-saving rows."""
+    from unittest.mock import patch
+
+    from token_goat import config as _config
+    from token_goat.hooks_common import record_hint_stat_pair
+
+    # Mock a hint with zero savings
+    class MockHint:
+        tokens_saved = 0
+
+        def __len__(self):
+            return 0
+
+    # Mock db.record_stat to track calls inside the function
+    with patch("token_goat.db.record_stat") as mock_record_stat:
+        # Mock config.load() to return a config with record_zero_savings=True
+        mock_config = _config.Config()
+        mock_config.stats = _config.StatsConfig(record_zero_savings=True)
+        monkeypatch.setattr(_config, "load", lambda: mock_config)
+
+        hint = MockHint()
+        record_hint_stat_pair("test_hint", hint, "detail")
+
+        # With record_zero_savings=True override and zero savings, both rows should be written
+        assert mock_record_stat.call_count == 2
