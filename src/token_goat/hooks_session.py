@@ -40,8 +40,6 @@ __all__ = ["session_start"]
 
 from typing import TYPE_CHECKING
 
-from .cache_common import short_output_id as _short_id
-from .compact import _humanize_bytes
 from .hooks_common import (
     CONTINUE,
     HookPayload,
@@ -174,6 +172,9 @@ def _build_recovery_hint(session_id: str) -> str | None:
     counterpart that fires *after* the compaction LLM has processed the
     manifest.
     """
+    from .cache_common import short_output_id as _short_id  # noqa: PLC0415
+    from .compact import _humanize_bytes  # noqa: PLC0415
+
     try:
         from . import session as session_mod  # noqa: PLC0415
 
