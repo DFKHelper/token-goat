@@ -284,7 +284,11 @@ class TestRunGit:
             assert _run_git(["log"], str(tmp_path), timeout=2) is None
 
     def test_passes_args_and_cwd(self, tmp_path: Path) -> None:
-        """_run_git forwards args and cwd correctly to subprocess.run."""
+        """_run_git forwards args and cwd correctly to subprocess.run.
+
+        Since _run_git now delegates to util.run_git, --no-optional-locks is
+        automatically prepended to prevent .git/index.lock contention.
+        """
         from token_goat.compact import _run_git
 
         mock_result = MagicMock()
@@ -295,7 +299,7 @@ class TestRunGit:
             _run_git(["diff", "--stat"], str(tmp_path), timeout=3)
 
         call_kwargs = mock_run.call_args
-        assert call_kwargs.args[0] == ["git", "diff", "--stat"]
+        assert call_kwargs.args[0] == ["git", "--no-optional-locks", "diff", "--stat"]
         assert call_kwargs.kwargs["cwd"] == str(tmp_path)
         assert call_kwargs.kwargs["timeout"] == 3
 

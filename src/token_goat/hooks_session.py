@@ -51,6 +51,7 @@ from .hooks_common import (
 from .hooks_common import (
     LOG as _LOG,
 )
+from .util import run_git as _run_git
 
 if TYPE_CHECKING:
     # ``project`` pulls in ``hashlib`` (~6 ms cold) plus the marker regexes,
@@ -577,7 +578,6 @@ def _build_session_brief(cwd: str) -> str | None:
     session source.
     """
     import os  # noqa: PLC0415
-    import subprocess  # noqa: PLC0415
     import time  # noqa: PLC0415
 
     # Feature gate: env var override (checked first, cheapest)
@@ -630,11 +630,7 @@ def _build_session_brief(cwd: str) -> str | None:
             _LOG.debug("session-start: brief cache hit for %s (age=%.1fs)", cwd, _age)
             return _cached_brief
 
-    common_kwargs: dict = {
-        "cwd": cwd,
-        "capture_output": True,
-        "text": True,
-    }
+    import subprocess  # noqa: PLC0415 — needed for TimeoutExpired reference
     # Whole-brief wall-clock budget: the git calls share one deadline so a slow repo can't stack timeouts into a long session-start pause.
     deadline = time.monotonic() + 2.5
 
@@ -649,11 +645,7 @@ def _build_session_brief(cwd: str) -> str | None:
     branch = "unknown"
     status_lines: list[str] = []
     try:
-        sz = subprocess.run(
-            ["git", "--no-optional-locks", "status", "-z", "-b"],
-            timeout=max(0.1, min(2.0, _remaining())),
-            **common_kwargs,
-        )
+        sz = _run_git(["status", "-z", "-b"], cwd=cwd, timeout=max(0.1, min(2.0, _remaining())))
         if sz.returncode == 128:
             # Not a git repo — cache the None so repeated calls skip subprocesses
             _brief_cache[cwd] = (None, _mtime_editmsg, _mtime_index, _now_mono)
@@ -676,15 +668,15 @@ def _build_session_brief(cwd: str) -> str | None:
         _log_skip_budget = _remaining()
         if _log_skip_budget > 0.1:
             try:
-                _local = subprocess.run(
-                    ["git", "rev-parse", "HEAD"],
+                _local = _run_git(
+                    ["rev-parse", "HEAD"],
+                    cwd=cwd,
                     timeout=max(0.1, min(0.8, _log_skip_budget)),
-                    **common_kwargs,
                 )
-                _origin = subprocess.run(
-                    ["git", "rev-parse", f"origin/{branch}"],
+                _origin = _run_git(
+                    ["rev-parse", f"origin/{branch}"],
+                    cwd=cwd,
                     timeout=max(0.1, min(0.8, _remaining())),
-                    **common_kwargs,
                 )
                 _local_sha = _local.stdout.strip() if _local.returncode == 0 else ""
                 _origin_sha = _origin.stdout.strip() if _origin.returncode == 0 else ""
@@ -707,11 +699,7 @@ def _build_session_brief(cwd: str) -> str | None:
     log_budget = _remaining()
     if log_budget > 0.1 and not _skip_log:
         try:
-            lg = subprocess.run(
-                ["git", "log", "--oneline", "-5"],
-                timeout=log_budget,
-                **common_kwargs,
-            )
+            lg = _run_git(["log", "--oneline", "-5"], cwd=cwd, timeout=log_budget)
             if lg.returncode == 0:
                 log_lines = [line.strip() for line in lg.stdout.splitlines() if line.strip()]
         except (subprocess.TimeoutExpired, OSError):
@@ -945,14 +933,7 @@ def user_prompt_submit(payload: HookPayload) -> HookResponse:
     # Git branch — fast, reads .git/HEAD via subprocess
     if cwd:
         try:
-            import subprocess  # noqa: PLC0415
-
-            r = subprocess.run(
-                ["git", "-C", cwd, "rev-parse", "--abbrev-ref", "HEAD"],
-                capture_output=True,
-                text=True,
-                timeout=3,
-            )
+            r = _run_git(["-C", cwd, "rev-parse", "--abbrev-ref", "HEAD"], timeout=3)
             branch = r.stdout.strip()
             if branch:
                 parts.append(f"branch: {branch}")
@@ -1040,14 +1021,7 @@ def subagent_stop(payload: HookPayload) -> HookResponse:
 
     # Run git status --porcelain to check for actual disk changes.
     try:
-        import subprocess  # noqa: PLC0415
-
-        r = subprocess.run(
-            ["git", "-C", cwd, "status", "--porcelain"],
-            capture_output=True,
-            text=True,
-            timeout=5,
-        )
+        r = _run_git(["-C", cwd, "status", "--porcelain"], timeout=5)
         git_output = r.stdout.strip()
     except Exception:  # noqa: BLE001
         return CONTINUE()

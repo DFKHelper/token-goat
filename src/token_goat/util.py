@@ -7,7 +7,10 @@ in two or more modules with no natural owner belong here.
 from __future__ import annotations
 
 import logging
+import os
+import subprocess
 from logging import Logger
+from subprocess import CompletedProcess
 
 
 def get_logger(name: str) -> Logger:
@@ -22,6 +25,51 @@ def get_logger(name: str) -> Logger:
         _LOG = get_logger("module_name")
     """
     return logging.getLogger(f"token_goat.{name}")
+
+
+def run_git(
+    args: list[str],
+    *,
+    cwd: str | None = None,
+    timeout: float = 10,
+    env_extra: dict[str, str] | None = None,
+    check: bool = False,
+) -> CompletedProcess[str]:
+    """Run ``git --no-optional-locks <args>`` and return the CompletedProcess.
+
+    Design rationale for each kwarg:
+
+    * ``--no-optional-locks`` is prepended automatically so git never acquires
+      the optional ``.git/index.lock`` (used for e.g. ``status`` refreshes).
+      This prevents interference with the editor / agent that already owns the
+      lock during a write operation.
+    * ``capture_output=True`` — every caller inspects stdout/stderr; letting them
+      inherit the terminal would pollute hook output and break JSON responses.
+    * ``text=True`` — all callers work with strings, not bytes.
+    * ``encoding="utf-8"`` — explicit encoding so behaviour is the same on every
+      platform regardless of the locale's default encoding.
+    * ``errors="replace"`` — on Windows, non-UTF-8 path bytes can appear in git
+      output (e.g. filenames with high-byte characters).  ``replace`` ensures we
+      always get a valid string rather than a UnicodeDecodeError.
+    * ``check=False`` by default — many callers treat non-zero exit as a sentinel
+      (e.g. "not a git repo" returns exit 128).  Callers that want an exception
+      on failure may pass ``check=True``.
+    * ``env_extra`` — merged on top of ``os.environ`` so callers can set
+      ``GIT_TERMINAL_PROMPT=0`` (prevents git from blocking on a password prompt)
+      without having to reconstruct the whole environment.
+    """
+    env = {**os.environ, **(env_extra or {})}
+    return subprocess.run(
+        ["git", "--no-optional-locks", *args],
+        cwd=cwd,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        timeout=timeout,
+        check=check,
+        env=env,
+    )
 
 
 def sanitize_surrogates(text: str) -> str:
