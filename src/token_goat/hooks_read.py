@@ -371,8 +371,8 @@ def _handle_index_only_file(
     if hint is None:
         return None
 
-    # Dedup: suppress if identical hint already seen this session.
-    fingerprint = _hint_fingerprint(str(hint))
+    # Dedup: suppress if identical hint already seen this session for this path.
+    fingerprint = _hint_fingerprint(str(hint), path=file_path)
     has_seen = getattr(cache, "has_hint_fingerprint", lambda _: False)(fingerprint)  # type: ignore[arg-type]
     if has_seen:
         _LOG.debug(
@@ -421,8 +421,8 @@ def _handle_structured_file(
     if hint is None:
         return None
 
-    # Dedup: suppress if identical hint already seen this session.
-    fingerprint = _hint_fingerprint(str(hint))
+    # Dedup: suppress if identical hint already seen this session for this path.
+    fingerprint = _hint_fingerprint(str(hint), path=file_path)
     has_seen = getattr(cache, "has_hint_fingerprint", lambda _: False)(fingerprint)  # type: ignore[arg-type]
     if has_seen:
         _LOG.debug(
@@ -848,7 +848,7 @@ def pre_read(payload: HookPayload) -> HookResponse:
             from .hints import _hint_fingerprint  # noqa: PLC0415
 
             hint_text = str(hint)
-            fingerprint = _hint_fingerprint(hint_text)
+            fingerprint = _hint_fingerprint(hint_text, path=file_path)
 
             # Suppress hint if identical hint was already seen in this session.
             if cache.has_hint_fingerprint(fingerprint):
