@@ -423,9 +423,36 @@ def test_claim_worker_slot_empty_claim_is_not_stale(tmp_data_dir):
     paths.ensure_dirs()
     claim = worker._worker_claim_path()
     claim.write_text("", encoding="utf-8")  # owner mid-startup
-
+    # mtime is fresh (just written) — must not be stale
+    assert worker._worker_claim_is_stale(claim) is False
     fd = worker._try_claim_worker_slot()
     assert fd is None, "empty claim must be treated as owner-mid-startup, not stale"
+    claim.unlink(missing_ok=True)
+
+
+def test_claim_is_stale_empty_claim_aged(tmp_data_dir):
+    """An empty claim whose mtime is >60 s old is a zombie — the worker died
+    between O_EXCL create and os.write.  It must be treated as stale."""
+    paths.ensure_dirs()
+    claim = worker._worker_claim_path()
+    claim.write_text("", encoding="utf-8")
+    # Back-date the mtime by 61 seconds to simulate a zombie file.
+    old_mtime = time.time() - 61
+    os.utime(claim, (old_mtime, old_mtime))
+
+    assert worker._worker_claim_is_stale(claim) is True
+    claim.unlink(missing_ok=True)
+
+
+def test_claim_is_stale_malformed_claim_aged(tmp_data_dir):
+    """A malformed (non-parseable) claim older than 60 s must also be treated as stale."""
+    paths.ensure_dirs()
+    claim = worker._worker_claim_path()
+    claim.write_text("not-a-pid\nnot-a-float", encoding="utf-8")
+    old_mtime = time.time() - 120
+    os.utime(claim, (old_mtime, old_mtime))
+
+    assert worker._worker_claim_is_stale(claim) is True
     claim.unlink(missing_ok=True)
 
 

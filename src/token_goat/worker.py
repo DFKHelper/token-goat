@@ -363,15 +363,31 @@ def _worker_claim_is_stale(claim_path: Path) -> bool:
     which is what made the previous version misjudge healthy long-running
     workers as stale.
 
-    An empty / malformed claim is treated as NOT stale: the owner is mid-startup
-    (the gap between the O_EXCL create and the single write is microscopic), and
-    reclaiming that window would re-open the race this mechanism closes.
+    An empty / malformed claim is treated as NOT stale during the brief
+    startup window (the gap between the O_EXCL create and the single write is
+    microscopic). However, if the mtime of the file is older than 60 seconds
+    the owner never finished writing — it died mid-startup — so the claim is
+    treated as a zombie and cleared.
     """
     try:
         pid_str, ct_str = claim_path.read_text(encoding="utf-8").split("\n", 1)
         pid, claimed_ct = int(pid_str), float(ct_str.strip())
     except (OSError, ValueError):
-        return False  # empty/malformed — owner mid-startup, not stale
+        # Empty or malformed content.  Check file age to detect zombie claims
+        # left by workers that were killed between O_EXCL create and os.write.
+        try:
+            mtime = os.stat(claim_path).st_mtime
+        except OSError:
+            return False  # file vanished — treat as not stale (nothing to clear)
+        age = time.time() - mtime
+        if age > 60:
+            _LOG.warning(
+                "clearing zombie claim file: %s (mtime age %.1fs)",
+                claim_path,
+                age,
+            )
+            return True
+        return False  # mid-startup grace window
     actual_ct = _proc_create_time(pid)
     if actual_ct is None:
         return True  # owner process is gone — reclaim
