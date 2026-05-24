@@ -327,6 +327,24 @@ def doctor(  # noqa: C901
                     flag("heartbeat", "missing", warn=True)
             else:
                 flag("pid file", f"present but PID {pid_val} not alive", warn=True)
+                # Heartbeat age is meaningful even for zombie workers: a very
+                # recent heartbeat suggests the process just exited cleanly,
+                # while a stale heartbeat (>5 min) with a dead PID strongly
+                # suggests the worker crashed or was killed without cleanup.
+                if hb_path.exists():
+                    try:
+                        hb_age = time.time() - hb_path.stat().st_mtime
+                        _ZOMBIE_THRESHOLD = 300  # 5 minutes
+                        if hb_age > _ZOMBIE_THRESHOLD:
+                            flag(
+                                "heartbeat",
+                                f"{int(hb_age)}s ago — zombie worker (pid gone, heartbeat stale)",
+                                warn=True,
+                            )
+                        else:
+                            ok("heartbeat", f"{int(hb_age)}s ago — process recently exited")
+                    except OSError:
+                        pass  # heartbeat file disappeared between exists() and stat()
         except Exception as e:  # noqa: BLE001
             flag("pid file", f"unreadable — {e}", warn=True)
     else:

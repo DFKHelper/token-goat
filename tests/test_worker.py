@@ -2114,3 +2114,45 @@ def test_is_token_goat_worker_oserror_returns_false(tmp_data_dir, monkeypatch):
     monkeypatch.setattr("psutil.Process", lambda pid: FakeProcess())
     result = worker._is_token_goat_worker(1)
     assert result is False
+
+
+# ---------------------------------------------------------------------------
+# no source files found — message level
+# ---------------------------------------------------------------------------
+
+def test_no_source_files_message_is_debug_not_info(tmp_data_dir, tmp_path, caplog):
+    """index_project emits the 'no source files found' message at DEBUG, not INFO.
+
+    When indexing an empty directory, the message must not appear at INFO level
+    so it does not pollute worker-stderr.log on every test run.
+    """
+    from token_goat.parser import index_project
+    from token_goat.project import make_project_at
+
+    empty_dir = tmp_path / "empty_project"
+    empty_dir.mkdir()
+    proj = make_project_at(empty_dir)
+
+    # Capture DEBUG+ messages from the parser logger
+    with caplog.at_level(logging.DEBUG, logger="token_goat.parser"):
+        index_project(proj, full=True)
+
+    # The message must appear at DEBUG level (not INFO/WARNING/ERROR)
+    matching = [
+        r for r in caplog.records
+        if "no source files found" in r.getMessage()
+    ]
+    assert matching, "Expected 'no source files found' message to be emitted"
+    for record in matching:
+        assert record.levelno == logging.DEBUG, (
+            f"Expected DEBUG ({logging.DEBUG}), got {record.levelname} ({record.levelno})"
+        )
+
+    # It must NOT appear at INFO level or above
+    info_or_above = [
+        r for r in caplog.records
+        if "no source files found" in r.getMessage() and r.levelno >= logging.INFO
+    ]
+    assert not info_or_above, (
+        f"'no source files found' appeared at INFO+ level: {info_or_above}"
+    )
