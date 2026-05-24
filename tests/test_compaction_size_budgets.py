@@ -147,20 +147,20 @@ def _seed_saturated_manifest_state(sid: str) -> None:
         session.mark_file_read(
             sid, f"/proj/src/edited_{i:02d}.py", offset=0, limit=40,
         )
-    # Symbol reads — produces "Symbols Accessed".
+    # Symbol reads — produces "**Syms:**".
     for i in range(10):
         session.mark_file_read(
             sid, f"/proj/src/symbols_{i:02d}.py", symbol=f"handle_event_{i:02d}",
         )
-    # Plain file reads — produces "Key Files Read".
+    # Plain file reads — produces "**Files:**".
     for i in range(15):
         session.mark_file_read(
             sid, f"/proj/src/read_{i:02d}.py", offset=0, limit=100,
         )
-    # Grep patterns — produces "Patterns Searched".
+    # Grep patterns — produces "**Grep:**".
     for i in range(10):
         session.mark_grep(sid, f"distinct_pattern_{i:02d}", "/proj/src")
-    # Bash history — produces "Commands Run" and "Cold Outputs".
+    # Bash history — produces "**Ran:**" and "Cold Outputs".
     for i in range(20):
         cmd_sha = f"manishabc{i:02d}{'x' * 8}"[:16]
         session.mark_bash_run(
@@ -191,7 +191,7 @@ class TestManifestBudget:
         # get trimmed off the tail when the 400-token budget binds, which is the
         # correct trim-pass behaviour and not a regression — this test only
         # asserts the two sections that always survive regardless of budget pressure.
-        for header in ("Files Edited", "Symbols Accessed"):
+        for header in ("**Edited:**", "**Syms:**"):
             assert header in manifest, (
                 f"missing manifest section {header!r}; rendered:\n{manifest}"
             )
@@ -215,7 +215,7 @@ class TestManifestBudget:
         # Use a 700-token budget — what compute_adaptive_budget gives a heavily
         # saturated mature session — so bash section is not crowded out.
         manifest, _ = compact.build_manifest_with_count(sid, max_tokens=700)
-        assert "Commands Run" in manifest, (
+        assert "**Ran:**" in manifest, (
             f"Commands Run missing at 700-token budget; rendered:\n{manifest}"
         )
 
@@ -268,7 +268,7 @@ class TestEditedFilesCap:
 
         manifest, _ = compact.build_manifest_with_count(sid, max_tokens=400)
 
-        assert "Files Edited" in manifest
+        assert "**Edited:**" in manifest
         edit_lines = [ln for ln in manifest.splitlines() if ln.startswith("- ✎")]
         assert len(edit_lines) <= 20, (
             f"edited-files section listed {len(edit_lines)} files (cap=20);\n{manifest}"
@@ -312,7 +312,7 @@ class TestEditedFilesCap:
 
         manifest, _ = compact.build_manifest_with_count(sid, max_tokens=400)
 
-        assert "Symbols Accessed" in manifest, (
+        assert "**Syms:**" in manifest, (
             f"Symbols Accessed crowded out by 30 long-named edited files;\n{manifest}"
         )
 
@@ -424,7 +424,7 @@ class TestUncommittedChangesCap:
                 f"_get_uncommitted_changes returned {len(result)} chars (cap=200): {result!r}"
             )
             # Token cost of the section including the header must be reasonable.
-            section = "### Uncommitted Changes\n" + "\n".join(f"  {ln}" for ln in lines)
+            section = "**Uncommitted:**\n" + "\n".join(f"  {ln}" for ln in lines)
             section_tokens = estimate_tokens(section)
             assert section_tokens <= 80, (
                 f"Uncommitted Changes section cost {section_tokens} tokens (expected ≤80)"

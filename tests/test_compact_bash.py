@@ -21,8 +21,8 @@ class TestEventCountIncludesBash:
 class TestManifestBashSection:
     def test_bash_section_emitted(self, tmp_data_dir, make_session):
         sid = "mb-1"
-        # A failed run goes to "Current Blockers"; a successful run goes to
-        # "Commands Run". Both must appear for this test to pass.
+        # A failed run goes to "**Blocked:**"; a successful run goes to
+        # "**Ran:**". Both must appear for this test to pass.
         make_session(
             sid,
             age_seconds=7200,
@@ -33,10 +33,10 @@ class TestManifestBashSection:
             },
         )
         m = compact.build_manifest(sid, max_tokens=600)
-        assert "Current Blockers" in m
+        assert "**Blocked:**" in m
         assert "pytest -v tests/" in m
         assert "exit 1" in m
-        assert "Commands Run" in m
+        assert "**Ran:**" in m
         assert "ruff check" in m
         # Cache ID appears in Commands Run for the successful run (short form).
         from token_goat import bash_cache
@@ -49,7 +49,7 @@ class TestManifestBashSection:
         make_session(sid, edits=1, bash_runs={"ls": (20, 0)})
         m = compact.build_manifest(sid, max_tokens=400)
         # Output too small to be useful — section omitted.
-        assert "Commands Run" not in m
+        assert "**Ran:**" not in m
 
     def test_only_bash_still_renders_manifest(self, tmp_data_dir, make_session):
         sid = "mb-3"
@@ -216,7 +216,7 @@ class TestCurrentBlockersSection:
             bash_runs={"pytest tests/": (8000, 1)},
         )
         m = compact.build_manifest(sid, max_tokens=400)
-        assert "Current Blockers" in m
+        assert "**Blocked:**" in m
         assert "pytest tests/" in m
         assert "exit 1" in m
 
@@ -230,7 +230,7 @@ class TestCurrentBlockersSection:
             bash_runs={"pytest tests/": (8000, 0)},
         )
         m = compact.build_manifest(sid, max_tokens=400)
-        assert "Current Blockers" not in m
+        assert "**Blocked:**" not in m
 
     def test_stale_failure_omits_blockers_header(self, tmp_data_dir, make_session):
         """A failure older than 60 minutes is not treated as an active blocker."""
@@ -249,7 +249,7 @@ class TestCurrentBlockersSection:
         object.__setattr__(entry, "ts", time.time() - 5400)
         session.save(cache)
         m = compact.build_manifest(sid, max_tokens=400)
-        assert "Current Blockers" not in m
+        assert "**Blocked:**" not in m
 
     def test_unknown_exit_code_not_treated_as_blocker(self, tmp_data_dir, make_session):
         """Commands with exit_code=None (unknown) are not surfaced as blockers."""
@@ -261,7 +261,7 @@ class TestCurrentBlockersSection:
             bash_runs={"cargo build": (8000, None)},
         )
         m = compact.build_manifest(sid, max_tokens=400)
-        assert "Current Blockers" not in m
+        assert "**Blocked:**" not in m
 
     def test_blockers_appear_before_edited_files(self, tmp_data_dir, make_session):
         """Current Blockers section must precede Files Edited in the manifest."""
@@ -285,10 +285,10 @@ class TestCurrentBlockersSection:
             truncated=False,
         )
         m = compact.build_manifest(sid, max_tokens=400)
-        assert "Current Blockers" in m
-        assert "Files Edited" in m
-        blockers_pos = m.index("Current Blockers")
-        edited_pos = m.index("Files Edited")
+        assert "**Blocked:**" in m
+        assert "**Edited:**" in m
+        blockers_pos = m.index("**Blocked:**")
+        edited_pos = m.index("**Edited:**")
         assert blockers_pos < edited_pos, (
             f"Expected 'Current Blockers' (pos {blockers_pos}) before "
             f"'Files Edited' (pos {edited_pos})"
@@ -304,7 +304,7 @@ class TestCurrentBlockersSection:
             bash_runs={"npm install": (50000, 0)},
         )
         m = compact.build_manifest(sid, max_tokens=400)
-        assert "Current Blockers" not in m
+        assert "**Blocked:**" not in m
 
     def test_multiple_failures_capped_at_three(self, tmp_data_dir, make_session):
         """At most 3 blocker entries are shown even when more commands failed."""
@@ -325,10 +325,10 @@ class TestCurrentBlockersSection:
         blocker_section_lines = []
         in_blockers = False
         for line in lines:
-            if line.startswith("### Current Blockers"):
+            if line.startswith("**Blocked:**"):
                 in_blockers = True
                 continue
-            if in_blockers and line.startswith("###"):
+            if in_blockers and line.startswith("**"):
                 break
             if in_blockers and line.startswith("- ✗"):
                 blocker_section_lines.append(line)
@@ -979,10 +979,10 @@ class TestFormatBashEntryInlineSnippet:
         lines = m.splitlines()
         in_commands_run = False
         for line in lines:
-            if line.startswith("### Commands Run"):
+            if line.startswith("**Ran:**"):
                 in_commands_run = True
                 continue
-            if in_commands_run and line.startswith("###"):
+            if in_commands_run and line.startswith("**"):
                 break
             if in_commands_run and line.startswith("  ") and line.strip():
                 raise AssertionError(
@@ -1020,6 +1020,6 @@ class TestFormatBashEntryInlineSnippet:
             bash_runs={"pytest tests/": (450, 1)},  # small but failing
         )
         m = compact.build_manifest(sid, max_tokens=800)
-        assert "Current Blockers" in m
+        assert "**Blocked:**" in m
         assert "pytest tests/" in m
         assert "exit 1" in m

@@ -19,6 +19,7 @@ __all__ = [
 ]
 
 import heapq
+import io
 import math
 import re
 import subprocess
@@ -1355,7 +1356,7 @@ def _render_what_worked_section(entries: list[object], now_ts: float) -> list[st
     """
     if not entries:
         return []
-    lines: list[str] = ["### What Worked"]
+    lines: list[str] = ["**Passed:**"]
     for entry in entries:
         raw_cmd = sanitize_log_str(getattr(entry, "cmd_preview", ""), max_len=200)
         cmd = raw_cmd[:57] + "..." if len(raw_cmd) > 60 else raw_cmd
@@ -2287,7 +2288,7 @@ def _render_tasks_section(tasks: list[dict[str, str]]) -> list[str]:
     if not active:
         return []
 
-    lines: list[str] = ["### TODOs"]
+    lines: list[str] = ["**TODOs:**"]
     shown = active[:_MAX_TODO_ENTRIES]
     for t in shown:
         subject = t["subject"]
@@ -2329,7 +2330,10 @@ def _render_section(
     """
     if not entries:
         return []
-    lines: list[str] = [f"### {header}"]
+    # Bold-label headers (starting with "**") are already fully formed; plain
+    # header strings get the markdown H3 prefix so legacy callers are unaffected.
+    hdr_line = header if header.startswith("**") else f"### {header}"
+    lines: list[str] = [hdr_line]
     for entry in entries:
         line = fmt(entry)
         if line:
@@ -2594,7 +2598,17 @@ def _render(cache: SessionCache, session_id: str, max_tokens: int) -> tuple[str,
     edited_keys_set = edited_keys  # already a set of normalized lower/forward-slash keys
     # Mature sessions (> 60 min) get 2 extra key-file slots: more context has
     # accumulated and the compaction LLM benefits from a broader file picture.
-    max_key_files = _MAX_FILES_READ + (2 if age_tier == "mature" else 0)
+    # Item #23: dynamically reduce max_files_read when there are many edited files —
+    # the Files Edited section already covers those paths, so the Key Files Read
+    # section has diminishing value and should yield budget to higher-signal sections.
+    _n_edited = len(edited_clean)
+    if _n_edited >= 10:
+        _dynamic_max_files = 4
+    elif _n_edited >= 5:
+        _dynamic_max_files = 6
+    else:
+        _dynamic_max_files = _MAX_FILES_READ
+    max_key_files = _dynamic_max_files + (2 if age_tier == "mature" else 0)
     top_files = heapq.nlargest(
         max_key_files,
         key_files_candidates,
@@ -2633,7 +2647,7 @@ def _render(cache: SessionCache, session_id: str, max_tokens: int) -> tuple[str,
     # Young sessions are included here too — a failure is critical regardless of age.
     now_ts_for_blockers = time.time()
     blocker_entries = _select_failed_bash_entries(raw_bash, now_ts_for_blockers)
-    blocker_lines = _render_section("Current Blockers", blocker_entries, _format_blocker_entry)
+    blocker_lines = _render_section("**Blocked:**", blocker_entries, _format_blocker_entry)
 
     # ── 0a. Active Skills — load-bearing protocol content ───────────────────
     # Built early so it sits high in the inverted-pyramid order: a loaded skill
@@ -2642,7 +2656,7 @@ def _render(cache: SessionCache, session_id: str, max_tokens: int) -> tuple[str,
     # loaded skill with a recall hint tells the compaction LLM "preserve these"
     # and gives the post-compact agent an exact command to re-fetch the body.
     skill_entries = _select_top_skill_entries(raw_skills)
-    skill_lines = _render_section("Active Skills", skill_entries, _format_skill_entry)
+    skill_lines = _render_section("**Skills:**", skill_entries, _format_skill_entry)
     if skill_entries:
         overflow_skills = len(raw_skills) - len(skill_entries)
         if overflow_skills > 0:
@@ -2657,7 +2671,7 @@ def _render(cache: SessionCache, session_id: str, max_tokens: int) -> tuple[str,
     uncommitted_changes: str | None = _get_uncommitted_changes(cwd)
     uncommitted_lines: list[str] = []
     if uncommitted_changes:
-        uncommitted_lines.append("### Uncommitted Changes")
+        uncommitted_lines.append("**Uncommitted:**")
         for line in uncommitted_changes.splitlines():
             uncommitted_lines.append(f"  {line.rstrip()}")
 
@@ -2670,7 +2684,7 @@ def _render(cache: SessionCache, session_id: str, max_tokens: int) -> tuple[str,
     pending_diff_stat: str = _get_git_diff_stat_summary(cwd)
 
     if edited_clean:
-        edited_lines.append("### Files Edited")
+        edited_lines.append("**Edited:**")
         # Sort by edit count descending so the most-touched files appear first.
         sorted_edited = sorted(edited_clean.items(), key=_BY_EDIT_COUNT, reverse=True)
         shown_edited = sorted_edited[:_MAX_EDITED_FILES_SHOWN]
@@ -2682,6 +2696,7 @@ def _render(cache: SessionCache, session_id: str, max_tokens: int) -> tuple[str,
         # inline diff so the compaction LLM has the exact change without a
         # round-trip.  Only attempted when cwd is available.
         _single_file_diff_used = False
+        _inline_diffs_were_emitted = False  # Item #13: track for Pending Changes gate
         if len(edited_clean) == 1 and cwd:
             _only_path, _only_count = shown_edited[0]
             _whole_diff = _get_whole_repo_diff(cwd)
@@ -2690,6 +2705,7 @@ def _render(cache: SessionCache, session_id: str, max_tokens: int) -> tuple[str,
                 for _dl in _whole_diff.splitlines():
                     edited_lines.append(f"  {_dl}")
                 _single_file_diff_used = True
+                _inline_diffs_were_emitted = True
 
         if not _single_file_diff_used:
             # ── #7: per-file inline diffs for top 2 ──────────────────────────
@@ -2712,12 +2728,15 @@ def _render(cache: SessionCache, session_id: str, max_tokens: int) -> tuple[str,
                             edited_lines.append(f"  {_dl}")
                         _inlined_paths.add(_ip)
                         _inline_budget -= len(_idiff)
+                        _inline_diffs_were_emitted = True
 
             # Remaining files (not inlined) use the grouped directory format.
             remaining_shown = [item for item in shown_edited if item[0] not in _inlined_paths]
             if remaining_shown:
                 grouped_lines = _group_edited_by_dir(remaining_shown, project_root=cwd)
                 edited_lines.extend(grouped_lines)
+        else:
+            _inlined_paths = set()
 
         if overflow_edited > 0:
             edited_lines.append(f"- …+{overflow_edited} more edited")
@@ -2726,8 +2745,15 @@ def _render(cache: SessionCache, session_id: str, max_tokens: int) -> tuple[str,
         # Whole-repo stat placed immediately after Files Edited so the compaction
         # LLM sees the scope and magnitude of in-flight work alongside the list of
         # edited files.  Omitted entirely when there are no uncommitted changes.
-        if pending_diff_stat:
-            edited_lines.append("### Pending Changes")
+        # Item #13: skip when nearly all edited files already have inline diffs —
+        # the per-file diffs carry more information than the aggregate stat.
+        # "Nearly all" = at most one file without an inline diff.
+        _skip_pending = (
+            _inline_diffs_were_emitted
+            and len(_inlined_paths) >= len(edited_clean) - 1
+        )
+        if pending_diff_stat and not _skip_pending:
+            edited_lines.append("**Pending:**")
             for line in pending_diff_stat.splitlines():
                 edited_lines.append(f"  {line}")
 
@@ -2777,11 +2803,16 @@ def _render(cache: SessionCache, session_id: str, max_tokens: int) -> tuple[str,
     sym_formatted: list[str] = []
     for entry in files_with_symbols:
         ranked_symbols = _rank_symbols_by_recency(entry, now_for_scoring)
-        syms = [sanitize_log_str(s, max_len=80) for s in ranked_symbols[:_MAX_SYMBOLS_PER_FILE_ENTRY]]
-        overflow = len(ranked_symbols) - _MAX_SYMBOLS_PER_FILE_ENTRY
-        sym_str = ", ".join(syms) + (f" +{overflow}" if overflow > 0 else "")
+        # Item #11: dedup consecutive/repeated symbols before rendering (order-preserving).
+        _seen_syms: set[str] = set()
+        deduped_symbols = [s for s in ranked_symbols if not (_seen_syms.__contains__(s) or _seen_syms.add(s))]  # type: ignore[func-returns-value]
+        dupes_removed = len(ranked_symbols) - len(deduped_symbols)
+        syms = [sanitize_log_str(s, max_len=80) for s in deduped_symbols[:_MAX_SYMBOLS_PER_FILE_ENTRY]]
+        overflow = len(deduped_symbols) - _MAX_SYMBOLS_PER_FILE_ENTRY
+        dupe_note = f" (+{dupes_removed} dupes removed)" if dupes_removed >= 3 else ""
+        sym_str = ", ".join(syms) + (f" +{overflow}" if overflow > 0 else "") + dupe_note
         sym_formatted.append(f"- {_short_path(entry.rel_or_abs, project_root=cwd)} → {sym_str}")
-    sym_lines, sym_used = _render_budget_lines("### Symbols Accessed", sym_formatted, sym_budget)
+    sym_lines, sym_used = _render_budget_lines("**Syms:**", sym_formatted, sym_budget)
 
     # ── 3. Bash history — up to 15 % of remaining budget ─────────────────────
     # Young sessions (< 10 min) skip bash/web sections: few commands have run
@@ -2822,7 +2853,7 @@ def _render(cache: SessionCache, session_id: str, max_tokens: int) -> tuple[str,
         return total >= 600
 
     bash_lines, bash_used = _render_budget_lines(
-        "### Commands Run",
+        "**Ran:**",
         [_format_bash_entry(be, inline_snippet=_should_inline(be)) for be in bash_entries],
         bash_budget,
     )
@@ -2903,7 +2934,7 @@ def _render(cache: SessionCache, session_id: str, max_tokens: int) -> tuple[str,
     # entries.  Cold Outputs and Directory Scans keep min_lines=2 because a
     # single stale/empty-ish entry is genuinely noisy there.
     web_lines, web_used = _render_budget_lines(
-        "### Web Fetches",
+        "**Web:**",
         _group_web_entries_by_domain(web_entries) if web_entries else [],
         web_budget,
     )
@@ -2920,7 +2951,7 @@ def _render(cache: SessionCache, session_id: str, max_tokens: int) -> tuple[str,
     if _all_grep_zero and age_secs > 300:
         grep_entries = []
     grep_lines, grep_used = _render_budget_lines(
-        "### Patterns Searched",
+        "**Grep:**",
         [_format_grep_entry(ge) for ge in grep_entries],
         grep_budget,
     )
@@ -2963,7 +2994,7 @@ def _render(cache: SessionCache, session_id: str, max_tokens: int) -> tuple[str,
     included_top_files: list[object] = []
 
     if top_files:
-        header = "### Key Files Read"
+        header = "**Files:**"
         header_cost = _token_count(header)
         files_entries_for_section: list[str] = []
 
@@ -3093,7 +3124,13 @@ def _render(cache: SessionCache, session_id: str, max_tokens: int) -> tuple[str,
     ):
         sections = _strip_common_prefix_from_sections(sections, common_prefix)
 
-    result = "\n".join(sections).rstrip()
+    # Item #21: StringIO write-buffer assembly — avoids the N-object intermediate
+    # list copy that "\n".join() creates for the full manifest string.
+    _buf = io.StringIO()
+    for _sec_line in sections:
+        _buf.write(_sec_line)
+        _buf.write("\n")
+    result = _buf.getvalue().rstrip()
     token_count = estimate_tokens(result)
     _LOG.debug(
         "_render: manifest assembled for session=%s; ~%d tokens (budget=%d) "
