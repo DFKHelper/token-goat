@@ -83,10 +83,12 @@ def _reset_session_cache(session_id: str | None) -> None:
 _RECOVERY_MAX_FILES: int = 6  # floor
 _RECOVERY_MAX_BASH: int = 4  # floor
 _RECOVERY_MAX_WEB: int = 4  # floor
-_RECOVERY_TOTAL_ITEMS: int = 14  # global budget = sum of floors
+_RECOVERY_MAX_SKILL: int = 4  # floor — skills are the whole point of this hint after compaction
+_RECOVERY_TOTAL_ITEMS: int = 18  # global budget = sum of floors
 _RECOVERY_FILES_CEILING: int = 12
 _RECOVERY_BASH_CEILING: int = 10
 _RECOVERY_WEB_CEILING: int = 10
+_RECOVERY_SKILL_CEILING: int = 8
 # Minimum byte size before a cached output is worth listing in the recovery
 # hint.  Below this the dedup hint would not have fired anyway, and the line
 # the recovery hint costs in the budget would not be repaid.
@@ -94,39 +96,52 @@ _RECOVERY_MIN_BYTES: int = 400
 
 
 def _allocate_recovery_slots(
-    files_n: int, bash_n: int, web_n: int,
-) -> tuple[int, int, int]:
-    """Allocate recovery-hint slots across files / bash / web sections.
+    files_n: int, bash_n: int, web_n: int, skill_n: int = 0,
+) -> tuple[int, int, int, int]:
+    """Allocate recovery-hint slots across files / bash / web / skill sections.
 
     Two-pass greedy allocator:
 
     1. **Floor pass** — each section claims ``min(available, floor)``.  Sections
        with fewer candidates than their floor release the slack immediately.
     2. **Reallocation pass** — leftover budget (total minus floor pass) is
-       distributed greedily in priority order (Files → Bash → Web), each
-       section capped at its ceiling AND at its true item count.
+       distributed greedily in priority order (Skills → Files → Bash → Web),
+       each section capped at its ceiling AND at its true item count.  Skills
+       lead the priority order because they're the load-bearing protocol
+       content the feature exists to preserve — files/bash/web survive
+       compaction better than skill prose does.
 
-    Returns ``(files_keep, bash_keep, web_keep)`` — exact slice sizes to apply
-    to the candidate lists.  Sum is ``min(files_n + bash_n + web_n, total)``.
+    Returns ``(files_keep, bash_keep, web_keep, skill_keep)`` — exact slice
+    sizes.  Sum is ``min(files_n + bash_n + web_n + skill_n, total)``.
+
+    The *skill_n* parameter is kwarg-style for backwards compatibility with
+    callers that haven't yet been migrated; defaulting to 0 means a legacy
+    3-argument call still produces the original 3-section allocation
+    (skill_keep returned as 0).
     """
     files_keep = min(files_n, _RECOVERY_MAX_FILES)
     bash_keep = min(bash_n, _RECOVERY_MAX_BASH)
     web_keep = min(web_n, _RECOVERY_MAX_WEB)
+    skill_keep = min(skill_n, _RECOVERY_MAX_SKILL)
 
-    remaining = _RECOVERY_TOTAL_ITEMS - (files_keep + bash_keep + web_keep)
+    remaining = _RECOVERY_TOTAL_ITEMS - (files_keep + bash_keep + web_keep + skill_keep)
     if remaining <= 0:
-        return files_keep, bash_keep, web_keep
+        return files_keep, bash_keep, web_keep, skill_keep
 
-    # Priority-ordered greedy expansion: files first (most reusable signal),
-    # then bash (re-runnable evidence), then web (rarest re-fetch path).
+    # Priority-ordered greedy expansion: skills first (whole-point of the
+    # feature), then files (most reusable signal), then bash (re-runnable
+    # evidence), then web (rarest re-fetch path).
     for current, total, ceiling in (
+        ("skill", skill_n, _RECOVERY_SKILL_CEILING),
         ("files", files_n, _RECOVERY_FILES_CEILING),
         ("bash", bash_n, _RECOVERY_BASH_CEILING),
         ("web", web_n, _RECOVERY_WEB_CEILING),
     ):
         if remaining <= 0:
             break
-        kept = {"files": files_keep, "bash": bash_keep, "web": web_keep}[current]
+        kept = {
+            "files": files_keep, "bash": bash_keep, "web": web_keep, "skill": skill_keep,
+        }[current]
         headroom = min(ceiling, total) - kept
         if headroom <= 0:
             continue
@@ -135,11 +150,13 @@ def _allocate_recovery_slots(
             files_keep += grant
         elif current == "bash":
             bash_keep += grant
-        else:
+        elif current == "web":
             web_keep += grant
+        else:
+            skill_keep += grant
         remaining -= grant
 
-    return files_keep, bash_keep, web_keep
+    return files_keep, bash_keep, web_keep, skill_keep
 
 
 def _build_recovery_hint(session_id: str) -> str | None:
@@ -184,15 +201,42 @@ def _build_recovery_hint(session_id: str) -> str | None:
         (we for we in cache.web_history.values() if we.body_bytes >= _RECOVERY_MIN_BYTES),
         key=lambda we: we.ts, reverse=True,
     ) if cache.web_history else []
+    # Skill entries: every loaded skill is high-signal so no min-bytes filter.
+    skill_hist = getattr(cache, "skill_history", None) or {}
+    skill_all = (
+        sorted(skill_hist.values(), key=lambda se: getattr(se, "ts", 0.0), reverse=True)
+        if skill_hist else []
+    )
 
-    files_n, bash_n, web_n = _allocate_recovery_slots(
-        len(files_all), len(bash_all), len(web_all),
+    files_n, bash_n, web_n, skill_n = _allocate_recovery_slots(
+        len(files_all), len(bash_all), len(web_all), len(skill_all),
     )
     files_keep = files_all[:files_n]
     bash_entries = bash_all[:bash_n]
     web_entries = web_all[:web_n]
+    skill_entries = skill_all[:skill_n]
 
     sections: list[str] = []
+
+    # 0. Loaded skills — first because they're the load-bearing protocol prose
+    #    the compaction LLM most aggressively trims.  Showing them up-top with
+    #    the recall command tells the post-compact agent exactly what was
+    #    active and how to retrieve the full body.
+    if skill_entries:
+        lines = ["**Skills**:"]
+        for se in skill_entries:
+            name = getattr(se, "skill_name", "?")
+            body_bytes = int(getattr(se, "body_bytes", 0))
+            run_count = int(getattr(se, "run_count", 1))
+            count_str = f" ×{run_count}" if run_count > 1 else ""
+            lines.append(
+                f"- {name}{count_str} ({_humanize_bytes(body_bytes)}) — "
+                f"`token-goat skill-body {name}`"
+            )
+        dropped = len(skill_all) - len(skill_entries)
+        if dropped > 0:
+            lines.append(f"- +{dropped} more")
+        sections.append("\n".join(lines))
 
     # 1. Recently-touched files — the agent will likely want these back.
     if files_keep:
@@ -244,6 +288,8 @@ def _build_recovery_hint(session_id: str) -> str | None:
     parts = ["## Post-Compact Recovery"]
     # Name the recall command only for sections that actually appear.
     recall = []
+    if skill_entries:
+        recall.append("`token-goat skill-body <name>`")
     if bash_entries:
         recall.append("`token-goat bash-output <id>`")
     if web_entries:

@@ -859,6 +859,16 @@ def _hooks_block(binary: str | None = None) -> dict[str, list[_HookMatcherEntry]
                     }
                 ],
             },
+            {
+                "matcher": "Skill",
+                "hooks": [
+                    {
+                        "type": "command",
+                        "command": runner("hook", "post-skill"),
+                        "timeout": 3000,
+                    }
+                ],
+            },
         ],
         "PreCompact": [
             {

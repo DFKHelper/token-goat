@@ -181,6 +181,11 @@ _COLD_OUTPUT_AGE_SECS: Final[int] = 1_800  # 30 minutes
 # Maximum cold bash entries surfaced in the "Cold Outputs" manifest section.
 _MAX_COLD_OUTPUTS: Final[int] = 4
 
+# Maximum skills surfaced in the "Active Skills" manifest section.  Sessions
+# load a handful of skills at most (Ralph + improve + a few specialist skills);
+# 6 covers any realistic session without crowding higher-priority blockers.
+_MAX_ACTIVE_SKILLS: Final[int] = 6
+
 # TTL for the process-level git diff stat summary cache (seconds).
 # `_get_git_diff_stat_summary` runs two git subprocesses per call; caching
 # avoids repeated invocations when build_manifest is called in quick succession
@@ -1262,6 +1267,46 @@ def _group_web_entries_by_domain(entries: list[object]) -> list[str]:
     return result
 
 
+def _select_top_skill_entries(skill_history: object) -> list[object]:
+    """Pick up to :data:`_MAX_ACTIVE_SKILLS` skill loads worth surfacing.
+
+    Returns the most-recently-loaded skills, newest first.  Sessions typically
+    load a handful of skills total so this is a thin wrapper over a sort —
+    unlike bash/web/grep, no size filter applies (every loaded skill is by
+    definition load-bearing context for the agent).
+    """
+    if not isinstance(skill_history, dict) or not skill_history:
+        return []
+    return heapq.nlargest(
+        _MAX_ACTIVE_SKILLS,
+        skill_history.values(),
+        key=lambda e: getattr(e, "ts", 0.0),
+    )
+
+
+def _format_skill_entry(entry: object) -> str:
+    """Render one :class:`session.SkillEntry` as a single manifest line.
+
+    Format::
+
+        - 🧠 ralph  ×3  (28KB)  recall: `token-goat skill-body ralph`
+        - 🧠 plugin:improve  (12KB)  recall: `token-goat skill-body plugin:improve`
+
+    The ``×N`` annotation appears when the skill was loaded more than once
+    in the session; the recall hint points the post-compact agent at the
+    cached body so the full prose can be retrieved without re-invoking the
+    skill (which would replay any side effects).
+    """
+    name = sanitize_log_str(getattr(entry, "skill_name", ""), max_len=80)
+    body_bytes = int(getattr(entry, "body_bytes", 0))
+    run_count = int(getattr(entry, "run_count", 1))
+    truncated = bool(getattr(entry, "truncated", False))
+    count_str = f"  ×{run_count}" if run_count > 1 else ""
+    size_str = _humanize_bytes(body_bytes)
+    trunc_marker = "*" if truncated else ""
+    return f"- 🧠 {name}{count_str}  ({size_str}{trunc_marker})  recall: `token-goat skill-body {name}`"
+
+
 def _select_top_glob_entries(glob_history: object) -> list[object]:
     """Pick up to :data:`_MAX_GLOB_ENTRIES` glob scans worth surfacing in the manifest.
 
@@ -1724,6 +1769,7 @@ def event_count(session_id: str) -> int:
         + len(cache.greps)
         + len(cache.edited_files)
         + len(getattr(cache, "bash_history", {}) or {})
+        + len(getattr(cache, "skill_history", {}) or {})
     )
 
 
@@ -1980,10 +2026,15 @@ def _render(cache: SessionCache, session_id: str, max_tokens: int) -> tuple[str,
     raw_bash: dict = _raw_bash if isinstance(_raw_bash, dict) else {}
     _raw_web = getattr(cache, "web_history", None)
     raw_web: dict = _raw_web if isinstance(_raw_web, dict) else {}
-    if not edited_clean and not files_clean and not raw_greps and not raw_bash and not raw_web:
+    _raw_skills = getattr(cache, "skill_history", None)
+    raw_skills: dict = _raw_skills if isinstance(_raw_skills, dict) else {}
+    if (
+        not edited_clean and not files_clean and not raw_greps
+        and not raw_bash and not raw_web and not raw_skills
+    ):
         _LOG.info(
             "_render: manifest suppressed for session=%s "
-            "(no activity tracked: edited=0 files_read=0 greps=0 bash=0)",
+            "(no activity tracked: edited=0 files_read=0 greps=0 bash=0 skills=0)",
             session_id[:8],
         )
         return "", 0
@@ -2092,6 +2143,19 @@ def _render(cache: SessionCache, session_id: str, max_tokens: int) -> tuple[str,
     blocker_entries = _select_failed_bash_entries(raw_bash, now_ts_for_blockers)
     blocker_lines = _render_section("Current Blockers", blocker_entries, _format_blocker_entry)
 
+    # ── 0a. Active Skills — load-bearing protocol content ───────────────────
+    # Built early so it sits high in the inverted-pyramid order: a loaded skill
+    # (Ralph, /improve, etc.) is multi-thousand-token prose that the compaction
+    # LLM aggressively summarises, dropping load-bearing rules.  Listing every
+    # loaded skill with a recall hint tells the compaction LLM "preserve these"
+    # and gives the post-compact agent an exact command to re-fetch the body.
+    skill_entries = _select_top_skill_entries(raw_skills)
+    skill_lines = _render_section("Active Skills", skill_entries, _format_skill_entry)
+    if skill_entries:
+        overflow_skills = len(raw_skills) - len(skill_entries)
+        if overflow_skills > 0:
+            skill_lines.append(f"- …+{overflow_skills} more loaded")
+
     # ── 0b. Uncommitted Changes — git diff --stat + status --short ───────────
     # Ground-truth picture of what's on disk regardless of which tool made the
     # changes.  Shown before Files Edited so the compaction LLM sees both the
@@ -2173,7 +2237,9 @@ def _render(cache: SessionCache, session_id: str, max_tokens: int) -> tuple[str,
     # rarely consume more than ~15 tokens, but we count them to keep the budget
     # accurate.  The uncommitted-changes section is additional fixed context and
     # is not counted against any per-section proportional budget.
-    fixed_text = "\n".join(header_lines + blocker_lines + uncommitted_lines + edited_lines + stale_lines)
+    fixed_text = "\n".join(
+        header_lines + blocker_lines + skill_lines + uncommitted_lines + edited_lines + stale_lines
+    )
     fixed_tokens = _token_count(fixed_text)
     sec_budgets = _section_budgets(max_tokens, fixed_tokens)
     _LOG.debug(
@@ -2360,6 +2426,7 @@ def _render(cache: SessionCache, session_id: str, max_tokens: int) -> tuple[str,
     has_read = bool(included_top_files or sym_lines)
     has_stale = bool(stale_read_files)
     has_cold = bool(cold_outputs)
+    has_skill = bool(skill_lines)
     legend_parts = []
     if has_edit:
         legend_parts.append("edited=✎")
@@ -2369,6 +2436,8 @@ def _render(cache: SessionCache, session_id: str, max_tokens: int) -> tuple[str,
         legend_parts.append("stale=⚠")
     if has_cold:
         legend_parts.append("cold=❄")
+    if has_skill:
+        legend_parts.append("skill=🧠")
 
     # Assemble the final manifest in inverted-pyramid order: most critical first
     # so that if the manifest is truncated mid-token the surviving content is
@@ -2384,6 +2453,7 @@ def _render(cache: SessionCache, session_id: str, max_tokens: int) -> tuple[str,
     sections: list[str] = (
         header_lines
         + blocker_lines
+        + skill_lines
         + uncommitted_lines
         + edited_lines
         + stale_lines

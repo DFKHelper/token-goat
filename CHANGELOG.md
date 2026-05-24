@@ -4,6 +4,20 @@ All notable changes to Token-Goat are documented in this file. Format follows Ke
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-05-23
+
+### Added
+
+- **Skill preservation through compaction.** Every `PostToolUse(Skill)` invocation captures the loaded skill body to a persistent on-disk cache (`data_dir() / "skills"`, 5 MB LRU-evicted) keyed by `(session, skill_name, content_sha)`. The compaction manifest gains an `### Active Skills` section listing every loaded skill with a `token-goat skill-body <name>` recall hint, and the post-compact recovery hint surfaces the same list under `**Skills**:`. Solves the "I forgot parts of the skill after compaction" problem — load-bearing prose (Ralph's DoD gates, /improve's iteration sequence, any multi-thousand-token protocol skill) is recoverable without re-invoking the skill, which would replay any side effects and pollute the conversation with a fresh tool-result block. Configurable via `config.toml [skill_preservation]` (`enabled`, `max_cache_bytes`) or disabled at runtime via `TOKEN_GOAT_SKILL_PRESERVATION=0`.
+
+- **`token-goat skill-body <name>`** — retrieve a cached skill body by name. Defaults to a head+tail view for large bodies; pass `--full` for everything, or narrow with `--head N`, `--tail N`, `--grep PATTERN`. Falls back to reading the original `~/.claude/skills/<name>/SKILL.md` (or plugin-path equivalent) when the cache entry has been evicted but the source path was recorded.
+
+- **`token-goat skill-history`** — list cached skill bodies (newest first) with their IDs, byte sizes, ages, and skill names.
+
+- **Skill marker (🧠) in the compaction manifest legend** — joins `edited=✎`, `read=→`, `stale=⚠`, `cold=❄` so the compaction LLM has a stable glyph vocabulary for every section type.
+
+- **4-section recovery hint allocator.** `_allocate_recovery_slots` now distributes 18 total slots across Files / Bash / Web / Skills with skill loads taking priority in the greedy expansion pass (they're the load-bearing protocol prose the feature exists to preserve — files/bash/web survive compaction better than skill bodies do).
+
 ## [0.7.0] - 2026-05-20
 
 ### Added

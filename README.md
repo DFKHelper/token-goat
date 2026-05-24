@@ -49,6 +49,7 @@ The fastest way to reduce Claude Code token costs is fixing these four, not writ
 | Agent re-reads a file edited mid-session | Unified diff injected as a hint — full Read avoided when the diff covers the change |
 | Compaction forgets which files were edited | Structured session manifest injected before compact |
 | Same files re-read from scratch after `/compact` | Recovery hint at SessionStart lists cached snapshot + bash + WebFetch IDs |
+| Loaded skill body (Ralph DoD, /improve sequence) summarised away by compaction | `### Active Skills` manifest section + `**Skills**:` recovery block list every loaded skill; full body recoverable via `token-goat skill-body <name>` without re-invoking |
 | Full file read for one function or section | `token-goat read file::symbol`, about 85% smaller |
 | `pytest` dumps 150 PASSED lines + dots + tracebacks | Failures-first view, 80 to 97% smaller |
 | `npm install` floods deprecation warnings + spinner | Errors kept; warnings collapsed by package, ~90% smaller |
@@ -253,6 +254,8 @@ Manual paths:
 | `token-goat compress --cmd '<command>'` | Preview what the Bash compression hook would do to any command — runs it, applies the matching filter, and prints the compressed view. |
 | `token-goat web-output <id>` | Retrieve a cached WebFetch response body by ID — same head+tail default, `--full`, and `--head`/`--tail`/`--grep` slicers as `bash-output`. |
 | `token-goat web-history` | List cached WebFetch responses (newest first) with their IDs, byte sizes, status codes, and URL previews. |
+| `token-goat skill-body <name>` | Retrieve a cached Skill body by name without re-invoking the skill (which would replay side effects). Same head+tail default, `--full`, and `--head`/`--tail`/`--grep` slicers as `bash-output`. |
+| `token-goat skill-history` | List cached Skill bodies (newest first) with their IDs, byte sizes, truncation status, and skill names. |
 | `token-goat compact-hint --session-id <id>` | Inspect the compaction manifest for a session |
 | `token-goat install` | Wire up hooks and autostart. `--dry-run` previews the changes, `--verify` audits an existing install. |
 | `token-goat doctor` | Confirm everything is wired correctly |
@@ -269,7 +272,7 @@ Missed lookups recover surgically: `symbol` auto-redirects to a single high-conf
 
 | Path | What |
 |------|------|
-| `~/.claude/settings.json` | Hook entries for `SessionStart`, `PreToolUse` (Read/Grep/Bash, Drive/WebFetch), `PostToolUse` (Edit/Write/MultiEdit, Read/Grep/Glob, Bash, WebFetch), and `PreCompact`. Plus a `Bash(token-goat:*)` permission allowlist entry. Existing hooks are preserved; a timestamped `.bak` is written before any change. |
+| `~/.claude/settings.json` | Hook entries for `SessionStart`, `PreToolUse` (Read/Grep/Bash, Drive/WebFetch), `PostToolUse` (Edit/Write/MultiEdit, Read/Grep/Glob, Bash, WebFetch, Skill), and `PreCompact`. Plus a `Bash(token-goat:*)` permission allowlist entry. Existing hooks are preserved; a timestamped `.bak` is written before any change. |
 | `~/.claude/CLAUDE.md` | A delimited block (`<!-- token-goat-begin -->` … `<!-- token-goat-end -->`) telling the agent to prefer `token-goat read` / `symbol` / `section` over `Read` / `Grep`. Any existing content is preserved. |
 | `~/.claude/skills/token-goat/SKILL.md` | The token-goat skill — the same routing guidance in skill form. |
 
@@ -299,7 +302,7 @@ The autostart command is `pythonw -m token_goat.cli worker --daemon` from Token-
 | Linux / WSL | `~/.local/share/token-goat/` |
 | macOS | `~/Library/Application Support/dfk-helper/token-goat/` |
 
-Contains the symbol index (`global.db`, per-project `.db` files), session cache, shrunken-image cache, embedding model (~130 MB, downloaded on the first `semantic` call), logs, locks, and the dirty-file queue. Nothing outside this directory and `~/.claude/` is written.
+Contains the symbol index (`global.db`, per-project `.db` files), session cache, shrunken-image cache, cached skill bodies (5 MB cap, LRU-evicted), embedding model (~130 MB, downloaded on the first `semantic` call), logs, locks, and the dirty-file queue. Nothing outside this directory and `~/.claude/` is written.
 
 **With `--codex`** (Codex CLI integration)
 
