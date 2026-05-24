@@ -756,12 +756,32 @@ def _get_rendered_summary(
     return rendered, False
 
 
+def _build_compact_file_summary(ranked: list[tuple[str, _FileInfo]], total: int) -> str:
+    """Return the 1-line file-list preamble used when compact mode suppresses the full list.
+
+    Format: ``"N files indexed. Top modules: a.py, b.py, c.py (+M more)\\n"``
+
+    *ranked* is the full PageRank-sorted list; we take the top 3 basenames.
+    *total* is the total map-worthy file count (== len(ranked)).
+    """
+    import os  # noqa: PLC0415
+
+    top3 = [os.path.basename(rel) for rel, _ in ranked[:3]]
+    rest = total - len(top3)
+    modules_str = ", ".join(top3)
+    if rest > 0:
+        modules_str += f" (+{rest} more)"
+    return f"{total} files indexed. Top modules: {modules_str}\n"
+
+
 def build_map(
     project: Project,
     *,
     budget_tokens: int = 4000,
     include_unranked_tail: bool = True,
     compact: bool | None = None,
+    full: bool = False,
+    compact_file_threshold: int | None = None,
 ) -> str:
     """Build the repo map text under the token budget.
 
@@ -779,6 +799,16 @@ def build_map(
       - ``True``: always one line per file.
       - ``False``: always show full symbol detail (caller takes responsibility
         for budget — useful when piping into a downstream summarizer).
+
+    ``full``: when ``True``, overrides the compact-mode file-list truncation
+    and always emits the full per-file list even when the project has more
+    files than ``compact_file_threshold``.
+
+    ``compact_file_threshold``: when compact mode is active AND the number of
+    map-worthy files exceeds this value, the per-file list preamble is replaced
+    with a 1-line summary (``"N files indexed. Top modules: …"``).  Callers
+    may pass this explicitly; if ``None``, the value is read from the
+    token-goat config (default 50).  Passing 0 disables the truncation.
     """
     t0 = time.monotonic()
     data = _load_and_rank(project)
@@ -790,6 +820,11 @@ def build_map(
 
     # Resolve compact mode: explicit caller wins, else auto-engage on tight budget.
     use_compact = compact if compact is not None else budget_tokens < _AUTO_COMPACT_BUDGET
+
+    # Resolve the compact-file-list threshold.
+    if compact_file_threshold is None:
+        from . import config as _cfg  # noqa: PLC0415
+        compact_file_threshold = _cfg.load().repomap.compact_file_threshold
 
     lang_set = sorted({info["language"] for info in data.files.values()})
     # Header: project name + (file count, langs). No "f" suffix — the count
@@ -807,30 +842,47 @@ def build_map(
     # Collect new summaries that need to be written back to the cache
     cache_writes: list[tuple[str, float, int, str]] = []
 
-    for rel, info in data.ranked:
-        if used >= budget_tokens:
-            break
+    # When compact mode is active and the project has more files than the
+    # threshold (and --full was not requested), replace the full per-file list
+    # with a concise 1-line summary and go straight to the symbol clusters
+    # (which are emitted by the caller via the standard per-file loop below).
+    # The summary line itself counts against the token budget.
+    use_summary_line = (
+        use_compact
+        and not full
+        and compact_file_threshold > 0
+        and len(data.ranked) > compact_file_threshold
+    )
 
-        rendered, is_hit = _get_rendered_summary(
-            rel, info, data, cache_writes, compact=use_compact,
-        )
-        if is_hit:
-            cache_hits += 1
-        else:
-            cache_misses += 1
+    if use_summary_line:
+        summary_line = _build_compact_file_summary(data.ranked, len(data.ranked))
+        out.append(summary_line)
+        used += estimate_tokens(summary_line)
+    else:
+        for rel, info in data.ranked:
+            if used >= budget_tokens:
+                break
 
-        rendered_tokens = estimate_tokens(rendered)
-        if used + rendered_tokens > budget_tokens:
-            break
-        out.append(rendered)
-        used += rendered_tokens
-        included += 1
+            rendered, is_hit = _get_rendered_summary(
+                rel, info, data, cache_writes, compact=use_compact,
+            )
+            if is_hit:
+                cache_hits += 1
+            else:
+                cache_misses += 1
 
-    if include_unranked_tail and included < len(data.ranked):
-        omitted = len(data.ranked) - included
-        # Tail marker: just the count — the model needs to know N were omitted,
-        # not what the budget was.
-        out.append(f"+{omitted} more\n")
+            rendered_tokens = estimate_tokens(rendered)
+            if used + rendered_tokens > budget_tokens:
+                break
+            out.append(rendered)
+            used += rendered_tokens
+            included += 1
+
+        if include_unranked_tail and included < len(data.ranked):
+            omitted = len(data.ranked) - included
+            # Tail marker: just the count — the model needs to know N were omitted,
+            # not what the budget was.
+            out.append(f"+{omitted} more\n")
 
     # Persist new cache entries (best-effort; failure must not affect output)
     if cache_writes:
@@ -844,13 +896,14 @@ def build_map(
     elapsed = time.monotonic() - t0
     _LOG.debug(
         "repomap: built map for %s: %d/%d files included (budget ~%d tokens), "
-        "cache hits=%d misses=%d, dur=%.3fs",
+        "cache hits=%d misses=%d summary_line=%s dur=%.3fs",
         project.root.name,
         included,
         len(data.files),
         budget_tokens,
         cache_hits,
         cache_misses,
+        use_summary_line,
         elapsed,
     )
     return "".join(out)

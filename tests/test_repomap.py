@@ -598,3 +598,168 @@ def test_build_map_density_chars_per_file_bound(tmp_path, tmp_data_dir, make_pro
         assert len(line) <= 80, (
             f"compact file line exceeds 80 chars ({len(line)}): {line!r}"
         )
+
+
+# ---------------------------------------------------------------------------
+# Compact file-list preamble truncation (item 6 — 2026-05-24 design plan)
+# ---------------------------------------------------------------------------
+
+def _make_synthetic_project(tmp_path, tmp_data_dir, make_project, n_files: int):
+    """Create and index a synthetic project with *n_files* Python source files.
+
+    Each file is padded to clear the ``_is_map_worthy`` threshold
+    (approx_lines = size // 50 >= 4, so each file needs >= 200 bytes).
+    Returns the indexed ``Project``.
+    """
+    from token_goat.parser import index_project
+
+    proj_root = tmp_path / f"synth_{n_files}"
+    src = proj_root / "src"
+    src.mkdir(parents=True)
+    pad = "# padding line to clear _MIN_DISPLAY_LINES threshold\n" * 6
+    for i in range(n_files):
+        (src / f"mod_{i:03d}.py").write_text(
+            f"{pad}"
+            f"def fn_{i}_a():\n    pass\n\n"
+            f"def fn_{i}_b():\n    pass\n\n"
+            f"class Cls_{i}:\n    pass\n",
+        )
+    proj = make_project(proj_root)
+    index_project(proj, full=True)
+    return proj
+
+
+def test_compact_under_threshold_emits_full_list(tmp_path, tmp_data_dir, make_project):
+    """30 files + --compact: under the default threshold of 50 — full file list emitted."""
+    proj = _make_synthetic_project(tmp_path, tmp_data_dir, make_project, 30)
+
+    # compact_file_threshold=50 (default): 30 < 50, so full list is expected.
+    text = repomap.build_map(
+        proj,
+        budget_tokens=10000,
+        compact=True,
+        compact_file_threshold=50,
+    )
+
+    # All 30 files should appear as individual file-entry lines (each has [python,).
+    file_lines = [line for line in text.splitlines() if "[python," in line]
+    assert len(file_lines) == 30, (
+        f"expected 30 file lines under threshold, got {len(file_lines)}"
+    )
+    # No summary line should be present.
+    assert "files indexed. Top modules:" not in text, (
+        "summary line must not appear when file count is under threshold"
+    )
+
+
+def test_compact_over_threshold_emits_summary_line(tmp_path, tmp_data_dir, make_project):
+    """80 files + --compact: over the default threshold — 1-line summary, not per-file list."""
+    proj = _make_synthetic_project(tmp_path, tmp_data_dir, make_project, 80)
+
+    text = repomap.build_map(
+        proj,
+        budget_tokens=10000,
+        compact=True,
+        compact_file_threshold=50,
+    )
+
+    # Summary line must be present and contain the correct total count.
+    assert "80 files indexed. Top modules:" in text, (
+        f"expected '80 files indexed. Top modules:' in output; got:\n{text[:500]}"
+    )
+
+    # Top-3 module names must appear (they come from the PageRank head).
+    # We don't know the exact order, but at least 3 distinct basenames must be present.
+    # The summary format is: "80 files indexed. Top modules: a.py, b.py, c.py (+77 more)"
+    import re
+    m = re.search(r"Top modules: ([^\n]+)", text)
+    assert m is not None, "Top modules line not found"
+    modules_part = m.group(1)
+    # Count names before "(+N more)" — should be exactly 3 for 80-file project.
+    # Names are separated by ", "; strip trailing (+N more) if present.
+    names_raw = re.sub(r"\s*\(\+\d+ more\)", "", modules_part)
+    names = [n.strip() for n in names_raw.split(",") if n.strip()]
+    assert len(names) == 3, (
+        f"expected exactly 3 top module names in summary, got {len(names)}: {modules_part!r}"
+    )
+    # Each name must end in .py (our synthetic project has only .py files).
+    for name in names:
+        assert name.endswith(".py"), f"module name {name!r} does not end in .py"
+
+    # Individual per-file lines must NOT be present (summary replaced them).
+    file_lines = [line for line in text.splitlines() if "[python," in line]
+    assert len(file_lines) == 0, (
+        f"per-file lines must be absent when summary line is emitted; found {len(file_lines)}"
+    )
+
+    # "+N more" annotation must reflect the right remainder.
+    assert "(+77 more)" in text, (
+        f"expected '(+77 more)' in summary for 80-file project (80 - 3 = 77); got: {modules_part!r}"
+    )
+
+
+def test_compact_over_threshold_full_flag_restores_list(tmp_path, tmp_data_dir, make_project):
+    """80 files + --compact --full: full file list is restored despite being over threshold."""
+    proj = _make_synthetic_project(tmp_path, tmp_data_dir, make_project, 80)
+
+    text = repomap.build_map(
+        proj,
+        budget_tokens=10000,
+        compact=True,
+        full=True,
+        compact_file_threshold=50,
+    )
+
+    # Summary line must NOT be present.
+    assert "files indexed. Top modules:" not in text, (
+        "--full must suppress the summary line and restore the full file list"
+    )
+
+    # All 80 files should appear as individual file-entry lines.
+    file_lines = [line for line in text.splitlines() if "[python," in line]
+    assert len(file_lines) == 80, (
+        f"--full should restore all 80 per-file lines, got {len(file_lines)}"
+    )
+
+
+def test_compact_threshold_env_override(tmp_path, tmp_data_dir, make_project, monkeypatch):
+    """Threshold override via TOKEN_GOAT_REPOMAP_COMPACT_THRESHOLD env var is respected."""
+    proj = _make_synthetic_project(tmp_path, tmp_data_dir, make_project, 10)
+
+    # Set the threshold to 5 so that 10 files triggers the summary line.
+    monkeypatch.setenv("TOKEN_GOAT_REPOMAP_COMPACT_THRESHOLD", "5")
+
+    # Load config with the env override active, then pass the threshold explicitly
+    # to build_map (mirrors what cmd_map does via config.load()).
+    from token_goat import config as tg_config
+    cfg = tg_config.load()
+    assert cfg.repomap.compact_file_threshold == 5, (
+        f"env override should set threshold to 5, got {cfg.repomap.compact_file_threshold}"
+    )
+
+    text = repomap.build_map(
+        proj,
+        budget_tokens=10000,
+        compact=True,
+        compact_file_threshold=cfg.repomap.compact_file_threshold,
+    )
+
+    # 10 files > threshold of 5 → summary line expected.
+    assert "10 files indexed. Top modules:" in text, (
+        f"expected summary line with threshold=5 and 10 files; got:\n{text[:500]}"
+    )
+
+    # Also verify below-threshold: set threshold to 20 so 10 files does NOT trigger.
+    monkeypatch.setenv("TOKEN_GOAT_REPOMAP_COMPACT_THRESHOLD", "20")
+    cfg2 = tg_config.load()
+    assert cfg2.repomap.compact_file_threshold == 20
+
+    text2 = repomap.build_map(
+        proj,
+        budget_tokens=10000,
+        compact=True,
+        compact_file_threshold=cfg2.repomap.compact_file_threshold,
+    )
+    assert "files indexed. Top modules:" not in text2, (
+        "summary line must not appear when file count is under threshold=20"
+    )

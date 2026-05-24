@@ -33,6 +33,7 @@ _ENV_SKILL_PRESERVATION: Final[str] = "TOKEN_GOAT_SKILL_PRESERVATION"  # set to 
 _ENV_PREFER_AVIF: Final[str] = "TOKEN_GOAT_PREFER_AVIF"  # set to "0"/"false"/"no"/"off" to force JPEG/WebP
 _ENV_CURATOR: Final[str] = "TOKEN_GOAT_CURATOR"  # set to "0"/"false"/"no"/"off" to disable
 _ENV_HINT_BUDGET: Final[str] = "TOKEN_GOAT_HINT_BUDGET"  # set to "0"/"false"/"no"/"off" to disable
+_ENV_REPOMAP_COMPACT_THRESHOLD: Final[str] = "TOKEN_GOAT_REPOMAP_COMPACT_THRESHOLD"  # integer override
 
 CONFIG_SCHEMA_VERSION: Final[int] = 1
 
@@ -97,6 +98,12 @@ class _HintBudgetToml(TypedDict, total=False):
     max_index_only_per_session: int
 
 
+class _RepomapToml(TypedDict, total=False):
+    """Expected shape of the [repomap] TOML section."""
+
+    compact_file_threshold: int
+
+
 class _ConfigToml(TypedDict, total=False):
     """Expected shape of the token-goat config TOML file."""
 
@@ -108,6 +115,7 @@ class _ConfigToml(TypedDict, total=False):
     image_shrink: _ImageShrinkToml
     curator: _CuratorToml
     hint_budget: _HintBudgetToml
+    repomap: _RepomapToml
 
 
 @dataclass
@@ -334,6 +342,28 @@ class ImageShrinkConfig:
 
 
 @dataclass
+class RepomapConfig:
+    """Configuration for the repo-map feature.
+
+    Controls how ``token-goat map --compact`` renders the file-list preamble
+    when the project has many files.  When ``compact`` mode is active AND the
+    number of map-worthy files exceeds *compact_file_threshold*, the full
+    per-file ranked list is replaced with a single summary line
+    (``"N files indexed. Top modules: a.py, b.py, c.py (+M more)"``).
+
+    The full list is always available via ``--full`` regardless of this setting.
+    Override at runtime by setting ``TOKEN_GOAT_REPOMAP_COMPACT_THRESHOLD=<n>``.
+
+    Attributes:
+        compact_file_threshold: File count above which compact mode suppresses
+            the per-file list preamble.  Default 50.  Set to 0 to disable
+            (always emit the full list even in compact mode).
+    """
+
+    compact_file_threshold: int = 50
+
+
+@dataclass
 class Config:
     """Top-level token-goat configuration.
 
@@ -349,6 +379,7 @@ class Config:
     image_shrink: ImageShrinkConfig = field(default_factory=ImageShrinkConfig)
     curator: CuratorConfig = field(default_factory=CuratorConfig)
     hint_budget: HintBudgetConfig = field(default_factory=HintBudgetConfig)
+    repomap: RepomapConfig = field(default_factory=RepomapConfig)
 
 
 # ---------------------------------------------------------------------------
@@ -618,6 +649,21 @@ def load() -> Config:
         )
         hb.enabled = False
 
+    rm_raw: _RepomapToml = cast("_RepomapToml", raw.get("repomap", {}))
+    rm = RepomapConfig(
+        compact_file_threshold=_validated_int(
+            rm_raw.get("compact_file_threshold", 50),
+            50,
+            0,
+            100_000,
+            "repomap.compact_file_threshold",
+        ),
+    )
+    env_rm_threshold = os.environ.get(_ENV_REPOMAP_COMPACT_THRESHOLD, "").strip()
+    if env_rm_threshold:
+        parsed_threshold = _validated_int(env_rm_threshold, 50, 0, 100_000, "repomap.compact_file_threshold(env)")
+        rm.compact_file_threshold = parsed_threshold
+
     _LOG.debug(
         "config resolved: compact_assist enabled=%s triggers=%s min_events=%d max_tokens=%d; "
         "bash_compress enabled=%s disabled_filters=%s max_lines=%d max_bytes=%d timeout=%d; "
@@ -625,7 +671,8 @@ def load() -> Config:
         "skill_preservation enabled=%s max_cache_bytes=%d; "
         "image_shrink prefer_avif=%s avif_quality=%d jpeg_quality=%d max_image_pixels=%d; "
         "curator enabled=%s min_samples=%d threshold_pct=%d; "
-        "hint_budget enabled=%s max=%d max_structured=%d max_index_only=%d",
+        "hint_budget enabled=%s max=%d max_structured=%d max_index_only=%d; "
+        "repomap compact_file_threshold=%d",
         ca.enabled,
         ca.triggers,
         ca.min_events,
@@ -649,10 +696,11 @@ def load() -> Config:
         hb.max_per_session,
         hb.max_structured_per_session,
         hb.max_index_only_per_session,
+        rm.compact_file_threshold,
     )
     return Config(
         compact_assist=ca, bash_compress=bc, session_brief=sb, skill_preservation=sp,
-        image_shrink=is_cfg, curator=cur, hint_budget=hb,
+        image_shrink=is_cfg, curator=cur, hint_budget=hb, repomap=rm,
     )
 
 
@@ -707,6 +755,9 @@ def save(config: Config) -> None:
             "max_per_session": hb.max_per_session,
             "max_structured_per_session": hb.max_structured_per_session,
             "max_index_only_per_session": hb.max_index_only_per_session,
+        },
+        "repomap": {
+            "compact_file_threshold": config.repomap.compact_file_threshold,
         },
     }
     try:
