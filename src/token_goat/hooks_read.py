@@ -220,10 +220,21 @@ def _try_shrink_image(
 
     try:
         src_path = Path(file_path)
-        shrink_result = image_shrink.shrink(src_path)
-        if shrink_result is None:
+        shrunken = image_shrink.shrink(src_path)
+        if shrunken is None:
             return None
-        shrunken, img_summary = shrink_result
+        # Compute alt-text summary by reopening the shrunken file — keeps
+        # shrink()'s return signature simple (Path|None) for the dozens of
+        # callers and tests that monkeypatch it. Fail-soft: empty summary
+        # on PIL/IO error so the redirect still fires.
+        img_summary = ""
+        try:
+            from PIL import Image as _PILImage  # noqa: PLC0415
+
+            with _PILImage.open(shrunken) as _img:
+                img_summary = image_shrink.extract_image_summary(src_path, _img)
+        except Exception:  # noqa: BLE001
+            pass
 
         # Detect cache hit: if shrunken path is in the image cache directory and
         # matches the expected content-hash stem, it was served from cache (zero CPU cost).
