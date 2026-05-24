@@ -1418,9 +1418,92 @@ _ESLINT_FILE_RE: Final[re.Pattern[str]] = re.compile(
 _RUFF_LINE_RE: Final[re.Pattern[str]] = re.compile(
     r"^(?P<file>.+?):(?P<line>\d+):(?P<col>\d+):\s+(?P<code>[A-Z]+\d+)\s"
 )
+_RUFF_FOOTER_RE: Final[re.Pattern[str]] = re.compile(
+    r"^Found \d+ error"
+)
 _MYPY_LINE_RE: Final[re.Pattern[str]] = re.compile(
     r"^(?P<file>.+?):(?P<line>\d+):(?:\d+:)?\s+(?P<level>error|note|warning):"
 )
+
+
+class RuffFilter(Filter):
+    """Compress ``ruff`` linter output.
+
+    Ruff on a large codebase often fires the same rule (e.g. E501 line-too-long)
+    hundreds of times across dozens of files.  The agent gains nothing from seeing
+    the 51st occurrence.
+
+    Compression model:
+
+    * **Rule with >= 3 occurrences across >= 2 files**: collapse to a single
+      summary line ``RULE_CODE: N occurrences in M files (example: <first line>)``.
+    * **Rule with < 3 occurrences** (or all in one file): keep all lines verbatim.
+    * **Always keep** the ``Found N errors`` footer line.
+    * **Always keep** non-violation lines (blank lines, section headers, etc.).
+    """
+
+    name = "ruff"
+    binaries = frozenset(["ruff"])
+
+    def compress(
+        self, stdout: str, stderr: str, exit_code: int, argv: list[str],
+    ) -> str:
+        merged = self._combine_output(stdout, stderr)
+        lines = merged.split("\n")
+
+        # First pass: collect violation lines grouped by rule code.
+        # code -> list of (file, full_line)
+        by_code: dict[str, list[tuple[str, str]]] = {}
+        footer_lines: list[str] = []
+        indexed: list[tuple[bool, str]] = []  # (is_violation, line)
+
+        for line in lines:
+            if _RUFF_FOOTER_RE.match(line):
+                footer_lines.append(line)
+                indexed.append((False, line))
+                continue
+            m = _RUFF_LINE_RE.match(line)
+            if m:
+                code = m.group("code")
+                file_ = m.group("file")
+                by_code.setdefault(code, []).append((file_, line))
+                indexed.append((True, line))
+            else:
+                indexed.append((False, line))
+
+        # Decide which codes get summarised (>= 3 occurrences across >= 2 files).
+        summarised: dict[str, str] = {}
+        for code, entries in by_code.items():
+            files = {f for f, _ in entries}
+            if len(entries) >= 3 and len(files) >= 2:
+                example = entries[0][1]
+                summarised[code] = (
+                    f"{code}: {len(entries)} occurrences in {len(files)} files"
+                    f" (example: {example})"
+                )
+
+        # Second pass: emit lines.
+        out: list[str] = []
+        emitted_summary: set[str] = set()
+        for is_viol, line in indexed:
+            if _RUFF_FOOTER_RE.match(line):
+                # Defer footers to end.
+                continue
+            if not is_viol:
+                out.append(line)
+                continue
+            m = _RUFF_LINE_RE.match(line)
+            code = m.group("code") if m else ""
+            if code in summarised:
+                if code not in emitted_summary:
+                    out.append(summarised[code])
+                    emitted_summary.add(code)
+                # else: skip — already summarised
+            else:
+                out.append(line)
+
+        out.extend(footer_lines)
+        return _squeeze_blank_lines("\n".join(out))
 
 
 class LinterFilter(Filter):
@@ -1434,14 +1517,13 @@ class LinterFilter(Filter):
     Filters dispatched:
 
     * **eslint**: ``  3:12  error  'foo' is defined but never used  no-unused-vars``
-    * **ruff**: ``src/foo.py:3:12: F401 'foo' imported but unused``
-    * **mypy / pyright**: ``src/foo.py:3: error: incompatible type``
+    * **pyright**: ``src/foo.py:3: error: incompatible type``
     * **pylint**: similar: falls through to dedupe_by_key.
     """
 
     name = "linter"
     binaries = frozenset([
-        "eslint", "ruff", "pyright", "pylint", "tsc",
+        "eslint", "pyright", "pylint", "tsc",
         "stylelint", "biome", "rome",
     ])
 
@@ -1450,7 +1532,7 @@ class LinterFilter(Filter):
     ) -> str:
         merged = self._combine_output(stdout, stderr)
         binary = Path(argv[0]).stem.lower() if argv else ""
-        if binary in ("ruff", "pyright", "pylint"):
+        if binary in ("pyright", "pylint"):
             compressed = dedupe_by_key(
                 merged.split("\n"),
                 re.compile(r"\b([A-Z][A-Z0-9]+\d+|error|warning|note)\b"),
@@ -2446,6 +2528,7 @@ FILTERS: list[Filter] = [
     DockerFilter(),
     KubectlFilter(),
     AwsFilter(),
+    RuffFilter(),
     MypyFilter(),
     LinterFilter(),
     GrepFilter(),
