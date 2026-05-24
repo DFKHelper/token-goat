@@ -19,8 +19,10 @@ __all__ = [
     "_WIDE_SESSION_THRESHOLD",
 ]
 
+import hashlib
 import heapq
 import io
+import json
 import math
 import os
 import re
@@ -188,6 +190,86 @@ _MANIFEST_CACHE_TTL_SECS: Final[float] = 600.0
 # (i.e., a prior PreCompact fire).  In tests (same process, multiple calls) the
 # set prevents a false stub on the call that immediately follows a write.
 _manifest_sha_written_this_process: set[str] = set()
+
+# ---------------------------------------------------------------------------
+# Manifest sidecar helpers (item #1 of 2026-05-24 design)
+# ---------------------------------------------------------------------------
+# The sidecar file ``sentinels/manifest_sha_{session_id}`` stores a small JSON
+# record: {"sha": <hex>, "fp": <fingerprint-hex>, "ts": <float>}.  Reading it
+# is ~0.1 ms (stat + open + json.loads on a 200-byte file) vs ~5–50 ms for a
+# full manifest render, so the fast-path saves meaningful wall time as well as
+# ~300–600 tokens per redundant compaction.
+
+def _compute_manifest_fingerprint(cache: SessionCache) -> str:  # type: ignore[name-defined]
+    """Return a hex fingerprint that changes when session content changes.
+
+    Inputs:
+    - Total event count (files + greps + edits + bash entries + web entries)
+    - Sorted edited_files keys (detects new edits)
+    - Timestamps of the last 3 bash entries, sorted descending (detects new commands)
+    - exit_code of the most recent bash entry (detects a new test failure)
+
+    The fingerprint must include the last-bash exit_code so a fresh red test
+    result busts the cache even when event_count is otherwise unchanged.
+    """
+    bash_history = getattr(cache, "bash_history", None) or {}
+    bash_entries = sorted(bash_history.values(), key=attrgetter("ts"), reverse=True)
+
+    last_3_ts = [round(e.ts, 3) for e in bash_entries[:3]]
+    last_exit = bash_entries[0].exit_code if bash_entries else None
+
+    event_count = (
+        len(cache.files)
+        + len(cache.greps)
+        + len(cache.edited_files)
+        + len(bash_history)
+        + len(getattr(cache, "web_history", None) or {})
+    )
+
+    payload = json.dumps(
+        {
+            "ev": event_count,
+            "ef": sorted(cache.edited_files.keys()),
+            "bt": last_3_ts,
+            "bx": last_exit,
+        },
+        separators=(",", ":"),
+        sort_keys=True,
+    )
+    return hashlib.sha256(payload.encode()).hexdigest()[:16]
+
+
+def _read_manifest_sidecar(session_id: str) -> tuple[str, str, float] | None:
+    """Read the manifest sidecar and return (sha, fingerprint, emit_ts) or None.
+
+    Returns None on any error (missing file, corrupt JSON, path traversal).
+    """
+    from . import paths  # noqa: PLC0415
+
+    try:
+        sidecar = paths.manifest_sha_sidecar_path(session_id)
+        raw = sidecar.read_text(encoding="utf-8")
+        data = json.loads(raw)
+        return str(data["sha"]), str(data["fp"]), float(data["ts"])
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _write_manifest_sidecar(session_id: str, sha: str, fingerprint: str, ts: float) -> None:
+    """Write the manifest sidecar atomically.  Errors are silently swallowed."""
+    from . import paths  # noqa: PLC0415
+
+    try:
+        sidecar = paths.manifest_sha_sidecar_path(session_id)
+        sidecar.parent.mkdir(parents=True, exist_ok=True)
+        payload = json.dumps({"sha": sha, "fp": fingerprint, "ts": ts}, separators=(",", ":"))
+        # Atomic write via temp file + rename (same volume guaranteed).
+        tmp = sidecar.with_suffix(".tmp")
+        tmp.write_text(payload, encoding="utf-8")
+        tmp.replace(sidecar)
+    except Exception:  # noqa: BLE001
+        pass
+
 
 # Maximum number of edited files listed individually in the "Files Edited" section.
 # The section is documented as "uncapped — every edited file is must-preserve", but
@@ -2154,39 +2236,46 @@ def build_manifest(session_id: str, *, max_tokens: int = 400) -> str:
     if cache is None:
         return ""
 
-    # --- Manifest delta-cache (item #19) ---
-    # Build the manifest text first, then check whether it differs from the
-    # last emitted version.  If identical AND within the TTL window, return a
-    # lightweight stub so the compaction LLM sees a clear "nothing changed"
-    # signal rather than a duplicate full manifest.
+    # --- Manifest delta-cache (item #1, 2026-05-24 design) ---
+    # Compute a cheap fingerprint from session inputs BEFORE rendering.  If the
+    # sidecar exists, is fresh (< TTL), and the fingerprint matches, we can skip
+    # the full _render and return a 1-line stub (~300-600 tokens saved per idle
+    # multi-compaction session).  The fingerprint includes the last-bash exit_code
+    # so a new red test result always busts the cache.
+    now = time.time()
+    fingerprint = _compute_manifest_fingerprint(cache)
+
+    sidecar_data = _read_manifest_sidecar(session_id)
+    if (
+        sidecar_data is not None
+        and session_id not in _manifest_sha_written_this_process
+    ):
+        _cached_sha, cached_fp, cached_ts = sidecar_data
+        sidecar_age = now - cached_ts
+        if sidecar_age < _MANIFEST_CACHE_TTL_SECS and cached_fp == fingerprint:
+            emit_time = datetime.fromtimestamp(cached_ts, tz=UTC).strftime("%H:%M")
+            short_id = session_id[:8] if len(session_id) >= 8 else session_id
+            _LOG.debug(
+                "build_manifest: sidecar cache-hit session=%s fp=%s age=%.0fs — returning stub",
+                session_id[:8], fingerprint, sidecar_age,
+            )
+            return (
+                f"## Token-Goat Manifest — unchanged since {emit_time}. "
+                f"Recall: `token-goat compact-hint --session-id {short_id}`."
+            )
+
+    # Cache miss or TTL expired: render the full manifest.
     full_manifest = _build_manifest_from_cache(cache, session_id, max_tokens)
     if not full_manifest:
         return full_manifest
 
+    # Persist the sidecar with the new SHA + fingerprint so the next PreCompact
+    # can skip rendering if nothing has changed.
     sha = _short_content_hash(full_manifest)
-    now = time.time()
-    age = now - cache.last_manifest_ts
+    _write_manifest_sidecar(session_id, sha, fingerprint, now)
+    _manifest_sha_written_this_process.add(session_id)
 
-    # Cache-hit: SHA matches, within TTL, AND the SHA was written by a prior
-    # process (not this one).  The process-local guard ensures that within a
-    # single process (e.g. tests calling build_manifest twice in a row) we
-    # never return a stub immediately after writing — the stub is only valid
-    # when a *separate* PreCompact process already emitted the full manifest.
-    sha_was_already_on_disk = (
-        cache.last_manifest_sha
-        and cache.last_manifest_sha == sha
-        and age < _MANIFEST_CACHE_TTL_SECS
-        and session_id not in _manifest_sha_written_this_process
-    )
-    if sha_was_already_on_disk:
-        age_sec = int(age)
-        _LOG.debug(
-            "build_manifest: cache-hit session=%s sha=%s age=%ds — returning stub",
-            session_id[:8], sha, age_sec,
-        )
-        return f"## Session Manifest (unchanged since {age_sec}s ago — see prior manifest)"
-
-    # Cache miss or TTL expired: update the session cache and return the full manifest.
+    # Also update the session-JSON fields so legacy callers and stats remain consistent.
     from . import (
         session as session_mod,  # deferred — cold-start; __getattr__ handles external access
     )
@@ -2194,7 +2283,7 @@ def build_manifest(session_id: str, *, max_tokens: int = 400) -> str:
     cache.last_manifest_ts = now
     cache._invalidate_json_cache()
     session_mod.save(cache)
-    _manifest_sha_written_this_process.add(session_id)
+
     return full_manifest
 
 

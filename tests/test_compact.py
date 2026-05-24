@@ -180,12 +180,16 @@ class TestManifestDeltaCache:
         session.mark_file_edited(sid, "/proj/src/worker.py")
         first = compact.build_manifest(sid)
         assert "## Token-Goat Session Manifest" in first
-        # Backdate last_manifest_ts to simulate TTL expiry
-        cache = session.load(sid)
-        cache.last_manifest_ts = time.time() - 700.0  # 700s > 600s TTL
-        cache._invalidate_json_cache()
-        session.save(cache)
-        # Clear process guard, same content but stale timestamp → full rebuild
+        # The TTL is now checked against the sidecar file's timestamp, not the
+        # session JSON's last_manifest_ts.  Backdate the sidecar to simulate expiry.
+        import json as _json  # noqa: PLC0415
+
+        from token_goat import paths  # noqa: PLC0415
+        sidecar = paths.manifest_sha_sidecar_path(sid)
+        data = _json.loads(sidecar.read_text(encoding="utf-8"))
+        data["ts"] = time.time() - 700.0  # 700s > 600s TTL
+        sidecar.write_text(_json.dumps(data, separators=(",", ":")), encoding="utf-8")
+        # Clear process guard, same content but stale sidecar → full rebuild
         self._clear_process_guard(sid)
         second = compact.build_manifest(sid)
         assert "## Token-Goat Session Manifest" in second
@@ -197,8 +201,9 @@ class TestManifestDeltaCache:
         compact.build_manifest(sid)
         self._clear_process_guard(sid)
         stub = compact.build_manifest(sid)
-        # Stub should contain a non-negative integer age
-        assert "ago" in stub
+        # New stub format: "## Token-Goat Manifest — unchanged since HH:MM. Recall: ..."
+        assert "unchanged since" in stub
+        assert "token-goat compact-hint" in stub
 
     def test_same_process_second_call_returns_full_not_stub(self, tmp_data_dir):
         """Within a single process, two successive calls always return full manifests.
@@ -6380,3 +6385,199 @@ class TestWideSessionSymbolReplacement:
         assert "token-goat map --compact" in syms_line
         # Must NOT list individual per-file symbol entries.
         assert "→" not in syms_line
+
+
+class TestManifestCacheStub:
+    """Sidecar-based manifest cache: fingerprint check short-circuits full render.
+
+    The mechanism (item #1 of 2026-05-24 design):
+    - After a full manifest is rendered, a sidecar file (sentinels/manifest_sha_{session_id})
+      is written with the manifest SHA, an input fingerprint, and a timestamp.
+    - On the next PreCompact, the fingerprint is recomputed from session inputs
+      BEFORE calling _render.  If the sidecar is fresh (<TTL) and the fingerprint
+      matches, a 1-line stub is returned instead of the full manifest.
+    - The fingerprint includes the most-recent bash exit_code so a new red test
+      result busts the cache even if event_count is otherwise unchanged.
+    - Same-process guard: session_id in _manifest_sha_written_this_process prevents
+      a stub from being returned in the same process that just wrote the sidecar.
+    """
+
+    def _clear_process_guard(self, sid: str) -> None:
+        """Simulate a new hook process by removing sid from the process-local guard."""
+        compact._manifest_sha_written_this_process.discard(sid)
+
+    # ------------------------------------------------------------------
+    # Test 1: first compact builds full manifest AND sidecar is created
+    # ------------------------------------------------------------------
+
+    def test_first_compact_builds_full_manifest_and_creates_sidecar(self, tmp_data_dir):
+        """First PreCompact call renders the full manifest and writes the sidecar."""
+        from token_goat import paths
+
+        sid = "stub-first-compact-abc"
+        session.mark_file_edited(sid, "/proj/src/auth.py")
+        session.mark_file_edited(sid, "/proj/src/utils.py")
+
+        result = compact.build_manifest(sid)
+
+        # Full manifest returned (has the standard header).
+        assert "## Token-Goat Session Manifest" in result
+
+        # Sidecar must exist after the first call.
+        sidecar = paths.manifest_sha_sidecar_path(sid)
+        assert sidecar.exists(), "sidecar must be created after first full manifest emit"
+
+        # Sidecar must contain valid JSON with expected keys.
+        import json as _json
+        data = _json.loads(sidecar.read_text(encoding="utf-8"))
+        assert "sha" in data
+        assert "fp" in data
+        assert "ts" in data
+        assert isinstance(data["ts"], float)
+        assert len(data["sha"]) > 0
+        assert len(data["fp"]) > 0
+
+    # ------------------------------------------------------------------
+    # Test 2: second compact within TTL with same inputs → stub returned
+    # ------------------------------------------------------------------
+
+    def test_second_compact_same_inputs_within_ttl_returns_stub(self, tmp_data_dir):
+        """Second PreCompact with identical session state returns the 1-line stub."""
+        sid = "stub-second-same-inputs"
+        session.mark_file_edited(sid, "/proj/src/parser.py")
+
+        # First call: full manifest.
+        first = compact.build_manifest(sid)
+        assert "## Token-Goat Session Manifest" in first
+
+        # Simulate new hook process (cross-process cache-hit path).
+        self._clear_process_guard(sid)
+
+        # Second call: same session state, sidecar is fresh → stub.
+        second = compact.build_manifest(sid)
+        assert "## Token-Goat Manifest — unchanged since" in second
+        assert "token-goat compact-hint --session-id" in second
+        # Must NOT contain the full manifest header.
+        assert "## Token-Goat Session Manifest" not in second
+        # Stub is a single line.
+        assert second.count("\n") == 0
+
+    def test_second_compact_sidecar_mtime_unchanged(self, tmp_data_dir):
+        """Cache hit must NOT overwrite the sidecar (mtime stays the same)."""
+        from token_goat import paths
+
+        sid = "stub-mtime-check"
+        session.mark_file_edited(sid, "/proj/src/db.py")
+
+        compact.build_manifest(sid)
+        sidecar = paths.manifest_sha_sidecar_path(sid)
+        mtime_after_first = sidecar.stat().st_mtime
+
+        self._clear_process_guard(sid)
+
+        compact.build_manifest(sid)
+        mtime_after_second = sidecar.stat().st_mtime
+
+        assert mtime_after_first == mtime_after_second, (
+            "sidecar must not be rewritten on a cache hit"
+        )
+
+    # ------------------------------------------------------------------
+    # Test 3: second compact within TTL with new bash exit_code → full rebuild
+    # ------------------------------------------------------------------
+
+    def test_new_bash_exit_code_busts_cache(self, tmp_data_dir):
+        """A new bash entry with non-zero exit_code changes the fingerprint → full rebuild."""
+        sid = "stub-exit-code-bust"
+        session.mark_file_edited(sid, "/proj/src/worker.py")
+
+        # First call: full manifest.
+        first = compact.build_manifest(sid)
+        assert "## Token-Goat Session Manifest" in first
+
+        # Record a new bash entry with exit_code=1 (e.g. a failing test).
+        session.mark_bash_run(
+            sid,
+            cmd_sha="abcd1234",
+            cmd_preview="pytest tests/",
+            output_id="out-001",
+            stdout_bytes=512,
+            stderr_bytes=0,
+            exit_code=1,
+            truncated=False,
+        )
+
+        self._clear_process_guard(sid)
+
+        # Second call: fingerprint changed due to new bash entry → full manifest.
+        second = compact.build_manifest(sid)
+        assert "## Token-Goat Session Manifest" in second
+        assert "unchanged since" not in second
+
+    def test_changed_edited_files_busts_cache(self, tmp_data_dir):
+        """Adding a new edited file changes the fingerprint → full manifest rebuilt."""
+        sid = "stub-edit-bust"
+        session.mark_file_edited(sid, "/proj/src/api.py")
+
+        first = compact.build_manifest(sid)
+        assert "## Token-Goat Session Manifest" in first
+
+        # Add a new edit — sorted edited_files keys change.
+        session.mark_file_edited(sid, "/proj/src/new_module.py")
+
+        self._clear_process_guard(sid)
+
+        second = compact.build_manifest(sid)
+        assert "## Token-Goat Session Manifest" in second
+        assert "unchanged since" not in second
+
+    # ------------------------------------------------------------------
+    # Test 4: sidecar > TTL old → full manifest rebuilt
+    # ------------------------------------------------------------------
+
+    def test_expired_sidecar_triggers_full_rebuild(self, tmp_data_dir):
+        """Sidecar older than _MANIFEST_CACHE_TTL_SECS triggers a full manifest rebuild."""
+        import json as _json
+
+        from token_goat import paths
+
+        sid = "stub-ttl-expired"
+        session.mark_file_edited(sid, "/proj/src/config.py")
+
+        # First call: write sidecar with a backdated timestamp.
+        first = compact.build_manifest(sid)
+        assert "## Token-Goat Session Manifest" in first
+
+        # Overwrite sidecar with a stale timestamp (700s > 600s TTL).
+        sidecar = paths.manifest_sha_sidecar_path(sid)
+        data = _json.loads(sidecar.read_text(encoding="utf-8"))
+        data["ts"] = time.time() - 700.0
+        sidecar.write_text(_json.dumps(data, separators=(",", ":")), encoding="utf-8")
+
+        self._clear_process_guard(sid)
+
+        # Second call: sidecar age > TTL → full manifest.
+        second = compact.build_manifest(sid)
+        assert "## Token-Goat Session Manifest" in second
+        assert "unchanged since" not in second
+
+    # ------------------------------------------------------------------
+    # Extra: same-process guard prevents stub even when sidecar is fresh
+    # ------------------------------------------------------------------
+
+    def test_same_process_guard_prevents_stub(self, tmp_data_dir):
+        """Within a single process, two calls always return the full manifest.
+
+        The process-local guard (_manifest_sha_written_this_process) ensures
+        we never hand back a stub in the same process that just wrote the sidecar.
+        """
+        sid = "stub-same-process-guard"
+        session.mark_file_edited(sid, "/proj/src/render.py")
+
+        first = compact.build_manifest(sid)
+        assert "## Token-Goat Session Manifest" in first
+
+        # No guard clear — second call in same process must return full manifest.
+        second = compact.build_manifest(sid)
+        assert "## Token-Goat Session Manifest" in second
+        assert "unchanged since" not in second
