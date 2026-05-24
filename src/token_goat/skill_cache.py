@@ -43,17 +43,16 @@ __all__ = [
     "write_sidecar",
 ]
 
-import hashlib
 import logging
 import re
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TypedDict
 
 from . import paths
 from .cache_common import (
     OUTPUT_FILENAME_RE,
+    OutputStatDict,
     evict_cache_dir,
     list_cache_outputs,
     load_output_meta_stat,
@@ -61,6 +60,7 @@ from .cache_common import (
     load_sidecar_json,
     safe_join_output_id,
     safe_session_fragment,
+    short_content_hash,
     truncate_tail_preserve,
     write_sidecar_metadata,
 )
@@ -112,14 +112,6 @@ class SkillMeta:
     source_path: str = ""  # best-effort filesystem path where the skill body was found
 
 
-class _OutputStatDict(TypedDict, total=False):
-    """Stat-derived metadata returned by :func:`load_output_meta`."""
-
-    output_id: str
-    size_bytes: int
-    mtime: float
-
-
 def _skill_outputs_dir() -> Path:
     """Return ``data_dir() / "skills"`` and create it on first use."""
     return paths.ensure_dir(paths.data_dir() / "skills")
@@ -128,12 +120,11 @@ def _skill_outputs_dir() -> Path:
 def content_hash(content: str) -> str:
     """Return a short content hash (first 16 hex chars of SHA-256).
 
-    Skill bodies are compared for dedup purposes only — not authenticated — so
-    a cryptographic hash is overkill, but SHA-256 is stdlib, fast, and gives a
-    very low collision rate.  Truncated to 16 chars to keep filenames short
-    while leaving ~64 bits of collision resistance.
+    Thin wrapper around :func:`cache_common.short_content_hash` kept for
+    backwards compatibility.  Callers outside this module (e.g. hooks_skill)
+    may pass the result to :func:`output_id_for` directly.
     """
-    return hashlib.sha256(content.encode("utf-8", errors="replace")).hexdigest()[:16]
+    return short_content_hash(content)
 
 
 def _safe_skill_name(skill_name: str) -> str | None:
@@ -169,9 +160,6 @@ def output_id_for(session_id: str, skill_name: str, content_sha: str) -> str:
     return f"{safe_session}-{safe_name}-{content_sha}"
 
 
-def _safe_join(output_id: str) -> Path | None:
-    """Validate *output_id* and return the corresponding cache file path."""
-    return safe_join_output_id(output_id, _skill_outputs_dir, "skill_cache")
 
 
 # Headings searched in priority order when looking for actionable checklist prose.
@@ -281,7 +269,7 @@ def store_output(
     try:
         sha = content_hash(body)
         out_id = output_id_for(session_id, name, sha)
-        path = _safe_join(out_id)
+        path = safe_join_output_id(out_id, _skill_outputs_dir, "skill_cache")
         if path is None:
             return None
 
@@ -320,7 +308,7 @@ def load_output(output_id: str) -> str | None:
     return load_output_text(output_id, _skill_outputs_dir, "skill_cache")
 
 
-def load_output_meta(output_id: str) -> _OutputStatDict | None:
+def load_output_meta(output_id: str) -> OutputStatDict | None:
     """Return stat-derived metadata for an output file (size, mtime), or None."""
     return load_output_meta_stat(output_id, _skill_outputs_dir, "skill_cache")
 
@@ -334,7 +322,7 @@ def evict_old_entries(*, max_total_bytes: int = DEFAULT_MAX_TOTAL_BYTES) -> int:
     )
 
 
-def list_outputs() -> list[_OutputStatDict]:
+def list_outputs() -> list[OutputStatDict]:
     """Return metadata for every cached output, newest first."""
     return list_cache_outputs(_skill_outputs_dir)
 
@@ -419,7 +407,7 @@ def list_by_session(session_id: str) -> list[SkillMeta]:
 
 def sidecar_meta_path(output_id: str) -> Path | None:
     """Return the sidecar JSON metadata path for *output_id*, or None on invalid ID."""
-    base = _safe_join(output_id)
+    base = safe_join_output_id(output_id, _skill_outputs_dir, "skill_cache")
     if base is None:
         return None
     return base.with_suffix(".json")

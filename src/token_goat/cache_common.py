@@ -8,6 +8,8 @@ from __future__ import annotations
 
 __all__ = [
     "OUTPUT_FILENAME_RE",
+    "OutputStatDict",
+    "build_output_id",
     "evict_cache_dir",
     "list_cache_outputs",
     "load_output_meta_stat",
@@ -15,16 +17,19 @@ __all__ = [
     "load_sidecar_json",
     "safe_join_output_id",
     "safe_session_fragment",
+    "short_content_hash",
     "short_output_id",
     "truncate_tail_preserve",
     "write_sidecar_metadata",
 ]
 
+import hashlib
 import json
 import logging
 import os
 import re
 import stat as _stat_module
+import time
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any, TypedDict
@@ -39,6 +44,52 @@ OUTPUT_FILENAME_RE = re.compile(r"^[a-zA-Z0-9_\-]{1,80}\.txt$")
 # Pre-compiled pattern used by safe_session_fragment — module-level so it is
 # only compiled once across both callers.
 _SESSION_UNSAFE_RE = re.compile(r"[^a-zA-Z0-9_\-]")
+
+
+class OutputStatDict(TypedDict, total=False):
+    """Stat-derived metadata shape shared by all three output-cache modules.
+
+    Every module previously declared its own ``_OutputStatDict`` with identical
+    fields; they are consolidated here.  The fields are the same regardless of
+    cache (bash, web, or skill): ``output_id`` is always present; ``size_bytes``
+    and ``mtime`` come from :func:`os.stat`.
+    """
+
+    output_id: str
+    size_bytes: int
+    mtime: float
+
+
+def short_content_hash(text: str) -> str:
+    """Return the first 16 hex characters of the SHA-256 of *text*.
+
+    Used by all three cache modules to fingerprint a command, URL, or skill
+    body for dedup/id purposes.  SHA-256 is overkill for collision resistance
+    at this scale (~hundreds of entries per session) but is stdlib, fast, and
+    consistent.  16 hex chars give ~64 bits of collision resistance — more than
+    enough.
+
+    Encoding errors are replaced rather than raised so the function is safe for
+    any string input including binary-tainted command output.
+    """
+    return hashlib.sha256(text.encode("utf-8", errors="replace")).hexdigest()[:16]
+
+
+def build_output_id(session_id: str, content_token: str, ts: float | None = None) -> str:
+    """Build the canonical ``{session_short}-{ms:013d}-{content_token}`` output ID.
+
+    Used by :mod:`bash_cache` and :mod:`web_cache` where the content token is
+    the hash of the command or URL (via :func:`short_content_hash`).  The
+    millisecond timestamp ensures two invocations of the same command/URL in
+    the same session do not collide while both remain addressable.
+
+    *skill_cache* uses a different ID shape (``{session_short}-{safe_name}-{sha}``)
+    and therefore does not use this helper; it calls :func:`short_content_hash`
+    directly.
+    """
+    safe_session = safe_session_fragment(session_id)
+    ms = int((ts if ts is not None else time.time()) * 1000)
+    return f"{safe_session}-{ms:013d}-{content_token}"
 
 
 def evict_cache_dir(
@@ -401,7 +452,7 @@ def load_output_meta_stat(
     output_id: str,
     cache_dir_fn: Callable[[], Path],
     log_name: str,
-) -> _OutputStatDict | None:
+) -> OutputStatDict | None:
     """Return stat-derived metadata for an output file (size, mtime), or None.
 
     Shared implementation for :func:`bash_cache.load_output_meta` and
@@ -414,14 +465,14 @@ def load_output_meta_stat(
         st = path.stat()
     except OSError:
         return None
-    return _OutputStatDict(
+    return OutputStatDict(
         output_id=output_id,
         size_bytes=int(st.st_size),
         mtime=float(st.st_mtime),
     )
 
 
-def list_cache_outputs(cache_dir_fn: Callable[[], Path]) -> list[_OutputStatDict]:
+def list_cache_outputs(cache_dir_fn: Callable[[], Path]) -> list[OutputStatDict]:
     """Return metadata for every cached output in *cache_dir_fn()*, newest first.
 
     Shared implementation for :func:`bash_cache.list_outputs` and
@@ -433,7 +484,7 @@ def list_cache_outputs(cache_dir_fn: Callable[[], Path]) -> list[_OutputStatDict
     except OSError:
         return []
 
-    results: list[_OutputStatDict] = []
+    results: list[OutputStatDict] = []
     try:
         for fp in d.iterdir():
             if not fp.name.endswith(".txt"):
@@ -444,7 +495,7 @@ def list_cache_outputs(cache_dir_fn: Callable[[], Path]) -> list[_OutputStatDict
                 st = fp.stat()
             except OSError:
                 continue
-            results.append(_OutputStatDict(
+            results.append(OutputStatDict(
                 output_id=fp.stem,
                 size_bytes=int(st.st_size),
                 mtime=float(st.st_mtime),

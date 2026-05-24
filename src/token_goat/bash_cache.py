@@ -33,26 +33,29 @@ __all__ = [
     "load_output",
     "load_output_meta",
     "output_id_for",
+    "read_sidecar",
+    "sidecar_meta_path",
     "store_output",
+    "write_sidecar",
 ]
 
-import hashlib
 import logging
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TypedDict
 
 from . import paths
 from .cache_common import (
     OUTPUT_FILENAME_RE,
+    OutputStatDict,
+    build_output_id,
     evict_cache_dir,
     list_cache_outputs,
     load_output_meta_stat,
     load_output_text,
     load_sidecar_json,
     safe_join_output_id,
-    safe_session_fragment,
+    short_content_hash,
     write_sidecar_metadata,
 )
 from .hooks_common import sanitize_log_str
@@ -97,17 +100,6 @@ class BashOutputMeta:
     truncated: bool
 
 
-class _OutputStatDict(TypedDict, total=False):
-    """Stat-derived metadata returned by :func:`load_output_meta`.
-
-    Keys match the return shape: output_id (always present), size_bytes, mtime.
-    """
-
-    output_id: str
-    size_bytes: int
-    mtime: float
-
-
 def _bash_outputs_dir() -> Path:
     """Return ``data_dir() / "bash_outputs"`` and create it on first use."""
     return paths.ensure_dir(paths.data_dir() / "bash_outputs")
@@ -116,39 +108,21 @@ def _bash_outputs_dir() -> Path:
 def command_hash(command: str) -> str:
     """Return a short content hash for *command* (first 16 hex chars of SHA-256).
 
-    Commands are compared for dedup purposes only — not authenticated — so a
-    cryptographic hash is overkill, but SHA-256 is stdlib, fast, and gives a
-    very low collision rate for the small number of commands ever stored per
-    session (a few hundred at most).  Truncated to 16 chars to keep filenames
-    short while leaving ~64 bits of collision resistance.
+    Thin wrapper around :func:`cache_common.short_content_hash` kept for
+    backwards compatibility and for use in :func:`session.mark_bash_run` which
+    passes the hash independently of the output ID.
     """
-    return hashlib.sha256(command.encode("utf-8", errors="replace")).hexdigest()[:16]
+    return short_content_hash(command)
 
 
 def output_id_for(session_id: str, command: str, ts: float | None = None) -> str:
     """Build a filesystem-safe ID for the (session, command, time) tuple.
 
-    The ID embeds a short session prefix and a millisecond timestamp so two
-    invocations of the same command in the same session do not collide; both
-    are kept and the latest wins on dedup lookups, but each cached output
-    remains addressable for forensic retrieval.
-
-    Session ID is short-prefixed (16 chars) because :func:`session.validate_session_id`
-    already caps it at 128 chars and stripping to 16 keeps total filename length
-    under 50 chars.  Non-alphanumeric characters are replaced with ``_``.
+    Delegates to :func:`cache_common.build_output_id` with the command hash as
+    the content token.  The millisecond timestamp ensures two invocations of
+    the same command in the same session do not collide.
     """
-    safe_session = safe_session_fragment(session_id)
-    ms = int((ts if ts is not None else time.time()) * 1000)
-    return f"{safe_session}-{ms:013d}-{command_hash(command)}"
-
-
-def _safe_join(output_id: str) -> Path | None:
-    """Validate *output_id* and return the corresponding cache file path.
-
-    Delegates to :func:`cache_common.safe_join_output_id` with the bash-specific
-    directory function and log name.
-    """
-    return safe_join_output_id(output_id, _bash_outputs_dir, "bash_cache")
+    return build_output_id(session_id, command_hash(command), ts)
 
 
 def store_output(
@@ -172,7 +146,7 @@ def store_output(
     """
     try:
         out_id = output_id_for(session_id, command)
-        path = _safe_join(out_id)
+        path = safe_join_output_id(out_id, _bash_outputs_dir, "bash_cache")
         if path is None:
             return None
 
@@ -238,7 +212,7 @@ def load_output(output_id: str) -> str | None:
     return load_output_text(output_id, _bash_outputs_dir, "bash_cache")
 
 
-def load_output_meta(output_id: str) -> _OutputStatDict | None:
+def load_output_meta(output_id: str) -> OutputStatDict | None:
     """Return stat-derived metadata for an output file (size, mtime), or None.
 
     Used by ``token-goat bash-history`` to render a listing without reading
@@ -272,7 +246,7 @@ def evict_old_entries(*, max_total_bytes: int = DEFAULT_MAX_TOTAL_BYTES) -> int:
     )
 
 
-def list_outputs() -> list[_OutputStatDict]:
+def list_outputs() -> list[OutputStatDict]:
     """Return metadata for every cached output, newest first.
 
     Used by ``token-goat bash-history`` for human inspection.  Returns an
@@ -289,7 +263,7 @@ def sidecar_meta_path(output_id: str) -> Path | None:
     re-parsing the body.  Sidecar absence is non-fatal: the cache body is
     always the source of truth for output text.
     """
-    base = _safe_join(output_id)
+    base = safe_join_output_id(output_id, _bash_outputs_dir, "bash_cache")
     if base is None:
         return None
     return base.with_suffix(".json")
