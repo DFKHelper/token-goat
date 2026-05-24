@@ -4,8 +4,21 @@ from __future__ import annotations
 import json
 
 import networkx as nx
+import pytest
 
 from token_goat import repomap
+
+# ---------------------------------------------------------------------------
+# Module-scoped ts_project: index ts_sample once per test module run.
+# All tests here are read-only on the indexed DB (build_map queries only);
+# test_build_map_cache_stale_entries_evicted calls index_project(full=True)
+# but re-indexes unchanged files, leaving the DB in the same valid state.
+# ---------------------------------------------------------------------------
+
+@pytest.fixture(scope="module")
+def ts_project(ts_project_module):
+    """Shadow the function-scoped conftest ts_project with a module-scoped one."""
+    return ts_project_module
 
 # ---------------------------------------------------------------------------
 # 1. compute_ranks on empty graph returns {}
