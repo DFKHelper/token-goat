@@ -65,7 +65,8 @@ __all__ = [
     "save",
     "set_snapshot_sha",
     "validate_session_id",
-    # Serialization helpers exposed for testing
+    # Internal helpers exposed for testing
+    "_merge_session_caches",
     "_migrate_session",
     "_parse_file_entry",
     "_parse_glob_entry",
@@ -91,6 +92,7 @@ import time
 from dataclasses import dataclass, field
 from itertools import islice
 from operator import attrgetter
+from pathlib import Path
 from typing import Any, Final, TypedDict
 
 from . import paths
@@ -107,6 +109,215 @@ _FILE_LOCK = threading.Lock()  # in-process; multi-process safe enough via atomi
 # starts with an empty set, so a single row per (session_id, phase) per process is
 # recorded rather than strictly one row per session lifetime.
 _REPORTED_CONTENTION: set[tuple[str, str]] = set()
+
+# ---------------------------------------------------------------------------
+# Cross-process session lockfile helpers
+# ---------------------------------------------------------------------------
+# Each session JSON gets a sidecar ``<session_id>.json.lock`` file used as a
+# mutual-exclusion token between hook processes.  We use O_CREAT|O_EXCL for
+# atomic creation — the process that wins the create owns the lock.  Stale
+# lockfiles (empty/malformed content or PID gone) older than _LOCK_STALE_SECS
+# are reclaimed automatically.
+_LOCK_STALE_SECS: Final[float] = 30.0
+# Maximum time (seconds) to spend waiting for a lock before giving up.
+_LOCK_TIMEOUT_SECS: Final[float] = 2.0
+# Poll interval when spinning for the lock.
+_LOCK_POLL_SECS: Final[float] = 0.02
+
+
+def _session_lock_path(session_id: str) -> Path:
+    """Return the lockfile path for *session_id*."""
+    return paths.session_cache_path(session_id).with_suffix(".json.lock")
+
+
+def _lock_is_stale(lock_path: Path) -> bool:
+    """Return True if *lock_path* is stale and safe to reclaim.
+
+    A lock is stale when:
+    - It is older than _LOCK_STALE_SECS (process that created it is gone or
+      frozen), OR
+    - Its content is empty/malformed AND it is older than 5 seconds (empty
+      file written then abandoned before the PID was recorded).
+    """
+    try:
+        st = lock_path.stat()
+    except OSError:
+        return True  # already gone
+    age = time.time() - st.st_mtime
+    if age > _LOCK_STALE_SECS:
+        return True
+    # Empty/malformed content after 5 s → stale
+    try:
+        content = lock_path.read_text(encoding="utf-8").strip()
+        if not content:
+            return age > 5.0
+        pid = int(content)
+    except (OSError, ValueError):
+        return age > 5.0
+    # Check if the owning PID is still alive.
+    try:
+        os.kill(pid, 0)
+    except (OSError, ProcessLookupError):
+        return True
+    return False
+
+
+def _acquire_session_lock(session_id: str) -> int | None:
+    """Acquire the cross-process lock for *session_id*.
+
+    Returns the open file descriptor for the lockfile on success, or None if
+    the lock could not be acquired within _LOCK_TIMEOUT_SECS.  The caller is
+    responsible for calling :func:`_release_session_lock` with the returned fd.
+    """
+    lock_path = _session_lock_path(session_id)
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    deadline = time.monotonic() + _LOCK_TIMEOUT_SECS
+    while True:
+        try:
+            fd = os.open(
+                str(lock_path),
+                os.O_CREAT | os.O_EXCL | os.O_WRONLY,
+                0o600,
+            )
+            # Write our PID so stale-check can verify liveness.
+            with contextlib.suppress(OSError):
+                os.write(fd, str(os.getpid()).encode())
+            return fd
+        except (FileExistsError, OSError):
+            pass
+        # Lock exists — check if it is stale.
+        if _lock_is_stale(lock_path):
+            with contextlib.suppress(OSError):
+                lock_path.unlink(missing_ok=True)
+            continue  # retry create immediately
+        if time.monotonic() >= deadline:
+            _LOG.debug("session lock timeout: %s", session_id[:16])
+            return None
+        time.sleep(_LOCK_POLL_SECS)
+
+
+def _release_session_lock(session_id: str, fd: int | None) -> None:
+    """Release the cross-process lock acquired by :func:`_acquire_session_lock`."""
+    lock_path = _session_lock_path(session_id)
+    if fd is not None:
+        with contextlib.suppress(OSError):
+            os.close(fd)
+    with contextlib.suppress(OSError):
+        lock_path.unlink(missing_ok=True)
+
+
+# ---------------------------------------------------------------------------
+# CAS merge helper
+# ---------------------------------------------------------------------------
+
+def _merge_session_caches(local: SessionCache, remote: SessionCache) -> SessionCache:
+    """Merge *local* mutations into a newer *remote* on-disk state.
+
+    Called when save() detects that *remote*.version > *local*.version,
+    meaning another process saved the file while we held our in-memory copy.
+    We keep *remote* as the base (it is authoritative for all uncontested
+    fields) and re-apply *local*'s mutations field-by-field using the
+    appropriate merge strategy:
+
+    - sets   → union
+    - dicts  → update remote with local (local's newer ts wins per-key)
+    - counts → max(local, remote)
+    - lists  → take whichever is longer, capped to the original list cap
+    - scalar bookkeeping (last_activity_ts) → max
+    """
+    # Work on remote as the base so all fields it has that we don't touch are
+    # preserved verbatim.
+    merged = remote
+
+    # --- sets ---
+    merged.hints_seen = local.hints_seen | remote.hints_seen
+    merged.bash_dedup_emitted_ids = local.bash_dedup_emitted_ids | remote.bash_dedup_emitted_ids
+
+    # --- dicts: merge local into remote (local ts wins per-key when both have it) ---
+    for k, v in local.files.items():
+        if k not in remote.files:
+            remote.files[k] = v
+        else:
+            # Keep the entry with the more recent last_read_ts.
+            if v.last_read_ts > remote.files[k].last_read_ts:
+                remote.files[k] = v
+    merged.files = remote.files
+
+    # edited_files: sum counts (each process independently incremented).
+    ec: int
+    for efk, ec in local.edited_files.items():
+        remote.edited_files[efk] = remote.edited_files.get(efk, 0) + max(0, ec - remote.edited_files.get(efk, 0))
+    merged.edited_files = remote.edited_files
+
+    # result_cache, bash_history, web_history, skill_history: newer ts wins.
+    rce: ResultCacheEntry
+    for rck, rce in local.result_cache.items():
+        if rck not in remote.result_cache or rce.ts > remote.result_cache[rck].ts:
+            remote.result_cache[rck] = rce
+    merged.result_cache = remote.result_cache
+
+    be: BashEntry
+    for bek, be in local.bash_history.items():
+        if bek not in remote.bash_history or be.ts > remote.bash_history[bek].ts:
+            remote.bash_history[bek] = be
+    merged.bash_history = remote.bash_history
+
+    we: WebEntry
+    for wek, we in local.web_history.items():
+        if wek not in remote.web_history or we.ts > remote.web_history[wek].ts:
+            remote.web_history[wek] = we
+    merged.web_history = remote.web_history
+
+    ske: SkillEntry
+    for skk, ske in local.skill_history.items():
+        if skk not in remote.skill_history or ske.ts > remote.skill_history[skk].ts:
+            remote.skill_history[skk] = ske
+    merged.skill_history = remote.skill_history
+
+    # snapshot_shas: local wins (it's the freshest content snapshot).
+    remote.snapshot_shas.update(local.snapshot_shas)
+    merged.snapshot_shas = remote.snapshot_shas
+
+    # greps / glob_history: append local entries not already in remote.
+    remote_grep_keys = {(grep.pattern, grep.path) for grep in remote.greps}
+    for grep in local.greps:
+        if (grep.pattern, grep.path) not in remote_grep_keys:
+            remote.greps.append(grep)
+    merged.greps = remote.greps
+
+    remote_glob_keys = {(glob.pattern, glob.path) for glob in remote.glob_history}
+    for glob in local.glob_history:
+        if (glob.pattern, glob.path) not in remote_glob_keys:
+            remote.glob_history.append(glob)
+    merged.glob_history = remote.glob_history
+
+    # --- counts: max ---
+    merged.hints_emitted = max(local.hints_emitted, remote.hints_emitted)
+    merged.hints_ignored = max(local.hints_ignored, remote.hints_ignored)
+    merged.structured_hints_emitted = max(local.structured_hints_emitted, remote.structured_hints_emitted)
+    merged.index_only_hints_emitted = max(local.index_only_hints_emitted, remote.index_only_hints_emitted)
+
+    # --- lists: take the longer one ---
+    merged.recent_hints = (
+        local.recent_hints if len(local.recent_hints) >= len(remote.recent_hints)
+        else remote.recent_hints
+    )
+
+    # --- scalars: max ---
+    merged.last_activity_ts = max(local.last_activity_ts, remote.last_activity_ts)
+
+    # --- manifest delta-cache: take the newer emit ---
+    if local.last_manifest_ts >= remote.last_manifest_ts:
+        merged.last_manifest_sha = local.last_manifest_sha
+        merged.last_manifest_ts = local.last_manifest_ts
+    # else remote already has the newer manifest fields (kept from base)
+
+    # cwd: prefer local (the hook that fired knows the current working directory).
+    if local.cwd is not None:
+        merged.cwd = local.cwd
+
+    merged._invalidate_json_cache()
+    return merged
 
 
 @dataclass
@@ -475,6 +686,13 @@ class SessionCache:
     # ``last_manifest_ts`` is the epoch timestamp of that emit; 0.0 means not yet set.
     last_manifest_sha: str = ""
     last_manifest_ts: float = 0.0
+    # Monotonically-incrementing version counter for optimistic CAS in save().
+    # Starts at 0 for a new session; each successful save() increments by 1.
+    # When two concurrent processes both load version N, the second to save
+    # detects version mismatch, merges its changes into the on-disk state,
+    # and writes version N+2 (or N+1 if the first also wrote N+1 before the
+    # merge).
+    version: int = 0
     unavailable: bool = field(default=False, repr=False, compare=False)
     # Internal: cached JSON string from last serialization — invalidated by any mutation.
     # Avoids O(N) re-serialization of files/greps dicts on every hook invocation when
@@ -520,6 +738,7 @@ class SessionCache:
             recent_hints=[[p, t] for p, t in self.recent_hints],
             last_manifest_sha=self.last_manifest_sha,
             last_manifest_ts=self.last_manifest_ts,
+            version=self.version,
         )
 
     def to_json(self) -> str:
@@ -751,6 +970,7 @@ class SessionCache:
             recent_hints=recent_hints,
             last_manifest_sha=str(d.get("last_manifest_sha", "")),
             last_manifest_ts=float(d.get("last_manifest_ts", 0.0)) if isinstance(d.get("last_manifest_ts"), (int, float)) else 0.0,
+            version=max(0, int(d.get("version", 0))) if isinstance(d.get("version"), (int, float)) else 0,
         )
 
 
@@ -1219,6 +1439,7 @@ class _SessionDict(TypedDict, total=False):
     recent_hints: list[list[object]]
     last_manifest_sha: str
     last_manifest_ts: float
+    version: int
 
 
 def _fresh_cache(session_id: str, *, unavailable: bool = False) -> SessionCache:
@@ -1431,6 +1652,8 @@ def _migrate_session(data: dict[str, Any]) -> dict[str, Any]:
         data["hints_ignored"] = 0
     if "recent_hints" not in data:
         data["recent_hints"] = []
+    if "version" not in data:
+        data["version"] = 0
 
     # Per-file-entry defaults for nested objects
     for _file_key, file_entry in data.get("files", {}).items():
@@ -1498,28 +1721,67 @@ def load(session_id: str) -> SessionCache:
 
 
 def save(cache: SessionCache) -> None:
-    """Atomically persist the session cache to disk."""
+    """Atomically persist the session cache to disk with cross-process CAS.
+
+    Uses a sidecar ``.lock`` file for mutual exclusion between concurrent hook
+    processes (one per tool call on Windows).  Within the critical section the
+    on-disk version is re-read; if another process wrote a newer version while
+    we held our in-memory copy, :func:`_merge_session_caches` re-applies our
+    mutations on top of the remote state before writing.  This prevents the
+    classic load-modify-save lost-update race.
+
+    Retry budget: up to 3 attempts for the underlying ``atomic_write_text``;
+    the lock itself has a 2-second timeout (see ``_LOCK_TIMEOUT_SECS``).  On
+    total failure the cache is marked ``unavailable`` so future saves no-op.
+    """
     if cache.unavailable:
         _LOG.debug("session save skipped (cache unavailable): %s", cache.session_id[:16])
         return
     t0 = time.monotonic()
     last_exc: OSError | None = None
-    for delay in (0.0, 0.05, 0.15):
-        if delay:
-            time.sleep(delay)
-        # _FILE_LOCK is acquired inside the retry loop, not outside, so that a
-        # sibling thread waiting to retry does not hold the lock while sleeping.
-        # Cross-process safety comes from atomic_write_text (write-to-temp +
-        # rename), so the lock only needs to serialize same-process writers.
+
+    for attempt in range(3):
+        if attempt:
+            time.sleep(0.05 * attempt)
+
+        # _FILE_LOCK serializes same-process threads; the sidecar lockfile
+        # serializes across processes.
         with _FILE_LOCK:
+            lock_fd = _acquire_session_lock(cache.session_id)
             try:
-                paths.atomic_write_text(
-                    paths.session_cache_path(cache.session_id),
-                    cache.to_json(),
-                )
-            except OSError as exc:
-                last_exc = exc
-                continue
+                # CAS: re-read on-disk state inside the lock.
+                disk_cache: SessionCache | None = None
+                p = paths.session_cache_path(cache.session_id)
+                try:
+                    if p.exists():
+                        raw = p.read_text(encoding="utf-8")
+                        data = json.loads(raw)
+                        data = _migrate_session(data)
+                        disk_cache = SessionCache.from_dict(data)
+                except (OSError, json.JSONDecodeError, KeyError, TypeError, ValueError):
+                    # On-disk file unreadable — treat as empty (will overwrite).
+                    disk_cache = None
+
+                # Merge if another process wrote a newer version since we loaded.
+                if disk_cache is not None and disk_cache.version > cache.version:
+                    _LOG.debug(
+                        "session CAS merge: %s (local v%d, remote v%d)",
+                        cache.session_id[:16], cache.version, disk_cache.version,
+                    )
+                    cache = _merge_session_caches(cache, disk_cache)
+
+                # Bump version and write.
+                cache.version = (disk_cache.version if disk_cache is not None else cache.version) + 1
+                cache._invalidate_json_cache()
+
+                try:
+                    paths.atomic_write_text(p, cache.to_json())
+                except OSError as exc:
+                    last_exc = exc
+                    continue
+            finally:
+                _release_session_lock(cache.session_id, lock_fd)
+
         elapsed_ms = (time.monotonic() - t0) * 1000
         if elapsed_ms >= 100:
             _LOG.warning(
@@ -1528,10 +1790,12 @@ def save(cache: SessionCache) -> None:
             )
         else:
             _LOG.debug(
-                "session saved: %s (%d files, %d greps) %.1fms",
-                cache.session_id[:16], len(cache.files), len(cache.greps), elapsed_ms,
+                "session saved: %s (%d files, %d greps) v%d %.1fms",
+                cache.session_id[:16], len(cache.files), len(cache.greps),
+                cache.version, elapsed_ms,
             )
         return
+
     if last_exc is not None:
         _LOG.warning(
             "session save failed after retries: %s (session=%s, files=%d, greps=%d) — "
