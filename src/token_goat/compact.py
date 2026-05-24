@@ -26,7 +26,6 @@ import json
 import math
 import os
 import re
-import subprocess
 import time
 from collections.abc import Callable
 from datetime import UTC, datetime
@@ -38,6 +37,7 @@ from .cache_common import short_content_hash as _short_content_hash
 from .cache_common import short_output_id as _short_id
 from .hooks_common import sanitize_log_str
 from .util import _humanize_bytes, get_logger
+from .util import run_git as _util_run_git
 
 
 def __getattr__(name: str) -> object:
@@ -82,15 +82,11 @@ def _run_git(args: list[str], cwd: str, timeout: float = 5) -> str | None:
     the process times out, the exit code is non-zero, or the output is empty.
     Never raises — all exceptions are swallowed so callers can use a simple
     ``if (out := _run_git(...)) is not None:`` pattern.
+
+    Delegates to ``util.run_git`` for consistent kwargs (encoding, errors, lock avoidance).
     """
     try:
-        result = subprocess.run(
-            ["git", *args],
-            cwd=cwd,
-            capture_output=True,
-            text=True,
-            timeout=timeout,
-        )
+        result = _util_run_git(args, cwd=cwd, timeout=timeout)
         if result.returncode != 0 or not result.stdout.strip():
             return None
         return result.stdout.strip()
