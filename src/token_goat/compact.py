@@ -74,6 +74,30 @@ if TYPE_CHECKING:
 
 _LOG = get_logger("compact")
 
+
+def _run_git(args: list[str], cwd: str, timeout: float = 5) -> str | None:
+    """Run ``git <args>`` in *cwd* and return stripped stdout, or ``None`` on failure.
+
+    Returns ``None`` when git is not found, the working directory does not exist,
+    the process times out, the exit code is non-zero, or the output is empty.
+    Never raises — all exceptions are swallowed so callers can use a simple
+    ``if (out := _run_git(...)) is not None:`` pattern.
+    """
+    try:
+        result = subprocess.run(
+            ["git", *args],
+            cwd=cwd,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+        )
+        if result.returncode != 0 or not result.stdout.strip():
+            return None
+        return result.stdout.strip()
+    except Exception:  # noqa: BLE001
+        return None
+
+
 # Wall-clock timeout for build_manifest() to prevent the PreCompact hook from stalling.
 # The function makes git subprocess calls which may hang on network mounts or large repos.
 # This is a belt-and-suspenders guard: individual git subprocesses have their own 2-5s
@@ -226,10 +250,12 @@ def _compute_manifest_fingerprint(cache: SessionCache) -> str:  # type: ignore[n
         + len(getattr(cache, "web_history", None) or {})
     )
 
+    _ef = cache.edited_files
+    _ef_keys = sorted(_ef.keys() if hasattr(_ef, "keys") else _ef)
     payload = json.dumps(
         {
             "ev": event_count,
-            "ef": sorted(cache.edited_files.keys()),
+            "ef": _ef_keys,
             "bt": last_3_ts,
             "bx": last_exit,
         },
@@ -514,58 +540,23 @@ def _get_git_diff_stat(
     if not cwd or not edited_paths:
         return None
 
-    try:
-        # Run git diff --stat HEAD for the given files
-        result = subprocess.run(
-            ["git", "diff", "--stat", "HEAD", "--"] + edited_paths,
-            cwd=cwd,
-            capture_output=True,
-            text=True,
-            timeout=2,
-        )
-
-        # Only use output if git succeeded
-        if result.returncode != 0:
-            _LOG.debug(
-                "_get_git_diff_stat: git diff failed with code %d (cwd=%s)",
-                result.returncode,
-                cwd,
-            )
-            return None
-
-        if not result.stdout.strip():
-            _LOG.debug("_get_git_diff_stat: git diff returned empty output")
-            return None
-
-        # Split into lines and filter out summary line (contains "file changed")
-        all_lines = result.stdout.strip().splitlines()
-        diff_lines = [
-            line for line in all_lines
-            if "file changed" not in line.lower() and "insertion" not in line.lower()
-        ]
-
-        if not diff_lines:
-            _LOG.debug("_get_git_diff_stat: no diff lines after filtering summary")
-            return None
-
-        # Truncate to 8 lines
-        lines = diff_lines[:8]
-        output = "\n".join(lines)
-
-        # Cap total output at 200 chars
-        if len(output) > 200:
-            output = output[:200].rsplit("\n", 1)[0]  # Backtrack to last newline
-
-        return output
-    except FileNotFoundError:
-        _LOG.debug("_get_git_diff_stat: git not found")
+    raw = _run_git(["diff", "--stat", "HEAD", "--"] + edited_paths, cwd, timeout=2)
+    if not raw:
         return None
-    except subprocess.TimeoutExpired:
-        _LOG.debug("_get_git_diff_stat: git diff timed out (>2s)")
+    # Filter out summary line (contains "file changed" / "insertions")
+    diff_lines = [
+        line for line in raw.splitlines()
+        if "file changed" not in line.lower() and "insertion" not in line.lower()
+    ]
+    if not diff_lines:
+        _LOG.debug("_get_git_diff_stat: no diff lines after filtering summary")
         return None
-    except Exception as e:  # noqa: BLE001
-        _LOG.debug("_get_git_diff_stat: error running git diff: %s", e)
-        return None
+
+    # Truncate to 8 lines and cap total at 200 chars.
+    output = "\n".join(diff_lines[:8])
+    if len(output) > 200:
+        output = output[:200].rsplit("\n", 1)[0]
+    return output
 
 
 _INLINE_DIFF_MAX_BYTES: Final[int] = 500  # per-file diff size gate (#7)
@@ -585,22 +576,10 @@ def _get_inline_diff_for_file(path: str, cwd: str) -> str | None:
     """
     if not cwd or not path:
         return None
-    try:
-        result = subprocess.run(
-            ["git", "diff", "--no-color", "HEAD", "--", path],
-            cwd=cwd,
-            capture_output=True,
-            text=True,
-            timeout=1.5,
-        )
-        if result.returncode != 0 or not result.stdout.strip():
-            return None
-        diff = result.stdout.strip()
-        if len(diff) > _INLINE_DIFF_MAX_BYTES:
-            return None
-        return diff
-    except Exception:  # noqa: BLE001
+    diff = _run_git(["diff", "--no-color", "HEAD", "--", path], cwd, timeout=1.5)
+    if diff is None or len(diff) > _INLINE_DIFF_MAX_BYTES:
         return None
+    return diff
 
 
 def _get_whole_repo_diff(cwd: str) -> str | None:
@@ -613,22 +592,10 @@ def _get_whole_repo_diff(cwd: str) -> str | None:
     """
     if not cwd:
         return None
-    try:
-        result = subprocess.run(
-            ["git", "diff", "--no-color", "HEAD"],
-            cwd=cwd,
-            capture_output=True,
-            text=True,
-            timeout=1.5,
-        )
-        if result.returncode != 0 or not result.stdout.strip():
-            return None
-        diff = result.stdout.strip()
-        if len(diff) > _SINGLE_FILE_DIFF_CAP:
-            return None
-        return diff
-    except Exception:  # noqa: BLE001
+    diff = _run_git(["diff", "--no-color", "HEAD"], cwd, timeout=1.5)
+    if diff is None or len(diff) > _SINGLE_FILE_DIFF_CAP:
         return None
+    return diff
 
 
 def _is_git_repo(cwd: str) -> bool:
@@ -680,37 +647,19 @@ def _get_uncommitted_changes(project_root: str | None) -> str | None:
             return cached[0]
 
         # Run git diff --stat HEAD to see tracked file changes with +/- counts.
-        diff_result = subprocess.run(
-            ["git", "diff", "--no-color", "--stat", "HEAD"],
-            cwd=project_root,
-            capture_output=True,
-            text=True,
-            timeout=5,
+        _diff_out = _run_git(["diff", "--no-color", "--stat", "HEAD"], project_root, timeout=5)
+        diff_lines: list[str] = (
+            [line.rstrip() for line in _diff_out.splitlines() if line.strip()]
+            if _diff_out else []
         )
-        diff_lines: list[str] = []
-        if diff_result.returncode == 0 and diff_result.stdout.strip():
-            diff_lines = [
-                line.rstrip()
-                for line in diff_result.stdout.strip().splitlines()
-                if line.strip()
-            ]
 
         # Run git status --short to catch untracked (??) and staged files not
         # reflected in diff --stat HEAD (e.g. new files added to the index).
-        status_result = subprocess.run(
-            ["git", "status", "--short"],
-            cwd=project_root,
-            capture_output=True,
-            text=True,
-            timeout=5,
+        _status_out = _run_git(["status", "--short"], project_root, timeout=5)
+        status_lines: list[str] = (
+            [line.rstrip() for line in _status_out.splitlines() if line.strip()]
+            if _status_out else []
         )
-        status_lines: list[str] = []
-        if status_result.returncode == 0 and status_result.stdout.strip():
-            status_lines = [
-                line.rstrip()
-                for line in status_result.stdout.strip().splitlines()
-                if line.strip()
-            ]
 
         if not diff_lines and not status_lines:
             _uncommitted_changes_cache[project_root] = (None, now)
@@ -786,17 +735,11 @@ def _get_git_diff_stat_summary(root: object) -> str:
         if cached is not None and now - cached[1] < _DIFF_STAT_SUMMARY_TTL:
             return cached[0]
 
-        result = subprocess.run(
-            ["git", "diff", "--no-color", "--stat", "HEAD"],
-            cwd=root_str,
-            capture_output=True,
-            text=True,
-            timeout=5,
-        )
-        if result.returncode != 0 or not result.stdout.strip():
+        _stat_out = _run_git(["diff", "--no-color", "--stat", "HEAD"], root_str, timeout=5)
+        if not _stat_out:
             _diff_stat_summary_cache[root_str] = ("", now)
             return ""
-        lines = result.stdout.strip().splitlines()
+        lines = _stat_out.splitlines()
         # Keep at most 6 lines (last 5 file-stat lines + the summary line which is last).
         # git --stat outputs file lines first then a summary line at the end; taking the
         # last 6 lines captures the summary and up to 5 file entries.
@@ -830,20 +773,14 @@ def _get_session_commits(cwd: str | None, session_start_ts: float) -> list[str]:
     """
     if not cwd or session_start_ts <= 0:
         return []
-    try:
-        result = subprocess.run(
-            ["git", "log", "--oneline", f"--since={int(session_start_ts)}", "--max-count=5"],
-            cwd=cwd,
-            capture_output=True,
-            text=True,
-            timeout=2,
-        )
-        if result.returncode != 0 or not result.stdout.strip():
-            return []
-        lines = result.stdout.strip().splitlines()
-        return [f"- {sanitize_log_str(line, max_len=100)}" for line in lines[:5]]
-    except Exception:  # noqa: BLE001
+    out = _run_git(
+        ["log", "--oneline", f"--since={int(session_start_ts)}", "--max-count=5"],
+        cwd,
+        timeout=2,
+    )
+    if not out:
         return []
+    return [f"- {sanitize_log_str(line, max_len=100)}" for line in out.splitlines()[:5]]
 
 
 def _count_suffix(n: int) -> str:

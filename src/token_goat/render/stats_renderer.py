@@ -216,6 +216,7 @@ def _fmt_date(d: date) -> str:
 
 _EIGHTHS = ["▏", "▎", "▍", "▌", "▋", "▊", "▉"]
 _BLOCK = "█"
+_TRACK = "░"  # light-shade for unfilled track — visually distinct from █ without relying on color
 _GRADIENT: list[RGB] = [C.GREEN1, C.GREEN2, C.GREEN3, C.GREEN4, C.GREEN5]
 
 
@@ -258,7 +259,7 @@ def _render_bar(fraction: float, width: int = _BAR_W) -> str:
     if has_partial:
         bar += fg(*_GRADIENT[-1]) + _EIGHTHS[eighths - 1]
     if n_track > 0:
-        bar += fg(*C.TRACK) + _BLOCK * n_track
+        bar += fg(*C.TRACK) + _TRACK * n_track
 
     return bar + RESET
 
@@ -625,7 +626,7 @@ def _hash_color(hash_str: str) -> RGB:
 # ── Section: by day ───────────────────────────────────────────────────────────
 
 def _render_by_day_section(stats: StatsData) -> list[str]:
-    """Render the "By day (top 7)" table: one row per day, ordered by share (largest first).
+    """Render the "By day" table: one row per day, ordered latest-first by date.
 
     Share fraction uses tokens when the period total is non-zero, falling back
     to bytes when all token counts are zero (e.g. an image-only session).
@@ -634,15 +635,14 @@ def _render_by_day_section(stats: StatsData) -> list[str]:
     if not stats.by_day:
         return []
 
-    lines: list[str] = [*_section_header("By day (top 7)"), _table_header("date")]
+    lines: list[str] = [*_section_header("By day"), _table_header("date")]
 
     def _share(d: DayStat) -> float:
         """Fraction of the period total this day represents (see section docstring)."""
         return _token_or_byte_share(d.tokens, d.bytes, stats.totals.tokens, stats.totals.bytes)
 
-    # Rows are ordered by share of the period total, largest first — matching
-    # the share column the row renders, so the column reads monotonically.
-    for d in sorted(stats.by_day, key=_share, reverse=True):
+    # Rows are ordered newest-first so the most recent activity is at the top.
+    for d in sorted(stats.by_day, key=lambda d: d.date, reverse=True):
         share = _share(d)
         lines.append(_table_row(d.date, share, d.bytes, d.tokens, d.events, share))
 
@@ -737,15 +737,16 @@ def _render_insights_section(stats: StatsData) -> list[str]:
 # ── Report header ──────────────────────────────────────────────────────────────
 
 def _render_header(stats: StatsData) -> list[str]:
-    """Return the report header line: the token-goat name and loaded version.
+    """Return the report header line: name, version, and window label.
 
-    ``stats.version`` is the installed token-goat package version. An empty
-    string (older ``StatsData`` payloads built before the field shipped)
-    renders just the name with no version suffix.
+    ``stats.version`` is the installed package version; omitted when empty.
+    ``stats.window_label`` is "last N days" or "all time"; omitted when empty.
     """
     line = f"{_M}{fg(*C.TEXT_BRIGHT)}token-goat{RESET}"
     if stats.version:
         line += f"  {fg(*C.TEXT_MUTED)}v{stats.version}{RESET}"
+    if stats.window_label:
+        line += f"  {fg(*C.TEXT_DIM)}·  {stats.window_label}{RESET}"
     return [line]
 
 

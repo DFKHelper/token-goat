@@ -35,6 +35,7 @@ __all__ = [
     "HookSpecificOutputDeny",
     "HookSpecificOutputUpdate",
     "LOG",
+    "bytes_to_tokens",
     "deny_redirect",
     "extract_tool_response_text",
     "get_session_context",
@@ -311,6 +312,19 @@ def sanitize_opt(value: object) -> str:
     return sanitize_log_str(str(value))
 
 
+def bytes_to_tokens(byte_count: int) -> int:
+    """Convert a byte count to an approximate token count (minimum 1).
+
+    Uses the same ``CHARS_PER_TOKEN`` constant (3.5) as the rest of the hint
+    layer.  The ``max(1, ...)`` guard ensures zero-length injections still
+    record at least one token of overhead — consistent with the inline formula
+    it replaces.
+    """
+    from .hints import CHARS_PER_TOKEN  # noqa: PLC0415
+
+    return max(1, int(byte_count / CHARS_PER_TOKEN))
+
+
 def record_hint_stat_pair(kind: str, hint: object, detail: str) -> None:
     """Record a matched-pair of stat rows for a hint: the gross saving plus the injection overhead.
 
@@ -338,11 +352,10 @@ def record_hint_stat_pair(kind: str, hint: object, detail: str) -> None:
                 sanitising it before passing — use :func:`sanitize_log_str`.
     """
     from . import config, db  # noqa: PLC0415
-    from .hints import CHARS_PER_TOKEN  # noqa: PLC0415
 
     realized_tokens: int = getattr(hint, "tokens_saved", 0)
     injection_bytes: int = len(hint)  # type: ignore[arg-type]
-    injection_cost_tokens = max(1, int(injection_bytes / CHARS_PER_TOKEN))
+    injection_cost_tokens = bytes_to_tokens(injection_bytes)
 
     # Skip writing stat rows for zero-saving hints (large-file nudges, lockfile
     # hints) unless explicitly enabled via config. These hint types don't realize

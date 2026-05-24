@@ -194,21 +194,40 @@ def global_db_path() -> Path:
     return data_dir() / "global.db"
 
 
+def _safe_child_path(base: Path, child_name: str, extension: str, label: str) -> Path:
+    """Return ``base / (child_name + extension)`` after null-byte and traversal checks.
+
+    Raises ``ValueError`` if *child_name* contains a null byte (some filesystems
+    treat these as path terminators) or if the resolved candidate escapes *base*
+    (e.g. via ``../../evil`` sequences).
+
+    Args:
+        base:       The directory that must contain the returned path.
+        child_name: The filename stem to join under *base* (no extension).
+        extension:  File extension including the leading dot (e.g. ``".db"``),
+                    or ``""`` if the child name already includes it.
+        label:      Human-readable label used in ``ValueError`` messages
+                    (e.g. ``"project_hash"``, ``"session_id"``).
+    """
+    if "\x00" in child_name:
+        raise ValueError(f"{label} contains null byte: {child_name!r}")
+    candidate = (base / f"{child_name}{extension}").resolve()
+    try:
+        candidate.relative_to(base.resolve())
+    except ValueError as exc:
+        raise ValueError(
+            f"{label} produces a path outside {base.name}/: {child_name!r}"
+        ) from exc
+    return candidate
+
+
 def project_db_path(project_hash: str) -> Path:
     """Path to projects/{hash}.db.
 
     Raises ValueError if the resolved path escapes the projects/ subdirectory,
     which would happen with traversal sequences like ``../../../evil``.
     """
-    if "\x00" in project_hash:
-        raise ValueError(f"project_hash contains null byte: {project_hash!r}")
-    base = data_dir() / "projects"
-    candidate = (base / f"{project_hash}.db").resolve()
-    try:
-        candidate.relative_to(base.resolve())
-    except ValueError as exc:
-        raise ValueError(f"project_hash produces a path outside the projects directory: {project_hash!r}") from exc
-    return candidate
+    return _safe_child_path(data_dir() / "projects", project_hash, ".db", "project_hash")
 
 
 def is_safe_rel_path(rel_path: str) -> bool:
@@ -250,14 +269,7 @@ def session_cache_path(session_id: str) -> Path:
     """
     import sys
 
-    if "\x00" in session_id:
-        raise ValueError(f"session_id contains null byte: {session_id!r}")
-    base = data_dir() / "sessions"
-    candidate = (base / f"{session_id}.json").resolve()
-    try:
-        candidate.relative_to(base.resolve())
-    except ValueError as exc:
-        raise ValueError(f"session_id produces a path outside the sessions directory: {session_id!r}") from exc
+    candidate = _safe_child_path(data_dir() / "sessions", session_id, ".json", "session_id")
     if sys.platform == "win32" and len(str(candidate)) >= 260:
         raise ValueError(
             f"session_id produces a path that exceeds Windows MAX_PATH (260 chars): "
@@ -366,17 +378,7 @@ def compact_skip_sentinel_path(session_id: str) -> Path:
     Raises ``ValueError`` if *session_id* contains a null byte or would
     produce a path outside the ``compact_skip/`` subdirectory.
     """
-    if "\x00" in session_id:
-        raise ValueError(f"session_id contains null byte: {session_id!r}")
-    base = data_dir() / "compact_skip"
-    candidate = (base / f"{session_id}.sentinel").resolve()
-    try:
-        candidate.relative_to(base.resolve())
-    except ValueError as exc:
-        raise ValueError(
-            f"session_id produces a path outside the compact_skip directory: {session_id!r}"
-        ) from exc
-    return candidate
+    return _safe_child_path(data_dir() / "compact_skip", session_id, ".sentinel", "session_id")
 
 
 def sentinels_dir() -> Path:
@@ -401,17 +403,7 @@ def manifest_sha_sidecar_path(session_id: str) -> Path:
     Raises ``ValueError`` if *session_id* contains a null byte or would
     produce a path outside the ``sentinels/`` directory.
     """
-    if "\x00" in session_id:
-        raise ValueError(f"session_id contains null byte: {session_id!r}")
-    base = sentinels_dir()
-    candidate = (base / f"manifest_sha_{session_id}").resolve()
-    try:
-        candidate.relative_to(base.resolve())
-    except ValueError as exc:
-        raise ValueError(
-            f"session_id produces a path outside the sentinels directory: {session_id!r}"
-        ) from exc
-    return candidate
+    return _safe_child_path(sentinels_dir(), f"manifest_sha_{session_id}", "", "session_id")
 
 
 def claude_config_dir() -> Path:

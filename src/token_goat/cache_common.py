@@ -36,6 +36,8 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any, TypedDict
 
+from .util import get_logger
+
 # Filename pattern shared by both the bash-output and web-output caches.
 # Components are intentionally kept short so the full path stays well within
 # PATH_MAX even when the data directory lives several levels deep (e.g. roaming
@@ -166,7 +168,7 @@ def evict_cache_dir(
       failed sidecar unlink is logged at DEBUG and will be cleaned up by the
       next orphan sweep.
     """
-    _log = logging.getLogger(f"token_goat.{log_name}")
+    _log = get_logger(log_name)
 
     try:
         d = cache_dir_fn()
@@ -396,7 +398,7 @@ def safe_join_output_id(
     """
     if not output_id:
         return None
-    _log = logging.getLogger(f"token_goat.{log_name}")
+    _log = get_logger(log_name)
     name = f"{output_id}.txt"
     if not OUTPUT_FILENAME_RE.match(name):
         _log.warning("%s: rejected output_id with invalid chars: %r", log_name, output_id[:200])
@@ -441,7 +443,7 @@ def load_output_text(
     exactly one match is found it is loaded; if zero or multiple are found
     ``None`` is returned.
     """
-    _log = logging.getLogger(f"token_goat.{log_name}")
+    _log = get_logger(log_name)
     path = safe_join_output_id(output_id, cache_dir_fn, log_name)
     if path is None:
         return None

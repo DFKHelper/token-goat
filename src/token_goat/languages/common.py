@@ -32,10 +32,12 @@ import types
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Protocol, TypeAlias
 
+from ..util import get_logger
+
 if TYPE_CHECKING:
     from ..parser import ImpExp, Ref, Section, Symbol
 
-_LOG = logging.getLogger("token_goat.languages.common")
+_LOG = get_logger("languages.common")
 
 # Shared call-site ref pattern for languages whose identifiers follow
 # [A-Za-z_][A-Za-z0-9_]* (Python, Go, Rust).  TypeScript/JS extends this with

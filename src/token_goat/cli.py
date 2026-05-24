@@ -29,6 +29,7 @@ import typer
 from . import config as config_mod
 from . import hooks_cli
 from .hooks_common import is_real_int
+from .render.ansi import color_stderr
 from .util import get_logger
 
 _LOG = get_logger("cli")
@@ -40,19 +41,13 @@ def _error(msg: str) -> None:
     On a TTY the prefix is rendered in red (ANSI 31); in a pipe or when NO_COLOR
     is set the message is plain text so it stays grep-friendly and CI-safe.
     """
-    if sys.stderr.isatty() and not os.environ.get("NO_COLOR"):
-        prefix = "\033[31mError:\033[0m "
-    else:
-        prefix = "Error: "
+    prefix = "\033[31mError:\033[0m " if color_stderr() else "Error: "
     typer.echo(f"{prefix}{msg}", err=True)
 
 
 def _warn(msg: str) -> None:
     """Print a user-facing warning to stderr with a consistent 'Warning: ' prefix."""
-    if sys.stderr.isatty() and not os.environ.get("NO_COLOR"):
-        prefix = "\033[33mWarning:\033[0m "
-    else:
-        prefix = "Warning: "
+    prefix = "\033[33mWarning:\033[0m " if color_stderr() else "Warning: "
     typer.echo(f"{prefix}{msg}", err=True)
 
 
@@ -108,6 +103,10 @@ _OPT_JSON: bool = typer.Option(False, "--json", help="Output structured JSON ins
 
 #: ``--context`` / ``-c`` lines option shared by bash-output and web-output commands.
 _OPT_CONTEXT_LINES: int = typer.Option(0, "--context", "-c", help="Extra lines before/after")  # noqa: B008
+
+#: Optional ``--session-id`` / ``-s`` flag.  When omitted the command uses the
+#: current or most-recent session automatically.
+_OPT_SESSION_ID: str | None = typer.Option(None, "--session-id", "-s")  # noqa: B008
 
 
 def _emit_path_result(path: Path, json_output: bool) -> None:
@@ -797,7 +796,7 @@ def deps(
 @app.command(rich_help_panel="Core")
 def read(
     target: str = typer.Argument(..., help="<file>::<symbol> — e.g., 'parser.py::index_project' or 'auth.py::Session.refresh' for a qualified method."),
-    session_id: str | None = typer.Option(None, "--session-id", "-s"),
+    session_id: str | None = _OPT_SESSION_ID,
     json_output: bool = _OPT_JSON,
     context_lines: int = _OPT_CONTEXT_LINES,
 ) -> None:
@@ -818,7 +817,7 @@ def read(
 @app.command(rich_help_panel="Core")
 def section(
     target: str = typer.Argument(..., help="<file>::<heading> — e.g., 'README.md::Install'. Append #N to disambiguate duplicate headings, e.g. 'doc.md::Setup#2'."),
-    session_id: str | None = typer.Option(None, "--session-id", "-s"),
+    session_id: str | None = _OPT_SESSION_ID,
     json_output: bool = _OPT_JSON,
     context_lines: int = _OPT_CONTEXT_LINES,
 ) -> None:
@@ -1306,6 +1305,56 @@ _HEAD_TAIL_THRESHOLD = _HEAD_TAIL_LINES * 2  # no-op when body <= this many line
 # --grep-max default cap (Item 10).
 _GREP_MAX_DEFAULT = 20
 
+# Shared Typer option objects for the output-slicing flags used by bash-output,
+# web-output, and skill-body.  Defined once so help text and defaults stay in
+# sync across all three commands.  Typer treats these as immutable descriptors —
+# it reads the default at registration time and does not mutate the objects.
+_OPT_HEAD: int = typer.Option(0, "--head", help="Show first N lines (0 = no head limit)")  # noqa: B008
+_OPT_TAIL: int = typer.Option(0, "--tail", help="Show last N lines (0 = no tail limit)")  # noqa: B008
+_OPT_GREP: str | None = typer.Option(None, "--grep", "-g", help="Show only lines matching the (case-sensitive) substring")  # noqa: B008
+_OPT_GREP_MAX: int = typer.Option(_GREP_MAX_DEFAULT, "--grep-max", help="Max matching lines to show with --grep (0 = no cap)")  # noqa: B008
+_OPT_FULL: bool = typer.Option(False, "--full", help="Return the entire cached output (disables smart-default head+tail)")  # noqa: B008
+_OPT_HEAD_TAIL: bool = typer.Option(False, "--head-tail", help="Emit first+last 20 lines with an omission marker instead of full body")  # noqa: B008
+
+
+def _apply_recall_filters(
+    lines: list[str],
+    *,
+    head: int,
+    tail: int,
+    grep: str | None,
+    full: bool,
+) -> list[str]:
+    """Apply the standard head/tail/grep/full slicing pipeline to *lines*.
+
+    This is the subset of output-recall filtering that is common to all three
+    output-recall commands (bash-output, web-output, skill-body).  More
+    specialised logic — grep-max capping, head-tail mode, numbered-lines JSON
+    anchoring — lives in :func:`_run_output_recall_command` because it is only
+    needed for the bash/web pair.
+
+    Args:
+        lines: Source lines (already split on newlines).
+        head:  Return first N lines (0 = no limit).
+        tail:  Return last N lines (0 = no limit).
+        grep:  Case-sensitive substring filter; ``None`` or ``""`` = no filter.
+        full:  When True, skip the smart-default elision even if no explicit
+               slice flags were passed.
+
+    Returns:
+        Filtered list of lines; caller joins with ``"\\n"`` for output.
+    """
+    slicing_requested = bool(grep) or head > 0 or tail > 0
+    if grep:
+        lines = [ln for ln in lines if grep in ln]
+    if head > 0:
+        lines = lines[:head]
+    if tail > 0:
+        lines = lines[-tail:]
+    if not slicing_requested and not full:
+        lines = _apply_smart_default(lines)
+    return lines
+
 
 def _apply_smart_default(lines: list[str]) -> list[str]:
     """Return head+tail slice with an elision marker, or the original list unchanged."""
@@ -1468,12 +1517,12 @@ def _run_output_recall_command(
 @app.command("bash-output", rich_help_panel="Core")
 def cmd_bash_output(
     output_id: str = typer.Argument(..., help="ID returned by the post-bash hook or `bash-history`."),
-    head: int = typer.Option(0, "--head", help="Show first N lines (0 = no head limit)"),
-    tail: int = typer.Option(0, "--tail", help="Show last N lines (0 = no tail limit)"),
-    grep: str | None = typer.Option(None, "--grep", "-g", help="Show only lines matching the (case-sensitive) substring"),
-    grep_max: int = typer.Option(_GREP_MAX_DEFAULT, "--grep-max", help="Max matching lines to show with --grep (0 = no cap)"),
-    full: bool = typer.Option(False, "--full", help="Return the entire cached output (disables smart-default head+tail)"),
-    head_tail: bool = typer.Option(False, "--head-tail", help="Emit first+last 20 lines with an omission marker instead of full body"),
+    head: int = _OPT_HEAD,
+    tail: int = _OPT_TAIL,
+    grep: str | None = _OPT_GREP,
+    grep_max: int = _OPT_GREP_MAX,
+    full: bool = _OPT_FULL,
+    head_tail: bool = _OPT_HEAD_TAIL,
     json_output: bool = _OPT_JSON,
 ) -> None:
     """Retrieve a sliced view of a cached Bash output.
@@ -1512,12 +1561,12 @@ def cmd_bash_output(
 @app.command("web-output", rich_help_panel="Core")
 def cmd_web_output(
     output_id: str = typer.Argument(..., help="ID returned by the post-fetch hook or `web-history`."),
-    head: int = typer.Option(0, "--head", help="Show first N lines (0 = no head limit)"),
-    tail: int = typer.Option(0, "--tail", help="Show last N lines (0 = no tail limit)"),
-    grep: str | None = typer.Option(None, "--grep", "-g", help="Show only lines matching the (case-sensitive) substring"),
-    grep_max: int = typer.Option(_GREP_MAX_DEFAULT, "--grep-max", help="Max matching lines to show with --grep (0 = no cap)"),
-    full: bool = typer.Option(False, "--full", help="Return the entire cached output (disables smart-default head+tail)"),
-    head_tail: bool = typer.Option(False, "--head-tail", help="Emit first+last 20 lines with an omission marker instead of full body"),
+    head: int = _OPT_HEAD,
+    tail: int = _OPT_TAIL,
+    grep: str | None = _OPT_GREP,
+    grep_max: int = _OPT_GREP_MAX,
+    full: bool = _OPT_FULL,
+    head_tail: bool = _OPT_HEAD_TAIL,
     json_output: bool = _OPT_JSON,
 ) -> None:
     """Retrieve a sliced view of a cached WebFetch response body.
@@ -1672,10 +1721,10 @@ def cmd_bash_history(
 @app.command("skill-body", rich_help_panel="Core")
 def cmd_skill_body(
     name: str = typer.Argument(..., help="Skill name (e.g. 'ralph', 'plugin:improve')."),
-    head: int = typer.Option(0, "--head", help="Show first N lines (0 = no head limit)"),
-    tail: int = typer.Option(0, "--tail", help="Show last N lines (0 = no tail limit)"),
-    grep: str | None = typer.Option(None, "--grep", "-g", help="Show only lines matching the (case-sensitive) substring"),
-    full: bool = typer.Option(False, "--full", help="Return the entire cached body (disables smart-default head+tail)"),
+    head: int = _OPT_HEAD,
+    tail: int = _OPT_TAIL,
+    grep: str | None = _OPT_GREP,
+    full: bool = _OPT_FULL,
     json_output: bool = _OPT_JSON,
 ) -> None:
     """Retrieve a sliced view of a cached Skill body.
@@ -1717,16 +1766,7 @@ def cmd_skill_body(
         _error(f"no cached body for skill: {name}")
         raise typer.Exit(1)
 
-    lines = body.splitlines()
-    _slicing_requested = grep or head > 0 or tail > 0
-    if grep:
-        lines = [ln for ln in lines if grep in ln]
-    if head > 0:
-        lines = lines[: head]
-    if tail > 0:
-        lines = lines[-tail :]
-    if not _slicing_requested and not full:
-        lines = _apply_smart_default(lines)
+    lines = _apply_recall_filters(body.splitlines(), head=head, tail=tail, grep=grep, full=full)
     sliced = "\n".join(lines)
 
     # Record a recall stat so `token-goat stats` reflects the value of avoiding

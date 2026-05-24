@@ -262,7 +262,7 @@ class TestProjectDbPathTraversal:
 
     def test_traversal_hash_raises_value_error(self, tmp_data_dir):
         """A traversal sequence like '../../../evil' raises ValueError."""
-        with pytest.raises(ValueError, match="outside the projects directory"):
+        with pytest.raises(ValueError, match="outside projects"):
             paths.project_db_path("../../../evil")
 
     def test_traversal_with_null_byte_raises(self, tmp_data_dir):
@@ -274,7 +274,7 @@ class TestProjectDbPathTraversal:
         """A hash that looks like an absolute path raises ValueError."""
         # On Windows Path("C:/windows/system32") in projects/ resolves outside.
         # On any platform "/etc/passwd" resolves outside.
-        with pytest.raises(ValueError, match="outside the projects directory"):
+        with pytest.raises(ValueError, match="outside projects"):
             paths.project_db_path("/etc/passwd")
 
 
@@ -293,13 +293,13 @@ class TestSessionCachePathTraversal:
 
     def test_traversal_session_id_raises_value_error(self, tmp_data_dir):
         """A traversal sequence raises ValueError."""
-        with pytest.raises(ValueError, match="outside the sessions directory"):
+        with pytest.raises(ValueError, match="outside sessions"):
             paths.session_cache_path("../../../etc/shadow")
 
     def test_windows_absolute_path_as_session_id_raises(self, tmp_data_dir):
         """A session ID that resolves to an absolute path outside sessions/ raises."""
         # Choosing a multi-level traversal that definitely escapes the directory.
-        with pytest.raises(ValueError, match="outside the sessions directory"):
+        with pytest.raises(ValueError, match="outside sessions"):
             paths.session_cache_path("../../leaked")
 
 
@@ -357,3 +357,68 @@ class TestAtomicWriteCore:
 
         # The rename succeeded; no unlink should have been called.
         assert unlink_calls == [], f"unexpected unlink calls: {unlink_calls}"
+
+
+# ---------------------------------------------------------------------------
+# Item 8: _safe_child_path traversal-guard helper
+# ---------------------------------------------------------------------------
+
+class TestSafeChildPath:
+    """Tests for paths._safe_child_path (Item 8 DRY consolidation)."""
+
+    def test_happy_path_returns_correct_path(self, tmp_path: Path) -> None:
+        """A valid child name returns base / (name + extension)."""
+        base = tmp_path / "subdir"
+        base.mkdir()
+        result = paths._safe_child_path(base, "abc123", ".db", "project_hash")
+        assert result == (base / "abc123.db").resolve()
+
+    def test_null_byte_raises_value_error(self, tmp_path: Path) -> None:
+        """A null byte in child_name raises ValueError with the label."""
+        base = tmp_path / "subdir"
+        base.mkdir()
+        with pytest.raises(ValueError, match="project_hash"):
+            paths._safe_child_path(base, "abc\x00def", ".db", "project_hash")
+
+    def test_traversal_raises_value_error(self, tmp_path: Path) -> None:
+        """A path-traversal sequence raises ValueError."""
+        base = tmp_path / "subdir"
+        base.mkdir()
+        with pytest.raises(ValueError, match="path outside"):
+            paths._safe_child_path(base, "../evil", ".db", "project_hash")
+
+    def test_empty_extension_works(self, tmp_path: Path) -> None:
+        """An empty extension string produces name-only file."""
+        base = tmp_path / "subdir"
+        base.mkdir()
+        result = paths._safe_child_path(base, "manifest_sha_mysession", "", "session_id")
+        assert result.name == "manifest_sha_mysession"
+
+
+class TestProjectDbPath:
+    """project_db_path now delegates to _safe_child_path."""
+
+    def test_valid_hash(self, tmp_data_dir: Path) -> None:
+        p = paths.project_db_path("deadbeef1234")
+        assert p.name == "deadbeef1234.db"
+        assert "projects" in str(p)
+
+    def test_null_byte_rejected(self, tmp_data_dir: Path) -> None:
+        with pytest.raises(ValueError, match="null byte"):
+            paths.project_db_path("abc\x00def")
+
+    def test_traversal_rejected(self, tmp_data_dir: Path) -> None:
+        with pytest.raises(ValueError):
+            paths.project_db_path("../../evil")
+
+
+class TestSessionCachePath:
+    """session_cache_path now delegates to _safe_child_path."""
+
+    def test_valid_session_id(self, tmp_data_dir: Path) -> None:
+        p = paths.session_cache_path("valid-session-id")
+        assert p.name == "valid-session-id.json"
+
+    def test_null_byte_rejected(self, tmp_data_dir: Path) -> None:
+        with pytest.raises(ValueError, match="null byte"):
+            paths.session_cache_path("abc\x00def")

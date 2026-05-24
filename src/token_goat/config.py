@@ -41,6 +41,22 @@ CONFIG_SCHEMA_VERSION: Final[int] = 1
 
 _VALID_TRIGGERS: Final[frozenset[str]] = frozenset(["manual", "auto"])
 
+_FALSY_ENV_VALUES: Final[frozenset[str]] = frozenset(["0", "false", "no", "off"])
+
+
+def _apply_env_disable(cfg_obj: Any, attr: str, env_key: str, label: str) -> None:
+    """Set ``cfg_obj.attr = False`` when *env_key* holds a falsy env-var value.
+
+    Recognises ``"0"``, ``"false"``, ``"no"``, and ``"off"`` (case-insensitive,
+    whitespace-stripped).  No-ops when the variable is unset or holds any other
+    value.  Logs an INFO message on disable so the change is visible in the
+    token-goat log.
+    """
+    val = os.environ.get(env_key, "").strip().lower()
+    if val in _FALSY_ENV_VALUES:
+        _LOG.info("%s disabled by environment variable (%s=%s)", label, env_key, val)
+        setattr(cfg_obj, attr, False)
+
 
 class _CompactAssistToml(TypedDict, total=False):
     """Expected shape of the [compact_assist] TOML section."""
@@ -545,17 +561,9 @@ def load() -> Config:
 
     # Environment override: TOKEN_GOAT_COMPACT_ASSIST=0 / false / no / off disables
     # Also accepts legacy TOKENWISE_COMPACT_ASSIST for backward compatibility.
-    env_val = (
-        os.environ.get(_ENV_COMPACT_ASSIST, "")
-        or os.environ.get(_ENV_COMPACT_ASSIST_LEGACY, "")
-    ).strip().lower()
-    if env_val in ("0", "false", "no", "off"):
-        _LOG.info(
-            "compact_assist disabled by environment variable (%s=%s)",
-            _ENV_COMPACT_ASSIST,
-            env_val,
-        )
-        ca.enabled = False
+    # Check the canonical key first; fall back to the legacy alias.
+    _env_ca_key = _ENV_COMPACT_ASSIST if os.environ.get(_ENV_COMPACT_ASSIST) else _ENV_COMPACT_ASSIST_LEGACY
+    _apply_env_disable(ca, "enabled", _env_ca_key, "compact_assist")
 
     bc_raw: _BashCompressToml = cast("_BashCompressToml", raw.get("bash_compress", {}))
     bc = BashCompressConfig(
@@ -577,27 +585,13 @@ def load() -> Config:
             bc_raw.get("timeout_seconds", 600), 600, 5, 7200, "bash_compress.timeout_seconds"
         ),
     )
-    env_bash = os.environ.get(_ENV_BASH_COMPRESS, "").strip().lower()
-    if env_bash in ("0", "false", "no", "off"):
-        _LOG.info(
-            "bash_compress disabled by environment variable (%s=%s)",
-            _ENV_BASH_COMPRESS,
-            env_bash,
-        )
-        bc.enabled = False
+    _apply_env_disable(bc, "enabled", _ENV_BASH_COMPRESS, "bash_compress")
 
     sb_raw: _SessionBriefToml = cast("_SessionBriefToml", raw.get("session_brief", {}))
     sb = SessionBriefConfig(
         enabled=_validated_bool(sb_raw.get("enabled", True), True, "session_brief.enabled"),
     )
-    env_brief = os.environ.get(_ENV_SESSION_BRIEF, "").strip().lower()
-    if env_brief in ("0", "false", "no", "off"):
-        _LOG.info(
-            "session_brief disabled by environment variable (%s=%s)",
-            _ENV_SESSION_BRIEF,
-            env_brief,
-        )
-        sb.enabled = False
+    _apply_env_disable(sb, "enabled", _ENV_SESSION_BRIEF, "session_brief")
 
     sp_raw: _SkillPreservationToml = cast("_SkillPreservationToml", raw.get("skill_preservation", {}))
     sp = SkillPreservationConfig(
@@ -610,14 +604,7 @@ def load() -> Config:
             "skill_preservation.max_cache_bytes",
         ),
     )
-    env_skill = os.environ.get(_ENV_SKILL_PRESERVATION, "").strip().lower()
-    if env_skill in ("0", "false", "no", "off"):
-        _LOG.info(
-            "skill_preservation disabled by environment variable (%s=%s)",
-            _ENV_SKILL_PRESERVATION,
-            env_skill,
-        )
-        sp.enabled = False
+    _apply_env_disable(sp, "enabled", _ENV_SKILL_PRESERVATION, "skill_preservation")
 
     is_raw: _ImageShrinkToml = cast("_ImageShrinkToml", raw.get("image_shrink", {}))
     is_cfg = ImageShrinkConfig(
@@ -632,14 +619,7 @@ def load() -> Config:
             "image_shrink.max_image_pixels",
         ),
     )
-    env_avif = os.environ.get(_ENV_PREFER_AVIF, "").strip().lower()
-    if env_avif in ("0", "false", "no", "off"):
-        _LOG.info(
-            "image_shrink.prefer_avif disabled by environment variable (%s=%s)",
-            _ENV_PREFER_AVIF,
-            env_avif,
-        )
-        is_cfg.prefer_avif = False
+    _apply_env_disable(is_cfg, "prefer_avif", _ENV_PREFER_AVIF, "image_shrink.prefer_avif")
 
     cur_raw: _CuratorToml = cast("_CuratorToml", raw.get("curator", {}))
     cur = CuratorConfig(
@@ -647,14 +627,7 @@ def load() -> Config:
         min_samples=_validated_int(cur_raw.get("min_samples", 10), 10, 1, 10_000, "curator.min_samples"),
         threshold_pct=_validated_int(cur_raw.get("threshold_pct", 20), 20, 0, 100, "curator.threshold_pct"),
     )
-    env_curator = os.environ.get(_ENV_CURATOR, "").strip().lower()
-    if env_curator in ("0", "false", "no", "off"):
-        _LOG.info(
-            "curator disabled by environment variable (%s=%s)",
-            _ENV_CURATOR,
-            env_curator,
-        )
-        cur.enabled = False
+    _apply_env_disable(cur, "enabled", _ENV_CURATOR, "curator")
 
     hb_raw: _HintBudgetToml = cast("_HintBudgetToml", raw.get("hint_budget", {}))
     hb = HintBudgetConfig(
@@ -669,14 +642,7 @@ def load() -> Config:
             hb_raw.get("max_index_only_per_session", 30), 30, 0, 1_000_000, "hint_budget.max_index_only_per_session",
         ),
     )
-    env_hint_budget = os.environ.get(_ENV_HINT_BUDGET, "").strip().lower()
-    if env_hint_budget in ("0", "false", "no", "off"):
-        _LOG.info(
-            "hint_budget disabled by environment variable (%s=%s)",
-            _ENV_HINT_BUDGET,
-            env_hint_budget,
-        )
-        hb.enabled = False
+    _apply_env_disable(hb, "enabled", _ENV_HINT_BUDGET, "hint_budget")
 
     rm_raw: _RepomapToml = cast("_RepomapToml", raw.get("repomap", {}))
     rm = RepomapConfig(
