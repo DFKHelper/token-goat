@@ -58,6 +58,8 @@ drop from 34 ms to ~6–8 ms.
 test that monkeypatches `compact.session_mod` directly — search confirms
 no test does this (greps for `compact.session_mod` returned zero matches).
 
+**STATUS:** ✓ DONE (iter 46, commit `1b01eec`)
+
 ### 2. Skip `_get_uncommitted_changes` / `_get_git_diff_stat_summary` when cwd is not a git repo
 **Current**: `build_manifest_adaptive` calls `_get_git_diff_stat_summary(cwd)`
 and `_get_uncommitted_changes(cwd)` unconditionally. Each runs
@@ -76,6 +78,8 @@ a non-git directory before/after.
 **Risk**: Low. Bare repos and worktrees use `.git` as a file pointer not a
 dir — the probe must accept both `Path.is_dir()` and `Path.is_file()` for
 `.git`. Add a regression test that builds a manifest from a worktree.
+
+**STATUS:** NOT IMPLEMENTED (deferred; uncommitted draft exists in working tree)
 
 ### 3. Switch `compact.py`'s ThreadPoolExecutor to a single deferred call
 **Current**: `build_manifest_adaptive` (and the budget pass that runs before
@@ -97,6 +101,8 @@ the same process; second call should not show ThreadPoolExecutor in the
 profile.
 **Risk**: Very low. The change is purely a fast-path; behaviour is
 identical otherwise.
+
+**STATUS:** NOT IMPLEMENTED (deferred; ThreadPoolExecutor removed in working-tree draft, reverted; sequential execution simpler and faster on cached paths)
 
 ### 4. Drop `from .compact import _humanize_bytes` import out of `hooks_session.py` SessionStart path
 **Current**: `hooks_session.py` line 43 imports `_humanize_bytes` from
@@ -121,6 +127,8 @@ into `hooks_common` (or extracting to a new `formatting.py`) is mechanical.
 Add a unit test pinning the two definitions are byte-identical so they
 don't drift.
 
+**STATUS:** ✓ DONE (iter 47, commit `b74d09b`)
+
 ### 5. Add a `compact_cache.json` per-session preflight that short-circuits empty manifests
 **Current**: Even with an empty session cache, the PreCompact hook spawns
 the Python process, imports compact, calls `build_manifest_with_count`,
@@ -144,6 +152,8 @@ sentinel means we skip emitting a manifest that should have fired. Mitigate
 by (a) writing the sentinel only when count is **0**, not just below
 threshold, and (b) deleting on every post-edit/post-read hook. The
 asymmetry — skip is opt-in by absence — fails safe.
+
+**STATUS:** ✓ DONE (iter 48–49, commit `afc069b`)
 
 ---
 
