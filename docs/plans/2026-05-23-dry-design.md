@@ -1,3 +1,5 @@
+> **STATUS (2026-05-24):** All items pending; planned for batches 5-6 (DRY, iter 31–45).
+
 # DRY Consolidation Design — 2026-05-23
 
 ## Problem

@@ -1,3 +1,5 @@
+> **STATUS (2026-05-24):** All items pending; planned for batch 4 (reliability, iter 26–30).
+
 # Reliability Design — 2026-05-23
 
 ## Problem
