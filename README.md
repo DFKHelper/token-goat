@@ -78,6 +78,11 @@ The fastest way to reduce Claude Code token costs is fixing these four, not writ
 | `token-goat map` outputs without rank context | Semantic compact mode outputs one result per line; `--full` for old format |
 | AVIF format not supported despite better compression | AVIF image-shrink (when Pillow has libaom); WebP fallback; codec auto-detection in docker |
 | Token-savings invisible until you run `stats` | Token-savings benchmark (slow-marked test suite) locks in measured wins; `token-goat stats` reports net-positive impact |
+| Hook crash leaves agent waiting for response | Fail-soft barrier catches `BaseException`/`MemoryError`/`SystemExit`; hook always returns `{"continue": true}` |
+| Concurrent edits lose update counts mid-session | Session CAS + mtime-based retry prevent lost edits in manifest |
+| Dirty queue appends corrupt on concurrent writes | OS file lock (fcntl/msvcrt) prevents torn JSON lines |
+| Worker claim file blocks all re-spawns on crash | Mtime staleness check (>60s) auto-recovers zombie claim files |
+| DRY consolidation — 600+ lines duplicated | Tool-response extractor unified; cache helpers (`_safe_join`, `OutputStatDict`) consolidated; dedup-hint template collapsed; CLI output/history commands unified; `humanize_bytes` centralized in `render/ansi` |
 
 > Two snapshots from the author's machine: **v0.1 after four hours**, and the **current build after several days** of real sessions.
 

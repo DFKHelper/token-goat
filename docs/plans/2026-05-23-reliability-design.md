@@ -1,4 +1,4 @@
-> **STATUS (2026-05-24):** All items pending; planned for batch 4 (reliability, iter 26–30).
+> **STATUS (2026-05-24):** Items 1–7 DONE (iter 41–45). Items 8–12 PENDING.
 
 # Reliability Design — 2026-05-23
 
@@ -31,6 +31,8 @@ A worker is killed by Windows Task Manager between `os.open(O_EXCL)` and the `os
 ## Improvement Backlog (ranked, adjacent-possible)
 
 ### 1. `fail_soft` must catch `BaseException` to match its contract — Score 1
+**STATUS:** DONE (iter 44, commit 9c37736)
+
 **File(s)**: `src/token_goat/hooks_cli.py` (line 287)
 **Problem**: The docstring promises "Returns {'continue': True} even if handler raises/crashes" but the `except` clause is `Exception`. A `SystemExit`, `KeyboardInterrupt`, `MemoryError`, or `GeneratorExit` from a buggy lazy-imported module bypasses the safe path. `safe_run` catches it at the outer layer, but the decorator's diagnostic record (`_tg_handler`, `_tg_error`) is lost, and any test or future caller using `fail_soft` standalone gets the raw crash.
 **Fix**: Change to `except BaseException as exc` with an explicit re-raise of `KeyboardInterrupt` and `SystemExit` (same pattern as `safe_run`) so process-control signals still terminate cleanly but every other base exception is captured with diagnostics. Add a comment cross-referencing `safe_run` so the two stay in sync.
@@ -38,6 +40,8 @@ A worker is killed by Windows Task Manager between `os.open(O_EXCL)` and the `os
 **Test**: Add `test_fail_soft_catches_base_exception` in `test_hooks_dispatcher.py` — handler raises `SystemExit(1)`, decorated handler must return a dict with `continue: True` and `_tg_error` populated. Handler raises `KeyboardInterrupt`, must re-raise.
 
 ### 2. Session cache writes need optimistic CAS to prevent edit-count loss — Score 1
+**STATUS:** DONE (iter 44, commit bf95c5a)
+
 **File(s)**: `src/token_goat/session.py` (`save`, `load`, `mark_file_edited`, `mark_file_read`, `mark_bash_run`, etc.)
 **Problem**: Two concurrent hook processes load the same `last_activity_ts`, mutate, and save. The second `os.replace()` wins; the first's mutation is lost. Today's `_FILE_LOCK` is in-process only; atomic_write_text only protects against torn writes, not against logical lost updates.
 **Fix**: On `save()`, before the atomic rename, stat the on-disk file. If `mtime_ns` differs from the snapshot taken at `load()`, reload, replay the mutation closure, and retry up to 3 times. Mutations are idempotent on `edited_files[k] = prev + 1`-style accumulators if we pass the closure as a callable. Simpler alternative: increment a `version` integer in the JSON, compare-and-swap on it. Apply to the four mutating functions called by post-edit / post-bash / post-fetch / post-skill.
@@ -45,6 +49,8 @@ A worker is killed by Windows Task Manager between `os.open(O_EXCL)` and the `os
 **Test**: Spawn two threads that each call `mark_file_edited("/x.py")` 50 times. Final count must equal 100, not <100.
 
 ### 3. Dirty-queue append needs `fcntl.flock` / `msvcrt.locking` to prevent line interleaving — Score 1
+**STATUS:** DONE (iter 45, commit 30d0e24)
+
 **File(s)**: `src/token_goat/worker.py` (`enqueue_dirty`, lines 421–442)
 **Problem**: `open("a")` + `f.write(line + "\n")` is only atomic if the line fits in the OS pipe buffer (PIPE_BUF, 4096 on Linux, smaller on Windows). A dirty entry with a long path + project_root + marker can exceed this. Two concurrent hooks writing simultaneously can produce a line like `{"path":"/a.py","proj{"path":"/b.py","project_hash":...}ect_hash":...}` — `drain_dirty_queue` will log it as a malformed entry and silently lose both edits.
 **Fix**: Wrap the `f.write()` with an OS file lock — `fcntl.flock(f.fileno(), fcntl.LOCK_EX)` on POSIX, `msvcrt.locking(f.fileno(), msvcrt.LK_LOCK, 1)` on Windows. The lock is released on `close()`. Holds for microseconds; never blocks more than one peer at a time.
@@ -52,6 +58,8 @@ A worker is killed by Windows Task Manager between `os.open(O_EXCL)` and the `os
 **Test**: Spawn 50 threads that each call `enqueue_dirty` with a 6 KB path. Drain the queue. Assert all 50 entries parsed cleanly with no JSON decode errors.
 
 ### 4. `_record_cache_contention` per-process dedup is meaningless — promote to disk — Score 1
+**STATUS:** DONE (iter 45, commit 3d23f19)
+
 **File(s)**: `src/token_goat/session.py` (lines 109, 1279–1296)
 **Problem**: `_REPORTED_CONTENTION` is a module-level `set` in a process that lives ~50 ms. Every hook process starts with an empty set, so the "dedup" emits one stat row per `(session_id, phase)` per hook process — that is, every single contended hook call. Under disk pressure the stats table fills with thousands of identical `session_cache_unavailable` rows.
 **Fix**: Replace the in-memory set with a touch-file at `data_dir() / "contention_marks" / f"{session_hash}_{phase}.mark"`. Check existence before recording; create after. Worker's `cleanup_on_startup` sweeps marks older than 1 hour. Adds one stat() per contention event but eliminates the duplicate-row flood.
@@ -59,6 +67,8 @@ A worker is killed by Windows Task Manager between `os.open(O_EXCL)` and the `os
 **Test**: Simulate 10 consecutive `_record_cache_contention(s1, "load", err)` calls in separate processes. After the first, `db.record_stat` is called zero times until the touch-file is swept.
 
 ### 5. Worker claim file needs mtime-stale check for empty/malformed content — Score 1
+**STATUS:** DONE (iter 45, commit f6b1dc3)
+
 **File(s)**: `src/token_goat/worker.py` (`_worker_claim_is_stale`, lines 350–374)
 **Problem**: `_worker_claim_is_stale` returns `False` for empty/malformed claim files (treats them as "owner mid-startup"). That branch is correct for the microsecond window between `O_EXCL` create and `os.write(pid)`, but if the worker was killed in that window the empty file is permanent — `_try_claim_worker_slot` will keep seeing it as held, no new worker can ever start, and the user has to manually delete the claim file.
 **Fix**: When `read_text()` produces empty/malformed content, also check `stat().st_mtime`: if older than 60 seconds (much longer than the legitimate write window of <1 ms), treat as stale and reclaim. The existing `_eviction_lock_is_stale` and `db.project_writer_lock._stale` use the same pattern; align this one.
@@ -66,6 +76,8 @@ A worker is killed by Windows Task Manager between `os.open(O_EXCL)` and the `os
 **Test**: Create an empty claim file, set its mtime to 70 s ago, call `_worker_claim_is_stale` — must return True. Same call with mtime 5 s ago — must return False.
 
 ### 6. `safe_run` should also wrap `denormalize_response` in a try/except — Score 1
+**STATUS:** DONE (iter 45, commit 3d11a4f)
+
 **File(s)**: `src/token_goat/hooks_cli.py` (lines 210–238)
 **Problem**: `safe_run`'s try block contains `read_payload`, `normalize_payload`, `dispatch`, and `denormalize_response`. The first three are well-tested; `denormalize_response` is a thin dict rewrite. But a future addition (e.g. a new field that triggers a `TypeError` in `_translate_hso_to_codex`) would abort *after* a successful dispatch, replacing the real hook output with a bare CONTINUE. The agent loses the image redirect / dedup hint without an explanation.
 **Fix**: Split the try block into two: keep `read_payload` + `normalize_payload` + `dispatch` in one try (recoverable to CONTINUE), wrap `denormalize_response` in its own try whose `except` returns the un-denormalized `dispatched` result. Worst case the harness sees camelCase Codex keys it doesn't understand and ignores them — still better than dropping the hint entirely.
@@ -73,6 +85,8 @@ A worker is killed by Windows Task Manager between `os.open(O_EXCL)` and the `os
 **Test**: Monkeypatch `_translate_hso_to_codex` to raise `RuntimeError`. `safe_run("pre-read", ..., harness="codex")` must emit a dict whose `hookSpecificOutput` is still present (in camelCase).
 
 ### 7. `paths.atomic_write_text` finally-block can clobber the renamed file — Score 1
+**STATUS:** DONE (iter 45, commit 3d11a4f)
+
 **File(s)**: `src/token_goat/paths.py` (`_atomic_write_core`)
 **Problem**: The `finally` block runs `tmp.unlink(missing_ok=True)`. On POSIX `os.rename()` removes the source name atomically, so `tmp` no longer exists — `missing_ok=True` swallows the error. On Windows, however, `_rename_with_retry` may *fail* (after exhausting retries) and the function re-raises — but on success the temp file is gone too. The finally is safe today but fragile: any future code path that constructs a path equal to `tmp` (e.g. another concurrent writer that picks the same `threading.get_ident()` + `monotonic_ns()` — vanishingly unlikely but not impossible across multiple processes with similar TIDs) would have its file deleted.
 **Fix**: Track success/failure explicitly: `renamed = False; try: ...; _rename_with_retry(tmp, path); renamed = True; finally: if not renamed: tmp.unlink(missing_ok=True)`. The unlink only fires when the rename failed and `tmp` actually still exists with our content.

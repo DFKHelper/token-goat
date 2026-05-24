@@ -26,6 +26,30 @@ All notable changes to Token-Goat are documented in this file. Format follows Ke
 - **Semantic compact output mode.** `token-goat map` defaults to semantic mode (one result per line, ranked by importance) and preserves the old `--full` format for verbosity; applies to `compact-hint` and other list-like outputs for consistency.
 - **Unchanged-file Pre-Read short-circuit.** When a file's content SHA matches the cached value, the Pre-Read hook skips hint generation entirely and lets the Read proceed without noise — saves tokens on stable working files.
 
+### Reliability
+
+- **`fail_soft` catches `BaseException` to match contract.** The decorator now catches all base exceptions including `MemoryError`, `SystemExit`, and `KeyboardInterrupt` (re-raised for process-control signals), ensuring the fail-soft invariant holds regardless of lazy-imported module behavior (commit 9c37736).
+- **Session cache writes use optimistic CAS to prevent edit-count loss.** Concurrent hook processes can no longer lose mutations; save operations detect `mtime` changes and retry the load-mutate cycle up to 3 times (commit bf95c5a).
+- **Dirty-queue append protected by OS file lock.** Concurrent `enqueue_dirty` calls now use `fcntl.flock` (POSIX) / `msvcrt.locking` (Windows) to prevent JSON line interleaving on concurrent writes (commit 30d0e24).
+- **Worker claim file auto-recovers from crashes via mtime staleness.** A claim file empty/malformed for >60 seconds is reclaimed as stale, unblocking worker startup after a crash between `O_EXCL` create and `pid` write (commit f6b1dc3).
+- **Cross-process contention dedup moved to disk.** The in-process `_REPORTED_CONTENTION` set (meaningless across hook processes) is replaced with touch-files under `contention_marks/`, preventing duplicate stat rows under disk pressure (commit 3d23f19).
+- **`safe_run` splits output serialization into its own try block.** `denormalize_response` failures no longer lose the entire hook payload; worst case the harness receives camelCase keys it ignores but still gets the image redirect / hint (commit 3d11a4f).
+- **Atomic write in `paths.py` finally-block guards against file clobbering.** The temp-file unlink only fires when rename fails, preventing accidental deletion of unrelated files (commit 3d11a4f).
+
+### DRY Consolidation
+
+- **`extract_tool_response_text` unifies bash/web/skill response extraction.** The three PostToolUse handlers shared identical `payload["tool_response"] → text` walks; extracted into `hooks_common.extract_tool_response_text()` with sibling `extract_tool_response_pair()` for exit codes / status codes (commit 3d23f19, 3d11a4f).
+- **Per-cache `_OutputStatDict` and `_safe_join` consolidated.** The bash/web/skill caches duplicated `class _OutputStatDict` byte-for-byte; exported from `cache_common` and reused via `functools.partial` (commit d24a5b4).
+- **`cache_common.short_content_hash()` replaces triplicate hash helpers.** Bash, web, and skill caches each had their own `sha256(text)[:16]` logic; unified into a single `short_content_hash(text)` (commit 47072d6).
+- **`_run_history_listing_command` unifies bash/web/skill history listing.** The three `list_outputs`→JSON/text rendering paths shared identical slicing, paging, and sidecar assembly (commit 985ea60).
+- **`_run_output_recall_command` merges bash/web output recall.** The two `cmd_*_output` commands duplicated slicing, grep, head/tail, and recall stat recording; collapsed into a single dispatcher (commit a5c68d4).
+- **`humanize_bytes` moved to `render/ansi.py` for cross-module reuse.** The compact/cli_doctor/stats modules each had their own bytes-formatter; canonical version now in `render/ansi` (commit 6e1ba74).
+- **Language decorator walker extracted to `common.extend_starts_for_decorators()`.** Python and TypeScript adapters shared the same decorator-offset iteration skeleton (commit 8aa1c30).
+- **`session.safe_load()` consolidates try/except for session loading.** Five hook locations had identical `try: load() except (OSError, ValueError): return None` blocks (commit 9c3d8d1).
+- **`cache_common.get_cache_dir()` + `sidecar_path_for()` extracted.** Per-cache `_X_outputs_dir` and `sidecar_meta_path` wrappers unified (commit df41374).
+- **`util.humanize_bytes()` canonical bytes formatter.** Replaces duplicates in compact.py, cli_doctor.py, stats.py (commit bcfe025).
+- **`hooks_common.run_dedup_hint()` template collapses four dedup handlers.** Bash/grep/glob/web dedup handlers shared 35 lines × 4 of load-session-build-hint-record-stat glue (commit 809aed4).
+
 ## [0.8.0] - 2026-05-23
 
 ### Added
