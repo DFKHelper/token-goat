@@ -1987,3 +1987,52 @@ def test_drain_dirty_queue_dedup_empty_queue(tmp_data_dir):
     """Empty queue returns an empty list — dedup path must not raise."""
     entries = worker.drain_dirty_queue()
     assert entries == []
+
+
+# ---------------------------------------------------------------------------
+# Dirty-queue file locking (concurrency)
+# ---------------------------------------------------------------------------
+
+
+def test_enqueue_dirty_concurrent_writes(tmp_data_dir):
+    """Concurrent enqueue_dirty calls must produce valid JSON lines with no interleaving.
+
+    Spawn 4 threads, each writing 50 entries with distinct 6 KB paths.
+    All lines must parse as valid JSON; no torn writes (key assertion).
+    Entry count may be slightly less than 200 if lock timeout occurs (best-effort fallback),
+    but zero torn/malformed JSON lines proves locking is working.
+    """
+    num_threads = 4
+    entries_per_thread = 50
+    total_expected = num_threads * entries_per_thread
+
+    def worker_thread(thread_id: int) -> None:
+        for i in range(entries_per_thread):
+            # Create a 6 KB path to stress the PIPE_BUF boundary on all platforms.
+            long_path = f"src/thread_{thread_id}_file_{i}_{'x' * 6000}.ts"
+            worker.enqueue_dirty(long_path, project_hash=f"proj_{thread_id}")
+
+    threads = [threading.Thread(target=worker_thread, args=(i,)) for i in range(num_threads)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    # Drain and verify all entries are valid JSON and no interleaving occurred.
+    queue_file = paths.dirty_queue_path()
+    assert queue_file.exists(), "Dirty queue file should exist"
+
+    lines = queue_file.read_text(encoding="utf-8").splitlines()
+    # Entry count should be very close to 200; allow a few losses due to lock timeout.
+    assert len(lines) >= total_expected * 0.95, f"Expected ≥{total_expected * 0.95} lines, got {len(lines)}"
+
+    # Parse each line as JSON; any JSON decode error means interleaving occurred.
+    # This is the critical assertion: no torn/malformed lines even under lock timeout.
+    for i, line in enumerate(lines):
+        try:
+            entry = json.loads(line)
+            assert "path" in entry, f"Line {i} missing 'path' key"
+            assert "project_hash" in entry, f"Line {i} missing 'project_hash' key"
+            assert "ts" in entry, f"Line {i} missing 'ts' key"
+        except json.JSONDecodeError as e:
+            raise AssertionError(f"Line {i} is malformed JSON (interleaving detected): {line!r}") from e
