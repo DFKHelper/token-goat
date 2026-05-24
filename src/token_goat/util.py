@@ -6,6 +6,23 @@ in two or more modules with no natural owner belong here.
 
 from __future__ import annotations
 
+import logging
+from logging import Logger
+
+
+def get_logger(name: str) -> Logger:
+    """Return ``logging.getLogger("token_goat.<name>")``.
+
+    Centralises the ``token_goat.`` prefix so each module only needs::
+
+        _LOG = get_logger(__name__.split(".")[-1])
+
+    or equivalently::
+
+        _LOG = get_logger("module_name")
+    """
+    return logging.getLogger(f"token_goat.{name}")
+
 
 def _humanize_bytes(n: int) -> str:
     """Return a short human-readable byte count: ``1.2KB``, ``3.4MB``, ``120B``.

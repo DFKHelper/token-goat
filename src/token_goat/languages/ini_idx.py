@@ -35,13 +35,13 @@ from __future__ import annotations
 
 __all__ = ["extract", "extract_env"]
 
-import logging
 import re
 
 from ..parser import ImpExp, Ref, Section, Symbol
+from ..util import get_logger
 from . import common
 
-_LOG = logging.getLogger("token_goat.languages.ini_idx")
+_LOG = get_logger("languages.ini_idx")
 
 # Column-0-anchored ``[name]`` header.  We allow letters, digits, underscores,
 # hyphens, dots, colons, and slashes in the name — this covers every dialect

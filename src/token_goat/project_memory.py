@@ -24,13 +24,13 @@ __all__ = [
     "unset_entry",
 ]
 
-import logging
 import re
 from pathlib import Path
 
 from . import paths
+from .util import get_logger
 
-_LOG = logging.getLogger("token_goat.project_memory")
+_LOG = get_logger("project_memory")
 
 # Maximum number of entries surfaced in the session-start injection.
 _MAX_ENTRIES: int = 30

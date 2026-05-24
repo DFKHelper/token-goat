@@ -29,13 +29,14 @@ from typing import Literal, ParamSpec, TypeVar, cast
 
 from . import paths
 from .hooks_common import CONTINUE, HookPayload, HookResponse, sanitize_log_str
+from .util import get_logger
 
 #: Valid harness identifiers used by :func:`normalize_payload`, :func:`denormalize_response`,
 #: and :func:`safe_run`.  Defined as a ``Literal`` so callers get a type error on
 #: an unrecognised harness name rather than silently applying the Claude path.
 Harness = Literal["claude", "codex"]
 
-_LOG = logging.getLogger("token_goat.hooks")
+_LOG = get_logger("hooks")
 
 # Cached log-path date string — invalidated when the calendar date rolls over.
 # Avoids a datetime.now() call on every hook dispatch (hooks fire on every

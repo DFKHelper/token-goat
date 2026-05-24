@@ -11,7 +11,6 @@ __all__ = [
 ]
 
 import hashlib
-import logging
 import os
 import re
 import time
@@ -19,6 +18,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from .hooks_common import sanitize_log_str
+from .util import get_logger
 
 # Cross-shell Windows-drive prefixes that resolve to the same NTFS location.
 #
@@ -65,7 +65,7 @@ def _normalize_shell_drive_prefix(posix_str: str) -> str:
         return f"{m.group(1).lower()}:/{m.group(2)}"
     return posix_str
 
-_LOG = logging.getLogger("token_goat.project")
+_LOG = get_logger("project")
 
 PROJECT_MARKERS = (
     ".git",

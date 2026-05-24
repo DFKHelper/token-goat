@@ -16,7 +16,6 @@ hook process for two reasons:
 from __future__ import annotations
 
 import contextlib
-import logging
 import os
 import signal
 import sys
@@ -25,11 +24,12 @@ from collections.abc import Callable
 from typing import TYPE_CHECKING
 
 from . import worker as _worker
+from .util import get_logger
 
 if TYPE_CHECKING:
     from .worker import CleanupStats, DirtyQueueEntry
 
-_LOG = logging.getLogger("token_goat.worker")
+_LOG = get_logger("worker")
 
 
 def cleanup_on_startup() -> CleanupStats:

@@ -51,7 +51,6 @@ __all__ = [
     "write_sidecar",
 ]
 
-import logging
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -74,8 +73,9 @@ from .cache_common import (
     write_sidecar_metadata,
 )
 from .hooks_common import sanitize_log_str
+from .util import get_logger
 
-_LOG = logging.getLogger("token_goat.web_cache")
+_LOG = get_logger("web_cache")
 
 # Total byte budget for the on-disk web-output store.  Web pages tend to be
 # larger than Bash logs (HTML + assets list, JSON dumps with embedded data)

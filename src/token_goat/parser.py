@@ -24,7 +24,6 @@ __all__ = [
 import contextlib
 import hashlib
 import heapq
-import logging
 import os
 import sqlite3
 import threading
@@ -36,11 +35,12 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Final, TypedDict
 
 from . import db
+from .util import get_logger
 
 if TYPE_CHECKING:
     from .project import Project
 
-_LOG = logging.getLogger("token_goat.parser")
+_LOG = get_logger("parser")
 
 # Extension -> language_key
 LANG_BY_EXT: dict[str, str] = {

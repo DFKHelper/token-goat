@@ -17,6 +17,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import IO, TypedDict, cast
 
+from .util import get_logger
+
 if sys.platform == "win32":
     import msvcrt
 else:
@@ -95,7 +97,7 @@ class _ProjectBucket(TypedDict):
     marker: str | None
 
 
-_LOG = logging.getLogger("token_goat.worker")
+_LOG = get_logger("worker")
 
 # Heartbeat interval (seconds)
 HEARTBEAT_INTERVAL = 30.0

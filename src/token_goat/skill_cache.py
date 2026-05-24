@@ -43,7 +43,6 @@ __all__ = [
     "write_sidecar",
 ]
 
-import logging
 import re
 import time
 from dataclasses import dataclass
@@ -67,8 +66,9 @@ from .cache_common import (
     write_sidecar_metadata,
 )
 from .hooks_common import sanitize_log_str
+from .util import get_logger
 
-_LOG = logging.getLogger("token_goat.skill_cache")
+_LOG = get_logger("skill_cache")
 
 # Total byte budget for the on-disk skill body store.  When exceeded, the
 # oldest entries (by mtime) are evicted until the cap is met.  5 MB is small

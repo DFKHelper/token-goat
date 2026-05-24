@@ -83,7 +83,6 @@ __all__ = [
 
 import contextlib
 import json
-import logging
 import os
 import re
 import stat as _stat_module
@@ -98,8 +97,9 @@ from typing import Any, Final, TypedDict
 
 from . import paths
 from .hooks_common import is_real_int, sanitize_log_str
+from .util import get_logger
 
-_LOG = logging.getLogger("token_goat.session")
+_LOG = get_logger("session")
 
 SESSION_SCHEMA_VERSION = 1
 _FILE_LOCK = threading.Lock()  # in-process; multi-process safe enough via atomic write

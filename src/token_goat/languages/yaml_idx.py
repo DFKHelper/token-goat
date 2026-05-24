@@ -47,14 +47,14 @@ from __future__ import annotations
 
 __all__ = ["extract"]
 
-import logging
 import re
 from collections.abc import Iterable
 
 from ..parser import ImpExp, Ref, Section, Symbol
+from ..util import get_logger
 from . import common
 
-_LOG = logging.getLogger("token_goat.languages.yaml_idx")
+_LOG = get_logger("languages.yaml_idx")
 
 # Largest indent width (in spaces) we treat as a single nesting level.  Above
 # this the file is assumed to use an unusual style and we suppress nested

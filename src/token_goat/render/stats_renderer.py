@@ -23,7 +23,6 @@ from __future__ import annotations
 __all__ = ["render_stats"]
 
 import json
-import logging
 import math
 import operator
 import shutil
@@ -31,10 +30,11 @@ from datetime import date
 from pathlib import Path
 from typing import TypedDict, cast
 
+from ..util import get_logger
 from .ansi import RESET, RGB, C, fg, lerp_rgb, pad_l, pad_r, strip_ansi, vlen
 from .types import DayStat, KindStat, ProjectStat, SourceStat, StatsData
 
-_LOG = logging.getLogger("token_goat.render.stats_renderer")
+_LOG = get_logger("render.stats_renderer")
 
 # Module-level key functions — avoids allocating a new lambda object on every
 # sort/max call in the hot rendering path.

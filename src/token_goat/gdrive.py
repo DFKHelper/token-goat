@@ -13,7 +13,6 @@ __all__ = [
 
 import contextlib
 import io
-import logging
 import os
 import re
 import sys
@@ -23,8 +22,9 @@ from typing import Protocol
 
 from . import image_shrink, paths
 from .hooks_common import sanitize_log_str
+from .util import get_logger
 
-_LOG = logging.getLogger("token_goat.gdrive")
+_LOG = get_logger("gdrive")
 
 
 class _GoogleCredentials(Protocol):

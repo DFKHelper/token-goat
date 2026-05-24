@@ -52,7 +52,6 @@ __all__ = [
 ]
 
 import contextlib
-import logging
 import os
 import re
 import sqlite3
@@ -62,11 +61,12 @@ from pathlib import Path
 from typing import Final
 
 from . import paths
+from .util import get_logger
 
 SCHEMA_VERSION: Final[int] = 2
 EMBED_DIM: Final[int] = 384  # BAAI/bge-small-en-v1.5
 
-_LOG = logging.getLogger("token_goat.db")
+_LOG = get_logger("db")
 
 # Cache integrity check results per DB file to avoid repeated PRAGMA checks.
 # Keys are absolute Path objects; values are always True (only passing checks

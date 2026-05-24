@@ -4,7 +4,6 @@ from __future__ import annotations
 import difflib
 import hashlib
 import json
-import logging
 import sqlite3
 from collections import defaultdict, deque
 from collections.abc import Callable, Sequence
@@ -15,8 +14,9 @@ import typer
 
 from . import db, read_replacement, session
 from .project import Project, find_project
+from .util import get_logger
 
-_LOG = logging.getLogger("token_goat.read_commands")
+_LOG = get_logger("read_commands")
 
 # Module-level key functions avoid allocating a new lambda object on every sort call.
 # Sorting dep maps is on the hot path when rendering large dependency graphs.

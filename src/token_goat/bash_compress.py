@@ -74,7 +74,6 @@ __all__ = [
     "UvFilter",
 ]
 
-import logging
 import math
 import re
 import shlex
@@ -83,7 +82,9 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Final
 
-_LOG = logging.getLogger("token_goat.bash_compress")
+from .util import get_logger
+
+_LOG = get_logger("bash_compress")
 
 # ---------------------------------------------------------------------------
 # Tunable limits

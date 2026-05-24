@@ -26,7 +26,6 @@ from __future__ import annotations
 
 __all__ = ["post_skill"]
 
-import logging
 from pathlib import Path
 
 from .hooks_common import (
@@ -38,8 +37,9 @@ from .hooks_common import (
     record_cached_stat,
     sanitize_log_str,
 )
+from .util import get_logger
 
-_LOG = logging.getLogger("token_goat.hooks_skill")
+_LOG = get_logger("hooks_skill")
 
 # Smallest skill body worth caching.  Below this size the body is almost
 # certainly a confirmation stub ("Skill loaded") rather than the real prose;

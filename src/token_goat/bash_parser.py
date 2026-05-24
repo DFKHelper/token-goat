@@ -59,16 +59,17 @@ All parsing is best-effort.  Unrecognized or malformed commands are returned as
 """
 from __future__ import annotations
 
-import logging
 import re
 import shlex
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
 
+from .util import get_logger
+
 __all__ = ["BashIntent", "parse"]
 
-_LOG = logging.getLogger("token_goat.bash_parser")
+_LOG = get_logger("bash_parser")
 
 # Hard cap on the raw command string before shlex.split to prevent a crafted
 # multi-megabyte payload from causing linear memory allocation in the tokenizer.

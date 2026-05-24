@@ -3,14 +3,14 @@ from __future__ import annotations
 
 __all__ = ["extract"]
 
-import logging
 import re
 from os.path import basename
 
 from ..parser import ImpExp, Ref, Section, Symbol
+from ..util import get_logger
 from . import common
 
-_LOG = logging.getLogger("token_goat.languages.typescript")
+_LOG = get_logger("languages.typescript")
 
 
 # Matches a TypeScript decorator line: optional indent, then ``@Name`` where Name

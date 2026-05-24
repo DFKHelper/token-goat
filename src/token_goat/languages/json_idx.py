@@ -4,12 +4,12 @@ from __future__ import annotations
 __all__ = ["extract"]
 
 import json
-import logging
 import re
 
 from ..parser import ImpExp, Ref, Section, Symbol
+from ..util import get_logger
 
-_LOG = logging.getLogger("token_goat.languages.json_idx")
+_LOG = get_logger("languages.json_idx")
 
 # Minimum file size to index JSON (50 KB)
 _MIN_JSON_SIZE = 50_000

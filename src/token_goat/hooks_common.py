@@ -25,6 +25,8 @@ every response-builder has a precise return type instead of ``dict[str, Any]``.
 """
 from __future__ import annotations
 
+from .util import get_logger
+
 __all__ = [
     "CONTINUE",
     "HookPayload",
@@ -48,7 +50,6 @@ __all__ = [
     "validate_cwd",
 ]
 
-import logging
 from pathlib import Path
 from typing import Any, Protocol, TypedDict, TypeGuard, cast
 
@@ -136,7 +137,7 @@ HookResponse = TypedDict(
 )
 
 # All hook modules share one logger so their output appears together in the log.
-LOG = logging.getLogger("token_goat.hooks")
+LOG = get_logger("hooks")
 
 # The most common hook response: let the harness proceed unchanged.
 # Using a function (not a bare dict) keeps each call site independent — callers

@@ -49,7 +49,6 @@ __all__ = [
 
 import contextlib
 import hashlib
-import logging
 import os
 import re
 import stat as _stat_module
@@ -59,8 +58,9 @@ from pathlib import Path
 
 from . import paths
 from .hooks_common import sanitize_log_str
+from .util import get_logger
 
-_LOG = logging.getLogger("token_goat.snapshots")
+_LOG = get_logger("snapshots")
 
 # Largest file size eligible for snapshotting.  Beyond this the diff itself
 # would not fit comfortably in a hint, so we save nothing rather than store
