@@ -9,6 +9,8 @@ from pathlib import Path
 
 import typer
 
+from .util import _humanize_bytes as _humanize_bytes_doctor
+
 
 def _cache_dir_stats(d: Path) -> tuple[int, int, int | None]:
     """Return ``(total_bytes, file_count, oldest_age_seconds_or_None)`` for *d*.
@@ -57,21 +59,6 @@ def _cache_dir_stats(d: Path) -> tuple[int, int, int | None]:
     oldest_age = int(now - oldest_mtime) if oldest_mtime is not None else None
     return total_bytes, file_count, oldest_age
 
-
-def _humanize_bytes_doctor(n: int) -> str:
-    """Compact ``B`` / ``KB`` / ``MB`` / ``GB`` formatter for the doctor output.
-
-    Identical shape to :func:`compact._humanize_bytes` but lives here so
-    cli_doctor stays a leaf importer (doctor must run even when the compaction
-    machinery is unavailable, e.g. during a partial install).
-    """
-    if n < 1024:
-        return f"{n}B"
-    if n < 1024 * 1024:
-        return f"{n / 1024:.1f}KB"
-    if n < 1024 * 1024 * 1024:
-        return f"{n / (1024 * 1024):.1f}MB"
-    return f"{n / (1024 * 1024 * 1024):.1f}GB"
 
 
 def doctor(  # noqa: C901

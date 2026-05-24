@@ -5631,3 +5631,41 @@ class TestSingleFileInlineDiff:
         manifest = compact._build_manifest_from_cache(cache, sid, 800)
         assert whole_diff_called["n"] == 0
         assert "Files Edited" in manifest
+
+
+# ---------------------------------------------------------------------------
+# _humanize_bytes (canonical helper in util, re-exported via compact)
+# ---------------------------------------------------------------------------
+
+class TestHumanizeBytes:
+    """Tests for the shared _humanize_bytes helper."""
+
+    def test_bytes_below_1024(self):
+        from token_goat.util import _humanize_bytes
+        assert _humanize_bytes(0) == "0B"
+        assert _humanize_bytes(512) == "512B"
+        assert _humanize_bytes(1023) == "1023B"
+
+    def test_kilobytes(self):
+        from token_goat.util import _humanize_bytes
+        assert _humanize_bytes(1024) == "1.0KB"
+        assert _humanize_bytes(2048) == "2.0KB"
+        assert _humanize_bytes(1536) == "1.5KB"
+
+    def test_megabytes(self):
+        from token_goat.util import _humanize_bytes
+        mb = 1024 * 1024
+        assert _humanize_bytes(mb) == "1.0MB"
+        assert _humanize_bytes(mb * 2) == "2.0MB"
+
+    def test_gigabytes(self):
+        from token_goat.util import _humanize_bytes
+        gb = 1024 * 1024 * 1024
+        assert _humanize_bytes(gb) == "1.0GB"
+        assert _humanize_bytes(gb * 3) == "3.0GB"
+
+    def test_compact_re_export(self):
+        """compact._humanize_bytes must resolve to the same object as util._humanize_bytes."""
+        from token_goat import compact
+        from token_goat.util import _humanize_bytes
+        assert compact._humanize_bytes is _humanize_bytes
