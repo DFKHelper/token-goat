@@ -599,19 +599,55 @@ def _check_vec_available(conn: sqlite3.Connection) -> bool:
         return False
 
 
-def _load_existing_chunk_hashes(conn: sqlite3.Connection) -> dict[tuple[str, int, int], str]:
-    """Return a mapping of (file_rel, start_line, end_line) -> content_sha256 for all indexed chunks.
+def _load_existing_chunk_hashes(
+    conn: sqlite3.Connection,
+    file_rels: list[str] | None = None,
+) -> dict[tuple[str, int, int], str]:
+    """Return a mapping of (file_rel, start_line, end_line) -> content_sha256 for indexed chunks.
 
     Used by :func:`index_project_embeddings` to skip re-embedding chunks whose
     content hasn't changed since the last index run.  Must be called before the
     file-scan loop starts so the snapshot reflects the pre-run DB state; calling
     it mid-loop would cause already-inserted chunks to appear as pre-existing.
+
+    Args:
+        conn: Open project DB connection.
+        file_rels: If ``None`` (default), load hashes for *all* files (full-index
+            path).  If a list is provided, load hashes only for those files
+            (incremental/dirty-queue path) — avoids loading 30–50 MB of chunk
+            data for the entire project on every 2-second poll cycle.
+            An empty list returns ``{}`` immediately without touching the DB.
+
+    Note on the SQLite variable limit (``SQLITE_MAX_VARIABLE_NUMBER``): the
+    default limit is 999 bound parameters per statement.  When ``len(file_rels)``
+    exceeds 900 the IN-list is split into batches of 500 and results are merged,
+    keeping well clear of that boundary.
     """
+    if file_rels is not None and len(file_rels) == 0:
+        return {}
+
     existing: dict[tuple[str, int, int], str] = {}
-    for row in conn.execute(
-        "SELECT file_rel, start_line, end_line, content_sha256 FROM chunks"
-    ):
-        existing[(row["file_rel"], row["start_line"], row["end_line"])] = row["content_sha256"]
+
+    if file_rels is None:
+        # Full-table scan: preserve original behaviour for the full-index path.
+        for row in conn.execute(
+            "SELECT file_rel, start_line, end_line, content_sha256 FROM chunks"
+        ):
+            existing[(row["file_rel"], row["start_line"], row["end_line"])] = row["content_sha256"]
+        return existing
+
+    # Incremental path: query only the requested files.
+    # SQLITE_MAX_VARIABLE_NUMBER defaults to 999; batch at 500 to stay safe.
+    _SQLITE_BATCH_SIZE = 500  # noqa: N806
+    for batch_start in range(0, len(file_rels), _SQLITE_BATCH_SIZE):
+        batch = file_rels[batch_start : batch_start + _SQLITE_BATCH_SIZE]
+        placeholders = ",".join("?" for _ in batch)
+        for row in conn.execute(
+            f"SELECT file_rel, start_line, end_line, content_sha256 FROM chunks"  # noqa: S608
+            f" WHERE file_rel IN ({placeholders})",
+            batch,
+        ):
+            existing[(row["file_rel"], row["start_line"], row["end_line"])] = row["content_sha256"]
     return existing
 
 
@@ -684,8 +720,20 @@ def index_project_embeddings(
     model_name: str = DEFAULT_MODEL,
     batch_size: int = 32,
     progress: Callable[[int, int], None] | None = None,
+    file_rels: list[str] | None = None,
 ) -> EmbeddingsResult:
-    """Compute embeddings for all chunks in a project. Idempotent on chunk SHA256."""
+    """Compute embeddings for chunks in a project. Idempotent on chunk SHA256.
+
+    Args:
+        project: Project to embed.
+        model_name: Fastembed model identifier.
+        batch_size: Number of chunks to embed per batch.
+        progress: Optional callback ``(done, total)`` for progress reporting.
+        file_rels: If ``None`` (default), embed chunks for *all* project files
+            (full-index path).  Pass a list of relative paths to restrict
+            embedding to those files only — used by the dirty-queue worker to
+            avoid loading the entire chunk table on each 2-second poll cycle.
+    """
     if not is_available():
         _LOG.debug("embeddings unavailable: fastembed not installed")
         raise EmbeddingsUnavailable("fastembed not installed")
@@ -705,8 +753,15 @@ def index_project_embeddings(
                 "sqlite-vec not loaded; embeddings disabled"
             )
 
-        existing = _load_existing_chunk_hashes(conn)
-        file_rows = conn.execute("SELECT rel_path FROM files").fetchall()
+        existing = _load_existing_chunk_hashes(conn, file_rels)
+        if file_rels is None:
+            file_rows = conn.execute("SELECT rel_path FROM files").fetchall()
+        else:
+            placeholders = ",".join("?" for _ in file_rels)
+            file_rows = conn.execute(
+                f"SELECT rel_path FROM files WHERE rel_path IN ({placeholders})",  # noqa: S608
+                file_rels,
+            ).fetchall() if file_rels else []
         n_files = len(file_rows)
 
         # Build full list of chunks that need (re)embedding.

@@ -491,3 +491,112 @@ def test_cli_semantic_max_distance_flag(ts_project, monkeypatch):
     # With a near-zero threshold, the gibberish query should leave no survivors.
     assert result.exit_code == 0
     assert "(no results)" in result.output
+
+
+# ---------------------------------------------------------------------------
+# Tests for _load_existing_chunk_hashes with file_rels filtering (P1 perf fix)
+# ---------------------------------------------------------------------------
+
+def test_load_chunk_hashes_all_files(ts_project, monkeypatch):
+    """Full-index path (file_rels=None) returns hashes for every indexed file."""
+    monkeypatch.setattr(emb, "embed_texts", _stub_embed)
+    emb.index_project_embeddings(ts_project)
+
+    with db.open_project(ts_project.hash) as conn:
+        all_hashes = emb._load_existing_chunk_hashes(conn, None)
+
+    assert len(all_hashes) > 0
+    # Every key is a (file_rel, start_line, end_line) triple.
+    for key in all_hashes:
+        assert len(key) == 3
+        assert isinstance(key[0], str)
+        assert isinstance(key[1], int)
+        assert isinstance(key[2], int)
+
+
+def test_load_chunk_hashes_specific_file(ts_project, monkeypatch):
+    """file_rels=[...] returns only hashes for the requested file, not others."""
+    monkeypatch.setattr(emb, "embed_texts", _stub_embed)
+    emb.index_project_embeddings(ts_project)
+
+    with db.open_project(ts_project.hash) as conn:
+        # Discover which file_rels actually have chunks.
+        all_rels = sorted({
+            row["file_rel"]
+            for row in conn.execute("SELECT DISTINCT file_rel FROM chunks")
+        })
+
+    assert all_rels, "test requires at least one indexed file with chunks"
+    target = all_rels[0]
+
+    with db.open_project(ts_project.hash) as conn:
+        filtered = emb._load_existing_chunk_hashes(conn, [target])
+        full = emb._load_existing_chunk_hashes(conn, None)
+
+    # Every key in filtered belongs to the target file.
+    for file_rel, _s, _e in filtered:
+        assert file_rel == target
+
+    # The filtered set is a strict subset of the full set.
+    assert filtered.items() <= full.items()
+
+    # If there are other files, filtered must be smaller than the full set.
+    if len(all_rels) > 1:
+        assert len(filtered) < len(full)
+
+
+def test_load_chunk_hashes_empty_list_returns_empty_no_sql(tmp_data_dir):
+    """file_rels=[] returns {} immediately without executing any SQL."""
+    conn = MagicMock(spec=sqlite3.Connection)
+
+    result = emb._load_existing_chunk_hashes(conn, [])
+
+    assert result == {}
+    conn.execute.assert_not_called()
+
+
+def test_load_chunk_hashes_large_project_filtered(tmp_data_dir):
+    """Querying 10 files out of 1500 synthetic rows returns only those 10 files' chunks.
+
+    Uses direct INSERT to avoid the parser/embedder overhead — this exercises
+    the SQL batching path (file_rels list within SQLITE_MAX_VARIABLE_NUMBER) and
+    confirms the returned dict is scoped to the requested files.
+    """
+    import hashlib as _hashlib  # noqa: PLC0415
+
+    from token_goat.project import make_project_at  # noqa: PLC0415
+
+    # Build a minimal project DB.
+    proj = make_project_at(tmp_data_dir)
+
+    with db.open_project(proj.hash) as conn:
+        # Ensure the chunks table exists (open_project runs DDL on first open).
+        # Insert synthetic file + chunk rows for 1500 files, 1 chunk each.
+        n_total = 1500
+        file_rows = [
+            (f"src/file_{i}.py", 0.0, _hashlib.sha256(f"file_{i}".encode()).hexdigest(), 0, 10, 0)
+            for i in range(n_total)
+        ]
+        conn.executemany(
+            "INSERT OR IGNORE INTO files(rel_path, mtime, content_sha256, language, size, line_count, indexed_at)"
+            " VALUES (?, ?, ?, 'python', ?, ?, ?)",
+            file_rows,
+        )
+        chunk_rows = [
+            (f"src/file_{i}.py", 0, 10, _hashlib.sha256(f"chunk_{i}".encode()).hexdigest(), "function", f"def f_{i}(): pass")
+            for i in range(n_total)
+        ]
+        conn.executemany(
+            "INSERT OR IGNORE INTO chunks(file_rel, start_line, end_line, content_sha256, kind, text) VALUES (?, ?, ?, ?, ?, ?)",
+            chunk_rows,
+        )
+
+    # Request only 10 of the 1500 files.
+    target_rels = [f"src/file_{i}.py" for i in range(10)]
+
+    with db.open_project(proj.hash) as conn:
+        result = emb._load_existing_chunk_hashes(conn, target_rels)
+
+    assert len(result) == 10
+    for file_rel, _s, _e in result:
+        assert file_rel in target_rels
