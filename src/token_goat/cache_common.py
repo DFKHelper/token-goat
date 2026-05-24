@@ -11,6 +11,7 @@ __all__ = [
     "OutputStatDict",
     "build_output_id",
     "evict_cache_dir",
+    "get_cache_dir",
     "list_cache_outputs",
     "load_output_meta_stat",
     "load_output_text",
@@ -19,6 +20,7 @@ __all__ = [
     "safe_session_fragment",
     "short_content_hash",
     "short_output_id",
+    "sidecar_path_for",
     "truncate_tail_preserve",
     "write_sidecar_metadata",
 ]
@@ -44,6 +46,29 @@ OUTPUT_FILENAME_RE = re.compile(r"^[a-zA-Z0-9_\-]{1,80}\.txt$")
 # Pre-compiled pattern used by safe_session_fragment — module-level so it is
 # only compiled once across both callers.
 _SESSION_UNSAFE_RE = re.compile(r"[^a-zA-Z0-9_\-]")
+
+
+def get_cache_dir(name: str) -> Path:
+    """Return ``data_dir() / name`` and create it on first use.
+
+    Shared implementation of the ``_bash_outputs_dir`` / ``_web_outputs_dir`` /
+    ``_skill_outputs_dir`` pattern used in every cache module.  All three called
+    either ``paths.ensure_dir(paths.data_dir() / name)`` or inlined the
+    equivalent ``mkdir`` — this centralises the one-liner so a future storage
+    layout change lands here once.
+    """
+    from . import paths as _paths  # noqa: PLC0415
+    return _paths.ensure_dir(_paths.data_dir() / name)
+
+
+def sidecar_path_for(output_path: Path) -> Path:
+    """Return the ``.json`` sidecar path for *output_path* (``.txt`` body file).
+
+    Each cache module's ``sidecar_meta_path`` previously duplicated
+    ``base.with_suffix(".json")``.  Centralising the one-liner means any future
+    change to the sidecar extension or naming convention lands in one place.
+    """
+    return output_path.with_suffix(".json")
 
 
 class OutputStatDict(TypedDict, total=False):

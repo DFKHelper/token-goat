@@ -50,12 +50,14 @@ from .cache_common import (
     OutputStatDict,
     build_output_id,
     evict_cache_dir,
+    get_cache_dir,
     list_cache_outputs,
     load_output_meta_stat,
     load_output_text,
     load_sidecar_json,
     safe_join_output_id,
     short_content_hash,
+    sidecar_path_for,
     write_sidecar_metadata,
 )
 from .hooks_common import sanitize_log_str
@@ -102,7 +104,7 @@ class BashOutputMeta:
 
 def _bash_outputs_dir() -> Path:
     """Return ``data_dir() / "bash_outputs"`` and create it on first use."""
-    return paths.ensure_dir(paths.data_dir() / "bash_outputs")
+    return get_cache_dir("bash_outputs")
 
 
 def command_hash(command: str) -> str:
@@ -266,7 +268,7 @@ def sidecar_meta_path(output_id: str) -> Path | None:
     base = safe_join_output_id(output_id, _bash_outputs_dir, "bash_cache")
     if base is None:
         return None
-    return base.with_suffix(".json")
+    return sidecar_path_for(base)
 
 
 def write_sidecar(meta: BashOutputMeta) -> None:

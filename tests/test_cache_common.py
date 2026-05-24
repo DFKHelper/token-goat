@@ -13,9 +13,11 @@ from token_goat.cache_common import (
     OutputStatDict,
     build_output_id,
     evict_cache_dir,
+    get_cache_dir,
     load_sidecar_json,
     safe_session_fragment,
     short_content_hash,
+    sidecar_path_for,
     truncate_tail_preserve,
 )
 
@@ -782,3 +784,78 @@ class TestOutputStatDict:
             assert not hasattr(mod, "_OutputStatDict"), (
                 f"{mod.__name__} still defines local _OutputStatDict"
             )
+
+
+class TestGetCacheDir:
+    """get_cache_dir(name) returns data_dir()/name and creates the directory."""
+
+    def test_creates_subdir_under_data_dir(self, tmp_path, monkeypatch) -> None:
+        import token_goat.paths as _paths
+        monkeypatch.setattr(_paths, "data_dir", lambda: tmp_path)
+        result = get_cache_dir("my_cache")
+        assert result == tmp_path / "my_cache"
+        assert result.is_dir()
+
+    def test_idempotent_when_dir_exists(self, tmp_path, monkeypatch) -> None:
+        import token_goat.paths as _paths
+        monkeypatch.setattr(_paths, "data_dir", lambda: tmp_path)
+        get_cache_dir("my_cache")
+        # Second call must not raise
+        result = get_cache_dir("my_cache")
+        assert result.is_dir()
+
+    def test_each_cache_module_uses_get_cache_dir(self, tmp_path, monkeypatch) -> None:
+        """All three cache modules must route their _*_dir() through get_cache_dir."""
+        import token_goat.paths as _paths
+        monkeypatch.setattr(_paths, "data_dir", lambda: tmp_path)
+        from token_goat import bash_cache, skill_cache, web_cache
+        assert bash_cache._bash_outputs_dir() == tmp_path / "bash_outputs"
+        assert web_cache._web_outputs_dir() == tmp_path / "web_outputs"
+        assert skill_cache._skill_outputs_dir() == tmp_path / "skills"
+
+    def test_no_raw_mkdir_in_web_cache(self) -> None:
+        """web_cache must not call .mkdir() directly — it must delegate to get_cache_dir."""
+        import ast
+        import pathlib
+        src = (pathlib.Path(__file__).parent.parent / "src" / "token_goat" / "web_cache.py").read_text()
+        tree = ast.parse(src)
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Attribute) and node.attr == "mkdir":
+                raise AssertionError(
+                    f"web_cache.py still calls .mkdir() directly at line {node.lineno}; "
+                    "use get_cache_dir() instead"
+                )
+
+
+class TestSidecarPathFor:
+    """sidecar_path_for(output_path) returns the .json sibling of a .txt body file."""
+
+    def test_replaces_txt_with_json(self, tmp_path) -> None:
+        body = tmp_path / "abc-0000000000000-deadbeef.txt"
+        assert sidecar_path_for(body) == tmp_path / "abc-0000000000000-deadbeef.json"
+
+    def test_works_on_path_without_existing_file(self, tmp_path) -> None:
+        body = tmp_path / "anon-9999999999999-cafebabe0000cafe.txt"
+        result = sidecar_path_for(body)
+        assert result.suffix == ".json"
+        assert result.stem == body.stem
+
+    def test_each_cache_sidecar_meta_path_uses_sidecar_path_for(self, tmp_path, monkeypatch) -> None:
+        """All three caches must route sidecar_meta_path through sidecar_path_for."""
+        import token_goat.paths as _paths
+        monkeypatch.setattr(_paths, "data_dir", lambda: tmp_path)
+        from token_goat import bash_cache, web_cache
+
+        # Craft valid output IDs for each cache (skill IDs have a different
+        # shape and are validated separately via the skill_cache tests).
+        bash_id = "anon-0000000000001-abcdef0123456789"
+        web_id = "anon-0000000000002-abcdef0123456789"
+
+        for cache_mod, oid, subdir in (
+            (bash_cache, bash_id, "bash_outputs"),
+            (web_cache, web_id, "web_outputs"),
+        ):
+            result = cache_mod.sidecar_meta_path(oid)
+            assert result is not None
+            assert result.suffix == ".json"
+            assert result.parent == tmp_path / subdir
