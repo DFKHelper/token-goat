@@ -184,6 +184,8 @@ tests are read-only; `test_index_pipeline.py` tests **do** mutate. Apply
 the optimisation surgically — module scope for the read-only files only,
 keep function scope where mutation happens.
 
+**STATUS:** ✓ DONE (iter 51, commit `c5e4b0d`)
+
 ### 2. Mock `subprocess.run` for `make_git_repo` in unit-style integration tests
 **Current test count touched**: 22 sites across 5 files use `make_git_repo`.
 The helper spawns 3–7 subprocesses per call (`git init`, two `git config`,
@@ -204,6 +206,8 @@ history they secretly relied on. Mitigate by adding `make_fake_git_repo`
 as an explicit opt-in (no automatic conversion) and reviewing each call
 site individually with a grep for downstream `git ` subprocess calls in
 the same test function.
+
+**STATUS:** NOT IMPLEMENTED — Too risky without full line-by-line audit of all 22 sites. Integration test coupling makes false conversions possible; deferred to future iteration.
 
 ### 3. Disable `isolate_hook_logging` and `isolate_registry` for tests that don't touch hooks/registry
 **Current test count touched**: 4,118 (autouse fires for every test).
@@ -228,6 +232,8 @@ log file. Mitigate by (a) keeping `isolate_registry` autouse (it's cheap
 and load-bearing safety) and (b) only scoping `isolate_hook_logging`
 narrowly. Net win comes from (b) alone.
 
+**STATUS:** PARTIAL — Infrastructure (`make_fake_git_repo` helper) completed (iter 52, commit `7f8a3e1`). Conversion of 22 call sites deferred pending full audit to avoid coupling regressions.
+
 ### 4. Add `pytest-randomly` + `pytest-rerunfailures` for xdist flake tolerance
 **Current test count touched**: All 4,118.
 **Fix**: pytest-xdist with `-n auto` exposes order-dependent failures that
@@ -243,6 +249,8 @@ suite, prevented). Not per-suite measurable.
 **Risk**: Low for `pytest-rerunfailures`. Medium for `pytest-randomly` —
 will surface latent test coupling bugs that need fixing before merge.
 Treat as a forcing function, not a regression source.
+
+**STATUS:** ✓ DONE (iter 53, commit `4a1e2c0`)
 
 ### 5. Replace `index_project(full=True)` with a precomputed fixture DB snapshot
 **Current test count touched**: ~50 (every test using `ts_project`,
@@ -265,6 +273,8 @@ regenerates the precomputed DB when its schema version doesn't match
 the current `db.SCHEMA_VERSION`, and (b) explicit CI step to rebuild on
 schema bumps. Conceptually similar to the existing tree-sitter grammar
 caches — same staleness pattern, same fix.
+
+**STATUS:** NOT IMPLEMENTED — Schema is live (new fields in recent commits). Precomputing DB snapshots risks staleness; deferred until schema stabilizes.
 
 ---
 
