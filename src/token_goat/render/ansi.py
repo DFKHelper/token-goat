@@ -12,7 +12,7 @@ Exports:
 """
 from __future__ import annotations
 
-__all__ = ["C", "RGB", "RESET", "USE_COLOR", "bg", "fg", "lerp_rgb", "pad_l", "pad_r", "strip_ansi", "vlen"]
+__all__ = ["C", "RGB", "RESET", "USE_COLOR", "bg", "fg", "fmt_bytes", "lerp_rgb", "pad_l", "pad_r", "strip_ansi", "vlen"]
 
 import os
 import re
@@ -38,6 +38,21 @@ _ANSI_ESCAPE_RE = re.compile(r"\x1b(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])")
 def strip_ansi(s: str) -> str:
     """Remove all ANSI/VT escape sequences from *s*."""
     return _ANSI_ESCAPE_RE.sub("", s)
+
+
+def fmt_bytes(n: int) -> str:
+    """Format a byte count as a plain-text human-readable string (B/KB/MB/GB/TB/PB).
+
+    No ANSI codes — safe for use in Rich table cells and fallback renderers.
+    For the ANSI-coloured variant used in the truecolor renderer see
+    ``render.stats_renderer._fmt_bytes``.
+    """
+    value: float = float(n)
+    for unit in ("B", "KB", "MB", "GB", "TB"):
+        if abs(value) < 1024:
+            return f"{int(value)}{unit}" if unit == "B" else f"{value:.1f}{unit}"
+        value = value / 1024
+    return f"{value:.1f}PB"
 
 
 def fg(r: int, g: int, b: int) -> str:
