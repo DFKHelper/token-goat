@@ -2,8 +2,20 @@
   <img src="assets/logo.png" alt="Token-Goat" width="700">
 </p>
 
+<p align="center"><b>Claude Code re-reads the same file three times. You pay every time.</b></p>
+
 <p align="center">
-  A Claude Code companion that cuts token costs on long sessions. Works with Claude Code, Codex CLI, opencode, and openclaw. Windows, Linux, WSL, and macOS. Install once, forget it.
+Token-Goat sits between Claude Code (or Codex) and your tools. When Claude grabs a 3&nbsp;MB screenshot, it gets a 100&nbsp;KB copy instead. When it asks for a file it already read, it gets a one-line "you already read this" hint with a narrow slice suggestion. The <code>pytest&nbsp;-v</code> output the model just saw arrives stripped to the failures. Sessions drop 40–90%. You don't change how you prompt.
+</p>
+
+<p align="center">
+<b>Install in one command:</b>
+</p>
+
+<pre align="center"><code>uv tool install token-goat && token-goat install</code></pre>
+
+<p align="center">
+Restart Claude Code. Run <code>token-goat stats</code> after your next session to see the savings.
 </p>
 
 <p align="center">
@@ -21,13 +33,11 @@
 </p>
 
 <p align="center">
-  <b>Token-Goat is built by one person and given away free.</b> If it saves you tokens, please drop a ⭐️ at the top of this page. One click, takes a second, and it genuinely makes my day. Thank you.
+  <b>97.4%</b> image compression &nbsp;·&nbsp; <b>85%</b> smaller reads via surgical CLI &nbsp;·&nbsp; <b>zero</b> ongoing maintenance
 </p>
 
----
-
 <p align="center">
-  <b>97.4%</b> image compression &nbsp;·&nbsp; <b>85%</b> smaller reads via surgical CLI &nbsp;·&nbsp; <b>zero</b> ongoing maintenance
+  Built free by one person. If it saves you tokens, drop a ⭐️ at the top of this page. One click. Makes my day.
 </p>
 
 ---
