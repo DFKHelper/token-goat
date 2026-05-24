@@ -41,6 +41,7 @@ __all__ = [
     "pre_tool_use_with_context",
     "pre_tool_use_with_update",
     "record_hint_stat_pair",
+    "run_dedup_hint",
     "sanitize_log_str",
     "sanitize_opt",
     "validate_cwd",
@@ -48,7 +49,7 @@ __all__ = [
 
 import logging
 from pathlib import Path
-from typing import Any, TypedDict, TypeGuard, cast
+from typing import Any, Protocol, TypedDict, TypeGuard, cast
 
 # ---------------------------------------------------------------------------
 # Typed shape for inbound hook payloads
@@ -539,3 +540,66 @@ def extract_tool_response_text(
                     return result
 
     return ""
+
+
+class _DedupeHintBuilder(Protocol):
+    """Callable that returns a hint object (with ``tokens_saved``) or ``None``."""
+
+    def __call__(self, session_id: str, cache: object) -> object | None: ...
+
+
+def run_dedup_hint(
+    payload: HookPayload,
+    *,
+    builder: _DedupeHintBuilder,
+    stat_kind: str,
+    detail: str,
+    log_label: str | None = None,
+) -> HookResponse | None:
+    """Shared skeleton for the four pre-hook dedup handlers.
+
+    Loads the session cache, calls *builder* to produce a hint, records the
+    stat pair, logs, and returns a :func:`pre_tool_use_with_context` response —
+    or ``None`` when no hint is available so the caller can fall through to
+    ``CONTINUE``.
+
+    Args:
+        payload:    The raw hook payload dict (must contain ``session_id``).
+        builder:    Callable ``(session_id, cache) -> hint | None``.  Each
+                    dedup handler closes over its tool-specific arguments
+                    (command/pattern/url) and passes a two-arg lambda here.
+        stat_kind:  Base stat kind string, e.g. ``"bash_dedup_hint"``.  The
+                    overhead counter is recorded under ``stat_kind + "_overhead"``
+                    by :func:`record_hint_stat_pair`.
+        detail:     Short string stored in the stat row detail column.  Callers
+                    should sanitize via :func:`sanitize_log_str` before passing.
+        log_label:  Optional prefix for the ``LOG.info`` call
+                    (e.g. ``"pre-read"``).  Defaults to ``"pre-hook"``.
+
+    Returns:
+        A ``HookResponse`` with ``additionalContext`` set to the hint text, or
+        ``None`` when the session cannot be loaded or the builder returns ``None``.
+    """
+    from . import session  # noqa: PLC0415
+
+    session_id, _cwd = get_session_context(payload)
+    if not session_id:
+        return None
+
+    try:
+        cache = session.load(session_id)
+    except (OSError, ValueError):
+        return None
+
+    hint = builder(session_id, cache)
+    if hint is None:
+        return None
+
+    record_hint_stat_pair(stat_kind, hint, detail)
+    LOG.info(
+        "%s: %s injected (tokens_saved=%d)",
+        log_label or "pre-hook",
+        stat_kind,
+        getattr(hint, "tokens_saved", 0),
+    )
+    return pre_tool_use_with_context(str(hint))
