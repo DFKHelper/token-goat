@@ -28,6 +28,7 @@ import os
 import re
 import time
 from collections.abc import Callable
+from dataclasses import asdict
 from datetime import UTC, datetime
 from operator import attrgetter, itemgetter
 from typing import TYPE_CHECKING, Any, Final
@@ -80,17 +81,24 @@ def _run_git(args: list[str], cwd: str, timeout: float = 5) -> str | None:
 
     Returns ``None`` when git is not found, the working directory does not exist,
     the process times out, the exit code is non-zero, or the output is empty.
-    Never raises — all exceptions are swallowed so callers can use a simple
-    ``if (out := _run_git(...)) is not None:`` pattern.
+
+    Item #31: only ``OSError`` (covers ``FileNotFoundError`` / ``PermissionError``)
+    and ``subprocess.SubprocessError`` (covers ``CalledProcessError`` /
+    ``TimeoutExpired``) are swallowed — programming errors like
+    ``AttributeError`` or assertion failures are allowed to propagate so they
+    surface in tests instead of being silently masked.  Aligns with the
+    ``util.run_git`` convention.
 
     Delegates to ``util.run_git`` for consistent kwargs (encoding, errors, lock avoidance).
     """
+    import subprocess  # noqa: PLC0415  — keep import lazy for hook cold-start
+
     try:
         result = _util_run_git(args, cwd=cwd, timeout=timeout)
         if result.returncode != 0 or not result.stdout.strip():
             return None
         return result.stdout.strip()
-    except Exception:  # noqa: BLE001
+    except (OSError, subprocess.SubprocessError):
         return None
 
 
@@ -221,44 +229,52 @@ _manifest_sha_written_this_process: set[str] = set()
 # ~300–600 tokens per redundant compaction.
 
 def _compute_manifest_fingerprint(cache: SessionCache) -> str:  # type: ignore[name-defined]
-    """Return a hex fingerprint that changes when session content changes.
+    """Return a hex fingerprint that changes when manifest-driving state changes.
 
-    Inputs:
-    - Total event count (files + greps + edits + bash entries + web entries)
-    - Sorted edited_files keys (detects new edits)
-    - Timestamps of the last 3 bash entries, sorted descending (detects new commands)
-    - exit_code of the most recent bash entry (detects a new test failure)
-
-    The fingerprint must include the last-bash exit_code so a fresh red test
-    result busts the cache even when event_count is otherwise unchanged.
+    The sidecar cache must invalidate when the session state that feeds the
+    rendered manifest changes: file access details, edits, grep history, bash /
+    web / skill / glob history, bash dedup exclusions, cwd, and the current
+    age tier. Build-manifest bookkeeping fields are intentionally excluded.
     """
-    bash_history = getattr(cache, "bash_history", None) or {}
-    bash_entries = sorted(bash_history.values(), key=attrgetter("ts"), reverse=True)
 
-    last_3_ts = [round(e.ts, 3) for e in bash_entries[:3]]
-    last_exit = bash_entries[0].exit_code if bash_entries else None
+    def _entry_payload(entry: object) -> object:
+        if hasattr(entry, "__dataclass_fields__"):
+            return asdict(entry)
+        return entry
 
-    event_count = (
-        len(cache.files)
-        + len(cache.greps)
-        + len(cache.edited_files)
-        + len(bash_history)
-        + len(getattr(cache, "web_history", None) or {})
-    )
+    def _dict_payload(mapping: object) -> dict[str, object]:
+        if not isinstance(mapping, dict) or not mapping:
+            return {}
+        return {str(key): _entry_payload(mapping[key]) for key in sorted(mapping)}
 
-    _ef = cache.edited_files
-    _ef_keys = sorted(_ef.keys() if hasattr(_ef, "keys") else _ef)
+    def _list_payload(items: object) -> list[object]:
+        if not isinstance(items, list) or not items:
+            return []
+        return [_entry_payload(item) for item in items]
+
+    now = time.time()
+    created_ts = float(getattr(cache, "created_ts", 0.0) or 0.0)
+    age_tier = _session_age_tier(max(0.0, now - created_ts))
+    edited_files = cache.edited_files if isinstance(cache.edited_files, dict) else {}
+    bash_dedup_ids = sorted(getattr(cache, "bash_dedup_emitted_ids", set()) or [])
+
     payload = json.dumps(
         {
-            "ev": event_count,
-            "ef": _ef_keys,
-            "bt": last_3_ts,
-            "bx": last_exit,
+            "age_tier": age_tier,
+            "bash_dedup_emitted_ids": bash_dedup_ids,
+            "bash_history": _dict_payload(getattr(cache, "bash_history", None)),
+            "cwd": getattr(cache, "cwd", None),
+            "edited_files": sorted(edited_files.items()),
+            "files": _dict_payload(getattr(cache, "files", None)),
+            "glob_history": _list_payload(getattr(cache, "glob_history", None)),
+            "greps": _list_payload(getattr(cache, "greps", None)),
+            "skill_history": _dict_payload(getattr(cache, "skill_history", None)),
+            "web_history": _dict_payload(getattr(cache, "web_history", None)),
         },
         separators=(",", ":"),
         sort_keys=True,
     )
-    return hashlib.sha256(payload.encode()).hexdigest()[:16]
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:16]
 
 
 def _read_manifest_sidecar(session_id: str) -> tuple[str, str, float] | None:
@@ -374,6 +390,34 @@ _diff_stat_summary_cache: dict[str | None, tuple[str, float]] = {}
 # called from both compute_adaptive_budget and _render during the same manifest
 # build). Same TTL semantics as the diff-stat cache above.
 _uncommitted_changes_cache: dict[str | None, tuple[str | None, float]] = {}
+
+# Item #35: LRU cap for the process-level caches above.  Long-lived worker
+# processes can hit hundreds of project switches over a session; an unbounded
+# dict slowly leaks memory and degrades dict-lookup performance.  32 is enough
+# for the common case (one or two repos under active iteration) with headroom
+# for monorepo sub-projects, and small enough that eviction overhead is trivial.
+_DIFF_STAT_CACHE_MAX_ENTRIES: Final[int] = 32
+
+
+def _put_bounded(cache: dict, key: object, value: object) -> None:
+    """Insert *value* under *key* in *cache*, evicting the oldest entry past the cap.
+
+    Dict insertion order is FIFO in CPython 3.7+, so popping ``next(iter(cache))``
+    removes the oldest key — close enough to LRU for these caches (TTL-bounded
+    + write-once-per-key) without the OrderedDict bookkeeping overhead.
+    """
+    if key in cache:
+        # Re-insert so the key becomes the most-recently-touched entry.
+        del cache[key]
+    elif len(cache) >= _DIFF_STAT_CACHE_MAX_ENTRIES:
+        # Drop the oldest entry to make room.
+        try:
+            oldest = next(iter(cache))
+        except StopIteration:  # pragma: no cover — empty dict, len == 0
+            oldest = None
+        if oldest is not None:
+            cache.pop(oldest, None)
+    cache[key] = value
 
 # Process-level cache for _is_git_repo() results.
 # A single stat() call per cwd is enough for the lifetime of the hook process
@@ -658,7 +702,7 @@ def _get_uncommitted_changes(project_root: str | None) -> str | None:
         )
 
         if not diff_lines and not status_lines:
-            _uncommitted_changes_cache[project_root] = (None, now)
+            _put_bounded(_uncommitted_changes_cache, project_root, (None, now))
             return None
 
         # Prefer diff --stat lines (they include +/- counts which are more
@@ -681,7 +725,7 @@ def _get_uncommitted_changes(project_root: str | None) -> str | None:
                 combined.append(sl)
 
         if not combined:
-            _uncommitted_changes_cache[project_root] = (None, now)
+            _put_bounded(_uncommitted_changes_cache, project_root, (None, now))
             return None
 
         # Truncate to 8 lines and cap total chars at 200.
@@ -690,7 +734,7 @@ def _get_uncommitted_changes(project_root: str | None) -> str | None:
         if len(output) > 200:
             output = output[:200].rsplit("\n", 1)[0]
         result = output if output.strip() else None
-        _uncommitted_changes_cache[project_root] = (result, now)
+        _put_bounded(_uncommitted_changes_cache, project_root, (result, now))
         return result
     except Exception:  # noqa: BLE001
         return None
@@ -733,7 +777,7 @@ def _get_git_diff_stat_summary(root: object) -> str:
 
         _stat_out = _run_git(["diff", "--no-color", "--stat", "HEAD"], root_str, timeout=5)
         if not _stat_out:
-            _diff_stat_summary_cache[root_str] = ("", now)
+            _put_bounded(_diff_stat_summary_cache, root_str, ("", now))
             return ""
         lines = _stat_out.splitlines()
         # Keep at most 6 lines (last 5 file-stat lines + the summary line which is last).
@@ -752,9 +796,9 @@ def _get_git_diff_stat_summary(root: object) -> str:
         # Hard cap: if still too long, drop the manifest section entirely rather than
         # truncating mid-line (a partial diff stat is misleading).
         if len(output) > 300:
-            _diff_stat_summary_cache[root_str] = ("", now)
+            _put_bounded(_diff_stat_summary_cache, root_str, ("", now))
             return ""
-        _diff_stat_summary_cache[root_str] = (output, now)
+        _put_bounded(_diff_stat_summary_cache, root_str, (output, now))
         return output
     except Exception:  # noqa: BLE001
         return ""
