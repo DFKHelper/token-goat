@@ -2447,7 +2447,11 @@ def _load_task_list(session_id: str) -> list[dict[str, str]]:
     return results
 
 
-def _render_tasks_section(tasks: list[dict[str, str]]) -> list[str]:
+def _render_tasks_section(
+    tasks: list[dict[str, str]],
+    *,
+    edited_paths: set[str] | None = None,
+) -> list[str]:
     """Render a ``### TODOs`` manifest section from a raw task list.
 
     Filters to ``pending`` and ``in_progress`` (``in-progress``) tasks, caps at
@@ -2456,14 +2460,47 @@ def _render_tasks_section(tasks: list[dict[str, str]]) -> list[str]:
 
     The status prefix uses ``[ ]`` for pending and ``[→]`` for in-progress so
     the compaction LLM can distinguish work not yet started from work underway.
+
+    Item #29: when *edited_paths* is provided, tasks whose subject contains the
+    basename or trailing path component of any edited file are suppressed —
+    those files are already pinned in the Edited section, so the TODO line
+    duplicates context that the compaction LLM already has.  Path matching is
+    case-insensitive against both basename and the last two path segments to
+    catch common phrasings like "update auth.py" and "fix src/auth.py".
     """
     active_statuses = {"pending", "in_progress", "in-progress"}
     active = [t for t in tasks if t.get("status", "") in active_statuses]
     if not active:
         return []
 
+    # Item #29: build a deduped set of edited-file basenames + last-two-segments
+    # so a substring match against the task subject is fast and predictable.
+    _suppress_tokens: set[str] = set()
+    if edited_paths:
+        import os as _os
+        for p in edited_paths:
+            norm = p.replace("\\", "/").lower()
+            basename = _os.path.basename(norm)
+            if basename:
+                _suppress_tokens.add(basename)
+            # Last two path segments (e.g. "src/auth.py") catch
+            # "src/auth.py is broken"-style subjects without matching too broadly.
+            parts = norm.strip("/").split("/")
+            if len(parts) >= 2:
+                _suppress_tokens.add("/".join(parts[-2:]))
+
+    def _is_about_edited_file(subject: str) -> bool:
+        if not _suppress_tokens:
+            return False
+        s = subject.lower()
+        return any(tok in s for tok in _suppress_tokens)
+
+    filtered_active = [t for t in active if not _is_about_edited_file(t["subject"])]
+    if not filtered_active:
+        return []
+
     lines: list[str] = ["**TODOs:**"]
-    shown = active[:_MAX_TODO_ENTRIES]
+    shown = filtered_active[:_MAX_TODO_ENTRIES]
     for t in shown:
         subject = t["subject"]
         subject = ellipsize(subject, _MAX_TODO_SUBJECT_CHARS)
@@ -2471,7 +2508,7 @@ def _render_tasks_section(tasks: list[dict[str, str]]) -> list[str]:
         marker = "[→]" if status in ("in_progress", "in-progress") else "[ ]"
         lines.append(f"- {marker} {subject}")
 
-    overflow = len(active) - len(shown)
+    overflow = len(filtered_active) - len(shown)
     if overflow > 0:
         lines.append(f"- …+{overflow} more")
 
@@ -3279,7 +3316,12 @@ def _render(cache: SessionCache, session_id: str, max_tokens: int) -> tuple[str,
     # does not need a dedicated budget slice — it comes out of the overall headroom
     # after the budgeted sections are assembled.
     raw_tasks = _load_task_list(session_id)
-    todo_lines = _render_tasks_section(raw_tasks)
+    # Item #29: pass the set of edited paths so the section suppresses TODOs
+    # whose subject already references a pinned edited file.
+    todo_lines = _render_tasks_section(
+        raw_tasks,
+        edited_paths=set(edited_clean) if edited_clean else None,
+    )
 
     # ── Item #16 — Merge Files Edited + Key Files Read when overlap >= 50% ──────
     # When many of the same paths appear in both the Edited and Files sections,
