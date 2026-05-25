@@ -1,4 +1,5 @@
 """Test paths module."""
+import sys
 from pathlib import Path
 
 import pytest
@@ -422,3 +423,95 @@ class TestSessionCachePath:
     def test_null_byte_rejected(self, tmp_data_dir: Path) -> None:
         with pytest.raises(ValueError, match="null byte"):
             paths.session_cache_path("abc\x00def")
+
+
+class TestNormalizeKey:
+    """paths.normalize_key — canonical path-key normalizer.
+
+    Contract (must match session._normalize_path exactly):
+    - Backslashes → forward slashes
+    - On Windows ONLY: uppercase drive letter (``C:`` style) → lowercase (``c:``)
+    - On non-Windows platforms: drive case is preserved (treated as literal chars)
+    - Idempotent: normalize(normalize(p)) == normalize(p) on the same platform
+    - Empty/short strings pass through without crashing
+    """
+
+    def test_backslash_to_forward_slash(self) -> None:
+        # Backslashes always become forward slashes regardless of platform.
+        assert paths.normalize_key("src\\foo\\bar.py") == "src/foo/bar.py"
+
+    def test_mixed_separators(self) -> None:
+        # Mixed separators collapse to all forward slashes.
+        assert paths.normalize_key("src\\foo/bar\\baz.py") == "src/foo/bar/baz.py"
+
+    @pytest.mark.skipif(sys.platform != "win32", reason="Drive-letter casing is Windows-only")
+    def test_windows_drive_lowercased(self) -> None:
+        assert paths.normalize_key("C:\\Projects\\foo.py") == "c:/Projects/foo.py"
+
+    @pytest.mark.skipif(sys.platform != "win32", reason="Drive-letter casing is Windows-only")
+    def test_windows_drive_already_lowercase(self) -> None:
+        # No change to already-lowercased drive letters.
+        assert paths.normalize_key("c:\\Projects\\foo.py") == "c:/Projects/foo.py"
+
+    @pytest.mark.skipif(sys.platform == "win32", reason="POSIX path semantics")
+    def test_posix_drive_letter_preserved(self) -> None:
+        # On non-Windows, paths like ``C:\\foo`` are not Windows drives; the
+        # backslash is still converted but the leading char is not touched.
+        # (This matches session._normalize_path behavior.)
+        assert paths.normalize_key("C:\\foo") == "C:/foo"
+
+    def test_already_normalized_idempotent(self) -> None:
+        # Forward-slash absolute POSIX path — no change expected.
+        p = "/usr/local/bin/foo"
+        assert paths.normalize_key(p) == p
+        # Idempotency: applying twice yields the same result.
+        assert paths.normalize_key(paths.normalize_key(p)) == p
+
+    def test_already_normalized_windows_lower_drive(self) -> None:
+        # Lowercase drive + forward slashes is the canonical form: idempotent.
+        p = "c:/projects/foo.py"
+        assert paths.normalize_key(p) == p
+        assert paths.normalize_key(paths.normalize_key(p)) == p
+
+    def test_trailing_separator_preserved(self) -> None:
+        # No rstrip — trailing slashes are preserved (after backslash conversion).
+        assert paths.normalize_key("src\\foo\\") == "src/foo/"
+        assert paths.normalize_key("src/foo/") == "src/foo/"
+
+    def test_empty_string(self) -> None:
+        assert paths.normalize_key("") == ""
+
+    def test_single_character(self) -> None:
+        # Too short for a drive prefix; no transformation.
+        assert paths.normalize_key("a") == "a"
+        assert paths.normalize_key("/") == "/"
+        # A lone backslash still flips to forward slash.
+        assert paths.normalize_key("\\") == "/"
+
+    def test_dot_path(self) -> None:
+        # Relative dot paths pass through unchanged on POSIX-form inputs;
+        # backslash dot paths flip separators.
+        assert paths.normalize_key(".") == "."
+        assert paths.normalize_key("./foo") == "./foo"
+        assert paths.normalize_key(".\\foo") == "./foo"
+
+    def test_relative_windows_path_no_drive(self) -> None:
+        # No drive letter — nothing to lowercase, only separator conversion.
+        assert paths.normalize_key("src\\foo.py") == "src/foo.py"
+
+    def test_session_alias_delegates(self) -> None:
+        # session._normalize_path must continue to return identical output;
+        # it is kept as a thin alias for backward compatibility.
+        from token_goat import session
+        sample_paths = [
+            "src\\foo.py",
+            "src/bar.py",
+            "C:\\Projects\\x.py",
+            "c:/projects/x.py",
+            "",
+            ".",
+            "./foo",
+            "/usr/local/bin",
+        ]
+        for p in sample_paths:
+            assert session._normalize_path(p) == paths.normalize_key(p)

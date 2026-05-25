@@ -96,7 +96,6 @@ import json
 import os
 import re
 import stat as _stat_module
-import sys
 import threading
 import time
 from collections.abc import Callable
@@ -1611,28 +1610,14 @@ def _has_windows_drive_prefix(s: str) -> bool:
 
 
 def _normalize_path(p: str) -> str:
-    """Normalize a path for use as a cache key. Forward slashes; lowercase drive on Windows.
+    """Normalize a path for use as a cache key (thin alias to ``paths.normalize_key``).
 
-    Drive letters must be lowercased because the harness and the hook dispatcher
-    can spawn separate processes that observe the same path with different cases
-    (e.g. ``C:\\foo`` vs ``c:\\foo``).  Without normalization, post-read hooks
-    writing ``C:\\`` and pre-read hooks reading ``c:\\`` miss the cache entirely,
-    making hint deduplication ineffective for the most common Windows paths.
-
-    Avoids constructing a Path object when the string contains no backslashes,
-    which is the common case for absolute POSIX paths and already-normalized keys.
-    The Path() round-trip was only needed to collapse mixed separators; a plain
-    str.replace is sufficient and avoids the allocation on the hot pre-read path.
+    Retained as a module-private alias so existing in-module and external
+    callers (``session._normalize_path``) continue to resolve.  The canonical
+    public entrypoint is :func:`token_goat.paths.normalize_key`; see its
+    docstring for the exact contract.
     """
-    # Fast path: no backslashes — skip the Path allocation entirely.
-    if "\\" not in p:
-        if sys.platform == "win32" and _has_windows_drive_prefix(p) and p[0].isupper():
-            return p[0].lower() + p[1:]
-        return p
-    s = p.replace("\\", "/")
-    if sys.platform == "win32" and _has_windows_drive_prefix(s) and s[0].isupper():
-        s = s[0].lower() + s[1:]
-    return s
+    return paths.normalize_key(p)
 
 
 _SESSION_ID_RE = re.compile(r"^[a-zA-Z0-9_-]+$")
