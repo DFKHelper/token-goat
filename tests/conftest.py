@@ -1,6 +1,7 @@
 """Shared test fixtures."""
 import logging
 import shutil
+import sys
 from pathlib import Path
 from unittest.mock import patch
 
@@ -9,6 +10,21 @@ import pytest
 import token_goat.paths as paths
 from token_goat.project import Project, canonicalize, project_hash
 from token_goat.session import SessionCache
+
+# Windows subprocesses (notably git on default cp1252 consoles) occasionally
+# emit non-UTF-8 bytes — most commonly 0x97 (cp1252 em dash) — to stderr.
+# pytest-timeout 2.4.0's `read_global_capture()` path can crash decoding
+# those bytes when a test exceeds the per-test timeout, which masks the
+# real timeout message and hangs the runner. Reconfiguring sys.stderr /
+# sys.stdout with errors="replace" turns the decode into a substitution
+# at the test process boundary.
+for _stream in (sys.stdout, sys.stderr):
+    _reconfigure = getattr(_stream, "reconfigure", None)
+    if _reconfigure is not None:
+        try:
+            _reconfigure(encoding="utf-8", errors="replace")
+        except (ValueError, OSError):
+            pass
 
 # ---------------------------------------------------------------------------
 # Home-directory helpers (used by test_install.py and test_install_codex.py)
