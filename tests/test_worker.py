@@ -2156,3 +2156,94 @@ def test_no_source_files_message_is_debug_not_info(tmp_data_dir, tmp_path, caplo
     assert not info_or_above, (
         f"'no source files found' appeared at INFO+ level: {info_or_above}"
     )
+
+
+# ---------------------------------------------------------------------------
+# _gc_orphaned_projects — orphan project GC
+# ---------------------------------------------------------------------------
+
+
+def _insert_project_row(gconn, hash_val: str, root: str, last_seen: float) -> None:
+    """Helper: insert a row into the projects table."""
+    now = int(time.time())
+    gconn.execute(
+        "INSERT OR REPLACE INTO projects(hash, root, marker, first_seen, last_seen, file_count, languages) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?)",
+        (hash_val, root, ".git", now, int(last_seen), 0, ""),
+    )
+
+
+def test_gc_orphaned_projects_spares_existing_dir(tmp_data_dir, tmp_path):
+    """A project whose root directory still exists must not be removed."""
+    from token_goat import db as _db
+    from token_goat.project import project_hash as ph_fn
+
+    root = tmp_path / "live_project"
+    root.mkdir()
+    ph = ph_fn(root)
+
+    old_ts = time.time() - 7200  # 2 hours ago — well outside safety window
+    with _db.open_global() as gconn:
+        _insert_project_row(gconn, ph, root.as_posix(), old_ts)
+
+    removed = worker._gc_orphaned_projects()
+    assert removed == 0
+
+    with _db.open_global() as gconn:
+        row = gconn.execute("SELECT root FROM projects WHERE hash = ?", (ph,)).fetchone()
+    assert row is not None, "existing-dir project was incorrectly removed"
+
+
+def test_gc_orphaned_projects_removes_deleted_dir(tmp_data_dir, tmp_path):
+    """A project whose root directory has been deleted must be removed after the safety window."""
+    from token_goat import db as _db
+    from token_goat.project import project_hash as ph_fn
+
+    root = tmp_path / "deleted_project"
+    root.mkdir()
+    ph = ph_fn(root)
+
+    old_ts = time.time() - 7200  # 2 hours ago — outside safety window
+    with _db.open_global() as gconn:
+        _insert_project_row(gconn, ph, root.as_posix(), old_ts)
+
+    # Create the per-project DB file so we can verify it is also removed.
+    db_path = paths.project_db_path(ph)
+    db_path.parent.mkdir(parents=True, exist_ok=True)
+    db_path.write_bytes(b"")
+
+    # Delete the root directory so GC will see it as missing.
+    root.rmdir()
+
+    removed = worker._gc_orphaned_projects()
+    assert removed == 1, f"expected 1 orphan removed, got {removed}"
+
+    with _db.open_global() as gconn:
+        row = gconn.execute("SELECT root FROM projects WHERE hash = ?", (ph,)).fetchone()
+    assert row is None, "orphaned project row was not deleted from global.db"
+    assert not db_path.exists(), "per-project .db file was not deleted"
+
+
+def test_gc_orphaned_projects_spares_recent_last_seen(tmp_data_dir, tmp_path):
+    """A project outside its safety window by age but recently seen must be spared."""
+    from token_goat import db as _db
+    from token_goat.project import project_hash as ph_fn
+
+    root = tmp_path / "recent_project"
+    root.mkdir()
+    ph = ph_fn(root)
+
+    # last_seen within the 30-minute safety window
+    recent_ts = time.time() - 60  # 1 minute ago
+    with _db.open_global() as gconn:
+        _insert_project_row(gconn, ph, root.as_posix(), recent_ts)
+
+    # Delete the directory — GC should still spare this project.
+    root.rmdir()
+
+    removed = worker._gc_orphaned_projects()
+    assert removed == 0, "project within safety window was incorrectly removed"
+
+    with _db.open_global() as gconn:
+        row = gconn.execute("SELECT root FROM projects WHERE hash = ?", (ph,)).fetchone()
+    assert row is not None, "safety-window project row was incorrectly deleted"
