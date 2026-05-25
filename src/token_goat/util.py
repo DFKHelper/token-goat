@@ -89,6 +89,23 @@ def sanitize_surrogates(text: str) -> str:
     return text.encode("utf-8", errors="replace").decode("utf-8", errors="replace")
 
 
+def ellipsize(s: str, max_chars: int) -> str:
+    """Return *s* truncated to *max_chars* with a trailing ``…`` when it exceeds that length.
+
+    When ``len(s) <= max_chars`` the string is returned unchanged.  When it
+    exceeds *max_chars*, the string is sliced to ``max_chars - 1`` characters
+    and ``…`` is appended so the result is exactly *max_chars* characters long.
+
+    >>> ellipsize("hello world", 8)
+    'hello w…'
+    >>> ellipsize("hi", 8)
+    'hi'
+    """
+    if len(s) <= max_chars:
+        return s
+    return s[: max_chars - 1] + "…"
+
+
 def _humanize_bytes(n: int) -> str:
     """Return a short human-readable byte count: ``1.2KB``, ``3.4MB``, ``120B``.
 

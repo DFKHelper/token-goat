@@ -497,3 +497,54 @@ class TestWebGroupingIntegration:
         assert "(2)" in m
         # github.com should appear separately
         assert "github.com" in m
+
+
+class TestRenderCacheMeta:
+    """_render_cache_meta: shared parenthesised metadata suffix for bash/web manifest lines."""
+
+    def test_basic_no_id(self) -> None:
+        result = compact._render_cache_meta("e=0", 12345)
+        assert result == "(e=0, 12.1KB)"
+
+    def test_with_output_id(self) -> None:
+        from token_goat.cache_common import short_output_id
+        oid = "anon-0000000000001-deadbeef"
+        result = compact._render_cache_meta("200", 1024, output_id=oid)
+        assert f"id={short_output_id(oid)}" in result
+        assert "200" in result
+        assert "1.0KB" in result
+
+    def test_truncated_marker(self) -> None:
+        result = compact._render_cache_meta("e=1", 500, truncated=True)
+        assert "(truncated)" in result
+
+    def test_no_truncated_marker_by_default(self) -> None:
+        result = compact._render_cache_meta("e=0", 500)
+        assert "truncated" not in result
+
+    def test_empty_output_id_omits_id_part(self) -> None:
+        result = compact._render_cache_meta("200", 1000, output_id="")
+        assert "id=" not in result
+
+    def test_parenthesised_form(self) -> None:
+        result = compact._render_cache_meta("e=0", 100)
+        assert result.startswith("(")
+        assert result.endswith(")")
+
+    def test_bash_format_consistency(self) -> None:
+        """Output matches the previous bash-entry format."""
+        from token_goat.util import _humanize_bytes
+        total = 12345
+        result = compact._render_cache_meta("e=1", total)
+        expected = f"(e=1, {_humanize_bytes(total)})"
+        assert result == expected
+
+    def test_web_format_consistency(self) -> None:
+        """Output matches the previous web-entry format."""
+        from token_goat.cache_common import short_output_id
+        from token_goat.util import _humanize_bytes
+        oid = "anon-0000000000001-deadbeef"
+        body_bytes = 14_200
+        result = compact._render_cache_meta("200", body_bytes, output_id=oid)
+        expected = f"(200, {_humanize_bytes(body_bytes)}, id={short_output_id(oid)})"
+        assert result == expected
