@@ -290,7 +290,11 @@ class TestCompactStaleAndCold:
         with patch("token_goat.compact.estimate_tokens", return_value=1):
             result, _ = compact._render(cache, "sess1234", 800)  # type: ignore[attr-defined]
         assert "❄" in result
-        assert "Cold Outputs" in result
+        # Cold-bash header was shortened from "Cold Outputs (evict — recall …)"
+        # to "**Cold:** evict, recall via `token-goat bash-output <id>`".
+        # Verify the cold-bash header marker and the recall pointer both render.
+        assert "**Cold:**" in result
+        assert "token-goat bash-output" in result
 
     def test_recent_bash_not_flagged_cold(self) -> None:
         from token_goat import compact

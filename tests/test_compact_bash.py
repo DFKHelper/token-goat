@@ -777,7 +777,9 @@ class TestFormatGlobEntry:
     def test_pattern_only(self):
         line = compact._format_glob_entry(self._make_entry("**/*.py"))
         assert "**/*.py" in line
-        assert "📂" in line
+        # Item #4: emoji prefix `\U0001f4c2` was replaced with ASCII `g:`
+        # because multi-byte emojis cost more tokens than 2 ASCII chars.
+        assert line.startswith("- g:")
 
     def test_with_path_scope(self):
         line = compact._format_glob_entry(self._make_entry("**/*.ts", path="src/"))

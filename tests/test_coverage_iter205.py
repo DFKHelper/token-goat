@@ -251,6 +251,17 @@ class TestCompactBuildManifest:
         mock_cache.files = {}
         mock_cache.greps = []
         mock_cache.edited_files = {}
+        # Explicit stubs prevent the MagicMock attribute trap in
+        # _compute_manifest_fingerprint (json.dumps cannot serialise a
+        # MagicMock auto-attr; the fingerprint now hashes cwd + the
+        # bash/web/skill/glob/dedup history).
+        mock_cache.cwd = None
+        mock_cache.bash_dedup_emitted_ids = set()
+        mock_cache.bash_history = {}
+        mock_cache.glob_history = []
+        mock_cache.skill_history = {}
+        mock_cache.web_history = {}
+        mock_cache.created_ts = 0.0
 
         with patch("token_goat.compact.session_mod.validate_session_id"), \
              patch("token_goat.compact.session_mod.load", return_value=mock_cache):
