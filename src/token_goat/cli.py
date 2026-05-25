@@ -2950,6 +2950,8 @@ def _assert_hook_registry_aligned() -> None:
     hook_registry.assert_typer_subcommands_aligned(registered)
 
 
+# Runs once per process at module import; cache is automatic via sys.modules.
+# Do not call from request paths or command bodies.
 _assert_hook_registry_aligned()
 
 
