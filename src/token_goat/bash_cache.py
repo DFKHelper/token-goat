@@ -60,6 +60,7 @@ from .cache_common import (
     safe_join_output_id,
     short_content_hash,
     sidecar_path_for,
+    store_blob,
     write_sidecar_metadata,
 )
 from .hooks_common import sanitize_log_str
@@ -165,10 +166,8 @@ def store_glob_result(
         # Build a stable output_id: glob_ prefix + session fragment + hash.
         from .cache_common import safe_session_fragment  # noqa: PLC0415
         out_id = f"{_GLOB_RESULT_PREFIX}{safe_session_fragment(session_id)}-{g_hash}"
-        cache_path = safe_join_output_id(out_id, _bash_outputs_dir, "bash_cache")
-        if cache_path is None:
+        if store_blob(out_id, result_text, _bash_outputs_dir, "bash_cache") is None:
             return None
-        paths.atomic_write_text(cache_path, result_text)
         evict_old_entries(max_total_bytes=max_total_bytes)
         _LOG.debug("bash_cache: stored glob result id=%s pattern=%s", out_id, sanitize_log_str(pattern))
         return out_id
