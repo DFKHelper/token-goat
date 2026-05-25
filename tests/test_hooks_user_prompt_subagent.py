@@ -96,6 +96,55 @@ def test_user_prompt_submit_no_session_cache_returns_continue(tmp_path):
 
 
 # ---------------------------------------------------------------------------
+# UserPromptSubmit — short-circuit on trivial prompts (item A12)
+# ---------------------------------------------------------------------------
+
+
+def test_user_prompt_submit_short_prompt_early_returns(tmp_path):
+    """Prompts shorter than 8 chars must early-return CONTINUE with no context."""
+    for short_prompt in ["k", "yes", "no", "/help", "ok", "y", "       "]:
+        result = user_prompt_submit({
+            "session_id": "short-prompt-sess",
+            "cwd": str(tmp_path),
+            "prompt": short_prompt,
+        })
+        assert result.get("continue") is True, f"Failed for prompt={short_prompt!r}"
+        assert result.get("hookSpecificOutput") is None, (
+            f"hookSpecificOutput must be absent for short prompt={short_prompt!r}"
+        )
+
+
+def test_user_prompt_submit_long_enough_prompt_proceeds(tmp_path):
+    """Prompts of 8+ chars bypass the short-circuit and proceed normally."""
+    mock_bash_entry = MagicMock()
+    mock_bash_entry.ts = 1000.0
+    mock_bash_entry.exit_code = 0
+
+    mock_cache = MagicMock()
+    mock_cache.edited_files = {"a.py"}
+    mock_cache.bash_history = {"cmd": mock_bash_entry}
+
+    import token_goat.session as real_session
+
+    with (
+        patch("subprocess.run") as mock_run,
+        patch.object(real_session, "safe_load", return_value=mock_cache),
+    ):
+        mock_run.return_value = MagicMock(stdout="main\n", returncode=0)
+        result = user_prompt_submit({
+            "session_id": "long-prompt-sess",
+            "cwd": str(tmp_path),
+            "prompt": "Please fix the login bug",  # 24 chars
+        })
+
+    assert result.get("continue") is True
+    hso = result.get("hookSpecificOutput")
+    # Long prompt proceeds — should produce a context summary
+    assert hso is not None
+    assert "additionalContext" in hso
+
+
+# ---------------------------------------------------------------------------
 # SubagentStop — no session_id / no cwd
 # ---------------------------------------------------------------------------
 
