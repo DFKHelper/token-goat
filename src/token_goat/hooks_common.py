@@ -381,8 +381,8 @@ def record_hint_stat_pair(kind: str, hint: object, detail: str) -> None:
                 automatically.
         hint:   The hint object — must have a numeric ``tokens_saved`` attribute
                 (any :class:`~hints.ReadHint` / :class:`~hints.DedupHint`
-                subclass), and must support ``len()`` so the injection byte cost
-                can be measured.  Accepts ``object`` so callers that pass a
+                subclass). Its string value is measured to account for the
+                injection byte cost. Accepts ``object`` so callers that pass a
                 typed hint subclass do not need a cast.
         detail: Short string stored in the stat row for triage (path, pattern,
                 URL, or command preview).  Callers are responsible for
@@ -399,7 +399,8 @@ def record_hint_stat_pair(kind: str, hint: object, detail: str) -> None:
         return
 
     realized_tokens: int = getattr(hint, "tokens_saved", 0)
-    injection_bytes: int = len(hint)  # type: ignore[arg-type]
+    injection_text = str(hint)
+    injection_bytes: int = len(injection_text.encode("utf-8"))
     injection_cost_tokens = bytes_to_tokens(injection_bytes)
 
     # Skip writing stat rows for zero-saving hints (large-file nudges, lockfile
@@ -641,7 +642,12 @@ def extract_tool_response_text(
     """
     raw_resp: object = payload.get("tool_response") if isinstance(payload, dict) else None
     if raw_resp is None and isinstance(payload, dict):
-        raw_resp = payload.get("tool_result") or payload.get("response")
+        for key in ("tool_result", "response"):
+            if key in payload:
+                candidate = payload[key]
+                if candidate is not None:
+                    raw_resp = candidate
+                    break
 
     if isinstance(raw_resp, str):
         return raw_resp
