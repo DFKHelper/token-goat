@@ -172,7 +172,13 @@ class TestRecordSessionHintImpact:
         assert any(clean in (d or "") for d in details)
 
     def test_two_stats_recorded(self):
-        """Both session_hint and session_hint_overhead stats must be recorded."""
+        """Both session_hint and session_hint_overhead stats are recorded.
+
+        Item 15 (commit 4cbe4ee) skips the overhead row when the injection
+        text is < 32 bytes, since the overhead measurement is negligible
+        for tiny nudges. Use a hint text longer than 32 bytes so the
+        overhead row is still emitted and both kinds are recorded.
+        """
         from token_goat.hints import ReadHint
 
         kinds: list[str] = []
@@ -180,7 +186,11 @@ class TestRecordSessionHintImpact:
         def fake_record_stat(project_hash, kind, *, bytes_saved=0, tokens_saved=0, detail=None):
             kinds.append(kind)
 
-        hint = ReadHint("Note: already read.", tokens_saved=10)
+        # 40-byte hint text — above the 32-byte gating threshold so both
+        # the gross-saving row AND the overhead row fire.
+        hint_text = "Note: already read this file recently; skip re-read."
+        assert len(hint_text.encode("utf-8")) >= 32
+        hint = ReadHint(hint_text, tokens_saved=10)
 
         with patch("token_goat.db.record_stat", side_effect=fake_record_stat):
             from token_goat.hooks_read import _record_session_hint_impact
@@ -189,6 +199,34 @@ class TestRecordSessionHintImpact:
 
         assert "session_hint" in kinds
         assert "session_hint_overhead" in kinds
+
+    def test_only_gross_stat_recorded_when_injection_below_threshold(self):
+        """Item 15: skip overhead row when injection_bytes < 32 and tokens_saved > 0.
+
+        Companion to test_two_stats_recorded — verifies that the gating
+        actually fires for small hints. A 19-byte hint must record the
+        gross-saving row but not the overhead row.
+        """
+        from token_goat.hints import ReadHint
+
+        kinds: list[str] = []
+
+        def fake_record_stat(project_hash, kind, *, bytes_saved=0, tokens_saved=0, detail=None):
+            kinds.append(kind)
+
+        # 19-byte hint — below the 32-byte gating threshold.
+        hint_text = "Note: already read."
+        assert len(hint_text.encode("utf-8")) < 32
+        hint = ReadHint(hint_text, tokens_saved=10)
+
+        with patch("token_goat.db.record_stat", side_effect=fake_record_stat):
+            from token_goat.hooks_read import _record_session_hint_impact
+
+            _record_session_hint_impact("/some/file.py", hint)
+
+        assert "session_hint" in kinds
+        # Overhead row is intentionally skipped for tiny hints.
+        assert "session_hint_overhead" not in kinds
 
 
 # ===========================================================================
