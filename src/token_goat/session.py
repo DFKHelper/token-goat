@@ -262,8 +262,23 @@ def _acquire_session_lock(session_id: str) -> int | None:
                 0o600,
             )
             # Write our PID so stale-check can verify liveness.
-            with contextlib.suppress(OSError):
-                os.write(fd, str(os.getpid()).encode())
+            # Retry once after a small delay if the first write fails.
+            pid_bytes = str(os.getpid()).encode()
+            try:
+                os.write(fd, pid_bytes)
+            except OSError:
+                time.sleep(0.01)
+                try:
+                    os.write(fd, pid_bytes)
+                except OSError:
+                    # Both writes failed; lock file has no PID, making stale-check unreliable.
+                    # Close fd and refuse the lock to avoid silent races.
+                    with contextlib.suppress(OSError):
+                        os.close(fd)
+                    with contextlib.suppress(OSError):
+                        lock_path.unlink(missing_ok=True)
+                    _LOG.error("session lock PID write failed (retry); refusing lock: %s", session_id[:16])
+                    return None
             return fd
         except (FileExistsError, OSError):
             pass
