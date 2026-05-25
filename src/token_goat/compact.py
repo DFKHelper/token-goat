@@ -277,10 +277,21 @@ def _compute_manifest_fingerprint(cache: SessionCache) -> str:  # type: ignore[n
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:16]
 
 
-def _read_manifest_sidecar(session_id: str) -> tuple[str, str, float] | None:
-    """Read the manifest sidecar and return (sha, fingerprint, emit_ts) or None.
+# Sidecar payload version.  v1 = {sha, fp, ts}.  v2 adds {counts: {...}} for
+# item #26 (Manifest Delta).  Bumping `_SIDECAR_VERSION` is how we ensure that
+# legacy v1 sidecars are gracefully ignored when the reader expects v2 fields.
+_SIDECAR_VERSION: Final[int] = 2
 
-    Returns None on any error (missing file, corrupt JSON, path traversal).
+
+def _read_manifest_sidecar(
+    session_id: str,
+) -> tuple[str, str, float, dict[str, int] | None] | None:
+    """Read the manifest sidecar and return (sha, fingerprint, emit_ts, counts) or None.
+
+    *counts* is a small dict of section-element counts from the prior render
+    (``{"edited": N, "bash": N, ...}``) used by item #26's Manifest Delta
+    section, or ``None`` for v1 sidecars / when the field is absent / malformed.
+    All other parse errors return ``None`` for the whole tuple.
     """
     from . import paths  # noqa: PLC0415
 
@@ -288,25 +299,114 @@ def _read_manifest_sidecar(session_id: str) -> tuple[str, str, float] | None:
         sidecar = paths.manifest_sha_sidecar_path(session_id)
         raw = sidecar.read_text(encoding="utf-8")
         data = json.loads(raw)
-        return str(data["sha"]), str(data["fp"]), float(data["ts"])
+        sha = str(data["sha"])
+        fp = str(data["fp"])
+        ts = float(data["ts"])
+        # Best-effort extraction of v2 counts.  A v1 sidecar (no "counts" key)
+        # OR a malformed counts dict yields counts=None — the caller falls back
+        # to skipping the delta section, never crashes.
+        counts_raw = data.get("counts")
+        counts: dict[str, int] | None = None
+        if isinstance(counts_raw, dict):
+            try:
+                counts = {str(k): int(v) for k, v in counts_raw.items()}
+            except (TypeError, ValueError):
+                counts = None
+        return sha, fp, ts, counts
     except Exception:  # noqa: BLE001
         return None
 
 
-def _write_manifest_sidecar(session_id: str, sha: str, fingerprint: str, ts: float) -> None:
-    """Write the manifest sidecar atomically.  Errors are silently swallowed."""
+def _write_manifest_sidecar(
+    session_id: str,
+    sha: str,
+    fingerprint: str,
+    ts: float,
+    counts: dict[str, int] | None = None,
+) -> None:
+    """Write the manifest sidecar atomically.  Errors are silently swallowed.
+
+    *counts* (item #26): per-section element counts emitted in the current
+    manifest, persisted so the next compact can compute a "Δ since last compact"
+    line.  Omitted (or empty) → no counts written, treated as v1-compatible.
+    """
     from . import paths  # noqa: PLC0415
 
     try:
         sidecar = paths.manifest_sha_sidecar_path(session_id)
         sidecar.parent.mkdir(parents=True, exist_ok=True)
-        payload = json.dumps({"sha": sha, "fp": fingerprint, "ts": ts}, separators=(",", ":"))
+        payload_dict: dict[str, object] = {
+            "v": _SIDECAR_VERSION,
+            "sha": sha,
+            "fp": fingerprint,
+            "ts": ts,
+        }
+        if counts:
+            payload_dict["counts"] = {k: int(v) for k, v in counts.items()}
+        payload = json.dumps(payload_dict, separators=(",", ":"), sort_keys=True)
         # Atomic write via temp file + rename (same volume guaranteed).
         tmp = sidecar.with_suffix(".tmp")
         tmp.write_text(payload, encoding="utf-8")
         tmp.replace(sidecar)
     except Exception:  # noqa: BLE001
         pass
+
+
+def _compute_section_counts(cache: object) -> dict[str, int]:
+    """Return per-section element counts for the current cache snapshot.
+
+    Used by item #26 (Manifest Delta) to persist a small fingerprint of "how
+    much was in the manifest last time" so the next compact can show what grew.
+    Defensive ``getattr`` calls so a legacy/test cache without one of these
+    fields contributes 0 rather than raising.
+    """
+    def _len(obj: object) -> int:
+        try:
+            return len(obj)  # type: ignore[arg-type]
+        except (TypeError, AttributeError):
+            return 0
+
+    return {
+        "edited": _len(getattr(cache, "edited_files", None) or {}),
+        "files": _len(getattr(cache, "files", None) or {}),
+        "bash": _len(getattr(cache, "bash_history", None) or {}),
+        "web": _len(getattr(cache, "web_history", None) or {}),
+        "grep": _len(getattr(cache, "greps", None) or []),
+        "glob": _len(getattr(cache, "glob_history", None) or []),
+        "skill": _len(getattr(cache, "skill_history", None) or {}),
+    }
+
+
+def _format_manifest_delta(
+    prior: dict[str, int] | None, current: dict[str, int]
+) -> str | None:
+    """Item #26: return a one-line delta string or None.
+
+    Format:  ``**Δ since last compact:** +2 edited, +3 bash``
+
+    - Returns None if *prior* is None (no prior sidecar; first compact).
+    - Returns None when no section count changed (manifest is steady-state).
+    - Reports both growth (+N) and shrinkage (-N) — a shrink usually means
+      session reset / cache trim and is just as informative.
+    - Section order is fixed (most load-bearing first) so the line is stable
+      across compactions and easy to scan.
+    """
+    if not prior:
+        return None
+    # Stable display order — matches the manifest's own section emission order.
+    _ORDER = ("edited", "files", "bash", "web", "grep", "glob", "skill", "symbols")
+    parts: list[str] = []
+    for key in _ORDER:
+        cur = int(current.get(key, 0))
+        old = int(prior.get(key, 0))
+        delta = cur - old
+        if delta == 0:
+            continue
+        sign = "+" if delta > 0 else ""
+        parts.append(f"{sign}{delta} {key}")
+    if not parts:
+        return None
+    return "**Δ since last compact:** " + ", ".join(parts)
 
 
 # Maximum number of edited files listed individually in the "Files Edited" section.
@@ -2397,11 +2497,12 @@ def build_manifest(session_id: str, *, max_tokens: int = 400) -> str:
     fingerprint = _compute_manifest_fingerprint(cache)
 
     sidecar_data = _read_manifest_sidecar(session_id)
+    prior_counts: dict[str, int] | None = None
     if (
         sidecar_data is not None
         and session_id not in _manifest_sha_written_this_process
     ):
-        _cached_sha, cached_fp, cached_ts = sidecar_data
+        _cached_sha, cached_fp, cached_ts, prior_counts = sidecar_data
         sidecar_age = now - cached_ts
         if sidecar_age < _MANIFEST_CACHE_TTL_SECS and cached_fp == fingerprint:
             emit_time = datetime.fromtimestamp(cached_ts, tz=UTC).strftime("%H:%M")
@@ -2414,16 +2515,30 @@ def build_manifest(session_id: str, *, max_tokens: int = 400) -> str:
                 f"## Token-Goat Manifest — unchanged since {emit_time}. "
                 f"Recall: `token-goat compact-hint --session-id {short_id}`."
             )
+    elif sidecar_data is not None:
+        # Cache write happened earlier in this process — still surface prior_counts
+        # for the delta line so the new manifest reflects the growth/shrink.
+        _cached_sha, cached_fp, cached_ts, prior_counts = sidecar_data
 
     # Cache miss or TTL expired: render the full manifest.
     full_manifest = _build_manifest_from_cache(cache, session_id, max_tokens)
     if not full_manifest:
         return full_manifest
 
-    # Persist the sidecar with the new SHA + fingerprint so the next PreCompact
-    # can skip rendering if nothing has changed.
+    # Item #26: prepend a one-line **Δ since last compact:** when the prior
+    # sidecar carried a counts payload AND any section count changed.  First-time
+    # compactions (prior_counts is None) skip the line — no "Δ: first compact"
+    # noise.  The line is inserted as the very first content line of the manifest
+    # so the compaction LLM sees what changed before reading anything else.
+    current_counts = _compute_section_counts(cache)
+    delta_line = _format_manifest_delta(prior_counts, current_counts)
+    if delta_line:
+        full_manifest = delta_line + "\n" + full_manifest
+
+    # Persist the sidecar with the new SHA + fingerprint + counts so the next
+    # PreCompact can skip rendering AND compute a delta against current counts.
     sha = _short_content_hash(full_manifest)
-    _write_manifest_sidecar(session_id, sha, fingerprint, now)
+    _write_manifest_sidecar(session_id, sha, fingerprint, now, counts=current_counts)
     _manifest_sha_written_this_process.add(session_id)
 
     # Also update the session-JSON fields so legacy callers and stats remain consistent.
