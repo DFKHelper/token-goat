@@ -166,10 +166,13 @@ def _contention_mark_path(session_id: str, phase: str) -> Path:
     """Return the touch-file path for a (session_id, phase) contention record."""
     from . import paths as _paths  # noqa: PLC0415
 
-    # Use first 32 chars of session_id to keep filenames sane on any FS.
-    safe_sid = session_id[:32].replace("/", "_").replace("\\", "_")
-    safe_phase = phase.replace("/", "_").replace("\\", "_")
-    return _paths.data_dir() / "contention_marks" / f"{safe_sid}_{safe_phase}.mark"
+    # Sanitize both components: keep only alphanumeric, underscore, and hyphen;
+    # truncate to 32 chars each so combined filenames stay well under FS limits.
+    _SAFE_RE = re.compile(r"[^A-Za-z0-9_-]")
+    safe_sid = _SAFE_RE.sub("_", session_id)[:32] or "anon"
+    safe_phase = _SAFE_RE.sub("_", phase)[:32] or "phase"
+    fragment = f"{safe_sid}_{safe_phase}.mark"
+    return _paths.safe_join(_paths.data_dir() / "contention_marks", fragment)
 
 
 # Touch-files older than this are considered expired and may be swept by the worker.
