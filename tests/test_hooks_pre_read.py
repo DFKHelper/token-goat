@@ -99,7 +99,8 @@ class TestPreReadHandlerDirect:
         `token-goat stats` must subtract the cost of injecting it.
         """
         from token_goat import db
-        from token_goat.hints import CHARS_PER_TOKEN, build_read_hint
+        from token_goat.hints import build_read_hint
+        from token_goat.hooks_common import bytes_to_tokens
 
         sid = "net_acct"
         path = "C:/proj/cached.py"
@@ -110,10 +111,15 @@ class TestPreReadHandlerDirect:
             session_id=sid, file_path=path, offset=0, limit=200, cwd="C:/proj"
         )
         assert hint is not None
-        injection_cost = max(1, int(len(hint) / CHARS_PER_TOKEN))
+        # record_hint_stat_pair measures injection cost from UTF-8 bytes
+        # (not Python str length) so multi-byte characters in the hint text
+        # account for their real on-the-wire cost. Mirror that math here.
+        hint_text = str(hint)
+        injection_bytes = len(hint_text.encode("utf-8"))
+        injection_cost = bytes_to_tokens(injection_bytes)
         assert injection_cost > 0  # the hint text is not free
         expected_net_tokens = hint.tokens_saved - injection_cost
-        expected_net_bytes = hint.tokens_saved * 4 - len(hint)
+        expected_net_bytes = hint.tokens_saved * 4 - injection_bytes
 
         payload = {
             "session_id": sid,
@@ -137,7 +143,7 @@ class TestPreReadHandlerDirect:
         assert gross_row["bytes_saved"] == hint.tokens_saved * 4
         assert overhead_row["kind"] == "session_hint_overhead"
         assert overhead_row["tokens_saved"] == -injection_cost
-        assert overhead_row["bytes_saved"] == -len(hint)
+        assert overhead_row["bytes_saved"] == -injection_bytes
         assert gross_row["tokens_saved"] + overhead_row["tokens_saved"] == expected_net_tokens
         assert gross_row["bytes_saved"] + overhead_row["bytes_saved"] == expected_net_bytes
 
