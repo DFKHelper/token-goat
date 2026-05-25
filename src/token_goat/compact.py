@@ -245,7 +245,7 @@ def _compute_manifest_fingerprint(cache: SessionCache) -> str:  # type: ignore[n
 
     def _entry_payload(entry: object) -> object:
         if hasattr(entry, "__dataclass_fields__"):
-            return asdict(entry)
+            return asdict(entry)  # type: ignore[call-overload]
         return entry
 
     def _dict_payload(mapping: object) -> dict[str, object]:
