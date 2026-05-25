@@ -101,3 +101,79 @@ class TestConfigMtimeCache:
         assert isinstance(env_fp, str)
         assert isinstance(mono_val, float)
         assert mono_val > 0
+
+
+class TestConfigUnknownSectionWarning:
+    """Unknown top-level TOML sections produce a warning (typo detection)."""
+
+    def _reset_cache(self) -> None:
+        import token_goat.config as cfg_mod
+        cfg_mod._config_mtime_cache = None
+
+    def test_typo_section_emits_warning(self, tmp_path, monkeypatch, caplog):
+        """A misspelt section name triggers a WARNING log entry."""
+        import logging
+
+        import token_goat.config as cfg_mod
+        import token_goat.paths as paths_mod
+
+        config_file = tmp_path / "config.toml"
+        # Intentional typo: 'compact_assit' instead of 'compact_assist'
+        config_file.write_text("[compact_assit]\nmin_events = 5\n", encoding="utf-8")
+        monkeypatch.setattr(paths_mod, "config_path", lambda: config_file)
+        self._reset_cache()
+
+        with caplog.at_level(logging.WARNING, logger="token_goat.config"):
+            cfg_mod.load()
+
+        warning_messages = [r.message for r in caplog.records if r.levelno == logging.WARNING]
+        assert any("compact_assit" in msg for msg in warning_messages), (
+            f"Expected a warning mentioning 'compact_assit'; got: {warning_messages}"
+        )
+
+    def test_valid_sections_no_warning(self, tmp_path, monkeypatch, caplog):
+        """All-valid config produces no unknown-section warnings."""
+        import logging
+
+        import token_goat.config as cfg_mod
+        import token_goat.paths as paths_mod
+
+        config_file = tmp_path / "config.toml"
+        config_file.write_text(
+            "[compact_assist]\nmin_events = 3\n[bash_compress]\nenabled = true\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(paths_mod, "config_path", lambda: config_file)
+        self._reset_cache()
+
+        with caplog.at_level(logging.WARNING, logger="token_goat.config"):
+            cfg_mod.load()
+
+        unknown_warnings = [
+            r.message for r in caplog.records
+            if r.levelno == logging.WARNING and "unknown config section" in r.message
+        ]
+        assert not unknown_warnings, f"Unexpected unknown-section warnings: {unknown_warnings}"
+
+    def test_typo_does_not_crash_or_affect_other_sections(self, tmp_path, monkeypatch, caplog):
+        """A typo in one section name does not prevent other sections from loading."""
+        import logging
+
+        import token_goat.config as cfg_mod
+        import token_goat.paths as paths_mod
+
+        config_file = tmp_path / "config.toml"
+        config_file.write_text(
+            "[compact_assit]\nmin_events = 99\n[compact_assist]\nmin_events = 7\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(paths_mod, "config_path", lambda: config_file)
+        self._reset_cache()
+
+        with caplog.at_level(logging.WARNING, logger="token_goat.config"):
+            cfg = cfg_mod.load()
+
+        # The correct section was still parsed
+        assert cfg.compact_assist.min_events == 7
+        # And a warning was emitted for the typo
+        assert any("compact_assit" in r.message for r in caplog.records if r.levelno == logging.WARNING)

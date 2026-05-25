@@ -85,6 +85,25 @@ _VALID_TRIGGERS: Final[frozenset[str]] = frozenset(["manual", "auto"])
 
 _FALSY_ENV_VALUES: Final[frozenset[str]] = frozenset(["0", "false", "no", "off"])
 
+# Every top-level TOML section that token-goat recognises.  A key present in
+# the file but absent from this set almost certainly indicates a typo (e.g.
+# ``[compact_assit]`` instead of ``[compact_assist]``); we warn rather than
+# crash so the user's config remains functional.
+_KNOWN_SECTIONS: Final[frozenset[str]] = frozenset([
+    "schema_version",
+    "compact_assist",
+    "bash_compress",
+    "session_brief",
+    "skill_preservation",
+    "image_shrink",
+    "curator",
+    "hint_budget",
+    "repomap",
+    "stats",
+    "hints",
+    "webfetch",
+])
+
 
 def _apply_env_disable(cfg_obj: Any, attr: str, env_key: str, label: str) -> None:
     """Set ``cfg_obj.attr = False`` when *env_key* holds a falsy env-var value.
@@ -651,6 +670,18 @@ def load() -> Config:
             _LOG.warning("config load failed for %s (%s); using defaults", p, e)
     else:
         _LOG.info("config file not found at %s; using all defaults", p)
+
+    # Warn on any top-level keys that token-goat doesn't recognise — almost
+    # always a typo (e.g. ``[compact_assit]`` instead of ``[compact_assist]``).
+    # We warn rather than crash so the rest of the config remains effective.
+    for section_key in raw:
+        if section_key not in _KNOWN_SECTIONS:
+            _LOG.warning(
+                "unknown config section: %r — check config.toml for typos"
+                " (known sections: %s)",
+                section_key,
+                ", ".join(sorted(_KNOWN_SECTIONS)),
+            )
 
     schema_v = raw.get("schema_version", 0)
     try:
