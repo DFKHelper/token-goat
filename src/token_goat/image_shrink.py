@@ -604,7 +604,7 @@ def ensure_cache_dir(cache_dir: Path) -> Path:
     created (e.g. permission denied, disk full).
     """
     try:
-        cache_dir.mkdir(parents=True, exist_ok=True)
+        paths.ensure_dir(cache_dir)
     except OSError as exc:
         raise OSError(
             f"image_shrink: cannot create cache directory {cache_dir}: {exc}"

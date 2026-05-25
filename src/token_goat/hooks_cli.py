@@ -266,7 +266,7 @@ def safe_run(event: str, input_file: Path | None = None, harness: Harness = "cla
         # is preserved.
         try:
             sink = paths.hooks_stderr_log_path()
-            sink.parent.mkdir(parents=True, exist_ok=True)
+            paths.ensure_dir(sink.parent)
             paths.roll_log_if_oversized(sink, paths.HOOKS_STDERR_LOG_MAX_BYTES)
             tb = traceback.format_exc()
             # safe_msg was sanitized above; only tb needs sanitization here.
@@ -467,7 +467,7 @@ def _write_compact_skip_sentinel(session_id: str) -> None:
     """
     try:
         sentinel = paths.compact_skip_sentinel_path(session_id)
-        sentinel.parent.mkdir(parents=True, exist_ok=True)
+        paths.ensure_dir(sentinel.parent)
         sentinel.touch()
     except Exception:  # noqa: BLE001
         pass

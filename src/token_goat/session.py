@@ -94,6 +94,7 @@ import contextlib
 import hashlib
 import json
 import os
+import random
 import re
 import stat as _stat_module
 import threading
@@ -201,9 +202,17 @@ _CONTENTION_MARK_TTL_SECS: Final[float] = 3600.0
 # are reclaimed automatically.
 _LOCK_STALE_SECS: Final[float] = 30.0
 # Maximum time (seconds) to spend waiting for a lock before giving up.
-_LOCK_TIMEOUT_SECS: Final[float] = 2.0
-# Poll interval when spinning for the lock.
+# Originally 2.0; raised to 5.0 because Windows pytest tmp-dir IO under concurrent
+# load can push individual save() calls past 2 s, causing legitimate work to be
+# dropped by the consecutive-timeout safety net. The hot path is unaffected
+# (rare-event budget only kicks in when the lock is genuinely contended).
+_LOCK_TIMEOUT_SECS: Final[float] = 5.0
+# Poll interval when spinning for the lock. Jittered slightly inside the loop
+# to prevent two starving processes from synchronising their polls.
 _LOCK_POLL_SECS: Final[float] = 0.02
+# Dedicated Random instance keeps the jitter deterministic per-process and
+# independent of any seeded RNG state callers may have set globally.
+_LOCK_JITTER: Final[random.Random] = random.Random()
 
 
 def _session_lock_path(session_id: str) -> Path:
@@ -235,10 +244,20 @@ def _lock_is_stale(lock_path: Path) -> bool:
         pid = int(content)
     except (OSError, ValueError):
         return age > 5.0
-    # Check if the owning PID is still alive.
+    # Reject obviously invalid PIDs before probing — os.kill(0, 0) raises
+    # OSError on Windows and signals every process in the group on POSIX,
+    # and Windows refuses PIDs outside the 32-bit unsigned range with
+    # WinError 87. Either path can also surface as SystemError when the
+    # interpreter is mid-exception. Treat any of those as "stale".
+    if pid <= 0 or pid > 0xFFFFFFFF:
+        return True
     try:
         os.kill(pid, 0)
     except (OSError, ProcessLookupError):
+        return True
+    except BaseException:  # noqa: BLE001
+        # SystemError or any other unexpected wrapper from the C call —
+        # be conservative and reclaim the lock rather than crash.
         return True
     return False
 
@@ -251,7 +270,7 @@ def _acquire_session_lock(session_id: str) -> int | None:
     responsible for calling :func:`_release_session_lock` with the returned fd.
     """
     lock_path = _session_lock_path(session_id)
-    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    paths.ensure_dir(lock_path.parent)
     deadline = time.monotonic() + _LOCK_TIMEOUT_SECS
     while True:
         try:
@@ -265,10 +284,17 @@ def _acquire_session_lock(session_id: str) -> int | None:
             pid_bytes = str(os.getpid()).encode()
             try:
                 os.write(fd, pid_bytes)
+                # Flush to disk so a racing reader sees the full PID, not a
+                # half-written prefix that would int-parse to a different PID
+                # and confuse the stale-check.
+                with contextlib.suppress(OSError):
+                    os.fsync(fd)
             except OSError:
                 time.sleep(0.01)
                 try:
                     os.write(fd, pid_bytes)
+                    with contextlib.suppress(OSError):
+                        os.fsync(fd)
                 except OSError:
                     # Both writes failed; lock file has no PID, making stale-check unreliable.
                     # Close fd and refuse the lock to avoid silent races.
@@ -289,7 +315,10 @@ def _acquire_session_lock(session_id: str) -> int | None:
         if time.monotonic() >= deadline:
             _LOG.debug("session lock timeout: %s", session_id[:16])
             return None
-        time.sleep(_LOCK_POLL_SECS)
+        # Small jitter (±25%) on the poll interval — without it, two starving
+        # processes settle into lockstep where they always check the lockfile
+        # at the same moment, and the loser always loses.
+        time.sleep(_LOCK_POLL_SECS * (0.75 + 0.5 * _LOCK_JITTER.random()))
 
 
 def _release_session_lock(session_id: str, fd: int | None) -> None:
@@ -1722,7 +1751,7 @@ def _record_cache_contention(session_id: str, phase: str, exc: OSError) -> None:
         # Cheap existence check — one stat() per contention event.
         if mark.exists():
             return
-        mark.parent.mkdir(parents=True, exist_ok=True)
+        paths.ensure_dir(mark.parent)
         # O_CREAT|O_EXCL is atomic: the process that wins the create records
         # the stat row; concurrent losers see the file on the next stat().
         fd = os.open(str(mark), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
@@ -2145,7 +2174,7 @@ def _sanitize_path(path: str) -> str:
     if len(path) > _MAX_PATH_LEN:
         _LOG.warning("mark_file: path exceeds max length (%d), truncating", _MAX_PATH_LEN)
         path = path[:_MAX_PATH_LEN]
-    normalized = path.replace("\\", "/")
+    normalized = paths.normalize_key(path)
     # Relative paths must not contain traversal components
     is_absolute = normalized.startswith("/") or _has_windows_drive_prefix(normalized)
     if not is_absolute:
