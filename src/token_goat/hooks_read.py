@@ -299,7 +299,8 @@ def _try_snapshot(
     in a hint anyway).  Records the resulting SHA in the session so the
     pre-read hook can skip the disk roundtrip when no change has occurred.
     """
-    from . import session, snapshots  # noqa: PLC0415
+    session = _get_session()
+    from . import snapshots  # noqa: PLC0415
 
     try:
         with Path(file_path).open("rb") as fh:
@@ -397,7 +398,7 @@ def _handle_index_only_file(
         return None
 
     # Budget: hard cap on index-only hints per session.
-    from . import session as _session  # noqa: PLC0415
+    _session = _get_session()
     from .hints import (  # noqa: PLC0415
         _HINT_KIND_INDEX_ONLY,
         _hint_budget_check,
@@ -461,7 +462,7 @@ def _handle_structured_file(
         return None
 
     # Budget: hard cap on structured-file hints per session.
-    from . import session as _session  # noqa: PLC0415
+    _session = _get_session()
     from .hints import (  # noqa: PLC0415
         _HINT_KIND_STRUCTURED,
         _hint_budget_check,
@@ -627,7 +628,7 @@ def _handle_grep_written_not_read(payload: HookPayload) -> HookResponse | None:
     redundant.  Only fires when ``path`` is a specific file (not a directory);
     directory-scoped Greps are let through without a hint.
     """
-    from . import session  # noqa: PLC0415
+    session = _get_session()
 
     session_id, _cwd = get_session_context(payload)
     if not session_id:
@@ -695,7 +696,7 @@ def _handle_glob_dedup(payload: HookPayload) -> HookResponse | None:
     # AND is recent enough (within STALE_READ_AGE_SECONDS).
     try:
         from . import bash_cache as _bc  # noqa: PLC0415
-        from . import session as _sess  # noqa: PLC0415
+        _sess = _get_session()
 
         cache = _sess.load(session_id)
         # Find the most recent GlobEntry for this (pattern, path).
@@ -827,7 +828,7 @@ def _flush_pending_hint_save(cache: object) -> None:
     try:
         if getattr(cache, "_pending_hint_save", False):
             cache._pending_hint_save = False  # type: ignore[union-attr]
-            from . import session as _sess  # noqa: PLC0415
+            _sess = _get_session()
             _sess.save(cache)  # type: ignore[arg-type]
     except Exception:  # noqa: BLE001
         pass
@@ -857,7 +858,7 @@ def pre_read(payload: HookPayload) -> HookResponse:
         # it early; if unavailable, fall through without the recovery check.
         _bash_session_id, _bash_cwd = get_session_context(payload)
         if _bash_session_id:
-            from . import session as _sess_mod  # noqa: PLC0415
+            _sess_mod = _get_session()
             _bash_cache = _sess_mod.load(_bash_session_id)
             _recovery_text = _check_recovery_pending(_bash_session_id, _bash_cache)
             if _recovery_text:
@@ -921,7 +922,7 @@ def pre_read(payload: HookPayload) -> HookResponse:
         _LOG.debug("pre-read: no session_id; skipping hint for %s", sanitize_log_str(file_path))
         return CONTINUE()
 
-    from . import session  # noqa: PLC0415
+    session = _get_session()
 
     cache = session.load(session_id)
 
@@ -1065,7 +1066,7 @@ def _check_ignored_hint(cache: object, file_path: str) -> None:
     silently — the hook must never fail due to curator bookkeeping.
     """
     try:
-        from . import session as _sess  # noqa: PLC0415
+        _sess = _get_session()
 
         recent_hints = getattr(cache, "recent_hints", [])
         if not recent_hints:
@@ -1102,7 +1103,7 @@ def post_read(payload: HookPayload) -> HookResponse:
     if not session_id:
         return CONTINUE()
 
-    from . import session  # noqa: PLC0415
+    session = _get_session()
 
     cache = session.load(session_id)
 
@@ -1179,6 +1180,19 @@ def post_read(payload: HookPayload) -> HookResponse:
 # savings.  Aligned with the dedup minimum so we never cache something we
 # would later refuse to surface.
 _BASH_CACHE_MIN_BYTES: int = 400
+
+# Lazy-load cache for the session module.  All function bodies that previously
+# did ``from . import session`` (or ``as _session``/``as _sess``) now call
+# ``_get_session()`` instead — the import cost is paid only once per process.
+_session_module = None  # cached on first access for lazy-load
+
+
+def _get_session():  # type: ignore[return]
+    global _session_module
+    if _session_module is None:
+        from . import session as _s  # noqa: PLC0415
+        _session_module = _s
+    return _session_module
 
 
 def _coerce_text(value: object) -> str:
@@ -1401,9 +1415,7 @@ def post_bash(payload: HookPayload) -> HookResponse:
     # bytes (\udcXX) in stdout/stderr that crash utf-8 serialisation downstream.
     stdout = _sanitize_surrogates(stdout)
     stderr = _sanitize_surrogates(stderr)
-    total_bytes = len(stdout.encode("utf-8", errors="replace")) + len(
-        stderr.encode("utf-8", errors="replace")
-    )
+    total_bytes = len(stdout.encode("utf-8")) + len(stderr.encode("utf-8"))
     if total_bytes < _BASH_CACHE_MIN_BYTES:
         _LOG.debug(
             "post-bash: output too small to cache (%d bytes < %d threshold)",
@@ -1414,7 +1426,8 @@ def post_bash(payload: HookPayload) -> HookResponse:
         _LOG.debug("post-bash: no session_id; output not cached")
         return CONTINUE()
 
-    from . import bash_cache, session  # noqa: PLC0415
+    from . import bash_cache  # noqa: PLC0415
+    session = _get_session()
 
     # Hash and preview the *original* command so reruns of the same logical
     # invocation (whether wrapped or not) collide on the same cache entry.
