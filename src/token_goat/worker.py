@@ -895,10 +895,26 @@ def _gc_orphaned_projects() -> int:
 
         # Root directory is gone and outside the safety window — remove the row
         # and the on-disk DB file (plus WAL / SHM sidecars).
+        #
+        # TOCTOU guard: a concurrent SessionStart may have called
+        # touch_project_last_seen() between the snapshot read above and this
+        # DELETE.  Restrict the DELETE to rows whose last_seen is still at or
+        # before the safety_cutoff so the concurrent touch is not overwritten.
         _LOG.info("_gc_orphaned_projects: removing orphaned project root=%s hash=%s", root, project_hash)
         try:
             with db.open_global() as gconn:
-                gconn.execute("DELETE FROM projects WHERE hash = ?", (project_hash,))
+                cur = gconn.execute(
+                    "DELETE FROM projects WHERE hash = ? AND last_seen <= ?",
+                    (project_hash, safety_cutoff),
+                )
+                if cur.rowcount == 0:
+                    # A concurrent touch bumped last_seen into the safety window;
+                    # leave the row in place and skip the DB-file removal.
+                    _LOG.debug(
+                        "_gc_orphaned_projects: skipping %s — last_seen updated concurrently",
+                        project_hash,
+                    )
+                    continue
         except (db.DBError, sqlite3.DatabaseError, OSError) as exc:
             _LOG.warning("_gc_orphaned_projects: could not delete row for %s: %s", project_hash, exc)
             continue
