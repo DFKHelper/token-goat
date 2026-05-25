@@ -263,106 +263,14 @@ def _build_recovery_hint(session_id: str) -> str | None:
 
     sections: list[str] = []
 
-    # 0. Loaded skills — first because they're the load-bearing protocol prose
-    #    the compaction LLM most aggressively trims.  When a cached body is
-    #    available, we inline the first checklist/DoD section (≤400 chars) so
-    #    the agent gets the actionable fraction immediately without a follow-up
-    #    tool call.  Fall back to the recall command when no checklist is found
-    #    or the body can't be loaded.
+    # 0. Loaded skills — single-line format matching compact.py's manifest.
     if skill_entries:
-        from . import skill_cache as _skill_cache  # noqa: PLC0415
-
-        # Dedup by content_sha.  The session already consolidates repeat loads of
-        # the same skill body into a single SkillEntry (incrementing run_count).
-        # But if the skill body changed mid-session (different content_sha), the
-        # session only keeps the latest entry — the older sha is still on disk.
-        # We scan the on-disk cache for this session to surface those extra shas.
-        #
-        # Result: group by (skill_name, content_sha).
-        #   - One sha per name → display as-is (×N from run_count if >1).
-        #   - Multiple shas per name → list each with sha[:8] suffix so the
-        #     agent can distinguish skill versions.
-
-        # Build a map: normalised_skill_name -> list[SkillMeta], newest first.
-        # output_id uses ":" → "_" substitution in plugin-namespaced names;
-        # normalise the same way for grouping.
-        disk_by_name: dict[str, list[_skill_cache.SkillMeta]] = {}
-        for disk_meta in _skill_cache.list_by_session(session_id):
-            disk_by_name.setdefault(disk_meta.skill_name, []).append(disk_meta)
-
-        lines = ["**Skills**:"]
-        for se in skill_entries:
-            name = getattr(se, "skill_name", "?")
-            body_bytes = int(getattr(se, "body_bytes", 0))
-            run_count = int(getattr(se, "run_count", 1))
-            current_sha = getattr(se, "content_sha", "")
-            output_id = getattr(se, "output_id", None)
-
-            # Collect distinct shas for this skill from disk (newest first).
-            # Normalise ":" → "_" to match the safe_name encoding in output_id.
-            disk_key = name.replace(":", "_")
-            disk_entries = disk_by_name.get(disk_key, [])
-            distinct_shas: list[str] = []
-            seen_shas: set[str] = set()
-            for dm in disk_entries:
-                if dm.content_sha not in seen_shas:
-                    distinct_shas.append(dm.content_sha)
-                    seen_shas.add(dm.content_sha)
-            # Always include the session's current sha even if not on disk.
-            if current_sha and current_sha not in seen_shas:
-                distinct_shas.append(current_sha)
-
-            multi_sha = len(distinct_shas) > 1
-
-            if multi_sha:
-                # Different content shas observed: list each with sha8 suffix.
-                # Show most recent first (disk_entries is already newest-first).
-                for sha in distinct_shas:
-                    sha8 = sha[:8]
-                    # Find the disk entry for this sha to get its output_id.
-                    sha_meta = next((dm for dm in disk_entries if dm.content_sha == sha), None)
-                    sha_output_id = sha_meta.output_id if sha_meta else output_id
-                    # Count badge: only the current (latest) sha gets run_count.
-                    is_current = sha == current_sha
-                    count_str = f" ×{run_count}" if (is_current and run_count > 1) else ""
-                    checklist: str | None = None
-                    if sha_output_id:
-                        body = _skill_cache.load_output(sha_output_id)
-                        if body:
-                            checklist = _skill_cache.extract_checklist_section(body)
-                    if checklist:
-                        preview_lines = checklist.splitlines()[:3]
-                        indented = "\n  > ".join(preview_lines)
-                        lines.append(f"- \U0001f9e0 {name}{count_str} [{sha8}]")
-                        lines.append(f"  > {indented}")
-                    else:
-                        lines.append(
-                            f"- {name}{count_str} [{sha8}] ({_humanize_bytes(body_bytes)}) — "
-                            f"`token-goat skill-body {name}`"
-                        )
-            else:
-                # Single sha: standard display with ×N count badge.
-                count_str = f" ×{run_count}" if run_count > 1 else ""
-                checklist = None
-                if output_id:
-                    body = _skill_cache.load_output(output_id)
-                    if body:
-                        checklist = _skill_cache.extract_checklist_section(body)
-                if checklist:
-                    # Indent each checklist line with "  > " for visual offset.
-                    preview_lines = checklist.splitlines()[:3]
-                    indented = "\n  > ".join(preview_lines)
-                    lines.append(f"- \U0001f9e0 {name}{count_str}")
-                    lines.append(f"  > {indented}")
-                else:
-                    lines.append(
-                        f"- {name}{count_str} ({_humanize_bytes(body_bytes)}) — "
-                        f"`token-goat skill-body {name}`"
-                    )
+        skill_names = [getattr(se, "skill_name", "?") for se in skill_entries]
         dropped = len(skill_all) - len(skill_entries)
-        if dropped > 0:
-            lines.append(f"- +{dropped} more")
-        sections.append("\n".join(lines))
+        suffix = f", +{dropped} more" if dropped > 0 else ""
+        skill_str = ", ".join(skill_names[:8]) + suffix
+        line = f"**Skills:** {skill_str} (recall via `token-goat skill-body <name>`)"
+        sections.append(line)
 
     # 1. Recently-touched files — the agent will likely want these back.
     if files_keep:
