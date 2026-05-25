@@ -143,6 +143,20 @@ def _safe_parse(
 
 SESSION_SCHEMA_VERSION = 1
 _FILE_LOCK = threading.Lock()  # in-process; multi-process safe enough via atomic write
+
+# ---------------------------------------------------------------------------
+# Process-local load cache
+# ---------------------------------------------------------------------------
+# user-prompt-submit and subagent-stop hooks both fire near-instantly in the
+# same Claude tool turn.  Without this cache each fires a full JSON file read
+# (~5-10 ms on Windows).  Within a single process invocation they can share.
+#
+# Keyed by session_id.  Value: (cache_obj, mtime_when_loaded).
+# Invalidated by mtime change (another process wrote the file) or overflow.
+# Cap: 4 entries (hook processes are single-session; 4 is a generous upper bound).
+_PROC_LOAD_CACHE_MAX: Final[int] = 4
+_proc_load_cache: dict[str, tuple[SessionCache, float]] = {}
+
 # Tracks (session_id, phase) pairs that have already logged a telemetry row for
 # cache contention.  Prevents flooding global.db with one stats row per hook call
 # when the session file becomes persistently unavailable (e.g. full disk).
@@ -1814,6 +1828,22 @@ def load(session_id: str) -> SessionCache:
     validate_session_id(session_id)
     t0 = time.monotonic()
     p = paths.session_cache_path(session_id)
+
+    # --- Process-local load cache ---
+    # Within a single process invocation (e.g. dual user-prompt-submit +
+    # subagent-stop hooks) skip the JSON read when the file has not changed.
+    # Keyed by session_id; invalidated by file mtime change or cap overflow.
+    try:
+        _cur_mtime = p.stat().st_mtime if p.exists() else -1.0
+    except OSError:
+        _cur_mtime = -1.0
+    _proc_entry = _proc_load_cache.get(session_id)
+    if _proc_entry is not None:
+        _cached_obj, _cached_mtime = _proc_entry
+        if _cached_mtime == _cur_mtime and _cur_mtime >= 0.0:
+            _LOG.debug("session load: proc-cache hit for %s", session_id[:16])
+            return _cached_obj
+
     try:
         if not p.exists():
             _LOG.info("session opened: %s (new)", session_id[:16])
@@ -1864,6 +1894,7 @@ def load(session_id: str) -> SessionCache:
             st = p.stat()
             cache._disk_mtime = st.st_mtime
             cache._disk_size = st.st_size
+            _cur_mtime = st.st_mtime
         except OSError:
             pass  # benign — save() falls back to full CAS if fingerprint is missing
         elapsed_ms = (time.monotonic() - t0) * 1000
@@ -1871,6 +1902,11 @@ def load(session_id: str) -> SessionCache:
             "session opened: %s (resuming, %d files tracked, %d edited, %.1fms)",
             session_id[:16], len(cache.files), len(cache.edited_files), elapsed_ms,
         )
+        # Store in process-local cache; evict oldest entry when at cap.
+        if _cur_mtime >= 0.0:
+            if len(_proc_load_cache) >= _PROC_LOAD_CACHE_MAX and session_id not in _proc_load_cache:
+                _proc_load_cache.pop(next(iter(_proc_load_cache)), None)
+            _proc_load_cache[session_id] = (cache, _cur_mtime)
         return cache
 
     if read_error is not None:
