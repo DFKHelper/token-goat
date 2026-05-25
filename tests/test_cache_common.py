@@ -581,6 +581,92 @@ class TestEvictCacheDir:
         assert list(d.glob("*.txt")) == []
 
 
+class TestEvictCacheDirFileCount:
+    """max_file_count cap in evict_cache_dir prevents unbounded file growth."""
+
+    def test_noop_when_under_both_caps(self, tmp_path: Path) -> None:
+        """No eviction when both bytes and count are within limits."""
+        d = tmp_path / "cache"
+        fn = _make_cache_dir_fn(d)
+        t = time.time()
+        for i in range(3):
+            name = _valid_name(f"{i:03d}")
+            _plant(d, f"{name}.txt", b"X" * 10, t + i)
+        removed = evict_cache_dir(
+            cache_dir_fn=fn, log_name="test_cache", max_total_bytes=10_000, max_file_count=10
+        )
+        assert removed == 0
+        assert len(list(d.glob("*.txt"))) == 3
+
+    def test_evicts_when_file_count_exceeded_but_bytes_ok(self, tmp_path: Path) -> None:
+        """When byte budget is fine but file count exceeds cap, oldest files are removed."""
+        d = tmp_path / "cache"
+        fn = _make_cache_dir_fn(d)
+        t = time.time()
+        # 5 tiny files; byte budget is huge but count cap is 3
+        for i in range(5):
+            name = _valid_name(f"{i:03d}")
+            _plant(d, f"{name}.txt", b"X" * 5, t + i)
+
+        removed = evict_cache_dir(
+            cache_dir_fn=fn, log_name="test_cache", max_total_bytes=10_000, max_file_count=3
+        )
+        assert removed == 2, "2 oldest files must be evicted to reach count=3"
+        assert len(list(d.glob("*.txt"))) == 3
+
+    def test_evicts_when_both_caps_exceeded(self, tmp_path: Path) -> None:
+        """When both bytes and count are over cap, eviction stops when BOTH are met."""
+        d = tmp_path / "cache"
+        fn = _make_cache_dir_fn(d)
+        t = time.time()
+        # 6 files of 100 bytes each; byte cap=250 (needs to remove 4), count cap=3 (needs to remove 3)
+        for i in range(6):
+            name = _valid_name(f"{i:03d}")
+            _plant(d, f"{name}.txt", b"X" * 100, t + i)
+
+        removed = evict_cache_dir(
+            cache_dir_fn=fn, log_name="test_cache", max_total_bytes=250, max_file_count=3
+        )
+        # byte cap requires removing 4, count cap requires removing 3 — must satisfy both
+        assert removed == 4
+        remaining = list(d.glob("*.txt"))
+        assert len(remaining) == 2
+
+    def test_count_noop_when_exactly_at_cap(self, tmp_path: Path) -> None:
+        """Eviction is skipped when file count equals the cap (<=, not <)."""
+        d = tmp_path / "cache"
+        fn = _make_cache_dir_fn(d)
+        t = time.time()
+        for i in range(4):
+            name = _valid_name(f"{i:03d}")
+            _plant(d, f"{name}.txt", b"X" * 5, t + i)
+
+        removed = evict_cache_dir(
+            cache_dir_fn=fn, log_name="test_cache", max_total_bytes=10_000, max_file_count=4
+        )
+        assert removed == 0
+
+    def test_bash_cache_file_count_cap_applied(self, tmp_path: Path, monkeypatch) -> None:
+        """bash_cache.evict_old_entries passes DEFAULT_MAX_FILE_COUNT to evict_cache_dir."""
+        import token_goat.paths as _paths
+        monkeypatch.setattr(_paths, "data_dir", lambda: tmp_path)
+
+        from token_goat import bash_cache
+
+        d = tmp_path / "bash_outputs"
+        d.mkdir(parents=True, exist_ok=True)
+        t = time.time()
+        # Plant DEFAULT_MAX_FILE_COUNT + 2 files, all tiny so byte cap is not hit
+        cap = bash_cache.DEFAULT_MAX_FILE_COUNT
+        for i in range(cap + 2):
+            name = _valid_name(f"{i:05d}")
+            _plant(d, f"{name}.txt", b"X" * 5, t + i)
+
+        removed = bash_cache.evict_old_entries(max_total_bytes=bash_cache.DEFAULT_MAX_TOTAL_BYTES)
+        assert removed == 2, f"expected 2 files evicted to reach count cap {cap}"
+        assert len(list(d.glob("*.txt"))) == cap
+
+
 class TestTruncateTailPreserve:
     """truncate_tail_preserve: tail-keep + marker for content above the byte cap."""
 
