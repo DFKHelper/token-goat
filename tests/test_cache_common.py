@@ -467,11 +467,9 @@ class TestEvictCacheDir:
     def test_orphan_sweep_runs_during_eviction_pass(self, tmp_path: Path) -> None:
         """The orphan sweep runs whenever the directory is over budget (eviction pass).
 
-        The original algorithm early-returns before the sweep when total <= cap.
-        The sweep therefore only fires when there is at least one body to
-        consider for deletion — i.e. when total > cap.  We verify that an orphan
-        sidecar is cleaned up in that scenario even if its own stem was never
-        a deletion candidate (because there is no matching .txt to count).
+        Verifies that an orphan sidecar is cleaned up during an eviction pass
+        even if its own stem was never a deletion candidate (because there is no
+        matching .txt to count).
         """
         d = tmp_path / "cache"
         fn = _make_cache_dir_fn(d)
@@ -489,6 +487,37 @@ class TestEvictCacheDir:
         # Cap of 1 → over budget → eviction + orphan sweep both run
         evict_cache_dir(cache_dir_fn=fn, log_name="test_cache", max_total_bytes=1)
         assert not orphan.exists(), "orphan must be swept during an eviction pass"
+
+    def test_orphan_sweep_runs_even_when_caps_satisfied(self, tmp_path: Path) -> None:
+        """Orphan-sidecar sweep runs even when both byte and file-count caps are satisfied.
+
+        Regression test for the fix that moved the sweep BEFORE the early return.
+        Previously, orphan .json files were only cleaned when eviction was also
+        triggered.  A partial write failure (body unlink succeeded, sidecar unlink
+        failed) would leave orphans until the next over-budget run.
+        """
+        d = tmp_path / "cache"
+        fn = _make_cache_dir_fn(d)
+        t = time.time()
+
+        # One real entry within budget.
+        real_name = _valid_name("001")
+        _plant(d, f"{real_name}.txt", b"X" * 10, t)
+
+        # One orphan sidecar with no matching .txt body.
+        orphan_stem = _valid_name("002")
+        orphan = d / f"{orphan_stem}.json"
+        orphan.write_text("{}", encoding="utf-8")
+
+        # Both caps satisfied — previously would early-return before the sweep.
+        removed = evict_cache_dir(
+            cache_dir_fn=fn, log_name="test_cache",
+            max_total_bytes=10_000, max_file_count=4096,
+        )
+        assert removed == 0, "no bodies should be evicted when under cap"
+        assert not orphan.exists(), (
+            "orphan .json sidecar must be swept even when caps are satisfied"
+        )
 
     # ------------------------------------------------------------------
     # Non-.txt files are ignored
