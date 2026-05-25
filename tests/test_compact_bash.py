@@ -35,14 +35,11 @@ class TestManifestBashSection:
         m = compact.build_manifest(sid, max_tokens=600)
         assert "**Blocked:**" in m
         assert "pytest -v tests/" in m
-        assert "exit 1" in m
+        assert "exit 1" in m  # blocker format uses full "exit X"
         assert "**Ran:**" in m
         assert "ruff check" in m
-        # Cache ID appears in Commands Run for the successful run (short form).
-        from token_goat import bash_cache
-        from token_goat.cache_common import short_output_id
-        full_id = f"out-{bash_cache.command_hash('uv run ruff check src/')}"
-        assert f"id={short_output_id(full_id)}" in m
+        # Exit code metadata appears in Commands Run for the successful run.
+        assert "e=0" in m
 
     def test_tiny_bash_skipped(self, tmp_data_dir, make_session):
         sid = "mb-2"
@@ -727,7 +724,7 @@ class TestFormatBashEntryRunCount:
         line = compact._format_bash_entry(self._make_entry(run_count=5, exit_code=1))
         # Marker appears between the command preview and the parenthesised metadata.
         marker_pos = line.index("[×5]")
-        paren_pos = line.index("(exit 1")
+        paren_pos = line.index("(e=1")
         assert marker_pos < paren_pos
 
 
@@ -940,11 +937,11 @@ class TestFormatBashEntryInlineSnippet:
         assert "\n  " not in line, "Expected no indented block when inline_snippet=False"
 
     def test_inline_snippet_false_header_still_present(self):
-        """Header line (command preview + id) is always emitted regardless of inline_snippet."""
+        """Header line (command preview + metadata) is always emitted regardless of inline_snippet."""
         entry = self._make_entry()
         line = compact._format_bash_entry(entry, inline_snippet=False)
         assert "pytest -v tests/" in line
-        assert "id=" in line
+        assert "e=0" in line  # exit code metadata present
 
     def test_inline_snippet_true_default_behaviour_preserved(self):
         """inline_snippet=True (the default) preserves existing rendering path."""
@@ -1003,7 +1000,7 @@ class TestFormatBashEntryInlineSnippet:
         # The bash_cache for this test session won't have real file content,
         # so snippet may not appear even for large entries — what matters is
         # no crash and the header line is present.
-        assert "id=" in m
+        assert "e=0" in m or "e=?" in m  # exit code present in metadata
 
     def test_blocker_always_inline_regardless_of_size(self, tmp_data_dir, make_session):
         """Blocker entries (exit_code != 0) always emit inline_snippet=True path.

@@ -129,9 +129,9 @@ _MAX_BASH_ENTRIES: Final[int] = 6
 # the manifest budget; additional tasks get an overflow note.
 _MAX_TODO_ENTRIES: Final[int] = 5
 # Max characters for a task subject in the manifest.  Subjects are user-authored
-# strings of arbitrary length; truncating at 60 chars keeps each line short
+# strings of arbitrary length; truncating at 50 chars keeps each line short
 # enough to fit the compact token budget without losing the essential meaning.
-_MAX_TODO_SUBJECT_CHARS: Final[int] = 60
+_MAX_TODO_SUBJECT_CHARS: Final[int] = 50
 # Smallest cached Bash output worth surfacing in the manifest.  Below ~400 bytes
 # the dedup hint suppresses on size anyway, and the manifest line itself costs
 # tokens that would not be paid back even if the agent acted on the hint.
@@ -918,7 +918,7 @@ def _extract_path_from_line(line: str) -> str | None:
 
     Examples:
         "- ✎ token_goat/compact.py  ×2" → "token_goat/compact.py"
-        "- → token_goat/hints.py  lines 1-100" → "token_goat/hints.py"
+        "- → token_goat/hints.py  L:1-100" → "token_goat/hints.py"
         "- token_goat/session.py → FileEntry" → "token_goat/session.py"
         "### Files Edited" → None
         "Legend: edited=✎" → None
@@ -1064,10 +1064,10 @@ def _format_ranges(ranges: list[tuple[int, int]]) -> str:
 
     Examples::
 
-        _format_ranges([(1, 50)])          # →  "  lines 1-50"
-        _format_ranges([(1, 1)])           # →  "  lines 1"      (single line)
+        _format_ranges([(1, 50)])          # →  "  L:1-50"
+        _format_ranges([(1, 1)])           # →  "  L:1"      (single line)
         _format_ranges([(1, 50), (100, 200), (300, 400), (500, 600), (700, 800)])
-        # →  "  lines 1-50, 100-200, 300-400, 400-500 +1 more"
+        # →  "  L:1-50, 100-200, 300-400, 400-500 +1 more"
 
     Single-line ranges (start == end) are formatted without a dash to keep the
     output readable.  Ranges beyond _MAX_RANGES_PER_FILE are summarised as
@@ -1101,7 +1101,7 @@ def _format_ranges(ranges: list[tuple[int, int]]) -> str:
     parts = ", ".join(str(start) if start == end else f"{start}-{end}" for start, end in shown)
     hidden_count = total_ranges - _MAX_RANGES_PER_FILE
     overflow_suffix = f" +{hidden_count} more" if hidden_count > 0 else ""
-    return f"  lines {parts}{overflow_suffix}"
+    return f"  L:{parts}{overflow_suffix}"
 
 
 def _is_noop_bash_command(entry: object) -> bool:
@@ -1432,8 +1432,8 @@ def _format_bash_entry(entry: object, inline_snippet: bool = True, *, is_blocker
 
     Format::
 
-        - $ pytest -v tests/  (exit 1, 12.3KB, id=abc123def...)
-        - $ pytest -v tests/  [×3] (exit 1, 12.3KB, id=abc123def...)
+        - $ pytest -v tests/  (e=1, 12.3KB)
+        - $ pytest -v tests/  [×3] (e=1, 12.3KB)
 
     When *inline_snippet* is True and a cached output body is available it is
     loaded from disk, passed through :func:`_middle_truncate` (keeping the
@@ -1441,16 +1441,11 @@ def _format_bash_entry(entry: object, inline_snippet: bool = True, *, is_blocker
     compaction LLM can see both the header and tail of long outputs without
     paying for the noisy middle.
 
-    When *inline_snippet* is False the header line only is returned.  The
-    ``id=`` suffix is still present so the agent can recover the full body on
-    demand via ``token-goat bash-output <id>`` without re-running the command.
-
-    The cache ID is included so the compaction LLM hands the agent something
-    actionable — the agent can call ``token-goat bash-output <id>`` to recover
-    the full body instead of re-running.  Byte counts use a compact human
-    suffix (KB/MB) because the raw integer (``12345``) is harder to scan in a
-    glance-level summary.  ``[×N]`` appears when the command was retried (same
-    SHA, run_count > 1) so retry loops are immediately visible.
+    When *inline_snippet* is False the header line only is returned.
+    Byte counts use a compact human suffix (KB/MB) because the raw integer
+    (``12345``) is harder to scan in a glance-level summary.  ``[×N]`` appears
+    when the command was retried (same SHA, run_count > 1) so retry loops are
+    immediately visible.
 
     *is_blocker* controls the inline snippet line cap: blocker entries keep 20
     lines (failure context is load-bearing); non-blocker entries cap at 12 to
@@ -1465,10 +1460,10 @@ def _format_bash_entry(entry: object, inline_snippet: bool = True, *, is_blocker
     truncated_marker = " (truncated)" if getattr(entry, "truncated", False) else ""
     run_count = int(getattr(entry, "run_count", 1))
     run_count_marker = f" [×{run_count}]" if run_count > 1 else ""
-    exit_str = "exit ?" if exit_code is None else f"exit {exit_code}"
+    exit_str = "e=?" if exit_code is None else f"e={exit_code}"
     header = (
         f"- $ {cmd_preview}{run_count_marker}  "
-        f"({exit_str}, {_humanize_bytes(total)}{truncated_marker}, id={_short_id(output_id)})"
+        f"({exit_str}, {_humanize_bytes(total)}{truncated_marker})"
     )
 
     if not inline_snippet:
@@ -2978,7 +2973,7 @@ def _render(cache: SessionCache, session_id: str, max_tokens: int) -> tuple[str,
                 total = getattr(be, "stdout_bytes", 0) + getattr(be, "stderr_bytes", 0)
                 oid = _short_id(sanitize_log_str(getattr(be, "output_id", "?"), max_len=64))
                 prev = sanitize_log_str(getattr(be, "cmd_preview", "?"), max_len=60)
-                line = f"- ❄ `{prev}` ({_humanize_bytes(total)}, {age_min}min old) `{oid}`"
+                line = f"- ❄ `{prev}` ({_humanize_bytes(total)}, {age_min}min old, {oid})"
                 cost = _token_count(line)
                 if bash_used + cold_header_cost + cold_content_used + cost > bash_budget:
                     break

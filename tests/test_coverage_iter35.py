@@ -270,11 +270,11 @@ class TestFormatRanges:
         assert _format_ranges([]) == ""
 
     def test_single_range(self):
-        assert _format_ranges([(1, 50)]) == "  lines 1-50"
+        assert _format_ranges([(1, 50)]) == "  L:1-50"
 
     def test_single_line_range(self):
         """When start == end, shows just the number."""
-        assert _format_ranges([(42, 42)]) == "  lines 42"
+        assert _format_ranges([(42, 42)]) == "  L:42"
 
     def test_multiple_ranges(self):
         result = _format_ranges([(1, 10), (20, 30)])
