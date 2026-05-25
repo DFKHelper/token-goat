@@ -55,7 +55,6 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
-from . import paths
 from .cache_common import (
     OUTPUT_FILENAME_RE,
     OutputStatDict,
@@ -69,6 +68,7 @@ from .cache_common import (
     safe_join_output_id,
     short_content_hash,
     sidecar_path_for,
+    store_blob,
     truncate_tail_preserve,
     write_sidecar_metadata,
 )
@@ -166,16 +166,14 @@ def store_output(
     """
     try:
         out_id = output_id_for(session_id, url)
-        path = safe_join_output_id(out_id, _web_outputs_dir, "web_cache")
-        if path is None:
-            return None
 
         body_bytes = len(body.encode("utf-8", errors="replace"))
         stored, truncated = truncate_tail_preserve(
             body, _MAX_STORED_BYTES, marker_template=_TRUNC_MARKER,
         )
 
-        paths.atomic_write_text(path, stored)
+        if store_blob(out_id, stored, _web_outputs_dir, "web_cache") is None:
+            return None
 
         meta = WebOutputMeta(
             output_id=out_id,

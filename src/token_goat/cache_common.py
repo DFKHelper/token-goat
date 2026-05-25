@@ -21,6 +21,7 @@ __all__ = [
     "short_content_hash",
     "short_output_id",
     "sidecar_path_for",
+    "store_blob",
     "truncate_tail_preserve",
     "write_sidecar_metadata",
 ]
@@ -411,6 +412,39 @@ def safe_join_output_id(
         _log.warning("%s: rejected output_id escaping base dir: %r", log_name, output_id[:200])
         return None
     return candidate
+
+
+def store_blob(
+    output_id: str,
+    body: str,
+    cache_dir_fn: Callable[[], Path],
+    log_name: str,
+) -> Path | None:
+    """Validate *output_id*, write *body* atomically, and return the path.
+
+    Returns ``None`` when the ID is malformed (same guard as
+    :func:`safe_join_output_id`).  On success returns the ``.txt`` path that
+    was written, so callers can derive the sidecar path or log the location.
+
+    This consolidates the three-line pattern that every cache ``store_output``
+    function repeats::
+
+        path = safe_join_output_id(out_id, cache_dir_fn, log_name)
+        if path is None:
+            return None
+        paths.atomic_write_text(path, body)
+
+    into a single call.  Any :exc:`OSError` from the write propagates to the
+    caller so the surrounding ``try/except OSError`` block in each store
+    function still handles it uniformly.
+    """
+    from . import paths as _paths  # noqa: PLC0415
+
+    path = safe_join_output_id(output_id, cache_dir_fn, log_name)
+    if path is None:
+        return None
+    _paths.atomic_write_text(path, body)
+    return path
 
 
 def short_output_id(output_id: str) -> str:
