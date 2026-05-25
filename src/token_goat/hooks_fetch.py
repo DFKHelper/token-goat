@@ -358,6 +358,24 @@ def post_fetch(payload: HookPayload) -> HookResponse:
         return CONTINUE()
 
     body, status_code = _extract_web_response(payload)
+
+    # Strip script/style/nav/header/footer blocks from HTML responses before
+    # caching.  These blocks are typically 60-90% of raw HTML bytes and pure
+    # noise for `token-goat web-output --grep`.  _strip_html_to_text operates
+    # on bytes; encode round-trip only when the body looks like HTML (the
+    # function checks for <html / <!doctype in the preamble before stripping).
+    try:
+        _body_bytes = body.encode("utf-8", errors="replace")
+        _stripped = webfetch._strip_html_to_text(_body_bytes)
+        if _stripped is not _body_bytes and _stripped != _body_bytes:
+            body = _stripped.decode("utf-8", errors="replace")
+            _LOG.debug(
+                "post-fetch: HTML stripped %d→%d bytes for %s",
+                len(_body_bytes), len(_stripped), sanitize_log_str(url, max_len=100),
+            )
+    except Exception:  # noqa: BLE001 — fail-soft: stripping must never break caching
+        pass
+
     body_size = len(body.encode("utf-8", errors="replace"))
     if body_size < _WEB_CACHE_MIN_BYTES:
         _LOG.debug(
