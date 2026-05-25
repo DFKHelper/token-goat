@@ -34,10 +34,7 @@ The same trick applies to any tool that takes URL-style paths on the command lin
 
 The per-test timeout is 30 s (`pyproject.toml`). When a Windows subprocess writes Windows-1252 bytes (most commonly the em dash `0x97`) to stderr and a test then trips the timeout, pytest-timeout 2.4.0's capture-decode path can crash on the invalid UTF-8 byte before it prints the timeout message. The combo is rare but masks the real failure when it fires.
 
-Two defensive layers are in place:
-
-- `tests/conftest.py` reconfigures `sys.stdout`/`sys.stderr` with `errors="replace"`.
-- `lefthook.yml` sets `PYTHONIOENCODING=utf-8:replace` on the pre-push test command so subprocesses spawned by tests inherit the same forgiving decoder.
+Mitigation: `lefthook.yml` sets `PYTHONIOENCODING=utf-8:replace` on the pre-push test command so subprocesses spawned by tests inherit the same forgiving decoder. (We deliberately do **not** call `sys.stdout.reconfigure(...)` inside `tests/conftest.py` — it disturbs the execnet pipe that pytest-xdist uses to talk between controller and workers on Windows, surfacing as a `Windows fatal exception: access violation` mid-suite.)
 
 If you still see a decode crash, run the suspect test directly with `-s` to bypass capture and identify the real failure.
 
