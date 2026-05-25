@@ -650,6 +650,74 @@ def doctor(  # noqa: C901
             ok("projected savings", "< 1 day of data — check back tomorrow")
 
     # ------------------------------------------------------------------
+    # 15b. DB contention metric (worker-stderr.log slow-session warnings)
+    # ------------------------------------------------------------------
+    # Counts "session slow" WARNING lines in worker-stderr.log written in the
+    # last 24 h.  Each line represents a DB session that took ≥1 s — on a
+    # single-user machine this means a reader was serialised behind a writer
+    # (typically a full project reindex holding the connection open).  Surfacing
+    # the count lets the user correlate perceived hook latency with real data.
+    typer.echo("\nDB contention")
+    _worker_stderr = paths.logs_dir() / "worker-stderr.log"
+    try:
+        if not _worker_stderr.exists():
+            ok("slow sessions (24 h)", "0 (no worker-stderr.log)")
+        else:
+            import re as _re_dc  # noqa: PLC0415
+            _SLOW_RE = _re_dc.compile(r"session slow: ([\d.]+)ms", _re_dc.IGNORECASE)
+            _cutoff_dc = time.time() - 86400
+            _slow_count = 0
+            _slow_max_ms = 0.0
+            # Parse ISO-8601-ish timestamps at the start of each line.
+            # Worker log lines are formatted by Python's logging module:
+            # "2026-05-25 12:34:56,789 WARNING … session slow: 2345.6ms …"
+            _TS_RE = _re_dc.compile(r"^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})")
+            import datetime  # noqa: PLC0415
+            for _line in _worker_stderr.read_text(encoding="utf-8", errors="replace").splitlines():
+                _m_slow = _SLOW_RE.search(_line)
+                if not _m_slow:
+                    continue
+                # Check whether this line falls within the last 24 h.
+                _m_ts = _TS_RE.match(_line)
+                if _m_ts:
+                    try:
+                        _ts = datetime.datetime.strptime(
+                            _m_ts.group(1), "%Y-%m-%d %H:%M:%S"
+                        ).replace(tzinfo=datetime.UTC).timestamp()
+                        if _ts < _cutoff_dc:
+                            continue
+                    except ValueError:
+                        pass  # unparseable timestamp — include the line anyway
+                _slow_count += 1
+                try:
+                    _ms = float(_m_slow.group(1))
+                    if _ms > _slow_max_ms:
+                        _slow_max_ms = _ms
+                except ValueError:
+                    pass
+            if _slow_count == 0:
+                ok("slow sessions (24 h)", "0 — no contention detected")
+            elif _slow_count < 10:
+                ok(
+                    "slow sessions (24 h)",
+                    f"{_slow_count} (max {_slow_max_ms:.0f}ms) — low",
+                )
+            elif _slow_count < 50:
+                flag(
+                    "slow sessions (24 h)",
+                    f"{_slow_count} (max {_slow_max_ms:.0f}ms) — moderate; large reindexes hold DB open",
+                    warn=True,
+                )
+            else:
+                flag(
+                    "slow sessions (24 h)",
+                    f"{_slow_count} (max {_slow_max_ms:.0f}ms) — HIGH; hooks may stall during reindex",
+                    warn=True,
+                )
+    except Exception as _e_dc:  # noqa: BLE001
+        flag("slow sessions (24 h)", f"unreadable — {_e_dc}", warn=True)
+
+    # ------------------------------------------------------------------
     # 15. Recent hook crashes (item 9) — only shown with --crashes
     # ------------------------------------------------------------------
     if crashes:
