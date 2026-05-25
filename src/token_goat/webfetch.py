@@ -595,6 +595,97 @@ def _apply_html_strip(cache_path: Path) -> None:
         _LOG.debug("webfetch: HTML strip failed for %s: %s", cache_path.name, exc)
 
 
+def _resolve_and_validate_ip(hostname: str) -> str:
+    """Resolve *hostname* to a single IP string, validated as non-private.
+
+    Used by ``_make_pinned_transport`` to obtain the IP that will be used for
+    the actual TCP connection, so DNS is only consulted once.  Returns the
+    first address returned by ``getaddrinfo`` that passed SSRF validation.
+
+    Raises ``ValueError`` if no safe address is found (all resolved to private
+    ranges) or if the hostname is unresolvable (fail-closed).
+    """
+    try:
+        addr_info = socket.getaddrinfo(hostname, None, proto=socket.IPPROTO_TCP)
+    except OSError as exc:
+        raise ValueError(f"SSRF IP-pin: cannot resolve {hostname!r}: {exc}") from exc
+
+    for _family, _type, _proto, _canonname, sockaddr in addr_info:
+        ip_str = sockaddr[0]
+        try:
+            ip = ipaddress.ip_address(ip_str)
+        except ValueError:
+            continue
+        if isinstance(ip, ipaddress.IPv6Address) and ip.ipv4_mapped is not None:
+            ip = ip.ipv4_mapped
+        if ip.is_loopback or ip.is_private or ip.is_link_local or ip.is_reserved:
+            continue
+        return ip_str  # first safe address wins
+
+    raise ValueError(
+        f"SSRF IP-pin: no safe address for {hostname!r} "
+        "(all resolved addresses are private/loopback/link-local)"
+    )
+
+
+def _make_pinned_transport(pinned_ip: str) -> httpx.HTTPTransport:
+    """Return an ``httpx.HTTPTransport`` that connects to *pinned_ip* directly.
+
+    DNS rebinding attack: ``_is_ssrf_safe()`` calls ``getaddrinfo`` to validate
+    the resolved IP.  When ``httpx`` later opens the TCP connection it calls
+    ``getaddrinfo`` *again*.  A hostile DNS server can return a public IP on the
+    first query and a private IP (e.g. 169.254.169.254 AWS IMDS) on the second.
+
+    Fix: resolve once in ``_is_ssrf_safe`` (already done), then resolve again
+    here and pin the result so ``httpx`` connects to a literal IP.  The
+    ``Host:`` header retains the original hostname so TLS SNI and virtual
+    hosting work correctly.  Because the IP was already validated by
+    ``_is_ssrf_safe`` before this function is called, a second DNS query would
+    be a TOCTOU window — we skip it and connect directly to the IP that already
+    passed validation.
+
+    Implementation: monkey-patch ``socket.getaddrinfo`` for the transport's
+    resolver so any lookup for the target hostname returns the pre-validated IP.
+    httpx's ``HTTPTransport`` uses ``httpcore`` which calls ``socket.getaddrinfo``
+    internally; redirecting that call to our stub closes the rebinding window
+    without requiring httpx internals knowledge.
+    """
+    import httpx  # noqa: PLC0415
+
+    original_getaddrinfo = socket.getaddrinfo
+
+    def _pinned_getaddrinfo(
+        host: str | bytes | None,
+        port: str | int | None,
+        family: int = 0,
+        type: int = 0,  # noqa: A002
+        proto: int = 0,
+        flags: int = 0,
+    ) -> list[tuple]:
+        """Return the pre-validated IP for the pinned host; delegate all others."""
+        host_str = host.decode() if isinstance(host, bytes) else (host or "")
+        if host_str.lower().rstrip(".") == pinned_ip:
+            # Already an IP literal — pass through unchanged.
+            return original_getaddrinfo(host, port, family, type, proto, flags)
+        # For any host lookup, substitute our pre-validated IP so DNS is not
+        # consulted again.  This closes the TOCTOU window between _is_ssrf_safe
+        # and the actual TCP connect.
+        return original_getaddrinfo(pinned_ip, port, family, type, proto, flags)
+
+    class _PinnedTransport(httpx.HTTPTransport):
+        """HTTPTransport subclass that uses the pre-validated IP for DNS resolution."""
+
+        def handle_request(self, request: httpx.Request) -> httpx.Response:
+            _prev = socket.getaddrinfo
+            socket.getaddrinfo = _pinned_getaddrinfo  # type: ignore[assignment]
+            try:
+                return super().handle_request(request)
+            finally:
+                socket.getaddrinfo = _prev  # type: ignore[assignment]
+
+    return _PinnedTransport()
+
+
 def fetch_url(
     url: str,
     *,
@@ -609,6 +700,10 @@ def fetch_url(
 
     Sends ETag / If-Modified-Since conditional requests when cache metadata is
     available; returns the cached file unchanged on HTTP 304 Not Modified.
+
+    DNS rebinding protection: the hostname is resolved once (in ``_is_ssrf_safe``
+    above) and the validated IP is pinned for the actual TCP connection so a
+    hostile DNS server cannot return a different address at connect time.
     """
     import httpx  # noqa: PLC0415 — deferred to avoid startup cost on every hook fire
 
@@ -616,6 +711,21 @@ def fetch_url(
         raise ValueError(f"URL too long ({len(url)} chars, max {_MAX_URL_LEN})")
     if not _is_ssrf_safe(url):
         raise ValueError(f"URL blocked by SSRF safety check: {_truncate_url(url)!r}")
+
+    # DNS rebinding mitigation: resolve the hostname once here (already done by
+    # _is_ssrf_safe above) and pin the validated IP for the actual TCP connect.
+    # Without pinning, httpx calls getaddrinfo again at connect time, giving a
+    # hostile DNS server a window to return a private IP on the second query.
+    _hostname = urlparse(url).hostname or ""
+    try:
+        _pinned_ip = _resolve_and_validate_ip(_hostname)
+        _transport = _make_pinned_transport(_pinned_ip)
+        _LOG.debug("webfetch: pinned %r → %s", _hostname, _pinned_ip)
+    except (ValueError, OSError) as _pin_exc:
+        # Fail-closed: if we cannot pin the IP treat it as an SSRF risk.
+        raise ValueError(
+            f"URL blocked: could not pin IP for {_hostname!r}: {_pin_exc}"
+        ) from _pin_exc
 
     image_shrink.ensure_cache_dir(paths.web_cache_dir())
 
@@ -667,7 +777,9 @@ def fetch_url(
             if "last_modified" in meta:
                 headers["If-Modified-Since"] = meta["last_modified"]
             try:
-                with httpx.Client(timeout=timeout_sec, follow_redirects=True) as client:
+                with httpx.Client(
+                    timeout=timeout_sec, follow_redirects=True, transport=_transport
+                ) as client:
                     r = client.get(url, headers=headers)
                 # Post-redirect SSRF check: the revalidation response may have
                 # followed redirects to a private/metadata endpoint.  An open
@@ -711,7 +823,9 @@ def fetch_url(
     # Download
     response_headers: httpx.Headers | None = None
     try:
-        with httpx.Client(timeout=timeout_sec, follow_redirects=True) as client, \
+        with httpx.Client(
+            timeout=timeout_sec, follow_redirects=True, transport=_transport
+        ) as client, \
                 client.stream("GET", url) as r:
             r.raise_for_status()
             final_url = str(r.url)
