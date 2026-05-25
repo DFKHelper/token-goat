@@ -670,11 +670,19 @@ class Filter:
         for an exact match in the first three positional arguments (skipping
         leading flags).  Override for more sophisticated dispatch (e.g. when
         a filter wants to inspect a flag's value).
+
+        Matching strategy: ``Path(argv[0]).stem.lower()`` covers the common
+        cases (``pytest``, ``pytest.exe``, ``/usr/bin/pytest``).  As a fallback
+        the full lowercased filename is also checked so that dot-in-name
+        binaries like ``py.test`` — where :func:`Path.stem` stops at the first
+        dot and returns ``"py"`` — are dispatched correctly.
         """
         if not argv:
             return False
-        stem = Path(argv[0]).stem.lower()
-        if stem not in self.binaries:
+        p = Path(argv[0])
+        stem = p.stem.lower()
+        name = p.name.lower()
+        if stem not in self.binaries and name not in self.binaries:
             return False
         if not self.subcommands:
             return True
@@ -831,7 +839,7 @@ _TWO_TOKEN_PREFIXES: Final[dict[str, frozenset[str]]] = {
     "python": frozenset(["-m"]),
     "python3": frozenset(["-m"]),
     "py": frozenset(["-m"]),
-    "uv": frozenset(["run", "tool", "pip"]),
+    "uv": frozenset(["run", "tool"]),
     "uvx": frozenset(),  # uvx <tool>, second token IS the binary
     "poetry": frozenset(["run"]),
     "rye": frozenset(["run"]),
