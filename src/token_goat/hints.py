@@ -1715,7 +1715,20 @@ def _build_web_dedup_hint_inner(
     )
     from . import cache_common as _cc  # noqa: PLC0415
 
-    grep_suffix = " (add --grep PATTERN to filter)" if entry.body_bytes >= _BASH_DEDUP_GREP_SUGGEST_BYTES else ""
+    # Show the --grep PATTERN recall hint only once per session.  On the first
+    # large-body WebFetch dedup the agent learns the pattern; subsequent fetches
+    # only show the id so the hint stays short.
+    _WEB_RECALL_HINT_KEY = "web_output_grep_hint_shown"  # noqa: N806
+    _grep_hint_shown = (
+        cache is not None and cache.has_hint_fingerprint(_WEB_RECALL_HINT_KEY)
+    )
+    if entry.body_bytes >= _BASH_DEDUP_GREP_SUGGEST_BYTES and not _grep_hint_shown:
+        grep_suffix = " (add --grep PATTERN to filter)"
+        # Mark the pattern as shown so subsequent fetches omit it.
+        if cache is not None:
+            cache.mark_hint_seen(_WEB_RECALL_HINT_KEY)
+    else:
+        grep_suffix = ""
 
     # Curator: record emission keyed on url_sha (web dedup is URL-keyed, not file-keyed).
     if cache is not None:

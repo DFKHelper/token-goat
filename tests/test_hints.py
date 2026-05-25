@@ -2316,6 +2316,42 @@ class TestWebDedupGrepSuggest:
         assert hint is not None
         assert "--grep" in hint
 
+    def test_grep_suffix_shown_only_once_per_session(self, tmp_data_dir):
+        """The --grep PATTERN recall hint fires only on the first large-body dedup per session."""
+        import token_goat.session as _sess
+        from token_goat.hints import _BASH_DEDUP_GREP_SUGGEST_BYTES, build_web_dedup_hint
+
+        sid = "s_web_recall_once"
+        url1 = "https://example.com/large-1"
+        url2 = "https://example.com/large-2"
+        self._record(sid, url1, body_bytes=_BASH_DEDUP_GREP_SUGGEST_BYTES + 100)
+        self._record(sid, url2, body_bytes=_BASH_DEDUP_GREP_SUGGEST_BYTES + 200)
+
+        cache = _sess.load(sid)
+
+        # First large-body dedup should include the --grep suffix.
+        hint1 = build_web_dedup_hint(session_id=sid, url=url1, cache=cache)
+        assert hint1 is not None
+        assert "--grep" in hint1
+
+        # Second large-body dedup in the same session should omit --grep.
+        hint2 = build_web_dedup_hint(session_id=sid, url=url2, cache=cache)
+        assert hint2 is not None
+        assert "--grep" not in hint2
+
+    def test_grep_suffix_omitted_when_cache_unavailable(self, tmp_data_dir):
+        """When cache=None, the --grep suffix fires (no session to track state)."""
+        from token_goat.hints import _BASH_DEDUP_GREP_SUGGEST_BYTES, build_web_dedup_hint
+
+        sid = "s_web_recall_nocache"
+        url = "https://example.com/large-nocache"
+        self._record(sid, url, body_bytes=_BASH_DEDUP_GREP_SUGGEST_BYTES + 100)
+
+        # cache=None path — cannot suppress, so hint includes --grep.
+        hint = build_web_dedup_hint(session_id=sid, url=url, cache=None)
+        assert hint is not None
+        assert "--grep" in hint
+
 
 # ---------------------------------------------------------------------------
 # Cross-session Grep dedup hint
