@@ -440,17 +440,20 @@ class TestSkillDedup:
 
 
 class TestRecoveryStatAccounting:
-    """compact_recovery overhead row is recorded when the recovery hint fires.
+    """Neither compact_recovery nor compact_recovery_overhead rows are written.
 
-    The zero-byte base ``compact_recovery`` row was dropped (item 3) because it
-    added 294 DB writes/month with zero observability value — the actual saving
-    signal lives in the matching ``compact_recovery_overhead`` row written when
-    the hint is injected.
+    Both stat rows were dropped (Option A):
+    - The zero-byte base ``compact_recovery`` row was noise (294 writes/month,
+      0 bytes/tokens saved).
+    - The ``compact_recovery_overhead`` row recorded only the cost side with
+      no matching positive counterpart, making the compact bucket appear as a
+      pure -N kt/month loss in ``token-goat stats``.
+    The injection is still logged at INFO level for auditability.
     """
 
-    def test_overhead_row_recorded_when_hint_fires(self, tmp_data_dir):
-        """Overhead row appears after the sidecar is consumed by pre_read;
-        no zero-byte base row is written at session_start time."""
+    def test_no_stat_rows_written_when_hint_fires(self, tmp_data_dir):
+        """Neither base nor overhead row is written even when the hint fires;
+        the injection is auditable via the INFO log."""
         from token_goat import db, hooks_read
 
         sid = "rec-overhead-1"
@@ -461,7 +464,7 @@ class TestRecoveryStatAccounting:
             "cwd": "/proj",
         })
 
-        # After session_start no stat rows should be present (base row dropped).
+        # After session_start no stat rows should be present.
         with db.open_global() as conn:
             after_start = {r["kind"] for r in conn.execute(
                 "SELECT kind FROM stats"
@@ -471,10 +474,11 @@ class TestRecoveryStatAccounting:
             "zero-byte base row must NOT be written at session_start"
         )
         assert "compact_recovery_overhead" not in after_start, (
-            "overhead row must NOT appear until sidecar is consumed by pre_read"
+            "overhead row must NOT appear at session_start"
         )
 
-        # Trigger pre_read on any file — the sidecar is consumed and overhead recorded.
+        # Trigger pre_read on any file — the sidecar is consumed but no stat row
+        # is written (Option A: both rows dropped).
         hooks_read.pre_read({
             "session_id": sid,
             "tool_name": "Read",
@@ -483,20 +487,17 @@ class TestRecoveryStatAccounting:
 
         with db.open_global() as conn:
             rows = conn.execute(
-                "SELECT kind, bytes_saved, tokens_saved FROM stats"
+                "SELECT kind FROM stats"
                 " WHERE kind IN ('compact_recovery', 'compact_recovery_overhead')"
             ).fetchall()
 
-        by_kind = {r["kind"]: r for r in rows}
-        assert "compact_recovery" not in by_kind, (
+        kinds = {r["kind"] for r in rows}
+        assert "compact_recovery" not in kinds, (
             "zero-byte base row must never be written"
         )
-        assert "compact_recovery_overhead" in by_kind, (
-            "overhead row must be present after sidecar consumed by pre_read"
+        assert "compact_recovery_overhead" not in kinds, (
+            "overhead row must NOT be written — dropped in Option A"
         )
-        overhead = by_kind["compact_recovery_overhead"]
-        assert overhead["bytes_saved"] < 0, "overhead bytes_saved must be negative"
-        assert overhead["tokens_saved"] < 0, "overhead tokens_saved must be negative"
 
     def test_no_overhead_row_when_hint_not_fired(self, tmp_data_dir):
         """When no hint is emitted (empty session) no overhead row should appear."""
