@@ -494,7 +494,7 @@ def _try_recovery_response(session_id: str | None, source: str) -> HookResponse 
     return None
 
 
-def _parse_status_z_b(output: str) -> tuple[str, list[str]]:
+def _parse_status_z_b(output: str) -> tuple[str, list[str], int]:
     """Parse the NUL-separated output of ``git status -z -b``.
 
     The ``-b`` flag prepends a branch header as the first NUL-terminated field::
@@ -504,22 +504,26 @@ def _parse_status_z_b(output: str) -> tuple[str, list[str]]:
     For detached HEAD git emits ``## HEAD (no branch)`` or ``## HEAD``.
     For a new repo with no commits: ``## No commits yet on main``.
 
-    Returns ``(branch, status_lines)`` where *status_lines* is a list of
-    ``"XY filename"`` strings (the same shape as ``--porcelain`` output) capped
-    at 20 entries, and *branch* is the short branch name (or ``"unknown"``).
+    Returns ``(branch, status_lines, total_count)`` where *status_lines* is a
+    list of ``"XY filename"`` strings (the same shape as ``--porcelain`` output)
+    capped at 50 entries, *branch* is the short branch name (or ``"unknown"``),
+    and *total_count* is the actual number of changed files observed (may exceed
+    50 when the dirty tree is very large).  When *total_count* > len(status_lines)
+    the caller can emit a ``(+N more files)`` notice.
 
     Rename entries in ``-z`` format are two consecutive NUL fields
     (``"XY new\\0old\\0"``); we surface only the *new* name (the first field)
     for counting purposes, matching what the old ``--porcelain`` parser did.
     """
     if not output:
-        return "unknown", []
+        return "unknown", [], 0
 
     # Fields are separated by NUL; trailing NUL produces an empty final field.
     fields = output.split("\0")
 
     branch = "unknown"
     status_lines: list[str] = []
+    total_count: int = 0
 
     for _i, field in enumerate(fields):
         if not field:
@@ -539,11 +543,11 @@ def _parse_status_z_b(output: str) -> tuple[str, list[str]]:
         elif len(field) >= 3 and field[2] == " ":
             # Porcelain v1-style "XY filename"; for renames the *next* field is
             # the old name — skip it (we only count the destination).
-            status_lines.append(field)
-            if len(status_lines) >= 20:
-                break
+            total_count += 1
+            if len(status_lines) < 50:
+                status_lines.append(field)
 
-    return branch, status_lines
+    return branch, status_lines, total_count
 
 
 def _build_session_brief(cwd: str) -> str | None:
@@ -644,6 +648,7 @@ def _build_session_brief(cwd: str) -> str | None:
     # stable since git 1.7.11 and covers every field the old two-call path used.
     branch = "unknown"
     status_lines: list[str] = []
+    _status_total: int = 0
     try:
         sz = _run_git(["status", "-z", "-b"], cwd=cwd, timeout=max(0.1, min(2.0, _remaining())))
         if sz.returncode == 128:
@@ -651,7 +656,7 @@ def _build_session_brief(cwd: str) -> str | None:
             _brief_cache[cwd] = (None, _mtime_editmsg, _mtime_index, _now_mono)
             return None
         if sz.returncode == 0:
-            branch, status_lines = _parse_status_z_b(sz.stdout)
+            branch, status_lines, _status_total = _parse_status_z_b(sz.stdout)
     except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
         return None
 
@@ -734,6 +739,12 @@ def _build_session_brief(cwd: str) -> str | None:
         if untracked:
             counts.append(f"{untracked} untracked")
         status_str = ", ".join(counts) if counts else "changes"
+        # When the dirty tree is larger than the parse cap (50 entries), append
+        # the overflow count so the agent knows the repo is massively dirty
+        # without all N files being listed individually.
+        truncated = _status_total - len(status_lines)
+        if truncated > 0:
+            status_str += f" (+{_status_total - len(status_lines)} more files)"
         parts.append(f"| {status_str}")
 
     # Add recent commits if present (em-dash separator)
