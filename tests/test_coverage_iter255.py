@@ -5,6 +5,8 @@ import time
 from pathlib import Path
 from unittest.mock import patch
 
+import pytest
+
 from token_goat import compact as compact_mod
 from token_goat import config as config_mod
 from token_goat.hooks_common import get_session_context, sanitize_log_str, sanitize_opt
@@ -292,6 +294,23 @@ def _make_session(session_id: str = "testsession123") -> SessionCache:
 
 
 class TestBuildManifest:
+    @pytest.fixture(autouse=True)
+    def _clear_manifest_sentinel(self, tmp_data_dir):
+        """Item 26 introduced a Manifest Delta sidecar that persists between
+        build_manifest calls. Tests in this class share a fixed session_id, so
+        without isolation the second call sees a matching fingerprint and
+        renders the "unchanged" stub instead of a fresh manifest. The
+        tmp_data_dir fixture already scopes paths to a per-test temp dir; this
+        autouse just guarantees the sentinel slate is clean at entry.
+        """
+        from token_goat import paths as _p  # noqa: PLC0415
+
+        sentinels = _p.data_dir() / "sentinels"
+        if sentinels.exists():
+            for sidecar in sentinels.glob("manifest_sha_*"):
+                sidecar.unlink(missing_ok=True)
+        yield
+
     def test_invalid_session_returns_empty(self):
         result = compact_mod.build_manifest("../traversal")
         assert result == ""
