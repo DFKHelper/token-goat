@@ -1509,7 +1509,7 @@ class TestBuildSealedBlock:
 
     def test_extract_path_from_read_line(self):
         """Extract path from read file marker line."""
-        line = "- → token_goat/hints.py  lines 1-100"
+        line = "- → token_goat/hints.py  L:1-100"
         result = compact._extract_path_from_line(line)
         assert result == "token_goat/hints.py"
 
