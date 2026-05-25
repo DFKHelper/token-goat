@@ -381,7 +381,7 @@ def _try_recovery_response(session_id: str | None, source: str) -> HookResponse 
         from . import paths  # noqa: PLC0415
 
         sidecar = paths.recovery_pending_path(session_id)
-        sidecar.parent.mkdir(parents=True, exist_ok=True)
+        paths.ensure_dir(sidecar.parent)
         sidecar.write_text(hint, encoding="utf-8")
         _LOG.info(
             "session-start: compact-recovery hint deferred to sidecar for session=%s (%d chars)",
@@ -966,8 +966,7 @@ def subagent_stop(payload: HookPayload) -> HookResponse:
 
         from . import paths as _paths  # noqa: PLC0415
 
-        sidecar_dir = _paths.data_dir() / "sessions"
-        sidecar_dir.mkdir(parents=True, exist_ok=True)
+        sidecar_dir = _paths.ensure_dir(_paths.data_dir() / "sessions")
         sidecar_path = sidecar_dir / _SUBAGENT_HALLUCINATION_SIDECAR
         record = _json.dumps({
             "ts": _time.time(),

@@ -616,8 +616,20 @@ def ensure_dir(path: Path) -> Path:
     that several modules repeat. Returns the same path so callers can
     chain on a single line:
         cache_dir = paths.ensure_dir(paths.image_cache_dir())
+
+    Race-tolerant on Windows: ``pathlib.Path.mkdir(parents=True, exist_ok=True)``
+    has a known race where two concurrent processes can both raise
+    ``FileExistsError`` even with ``exist_ok=True``, because Python's internal
+    ``is_dir()`` check on the EEXIST branch is not atomic with the failing
+    ``os.mkdir`` call. When the parent already exists as a directory we treat
+    the EEXIST as success — matching the documented semantics of
+    ``exist_ok=True``.
     """
-    path.mkdir(parents=True, exist_ok=True)
+    try:
+        path.mkdir(parents=True, exist_ok=True)
+    except FileExistsError:
+        if not path.is_dir():
+            raise
     return path
 
 
@@ -634,7 +646,7 @@ def ensure_dirs() -> None:
         data_dir() / "queue",
     ]
     for d in dirs:
-        d.mkdir(parents=True, exist_ok=True)
+        ensure_dir(d)
 
 
 def _rename_with_retry(src: Path, dest: Path) -> None:
@@ -728,7 +740,7 @@ def _atomic_write_core(path: Path, content: str | bytes, mode: Literal["w", "wb"
     On Windows, _rename_with_retry handles the brief exclusive-lock window.
     """
     tmp = path.with_name(f"{path.name}.{threading.get_ident()}.{time.monotonic_ns()}.tmp")
-    path.parent.mkdir(parents=True, exist_ok=True)
+    ensure_dir(path.parent)
     renamed = False
     try:
         fd = _open_restricted(tmp)

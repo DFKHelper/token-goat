@@ -4754,6 +4754,19 @@ class TestInlineDiffForTop2Edited:
         assert "inline diff" in manifest  # bar.py inlined
         assert "bar.py" in manifest
 
+    def test_slice_diff_for_file_normalizes_backslashes(self):
+        """_slice_diff_for_file should match the same file regardless of separators."""
+        whole = (
+            "diff --git a/src/foo.py b/src/foo.py\n"
+            "index 1111111..2222222 100644\n"
+            "--- a/src/foo.py\n"
+            "+++ b/src/foo.py\n"
+            "@@ -1 +1 @@\n"
+            "-old\n"
+            "+new\n"
+        )
+        assert compact._slice_diff_for_file(whole, r"src\foo.py") == whole
+
 
 # ---------------------------------------------------------------------------
 # #17 — single-file whole-repo inline diff
