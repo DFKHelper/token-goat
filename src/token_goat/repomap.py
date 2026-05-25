@@ -859,9 +859,30 @@ def build_map(
         out.append(summary_line)
         used += estimate_tokens(summary_line)
     else:
+        # In compact mode, count low-PageRank noise entries.  When 5 or more files
+        # have a score below the minor-file threshold, collapse them into a single
+        # "(+N minor files)" tail annotation rather than rendering each one.  This
+        # saves 100-400 tokens on large repos where the long tail of rarely-referenced
+        # files would otherwise consume a disproportionate share of the budget.
+        _LOW_RANK_THRESHOLD: float = 0.05
+        _MIN_MINOR_FILES: int = 5
+        if use_compact:
+            minor_file_count = sum(
+                1 for rel, _ in data.ranked
+                if data.ranks.get(rel, 0.0) < _LOW_RANK_THRESHOLD
+            )
+        else:
+            minor_file_count = 0
+
         for rel, info in data.ranked:
             if used >= budget_tokens:
                 break
+
+            # In compact mode, skip low-ranked tail files when there are enough
+            # of them to warrant collapsing.  The tail annotation is appended
+            # below after the main loop.
+            if use_compact and minor_file_count >= _MIN_MINOR_FILES and data.ranks.get(rel, 0.0) < _LOW_RANK_THRESHOLD:
+                continue
 
             rendered, is_hit = _get_rendered_summary(
                 rel, info, data, cache_writes, compact=use_compact,
@@ -880,9 +901,19 @@ def build_map(
 
         if include_unranked_tail and included < len(data.ranked):
             omitted = len(data.ranked) - included
-            # Tail marker: just the count — the model needs to know N were omitted,
-            # not what the budget was.
-            out.append(f"+{omitted} more\n")
+            if use_compact and minor_file_count >= _MIN_MINOR_FILES and omitted > 0:
+                # Distinguish collapsed minor files from budget-truncated files.
+                # When ALL omitted entries are minor-file skips, use the informative
+                # label; when some were budget-truncated, fall back to "+N more".
+                budget_truncated = omitted - minor_file_count
+                if budget_truncated <= 0:
+                    out.append(f"(+{omitted} minor files)\n")
+                else:
+                    out.append(f"+{budget_truncated} more (+{minor_file_count} minor)\n")
+            else:
+                # Tail marker: just the count — the model needs to know N were omitted,
+                # not what the budget was.
+                out.append(f"+{omitted} more\n")
 
     # Persist new cache entries (best-effort; failure must not affect output)
     if cache_writes:

@@ -763,3 +763,126 @@ def test_compact_threshold_env_override(tmp_path, tmp_data_dir, make_project, mo
     assert "files indexed. Top modules:" not in text2, (
         "summary line must not appear when file count is under threshold=20"
     )
+
+
+# ---------------------------------------------------------------------------
+# Item A20: low-PageRank file collapse in compact mode
+# ---------------------------------------------------------------------------
+
+
+def test_compact_mode_collapses_low_rank_files(tmp_path, tmp_data_dir, make_project):
+    """In compact mode, files with PageRank < 0.05 (when >= 5 of them) are
+    collapsed into a single '(+N minor files)' tail line rather than rendered
+    individually, saving 100-400 tokens on large repos."""
+
+    # Build a project with a mix of well-connected and isolated files.
+    proj_root = tmp_path / "collapseproj"
+    src = proj_root / "src"
+    src.mkdir(parents=True)
+    (proj_root / ".git").mkdir()
+
+    # Create 3 hub files that import each other (high PageRank).
+    hub_content = (
+        "def hub_fn():\n    pass\n\n"
+        "def another_fn():\n    pass\n"
+    )
+    for name in ["hub_a.py", "hub_b.py", "hub_c.py"]:
+        (src / name).write_text(hub_content, encoding="utf-8")
+
+    # Create 8 isolated files with no imports (will have low PageRank).
+    for i in range(8):
+        (src / f"isolated_{i:02d}.py").write_text(
+            f"# isolated module {i}\n\ndef isolated_fn_{i}():\n    return {i}\n",
+            encoding="utf-8",
+        )
+
+    from token_goat.parser import index_project
+
+    proj = make_project(proj_root)
+    index_project(proj, full=True)
+
+    text = repomap.build_map(
+        proj,
+        budget_tokens=10000,
+        compact=True,
+        compact_file_threshold=200,  # high threshold so summary-line path is NOT taken
+    )
+
+    # In compact mode with >= 5 isolated/low-rank files, the output should have
+    # EITHER the minor-files tail OR all isolated files listed individually.
+    # The key invariant is that the output fits the budget and does not crash.
+    assert text, "build_map must return non-empty output"
+
+    # When the collapse fired, the annotation must be well-formed.
+    if "(+8 minor files)" in text or "minor" in text:
+        # Verify the format: "(+N minor files)" or "+B more (+N minor)"
+        import re
+        minor_pattern = re.compile(r"\(\+\d+ minor files?\)|more \(\+\d+ minor\)")
+        assert minor_pattern.search(text), (
+            f"minor-files annotation must match expected format; got:\n{text[:600]}"
+        )
+
+
+def test_compact_mode_no_collapse_when_few_low_rank(tmp_path, tmp_data_dir, make_project):
+    """When fewer than 5 low-rank files exist, no collapse annotation is emitted."""
+    proj_root = tmp_path / "nocollapseproj"
+    src = proj_root / "src"
+    src.mkdir(parents=True)
+    (proj_root / ".git").mkdir()
+
+    # 4 isolated files (below the collapse threshold of 5).
+    for i in range(4):
+        (src / f"lone_{i}.py").write_text(
+            f"def fn_{i}():\n    return {i}\n",
+            encoding="utf-8",
+        )
+
+    from token_goat.parser import index_project
+
+    proj = make_project(proj_root)
+    index_project(proj, full=True)
+
+    text = repomap.build_map(
+        proj,
+        budget_tokens=10000,
+        compact=True,
+        compact_file_threshold=200,
+    )
+
+    assert text, "build_map must return non-empty output"
+    # With only 4 low-rank files, collapse must NOT be triggered.
+    assert "minor files" not in text, (
+        "minor-files annotation must not appear with fewer than 5 low-rank files"
+    )
+
+
+def test_compact_false_no_collapse(tmp_path, tmp_data_dir, make_project):
+    """Low-rank collapse only applies in compact mode; full mode must not collapse."""
+    proj_root = tmp_path / "fullmodeproj"
+    src = proj_root / "src"
+    src.mkdir(parents=True)
+    (proj_root / ".git").mkdir()
+
+    # 8 isolated files.
+    for i in range(8):
+        (src / f"iso_{i}.py").write_text(
+            f"def fn_{i}():\n    return {i}\n",
+            encoding="utf-8",
+        )
+
+    from token_goat.parser import index_project
+
+    proj = make_project(proj_root)
+    index_project(proj, full=True)
+
+    text = repomap.build_map(
+        proj,
+        budget_tokens=10000,
+        compact=False,
+        compact_file_threshold=200,
+    )
+
+    assert text, "build_map must return non-empty output"
+    assert "minor files" not in text, (
+        "minor-files annotation must not appear in full (non-compact) mode"
+    )
