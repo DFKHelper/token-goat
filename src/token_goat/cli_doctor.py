@@ -333,6 +333,59 @@ def doctor(  # noqa: C901
         flag("detected", "no project marker found in cwd or parents", warn=True)
 
     # ------------------------------------------------------------------
+    # 8b. Hook wrapper
+    # Checked before the Worker section: a missing or stale wrapper causes
+    # hooks to silently fail, which then manifests as worker symptoms.
+    # ------------------------------------------------------------------
+    typer.echo("\nHook wrapper")
+    wrapper_path = paths.hook_wrapper_path()
+    if not wrapper_path.exists():
+        flag("exists", f"NOT FOUND at {wrapper_path} — run `token-goat install` to create it")
+    else:
+        ok("exists", str(wrapper_path))
+
+        # Drift detection: compare on-disk content with what install would write today.
+        # Read in binary mode and decode so line endings are preserved verbatim
+        # (the wrapper uses CRLF on Windows; Python text-mode open() translates
+        # \r\n → \n, which would cause a false "differs" on every Windows install).
+        try:
+            on_disk = wrapper_path.read_bytes().decode("utf-8", errors="replace")
+            expected = paths.hook_wrapper_content()
+            if on_disk == expected:
+                ok("content", "up to date")
+            else:
+                flag(
+                    "content",
+                    "differs from expected — run `token-goat install` to refresh",
+                    warn=True,
+                )
+        except Exception as _e:  # noqa: BLE001
+            flag("content", f"could not read — {_e}", warn=True)
+
+        # Functional check: invoke the wrapper with --version and verify a response.
+        try:
+            _wrap_result = subprocess.run(
+                [str(wrapper_path), "--version"],
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+            if _wrap_result.returncode == 0 and _wrap_result.stdout.strip():
+                ok("invoke", f"ok — {_wrap_result.stdout.strip()[:80]}")
+            else:
+                flag(
+                    "invoke",
+                    f"exit {_wrap_result.returncode} — {(_wrap_result.stderr or _wrap_result.stdout).strip()[:120]}",
+                    warn=True,
+                )
+        except FileNotFoundError:
+            flag("invoke", "wrapper not executable or not found by shell", warn=True)
+        except subprocess.TimeoutExpired:
+            flag("invoke", "timed out after 10s", warn=True)
+        except Exception as _e:  # noqa: BLE001
+            flag("invoke", f"error — {_e}", warn=True)
+
+    # ------------------------------------------------------------------
     # 9. Worker
     # ------------------------------------------------------------------
     typer.echo("\nWorker")
