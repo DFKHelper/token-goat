@@ -2283,7 +2283,10 @@ def _load_task_list(session_id: str) -> list[dict[str, str]]:
 
     from . import paths as paths_mod  # noqa: PLC0415
 
-    tasks_dir = paths_mod.claude_config_dir() / "tasks" / session_id
+    try:
+        tasks_dir = paths_mod.safe_join(paths_mod.claude_config_dir() / "tasks", session_id)
+    except ValueError:
+        return []
     if not tasks_dir.is_dir():
         return []
 

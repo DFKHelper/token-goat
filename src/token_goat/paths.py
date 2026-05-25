@@ -33,6 +33,7 @@ __all__ = [
     "manifest_sha_sidecar_path",
     "recovery_pending_path",
     "sentinels_dir",
+    "safe_join",
     "session_cache_path",
     "web_cache_dir",
     "worker_heartbeat_path",
@@ -222,6 +223,51 @@ def _safe_child_path(base: Path, child_name: str, extension: str, label: str) ->
             f"{label} produces a path outside {base.name}/: {child_name!r}"
         ) from exc
     return candidate
+
+
+def safe_join(base: Path, fragment: str, *, ext: str = "") -> Path:
+    """Return ``base / (fragment + ext)`` after comprehensive safety checks.
+
+    This is the canonical public helper for joining a base directory with a
+    user-controlled fragment (session_id, hash, CLI arg, hook payload value,
+    or file-derived string).  It subsumes ``_safe_child_path`` and adds an
+    additional check for embedded colons, which are POSIX-legal but
+    Windows-illegal and can appear in Codex session IDs.
+
+    Checks performed (in order):
+    1. Null-byte rejection — some POSIX filesystems treat ``\\x00`` as a path
+       terminator, allowing an attacker to truncate or redirect the path.
+    2. Colon rejection — ``C:/evil`` is a Windows absolute path when used as a
+       fragment; Codex session IDs can contain ``:`` which silently breaks
+       ``Path`` construction on Windows.
+    3. Traversal rejection — ``resolve()`` + ``relative_to()`` ensures the
+       candidate does not escape *base* via ``..`` sequences (POSIX or Windows).
+    4. Absolute-path rejection — covered implicitly by the ``relative_to``
+       check, but the null-byte and colon guards run first for clarity.
+
+    Args:
+        base:     The directory that must contain the returned path.
+        fragment: The filename fragment to join (no extension).  Must not be
+                  empty, contain null bytes, contain colons, or produce a path
+                  outside *base* after resolution.
+        ext:      Optional extension including the leading dot (e.g. ``".json"``).
+                  Defaults to ``""`` when the fragment already carries the
+                  extension or when the result is an extensionless file.
+
+    Returns:
+        The resolved ``Path`` object inside *base*.
+
+    Raises:
+        ValueError: On any of the rejection conditions above.
+    """
+    if not fragment:
+        raise ValueError("safe_join: fragment must not be empty")
+    if "\x00" in fragment:
+        raise ValueError(f"safe_join: fragment contains null byte: {fragment!r}")
+    if ":" in fragment:
+        raise ValueError(f"safe_join: fragment contains colon (possible Windows absolute path): {fragment!r}")
+    # Delegate to _safe_child_path which performs the resolve/relative_to check.
+    return _safe_child_path(base, fragment, ext, "fragment")
 
 
 def project_db_path(project_hash: str) -> Path:
