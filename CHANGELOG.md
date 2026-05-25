@@ -2,6 +2,87 @@
 
 All notable changes to Token-Goat are documented in this file. Format follows Keep a Changelog. Token-Goat follows Semantic Versioning starting at 1.0.
 
+## [Unreleased] — 55-iteration loop (2026-05-25)
+
+### Security
+
+- **DNS rebinding window closed in SSRF guard.** `webfetch.py` now resolves once via a new `_resolve_and_validate_ip()` and pins the connection to that IP via a custom `_make_pinned_transport()`. Previously a hostile DNS server could return a public IP to the validation query and a private IP (e.g. 169.254.169.254 IMDS) to httpx's reconnect (`22bcd56`).
+- **`paths.safe_join()` promoted as canonical fragment joiner.** Two raw joins that took user-controlled session_ids now flow through it; sanitises null bytes, `..`, absolute paths, and Windows-illegal colons (`197acd9`).
+- **`dispatch()` ensures `continue=true`.** Handlers returning `{}` or any dict missing `"continue"` would otherwise become harness-blocking responses. Crash-sink boundary now sanitises tracebacks before all three sinks (stderr, logger, file), not just the file write (`b04eee5`).
+
+### Reliability
+
+- **Surrogate-escape crash fix.** `post_bash` was crashing 1,311 times/week in production with `UnicodeEncodeError: 'utf-8' codec can't encode character '\udcXX'`. New `util.sanitize_surrogates` applied at the boundary in `post_bash` right after `_extract_bash_response` (`6fdba43`).
+- **Hook registry consolidated to single source of truth.** New `hook_registry.py` declares each event once; five derived tables read from it. A startup `_assert_hook_registry_aligned()` raises `ImportError` if any registry event lacks a matching `@hook_app.command` decorator. Eliminates the recurring drift bug class. Bridge TS event tables get an alignment regression test (`930033c`, `1408673`).
+- **Persistent hook wrapper survives `uv tool install --reinstall`.** A `.cmd` at `data_dir/bin/tg-hook.cmd` lives outside the uv tool venv; checks for `token_goat/__init__.py` on disk before forwarding to pythonw, otherwise emits `{"continue":true}` and exits 0. Drift surfaced in `doctor` (`e53d553`, `48193ad`).
+- **Orphaned project GC.** Worker removes global.db rows + per-project `.db`/`.db-wal`/`.db-shm` for missing-root projects with 30-min safety window. Race-safe DELETE with `last_seen` predicate prevents TOCTOU loss (`ec60af0`, `009d2ba`). Reclaims 2.3 GB on the audited install.
+- **`save_locked` no longer proceeds without lock on timeout.** After 3 consecutive `_acquire_session_lock` timeouts, `cache.unavailable = True` and the writer short-circuits (`6453310`).
+- **Session schema version enforced on load.** Cached mismatch drops the cache and starts fresh (`e6f40b2`).
+- **Worker SIGTERM handler.** Explicit `_graceful_shutdown` wired for SIGTERM + SIGINT on POSIX (`47a4faf`).
+- **TOML config schema warning.** `config.py` warns on unknown top-level sections (catches `[compact_assit]` typos) (`479b763`).
+- **`hooks-stderr.log` test isolation.** 230 KB / 316 crash blocks of test garbage were polluting the production crash sink. Autouse conftest fixture redirects test runs to `tmp_path` (`4e940d7`).
+
+### Token Savings — hints / manifest / hot path
+
+- **Manifest format shortening bundle.** `_format_ranges` emits `L:X-Y` not `lines X-Y`; cold/recent bash entries drop the `id=` label and shorten `exit=` to `e=`; `_MAX_TODO_SUBJECT_CHARS` lowered to 50. ~71 tokens/manifest (`f9b583f`).
+- **Active-skills section collapsed.** Per-skill bullets with full recall → single `**Skills:** name1, name2, … — recall via token-goat skill-body <name>`. ~160 tokens/6-skill manifest (`3564410`).
+- **Adaptive `_MAX_BASH_ENTRIES`.** Scales with bash_history length instead of fixed at 6 (`e60c867`).
+- **Clean-repo session brief one-liner.** When in-sync on stable branch with no uncommitted, brief collapses to `"<branch> (clean)"` from a multi-line structured block (`3970702`).
+- **status_lines cap.** 50 entries max + `(+N more files)` summary; dirty-tree SessionStart was emitting 3-5 KB (`e5347a8`).
+- **Failed-tiny-bash signal.** Tiny output + exit ≠ 0 now appends to `bash_history` so manifest's Current Blockers picks it up (`70a3066`).
+- **Single rev-list + adaptive git-log entry count.** Two rev-parse subprocesses collapsed into one `rev-list --left-right --count`; in-sync repos skip the git-log section entirely (`a234855`).
+- **Glob-dedup cache capped at 20 paths + grep-after-edit hint capped at 5** (`08dd016`).
+- **user-prompt-submit short-circuit on prompts <8 chars** (`022330a`).
+- **Long grep patterns truncated in hints + micro-diff one-liner** (`3d13252`).
+- **Basename in already-read hint prose + proximity check** to suppress false positives when the agent is reading a far section of a file (`076bacb`).
+- **Snapshot-diff hint range-overlap check** suppresses the hint when read range doesn't overlap edited range (`71088db`).
+- **Repomap collapses low-PageRank tail** to `(+N minor files)` in compact mode (`a7c90ad`).
+- **Image alt-text drops `→ N KiB` when savings ratio < 4×** (`b71cf83`).
+- **WebFetch HTML strip before caching** — 60-90% byte reduction for HTML pages (`2b4caea`).
+- **web-output --grep recall hint once-per-session** (`a4e67c7`).
+- **Process-local LRU on `session.load()`** mtime-keyed, cap 4 — skips JSON parse for back-to-back hooks (`5ea945f`).
+- **Pytest banner + ruff success suppression in bash_compress** (`d0a29cd`).
+
+### Performance
+
+- **Test suite 22% faster.** Eviction tests were doing 200-500 real disk writes each. `patch.object(session, "save")` makes them in-memory; round-trip persistence covered separately (`9798981`).
+- **Hot-path utf8 byte-length simplification** + **11 lazy session imports consolidated** in hooks_read.py (`e7f165b`).
+- **`cli_doctor` global.db connection reuse** between sections 14/14b (`4c77089`).
+- **Bash-outputs file-count cap + always-on orphan sweep.** `evict_cache_dir` gained `max_file_count=4096`; orphan-sidecar sweep moved before the early return. Doctor flags file-count overage (`09a527a`, `b64a714`).
+- **DB contention metric in doctor.** Scans worker-stderr.log for `session slow` warnings in last 24 h (`1b11b49`).
+
+### DRY
+
+- **16 git subprocess sites → `util.run_git()`.** Always sets `--no-optional-locks` + UTF-8 with `errors="replace"`. Regression test asserts no other bare git subprocess calls remain (`2d18337`).
+- **`cache_common.safe_cache_op` context manager** (`c4b9e54`) + **`cache_common.store_blob`** (`58306b9`).
+- **`util.ellipsize` + `compact._render_cache_meta` helpers** (`a9f363a`).
+- **`hints._require_cache`, `cli._lazy_import`, `cli_doctor._check_step`, `session._load_or_empty_json`** helpers (`9636d2d`, `fd10af4`, `582001d`).
+
+### Tests
+
+- **Hook registry alignment test class** asserts every event has a matching `@hook_app.command`; also checks codex and lazy-getattr table coverage (`930033c`).
+- **bash_compress dispatch + golden-output tests** +151 tests across all 17 filters. Two dispatch bugs surfaced: `py.test` never dispatched and `uv pip install` was over-stripped (`d241f6e`, `1817f7e`).
+- **Bridge TS event-table alignment.** Asserts every event in OPENCODE_PLUGIN_TS + OPENCLAW_PLUGIN_TS exists in `hook_registry.all_events()` (`1408673`).
+- **`paths.safe_join` regression tests** (`197acd9`).
+- **Hypothesis property tests for range-overlap arithmetic.** 300-500 cases per property, no violations (`f6b54a7`).
+- **`test_extractor_crash_returns_none` flake fix** — `_RESULT_CACHE` shared mutable state across tests (`142fad0`).
+
+### Docs
+
+- **`docs/audit-2026-05-24-coupled-registries.md`** — catalog of 8 coupled-registry patterns ranked by silent-vs-loud break risk (`930033c`).
+- **`docs/test-speed-deferrals.md`** — formally defers `test_compact.py` split and `test_read_replacement.py` fixture-scope flip with measurements (`ce53586`).
+
+### Dependencies
+
+- **`hypothesis>=6.0.0`** added to `[dependency-groups].dev`. Was missing — `tests/test_parser_malformed.py` erred at collection time. Unlocks 71 previously-uncollected tests (`2cad7f9`).
+
+### Stats hygiene
+
+- **Compact-recovery zero-value rows dropped** (`1e69346`, `ed43859`).
+- **Bash-compress noise-threshold suppression.** `MIN_RECORD_STAT_BYTES = 32` skips `record_stat` for whitespace-only compressions that polluted stats with "0.0% savings" buckets (`d5cbd9a`).
+
+**Suite at end of loop: 4965 pass (started at 4598; +367 tests added).**
+
 ## [Unreleased] — 68-iteration loop (2026-05-24)
 
 ### Security
