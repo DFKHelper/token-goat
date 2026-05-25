@@ -365,18 +365,20 @@ class TestParseStatusZB:
     def test_clean_repo(self):
         """Clean working tree: only header field, no status entries."""
         import token_goat.hooks_session as hs_mod
-        branch, lines = hs_mod._parse_status_z_b("## main...origin/main\0")
+        branch, lines, total = hs_mod._parse_status_z_b("## main...origin/main\0")
         assert branch == "main"
         assert lines == []
+        assert total == 0
 
     def test_branch_with_untracked_and_modified(self):
         """Branch header plus 1 untracked and 1 modified file."""
         import token_goat.hooks_session as hs_mod
         # -z output: header\0XY file\0XY file\0
         output = "## feature/foo...origin/feature/foo\0?? new_file.py\0 M src/bar.py\0"
-        branch, lines = hs_mod._parse_status_z_b(output)
+        branch, lines, total = hs_mod._parse_status_z_b(output)
         assert branch == "feature/foo"
         assert len(lines) == 2
+        assert total == 2
         assert any(ln.startswith("??") for ln in lines)
         assert any(ln[1:2] == "M" for ln in lines)
 
@@ -384,41 +386,46 @@ class TestParseStatusZB:
         """Detached HEAD: branch reported as 'HEAD'."""
         import token_goat.hooks_session as hs_mod
         output = "## HEAD (no branch)\0 M src/foo.py\0"
-        branch, lines = hs_mod._parse_status_z_b(output)
+        branch, lines, total = hs_mod._parse_status_z_b(output)
         assert branch == "HEAD"
         assert len(lines) == 1
+        assert total == 1
 
     def test_no_commits_yet(self):
         """New repo with no commits: 'No commits yet on <branch>'."""
         import token_goat.hooks_session as hs_mod
         output = "## No commits yet on main\0"
-        branch, lines = hs_mod._parse_status_z_b(output)
+        branch, lines, total = hs_mod._parse_status_z_b(output)
         assert branch == "main"
         assert lines == []
+        assert total == 0
 
-    def test_capped_at_20_entries(self):
-        """Status entries are capped at 20 regardless of output length."""
+    def test_capped_at_50_entries_total_reported(self):
+        """Status list is capped at 50 but total_count reflects the full count."""
         import token_goat.hooks_session as hs_mod
-        entries = "".join(f"?? file{i}.py\0" for i in range(30))
+        entries = "".join(f"?? file{i}.py\0" for i in range(80))
         output = f"## main\0{entries}"
-        branch, lines = hs_mod._parse_status_z_b(output)
+        branch, lines, total = hs_mod._parse_status_z_b(output)
         assert branch == "main"
-        assert len(lines) == 20
+        assert len(lines) == 50
+        assert total == 80
 
     def test_empty_output(self):
         """Empty string (git not a repo / failure) returns safe defaults."""
         import token_goat.hooks_session as hs_mod
-        branch, lines = hs_mod._parse_status_z_b("")
+        branch, lines, total = hs_mod._parse_status_z_b("")
         assert branch == "unknown"
         assert lines == []
+        assert total == 0
 
     def test_staged_file(self):
         """Staged (index-modified) file is correctly detected."""
         import token_goat.hooks_session as hs_mod
         output = "## main\0M  src/staged.py\0"
-        branch, lines = hs_mod._parse_status_z_b(output)
+        branch, lines, total = hs_mod._parse_status_z_b(output)
         assert branch == "main"
         assert len(lines) == 1
+        assert total == 1
         assert lines[0][:1] == "M"  # staged in index
 
 

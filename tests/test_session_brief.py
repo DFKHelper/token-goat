@@ -354,17 +354,18 @@ class TestBriefTokenBudget:
         assert len(brief) < 400
 
     def test_many_status_lines_capped(self, tmp_path):
-        """More than 20 status lines are capped at 20."""
-        lines = "\n".join(f" M src/file{i}.py" for i in range(30))
+        """More than 50 status lines are capped with a (+N more files) notice."""
+        lines = "\n".join(f" M src/file{i}.py" for i in range(80))
         with patch("subprocess.run", side_effect=_make_run_side_effect(
             status_output=lines,
         )):
             brief = _build_session_brief(str(tmp_path))
 
         assert brief is not None
-        # Brief should not list all 30 files (it summarises counts, not filenames)
-        # Just verify it returns a sensible summary
+        # Brief should summarise counts and emit a (+N more files) notice.
         assert "modified" in brief or "staged" in brief or "changes" in brief
+        # 80 files, cap is 50: expect "+30 more files" in the brief.
+        assert "more files" in brief
 
 
 # ---------------------------------------------------------------------------
