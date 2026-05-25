@@ -188,6 +188,15 @@ class TestBuildManifest:
         fake_cache.files = {}
         fake_cache.greps = []
         fake_cache.created_ts = 0.0
+        # MagicMock attribute trap: _compute_manifest_fingerprint now JSON-
+        # serialises cwd + dedup/history fields. Auto-attrs are MagicMocks
+        # which json.dumps cannot encode — stub each one explicitly.
+        fake_cache.cwd = None
+        fake_cache.bash_dedup_emitted_ids = set()
+        fake_cache.bash_history = {}
+        fake_cache.glob_history = []
+        fake_cache.skill_history = {}
+        fake_cache.web_history = {}
 
         with (
             patch.object(session_mod, "validate_session_id"),
@@ -204,6 +213,13 @@ class TestBuildManifest:
         fake_cache.files = {}
         fake_cache.greps = []
         fake_cache.created_ts = 0.0
+        # Same MagicMock-attribute-trap fix as above.
+        fake_cache.cwd = None
+        fake_cache.bash_dedup_emitted_ids = set()
+        fake_cache.bash_history = {}
+        fake_cache.glob_history = []
+        fake_cache.skill_history = {}
+        fake_cache.web_history = {}
         # tmp_data_dir isolates the manifest SHA sidecar so prior test runs
         # don't return a stub here.
         with (
