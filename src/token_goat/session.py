@@ -1815,6 +1815,30 @@ def _migrate_session(data: dict[str, Any]) -> dict[str, Any]:
     return data
 
 
+def _load_or_empty_json(path: Path) -> dict[str, object]:
+    """Load JSON from *path*, returning empty dict on read or parse errors.
+
+    Attempts to read and parse the file at *path* as JSON. If the file cannot
+    be read (OSError) or parsed (JSONDecodeError), logs a debug message and
+    returns an empty dict.
+
+    Parameters
+    ----------
+    path
+        The file path to read JSON from.
+
+    Returns
+    -------
+    dict[str, object]
+        The parsed JSON as a dict, or an empty dict on any error.
+    """
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as e:
+        _LOG.debug("load failed for %s: %s — returning empty", path, e)
+        return {}
+
+
 def load(session_id: str) -> SessionCache:
     """Load the on-disk session cache for *session_id*, or create a fresh one.
 
