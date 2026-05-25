@@ -965,3 +965,81 @@ def test_safe_run_crash_writes_to_isolated_log_not_real_log(tmp_path, monkeypatc
     assert not real_sink.exists(), (
         "crash was written to the real hooks-stderr.log; isolation fixture did not work"
     )
+
+
+# ---------------------------------------------------------------------------
+# Watchdog: a hung handler must not be able to block dispatch indefinitely.
+# signal.alarm is POSIX-only, so the dispatcher uses a daemon thread + join
+# with a finite timeout.  These tests exercise that path on every platform.
+# ---------------------------------------------------------------------------
+
+
+def test_dispatch_watchdog_returns_within_budget_on_hung_handler(monkeypatch):
+    """A handler that sleeps far past the budget must not stall dispatch.
+
+    The watchdog budget is _HOOK_WATCHDOG_MS.  We shrink it to ~100ms for
+    speed, install a handler that sleeps 5x that, and verify dispatch
+    returns continue:true within budget + 200ms tolerance.
+    """
+    import time as _time
+
+    monkeypatch.setattr(hooks_cli, "_HOOK_WATCHDOG_MS", 100)
+    budget_s = hooks_cli._HOOK_WATCHDOG_MS / 1000.0
+    sleep_s = budget_s * 5
+
+    def slow_handler(_payload):
+        _time.sleep(sleep_s)
+        return {"continue": True}
+
+    monkeypatch.setitem(hooks_cli.EVENTS, "session-start", slow_handler)
+
+    t0 = _time.monotonic()
+    result = hooks_cli.dispatch("session-start", {"session_id": "watchdog-hang"})
+    elapsed = _time.monotonic() - t0
+
+    _assert_continue(result)
+    assert result.get("_tg_watchdog_tripped") is True, (
+        f"watchdog flag missing on hung-handler result: {result!r}"
+    )
+    # Budget + 200ms tolerance for thread join overhead.
+    assert elapsed < budget_s + 0.2, (
+        f"dispatch took {elapsed:.3f}s, exceeded watchdog budget {budget_s:.3f}s + 200ms"
+    )
+
+
+def test_dispatch_watchdog_does_not_trip_on_fast_handler(monkeypatch):
+    """A handler that finishes well within budget must complete normally —
+    no watchdog flag, real return value preserved."""
+
+    def fast_handler(_payload):
+        return {"continue": True, "_marker": "fast-ok"}
+
+    monkeypatch.setattr(hooks_cli, "_HOOK_WATCHDOG_MS", 5000)
+    monkeypatch.setitem(hooks_cli.EVENTS, "session-start", fast_handler)
+
+    result = hooks_cli.dispatch("session-start", {"session_id": "watchdog-fast"})
+    _assert_continue(result)
+    assert result.get("_marker") == "fast-ok"
+    assert "_tg_watchdog_tripped" not in result
+
+
+def test_dispatch_watchdog_logs_warning_on_trip(monkeypatch, caplog):
+    """When the watchdog trips, the dispatcher must log a WARNING."""
+    import logging as _logging
+    import time as _time
+
+    monkeypatch.setattr(hooks_cli, "_HOOK_WATCHDOG_MS", 50)
+
+    def hung(_payload):
+        _time.sleep(0.5)
+        return {"continue": True}
+
+    monkeypatch.setitem(hooks_cli.EVENTS, "session-start", hung)
+
+    with caplog.at_level(_logging.WARNING, logger="token_goat.hooks"):
+        hooks_cli.dispatch("session-start", {"session_id": "watchdog-log"})
+
+    msgs = [r.getMessage() for r in caplog.records if r.levelno >= _logging.WARNING]
+    assert any("watchdog tripped" in m for m in msgs), (
+        f"expected a 'watchdog tripped' warning, got: {msgs!r}"
+    )

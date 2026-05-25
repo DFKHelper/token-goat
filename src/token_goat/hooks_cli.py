@@ -21,6 +21,7 @@ import functools
 import json
 import logging
 import sys
+import threading
 import time
 import traceback
 from collections.abc import Callable
@@ -146,6 +147,14 @@ _MAX_PAYLOAD_BYTES = 10 * 1024 * 1024  # 10 MB — guard against runaway harness
 # HOOK_MODERATE_MS and HOOK_SLOW_MS are logged at DEBUG with a "moderate" tag.
 _HOOK_SLOW_MS = 500
 _HOOK_MODERATE_MS = 100
+
+# Watchdog budget for a single hook handler.  Set to 4x the slow threshold so
+# a "slow but legitimate" handler completes well within the budget, while a
+# genuinely hung handler (deadlock, blocked I/O on a dead socket, etc.) is
+# abandoned before it can stall the agent.  signal.alarm is POSIX-only and
+# cannot be used here — Windows is a first-class target — so dispatch runs
+# the handler in a daemon thread and stops waiting for it past the budget.
+_HOOK_WATCHDOG_MS = _HOOK_SLOW_MS * 4
 
 
 def read_payload(input_file: Path | None = None) -> HookPayload:
@@ -578,7 +587,40 @@ def dispatch(event: str, payload: HookPayload) -> dict[str, object]:
         return dict(CONTINUE())
     _LOG.debug("hook %s started", safe_event)
     t0 = time.monotonic()
-    result: dict[str, object] = dict(handler(payload))
+    # Run the handler in a daemon thread so a hung handler cannot block the
+    # dispatcher beyond the watchdog budget.  The thread keeps running to
+    # completion in the background (preserving fail_soft semantics — the
+    # handler's own try/except still fires); we just stop waiting for it.
+    # daemon=True ensures the process can exit on Windows even if the thread
+    # is wedged on an unkillable syscall.
+    handler_result: dict[str, object] = {}
+    handler_error: list[BaseException] = []
+
+    def _run_handler() -> None:
+        try:
+            handler_result.update(dict(handler(payload)))
+        except BaseException as exc:  # pragma: no cover — fail_soft catches first
+            handler_error.append(exc)
+
+    worker = threading.Thread(
+        target=_run_handler,
+        name=f"tg-hook-{safe_event}",
+        daemon=True,
+    )
+    worker.start()
+    timeout_s = _HOOK_WATCHDOG_MS / 1000.0
+    worker.join(timeout_s)
+    if worker.is_alive():
+        _LOG.warning(
+            "hook %s watchdog tripped after %.0fms — abandoning wait (handler continues in background)",
+            safe_event,
+            _HOOK_WATCHDOG_MS,
+        )
+        watchdog_result: dict[str, object] = dict(CONTINUE())
+        watchdog_result["_tg_elapsed_ms"] = round((time.monotonic() - t0) * 1000, 2)
+        watchdog_result["_tg_watchdog_tripped"] = True
+        return watchdog_result
+    result: dict[str, object] = dict(handler_result)
     elapsed_ms = (time.monotonic() - t0) * 1000
     if elapsed_ms >= _HOOK_SLOW_MS:
         _LOG.warning("hook %s slow: %.1fms (check for blockage or I/O delays)", safe_event, elapsed_ms)
