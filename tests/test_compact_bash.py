@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import time
+from dataclasses import dataclass
 
 from token_goat import compact, session
 
@@ -1020,3 +1021,187 @@ class TestFormatBashEntryInlineSnippet:
         assert "**Blocked:**" in m
         assert "pytest tests/" in m
         assert "exit 1" in m
+
+
+@dataclass
+class _StubBashEntry:
+    """Lightweight stand-in for session.BashEntry in item-#28 unit tests."""
+
+    cmd_sha: str
+    cmd_preview: str
+    output_id: str
+    ts: float
+    stdout_bytes: int
+    stderr_bytes: int
+    exit_code: int | None = None
+    truncated: bool = False
+    run_count: int = 1
+    elapsed_ms: float | None = None
+
+
+class TestClassifyBashEntry:
+    """Item #28: _classify_bash_entry buckets each entry into failed/slow/ok."""
+
+    @staticmethod
+    def _make(exit_code: int | None, elapsed_ms: float | None = None) -> _StubBashEntry:
+        return _StubBashEntry(
+            cmd_sha="sha", cmd_preview="cmd", output_id="oid", ts=0.0,
+            stdout_bytes=100, stderr_bytes=0,
+            exit_code=exit_code, elapsed_ms=elapsed_ms,
+        )
+
+    def test_failed_when_exit_nonzero(self):
+        assert compact._classify_bash_entry(self._make(exit_code=1)) == "failed"
+
+    def test_failed_when_exit_negative(self):
+        assert compact._classify_bash_entry(self._make(exit_code=-15)) == "failed"
+
+    def test_ok_when_exit_zero_and_fast(self):
+        assert compact._classify_bash_entry(self._make(exit_code=0, elapsed_ms=100)) == "ok"
+
+    def test_ok_when_exit_unknown(self):
+        # Unknown exit (None) defaults to ok — avoids false "failed" alarms.
+        assert compact._classify_bash_entry(self._make(exit_code=None)) == "ok"
+
+    def test_slow_when_exit_zero_and_elapsed_above_threshold(self):
+        # 6 seconds > _SLOW_BASH_THRESHOLD_SECS (5s)
+        assert compact._classify_bash_entry(self._make(exit_code=0, elapsed_ms=6000)) == "slow"
+
+    def test_ok_when_exit_zero_at_threshold(self):
+        # Threshold is strict greater-than: exactly 5s is still ok.
+        assert compact._classify_bash_entry(
+            self._make(exit_code=0, elapsed_ms=5000)
+        ) == "ok"
+
+    def test_failed_overrides_slow(self):
+        # A slow failing run should be classified failed, not slow.
+        assert compact._classify_bash_entry(
+            self._make(exit_code=1, elapsed_ms=30000)
+        ) == "failed"
+
+    def test_missing_elapsed_fields_defaults_ok(self):
+        # Real BashEntry today has no elapsed_ms field; getattr defaults to 0.
+        entry = _StubBashEntry(
+            cmd_sha="s", cmd_preview="c", output_id="o", ts=0.0,
+            stdout_bytes=100, stderr_bytes=0, exit_code=0,
+        )
+        assert compact._classify_bash_entry(entry) == "ok"
+
+
+class TestRenderBashGrouped:
+    """Item #28: _render_bash_grouped emits Failed/Slow/Ok sub-groups."""
+
+    @staticmethod
+    def _make(
+        cmd: str, exit_code: int, *, elapsed_ms: float | None = None, idx: int = 0
+    ) -> _StubBashEntry:
+        return _StubBashEntry(
+            cmd_sha=f"sha{idx}",
+            cmd_preview=cmd,
+            output_id=f"oid{idx}",
+            ts=float(idx),
+            stdout_bytes=200,
+            stderr_bytes=0,
+            exit_code=exit_code,
+            elapsed_ms=elapsed_ms,
+        )
+
+    @staticmethod
+    def _never_inline(_be: object) -> bool:
+        return False
+
+    def test_only_failed_entries_emit_failed_header(self):
+        """A bash list of pure failures gets the **Failed:** sub-header."""
+        entries: list[object] = [
+            self._make("pytest a", exit_code=1, idx=0),
+            self._make("pytest b", exit_code=2, idx=1),
+        ]
+        lines, used = compact._render_bash_grouped(
+            entries, budget=1_000, should_inline=self._never_inline,
+        )
+        assert lines[0] == "**Ran:**"
+        assert "**Failed:**" in lines
+        # No **Slow:** / **Ok:** headers when those groups are empty.
+        assert "**Slow:**" not in lines
+        assert "**Ok:**" not in lines
+        assert used > 0
+
+    def test_mixed_failed_and_ok_no_slow_header(self):
+        """Failed + Ok groups present, Slow group empty → no **Slow:** header."""
+        entries: list[object] = [
+            self._make("pytest a", exit_code=1, idx=0),
+            self._make("ruff check", exit_code=0, idx=1),
+            self._make("mypy src", exit_code=0, idx=2),
+        ]
+        lines, _ = compact._render_bash_grouped(
+            entries, budget=1_000, should_inline=self._never_inline,
+        )
+        joined = "\n".join(lines)
+        # Both group headers emitted because there are multiple non-empty groups.
+        assert "**Failed:**" in joined
+        assert "**Ok:**" in joined
+        assert "**Slow:**" not in joined
+        # Failed precedes Ok in emission order.
+        assert lines.index("**Failed:**") < lines.index("**Ok:**")
+
+    def test_all_ok_omits_ok_subheader(self):
+        """When every entry is ok, the **Ok:** sub-header is omitted entirely
+        (the **Ran:** label is sufficient context).
+        """
+        entries: list[object] = [
+            self._make("ls", exit_code=0, idx=0),
+            self._make("pwd", exit_code=0, idx=1),
+        ]
+        lines, _ = compact._render_bash_grouped(
+            entries, budget=1_000, should_inline=self._never_inline,
+        )
+        assert lines[0] == "**Ran:**"
+        assert "**Ok:**" not in lines
+        assert "**Failed:**" not in lines
+        assert "**Slow:**" not in lines
+
+    def test_all_three_groups_emit_in_priority_order(self):
+        """Failed → Slow → Ok emission order, with all sub-headers present."""
+        entries: list[object] = [
+            self._make("pytest fail", exit_code=1, idx=0),
+            self._make("pytest slow", exit_code=0, elapsed_ms=10_000, idx=1),
+            self._make("ls fast", exit_code=0, elapsed_ms=10, idx=2),
+        ]
+        lines, _ = compact._render_bash_grouped(
+            entries, budget=2_000, should_inline=self._never_inline,
+        )
+        # All three group headers present.
+        assert "**Failed:**" in lines
+        assert "**Slow:**" in lines
+        assert "**Ok:**" in lines
+        # Priority order: failed → slow → ok.
+        assert lines.index("**Failed:**") < lines.index("**Slow:**") < lines.index("**Ok:**")
+
+    def test_empty_entries_returns_empty_output(self):
+        lines, used = compact._render_bash_grouped(
+            [], budget=1_000, should_inline=self._never_inline,
+        )
+        assert lines == []
+        assert used == 0
+
+    def test_zero_budget_emits_nothing(self):
+        """An impossibly tight budget yields no output (no lone sub-headers)."""
+        entries: list[object] = [self._make("pytest", exit_code=1, idx=0)]
+        lines, used = compact._render_bash_grouped(
+            entries, budget=1, should_inline=self._never_inline,
+        )
+        assert lines == []
+        assert used == 0
+
+    def test_preserves_within_group_order(self):
+        """Within each group, original ordering of `bash_entries` is preserved."""
+        entries: list[object] = [
+            self._make("cmd_ok_1", exit_code=0, idx=0),
+            self._make("cmd_ok_2", exit_code=0, idx=1),
+            self._make("cmd_ok_3", exit_code=0, idx=2),
+        ]
+        lines, _ = compact._render_bash_grouped(
+            entries, budget=1_000, should_inline=self._never_inline,
+        )
+        joined = "\n".join(lines)
+        assert joined.index("cmd_ok_1") < joined.index("cmd_ok_2") < joined.index("cmd_ok_3")
