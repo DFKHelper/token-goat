@@ -1029,7 +1029,7 @@ def subagent_stop(payload: HookPayload) -> HookResponse:
         cache = _session.safe_load(session_id, caller="subagent-stop")
         if cache is None:
             return CONTINUE()
-        edited = getattr(cache, "edited_files", set())
+        edited: set[str] = getattr(cache, "edited_files", set())
         if not edited:
             return CONTINUE()
     except Exception:  # noqa: BLE001

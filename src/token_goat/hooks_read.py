@@ -888,7 +888,7 @@ def _check_recovery_pending(session_id: str, cache: object) -> str | None:
         sidecar.unlink(missing_ok=True)
         # Mark in-process so we don't re-check on subsequent calls.
         try:  # noqa: SIM105
-            cache.recovery_injected = True  # type: ignore[union-attr]
+            cache.recovery_injected = True  # type: ignore[attr-defined]
         except Exception:  # noqa: BLE001
             pass
         _LOG.info(
@@ -919,7 +919,7 @@ def _flush_pending_hint_save(cache: object) -> None:
     """
     try:
         if getattr(cache, "_pending_hint_save", False):
-            cache._pending_hint_save = False  # type: ignore[union-attr]
+            cache._pending_hint_save = False  # type: ignore[attr-defined]
             _sess = _get_session()
             _sess.save(cache)  # type: ignore[arg-type]
     except Exception:  # noqa: BLE001

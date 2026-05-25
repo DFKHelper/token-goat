@@ -1931,7 +1931,7 @@ def cmd_skill_body(
             {"lineno": original_index.get(ln, 0), "text": ln}
             for ln in lines
         ]
-        payload: dict[str, object] = {
+        payload2: dict[str, object] = {
             "skill_name": name,
             "source": source_label,
             "text": sliced,
@@ -1941,12 +1941,12 @@ def cmd_skill_body(
             "body_bytes": body_bytes,
         }
         if meta is not None:
-            payload["output_id"] = meta.output_id
-            payload["content_sha"] = meta.content_sha
-            payload["ts"] = meta.ts
-            payload["truncated"] = meta.truncated
-            payload["source_path"] = meta.source_path
-        typer.echo(json.dumps(payload, ensure_ascii=False, separators=(",", ":")))
+            payload2["output_id"] = meta.output_id
+            payload2["content_sha"] = meta.content_sha
+            payload2["ts"] = meta.ts
+            payload2["truncated"] = meta.truncated
+            payload2["source_path"] = meta.source_path
+        typer.echo(json.dumps(payload2, ensure_ascii=False, separators=(",", ":")))
         return
 
     typer.echo(sliced)
@@ -2760,7 +2760,7 @@ def config_validate(
     try:
         raw = tomllib.loads(cfg_path.read_text(encoding="utf-8"))
     except tomllib.TOMLDecodeError as exc:
-        issue = {"path": str(cfg_path), "error": f"TOML parse error: {exc}"}
+        issue: dict[str, object] = {"path": str(cfg_path), "error": f"TOML parse error: {exc}"}
         if json_output:
             typer.echo(json.dumps({"ok": False, "issues": [issue]}, separators=(",", ":")))
         else:
@@ -2772,13 +2772,14 @@ def config_validate(
         return matches[0] if matches else None
 
     # Check top-level keys
+    _issue: dict[str, object]
     for key in raw:
         if key not in _KNOWN_TOP_LEVEL:
             suggestion = _closest(key, _KNOWN_TOP_LEVEL)
-            issue: dict[str, object] = {"path": str(cfg_path), "key": key, "message": f"unknown top-level key: '{key}'"}
+            _issue = {"path": str(cfg_path), "key": key, "message": f"unknown top-level key: '{key}'"}
             if suggestion:
-                issue["suggestion"] = f"did you mean: {suggestion}"
-            issues.append(issue)
+                _issue["suggestion"] = f"did you mean: {suggestion}"
+            issues.append(_issue)
 
     # Check per-section keys
     for section_key, known_section_keys in _KNOWN_SECTION_KEYS.items():
@@ -2788,10 +2789,10 @@ def config_validate(
         for sub_key in section_val:
             if sub_key not in known_section_keys:
                 suggestion = _closest(sub_key, known_section_keys)
-                issue = {"path": str(cfg_path), "key": f"{section_key}.{sub_key}", "message": f"unknown key: '{section_key}.{sub_key}'"}
+                _issue = {"path": str(cfg_path), "key": f"{section_key}.{sub_key}", "message": f"unknown key: '{section_key}.{sub_key}'"}
                 if suggestion:
-                    issue["suggestion"] = f"did you mean: {section_key}.{suggestion}"
-                issues.append(issue)
+                    _issue["suggestion"] = f"did you mean: {section_key}.{suggestion}"
+                issues.append(_issue)
 
     ok = len(issues) == 0
     if json_output:
@@ -2804,10 +2805,10 @@ def config_validate(
         typer.echo(f"config OK: {cfg_path}")
         return
 
-    for issue in issues:
-        line = f"  [UNKNOWN] {issue['key']}"
-        if "suggestion" in issue:
-            line += f"  ({issue['suggestion']})"
+    for _issue in issues:
+        line = f"  [UNKNOWN] {_issue['key']}"
+        if "suggestion" in _issue:
+            line += f"  ({_issue['suggestion']})"
         typer.echo(line)
     typer.echo(f"\n{len(issues)} issue(s) found in {cfg_path}")
     raise typer.Exit(1)

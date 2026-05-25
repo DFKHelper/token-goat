@@ -620,7 +620,7 @@ def _resolve_and_validate_ip(hostname: str) -> str:
             ip = ip.ipv4_mapped
         if ip.is_loopback or ip.is_private or ip.is_link_local or ip.is_reserved:
             continue
-        return ip_str  # first safe address wins
+        return str(ip_str)  # first safe address wins
 
     raise ValueError(
         f"SSRF IP-pin: no safe address for {hostname!r} "
@@ -741,13 +741,14 @@ def fetch_url(
         # while the shrunk file exists on disk; a vanished file falls
         # through to the slow path which re-hashes and re-shrinks.
         if shrink_if_image and (shrunk_pointer := meta.get("shrunk_path")):
-            shrunk_path = Path(shrunk_pointer)
+            _shrunk_path_init = Path(shrunk_pointer)
+            shrunk_path: Path | None = _shrunk_path_init
             # Path containment check: a tampered sidecar could redirect to any
             # file on disk (e.g. ~/.ssh/id_rsa).  Resolve symlinks then confirm
             # the target lives under an allowed cache root before trusting it.
             _allowed_roots = (paths.image_cache_dir().resolve(), paths.web_cache_dir().resolve())
             try:
-                _resolved = shrunk_path.resolve()
+                _resolved = _shrunk_path_init.resolve()
                 _contained = any(
                     _resolved == _root or str(_resolved).startswith(str(_root) + ("/" if str(_root)[-1] != "/" else ""))
                     for _root in _allowed_roots

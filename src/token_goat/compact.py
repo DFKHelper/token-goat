@@ -3102,7 +3102,8 @@ def _render(cache: SessionCache, session_id: str, max_tokens: int) -> tuple[str,
     files_budget = sec_budgets["files"]
     files_lines: list[str] = []
     files_used = 0
-    included_top_files: list[object] = []
+    from .session import FileEntry as _FileEntry  # noqa: PLC0415
+    included_top_files: list[_FileEntry] = []
 
     if top_files:
         header = "**Files:**"
