@@ -1,6 +1,9 @@
 """Tests for hooks_common helpers: extract_tool_response_text, run_dedup_hint."""
 from __future__ import annotations
 
+import pytest
+
+from token_goat.hints import ReadHint
 from token_goat.hooks_cli import denormalize_response
 from token_goat.hooks_common import extract_tool_response_text, run_dedup_hint
 
@@ -112,6 +115,12 @@ def test_dict_prefers_first_matching_key():
 def test_tool_result_fallback():
     payload = {"session_id": "s1", "tool_result": "from tool_result"}
     assert extract_tool_response_text(payload) == "from tool_result"
+
+
+@pytest.mark.parametrize("tool_result", ["", [], {}])
+def test_empty_tool_result_does_not_fall_back(tool_result):
+    payload = {"session_id": "s1", "tool_result": tool_result, "response": "fallback"}
+    assert extract_tool_response_text(payload) == ""
 
 
 def test_response_fallback():
@@ -399,20 +408,13 @@ def test_record_hint_stat_pair_zero_savings_skips_writes(monkeypatch):
     from token_goat import config as _config
     from token_goat.hooks_common import record_hint_stat_pair
 
-    # Mock a hint with zero tokens saved and zero injection bytes
-    class MockHint:
-        tokens_saved = 0
-
-        def __len__(self):
-            return 0
-
     # Mock db.record_stat to track calls inside the function
     with patch("token_goat.db.record_stat") as mock_record_stat:
         # Mock config.load() to return default config (record_zero_savings=False)
         mock_config = _config.Config()
         monkeypatch.setattr(_config, "load", lambda: mock_config)
 
-        hint = MockHint()
+        hint = ReadHint("", tokens_saved=0)
         record_hint_stat_pair("test_hint", hint, "detail")
 
         # With default config (record_zero_savings=False) and zero savings, no writes should occur
@@ -426,20 +428,13 @@ def test_record_hint_stat_pair_nonzero_savings_writes(monkeypatch):
     from token_goat import config as _config
     from token_goat.hooks_common import record_hint_stat_pair
 
-    # Mock a hint with 10 tokens saved
-    class MockHint:
-        tokens_saved = 10
-
-        def __len__(self):
-            return 50  # 50 bytes
-
     # Mock db.record_stat to track calls inside the function
     with patch("token_goat.db.record_stat") as mock_record_stat:
         # Mock config.load() to return default config
         mock_config = _config.Config()
         monkeypatch.setattr(_config, "load", lambda: mock_config)
 
-        hint = MockHint()
+        hint = ReadHint("x" * 40, tokens_saved=10)
         record_hint_stat_pair("test_hint", hint, "detail")
 
         # With tokens_saved>0, both rows should be written
@@ -453,13 +448,6 @@ def test_record_hint_stat_pair_zero_savings_with_config_override(monkeypatch):
     from token_goat import config as _config
     from token_goat.hooks_common import record_hint_stat_pair
 
-    # Mock a hint with zero savings
-    class MockHint:
-        tokens_saved = 0
-
-        def __len__(self):
-            return 0
-
     # Mock db.record_stat to track calls inside the function
     with patch("token_goat.db.record_stat") as mock_record_stat:
         # Mock config.load() to return a config with record_zero_savings=True
@@ -467,7 +455,7 @@ def test_record_hint_stat_pair_zero_savings_with_config_override(monkeypatch):
         mock_config.stats = _config.StatsConfig(record_zero_savings=True)
         monkeypatch.setattr(_config, "load", lambda: mock_config)
 
-        hint = MockHint()
+        hint = ReadHint("", tokens_saved=0)
         record_hint_stat_pair("test_hint", hint, "detail")
 
         # With record_zero_savings=True override and zero savings, both rows should be written
@@ -481,21 +469,11 @@ def test_record_hint_stat_pair_small_injection_skips_overhead(monkeypatch):
     from token_goat import config as _config
     from token_goat.hooks_common import record_hint_stat_pair
 
-    # Mock a hint with 5 tokens saved and < 32 UTF-8 bytes when stringified (< 32 threshold)
-    class MockHintSmallInj:
-        tokens_saved = 5
-
-        def __str__(self):
-            return "short hint"  # 10 bytes in UTF-8, < 32
-
-        def __len__(self):
-            return len(str(self).encode("utf-8"))
-
     with patch("token_goat.db.record_stat") as mock_record_stat:
         mock_config = _config.Config()
         monkeypatch.setattr(_config, "load", lambda: mock_config)
 
-        hint = MockHintSmallInj()
+        hint = ReadHint("short hint", tokens_saved=5)
         record_hint_stat_pair("test_hint", hint, "detail")
 
         # Only the saving row should be written (1 call), not the overhead row
@@ -513,21 +491,11 @@ def test_record_hint_stat_pair_small_injection_zero_savings_skips_all(monkeypatc
     from token_goat import config as _config
     from token_goat.hooks_common import record_hint_stat_pair
 
-    # Mock a hint with 0 tokens saved and < 32 UTF-8 bytes
-    class MockHintSmallInj:
-        tokens_saved = 0
-
-        def __str__(self):
-            return "tiny"  # 4 bytes in UTF-8, < 32
-
-        def __len__(self):
-            return len(str(self).encode("utf-8"))
-
     with patch("token_goat.db.record_stat") as mock_record_stat:
         mock_config = _config.Config()
         monkeypatch.setattr(_config, "load", lambda: mock_config)
 
-        hint = MockHintSmallInj()
+        hint = ReadHint("tiny", tokens_saved=0)
         record_hint_stat_pair("test_hint", hint, "detail")
 
         # No rows written: zero savings with default config (record_zero_savings=False)
@@ -541,22 +509,11 @@ def test_record_hint_stat_pair_large_injection_writes_both(monkeypatch):
     from token_goat import config as _config
     from token_goat.hooks_common import record_hint_stat_pair
 
-    # Mock a hint with 5 tokens saved and >= 32 UTF-8 bytes
-    class MockHintLargeInj:
-        tokens_saved = 5
-
-        def __str__(self):
-            # 40 bytes: "x" * 40 = 40 UTF-8 bytes
-            return "x" * 40
-
-        def __len__(self):
-            return len(str(self).encode("utf-8"))
-
     with patch("token_goat.db.record_stat") as mock_record_stat:
         mock_config = _config.Config()
         monkeypatch.setattr(_config, "load", lambda: mock_config)
 
-        hint = MockHintLargeInj()
+        hint = ReadHint("x" * 40, tokens_saved=5)
         record_hint_stat_pair("test_hint", hint, "detail")
 
         # Both rows should be written (large injection, positive savings)
@@ -566,6 +523,26 @@ def test_record_hint_stat_pair_large_injection_writes_both(monkeypatch):
         kinds = [call[0][1] for call in mock_record_stat.call_args_list]
         assert "test_hint" in kinds
         assert "test_hint_overhead" in kinds
+
+
+def test_record_hint_stat_pair_counts_utf8_bytes(monkeypatch):
+    """UTF-8 overhead should be counted in bytes, not characters."""
+    from unittest.mock import patch
+
+    from token_goat import config as _config
+    from token_goat.hooks_common import record_hint_stat_pair
+
+    with patch("token_goat.db.record_stat") as mock_record_stat:
+        mock_config = _config.Config()
+        monkeypatch.setattr(_config, "load", lambda: mock_config)
+
+        hint_text = "café" * 10
+        hint = ReadHint(hint_text, tokens_saved=10)
+        record_hint_stat_pair("test_hint", hint, "detail")
+
+        assert mock_record_stat.call_count == 2
+        overhead_kwargs = mock_record_stat.call_args_list[1][1]
+        assert overhead_kwargs["bytes_saved"] == -len(hint_text.encode("utf-8"))
 
 
 def _quiet_hours_at(hhmm: str, quiet_hours: str) -> bool:
