@@ -36,6 +36,7 @@ __all__ = [
     "_HINT_KIND_DEDUP",
     "_HINT_KIND_STRUCTURED",
     "_HINT_KIND_INDEX_ONLY",
+    "_PROXIMITY_SLOP_LINES",
 ]
 
 # ---------------------------------------------------------------------------
@@ -441,6 +442,20 @@ def _build_read_hint_inner(
     fname = _sanitize_hint_path(Path(file_path).name)
     file_path = _sanitize_hint_path(file_path)
 
+    # Compute a shorter recall_path for use in recall-command examples embedded
+    # in hints.  Using the relative path (when cwd is available) instead of the
+    # full absolute path saves ~25-40 tokens per hint on typical projects where
+    # file_path is an absolute Windows path like C:/Projects/foo/src/bar.py.
+    # When cwd is None or the path is not inside cwd, fall back to file_path so
+    # recall commands remain copy-paste correct.
+    recall_path: str = file_path
+    if cwd:
+        try:
+            _rel = Path(file_path).relative_to(Path(cwd))
+            recall_path = _sanitize_hint_path(_rel.as_posix())
+        except ValueError:
+            pass  # file_path not under cwd — keep absolute path
+
     # 1. Check session cache first.
     # Load the cache once and pass it explicitly so _hint_from_cache can access
     # created_ts for the adaptive staleness threshold without a second disk read.
@@ -456,7 +471,8 @@ def _build_read_hint_inner(
             return None
         hint = _hint_from_cache(
             entry, req_start, req_end, file_path,
-            fname=fname, has_explicit_limit=has_explicit_limit,
+            fname=fname, recall_path=recall_path,
+            has_explicit_limit=has_explicit_limit,
             cache=cache,
         )
         if hint is not None:
@@ -499,6 +515,15 @@ def _build_read_hint_inner(
 # ---------------------------------------------------------------------------
 
 
+
+# Minimum line proximity gap before a "you already read this file" hint is
+# suppressed as a false positive.  When the new read's range is more than
+# this many lines past the end of ALL cached ranges (or before the start),
+# the agent is clearly reading a different section and the hint would be
+# misleading noise — suppress it.
+_PROXIMITY_SLOP_LINES: int = 200
+
+
 def _hint_from_cache(
     entry: session.FileEntry,
     req_start: int,
@@ -506,6 +531,7 @@ def _hint_from_cache(
     file_path: str,
     *,
     fname: str | None = None,
+    recall_path: str | None = None,
     has_explicit_limit: bool = False,
     cache: session.SessionCache | None = None,
 ) -> ReadHint | None:
@@ -515,6 +541,11 @@ def _hint_from_cache(
     on the Read call (rather than relying on the implicit DEFAULT_READ_LIMIT).
     A small explicit-limit request is surgical intent — see
     ``_NARROW_EXPLICIT_READ_LINES`` for why this short-circuits the dedup nag.
+
+    ``recall_path`` is the path used in recall-command examples embedded in
+    hints.  When provided, it should be the shortest unambiguous path (e.g.
+    relative path from project root) rather than the full absolute path.  If
+    omitted, falls back to ``file_path``.
     """
     # Accept pre-computed fname from build_read_hint to avoid a redundant
     # Path allocation on the hot pre-read path (one Path per hook call saved).
@@ -522,6 +553,10 @@ def _hint_from_cache(
     if fname is None:
         fname = _sanitize_hint_path(Path(file_path).name)
     file_path = _sanitize_hint_path(file_path)
+    # recall_path: prefer the explicitly-supplied shorter path; fall back to
+    # the absolute file_path (already sanitized above).
+    if recall_path is None:
+        recall_path = file_path
     requested_lines = req_end - req_start + 1
 
     # Suppress the line-range dedup hint when the cached ranges are no longer
@@ -587,7 +622,7 @@ def _hint_from_cache(
         return ReadHint(
             _apply_terse(
                 f"`{fname}` re-read often{sym_suffix}. "
-                f"Use `token-goat read \"{file_path}::sym\"` for surgical access."
+                f"Use `token-goat read \"{recall_path}::sym\"` for surgical access."
             ),
             0,
         )
@@ -615,7 +650,7 @@ def _hint_from_cache(
         return ReadHint(
             _apply_terse(
                 f"`{fname}` read via `token-goat read`: {sym_list}{more}. "
-                f"Use `token-goat read \"{file_path}::symbol\"` for more."
+                f"Use `token-goat read \"{recall_path}::symbol\"` for more."
             ),
             0,
         )
@@ -625,6 +660,27 @@ def _hint_from_cache(
     # n_ranges caches len() so it is not recomputed for the summary/extra strings.
     line_ranges = entry.line_ranges
     n_ranges = len(line_ranges)
+
+    # Proximity check (Item A28): when the new read is entirely outside every
+    # cached range by more than _PROXIMITY_SLOP_LINES lines, the hint is a
+    # false positive — the agent is reading a different section of the file.
+    # Compute the global min/max cached line in a single pass and suppress
+    # when the request falls entirely outside the ±slop band.
+    if line_ranges:
+        global_min = line_ranges[0][0]
+        global_max = line_ranges[0][1]
+        for _s, _e in line_ranges[1:]:
+            if _s < global_min:
+                global_min = _s
+            if _e > global_max:
+                global_max = _e
+        if req_start > global_max + _PROXIMITY_SLOP_LINES or req_end < global_min - _PROXIMITY_SLOP_LINES:
+            _LOG.debug(
+                "_hint_from_cache: suppressing hint for %s "
+                "(proximity: req=[%d,%d] cached=[%d,%d] slop=%d)",
+                fname, req_start, req_end, global_min, global_max, _PROXIMITY_SLOP_LINES,
+            )
+            return None
 
     # Compute overlap against all cached ranges in a single pass.
     # Also track last_cached_end here to avoid a second generator scan later.

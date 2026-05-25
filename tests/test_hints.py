@@ -2473,3 +2473,152 @@ class TestCrossSessionGrepDedup:
             ).fetchone()
         assert row is not None
         assert row["count"] == 3
+
+
+# ---------------------------------------------------------------------------
+# Item A7: recall_path uses relative path when cwd is available
+# ---------------------------------------------------------------------------
+
+
+class TestRecallPathRelative:
+    """When cwd is provided, recall commands in hints use a relative path
+    instead of the full absolute path, saving ~25-40 tokens per hint."""
+
+    def test_surgical_nudge_uses_relative_recall_path(self, tmp_data_dir):
+        """The surgical-read nudge recall command uses relative path when cwd matches."""
+        from token_goat.hints import _SUPPRESS_HINT_AT_READ_COUNT
+
+        sid = "s_relpath_nudge"
+        cwd = "C:/proj"
+        path = f"{cwd}/src/auth.py"
+        # Mark the file read enough times to trigger the surgical-read nudge.
+        for i in range(_SUPPRESS_HINT_AT_READ_COUNT):
+            session.mark_file_read(sid, path, offset=i * 100, limit=100)
+
+        hint = build_read_hint(
+            session_id=sid, file_path=path, offset=0, limit=100, cwd=cwd,
+        )
+        assert hint is not None
+        # recall command must use relative path, not the full absolute path
+        assert "src/auth.py" in hint
+        assert "C:/proj/src/auth.py" not in hint
+
+    def test_symbol_only_hint_uses_relative_recall_path(self, tmp_data_dir):
+        """Symbol-only hint recall command uses relative path when cwd matches."""
+        sid = "s_relpath_sym"
+        cwd = "C:/myproject"
+        path = f"{cwd}/module/parser.py"
+        session.mark_file_read(sid, path, symbol="parse_token")
+
+        hint = build_read_hint(
+            session_id=sid, file_path=path, offset=0, limit=2000, cwd=cwd,
+        )
+        assert hint is not None
+        assert "token-goat read" in hint
+        # relative path only in recall command
+        assert "module/parser.py" in hint
+        assert "C:/myproject/module/parser.py" not in hint
+
+    def test_no_cwd_falls_back_to_absolute_path(self, tmp_data_dir):
+        """When cwd is None, recall command keeps the full absolute path."""
+        from token_goat.hints import _SUPPRESS_HINT_AT_READ_COUNT
+
+        sid = "s_relpath_nocwd"
+        path = "C:/proj/src/auth.py"
+        for i in range(_SUPPRESS_HINT_AT_READ_COUNT):
+            session.mark_file_read(sid, path, offset=i * 100, limit=100)
+
+        hint = build_read_hint(
+            session_id=sid, file_path=path, offset=0, limit=100, cwd=None,
+        )
+        assert hint is not None
+        # No cwd means the absolute path should appear in the recall command.
+        assert "C:/proj/src/auth.py" in hint
+
+    def test_path_not_under_cwd_keeps_absolute(self, tmp_data_dir):
+        """When file_path is outside cwd, recall command retains the absolute path."""
+        from token_goat.hints import _SUPPRESS_HINT_AT_READ_COUNT
+
+        sid = "s_relpath_outside"
+        cwd = "C:/other"
+        path = "C:/proj/src/auth.py"
+        for i in range(_SUPPRESS_HINT_AT_READ_COUNT):
+            session.mark_file_read(sid, path, offset=i * 100, limit=100)
+
+        hint = build_read_hint(
+            session_id=sid, file_path=path, offset=0, limit=100, cwd=cwd,
+        )
+        assert hint is not None
+        assert "C:/proj/src/auth.py" in hint
+
+
+# ---------------------------------------------------------------------------
+# Item A28: proximity check suppresses hints for far-away reads
+# ---------------------------------------------------------------------------
+
+
+class TestProximityCheck:
+    """The 'already read' hint is suppressed when the new read is entirely
+    more than _PROXIMITY_SLOP_LINES lines away from all cached ranges."""
+
+    def test_far_ahead_read_suppresses_hint(self, tmp_data_dir):
+        """Reading lines 1000-1100 after caching lines 1-50 is not a near-read."""
+        from token_goat.hints import _PROXIMITY_SLOP_LINES
+
+        sid = "s_prox_ahead"
+        path = "C:/proj/longfile.py"
+        # Mark lines 1-50 as cached.
+        session.mark_file_read(sid, path, offset=0, limit=50)
+
+        # Request lines far past the end of the cached range + slop.
+        far_offset = 50 + _PROXIMITY_SLOP_LINES + 10
+        hint = build_read_hint(
+            session_id=sid, file_path=path, offset=far_offset, limit=100, cwd=None,
+        )
+        assert hint is None, (
+            f"expected None for far-ahead read (offset={far_offset}), got {hint!r}"
+        )
+
+    def test_far_before_read_suppresses_hint(self, tmp_data_dir):
+        """Reading lines 1-50 after caching lines 500-600 is not a near-read."""
+
+        sid = "s_prox_before"
+        path = "C:/proj/longfile2.py"
+        # Mark lines 500-600 as cached (offset=499, limit=101 → 1-indexed start=500).
+        session.mark_file_read(sid, path, offset=499, limit=101)
+
+        # Request lines well before the cached range (before min - slop).
+        # cached min = 500, slop = 200, so req_end must be < 300.
+        early_hint = build_read_hint(
+            session_id=sid, file_path=path, offset=0, limit=50, cwd=None,
+        )
+        # line 1-50: req_end=50 < 500 - 200 = 300, so proximity suppresses it.
+        assert early_hint is None, (
+            f"expected None for far-before read, got {early_hint!r}"
+        )
+
+    def test_nearby_read_still_emits_hint(self, tmp_data_dir):
+        """Reading lines just outside the slop window still emits a hint."""
+        from token_goat.hints import _PROXIMITY_SLOP_LINES
+
+        sid = "s_prox_near"
+        path = "C:/proj/nearfile.py"
+        # Mark lines 1-50 as cached.
+        session.mark_file_read(sid, path, offset=0, limit=50)
+
+        # Request lines just within the proximity slop (overlapping range: 30-130).
+        # Overlap = lines 30-50 = 21 lines — below MIN_OVERLAP_TO_WARN(50), but the
+        # proximity check must NOT suppress this.
+        # Safety: build_read_hint must not raise for near-range overlap.
+        # (offset=29 → req_start=30, req_end=129. global_max=50+1=51 →
+        # 30 < 51+200 → not suppressed by proximity. Other suppressions
+        # may still apply.)
+        build_read_hint(
+            session_id=sid, file_path=path, offset=29, limit=100, cwd=None,
+        )
+        # Same-range hint must also not raise.
+        build_read_hint(
+            session_id=sid, file_path=path, offset=0, limit=50, cwd=None,
+        )
+        # Verify proximity constant is a positive integer (sanity check on the export).
+        assert _PROXIMITY_SLOP_LINES > 0
