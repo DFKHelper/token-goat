@@ -440,18 +440,17 @@ class TestSkillDedup:
 
 
 class TestRecoveryStatAccounting:
-    """compact_recovery must record its injection overhead like sibling hint kinds.
+    """compact_recovery overhead row is recorded when the recovery hint fires.
 
-    Before this fix the stat block only wrote the base ``compact_recovery`` row
-    (0 savings, 0 bytes) and omitted the ``compact_recovery_overhead`` negative
-    row, leaving an honest-accounting gap vs. session_hint / diff_hint /
-    bash_dedup_hint.
+    The zero-byte base ``compact_recovery`` row was dropped (item 3) because it
+    added 294 DB writes/month with zero observability value — the actual saving
+    signal lives in the matching ``compact_recovery_overhead`` row written when
+    the hint is injected.
     """
 
     def test_overhead_row_recorded_when_hint_fires(self, tmp_data_dir):
-        """compact_recovery base row appears after session_start; overhead row
-        appears only after the sidecar is consumed by _check_recovery_pending
-        (i.e. on the first pre-read after compaction)."""
+        """Overhead row appears after the sidecar is consumed by pre_read;
+        no zero-byte base row is written at session_start time."""
         from token_goat import db, hooks_read
 
         sid = "rec-overhead-1"
@@ -462,13 +461,15 @@ class TestRecoveryStatAccounting:
             "cwd": "/proj",
         })
 
-        # After session_start the base row is present but overhead is deferred.
+        # After session_start no stat rows should be present (base row dropped).
         with db.open_global() as conn:
             after_start = {r["kind"] for r in conn.execute(
                 "SELECT kind FROM stats"
                 " WHERE kind IN ('compact_recovery', 'compact_recovery_overhead')"
             ).fetchall()}
-        assert "compact_recovery" in after_start, "base row must be present after session_start"
+        assert "compact_recovery" not in after_start, (
+            "zero-byte base row must NOT be written at session_start"
+        )
         assert "compact_recovery_overhead" not in after_start, (
             "overhead row must NOT appear until sidecar is consumed by pre_read"
         )
@@ -487,6 +488,9 @@ class TestRecoveryStatAccounting:
             ).fetchall()
 
         by_kind = {r["kind"]: r for r in rows}
+        assert "compact_recovery" not in by_kind, (
+            "zero-byte base row must never be written"
+        )
         assert "compact_recovery_overhead" in by_kind, (
             "overhead row must be present after sidecar consumed by pre_read"
         )
@@ -515,9 +519,9 @@ class TestRecoveryStatAccounting:
         assert "compact_recovery" not in kinds, "base row must not appear when hint suppressed"
         assert "compact_recovery_overhead" not in kinds, "overhead row must not appear when hint suppressed"
 
-    def test_base_row_has_zero_savings(self, tmp_data_dir):
-        """The base compact_recovery row must claim 0 savings — savings are
-        realised downstream under bash_dedup_hint / web_dedup_hint."""
+    def test_no_base_row_written(self, tmp_data_dir):
+        """The zero-byte compact_recovery base row must never be written — it
+        was a pure noise bucket (294 writes/month, 0 bytes/tokens saved)."""
         from token_goat import db
 
         sid = "rec-overhead-3"
@@ -533,6 +537,4 @@ class TestRecoveryStatAccounting:
                 "SELECT bytes_saved, tokens_saved FROM stats WHERE kind = 'compact_recovery'"
             ).fetchone()
 
-        assert row is not None
-        assert row["bytes_saved"] == 0
-        assert row["tokens_saved"] == 0
+        assert row is None, "compact_recovery base row must not be written"
