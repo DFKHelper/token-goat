@@ -41,10 +41,10 @@ _DISPATCH_CASES: list[tuple[list[str], str]] = [
     # ---- PytestFilter ----
     (["pytest", "tests/"], "pytest"),
     (["pytest", "-x", "-v", "tests/unit/"], "pytest"),
-    # NOTE: py.test is in PytestFilter.binaries but Path('py.test').stem == 'py',
-    # so the binary-stem match misses it.  This is a known limitation — the
-    # filter relies on Path.stem which stops at the first dot.  Omit from the
-    # dispatch table and document in test_py_dot_test_limitation below.
+    # py.test: Filter.matches() now checks both Path.stem *and* Path.name so the
+    # full filename 'py.test' matches PytestFilter.binaries even though
+    # Path('py.test').stem == 'py'.
+    (["py.test", "tests/"], "pytest"),
     (["python", "-m", "pytest", "tests/"], "pytest"),
     (["uv", "run", "pytest", "tests/"], "pytest"),
     # ---- JestFilter ----
@@ -107,12 +107,10 @@ _DISPATCH_CASES: list[tuple[list[str], str]] = [
     # ---- UvFilter ----
     (["uv", "sync"], "uv"),
     (["uv", "add", "requests"], "uv"),
-    # NOTE: 'uv pip install' is NOT routed to UvFilter by select_filter because
-    # _strip_prefixes treats 'uv pip' as a two-token launcher, stripping both
-    # tokens and leaving ['install', 'mypackage'] which has no filter.
-    # UvFilter.matches() *would* match if called on the raw argv, but
-    # select_filter calls matches() on the *stripped* argv.
-    # This is documented in test_uv_pip_stripped_by_prefix_stripping below.
+    # uv pip install: 'pip' removed from _TWO_TOKEN_PREFIXES["uv"] triggers so
+    # _strip_prefixes leaves ['uv', 'pip', 'install', ...] intact; UvFilter
+    # matches on 'uv' stem and finds 'pip' in its pm_subcommands list.
+    (["uv", "pip", "install", "requests"], "uv"),
     # ---- PythonFilter ----
     (["python", "script.py"], "python"),
     (["python3", "-c", "print('hello')"], "python"),
@@ -226,41 +224,29 @@ def test_git_status_routes_to_git() -> None:
     assert f.name == "git"
 
 
-def test_py_dot_test_limitation() -> None:
-    """Document known limitation: 'py.test' binary is NOT dispatched to PytestFilter.
+def test_py_dot_test_dispatches_to_pytest() -> None:
+    """'py.test' binary dispatches to PytestFilter.
 
-    BUG (bash_compress.py line 676): Filter.matches() uses Path(argv[0]).stem
-    which stops at the first dot.  Path('py.test').stem == 'py', not 'py.test',
-    so 'py.test' in PytestFilter.binaries never matches even though the entry
-    exists.  Workaround: invoke as 'pytest' instead.
-
-    This test documents the current (broken) behavior so any fix is visible.
+    Filter.matches() now checks both Path(argv[0]).stem *and* Path(argv[0]).name
+    against the binaries set.  Path('py.test').stem == 'py' (misses), but
+    Path('py.test').name == 'py.test' which matches PytestFilter.binaries.
     """
-    # 'py.test' currently returns None (no filter dispatched).
     result = bc.select_filter(["py.test", "tests/"])
-    assert result is None, (
-        "If this assertion fails, py.test dispatch has been fixed — "
-        "update this test to assert result.name == 'pytest'."
-    )
+    assert result is not None, "py.test should dispatch to PytestFilter"
+    assert result.name == "pytest"
 
 
-def test_uv_pip_stripped_by_prefix_stripping() -> None:
-    """Document known gap: 'uv pip install pkg' is NOT routed to UvFilter.
+def test_uv_pip_install_routes_to_uv() -> None:
+    """'uv pip install pkg' is routed to UvFilter.
 
-    _strip_prefixes treats 'uv' as a two-token prefix and 'pip' as its
-    dispatch keyword, consuming both and leaving ['install', 'mypackage'].
-    No filter matches 'install', so select_filter returns None.
-
-    This means 'uv pip install' output is NOT compressed.
-    UvFilter.matches() correctly returns True when given the raw argv, but
-    select_filter calls matches() on the *stripped* argv.
+    'pip' was removed from _TWO_TOKEN_PREFIXES["uv"] triggers so _strip_prefixes
+    no longer consumes 'pip' as a dispatch keyword.  The argv remains
+    ['uv', 'pip', 'install', 'mypackage'] after stripping, and UvFilter.matches()
+    finds 'uv' as the stem and 'pip' in its pm_subcommands set.
     """
-    # Current behavior: no filter dispatched.
     result = bc.select_filter(["uv", "pip", "install", "mypackage"])
-    assert result is None, (
-        "If this assertion fails, 'uv pip install' dispatch has been fixed — "
-        "update this test to assert result.name == 'uv'."
-    )
+    assert result is not None, "uv pip install should route to UvFilter"
+    assert result.name == "uv"
 
 
 def test_uv_run_pytest_routes_to_pytest() -> None:
