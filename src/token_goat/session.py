@@ -1985,12 +1985,17 @@ def save(cache: SessionCache) -> None:
     Retry budget: up to 3 attempts for the underlying ``atomic_write_text``;
     the lock itself has a 2-second timeout (see ``_LOCK_TIMEOUT_SECS``).  On
     total failure the cache is marked ``unavailable`` so future saves no-op.
+
+    Lock-timeout handling: if ``_acquire_session_lock`` returns None (timeout)
+    the save is aborted for that attempt.  After 3 consecutive lock timeouts the
+    cache is marked unavailable to stop future save attempts.
     """
     if cache.unavailable:
         _LOG.debug("session save skipped (cache unavailable): %s", cache.session_id[:16])
         return
     t0 = time.monotonic()
     last_exc: OSError | None = None
+    consecutive_lock_timeouts = 0
 
     for attempt in range(3):
         if attempt:
@@ -2000,6 +2005,33 @@ def save(cache: SessionCache) -> None:
         # serializes across processes.
         with _FILE_LOCK:
             lock_fd = _acquire_session_lock(cache.session_id)
+            if lock_fd is None:
+                # Cross-process lock timed out — skip this attempt but track
+                # the consecutive count so we can bail after 3 failures.
+                consecutive_lock_timeouts += 1
+                _LOG.debug(
+                    "session lock timeout (attempt %d): %s",
+                    attempt + 1, cache.session_id[:16],
+                )
+                with contextlib.suppress(Exception):
+                    from . import db as _db_lock  # noqa: PLC0415
+                    _db_lock.record_stat(
+                        None,
+                        "session_cache_lock_timeout",
+                        bytes_saved=0,
+                        tokens_saved=0,
+                        detail=cache.session_id[:32],
+                    )
+                if consecutive_lock_timeouts >= 3:
+                    _LOG.warning(
+                        "session save: 3 consecutive lock timeouts — "
+                        "marking cache unavailable (session=%s)",
+                        cache.session_id[:16],
+                    )
+                    cache.unavailable = True
+                    return
+                continue
+            consecutive_lock_timeouts = 0
             try:
                 # CAS: re-read on-disk state inside the lock.
                 # Fast path: if the file's mtime+size match the fingerprint we
