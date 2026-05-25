@@ -528,6 +528,30 @@ class TestPytestFilter:
         assert "PASSED tests/test_0.py" not in result.text
         assert "collapsed 50 PASSED" in result.text
 
+    def test_strips_banner_lines(self):
+        """Banner lines (platform, cachedir, rootdir, plugins, configfile) are stripped."""
+        text = (
+            "platform linux -- Python 3.12.0, pytest-8.1.0\n"
+            "cachedir: /tmp/pytest-cache\n"
+            "rootdir: /home/user/project\n"
+            "configfile: pyproject.toml\n"
+            "plugins: xdist-3.5.0, cov-5.0.0\n"
+            "= test session starts =\n"
+            "collected 5 items\n"
+            "FAILED tests/test_x.py::test_one\n"
+            "= 1 failed, 4 passed in 0.5s =\n"
+        )
+        f = bc.PytestFilter()
+        result = f.apply(text, "", 1, ["pytest"])
+        assert "platform linux" not in result.text
+        assert "cachedir:" not in result.text
+        assert "rootdir:" not in result.text
+        assert "configfile:" not in result.text
+        assert "plugins:" not in result.text
+        # Real signal must survive.
+        assert "FAILED tests/test_x.py::test_one" in result.text
+        assert "1 failed, 4 passed" in result.text
+
 
 # ---------------------------------------------------------------------------
 # Jest filter
@@ -1613,6 +1637,33 @@ class TestRuffFilter:
         """select_filter dispatches ruff commands to RuffFilter, not LinterFilter."""
         f = bc.select_filter(["ruff", "check", "src/"])
         assert isinstance(f, bc.RuffFilter)
+
+    def test_success_banner_stripped_on_clean_run(self) -> None:
+        """'All checks passed!' is suppressed when exit_code is 0 and no violations."""
+        f = bc.RuffFilter()
+        result = f.apply("All checks passed!", "", 0, ["ruff", "check", "src/"])
+        assert result.text.strip() == ""
+
+    def test_no_errors_found_stripped_on_clean_run(self) -> None:
+        """'No errors found.' is suppressed when exit_code is 0 and no violations."""
+        f = bc.RuffFilter()
+        result = f.apply("No errors found.", "", 0, ["ruff", "check"])
+        assert result.text.strip() == ""
+
+    def test_success_banner_preserved_on_failure(self) -> None:
+        """When exit_code is non-zero, the output (including errors) is kept."""
+        stdout = "src/foo.py:1:1: E501 Line too long\nAll checks passed!"
+        f = bc.RuffFilter()
+        result = f.apply(stdout, "", 1, ["ruff", "check"])
+        assert "E501" in result.text
+
+    def test_fix_summary_kept_on_clean_run(self) -> None:
+        """'ruff check --fix' may print a fix summary alongside a success line;
+        the fix summary survives, only the bare success banner is stripped."""
+        stdout = "Fixed 3 errors.\nAll checks passed!"
+        f = bc.RuffFilter()
+        result = f.apply(stdout, "", 0, ["ruff", "check", "--fix"])
+        assert "Fixed 3 errors" in result.text
 
 
 # ---------------------------------------------------------------------------
