@@ -482,15 +482,6 @@ def _try_recovery_response(session_id: str | None, source: str) -> HookResponse 
     except Exception:  # noqa: BLE001
         _LOG.debug("recovery hint: sidecar write failed", exc_info=True)
 
-    # Stats: record that the compact event fired; overhead is deferred until
-    # the hook actually injects (see pre_read in hooks_read.py).
-    try:
-        from . import db  # noqa: PLC0415
-
-        db.record_stat(None, "compact_recovery", bytes_saved=0, tokens_saved=0, detail=session_id[:32])
-    except Exception:  # noqa: BLE001
-        _LOG.debug("recovery hint: stat record failed", exc_info=True)
-
     return None
 
 
