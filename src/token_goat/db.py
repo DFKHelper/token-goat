@@ -50,6 +50,7 @@ __all__ = [
     "record_stat",
     "touch_project_last_seen",
     "update_global_grep_pattern",
+    "with_timeout",
 ]
 
 import contextlib
@@ -253,6 +254,48 @@ def _is_readonly_or_transient(error: sqlite3.OperationalError) -> bool:
     """
     lowered = str(error).lower()
     return "locked" in lowered or "busy" in lowered or "i/o" in lowered or "readonly" in lowered
+
+
+# Item 20: Timeout wrapper for hook-context DB writes to prevent blocking the harness.
+# Hooks run synchronously before/during tool calls; a 10s+ block on Windows when a
+# writer holds the lock can freeze the agent. This wrapper sets a 2s busy_timeout
+# so hooks fail fast and let the harness continue.
+
+
+def with_timeout(fn: Callable[[sqlite3.Connection], None], timeout_s: float = 2.0) -> None:
+    """Execute a callable with a short DB timeout, swallowing transient lock errors.
+
+    Item 20: On Windows, long-lived writer locks can cause a single hook write to
+    block for >10s. This wrapper opens a connection with a 2s timeout (rather than
+    the default 5s) so hooks fail fast instead of stalling the harness.
+
+    Args:
+        fn:        Callable that accepts a single sqlite3.Connection and performs
+                   the desired read/write operation.
+        timeout_s: Timeout in seconds before giving up on a locked DB. Default is
+                   2.0; set higher for non-hook contexts.
+
+    Silently swallows ``OperationalError`` containing "busy", "locked", or "i/o"
+    (expected in contention or sandbox contexts), and logs other errors at WARNING
+    so they surface without crashing the hook.
+    """
+    timeout_ms = int(timeout_s * 1000)
+    try:
+        # Open a temporary connection with the short timeout and execute the operation.
+        paths.ensure_dir(paths.global_db_path().parent)
+        conn = sqlite3.connect(str(paths.global_db_path()), isolation_level=None, timeout=timeout_s)
+        try:
+            conn.execute(f"PRAGMA busy_timeout = {timeout_ms}")
+            fn(conn)
+        finally:
+            conn.close()
+    except sqlite3.OperationalError as exc:
+        if _is_readonly_or_transient(exc):
+            _LOG.debug("with_timeout write skipped (transient): %s", exc)
+        else:
+            _LOG.warning("with_timeout write failed: %s", exc)
+    except Exception as exc:  # noqa: BLE001
+        _LOG.warning("with_timeout failed: %s", exc)
 
 
 def _best_effort_write(fn: Callable[[], None], label: str) -> None:
