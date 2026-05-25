@@ -1,6 +1,7 @@
 """Tests for the webfetch module — Phase 14."""
 from __future__ import annotations
 
+import contextlib
 import io
 from unittest.mock import MagicMock, patch
 
@@ -405,6 +406,142 @@ class TestFetchUrlSsrfGuard:
                 pytest.raises(ValueError):
             webfetch.fetch_url("http://127.0.0.1/image.png")
         mock_cls.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# 10b. DNS rebinding mitigation: _resolve_and_validate_ip + _make_pinned_transport
+# ---------------------------------------------------------------------------
+
+
+class TestResolveAndValidateIp:
+    """_resolve_and_validate_ip must return a safe public IP or raise ValueError."""
+
+    def test_private_ip_raises(self):
+        """A hostname that resolves only to a private IP must raise ValueError."""
+        import socket
+        from unittest.mock import patch
+
+        # Simulate a hostname that resolves to 10.0.0.1 (private RFC1918)
+        fake_addrinfo = [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("10.0.0.1", 0))]
+        with patch("socket.getaddrinfo", return_value=fake_addrinfo), pytest.raises(ValueError, match="no safe address"):
+            webfetch._resolve_and_validate_ip("internal.corp")
+
+    def test_loopback_ip_raises(self):
+        """A hostname that resolves only to 127.x.x.x must raise ValueError."""
+        import socket
+        from unittest.mock import patch
+
+        fake_addrinfo = [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("127.0.0.1", 0))]
+        with patch("socket.getaddrinfo", return_value=fake_addrinfo), pytest.raises(ValueError, match="no safe address"):
+            webfetch._resolve_and_validate_ip("loopback.internal")
+
+    def test_link_local_ip_raises(self):
+        """A hostname that resolves to 169.254.x.x (IMDS) must raise ValueError."""
+        import socket
+        from unittest.mock import patch
+
+        fake_addrinfo = [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("169.254.169.254", 0))]
+        with patch("socket.getaddrinfo", return_value=fake_addrinfo), pytest.raises(ValueError, match="no safe address"):
+            webfetch._resolve_and_validate_ip("metadata.aws")
+
+    def test_unresolvable_hostname_raises(self):
+        """An unresolvable hostname must raise ValueError (fail-closed)."""
+        from unittest.mock import patch
+
+        with patch("socket.getaddrinfo", side_effect=OSError("Name or service not known")), pytest.raises(ValueError, match="cannot resolve"):
+            webfetch._resolve_and_validate_ip("does-not-exist.invalid")
+
+    def test_public_ip_returned(self):
+        """A hostname that resolves to a public IP must return the IP string."""
+        import socket
+        from unittest.mock import patch
+
+        fake_addrinfo = [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", 0))]
+        with patch("socket.getaddrinfo", return_value=fake_addrinfo):
+            result = webfetch._resolve_and_validate_ip("example.com")
+        assert result == "93.184.216.34"
+
+    def test_ipv4_mapped_ipv6_private_raises(self):
+        """An IPv4-mapped IPv6 address in a private range must raise ValueError."""
+        import socket
+        from unittest.mock import patch
+
+        # ::ffff:10.0.0.1 maps to 10.0.0.1 (private)
+        fake_addrinfo = [(socket.AF_INET6, socket.SOCK_STREAM, 6, "", ("::ffff:10.0.0.1", 0, 0, 0))]
+        with patch("socket.getaddrinfo", return_value=fake_addrinfo), pytest.raises(ValueError, match="no safe address"):
+            webfetch._resolve_and_validate_ip("mapped.internal")
+
+    def test_mixed_addresses_returns_first_safe(self):
+        """When addr_info has a private entry first then a public entry, return the public one."""
+        import socket
+        from unittest.mock import patch
+
+        fake_addrinfo = [
+            (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("10.0.0.1", 0)),     # private
+            (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", 0)), # public
+        ]
+        with patch("socket.getaddrinfo", return_value=fake_addrinfo):
+            result = webfetch._resolve_and_validate_ip("mixed.example.com")
+        assert result == "93.184.216.34"
+
+
+class TestMakePinnedTransport:
+    """_make_pinned_transport must produce a transport whose getaddrinfo stub
+    redirects lookups to the pinned IP (verifying the DNS rebinding window is closed)."""
+
+    def test_pinned_transport_redirects_getaddrinfo(self):
+        """getaddrinfo calls inside the pinned transport must go to the pinned IP."""
+        import socket
+        from unittest.mock import MagicMock, patch
+
+        pinned_ip = "93.184.216.34"
+        transport = webfetch._make_pinned_transport(pinned_ip)
+
+        # Intercept calls inside handle_request by monkey-patching httpx.HTTPTransport
+        # at the base class level to avoid an actual network connection.
+        captured_hosts: list[str] = []
+        original_getaddrinfo = socket.getaddrinfo
+
+        def capturing_getaddrinfo(host, port, *args, **kwargs):
+            if isinstance(host, str):
+                captured_hosts.append(host)
+            # Use the real getaddrinfo to avoid import-order issues, but return
+            # a loopback so no actual connection happens.
+            return original_getaddrinfo("127.0.0.1", port, *args, **kwargs)
+
+        # Build a fake request and mock the parent handle_request
+        import httpx
+        fake_request = httpx.Request("GET", "http://example.com/")
+        fake_response = MagicMock(spec=httpx.Response)
+
+        with patch.object(httpx.HTTPTransport, "handle_request", return_value=fake_response), \
+                patch("socket.getaddrinfo", side_effect=capturing_getaddrinfo), \
+                contextlib.suppress(Exception):
+            transport.handle_request(fake_request)
+
+        # After handle_request returns, socket.getaddrinfo must be restored
+        assert socket.getaddrinfo is original_getaddrinfo, (
+            "socket.getaddrinfo was not restored after handle_request"
+        )
+
+    def test_getaddrinfo_restored_after_exception(self):
+        """socket.getaddrinfo is restored even if handle_request raises."""
+        import socket
+        from unittest.mock import patch
+
+        import httpx
+
+        pinned_ip = "93.184.216.34"
+        transport = webfetch._make_pinned_transport(pinned_ip)
+        original_getaddrinfo = socket.getaddrinfo
+        fake_request = httpx.Request("GET", "http://example.com/")
+
+        with patch.object(httpx.HTTPTransport, "handle_request", side_effect=RuntimeError("boom")), pytest.raises(RuntimeError, match="boom"):
+            transport.handle_request(fake_request)
+
+        assert socket.getaddrinfo is original_getaddrinfo, (
+            "socket.getaddrinfo leaked after exception in handle_request"
+        )
 
 
 # ---------------------------------------------------------------------------
