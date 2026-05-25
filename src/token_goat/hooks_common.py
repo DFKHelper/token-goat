@@ -74,6 +74,9 @@ class HookPayload(TypedDict, total=False):
     turn_id: str
     tool_name: str
     tool_input: dict[str, Any]
+    tool_response: object
+    tool_result: object
+    response: object
     file_path: str
     file_content: str
     line_number: int

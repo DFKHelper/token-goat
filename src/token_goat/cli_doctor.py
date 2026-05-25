@@ -68,7 +68,10 @@ def _render_cache_section(
     cap_bytes: int | None,
     cap_file_count: int | None,
     ok: Callable[[str, str], None],
-    flag: Callable[[str, str], None],
+    # `flag` accepts an optional `warn=True` keyword so the caller can
+    # downgrade an over-cap line to a warning. Callable[..., None] is the
+    # only way to express that without leaking the inner closure shape.
+    flag: Callable[..., None],
 ) -> None:
     """Render a single cache section for the doctor output.
 
