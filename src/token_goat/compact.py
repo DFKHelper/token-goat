@@ -36,7 +36,7 @@ from urllib.parse import urlparse
 from .cache_common import short_content_hash as _short_content_hash
 from .cache_common import short_output_id as _short_id
 from .hooks_common import sanitize_log_str
-from .util import _humanize_bytes, get_logger
+from .util import _humanize_bytes, ellipsize, get_logger
 from .util import run_git as _util_run_git
 
 
@@ -1451,6 +1451,33 @@ def _middle_truncate(text: str, max_lines: int = 20) -> str:
     return "\n".join(head + [marker] + tail)
 
 
+def _render_cache_meta(
+    status: str,
+    body_bytes: int,
+    *,
+    truncated: bool = False,
+    output_id: str = "",
+) -> str:
+    """Build the parenthesised metadata suffix shared by bash and web manifest lines.
+
+    Examples::
+
+        _render_cache_meta("e=0", 12345)
+        # → "(e=0, 12.1KB)"
+
+        _render_cache_meta("200", 14200, truncated=True, output_id="abc123ef")
+        # → "(200, 13.9KB (truncated), id=abc123ef)"
+
+    When *output_id* is non-empty the ``id=<short>`` component is appended so
+    the compaction LLM can recall the body via ``token-goat web-output <id>``.
+    When *truncated* is True ``" (truncated)"`` is inserted after the byte count.
+    """
+    truncated_marker = " (truncated)" if truncated else ""
+    bytes_str = _humanize_bytes(body_bytes)
+    id_part = f", id={_short_id(output_id)}" if output_id else ""
+    return f"({status}, {bytes_str}{truncated_marker}{id_part})"
+
+
 def _format_bash_entry(entry: object, inline_snippet: bool = True, *, is_blocker: bool = False) -> str:
     """Render one :class:`session.BashEntry` as a single manifest line.
 
@@ -1481,14 +1508,11 @@ def _format_bash_entry(entry: object, inline_snippet: bool = True, *, is_blocker
     total = int(getattr(entry, "stdout_bytes", 0)) + int(getattr(entry, "stderr_bytes", 0))
     exit_code = getattr(entry, "exit_code", None)
     output_id = getattr(entry, "output_id", "")
-    truncated_marker = " (truncated)" if getattr(entry, "truncated", False) else ""
     run_count = int(getattr(entry, "run_count", 1))
     run_count_marker = f" [×{run_count}]" if run_count > 1 else ""
     exit_str = "e=?" if exit_code is None else f"e={exit_code}"
-    header = (
-        f"- $ {cmd_preview}{run_count_marker}  "
-        f"({exit_str}, {_humanize_bytes(total)}{truncated_marker})"
-    )
+    meta = _render_cache_meta(exit_str, total, truncated=bool(getattr(entry, "truncated", False)))
+    header = f"- $ {cmd_preview}{run_count_marker}  {meta}"
 
     if not inline_snippet:
         return header
@@ -1552,12 +1576,14 @@ def _format_web_entry(entry: object) -> str:
     body_bytes = int(getattr(entry, "body_bytes", 0))
     status_code = getattr(entry, "status_code", None)
     output_id = sanitize_log_str(getattr(entry, "output_id", ""), max_len=24)
-    truncated_marker = " (truncated)" if getattr(entry, "truncated", False) else ""
     status_str = str(status_code) if status_code is not None else "?"
-    return (
-        f"- 🌐 {url_preview}  "
-        f"({status_str}, {_humanize_bytes(body_bytes)}{truncated_marker}, id={_short_id(output_id)})"
+    meta = _render_cache_meta(
+        status_str,
+        body_bytes,
+        truncated=bool(getattr(entry, "truncated", False)),
+        output_id=output_id,
     )
+    return f"- 🌐 {url_preview}  {meta}"
 
 
 def _group_web_entries_by_domain(entries: list[object]) -> list[str]:
@@ -2282,9 +2308,7 @@ def _cap_line(line: str, max_len: int = 120) -> str:
     Returns:
         The original line, or a truncated version with ellipsis.
     """
-    if len(line) <= max_len:
-        return line
-    return line[: max_len - 1] + "…"
+    return ellipsize(line, max_len)
 
 
 def _load_task_list(session_id: str) -> list[dict[str, str]]:
@@ -2348,8 +2372,7 @@ def _render_tasks_section(tasks: list[dict[str, str]]) -> list[str]:
     shown = active[:_MAX_TODO_ENTRIES]
     for t in shown:
         subject = t["subject"]
-        if len(subject) > _MAX_TODO_SUBJECT_CHARS:
-            subject = subject[:_MAX_TODO_SUBJECT_CHARS - 1] + "…"
+        subject = ellipsize(subject, _MAX_TODO_SUBJECT_CHARS)
         status = t.get("status", "pending")
         marker = "[→]" if status in ("in_progress", "in-progress") else "[ ]"
         lines.append(f"- {marker} {subject}")
