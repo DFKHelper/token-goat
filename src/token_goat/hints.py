@@ -69,6 +69,12 @@ _LOG = get_logger("hints")
 # when the hint is injected as ``additionalContext`` in the PreToolUse response.
 _MAX_HINT_PATH_LEN = 300
 
+# Max display length for a grep pattern in dedup hints.  Long regex patterns
+# (multi-line PCRE, complex alternations) can be 100+ chars; the display string
+# is truncated here to keep hints compact.  Dedup logic still keys on the full
+# pattern hash — only the rendered text is shortened.
+_MAX_GREP_PATTERN_DISPLAY_LEN = 60
+
 
 def _hint_fingerprint(hint_text: str, path: str = "") -> str:
     """Return a stable SHA256 fingerprint (first 12 hex chars) of hint text + path.
@@ -111,6 +117,21 @@ def _sanitize_hint_path(p: str) -> str:
     vector before any path reaches a hint f-string.
     """
     return sanitize_log_str(p, max_len=_MAX_HINT_PATH_LEN)
+
+
+def _truncate_pattern_display(pattern: str) -> str:
+    """Return a display-safe version of a grep pattern for use in hint text.
+
+    Sanitises newlines/CRs (injection defence via :func:`_sanitize_hint_path`),
+    then truncates to :data:`_MAX_GREP_PATTERN_DISPLAY_LEN` characters so that
+    long regex patterns (multi-line PCRE, complex alternations) do not bloat the
+    hint.  Dedup keying always uses the full pattern hash — only the rendered
+    text is shortened.
+    """
+    safe = _sanitize_hint_path(pattern)
+    if len(safe) > _MAX_GREP_PATTERN_DISPLAY_LEN:
+        return safe[:_MAX_GREP_PATTERN_DISPLAY_LEN] + "…"
+    return safe
 
 
 class _SymbolRow(TypedDict):
@@ -884,15 +905,54 @@ def _build_diff_hint_inner(
     # `+++`/`---` header) using a zero-context probe, then re-emit with the
     # right width.  Tiny edits get 1 line of context; everything else gets the
     # standard 2.  Two unified_diff calls, but the n=0 pass is tiny by design.
-    probe_text = "".join(
-        difflib.unified_diff(
-            snapshot_lines, current_lines, n=0, lineterm="",
-        ),
+    probe_lines = list(difflib.unified_diff(
+        snapshot_lines, current_lines, n=0, lineterm="",
+    ))
+    added_count = sum(
+        1 for line in probe_lines
+        if line[:1] == "+" and not line.startswith("+++")
     )
-    changed_count = sum(
-        1 for line in probe_text.splitlines()
-        if line[:1] in ("+", "-") and not line.startswith(("+++", "---"))
+    removed_count = sum(
+        1 for line in probe_lines
+        if line[:1] == "-" and not line.startswith("---")
     )
+    changed_count = added_count + removed_count
+    hunk_lines = [line for line in probe_lines if line.startswith("@@")]
+    hunk_count = len(hunk_lines)
+
+    # Micro-diff collapse: a single hunk with fewer than 3 changed lines total
+    # produces 6+ overhead lines (---, +++, @@, context) for one substantive
+    # change.  Emit a one-liner summary instead.  The full-file token saving
+    # check still applies so very small files are not emitted.
+    _MICRO_DIFF_MAX_CHANGED = 3
+    if hunk_count == 1 and 0 < changed_count < _MICRO_DIFF_MAX_CHANGED:
+        # Parse the first (only) hunk header to extract the line number.
+        # Unified diff hunk header format: "@@ -a,b +c,d @@ optional text"
+        # We use the destination line number (c) for the "@ L<n>" annotation.
+        import re  # noqa: PLC0415
+        hunk_match = re.match(r"@@ -\d+(?:,\d+)? \+(\d+)(?:,\d+)? @@", hunk_lines[0])
+        line_num = int(hunk_match.group(1)) if hunk_match else 0
+
+        if added_count > 0 and removed_count > 0:
+            summary_change = f"±{changed_count} lines"
+        elif added_count > 0:
+            n_word = "line" if added_count == 1 else "lines"
+            summary_change = f"+{added_count} {n_word}"
+        else:
+            n_word = "line" if removed_count == 1 else "lines"
+            summary_change = f"-{removed_count} {n_word}"
+
+        line_str = f" @ L{line_num}" if line_num else ""
+        full_tokens_micro = _est_tokens_from_chars(len(current_text))
+        # A one-liner hint costs ~8 tokens; saving is full-read minus that.
+        tokens_saved_micro = max(0, full_tokens_micro - 8)
+        if tokens_saved_micro < _DIFF_HINT_MIN_TOKENS_SAVED:
+            return None
+        return ReadHint(
+            _apply_terse(f"`{fname}` changed: {summary_change}{line_str}"),
+            tokens_saved_micro,
+        )
+
     n_context = (
         _DIFF_TINY_CONTEXT_LINES
         if 0 < changed_count <= _DIFF_TINY_CHANGE_THRESHOLD
@@ -1358,7 +1418,7 @@ def _build_grep_dedup_hint_inner(
         # Estimate the bytes that would land in context if the agent re-runs.
         bytes_avoided = entry.result_count * _GREP_AVG_BYTES_PER_RESULT
         tokens_avoided = _est_tokens_from_chars(bytes_avoided)
-        pattern_short = _sanitize_hint_path(pattern)
+        pattern_short = _truncate_pattern_display(pattern)
         path_str = f" in `{_sanitize_hint_path(path)}`" if path else ""
         # Curator: record emission keyed on the pattern (grep has no file path).
         _record_hint_emitted(cache, f"grep:{pattern}")
@@ -1406,7 +1466,7 @@ def _build_grep_cross_session_hint(pattern: str, now: float) -> ReadHint | None:
     if age > _GREP_CROSS_SESSION_STALE_SECS:
         return None
     # Pattern is frequent and recent — nudge toward semantic search.
-    pattern_short = _sanitize_hint_path(pattern)
+    pattern_short = _truncate_pattern_display(pattern)
     return ReadHint(
         _apply_terse(
             f"Grep `{pattern_short}` is a frequent pattern ({count} sessions). "
