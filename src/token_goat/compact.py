@@ -2712,16 +2712,14 @@ def _render(cache: SessionCache, session_id: str, max_tokens: int) -> tuple[str,
     # loaded skill with a recall hint tells the compaction LLM "preserve these"
     # and gives the post-compact agent an exact command to re-fetch the body.
     #
-    # Item #9 — collapse to summary line when recovery hint will also fire.
-    # The recovery hint inlines the per-skill checklist and recall commands;
-    # repeating the full per-skill listing here wastes 15–25 tokens per skill.
-    # Collapse when: skill_history non-empty AND session activity >= _ACTIVITY_FLOOR
-    # (same gate that controls recovery hint emission).
-    # Fall back to full listing when activity is low (recovery hint won't fire).
+    # Item #9 / A25 — always collapse to a single summary line.
+    # Listing each skill on its own bullet with a per-skill recall hint wastes
+    # 15–25 tokens per skill (6 skills × ~30t = 180t).  The agent already knows
+    # the recall pattern from one example; the per-skill body is available via
+    # the recovery hint that fires after compaction.  Use the summary format
+    # unconditionally: one line, names + a single generic recall example.
     skill_entries = _select_top_skill_entries(raw_skills)
-    _activity_score_for_skills = _session_activity_score(cache)
-    _skills_collapse = bool(raw_skills) and _activity_score_for_skills >= _ACTIVITY_FLOOR
-    if _skills_collapse and skill_entries:
+    if skill_entries:
         # Build summary: "ralph ×3, improve ×1 — recall via token-goat skill-body <name>"
         _skill_parts = []
         for _se in skill_entries:
@@ -2736,11 +2734,7 @@ def _render(cache: SessionCache, session_id: str, max_tokens: int) -> tuple[str,
             f"**Skills:** {_skills_summary} — recall via `token-goat skill-body <name>`"
         ]
     else:
-        skill_lines = _render_section("**Skills:**", skill_entries, _format_skill_entry)
-        if skill_entries:
-            overflow_skills = len(raw_skills) - len(skill_entries)
-            if overflow_skills > 0:
-                skill_lines.append(f"- …+{overflow_skills} more loaded")
+        skill_lines = []
 
     # ── 0b. Uncommitted Changes — git diff --stat + status --short ───────────
     # Ground-truth picture of what's on disk regardless of which tool made the

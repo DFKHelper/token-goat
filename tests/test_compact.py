@@ -5183,14 +5183,17 @@ class TestSkillsSectionCollapse:
             skills_content = skills_part
         assert "🧠" not in skills_content
 
-    def test_full_listing_when_low_activity(self, tmp_data_dir):
-        """Low-activity session (score < _ACTIVITY_FLOOR): full per-skill listing."""
+    def test_summary_format_always_used(self, tmp_data_dir):
+        """Skills are always emitted as a single summary line regardless of activity level.
+
+        The per-skill bullet listing (🧠 prefix + per-skill recall command) is replaced
+        by a single compact line: **Skills:** <name1>, <name2> — recall via `token-goat skill-body <name>`
+        This applies even to low-activity sessions where the old code used the full format.
+        """
         from token_goat import skill_cache
 
-        sid = "skills-collapse-lowact-abc"
+        sid = "skills-summary-lowact-abc"
         # Score = 1 skill × 1 = 1, below _ACTIVITY_FLOOR (3). No edits, no bash.
-        # We must still pass the activity-floor check in build_manifest_adaptive,
-        # but build_manifest (fixed max_tokens) bypasses that gate — use it directly.
         body = "skill body content " * 20
         meta = skill_cache.store_output(sid, "ralph", body)
         assert meta is not None
@@ -5199,27 +5202,21 @@ class TestSkillsSectionCollapse:
             sid, meta.skill_name, meta.output_id, meta.content_sha,
             meta.body_bytes, meta.truncated,
         )
-        # One file read (no edits, no bash) — score = 0 from edits/bash, 1 from skill.
-        # Total = 1 < _ACTIVITY_FLOOR (3) → full listing path.
         session.mark_file_read(sid, "src/foo.py", offset=0, limit=50)
 
         result = compact.build_manifest(sid, max_tokens=600)
 
         if "**Skills:**" not in result:
-            # Session may have been suppressed entirely — that is acceptable here
-            # since the activity is genuinely low; the test only checks that
-            # IF skills appear, they use the full format.
+            # Session may be suppressed entirely at very low activity — acceptable.
             return
 
-        # Full listing has per-skill bullet lines with 🧠 prefix.
-        assert "🧠" in result
-        # Full listing does NOT use the collapsed "recall via" summary inline.
+        # Summary format: **Skills:** is the start of a single inline line.
         skills_line = next(
             (ln for ln in result.splitlines() if ln.startswith("**Skills:**")), None
         )
-        # In full listing mode, **Skills:** is a section header (no inline summary).
-        if skills_line is not None:
-            assert "recall via" not in skills_line
+        assert skills_line is not None, "Expected **Skills:** as a line-start header"
+        assert "ralph" in skills_line
+        assert "recall via" in skills_line
 
 
 # ---------------------------------------------------------------------------

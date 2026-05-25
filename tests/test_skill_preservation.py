@@ -294,7 +294,9 @@ class TestManifestActiveSkillsSection:
         m = compact.build_manifest(sid, max_tokens=600)
         assert "**Skills:**" in m
         assert "ralph" in m
-        assert "token-goat skill-body ralph" in m
+        # Skills are now collapsed to a single summary line; the generic recall
+        # pattern is present rather than a per-skill command.
+        assert "token-goat skill-body <name>" in m or "token-goat skill-body ralph" in m
 
     def test_run_count_marker_appears(self, tmp_data_dir):
         sid = "session-manifest-runs"
