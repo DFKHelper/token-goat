@@ -1059,6 +1059,36 @@ def _build_diff_hint_inner(
 
 
 # ---------------------------------------------------------------------------
+# ---------------------------------------------------------------------------
+# Session-cache helpers
+# ---------------------------------------------------------------------------
+
+
+def _require_cache(
+    session_id: str,
+    cache: session.SessionCache | None,
+) -> session.SessionCache | None:
+    """Load the session cache if not already loaded; return None when unavailable.
+
+    Consolidates the four-line guard that every inner hint function repeats::
+
+        if cache is None:
+            cache = session.load(session_id)
+        if cache.unavailable:
+            return None
+
+    into a single call.  Callers that need additional post-load checks (e.g.
+    :func:`_build_glob_dedup_hint_inner` which also tests
+    ``cache.is_glob_history_empty()``) call this first, then apply their own
+    guard on the returned cache.
+    """
+    if cache is None:
+        cache = session.load(session_id)
+    if cache.unavailable:
+        return None
+    return cache
+
+
 # Curator pass: suppress dedup hints when the agent ignores them
 # ---------------------------------------------------------------------------
 
@@ -1436,9 +1466,8 @@ def _build_grep_dedup_hint_inner(
     """
     if not session_id or not pattern:
         return None
+    cache = _require_cache(session_id, cache)
     if cache is None:
-        cache = session.load(session_id)
-    if cache.unavailable:
         return None
 
     now = time.time()
@@ -1597,9 +1626,8 @@ def _build_glob_dedup_hint_inner(
     """
     if not session_id or not pattern:
         return None
-    if cache is None:
-        cache = session.load(session_id)
-    if cache.unavailable or cache.is_glob_history_empty():
+    cache = _require_cache(session_id, cache)
+    if cache is None or cache.is_glob_history_empty():
         return None
     if not _curator_should_emit(cache):
         return None
@@ -1808,9 +1836,8 @@ def _build_unchanged_file_hint_inner(
     if not session_id or not file_path:
         return None
 
+    cache = _require_cache(session_id, cache)
     if cache is None:
-        cache = session.load(session_id)
-    if cache.unavailable:
         return None
 
     # Require that the file was read AND subsequently edited this session.
