@@ -26,6 +26,7 @@ from __future__ import annotations
 
 __all__ = [
     "DEFAULT_MAX_TOTAL_BYTES",
+    "DEFAULT_MAX_FILE_COUNT",
     "OUTPUT_FILENAME_RE",
     "BashOutputMeta",
     "command_hash",
@@ -74,6 +75,11 @@ _LOG = get_logger("bash_cache")
 # enough to be invisible on any modern disk while big enough to hold several
 # full build/test logs (~1-3 MB each is typical).
 DEFAULT_MAX_TOTAL_BYTES: int = 16 * 1024 * 1024
+#: File-count cap.  Many sub-1 KB entries accumulate when the agent runs short
+#: commands frequently; Windows NTFS ``iterdir`` over 10 K+ files adds ~200–500 ms
+#: to hook cold-start.  4 096 entries × average 1 KB = 4 MB, well within the
+#: byte cap, so file-count eviction rarely fires unless entries are tiny.
+DEFAULT_MAX_FILE_COUNT: int = 4096
 
 # OUTPUT_FILENAME_RE is imported from cache_common — shared with web_cache.
 
@@ -316,12 +322,13 @@ def evict_old_entries(*, max_total_bytes: int = DEFAULT_MAX_TOTAL_BYTES) -> int:
     All errors are swallowed — eviction is opportunistic, not authoritative.
 
     The shared algorithm lives in :func:`cache_common.evict_cache_dir`; this
-    wrapper supplies the bash-specific directory, log name, and default cap.
+    wrapper supplies the bash-specific directory, log name, and default caps.
     """
     return evict_cache_dir(
         cache_dir_fn=_bash_outputs_dir,
         log_name="bash_cache",
         max_total_bytes=max_total_bytes,
+        max_file_count=DEFAULT_MAX_FILE_COUNT,
     )
 
 

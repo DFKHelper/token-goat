@@ -168,13 +168,15 @@ def evict_cache_dir(
     cache_dir_fn: Callable[[], Path],
     log_name: str,
     max_total_bytes: int,
+    max_file_count: int = 4096,
 ) -> int:
     """Evict the oldest ``.txt`` entries from a cache directory until the total
-    on-disk size is at or under *max_total_bytes*.
+    on-disk size is at or under *max_total_bytes* AND the file count is at or
+    under *max_file_count*.
 
     This is the shared implementation of the LRU-eviction algorithm used by
     both :func:`bash_cache.evict_old_entries` and
-    :func:`web_cache.evict_old_entries`.  Callers supply the three values that
+    :func:`web_cache.evict_old_entries`.  Callers supply the values that
     differ between the two modules; everything else — the scan loop, symlink
     guard, oldest-first sort, body+sidecar pair deletion, and orphan-sidecar
     sweep — is identical and lives here once.
@@ -193,6 +195,12 @@ def evict_cache_dir(
     max_total_bytes:
         Byte budget for the directory.  Entries are deleted oldest-first until
         the summed size of remaining ``.txt`` files is at or below this value.
+    max_file_count:
+        File count cap for the directory.  Entries are deleted oldest-first
+        until the number of ``.txt`` files is at or below this value.  The
+        default of 4096 prevents unbounded growth when many sub-1 KB entries
+        accumulate — Windows NTFS ``iterdir`` on tens of thousands of files
+        adds measurable hook cold-start latency (~200–500 ms).
 
     Returns
     -------
@@ -239,17 +247,19 @@ def evict_cache_dir(
     except OSError:
         return 0
 
-    if total <= max_total_bytes:
+    if total <= max_total_bytes and len(entries) <= max_file_count:
         return 0
 
     entries.sort(key=lambda t: t[1])  # oldest first
+    remaining = len(entries)
     removed = 0
     for fp, _mtime, size in entries:
-        if total <= max_total_bytes:
+        if total <= max_total_bytes and remaining <= max_file_count:
             break
         try:
             fp.unlink()
             total -= size
+            remaining -= 1
             removed += 1
         except OSError:
             continue
@@ -262,8 +272,8 @@ def evict_cache_dir(
             _log.debug("%s: sidecar cleanup failed for %s: %s", log_name, sidecar.name, exc)
     if removed:
         _log.info(
-            "%s: evicted %d entries to fit cap=%d bytes",
-            log_name, removed, max_total_bytes,
+            "%s: evicted %d entries (bytes cap=%d, count cap=%d)",
+            log_name, removed, max_total_bytes, max_file_count,
         )
 
     # Orphan-sidecar sweep — a sidecar whose body was deleted out-of-band
