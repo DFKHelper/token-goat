@@ -4,6 +4,7 @@ from __future__ import annotations
 import contextlib
 import sqlite3
 import time
+from collections.abc import Callable
 from datetime import date
 from pathlib import Path
 
@@ -96,6 +97,30 @@ def doctor(  # noqa: C901
         prefix = "WARN" if warn else "FAIL"
         typer.echo(f"  [{prefix}] {label}: {value}")
 
+    def _check_step(label: str, fn: Callable[[], object], *, warn: bool = False) -> None:
+        """Execute a check step, emitting a pass or failure message.
+
+        Wraps the try/except pattern for doctor check steps: calls *fn()*, emits
+        a passing message via ``ok(label, str(result))``, and catches exceptions
+        to emit a failure message via ``flag(label, str(e), warn=warn)``.
+
+        Parameters
+        ----------
+        label
+            The check label to pass to ok/flag.
+        fn
+            The callable that performs the check. Its return value is converted
+            to a string for the ok message. If None, an empty string is used.
+        warn
+            If True, failures are emitted as warnings; otherwise as failures.
+            Defaults to False.
+        """
+        try:
+            result = fn()
+            ok(label, str(result) if result is not None else "")
+        except Exception as e:  # noqa: BLE001
+            flag(label, str(e), warn=warn)
+
     typer.echo("\ntoken-goat doctor\n")
 
     # ------------------------------------------------------------------
@@ -111,24 +136,25 @@ def doctor(  # noqa: C901
     except importlib.metadata.PackageNotFoundError:
         cc_ver = "unknown"
     ok("token-goat", cc_ver)
-    try:
+
+    def _check_uv() -> str:
         uv_out = subprocess.run(
             ["uv", "--version"], capture_output=True, text=True, timeout=5
         )
-        ok("uv", uv_out.stdout.strip() or "installed")
-    except (FileNotFoundError, OSError, subprocess.TimeoutExpired):
-        flag("uv", "not found", warn=True)
+        return uv_out.stdout.strip() or "installed"
+
+    _check_step("uv", _check_uv, warn=True)
 
     # ------------------------------------------------------------------
     # 1b. Detected harnesses
     # ------------------------------------------------------------------
-    try:
+    def _check_harnesses() -> str:
         from . import install as _install  # noqa: PLC0415
 
         harnesses = _install.detect_harnesses()
-        ok("harnesses detected", ", ".join(harnesses) if harnesses else "none")
-    except Exception as _e:  # noqa: BLE001
-        flag("harnesses detected", f"error — {_e}", warn=True)
+        return ", ".join(harnesses) if harnesses else "none"
+
+    _check_step("harnesses detected", _check_harnesses, warn=True)
 
     # ------------------------------------------------------------------
     # 2. Paths
@@ -204,30 +230,30 @@ def doctor(  # noqa: C901
     # ------------------------------------------------------------------
     # 4. sqlite-vec
     # ------------------------------------------------------------------
-    if ext_ok:
-        try:
-            import sqlite_vec  # noqa: PLC0415
+    def _check_sqlite_vec() -> object:
+        import sqlite_vec  # noqa: PLC0415
 
-            conn2 = sqlite3.connect(":memory:", isolation_level=None)
-            conn2.enable_load_extension(True)
-            sqlite_vec.load(conn2)
-            conn2.enable_load_extension(False)
-            vec_ver = conn2.execute("SELECT vec_version()").fetchone()[0]
-            conn2.close()
-            ok("sqlite-vec", vec_ver)
-        except Exception as e:  # noqa: BLE001
-            flag("sqlite-vec", f"failed — {e}")
+        conn2 = sqlite3.connect(":memory:", isolation_level=None)
+        conn2.enable_load_extension(True)
+        sqlite_vec.load(conn2)
+        conn2.enable_load_extension(False)
+        vec_ver = conn2.execute("SELECT vec_version()").fetchone()[0]
+        conn2.close()
+        return vec_ver
+
+    if ext_ok:
+        _check_step("sqlite-vec", _check_sqlite_vec)
     else:
         flag("sqlite-vec", "skipped (no extension support)", warn=True)
 
     # ------------------------------------------------------------------
     # 5. fastembed
     # ------------------------------------------------------------------
-    try:
+    def _check_fastembed() -> str:
         importlib.import_module("fastembed")
-        ok("fastembed", "importable")
-    except ImportError as e:
-        flag("fastembed", f"not importable — {e}")
+        return "importable"
+
+    _check_step("fastembed", _check_fastembed)
 
     # ------------------------------------------------------------------
     # 6. Pillow
