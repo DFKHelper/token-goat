@@ -2,13 +2,14 @@
 from __future__ import annotations
 
 import json
+import re
 import sys
 from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
 from unittest.mock import patch
 
-from token_goat import bridges
+from token_goat import bridges, hook_registry
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -115,6 +116,78 @@ class TestPluginTsSources:
     def test_openclaw_ts_webfetch_routes_to_post_fetch(self) -> None:
         # Web-fetch caching requires post-fetch, not post-read.
         assert 'WebFetch: "post-fetch"' in bridges.OPENCLAW_PLUGIN_TS
+
+
+# ---------------------------------------------------------------------------
+# Bridge TS event-table alignment with hook_registry
+# ---------------------------------------------------------------------------
+
+
+_EVENT_PREFIXES = re.compile(r'^(?:pre|post|session|user|subagent)-')
+
+
+def _extract_bridge_events(ts_source: str) -> set[str]:
+    """Return every hook-event name string referenced in *ts_source*.
+
+    Covers three patterns:
+    1. Direct callHook first argument:  callHook("session-start", ...)
+    2. POST_HOOK table values:          Bash: "post-bash",
+    3. Ternary / variable assignments:  ? "pre-fetch" : "pre-read"
+
+    Only strings matching the canonical event prefix pattern
+    (pre-, post-, session-, user-, subagent-) are collected, which filters
+    out incidental hyphenated strings like "token-goat" or "before_tool_call".
+    """
+    all_quoted = set(re.findall(r'["\']([a-z][a-z0-9-]+)["\']', ts_source))
+    return {v for v in all_quoted if _EVENT_PREFIXES.match(v)}
+
+
+class TestBridgeEventRegistryAlignment:
+    """Verify every event name hard-coded in the bridge TS strings is registered
+    in hook_registry.  A rename in hook_registry that leaves the bridge TS stale
+    would silently produce no-op hook calls; this test catches that drift."""
+
+    def test_opencode_events_all_registered(self) -> None:
+        canonical = set(hook_registry.all_events())
+        bridge_events = _extract_bridge_events(bridges.OPENCODE_PLUGIN_TS)
+        assert bridge_events, "regex found no event names in OPENCODE_PLUGIN_TS — pattern may need update"
+        unknown = bridge_events - canonical
+        assert not unknown, (
+            f"OPENCODE_PLUGIN_TS references event(s) not in hook_registry: {sorted(unknown)}\n"
+            f"Canonical events: {sorted(canonical)}"
+        )
+
+    def test_openclaw_events_all_registered(self) -> None:
+        canonical = set(hook_registry.all_events())
+        bridge_events = _extract_bridge_events(bridges.OPENCLAW_PLUGIN_TS)
+        assert bridge_events, "regex found no event names in OPENCLAW_PLUGIN_TS — pattern may need update"
+        unknown = bridge_events - canonical
+        assert not unknown, (
+            f"OPENCLAW_PLUGIN_TS references event(s) not in hook_registry: {sorted(unknown)}\n"
+            f"Canonical events: {sorted(canonical)}"
+        )
+
+    def test_combined_bridge_events_cover_common_subset(self) -> None:
+        """Each bridge must reference the core events appropriate for its harness.
+
+        opencode has compaction support (experimental.session.compacting), so it
+        must include pre-compact.  openclaw has no compaction API, so pre-compact
+        is intentionally absent there.
+        """
+        # Events required in both bridges (common integration surface)
+        shared_core = {"session-start", "pre-read", "pre-fetch", "post-edit", "post-bash"}
+        # Events only required where the harness supports them
+        opencode_only = {"pre-compact"}
+
+        opencode_events = _extract_bridge_events(bridges.OPENCODE_PLUGIN_TS)
+        openclaw_events = _extract_bridge_events(bridges.OPENCLAW_PLUGIN_TS)
+
+        for event in shared_core:
+            assert event in opencode_events, f"shared core event '{event}' missing from OPENCODE_PLUGIN_TS"
+            assert event in openclaw_events, f"shared core event '{event}' missing from OPENCLAW_PLUGIN_TS"
+
+        for event in opencode_only:
+            assert event in opencode_events, f"opencode-only event '{event}' missing from OPENCODE_PLUGIN_TS"
 
 
 # ---------------------------------------------------------------------------
