@@ -895,21 +895,12 @@ def _check_recovery_pending(session_id: str, cache: object) -> str | None:
             "pre-read: deferred recovery hint injected for session=%s (%d chars)",
             session_id[:16], len(hint),
         )
-        # Record injection overhead now that the hint is actually being used.
-        try:
-            from . import db as _db  # noqa: PLC0415
-            from .hooks_common import bytes_to_tokens  # noqa: PLC0415
-
-            injection_bytes = len(hint.encode("utf-8"))
-            _db.record_stat(
-                None,
-                "compact_recovery_overhead",
-                bytes_saved=-injection_bytes,
-                tokens_saved=-bytes_to_tokens(injection_bytes),
-                detail=session_id[:32],
-            )
-        except Exception:  # noqa: BLE001
-            pass
+        # compact_recovery_overhead stat removed (Option A): neither the cost
+        # side (overhead) nor the benefit side (downstream hint savings) were
+        # being measured reliably, so the row appeared as a pure -N kt/mo loss
+        # in `token-goat stats` with no matching positive counterpart.  Dropping
+        # both avoids the misleading negative.  The injection is still logged at
+        # INFO so it is auditable in the daily log.
         return hint
     except Exception:  # noqa: BLE001
         _LOG.debug("pre-read: recovery sidecar check failed", exc_info=True)
