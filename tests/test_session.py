@@ -2826,6 +2826,62 @@ class TestSessionLockfile:
 
         assert any(observed_during_write), "lock was never observed held during write"
 
+    def test_save_does_not_write_when_lock_times_out(self, tmp_data_dir):
+        """save() must not write the session file when _acquire_session_lock returns None.
+
+        Regression test: previously the code entered the CAS+write region without
+        checking whether the lock was actually acquired.  save() has a 3-attempt
+        loop so all 3 attempts will time out, marking the cache unavailable.
+        """
+        from token_goat.session import _fresh_cache
+
+        sid = "lock-timeout-no-write"
+        cache = _fresh_cache(sid)
+        cache.files["/proj/foo.py"] = {"ranges": [[0, 10]], "symbols": [], "read_count": 1, "sha": ""}
+
+        import token_goat.session as _sess
+        with patch.object(_sess, "_acquire_session_lock", return_value=None):
+            _sess.save(cache)
+
+        # The session file must NOT have been created regardless of lock outcome.
+        p = session.paths.session_cache_path(sid)
+        assert not p.exists(), "save() wrote session file despite lock timeout"
+
+    def test_save_marks_unavailable_after_three_consecutive_lock_timeouts(self, tmp_data_dir):
+        """After 3 consecutive lock timeouts save() marks cache.unavailable = True.
+
+        Subsequent saves must no-op immediately without attempting to acquire
+        the lock again.  save() internally retries up to 3 times, so a single
+        call with lock always returning None exhausts the budget.
+        """
+        from token_goat.session import _fresh_cache
+
+        sid = "lock-timeout-unavailable"
+        cache = _fresh_cache(sid)
+
+        import token_goat.session as _sess
+        with patch.object(_sess, "_acquire_session_lock", return_value=None):
+            # save() has a 3-attempt loop internally; one call exhausts all 3.
+            _sess.save(cache)
+
+        assert cache.unavailable, (
+            "cache must be marked unavailable after 3 consecutive lock timeouts"
+        )
+
+        # A subsequent save must skip immediately (lock never attempted again).
+        acquire_call_count = [0]
+
+        def counting_acquire(sid_arg):  # noqa: ARG001
+            acquire_call_count[0] += 1
+            return None
+
+        with patch.object(_sess, "_acquire_session_lock", counting_acquire):
+            _sess.save(cache)
+
+        assert acquire_call_count[0] == 0, (
+            "save() must not attempt to acquire lock when cache is already unavailable"
+        )
+
 
 # ---------------------------------------------------------------------------
 # Cross-process concurrent write regression test (item #10)
