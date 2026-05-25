@@ -10,6 +10,7 @@ from pathlib import Path
 
 import typer
 
+from . import paths
 from .util import _humanize_bytes as _humanize_bytes_doctor
 
 
@@ -60,6 +61,48 @@ def _cache_dir_stats(d: Path) -> tuple[int, int, int | None]:
     oldest_age = int(now - oldest_mtime) if oldest_mtime is not None else None
     return total_bytes, file_count, oldest_age
 
+
+def _render_cache_section(
+    label: str,
+    dir_name: str,
+    cap_bytes: int | None,
+    cap_file_count: int | None,
+    ok: Callable[[str, str], None],
+    flag: Callable[[str, str], None],
+) -> None:
+    """Render a single cache section for the doctor output.
+
+    Emits an ok/flag line based on cache directory size and file count.
+    Caps are optional (None means no cap applies).
+    """
+    d = paths.data_dir() / dir_name
+    if not d.exists():
+        ok(label, "(not yet created)")
+        return
+    try:
+        total_bytes, file_count, oldest_age = _cache_dir_stats(d)
+    except OSError as e:
+        flag(label, f"unreadable — {e}", warn=True)
+        return
+    if file_count == 0:
+        ok(label, "0 files (empty)")
+        return
+    age_str = f", oldest {oldest_age // 3600}h ago" if oldest_age is not None else ""
+    size_str = _humanize_bytes_doctor(total_bytes)
+    # Detect over-cap: bytes cap OR file-count cap.  The file-count cap is
+    # expressed in .txt bodies; _cache_dir_stats counts ALL files (bodies +
+    # sidecars), so compare against cap_file_count * 2 to give a fair
+    # threshold that accounts for each body having one sidecar.
+    bytes_over = cap_bytes is not None and total_bytes > int(cap_bytes * 1.1)
+    count_over = (
+        cap_file_count is not None and file_count > cap_file_count * 2 * 1.1
+    )
+    if bytes_over or count_over:
+        # 10% over the cap is the eviction's grace window; beyond that
+        # the periodic sweep should have caught up by now.
+        flag(label, f"{file_count} files, {size_str}{age_str} (over cap)", warn=True)
+    else:
+        ok(label, f"{file_count} files, {size_str}{age_str}")
 
 
 def doctor(  # noqa: C901
@@ -562,34 +605,7 @@ def doctor(  # noqa: C901
         ("web outputs", "web_outputs", 32 * 1024 * 1024, 4096),
         ("session snapshots", "session_snapshots", None, None),
     ):
-        d = paths.data_dir() / dir_name
-        if not d.exists():
-            ok(label, "(not yet created)")
-            continue
-        try:
-            total_bytes, file_count, oldest_age = _cache_dir_stats(d)
-        except OSError as e:
-            flag(label, f"unreadable — {e}", warn=True)
-            continue
-        if file_count == 0:
-            ok(label, "0 files (empty)")
-            continue
-        age_str = f", oldest {oldest_age // 3600}h ago" if oldest_age is not None else ""
-        size_str = _humanize_bytes_doctor(total_bytes)
-        # Detect over-cap: bytes cap OR file-count cap.  The file-count cap is
-        # expressed in .txt bodies; _cache_dir_stats counts ALL files (bodies +
-        # sidecars), so compare against cap_file_count * 2 to give a fair
-        # threshold that accounts for each body having one sidecar.
-        bytes_over = cap_bytes is not None and total_bytes > int(cap_bytes * 1.1)
-        count_over = (
-            cap_file_count is not None and file_count > cap_file_count * 2 * 1.1
-        )
-        if bytes_over or count_over:
-            # 10% over the cap is the eviction's grace window; beyond that
-            # the periodic sweep should have caught up by now.
-            flag(label, f"{file_count} files, {size_str}{age_str} (over cap)", warn=True)
-        else:
-            ok(label, f"{file_count} files, {size_str}{age_str}")
+        _render_cache_section(label, dir_name, cap_bytes, cap_file_count, ok, flag)
 
     # ------------------------------------------------------------------
     # 14. Stats summary + 14b. Cumulative-savings projection (item 11)
