@@ -603,23 +603,88 @@ _INLINE_DIFF_MAX_BYTES: Final[int] = 500  # per-file diff size gate (#7)
 _INLINE_DIFF_TOTAL_CAP: Final[int] = 800  # total inlined diff bytes in manifest (#7)
 _SINGLE_FILE_DIFF_CAP: Final[int] = 400  # whole-repo diff cap for single-file replace (#17)
 
+# Item #2: short-TTL cache for the whole-repo ``git diff HEAD`` output keyed
+# by cwd.  ``_get_whole_repo_diff`` and ``_get_inline_diff_for_file`` both
+# need the diff; running git separately for each path multiplies the
+# subprocess cost across a manifest build.  We fetch once, slice for the
+# per-file callers, and let the TTL expire so a fresh diff is picked up
+# between consecutive PreCompact fires.
+_WHOLE_DIFF_TTL_SECS: Final[float] = 30.0
+_whole_diff_cache: dict[str, tuple[str | None, float]] = {}
+
+
+def _fetch_whole_repo_diff_cached(cwd: str) -> str | None:
+    """Return the full ``git diff HEAD`` output for *cwd*, cached for the TTL.
+
+    Returns ``None`` when git is unavailable, the repo has no diff, or the
+    subprocess fails.  Empty-string is normalised to ``None`` so callers can
+    use the simple ``if diff is None`` idiom.
+    """
+    if not cwd:
+        return None
+    now = time.monotonic()
+    cached = _whole_diff_cache.get(cwd)
+    if cached is not None and now - cached[1] < _WHOLE_DIFF_TTL_SECS:
+        return cached[0]
+    diff = _run_git(["diff", "--no-color", "HEAD"], cwd, timeout=1.5)
+    _put_bounded(_whole_diff_cache, cwd, (diff, now))
+    return diff
+
+
+def _slice_diff_for_file(whole_diff: str, path: str) -> str | None:
+    """Extract the per-file segment for *path* from a full ``git diff HEAD`` output.
+
+    Splits *whole_diff* on the ``diff --git`` boundary that opens each file's
+    section and returns the chunk whose header references *path*.  Path
+    matching tolerates both ``a/path`` / ``b/path`` prefixes and case-
+    insensitive matches so Windows-cased paths still resolve.
+
+    Returns ``None`` when no chunk matches (e.g. path is staged-but-unmodified
+    or has been added via ``git add`` only).
+    """
+    if not whole_diff or not path:
+        return None
+    norm_path = path.replace("\\", "/")
+    # Split on each "diff --git" boundary; keep the prefix attached to its chunk.
+    chunks = [c for c in whole_diff.split("\ndiff --git ") if c.strip()]
+    # The first chunk may or may not start with "diff --git " depending on the
+    # split shape; normalise by ensuring every chunk's first line is the file
+    # header so we can match consistently.
+    needle_a = f"a/{norm_path}"
+    needle_b = f"b/{norm_path}"
+    for chunk in chunks:
+        header = chunk.split("\n", 1)[0]
+        # Case-insensitive search handles Windows case-folding inside git.
+        if needle_a in header or needle_b in header or norm_path in header:
+            # Re-prepend the "diff --git " token we stripped during split.
+            if not chunk.startswith("diff --git "):
+                chunk = "diff --git " + chunk
+            return chunk
+    return None
+
 
 def _get_inline_diff_for_file(path: str, cwd: str) -> str | None:
-    """Return ``git diff HEAD <path>`` if the output is small enough to inline.
+    """Return per-file ``git diff HEAD`` when the diff is small enough to inline.
 
     Used by the edited-files section (#7) to replace the bare "edited Nx" note
-    with the actual diff when it fits within *_INLINE_DIFF_MAX_BYTES*.  Falls
-    back to ``None`` (caller uses the regular entry) on any failure or when the
-    diff is too large.
+    with the actual diff when it fits within *_INLINE_DIFF_MAX_BYTES*.
 
-    Timeout: 1.5 s (must not stall the PreCompact hook).
+    Item #2: routes through the per-manifest whole-diff cache instead of
+    spawning a fresh ``git diff HEAD -- <path>`` subprocess per file.  The
+    cached diff is sliced down to just this file's segment via
+    :func:`_slice_diff_for_file`.
+
+    Falls back to ``None`` on any failure or when the sliced diff is too large.
     """
     if not cwd or not path:
         return None
-    diff = _run_git(["diff", "--no-color", "HEAD", "--", path], cwd, timeout=1.5)
-    if diff is None or len(diff) > _INLINE_DIFF_MAX_BYTES:
+    whole = _fetch_whole_repo_diff_cached(cwd)
+    if not whole:
         return None
-    return diff
+    segment = _slice_diff_for_file(whole, path)
+    if segment is None or len(segment) > _INLINE_DIFF_MAX_BYTES:
+        return None
+    return segment
 
 
 def _get_whole_repo_diff(cwd: str) -> str | None:
@@ -628,11 +693,12 @@ def _get_whole_repo_diff(cwd: str) -> str | None:
     Used by the single-file inline path (#17).  Returns ``None`` on any failure
     or when the diff exceeds the cap.
 
-    Timeout: 1.5 s.
+    Item #2: shares the cached subprocess result with
+    :func:`_get_inline_diff_for_file`.
     """
     if not cwd:
         return None
-    diff = _run_git(["diff", "--no-color", "HEAD"], cwd, timeout=1.5)
+    diff = _fetch_whole_repo_diff_cached(cwd)
     if diff is None or len(diff) > _SINGLE_FILE_DIFF_CAP:
         return None
     return diff
@@ -2271,6 +2337,19 @@ def _build_manifest_from_cache(
         result += f"\n\n⚠ manifest build timed out after {elapsed:.2f}s — output may be incomplete"
         _LOG.warning(
             "build_manifest: timeout exceeded for session=%s (%.2fs > %.2fs)",
+            session_id[:8],
+            elapsed,
+            _MANIFEST_TIMEOUT_SECS,
+        )
+    elif elapsed > _MANIFEST_TIMEOUT_SECS * 0.8:
+        # Item #30: graduated warning — when render time crosses 80 % of the
+        # hard timeout, emit a footer signal so operators see slow-render
+        # sessions before they tip over into truncation.  Plain text, single
+        # line, ~10 tokens cost; the compaction LLM ignores it but downstream
+        # tooling and humans can grep for "(rendered in" to spot trouble.
+        result += f"\n\n(rendered in {int(elapsed * 1000)}ms)"
+        _LOG.info(
+            "build_manifest: slow-render warning for session=%s (%.2fs > 80%% of %.2fs)",
             session_id[:8],
             elapsed,
             _MANIFEST_TIMEOUT_SECS,
