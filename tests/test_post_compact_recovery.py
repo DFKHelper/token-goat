@@ -266,10 +266,21 @@ class TestRecoverySlotAllocator:
 
 
 class TestRecoverySkillChecklist:
-    """Recovery hint inlines checklist sections instead of recall commands."""
+    """Recovery hint surfaces skill names with a recall-command pointer.
+
+    NOTE: commit 6fc1c46 (refactor: collapse skill list to single-line format)
+    intentionally dropped the inlined-checklist feature and the per-skill
+    bullet structure. The new format is a one-line summary:
+    ``**Skills:** name1, name2 (recall via `token-goat skill-body <name>`)``.
+    Inlined DoD/Checklist sections, sha8 dedup, and ×N count badges are
+    no longer emitted — the agent is pointed at `token-goat skill-body
+    <name> --section DoD` to retrieve a section on demand. These tests
+    now verify the simplified contract: the skill name appears once and
+    the recall pointer is present.
+    """
 
     def test_checklist_inlined_not_recall_command(self, tmp_data_dir):
-        """Store a skill body with ## DoD; recovery hint must contain DoD text, not just recall."""
+        """Skill name and recall pointer present even when body has a ## DoD section."""
         sid = "rec-checklist-1"
         dod_lines = "- All tests pass\n- Lint clean\n- Mypy clean"
         body = f"# ralph\n\nIntro text here.\n\n## DoD\n\n{dod_lines}\n\n## Other\n\nnot this\n"
@@ -286,16 +297,14 @@ class TestRecoverySkillChecklist:
         })
         _assert_continue(result)
         ctx = _read_sidecar(sid)
-        # Checklist content must be inlined.
-        assert "All tests pass" in ctx, f"DoD text missing from hint:\n{ctx}"
-        assert "Lint clean" in ctx
-        # Should NOT fall back to recall command for this entry.
-        assert "token-goat skill-body ralph" not in ctx, (
-            f"recall command leaked into hint that should have inline checklist:\n{ctx}"
-        )
+        assert "ralph" in ctx, f"skill name missing from hint:\n{ctx}"
+        # Single-line format points at the recall command rather than inlining.
+        assert "token-goat skill-body <name>" in ctx
+        # The --section pointer tells the agent how to fetch DoD on demand.
+        assert "--section DoD" in ctx
 
     def test_fallback_when_body_has_no_checklist(self, tmp_data_dir):
-        """Body stored with no ## DoD / ## Checklist — falls back to recall command."""
+        """Skill without a checklist heading still appears with the recall pointer."""
         sid = "rec-checklist-2"
         body = "# ralph\n\n## Overview\n\nJust an overview.\n\n## Usage\n\nUsage text.\n" + ("x" * 300)
         meta = skill_cache.store_output(sid, "ralph", body)
@@ -312,12 +321,12 @@ class TestRecoverySkillChecklist:
         _assert_continue(result)
         ctx = _read_sidecar(sid)
         assert "ralph" in ctx
-        assert "token-goat skill-body ralph" in ctx, (
-            f"fallback recall command missing for skill without checklist:\n{ctx}"
+        assert "token-goat skill-body <name>" in ctx, (
+            f"recall command missing for skill without checklist:\n{ctx}"
         )
 
     def test_fallback_when_no_body_stored(self, tmp_data_dir):
-        """Session has skill_history entry but no body in cache — falls back to recall."""
+        """skill_history entry without a cached body still surfaces name + recall."""
         sid = "rec-checklist-3"
         # Mark skill loaded with a bogus output_id (body never written to disk).
         session.mark_skill_loaded(sid, "ralph", "nonexistent-id", "sha", 25_000, False)
@@ -329,10 +338,16 @@ class TestRecoverySkillChecklist:
         _assert_continue(result)
         ctx = _read_sidecar(sid)
         assert "ralph" in ctx
-        assert "token-goat skill-body ralph" in ctx
+        assert "token-goat skill-body <name>" in ctx
 
     def test_checklist_capped_at_400_chars(self, tmp_data_dir):
-        """Long DoD sections are capped so the hint doesn't balloon."""
+        """Long bodies cannot inflate the hint — single-line summary is bounded.
+
+        Old contract inlined a capped DoD section. New contract emits a
+        single-line summary regardless of body length, so the bound is
+        even tighter — verify the skill-name line is short and the body
+        text itself does not leak in.
+        """
         sid = "rec-checklist-4"
         long_dod = "- criterion item\n" * 100  # >> 400 chars
         body = f"# ralph\n\n## DoD\n\n{long_dod}\n## End\n"
@@ -344,17 +359,31 @@ class TestRecoverySkillChecklist:
         )
         hint = hooks_session._build_recovery_hint(sid)
         assert hint is not None
-        # Skill block should contain inlined content — count chars of that block.
-        assert "criterion item" in hint
-        # Full 100-item list (~1700 chars) must not be present.
-        assert hint.count("criterion item") < 50, "DoD section not capped in recovery hint"
+        # Body content must NOT inline into the single-line summary.
+        assert "criterion item" not in hint, (
+            "DoD body text leaked into single-line skill summary"
+        )
+        assert "ralph" in hint
+        # The single-line skill summary stays short.
+        skill_lines = [ln for ln in hint.splitlines() if "**Skills:**" in ln]
+        assert skill_lines, f"Skill summary line missing:\n{hint}"
+        assert len(skill_lines[0]) < 400, (
+            f"Skill summary line should be tight, got {len(skill_lines[0])} chars"
+        )
 
 
 class TestSkillDedup:
-    """Recovery hint deduplicates skill bodies by content_sha across loads."""
+    """Recovery hint emits each loaded skill name exactly once.
+
+    NOTE: commit 6fc1c46 collapsed the per-skill bullet list into a single
+    ``**Skills:** name1, name2`` line and dropped sha8 differentiation and
+    ×N count badges in the process. These tests now verify the simplified
+    contract: each skill name appears exactly once on the summary line
+    regardless of how many times it was loaded.
+    """
 
     def test_same_sha_three_loads_shows_count_badge(self, tmp_data_dir):
-        """3 loads of same skill body → ONE entry with ×3 badge, not 3 lines."""
+        """3 loads of same skill → name appears exactly once on the summary line."""
         sid = "dedup-same-sha-1"
         body = "# ralph\n\n## Overview\n\nJust an overview.\n" + ("x" * 300)
         # Store once — same sha means same output_id (idempotent).
@@ -368,14 +397,15 @@ class TestSkillDedup:
             )
         hint = hooks_session._build_recovery_hint(sid)
         assert hint is not None
-        # ×3 badge must appear exactly once.
-        assert "×3" in hint, f"Expected ×3 count badge:\n{hint}"
-        # Should not appear as three separate ralph lines.
-        ralph_lines = [ln for ln in hint.splitlines() if "ralph" in ln and ln.strip().startswith("-")]
-        assert len(ralph_lines) == 1, f"Expected 1 ralph line, got {len(ralph_lines)}:\n{hint}"
+        # Single-line summary: ralph appears exactly once.
+        skill_lines = [ln for ln in hint.splitlines() if "**Skills:**" in ln]
+        assert len(skill_lines) == 1, f"Expected 1 skill summary line:\n{hint}"
+        assert skill_lines[0].count("ralph") == 1, (
+            f"Expected ralph to appear once in summary:\n{skill_lines[0]}"
+        )
 
     def test_different_sha_shows_both_with_sha8_suffix(self, tmp_data_dir):
-        """2 loads of same skill with different sha → BOTH listed with sha[:8] suffix."""
+        """2 loads of same skill name → name listed once (latest body wins)."""
         sid = "dedup-diff-sha-1"
         body_v1 = "# ralph\n\n## Overview\n\nVersion 1 body.\n" + ("a" * 300)
         body_v2 = "# ralph\n\n## Overview\n\nVersion 2 body.\n" + ("b" * 300)
@@ -391,12 +421,13 @@ class TestSkillDedup:
 
         hint = hooks_session._build_recovery_hint(sid)
         assert hint is not None
-        # Both sha8 prefixes must appear.
-        assert meta1.content_sha[:8] in hint, f"sha8 of v1 missing:\n{hint}"
-        assert meta2.content_sha[:8] in hint, f"sha8 of v2 missing:\n{hint}"
-        # Both should be listed as ralph entries.
-        ralph_lines = [ln for ln in hint.splitlines() if "ralph" in ln and ln.strip().startswith("-")]
-        assert len(ralph_lines) == 2, f"Expected 2 ralph lines (one per sha), got {len(ralph_lines)}:\n{hint}"
+        # Single-line summary: ralph appears once. The latest body is
+        # what `token-goat skill-body ralph` resolves to.
+        skill_lines = [ln for ln in hint.splitlines() if "**Skills:**" in ln]
+        assert len(skill_lines) == 1, f"Expected 1 skill summary line:\n{hint}"
+        assert skill_lines[0].count("ralph") == 1, (
+            f"Expected ralph to appear once in summary:\n{skill_lines[0]}"
+        )
 
     def test_single_load_no_count_badge(self, tmp_data_dir):
         """1 load → no ×N suffix in the hint."""
@@ -411,7 +442,7 @@ class TestSkillDedup:
         assert "improve" in hint
 
     def test_mixed_two_skills_one_dup_one_single(self, tmp_data_dir):
-        """2 skills: ralph loaded 2× (same sha), improve loaded 1× → 2 entries total."""
+        """ralph loaded 2× + improve loaded 1× → summary line names both once."""
         sid = "dedup-mixed-1"
         body_r = "# ralph\n\n## Overview\n\nRalph body.\n" + ("r" * 300)
         body_i = "# improve\n\n## Overview\n\nImprove body.\n" + ("i" * 300)
@@ -427,16 +458,12 @@ class TestSkillDedup:
 
         hint = hooks_session._build_recovery_hint(sid)
         assert hint is not None
-        # ralph must show ×2; improve must appear without badge.
-        assert "ralph" in hint
-        assert "improve" in hint
-        ralph_lines = [ln for ln in hint.splitlines() if "ralph" in ln and ln.strip().startswith("-")]
-        improve_lines = [ln for ln in hint.splitlines() if "improve" in ln and ln.strip().startswith("-")]
-        assert len(ralph_lines) == 1, f"Expected 1 ralph line, got {len(ralph_lines)}:\n{hint}"
-        assert len(improve_lines) == 1, f"Expected 1 improve line, got {len(improve_lines)}:\n{hint}"
-        # ralph must have ×2 badge somewhere on its line or nearby.
-        ralph_block = "\n".join(ralph_lines)
-        assert "×2" in ralph_block, f"×2 badge missing from ralph block:\n{hint}"
+        # Single-line summary contains both names exactly once.
+        skill_lines = [ln for ln in hint.splitlines() if "**Skills:**" in ln]
+        assert len(skill_lines) == 1, f"Expected 1 skill summary line:\n{hint}"
+        summary = skill_lines[0]
+        assert summary.count("ralph") == 1, f"Expected ralph once:\n{summary}"
+        assert summary.count("improve") == 1, f"Expected improve once:\n{summary}"
 
 
 class TestRecoveryStatAccounting:
