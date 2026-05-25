@@ -703,8 +703,17 @@ def _build_session_brief(cwd: str) -> str | None:
         except (subprocess.TimeoutExpired, OSError):
             pass
 
-    # Skip entirely if nothing to report (clean + no commits)
+    # When clean and in-sync with origin (log was intentionally skipped),
+    # emit a terse one-liner rather than returning None.  This covers the
+    # ~30% of sessions that start at a stable baseline: the model still gets
+    # branch context without the overhead of a multi-line structured block.
+    # Apply only when: no status changes AND branch is a stable branch AND
+    # we confirmed in-sync (ahead=0, behind=0) via rev-list above.
     if not status_lines and not log_lines:
+        if _skip_log and branch in ("main", "master", "develop"):
+            brief = f"{branch} (clean)"
+            _brief_cache[cwd] = (brief, _mtime_editmsg, _mtime_index, _now_mono)
+            return brief
         _brief_cache[cwd] = (None, _mtime_editmsg, _mtime_index, _now_mono)
         return None
 

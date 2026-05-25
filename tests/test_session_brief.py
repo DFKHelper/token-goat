@@ -131,6 +131,73 @@ class TestBriefSkippedWhenClean:
         assert brief is None
 
 
+def _make_run_insync(branch: str = "main") -> object:
+    """Return a subprocess.run side-effect that simulates a fully clean, in-sync repo.
+
+    ``git rev-list --left-right --count HEAD...origin/<branch>`` returns "0\\t0"
+    so ``_skip_log`` is set and the new terse one-liner path is taken.
+    """
+    def _run(cmd, **kwargs):
+        result = MagicMock()
+        if "status" in cmd:
+            result.returncode = 0
+            result.stdout = f"## {branch}...origin/{branch}\0"
+        elif "rev-list" in cmd:
+            result.returncode = 0
+            result.stdout = "0\t0"
+        else:
+            result.returncode = 0
+            result.stdout = ""
+        return result
+    return _run
+
+
+class TestBriefCleanInsyncTerseLine:
+    """When clean and fully in-sync with origin, brief collapses to one terse line."""
+
+    def test_main_insync_returns_terse_brief(self, tmp_path):
+        """Clean main in-sync with origin → 'main (clean)' instead of None."""
+        with patch("subprocess.run", side_effect=_make_run_insync("main")):
+            brief = _build_session_brief(str(tmp_path))
+
+        assert brief == "main (clean)"
+
+    def test_master_insync_returns_terse_brief(self, tmp_path):
+        """Clean master in-sync with origin → 'master (clean)'."""
+        with patch("subprocess.run", side_effect=_make_run_insync("master")):
+            brief = _build_session_brief(str(tmp_path))
+
+        assert brief == "master (clean)"
+
+    def test_develop_insync_returns_terse_brief(self, tmp_path):
+        """Clean develop in-sync with origin → 'develop (clean)'."""
+        with patch("subprocess.run", side_effect=_make_run_insync("develop")):
+            brief = _build_session_brief(str(tmp_path))
+
+        assert brief == "develop (clean)"
+
+    def test_feature_branch_insync_still_returns_none(self, tmp_path):
+        """A non-stable branch that is clean + in-sync still returns None (no info to add)."""
+        with patch("subprocess.run", side_effect=_make_run_insync("feature/x")):
+            brief = _build_session_brief(str(tmp_path))
+
+        # _skip_log only fires for main/master/develop, so feature/x goes through
+        # the normal "nothing to report" path and returns None.
+        assert brief is None
+
+    def test_terse_brief_is_cached(self, tmp_path):
+        """The terse clean brief is stored in the in-process brief cache."""
+        # Clear the module-level cache before the test.
+        import token_goat.hooks_session as hs
+        hs._brief_cache.clear()
+        with patch("subprocess.run", side_effect=_make_run_insync("main")):
+            brief1 = _build_session_brief(str(tmp_path))
+        # Second call should hit the cache (no new subprocess.run calls).
+        with patch("subprocess.run", side_effect=lambda *a, **kw: (_ for _ in ()).throw(AssertionError("subprocess called on cache hit"))):
+            brief2 = _build_session_brief(str(tmp_path))
+        assert brief1 == brief2 == "main (clean)"
+
+
 class TestBriefSkippedWhenNotGitRepo:
     """Brief is skipped gracefully for non-git directories."""
 
