@@ -57,6 +57,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from . import paths
+from .cache_common import safe_cache_op
 from .hooks_common import sanitize_log_str
 from .util import get_logger
 
@@ -184,18 +185,13 @@ def store(session_id: str, file_path: str, content: bytes) -> SnapshotResult | N
     p = snapshot_path(session_id, file_path)
     if p is None:
         return None
-    try:
+    sha = hashlib.sha256(content).hexdigest()
+    with safe_cache_op(f"store:{sanitize_log_str(file_path)}", log=_LOG):
         p.parent.mkdir(parents=True, exist_ok=True)
         _evict_oldest(p.parent, MAX_SNAPSHOTS_PER_SESSION - 1)
         paths.atomic_write_bytes(p, content)
-    except OSError as exc:
-        _LOG.warning(
-            "snapshots: store failed for %s: %s",
-            sanitize_log_str(file_path), exc,
-        )
-        return None
-    sha = hashlib.sha256(content).hexdigest()
-    return SnapshotResult(path=p, content_sha=sha, size_bytes=len(content))
+        return SnapshotResult(path=p, content_sha=sha, size_bytes=len(content))
+    return None
 
 
 def load(session_id: str, file_path: str) -> bytes | None:

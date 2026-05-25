@@ -65,6 +65,7 @@ from .cache_common import (
     load_output_meta_stat,
     load_output_text,
     load_sidecar_json,
+    safe_cache_op,
     safe_join_output_id,
     short_content_hash,
     sidecar_path_for,
@@ -164,7 +165,7 @@ def store_output(
     leaves the directory slightly over budget — the next call will try
     again.
     """
-    try:
+    with safe_cache_op("store_output", log=_LOG):
         out_id = output_id_for(session_id, url)
 
         body_bytes = len(body.encode("utf-8", errors="replace"))
@@ -192,9 +193,7 @@ def store_output(
             out_id, body_bytes, truncated,
         )
         return meta
-    except OSError as exc:
-        _LOG.warning("web_cache: store failed: %s", exc)
-        return None
+    return None
 
 
 def load_output(output_id: str) -> str | None:
