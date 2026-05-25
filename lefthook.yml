@@ -12,4 +12,6 @@ pre-push:
     typecheck:
       run: uv run mypy src
     test:
+      env:
+        PYTHONIOENCODING: "utf-8:replace"
       run: uv run pytest -q --tb=short
