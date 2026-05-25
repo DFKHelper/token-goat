@@ -502,39 +502,48 @@ def doctor(  # noqa: C901
             ok(label, f"{file_count} files, {size_str}{age_str}")
 
     # ------------------------------------------------------------------
-    # 14. Stats summary
+    # 14. Stats summary + 14b. Cumulative-savings projection (item 11)
     # ------------------------------------------------------------------
-    typer.echo("\nStats")
+    # Both sections read from global.db, so they share a single connection.
     # doctor only reads here — use the read-only opener. open_global() runs
     # PRAGMA integrity_check on connect, which is multi-second on a large
     # global.db; a diagnostic must not pay that cost or create the DB.
+    typer.echo("\nStats")
+    _row: object = None
+    _cache_row: object = None
+    _proj_row: object = None
     try:
         with _db.open_global_readonly() as conn:
-            row = conn.execute(
+            _row = conn.execute(
                 "SELECT COUNT(*), SUM(tokens_saved), SUM(bytes_saved) FROM stats"
             ).fetchone()
-            cache_row = conn.execute(
+            _cache_row = conn.execute(
                 "SELECT COUNT(*) FROM stats WHERE kind = ? AND ts >= ?",
                 ("session_cache_unavailable", int(time.time()) - 3600),
             ).fetchone()
-        if row and row[0]:
-            ok("events", str(row[0]))
-            ok("tokens saved", str(row[1] or 0))
-            ok("bytes saved", str(row[2] or 0))
-        else:
-            ok("(none)", "no recorded savings yet")
-        if cache_row and cache_row[0]:
-            flag(
-                "session-cache",
-                f"{cache_row[0]} contention event(s) in the last hour",
-                warn=True,
-            )
-        else:
-            ok("session-cache", "no contention events in the last hour")
+            # Oldest stats row gives elapsed time; sum gives total savings.
+            _proj_row = conn.execute(
+                "SELECT SUM(tokens_saved), MIN(ts), MAX(ts) FROM stats"
+            ).fetchone()
     except FileNotFoundError:
         ok("(none)", "no recorded savings yet")
     except Exception as e:  # noqa: BLE001
         flag("stats", str(e), warn=True)
+
+    if _row and _row[0]:  # type: ignore[index]
+        ok("events", str(_row[0]))  # type: ignore[index]
+        ok("tokens saved", str(_row[1] or 0))  # type: ignore[index]
+        ok("bytes saved", str(_row[2] or 0))  # type: ignore[index]
+    elif _row is not None:
+        ok("(none)", "no recorded savings yet")
+    if _cache_row and _cache_row[0]:  # type: ignore[index]
+        flag(
+            "session-cache",
+            f"{_cache_row[0]} contention event(s) in the last hour",  # type: ignore[index]
+            warn=True,
+        )
+    elif _cache_row is not None:
+        ok("session-cache", "no contention events in the last hour")
 
     # ------------------------------------------------------------------
     # 14b. Cumulative-savings projection (item 11)
@@ -544,32 +553,22 @@ def doctor(  # noqa: C901
     # This is intentionally a rough projection — the point is a ballpark
     # "are you getting value?" number, not an invoice.
     _COST_PER_1M_TOKENS: float = 3.0  # USD, conservative Claude input price
-    try:
-        with _db.open_global_readonly() as _proj_conn:
-            # Oldest stats row gives elapsed time; sum gives total savings.
-            _proj_row = _proj_conn.execute(
-                "SELECT SUM(tokens_saved), MIN(ts), MAX(ts) FROM stats"
-            ).fetchone()
-        if _proj_row and _proj_row[0] and _proj_row[1] and _proj_row[2]:
-            _total_tokens = int(_proj_row[0])
-            _oldest_ts = float(_proj_row[1])
-            _newest_ts = float(_proj_row[2])
-            _elapsed_days = (_newest_ts - _oldest_ts) / 86400.0
-            if _elapsed_days >= 1.0:
-                _tokens_per_day = _total_tokens / _elapsed_days
-                _tokens_per_month = _tokens_per_day * 30
-                _usd_per_month = (_tokens_per_month / 1_000_000) * _COST_PER_1M_TOKENS
-                ok(
-                    "projected savings",
-                    f"${_usd_per_month:.2f}/month at current rate "
-                    f"({_tokens_per_month:,.0f} tokens/month, ${_COST_PER_1M_TOKENS}/1M)",
-                )
-            else:
-                ok("projected savings", "< 1 day of data — check back tomorrow")
-    except FileNotFoundError:
-        pass
-    except Exception:  # noqa: BLE001
-        pass
+    if _proj_row and _proj_row[0] and _proj_row[1] and _proj_row[2]:  # type: ignore[index]
+        _total_tokens = int(_proj_row[0])  # type: ignore[index]
+        _oldest_ts = float(_proj_row[1])  # type: ignore[index]
+        _newest_ts = float(_proj_row[2])  # type: ignore[index]
+        _elapsed_days = (_newest_ts - _oldest_ts) / 86400.0
+        if _elapsed_days >= 1.0:
+            _tokens_per_day = _total_tokens / _elapsed_days
+            _tokens_per_month = _tokens_per_day * 30
+            _usd_per_month = (_tokens_per_month / 1_000_000) * _COST_PER_1M_TOKENS
+            ok(
+                "projected savings",
+                f"${_usd_per_month:.2f}/month at current rate "
+                f"({_tokens_per_month:,.0f} tokens/month, ${_COST_PER_1M_TOKENS}/1M)",
+            )
+        else:
+            ok("projected savings", "< 1 day of data — check back tomorrow")
 
     # ------------------------------------------------------------------
     # 15. Recent hook crashes (item 9) — only shown with --crashes
