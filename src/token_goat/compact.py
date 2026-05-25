@@ -1293,13 +1293,37 @@ def _rank_symbols_by_recency(entry: FileEntry, now: float) -> list[str]:
     return [item[0] for item in scored_symbols]
 
 
+def _adaptive_bash_max(bash_history: object) -> int:
+    """Compute the effective Bash entry cap based on session size.
+
+    Short sessions (< 10 commands) are dominated by the bash section if the
+    full _MAX_BASH_ENTRIES constant is used — the handful of commands run so
+    far would fill the manifest while the agent still has fresh context.
+    Scaling down for short sessions keeps the manifest proportional.
+
+    Formula: ``min(_MAX_BASH_ENTRIES, max(2, len(bash_history) // 5))``.
+    Examples:
+    - 10 commands → 2  (10 // 5 = 2)
+    - 25 commands → 5  (25 // 5 = 5, capped at 6)
+    - 30 commands → 6  (30 // 5 = 6)
+    - 60 commands → 6  (capped at _MAX_BASH_ENTRIES)
+    """
+    n = len(bash_history) if isinstance(bash_history, dict) else 0
+    return min(_MAX_BASH_ENTRIES, max(2, n // 5))
+
+
 def _select_top_bash_entries(bash_history: object) -> list[object]:
-    """Pick up to :data:`_MAX_BASH_ENTRIES` cached Bash runs worth surfacing."""
+    """Pick up to an adaptive cap of cached Bash runs worth surfacing.
+
+    The cap scales with session length (see :func:`_adaptive_bash_max`) so
+    short sessions don't let the bash section dominate the manifest budget.
+    """
+    effective_max = _adaptive_bash_max(bash_history)
     return _select_top_entries(
         bash_history,
         min_bytes=_MIN_BASH_BYTES_FOR_MANIFEST,
         size_fn=lambda e: getattr(e, "stdout_bytes", 0) + getattr(e, "stderr_bytes", 0),
-        max_n=_MAX_BASH_ENTRIES,
+        max_n=effective_max,
         exclude_fn=_is_noop_bash_command,
     )
 
