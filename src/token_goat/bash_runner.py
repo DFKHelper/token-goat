@@ -57,6 +57,11 @@ from .util import get_logger
 
 _LOG = get_logger("bash_runner")
 
+#: Minimum bytes saved to bother writing a stat row.  Filters that squeeze
+#: 2–3 bytes (e.g. whitespace-only collapses) generate noise rows with
+#: "0.0% savings" in `token-goat stats`; skip them below this threshold.
+MIN_RECORD_STAT_BYTES: Final[int] = 32
+
 #: Per-stream byte cap.  Beyond this we stop appending to the in-memory buffer
 #: and discard the rest, so a runaway log can never OOM the wrapper.  32 MiB
 #: per stream covers practically any real command (10K lines × 3 KB/line).
@@ -400,7 +405,7 @@ def _record_savings(
     Best-effort: a DB error must never block the wrapper from returning the
     exit code.  All exceptions are caught and logged at debug level.
     """
-    if result.bytes_saved <= 0:
+    if result.bytes_saved < MIN_RECORD_STAT_BYTES:
         return
     try:
         from . import db  # noqa: PLC0415

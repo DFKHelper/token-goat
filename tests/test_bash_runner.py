@@ -167,3 +167,44 @@ class TestStatsRecording:
             ).fetchall()
         assert rows, "expected at least one bash_compress stat row"
         assert any(r["bytes_saved"] > 0 for r in rows)
+
+    def test_small_savings_below_threshold_not_recorded(self, tmp_data_dir):
+        """Savings below MIN_RECORD_STAT_BYTES must not produce a stat row."""
+        from unittest.mock import patch
+
+        from token_goat import bash_runner as br
+
+        # Build a CompressedOutput that saves only 3 bytes (below threshold of 32).
+        result = br.bash_compress.CompressedOutput(
+            text="x",
+            original_bytes=10,
+            compressed_bytes=7,
+            filter_name="python",
+        )
+        assert result.bytes_saved == 3
+        assert result.bytes_saved < br.MIN_RECORD_STAT_BYTES
+
+        # _record_savings should return before importing db — patch at the db module level.
+        with patch("token_goat.db.record_stat") as mock_record:
+            br._record_savings(result, "python -c 'pass'", elapsed_ms=1.0)
+        mock_record.assert_not_called()
+
+    def test_savings_at_threshold_are_recorded(self, tmp_data_dir):
+        """Savings at exactly MIN_RECORD_STAT_BYTES must produce a stat row."""
+        from unittest.mock import patch
+
+        from token_goat import bash_runner as br
+
+        threshold = br.MIN_RECORD_STAT_BYTES
+        result = br.bash_compress.CompressedOutput(
+            text="x",
+            original_bytes=threshold + 50,
+            compressed_bytes=50,
+            filter_name="pytest",
+        )
+        assert result.bytes_saved == threshold
+
+        # Verify record_savings runs the DB call for bytes_saved == threshold.
+        with patch("token_goat.db.record_stat") as mock_record:
+            br._record_savings(result, "pytest tests/", elapsed_ms=5.0)
+        assert mock_record.called, "record_stat must be called at threshold"
