@@ -393,19 +393,32 @@ class TestExtractChecklistSection:
 # ---------------------------------------------------------------------------
 
 class TestRecoveryHintSkills:
+    # Recovery hint format was simplified in commit 6fc1c46 (refactor:
+    # collapse skill list to single-line format) to match compact.py's
+    # manifest convention: `**Skills:** name1, name2, ... (recall via
+    # \`token-goat skill-body <name>\`)`. Per-skill bullets, inlined DoD
+    # checklists, sha8 dedup, and ×N count badges are no longer emitted —
+    # the agent calls `token-goat skill-body <name>` (or `--section DoD`)
+    # to retrieve the body on demand. These tests verify the new
+    # single-line contract.
     def test_skills_block_appears(self, tmp_data_dir):
         sid = "session-recovery-skill"
         session.mark_skill_loaded(sid, "ralph", "oid1", "sha1", 25_000, False)
         hint = hooks_session._build_recovery_hint(sid)
         assert hint is not None
-        assert "**Skills**" in hint
+        assert "**Skills:**" in hint
         assert "ralph" in hint
-        # With no body stored, falls back to recall command format.
-        assert "token-goat skill-body ralph" in hint
+        # The single-line summary points the agent at the recall command.
         assert "token-goat skill-body <name>" in hint
 
     def test_checklist_inlined_when_body_stored(self, tmp_data_dir):
-        """When a body with a ## DoD section is cached, recovery hint inlines it."""
+        """Body with a ## DoD heading is reachable via the recall hint.
+
+        Inlining checklists was removed in commit 6fc1c46 — the new format
+        names the skill and points at `token-goat skill-body <name>
+        --section DoD`. The body is still cached; verify the skill name is
+        in the hint and the section-retrieval tip is present.
+        """
         sid = "session-recovery-checklist"
         dod_text = "- All tests pass\n- Lint clean\n- Mypy clean"
         body = f"# ralph\n\nIntro.\n\n## DoD\n\n{dod_text}\n\n## Other\n\nNot this.\n"
@@ -417,15 +430,13 @@ class TestRecoveryHintSkills:
         )
         hint = hooks_session._build_recovery_hint(sid)
         assert hint is not None
-        assert "**Skills**" in hint
+        assert "**Skills:**" in hint
         assert "ralph" in hint
-        # Checklist content must appear inline.
-        assert "All tests pass" in hint
-        # Should NOT fall back to recall command for this skill entry.
-        assert "token-goat skill-body ralph" not in hint
+        # The --section tip points the agent at how to fetch the DoD body.
+        assert "--section DoD" in hint
 
     def test_fallback_when_no_checklist_in_body(self, tmp_data_dir):
-        """Body stored but no checklist heading → fall back to recall command."""
+        """Skill name appears in the single-line hint with recall pointer."""
         sid = "session-recovery-fallback"
         body = "# ralph\n\n## Overview\n\nJust an overview.\n\n## Usage\n\nUsage.\n" + ("x" * 300)
         meta = skill_cache.store_output(sid, "ralph", body)
@@ -437,7 +448,7 @@ class TestRecoveryHintSkills:
         hint = hooks_session._build_recovery_hint(sid)
         assert hint is not None
         assert "ralph" in hint
-        assert "token-goat skill-body ralph" in hint
+        assert "token-goat skill-body <name>" in hint
 
     def test_no_skills_no_block(self, tmp_data_dir):
         sid = "session-recovery-no-skill"
@@ -445,7 +456,7 @@ class TestRecoveryHintSkills:
         session.mark_file_read(sid, "/tmp/foo.py", 0, 20)
         hint = hooks_session._build_recovery_hint(sid)
         if hint is not None:
-            assert "**Skills**" not in hint
+            assert "**Skills:**" not in hint
 
 
 # ---------------------------------------------------------------------------
