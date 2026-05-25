@@ -272,9 +272,19 @@ def _try_shrink_image(
 
         shrink_response = dict(tool_input)
         shrink_response["file_path"] = str(shrunken)
+        _src_b = img_stats["src_bytes"]
+        _out_b = img_stats["out_bytes"]
+        # Omit the "→ N bytes" suffix when the compression ratio is modest (< 4x):
+        # the saved bytes are small enough that the extra token cost of printing
+        # the output size isn't worth it.  Keep the suffix only when savings are
+        # dramatic (original >= 4× larger), where it visually confirms the win.
+        if _out_b > 0 and _src_b / _out_b >= 4:
+            _size_str = f"{_src_b:,} → {_out_b:,} bytes"
+        else:
+            _size_str = f"{_src_b:,} bytes"
         note = (
             f"Note: image auto-shrunk by token-goat "
-            f"({img_stats['src_bytes']:,} → {img_stats['out_bytes']:,} bytes, "
+            f"({_size_str}, "
             f"~{img_stats['bytes_saved']:,} bytes saved). "
             f"Original: {file_path}"
         )
