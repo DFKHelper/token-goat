@@ -2,7 +2,11 @@
 
 All notable changes to Token-Goat are documented in this file. Format follows Keep a Changelog. Token-Goat follows Semantic Versioning starting at 1.0.
 
-## [Unreleased] — 55-iteration loop (2026-05-25)
+## [0.9.0] - 2026-05-25
+
+Bundles three improvement loops landed since 0.8.0 (37-iter context/compaction on 2026-05-25, 68-iter reliability/perf on 2026-05-24, 55-iter context-savings baseline). Headlines: SSRF DNS-rebinding fix, hook registry single-source-of-truth with startup alignment gate, race-tolerant Windows `mkdir`, manifest format shortening + delta tracking, CI split into fast/slow tiers, and cross-harness wire-format compatibility coverage.
+
+_From the 37-iteration loop (2026-05-25):_
 
 ### Security
 
@@ -86,7 +90,7 @@ All notable changes to Token-Goat are documented in this file. Format follows Ke
 
 **Suite at end of loop: 4965 pass (started at 4598; +367 tests added).**
 
-## [Unreleased] — 68-iteration loop (2026-05-24)
+_From the 68-iteration loop (2026-05-24):_
 
 ### Security
 
@@ -135,7 +139,7 @@ All notable changes to Token-Goat are documented in this file. Format follows Ke
 
 ---
 
-## [Unreleased] — prior iteration batch (55-iter baseline)
+_From the 55-iteration baseline:_
 
 ### Added
 
