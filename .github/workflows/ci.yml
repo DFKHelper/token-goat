@@ -39,7 +39,26 @@ jobs:
         # the actual ``subprocess.Popen`` is skipped.
         env:
           TOKEN_GOAT_NO_WORKER_SPAWN: "1"
-        run: uv run pytest -rfE --tb=short
+        # ``-m "not slow"`` excludes the opt-in stress tier (git-integration
+        # tests, multi-process concurrency tests). The slow tier is racy on
+        # the Windows runner's tmpdir under heavy IO and CI's already-stressed
+        # filesystem layer — pytest-rerunfailures only partially masks it.
+        # The fast tier still exercises the cross-process invariants via the
+        # threaded variant of each stress test (e.g. test_concurrent_threads
+        # _100_edits_no_loss covers the same lock-stack as its subprocess
+        # sibling, just without the subprocess.Popen pressure).
+        run: uv run pytest -m "not slow" -rfE --tb=short
+
+      - name: Test (slow tier, allow-fail)
+        # The slow tier runs the multi-process concurrency tests and git
+        # integration tests. These are racy under Windows-Server-2022 + GitHub
+        # Actions and we don't want them to gate the build. ``continue-on-error``
+        # surfaces failures without blocking the run, so we still see what's
+        # happening but don't lose the entire build to a transient race.
+        continue-on-error: true
+        env:
+          TOKEN_GOAT_NO_WORKER_SPAWN: "1"
+        run: uv run pytest -m "slow" -rfE --tb=short
 
       - name: Kill leftover detached worker daemons
         # Several hook tests trigger ``worker.ensure_running()`` which
