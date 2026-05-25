@@ -655,51 +655,49 @@ def _build_session_brief(cwd: str) -> str | None:
     except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
         return None
 
-    # git log --oneline -5
+    # git log --oneline (adaptive count)
     # Skip when we're on clean main/master and local HEAD is in sync with
     # origin/<branch> — the session is at a stable baseline and the recent
     # commit list adds no actionable signal (#26).
-    # Guard: we only skip when the SHA values look like real git SHAs (40 hex
-    # chars) so that test stubs returning branch-name strings don't accidentally
-    # trigger the skip.
+    #
+    # Item A4: replace two separate rev-parse calls with a single
+    # `git rev-list --left-right --count HEAD...origin/<branch>` call.
+    # Returns "ahead\tbehind" counts; "0\t0" means in-sync.  One spawn
+    # instead of two saves ~30-80 ms on Windows per SessionStart.
+    #
+    # Item A2: adaptive log entry count — on a clean baseline (empty status,
+    # main/master/develop, in-sync with origin) emit only 2 entries instead of 5.
+    # A clean session at a stable baseline gains very little from extra SHAs;
+    # saving ~40-80 tokens per clean SessionStart is worthwhile.
     log_lines: list[str] = []
     _skip_log = False
-    if branch in ("main", "master") and not status_lines:
+    _log_count = 5  # default; may be reduced for clean stable sessions
+    if branch in ("main", "master", "develop") and not status_lines:
         _log_skip_budget = _remaining()
         if _log_skip_budget > 0.1:
             try:
-                _local = _run_git(
-                    ["rev-parse", "HEAD"],
+                _rl = _run_git(
+                    ["rev-list", "--left-right", "--count", f"HEAD...origin/{branch}"],
                     cwd=cwd,
                     timeout=max(0.1, min(0.8, _log_skip_budget)),
                 )
-                _origin = _run_git(
-                    ["rev-parse", f"origin/{branch}"],
-                    cwd=cwd,
-                    timeout=max(0.1, min(0.8, _remaining())),
-                )
-                _local_sha = _local.stdout.strip() if _local.returncode == 0 else ""
-                _origin_sha = _origin.stdout.strip() if _origin.returncode == 0 else ""
-                # Only skip when both SHAs look like real git object hashes
-                # (40 hex characters).  Branch-name strings from test stubs or
-                # partial refs never satisfy this predicate.
-                import re as _re  # noqa: PLC0415
-                _sha_re = _re.compile(r"^[0-9a-f]{40}$")
-                if (
-                    _local_sha
-                    and _origin_sha
-                    and _sha_re.match(_local_sha)
-                    and _sha_re.match(_origin_sha)
-                    and _local_sha == _origin_sha
-                ):
-                    _skip_log = True
+                if _rl.returncode == 0:
+                    _parts = _rl.stdout.strip().split()
+                    if len(_parts) == 2:
+                        _ahead, _behind = _parts
+                        if _ahead == "0" and _behind == "0":
+                            # In-sync: skip the log entirely
+                            _skip_log = True
+                        elif _ahead == "0":
+                            # Behind origin — reduce to 2 to save tokens
+                            _log_count = 2
             except (subprocess.TimeoutExpired, OSError):
                 pass  # fail-open: if we can't check, emit the log
 
     log_budget = _remaining()
     if log_budget > 0.1 and not _skip_log:
         try:
-            lg = _run_git(["log", "--oneline", "-5"], cwd=cwd, timeout=log_budget)
+            lg = _run_git(["log", "--oneline", f"-{_log_count}"], cwd=cwd, timeout=log_budget)
             if lg.returncode == 0:
                 log_lines = [line.strip() for line in lg.stdout.splitlines() if line.strip()]
         except (subprocess.TimeoutExpired, OSError):
