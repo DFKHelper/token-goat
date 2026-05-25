@@ -26,6 +26,7 @@ __all__ = [
     "locks_dir",
     "logs_dir",
     "models_dir",
+    "normalize_key",
     "project_db_path",
     "python_runner_argv",
     "python_runner_command",
@@ -295,6 +296,38 @@ def project_db_path(project_hash: str) -> Path:
     which would happen with traversal sequences like ``../../../evil``.
     """
     return _safe_child_path(data_dir() / "projects", project_hash, ".db", "project_hash")
+
+
+def _has_windows_drive_prefix(s: str) -> bool:
+    """Return True when *s* begins with a Windows drive letter followed by a colon.
+
+    Accepts both upper- and lowercase drive letters (``C:``, ``c:``) so it can be
+    used both for case-aware normalization and for absolute-path classification.
+    """
+    return len(s) >= 2 and s[1] == ":" and s[0].isalpha()
+
+
+def normalize_key(p: str) -> str:
+    """Canonical path-key normalizer for session/hint/compact/stats lookups.
+
+    Replaces backslashes with forward slashes; lowercases the Windows drive
+    letter (only on Windows, only when present and uppercase).  This is the
+    public canonical form used across token-goat for cache keys, dedup
+    fingerprints, and dict lookups that must agree between hook processes that
+    can observe the same file with different casings (e.g. ``C:\\foo`` vs
+    ``c:\\foo``) when spawned independently by the harness.
+
+    Fast path: paths with no backslashes skip the allocation entirely.
+    """
+    # Fast path: no backslashes — skip the str.replace allocation.
+    if "\\" not in p:
+        if sys.platform == "win32" and _has_windows_drive_prefix(p) and p[0].isupper():
+            return p[0].lower() + p[1:]
+        return p
+    s = p.replace("\\", "/")
+    if sys.platform == "win32" and _has_windows_drive_prefix(s) and s[0].isupper():
+        s = s[0].lower() + s[1:]
+    return s
 
 
 def is_safe_rel_path(rel_path: str) -> bool:
