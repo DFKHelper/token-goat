@@ -763,7 +763,13 @@ def _get_git_diff_stat_summary(root: object) -> str:
 def _get_session_commits(cwd: str | None, session_start_ts: float) -> list[str]:
     """Return git log lines for commits made after session_start_ts.
 
-    Returns at most 5 commits, formatted as "- {short_hash} {subject}".
+    Returns at most 5 commits, formatted as ``{short_hash} {subject}``.
+
+    Item #5: the leading ``- `` prefix was dropped — the commits section is
+    already rendered under an ``### Commits This Session`` header inside an
+    already-bulleted block, and the prefix added ~2 tokens per commit × 5
+    commits with no information gain.
+
     Returns [] when git is unavailable, not in a repo, or cwd is None.
     Times out after 2 seconds.
     """
@@ -776,7 +782,7 @@ def _get_session_commits(cwd: str | None, session_start_ts: float) -> list[str]:
     )
     if not out:
         return []
-    return [f"- {sanitize_log_str(line, max_len=100)}" for line in out.splitlines()[:5]]
+    return [sanitize_log_str(line, max_len=100) for line in out.splitlines()[:5]]
 
 
 def _count_suffix(n: int) -> str:
@@ -1511,7 +1517,14 @@ def _format_bash_entry(entry: object, inline_snippet: bool = True, *, is_blocker
     run_count = int(getattr(entry, "run_count", 1))
     run_count_marker = f" [×{run_count}]" if run_count > 1 else ""
     exit_str = "e=?" if exit_code is None else f"e={exit_code}"
-    meta = _render_cache_meta(exit_str, total, truncated=bool(getattr(entry, "truncated", False)))
+    truncated = bool(getattr(entry, "truncated", False))
+    # Item #10: when the command's output is small (<1KB) AND not truncated,
+    # the byte count carries no useful signal — drop it entirely.  Saves
+    # ~3 tokens/entry across the typical short-command-heavy session.
+    if not truncated and total < 1024:
+        meta = f"({exit_str})"
+    else:
+        meta = _render_cache_meta(exit_str, total, truncated=truncated)
     header = f"- $ {cmd_preview}{run_count_marker}  {meta}"
 
     if not inline_snippet:
@@ -1712,23 +1725,32 @@ def _select_top_glob_entries(glob_history: object) -> list[object]:
     return heapq.nlargest(_MAX_GLOB_ENTRIES, candidates, key=lambda e: getattr(e, "ts", 0.0))
 
 
-def _format_glob_entry(entry: object) -> str:
+def _format_glob_entry(entry: object, *, cwd: str | None = None) -> str:
     """Render one :class:`session.GlobEntry` as a single manifest line.
 
     Format::
 
-        - 📂 **/*.py  (src/, 42 files)
-        - 📂 tests/**  (27 files)
-        - 📂 src/**/*.ts
+        - g: **/*.py  (src/, 42 files)
+        - g: tests/**  (27 files)
+        - g: src/**/*.ts
 
-    Scope path is omitted when ``None``; file count omitted when not recorded.
+    Item #4: the ``📂`` emoji prefix is replaced with the ASCII marker ``g:``
+    (multi-byte emojis cost more tokens than 2 ASCII chars), and the scope
+    path is suppressed when it equals *cwd* (the path scope is then redundant
+    — the agent already knows the working directory).
     """
     pattern = sanitize_log_str(getattr(entry, "pattern", ""), max_len=80)
     path = getattr(entry, "path", None)
+    if path and cwd:
+        # Suppress scope path when it equals the session cwd.
+        norm_path = str(path).replace("\\", "/").rstrip("/").lower()
+        norm_cwd = str(cwd).replace("\\", "/").rstrip("/").lower()
+        if norm_path == norm_cwd:
+            path = None
     count = getattr(entry, "result_count", None)
     scope = f"  ({path}" if path else ""
     hits = (f", {count} files)" if scope else f"  ({count} files)") if isinstance(count, int) else (")" if scope else "")
-    return f"- 📂 {pattern}{scope}{hits}"
+    return f"- g: {pattern}{scope}{hits}"
 
 
 def _token_count(text: str) -> int:
@@ -1943,24 +1965,19 @@ def _format_grep_entry(entry: object) -> str:
 
     Format::
 
-        - `pattern` in src/token_goat/ (12 results)
-        - `pattern` (0 results)        (zero = dead end, still informative)
+        - `pattern` in src/token_goat/ (12)
+        - `pattern` (0)                (zero = dead end, still informative)
         - `pattern` in src/            (when result_count is unknown)
 
-    Single space before the count parens (was double) — saves ~1 token per
-    entry × _MAX_GREP_ENTRIES, no information lost.  The "results" noun is
-    kept because tests assert on the literal "N results" / "1 result" form
-    and the singular distinction is load-bearing for compaction-LLM context.
+    Item #3: the explicit "results"/"result" noun is dropped — bare ``(N)`` is
+    unambiguous in context and saves ~1 token per entry × _MAX_GREP_ENTRIES.
+    The compaction LLM infers the count semantics from the grep line shape.
     """
     pattern = sanitize_log_str(getattr(entry, "pattern", ""), max_len=80)
     path = getattr(entry, "path", None)
     result_count = getattr(entry, "result_count", None)
     path_str = f" in {_short_path(path)}" if path else ""
-    if result_count is not None:
-        noun = "result" if result_count == 1 else "results"
-        count_str = f" ({result_count} {noun})"
-    else:
-        count_str = ""
+    count_str = f" ({result_count})" if result_count is not None else ""
     return f"- `{pattern}`{path_str}{count_str}"
 
 
@@ -3002,7 +3019,9 @@ def _render(cache: SessionCache, session_id: str, max_tokens: int) -> tuple[str,
     )
     cold_outputs: list[object] = []
     if cold_candidates:
-        cold_header = "### Cold Outputs (evict — recall via `token-goat bash-output <id>`)"
+        # Item #11: shortened from "### Cold Outputs (evict — recall via …)" to a
+        # bold-label one-liner.  Saves ~2 tokens per session that has cold outputs.
+        cold_header = "**Cold:** evict, recall via `token-goat bash-output <id>`"
         cold_header_cost = _token_count(cold_header)
         if bash_used + cold_header_cost <= bash_budget:
             # Collect content lines first; emit header only when ≥2 entries fit
@@ -3084,7 +3103,11 @@ def _render(cache: SessionCache, session_id: str, max_tokens: int) -> tuple[str,
         if age_tier != "young"
         else []
     )
-    glob_lines = _render_section("Directory Scans", glob_entries, _format_glob_entry)
+    glob_lines = _render_section(
+        "Directory Scans",
+        glob_entries,
+        lambda e: _format_glob_entry(e, cwd=cwd),
+    )
     if glob_lines:
         # min_lines=2: a single-entry Directory Scans section is rarely worth the
         # header overhead — suppress it the same way _render_budget_lines does.

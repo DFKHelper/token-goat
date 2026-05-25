@@ -661,27 +661,36 @@ class TestGrepSection:
         sid = "grep-count-session-abc"
         session.mark_grep(sid, "needle", "/proj/src", result_count=7)
         result = compact.build_manifest(sid)
-        assert "7 results" in result, f"result count missing:\n{result}"
+        # Item #3: bare ``(N)`` — the "results" noun was dropped.
+        assert "(7)" in result, f"result count missing:\n{result}"
 
     def test_grep_zero_result_count_shown(self, tmp_data_dir):
         sid = "grep-zero-session-abc"
         session.mark_grep(sid, "dead_end", "/proj/src", result_count=0)
         result = compact.build_manifest(sid)
-        assert "0 results" in result, f"zero result count missing:\n{result}"
+        assert "(0)" in result, f"zero result count missing:\n{result}"
 
     def test_grep_result_count_singular(self, tmp_data_dir):
         sid = "grep-singular-session-abc"
         session.mark_grep(sid, "unique_hit", "/proj/src", result_count=1)
         result = compact.build_manifest(sid)
-        assert "1 result" in result, f"singular form missing:\n{result}"
-        assert "1 results" not in result, f"wrong plural form:\n{result}"
+        # Item #3: bare ``(1)`` is now used for both singular and plural counts.
+        assert "(1)" in result, f"singular count missing:\n{result}"
+        assert "1 result" not in result, f"obsolete 'N result' form leaked:\n{result}"
 
     def test_grep_no_count_when_unknown(self, tmp_data_dir):
         sid = "grep-no-count-session-abc"
         session.mark_grep(sid, "unknown_count", "/proj/src", result_count=None)
         result = compact.build_manifest(sid)
         assert "unknown_count" in result
-        assert "result" not in result, f"count shown when it should be absent:\n{result}"
+        # No "(N)" suffix should appear on the grep line when count is unknown.
+        grep_line = next(
+            (ln for ln in result.splitlines() if "unknown_count" in ln), ""
+        )
+        tail = grep_line.split("unknown_count", 1)[1] if "unknown_count" in grep_line else ""
+        assert "(" not in tail, (
+            f"count shown when it should be absent:\n{grep_line}"
+        )
 
     def test_grep_most_recent_shown_first(self, tmp_data_dir, monkeypatch):
         import itertools as _it
@@ -752,8 +761,9 @@ class TestGrepSection:
             f"deduplicated pattern should appear exactly once:\n{result}"
         )
         # The most-recent entry had result_count=7 — that should be the surviving entry.
-        assert "7 results" in result, (
-            f"most-recent occurrence (7 results) should survive dedup:\n{result}"
+        # Item #3: bare ``(N)`` form.
+        assert "(7)" in result, (
+            f"most-recent occurrence (7) should survive dedup:\n{result}"
         )
 
     def test_grep_stale_45min_dropped_fresh_kept(self, tmp_data_dir):
@@ -934,7 +944,8 @@ class TestColdOutputs:
 
         # Failed command should NOT appear in the Cold Outputs section
         # (it may still appear in the Commands Run section — that is acceptable).
-        assert "Cold Outputs" not in result or "failed_id_001" not in result, (
+        # Item #11: header is now the bold-label "**Cold:**".
+        assert "**Cold:**" not in result or "failed_id_001" not in result, (
             f"failed command should not appear in cold outputs:\n{result}"
         )
 
@@ -970,8 +981,9 @@ class TestColdOutputs:
 
         result = compact.build_manifest(sid, max_tokens=800)
 
-        # Successful command SHOULD appear in Cold Outputs section (short id form)
-        assert "Cold Outputs" in result, f"cold outputs section missing:\n{result}"
+        # Successful command SHOULD appear in Cold Outputs section (short id form).
+        # Item #11: header is now "**Cold:** evict, recall via ...".
+        assert "**Cold:**" in result, f"cold outputs section missing:\n{result}"
         from token_goat.cache_common import short_output_id
         assert short_output_id("success_id_001") in result, (
             f"successful cold command short id should appear in cold outputs:\n{result}"
@@ -1881,9 +1893,12 @@ class TestSessionCommits:
         past_timestamp = time.time() - 3600
         result = compact._get_session_commits(str(repo_path), past_timestamp)
 
-        # Should return at least one formatted commit
+        # Should return at least one formatted commit.
+        # Item #5: the leading "- " bullet prefix was dropped — entries are now
+        # emitted as bare "{hash} {subject}" lines since the commits section is
+        # already rendered under a bulleted header block.
         assert len(result) > 0
-        assert all(line.startswith("- ") for line in result)
+        assert all(not line.startswith("- ") for line in result)
         assert "test commit" in result[0]
 
     def test_manifest_includes_commits_section_when_present(self, tmp_data_dir):
@@ -1901,7 +1916,8 @@ class TestSessionCommits:
         session.save(cache)
 
         # Mock _get_session_commits to return some commits
-        mock_commits = ["- abc1234 feat: add feature", "- def5678 fix: bug fix"]
+        # Item #5: entries are emitted without the leading "- " bullet prefix.
+        mock_commits = ["abc1234 feat: add feature", "def5678 fix: bug fix"]
         with patch("token_goat.compact._get_session_commits", return_value=mock_commits):
             result = compact.build_manifest(sid)
 
@@ -2412,7 +2428,8 @@ class TestYoungSessionOmitsBashSection:
 
         result = compact.build_manifest(sid)
 
-        assert "Cold Outputs" not in result, (
+        # Item #11: header is now the bold-label "**Cold:**".
+        assert "**Cold:**" not in result, (
             f"cold outputs must be absent for young session:\n{result}"
         )
 
@@ -4552,7 +4569,8 @@ class TestColdOutputsMatureOnly:
         cache.created_ts = _time.time() - 1800  # 30 min old → active
         session.save(cache)
         manifest = compact._build_manifest_from_cache(cache, sid, 800)
-        assert "Cold Outputs" not in manifest
+        # Item #11: header is now the bold-label "**Cold:**".
+        assert "**Cold:**" not in manifest
 
     def test_mature_session_has_cold_outputs(self, tmp_data_dir):
         """Mature-tier session with old bash output → Cold Outputs section present."""
@@ -4568,7 +4586,8 @@ class TestColdOutputsMatureOnly:
         cache.created_ts = _time.time() - 4000  # ~67 min old → mature
         session.save(cache)
         manifest = compact._build_manifest_from_cache(cache, sid, 800)
-        assert "Cold Outputs" in manifest
+        # Item #11: header is now the bold-label "**Cold:**".
+        assert "**Cold:**" in manifest
 
     def test_young_session_no_cold_outputs(self, tmp_data_dir):
         """Young-tier session → Cold Outputs suppressed (same as active)."""
@@ -4581,7 +4600,8 @@ class TestColdOutputsMatureOnly:
         cache.created_ts = _time.time() - 120  # 2 min old → young
         session.save(cache)
         manifest = compact._build_manifest_from_cache(cache, sid, 800)
-        assert "Cold Outputs" not in manifest
+        # Item #11: header is now the bold-label "**Cold:**".
+        assert "**Cold:**" not in manifest
 
 
 # ---------------------------------------------------------------------------
