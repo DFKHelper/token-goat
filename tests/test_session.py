@@ -2755,8 +2755,18 @@ class TestSessionLockfile:
         assert _lock_is_stale(lp) is True
         lp.unlink(missing_ok=True)
 
+    @pytest.mark.slow
     def test_second_acquire_returns_none_within_timeout(self, tmp_data_dir):
-        """A second acquire attempt while the lock is held returns None (timeout)."""
+        """A second acquire attempt while the lock is held returns None (timeout).
+
+        Marked ``slow``: this test intentionally spins in the lock-poll loop for
+        the full ``_LOCK_TIMEOUT_SECS`` (5 s of real wall time), and that 5 s
+        can stretch past the per-test timeout on a heavily loaded Windows CI
+        runner — when it does, pytest-timeout broadcasts CTRL_C_EVENT and the
+        xdist worker dies with a `Windows fatal exception: access violation`.
+        The cross-process invariant is still covered by the threaded sibling
+        tests in :class:`TestSessionLockfileConcurrent`.
+        """
         import os as _os
         import time as _time
 
