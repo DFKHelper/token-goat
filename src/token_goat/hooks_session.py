@@ -922,6 +922,13 @@ def user_prompt_submit(payload: HookPayload) -> HookResponse:
 
     All errors are swallowed — the hook must never block prompt submission.
     """
+    # Short-circuit for trivial prompts (e.g. "k", "yes", "no", "/help").
+    # The session-state context adds no value when the user types fewer than
+    # 8 characters; skip the git subprocess and cache load entirely.
+    _raw_prompt = payload.get("prompt", "")
+    if isinstance(_raw_prompt, str) and len(_raw_prompt.strip()) < 8:
+        return CONTINUE()
+
     session_id, cwd = get_session_context(payload)
     if not session_id:
         return CONTINUE()
