@@ -162,6 +162,22 @@ class TestManifestDeltaCache:
         assert "unchanged since" in second
         assert "## Token-Goat Session Manifest" not in second
 
+    def test_second_call_after_read_count_change_returns_full(self, tmp_data_dir):
+        sid = "delta-read-count-change"
+        session.mark_file_read(sid, "/proj/src/app.py", offset=0, limit=50)
+        first = compact.build_manifest(sid)
+        assert "## Token-Goat Session Manifest" in first
+
+        cache = session.load(sid)
+        only_file = next(iter(cache.files.values()))
+        only_file.read_count += 1
+        session.save(cache)
+
+        self._clear_process_guard(sid)
+        second = compact.build_manifest(sid)
+        assert "## Token-Goat Session Manifest" in second
+        assert "unchanged since" not in second
+
     def test_second_call_with_new_edit_returns_full(self, tmp_data_dir):
         sid = "delta-with-edit"
         session.mark_file_edited(sid, "/proj/src/api.py")
@@ -4312,26 +4328,27 @@ class TestWhatWorkedSection:
         assert result == []
 
     def test_render_section_header_and_format(self):
-        """render emits ### What Worked header and ✅-prefixed lines."""
+        """Item #6: 1-2 entries collapse to a single ``**Passed:** cmd (Nm)`` line."""
         import time as _time
         now = _time.time()
         entries = [self._make_bash_entry("pytest tests/unit/", 0, now - 180, "abc999")]
         lines = compact._render_what_worked_section(entries, now)
-        assert lines[0] == "**Passed:**"
-        assert len(lines) == 2
-        assert "✅" in lines[1]
-        assert "pytest tests/unit/" in lines[1]
-        assert "3 min ago" in lines[1]
+        # Item #6: single-line emit — no per-entry bullet, no header-only first line.
+        assert len(lines) == 1
+        assert lines[0].startswith("**Passed:** ")
+        assert "pytest tests/unit/" in lines[0]
+        # Age compressed to "(3m)" form in the collapsed view.
+        assert "(3m)" in lines[0]
 
     def test_render_cmd_truncated_at_60_chars(self):
-        """cmd_preview longer than 60 chars is truncated with ellipsis."""
+        """cmd_preview longer than 60 chars is truncated with ellipsis (Item #6 collapsed form)."""
         import time as _time
         now = _time.time()
         long_cmd = "pytest " + "x" * 60
         entries = [self._make_bash_entry(long_cmd, 0, now - 60, "longid")]
         lines = compact._render_what_worked_section(entries, now)
-        content = lines[1]
-        # The backtick-wrapped cmd must be at most 60 chars + "..."
+        # Collapsed single-line form: extract the backtick-wrapped cmd.
+        content = lines[0]
         import re
         m = re.search(r"`([^`]+)`", content)
         assert m is not None

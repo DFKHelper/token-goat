@@ -804,6 +804,23 @@ def _get_git_diff_stat_summary(root: object) -> str:
         return ""
 
 
+def _get_stash_count(cwd: str | None) -> int:
+    """Return the number of entries in ``git stash list``, or 0 on any failure.
+
+    Item #27: stash count is load-bearing state currently invisible to the
+    compaction LLM — a forgotten ``git stash`` carries pending work the agent
+    must remember.  Lightweight subprocess (no pathspec), 2 s timeout.  The
+    return value gates emit-vs-suppress in the manifest renderer; 0 disables
+    the section entirely so the common (no-stashes) path costs nothing.
+    """
+    if not cwd:
+        return 0
+    out = _run_git(["stash", "list"], cwd, timeout=2)
+    if not out:
+        return 0
+    return sum(1 for line in out.splitlines() if line.strip())
+
+
 def _get_session_commits(cwd: str | None, session_start_ts: float) -> list[str]:
     """Return git log lines for commits made after session_start_ts.
 
@@ -1440,23 +1457,39 @@ def _select_what_worked(bash_history: object, blocker_ids: set[object]) -> list[
 
 
 def _render_what_worked_section(entries: list[object], now_ts: float) -> list[str]:
-    """Render a ``### What Worked`` section listing at most 2 recent green test runs.
+    """Render a ``**Passed:**`` section listing at most 2 recent green test runs.
 
-    Format::
-
-        ### What Worked
-        - ✅ `pytest tests/unit/ -x` (3 min ago) `abc123`
-        - ✅ `uv run pytest -m "not slow"` (12 min ago) `def456`
+    Item #6: when there are 1–2 entries (the common case — the selector caps
+    at 2 anyway) the section collapses to a single ``**Passed:** cmd1 (Nm),
+    cmd2 (Nm)`` line.  Saves ~5 tokens vs. the previous header + bullet form
+    and keeps the entries visually adjacent so the compaction LLM can see
+    "what's green" at a glance.
 
     The cmd_preview is truncated to 60 characters.  Age is expressed in whole
-    minutes (rounded down).  The output_id suffix is the short form from
-    :func:`cache_common.short_output_id` so the agent can recall the full
-    output via ``token-goat bash-output <id>`` if needed.
+    minutes (rounded down).  Output-id recall hints are dropped from the
+    collapsed form — the agent can recover them from the bash section's
+    cache pointers; duplicating them here was redundant context.
 
     Returns an empty list when *entries* is empty (no section emitted).
     """
     if not entries:
         return []
+
+    def _format_entry(entry: object) -> str:
+        raw_cmd = sanitize_log_str(getattr(entry, "cmd_preview", ""), max_len=200)
+        cmd = raw_cmd[:57] + "..." if len(raw_cmd) > 60 else raw_cmd
+        ts = getattr(entry, "ts", now_ts)
+        age_min = max(0, int((now_ts - ts) / 60))
+        return f"`{cmd}` ({age_min}m)"
+
+    # Item #6 collapse: 1-2 entries → single line.
+    if len(entries) <= 2:
+        joined = ", ".join(_format_entry(e) for e in entries)
+        return [f"**Passed:** {joined}"]
+
+    # Fallback for the hypothetical case where future selector loosens the cap:
+    # keep the bulleted form with the old recall-id suffix so we still preserve
+    # the per-entry output pointer when more than 2 entries are listed.
     lines: list[str] = ["**Passed:**"]
     for entry in entries:
         raw_cmd = sanitize_log_str(getattr(entry, "cmd_preview", ""), max_len=200)
@@ -2636,13 +2669,27 @@ def _render(cache: SessionCache, session_id: str, max_tokens: int) -> tuple[str,
     # Defensive: legacy/test fixtures sometimes hand us a list for edited_files
     # rather than a dict; guard with isinstance so the filter never KeyErrors.
     raw_edited = cache.edited_files if isinstance(cache.edited_files, dict) else {}
+    # Item #32: cache is_noise_path() results per render so each path is
+    # classified at most once.  On wide sessions (200+ files) the previous
+    # repeated calls (edited_clean, files_clean.rel_or_abs, files_clean.key)
+    # ran 600+ regex/segment checks; routing through a local dict drops that
+    # to one classification per unique path.
+    _noise_cache: dict[str, bool] = {}
+
+    def _is_noise(path: str) -> bool:
+        cached = _noise_cache.get(path)
+        if cached is None:
+            cached = is_noise_path(path)
+            _noise_cache[path] = cached
+        return cached
+
     edited_clean: dict[str, int] = {
         path: count for path, count in raw_edited.items()
-        if not is_noise_path(path)
+        if not _is_noise(path)
     }
     files_clean: dict[str, FileEntry] = {
         key: entry for key, entry in cache.files.items()
-        if not is_noise_path(entry.rel_or_abs) and not is_noise_path(key)
+        if not _is_noise(entry.rel_or_abs) and not _is_noise(key)
     }
     noise_skipped = (
         (len(raw_edited) - len(edited_clean))
@@ -2924,6 +2971,13 @@ def _render(cache: SessionCache, session_id: str, max_tokens: int) -> tuple[str,
         edited_paths = list(edited_clean.keys())
         diff_stat = _get_git_diff_stat(edited_paths, cwd)
         session_commits = _get_session_commits(cwd, created_ts) if created_ts > 0 else []
+
+        # Item #27: surface non-zero stash count.  A forgotten stash is real
+        # in-flight work the compaction LLM should know about; silent zero
+        # stashes pay no token cost.
+        stash_count = _get_stash_count(cwd) if cwd else 0
+        if stash_count > 0:
+            edited_lines.append(f"**Stashes:** {stash_count}  (run `git stash list` to inspect)")
 
         if diff_stat:
             edited_lines.append("### Diff Summary")
