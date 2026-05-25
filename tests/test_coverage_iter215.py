@@ -126,38 +126,49 @@ class TestRecordStatInMemoryDb:
 
 
 class TestNormalizePathPlatformPatched:
-    """_normalize_path Windows-branch behaviour verified by patching sys.platform."""
+    """``paths.normalize_key`` Windows-branch behaviour verified by patching sys.platform.
+
+    Commit e21ae12 promoted ``session._normalize_path`` to public
+    ``paths.normalize_key`` and dropped the ``import sys`` from
+    ``session.py`` — ``session._normalize_path`` is now a thin alias.
+    The platform-dependent logic lives in ``paths`` so we patch
+    ``paths.sys.platform`` to exercise both branches.
+    """
 
     def test_uppercase_drive_no_backslash_lowercased_on_win32(self):
         """Fast path: no backslash + uppercase drive → lowercase drive on win32."""
+        import token_goat.paths as tg_paths
         import token_goat.session as sess
 
-        with patch.object(sess.sys, "platform", "win32"):
+        with patch.object(tg_paths.sys, "platform", "win32"):
             result = sess._normalize_path("C:/foo/bar.py")
         assert result == "c:/foo/bar.py"
 
     def test_uppercase_drive_no_backslash_unchanged_on_linux(self):
         """Fast path: uppercase drive-like string is NOT modified on Linux."""
+        import token_goat.paths as tg_paths
         import token_goat.session as sess
 
-        with patch.object(sess.sys, "platform", "linux"):
+        with patch.object(tg_paths.sys, "platform", "linux"):
             result = sess._normalize_path("C:/foo/bar.py")
         # On Linux, 'C:/foo/bar.py' has no backslash, platform != win32 → unchanged
         assert result == "C:/foo/bar.py"
 
     def test_backslash_path_uppercase_drive_lowercased_on_win32(self):
         """Backslash path: separators converted AND drive lowercased on win32."""
+        import token_goat.paths as tg_paths
         import token_goat.session as sess
 
-        with patch.object(sess.sys, "platform", "win32"):
+        with patch.object(tg_paths.sys, "platform", "win32"):
             result = sess._normalize_path("D:\\projects\\file.py")
         assert result == "d:/projects/file.py"
 
     def test_backslash_path_separators_converted_on_linux(self):
         """Backslash path: separators converted to forward slash even on Linux."""
+        import token_goat.paths as tg_paths
         import token_goat.session as sess
 
-        with patch.object(sess.sys, "platform", "linux"):
+        with patch.object(tg_paths.sys, "platform", "linux"):
             result = sess._normalize_path("C:\\projects\\file.py")
         # Backslashes become forward slashes; drive NOT lowercased on Linux
         assert "\\" not in result
@@ -165,17 +176,19 @@ class TestNormalizePathPlatformPatched:
 
     def test_already_lowercase_drive_unchanged_on_win32(self):
         """Lowercase drive letter is not double-lowercased."""
+        import token_goat.paths as tg_paths
         import token_goat.session as sess
 
-        with patch.object(sess.sys, "platform", "win32"):
+        with patch.object(tg_paths.sys, "platform", "win32"):
             result = sess._normalize_path("c:/already/lower.py")
         assert result == "c:/already/lower.py"
 
     def test_non_drive_letter_prefix_unchanged_on_win32(self):
         """A path whose second char is not ':' is not altered on win32."""
+        import token_goat.paths as tg_paths
         import token_goat.session as sess
 
-        with patch.object(sess.sys, "platform", "win32"):
+        with patch.object(tg_paths.sys, "platform", "win32"):
             result = sess._normalize_path("/home/user/file.py")
         assert result == "/home/user/file.py"
 
@@ -193,9 +206,10 @@ class TestNormalizePathPlatformPatched:
 
     def test_mixed_separators_on_win32_all_become_forward_slash(self):
         """Mixed backslash+forward-slash path is fully normalised."""
+        import token_goat.paths as tg_paths
         import token_goat.session as sess
 
-        with patch.object(sess.sys, "platform", "win32"):
+        with patch.object(tg_paths.sys, "platform", "win32"):
             result = sess._normalize_path("E:\\foo/bar\\baz.py")
         assert result == "e:/foo/bar/baz.py"
 
