@@ -1608,6 +1608,7 @@ dev = [
 
 [package.dev-dependencies]
 dev = [
+    { name = "hypothesis" },
     { name = "pytest-randomly" },
     { name = "pytest-rerunfailures" },
     { name = "pytest-timeout" },
@@ -1641,6 +1642,7 @@ provides-extras = ["dev"]
 
 [package.metadata.requires-dev]
 dev = [
+    { name = "hypothesis", specifier = ">=6.0.0" },
     { name = "pytest-randomly", specifier = ">=3.15.0" },
     { name = "pytest-rerunfailures", specifier = ">=14.0" },
     { name = "pytest-timeout", specifier = ">=2.4.0" },
