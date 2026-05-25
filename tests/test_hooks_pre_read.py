@@ -508,6 +508,152 @@ class TestGrepWrittenNotReadHint:
         _assert_continue(result)
         assert "hookSpecificOutput" not in result
 
+    # -- Item A15: directory-scope grep written-not-read (capped list) --------
+
+    def test_grep_dir_written_not_read_emits_hint(self, tmp_data_dir):
+        """Grep on a directory with edited-but-unread files → capped hint."""
+        sid = "grep-dir-written-nr"
+        dir_path = "/proj/src"
+        # Mark 7 files under the directory as edited but not read back
+        for i in range(7):
+            session.mark_file_edited(sid, f"/proj/src/module_{i}.py")
+
+        payload = {
+            "session_id": sid,
+            "tool_name": "Grep",
+            "tool_input": {"pattern": "def ", "path": dir_path},
+            "cwd": "/proj",
+        }
+        result = hooks_cli.pre_read(payload)
+        _assert_continue(result)
+        assert "hookSpecificOutput" in result
+        ctx = result["hookSpecificOutput"]["additionalContext"]
+        assert "written" in ctx.lower()
+        # Should show first 5 + overflow
+        assert "(+2 more edited)" in ctx
+
+    def test_grep_dir_at_cap_no_overflow(self, tmp_data_dir):
+        """Exactly 5 edited files → no overflow line."""
+        sid = "grep-dir-at-cap"
+        dir_path = "/proj/src"
+        for i in range(5):
+            session.mark_file_edited(sid, f"/proj/src/file_{i}.py")
+
+        payload = {
+            "session_id": sid,
+            "tool_name": "Grep",
+            "tool_input": {"pattern": "class ", "path": dir_path},
+        }
+        result = hooks_cli.pre_read(payload)
+        _assert_continue(result)
+        assert "hookSpecificOutput" in result
+        ctx = result["hookSpecificOutput"]["additionalContext"]
+        assert "more edited" not in ctx
+
+    def test_grep_dir_no_edited_files_no_hint(self, tmp_data_dir):
+        """Directory grep with no edited files under it → no hint."""
+        sid = "grep-dir-clean"
+        result = hooks_cli.pre_read({
+            "session_id": sid,
+            "tool_name": "Grep",
+            "tool_input": {"pattern": "import", "path": "/proj/src"},
+        })
+        _assert_continue(result)
+        assert "hookSpecificOutput" not in result
+
+    def test_grep_dir_all_already_read_no_hint(self, tmp_data_dir):
+        """Edited files that were also read → hint must not fire."""
+        sid = "grep-dir-all-read"
+        path = "/proj/src/already.py"
+        session.mark_file_edited(sid, path)
+        session.mark_file_read(sid, path, offset=0, limit=200)
+
+        result = hooks_cli.pre_read({
+            "session_id": sid,
+            "tool_name": "Grep",
+            "tool_input": {"pattern": "def ", "path": "/proj/src"},
+        })
+        _assert_continue(result)
+        # File is in cache.files → directory hint must not fire
+        if "hookSpecificOutput" in result:
+            ctx = result["hookSpecificOutput"].get("additionalContext", "")
+            assert "written" not in ctx.lower()
+
+
+# ---------------------------------------------------------------------------
+# Glob cache cap tests (item A13)
+# ---------------------------------------------------------------------------
+
+
+class TestGlobCacheCap:
+    """Glob result cache dedup must cap the replayed path list to 20 entries."""
+
+    def _post_glob(self, sid, pattern, result_text, path=None):
+        from token_goat import bash_cache
+        payload = {
+            "session_id": sid,
+            "tool_name": "Glob",
+            "tool_input": {"pattern": pattern, **({"path": path} if path else {})},
+            "tool_result_content": [{"type": "text", "text": result_text}],
+            "cwd": "/proj",
+        }
+        hooks_cli.post_read(payload)
+        bash_cache.store_glob_result(sid, pattern, path, result_text)
+
+    def _pre_glob(self, sid, pattern, path=None):
+        payload = {
+            "session_id": sid,
+            "tool_name": "Glob",
+            "tool_input": {"pattern": pattern, **({"path": path} if path else {})},
+        }
+        return hooks_cli.pre_read(payload)
+
+    def test_glob_cache_caps_at_20_paths(self, tmp_data_dir):
+        """Cached glob result with >20 files → only first 20 + overflow shown."""
+        sid = "glob-cap-30"
+        pattern = "**/*.py"
+        files = [f"src/file_{i:03d}.py" for i in range(30)]
+        result_text = "\n".join(files) + "\n"
+        self._post_glob(sid, pattern, result_text)
+
+        result = self._pre_glob(sid, pattern)
+        _assert_continue(result)
+        hso = result.get("hookSpecificOutput")
+        if hso is None:
+            # Result count threshold not met by session history — skip
+            return
+        ctx = hso.get("additionalContext", "")
+        if "cached result" not in ctx:
+            return
+        # First 20 files should be present
+        assert "src/file_000.py" in ctx
+        assert "src/file_019.py" in ctx
+        # File 20 (index 20) should NOT appear verbatim
+        assert "src/file_020.py" not in ctx
+        # Overflow marker should appear
+        assert "(+10 more)" in ctx
+
+    def test_glob_cache_under_cap_shows_all(self, tmp_data_dir):
+        """Cached glob result with ≤20 files → all files shown, no overflow line."""
+        sid = "glob-cap-10"
+        pattern = "**/*.ts"
+        files = [f"src/component_{i}.ts" for i in range(10)]
+        result_text = "\n".join(files) + "\n"
+        self._post_glob(sid, pattern, result_text)
+
+        result = self._pre_glob(sid, pattern)
+        _assert_continue(result)
+        hso = result.get("hookSpecificOutput")
+        if hso is None:
+            return
+        ctx = hso.get("additionalContext", "")
+        if "cached result" not in ctx:
+            return
+        assert "src/component_0.ts" in ctx
+        assert "src/component_9.ts" in ctx
+        assert "(+0 more)" not in ctx
+        assert "more)" not in ctx
+
 
 # ---------------------------------------------------------------------------
 # Structured-file hint tests

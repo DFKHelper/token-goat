@@ -619,14 +619,20 @@ def _handle_grep_dedup(payload: HookPayload) -> HookResponse | None:
     )
 
 
-def _handle_grep_written_not_read(payload: HookPayload) -> HookResponse | None:
-    """Hint when Grep targets a single file written this session but not yet read back.
+_GREP_WRITTEN_NOT_READ_MAX_PATHS = 5
 
-    When ``path`` resolves to a file that was written (Edit/Write/MultiEdit)
-    this session and has never been read back, the content the agent wrote may
-    still be visible in context from the Write/Edit tool result — making a Grep
-    redundant.  Only fires when ``path`` is a specific file (not a directory);
-    directory-scoped Greps are let through without a hint.
+
+def _handle_grep_written_not_read(payload: HookPayload) -> HookResponse | None:
+    """Hint when Grep targets a file (or directory) written this session but not yet read back.
+
+    Single-file path: when ``path`` resolves to a specific file that was written
+    (Edit/Write/MultiEdit) this session and has never been read back, the content
+    the agent wrote may still be visible in context from the Write/Edit tool result
+    — making a Grep redundant.
+
+    Directory path: when ``path`` is a directory, scan all edited files under that
+    directory and emit a capped hint listing up to
+    :data:`_GREP_WRITTEN_NOT_READ_MAX_PATHS` of them.
     """
     session = _get_session()
 
@@ -644,22 +650,56 @@ def _handle_grep_written_not_read(payload: HookPayload) -> HookResponse | None:
     except (OSError, ValueError):
         return None
 
-    _written_key = session._normalize_path(path)  # type: ignore[attr-defined]
     _edited: dict[str, int] = cache.edited_files if isinstance(cache.edited_files, dict) else {}
+
+    # --- single-file path ---------------------------------------------------
+    _written_key = session._normalize_path(path)  # type: ignore[attr-defined]
     _edit_count = _edited.get(_written_key, 0)
-    if _edit_count < 1 or _written_key in cache.files:
+    if _edit_count >= 1 and _written_key not in cache.files:
+        fname = sanitize_log_str(Path(path).name, max_len=256)
+        hint_text = (
+            f"Note: `{fname}` was written {_edit_count}x this session and not yet read back. "
+            f"The content you wrote may still be in context from the tool result — "
+            f"check there before grepping. For a specific symbol use "
+            f"`token-goat read \"{path}::SymbolName\"`."
+        )
+        _LOG.debug(
+            "pre-read: grep written-not-read hint for %s (edit_count=%d)",
+            sanitize_log_str(path), _edit_count,
+        )
+        return pre_tool_use_with_context(hint_text)
+
+    # --- directory-scope path -----------------------------------------------
+    # Collect edited-but-not-yet-read files whose normalised key starts with
+    # the normalised directory prefix.  Cap the list at _GREP_WRITTEN_NOT_READ_MAX_PATHS
+    # to avoid injecting a 30–50 path blob when a large refactor touched many files.
+    _dir_key = session._normalize_path(path)  # type: ignore[attr-defined]
+    # Normalised paths use forward slashes; ensure the prefix ends with one so
+    # "src/foo" doesn't match "src/foobar".
+    _dir_prefix = _dir_key if _dir_key.endswith("/") else _dir_key + "/"
+    _dir_matches = [
+        (p, c) for p, c in _edited.items()
+        if p.startswith(_dir_prefix) and p not in cache.files and c >= 1
+    ]
+    if not _dir_matches:
         return None
 
-    fname = sanitize_log_str(Path(path).name, max_len=256)
+    _dir_matches.sort(key=lambda x: x[1], reverse=True)
+    _shown = _dir_matches[:_GREP_WRITTEN_NOT_READ_MAX_PATHS]
+    _overflow = len(_dir_matches) - len(_shown)
+    _path_lines = "\n".join(f"  {sanitize_log_str(p, max_len=256)}" for p, _ in _shown)
+    if _overflow > 0:
+        _path_lines += f"\n  (+{_overflow} more edited)"
     hint_text = (
-        f"Note: `{fname}` was written {_edit_count}x this session and not yet read back. "
-        f"The content you wrote may still be in context from the tool result — "
+        f"Note: {len(_dir_matches)} file(s) under `{sanitize_log_str(path, max_len=200)}` "
+        f"were written this session and not yet read back:\n{_path_lines}\n"
+        f"Their content may still be in context from the tool results — "
         f"check there before grepping. For a specific symbol use "
-        f"`token-goat read \"{path}::SymbolName\"`."
+        f"`token-goat read \"<path>::SymbolName\"`."
     )
     _LOG.debug(
-        "pre-read: grep written-not-read hint for %s (edit_count=%d)",
-        sanitize_log_str(path), _edit_count,
+        "pre-read: grep written-not-read dir hint for %s (%d files)",
+        sanitize_log_str(path), len(_dir_matches),
     )
     return pre_tool_use_with_context(hint_text)
 
@@ -708,10 +748,19 @@ def _handle_glob_dedup(payload: HookPayload) -> HookResponse | None:
                 cached_result = _bc.load_glob_result(session_id, pattern, path)
                 if cached_result is not None:
                     path_label = f" in {path!r}" if path else ""
+                    # Cap the replayed path list to avoid injecting 200-path blobs.
+                    _GLOB_CACHE_MAX_PATHS = 20
+                    _cached_lines = cached_result.splitlines()
+                    _overflow = len(_cached_lines) - _GLOB_CACHE_MAX_PATHS
+                    if _overflow > 0:
+                        _cached_display = "\n".join(_cached_lines[:_GLOB_CACHE_MAX_PATHS])
+                        _cached_display += f"\n(+{_overflow} more)"
+                    else:
+                        _cached_display = cached_result
                     hint_text = (
                         f"Note: Glob `{sanitize_log_str(pattern, max_len=100)}`{path_label} "
                         f"ran {int(age)}s ago — cached result ({glob_entry.result_count or '?'} paths):\n"
-                        f"{cached_result}\n"
+                        f"{_cached_display}\n"
                         "(Serving from cache. Run without hints to force a fresh scan.)"
                     )
                     from .hooks_common import record_cached_stat  # noqa: PLC0415
