@@ -4,6 +4,7 @@ from __future__ import annotations
 import pathlib
 import sys
 import time
+from unittest.mock import patch
 
 import pytest
 
@@ -960,24 +961,33 @@ class TestBashDedupEmittedIds:
 
 
 class TestFilesMaxEviction:
-    """FILES_MAX FIFO eviction in mark_file_read."""
+    """FILES_MAX FIFO eviction in mark_file_read.
+
+    These tests exercise the in-memory eviction logic in _evict_oldest.  They
+    chain the cache= parameter through every call to skip repeated disk loads,
+    and patch session.save to a no-op so the 500+ mutations don't each trigger
+    a full filesystem write.  The disk-persistence contract is covered by the
+    round-trip tests in TestSessionCacheBasics.
+    """
 
     def test_files_evicted_when_cap_exceeded(self, tmp_data_dir):
         """Filling past FILES_MAX evicts oldest entries; dict stays at most FILES_MAX."""
         sid = "files_cap_1"
         overshoot = 10
-        for i in range(session.FILES_MAX + overshoot):
-            session.mark_file_read(sid, f"/abs/path/file_{i}.py")
-        cache = session.load(sid)
+        with patch.object(session, "save"):
+            cache = None
+            for i in range(session.FILES_MAX + overshoot):
+                cache = session.mark_file_read(sid, f"/abs/path/file_{i}.py", cache=cache)
         assert len(cache.files) <= session.FILES_MAX
 
     def test_newest_files_survive_eviction(self, tmp_data_dir):
         """After eviction the most recently inserted files are still present."""
         sid = "files_cap_2"
         total = session.FILES_MAX + 20
-        for i in range(total):
-            session.mark_file_read(sid, f"/abs/path/file_{i}.py")
-        cache = session.load(sid)
+        with patch.object(session, "save"):
+            cache = None
+            for i in range(total):
+                cache = session.mark_file_read(sid, f"/abs/path/file_{i}.py", cache=cache)
         # The last inserted file must survive — it was added after the eviction pass.
         last_key = f"/abs/path/file_{total - 1}.py"
         assert last_key in cache.files, "most recently added file was evicted"
@@ -985,167 +995,193 @@ class TestFilesMaxEviction:
     def test_files_exactly_at_cap_not_evicted(self, tmp_data_dir):
         """Exactly FILES_MAX unique files: no eviction fires."""
         sid = "files_cap_3"
-        for i in range(session.FILES_MAX):
-            session.mark_file_read(sid, f"/abs/path/f_{i}.py")
-        cache = session.load(sid)
+        with patch.object(session, "save"):
+            cache = None
+            for i in range(session.FILES_MAX):
+                cache = session.mark_file_read(sid, f"/abs/path/f_{i}.py", cache=cache)
         assert len(cache.files) == session.FILES_MAX
 
 
 class TestEditedFilesMaxEviction:
-    """EDITED_FILES_MAX FIFO eviction in mark_file_edited."""
+    """EDITED_FILES_MAX FIFO eviction in mark_file_edited.
+
+    See TestFilesMaxEviction docstring for the save-mock rationale.
+    """
 
     def test_edited_files_evicted_when_cap_exceeded(self, tmp_data_dir):
         """Filling past EDITED_FILES_MAX evicts oldest entries; dict stays bounded."""
         sid = "edited_cap_1"
         overshoot = 10
-        for i in range(session.EDITED_FILES_MAX + overshoot):
-            session.mark_file_edited(sid, f"/abs/path/edit_{i}.py")
-        cache = session.load(sid)
+        with patch.object(session, "save"):
+            cache = None
+            for i in range(session.EDITED_FILES_MAX + overshoot):
+                cache = session.mark_file_edited(sid, f"/abs/path/edit_{i}.py", cache=cache)
         assert len(cache.edited_files) <= session.EDITED_FILES_MAX
 
     def test_newest_edited_files_survive_eviction(self, tmp_data_dir):
         """After eviction the most recently edited files are still present."""
         sid = "edited_cap_2"
         total = session.EDITED_FILES_MAX + 20
-        for i in range(total):
-            session.mark_file_edited(sid, f"/abs/path/edit_{i}.py")
-        cache = session.load(sid)
+        with patch.object(session, "save"):
+            cache = None
+            for i in range(total):
+                cache = session.mark_file_edited(sid, f"/abs/path/edit_{i}.py", cache=cache)
         last_key = f"/abs/path/edit_{total - 1}.py"
         assert last_key in cache.edited_files, "most recently edited file was evicted"
 
     def test_edited_files_exactly_at_cap_not_evicted(self, tmp_data_dir):
         """Exactly EDITED_FILES_MAX unique files: no eviction fires."""
         sid = "edited_cap_3"
-        for i in range(session.EDITED_FILES_MAX):
-            session.mark_file_edited(sid, f"/abs/path/e_{i}.py")
-        cache = session.load(sid)
+        with patch.object(session, "save"):
+            cache = None
+            for i in range(session.EDITED_FILES_MAX):
+                cache = session.mark_file_edited(sid, f"/abs/path/e_{i}.py", cache=cache)
         assert len(cache.edited_files) == session.EDITED_FILES_MAX
 
     def test_repeated_edit_of_same_file_does_not_evict(self, tmp_data_dir):
         """Editing the same file repeatedly never adds new keys, so no eviction fires."""
         sid = "edited_cap_4"
-        # Fill to cap with distinct files.
-        for i in range(session.EDITED_FILES_MAX):
-            session.mark_file_edited(sid, f"/abs/path/e_{i}.py")
-        # Edit the first file many more times — it's already a key, so no new insertion.
-        for _ in range(20):
-            session.mark_file_edited(sid, "/abs/path/e_0.py")
-        cache = session.load(sid)
+        with patch.object(session, "save"):
+            # Fill to cap with distinct files.
+            cache = None
+            for i in range(session.EDITED_FILES_MAX):
+                cache = session.mark_file_edited(sid, f"/abs/path/e_{i}.py", cache=cache)
+            # Edit the first file many more times — it's already a key, so no new insertion.
+            for _ in range(20):
+                cache = session.mark_file_edited(sid, "/abs/path/e_0.py", cache=cache)
         assert len(cache.edited_files) == session.EDITED_FILES_MAX
         # Edit count for the repeated file must be > 1.
         assert cache.edited_files.get("/abs/path/e_0.py", 0) > 1
 
 
 class TestSnapshotShasMaxEviction:
-    """SNAPSHOT_SHAS_MAX FIFO eviction in set_snapshot_sha."""
+    """SNAPSHOT_SHAS_MAX FIFO eviction in set_snapshot_sha.
+
+    See TestFilesMaxEviction docstring for the save-mock rationale.
+    """
 
     def test_snapshot_shas_evicted_when_cap_exceeded(self, tmp_data_dir):
         """Filling past SNAPSHOT_SHAS_MAX evicts oldest entries; dict stays bounded."""
         sid = "snap_cap_1"
         overshoot = 5
-        for i in range(session.SNAPSHOT_SHAS_MAX + overshoot):
-            session.set_snapshot_sha(sid, f"/abs/path/snap_{i}.py", f"sha_{i}")
-        cache = session.load(sid)
+        with patch.object(session, "save"):
+            cache = None
+            for i in range(session.SNAPSHOT_SHAS_MAX + overshoot):
+                cache = session.set_snapshot_sha(sid, f"/abs/path/snap_{i}.py", f"sha_{i}", cache=cache)
         assert len(cache.snapshot_shas) <= session.SNAPSHOT_SHAS_MAX
 
     def test_newest_snapshots_survive_eviction(self, tmp_data_dir):
         """After eviction the most recently inserted snapshot is still present."""
         sid = "snap_cap_2"
         total = session.SNAPSHOT_SHAS_MAX + 10
-        for i in range(total):
-            session.set_snapshot_sha(sid, f"/abs/path/snap_{i}.py", f"sha_{i}")
-        cache = session.load(sid)
+        with patch.object(session, "save"):
+            cache = None
+            for i in range(total):
+                cache = session.set_snapshot_sha(sid, f"/abs/path/snap_{i}.py", f"sha_{i}", cache=cache)
         last_key = f"/abs/path/snap_{total - 1}.py"
         assert last_key in cache.snapshot_shas, "most recently added snapshot was evicted"
 
     def test_snapshot_shas_exactly_at_cap_not_evicted(self, tmp_data_dir):
         """Exactly SNAPSHOT_SHAS_MAX unique paths: no eviction fires."""
         sid = "snap_cap_3"
-        for i in range(session.SNAPSHOT_SHAS_MAX):
-            session.set_snapshot_sha(sid, f"/abs/path/s_{i}.py", f"sha_{i}")
-        cache = session.load(sid)
+        with patch.object(session, "save"):
+            cache = None
+            for i in range(session.SNAPSHOT_SHAS_MAX):
+                cache = session.set_snapshot_sha(sid, f"/abs/path/s_{i}.py", f"sha_{i}", cache=cache)
         assert len(cache.snapshot_shas) == session.SNAPSHOT_SHAS_MAX
 
 
 class TestWebHistoryMaxEviction:
-    """WEB_HISTORY_MAX FIFO eviction in mark_web_fetch."""
+    """WEB_HISTORY_MAX FIFO eviction in mark_web_fetch.
+
+    See TestFilesMaxEviction docstring for the save-mock rationale.
+    """
 
     def test_web_history_evicted_when_cap_exceeded(self, tmp_data_dir):
         """Filling past WEB_HISTORY_MAX evicts oldest entries; dict stays bounded."""
         sid = "web_cap_1"
         overshoot = 5
-        for i in range(session.WEB_HISTORY_MAX + overshoot):
-            session.mark_web_fetch(
-                sid,
-                url_sha=f"sha_{i}",
-                url_preview=f"https://example.com/page_{i}",
-                output_id=f"out_{i}",
-                body_bytes=1000,
-                status_code=200,
-                truncated=False,
-            )
-        cache = session.load(sid)
+        with patch.object(session, "save"):
+            cache = None
+            for i in range(session.WEB_HISTORY_MAX + overshoot):
+                cache = session.mark_web_fetch(
+                    sid,
+                    url_sha=f"sha_{i}",
+                    url_preview=f"https://example.com/page_{i}",
+                    output_id=f"out_{i}",
+                    body_bytes=1000,
+                    status_code=200,
+                    truncated=False,
+                    cache=cache,
+                )
         assert len(cache.web_history) <= session.WEB_HISTORY_MAX
 
     def test_newest_web_entries_survive_eviction(self, tmp_data_dir):
         """After eviction the most recently added web entry is still present."""
         sid = "web_cap_2"
         total = session.WEB_HISTORY_MAX + 10
-        for i in range(total):
-            session.mark_web_fetch(
-                sid,
-                url_sha=f"sha_{i}",
-                url_preview=f"https://example.com/page_{i}",
-                output_id=f"out_{i}",
-                body_bytes=1000,
-                status_code=200,
-                truncated=False,
-            )
-        cache = session.load(sid)
+        with patch.object(session, "save"):
+            cache = None
+            for i in range(total):
+                cache = session.mark_web_fetch(
+                    sid,
+                    url_sha=f"sha_{i}",
+                    url_preview=f"https://example.com/page_{i}",
+                    output_id=f"out_{i}",
+                    body_bytes=1000,
+                    status_code=200,
+                    truncated=False,
+                    cache=cache,
+                )
         last_key = f"sha_{total - 1}"
         assert last_key in cache.web_history, "most recently added web entry was evicted"
 
     def test_web_history_exactly_at_cap_not_evicted(self, tmp_data_dir):
         """Exactly WEB_HISTORY_MAX unique URLs: no eviction fires."""
         sid = "web_cap_3"
-        for i in range(session.WEB_HISTORY_MAX):
-            session.mark_web_fetch(
-                sid,
-                url_sha=f"sha_{i}",
-                url_preview=f"https://example.com/page_{i}",
-                output_id=f"out_{i}",
-                body_bytes=1000,
-                status_code=200,
-                truncated=False,
-            )
-        cache = session.load(sid)
+        with patch.object(session, "save"):
+            cache = None
+            for i in range(session.WEB_HISTORY_MAX):
+                cache = session.mark_web_fetch(
+                    sid,
+                    url_sha=f"sha_{i}",
+                    url_preview=f"https://example.com/page_{i}",
+                    output_id=f"out_{i}",
+                    body_bytes=1000,
+                    status_code=200,
+                    truncated=False,
+                    cache=cache,
+                )
         assert len(cache.web_history) == session.WEB_HISTORY_MAX
 
     def test_duplicate_url_sha_does_not_trigger_eviction(self, tmp_data_dir):
         """Re-fetching the same URL (same SHA) updates the entry without triggering eviction."""
         sid = "web_cap_4"
-        # Fill to cap with distinct URLs.
-        for i in range(session.WEB_HISTORY_MAX):
-            session.mark_web_fetch(
+        with patch.object(session, "save"):
+            # Fill to cap with distinct URLs.
+            cache = None
+            for i in range(session.WEB_HISTORY_MAX):
+                cache = session.mark_web_fetch(
+                    sid,
+                    url_sha=f"sha_{i}",
+                    url_preview=f"https://example.com/page_{i}",
+                    output_id=f"out_{i}",
+                    body_bytes=1000,
+                    status_code=200,
+                    truncated=False,
+                    cache=cache,
+                )
+            # Fetch the first URL again (same SHA).
+            cache = session.mark_web_fetch(
                 sid,
-                url_sha=f"sha_{i}",
-                url_preview=f"https://example.com/page_{i}",
-                output_id=f"out_{i}",
+                url_sha="sha_0",
+                url_preview="https://example.com/page_0?v=2",
+                output_id="out_0_retry",
                 body_bytes=1000,
                 status_code=200,
                 truncated=False,
+                cache=cache,
             )
-        # Fetch the first URL again (same SHA).
-        session.mark_web_fetch(
-            sid,
-            url_sha="sha_0",
-            url_preview="https://example.com/page_0?v=2",
-            output_id="out_0_retry",
-            body_bytes=1000,
-            status_code=200,
-            truncated=False,
-        )
-        cache = session.load(sid)
         # Should still be at cap (no new entry added).
         assert len(cache.web_history) == session.WEB_HISTORY_MAX
         # The updated entry must be present with the newer output_id.
@@ -1580,17 +1616,17 @@ class TestSessionEvictionFIFO:
     def test_file_read_eviction_preserves_newest(self, tmp_data_dir):
         """Marking 25 files with cap=20 keeps the newest 20, evicts first 5."""
         sid = "evict_file_newest"
-        # Mark 25 files read
-        for i in range(25):
-            session.mark_file_read(sid, f"file_{i:02d}.py", offset=0, limit=10)
-        cache = session.load(sid)
-        # Cap is FILES_MAX (500 in config), so 25 should all fit — no eviction yet
-        assert len(cache.files) == 25
-        # Now mark enough files to trigger eviction when cap=20 is manually enforced
-        # Do a targeted test: manually create a cache with 25 files, then call eviction
-        for i in range(475):  # Now at 500 total
-            session.mark_file_read(sid, f"extra_{i:04d}.py", offset=0, limit=10)
-        cache = session.load(sid)
+        with patch.object(session, "save"):
+            # Mark 25 files read
+            cache = None
+            for i in range(25):
+                cache = session.mark_file_read(sid, f"file_{i:02d}.py", offset=0, limit=10, cache=cache)
+            # Cap is FILES_MAX (500 in config), so 25 should all fit — no eviction yet
+            assert len(cache.files) == 25
+            # Now mark enough files to trigger eviction when cap=20 is manually enforced
+            # Do a targeted test: manually create a cache with 25 files, then call eviction
+            for i in range(475):  # Now at 500 total
+                cache = session.mark_file_read(sid, f"extra_{i:04d}.py", offset=0, limit=10, cache=cache)
         # At FILES_MAX=500, should be capped
         assert len(cache.files) <= session.FILES_MAX
         # Newest file should exist (last one added)
