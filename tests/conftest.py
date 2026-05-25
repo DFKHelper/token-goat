@@ -1,4 +1,5 @@
 """Shared test fixtures."""
+import contextlib
 import logging
 import shutil
 import sys
@@ -21,10 +22,8 @@ from token_goat.session import SessionCache
 for _stream in (sys.stdout, sys.stderr):
     _reconfigure = getattr(_stream, "reconfigure", None)
     if _reconfigure is not None:
-        try:
+        with contextlib.suppress(ValueError, OSError):
             _reconfigure(encoding="utf-8", errors="replace")
-        except (ValueError, OSError):
-            pass
 
 # ---------------------------------------------------------------------------
 # Home-directory helpers (used by test_install.py and test_install_codex.py)
