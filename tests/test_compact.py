@@ -5625,3 +5625,174 @@ class TestManifestCacheStub:
         second = compact.build_manifest(sid)
         assert "## Token-Goat Session Manifest" in second
         assert "unchanged since" not in second
+
+
+class TestManifestDelta:
+    """Item #26: **Δ since last compact:** mini-section at top of manifest.
+
+    Behaviour:
+    - First compact (no prior sidecar) emits no delta line.
+    - Subsequent compaction with section-count changes prepends a single line
+      listing which sections grew or shrank (e.g. ``+2 edited, +3 bash``).
+    - A v1-style sidecar (no `counts` field) gracefully degrades — treated the
+      same as a first compact, no delta emitted.
+    - A malformed `counts` payload likewise degrades silently.
+    """
+
+    def _clear_process_guard(self, sid: str) -> None:
+        compact._manifest_sha_written_this_process.discard(sid)
+
+    def test_first_compact_emits_no_delta_line(self, tmp_data_dir):
+        """First-ever compact has no prior sidecar — Δ line must be absent."""
+        sid = "delta-first-compact"
+        session.mark_file_edited(sid, "/proj/src/auth.py")
+        result = compact.build_manifest(sid)
+        assert "## Token-Goat Session Manifest" in result
+        assert "Δ since last compact" not in result
+
+    def test_subsequent_compact_with_growth_emits_delta(self, tmp_data_dir):
+        """Adding bash + edited entries between compacts surfaces +N counts."""
+        sid = "delta-with-growth"
+        session.mark_file_edited(sid, "/proj/src/auth.py")
+        first = compact.build_manifest(sid)
+        assert "Δ since last compact" not in first
+
+        # Grow the session: +1 edited, +2 bash.
+        session.mark_file_edited(sid, "/proj/src/new.py")
+        session.mark_bash_run(
+            sid,
+            cmd_sha="aa",
+            cmd_preview="pytest",
+            output_id="o1",
+            stdout_bytes=10,
+            stderr_bytes=0,
+            exit_code=0,
+            truncated=False,
+        )
+        session.mark_bash_run(
+            sid,
+            cmd_sha="bb",
+            cmd_preview="ruff",
+            output_id="o2",
+            stdout_bytes=10,
+            stderr_bytes=0,
+            exit_code=0,
+            truncated=False,
+        )
+
+        self._clear_process_guard(sid)
+        second = compact.build_manifest(sid)
+        # Delta line must be the first line of the manifest.
+        assert second.startswith("**Δ since last compact:**"), (
+            f"delta line must be at the very top.\nManifest:\n{second}"
+        )
+        assert "+1 edited" in second
+        assert "+2 bash" in second
+        # Full manifest still follows the delta line.
+        assert "## Token-Goat Session Manifest" in second
+
+    def test_delta_omitted_when_no_change(self, tmp_data_dir):
+        """If section counts are unchanged between compacts, no Δ line.
+
+        With identical session state the fingerprint matches and a stub is
+        returned — but even if the rebuild path were taken (e.g. ttl expired),
+        the delta line must not appear because nothing changed.
+        """
+        import json as _json
+
+        from token_goat import paths
+
+        sid = "delta-no-change"
+        session.mark_file_edited(sid, "/proj/src/auth.py")
+        compact.build_manifest(sid)
+
+        # Force a TTL-expired rebuild without changing session state.
+        sidecar = paths.manifest_sha_sidecar_path(sid)
+        data = _json.loads(sidecar.read_text(encoding="utf-8"))
+        data["ts"] = time.time() - 700.0  # > _MANIFEST_CACHE_TTL_SECS
+        sidecar.write_text(_json.dumps(data, separators=(",", ":")), encoding="utf-8")
+        self._clear_process_guard(sid)
+
+        second = compact.build_manifest(sid)
+        # Full rebuild because TTL expired, but counts identical → no Δ line.
+        assert "## Token-Goat Session Manifest" in second
+        assert "Δ since last compact" not in second
+
+    def test_v1_sidecar_treated_as_no_prior_counts(self, tmp_data_dir):
+        """Legacy v1 sidecar (no `counts` key) gracefully degrades to no Δ line."""
+        import json as _json
+
+        from token_goat import paths
+
+        sid = "delta-v1-sidecar"
+        sidecar_path = paths.manifest_sha_sidecar_path(sid)
+        sidecar_path.parent.mkdir(parents=True, exist_ok=True)
+        # Write a v1 sidecar by hand — no `v`, no `counts`.
+        sidecar_path.write_text(
+            _json.dumps(
+                {
+                    "sha": "abc123",
+                    "fp": "different-fp-so-no-cache-hit",
+                    "ts": time.time() - 10.0,
+                },
+                separators=(",", ":"),
+            ),
+            encoding="utf-8",
+        )
+
+        # Build a manifest — sidecar's fp won't match so we go through render.
+        session.mark_file_edited(sid, "/proj/src/auth.py")
+        result = compact.build_manifest(sid)
+        assert "## Token-Goat Session Manifest" in result
+        # No Δ line because prior_counts was None for the v1 sidecar.
+        assert "Δ since last compact" not in result
+
+    def test_malformed_counts_payload_treated_as_no_prior_counts(self, tmp_data_dir):
+        """A sidecar with garbage in `counts` must not crash — treat as missing."""
+        import json as _json
+
+        from token_goat import paths
+
+        sid = "delta-malformed-counts"
+        sidecar_path = paths.manifest_sha_sidecar_path(sid)
+        sidecar_path.parent.mkdir(parents=True, exist_ok=True)
+        sidecar_path.write_text(
+            _json.dumps(
+                {
+                    "v": 2,
+                    "sha": "abc123",
+                    "fp": "different-fp",
+                    "ts": time.time() - 10.0,
+                    "counts": "not-a-dict",  # malformed
+                },
+                separators=(",", ":"),
+            ),
+            encoding="utf-8",
+        )
+
+        session.mark_file_edited(sid, "/proj/src/auth.py")
+        # Must not raise — _read_manifest_sidecar swallows malformed counts.
+        result = compact.build_manifest(sid)
+        assert "## Token-Goat Session Manifest" in result
+        assert "Δ since last compact" not in result
+
+    def test_format_manifest_delta_no_prior(self):
+        """Unit: prior=None returns None (no delta line)."""
+        result = compact._format_manifest_delta(None, {"edited": 5})
+        assert result is None
+
+    def test_format_manifest_delta_no_change(self):
+        """Unit: identical counts return None (omit Δ line entirely)."""
+        result = compact._format_manifest_delta({"edited": 3}, {"edited": 3})
+        assert result is None
+
+    def test_format_manifest_delta_growth_and_shrink(self):
+        """Unit: combined +/- deltas in stable section order."""
+        prior = {"edited": 3, "bash": 5, "grep": 2}
+        current = {"edited": 5, "bash": 4, "grep": 2}
+        result = compact._format_manifest_delta(prior, current)
+        assert result is not None
+        assert result.startswith("**Δ since last compact:**")
+        assert "+2 edited" in result
+        assert "-1 bash" in result
+        assert "grep" not in result  # unchanged → omitted
