@@ -2247,3 +2247,60 @@ def test_gc_orphaned_projects_spares_recent_last_seen(tmp_data_dir, tmp_path):
     with _db.open_global() as gconn:
         row = gconn.execute("SELECT root FROM projects WHERE hash = ?", (ph,)).fetchone()
     assert row is not None, "safety-window project row was incorrectly deleted"
+
+
+def test_gc_orphaned_projects_toctou_concurrent_touch_preserves_row(tmp_data_dir, tmp_path):
+    """A concurrent touch_project_last_seen between the snapshot read and DELETE
+    must cause the DELETE to be a no-op so the freshly-touched row is preserved.
+
+    Regression test for the TOCTOU race fixed in _gc_orphaned_projects:
+    previously the DELETE was unconditional (``WHERE hash = ?``); now it adds
+    ``AND last_seen <= safety_cutoff`` so a concurrent update is never lost.
+    """
+    from unittest.mock import patch
+
+    from token_goat import db as _db
+    from token_goat.project import project_hash as ph_fn
+
+    root = tmp_path / "concurrent_project"
+    root.mkdir()
+    ph = ph_fn(root)
+
+    old_ts = time.time() - 7200  # 2 hours ago — outside safety window
+    with _db.open_global() as gconn:
+        _insert_project_row(gconn, ph, root.as_posix(), old_ts)
+
+    # Delete the root directory so GC would normally remove the row.
+    root.rmdir()
+
+    # Simulate a concurrent SessionStart: before GC issues the DELETE we bump
+    # last_seen to "right now" (well inside the safety window).
+    original_open_global = _db.open_global
+
+    call_count = [0]
+
+    def patched_open_global():
+        ctx = original_open_global()
+        call_count[0] += 1
+        if call_count[0] == 2:
+            # On the second open (the DELETE connection) first do the concurrent touch.
+            with original_open_global() as touch_conn:
+                touch_conn.execute(
+                    "UPDATE projects SET last_seen = ? WHERE hash = ?",
+                    (int(time.time()), ph),
+                )
+        return ctx
+
+    with patch.object(_db, "open_global", patched_open_global):
+        removed = worker._gc_orphaned_projects()
+
+    # The row was touched into the safety window between read and delete;
+    # the conditional DELETE must have been a no-op.
+    assert removed == 0, (
+        "concurrent touch bumped last_seen into safety window — row must be preserved, "
+        f"but removed={removed}"
+    )
+
+    with _db.open_global() as gconn:
+        row = gconn.execute("SELECT root FROM projects WHERE hash = ?", (ph,)).fetchone()
+    assert row is not None, "TOCTOU: row was deleted despite concurrent last_seen update"
