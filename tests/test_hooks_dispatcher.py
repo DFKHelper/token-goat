@@ -434,6 +434,11 @@ class TestSafeRun:
 
         # Redirect logs_dir() to a tmp directory so the test is isolated.
         monkeypatch.setattr(paths, "logs_dir", lambda: tmp_path / "logs")
+        # Also redirect the crash-sink override (set by the autouse fixture) to
+        # this test's expected location so safe_run writes here, not to the
+        # fixture's tmp path.
+        sink_path = tmp_path / "logs" / "hooks-stderr.log"
+        monkeypatch.setattr(paths, "_hooks_stderr_log_override", sink_path)
 
         # Force a crash by making dispatch raise unconditionally.
         monkeypatch.setattr(hc, "dispatch", lambda event, payload: (_ for _ in ()).throw(RuntimeError("boom")))
@@ -465,6 +470,9 @@ class TestSafeRun:
 
         monkeypatch.setattr(paths, "logs_dir", lambda: tmp_path / "logs")
         monkeypatch.setattr(hc, "dispatch", lambda event, payload: (_ for _ in ()).throw(ValueError("x")))
+        # Redirect the crash-sink override to this test's expected location.
+        sink_path = tmp_path / "logs" / "hooks-stderr.log"
+        monkeypatch.setattr(paths, "_hooks_stderr_log_override", sink_path)
 
         log_dir = tmp_path / "logs"
         log_dir.mkdir(parents=True, exist_ok=True)
@@ -891,6 +899,9 @@ class TestCrashSinkSurrogateSafety:
 
         monkeypatch.setattr(paths, "logs_dir", lambda: tmp_path / "logs")
         monkeypatch.setattr(hc, "dispatch", lambda event, payload: (_ for _ in ()).throw(RuntimeError("normal message")))
+        # Redirect the crash-sink override to this test's expected location.
+        sink_path = tmp_path / "logs" / "hooks-stderr.log"
+        monkeypatch.setattr(paths, "_hooks_stderr_log_override", sink_path)
 
         payload_file = tmp_path / "payload.json"
         payload_file.write_text('{"session_id": "utf8-test"}', encoding="utf-8")
@@ -902,3 +913,55 @@ class TestCrashSinkSurrogateSafety:
         content = sink.read_text(encoding="utf-8")
         assert "pre-read" in content
         assert "RuntimeError" in content
+
+
+# ---------------------------------------------------------------------------
+# hooks-stderr.log isolation — crash-sink writes must not touch the real log
+# ---------------------------------------------------------------------------
+
+
+def test_safe_run_crash_writes_to_isolated_log_not_real_log(tmp_path, monkeypatch):
+    """safe_run crash-sink writes must land in the isolate_hooks_stderr_log override,
+    not in the real production logs/hooks-stderr.log.
+
+    The autouse ``isolate_hooks_stderr_log`` fixture in conftest.py redirects
+    ``paths.hooks_stderr_log_path()`` to a per-test tmp file.  This test
+    verifies that redirect works end-to-end: after a deliberate crash, the
+    isolated file has content, and the real log directory has no hooks-stderr.log.
+    """
+    from token_goat import hooks_cli as hc
+    from token_goat import paths
+
+    real_log_dir = tmp_path / "real_logs_dir"
+    real_log_dir.mkdir()
+
+    # Point logs_dir() to a separate directory so we can check it stays empty.
+    monkeypatch.setattr(paths, "logs_dir", lambda: real_log_dir)
+
+    # The autouse fixture already set the override to tmp_path / "test-hooks-stderr.log".
+    # Confirm the override is active.
+    override_path = paths.hooks_stderr_log_path()
+    assert override_path != real_log_dir / "hooks-stderr.log", (
+        "isolate_hooks_stderr_log fixture did not activate the override"
+    )
+
+    # Cause a crash in safe_run.
+    monkeypatch.setattr(
+        hc,
+        "dispatch",
+        lambda event, payload: (_ for _ in ()).throw(RuntimeError("boom-isolation-test")),
+    )
+    payload_file = tmp_path / "payload.json"
+    payload_file.write_text('{"session_id": "isolation-test"}', encoding="utf-8")
+    hc.safe_run("pre-read", input_file=payload_file)
+
+    # The isolated log should have the crash.
+    assert override_path.exists(), "crash was not written to the isolated log"
+    content = override_path.read_text(encoding="utf-8")
+    assert "boom-isolation-test" in content
+
+    # The real log directory must NOT have a hooks-stderr.log.
+    real_sink = real_log_dir / "hooks-stderr.log"
+    assert not real_sink.exists(), (
+        "crash was written to the real hooks-stderr.log; isolation fixture did not work"
+    )

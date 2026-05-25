@@ -67,6 +67,20 @@ def tmp_data_dir(tmp_path):
         yield tmp_path
 
 
+@pytest.fixture(autouse=True)
+def isolate_hooks_stderr_log(tmp_path):
+    """Redirect hooks-stderr.log writes to an isolated tmp file for the duration of each test.
+
+    Prevents test-induced hook crashes (``RuntimeError: boom``, ``_CustomBaseExc: boom``,
+    etc.) from polluting the production logs/hooks-stderr.log, which keeps
+    ``token-goat doctor --crashes`` output free of test noise.
+    """
+    isolated = tmp_path / "test-hooks-stderr.log"
+    paths.set_hooks_stderr_log_override(isolated)
+    yield isolated
+    paths.set_hooks_stderr_log_override(None)
+
+
 def make_project_from_root(root: Path) -> Project:
     """Construct a Project from a root directory.
 

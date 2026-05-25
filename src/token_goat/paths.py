@@ -20,6 +20,7 @@ __all__ = [
     "hook_wrapper_content",
     "hook_wrapper_path",
     "hooks_stderr_log_path",
+    "set_hooks_stderr_log_override",
     "image_cache_dir",
     "is_safe_rel_path",
     "locks_dir",
@@ -68,8 +69,25 @@ LOG_FILE_MAX_BYTES = 5_000_000
 HOOKS_STDERR_LOG_MAX_BYTES = 1_000_000
 
 
+_hooks_stderr_log_override: Path | None = None
+
+
+def set_hooks_stderr_log_override(path: Path | None) -> None:
+    """Override the hooks-stderr.log path for testing.
+
+    Pass a ``tmp_path``-rooted path to redirect crash-sink writes away from the
+    real production log during test runs.  Pass ``None`` to restore the default.
+    This is the only supported test-isolation mechanism for hooks-stderr.log;
+    use the ``isolate_hooks_stderr_log`` autouse fixture in conftest.py.
+    """
+    global _hooks_stderr_log_override  # noqa: PLW0603
+    _hooks_stderr_log_override = path
+
+
 def hooks_stderr_log_path() -> Path:
     """Path to the hook-process crash sink: ``logs/hooks-stderr.log``."""
+    if _hooks_stderr_log_override is not None:
+        return _hooks_stderr_log_override
     return logs_dir() / "hooks-stderr.log"
 
 
