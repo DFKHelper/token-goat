@@ -73,12 +73,42 @@ class TestBuildManifest:
         assert "**Edited:**" in result
         assert "auth.py" in result
 
-    def test_symbols_section_present(self, tmp_data_dir):
+    def test_symbols_section_present(self, tmp_data_dir, monkeypatch):
+        # Item #8: a symbol-bearing file that also appears in **Files:** has its
+        # symbol-detail line suppressed.  To exercise the **Syms:** section we
+        # must read enough other plain (no-symbol) files that parser.py's
+        # importance score falls below the `_MAX_FILES_READ` (10) cap, leaving
+        # the symbol file out of **Files:** so its detail surfaces in **Syms:**.
+        # Bump _WIDE_SESSION_THRESHOLD so the padding doesn't flip the session
+        # into wide mode (which replaces per-file symbol lines with a pointer).
+        monkeypatch.setattr(compact, "_WIDE_SESSION_THRESHOLD", 200)
         sid = "symbols-session-abc"
+        for i in range(16):
+            for _ in range(5):
+                session.mark_file_read(sid, f"/proj/src/noise{i:02d}.py", offset=0, limit=400)
         session.mark_file_read(sid, "/proj/src/parser.py", symbol="index_project")
         result = compact.build_manifest(sid)
         assert "**Syms:**" in result
         assert "index_project" in result
+
+    def test_symbol_detail_suppressed_when_file_in_files_section(self, tmp_data_dir):
+        """Item #8: when a symbol-bearing file also appears in **Files:**, its
+        per-file symbol-detail line is suppressed (the read entry implies it)."""
+        sid = "sym-suppress-session-abc"
+        # Single file with one symbol — will end up in **Files:** as the only
+        # candidate, so its symbol-detail line must NOT appear in **Syms:**.
+        session.mark_file_read(sid, "/proj/src/lonely.py", symbol="solo_symbol")
+        result = compact.build_manifest(sid)
+        # The file is interesting enough to appear in **Files:**
+        assert "lonely.py" in result
+        # But the symbol-detail line for it must not appear — extract any
+        # **Syms:** section and verify it doesn't list this file's symbols.
+        if "**Syms:**" in result:
+            syms_part = result.split("**Syms:**", 1)[1].split("\n**", 1)[0]
+            assert "solo_symbol" not in syms_part, (
+                "Symbol detail should be suppressed when file is in **Files:**.\n"
+                f"Manifest:\n{result}"
+            )
 
     def test_key_files_section_present(self, tmp_data_dir):
         sid = "keyfiles-session-abc"
@@ -1270,6 +1300,10 @@ class TestSymbolRankingByRecency:
 
     def test_recent_symbol_file_appears_before_older(self, tmp_data_dir, monkeypatch):
         import itertools as _it
+        # Bump wide-session threshold so the noise padding doesn't flip the
+        # session into "wide" mode (which collapses **Syms:** to a single
+        # pointer line and would defeat the recency-ordering check below).
+        monkeypatch.setattr(compact, "_WIDE_SESSION_THRESHOLD", 200)
         sid = "symbol-recency-session-abc"
         _ts = _it.count(1_000_000_000.0, 0.01)
         monkeypatch.setattr(session.time, "time", lambda: next(_ts))
@@ -1280,6 +1314,12 @@ class TestSymbolRankingByRecency:
             session.mark_file_read(sid, f"/proj/src/mid{i}.py", symbol=f"mid_sym_{i}")
         # Most-recent symbol read
         session.mark_file_read(sid, "/proj/src/recent.py", symbol="recent_sym")
+        # Item #8 pads: heavily-read no-symbol files dominate **Files:** so the
+        # symbol-bearing files above stay out of **Files:** and therefore keep
+        # their symbol-detail lines in **Syms:**.
+        for i in range(16):
+            for _ in range(8):
+                session.mark_file_read(sid, f"/proj/src/noise{i:02d}.py", offset=0, limit=600)
         result = compact.build_manifest(sid)
         # In Symbols Accessed section, recent.py should appear before older.py
         symbols_section = result.split("**Syms:**")[1] if "**Syms:**" in result else result
@@ -2232,23 +2272,32 @@ class TestImportanceScoringInManifest:
     """Integration tests: _importance_score drives 'Key Files Read' section ordering."""
 
     def test_symbol_file_outranks_scan_heavy_file_in_manifest(self, tmp_data_dir):
-        """A file read once with symbols appears before a file read many times with none."""
+        """A file read multiple times with symbols outranks a file scanned more.
+
+        Item #8 note: when a symbol-bearing file also appears in **Files:** its
+        per-file symbol-detail line is suppressed.  The importance-ranking
+        invariant tested here is now visible in **Files:** ordering — symbolic.py
+        outranks scanned.py because the per-symbol bonus dominates raw read
+        frequency in `_importance_score`.  scanned.py is read 4 times (below the
+        Hot threshold of 5) so both files land in the normal-files block where
+        importance score is the sort key.
+        """
         sid = "importance-sym-vs-reads-session"
-        # File A: read 5 times, no symbols
-        for _ in range(5):
+        # File A: read 4 times, no symbols (below Hot threshold so it sorts by importance)
+        for _ in range(4):
             session.mark_file_read(sid, "/proj/src/scanned.py", offset=0, limit=50)
-        # File B: read once, 3 symbols
+        # File B: read 3 times, each adding a symbol — symbol bonus drives importance
         session.mark_file_read(sid, "/proj/src/symbolic.py", symbol="parse_tree")
         session.mark_file_read(sid, "/proj/src/symbolic.py", symbol="walk_nodes")
         session.mark_file_read(sid, "/proj/src/symbolic.py", symbol="emit_tokens")
 
         result = compact.build_manifest(sid)
-        # Both should appear (scanned has 5 reads so it might be hot; if so use Key Files)
+        # Both should appear (in **Files:** — both below Hot threshold).
         assert "scanned.py" in result
         assert "symbolic.py" in result
 
-        # Symbols Accessed section shows symbolic.py — check it appears before scanned.py
-        # in the overall manifest (symbols section precedes key-files section)
+        # Per importance score, symbolic.py outranks scanned.py and is listed
+        # first in **Files:** (importance is the primary sort key for that section).
         assert result.index("symbolic.py") < result.index("scanned.py"), (
             f"symbolic file should appear before scanned file:\n{result}"
         )

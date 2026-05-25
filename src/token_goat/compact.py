@@ -3142,8 +3142,27 @@ def _render(cache: SessionCache, session_id: str, max_tokens: int) -> tuple[str,
         sym_lines: list[str] = [_wide_line] if _wide_cost <= sym_budget else []
         sym_used: int = _wide_cost if sym_lines else 0
     else:
+        # Item #8: suppress symbol-detail lines for files that already appear in
+        # the **Files:** read list (top_files).  The read entry implies the file
+        # is interesting; repeating its symbol breakdown is redundant
+        # (~25 tokens per dual-listed file).  We use the `top_files` candidate
+        # set rather than the budget-filtered `included_top_files` because the
+        # files section is rendered later; in practice nearly every entry in
+        # top_files survives budget filtering, so the suppression set is
+        # essentially the same.
+        _top_files_paths_norm = {
+            getattr(e, "rel_or_abs", "").replace("\\", "/").lower()
+            for e in top_files
+        }
         sym_formatted: list[str] = []
+        _suppressed_sym_files = 0
         for entry in files_with_symbols:
+            _entry_path_norm = entry.rel_or_abs.replace("\\", "/").lower()
+            if _entry_path_norm in _top_files_paths_norm:
+                # Skip — the file already appears in **Files:** so the symbol
+                # detail line would be a redundant ~25-token repeat.
+                _suppressed_sym_files += 1
+                continue
             ranked_symbols = _rank_symbols_by_recency(entry, now_for_scoring)
             # Item #11: dedup consecutive/repeated symbols before rendering (order-preserving).
             _seen_syms: set[str] = set()
@@ -3154,6 +3173,11 @@ def _render(cache: SessionCache, session_id: str, max_tokens: int) -> tuple[str,
             dupe_note = f" (+{dupes_removed} dupes removed)" if dupes_removed >= 3 else ""
             sym_str = ", ".join(syms) + (f" +{overflow}" if overflow > 0 else "") + dupe_note
             sym_formatted.append(f"- {_short_path(entry.rel_or_abs, project_root=cwd)} → {sym_str}")
+        if _suppressed_sym_files:
+            _LOG.debug(
+                "_render: suppressed %d symbol-detail line(s) for files in **Files:** "
+                "(item #8)", _suppressed_sym_files,
+            )
         sym_lines, sym_used = _render_budget_lines("**Syms:**", sym_formatted, sym_budget)
 
     # ── 3. Bash history — up to 15 % of remaining budget ─────────────────────
