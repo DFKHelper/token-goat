@@ -1421,6 +1421,35 @@ def post_bash(payload: HookPayload) -> HookResponse:
             "post-bash: output too small to cache (%d bytes < %d threshold)",
             total_bytes, _BASH_CACHE_MIN_BYTES,
         )
+        # Failed tiny commands are not cached to disk but we still record a
+        # lightweight session entry so the compact manifest's "Current Blockers"
+        # section can surface them.  A small "npm test" → "Error: missing dep"
+        # output that is forgotten causes the agent to re-run the command
+        # unnecessarily on the next turn.
+        if exit_code not in (None, 0) and session_id:
+            from . import bash_cache as _bc  # noqa: PLC0415
+            session = _get_session()
+            _cmd_sha = _bc.command_hash(display_cmd)
+            # Inline snippet capped at 200 chars so the manifest line stays short.
+            _snippet = (stdout + stderr)[:200].strip()
+            _output_id = f"small:{_cmd_sha[:8]}:{int(exit_code)}"
+            try:
+                session.mark_bash_run(
+                    session_id=session_id,
+                    cmd_sha=_cmd_sha,
+                    cmd_preview=display_cmd,
+                    output_id=_output_id,
+                    stdout_bytes=len(stdout.encode("utf-8")),
+                    stderr_bytes=len(stderr.encode("utf-8")),
+                    exit_code=exit_code,
+                    truncated=False,
+                )
+                _LOG.debug(
+                    "post-bash: recorded failed small command exit=%s bytes=%d cmd=%.60s",
+                    exit_code, total_bytes, display_cmd,
+                )
+            except (ValueError, OSError) as exc:
+                _LOG.debug("post-bash: failed-small session record failed: %s", exc)
         return CONTINUE()
     if not session_id:
         _LOG.debug("post-bash: no session_id; output not cached")
