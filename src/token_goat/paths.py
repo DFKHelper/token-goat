@@ -619,17 +619,36 @@ def ensure_dir(path: Path) -> Path:
 
     Race-tolerant on Windows: ``pathlib.Path.mkdir(parents=True, exist_ok=True)``
     has a known race where two concurrent processes can both raise
-    ``FileExistsError`` even with ``exist_ok=True``, because Python's internal
-    ``is_dir()`` check on the EEXIST branch is not atomic with the failing
-    ``os.mkdir`` call. When the parent already exists as a directory we treat
-    the EEXIST as success — matching the documented semantics of
-    ``exist_ok=True``.
+    ``FileExistsError`` even with ``exist_ok=True``. Python's pathlib catches
+    OSError from os.mkdir and re-raises unless ``self.is_dir()`` returns True,
+    but ``is_dir()`` does a ``stat()`` that can transiently return stale data
+    on Windows right after another process creates the directory — so pathlib
+    spuriously re-raises a FileExistsError on a directory that genuinely
+    exists. We retry briefly and fall back to ``path.exists()`` which is more
+    forgiving than ``is_dir()`` under filesystem-attribute lag.
     """
-    try:
-        path.mkdir(parents=True, exist_ok=True)
-    except FileExistsError:
-        if not path.is_dir():
-            raise
+    last_exc: FileExistsError | None = None
+    for attempt in range(3):
+        try:
+            path.mkdir(parents=True, exist_ok=True)
+            return path
+        except FileExistsError as exc:
+            last_exc = exc
+            # Race: another process beat us; Windows stat may not have synced
+            # yet. Yield briefly and re-check.
+            time.sleep(0.005 * (attempt + 1))
+            try:
+                if path.is_dir():
+                    return path
+            except OSError:
+                continue  # is_dir itself raced; keep retrying
+    # Final check: trust ``exists()`` (cheaper than ``is_dir`` and less
+    # sensitive to stat-attribute lag). If anything at all is at this path
+    # we treat ``exist_ok=True`` as satisfied — same intent the caller has.
+    if path.exists():
+        return path
+    if last_exc is not None:
+        raise last_exc
     return path
 
 
