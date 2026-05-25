@@ -2,12 +2,13 @@
 from __future__ import annotations
 
 import difflib
+import functools
 import hashlib
 import sqlite3
 import time
 from collections.abc import Callable
 from pathlib import Path
-from typing import Final, TypedDict
+from typing import Final, TypedDict, TypeVar, cast
 
 from . import db, session, snapshots
 from .hooks_common import sanitize_log_str, validate_cwd
@@ -120,6 +121,19 @@ def _sanitize_hint_path(p: str) -> str:
     return sanitize_log_str(p, max_len=_MAX_HINT_PATH_LEN)
 
 
+# Process-local cache for pattern display strings.  Patterns recur within a
+# session (e.g. exploratory grep loops, dedup hint re-emissions) and the
+# sanitize→length-check→slice work is identical for every emit.  Keying on
+# ``hash(pattern)`` keeps memory bounded (one int + ~80-char string per unique
+# pattern) and avoids the SHA cost of a content-stable hash on the hot pre-tool
+# hook path.  Soft-cap at :data:`_PATTERN_DISPLAY_CACHE_MAX` so a pathological
+# session that hashes thousands of distinct patterns cannot grow the dict
+# without bound — the cache is cleared (full reset) rather than LRU-evicted
+# because dedup hint workloads concentrate on a small recurring pattern set.
+_PATTERN_DISPLAY_CACHE: dict[int, str] = {}
+_PATTERN_DISPLAY_CACHE_MAX: Final[int] = 256
+
+
 def _truncate_pattern_display(pattern: str) -> str:
     """Return a display-safe version of a grep pattern for use in hint text.
 
@@ -128,11 +142,25 @@ def _truncate_pattern_display(pattern: str) -> str:
     long regex patterns (multi-line PCRE, complex alternations) do not bloat the
     hint.  Dedup keying always uses the full pattern hash — only the rendered
     text is shortened.
+
+    Results are memoised in :data:`_PATTERN_DISPLAY_CACHE` keyed by
+    ``hash(pattern)``: dedup hints for the same pattern reuse the display
+    without re-sanitising on every emit.  Cache is cleared (full reset) when
+    it exceeds :data:`_PATTERN_DISPLAY_CACHE_MAX` to bound memory.
     """
+    key = hash(pattern)
+    cached = _PATTERN_DISPLAY_CACHE.get(key)
+    if cached is not None:
+        return cached
     safe = _sanitize_hint_path(pattern)
     if len(safe) > _MAX_GREP_PATTERN_DISPLAY_LEN:
-        return safe[:_MAX_GREP_PATTERN_DISPLAY_LEN] + "…"
-    return safe
+        display = safe[:_MAX_GREP_PATTERN_DISPLAY_LEN] + "…"
+    else:
+        display = safe
+    if len(_PATTERN_DISPLAY_CACHE) >= _PATTERN_DISPLAY_CACHE_MAX:
+        _PATTERN_DISPLAY_CACHE.clear()
+    _PATTERN_DISPLAY_CACHE[key] = display
+    return display
 
 
 class _SymbolRow(TypedDict):
@@ -247,6 +275,43 @@ class ReadHint(str):
         obj = super().__new__(cls, text)
         obj.tokens_saved = tokens_saved
         return obj
+
+
+# ---------------------------------------------------------------------------
+# Shared fail-soft decorator for all hint builders
+# ---------------------------------------------------------------------------
+# Defined early in the module so every ``build_*_hint`` function below can
+# decorate itself.  Catches any exception raised by the inner implementation
+# and returns ``None`` so the calling hook stays fail-soft.
+
+_F = TypeVar("_F", bound=Callable[..., "ReadHint | None"])
+
+
+def _failsoft_hint(fn: _F) -> _F:
+    """Decorator: catch any exception raised by a hint builder and return ``None``.
+
+    Replaces the per-builder ``try: ... except Exception: _LOG.debug(...); return None``
+    boilerplate that the eight public ``build_*_hint`` functions used to repeat.
+    The wrapped callable's name is used in the warning message so log readers
+    can correlate the failure to a specific hint builder.
+
+    Session correlation: when the wrapped call passes ``session_id`` as a keyword
+    argument it is included (truncated to 16 chars) in the log line — mirroring
+    the behaviour the old per-function wrappers provided.
+    """
+    @functools.wraps(fn)
+    def _wrapper(*args: object, **kwargs: object) -> ReadHint | None:
+        try:
+            return fn(*args, **kwargs)
+        except Exception as exc:  # noqa: BLE001 — fail-soft for the hot pre-tool hook path
+            session_id = kwargs.get("session_id", "")
+            session_id_str = str(session_id)[:16] if session_id else ""
+            _LOG.warning(
+                "%s: unexpected error (session=%s): %s",
+                fn.__name__, session_id_str, exc, exc_info=True,
+            )
+            return None
+    return cast(_F, _wrapper)
 
 
 def _symbols_suffix(symbols_read: list[str], max_chars: int = _SYMBOLS_SUFFIX_MAX_CHARS) -> str:
@@ -897,6 +962,7 @@ _DIFF_TINY_CHANGE_THRESHOLD: int = 3
 _DIFF_TINY_CONTEXT_LINES: int = 1
 
 
+@_failsoft_hint
 def build_diff_hint(
     *,
     session_id: str,
@@ -919,20 +985,13 @@ def build_diff_hint(
     * the diff would exceed :data:`DIFF_HINT_MAX_BYTES`
     * the realized saving falls below :data:`_DIFF_HINT_MIN_TOKENS_SAVED`
 
-    Never raises; any unexpected exception is caught at module boundary and
-    the hint is suppressed (an error in hint generation must not break the
-    pre-read hook's fail-soft contract).
+    Never raises; the ``@_failsoft_hint`` decorator catches any unexpected
+    exception (an error in hint generation must not break the pre-read hook's
+    fail-soft contract).
     """
-    try:
-        return _build_diff_hint_inner(
-            session_id=session_id, file_path=file_path, current_text=current_text,
-        )
-    except Exception as exc:  # noqa: BLE001 — fail-soft for the hot pre-read path
-        _LOG.warning(
-            "build_diff_hint: unexpected error for %r (session=%s): %s",
-            file_path, (session_id or "")[:16], exc, exc_info=True,
-        )
-        return None
+    return _build_diff_hint_inner(
+        session_id=session_id, file_path=file_path, current_text=current_text,
+    )
 
 
 def _build_diff_hint_inner(
@@ -1209,6 +1268,46 @@ def _record_index_only_hint_emitted(cache: session.SessionCache) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Per-tool recall-command emission tracking
+# ---------------------------------------------------------------------------
+# After the agent has seen the verbose "`token-goat <tool>-output ID`" recall
+# pointer twice in the same session it has learned the convention; subsequent
+# hints drop the full command and emit only the bare ID.  Saves ~11-15 tokens
+# per emission across dozens of hints per session.  Counter is persisted via
+# the session cache's hints_seen set using sentinel keys per tool — avoids a
+# session schema change while surviving the multi-process hook lifecycle
+# (each hook invocation is a fresh process; only the on-disk session JSON
+# carries state across invocations).
+
+_RECALL_HINT_SUPPRESS_AFTER: Final[int] = 2
+
+
+def _should_emit_recall_command(
+    cache: session.SessionCache | None,
+    tool: str,
+) -> bool:
+    """Return True when the verbose recall command should be included for *tool*.
+
+    Increments the per-tool emission counter (stored as sentinel fingerprints in
+    ``cache.hints_seen``) and returns False once the counter exceeds
+    :data:`_RECALL_HINT_SUPPRESS_AFTER` — at that point the caller should emit
+    the bare output ID instead of the full ``token-goat <tool>-output <id>``
+    string.
+
+    Returns True when *cache* is None (no session cache available — emit the
+    helpful pointer rather than silently drop it).
+    """
+    if cache is None:
+        return True
+    for n in range(1, _RECALL_HINT_SUPPRESS_AFTER + 1):
+        key = f"recall_count:{tool}:{n}"
+        if not cache.has_hint_fingerprint(key):
+            cache.mark_hint_seen(key)
+            return True
+    return False
+
+
+# ---------------------------------------------------------------------------
 # Shared fail-soft wrapper for all dedup hint builders
 # ---------------------------------------------------------------------------
 
@@ -1252,6 +1351,7 @@ def _failsoft_dedup_hint(
 # ---------------------------------------------------------------------------
 
 
+@_failsoft_hint
 def build_bash_dedup_hint(
     *,
     session_id: str,
@@ -1275,12 +1375,8 @@ def build_bash_dedup_hint(
       (same staleness boundary used by the read-dedup path: above that
       window the model's context has likely scrolled past the old result)
     """
-    return _failsoft_dedup_hint(
-        lambda: _build_bash_dedup_hint_inner(
-            session_id=session_id, command=command, cache=cache,
-        ),
-        caller="build_bash_dedup_hint",
-        session_id=session_id,
+    return _build_bash_dedup_hint_inner(
+        session_id=session_id, command=command, cache=cache,
     )
 
 
@@ -1340,7 +1436,14 @@ def _build_bash_dedup_hint_inner(
     cmd_short = _sanitize_hint_path(command)
     run_count = getattr(entry, "run_count", 1)
     from . import cache_common as _cc  # noqa: PLC0415
-    recall_cmd = f"token-goat bash-output {_cc.short_output_id(entry.output_id)}"
+    short_id = _cc.short_output_id(entry.output_id)
+    # After the agent has seen the verbose recall pointer twice, drop the
+    # full command string and emit just the bare ID — the agent has learned
+    # the recall convention and the extra ~13 tokens per hint are noise.
+    if _should_emit_recall_command(cache, "bash"):
+        recall_cmd = f"token-goat bash-output {short_id}"
+    else:
+        recall_cmd = f"id={short_id}"
 
     # Front-load failure signal so the agent sees it immediately.
     # When the prefix carries the exit code, drop it from the body to avoid
@@ -1413,6 +1516,7 @@ _GREP_CROSS_SESSION_MIN_COUNT: int = 3
 _GREP_CROSS_SESSION_STALE_SECS: float = 3600.0
 
 
+@_failsoft_hint
 def build_grep_dedup_hint(
     *,
     session_id: str,
@@ -1440,12 +1544,8 @@ def build_grep_dedup_hint(
     Never raises; any unexpected exception is caught and the hint is
     suppressed (the pre-Grep path must stay fail-soft).
     """
-    return _failsoft_dedup_hint(
-        lambda: _build_grep_dedup_hint_inner(
-            session_id=session_id, pattern=pattern, path=path, cache=cache,
-        ),
-        caller="build_grep_dedup_hint",
-        session_id=session_id,
+    return _build_grep_dedup_hint_inner(
+        session_id=session_id, pattern=pattern, path=path, cache=cache,
     )
 
 
@@ -1577,6 +1677,7 @@ _GLOB_DEDUP_MIN_RESULT_COUNT: int = 5
 _GLOB_AVG_BYTES_PER_RESULT: int = 60
 
 
+@_failsoft_hint
 def build_glob_dedup_hint(
     *,
     session_id: str,
@@ -1602,12 +1703,8 @@ def build_glob_dedup_hint(
     Never raises; any unexpected exception is caught and the hint is suppressed
     (the pre-Glob path must stay fail-soft).
     """
-    return _failsoft_dedup_hint(
-        lambda: _build_glob_dedup_hint_inner(
-            session_id=session_id, pattern=pattern, path=path, cache=cache,
-        ),
-        caller="build_glob_dedup_hint",
-        session_id=session_id,
+    return _build_glob_dedup_hint_inner(
+        session_id=session_id, pattern=pattern, path=path, cache=cache,
     )
 
 
@@ -1669,6 +1766,7 @@ def _build_glob_dedup_hint_inner(
 _WEB_DEDUP_MIN_BYTES: int = 1024
 
 
+@_failsoft_hint
 def build_web_dedup_hint(
     *,
     session_id: str,
@@ -1692,12 +1790,8 @@ def build_web_dedup_hint(
       (above that window the page content is likely to have changed and a
       re-fetch is legitimate)
     """
-    return _failsoft_dedup_hint(
-        lambda: _build_web_dedup_hint_inner(
-            session_id=session_id, url=url, cache=cache,
-        ),
-        caller="build_web_dedup_hint",
-        session_id=session_id,
+    return _build_web_dedup_hint_inner(
+        session_id=session_id, url=url, cache=cache,
     )
 
 
@@ -1761,10 +1855,17 @@ def _build_web_dedup_hint_inner(
     # Curator: record emission keyed on url_sha (web dedup is URL-keyed, not file-keyed).
     if cache is not None:
         _record_hint_emitted(cache, f"web:{url_sha}")
+    # After the agent has seen the verbose recall pointer twice, drop the
+    # full command string and emit just the bare ID — see _should_emit_recall_command.
+    short_id = _cc.short_output_id(entry.output_id)
+    if _should_emit_recall_command(cache, "web"):
+        recall_str = f"`token-goat web-output {short_id}`"
+    else:
+        recall_str = f"id={short_id}"
     return ReadHint(
         _apply_terse(
             f"URL ({int(age)}s): {entry.body_bytes:,}B{status_str}, ~{tokens_avoided}t. "
-            f"`token-goat web-output {_cc.short_output_id(entry.output_id)}`{grep_suffix}"
+            f"{recall_str}{grep_suffix}"
         ),
         tokens_avoided,
     )
@@ -1785,6 +1886,7 @@ _UNCHANGED_MAX_AGE_SECONDS: int = 10 * 60
 _UNCHANGED_MIN_BYTES: int = 800
 
 
+@_failsoft_hint
 def build_unchanged_file_hint(
     *,
     session_id: str,
@@ -1809,18 +1911,12 @@ def build_unchanged_file_hint(
     would duplicate those bytes for zero new information.
 
     Returns a :class:`ReadHint` (tokens_saved > 0) or ``None`` (no hint).
-    Never raises; any I/O error is caught and the hint is suppressed.
+    Never raises; the ``@_failsoft_hint`` decorator catches any I/O error so
+    the hint is suppressed silently.
     """
-    try:
-        return _build_unchanged_file_hint_inner(
-            session_id=session_id, file_path=file_path, cache=cache,
-        )
-    except Exception:  # noqa: BLE001 — fail-soft for the hot pre-read path
-        _LOG.debug(
-            "build_unchanged_file_hint: unexpected error for %r",
-            file_path, exc_info=True,
-        )
-        return None
+    return _build_unchanged_file_hint_inner(
+        session_id=session_id, file_path=file_path, cache=cache,
+    )
 
 
 def _build_unchanged_file_hint_inner(
@@ -1973,6 +2069,7 @@ def _is_index_only_file(basename_lower: str) -> str | None:
     return None
 
 
+@_failsoft_hint
 def build_index_only_file_hint(
     *,
     file_path: str,
@@ -1988,18 +2085,12 @@ def build_index_only_file_hint(
     - The caller did NOT specify BOTH offset AND limit (surgical intent guard).
 
     Returns ``None`` (no hint) for small files, unrecognised names, or when
-    the caller already scoped the read with offset+limit.  Never raises.
+    the caller already scoped the read with offset+limit.  Never raises; the
+    ``@_failsoft_hint`` decorator catches any exception silently.
     """
-    try:
-        return _build_index_only_file_hint_inner(
-            file_path=file_path, offset=offset, limit=limit,
-        )
-    except Exception:  # noqa: BLE001 — fail-soft for the hot pre-read path
-        _LOG.debug(
-            "build_index_only_file_hint: unexpected error for %r",
-            file_path, exc_info=True,
-        )
-        return None
+    return _build_index_only_file_hint_inner(
+        file_path=file_path, offset=offset, limit=limit,
+    )
 
 
 def _build_index_only_file_hint_inner(
@@ -2137,6 +2228,7 @@ def _estimate_row_count(path: Path, file_size: int) -> int:
         return 0
 
 
+@_failsoft_hint
 def build_structured_file_hint(
     *,
     file_path: str,
@@ -2151,15 +2243,12 @@ def build_structured_file_hint(
     - The caller did NOT already specify both offset AND limit (surgical intent).
 
     Returns ``None`` (no hint) for small files, non-structured extensions,
-    or when the caller already uses offset/limit.  Never raises.
+    or when the caller already uses offset/limit.  Never raises; the
+    ``@_failsoft_hint`` decorator catches any exception silently.
     """
-    try:
-        return _build_structured_file_hint_inner(
-            file_path=file_path, offset=offset, limit=limit,
-        )
-    except Exception:  # noqa: BLE001 — fail-soft for the hot pre-read path
-        _LOG.debug("build_structured_file_hint: unexpected error for %r", file_path, exc_info=True)
-        return None
+    return _build_structured_file_hint_inner(
+        file_path=file_path, offset=offset, limit=limit,
+    )
 
 
 def _build_structured_file_hint_inner(
