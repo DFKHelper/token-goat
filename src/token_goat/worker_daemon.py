@@ -302,7 +302,9 @@ def run_daemon(stop_event=None) -> None:
                 last_version_check = now
 
             if now - last_gc_projects >= _worker.GC_PROJECTS_INTERVAL:
-                _timed_cycle("gc orphaned projects", _worker._gc_orphaned_projects)
+                def _gc_void() -> None:
+                    _worker._gc_orphaned_projects()
+                _timed_cycle("gc orphaned projects", _gc_void)
                 last_gc_projects = now
 
             sleep_for = _worker.adaptive_poll_interval(consecutive_empty_drains)
