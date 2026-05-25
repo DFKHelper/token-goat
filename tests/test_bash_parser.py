@@ -626,3 +626,98 @@ def test_bash_pipe_unchanged_no_filtered_flag():
     assert intent.target_path == "foo.txt"
     assert intent.filtered is False
     assert intent.filter_pattern is None
+
+
+# ---------------------------------------------------------------------------
+# 26. ``type`` ambiguity guard — POSIX builtin vs cmd.exe / PowerShell read
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "command,expected_path",
+    [
+        # Path-like arguments (contain ., /, \, :, or ~) → treated as reads.
+        ("type foo.txt", "foo.txt"),
+        ("type ./foo", "./foo"),
+        ("type ../foo", "../foo"),
+        ("type src/main.py", "src/main.py"),
+        ("type ~/notes.md", "~/notes.md"),
+        # Quoted Windows absolute path — shlex preserves backslashes inside quotes.
+        ('type "C:\\config.ini"', "C:\\config.ini"),
+        # cmd.exe absolute path.
+        ("TYPE README.md", "README.md"),
+    ],
+)
+def test_type_with_path_like_argument_is_read(command, expected_path):
+    intent = parse(command)
+    assert intent.kind == "read"
+    assert intent.target_path == expected_path
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        # Bare identifiers — POSIX builtin command-lookup, not a file read.
+        "type ls",
+        "type git",
+        "type python",
+        "type cd",
+    ],
+)
+def test_type_with_bare_identifier_is_unknown(command):
+    intent = parse(command)
+    assert intent.kind == "unknown"
+    assert intent.reason is not None
+    assert "type" in intent.reason
+
+
+# ---------------------------------------------------------------------------
+# 27. PowerShell Get-Content / gc — additional inline-equals flag forms
+# ---------------------------------------------------------------------------
+
+
+def test_powershell_get_content_path_equals_form():
+    # ``Get-Content -Path=foo.txt`` — PowerShell accepts the inline equals form.
+    intent = parse("Get-Content -Path=foo.txt")
+    assert intent.kind == "read"
+    assert intent.target_path == "foo.txt"
+
+
+def test_powershell_get_content_literalpath_equals_form():
+    intent = parse("Get-Content -LiteralPath=foo.txt")
+    assert intent.kind == "read"
+    assert intent.target_path == "foo.txt"
+
+
+def test_powershell_get_content_totalcount_equals_form():
+    intent = parse("Get-Content -Path=foo.txt -TotalCount=50")
+    assert intent.kind == "read"
+    assert intent.target_path == "foo.txt"
+    assert intent.offset == 1
+    assert intent.limit == 50
+
+
+def test_powershell_get_content_tail_equals_form():
+    intent = parse("Get-Content foo.txt -Tail=20")
+    assert intent.kind == "read"
+    assert intent.target_path == "foo.txt"
+    assert intent.offset is None
+    assert intent.limit == 20
+
+
+def test_powershell_get_content_first_alias():
+    # ``-First N`` is a PowerShell partial-name alias for -TotalCount.
+    intent = parse("Get-Content foo.txt -First 10")
+    assert intent.kind == "read"
+    assert intent.target_path == "foo.txt"
+    assert intent.offset == 1
+    assert intent.limit == 10
+
+
+def test_powershell_get_content_last_alias():
+    # ``-Last N`` is the partial-name alias for -Tail.
+    intent = parse("Get-Content foo.txt -Last 5")
+    assert intent.kind == "read"
+    assert intent.target_path == "foo.txt"
+    assert intent.offset is None
+    assert intent.limit == 5

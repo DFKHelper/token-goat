@@ -53,6 +53,14 @@ False-positive guards
 * Heredocs (``cat << EOF ... EOF``) are *not* file reads — no path follows the
   command — and are classified as ``unknown``.
 * In-place editors (``sed -i``, ``perl -i``) mutate files and are rejected.
+* ``type <name>`` is treated as a file read only when the argument is
+  path-like (contains ``.``, ``/``, ``\\``, ``:``, or ``~``).  Bare
+  identifiers like ``type ls`` are the POSIX command-lookup builtin and
+  are classified as ``unknown``.
+* ``type <name>`` is treated as a file read only when the argument is
+  path-like (contains ``.``, ``/``, ``\\``, ``:``, or ``~``).  Bare
+  identifiers like ``type ls`` are the POSIX command-lookup builtin and
+  are classified as ``unknown``.
 
 All parsing is best-effort.  Unrecognized or malformed commands are returned as
 ``BashIntent(kind="unknown")`` without raising an exception.
@@ -261,6 +269,27 @@ _AWK_EQ_RE = re.compile(r"^\s*NR\s*==\s*(\d+)\s*$")
 _AWK_RANGE_RE = re.compile(
     r"^\s*NR\s*>=?\s*(\d+)\s*&&\s*NR\s*<=?\s*(\d+)\s*$"
 )
+
+# Heuristic for "looks like a file path".  ``type`` is the most ambiguous
+# read-binary because it is *also* a bash/POSIX builtin (``type ls`` is a
+# command-lookup, not a file read) and a cmd.exe / PowerShell file-print
+# command.  To avoid mis-classifying command-lookup invocations we require
+# the argument to contain at least one path-defining glyph (``.``, ``/``,
+# ``\``, ``:``, ``~``) before treating ``type FOO`` as a file read.  Common
+# command names like ``ls``, ``git``, ``python`` lack all four glyphs and
+# fall through to ``unknown``.
+_PATH_LIKE_RE = re.compile(r"[./\\:~]")
+
+
+def _looks_like_path(token: str) -> bool:
+    """Return True when *token* contains at least one path-defining glyph.
+
+    Used to disambiguate ``type FOO`` between the cmd.exe / PowerShell
+    file-read sense and the POSIX-shell command-lookup builtin.  A token
+    like ``foo.txt``, ``./foo``, ``C:\\foo``, ``~/foo``, or ``foo/bar`` is
+    treated as a path; a bare identifier like ``ls`` or ``git`` is not.
+    """
+    return bool(_PATH_LIKE_RE.search(token))
 
 
 def _parse_sed_script(script: str) -> tuple[int | None, int | None]:
@@ -558,6 +587,18 @@ def _parse_read(binary: str, args: list[str]) -> BashIntent:
         if binary == "head" and limit is not None:
             offset = 1
 
+    # ``type`` ambiguity guard: in bash / POSIX shells ``type`` is a
+    # command-lookup builtin (``type ls`` reports where ``ls`` lives), not a
+    # file read.  In cmd.exe and PowerShell ``type`` is a file-print command.
+    # We split the two by argument shape — a path-like token (containing
+    # ``.``, ``/``, ``\``, ``:``, or ``~``) is treated as a read; a bare
+    # identifier is treated as the POSIX builtin and classified ``unknown``.
+    if binary == "type" and not _looks_like_path(target_path):
+        return BashIntent(
+            kind="unknown",
+            reason="`type <name>` without a path-like argument is the POSIX builtin",
+        )
+
     intent = _build_read_intent(target_path)
     if intent.kind == "read":
         intent.offset = offset
@@ -591,6 +632,27 @@ def _parse_powershell_read(binary: str, args: list[str]) -> BashIntent:
             target_path = args[i + 1]
             i += 2
             continue
+        # PowerShell also accepts the inline ``-Path=foo.txt`` form.
+        if "=" in a:
+            stem = lower.split("=", 1)[0]
+            value_str = a.split("=", 1)[1]
+            if stem in _PS_PATH_FLAGS and value_str:
+                target_path = value_str
+                i += 1
+                continue
+            if stem in _PS_HEAD_FLAGS:
+                value = _try_parse_int(value_str)
+                if value is not None:
+                    limit = value
+                i += 1
+                continue
+            if stem in _PS_TAIL_FLAGS:
+                value = _try_parse_int(value_str)
+                if value is not None:
+                    limit = value
+                    is_tail = True
+                i += 1
+                continue
         if lower in _PS_HEAD_FLAGS and i + 1 < len(args):
             value = _try_parse_int(args[i + 1])
             if value is not None:
