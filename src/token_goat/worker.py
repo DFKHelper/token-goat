@@ -76,6 +76,7 @@ class CleanupStats(TypedDict, total=False):
     bash_outputs_evicted: int
     wal_bytes_reclaimed: int
     project_wal_bytes_reclaimed: int
+    orphaned_projects_removed: int
     failures: list[str]  # task names that raised during cleanup
 
 
@@ -848,18 +849,96 @@ def _checkpoint_project_wals() -> int:
     return reclaimed
 
 
+# Projects whose root directory has been missing for less than this many seconds
+# are spared from GC — covers brief in-progress test runs that create and delete
+# temp dirs, as well as network-mounted drives that may be temporarily unavailable.
+_GC_PROJECTS_SAFETY_WINDOW = 1800.0  # 30 minutes
+
+# How often to run the orphan-project GC pass in the running daemon (in addition
+# to the once-per-startup pass inside cleanup_on_startup).
+GC_PROJECTS_INTERVAL = 3600.0  # 1 hour
+
+
+def _gc_orphaned_projects() -> int:
+    """Delete global.db project rows (and their on-disk .db files) whose root dirs no longer exist.
+
+    Safety: projects whose ``last_seen`` timestamp is within the last
+    ``_GC_PROJECTS_SAFETY_WINDOW`` seconds are skipped so short-lived test
+    temp-dirs and brief network-mount outages are never accidentally pruned.
+
+    Returns the number of project rows removed.
+    """
+    removed = 0
+    now = time.time()
+    safety_cutoff = now - _GC_PROJECTS_SAFETY_WINDOW
+    try:
+        with db.open_global() as gconn:
+            rows = gconn.execute(
+                "SELECT hash, root, last_seen FROM projects"
+            ).fetchall()
+    except (db.DBError, sqlite3.DatabaseError, OSError) as exc:
+        _LOG.warning("_gc_orphaned_projects: could not read projects table: %s", exc)
+        return 0
+
+    for row in rows:
+        project_hash = row["hash"]
+        root = row["root"]
+        last_seen = float(row["last_seen"])
+
+        # Safety window: skip recently-active projects even if the dir is gone.
+        if last_seen > safety_cutoff:
+            _LOG.debug("_gc_orphaned_projects: skipping recent project %s (last_seen %.0fs ago)", root, now - last_seen)
+            continue
+
+        if Path(root).is_dir():
+            continue
+
+        # Root directory is gone and outside the safety window — remove the row
+        # and the on-disk DB file (plus WAL / SHM sidecars).
+        _LOG.info("_gc_orphaned_projects: removing orphaned project root=%s hash=%s", root, project_hash)
+        try:
+            with db.open_global() as gconn:
+                gconn.execute("DELETE FROM projects WHERE hash = ?", (project_hash,))
+        except (db.DBError, sqlite3.DatabaseError, OSError) as exc:
+            _LOG.warning("_gc_orphaned_projects: could not delete row for %s: %s", project_hash, exc)
+            continue
+
+        # Remove per-project DB files; ignore individual errors so a locked file
+        # does not abort cleanup of the remaining orphans.
+        try:
+            db_path = paths.project_db_path(project_hash)
+        except ValueError:
+            _LOG.warning("_gc_orphaned_projects: invalid project hash %r — skipping file removal", project_hash)
+            removed += 1
+            continue
+        for suffix in ("", "-wal", "-shm"):
+            candidate = Path(str(db_path) + suffix) if suffix else db_path
+            if candidate.exists():
+                try:
+                    candidate.unlink()
+                    _LOG.debug("_gc_orphaned_projects: deleted %s", candidate)
+                except OSError as exc:
+                    _LOG.warning("_gc_orphaned_projects: could not delete %s: %s", candidate, exc)
+        removed += 1
+
+    if removed:
+        _LOG.info("_gc_orphaned_projects: removed %d orphaned project(s)", removed)
+    return removed
+
+
 def cleanup_on_startup() -> CleanupStats:
     """Run all self-healing tasks on daemon startup. Returns a summary with counts and failures.
 
     Each task is run independently: a failure in one task is caught, recorded in
     the ``"failures"`` list, and does not prevent remaining tasks from running.
     Tasks run:
-    * ``_cleanup_stale_locks``   — remove lock files for dead PIDs or old ages.
-    * ``_cleanup_old_logs``      — delete daily log files older than LOG_RETENTION_DAYS.
-    * ``_prune_stats_table``     — drop stats rows beyond STATS_RETENTION_DAYS.
+    * ``_cleanup_stale_locks``     — remove lock files for dead PIDs or old ages.
+    * ``_cleanup_old_logs``        — delete daily log files older than LOG_RETENTION_DAYS.
+    * ``_prune_stats_table``       — drop stats rows beyond STATS_RETENTION_DAYS.
     * ``reap_stale_index_markers`` — clear ``*.indexing`` markers for finished/crashed spawns.
     * ``evict_image_cache_if_over_limit`` — LRU-evict images when cache exceeds 500 MB.
-    * ``_checkpoint_global_wal`` — TRUNCATE-checkpoint global.db's WAL so it cannot grow unbounded.
+    * ``_checkpoint_global_wal``   — TRUNCATE-checkpoint global.db's WAL so it cannot grow unbounded.
+    * ``_gc_orphaned_projects``    — delete rows/DBs for projects whose root dirs no longer exist.
     """
     stats: CleanupStats = {
         "stale_locks_cleared": 0,
@@ -868,6 +947,7 @@ def cleanup_on_startup() -> CleanupStats:
         "image_bytes_evicted": 0,
         "image_files_evicted": 0,
         "stats_rows_pruned": 0,
+        "orphaned_projects_removed": 0,
     }
     failures: list[str] = []
 
@@ -883,6 +963,7 @@ def cleanup_on_startup() -> CleanupStats:
         ("bash_outputs", _evict_bash_outputs, "bash_outputs_evicted"),
         ("wal_checkpoint", _checkpoint_global_wal, "wal_bytes_reclaimed"),
         ("project_wal_checkpoint", _checkpoint_project_wals, "project_wal_bytes_reclaimed"),
+        ("gc_orphaned_projects", _gc_orphaned_projects, "orphaned_projects_removed"),
     ]
     for task_name, task_fn, stat_key in _int_tasks:
         try:
@@ -913,7 +994,8 @@ def cleanup_on_startup() -> CleanupStats:
     _LOG.info(
         "startup cleanup complete: locks_cleared=%d index_markers_cleared=%d logs_deleted=%d "
         "stats_rows_pruned=%d image_bytes_evicted=%d image_files_evicted=%d "
-        "snapshots_cleared=%d bash_outputs_evicted=%d wal_bytes_reclaimed=%d%s",
+        "snapshots_cleared=%d bash_outputs_evicted=%d wal_bytes_reclaimed=%d "
+        "orphaned_projects_removed=%d%s",
         stats.get("stale_locks_cleared", 0),
         stats.get("stale_index_markers_cleared", 0),
         stats.get("logs_deleted", 0),
@@ -923,6 +1005,7 @@ def cleanup_on_startup() -> CleanupStats:
         stats.get("snapshots_cleared", 0),
         stats.get("bash_outputs_evicted", 0),
         stats.get("wal_bytes_reclaimed", 0),
+        stats.get("orphaned_projects_removed", 0),
         f" failures={failures}" if failures else "",
     )
     return stats
