@@ -34,6 +34,7 @@ from operator import attrgetter, itemgetter
 from typing import TYPE_CHECKING, Any, Final
 from urllib.parse import urlparse
 
+from . import paths
 from .cache_common import short_content_hash as _short_content_hash
 from .cache_common import short_output_id as _short_id
 from .hooks_common import sanitize_log_str
@@ -59,6 +60,11 @@ def __getattr__(name: str) -> object:
         from . import session as _session  # noqa: PLC0415
         return _session
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
+
+def _norm_key(path: object) -> str:
+    """Return the case-insensitive normalized path key used in compact lookups."""
+    return paths.normalize_key(str(path)).lower()
 
 
 def estimate_tokens(text: str) -> int:
@@ -645,7 +651,7 @@ def is_noise_path(path: str) -> bool:
     """
     if not path:
         return False
-    p = path.replace("\\", "/").lower()
+    p = _norm_key(path)
     # Path-segment check first: catches whole noise directories regardless of
     # the file's own extension (e.g. ``project/.venv/lib/foo.py``).
     for segment in _NOISE_SEGMENTS:
@@ -744,7 +750,7 @@ def _slice_diff_for_file(whole_diff: str, path: str) -> str | None:
     """
     if not whole_diff or not path:
         return None
-    norm_path = path.replace("\\", "/")
+    norm_path = paths.normalize_key(path)
     # Split on each "diff --git" boundary; keep the prefix attached to its chunk.
     chunks = [c for c in whole_diff.split("\ndiff --git ") if c.strip()]
     # The first chunk may or may not start with "diff --git " depending on the
@@ -1986,8 +1992,8 @@ def _format_glob_entry(entry: object, *, cwd: str | None = None) -> str:
     path = getattr(entry, "path", None)
     if path and cwd:
         # Suppress scope path when it equals the session cwd.
-        norm_path = str(path).replace("\\", "/").rstrip("/").lower()
-        norm_cwd = str(cwd).replace("\\", "/").rstrip("/").lower()
+        norm_path = _norm_key(str(path)).rstrip("/")
+        norm_cwd = _norm_key(str(cwd)).rstrip("/")
         if norm_path == norm_cwd:
             path = None
     count = getattr(entry, "result_count", None)
@@ -2673,7 +2679,7 @@ def _render_tasks_section(
     if edited_paths:
         import os as _os
         for p in edited_paths:
-            norm = p.replace("\\", "/").lower()
+            norm = _norm_key(p)
             basename = _os.path.basename(norm)
             if basename:
                 _suppress_tokens.add(basename)
@@ -2743,6 +2749,128 @@ def _render_section(
         if line:
             lines.append(_cap_line(line))
     return lines
+
+
+# Item #28: threshold for the **Slow:** bash group.  A successfully-exited
+# command that took longer than this many seconds is surfaced separately so
+# the compaction LLM (and post-compact agent) can see "this passes but is
+# expensive" candidates worth speeding up.
+_SLOW_BASH_THRESHOLD_SECS: Final[float] = 5.0
+
+
+def _classify_bash_entry(entry: object) -> str:
+    """Return one of ``"failed"``, ``"slow"``, or ``"ok"`` for grouped emission.
+
+    - ``failed``: exit_code is not None and not zero.
+    - ``slow``:   exit_code == 0 AND wall time > _SLOW_BASH_THRESHOLD_SECS.
+    - ``ok``:     everything else (including exit_code is None — unknown class
+                   defaults to ok rather than failed to avoid scary false alarms).
+
+    Wall-time is read defensively via ``getattr(entry, "elapsed_ms", 0)`` then
+    ``elapsed_s`` so the function works with both the in-memory ``BashEntry``
+    dataclass (which may grow either field in future) and the test fixtures
+    that only set a subset of attributes.
+    """
+    exit_code = getattr(entry, "exit_code", None)
+    if exit_code is not None and exit_code != 0:
+        return "failed"
+    elapsed_ms = getattr(entry, "elapsed_ms", None)
+    if elapsed_ms is None:
+        elapsed_s = float(getattr(entry, "elapsed_s", 0.0) or 0.0)
+    else:
+        try:
+            elapsed_s = float(elapsed_ms) / 1000.0
+        except (TypeError, ValueError):
+            elapsed_s = 0.0
+    if exit_code == 0 and elapsed_s > _SLOW_BASH_THRESHOLD_SECS:
+        return "slow"
+    return "ok"
+
+
+def _render_bash_grouped(
+    bash_entries: list[object],
+    budget: int,
+    should_inline: Callable[[object], bool],
+) -> tuple[list[str], int]:
+    """Item #28: emit bash entries grouped by exit-code class.
+
+    Produces::
+
+        **Ran:**
+        **Failed:**
+        - $ pytest tests/  (e=1, ...)
+        **Slow:**
+        - $ pip install ...  (e=0, ...)
+        **Ok:**
+        - $ ls (e=0, ...)
+
+    Within each group the existing entry order (recency-then-size, as built
+    by :func:`_select_top_bash_entries`) is preserved.  Empty groups omit
+    their sub-header.  When every retained entry is in a single group AND
+    that group is ``ok``, the sub-header is omitted entirely (**Ran:** alone
+    is sufficient context — saves ~3 tokens on the common all-passing case).
+    Token budget is honoured greedily in group-priority order (failed first).
+    """
+    if not bash_entries:
+        return [], 0
+
+    # Partition while preserving original order within each bucket.
+    by_class: dict[str, list[object]] = {"failed": [], "slow": [], "ok": []}
+    for be in bash_entries:
+        by_class[_classify_bash_entry(be)].append(be)
+
+    header = "**Ran:**"
+    header_cost = _token_count(header)
+    out: list[str] = [header]
+    used = header_cost
+
+    # Item #28 micro-opt: skip the **Ok:** sub-header on the common case where
+    # every entry passes — the **Ran:** label is enough context and we save
+    # ~3 tokens per all-green manifest.
+    only_ok = (
+        not by_class["failed"] and not by_class["slow"] and bool(by_class["ok"])
+    )
+
+    # Emit groups in priority order so a tight budget still surfaces failures.
+    _ORDER: tuple[tuple[str, str | None], ...] = (
+        ("failed", "**Failed:**"),
+        ("slow", "**Slow:**"),
+        ("ok", None if only_ok else "**Ok:**"),
+    )
+
+    emitted_any = False
+    for group_key, sub_header in _ORDER:
+        group_entries = by_class[group_key]
+        if not group_entries:
+            continue
+        # Reserve room for the sub-header before trying to fit content lines.
+        sub_header_cost = _token_count(sub_header) if sub_header else 0
+        if sub_header and used + sub_header_cost > budget:
+            break  # Even the sub-header doesn't fit — stop here.
+
+        group_lines: list[str] = []
+        group_cost = 0
+        for be in group_entries:
+            line = _format_bash_entry(be, inline_snippet=should_inline(be))
+            cost = _token_count(line)
+            if used + sub_header_cost + group_cost + cost > budget:
+                break
+            group_lines.append(line)
+            group_cost += cost
+
+        if not group_lines:
+            continue  # No content fits — don't emit a lone sub-header.
+
+        if sub_header:
+            out.append(sub_header)
+            used += sub_header_cost
+        out.extend(group_lines)
+        used += group_cost
+        emitted_any = True
+
+    if not emitted_any:
+        return [], 0
+    return out, used
 
 
 def _render_budget_lines(
@@ -2961,7 +3089,7 @@ def _render(cache: SessionCache, session_id: str, max_tokens: int) -> tuple[str,
     # session._normalize_path() and files-dict keys come from the same helper —
     # but the rel_or_abs display strings differ (relative vs. absolute), so we
     # match on the dict keys, not the display path.
-    edited_keys = {p.replace("\\", "/").lower() for p in edited_clean}
+    edited_keys = {_norm_key(p) for p in edited_clean}
 
     # Compute session age and tier once up-front — used in multiple sections below.
     _created_ts = getattr(cache, "created_ts", None)
@@ -2974,7 +3102,7 @@ def _render(cache: SessionCache, session_id: str, max_tokens: int) -> tuple[str,
         entry.rel_or_abs
         for key, entry in files_clean.items()
         if getattr(entry, "last_edit_ts", 0.0) > entry.last_read_ts
-        and key.replace("\\", "/").lower() not in edited_keys
+        and _norm_key(key) not in edited_keys
     ]
 
     # Rank "Symbols Accessed" by most-recent read first.  When a long session
@@ -3007,7 +3135,7 @@ def _render(cache: SessionCache, session_id: str, max_tokens: int) -> tuple[str,
     total_files_read = len(files_clean)
     key_files_candidates = [
         entry for key, entry in files_clean.items()
-        if key.replace("\\", "/").lower() not in edited_keys
+        if _norm_key(key) not in edited_keys
     ]
     # Files that are also in edited_files (path key match) get an edit_bonus even
     # when they appear in key_files_candidates — this handles the case where a file
@@ -3033,7 +3161,7 @@ def _render(cache: SessionCache, session_id: str, max_tokens: int) -> tuple[str,
         key=lambda e: _importance_score(
             e,
             now_for_scoring,
-            edit_bonus=15.0 if e.rel_or_abs.replace("\\", "/").lower() in edited_keys_set else 0.0,
+            edit_bonus=15.0 if _norm_key(e.rel_or_abs) in edited_keys_set else 0.0,
         ),
     )
     _LOG.debug(
@@ -3266,13 +3394,13 @@ def _render(cache: SessionCache, session_id: str, max_tokens: int) -> tuple[str,
         # top_files survives budget filtering, so the suppression set is
         # essentially the same.
         _top_files_paths_norm = {
-            getattr(e, "rel_or_abs", "").replace("\\", "/").lower()
+            _norm_key(getattr(e, "rel_or_abs", ""))
             for e in top_files
         }
         sym_formatted: list[str] = []
         _suppressed_sym_files = 0
         for entry in files_with_symbols:
-            _entry_path_norm = entry.rel_or_abs.replace("\\", "/").lower()
+            _entry_path_norm = _norm_key(entry.rel_or_abs)
             if _entry_path_norm in _top_files_paths_norm:
                 # Skip — the file already appears in **Files:** so the symbol
                 # detail line would be a redundant ~25-token repeat.
@@ -3333,10 +3461,14 @@ def _render(cache: SessionCache, session_id: str, max_tokens: int) -> tuple[str,
         total = int(getattr(be, "stdout_bytes", 0)) + int(getattr(be, "stderr_bytes", 0))
         return total >= 600
 
-    bash_lines, bash_used = _render_budget_lines(
-        "**Ran:**",
-        [_format_bash_entry(be, inline_snippet=_should_inline(be)) for be in bash_entries],
-        bash_budget,
+    # Item #28: group bash entries by exit-code class within the **Ran:** section.
+    # Order: **Failed:** (exit != 0) first, then **Slow:** (exit == 0, elapsed > 5s),
+    # then **Ok:** (the rest).  Within each group the existing recency/size ordering
+    # from `_select_top_bash_entries` is preserved.  Empty groups omit their header.
+    # When all entries are in a single group AND that group is **Ok:**, we skip the
+    # sub-header entirely (the **Ran:** label is sufficient).
+    bash_lines, bash_used = _render_bash_grouped(
+        bash_entries, bash_budget, _should_inline,
     )
 
     # ── 3a. What Worked — last 2 green test runs ──────────────────────────────
@@ -3555,10 +3687,10 @@ def _render(cache: SessionCache, session_id: str, max_tokens: int) -> tuple[str,
     # Only merge when ratio >= 0.5 AND both the Edited section and Files section
     # have content (so we are not collapsing a section that doesn't exist yet).
     _all_read_paths_norm = {
-        key.replace("\\", "/").lower()
+        _norm_key(key)
         for key in files_clean
     }
-    _edited_paths_norm = {p.replace("\\", "/").lower(): p for p in edited_clean}
+    _edited_paths_norm = {_norm_key(p): p for p in edited_clean}
     _overlap_set = set(_edited_paths_norm.keys()) & _all_read_paths_norm
     _overlap_ratio = len(_overlap_set) / max(len(edited_clean), 1)
     _do_merge = (
@@ -3573,17 +3705,17 @@ def _render(cache: SessionCache, session_id: str, max_tokens: int) -> tuple[str,
         # then read-only top-files not in edited.
         merged_entries: list[str] = []
         _read_count_map = {
-            entry.rel_or_abs.replace("\\", "/").lower(): entry
+            _norm_key(entry.rel_or_abs): entry
             for entry in included_top_files
         }
         # Also check files_clean for read counts of edited paths.
         _files_clean_norm = {
-            key.replace("\\", "/").lower(): entry
+            _norm_key(key): entry
             for key, entry in files_clean.items()
         }
         # Sort edited paths by edit count descending (same as current edited section).
         for _ep, _ec in sorted(edited_clean.items(), key=_BY_EDIT_COUNT, reverse=True):
-            _ep_norm = _ep.replace("\\", "/").lower()
+            _ep_norm = _norm_key(_ep)
             # Prefer read-count from included_top_files; fall back to files_clean.
             _re = _read_count_map.get(_ep_norm) or _files_clean_norm.get(_ep_norm)
             _rc = _re.read_count if _re else 0
@@ -3594,7 +3726,7 @@ def _render(cache: SessionCache, session_id: str, max_tokens: int) -> tuple[str,
         # Add read-only top-files not in edited_clean.
         _edited_norm_set = set(_edited_paths_norm.keys())
         for _re in included_top_files:
-            _rp_norm = _re.rel_or_abs.replace("\\", "/").lower()
+            _rp_norm = _norm_key(_re.rel_or_abs)
             if _rp_norm not in _edited_norm_set:
                 _rc = _re.read_count
                 _annotation = f"→×{_rc}" if _rc > 1 else "→"
