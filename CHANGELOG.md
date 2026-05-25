@@ -54,7 +54,10 @@ All notable changes to Token-Goat are documented in this file. Format follows Ke
 ### DRY
 
 - **16 git subprocess sites → `util.run_git()`.** Always sets `--no-optional-locks` + UTF-8 with `errors="replace"`. Regression test asserts no other bare git subprocess calls remain (`2d18337`).
-- **`cache_common.safe_cache_op` context manager** (`c4b9e54`) + **`cache_common.store_blob`** (`58306b9`).
+- **`cache_common.safe_cache_op` context manager** (`c4b9e54`) + **`cache_common.store_blob` for atomic blob writes** (`58306b9`).
+- **`cache_common.short_content_hash()` unifies hash logic** across bash/web/skill caches (`47072d6`).
+- **`paths.safe_join()` canonical fragment joiner** — sanitises null bytes, `..`, absolute paths, Windows-illegal colons (`197acd9`).
+- **`paths.hook_wrapper_path()` persistent hook wrapper** survives `uv tool install --reinstall` (`e53d553`, `48193ad`).
 - **`util.ellipsize` + `compact._render_cache_meta` helpers** (`a9f363a`).
 - **`hints._require_cache`, `cli._lazy_import`, `cli_doctor._check_step`, `session._load_or_empty_json`** helpers (`9636d2d`, `fd10af4`, `582001d`).
 
