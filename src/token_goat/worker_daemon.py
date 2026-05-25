@@ -49,14 +49,48 @@ def _process_dirty_entries(entries: list[DirtyQueueEntry]) -> None:
     _worker._process_dirty_entries(entries)
 
 
+def _graceful_shutdown(signum: int, frame: object) -> None:
+    """Signal handler: clean up the PID file before exiting.
+
+    Called on SIGTERM and SIGINT.  Explicitly removes the PID file as a
+    belt-and-suspenders measure alongside the ``atexit.register(_clear_pid)``
+    installed by :func:`run_daemon` — atexit fires on ``sys.exit`` (which this
+    handler calls), so the cleanup happens twice in the normal path, but only
+    the explicit call fires if the process is terminated in a way that bypasses
+    atexit (e.g. hard kill before Python's signal-handler dispatch completes on
+    some platforms).
+
+    Note on ``pythonw.exe`` (Windows GUI subsystem): this process receives no
+    console-control events, so SIGTERM / SIGINT never arrive via the terminal.
+    The Windows-specific ``SetConsoleCtrlHandler`` path in
+    :func:`_install_windows_console_handler` handles CTRL_CLOSE_EVENT /
+    CTRL_SHUTDOWN_EVENT instead.  When the parent kills the process via
+    ``TerminateProcess``, Python's atexit hooks do *not* run — this is a
+    Windows OS limitation and is not fixable in user-space.  The PID file will
+    be cleaned up on the *next* worker startup via ``cleanup_on_startup()``.
+    """
+    _LOG.debug("received signal %d; initiating clean shutdown", signum)
+    with contextlib.suppress(Exception):
+        _worker._clear_pid()
+    sys.exit(0)
+
+
 def _install_signal_handlers() -> None:
     """Register SIGTERM/SIGINT handlers that exit cleanly, suppressing errors on platforms
     where the signal module exists but signal installation is restricted (e.g. non-main threads).
+
+    On POSIX systems SIGTERM is the standard graceful-termination signal; wiring
+    it explicitly ensures the PID file is removed even when the process is stopped
+    by a service manager (systemd, launchd) or ``kill <pid>``.
+
+    On Windows ``pythonw.exe`` (GUI subsystem, no console attached), neither
+    SIGTERM nor SIGINT arrives via the terminal — console-control events are
+    handled separately by :func:`_install_windows_console_handler`.
     """
     for sig in (signal.SIGTERM, signal.SIGINT):
         if hasattr(signal, sig.name):
             with contextlib.suppress(ValueError, AttributeError):
-                signal.signal(sig, lambda *_: sys.exit(0))
+                signal.signal(sig, _graceful_shutdown)
 
 
 def _install_windows_console_handler(stop_event=None) -> None:

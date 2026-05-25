@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import ctypes
+import signal
 import sys
 import threading
 from unittest.mock import patch
@@ -508,3 +509,43 @@ def test_run_daemon_registers_atexit_clear_pid(tmp_data_dir):
     assert expected_clear_pid in registered_funcs, (
         "run_daemon must register _clear_pid with atexit on all platforms"
     )
+
+
+# ---------------------------------------------------------------------------
+# SIGTERM handler — POSIX only
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX-only: SIGTERM not wired on Windows")
+def test_install_signal_handlers_wires_sigterm_on_posix() -> None:
+    """_install_signal_handlers registers _graceful_shutdown for SIGTERM on POSIX."""
+    registered: dict[int, object] = {}
+
+    def _fake_signal(sig: int, handler: object) -> object:
+        registered[sig] = handler
+        return signal.SIG_DFL
+
+    with patch("token_goat.worker_daemon.signal") as mock_signal_mod:
+        mock_signal_mod.SIGTERM = signal.SIGTERM
+        mock_signal_mod.SIGINT = signal.SIGINT
+        mock_signal_mod.signal.side_effect = _fake_signal
+        mock_signal_mod.SIG_DFL = signal.SIG_DFL
+        daemon._install_signal_handlers()
+
+    assert signal.SIGTERM in registered, "_install_signal_handlers must wire SIGTERM on POSIX"
+    assert registered[signal.SIGTERM] is daemon._graceful_shutdown, (
+        "SIGTERM must be mapped to _graceful_shutdown, not a bare sys.exit lambda"
+    )
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX-only")
+def test_graceful_shutdown_clears_pid_before_exit() -> None:
+    """_graceful_shutdown calls _worker._clear_pid() then sys.exit(0)."""
+    with (
+        patch.object(worker, "_clear_pid") as mock_clear,
+        patch("sys.exit") as mock_exit,
+    ):
+        daemon._graceful_shutdown(signal.SIGTERM, None)
+
+    mock_clear.assert_called_once()
+    mock_exit.assert_called_once_with(0)
