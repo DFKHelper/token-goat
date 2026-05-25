@@ -196,11 +196,14 @@ def evict_cache_dir(
         Byte budget for the directory.  Entries are deleted oldest-first until
         the summed size of remaining ``.txt`` files is at or below this value.
     max_file_count:
-        File count cap for the directory.  Entries are deleted oldest-first
-        until the number of ``.txt`` files is at or below this value.  The
-        default of 4096 prevents unbounded growth when many sub-1 KB entries
-        accumulate — Windows NTFS ``iterdir`` on tens of thousands of files
-        adds measurable hook cold-start latency (~200–500 ms).
+        File count cap for the directory expressed as the maximum number of
+        ``.txt`` body files.  Each body file may have a matching ``.json``
+        sidecar, so the physical directory-entry count may be up to
+        ``2 * max_file_count``.  Entries are deleted oldest-first until the
+        number of ``.txt`` files is at or below this value.  The default of
+        4096 prevents unbounded growth when many sub-1 KB entries accumulate —
+        Windows NTFS ``iterdir`` on tens of thousands of files adds measurable
+        hook cold-start latency (~200–500 ms).
 
     Returns
     -------
@@ -247,6 +250,26 @@ def evict_cache_dir(
     except OSError:
         return 0
 
+    # Orphan-sidecar sweep — a sidecar whose body was deleted out-of-band
+    # (e.g. a previous eviction whose body unlink succeeded before the sidecar
+    # unlink could run, or a manual ``rm cache/*.txt``) would otherwise live
+    # forever.  We sweep BEFORE the early-return so orphans are cleaned even
+    # when both caps are already satisfied.  Cost: one additional iterdir pass,
+    # which is the same order as the scan pass we already paid above.
+    try:
+        for sp in d.iterdir():
+            if not sp.name.endswith(".json"):
+                continue
+            body = sp.with_suffix(".txt")
+            if body.exists():
+                continue
+            try:
+                sp.unlink()
+            except OSError as exc:
+                _log.debug("%s: orphan sidecar removal failed: %s: %s", log_name, sp.name, exc)
+    except OSError:
+        pass
+
     if total <= max_total_bytes and len(entries) <= max_file_count:
         return 0
 
@@ -275,24 +298,6 @@ def evict_cache_dir(
             "%s: evicted %d entries (bytes cap=%d, count cap=%d)",
             log_name, removed, max_total_bytes, max_file_count,
         )
-
-    # Orphan-sidecar sweep — a sidecar whose body was deleted out-of-band
-    # (e.g. a previous eviction whose body unlink succeeded before the sidecar
-    # unlink could run, or a manual ``rm cache/*.txt``) would otherwise live
-    # forever.  We list ``.json`` files and drop any without a matching ``.txt``.
-    try:
-        for sp in d.iterdir():
-            if not sp.name.endswith(".json"):
-                continue
-            body = sp.with_suffix(".txt")
-            if body.exists():
-                continue
-            try:
-                sp.unlink()
-            except OSError as exc:
-                _log.debug("%s: orphan sidecar removal failed: %s: %s", log_name, sp.name, exc)
-    except OSError:
-        pass
 
     return removed
 

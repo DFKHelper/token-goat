@@ -554,10 +554,13 @@ def doctor(  # noqa: C901
     # diff-aware-re-read features so a long-lived install can be inspected
     # for runaway growth without grep-ing the data directory by hand.
     typer.echo("\nCaches")
-    for label, dir_name, cap_bytes in (
-        ("bash outputs", "bash_outputs", 16 * 1024 * 1024),
-        ("web outputs", "web_outputs", 32 * 1024 * 1024),
-        ("session snapshots", "session_snapshots", None),
+    # cap_file_count is the max number of .txt body files (each may also have a
+    # .json sidecar, so the physical directory-entry count can be up to 2× this).
+    # None means no file-count cap applies (e.g. session_snapshots).
+    for label, dir_name, cap_bytes, cap_file_count in (
+        ("bash outputs", "bash_outputs", 16 * 1024 * 1024, 4096),
+        ("web outputs", "web_outputs", 32 * 1024 * 1024, 4096),
+        ("session snapshots", "session_snapshots", None, None),
     ):
         d = paths.data_dir() / dir_name
         if not d.exists():
@@ -573,7 +576,15 @@ def doctor(  # noqa: C901
             continue
         age_str = f", oldest {oldest_age // 3600}h ago" if oldest_age is not None else ""
         size_str = _humanize_bytes_doctor(total_bytes)
-        if cap_bytes is not None and total_bytes > int(cap_bytes * 1.1):
+        # Detect over-cap: bytes cap OR file-count cap.  The file-count cap is
+        # expressed in .txt bodies; _cache_dir_stats counts ALL files (bodies +
+        # sidecars), so compare against cap_file_count * 2 to give a fair
+        # threshold that accounts for each body having one sidecar.
+        bytes_over = cap_bytes is not None and total_bytes > int(cap_bytes * 1.1)
+        count_over = (
+            cap_file_count is not None and file_count > cap_file_count * 2 * 1.1
+        )
+        if bytes_over or count_over:
             # 10% over the cap is the eviction's grace window; beyond that
             # the periodic sweep should have caught up by now.
             flag(label, f"{file_count} files, {size_str}{age_str} (over cap)", warn=True)
