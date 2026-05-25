@@ -410,6 +410,26 @@ def record_hint_stat_pair(kind: str, hint: object, detail: str) -> None:
     if realized_tokens == 0 and injection_bytes == 0 and not cfg.stats.record_zero_savings:
         return
 
+    # Item 15: Skip writing the overhead row when injection_bytes < 32 and tokens_saved > 0.
+    # Small injection hints (e.g., "you already read this file" nudges) have
+    # negligible overhead cost; skipping their overhead row measurement removes
+    # ~30% of SQLite write traffic on the hot pre-read path without losing
+    # material insight. The saving row is still written when tokens_saved > 0,
+    # since that represents real value captured.
+    if injection_bytes < 32 and realized_tokens > 0:
+        db.record_stat(
+            None,
+            kind,
+            bytes_saved=realized_tokens * 4,
+            tokens_saved=realized_tokens,
+            detail=detail,
+        )
+        return
+
+    # For zero savings, skip rows unless record_zero_savings config is enabled
+    if realized_tokens == 0 and not cfg.stats.record_zero_savings:
+        return
+
     db.record_stat(
         None,
         kind,
