@@ -10,7 +10,7 @@ import time
 from collections.abc import Callable
 from dataclasses import asdict, is_dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, cast, get_args
+from typing import TYPE_CHECKING, Any, cast, get_args
 
 if TYPE_CHECKING:
     from .project import Project
@@ -88,6 +88,23 @@ def _emit_json(data: object, *, indent: int | None = None) -> None:
     raise typer.Exit(0)
 
 
+def _lazy_import(name: str) -> Any:
+    """Lazy intra-package module import.  Use inside command bodies to defer cold-start cost.
+
+    Returns the imported module as ``Any`` so callers can access attributes
+    without mypy complaints.  Typical usage::
+
+        _db = _lazy_import("db")
+        with _db.open_project(proj_hash) as conn:
+            ...
+
+    The single ``# noqa: PLC0415`` lives here rather than at every call site,
+    eliminating the per-import suppression comment on each lazy-load line.
+    """
+    from importlib import import_module  # noqa: PLC0415
+    return import_module(f"token_goat.{name}")
+
+
 # ---------------------------------------------------------------------------
 # Reusable Typer option constants
 #
@@ -140,7 +157,7 @@ def _validate_session_id(session_id: str) -> None:
 
     All five session-aware commands use this instead of duplicating that block.
     """
-    from . import session as session_mod  # noqa: PLC0415
+    session_mod = _lazy_import("session")
 
     try:
         session_mod.validate_session_id(session_id)
@@ -208,7 +225,7 @@ def _project_symbol_pool(proj_hash: str) -> list[str]:
     and the auto-redirect lookup hit the DB exactly once per command
     invocation instead of twice.
     """
-    from . import db as _db  # noqa: PLC0415
+    _db = _lazy_import("db")
 
     try:
         with _db.open_project_readonly(proj_hash) as conn:
@@ -245,7 +262,7 @@ def _global_symbol_pool() -> list[str]:
 
     Mirrors :func:`_project_symbol_pool` for cross-project lookups.
     """
-    from . import db as _db  # noqa: PLC0415
+    _db = _lazy_import("db")
 
     try:
         with _db.open_global_readonly() as gconn:
@@ -289,7 +306,7 @@ def _query_project(proj_hash: str, sql: str, params: tuple[object, ...]) -> list
 
     Returns the raw sqlite3.Row list on success.
     """
-    from . import db as _db  # noqa: PLC0415
+    _db = _lazy_import("db")
 
     try:
         with _db.open_project(proj_hash) as conn:
@@ -394,7 +411,7 @@ def symbol(
     ``redirected_from`` field in JSON output and a ``(redirected from: ...)``
     marker in plain-text output so the substitution is auditable.  Use
     ``--strict`` to opt out and get the previous behaviour."""
-    from . import db as _db  # noqa: PLC0415
+    _db = _lazy_import("db")
 
     use_tty_color = sys.stdout.isatty() and not as_json
 
