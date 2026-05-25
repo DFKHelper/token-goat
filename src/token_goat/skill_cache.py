@@ -59,6 +59,7 @@ from .cache_common import (
     load_output_meta_stat,
     load_output_text,
     load_sidecar_json,
+    safe_cache_op,
     safe_join_output_id,
     safe_session_fragment,
     short_content_hash,
@@ -330,7 +331,7 @@ def store_output(
         )
         return None
 
-    try:
+    with safe_cache_op("store_output", log=_LOG):
         sha = content_hash(body)
         out_id = output_id_for(session_id, name, sha)
         stored, truncated = truncate_tail_preserve(
@@ -359,9 +360,7 @@ def store_output(
             out_id, name, meta.body_bytes, truncated,
         )
         return meta
-    except OSError as exc:
-        _LOG.warning("skill_cache: store failed: %s", exc)
-        return None
+    return None
 
 
 def load_output(output_id: str) -> str | None:

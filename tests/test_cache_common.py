@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import time
 from pathlib import Path
@@ -15,6 +16,7 @@ from token_goat.cache_common import (
     evict_cache_dir,
     get_cache_dir,
     load_sidecar_json,
+    safe_cache_op,
     safe_session_fragment,
     short_content_hash,
     sidecar_path_for,
@@ -859,3 +861,54 @@ class TestSidecarPathFor:
             assert result is not None
             assert result.suffix == ".json"
             assert result.parent == tmp_path / subdir
+
+
+class TestSafeCacheOp:
+    """safe_cache_op: context manager that catches OSError and logs a warning."""
+
+    def _make_log(self) -> logging.Logger:
+        return logging.getLogger("test_safe_cache_op")
+
+    def test_no_exception_passes_through(self) -> None:
+        """When no exception is raised the with-block completes normally."""
+        result = []
+        with safe_cache_op("test_op", log=self._make_log()):
+            result.append(42)
+        assert result == [42]
+
+    def test_oserror_suppressed(self) -> None:
+        """OSError is caught and does not propagate."""
+        ran = []
+        with safe_cache_op("test_op", log=self._make_log()):
+            raise OSError("disk full")
+        ran.append("after_with")
+        assert ran == ["after_with"]
+
+    def test_oserror_subclass_suppressed(self) -> None:
+        """FileNotFoundError (a subclass of OSError) is also suppressed."""
+        with safe_cache_op("test_op", log=self._make_log()):
+            raise FileNotFoundError("not found")
+
+    def test_non_oserror_propagates(self) -> None:
+        """Non-OSError exceptions are not suppressed."""
+        with pytest.raises(ValueError, match="bad value"), safe_cache_op("test_op", log=self._make_log()):
+            raise ValueError("bad value")
+
+    def test_oserror_logs_warning(self, caplog: pytest.LogCaptureFixture) -> None:
+        """OSError triggers a warning log containing the op_name."""
+        log = logging.getLogger("token_goat.cache_common_test")
+        with caplog.at_level(logging.WARNING, logger=log.name), safe_cache_op("my_op", log=log):
+            raise OSError("disk full")
+        assert any("my_op" in r.message for r in caplog.records)
+
+    def test_return_value_pattern(self) -> None:
+        """The caller can use 'return None' after the with-block as the fallback."""
+        def _store(fail: bool) -> int | None:
+            with safe_cache_op("store", log=self._make_log()):
+                if fail:
+                    raise OSError("disk full")
+                return 42
+            return None
+
+        assert _store(fail=False) == 42
+        assert _store(fail=True) is None

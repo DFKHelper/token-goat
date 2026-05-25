@@ -16,6 +16,7 @@ __all__ = [
     "load_output_meta_stat",
     "load_output_text",
     "load_sidecar_json",
+    "safe_cache_op",
     "safe_join_output_id",
     "safe_session_fragment",
     "short_content_hash",
@@ -33,7 +34,8 @@ import os
 import re
 import stat as _stat_module
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Generator
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, TypedDict
 
@@ -62,6 +64,47 @@ def get_cache_dir(name: str) -> Path:
     """
     from . import paths as _paths  # noqa: PLC0415
     return _paths.ensure_dir(_paths.data_dir() / name)
+
+
+@contextmanager
+def safe_cache_op(op_name: str, *, log: logging.Logger) -> Generator[None, None, None]:
+    """Context manager that catches and logs ``OSError`` from a cache write operation.
+
+    Use inside ``store_output`` and similar functions to replace the boilerplate::
+
+        try:
+            # ... write logic ...
+            return result
+        except OSError as exc:
+            _LOG.warning("%s: store failed: %s", log_prefix, exc)
+            return None
+
+    with::
+
+        with safe_cache_op("store_output", log=_LOG):
+            # ... write logic ...
+            return result
+        return None  # reached only when the context manager suppresses an OSError
+
+    Parameters
+    ----------
+    op_name:
+        Short descriptive name for the operation (e.g. ``"store_output"``, ``"store"``).
+        Included in the warning message so log readers know which step failed.
+    log:
+        The module-level logger to emit the warning on.
+
+    Notes
+    -----
+    Only ``OSError`` (and its subclasses) are caught; all other exceptions
+    propagate normally.  This matches the contract of the cache modules, where
+    I/O failures are expected (full disk, antivirus lock, read-only filesystem)
+    but programming errors should still surface.
+    """
+    try:
+        yield
+    except OSError as exc:
+        log.warning("cache: %s failed: %s", op_name, exc)
 
 
 def sidecar_path_for(output_path: Path) -> Path:
