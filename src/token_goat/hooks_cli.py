@@ -30,7 +30,7 @@ from typing import Literal, ParamSpec, TypeVar, cast
 
 from . import paths
 from .hooks_common import CONTINUE, HookPayload, HookResponse, sanitize_log_str
-from .util import get_logger
+from .util import get_logger, sanitize_surrogates
 
 #: Valid harness identifiers used by :func:`normalize_payload`, :func:`denormalize_response`,
 #: and :func:`safe_run`.  Defined as a ``Literal`` so callers get a type error on
@@ -238,12 +238,18 @@ def safe_run(event: str, input_file: Path | None = None, harness: Harness = "cla
         raise
     except BaseException as exc:  # noqa: BLE001 — bulletproof
         msg = f"token-goat hook {event} failed: {type(exc).__name__}: {exc}"
+        # Sanitize surrogates at the message boundary so that every downstream
+        # consumer (stderr print, logger, crash-sink write) receives valid UTF-8.
+        # On Windows, a path with non-UTF-8 bytes produces surrogate-escape chars
+        # in str(exc); without sanitization the print() or file write would raise
+        # UnicodeEncodeError and the crash would be silently lost.
+        safe_msg = sanitize_surrogates(msg)
         with contextlib.suppress(Exception):
-            print(msg, file=sys.stderr)
+            print(safe_msg, file=sys.stderr)
         with contextlib.suppress(Exception):
             # Attempt to persist to log file even if normal setup failed.
             _setup_logging()
-            _LOG.error("%s", msg, exc_info=True)
+            _LOG.error("%s", safe_msg, exc_info=True)
         # Dedicated crash sink: append msg + traceback to hooks-stderr.log so
         # hook crashes are not silently lost when the harness redirects stderr
         # to nul:/dev/null.  This must never raise — any write failure is
@@ -254,8 +260,10 @@ def safe_run(event: str, input_file: Path | None = None, harness: Harness = "cla
             sink.parent.mkdir(parents=True, exist_ok=True)
             paths.roll_log_if_oversized(sink, paths.HOOKS_STDERR_LOG_MAX_BYTES)
             tb = traceback.format_exc()
+            # safe_msg was sanitized above; only tb needs sanitization here.
+            safe_tb = sanitize_surrogates(tb)
             with sink.open("a", encoding="utf-8") as fh:
-                fh.write(msg + "\n" + tb)
+                fh.write(safe_msg + "\n" + safe_tb)
         except Exception:  # noqa: BLE001
             pass
         emit(result)
@@ -578,4 +586,10 @@ def dispatch(event: str, payload: HookPayload) -> dict[str, object]:
         speed_tag = "moderate" if elapsed_ms >= _HOOK_MODERATE_MS else "fast"
         _LOG.debug("hook %s completed in %.1fms (%s)", safe_event, elapsed_ms, speed_tag)
     result["_tg_elapsed_ms"] = round(elapsed_ms, 2)
+    # Top-level safety net: every valid hook response must carry {"continue": True}.
+    # fail_soft already guarantees this on exception paths, but a handler that
+    # returns an unexpected shape (e.g. empty dict, missing key) would otherwise
+    # produce a response the harness cannot parse.  Force the field to True so the
+    # harness never blocks on a malformed-but-non-crashing handler return.
+    result.setdefault("continue", True)
     return result

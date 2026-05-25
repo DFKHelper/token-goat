@@ -764,3 +764,141 @@ class TestCompactSkipSentinel:
         monkeypatch.setattr(paths, "data_dir", lambda: tmp_path)
         result = hc.pre_compact({"trigger": "auto"})
         assert result.get("continue") is True
+
+
+# ---------------------------------------------------------------------------
+# Item D: dispatch top-level continue-field sanitization
+# ---------------------------------------------------------------------------
+
+
+class TestDispatchContinueGuard:
+    """dispatch() must always return a response with {"continue": True},
+    even when the handler returns a dict that is missing the key."""
+
+    def test_handler_returning_empty_dict_gets_continue_injected(self, monkeypatch):
+        """A handler that returns {} (missing 'continue') must still produce continue:true."""
+
+        from token_goat import hooks_cli as hc
+
+        # Register a one-shot handler that returns an empty dict.
+        original_cache = dict(hc._HANDLER_CACHE)
+        try:
+            hc._HANDLER_CACHE["pre-read"] = lambda payload: {}  # type: ignore[assignment]
+            result = hc.dispatch("pre-read", {"tool_name": "Other"})
+        finally:
+            hc._HANDLER_CACHE.clear()
+            hc._HANDLER_CACHE.update(original_cache)
+
+        assert result.get("continue") is True, (
+            f"dispatch() did not inject 'continue' for empty-dict handler response: {result}"
+        )
+
+    def test_handler_returning_only_extra_keys_gets_continue_injected(self, monkeypatch):
+        """A handler returning a non-continue dict still gets continue:true appended."""
+        from token_goat import hooks_cli as hc
+
+        original_cache = dict(hc._HANDLER_CACHE)
+        try:
+            hc._HANDLER_CACHE["pre-read"] = lambda payload: {"extra": "value"}  # type: ignore[assignment]
+            result = hc.dispatch("pre-read", {"tool_name": "Other"})
+        finally:
+            hc._HANDLER_CACHE.clear()
+            hc._HANDLER_CACHE.update(original_cache)
+
+        assert result.get("continue") is True
+
+    def test_handler_returning_continue_true_is_unchanged(self, monkeypatch):
+        """A handler already returning continue:true must not have it overwritten."""
+        from token_goat import hooks_cli as hc
+
+        original_cache = dict(hc._HANDLER_CACHE)
+        try:
+            hc._HANDLER_CACHE["pre-read"] = lambda payload: {"continue": True, "extra": "x"}  # type: ignore[assignment]
+            result = hc.dispatch("pre-read", {"tool_name": "Other"})
+        finally:
+            hc._HANDLER_CACHE.clear()
+            hc._HANDLER_CACHE.update(original_cache)
+
+        assert result.get("continue") is True
+        assert result.get("extra") == "x"
+
+
+# ---------------------------------------------------------------------------
+# Item B: crash-sink surrogate safety
+# ---------------------------------------------------------------------------
+
+
+class TestCrashSinkSurrogateSafety:
+    """safe_run's crash-sink log write must survive surrogate chars in msg/traceback.
+
+    Tests verify that sanitize_surrogates is called at the right boundary in
+    safe_run so that UnicodeEncodeError in the crash log write never silently
+    swallows a crash record.  Direct use of surrogate codepoints in test
+    function scope is avoided because xdist/execnet cannot serialize strings
+    with lone surrogates across its communication channel — instead we verify
+    the sanitization boundary is wired correctly via monkeypatching.
+    """
+
+    def test_crash_sink_calls_sanitize_surrogates_on_msg_and_tb(
+        self, tmp_path, capsys, monkeypatch
+    ):
+        """safe_run must apply sanitize_surrogates to both msg and tb before
+        writing to the crash sink.  This is the boundary that prevents a
+        UnicodeEncodeError from silently swallowing a crash when the exception
+        or its traceback contains Windows surrogate-escape chars."""
+        import json
+
+        from token_goat import hooks_cli as hc
+        from token_goat import paths
+
+        monkeypatch.setattr(paths, "logs_dir", lambda: tmp_path / "logs")
+        monkeypatch.setattr(hc, "dispatch", lambda event, payload: (_ for _ in ()).throw(RuntimeError("boom")))
+
+        sanitize_calls: list[str] = []
+
+        original = hc.sanitize_surrogates
+
+        def recording_sanitize(text: str) -> str:
+            sanitize_calls.append(text)
+            return original(text)
+
+        monkeypatch.setattr(hc, "sanitize_surrogates", recording_sanitize)
+
+        payload_file = tmp_path / "payload.json"
+        payload_file.write_text('{"session_id": "sanitize-call-test"}', encoding="utf-8")
+        hc.safe_run("pre-read", input_file=payload_file)
+
+        # Fail-soft contract: continue:true still emitted
+        out = capsys.readouterr().out
+        parsed = json.loads(out)
+        assert parsed["continue"] is True
+
+        # sanitize_surrogates must have been called at least twice:
+        # once for msg and at least once for tb (the traceback).
+        assert len(sanitize_calls) >= 2, (
+            f"expected sanitize_surrogates called >=2 times (msg + tb), got {len(sanitize_calls)}"
+        )
+
+    def test_crash_sink_is_valid_utf8_after_write(self, tmp_path, capsys, monkeypatch):
+        """The crash-sink file must always be readable as valid UTF-8 after a crash.
+
+        This is the outcome guarantee: whatever sanitization runs, the resulting
+        file must not contain invalid UTF-8 sequences.
+        """
+
+        from token_goat import hooks_cli as hc
+        from token_goat import paths
+
+        monkeypatch.setattr(paths, "logs_dir", lambda: tmp_path / "logs")
+        monkeypatch.setattr(hc, "dispatch", lambda event, payload: (_ for _ in ()).throw(RuntimeError("normal message")))
+
+        payload_file = tmp_path / "payload.json"
+        payload_file.write_text('{"session_id": "utf8-test"}', encoding="utf-8")
+        hc.safe_run("pre-read", input_file=payload_file)
+
+        sink = tmp_path / "logs" / "hooks-stderr.log"
+        assert sink.exists(), "hooks-stderr.log was not created"
+        # This read must not raise — file must be valid UTF-8.
+        content = sink.read_text(encoding="utf-8")
+        assert "pre-read" in content
+        assert "RuntimeError" in content
