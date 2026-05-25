@@ -2663,6 +2663,19 @@ class TestSessionLockfile:
         finally:
             _release_session_lock(sid, fd)
 
+    def test_acquire_refuses_lock_on_pid_write_failure(self, tmp_data_dir):
+        """Both PID write attempts fail; lock is refused and cleaned up."""
+        from unittest.mock import patch
+
+        from token_goat.session import _acquire_session_lock, _session_lock_path
+
+        sid = "lock_write_fail"
+        with patch("token_goat.session.os.write", side_effect=OSError("write failed")):
+            fd = _acquire_session_lock(sid)
+            assert fd is None, "Lock should be refused when PID write fails twice"
+            lock_path = _session_lock_path(sid)
+            assert not lock_path.exists(), "Lock file should be cleaned up"
+
     def test_lock_is_stale_absent_file_returns_true(self, tmp_data_dir):
         """A lockfile that does not exist is treated as stale (already gone)."""
         from token_goat.session import _lock_is_stale, _session_lock_path
