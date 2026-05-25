@@ -147,3 +147,5 @@ CLAUDE.md
 .tmp/
 .verify-manual/
 .improve-state-*.json
+# Accidental local data dir from misconfigured LOCALAPPDATA in dev/test runs
+.localapp/
