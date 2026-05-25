@@ -946,6 +946,11 @@ _PYTEST_FAIL_LINE_RE: Final[re.Pattern[str]] = re.compile(
     r"^(FAILED|ERROR|PASSED|SKIPPED|XFAIL|XPASS)\s+\S"
 )
 _PYTEST_COLLECT_RE: Final[re.Pattern[str]] = re.compile(r"^collected \d+ items?")
+# Banner lines emitted before ``= test session starts =`` — constant per
+# project so the agent gains no new information from reading them.
+_PYTEST_BANNER_RE: Final[re.Pattern[str]] = re.compile(
+    r"^(?:platform\s|cachedir:\s|rootdir:\s|plugins:\s|configfile:\s)"
+)
 
 
 class PytestFilter(Filter):
@@ -959,7 +964,9 @@ class PytestFilter(Filter):
       in Xs =`` line.
     * **Drop**: pass-progress dots line (``....F..s....    [ 50%]``),
       ``PASSED`` lines in verbose mode (kept as a count), individual collected
-      file names beyond the first few.
+      file names beyond the first few, and the constant banner lines
+      (``platform``, ``cachedir:``, ``rootdir:``, ``plugins:``,
+      ``configfile:``) that are the same for every invocation.
 
     On a 5 KB pytest run with no failures the output shrinks to ~10 lines.
     With failures the failure tracebacks are preserved untouched so the agent
@@ -981,6 +988,10 @@ class PytestFilter(Filter):
         for line in lines:
             # Drop the dots/percent progress line entirely.
             if _PYTEST_DOTS_RE.match(line):
+                continue
+            # Drop constant banner lines (platform, cachedir, rootdir, plugins,
+            # configfile) — same for every run, zero information for the agent.
+            if _PYTEST_BANNER_RE.match(line):
                 continue
             # Section transitions, re-evaluate which block we're in.
             if _PYTEST_HEADER_RE.match(line):
@@ -1421,6 +1432,11 @@ _RUFF_LINE_RE: Final[re.Pattern[str]] = re.compile(
 _RUFF_FOOTER_RE: Final[re.Pattern[str]] = re.compile(
     r"^Found \d+ error"
 )
+# Ruff success banner: "All checks passed!" (or the older "No errors found.")
+# The agent infers success from exit code 0; the text is pure noise.
+_RUFF_SUCCESS_RE: Final[re.Pattern[str]] = re.compile(
+    r"^(?:All checks passed!|No errors found\.?)\s*$"
+)
 _MYPY_LINE_RE: Final[re.Pattern[str]] = re.compile(
     r"^(?P<file>.+?):(?P<line>\d+):(?:\d+:)?\s+(?P<level>error|note|warning):"
 )
@@ -1440,6 +1456,9 @@ class RuffFilter(Filter):
     * **Rule with < 3 occurrences** (or all in one file): keep all lines verbatim.
     * **Always keep** the ``Found N errors`` footer line.
     * **Always keep** non-violation lines (blank lines, section headers, etc.).
+    * **On clean exit (exit_code 0, no violations)**: return empty string — the
+      agent infers success from the exit code and does not need the
+      ``"All checks passed!"`` banner.
     """
 
     name = "ruff"
@@ -1449,6 +1468,23 @@ class RuffFilter(Filter):
         self, stdout: str, stderr: str, exit_code: int, argv: list[str],
     ) -> str:
         merged = self._combine_output(stdout, stderr)
+
+        # Fast path: clean run — strip the success banner entirely.  The agent
+        # infers pass/fail from the exit code; the "All checks passed!" string
+        # is pure noise (~4 tokens per invocation).
+        if exit_code == 0:
+            lines_stripped = [
+                ln for ln in merged.splitlines() if not _RUFF_SUCCESS_RE.match(ln)
+            ]
+            # If nothing remains after stripping the success banner (and any
+            # surrounding blank lines), return empty — don't emit whitespace.
+            cleaned = "\n".join(lines_stripped).strip()
+            # Only suppress when the remaining content is also empty (i.e. ruff
+            # printed *only* the success banner).  If there is other output on a
+            # clean run (e.g. auto-fix summary from `ruff check --fix`), keep it.
+            if not cleaned:
+                return ""
+
         lines = merged.split("\n")
 
         # First pass: collect violation lines grouped by rule code.
