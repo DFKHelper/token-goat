@@ -558,7 +558,12 @@ def _try_unchanged_file_hint(
 
 
 def _try_diff_hint(
-    session_id: str, file_path: str
+    session_id: str,
+    file_path: str,
+    *,
+    req_start: int | None = None,
+    req_end: int | None = None,
+    entry_line_ranges: list[tuple[int, int]] | None = None,
 ) -> HookResponse | None:
     """Return a diff-hint hook response when one applies, otherwise ``None``.
 
@@ -566,10 +571,47 @@ def _try_diff_hint(
     stored session snapshot.  Skips files that cannot be read or that exceed
     the snapshot size cap (the snapshot would be missing in that case anyway).
 
+    When *req_start* / *req_end* and *entry_line_ranges* are provided, the hint
+    is suppressed when the requested read range does not overlap any of the
+    previously-read line ranges.  This avoids false positives when the agent is
+    reading a section of the file that was never in context before — there is
+    nothing to diff against for that section, so emitting the diff is noise.
+
     Records the realized saving as a ``diff_hint`` stat row plus a
     ``diff_hint_overhead`` row covering the hint's own injection cost — same
     honest-accounting pattern used by the session_hint path.
     """
+    # Range-overlap guard (Item A26): suppress the diff hint when the requested
+    # read range is entirely outside every cached read range.  Uses the same
+    # proximity-slop constant as the read-hint proximity check so both checks
+    # are tuned by a single constant.
+    if (
+        req_start is not None
+        and req_end is not None
+        and entry_line_ranges
+        and entry_line_ranges != [(0, 0)]  # collapsed sentinel = full file
+    ):
+        from .hints import _PROXIMITY_SLOP_LINES  # noqa: PLC0415
+
+        global_min = entry_line_ranges[0][0]
+        global_max = entry_line_ranges[0][1]
+        for _s, _e in entry_line_ranges[1:]:
+            if _s < global_min:
+                global_min = _s
+            if _e > global_max:
+                global_max = _e
+        if req_start > global_max + _PROXIMITY_SLOP_LINES or req_end < global_min - _PROXIMITY_SLOP_LINES:
+            _LOG.debug(
+                "diff-hint: suppressed for %s (range [%d,%d] outside cached [%d,%d] ±%d)",
+                sanitize_log_str(file_path),
+                req_start,
+                req_end,
+                global_min,
+                global_max,
+                _PROXIMITY_SLOP_LINES,
+            )
+            return None
+
     from . import snapshots  # noqa: PLC0415
     from .hints import build_diff_hint  # noqa: PLC0415
 
@@ -1030,7 +1072,27 @@ def pre_read(payload: HookPayload) -> HookResponse:
     # this file before) but the diff carries the actually-changed bytes.
     entry = cache.files.get(session._normalize_path(file_path))  # type: ignore[attr-defined]
     if entry is not None and entry.last_edit_ts > entry.last_read_ts:
-        diff_response = _try_diff_hint(session_id, file_path)
+        # Compute requested read range for the overlap guard in _try_diff_hint.
+        _raw_offset = tool_input.get("offset")
+        _raw_limit = tool_input.get("limit")
+        _req_start: int | None = None
+        _req_end: int | None = None
+        try:
+            from .hints import DEFAULT_READ_LIMIT  # noqa: PLC0415
+
+            _safe_offset = max(0, int(_raw_offset)) if _raw_offset is not None else 0
+            _safe_limit = max(0, int(_raw_limit)) if _raw_limit is not None else 0
+            _req_start = _safe_offset + 1
+            _req_end = _req_start + (_safe_limit or DEFAULT_READ_LIMIT) - 1
+        except (TypeError, ValueError):
+            pass
+        diff_response = _try_diff_hint(
+            session_id,
+            file_path,
+            req_start=_req_start,
+            req_end=_req_end,
+            entry_line_ranges=entry.line_ranges if entry is not None else None,
+        )
         if diff_response is not None:
             # Extract the text so we can combine with the git hint if present.
             hso = diff_response.get("hookSpecificOutput") or {}
