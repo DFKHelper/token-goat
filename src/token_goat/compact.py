@@ -3210,6 +3210,48 @@ def _build_sealed_block(
     return block
 
 
+def _apply_noise_floor(
+    section_groups: list[tuple[str, list[str], bool]],
+    noise_floor: int,
+) -> list[tuple[str, list[str], bool]]:
+    """Filter out small unprotected sections when their token count is below the noise floor.
+
+    Args:
+        section_groups: List of (name, lines, protected) tuples representing manifest sections.
+        noise_floor: Minimum token count threshold. Sections with fewer tokens are dropped.
+                     If 0, no filtering is applied.
+
+    Returns:
+        A new list with small unprotected sections removed. Protected sections (protected=True)
+        are always kept. Only body subsections (not header/legend) can be dropped.
+    """
+    if noise_floor <= 0:
+        return section_groups
+
+    filtered: list[tuple[str, list[str], bool]] = []
+    for name, lines, protected in section_groups:
+        if protected:
+            # Always keep protected sections
+            filtered.append((name, lines, protected))
+        else:
+            # For unprotected sections, check token count
+            if not lines:
+                # Empty section — drop it
+                continue
+            section_text = "\n".join(lines)
+            section_tokens = _token_count(section_text)
+            if section_tokens >= noise_floor:
+                # Keep it — above noise floor
+                filtered.append((name, lines, protected))
+            else:
+                # Drop it — below noise floor
+                _LOG.debug(
+                    "_apply_noise_floor: dropped section=%s tokens=%d < floor=%d",
+                    name, section_tokens, noise_floor,
+                )
+    return filtered
+
+
 def _render(cache: SessionCache, session_id: str, max_tokens: int) -> tuple[str, int]:
     """Build the Markdown session manifest string from *cache* for the PreCompact hook.
 
@@ -4088,6 +4130,13 @@ def _render(cache: SessionCache, session_id: str, max_tokens: int) -> tuple[str,
         ("files",       files_lines,         False),
         ("todos",       todo_lines,          False),
     ]
+    # ── Apply noise floor: drop small unprotected sections ───────────────────
+    # Load config to get the noise floor setting (default 0 = disabled).
+    from . import config as config_mod  # noqa: PLC0415
+    cfg = config_mod.load()
+    noise_floor = cfg.compact_assist.noise_floor_tokens
+    _section_groups = _apply_noise_floor(_section_groups, noise_floor)
+
     sections: list[str] = []
     for _name, _lines, _ in _section_groups:
         sections.extend(_lines)

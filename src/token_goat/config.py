@@ -146,6 +146,7 @@ class _CompactAssistToml(TypedDict, total=False):
     max_manifest_tokens: int
     auto_trigger_multiplier: float
     compact_skip_ttl_secs: float
+    noise_floor_tokens: int
 
 
 class _BashCompressToml(TypedDict, total=False):
@@ -302,6 +303,12 @@ class CompactAssistConfig:
     # whenever the user is active, so a long TTL only affects truly quiet
     # sessions.  Clamped to (0, 3600] s.
     compact_skip_ttl_secs: float = 300.0
+    # Noise floor (tokens): sections with estimated token count less than this
+    # value are dropped from the manifest before final assembly, saving tokens
+    # when low-signal sections add clutter.  Default 0 disables the filter
+    # (no sections are dropped).  When > 0, only body subsections are dropped;
+    # the header and critical sections (edited, blockers, skills) are always preserved.
+    noise_floor_tokens: int = 0
 
 
 @dataclass
