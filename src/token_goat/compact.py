@@ -1254,6 +1254,43 @@ def _find_common_prefix(paths: list[str]) -> str | None:
     return common[:slash_idx + 1]
 
 
+def _strip_common_prefix_lines(
+    lines: list[str],
+    common_prefix: str,
+) -> list[str]:
+    """Strip ``common_prefix`` from path-bearing lines, leaving non-path lines intact.
+
+    Unlike :func:`_strip_common_prefix_from_sections`, this helper does NOT
+    insert a ``(paths relative to ...)`` header line — it only rewrites
+    existing path-bearing lines.  Use this when you need to apply the same
+    transformation to a single section in isolation (e.g. during priority-
+    aware safety trim, where the manifest body is rebuilt section-by-section).
+    """
+    if not common_prefix:
+        return list(lines)
+    out: list[str] = []
+    for line in lines:
+        path = _extract_path_from_line(line)
+        if path and path.startswith(common_prefix) and line.startswith("- "):
+            rest = line[2:]
+            marker = ""
+            if rest and rest[0] in ("✎", "→", "⚠", "❄"):
+                marker = rest[0]
+                rest = rest[1:].lstrip()
+            else:
+                rest = rest.lstrip()
+            parts = rest.split(None, 1)
+            new_path = path[len(common_prefix):]
+            tail = f" {parts[1]}" if len(parts) > 1 else ""
+            if marker:
+                out.append(f"- {marker} {new_path}{tail}")
+            else:
+                out.append(f"- {new_path}{tail}")
+        else:
+            out.append(line)
+    return out
+
+
 def _strip_common_prefix_from_sections(
     sections: list[str],
     common_prefix: str,
@@ -1273,7 +1310,7 @@ def _strip_common_prefix_from_sections(
     if not common_prefix:
         return sections
 
-    result = []
+    result: list[str] = []
     session_line_idx = -1
 
     # Find the session line and copy header lines
@@ -1287,34 +1324,12 @@ def _strip_common_prefix_from_sections(
     if session_line_idx >= 0:
         result.insert(session_line_idx + 1, f"(paths relative to {common_prefix})")
 
-    # Process remaining lines, stripping prefix from path-bearing lines
-    for i in range(session_line_idx + 1 if session_line_idx >= 0 else 0, len(sections)):
-        line = sections[i]
-        path = _extract_path_from_line(line)
-        if path and path.startswith(common_prefix):
-            # Reconstruct the line with the prefix stripped
-            # Extract the marker and rest of the line
-            if line.startswith("- "):
-                rest = line[2:]
-                marker = ""
-                if rest and rest[0] in ("✎", "→", "⚠", "❄"):
-                    marker = rest[0]
-                    rest = rest[1:].lstrip()
-                else:
-                    rest = rest.lstrip()
-
-                # Remove old path and build new one
-                parts = rest.split(None, 1)
-                new_path = path[len(common_prefix):]
-                tail = f" {parts[1]}" if len(parts) > 1 else ""
-                if marker:
-                    result.append(f"- {marker} {new_path}{tail}")
-                else:
-                    result.append(f"- {new_path}{tail}")
-            else:
-                result.append(line)
-        else:
-            result.append(line)
+    # Process remaining lines via the shared per-line stripper.  This keeps the
+    # rewrite logic in exactly one place (DRY) so both call sites — the full
+    # manifest assembly and the priority-aware safety trim — apply identical
+    # transformations.
+    tail_start = session_line_idx + 1 if session_line_idx >= 0 else 0
+    result.extend(_strip_common_prefix_lines(sections[tail_start:], common_prefix))
 
     return result
 
@@ -4033,35 +4048,64 @@ def _render(cache: SessionCache, session_id: str, max_tokens: int) -> tuple[str,
     #   5. Grep patterns      — investigation history (least critical)
     #   6. Key files read     — broader context
     #   6b. TODOs             — pending/in-progress TaskList entries
-    sections: list[str] = (
-        sealed_block
-        + header_lines
-        + blocker_lines
-        + decision_lines
-        + skill_lines
-        + uncommitted_lines
-        + edited_lines
-        + stale_lines
-        + bash_lines
-        + what_worked_lines
-        + sym_lines
-        + web_lines
-        + glob_lines
-        + grep_lines
-        + files_lines
-        + todo_lines
-    )
+    # ── Section assembly with truncation priority ───────────────────────────
+    # Each tuple is (name, lines, protected).  ``protected`` sections are NEVER
+    # dropped wholesale during the safety-trim pass — they carry the highest
+    # post-compact recovery signal (sealed block, header, blockers, decisions,
+    # active skills, uncommitted/edited state).  Unprotected sections are
+    # dropped in reverse list order (lowest-signal first) when the manifest
+    # exceeds ``max_tokens``.  This replaces the previous naive bottom-up
+    # line-popping which could leave orphan section headers (e.g. ``**Files:**``
+    # with no entries) and silently strip the legend line before any content.
+    #
+    # Drop order (lowest signal → highest):
+    #   1. todos     — TaskList entries (usually fresh from disk; cheap to recover)
+    #   2. files     — Key Files Read (read-only context, already implied by syms)
+    #   3. grep      — Investigation history (least load-bearing)
+    #   4. glob      — Directory scan history
+    #   5. web       — Reference material URLs
+    #   6. syms      — Symbol detail per file
+    #   7. what_worked — Curated "tests were green" pointer
+    #   8. bash      — Command history (current work context — only drop under extreme pressure)
+    #   9. stale     — Outdated snapshot warnings (small, useful — kept above bash)
+    # Protected (never wholesale-dropped):
+    #   sealed, header, blockers, decisions, skills, uncommitted, edited, legend.
+    _section_groups: list[tuple[str, list[str], bool]] = [
+        ("sealed",      sealed_block,        True),
+        ("header",      header_lines,        True),
+        ("blockers",    blocker_lines,       True),
+        ("decisions",   decision_lines,      True),
+        ("skills",      skill_lines,         True),
+        ("uncommitted", uncommitted_lines,   True),
+        ("edited",      edited_lines,        True),
+        ("stale",       stale_lines,         False),
+        ("bash",        bash_lines,          False),
+        ("what_worked", what_worked_lines,   False),
+        ("syms",        sym_lines,           False),
+        ("web",         web_lines,           False),
+        ("glob",        glob_lines,          False),
+        ("grep",        grep_lines,          False),
+        ("files",       files_lines,         False),
+        ("todos",       todo_lines,          False),
+    ]
+    sections: list[str] = []
+    for _name, _lines, _ in _section_groups:
+        sections.extend(_lines)
     # #22: When only one marker kind appears the verbose "Legend: key=symbol"
     # prefix is self-evident — drop the "Legend: " label to save ~3-5 tokens.
     # With two or more kinds the full legend is a useful key, so keep the prefix.
+    legend_line: str | None = None
     if len(legend_parts) == 1:
-        sections.append(legend_parts[0])
+        legend_line = legend_parts[0]
     elif len(legend_parts) >= 2:
-        sections.append("Legend: " + "  ".join(legend_parts))
+        legend_line = "Legend: " + "  ".join(legend_parts)
+    if legend_line is not None:
+        sections.append(legend_line)
 
     # ── Common prefix stripping — save tokens by detecting shared path prefixes ─
     path_lines = [line for line in sections if _extract_path_from_line(line) is not None]
     paths_only = [p for line in path_lines if (p := _extract_path_from_line(line)) is not None]
+    _applied_prefix: str | None = None
     if (
         len(path_lines) >= 3  # Worthwhile only with 3+ paths
         and len(paths_only) > 0
@@ -4070,6 +4114,7 @@ def _render(cache: SessionCache, session_id: str, max_tokens: int) -> tuple[str,
         and len(paths_only) >= int(len(path_lines) * 0.7)  # Must cover 70% of path lines
     ):
         sections = _strip_common_prefix_from_sections(sections, common_prefix)
+        _applied_prefix = common_prefix
 
     # Item #21: StringIO write-buffer assembly — avoids the N-object intermediate
     # list copy that "\n".join() creates for the full manifest string.
@@ -4086,18 +4131,83 @@ def _render(cache: SessionCache, session_id: str, max_tokens: int) -> tuple[str,
         sym_used, bash_used, web_used, glob_used, grep_used, files_used,
     )
 
-    # Safety net: per-section budgets use _token_count (len//4, conservative) while
-    # estimate_tokens uses len/3.5 (slightly more generous).  In rare cases the
-    # assembled total can still exceed max_tokens by a few tokens.  Trim from the
-    # bottom (lowest-priority sections) to stay within the global ceiling.
+    # ── Safety net: priority-aware section truncation ────────────────────────
+    # Per-section budgets use _token_count (len//4, conservative) while
+    # estimate_tokens uses len/3.5 (slightly more generous).  In rare cases
+    # the assembled total can still exceed max_tokens by a few tokens.
+    #
+    # Strategy: drop unprotected sections wholesale in reverse priority order
+    # (todos → files → grep → glob → web → syms → what_worked → bash → stale)
+    # before any line-by-line trimming.  Wholesale section drops never leave
+    # an orphan ``**Files:**`` header with no entries — a known defect of the
+    # previous bottom-popping approach.  Protected sections (sealed, header,
+    # blockers, decisions, skills, uncommitted, edited) and the legend are
+    # never wholesale-dropped — they carry the highest post-compact recovery
+    # signal.  As a final fallback when wholesale drops are exhausted, the
+    # tail is line-trimmed but the legend (last line) is pinned in place so
+    # marker explanations always survive.
     if token_count > max_tokens:
         _LOG.info(
             "_render: safety trim for session=%s (%d tokens > %d budget)",
             session_id[:8], token_count, max_tokens,
         )
-        lines = result.splitlines()
-        while len(lines) > 3 and estimate_tokens("\n".join(lines)) > max_tokens:
-            lines.pop()
-        result = "\n".join(lines)
+
+        def _assemble(live_groups: list[tuple[str, list[str], bool]]) -> str:
+            """Rebuild the manifest string from *live_groups*, applying the same
+            common-prefix stripping that was applied to the original assembly."""
+            body: list[str] = []
+            for _name, _lines, _ in live_groups:
+                body.extend(_lines)
+            if legend_line is not None:
+                body.append(legend_line)
+            if _applied_prefix:
+                body = _strip_common_prefix_from_sections(body, _applied_prefix)
+            return "\n".join(body).rstrip()
+
+        _droppable_names_in_drop_order = [
+            "todos", "files", "grep", "glob", "web",
+            "syms", "what_worked", "bash", "stale",
+        ]
+        _live_groups = list(_section_groups)
+        _solved = False
+        for _drop_name in _droppable_names_in_drop_order:
+            _live_groups = [
+                (n, lns, p) for (n, lns, p) in _live_groups if n != _drop_name
+            ]
+            _candidate_text = _assemble(_live_groups)
+            if estimate_tokens(_candidate_text) <= max_tokens:
+                result = _candidate_text
+                _solved = True
+                _LOG.info(
+                    "_render: safety trim dropped section=%s (session=%s)",
+                    _drop_name, session_id[:8],
+                )
+                break
+            _LOG.debug(
+                "_render: safety trim dropped section=%s, still over budget",
+                _drop_name,
+            )
+        if not _solved:
+            # All droppable sections gone and still over budget.  Fall back
+            # to bottom line-popping on what remains, but pin the legend so
+            # marker explanations survive (they explain markers still in
+            # the body — losing the legend leaves orphan symbols).
+            _body_lines: list[str] = []
+            for _name, _lines, _ in _live_groups:
+                _body_lines.extend(_lines)
+            _legend_suffix = [legend_line] if legend_line is not None else []
+            _trimmed = _body_lines[:]
+            while len(_trimmed) > 3 and estimate_tokens(
+                "\n".join(
+                    _strip_common_prefix_from_sections(
+                        _trimmed + _legend_suffix, _applied_prefix,
+                    ) if _applied_prefix else _trimmed + _legend_suffix
+                )
+            ) > max_tokens:
+                _trimmed.pop()
+            _final = _trimmed + _legend_suffix
+            if _applied_prefix:
+                _final = _strip_common_prefix_from_sections(_final, _applied_prefix)
+            result = "\n".join(_final).rstrip()
 
     return result, files_with_symbols_count
