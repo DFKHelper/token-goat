@@ -309,6 +309,14 @@ def _read_manifest_sidecar(
         sha = str(data["sha"])
         fp = str(data["fp"])
         ts = float(data["ts"])
+        # Non-finite ts (NaN, inf) would compare-false in every cache-hit
+        # predicate but the upstream caller has no reason to inspect for it.
+        # Treat the whole sidecar as unreadable to keep the contract simple
+        # (returns None → caller rebuilds).  Empty sha/fp likewise indicate a
+        # corrupted write — refuse to surface them as a cache key.
+        import math  # noqa: PLC0415
+        if not math.isfinite(ts) or not sha or not fp:
+            return None
         # Best-effort extraction of v2 counts.  A v1 sidecar (no "counts" key)
         # OR a malformed counts dict yields counts=None — the caller falls back
         # to skipping the delta section, never crashes.
@@ -2638,7 +2646,20 @@ def build_manifest(session_id: str, *, max_tokens: int = 400) -> str:
     ):
         _cached_sha, cached_fp, cached_ts, prior_counts = sidecar_data
         sidecar_age = now - cached_ts
-        if sidecar_age < _MANIFEST_CACHE_TTL_SECS and cached_fp == fingerprint:
+        # Cache-hit predicate requires 0 <= sidecar_age < TTL.  A negative age
+        # means the sidecar's ``ts`` is in the future relative to the current
+        # clock — clock skew, NTP step, a wall-clock rollback, or a manually
+        # edited sentinel file.  Without the lower bound, ``-7_000_000_000s <
+        # 600s`` would pass and pin the cache to a stub indefinitely.  A
+        # cached_ts <= 0 means the sidecar was parsed from corrupted/legacy
+        # data and should likewise force a full rebuild (the read helper
+        # coerces ``data["ts"]`` to float, but a missing/zero stored ts would
+        # arrive here as 0.0 if ever serialized by an older writer).
+        if (
+            cached_ts > 0.0
+            and 0.0 <= sidecar_age < _MANIFEST_CACHE_TTL_SECS
+            and cached_fp == fingerprint
+        ):
             emit_time = datetime.fromtimestamp(cached_ts, tz=UTC).strftime("%H:%M")
             short_id = session_id[:8] if len(session_id) >= 8 else session_id
             _LOG.debug(
@@ -2649,6 +2670,24 @@ def build_manifest(session_id: str, *, max_tokens: int = 400) -> str:
                 f"## Token-Goat Manifest — unchanged since {emit_time}. "
                 f"Recall: `token-goat compact-hint --session-id {short_id}`."
             )
+        # Log negative-age incidents so operators notice clock-skew problems.
+        if sidecar_age < 0.0:
+            _LOG.warning(
+                "build_manifest: sidecar ts is in the future session=%s skew=%.0fs"
+                " — ignoring cache, rebuilding manifest",
+                session_id[:8], -sidecar_age,
+            )
+            # Drop the poisoned prior_counts: an out-of-band/future ts often
+            # implies the sidecar is from a different machine or session swap,
+            # so its counts would yield a misleading delta.
+            prior_counts = None
+        elif cached_ts <= 0.0:
+            _LOG.warning(
+                "build_manifest: sidecar ts is non-positive session=%s ts=%r"
+                " — ignoring cache, rebuilding manifest",
+                session_id[:8], cached_ts,
+            )
+            prior_counts = None
     elif sidecar_data is not None:
         # Cache write happened earlier in this process — still surface prior_counts
         # for the delta line so the new manifest reflects the growth/shrink.
