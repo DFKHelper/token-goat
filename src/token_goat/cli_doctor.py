@@ -388,6 +388,11 @@ def doctor(  # noqa: C901
     if proj is not None:
         ok("detected", f"yes (marker: {proj.marker})")
         ok("hash", f"{proj.hash[:8]}...")
+        # Surface the canonical-form input that produced the hash so users
+        # can verify drive-letter case, separator style, and symlink-resolved
+        # target match expectations.  The full posix string is what gets
+        # SHA1-hashed; mismatch here is the source of fragmented indexes.
+        ok("canonical_root", proj.root.as_posix())
         try:
             with _db.open_project(proj.hash) as conn:
                 row = conn.execute("SELECT value FROM meta WHERE key='schema_version'").fetchone()
