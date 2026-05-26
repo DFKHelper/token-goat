@@ -272,6 +272,7 @@ def _pre_snapshot_imports(session_id: str, file_path: str, cwd: str | None) -> N
 
     def _worker() -> None:
         try:
+            from . import session as _session  # noqa: PLC0415
             from . import snapshots  # noqa: PLC0415
 
             fp = Path(file_path) if Path(file_path).is_absolute() else (
@@ -297,6 +298,20 @@ def _pre_snapshot_imports(session_id: str, file_path: str, cwd: str | None) -> N
                             "predictive-snapshot: stored %s for %s",
                             sanitize_log_str(target_path), sanitize_log_str(file_path),
                         )
+                        # Persist the snapshot's content sha so a later diff
+                        # hint can verify integrity before firing.  Best-effort:
+                        # a session-cache write failure is logged but does not
+                        # break the predictive snapshot — the snapshot itself
+                        # is still useful, just unverified.
+                        try:
+                            _session.set_snapshot_sha(
+                                session_id, target_path, result.content_sha,
+                            )
+                        except Exception:  # noqa: BLE001
+                            _LOG.debug(
+                                "predictive-snapshot: sha persist failed for %s",
+                                sanitize_log_str(target_path), exc_info=True,
+                            )
                 except Exception:  # noqa: BLE001
                     _LOG.debug("predictive-snapshot: failed for %s", sanitize_log_str(target_path), exc_info=True)
         except Exception:  # noqa: BLE001

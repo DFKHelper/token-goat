@@ -1095,7 +1095,22 @@ def _build_diff_hint_inner(
     current_text: str,
 ) -> ReadHint | None:
     """Inner implementation of :func:`build_diff_hint`; may raise."""
-    snapshot_bytes = snapshots.load(session_id, file_path)
+    # Integrity-gated load: when the session cache has a recorded sha for this
+    # snapshot, pass it to snapshots.load so a corrupted / partially-written /
+    # evicted-and-rewritten-under-same-key snapshot file is detected and
+    # discarded rather than driving a misleading diff hint.  When no sha is on
+    # record (legacy snapshots from before set_snapshot_sha was wired, or a
+    # predictive snapshot whose sha sidecar was not persisted), we fall back to
+    # the unverified load — the diff against the snapshot bytes is still the
+    # best evidence we have, and a missing sha must not silently suppress all
+    # legacy diff hints.
+    try:
+        expected_sha = session.get_snapshot_sha(session_id, file_path)
+    except Exception:  # noqa: BLE001 — sha lookup must never break the hint path
+        expected_sha = None
+    snapshot_bytes = snapshots.load(
+        session_id, file_path, expected_sha=expected_sha,
+    )
     if snapshot_bytes is None:
         return None
 

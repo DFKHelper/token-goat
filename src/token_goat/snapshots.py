@@ -287,12 +287,30 @@ def load_kind(session_id: str, file_path: str) -> str | None:
     return text if text in _VALID_KINDS else None
 
 
-def load(session_id: str, file_path: str) -> bytes | None:
+def load(
+    session_id: str,
+    file_path: str,
+    *,
+    expected_sha: str | None = None,
+) -> bytes | None:
     """Return the snapshot bytes for ``(session_id, file_path)``, or ``None``.
 
     Returns ``None`` when the snapshot is absent, unreadable, or too large to
     safely return (defensive: a snapshot that has somehow grown past
     :data:`MAX_SNAPSHOT_BYTES` between write and load is treated as missing).
+
+    Integrity check
+    ~~~~~~~~~~~~~~~
+    When *expected_sha* is provided, the loaded bytes are hashed and the digest
+    is compared to the caller's expected SHA-256 hex digest.  On mismatch the
+    snapshot is treated as untrusted and ``None`` is returned (with a warning
+    log) — diff-aware re-read consumers pass the SHA recorded at store time so
+    a snapshot that has been corrupted, partially-written, or evicted-and-
+    rewritten under the same filename hash cannot drive a misleading hint.
+    Comparison is case-insensitive on the hex digest.
+
+    A ``None`` *expected_sha* skips the integrity check (legacy callers retain
+    the unconditional behaviour).
     """
     p = snapshot_path(session_id, file_path)
     if p is None or not p.exists():
@@ -308,13 +326,26 @@ def load(session_id: str, file_path: str) -> bytes | None:
         )
         return None
     try:
-        return p.read_bytes()
+        data = p.read_bytes()
     except OSError as exc:
         _LOG.warning(
             "snapshots: load failed for %s: %s",
             sanitize_log_str(file_path), exc,
         )
         return None
+    if expected_sha is not None:
+        actual_sha = hashlib.sha256(data).hexdigest()
+        if actual_sha.lower() != expected_sha.lower():
+            _LOG.warning(
+                "snapshots: integrity mismatch for %s "
+                "(expected sha[:8]=%s, got sha[:8]=%s, size=%d) — discarding",
+                sanitize_log_str(file_path),
+                expected_sha[:8] if expected_sha else "",
+                actual_sha[:8],
+                size,
+            )
+            return None
+    return data
 
 
 def cleanup_session(session_id: str) -> int:
