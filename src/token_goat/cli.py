@@ -2841,59 +2841,168 @@ def post_skill(
 def compact_hint(
     session_id: str = typer.Option(..., "--session-id", "-s", help="Claude session_id"),
     json_output: bool = _OPT_JSON,
-    max_tokens: int = typer.Option(400, "--max-tokens", help="Token budget for the manifest"),
+    max_tokens: int = typer.Option(
+        0,
+        "--max-tokens",
+        help="Override token budget for the manifest (0 = use config.max_manifest_tokens).",
+    ),
+    trigger: str = typer.Option(
+        "manual",
+        "--trigger",
+        help=(
+            "Simulate the PreCompact trigger that fired the hook.  When 'auto' and "
+            "auto_trigger_multiplier > 1, the effective budget is boosted exactly as the "
+            "live hook does.  Use 'manual' (default) to preview a user-invoked /compact."
+        ),
+    ),
 ) -> None:
     """Show the compaction manifest token-goat would inject for a session.
 
-    Use this to inspect what the PreCompact hook will emit as systemMessage
-    before Claude Code compacts the conversation. Useful for debugging.
+    Faithfully previews what the PreCompact hook will emit as ``systemMessage``
+    before Claude Code compacts the conversation, applying the *same* gates the
+    live hook applies:
+
+    * ``[compact_assist] enabled`` config flag
+    * Trigger membership in ``cfg.triggers`` (simulate via ``--trigger``)
+    * Pressure-aware budget boost when ``trigger=auto`` (via ``auto_trigger_multiplier``)
+    * Compact-skip sentinel fast-path (would the hook short-circuit silently?)
+    * ``min_events`` event-count gate
+    * Sidecar manifest cache hit (the 1-line "unchanged since" stub)
+
+    The trailing token estimate uses the canonical ``compact.estimate_tokens``
+    helper — the same function ``_render`` uses internally — so the preview
+    matches the actual emitted size rather than under-counting.
+
+    Use this to debug why a manifest is (or isn't) being emitted, what its
+    final size will be, and which sections survive after the per-section
+    budget split.
     """
     from . import compact as compact_mod  # noqa: PLC0415
     from . import config as config_mod  # noqa: PLC0415
+    from . import hooks_cli as hooks_cli_mod  # noqa: PLC0415
 
     _validate_session_id(session_id)
 
     cfg = config_mod.load().compact_assist
 
+    # --- Resolve the effective budget the live hook would use ----------------
+    # `max_tokens=0` (the new default) means "use whatever the live hook
+    # would use": cfg.max_manifest_tokens, scaled by auto_trigger_multiplier
+    # when trigger == "auto".  This makes the preview faithful out of the box
+    # without forcing the caller to look up the config value first.
+    base_tokens = int(max_tokens) if max_tokens > 0 else int(cfg.max_manifest_tokens)
+    raw_multiplier = getattr(cfg, "auto_trigger_multiplier", 1.0)
+    multiplier = float(raw_multiplier) if isinstance(raw_multiplier, (int, float)) else 1.0
+    if trigger == "auto" and multiplier > 1.0:
+        effective_tokens = int(base_tokens * multiplier)
+    else:
+        effective_tokens = base_tokens
+
+    # --- Apply hook-side gates so the preview matches reality ----------------
+    trigger_allowed = bool(cfg.triggers) and trigger in cfg.triggers
+    # Defensive: `_check_compact_skip_sentinel` is fail-soft in the hook path,
+    # but if it ever raises (e.g. a future refactor introduces a non-OSError
+    # branch), fall back to "no fast-path" so the preview still renders.
+    try:
+        sentinel_fast_path = hooks_cli_mod._check_compact_skip_sentinel(session_id)
+    except Exception:  # noqa: BLE001
+        sentinel_fast_path = False
+    n_events = compact_mod.event_count(session_id)
+    events_sufficient = n_events >= cfg.min_events
+
+    # Render the manifest with the *effective* budget (matching the hook).
+    # We still render even when gates fail so the user can see "what would
+    # have been emitted if the gates passed" — but `would_emit` reflects the
+    # full gate chain accurately.
+    manifest = compact_mod.build_manifest(session_id, max_tokens=effective_tokens)
+    is_cached_stub = manifest.startswith("## Token-Goat Manifest — unchanged since")
+    would_emit = bool(
+        cfg.enabled
+        and trigger_allowed
+        and not sentinel_fast_path
+        and events_sufficient
+        and manifest
+    )
+
     if json_output:
         import json as _json  # noqa: PLC0415
 
-        n_events = compact_mod.event_count(session_id)
-        manifest = compact_mod.build_manifest(session_id, max_tokens=max_tokens)
         typer.echo(_json.dumps({
             "enabled": cfg.enabled,
             "triggers": cfg.triggers,
+            "trigger_requested": trigger,
+            "trigger_allowed": trigger_allowed,
             "min_events": cfg.min_events,
             "max_manifest_tokens": cfg.max_manifest_tokens,
+            "auto_trigger_multiplier": multiplier,
+            "effective_max_tokens": effective_tokens,
             "event_count": n_events,
-            "would_emit": cfg.enabled and n_events >= cfg.min_events and bool(manifest),
+            "events_sufficient": events_sufficient,
+            "sentinel_fast_path": sentinel_fast_path,
+            "is_cached_stub": is_cached_stub,
+            "token_estimate": compact_mod.estimate_tokens(manifest) if manifest else 0,
+            "char_count": len(manifest),
+            "would_emit": would_emit,
             "manifest": manifest,
         }, separators=(",", ":")))
         return
 
-    n_events = compact_mod.event_count(session_id)
+    # --- Human-readable preview with explicit gate chain ---------------------
     typer.echo(f"compact-assist enabled: {cfg.enabled}")
     typer.echo(f"triggers: {', '.join(cfg.triggers)}")
+    boost_note = ""
+    if trigger == "auto" and multiplier > 1.0:
+        boost_note = f"  (auto boost ×{multiplier:g}: {base_tokens} → {effective_tokens})"
+    typer.echo(
+        f"trigger: {trigger} "
+        f"({'allowed' if trigger_allowed else 'BLOCKED — not in cfg.triggers'})"
+    )
+    typer.echo(
+        f"budget: {effective_tokens} tokens"
+        f"{boost_note}"
+    )
     typer.echo(f"min_events: {cfg.min_events}  |  session events: {n_events}")
+    sentinel_state = (
+        "FRESH — hook would short-circuit before reaching this manifest"
+        if sentinel_fast_path
+        else "absent or stale (hook would run normally)"
+    )
+    typer.echo(f"compact-skip sentinel: {sentinel_state}")
     typer.echo("")
 
+    # Gate chain — fail-fast in the order the live hook applies them.
     if not cfg.enabled:
         typer.echo("(disabled — set TOKEN_GOAT_COMPACT_ASSIST=1 or edit config.toml to enable)")
         return
-
-    if n_events < cfg.min_events:
+    if not trigger_allowed:
+        typer.echo(
+            f"(no manifest: trigger '{trigger}' not in configured triggers "
+            f"{list(cfg.triggers)})"
+        )
+        return
+    if sentinel_fast_path:
+        typer.echo(
+            "(no manifest: compact-skip sentinel is fresh — the hook would return "
+            "{continue:true} without building a manifest)"
+        )
+        return
+    if not events_sufficient:
         typer.echo(f"(no manifest: {n_events} events < min_events {cfg.min_events})")
         return
-
-    manifest = compact_mod.build_manifest(session_id, max_tokens=max_tokens)
     if not manifest:
-        typer.echo("(no manifest: session cache empty)")
+        typer.echo("(no manifest: session cache empty or all-noise)")
         return
 
     typer.echo("--- manifest that would be injected as systemMessage ---")
     typer.echo(manifest)
     typer.echo("---")
-    typer.echo(f"({len(manifest)} chars, ~{len(manifest) // 4} tokens)")
+    # Use the canonical token estimator (compact.estimate_tokens) instead of
+    # `len // 4`.  The old approximation under-counted by ~25 % vs. the actual
+    # estimator used inside `_render`, so the preview's "~N tokens" footer was
+    # consistently smaller than the value the hook reports in its debug log.
+    est_tokens = compact_mod.estimate_tokens(manifest)
+    stub_note = "  [cached stub: sidecar fingerprint matched]" if is_cached_stub else ""
+    typer.echo(f"({len(manifest)} chars, ~{est_tokens} tokens){stub_note}")
 
 
 def _config_get_value(config: object, key: str) -> object:
