@@ -50,20 +50,43 @@ _LOG = get_logger("languages.toml_idx")
 _MAX_HEADING_LEN: int = 200
 _MAX_SYMBOLS_PER_FILE: int = 500
 
-# Strict TOML table-header regex:
-#   * Column-0 anchored — no leading whitespace (per the TOML spec).
-#   * Table name allows the standard bare-key character class plus dots; we
-#     intentionally accept hyphens and underscores because both are common
-#     and explicitly allowed by TOML.
+# Strict TOML table-header regex — combined bare-or-quoted form is defined
+# below (``_TABLE_RE``).  Combined into one pattern so :func:`common.scan_flat_headers`
+# can walk each candidate line exactly once.
+#
+# Both forms share:
+#   * Column-0 anchor — no leading whitespace (per the TOML spec).
 #   * Trailing comment after the closing bracket is tolerated.
-#   * Quoted keys (``["tool.ruff"]``) are matched separately because their
-#     bracket content can contain dots that are *not* path separators.
-_BARE_TABLE_RE = re.compile(
-    r"^(\[\[?)\s*([A-Za-z0-9_\-][A-Za-z0-9_\-.]*)\s*(\]\]?)\s*(?:#.*)?$"
+# Form differences:
+#   * Bare key (``[tool.ruff]``): standard bare-key character class plus dots,
+#     hyphens, and underscores (all spec-allowed).
+#   * Quoted key (``["tool.ruff"]``): bracket content can contain characters
+#     (dots, slashes) that would otherwise be path separators in a bare key.
+
+
+# Combined bare-or-quoted TOML table-header regex.  We match both forms in a
+# single alternation so :func:`common.scan_flat_headers` only walks the file
+# once.  Group ``open`` / ``close`` capture the brackets so we can detect a
+# mismatch (``[[name]`` or ``[name]]``); ``bare`` and ``quoted`` capture the
+# heading text, exactly one of which is non-empty per successful match.
+_TABLE_RE = re.compile(
+    r"^(?P<open>\[\[?)\s*"
+    r"(?:(?P<bare>[A-Za-z0-9_\-][A-Za-z0-9_\-.]*)"
+    r"|\"(?P<quoted>[^\"\n]+)\")"
+    r"\s*(?P<close>\]\]?)\s*(?:#.*)?$"
 )
-_QUOTED_TABLE_RE = re.compile(
-    r"^(\[\[?)\s*\"([^\"\n]+)\"\s*(\]\]?)\s*(?:#.*)?$"
-)
+
+
+def _toml_get_name(m: re.Match[str]) -> str:
+    """Return the table heading from a ``_TABLE_RE`` match, or '' to skip.
+
+    Rejects mismatched bracket pairs (``[[name]`` / ``[name]]``) by returning
+    the empty string — :func:`common.scan_flat_headers` treats empty headings
+    as a skip signal so the malformed line is silently dropped.
+    """
+    if len(m.group("open")) != len(m.group("close")):
+        return ""
+    return (m.group("bare") or m.group("quoted") or "").strip()
 
 
 def extract(
@@ -78,48 +101,22 @@ def extract(
     are simply not emitted.  A file with no table headers at all produces an
     empty result, which is the correct behaviour — there is nothing to index.
     """
-    text = common.decode_source_text(source, _LOG, "toml_idx")
-    if text is None:
+    result = common.scan_flat_headers(
+        source,
+        _LOG,
+        "toml_idx",
+        pattern=_TABLE_RE,
+        get_name=_toml_get_name,
+        symbol_kind="toml_key",
+        max_entries=_MAX_SYMBOLS_PER_FILE,
+        max_heading_len=_MAX_HEADING_LEN,
+        # ``[[`` -> level 2 (array-of-tables); ``[`` -> level 1 (table).
+        level_from_match=lambda m: 2 if m.group("open") == "[[" else 1,
+        # Headers must start at column 0; the prefilter skips the regex cost
+        # on every non-header line (the vast majority of a real TOML file).
+        prefilter=lambda c: c.startswith("["),
+    )
+    if result is None:
         return [], [], [], []
-
-    lines = text.split("\n")
-    sections: list[Section] = []
-    symbols: list[Symbol] = []
-
-    for idx, line in enumerate(lines, start=1):
-        # Strip a UTF-8 BOM if present at file start.  The regex anchors at
-        # column 0 and would otherwise miss a header on line 1 of a BOM file.
-        candidate = common.bom_strip_first_line(line, idx)
-        # Headers must start at column 0 — leading whitespace makes the line
-        # either invalid TOML or a key inside an inline table.
-        if not candidate.startswith("["):
-            continue
-        m = _BARE_TABLE_RE.match(candidate)
-        if m is None:
-            m = _QUOTED_TABLE_RE.match(candidate)
-            if m is None:
-                continue
-        open_bracket, name, close_bracket = m.group(1), m.group(2).strip(), m.group(3)
-        # ``[[...]]`` requires matching ``]]``; reject mismatched bracket
-        # pairs (``[[name]`` or ``[name]]``) as malformed and skip them.
-        if len(open_bracket) != len(close_bracket):
-            continue
-        if not name or len(name) > _MAX_HEADING_LEN:
-            continue
-        level = 2 if open_bracket == "[[" else 1
-        sections.append(
-            Section(heading=name, level=level, line=idx)
-        )
-        symbols.append(
-            Symbol(name=name, kind="toml_key", line=idx)
-        )
-        if len(symbols) >= _MAX_SYMBOLS_PER_FILE:
-            break
-
-    # Compute end_line for each section.  TOML has no nested table structure
-    # at the source level — every header is a top-level marker — so the end
-    # of section N is simply the line before section N+1, or the last line of
-    # the file for the final section.
-    common.assign_flat_end_lines(sections, len(lines))
-
+    symbols, sections = result
     return symbols, [], [], sections

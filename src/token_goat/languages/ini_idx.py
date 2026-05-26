@@ -67,38 +67,22 @@ def extract(
     Refs and imports are always empty for INI files — there is no cross-file
     reference model in this format.
     """
-    text = common.decode_source_text(source, _LOG, "ini_idx")
-    if text is None:
+    result = common.scan_flat_headers(
+        source,
+        _LOG,
+        "ini_idx",
+        pattern=_HEADER_RE,
+        get_name=lambda m: m.group(1).strip(),
+        symbol_kind="ini_section",
+        max_entries=_MAX_SECTIONS,
+        max_heading_len=_MAX_HEADING_LEN,
+        # ``[`` is the only first character that can introduce a header in
+        # INI; skip the regex cost on every other line.
+        prefilter=lambda c: bool(c) and c[0] == "[",
+    )
+    if result is None:
         return [], [], [], []
-
-    lines = text.split("\n")
-    sections: list[Section] = []
-    symbols: list[Symbol] = []
-
-    for idx, line in enumerate(lines, start=1):
-        # Strip a UTF-8 BOM if present at file start so the column-0 anchor
-        # still matches a header on line 1 of a BOM-saved file (Notepad on
-        # Windows defaults to UTF-8 with BOM for plain-text saves).
-        candidate = common.bom_strip_first_line(line, idx)
-        if not candidate or candidate[0] != "[":
-            continue
-        m = _HEADER_RE.match(candidate)
-        if m is None:
-            continue
-        name = m.group(1).strip()
-        if not name or len(name) > _MAX_HEADING_LEN:
-            continue
-        sections.append(Section(heading=name, level=1, line=idx))
-        symbols.append(Symbol(name=name, kind="ini_section", line=idx))
-        if len(sections) >= _MAX_SECTIONS:
-            break
-
-    # End-line computation: each section spans from its header through the
-    # line before the next header (or EOF for the trailing section).  This is
-    # the same shape as TOML — both formats are flat at the source level even
-    # when their names look hierarchical.
-    common.assign_flat_end_lines(sections, len(lines))
-
+    symbols, sections = result
     return symbols, [], [], sections
 
 
@@ -116,6 +100,16 @@ _ENV_KEY_RE = re.compile(r"^([A-Za-z_][A-Za-z0-9_]*)\s*[:=]")
 _MAX_ENV_KEYS: int = 200
 
 
+def _env_prefilter(candidate: str) -> bool:
+    """Cheap per-line filter for the ``.env`` scan path.
+
+    Rejects comments (``#`` / ``;``) and continuation lines (leading
+    whitespace) before paying the regex cost.  Returns True only for lines
+    that could plausibly carry a ``KEY=value`` assignment at column 0.
+    """
+    return bool(candidate) and candidate[0] not in "#; \t"
+
+
 def extract_env(
     source: bytes, rel_path: str
 ) -> tuple[list[Symbol], list[Ref], list[ImpExp], list[Section]]:
@@ -126,27 +120,19 @@ def extract_env(
     captured key carries its 1-based line number so ``token-goat symbol``
     points at the assignment.
     """
-    text = common.decode_source_text(source, _LOG, "ini_idx")
-    if text is None:
+    result = common.scan_flat_headers(
+        source,
+        _LOG,
+        "ini_idx",
+        pattern=_ENV_KEY_RE,
+        get_name=lambda m: m.group(1),
+        symbol_kind="env_key",
+        max_entries=_MAX_ENV_KEYS,
+        max_heading_len=_MAX_HEADING_LEN,
+        emit_sections=False,
+        prefilter=_env_prefilter,
+    )
+    if result is None:
         return [], [], [], []
-
-    symbols: list[Symbol] = []
-    for idx, line in enumerate(text.split("\n"), start=1):
-        candidate = common.bom_strip_first_line(line, idx)
-        if not candidate or candidate[0] in "#;":
-            continue
-        # Reject leading whitespace defensively: continuation lines and shell
-        # heredoc bodies must not be mistaken for key assignments.
-        if candidate[0] in " \t":
-            continue
-        m = _ENV_KEY_RE.match(candidate)
-        if m is None:
-            continue
-        name = m.group(1)
-        if not name or len(name) > _MAX_HEADING_LEN:
-            continue
-        symbols.append(Symbol(name=name, kind="env_key", line=idx))
-        if len(symbols) >= _MAX_ENV_KEYS:
-            break
-
+    symbols, _ = result
     return symbols, [], [], []
