@@ -611,6 +611,58 @@ def doctor(  # noqa: C901
         _render_cache_section(label, dir_name, cap_bytes, cap_file_count, ok, flag)
 
     # ------------------------------------------------------------------
+    # 13b. Configuration — opt-in flags + their effective values
+    # ------------------------------------------------------------------
+    # Surfaces the major opt-in flags (compact_assist, skill_preservation,
+    # hints.json_sidecar, etc.) with their currently effective values so a
+    # confused user (or a future agent) can answer "is feature X actually on?"
+    # without grep-ing config.toml.  Honours env-var overrides since `config.load()`
+    # applies them before returning the Config object.
+    typer.echo("\nConfiguration")
+    try:
+        from . import config as _config  # noqa: PLC0415
+
+        cfg = _config.load()
+        # compact_assist: master switch + the auto-trigger multiplier added in run 1 iter 3.
+        ok("compact_assist.enabled", str(cfg.compact_assist.enabled).lower())
+        ok(
+            "compact_assist.auto_trigger_multiplier",
+            f"{cfg.compact_assist.auto_trigger_multiplier:g}",
+        )
+        ok(
+            "compact_assist.max_manifest_tokens",
+            str(cfg.compact_assist.max_manifest_tokens),
+        )
+        # skill_preservation: enabled / cache cap.
+        ok("skill_preservation.enabled", str(cfg.skill_preservation.enabled).lower())
+        ok(
+            "skill_preservation.max_cache_bytes",
+            str(cfg.skill_preservation.max_cache_bytes),
+        )
+        # hints: json_sidecar (r2 iter 1) plus the quiet-hours window if set.
+        ok("hints.json_sidecar", str(cfg.hints.json_sidecar).lower())
+        if cfg.hints.quiet_hours:
+            ok("hints.quiet_hours", cfg.hints.quiet_hours)
+        ok(
+            "hints.suppress_after_ignored",
+            str(cfg.hints.suppress_after_ignored),
+        )
+        # bash_compress: enabled + max line/byte caps so the user can verify
+        # the safety net is intact.
+        ok("bash_compress.enabled", str(cfg.bash_compress.enabled).lower())
+        ok("bash_compress.max_lines", str(cfg.bash_compress.max_lines))
+        # decision log (this iteration): always-on opt-in CLI feature; surface
+        # the per-session cap so the user knows the implicit ceiling.
+        try:
+            from . import session as _session  # noqa: PLC0415
+
+            ok("decision_log.max_per_session", str(_session.DECISION_HISTORY_MAX))
+        except Exception as exc:  # noqa: BLE001
+            flag("decision_log.max_per_session", str(exc), warn=True)
+    except Exception as e:  # noqa: BLE001
+        flag("config load", str(e), warn=True)
+
+    # ------------------------------------------------------------------
     # 14. Stats summary + 14b. Cumulative-savings projection (item 11)
     # ------------------------------------------------------------------
     # Both sections read from global.db, so they share a single connection.

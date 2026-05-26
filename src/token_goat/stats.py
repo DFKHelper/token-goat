@@ -127,6 +127,14 @@ _KIND_TO_SOURCE: dict[str, str] = {
     # for a prior session.  Always bytes_saved=0; the row is an adoption
     # signal (how often agents fall back on resume) rather than a saving.
     "resume_packet": SOURCE_COMPACT,
+    # decision_log: `token-goat decision "<text>"` — append-only reasoning log
+    # surfaced in the compact manifest.  Tokens saved is always 0 (the entry is
+    # additive context that survives compaction, not a replacement for a read).
+    # bytes_saved tracks cumulative entry length so adoption is measurable in
+    # ``token-goat stats``; the row sits in the compact bucket alongside the
+    # other "preserve through compaction" mechanisms (skill_body_recall,
+    # compact_recovery, resume_packet).
+    "decision_log": SOURCE_COMPACT,
     # bash output cache family — preventing repeat command runs is structurally
     # distinct from preventing file re-reads (no source file is involved), so
     # it gets its own user-visible bucket rather than folding into HINT.
