@@ -47,7 +47,15 @@ jobs:
         # threaded variant of each stress test (e.g. test_concurrent_threads
         # _100_edits_no_loss covers the same lock-stack as its subprocess
         # sibling, just without the subprocess.Popen pressure).
-        run: uv run pytest -m "not slow" -rfE --tb=short
+        #
+        # ``-n 2`` overrides the ``-n auto`` from pyproject.toml's addopts.
+        # The Windows-2022 GH Actions runner only has 2 CPUs, so ``-n auto``
+        # oversaturates and produces transient C-extension crashes in
+        # xdist workers (``Windows fatal exception: code 0xc000001d`` /
+        # access violations under tree-sitter load). Fixed parallelism keeps
+        # the suite stable; locally ``-n auto`` is still the default for
+        # the faster multi-core dev loop.
+        run: uv run pytest -n 2 -m "not slow" -rfE --tb=short
 
       - name: Test (slow tier, allow-fail)
         # The slow tier runs the multi-process concurrency tests and git
