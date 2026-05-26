@@ -284,7 +284,14 @@ def _pre_snapshot_imports(session_id: str, file_path: str, cwd: str | None) -> N
             for target_path in targets:
                 try:
                     content = Path(target_path).read_bytes()
-                    result = snapshots.store(session_id, target_path, content)
+                    # Tag the snapshot as "predictive" so a subsequent diff
+                    # hint built against it can be counted as a predictive
+                    # prefetch hit in `token-goat stats`.  The default kind
+                    # ("read") would mark this as a normal post-read snapshot
+                    # and lose the attribution.
+                    result = snapshots.store(
+                        session_id, target_path, content, kind="predictive",
+                    )
                     if result:
                         _LOG.debug(
                             "predictive-snapshot: stored %s for %s",

@@ -660,6 +660,34 @@ def _try_diff_hint(
         return None
 
     record_hint_stat_pair("diff_hint", hint, sanitize_log_str(file_path, max_len=512))
+    # Predictive-prefetch attribution.  When the snapshot was written
+    # speculatively by post_edit's import-following path, count this diff hit
+    # as a predictive prefetch payoff: the hint saved tokens *because* the
+    # snapshot existed *before* the agent ever read the file.  Without the
+    # prefetch, no snapshot would exist and no diff hint would fire.  A
+    # second stat row makes this measurable in `token-goat stats` without
+    # double-counting the saving (we record bytes_saved=0 to avoid that).
+    try:
+        snapshot_kind = snapshots.load_kind(session_id, file_path)
+    except Exception:  # noqa: BLE001
+        snapshot_kind = None
+    if snapshot_kind == "predictive":
+        from . import db as _db  # noqa: PLC0415
+
+        try:
+            _db.record_stat(
+                None,
+                "predictive_prefetch_hit",
+                bytes_saved=0,
+                tokens_saved=0,
+                detail=sanitize_log_str(file_path, max_len=512),
+            )
+        except Exception:  # noqa: BLE001
+            _LOG.debug("predictive-snapshot: stat record failed", exc_info=True)
+        _LOG.info(
+            "pre-read: predictive-snapshot hit for %s (tokens_saved=%d)",
+            sanitize_log_str(file_path), hint.tokens_saved,
+        )
     _LOG.info(
         "pre-read: diff-hint injected for %s (tokens_saved=%d)",
         sanitize_log_str(file_path), hint.tokens_saved,
@@ -1087,8 +1115,27 @@ def pre_read(payload: HookPayload) -> HookResponse:
     # a snapshot to compare against.  When applicable, the diff hint replaces
     # the standard cache hint — both communicate the same idea (you've seen
     # this file before) but the diff carries the actually-changed bytes.
+    #
+    # Predictive-prefetch unlock: when the file has never been read in this
+    # session BUT a predictive snapshot exists (written by post_edit's
+    # import-following path), still route through the diff hint.  The
+    # snapshot represents what the agent would have seen at the moment of
+    # the editing peer's last read of the disk file; if the file has changed
+    # since then the diff is genuinely useful, and if it hasn't,
+    # build_diff_hint returns None (its size + min-saving thresholds remain
+    # the only emission gate).  Without this branch, every predictive
+    # snapshot is pure overhead with no payoff path.
     entry = cache.files.get(session._normalize_path(file_path))  # type: ignore[attr-defined]
-    if entry is not None and entry.last_edit_ts > entry.last_read_ts:
+    _predictive_unlock = False
+    if entry is None or entry.last_edit_ts <= entry.last_read_ts:
+        try:
+            from . import snapshots as _snap_mod  # noqa: PLC0415
+
+            if _snap_mod.load_kind(session_id, file_path) == "predictive":
+                _predictive_unlock = True
+        except Exception:  # noqa: BLE001
+            _predictive_unlock = False
+    if (entry is not None and entry.last_edit_ts > entry.last_read_ts) or _predictive_unlock:
         # Compute requested read range for the overlap guard in _try_diff_hint.
         _raw_offset = tool_input.get("offset")
         _raw_limit = tool_input.get("limit")
