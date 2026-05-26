@@ -187,3 +187,90 @@ class TestShrinkNoteRatioFormat:
         note = self._build_note(10_000, 0, 10_000, "/tmp/zero.jpg")
         assert "→" not in note
         assert "10,000 bytes" in note
+
+
+# ---------------------------------------------------------------------------
+# Bypass telemetry: sub-threshold images record image_shrink_skipped stat
+# so the bypass rate is measurable from the stats DB.
+# ---------------------------------------------------------------------------
+
+
+class TestTryShrinkImageBypassTelemetry:
+    """Sub-threshold images record an informational image_shrink_skipped row.
+
+    The row carries the actual file size and the threshold that was checked
+    against, so a follow-up `token-goat stats` (or a manual sqlite query) can
+    answer "how often is the threshold bypassed?" and "is the threshold tuned
+    to real data?".
+    """
+
+    def test_small_image_records_skipped_stat(self, tmp_path, monkeypatch):
+        from unittest.mock import patch
+
+        from token_goat.hooks_read import _try_shrink_image
+
+        # Build a sub-threshold file ourselves so we don't depend on PIL: a
+        # 1 KB .jpg is well under both the lossy and lossless thresholds.
+        src = tmp_path / "tiny.jpg"
+        src.write_bytes(b"\xff\xd8\xff" + b"\x00" * 1024)
+
+        recorded: list[tuple[str, int, int, str]] = []
+
+        def fake_record_stat(project_hash, kind, *, bytes_saved, tokens_saved, detail=""):
+            recorded.append((kind, bytes_saved, tokens_saved, detail))
+
+        with patch("token_goat.db.record_stat", side_effect=fake_record_stat):
+            result = _try_shrink_image(str(src), {"file_path": str(src)})
+
+        assert result is None, "Sub-threshold image must not produce a redirect"
+        # Exactly one stat row for the bypass should be recorded.
+        skipped = [r for r in recorded if r[0] == "image_shrink_skipped"]
+        assert skipped, f"Expected image_shrink_skipped stat; got {recorded}"
+        kind, bytes_saved, tokens_saved, detail = skipped[0]
+        assert bytes_saved == 0
+        assert tokens_saved == 0
+        # Detail string includes the actual size and threshold so the bypass
+        # histogram is queryable from the DB.
+        assert "size=" in detail
+        assert "threshold=" in detail
+
+    def test_missing_file_does_not_record_skipped(self, tmp_path):
+        """OSError from stat() falls through; no bypass stat is recorded."""
+        from unittest.mock import patch
+
+        from token_goat.hooks_read import _try_shrink_image
+
+        # Ghost path: no file on disk.
+        ghost = tmp_path / "ghost.jpg"
+        recorded: list[tuple[str, int, int, str]] = []
+
+        def fake_record_stat(project_hash, kind, *, bytes_saved, tokens_saved, detail=""):
+            recorded.append((kind, bytes_saved, tokens_saved, detail))
+
+        with patch("token_goat.db.record_stat", side_effect=fake_record_stat):
+            _try_shrink_image(str(ghost), {"file_path": str(ghost)})
+
+        skipped = [r for r in recorded if r[0] == "image_shrink_skipped"]
+        assert not skipped, (
+            f"Missing file must not record image_shrink_skipped; got {recorded}"
+        )
+
+    def test_non_image_does_not_record_skipped(self, tmp_path):
+        """Non-image paths short-circuit before any size or stat work."""
+        from unittest.mock import patch
+
+        from token_goat.hooks_read import _try_shrink_image
+
+        txt = tmp_path / "notes.txt"
+        txt.write_text("hello")
+        recorded: list[tuple[str, int, int, str]] = []
+
+        def fake_record_stat(project_hash, kind, *, bytes_saved, tokens_saved, detail=""):
+            recorded.append((kind, bytes_saved, tokens_saved, detail))
+
+        with patch("token_goat.db.record_stat", side_effect=fake_record_stat):
+            _try_shrink_image(str(txt), {"file_path": str(txt)})
+
+        assert not recorded, (
+            f"Non-image path must not record any image stats; got {recorded}"
+        )

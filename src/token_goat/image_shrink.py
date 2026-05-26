@@ -27,6 +27,7 @@ __all__ = [
     "avif_supported",
     "ensure_cache_dir",
     "extract_image_summary",
+    "format_threshold",
     "is_image_path",
     "should_shrink",
     "shrink",
@@ -63,6 +64,45 @@ MAX_LONG_EDGE = 1024
 # 100 KB is a conservative threshold: most PNGs below this size are small icons
 # or diagrams whose pixel area is already within Claude's efficient range.
 SIZE_THRESHOLD_BYTES = 100 * 1024
+
+# Per-format lower bound below which a re-encode is unlikely to pay off.
+# JPEG / WebP / AVIF are already lossy-compressed by their producer, so files in
+# the 32–100 KB band are usually already efficient and the encode cost (30–80 ms
+# on commodity hardware) outweighs any token savings.  PNG / BMP / TIFF / GIF are
+# either lossless or weakly compressed: a 40 KB PNG screenshot typically drops to
+# 12–20 KB as lossless WebP at zero quality loss, so we lower the threshold for
+# those formats.  Falls back to SIZE_THRESHOLD_BYTES for any unrecognized suffix.
+_LOSSY_FORMAT_THRESHOLD_BYTES = SIZE_THRESHOLD_BYTES        # JPEG/WebP/AVIF
+_LOSSLESS_FORMAT_THRESHOLD_BYTES = 32 * 1024                 # PNG/BMP/TIFF/GIF
+
+_LOSSY_INPUT_SUFFIXES = frozenset({".jpg", ".jpeg", ".webp", ".avif"})
+_LOSSLESS_INPUT_SUFFIXES = frozenset({".png", ".bmp", ".tiff", ".tif", ".gif"})
+
+
+def format_threshold(path_or_suffix: str | Path) -> int:
+    """Return the per-format byte threshold below which shrink is a no-op.
+
+    Recognises lossy producer formats (JPEG, WebP, AVIF) and gives them the
+    historical :data:`SIZE_THRESHOLD_BYTES` (100 KB) — bytes in those formats
+    are likely already efficient, so a re-encode is pure CPU overhead until
+    the file is genuinely large.  PNG / BMP / TIFF / GIF inputs get the
+    smaller :data:`_LOSSLESS_FORMAT_THRESHOLD_BYTES` (32 KB) because lossless
+    inputs at modest size still compress meaningfully when re-emitted as
+    lossless WebP or as the configured lossy format.
+
+    Unknown extensions fall back to :data:`SIZE_THRESHOLD_BYTES` so any new
+    image format that arrives at the hook is treated conservatively
+    (no over-eager shrink).
+    """
+    if isinstance(path_or_suffix, str):
+        suffix = path_or_suffix.lower()
+        if not suffix.startswith("."):
+            suffix = Path(path_or_suffix).suffix.lower()
+    else:
+        suffix = path_or_suffix.suffix.lower()
+    if suffix in _LOSSLESS_INPUT_SUFFIXES:
+        return _LOSSLESS_FORMAT_THRESHOLD_BYTES
+    return _LOSSY_FORMAT_THRESHOLD_BYTES
 
 # JPEG quality for photographic output.  75 is the standard "high quality"
 # threshold: visually lossless for natural images, typically 5–20× smaller than
@@ -295,12 +335,18 @@ def should_shrink(src_path: Path) -> bool:
     callers don't need to guard against special filesystem entries.
     Returns False on any OS error rather than raising so callers can treat
     the answer as a conservative hint, not a guarantee.
+
+    The per-format threshold from :func:`format_threshold` lets PNG / BMP /
+    TIFF / GIF inputs cross the bar at 32 KB while JPEG / WebP / AVIF inputs
+    still need 100 KB — lossy producer formats below 100 KB are usually
+    already efficient and the encode CPU outweighs the saving, but lossless
+    inputs in the 32–100 KB band typically halve under a lossless WebP pass.
     """
     try:
         if not is_image_path(src_path):
             return False
         st = src_path.stat()  # single syscall: raises FileNotFoundError if absent
-        return stat.S_ISREG(st.st_mode) and st.st_size > SIZE_THRESHOLD_BYTES
+        return stat.S_ISREG(st.st_mode) and st.st_size > format_threshold(src_path)
     except OSError as exc:
         _LOG.debug("should_shrink: stat failed for %s: %s", src_path, exc)
         return False
@@ -373,7 +419,7 @@ def shrink(src_path: Path) -> Path | None:
         src_size = src_path.stat().st_size
     except OSError:
         return None
-    if src_size <= SIZE_THRESHOLD_BYTES:
+    if src_size <= format_threshold(src_path):
         return None
 
     paths.ensure_dir(paths.image_cache_dir())

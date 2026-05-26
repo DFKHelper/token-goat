@@ -222,6 +222,32 @@ def _try_shrink_image(
 
     try:
         src_path = Path(file_path)
+        # Record "considered but bypassed" telemetry for files that fall under
+        # the per-format threshold.  Without this, the bypass rate is invisible
+        # and the threshold can only be guessed.  The stat is recorded with
+        # bytes_saved=0 + tokens_saved=0 (informational row) so it shows up in
+        # `token-goat stats` only when `stats.record_zero_savings = true` is
+        # configured.  We compute the actual file size once and reuse it for
+        # the detail string so the histogram is queryable from the stats DB.
+        try:
+            _src_stat = src_path.stat()
+            if _src_stat.st_size <= image_shrink.format_threshold(src_path):
+                db.record_stat(
+                    None,
+                    "image_shrink_skipped",
+                    bytes_saved=0,
+                    tokens_saved=0,
+                    detail=(
+                        f"{sanitize_log_str(file_path)} "
+                        f"size={_src_stat.st_size} "
+                        f"threshold={image_shrink.format_threshold(src_path)}"
+                    ),
+                )
+                return None
+        except OSError:
+            # Missing file / permission: fall through to image_shrink.shrink
+            # which has its own OSError handling and returns None silently.
+            pass
         shrunken = image_shrink.shrink(src_path)
         if shrunken is None:
             return None
