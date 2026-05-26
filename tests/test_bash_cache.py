@@ -34,6 +34,36 @@ class TestStoreAndLoad:
         # The very last characters of `big` are preserved at the tail.
         assert body.endswith("A")
 
+    def test_utf8_truncation_bounded_by_bytes_not_chars(self, tmp_data_dir):
+        """Regression: store_output must bound the stored body by utf-8 bytes.
+
+        Previously the truncation sliced on codepoints, which for multi-byte
+        characters (CJK, emoji) could store up to 4× the cap on disk.  A 2 MB
+        cap with all 4-byte emoji would store up to 8 MB and silently
+        overshoot the 16 MB directory cap.  The fix slices on raw utf-8 bytes
+        with safe decode at the boundary.
+        """
+        # 3-byte CJK characters.  Aim for ~3 MB on disk pre-truncation.
+        # 1_000_000 × 3 bytes = 3_000_000 bytes (above the 2 MB cap).
+        big_cjk = "中" * 1_000_000
+        meta = bash_cache.store_output("utf8-sess", "echo cjk", big_cjk, "", 0)
+        assert meta is not None
+        assert meta.truncated is True
+
+        body = bash_cache.load_output(meta.output_id)
+        assert body is not None
+        # The kept content (after the marker prefix) must be at or under the
+        # 2 MB cap when encoded as utf-8.
+        marker_end = body.index("]\n") + 2
+        kept = body[marker_end:]
+        kept_bytes = len(kept.encode("utf-8", errors="replace"))
+        max_stored = 2 * 1024 * 1024
+        # Allow a tiny overhead for the truncation marker itself, but the kept
+        # content slice must be at or under the cap.
+        assert kept_bytes <= max_stored, (
+            f"kept body {kept_bytes} bytes exceeds cap {max_stored}"
+        )
+
     def test_id_format_rejects_traversal(self, tmp_data_dir):
         """A crafted output_id with traversal characters returns no path."""
         assert bash_cache.load_output("../../etc/passwd") is None

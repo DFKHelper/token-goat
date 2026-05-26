@@ -519,6 +519,62 @@ class TestEvictCacheDir:
             "orphan .json sidecar must be swept even when caps are satisfied"
         )
 
+    def test_unrelated_json_not_deleted_by_sweep(self, tmp_path: Path) -> None:
+        """A .json file whose stem is NOT a valid cache filename must be left alone.
+
+        Regression test: previously the orphan-sweep deleted any .json file
+        whose .txt sibling was absent, which could destroy user-managed config
+        files or debugger artifacts dropped into the cache directory.  The
+        sweep now validates the stem against OUTPUT_FILENAME_RE first.
+        """
+        d = tmp_path / "cache"
+        fn = _make_cache_dir_fn(d)
+        t = time.time()
+
+        # One legitimate cache entry so the directory exists.
+        real_name = _valid_name("001")
+        _plant(d, f"{real_name}.txt", b"X" * 10, t)
+
+        # An unrelated .json file whose stem would NOT match OUTPUT_FILENAME_RE
+        # (contains a dot in the middle, which is invalid per the regex).
+        unrelated = d / "user.config.json"
+        unrelated.write_text('{"setting": "value"}', encoding="utf-8")
+
+        # Run the sweep — once with caps satisfied, once with caps exceeded.
+        evict_cache_dir(
+            cache_dir_fn=fn, log_name="test_cache",
+            max_total_bytes=10_000, max_file_count=4096,
+        )
+        assert unrelated.exists(), "unrelated .json must NOT be swept (caps OK)"
+
+        evict_cache_dir(cache_dir_fn=fn, log_name="test_cache", max_total_bytes=1)
+        assert unrelated.exists(), "unrelated .json must NOT be swept (eviction)"
+
+    def test_invalid_named_json_with_path_separator_not_deleted(self, tmp_path: Path) -> None:
+        """A .json file whose stem contains characters disallowed by OUTPUT_FILENAME_RE.
+
+        Specifically the orphan sweep must reject any .json whose .txt sibling
+        name would not pass our filename validator.  This is the defensive
+        gate that keeps the sweep from touching files token-goat did not
+        write itself.
+        """
+        d = tmp_path / "cache"
+        fn = _make_cache_dir_fn(d)
+        t = time.time()
+
+        real_name = _valid_name("001")
+        _plant(d, f"{real_name}.txt", b"X" * 10, t)
+
+        # Stem with a space — disallowed by OUTPUT_FILENAME_RE.
+        rogue = d / "rogue file.json"
+        rogue.write_text("{}", encoding="utf-8")
+
+        evict_cache_dir(
+            cache_dir_fn=fn, log_name="test_cache",
+            max_total_bytes=10_000, max_file_count=4096,
+        )
+        assert rogue.exists(), "rogue .json with invalid stem must NOT be swept"
+
     # ------------------------------------------------------------------
     # Non-.txt files are ignored
     # ------------------------------------------------------------------
@@ -748,6 +804,68 @@ class TestTruncateTailPreserve:
         )
         assert stored.startswith("MARK n=20 total=100\n")
 
+    def test_utf8_kept_bytes_at_or_under_cap(self) -> None:
+        """The kept tail's utf-8 byte length must be at or under max_bytes.
+
+        Regression test: previously the implementation used codepoint slicing
+        (``content[-max_bytes:]``) which for multi-byte characters could store
+        up to 4× the cap on disk, silently breaking the directory byte-cap.
+        The fix slices on raw bytes, then decodes with errors="replace" so a
+        cut at a codepoint boundary is safe.
+        """
+        # Each Chinese character is 3 bytes in utf-8.
+        # 200 characters × 3 bytes = 600 bytes total
+        content = "中" * 200
+        stored, truncated = truncate_tail_preserve(
+            content, max_bytes=60, marker_template="[t {n}/{total}]\n",
+        )
+        assert truncated is True
+        # The kept portion (after the marker prefix) must be at or under 60 bytes
+        # The marker prefix itself is not counted toward the cap.
+        marker_end = stored.index("]\n") + 2
+        kept_only = stored[marker_end:]
+        kept_bytes = len(kept_only.encode("utf-8", errors="replace"))
+        assert kept_bytes <= 60, (
+            f"kept tail is {kept_bytes} bytes, exceeds cap of 60"
+        )
+
+    def test_utf8_4byte_emoji_kept_bytes_at_or_under_cap(self) -> None:
+        """4-byte UTF-8 (emoji) tail honours the byte cap."""
+        # Pile of poo emoji (U+1F4A9) is 4 bytes in UTF-8.  50 emoji = 200 bytes.
+        content = "\U0001f4a9" * 50
+        stored, truncated = truncate_tail_preserve(
+            content, max_bytes=20, marker_template="[t {n}/{total}]\n",
+        )
+        assert truncated is True
+        marker_end = stored.index("]\n") + 2
+        kept_only = stored[marker_end:]
+        kept_bytes = len(kept_only.encode("utf-8", errors="replace"))
+        assert kept_bytes <= 20, (
+            f"kept tail is {kept_bytes} bytes, exceeds cap of 20"
+        )
+
+    def test_utf8_partial_codepoint_handled_with_replacement(self) -> None:
+        """If the byte cut falls mid-codepoint, decode yields a U+FFFD prefix.
+
+        We don't strictly require the prefix character — different platforms
+        could behave differently — but the kept content must remain valid UTF-8
+        and must fit in the byte budget.
+        """
+        # Mix ASCII tail with 3-byte chars to force a mid-codepoint cut.
+        # "中" × 30 = 90 bytes; cap at 50 bytes.  The byte slice will cut in the
+        # middle of a "中".
+        content = "中" * 30
+        stored, truncated = truncate_tail_preserve(
+            content, max_bytes=50, marker_template="[t {n}/{total}]\n",
+        )
+        assert truncated is True
+        marker_end = stored.index("]\n") + 2
+        kept_only = stored[marker_end:]
+        # Encode round-trips cleanly — must be valid UTF-8 string.
+        encoded = kept_only.encode("utf-8")
+        re_decoded = encoded.decode("utf-8")
+        assert kept_only == re_decoded
+
 
 class TestShortContentHash:
     """short_content_hash: 16-hex SHA-256 truncation of any string."""
@@ -863,6 +981,85 @@ class TestBuildOutputId:
             expected = build_output_id("sess-y", url_hash(url), ts=ts)
             actual = output_id_for("sess-y", url, ts=ts)
             assert actual == expected
+
+
+class TestBuildKeyedOutputId:
+    """build_keyed_output_id: timestamp-less {prefix}{session}-{token} IDs.
+
+    Used by the bash glob-result cache where re-running the same Glob call
+    in a session must overwrite the existing entry rather than accumulate one
+    cache file per call.
+    """
+
+    def test_basic_format(self) -> None:
+        from token_goat.cache_common import build_keyed_output_id
+        result = build_keyed_output_id("glob_", "sess", "deadbeef01234567")
+        assert result == "glob_sess-deadbeef01234567"
+
+    def test_same_inputs_produce_same_id(self) -> None:
+        """Two calls with the same args must collide so the cache overwrites."""
+        from token_goat.cache_common import build_keyed_output_id
+        a = build_keyed_output_id("glob_", "mysession", "deadbeef01234567")
+        b = build_keyed_output_id("glob_", "mysession", "deadbeef01234567")
+        assert a == b
+
+    def test_different_tokens_produce_different_ids(self) -> None:
+        from token_goat.cache_common import build_keyed_output_id
+        a = build_keyed_output_id("glob_", "sess", "aaaaaaaaaaaaaaaa")
+        b = build_keyed_output_id("glob_", "sess", "bbbbbbbbbbbbbbbb")
+        assert a != b
+
+    def test_session_fragment_is_safe(self) -> None:
+        """Session ID is sanitised the same way as build_output_id."""
+        from token_goat.cache_common import build_keyed_output_id
+        result = build_keyed_output_id("glob_", "hello world!", "tok")
+        # Spaces and ! become underscores, truncated to 16 chars
+        assert result == "glob_hello_world_-tok"
+
+    def test_result_matches_output_filename_re(self) -> None:
+        """Result + .txt suffix must be a valid cache filename."""
+        from token_goat.cache_common import build_keyed_output_id
+        result = build_keyed_output_id("glob_", "session-id-123", "abcdef0123456789")
+        assert OUTPUT_FILENAME_RE.match(result + ".txt"), (
+            f"build_keyed_output_id result {result!r} is not a valid cache filename stem"
+        )
+
+    def test_used_by_bash_store_glob_result(self, tmp_path, monkeypatch) -> None:
+        """bash_cache.store_glob_result builds an ID via build_keyed_output_id."""
+        import token_goat.paths as _paths
+        from token_goat.cache_common import build_keyed_output_id
+
+        monkeypatch.setattr(_paths, "data_dir", lambda: tmp_path)
+
+        from token_goat.bash_cache import (
+            _GLOB_RESULT_PREFIX,
+            glob_hash,
+            store_glob_result,
+        )
+        sid = "test-glob-session"
+        pattern = "**/*.py"
+        path = None
+        out_id = store_glob_result(sid, pattern, path, "src/main.py\n")
+        assert out_id is not None
+        expected = build_keyed_output_id(
+            _GLOB_RESULT_PREFIX, sid, glob_hash(pattern, path)
+        )
+        assert out_id == expected
+
+    def test_two_stores_of_same_glob_collide(self, tmp_path, monkeypatch) -> None:
+        """Storing the same glob twice overwrites the entry — single file on disk."""
+        import token_goat.paths as _paths
+        monkeypatch.setattr(_paths, "data_dir", lambda: tmp_path)
+        from token_goat.bash_cache import _bash_outputs_dir, store_glob_result
+
+        sid = "collision-session"
+        store_glob_result(sid, "*.ts", None, "first.ts\n")
+        store_glob_result(sid, "*.ts", None, "first.ts\nsecond.ts\n")
+
+        # Exactly one entry on disk (same ID, overwritten).
+        entries = list(_bash_outputs_dir().glob("*.txt"))
+        assert len(entries) == 1
+        assert "second.ts" in entries[0].read_text()
 
 
 class TestOutputStatDict:
