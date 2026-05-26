@@ -68,6 +68,15 @@ _KIND_TO_SOURCE: dict[str, str] = {
     "session_hint_overhead": SOURCE_HINT,
     "diff_hint": SOURCE_HINT,
     "diff_hint_overhead": SOURCE_HINT,
+    # predictive_prefetch_hit: attribution row written when a diff_hint fires
+    # against a snapshot that was captured speculatively by post_edit (kind=
+    # "predictive") rather than by post_read.  bytes_saved / tokens_saved are
+    # always 0 so the row never double-counts the parent diff_hint saving —
+    # it exists purely to measure how often the import-following prefetch
+    # path actually pays off.  Written directly via db.record_stat (not via
+    # record_hint_stat_pair) so the zero-saving filter does not drop it; the
+    # row is always preserved for telemetry queries.
+    "predictive_prefetch_hit": SOURCE_HINT,
     "grep_dedup_hint": SOURCE_HINT,
     "grep_dedup_hint_overhead": SOURCE_HINT,
     # surgical read family

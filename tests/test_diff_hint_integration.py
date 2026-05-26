@@ -159,3 +159,140 @@ class TestDiffHintEndToEnd:
         assert "module_overlap.py" in ctx or "```diff" in ctx, (
             f"Expected diff hint, got: {ctx!r}"
         )
+
+
+class TestPredictivePrefetchTelemetry:
+    """A diff-hint hit against a predictive snapshot records an attribution row.
+
+    End-to-end: post_edit prefetches an adjacent module → the agent later
+    reads that module → the pre-read diff hint fires → a
+    ``predictive_prefetch_hit`` row is appended to the stats table.  Without
+    this row the value of the prefetch path is invisible in
+    ``token-goat stats``.
+    """
+
+    def test_diff_hint_against_predictive_snapshot_records_attribution(
+        self, tmp_data_dir, tmp_path,
+    ):
+        """When the diff hint fires against a kind=predictive snapshot, a
+        predictive_prefetch_hit row appears in the global stats DB."""
+        import time
+
+        from token_goat import db, hooks_edit, hooks_read, snapshots
+
+        (tmp_path / ".git").mkdir()
+
+        # Sufficient body to clear the diff-hint min-saving threshold.
+        body = "".join(f"def fn_{i}():\n    return {i}\n" for i in range(200))
+        util_py = tmp_path / "util.py"
+        util_original = "VERSION = 1\n" + body
+        util_py.write_text(util_original, encoding="utf-8")
+
+        main_py = tmp_path / "main.py"
+        main_py.write_text("from .util import fn_0\n", encoding="utf-8")
+
+        sid = "pred-prefetch-tele-01"
+
+        # 1. Edit main.py — triggers the predictive-prefetch snapshot of util.py.
+        _assert_continue(hooks_edit.post_edit({
+            "session_id": sid,
+            "tool_input": {"file_path": str(main_py)},
+            "cwd": str(tmp_path),
+        }))
+        # Wait for the daemon thread to finish.
+        time.sleep(0.4)
+
+        # Sanity: the predictive snapshot exists and is tagged.
+        assert snapshots.load_kind(sid, str(util_py)) == "predictive", (
+            "precondition: util.py must have been pre-snapshotted as predictive"
+        )
+
+        # 2. The user edits util.py externally before the agent reads it.
+        util_py.write_text("VERSION = 2\n" + body, encoding="utf-8")
+
+        # 3. Agent reads util.py → diff hint fires against the predictive snapshot.
+        result = hooks_read.pre_read({
+            "session_id": sid,
+            "tool_name": "Read",
+            "tool_input": {"file_path": str(util_py)},
+            "cwd": str(tmp_path),
+        })
+        _assert_continue(result)
+        hso = result.get("hookSpecificOutput") or {}
+        ctx = hso.get("additionalContext", "") if isinstance(hso, dict) else ""
+        # The diff hint must have fired — otherwise the attribution test below
+        # would silently pass for the wrong reason.
+        assert "util.py" in ctx or "```diff" in ctx, (
+            f"diff hint expected, got: {ctx!r}"
+        )
+
+        # 4. The predictive_prefetch_hit attribution row was written.
+        with db.open_global() as conn:
+            row = conn.execute(
+                "SELECT detail FROM stats "
+                "WHERE kind = 'predictive_prefetch_hit' "
+                "ORDER BY id DESC LIMIT 1"
+            ).fetchone()
+        assert row is not None, (
+            "expected a predictive_prefetch_hit row after diff-hint fired on a "
+            "predictive snapshot"
+        )
+        # detail should mention util.py (the file the prefetch paid off on).
+        assert "util.py" in (row[0] or ""), (
+            f"detail must identify the prefetched file; got {row[0]!r}"
+        )
+
+    def test_diff_hint_against_read_snapshot_no_attribution(
+        self, tmp_data_dir, tmp_path,
+    ):
+        """A normal post-read snapshot must NOT generate a prefetch_hit row.
+
+        Negative control for the test above: without this guard, a buggy
+        load_kind that returned "predictive" for every snapshot would still
+        pass the positive test but pollute stats with false attributions.
+        """
+        from token_goat import db, hooks_edit, hooks_read
+
+        (tmp_path / ".git").mkdir()
+        body = "".join(f"def fn_{i}():\n    return {i}\n" for i in range(200))
+        src = tmp_path / "mod.py"
+        src.write_text("VERSION = 1\n" + body, encoding="utf-8")
+
+        sid = "pred-prefetch-neg-01"
+
+        # Capture how many prefetch_hit rows existed at start of test (other
+        # tests in this file run before this one and may have written rows).
+        with db.open_global() as conn:
+            before_count = conn.execute(
+                "SELECT COUNT(*) FROM stats WHERE kind = 'predictive_prefetch_hit'"
+            ).fetchone()[0]
+
+        # 1. Normal post-read → kind=read snapshot.
+        _assert_continue(hooks_read.post_read({
+            "session_id": sid,
+            "tool_name": "Read",
+            "tool_input": {"file_path": str(src)},
+        }))
+        # 2. Edit so the diff has something to show.
+        src.write_text("VERSION = 2\n" + body, encoding="utf-8")
+        _assert_continue(hooks_edit.post_edit({
+            "session_id": sid,
+            "tool_input": {"file_path": str(src)},
+            "cwd": str(tmp_path),
+        }))
+        # 3. Re-read → diff hint fires, but against a read-flavoured snapshot.
+        _assert_continue(hooks_read.pre_read({
+            "session_id": sid,
+            "tool_name": "Read",
+            "tool_input": {"file_path": str(src)},
+            "cwd": str(tmp_path),
+        }))
+
+        with db.open_global() as conn:
+            after_count = conn.execute(
+                "SELECT COUNT(*) FROM stats WHERE kind = 'predictive_prefetch_hit'"
+            ).fetchone()[0]
+        assert after_count == before_count, (
+            "post-read snapshot must not produce a predictive_prefetch_hit row "
+            f"(before={before_count}, after={after_count})"
+        )

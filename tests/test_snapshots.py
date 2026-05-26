@@ -342,3 +342,147 @@ class TestPredictiveSnapshot:
         names = {Path(r).name for r in resolved}
         assert {"a.py", "b.py", "c.py"} == names, \
             f"expected all three distinct modules, got {names}"
+
+
+class TestSnapshotKind:
+    """Tagging snapshots with origin (read vs predictive) for telemetry.
+
+    The kind sidecar is the single source of truth that lets the diff-hint
+    path attribute a hit to the predictive-prefetch mechanism rather than to
+    a normal post-read snapshot.  These tests pin the sidecar contract so
+    later refactors (e.g. moving the kind into a manifest file) cannot
+    silently drop attribution without flipping a test.
+    """
+
+    def test_default_kind_is_read(self, tmp_data_dir):
+        """A store() without kind= produces a snapshot tagged ``read``.
+
+        Backwards-compat sentinel: every existing call site passes no kind=,
+        so the default must continue to be the post-read flavour.
+        """
+        snapshots.store("kind1", "/tmp/k1.py", b"hello\n")
+        assert snapshots.load_kind("kind1", "/tmp/k1.py") == "read"
+
+    def test_predictive_kind_stored_and_loaded(self, tmp_data_dir):
+        """kind="predictive" round-trips through load_kind."""
+        snapshots.store("kind2", "/tmp/k2.py", b"hi\n", kind="predictive")
+        assert snapshots.load_kind("kind2", "/tmp/k2.py") == "predictive"
+
+    def test_unknown_kind_falls_back_to_read(self, tmp_data_dir):
+        """An unrecognised kind is normalised to ``read`` on write.
+
+        Defensive — protects the on-disk format from being poisoned by a
+        future caller passing an arbitrary string (e.g. a typo or a hostile
+        payload).  The sidecar must only ever hold one of the known values.
+        """
+        snapshots.store("kind3", "/tmp/k3.py", b"x", kind="bogus-value")
+        assert snapshots.load_kind("kind3", "/tmp/k3.py") == "read"
+
+    def test_load_kind_missing_snapshot_returns_none(self, tmp_data_dir):
+        """No snapshot at all → load_kind returns None.
+
+        Pre-tag legacy snapshots also return None here; the diff-hint path
+        treats None as "unknown / read" and proceeds without attribution.
+        """
+        assert snapshots.load_kind("kind4-none", "/tmp/never.py") is None
+
+    def test_load_kind_missing_sidecar_returns_none(self, tmp_data_dir):
+        """Snapshot exists, sidecar deleted → load_kind returns None.
+
+        Models the legacy-snapshot path: a snapshot written by an older
+        token-goat (before kind tagging) has no sidecar.  load_kind must
+        degrade gracefully to None — never raise, never assume a default.
+        """
+        snapshots.store("kind5", "/tmp/k5.py", b"x", kind="predictive")
+        p = snapshots.snapshot_path("kind5", "/tmp/k5.py")
+        assert p is not None
+        # Unlink the sidecar that store() wrote, leaving the .bin intact.
+        sidecar = p.with_suffix(p.suffix + ".kind")
+        assert sidecar.exists()
+        sidecar.unlink()
+        assert snapshots.load_kind("kind5", "/tmp/k5.py") is None
+        # The snapshot itself is still loadable — only the attribution is lost.
+        assert snapshots.load("kind5", "/tmp/k5.py") == b"x"
+
+    def test_cleanup_session_removes_sidecars(self, tmp_data_dir):
+        """``cleanup_session`` evicts both the snapshot and its kind sidecar."""
+        snapshots.store("kind6", "/tmp/k6.py", b"a", kind="predictive")
+        p = snapshots.snapshot_path("kind6", "/tmp/k6.py")
+        assert p is not None
+        sidecar = p.with_suffix(p.suffix + ".kind")
+        assert sidecar.exists()
+        snapshots.cleanup_session("kind6")
+        assert not sidecar.exists()
+        assert snapshots.load_kind("kind6", "/tmp/k6.py") is None
+
+    def test_eviction_drops_orphan_sidecar(self, tmp_data_dir, monkeypatch):
+        """When _evict_oldest drops a .bin, its .kind sidecar goes with it.
+
+        The cap counts only .bin files (sidecars are bookkeeping), so an
+        orphaned .kind after eviction is a leak.  Verify the cleanup happens
+        in-band rather than waiting for the periodic stale sweep.
+        """
+        import os as _os
+        import time as _time
+
+        monkeypatch.setattr(snapshots, "MAX_SNAPSHOTS_PER_SESSION", 2)
+        base_ts = _time.time() - 100
+        for i in range(4):
+            result = snapshots.store(
+                "kind7-evict", f"/tmp/ke{i}.py", f"v{i}".encode(), kind="predictive",
+            )
+            assert result is not None
+            _os.utime(result.path, (base_ts + i, base_ts + i))
+            sidecar = result.path.with_suffix(result.path.suffix + ".kind")
+            if sidecar.exists():
+                _os.utime(sidecar, (base_ts + i, base_ts + i))
+
+        # The two oldest .bin files should be evicted along with their
+        # sidecars.  Walk the session dir and confirm no orphan .kind exists.
+        sess_dir = snapshots._session_dir("kind7-evict")
+        assert sess_dir is not None
+        kinds = sorted(p.name for p in sess_dir.iterdir() if p.suffix == ".kind")
+        bins = sorted(p.name for p in sess_dir.iterdir() if p.suffix == ".bin")
+        # Every kind sidecar must have a matching .bin counterpart.
+        bin_stems = {p[:-len(".bin")] for p in bins}
+        kind_stems = {p[:-len(".bin.kind")] for p in kinds}
+        assert kind_stems.issubset(bin_stems), \
+            f"orphan .kind files: {kind_stems - bin_stems}"
+
+
+class TestPredictivePrefetchAttribution:
+    """The post_edit prefetch path must tag its snapshots as ``predictive``.
+
+    Together with TestSnapshotKind this anchors the end-to-end attribution
+    chain: post_edit writes ``predictive``, the diff-hint path reads back
+    ``predictive`` and emits a ``predictive_prefetch_hit`` stat row.  If
+    either side regresses, the stat row stops appearing in ``token-goat
+    stats`` and the prefetch mechanism becomes unmeasurable again.
+    """
+
+    def test_predictive_snapshot_kind_is_predictive(self, tmp_path, tmp_data_dir):
+        """End-to-end: editing a .py with a local import tags the prefetched
+        snapshot as ``predictive`` (not the default ``read``)."""
+        import time
+
+        from token_goat import hooks_edit
+
+        util_py = tmp_path / "util.py"
+        util_py.write_text("def helper(): pass\n", encoding="utf-8")
+
+        main_py = tmp_path / "main.py"
+        main_py.write_text("from .util import helper\n", encoding="utf-8")
+
+        sid = "pred-kind-end-to-end-01"
+        payload = {
+            "session_id": sid,
+            "tool_name": "Write",
+            "tool_input": {"file_path": str(main_py)},
+            "tool_response": "ok",
+            "cwd": str(tmp_path),
+        }
+        _assert_continue(hooks_edit.post_edit(payload))
+        time.sleep(0.3)
+
+        # The prefetched util.py snapshot must carry the predictive tag.
+        assert snapshots.load_kind(sid, str(util_py)) == "predictive"

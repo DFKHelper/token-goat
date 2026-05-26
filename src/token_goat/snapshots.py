@@ -43,6 +43,7 @@ __all__ = [
     "SnapshotResult",
     "cleanup_session",
     "load",
+    "load_kind",
     "snapshot_path",
     "store",
 ]
@@ -62,6 +63,15 @@ from .hooks_common import sanitize_log_str
 from .util import get_logger
 
 _LOG = get_logger("snapshots")
+
+# Recognised snapshot origin kinds.  Stored as a tiny sidecar next to the
+# binary snapshot so the diff-hint path can distinguish a normal post-read
+# capture (``read``) from one written speculatively by the predictive
+# prefetch path (``predictive``).  The default is ``read`` because the vast
+# majority of snapshots originate from post-read.
+_KIND_READ: str = "read"
+_KIND_PREDICTIVE: str = "predictive"
+_VALID_KINDS: frozenset[str] = frozenset({_KIND_READ, _KIND_PREDICTIVE})
 
 # Largest file size eligible for snapshotting.  Beyond this the diff itself
 # would not fit comfortably in a hint, so we save nothing rather than store
@@ -133,18 +143,33 @@ def snapshot_path(session_id: str, file_path: str) -> Path | None:
     return d / f"{_path_key(file_path)}.bin"
 
 
+def _kind_sidecar_path(snapshot_p: Path) -> Path:
+    """Return the sidecar path that holds the snapshot's origin kind.
+
+    The sidecar is a 1-line text file next to ``snapshot_p`` that records why
+    the snapshot was written (``read`` vs ``predictive``).  Kept as a separate
+    file rather than embedded in the snapshot bytes so the snapshot itself
+    stays a pristine copy of the source file — the diff machinery compares
+    bytes directly and any in-band header would break that contract.
+    """
+    return snapshot_p.with_suffix(snapshot_p.suffix + ".kind")
+
+
 def _evict_oldest(d: Path, max_count: int) -> int:
     """Drop the oldest snapshots in *d* until at most *max_count* remain.
 
-    Returns the number of files removed.  Silently ignores I/O errors so a
-    transient permission glitch does not abort the snapshot write the caller
-    is about to attempt.
+    Returns the number of ``.bin`` snapshots removed (sidecar ``.kind`` files
+    are evicted alongside their owning ``.bin`` but do not count toward the
+    return value).  The cap applies to snapshots only — sidecars are
+    bookkeeping and must not pre-trigger eviction.  Silently ignores I/O
+    errors so a transient permission glitch does not abort the snapshot write
+    the caller is about to attempt.
     """
     try:
         entries = [
             (p, p.stat().st_mtime)
             for p in d.iterdir()
-            if p.is_file() and not p.is_symlink()
+            if p.is_file() and not p.is_symlink() and p.suffix == ".bin"
         ]
     except OSError:
         return 0
@@ -159,12 +184,24 @@ def _evict_oldest(d: Path, max_count: int) -> int:
             removed += 1
         except OSError:
             continue
+        # Best-effort sidecar removal: an orphan .kind is harmless (load_kind
+        # returns None when the .bin is gone via snapshot_path) but cleaning it
+        # up keeps the on-disk dir from growing without bound under heavy
+        # eviction churn.
+        with contextlib.suppress(OSError):
+            _kind_sidecar_path(p).unlink()
     if removed:
         _LOG.debug("snapshots: evicted %d entries from %s (cap=%d)", removed, d.name, max_count)
     return removed
 
 
-def store(session_id: str, file_path: str, content: bytes) -> SnapshotResult | None:
+def store(
+    session_id: str,
+    file_path: str,
+    content: bytes,
+    *,
+    kind: str = _KIND_READ,
+) -> SnapshotResult | None:
     """Persist *content* as the current snapshot for ``(session_id, file_path)``.
 
     Returns ``None`` (and logs at debug) when the file is too large, the
@@ -175,6 +212,19 @@ def store(session_id: str, file_path: str, content: bytes) -> SnapshotResult | N
     (≤256 KB) and we read them back exactly once per re-read attempt.  The
     write is atomic via rename-over so a concurrent reader never observes a
     partial file.
+
+    The *kind* tag identifies why the snapshot was written:
+
+    * ``"read"`` (default) — captured by ``post_read`` after the agent read
+      the file.  Used by the diff hint to render edits-since-read.
+    * ``"predictive"`` — captured speculatively by ``post_edit`` for an
+      adjacent module the agent is likely to read next.  When the diff hint
+      later fires against this snapshot, it counts as a *predictive prefetch
+      hit* and is recorded under a distinct stat kind so the value of the
+      prefetch path can be measured.
+
+    Any unrecognised kind falls back to ``"read"`` so the on-disk format
+    cannot be poisoned by a future caller passing an arbitrary string.
     """
     if len(content) > MAX_SNAPSHOT_BYTES:
         _LOG.debug(
@@ -186,12 +236,55 @@ def store(session_id: str, file_path: str, content: bytes) -> SnapshotResult | N
     if p is None:
         return None
     sha = hashlib.sha256(content).hexdigest()
+    safe_kind = kind if kind in _VALID_KINDS else _KIND_READ
     with safe_cache_op(f"store:{sanitize_log_str(file_path)}", log=_LOG):
         p.parent.mkdir(parents=True, exist_ok=True)
         _evict_oldest(p.parent, MAX_SNAPSHOTS_PER_SESSION - 1)
         paths.atomic_write_bytes(p, content)
+        # Sidecar write is best-effort: if it fails the snapshot itself is
+        # still valid, the diff hint just won't recognise this as a
+        # predictive hit (degrades gracefully to the original behaviour).
+        sidecar = _kind_sidecar_path(p)
+        try:
+            paths.atomic_write_bytes(sidecar, safe_kind.encode("ascii"))
+        except OSError as exc:
+            _LOG.debug(
+                "snapshots: kind sidecar write failed for %s: %s",
+                sanitize_log_str(file_path), exc,
+            )
         return SnapshotResult(path=p, content_sha=sha, size_bytes=len(content))
     return None
+
+
+def load_kind(session_id: str, file_path: str) -> str | None:
+    """Return the recorded kind for the snapshot of ``(session_id, file_path)``.
+
+    Returns one of the values in :data:`_VALID_KINDS`, or ``None`` when no
+    sidecar exists (either the snapshot pre-dates the kind tag, the sidecar
+    write failed, or no snapshot is present at all).  Treat ``None`` as
+    "unknown / legacy snapshot" and fall back to the default behaviour.
+
+    Never raises — any I/O error returns ``None`` so callers on the hot hint
+    path are not impacted by a transient permission glitch.
+    """
+    p = snapshot_path(session_id, file_path)
+    if p is None:
+        return None
+    sidecar = _kind_sidecar_path(p)
+    if not sidecar.exists():
+        return None
+    try:
+        # Sidecar is at most a short ASCII word; cap the read to 32 bytes so
+        # a planted oversize sidecar cannot waste memory on a bogus payload.
+        with sidecar.open("rb") as fh:
+            raw = fh.read(32)
+    except OSError:
+        return None
+    try:
+        text = raw.decode("ascii").strip()
+    except UnicodeDecodeError:
+        return None
+    return text if text in _VALID_KINDS else None
 
 
 def load(session_id: str, file_path: str) -> bytes | None:
@@ -234,7 +327,7 @@ def cleanup_session(session_id: str) -> int:
     d = _session_dir(session_id)
     if d is None or not d.exists():
         return 0
-    removed = 0
+    removed = 0  # count of .bin snapshots removed (sidecars excluded)
     try:
         for fp in d.iterdir():
             try:
@@ -244,9 +337,15 @@ def cleanup_session(session_id: str) -> int:
             if _stat_module.S_ISLNK(st.st_mode):
                 _LOG.warning("snapshots: skipping symlink in cleanup: %s", fp.name)
                 continue
+            # Sidecar .kind files are bookkeeping — they get unlinked alongside
+            # the .bin but are not user-visible snapshots, so they do not bump
+            # the returned count.  Callers (and existing tests) expect the
+            # return value to track snapshots, not on-disk file pairs.
+            is_snapshot = fp.suffix == ".bin"
             try:
                 fp.unlink()
-                removed += 1
+                if is_snapshot:
+                    removed += 1
             except OSError:
                 continue
     except OSError:
@@ -268,7 +367,7 @@ def cleanup_stale(max_age_hours: float = 24.0) -> int:
     if not base.exists():
         return 0
     cutoff = time.time() - max_age_hours * 3600
-    removed = 0
+    removed = 0  # count of .bin snapshots removed (sidecars excluded)
     try:
         for session_dir in base.iterdir():
             if not session_dir.is_dir() or session_dir.is_symlink():
@@ -282,9 +381,11 @@ def cleanup_stale(max_age_hours: float = 24.0) -> int:
                     if _stat_module.S_ISLNK(st.st_mode):
                         continue
                     if st.st_mtime < cutoff:
+                        is_snapshot = fp.suffix == ".bin"
                         try:
                             fp.unlink()
-                            removed += 1
+                            if is_snapshot:
+                                removed += 1
                         except OSError:
                             continue
             except OSError:
