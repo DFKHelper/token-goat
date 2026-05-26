@@ -123,6 +123,15 @@ _DISPATCH_CASES: list[tuple[list[str], str]] = [
     # ---- PythonFilter ----
     (["python", "script.py"], "python"),
     (["python3", "-c", "print('hello')"], "python"),
+    # ---- AnsibleFilter ----
+    (["ansible", "all", "-m", "ping"], "ansible"),
+    (["ansible-playbook", "site.yml"], "ansible"),
+    (["ansible-playbook", "-i", "inventory.ini", "deploy.yml"], "ansible"),
+    (["ansible-pull", "-U", "git@example.com:playbooks.git"], "ansible"),
+    # ---- PreCommitFilter ----
+    (["pre-commit", "run", "--all-files"], "pre-commit"),
+    (["pre-commit", "install"], "pre-commit"),
+    (["pre-commit", "autoupdate"], "pre-commit"),
 ]
 
 
@@ -1353,6 +1362,7 @@ def test_filters_list_covers_expected_tools() -> None:
         "pytest", "jest", "cargo", "npm", "docker", "kubectl",
         "aws", "gh", "ruff", "mypy", "linter", "grep", "git",
         "make", "go-test", "terraform", "pip", "uv", "python",
+        "ansible", "pre-commit",
     }
     missing = expected - names
     assert not missing, f"Missing filters in FILTERS registry: {missing}"
@@ -1383,3 +1393,239 @@ def test_go_vet_routes_to_make() -> None:
     f = bc.select_filter(["go", "vet", "./..."])
     assert f is not None
     assert f.name == "make"
+
+
+# ---------------------------------------------------------------------------
+# 7. AnsibleFilter / PreCommitFilter — golden output + registry guards
+# ---------------------------------------------------------------------------
+
+# A representative ansible-playbook run with two tasks across three hosts,
+# one of which fails on the second task.  Exercises every line shape the
+# filter cares about: PLAY/TASK headers, status lines, fatal payload,
+# PLAY RECAP block.
+_ANSIBLE_OUTPUT = """\
+PLAY [Deploy app] *************************************************************
+
+TASK [Gathering Facts] ********************************************************
+ok: [web1]
+ok: [web2]
+ok: [web3]
+
+TASK [Install nginx] **********************************************************
+changed: [web1]
+changed: [web2]
+fatal: [web3]: FAILED! => {"changed": false, "msg": "Package nginx not found", "rc": 100}
+
+TASK [Start nginx] ************************************************************
+ok: [web1]
+ok: [web2]
+skipping: [web3]
+
+PLAY RECAP ********************************************************************
+web1                       : ok=3    changed=1    unreachable=0    failed=0    skipped=0
+web2                       : ok=3    changed=1    unreachable=0    failed=0    skipped=0
+web3                       : ok=1    changed=0    unreachable=0    failed=1    skipped=1
+"""
+
+
+class TestAnsibleFilter:
+    def test_play_and_task_headers_preserved(self) -> None:
+        f = bc.AnsibleFilter()
+        out = _apply(f, _ANSIBLE_OUTPUT)
+        assert "PLAY [Deploy app]" in out
+        assert "TASK [Gathering Facts]" in out
+        assert "TASK [Install nginx]" in out
+        assert "TASK [Start nginx]" in out
+
+    def test_status_lines_collapsed_to_count(self) -> None:
+        f = bc.AnsibleFilter()
+        out = _apply(f, _ANSIBLE_OUTPUT)
+        # Individual ``ok: [host]`` rows must be gone — replaced by a count.
+        assert "ok: [web1]" not in out
+        assert "ok: [web2]" not in out
+        # The aggregate marker line carries the counts.
+        assert "ok" in out and "token-goat:" in out
+
+    def test_fatal_block_preserved_verbatim(self) -> None:
+        f = bc.AnsibleFilter()
+        out = _apply(f, _ANSIBLE_OUTPUT)
+        # The fatal line and its JSON-ish payload (same line in this fixture)
+        # must survive — that's the load-bearing failure signal.
+        assert "fatal: [web3]: FAILED!" in out
+        assert "Package nginx not found" in out
+
+    def test_play_recap_block_preserved(self) -> None:
+        f = bc.AnsibleFilter()
+        out = _apply(f, _ANSIBLE_OUTPUT)
+        # PLAY RECAP and every per-host row carries the run-summary signal.
+        assert "PLAY RECAP" in out
+        assert "web1" in out and "ok=3" in out
+        assert "web3" in out and "failed=1" in out
+
+    def test_savings_ratio_large_inventory(self) -> None:
+        f = bc.AnsibleFilter()
+        # 50 hosts × 20 ok-only tasks ≈ 1000 status lines, all collapsible.
+        lines = ["PLAY [big] ***"]
+        for t in range(20):
+            lines.append(f"TASK [task-{t}] ***")
+            for h in range(50):
+                lines.append(f"ok: [host-{h:02d}]")
+        lines.append("")
+        lines.append("PLAY RECAP ***")
+        for h in range(50):
+            lines.append(
+                f"host-{h:02d}                       : ok=20   changed=0    "
+                f"unreachable=0    failed=0    skipped=0"
+            )
+        big = "\n".join(lines) + "\n"
+        ratio = _savings_ratio(f, big)
+        assert ratio >= 0.40, f"AnsibleFilter savings {ratio:.0%} < 40% on big run"
+
+    def test_empty_input_no_crash(self) -> None:
+        f = bc.AnsibleFilter()
+        out = _apply(f, "", "")
+        assert out == "" or out.strip() == ""
+
+
+# A representative ``pre-commit run --all-files`` output: env-setup info,
+# many passing hooks, one failing hook with diff payload, and a final
+# trailing-whitespace hook that passed.
+_PRECOMMIT_OUTPUT = """\
+[INFO] Initializing environment for https://github.com/pre-commit/pre-commit-hooks.
+[INFO] Installing environment for https://github.com/pre-commit/pre-commit-hooks.
+[INFO] Installing environment for https://github.com/psf/black.
+Trim trailing whitespace.................................................Passed
+Fix end of files.........................................................Passed
+Check yaml...........................................(no files to check)Skipped
+Check for added large files..............................................Passed
+black....................................................................Failed
+- hook id: black
+- files were modified by this hook
+
+reformatted src/foo.py
+
+All done! ✨ 🍰 ✨
+1 file reformatted.
+
+ruff.....................................................................Passed
+mypy.....................................................................Passed
+"""
+
+
+class TestPreCommitFilter:
+    def test_failed_hook_preserved(self) -> None:
+        f = bc.PreCommitFilter()
+        out = _apply(f, _PRECOMMIT_OUTPUT)
+        assert "black....................................................................Failed" in out
+        # The failure body (hook id, file list, diff) must survive verbatim.
+        assert "- hook id: black" in out
+        assert "reformatted src/foo.py" in out
+        assert "1 file reformatted." in out
+
+    def test_passing_hooks_collapsed(self) -> None:
+        f = bc.PreCommitFilter()
+        out = _apply(f, _PRECOMMIT_OUTPUT)
+        # Individual Passed lines disappear (4 before the failure: Trim, Fix,
+        # large files, plus 2 after: ruff, mypy — minus the Skipped yaml).
+        assert "Trim trailing whitespace" not in out
+        assert "Fix end of files" not in out
+        # The collapse marker is present at least once.
+        assert "collapsed" in out and "Passed" in out
+
+    def test_info_env_setup_collapsed(self) -> None:
+        f = bc.PreCommitFilter()
+        out = _apply(f, _PRECOMMIT_OUTPUT)
+        # First [INFO] line is kept verbatim; subsequent ones are dropped.
+        # The fixture has three [INFO] lines — exactly one survives as a
+        # verbatim "[INFO] Initializing environment" line plus the marker.
+        assert "[INFO] Initializing environment for" in out
+        # The two further [INFO] lines should be gone.
+        assert "Installing environment for https://github.com/pre-commit" not in out
+        assert "Installing environment for https://github.com/psf/black" not in out
+        # The dropped-count marker is present.
+        assert "dropped 2 pre-commit [INFO] env-setup lines" in out
+
+    def test_skipped_counted(self) -> None:
+        f = bc.PreCommitFilter()
+        out = _apply(f, _PRECOMMIT_OUTPUT)
+        # Skipped hook is not preserved verbatim but counted in the collapse.
+        assert "Check yaml" not in out
+        assert "Skipped" in out  # appears in the collapsed marker
+
+    def test_savings_ratio_many_passing_hooks(self) -> None:
+        f = bc.PreCommitFilter()
+        lines = [
+            "[INFO] Initializing environment for repo.",
+            "[INFO] Installing environment for repo.",
+            "[INFO] Restored package cache.",
+        ]
+        for i in range(80):
+            lines.append(f"hook-{i:03d}" + "." * (60 - len(str(i))) + "Passed")
+        big = "\n".join(lines) + "\n"
+        ratio = _savings_ratio(f, big)
+        assert ratio >= 0.40, f"PreCommitFilter savings {ratio:.0%} < 40%"
+
+    def test_no_match_for_make(self) -> None:
+        """``make pre-commit`` should still route to MakeFilter, not us.
+
+        ``pre-commit`` only matches when the binary itself is ``pre-commit``;
+        a make target with that name has stem ``make`` and goes to MakeFilter.
+        """
+        f = bc.PreCommitFilter()
+        assert not f.matches(["make", "pre-commit"])
+
+
+# ---------------------------------------------------------------------------
+# 8. Registry-order guards for the new filters
+# ---------------------------------------------------------------------------
+
+
+def test_ansible_and_pre_commit_in_registry() -> None:
+    """Both new filters are registered exactly once and reachable by name."""
+    names = [f.name for f in bc.FILTERS]
+    assert names.count("ansible") == 1
+    assert names.count("pre-commit") == 1
+    assert bc.filter_by_name("ansible") is not None
+    assert bc.filter_by_name("pre-commit") is not None
+
+
+def test_ansible_dispatches_independently_of_make() -> None:
+    """``ansible-playbook deploy.yml`` must route to AnsibleFilter, not MakeFilter.
+
+    Belt-and-braces guard: ``ansible-playbook`` shares no binary stem with
+    MakeFilter (``make``, ``gradle``, ``mvn`` etc.), but we encode the
+    expectation explicitly so a future rename or accidental binary-set
+    expansion in MakeFilter fails loudly here rather than silently
+    swallowing ansible output through the wrong compressor.
+    """
+    f = bc.select_filter(["ansible-playbook", "site.yml"])
+    assert f is not None
+    assert f.name == "ansible"
+
+
+def test_pre_commit_precedes_python_catchall_in_registry() -> None:
+    """PreCommitFilter must precede PythonFilter in FILTERS.
+
+    PythonFilter is the catch-all for the Python toolchain; if a future
+    refactor adds ``pre-commit`` to its binaries set or moves PythonFilter
+    earlier, ``pre-commit run`` would silently route to PythonFilter and
+    lose the hook-level compression.  This guard documents the contract.
+    """
+    names = [f.name for f in bc.FILTERS]
+    assert "pre-commit" in names and "python" in names
+    assert names.index("pre-commit") < names.index("python"), (
+        "PreCommitFilter must be registered before PythonFilter (catch-all)."
+    )
+
+
+def test_ansible_precedes_python_catchall_in_registry() -> None:
+    """AnsibleFilter must precede PythonFilter in FILTERS.
+
+    Same reasoning as the pre-commit precedence guard: ``ansible*`` binaries
+    must never silently fall through to the catch-all PythonFilter.
+    """
+    names = [f.name for f in bc.FILTERS]
+    assert "ansible" in names and "python" in names
+    assert names.index("ansible") < names.index("python"), (
+        "AnsibleFilter must be registered before PythonFilter (catch-all)."
+    )

@@ -2296,6 +2296,213 @@ class TerraformFilter(Filter):
         return _squeeze_blank_lines("\n".join(kept))
 
 
+# --- Ansible ---------------------------------------------------------------
+
+#: Ansible task status lines: ``ok: [host]`` / ``changed: [host] => (item=...)`` /
+#: ``skipping: [host]`` / ``fatal: [host]: FAILED!``.
+_ANSIBLE_STATUS_RE: Final[re.Pattern[str]] = re.compile(
+    r"^(ok|changed|skipping|skipped|included):\s*\[",
+)
+#: Ansible PLAY / TASK / HANDLER section headers (e.g. ``TASK [Install nginx]``).
+_ANSIBLE_HEADER_RE: Final[re.Pattern[str]] = re.compile(
+    r"^(PLAY|TASK|HANDLER|RUNNING HANDLER|META)(?:\s*\[|\s*RECAP)",
+)
+#: Ansible final ``PLAY RECAP`` block delimiter.
+_ANSIBLE_RECAP_RE: Final[re.Pattern[str]] = re.compile(r"^PLAY RECAP")
+#: Ansible per-host recap row: ``hostname : ok=N changed=N unreachable=N ...``.
+_ANSIBLE_RECAP_ROW_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\S+\s*:\s*ok=\d+\s+changed=\d+",
+)
+#: Ansible failure / error / unreachable / warning signal.
+_ANSIBLE_FAIL_RE: Final[re.Pattern[str]] = re.compile(
+    r"^(fatal|failed|unreachable|FAILED|ERROR|\[WARNING\]):",
+)
+
+
+class AnsibleFilter(Filter):
+    """Compress ``ansible`` / ``ansible-playbook`` output.
+
+    Ansible playbook runs emit one ``ok: [host]`` (or ``changed:``/``skipping:``)
+    line per (task × host).  On a 30-host inventory with 50 tasks this is 1500
+    progress lines for a fully-successful run — pure noise unless a host
+    failed.  The signal lives in: PLAY/TASK headers, any ``fatal:`` /
+    ``failed:`` / ``unreachable:`` / ``[WARNING]`` lines, and the final
+    ``PLAY RECAP`` block.
+
+    Compression model:
+
+    * **Keep** every ``PLAY [name]`` / ``TASK [name]`` / ``HANDLER`` header
+      verbatim (cheap, load-bearing for understanding what the playbook is
+      doing).
+    * **Collapse** runs of ``ok:`` / ``changed:`` / ``skipping:`` status lines
+      to a per-task count (``[token-goat: 12 ok, 3 changed, 0 skipping]``).
+    * **Keep** every ``fatal:`` / ``failed:`` / ``unreachable:`` / ``[WARNING]``
+      line verbatim plus the full multi-line ``=>`` JSON-ish payload that
+      follows.
+    * **Keep** the final ``PLAY RECAP`` block verbatim — it's the canonical
+      summary the agent needs.
+    """
+
+    name = "ansible"
+    binaries = frozenset([
+        "ansible", "ansible-playbook", "ansible-pull", "ansible-console",
+    ])
+
+    def compress(
+        self, stdout: str, stderr: str, exit_code: int, argv: list[str],
+    ) -> str:
+        merged = self._combine_output(stdout, stderr)
+        lines = merged.split("\n")
+        kept: list[str] = []
+        # Pending status counts for the current task.  Flushed when a new
+        # TASK/PLAY header appears, when a failure is seen, or at end-of-input.
+        status_counts: dict[str, int] = {}
+        in_recap = False
+        in_fail_payload = False
+
+        def flush_status() -> None:
+            if not status_counts:
+                return
+            parts = [f"{n} {label}" for label, n in status_counts.items() if n]
+            if parts:
+                kept.append(f"[token-goat: {', '.join(parts)}]")
+            status_counts.clear()
+
+        for line in lines:
+            if _ANSIBLE_RECAP_RE.match(line):
+                flush_status()
+                in_recap = True
+                in_fail_payload = False
+                kept.append(line)
+                continue
+            if in_recap:
+                # Preserve PLAY RECAP block verbatim until a blank line ends it.
+                kept.append(line)
+                if not line.strip():
+                    in_recap = False
+                continue
+            if _ANSIBLE_FAIL_RE.match(line):
+                flush_status()
+                in_fail_payload = True
+                kept.append(line)
+                continue
+            if in_fail_payload:
+                # The block ends at the next blank line or a new TASK/PLAY header.
+                if not line.strip() or _ANSIBLE_HEADER_RE.match(line):
+                    in_fail_payload = False
+                    if not line.strip():
+                        kept.append(line)
+                        continue
+                else:
+                    kept.append(line)
+                    continue
+            if _ANSIBLE_HEADER_RE.match(line):
+                flush_status()
+                kept.append(line)
+                continue
+            if _ANSIBLE_STATUS_RE.match(line):
+                label = line.split(":", 1)[0].strip()
+                status_counts[label] = status_counts.get(label, 0) + 1
+                continue
+            kept.append(line)
+        flush_status()
+        return _squeeze_blank_lines("\n".join(kept))
+
+
+# --- pre-commit ------------------------------------------------------------
+
+#: pre-commit hook-result line: ``Trim trailing whitespace.....................Passed``.
+#:
+#: Also handles the ``hook_name...(no files to check)Skipped`` variant where
+#: pre-commit interpolates a parenthetical reason between the dot leader and
+#: the status word.
+_PRECOMMIT_RESULT_RE: Final[re.Pattern[str]] = re.compile(
+    r"^(?P<hook>\S.*?)\.{3,}(?:\([^)]*\))?\s*(?P<status>Passed|Failed|Skipped|Pre-commit hook failed)\s*$",
+)
+#: pre-commit install/lifecycle progress lines (``[INFO] Initializing environment...``).
+_PRECOMMIT_INFO_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\[INFO\]\s+(Initializing|Installing|Restored|Cloning)",
+)
+
+
+class PreCommitFilter(Filter):
+    """Compress ``pre-commit run`` output.
+
+    ``pre-commit run --all-files`` on a large repo emits one ``hook_name.....``
+    line per hook, plus ``[INFO]`` environment-setup chatter, plus the full
+    hook stdout/stderr for every failed hook.  Passing hooks are pure noise
+    once the run is green.
+
+    Compression model:
+
+    * **Keep** every ``Failed`` hook result and the indented diff/error block
+      that follows it (up to the next hook-result line or blank line).
+    * **Collapse** consecutive ``Passed`` / ``Skipped`` results to a count
+      while still preserving the *first* and *last* of each group so the agent
+      can see which hooks ran.
+    * **Drop** ``[INFO] Initializing environment...`` / ``[INFO] Installing
+      environment...`` chatter; keep only the first one as a marker.
+    * **Keep** every ``- hook id:`` / ``- exit code:`` / ``- files were
+      modified`` line verbatim because those are the post-failure summary.
+    """
+
+    name = "pre-commit"
+    binaries = frozenset(["pre-commit"])
+
+    def compress(
+        self, stdout: str, stderr: str, exit_code: int, argv: list[str],
+    ) -> str:
+        merged = self._combine_output(stdout, stderr)
+        lines = merged.split("\n")
+        kept: list[str] = []
+        passed = 0
+        skipped = 0
+        info_dropped = 0
+        first_info_kept = False
+        in_fail_block = False
+        for line in lines:
+            m = _PRECOMMIT_RESULT_RE.match(line)
+            if m:
+                status = m.group("status")
+                if status == "Failed" or status == "Pre-commit hook failed":
+                    if passed or skipped:
+                        kept.append(
+                            f"[token-goat: collapsed {passed} Passed, "
+                            f"{skipped} Skipped hook(s)]"
+                        )
+                        passed = 0
+                        skipped = 0
+                    in_fail_block = True
+                    kept.append(line)
+                    continue
+                in_fail_block = False
+                if status == "Passed":
+                    passed += 1
+                elif status == "Skipped":
+                    skipped += 1
+                continue
+            if _PRECOMMIT_INFO_RE.match(line):
+                if first_info_kept:
+                    info_dropped += 1
+                    continue
+                first_info_kept = True
+                kept.append(line)
+                continue
+            # End of an indented failure block: a blank line.
+            if in_fail_block and not line.strip():
+                in_fail_block = False
+            kept.append(line)
+        if passed or skipped:
+            kept.append(
+                f"[token-goat: collapsed {passed} Passed, {skipped} Skipped hook(s)]"
+            )
+        if info_dropped:
+            kept.append(
+                f"[token-goat: dropped {info_dropped} pre-commit [INFO] env-setup lines]"
+            )
+        return _squeeze_blank_lines("\n".join(kept))
+
+
 # --- grep / rg / ag / ack / git grep -----------------------------------------
 
 #: Threshold: outputs with more non-empty lines than this are compressed.
@@ -2795,6 +3002,12 @@ FILTERS: list[Filter] = [
     GoTestFilter(),
     MakeFilter(),
     TerraformFilter(),
+    # AnsibleFilter and PreCommitFilter have disjoint binaries from every
+    # other filter (``ansible*`` and ``pre-commit`` respectively), so their
+    # position within the registry is purely cosmetic — placed alongside
+    # other deployment-style tooling.
+    AnsibleFilter(),
+    PreCommitFilter(),
     PipFilter(),
     UvFilter(),
     PythonFilter(),
