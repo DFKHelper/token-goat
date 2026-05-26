@@ -581,6 +581,11 @@ class HintsConfig:
             "(↳ same hint seen Nx, see prior context)". Set to 0 to always emit
             verbose (never use short stub). Set to 1 to use short stub from the
             2nd occurrence onward.
+        min_file_lines_for_hint: Minimum number of lines in a file before full-file
+            hints (already-read / index-based large-file suggestions) are emitted.
+            Default 0 (disabled). When >0, files with fewer lines are not hinted,
+            since the cost of the hint (~25 tokens) exceeds the saving on a cheap
+            re-read. Surgical hints (symbol/section/diff) are never suppressed.
     """
 
     suppress_after_ignored: int = 5
@@ -589,6 +594,8 @@ class HintsConfig:
     json_sidecar: bool = False
     # Verbose-suppression threshold for repeated hint fingerprints.
     verbose_until_seen_count: int = 2
+    # Minimum line count for full-file hints. 0 disables suppression.
+    min_file_lines_for_hint: int = 0
 
 
 @dataclass
