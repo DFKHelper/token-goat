@@ -831,6 +831,10 @@ class TestKindToSource:
         assert kind_to_source("bash_dedup_hint_overhead") == SOURCE_BASH
         assert kind_to_source("bash_output_cached") == SOURCE_BASH
         assert kind_to_source("bash_output_recall") == SOURCE_BASH
+        # Adoption-telemetry rows: recall_miss + dedup_stale share the bucket
+        # so the bash savings line shows hit/miss/stale alongside one another.
+        assert kind_to_source("bash_output_recall_miss") == SOURCE_BASH
+        assert kind_to_source("bash_dedup_stale") == SOURCE_BASH
 
     def test_web_family_kinds_map_to_web(self):
         """WebFetch caching, dedup, and recall live in SOURCE_WEB."""
@@ -839,6 +843,9 @@ class TestKindToSource:
         assert kind_to_source("web_dedup_hint_overhead") == SOURCE_WEB
         assert kind_to_source("web_output_cached") == SOURCE_WEB
         assert kind_to_source("web_output_recall") == SOURCE_WEB
+        # Adoption-telemetry rows: recall_miss + dedup_stale share the bucket.
+        assert kind_to_source("web_output_recall_miss") == SOURCE_WEB
+        assert kind_to_source("web_dedup_stale") == SOURCE_WEB
 
     def test_kind_to_source_static_map_only_known_buckets(self):
         """Every entry in the static map must point at a real SOURCE_* constant.

@@ -1418,6 +1418,27 @@ def _should_emit_recall_command(
 # ---------------------------------------------------------------------------
 
 
+def _record_dedup_stale(kind: str, detail: str) -> None:
+    """Record a zero-savings stat row when a dedup hint is suppressed due to age.
+
+    ``kind`` is ``"bash_dedup_stale"`` or ``"web_dedup_stale"``.  These rows
+    pair with ``bash_dedup_hint`` / ``web_dedup_hint`` to make the bypass rate
+    measurable: ``stale / (stale + hit)`` shows what fraction of cached
+    entries were too old to suppress a re-run, which lets us tune the stale
+    threshold.  Best-effort; any DB error is swallowed because telemetry
+    must never break the hint pipeline (cf. fail-soft hooks contract).
+    """
+    import contextlib  # noqa: PLC0415
+    with contextlib.suppress(Exception):
+        db.record_stat(
+            None,
+            kind,
+            bytes_saved=0,
+            tokens_saved=0,
+            detail=detail[:64],
+        )
+
+
 def _failsoft_dedup_hint(
     fn: Callable[[], ReadHint | None],
     *,
@@ -1532,6 +1553,7 @@ def _build_bash_dedup_hint_inner(
             "build_bash_dedup_hint: prior run stale (age=%.0fs > %.0fs); suppressing",
             age, bash_stale_threshold,
         )
+        _record_dedup_stale("bash_dedup_stale", _sanitize_hint_path(command))
         return None
 
     total_bytes = entry.stdout_bytes + entry.stderr_bytes
@@ -1933,6 +1955,7 @@ def _build_web_dedup_hint_inner(
             "build_web_dedup_hint: prior fetch stale (age=%.0fs > %ds); suppressing",
             age, STALE_READ_AGE_SECONDS,
         )
+        _record_dedup_stale("web_dedup_stale", _sanitize_hint_path(url))
         return None
     if entry.body_bytes < _WEB_DEDUP_MIN_BYTES:
         return None

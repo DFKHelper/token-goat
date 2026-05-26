@@ -137,6 +137,21 @@ _KIND_TO_SOURCE: dict[str, str] = {
     # `token-goat bash-output` to retrieve a cached output.  saved_bytes =
     # full_output − returned_slice; zero for an unsliced full recall (honest).
     "bash_output_recall": SOURCE_BASH,
+    # bash_output_recall_miss: fired by cmd_bash_output when the agent
+    # asks for an ID that no longer exists on disk (evicted, mistyped, or
+    # from a different session).  bytes_saved is always 0.  The row exists
+    # so adoption telemetry can distinguish a healthy recall from a stale
+    # one — a high miss rate signals eviction is too aggressive or the
+    # agent is hallucinating IDs.  Only surfaces in `token-goat stats`
+    # when [stats] record_zero_savings = true.
+    "bash_output_recall_miss": SOURCE_BASH,
+    # bash_dedup_stale: fired by build_bash_dedup_hint when a prior bash
+    # entry exists in the session cache but its age exceeds the stale
+    # threshold, so the hint is suppressed and the agent ends up re-running
+    # the command.  Parallel to image_shrink_skipped: zero realized saving,
+    # but the row makes the bypass rate measurable
+    # (stale / (stale + dedup_hint)) so the threshold can be tuned.
+    "bash_dedup_stale": SOURCE_BASH,
     # web-fetch cache family — same shape as bash, separate bucket so the
     # network-savings line is distinct from the local-execution-savings line
     # in the stats output.
@@ -147,6 +162,13 @@ _KIND_TO_SOURCE: dict[str, str] = {
     # `token-goat web-output` to retrieve a cached web response.  Same
     # semantics as bash_output_recall: zero for a full recall, >0 for a slice.
     "web_output_recall": SOURCE_WEB,
+    # web_output_recall_miss: fired by cmd_web_output for a missing ID.
+    # Same adoption-telemetry shape as bash_output_recall_miss; surfaces
+    # only when [stats] record_zero_savings = true.
+    "web_output_recall_miss": SOURCE_WEB,
+    # web_dedup_stale: fired by build_web_dedup_hint when a prior fetch
+    # entry exists but is age-stale.  Parallel to bash_dedup_stale.
+    "web_dedup_stale": SOURCE_WEB,
 }
 
 
