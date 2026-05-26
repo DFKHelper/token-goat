@@ -48,6 +48,7 @@ _CONFIG_ENV_KEYS: tuple[str, ...] = (
     "TOKEN_GOAT_PREFER_AVIF",
     "TOKEN_GOAT_CURATOR",
     "TOKEN_GOAT_HINT_BUDGET",
+    "TOKEN_GOAT_HINT_JSON_SIDECAR",
     "TOKEN_GOAT_REPOMAP_COMPACT_THRESHOLD",
 )
 
@@ -77,6 +78,7 @@ _ENV_SKILL_PRESERVATION: Final[str] = "TOKEN_GOAT_SKILL_PRESERVATION"  # set to 
 _ENV_PREFER_AVIF: Final[str] = "TOKEN_GOAT_PREFER_AVIF"  # set to "0"/"false"/"no"/"off" to force JPEG/WebP
 _ENV_CURATOR: Final[str] = "TOKEN_GOAT_CURATOR"  # set to "0"/"false"/"no"/"off" to disable
 _ENV_HINT_BUDGET: Final[str] = "TOKEN_GOAT_HINT_BUDGET"  # set to "0"/"false"/"no"/"off" to disable
+_ENV_HINT_JSON_SIDECAR: Final[str] = "TOKEN_GOAT_HINT_JSON_SIDECAR"  # set to "1"/"true"/"yes"/"on" to enable
 _ENV_REPOMAP_COMPACT_THRESHOLD: Final[str] = "TOKEN_GOAT_REPOMAP_COMPACT_THRESHOLD"  # integer override
 
 CONFIG_SCHEMA_VERSION: Final[int] = 1
@@ -84,6 +86,22 @@ CONFIG_SCHEMA_VERSION: Final[int] = 1
 _VALID_TRIGGERS: Final[frozenset[str]] = frozenset(["manual", "auto"])
 
 _FALSY_ENV_VALUES: Final[frozenset[str]] = frozenset(["0", "false", "no", "off"])
+_TRUTHY_ENV_VALUES: Final[frozenset[str]] = frozenset(["1", "true", "yes", "on"])
+
+
+def _apply_env_enable(cfg_obj: Any, attr: str, env_key: str, label: str) -> None:
+    """Set ``cfg_obj.attr = True`` when *env_key* holds a truthy env-var value.
+
+    Mirror of :func:`_apply_env_disable` for opt-in features whose default is
+    ``False``.  Recognises ``"1"``, ``"true"``, ``"yes"``, and ``"on"``
+    (case-insensitive, whitespace-stripped).  No-ops when the variable is unset
+    or holds any other value.  Logs an INFO line on enable so the change is
+    visible in the token-goat log.
+    """
+    val = os.environ.get(env_key, "").strip().lower()
+    if val in _TRUTHY_ENV_VALUES:
+        _LOG.info("%s enabled by environment variable (%s=%s)", label, env_key, val)
+        setattr(cfg_obj, attr, True)
 
 # Every top-level TOML section that token-goat recognises.  A key present in
 # the file but absent from this set almost certainly indicates a typo (e.g.
@@ -195,6 +213,7 @@ class _HintsToml(TypedDict, total=False):
 
     suppress_after_ignored: int
     quiet_hours: str
+    json_sidecar: bool
 
 
 class _WebFetchToml(TypedDict, total=False):
@@ -501,7 +520,8 @@ class StatsConfig:
 
 @dataclass
 class HintsConfig:
-    """Configuration for adaptive hint suppression and quiet-hours.
+    """Configuration for adaptive hint suppression, quiet-hours, and the
+    structured-JSON sidecar.
 
     Attributes:
         suppress_after_ignored: How many consecutive ignored hints for a category
@@ -511,10 +531,22 @@ class HintsConfig:
             in "HH:MM-HH:MM" format (24-hour clock). Empty string disables.
             Example: "22:00-07:00" suppresses hints from 10pm to 7am.
             Midnight wrap-around is supported.
+        json_sidecar: When True, every dedup / re-read / unchanged-file / structured
+            file hint is prefixed with a one-line JSON sidecar carrying the same
+            information in a machine-parseable form (``{"hint":"already_read",
+            "file":"...", "ranges":[[1,40]], ...}``).  The original prose line is
+            preserved verbatim so existing dedup, fingerprints, curator metrics
+            and test assertions keep working unchanged.  Opt-in (default False)
+            because the sidecar adds ~30-80 chars per hint and the feature is
+            still proving itself; flip the bit per-session via
+            ``TOKEN_GOAT_HINT_JSON_SIDECAR=1`` to evaluate. Defaults to False
+            unless overridden in config or env.
     """
 
     suppress_after_ignored: int = 5
     quiet_hours: str = ""
+    # Opt-in structured-JSON line prepended to prose hints. See class docstring.
+    json_sidecar: bool = False
 
 
 @dataclass
@@ -862,7 +894,12 @@ def load() -> Config:
             hints_raw.get("suppress_after_ignored", 5), 5, 0, 1000, "hints.suppress_after_ignored"
         ),
         quiet_hours=str(hints_raw.get("quiet_hours", "")).strip(),
+        json_sidecar=_validated_bool(
+            hints_raw.get("json_sidecar", False), False, "hints.json_sidecar"
+        ),
     )
+    # Opt-in env override: TOKEN_GOAT_HINT_JSON_SIDECAR=1/true/yes/on enables.
+    _apply_env_enable(hints_cfg, "json_sidecar", _ENV_HINT_JSON_SIDECAR, "hints.json_sidecar")
 
     wf_raw: _WebFetchToml = cast("_WebFetchToml", raw.get("webfetch", {}))
     wf_cfg = WebFetchConfig(
@@ -984,6 +1021,7 @@ def save(config: Config) -> None:
         "hints": {
             "suppress_after_ignored": config.hints.suppress_after_ignored,
             "quiet_hours": config.hints.quiet_hours,
+            "json_sidecar": config.hints.json_sidecar,
         },
         "webfetch": {
             "allow": config.webfetch.allow,

@@ -4,11 +4,12 @@ from __future__ import annotations
 import difflib
 import functools
 import hashlib
+import json
 import sqlite3
 import time
 from collections.abc import Callable
 from pathlib import Path
-from typing import Final, TypedDict, TypeVar, cast
+from typing import Any, Final, TypedDict, TypeVar, cast
 
 from . import db, session, snapshots
 from .hooks_common import sanitize_log_str, validate_cwd
@@ -31,6 +32,8 @@ __all__ = [
     "build_unchanged_file_hint",
     "build_web_dedup_hint",
     "compute_stale_threshold",
+    "_emit_json_sidecar",
+    "_json_sidecar_enabled",
     "_hint_budget_check",
     "_record_structured_hint_emitted",
     "_record_index_only_hint_emitted",
@@ -62,6 +65,89 @@ def _apply_terse(text: str) -> str:
     for verbose, terse in _TERSE.items():
         text = text.replace(verbose, terse)
     return text
+
+
+# ---------------------------------------------------------------------------
+# Structured-JSON sidecar (opt-in via [hints] json_sidecar = true)
+# ---------------------------------------------------------------------------
+# When enabled, every dedup / re-read / unchanged-file / structured-file hint
+# is prefixed with a one-line JSON object encoding the same information in a
+# machine-parseable shape:
+#
+#   {"hint":"already_read","file":"foo.py","ranges":[[1,40]],"wasted":~120}
+#   <existing prose line stays verbatim below>
+#
+# Goals:
+#   1. Agents that parse JSON get a deterministic schema and can act on it
+#      programmatically (jump straight to a token-goat recall command).
+#   2. Agents that don't parse JSON still see the prose line — backward
+#      compatible.
+#   3. The prose line is unchanged byte-for-byte, so all existing tests, all
+#      content-hash dedup and curator/budget bookkeeping keep working.
+#
+# Sidecar generation happens AFTER content-hash dedup (which keys on the prose
+# only) so two semantically identical hints still dedup correctly even when
+# the JSON sidecar is enabled.
+
+# Cap on the size of any single sidecar JSON line to bound worst-case overhead.
+# A pathological file path or symbol list will be tail-truncated rather than
+# bloating ``additionalContext`` past this threshold.
+_JSON_SIDECAR_MAX_BYTES: Final[int] = 400
+
+# Separator placed between the sidecar JSON line and the existing prose hint.
+# Newline keeps each line independently greppable by downstream agents while
+# also matching the multi-line shape of bash/git output that LLMs already parse.
+_JSON_SIDECAR_SEP: Final[str] = "\n"
+
+
+def _json_sidecar_enabled() -> bool:
+    """Return True when [hints] json_sidecar is enabled in config or env.
+
+    Imports ``config`` lazily so the hot pre-read path does not pay the import
+    cost when the feature is off (the default).  Fails closed (returns False)
+    if config loading raises for any reason — keeping the sidecar invisible is
+    the safe default since the prose line is fully self-sufficient.
+    """
+    try:
+        from . import config as _config  # noqa: PLC0415
+
+        return bool(_config.load().hints.json_sidecar)
+    except Exception:  # noqa: BLE001 — fail-soft; sidecar is purely additive
+        return False
+
+
+def _emit_json_sidecar(hint: ReadHint | None, kind: str, **fields: Any) -> ReadHint | None:
+    """Return *hint* unchanged when the JSON sidecar is disabled, else prepend it.
+
+    The sidecar carries ``{"hint": kind, ...fields}`` rendered as a single
+    compact JSON line with no internal whitespace.  ``None`` fields are dropped
+    so the JSON stays terse.  Hint metadata (``tokens_saved``) is preserved on
+    the wrapped result so curator/stats accounting is unaffected.
+
+    Fail-soft: any exception (JSON encoding failure on an exotic value, missing
+    config module) returns the original prose hint unchanged so the agent's
+    work is never interrupted.
+    """
+    if hint is None:
+        return None
+    if not _json_sidecar_enabled():
+        return hint
+    try:
+        payload: dict[str, Any] = {"hint": kind}
+        for k, v in fields.items():
+            if v is None:
+                continue
+            payload[k] = v
+        line = json.dumps(payload, separators=(",", ":"), ensure_ascii=False)
+        if len(line.encode("utf-8")) > _JSON_SIDECAR_MAX_BYTES:
+            # Pathological payload — drop the sidecar rather than bloat context.
+            return hint
+        combined = f"{line}{_JSON_SIDECAR_SEP}{hint}"
+        return ReadHint(combined, hint.tokens_saved)
+    except (TypeError, ValueError) as exc:
+        _LOG.debug("_emit_json_sidecar: skipped (encoding error: %s)", exc)
+        return hint
+
 
 _LOG = get_logger("hints")
 
@@ -463,6 +549,14 @@ def build_read_hint(
                 from . import session as _sess  # noqa: PLC0415
                 norm_path = _sess._normalize_path(file_path)  # type: ignore[attr-defined]
                 _record_hint_emitted(cache, norm_path)
+        # JSON sidecar: opt-in machine-readable line prepended after dedup so
+        # the prose-only hash above keeps deduping correctly. No-op when the
+        # [hints] json_sidecar feature flag is off (default).
+        if hint is not None:
+            kind = "already_read" if hint.tokens_saved > 0 else "read_suggestion"
+            hint = _emit_json_sidecar(
+                hint, kind, file=file_path, wasted=hint.tokens_saved or None,
+            )
         return hint
     except Exception as exc:  # noqa: BLE001
         _LOG.warning(
@@ -1063,9 +1157,15 @@ def _build_diff_hint_inner(
         tokens_saved_micro = max(0, full_tokens_micro - 8)
         if tokens_saved_micro < _DIFF_HINT_MIN_TOKENS_SAVED:
             return None
-        return ReadHint(
+        prose_micro = ReadHint(
             _apply_terse(f"`{fname}` changed: {summary_change}{line_str}"),
             tokens_saved_micro,
+        )
+        return _emit_json_sidecar(
+            prose_micro, "diff_since_last_read",
+            file=_sanitize_hint_path(file_path),
+            added=added_count, removed=removed_count,
+            line=line_num or None, wasted=tokens_saved_micro,
         )
 
     n_context = (
@@ -1110,10 +1210,16 @@ def _build_diff_hint_inner(
         )
         return None
 
-    return ReadHint(
+    prose_diff = ReadHint(
         _apply_terse(f"`{fname}` diff (~{tokens_saved} tokens saved):\n")
         + f"```diff\n{diff_text}\n```\n",
         tokens_saved,
+    )
+    return _emit_json_sidecar(
+        prose_diff, "diff_since_last_read",
+        file=_sanitize_hint_path(file_path),
+        added=added_count, removed=removed_count,
+        wasted=tokens_saved,
     )
 
 
@@ -1991,7 +2097,7 @@ def _build_unchanged_file_hint_inner(
     age_s = int(snapshot_age)
     full_tokens = _est_tokens_from_chars(len(current_bytes))
 
-    return ReadHint(
+    prose = ReadHint(
         _apply_terse(
             f"`{fname}` unchanged since your edit ({age_s}s ago, ~{full_tokens}t). "
             f"Content already in context from Edit result. "
@@ -1999,6 +2105,11 @@ def _build_unchanged_file_hint_inner(
             f"For a symbol use `token-goat read \"{safe_path}::Symbol\"`."
         ),
         full_tokens,
+    )
+    # Opt-in machine-readable sidecar; no-op when [hints] json_sidecar is off.
+    return _emit_json_sidecar(
+        prose, "unchanged_since_edit",
+        file=safe_path, age_s=age_s, wasted=full_tokens,
     )
 
 
