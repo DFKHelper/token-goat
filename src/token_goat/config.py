@@ -218,6 +218,7 @@ class _HintsToml(TypedDict, total=False):
     suppress_after_ignored: int
     quiet_hours: str
     json_sidecar: bool
+    verbose_until_seen_count: int
 
 
 class _WebFetchToml(TypedDict, total=False):
@@ -553,7 +554,7 @@ class StatsConfig:
 
 @dataclass
 class HintsConfig:
-    """Configuration for adaptive hint suppression, quiet-hours, and the
+    """Configuration for adaptive hint suppression, quiet-hours, verbose suppression, and the
     structured-JSON sidecar.
 
     Attributes:
@@ -574,12 +575,20 @@ class HintsConfig:
             still proving itself; flip the bit per-session via
             ``TOKEN_GOAT_HINT_JSON_SIDECAR=1`` to evaluate. Defaults to False
             unless overridden in config or env.
+        verbose_until_seen_count: Number of times a hint fingerprint must be seen
+            before suppressing its verbose text in favor of a short stub. Default 2
+            means the first two occurrences are full text; the 3rd+ emits only
+            "(↳ same hint seen Nx, see prior context)". Set to 0 to always emit
+            verbose (never use short stub). Set to 1 to use short stub from the
+            2nd occurrence onward.
     """
 
     suppress_after_ignored: int = 5
     quiet_hours: str = ""
     # Opt-in structured-JSON line prepended to prose hints. See class docstring.
     json_sidecar: bool = False
+    # Verbose-suppression threshold for repeated hint fingerprints.
+    verbose_until_seen_count: int = 2
 
 
 @dataclass

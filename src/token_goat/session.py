@@ -357,12 +357,15 @@ def _merge_session_caches(local: SessionCache, remote: SessionCache) -> SessionC
     # preserved verbatim.
     merged = remote
 
-    # --- sets ---
-    # Union can exceed the per-session cap; mirror the clear-on-overflow
-    # strategy used in has_hint_fingerprint() so the set stays bounded.
-    merged.hints_seen = local.hints_seen | remote.hints_seen
+    # --- dicts and sets ---
+    # hints_seen: dict merge — take max count for each fingerprint, bounded by HINTS_SEEN_MAX
+    merged_hints = dict(remote.hints_seen)
+    for fp, count in local.hints_seen.items():
+        merged_hints[fp] = max(merged_hints.get(fp, 0), count)
+    merged.hints_seen = merged_hints
     if len(merged.hints_seen) > HINTS_SEEN_MAX:
-        merged.hints_seen = set()
+        merged.hints_seen = {}
+    # bash_dedup_emitted_ids: set union
     merged.bash_dedup_emitted_ids = local.bash_dedup_emitted_ids | remote.bash_dedup_emitted_ids
 
     # --- dicts: merge local into remote (local ts wins per-key when both have it) ---
@@ -827,10 +830,12 @@ class SessionCache:
     # Storing only the SHA here (not the bytes) keeps the session JSON small.
     snapshot_shas: dict[str, str] = field(default_factory=dict)
     # Per-session hint fingerprints to suppress duplicate hint injection within the
-    # same session. Maps hint_fingerprint (hash of hint text) → bool; a set persisted
-    # as list[str] for JSON serialization.  Cleared when session expires or approaches
-    # time-to-live limits to avoid false-positive suppression on stale cached hints.
-    hints_seen: set[str] = field(default_factory=set)
+    # same session. Maps hint_fingerprint (hash of hint text) → count; a dict persisted
+    # as dict[str, int] for JSON serialization.  Tracks how many times each fingerprint
+    # has been emitted to enable verbose suppression (short stub after N occurrences).
+    # Cleared when session expires or approaches time-to-live limits to avoid false-positive
+    # suppression on stale cached hints.
+    hints_seen: dict[str, int] = field(default_factory=dict)
     # Tracks which bash output_ids have been surfaced in a dedup hint this session.
     # Serialized as a sorted list[str] in JSON for stability; parsed back to set[str].
     # Used by compact.py to skip manifest entries that the agent already saw via hint.
@@ -966,11 +971,13 @@ class SessionCache:
         self._hints_seen_sorted_cache = None
         self._bash_dedup_sorted_cache = None
 
-    def _get_hints_seen_sorted(self) -> list[str]:
-        """Return a cached sorted list of hints_seen, recomputing only on invalidation."""
-        if self._hints_seen_sorted_cache is None:
-            self._hints_seen_sorted_cache = sorted(self.hints_seen)
-        return self._hints_seen_sorted_cache
+    def _get_hints_seen_sorted(self) -> dict[str, int]:
+        """Return hints_seen dict for serialization to JSON.
+
+        Note: hints_seen is now a dict[str, int], not a set[str].  Serialized
+        directly (dict is JSON-serializable); no sorting needed anymore.
+        """
+        return self.hints_seen
 
     def _get_bash_dedup_sorted(self) -> list[str]:
         """Return a cached sorted list of bash_dedup_emitted_ids, recomputing only on invalidation."""
@@ -1002,12 +1009,15 @@ class SessionCache:
         """Check if a hint fingerprint was already seen this session.
 
         Returns True if the fingerprint is in hints_seen, False otherwise.
+        Note: this checks for presence only; use hints_seen[fingerprint] to
+        get the count (how many times it has been emitted).
         """
         return fingerprint in self.hints_seen
 
     def mark_hint_seen(self, fingerprint: str) -> None:
         """Record a hint fingerprint as seen this session.
 
+        Increments the count for this fingerprint (or sets it to 1 if new).
         Defers the disk write: sets ``_pending_hint_save = True`` instead of
         calling ``save()`` inline.  The pending write is flushed by the next
         ``mark_file_read`` / ``mark_bash_run`` / ``mark_grep`` / etc. that
@@ -1017,20 +1027,21 @@ class SessionCache:
         the handler returns and calls ``save()`` then.
 
         If the hint fires in pre-read but the process exits before any
-        post-read save (harness crash, tool denied), the fingerprint is lost
+        post-read save (harness crash, tool denied), the count is lost
         and the same hint re-fires on the next invocation — a benign
         false-positive, not data loss.
         """
-        if fingerprint not in self.hints_seen:
-            self.hints_seen.add(fingerprint)
-            # Enforce HINTS_SEEN_MAX by clearing when cap is exceeded.
-            # False-positive re-emission of a suppressed hint is acceptable;
-            # unbounded growth is not.
-            if len(self.hints_seen) > HINTS_SEEN_MAX:
-                self.hints_seen.clear()
-            self.last_activity_ts = time.time()
-            self._invalidate_json_cache()
-            self._pending_hint_save = True
+        # Increment count (or initialize to 1)
+        current_count = self.hints_seen.get(fingerprint, 0)
+        self.hints_seen[fingerprint] = current_count + 1
+        # Enforce HINTS_SEEN_MAX by clearing when cap is exceeded.
+        # False-positive re-emission of a suppressed hint is acceptable;
+        # unbounded growth is not.
+        if len(self.hints_seen) > HINTS_SEEN_MAX:
+            self.hints_seen.clear()
+        self.last_activity_ts = time.time()
+        self._invalidate_json_cache()
+        self._pending_hint_save = True
 
     @classmethod
     def from_dict(cls, d: dict[str, Any]) -> SessionCache:
@@ -1157,14 +1168,24 @@ class SessionCache:
                 if isinstance(k, str) and isinstance(v, str):
                     snapshot_shas[k] = v
 
-        # hints_seen: list[str] (persisted) → set[str] (in-memory).  Coerce entries
-        # to str defensively so a malformed entry is dropped silently.
-        hints_seen: set[str] = set()
-        raw_hints = d.get("hints_seen", [])
-        if isinstance(raw_hints, list):
+        # hints_seen: dict[str, int] (persisted) → dict[str, int] (in-memory).
+        # New format after verbose-suppression feature; backwards-compat with
+        # old list[str] format (treat missing counts as 1).
+        hints_seen: dict[str, int] = {}
+        raw_hints = d.get("hints_seen", {})
+        if isinstance(raw_hints, dict):
+            # New format: dict[str, int]
+            for h, count in raw_hints.items():
+                if isinstance(h, str) and h:
+                    try:
+                        hints_seen[h] = max(1, int(count)) if count else 1
+                    except (TypeError, ValueError):
+                        hints_seen[h] = 1
+        elif isinstance(raw_hints, list):
+            # Legacy format: list[str] — treat each as count=1
             for h in raw_hints:
                 if isinstance(h, str) and h:
-                    hints_seen.add(h)
+                    hints_seen[h] = 1
 
         # bash_dedup_emitted_ids: list[str] (persisted) → set[str] (in-memory).
         # Missing in older sessions → empty set (no ids were tracked).
@@ -1714,7 +1735,7 @@ class _SessionDict(TypedDict, total=False):
     skill_history: dict[str, _SkillEntryDict]
     decisions: list[_DecisionEntryDict]
     snapshot_shas: dict[str, str]
-    hints_seen: list[str]
+    hints_seen: dict[str, int] | list[str]
     bash_dedup_emitted_ids: list[str]
     hints_emitted: int
     hints_ignored: int

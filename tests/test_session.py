@@ -2466,8 +2466,8 @@ class TestSessionCAS:
             f"expected hints_emitted >= 1 (no lost write), got {final.hints_emitted}"
         )
 
-    def test_merge_session_caches_unions_sets(self, tmp_data_dir):
-        """_merge_session_caches unions hints_seen from both sides."""
+    def test_merge_session_caches_merges_dicts(self, tmp_data_dir):
+        """_merge_session_caches merges hints_seen dicts, taking max count for each fingerprint."""
         from token_goat.session import _merge_session_caches
 
         sid = "cas_merge_sets"
@@ -2476,16 +2476,16 @@ class TestSessionCAS:
 
         local = session.load(sid)
         local.version = 3
-        local.hints_seen = {"a", "b"}
+        local.hints_seen = {"a": 2, "b": 1}
         local.bash_dedup_emitted_ids = {"x"}
 
         remote = session.load(sid)
         remote.version = 5
-        remote.hints_seen = {"b", "c"}
+        remote.hints_seen = {"b": 3, "c": 1}
         remote.bash_dedup_emitted_ids = {"y"}
 
         merged = _merge_session_caches(local, remote)
-        assert merged.hints_seen == {"a", "b", "c"}
+        assert merged.hints_seen == {"a": 2, "b": 3, "c": 1}
         assert merged.bash_dedup_emitted_ids == {"x", "y"}
 
     def test_merge_session_caches_max_counts(self, tmp_data_dir):
@@ -2588,7 +2588,7 @@ class TestSessionCAS:
         )
 
     def test_merge_hints_seen_respects_cap(self, tmp_data_dir):
-        """After CAS merge, hints_seen set must not exceed HINTS_SEEN_MAX."""
+        """After CAS merge, hints_seen dict must not exceed HINTS_SEEN_MAX."""
         from token_goat.session import HINTS_SEEN_MAX, _merge_session_caches
 
         sid = "cas_merge_hints_seen_cap"
@@ -2596,10 +2596,10 @@ class TestSessionCAS:
         # Each side has HINTS_SEEN_MAX - 1 fully disjoint entries so the union
         # would be ~2 * HINTS_SEEN_MAX, well over the cap.
         local = session.load(sid)
-        local.hints_seen = {f"local_{i}" for i in range(HINTS_SEEN_MAX - 1)}
+        local.hints_seen = {f"local_{i}": 1 for i in range(HINTS_SEEN_MAX - 1)}
 
         remote = session.load(sid)
-        remote.hints_seen = {f"remote_{i}" for i in range(HINTS_SEEN_MAX - 1)}
+        remote.hints_seen = {f"remote_{i}": 1 for i in range(HINTS_SEEN_MAX - 1)}
 
         merged = _merge_session_caches(local, remote)
 
@@ -3083,40 +3083,35 @@ class TestSortedListCache:
     and cleared by _invalidate_json_cache().
     """
 
-    def test_sorted_cache_populated_on_to_dict(self, tmp_data_dir):
-        """After to_dict(), _hints_seen_sorted_cache is populated."""
+    def test_hints_seen_dict_serialized_correctly(self, tmp_data_dir):
+        """to_dict() serializes hints_seen dict correctly."""
         sid = "aabb11" * 6
         cache = session.load(sid)
-        cache.hints_seen = {"z-fp", "a-fp", "m-fp"}
+        cache.hints_seen = {"z-fp": 3, "a-fp": 1, "m-fp": 2}
         cache._invalidate_json_cache()
-        cache.to_dict()
-        assert cache._hints_seen_sorted_cache is not None
-        assert cache._hints_seen_sorted_cache == ["a-fp", "m-fp", "z-fp"]
+        d = cache.to_dict()
+        assert d["hints_seen"] == {"z-fp": 3, "a-fp": 1, "m-fp": 2}
 
-    def test_sorted_cache_cleared_on_invalidate(self, tmp_data_dir):
-        """_invalidate_json_cache() clears both sorted caches."""
+    def test_bash_dedup_sorted_cache_cleared_on_invalidate(self, tmp_data_dir):
+        """_invalidate_json_cache() clears the bash dedup sorted cache."""
         sid = "bbcc22" * 6
         cache = session.load(sid)
-        cache.hints_seen = {"fp1"}
+        cache.hints_seen = {"fp1": 1}
         cache.bash_dedup_emitted_ids = {"id1"}
-        cache.to_dict()  # populate caches
-        assert cache._hints_seen_sorted_cache is not None
+        cache.to_dict()  # populate cache
         assert cache._bash_dedup_sorted_cache is not None
         cache._invalidate_json_cache()
-        assert cache._hints_seen_sorted_cache is None
         assert cache._bash_dedup_sorted_cache is None
 
-    def test_sorted_cache_reused_without_mutation(self, tmp_data_dir):
-        """Multiple to_dict() calls without mutation reuse the same sorted list object."""
+    def test_dict_serialized_consistently(self, tmp_data_dir):
+        """Multiple to_dict() calls without mutation produce same dict."""
         sid = "ccdd33" * 6
         cache = session.load(sid)
-        cache.hints_seen = {"fp-x", "fp-a"}
+        cache.hints_seen = {"fp-x": 2, "fp-a": 1}
         cache._invalidate_json_cache()
-        cache.to_dict()
-        first_list = cache._hints_seen_sorted_cache
-        cache.to_dict()
-        second_list = cache._hints_seen_sorted_cache
-        assert first_list is second_list
+        first_dict = cache.to_dict()
+        second_dict = cache.to_dict()
+        assert first_dict["hints_seen"] == second_dict["hints_seen"]
 
     def test_bash_dedup_sorted_cache(self, tmp_data_dir):
         """bash_dedup_emitted_ids sorted cache works symmetrically."""
@@ -3128,14 +3123,14 @@ class TestSortedListCache:
         assert d["bash_dedup_emitted_ids"] == ["a-id", "z-id"]
         assert cache._bash_dedup_sorted_cache == ["a-id", "z-id"]
 
-    def test_hints_seen_output_is_sorted_list(self, tmp_data_dir):
-        """to_dict() still produces a sorted list for hints_seen (JSON stability)."""
+    def test_hints_seen_output_is_dict(self, tmp_data_dir):
+        """to_dict() produces a dict[str, int] for hints_seen."""
         sid = "eeff55" * 6
         cache = session.load(sid)
-        cache.hints_seen = {"z", "a", "m"}
+        cache.hints_seen = {"z": 1, "a": 2, "m": 3}
         cache._invalidate_json_cache()
         d = cache.to_dict()
-        assert d["hints_seen"] == sorted(["z", "a", "m"])
+        assert d["hints_seen"] == {"z": 1, "a": 2, "m": 3}
 
 
 class TestPendingHintSave:
@@ -3182,14 +3177,16 @@ class TestPendingHintSave:
         on_disk = session.load(sid)
         assert "flush-via-file-read" in on_disk.hints_seen
 
-    def test_duplicate_fingerprint_does_not_set_flag(self, tmp_data_dir):
-        """mark_hint_seen is a no-op for already-seen fingerprints."""
+    def test_duplicate_fingerprint_increments_count_sets_flag(self, tmp_data_dir):
+        """mark_hint_seen increments count for already-seen fingerprints and sets flag."""
         sid = "223344" * 6
         cache = session.load(sid)
         cache.mark_hint_seen("already-seen")
+        assert cache.hints_seen["already-seen"] == 1
         cache._pending_hint_save = False  # reset
-        cache.mark_hint_seen("already-seen")  # second call — no-op
-        assert cache._pending_hint_save is False
+        cache.mark_hint_seen("already-seen")  # second call — increments count
+        assert cache.hints_seen["already-seen"] == 2
+        assert cache._pending_hint_save is True  # flag is set because count changed
 
 
 class TestAdaptiveHintSuppression:
