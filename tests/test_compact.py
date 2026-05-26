@@ -5863,6 +5863,170 @@ class TestManifestCacheStub:
         assert "## Token-Goat Session Manifest" in second
         assert "unchanged since" not in second
 
+    # ------------------------------------------------------------------
+    # Clock-skew / corrupted-ts hardening tests
+    # ------------------------------------------------------------------
+
+    def test_future_dated_sidecar_forces_full_rebuild(self, tmp_data_dir):
+        """A sidecar with ts in the future must NOT be treated as a fresh cache.
+
+        Without the clock-skew guard, ``now - ts < 0`` would still pass the
+        ``< _MANIFEST_CACHE_TTL_SECS`` predicate and pin the cache to a stub
+        until the wall clock caught up — potentially years.
+        """
+        import json as _json
+
+        from token_goat import paths
+
+        sid = "stub-future-skew"
+        session.mark_file_edited(sid, "/proj/src/skew.py")
+
+        first = compact.build_manifest(sid)
+        assert "## Token-Goat Session Manifest" in first
+
+        # Backdate the sidecar to 1 day in the future.
+        sidecar = paths.manifest_sha_sidecar_path(sid)
+        data = _json.loads(sidecar.read_text(encoding="utf-8"))
+        data["ts"] = time.time() + 86400.0
+        sidecar.write_text(_json.dumps(data, separators=(",", ":")), encoding="utf-8")
+
+        self._clear_process_guard(sid)
+
+        second = compact.build_manifest(sid)
+        # Must be full manifest, not a stub.
+        assert "## Token-Goat Session Manifest" in second
+        assert "unchanged since" not in second
+
+    def test_zero_ts_sidecar_forces_full_rebuild(self, tmp_data_dir):
+        """A sidecar with ts <= 0 (corrupted / legacy zero) must force a rebuild.
+
+        Guard test: today's predicate (``now - 0.0`` is huge, fails TTL check)
+        already produces the right outcome, but a future refactor that swaps
+        the comparison ordering or normalizes the age could regress.  The
+        explicit ``cached_ts > 0.0`` guard makes the intent load-bearing.
+        """
+        import json as _json
+
+        from token_goat import paths
+
+        sid = "stub-zero-ts"
+        session.mark_file_edited(sid, "/proj/src/zero.py")
+
+        first = compact.build_manifest(sid)
+        assert "## Token-Goat Session Manifest" in first
+
+        # Corrupt the sidecar with a zero timestamp.
+        sidecar = paths.manifest_sha_sidecar_path(sid)
+        data = _json.loads(sidecar.read_text(encoding="utf-8"))
+        data["ts"] = 0.0
+        sidecar.write_text(_json.dumps(data, separators=(",", ":")), encoding="utf-8")
+
+        self._clear_process_guard(sid)
+
+        second = compact.build_manifest(sid)
+        assert "## Token-Goat Session Manifest" in second
+        assert "unchanged since" not in second
+
+    def test_nan_ts_sidecar_treated_as_unreadable(self, tmp_data_dir):
+        """A sidecar with NaN/inf ts must be ignored entirely (cache rebuilds).
+
+        Guard test: NaN comparisons always return False so today's predicate
+        already rebuilds, but a downstream ``datetime.fromtimestamp(NaN)`` or
+        arithmetic on inf would crash if the caller ever reached that branch.
+        ``_read_manifest_sidecar`` defensively rejects non-finite ts so the
+        caller never sees them.
+        """
+        import json as _json
+
+        from token_goat import paths
+
+        sid = "stub-nan-ts"
+        session.mark_file_edited(sid, "/proj/src/nan.py")
+        compact.build_manifest(sid)
+
+        sidecar = paths.manifest_sha_sidecar_path(sid)
+        # NaN doesn't survive JSON round-trip via stdlib's json module by
+        # default, so use a sentinel that ``float()`` will widen to NaN.
+        raw = sidecar.read_text(encoding="utf-8")
+        data = _json.loads(raw)
+        data["ts"] = "NaN"  # str → float("NaN") downstream
+        sidecar.write_text(
+            _json.dumps(data, separators=(",", ":")),
+            encoding="utf-8",
+        )
+
+        self._clear_process_guard(sid)
+
+        rebuilt = compact.build_manifest(sid)
+        assert "## Token-Goat Session Manifest" in rebuilt
+        assert "unchanged since" not in rebuilt
+
+    def test_empty_sha_or_fp_sidecar_treated_as_unreadable(self, tmp_data_dir):
+        """A sidecar with empty ``sha`` or ``fp`` strings must be rejected."""
+        import json as _json
+
+        from token_goat import paths
+
+        sid = "stub-empty-sha"
+        session.mark_file_edited(sid, "/proj/src/empty.py")
+        compact.build_manifest(sid)
+
+        sidecar = paths.manifest_sha_sidecar_path(sid)
+        data = _json.loads(sidecar.read_text(encoding="utf-8"))
+        data["sha"] = ""  # corrupted blank
+        sidecar.write_text(
+            _json.dumps(data, separators=(",", ":")), encoding="utf-8",
+        )
+
+        self._clear_process_guard(sid)
+        rebuilt = compact.build_manifest(sid)
+        assert "## Token-Goat Session Manifest" in rebuilt
+        assert "unchanged since" not in rebuilt
+
+    def test_far_future_ts_does_not_emit_delta_line(self, tmp_data_dir):
+        """A future-dated sidecar discards prior_counts → no misleading delta line.
+
+        Rationale: a sentinel with a wall-clock-future ``ts`` is suspect (likely
+        a clock-step, file-restore, or cross-machine sync glitch).  Trusting its
+        ``counts`` payload would produce a misleading **Δ since last compact**
+        line on the rebuild.  We expect the rebuilt manifest to omit the delta
+        line entirely, just like a first compact.
+        """
+        import json as _json
+
+        from token_goat import paths
+
+        sid = "stub-future-skew-no-delta"
+        # First compact populates the sidecar with counts.
+        session.mark_file_edited(sid, "/proj/src/d1.py")
+        session.mark_bash_run(
+            sid,
+            cmd_sha="ab",
+            cmd_preview="pytest",
+            output_id="oA",
+            stdout_bytes=10,
+            stderr_bytes=0,
+            exit_code=0,
+            truncated=False,
+        )
+        compact.build_manifest(sid)
+
+        # Future-date the sidecar so the cache hit is rejected.
+        sidecar = paths.manifest_sha_sidecar_path(sid)
+        data = _json.loads(sidecar.read_text(encoding="utf-8"))
+        data["ts"] = time.time() + 3600.0  # 1 hour in the future
+        sidecar.write_text(_json.dumps(data, separators=(",", ":")), encoding="utf-8")
+
+        # Mutate session so the rebuild would normally show +N deltas.
+        session.mark_file_edited(sid, "/proj/src/d2.py")
+        self._clear_process_guard(sid)
+
+        rebuilt = compact.build_manifest(sid)
+        assert "## Token-Goat Session Manifest" in rebuilt
+        # Critical: prior_counts must be discarded → no Δ line on the rebuilt
+        # manifest, since the future ts indicates a corrupted/stale sidecar.
+        assert "Δ since last compact" not in rebuilt
+
 
 class TestManifestDelta:
     """Item #26: **Δ since last compact:** mini-section at top of manifest.
