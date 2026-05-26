@@ -2558,6 +2558,7 @@ def build_manifest_adaptive(session_id: str) -> str:
         session_id,
         budget,
         edited_dir_group_threshold=cfg.compact_assist.edited_dir_group_threshold,
+        max_section_lines=cfg.compact_assist.max_section_lines,
     )
 
 
@@ -2586,6 +2587,7 @@ def _build_manifest_from_cache(
     session_id: str,
     max_tokens: int,
     edited_dir_group_threshold: int = 3,
+    max_section_lines: int = 0,
 ) -> str:
     """Render the manifest from an already-loaded *cache*.
 
@@ -2610,6 +2612,7 @@ def _build_manifest_from_cache(
         session_id,
         max_tokens,
         edited_dir_group_threshold=edited_dir_group_threshold,
+        max_section_lines=max_section_lines,
     )
     elapsed = time.monotonic() - start
 
@@ -2739,6 +2742,7 @@ def build_manifest(session_id: str, *, max_tokens: int = 400) -> str:
         session_id,
         max_tokens,
         edited_dir_group_threshold=cfg.compact_assist.edited_dir_group_threshold,
+        max_section_lines=cfg.compact_assist.max_section_lines,
     )
     if not full_manifest:
         return full_manifest
@@ -2802,6 +2806,7 @@ def build_manifest_with_count(
         session_id,
         max_tokens,
         edited_dir_group_threshold=cfg.compact_assist.edited_dir_group_threshold,
+        max_section_lines=cfg.compact_assist.max_section_lines,
     )
     return manifest, n_events
 
@@ -2931,6 +2936,46 @@ def _render_tasks_section(
         lines.append(f"- …+{overflow} more")
 
     return lines
+
+
+def _apply_section_line_cap(lines: list[str], cap: int) -> list[str]:
+    """Truncate a section's bullet list to at most *cap* items, appending a "+N more" tail.
+
+    When cap <= 0 (disabled) or cap >= len(lines), returns *lines* unchanged.
+    Otherwise, returns a new list with the first *cap* items plus a final
+    "(+N more)" line indicating the number of truncated entries.
+
+    This prevents a single bloated section (e.g. 80 edited files) from dominating
+    the manifest budget at the expense of other sections. Apply this AFTER
+    directory-grouping so grouped lines count as 1 item each.
+
+    Args:
+        lines: List of manifest lines, typically header + bullet items.
+               Expected format: ["### Header", "- item1", "- item2", ...].
+        cap: Maximum number of items (lines after the header) to keep.
+             Values <= 0 disable the cap and return *lines* unchanged.
+
+    Returns:
+        Either *lines* unchanged (if cap is disabled or >= len(lines)),
+        or a new list with the header + first *cap* items + a "+N more" tail.
+    """
+    if cap <= 0 or not lines:
+        return lines
+
+    # The first line is the header; count items after it.
+    if len(lines) <= 1:
+        return lines
+
+    # Skip the header (line 0) when counting items.
+    item_count = len(lines) - 1
+    if item_count <= cap:
+        return lines
+
+    # Truncate: keep header + first cap items, then add "+N more" tail.
+    kept_lines = lines[:cap + 1]  # header + cap items
+    overflow = item_count - cap
+    kept_lines.append(f"- ... (+{overflow} more)")
+    return kept_lines
 
 
 def _render_section(
@@ -3293,6 +3338,7 @@ def _render(
     session_id: str,
     max_tokens: int,
     edited_dir_group_threshold: int = 3,
+    max_section_lines: int = 0,
 ) -> tuple[str, int]:
     """Build the Markdown session manifest string from *cache* for the PreCompact hook.
 
@@ -4180,7 +4226,17 @@ def _render(
     from . import config as config_mod  # noqa: PLC0415
     cfg = config_mod.load()
     noise_floor = cfg.compact_assist.noise_floor_tokens
+    max_section_lines_cap = cfg.compact_assist.max_section_lines
     _section_groups = _apply_noise_floor(_section_groups, noise_floor)
+
+    # ── Apply per-section line cap to prevent bloated sections dominating budget ─
+    # The cap is applied AFTER directory-grouping so grouped lines count as 1 item.
+    # Only apply to the four list-shaped sections; skip single-line sections and
+    # protected sections (header, blockers, decisions, skills, uncommitted).
+    if max_section_lines_cap > 0:
+        for idx, (_name, _lines, _protected) in enumerate(_section_groups):
+            if not _protected and _name in ("edited", "files", "syms"):
+                _section_groups[idx] = (_name, _apply_section_line_cap(_lines, max_section_lines_cap), _protected)
 
     sections: list[str] = []
     for _name, _lines, _ in _section_groups:
