@@ -429,3 +429,142 @@ class TestUncommittedChangesCap:
             assert section_tokens <= 80, (
                 f"Uncommitted Changes section cost {section_tokens} tokens (expected ≤80)"
             )
+
+
+# ---------------------------------------------------------------------------
+# Priority-aware safety-trim tests
+# ---------------------------------------------------------------------------
+
+
+class TestPriorityAwareSafetyTrim:
+    """When ``estimate_tokens(manifest) > max_tokens`` the trim pass drops
+    low-signal sections wholesale before resorting to bottom-line popping.
+
+    These guard against three defects in the previous naive bottom-popping
+    approach:
+
+    1. **Orphan section headers** — line popping could leave ``**Files:**``
+       with no entries when the trim cut mid-section.
+    2. **Legend stripped before content** — the legend was the final appended
+       line, so the very first pop removed marker explanations while the
+       symbols (✎ → ⚠ ❄) still appeared in the body above.
+    3. **No priority signal** — the previous trim treated sections as a flat
+       line stream; lower-signal sections (todos, files, grep) and higher-
+       signal sections (bash, stale) were trimmed in raw bottom-up order
+       without explicit priority.
+    """
+
+    def test_no_orphan_section_header_after_trim(self, tmp_data_dir):
+        """A trim cut must drop a whole section, not just its entries.
+
+        Walk the manifest looking for any line that matches a known section
+        header marker (``**Foo:**`` / ``### Heading``) immediately followed
+        by either a blank line, EOF, or another header — i.e. an orphan.
+        """
+        sid = "trim-no-orphan-header"
+        _seed_saturated_manifest_state(sid)
+
+        # Tight budget forces the safety trim path.
+        manifest, _ = compact.build_manifest_with_count(sid, max_tokens=180)
+
+        lines = manifest.splitlines()
+        # Known section headers that could orphan.
+        header_markers = (
+            "**Files:**", "**Grep:**", "**Web:**", "**Syms:**",
+            "**Ran:**", "**Cold:**", "**Skills:**", "**Decisions:**",
+            "### Cold Outputs", "### Diff Summary", "### Commits This Session",
+            "### TODOs", "Directory Scans",
+        )
+        for i, line in enumerate(lines):
+            if not any(line.startswith(m) for m in header_markers):
+                continue
+            # Check whether the next non-empty line is content (`- `, `  `, or `#### `)
+            # or another header (which means the current one is orphan).
+            for j in range(i + 1, len(lines)):
+                nxt = lines[j]
+                if not nxt.strip():
+                    continue
+                # Content lines start with these prefixes for sections.
+                if nxt.startswith(("- ", "  ", "#### ", "**Pending:**")):
+                    break  # has content — not orphan
+                if any(nxt.startswith(m) for m in header_markers):
+                    # Two headers back-to-back — outer is orphan.
+                    raise AssertionError(
+                        f"orphan section header at line {i}: {line!r} "
+                        f"followed by header at line {j}: {nxt!r}\n"
+                        f"full manifest:\n{manifest}"
+                    )
+                # Other content (e.g. Legend, a free text line) — section ended cleanly.
+                break
+
+    def test_legend_survives_aggressive_trim(self, tmp_data_dir):
+        """When the body uses marker symbols (✎ → ⚠ ❄), the Legend line that
+        explains them must survive even a very tight budget — otherwise the
+        compaction LLM sees orphan symbols with no key."""
+        sid = "trim-legend-survives"
+        _seed_saturated_manifest_state(sid)
+
+        manifest, _ = compact.build_manifest_with_count(sid, max_tokens=200)
+        # Check that if any marker symbol appears in body, the legend appears.
+        markers_in_body = any(
+            sym in manifest for sym in ("✎", "→", "⚠", "❄")
+        )
+        if markers_in_body:
+            # Either single-marker bare line or "Legend: ..." prefix.
+            has_legend = (
+                "Legend: " in manifest
+                or any(
+                    line.strip() in {"edited=✎", "read=→", "stale=⚠", "cold=❄", "skill=🧠"}
+                    for line in manifest.splitlines()
+                )
+            )
+            assert has_legend, (
+                "marker symbols present in manifest body but legend missing; "
+                f"rendered:\n{manifest}"
+            )
+
+    def test_protected_sections_survive_tight_budget(self, tmp_data_dir):
+        """Sealed block + header + edited files (the highest-signal sections)
+        must always survive the trim, even at a budget too tight for everything."""
+        sid = "trim-protected"
+        _seed_saturated_manifest_state(sid)
+
+        manifest, _ = compact.build_manifest_with_count(sid, max_tokens=150)
+
+        assert manifest, "trimmed manifest must not be empty"
+        # Sealed block + header anchor every post-compact recovery — never drop.
+        assert "## Token-Goat Session Manifest" in manifest, (
+            f"header dropped under tight budget; rendered:\n{manifest}"
+        )
+        # Edited section is protected — must appear in some form.
+        assert (
+            "**Edited:**" in manifest
+            or "**Files:**" in manifest  # merged-section variant
+        ), f"edited section dropped under tight budget; rendered:\n{manifest}"
+
+    def test_low_priority_dropped_before_high(self, tmp_data_dir):
+        """Under budget pressure, low-priority sections (Grep, Files-read,
+        TODOs) must be dropped before high-priority sections (Bash, Stale)."""
+        import time
+        sid = "trim-priority-order"
+        _seed_saturated_manifest_state(sid)
+        # Mature tier so bash section is eligible (young sessions skip it).
+        cache = session.load(sid)
+        cache.created_ts = time.time() - 7200
+        session.save(cache)
+
+        # Budget tight enough to force *some* drops but not all sections.
+        manifest, _ = compact.build_manifest_with_count(sid, max_tokens=400)
+
+        # If Grep was dropped (low priority), Bash should still be present
+        # (higher priority).  This guards the priority ordering.
+        grep_dropped = "**Grep:**" not in manifest
+        bash_dropped = "**Ran:**" not in manifest
+        if grep_dropped and not bash_dropped:
+            pass  # correct: low dropped first
+        elif not grep_dropped and bash_dropped:
+            raise AssertionError(
+                "priority inversion: **Ran:** dropped while **Grep:** survived; "
+                f"rendered:\n{manifest}"
+            )
+        # else: both present or both absent — both are fine outcomes here.
