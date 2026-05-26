@@ -67,6 +67,56 @@ class TestShouldShrink:
 
 
 # ---------------------------------------------------------------------------
+# 2b. format_threshold — per-format threshold lookup
+# ---------------------------------------------------------------------------
+
+
+class TestFormatThreshold:
+    """The per-format threshold gives lossless inputs a lower bar than lossy ones."""
+
+    def test_jpeg_threshold_matches_legacy_constant(self):
+        # JPEG / WebP / AVIF retain the historical 100 KB threshold so that
+        # already-efficient inputs are not re-encoded for marginal gain.
+        assert image_shrink.format_threshold("photo.jpg") == image_shrink.SIZE_THRESHOLD_BYTES
+        assert image_shrink.format_threshold("photo.JPEG") == image_shrink.SIZE_THRESHOLD_BYTES
+        assert image_shrink.format_threshold("banner.webp") == image_shrink.SIZE_THRESHOLD_BYTES
+        assert image_shrink.format_threshold("modern.avif") == image_shrink.SIZE_THRESHOLD_BYTES
+
+    def test_png_threshold_is_lower_than_jpeg(self):
+        # PNG / BMP / TIFF / GIF are lossless or weakly compressed and benefit
+        # from re-encoding starting at a smaller size.
+        png_t = image_shrink.format_threshold("shot.png")
+        jpg_t = image_shrink.format_threshold("photo.jpg")
+        assert png_t < jpg_t, (
+            f"Expected PNG threshold {png_t} to be lower than JPEG {jpg_t}"
+        )
+
+    def test_bmp_tiff_gif_share_lossless_threshold(self):
+        png_t = image_shrink.format_threshold("a.png")
+        assert image_shrink.format_threshold("b.bmp") == png_t
+        assert image_shrink.format_threshold("c.tiff") == png_t
+        assert image_shrink.format_threshold("d.tif") == png_t
+        assert image_shrink.format_threshold("e.gif") == png_t
+
+    def test_accepts_bare_suffix_string(self):
+        # Callers that already hold a suffix should not pay for a Path() round-trip.
+        assert image_shrink.format_threshold(".png") == image_shrink.format_threshold("x.png")
+        assert image_shrink.format_threshold(".jpg") == image_shrink.format_threshold("x.jpg")
+
+    def test_unknown_extension_falls_back_to_lossy_default(self):
+        # An unknown image suffix is treated conservatively (no over-eager shrink)
+        # by falling back to the larger lossy default.
+        assert image_shrink.format_threshold("mystery.heic") == image_shrink.SIZE_THRESHOLD_BYTES
+
+    def test_path_input_equivalent_to_string(self):
+        from pathlib import Path
+        assert (
+            image_shrink.format_threshold(Path("/abs/foo.png"))
+            == image_shrink.format_threshold("foo.png")
+        )
+
+
+# ---------------------------------------------------------------------------
 # 4. shrink returns None for small image
 # ---------------------------------------------------------------------------
 

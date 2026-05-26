@@ -49,6 +49,13 @@ _KIND_TO_SOURCE: dict[str, str] = {
     # represent CPU work to compress the image down to a smaller size.
     "image_shrink": SOURCE_IMAGE,
     "image_shrink_cache_hit": SOURCE_IMAGE,
+    # image_shrink_skipped: informational row for images that fell under the
+    # per-format threshold (see image_shrink.format_threshold) and were passed
+    # through unmodified.  bytes_saved / tokens_saved are always 0; the row
+    # exists so the bypass rate can be measured (skipped / (skipped + shrunk +
+    # cache_hit)) and the threshold tuned based on real session data.  Only
+    # surfaces in `token-goat stats` when [stats] record_zero_savings = true.
+    "image_shrink_skipped": SOURCE_IMAGE,
     "webfetch_image": SOURCE_IMAGE,
     "gdrive_image": SOURCE_IMAGE,
     # hint family (both gross savings and overhead live here so the source
