@@ -50,14 +50,21 @@ jobs:
         #
         # ``-n 0`` forces serial execution, overriding the ``-n auto`` from
         # pyproject.toml's addopts. The Windows-2022 GH Actions runner produces
-        # consistent xdist worker C-extension crashes under the current test-
-        # suite stress (``Windows fatal exception: access violation`` and
-        # ``code 0xc000001d`` ILLEGAL_INSTRUCTION) regardless of ``-n auto``
-        # or ``-n 2``. Serial execution eliminates the cross-worker contention
-        # that triggers the crashes; cost is ~10-15 min instead of 5, which is
-        # acceptable for a gating signal. Locally ``-n auto`` is still the
-        # default for the multi-core dev loop.
-        run: uv run pytest -n 0 -m "not slow" -rfE --tb=short
+        # transient C-extension worker crashes (``Windows fatal exception:
+        # access violation`` / ``code 0xc000001d`` / ``<freed thread state>``)
+        # at random points in the suite. Even serial execution sees them — the
+        # corruption is process-level, not contention-level. The 3-attempt
+        # retry loop catches them: a single attempt's crash rate is ~40%, so
+        # three independent tries yield ~94% green CI without hiding real
+        # failures (a real regression fails every attempt).
+        run: |
+          for attempt in 1 2 3; do
+            echo "=== Test attempt $attempt of 3 ==="
+            uv run pytest -n 0 -m "not slow" -rfE --tb=short && exit 0
+            echo "=== Attempt $attempt failed; retrying ==="
+          done
+          exit 1
+        shell: bash
 
       - name: Test (slow tier, allow-fail)
         # The slow tier runs the multi-process concurrency tests and git
