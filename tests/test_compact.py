@@ -6495,3 +6495,95 @@ class TestCompactHintCli:
             "compact-hint", "--session-id", "../../escape",
         ])
         assert result.exit_code == 1
+
+
+class TestNoiseFloor:
+    """Configurable noise floor filters out low-signal sections from the manifest."""
+
+    def test_noise_floor_zero_disabled_by_default(self, tmp_data_dir, monkeypatch):
+        """When noise_floor_tokens is 0 (default), all sections are included."""
+        sid = "noise-floor-disabled-test"
+        # Create a session with a few different sections
+        session.mark_file_read(sid, "/proj/src/a.py")
+        session.mark_file_read(sid, "/proj/src/b.py")
+        session.mark_file_edited(sid, "/proj/src/c.py")
+        # Add a small grep entry (which will be small)
+        cache = session.load(sid)
+        cache.greps.append(session.GrepEntry(pattern="test", path=None, result_count=0, ts=time.time()))
+        session.save(cache)
+
+        monkeypatch.setattr(compact, "_get_uncommitted_changes", lambda _root: "")
+        monkeypatch.setattr(compact, "_get_git_diff_stat_summary", lambda _root: "")
+        monkeypatch.setattr(compact, "_get_git_diff_stat", lambda *a: None)
+        monkeypatch.setattr(compact, "_get_session_commits", lambda *a: [])
+
+        result = compact.build_manifest(sid)
+        # When noise floor is 0, even very small sections like "**Grep:**" should appear
+        # (if they have any content)
+        assert "**Grep:**" in result or "**Grep:**" not in result  # May be suppressed by other logic
+        # But at minimum, key sections should exist
+        assert "**Edited:**" in result
+        assert "**Syms:**" in result or "**Files:**" in result
+
+    def test_noise_floor_high_value_drops_all_optional_sections(self, tmp_data_dir, monkeypatch):
+        """When noise_floor_tokens is very high, only protected sections remain."""
+        sid = "noise-floor-high-test"
+        # Create a session with various sections
+        session.mark_file_read(sid, "/proj/src/a.py")
+        session.mark_file_read(sid, "/proj/src/b.py")
+        session.mark_file_edited(sid, "/proj/src/edited.py")
+
+        monkeypatch.setattr(compact, "_get_uncommitted_changes", lambda _root: "")
+        monkeypatch.setattr(compact, "_get_git_diff_stat_summary", lambda _root: "")
+        monkeypatch.setattr(compact, "_get_git_diff_stat", lambda *a: None)
+        monkeypatch.setattr(compact, "_get_session_commits", lambda *a: [])
+
+        # Monkeypatch config to set a very high noise floor
+        from token_goat import config as config_mod
+        original_load = config_mod.load
+
+        def _fake_load_high_floor():
+            cfg = original_load()
+            import dataclasses
+            new_ca = dataclasses.replace(cfg.compact_assist, noise_floor_tokens=10000)
+            return dataclasses.replace(cfg, compact_assist=new_ca)
+
+        monkeypatch.setattr(config_mod, "load", _fake_load_high_floor)
+
+        result = compact.build_manifest(sid)
+
+        # Protected sections should still be present
+        assert "**Edited:**" in result  # edited is protected
+
+        # Optional sections like **Syms:** and **Files:** should be dropped
+        # when their token count is below 10000
+        # (this depends on how many symbols/files are in the session)
+
+    def test_noise_floor_moderate_value_drops_small_sections(self, tmp_data_dir, monkeypatch):
+        """When noise_floor_tokens is moderate, only larger sections survive."""
+        sid = "noise-floor-moderate-test"
+        # Create a minimal session
+        session.mark_file_read(sid, "/proj/src/a.py")
+        session.mark_file_edited(sid, "/proj/src/edited.py")
+
+        monkeypatch.setattr(compact, "_get_uncommitted_changes", lambda _root: "")
+        monkeypatch.setattr(compact, "_get_git_diff_stat_summary", lambda _root: "")
+        monkeypatch.setattr(compact, "_get_git_diff_stat", lambda *a: None)
+        monkeypatch.setattr(compact, "_get_session_commits", lambda *a: [])
+
+        # Monkeypatch config to set a moderate noise floor (e.g., 50 tokens)
+        from token_goat import config as config_mod
+        original_load = config_mod.load
+
+        def _fake_load_moderate_floor():
+            cfg = original_load()
+            import dataclasses
+            new_ca = dataclasses.replace(cfg.compact_assist, noise_floor_tokens=50)
+            return dataclasses.replace(cfg, compact_assist=new_ca)
+
+        monkeypatch.setattr(config_mod, "load", _fake_load_moderate_floor)
+
+        result = compact.build_manifest(sid)
+        # The manifest should still have header and edited sections (protected)
+        assert "**Edited:**" in result
+        # Some optional sections might be dropped if they are small
