@@ -20,6 +20,7 @@ import contextlib
 import functools
 import json
 import logging
+import os
 import sys
 import threading
 import time
@@ -27,7 +28,7 @@ import traceback
 from collections.abc import Callable
 from datetime import datetime
 from pathlib import Path
-from typing import Literal, ParamSpec, TypeVar, cast
+from typing import Final, Literal, ParamSpec, TypeVar, cast
 
 from . import paths
 from .hooks_common import CONTINUE, HookPayload, HookResponse, sanitize_log_str
@@ -155,6 +156,51 @@ _HOOK_MODERATE_MS = 100
 # cannot be used here — Windows is a first-class target — so dispatch runs
 # the handler in a daemon thread and stops waiting for it past the budget.
 _HOOK_WATCHDOG_MS = _HOOK_SLOW_MS * 4
+
+# Operator-tunable bounds for the watchdog budget.  100ms is a hard floor so a
+# bad env value can't make every hook trip the watchdog on the first sleep; the
+# 30s ceiling caps the worst-case agent stall from a wedged handler at half a
+# minute.  Outside this range we clamp rather than reject so a fat-fingered
+# value still produces sane behavior (fail-soft over fail-loud).
+_HOOK_WATCHDOG_MS_FLOOR: Final[int] = 100
+_HOOK_WATCHDOG_MS_CEIL: Final[int] = 30_000
+
+#: Environment variable that overrides :data:`_HOOK_WATCHDOG_MS` per-invocation.
+#: Read on every dispatch (cheap — ``os.environ.get`` is a dict lookup) so an
+#: operator can re-tune the budget by editing settings.json without restarting
+#: the agent.  Invalid/blank values silently fall back to the compiled default.
+_ENV_HOOK_WATCHDOG_MS: Final[str] = "TOKEN_GOAT_HOOK_WATCHDOG_MS"
+
+
+def _resolved_watchdog_ms() -> int:
+    """Return the effective watchdog budget in milliseconds.
+
+    Reads :data:`_ENV_HOOK_WATCHDOG_MS` and clamps to
+    ``[_HOOK_WATCHDOG_MS_FLOOR, _HOOK_WATCHDOG_MS_CEIL]``.  Any parse failure
+    (non-numeric, negative, blank) falls back to :data:`_HOOK_WATCHDOG_MS`.
+
+    Reading the env per dispatch costs ~1 µs and means an operator can re-tune
+    the budget mid-session by editing the agent's settings.json — no restart
+    needed.  Tests still monkeypatch ``_HOOK_WATCHDOG_MS`` directly, which
+    continues to work because that constant is the fallback.
+    """
+    raw = os.environ.get(_ENV_HOOK_WATCHDOG_MS, "").strip()
+    if not raw:
+        return _HOOK_WATCHDOG_MS
+    try:
+        parsed = int(raw)
+    except (TypeError, ValueError):
+        return _HOOK_WATCHDOG_MS
+    if parsed <= 0:
+        return _HOOK_WATCHDOG_MS
+    # Clamp to the operator-safe band.  We deliberately clamp rather than
+    # raise: a hook firing on every tool call must not crash on a bad env
+    # value, and the clamped behavior is still observable + correctable.
+    if parsed < _HOOK_WATCHDOG_MS_FLOOR:
+        return _HOOK_WATCHDOG_MS_FLOOR
+    if parsed > _HOOK_WATCHDOG_MS_CEIL:
+        return _HOOK_WATCHDOG_MS_CEIL
+    return parsed
 
 
 def read_payload(input_file: Path | None = None) -> HookPayload:
@@ -630,17 +676,21 @@ def dispatch(event: str, payload: HookPayload) -> dict[str, object]:
         daemon=True,
     )
     worker.start()
-    timeout_s = _HOOK_WATCHDOG_MS / 1000.0
+    # Re-read the env on every dispatch (cheap dict lookup) so operators can
+    # widen the budget on slow Windows boxes without restarting the agent.
+    watchdog_ms = _resolved_watchdog_ms()
+    timeout_s = watchdog_ms / 1000.0
     worker.join(timeout_s)
     if worker.is_alive():
         _LOG.warning(
             "hook %s watchdog tripped after %.0fms — abandoning wait (handler continues in background)",
             safe_event,
-            _HOOK_WATCHDOG_MS,
+            watchdog_ms,
         )
         watchdog_result: dict[str, object] = dict(CONTINUE())
         watchdog_result["_tg_elapsed_ms"] = round((time.monotonic() - t0) * 1000, 2)
         watchdog_result["_tg_watchdog_tripped"] = True
+        watchdog_result["_tg_watchdog_budget_ms"] = watchdog_ms
         return watchdog_result
     result: dict[str, object] = dict(handler_result)
     elapsed_ms = (time.monotonic() - t0) * 1000
