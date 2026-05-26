@@ -17,7 +17,6 @@ __all__ = [
     "gdrive_cache_dir",
     "gdrive_creds_path",
     "global_db_path",
-    "has_windows_drive_prefix",
     "hook_wrapper_content",
     "hook_wrapper_path",
     "hooks_stderr_log_path",
@@ -299,18 +298,13 @@ def project_db_path(project_hash: str) -> Path:
     return _safe_child_path(data_dir() / "projects", project_hash, ".db", "project_hash")
 
 
-def has_windows_drive_prefix(s: str) -> bool:
+def _has_windows_drive_prefix(s: str) -> bool:
     """Return True when *s* begins with a Windows drive letter followed by a colon.
 
     Accepts both upper- and lowercase drive letters (``C:``, ``c:``) so it can be
     used both for case-aware normalization and for absolute-path classification.
     """
     return len(s) >= 2 and s[1] == ":" and s[0].isalpha()
-
-
-# Back-compat alias: kept module-private name pointing at the public function so
-# any in-tree callers using the underscore form continue to work.
-_has_windows_drive_prefix = has_windows_drive_prefix
 
 
 def normalize_key(p: str) -> str:
@@ -357,11 +351,11 @@ def normalize_key(p: str) -> str:
     """
     # Fast path: no backslashes — skip the str.replace allocation.
     if "\\" not in p:
-        if sys.platform == "win32" and has_windows_drive_prefix(p) and p[0].isupper():
+        if sys.platform == "win32" and _has_windows_drive_prefix(p) and p[0].isupper():
             return p[0].lower() + p[1:]
         return p
     s = p.replace("\\", "/")
-    if sys.platform == "win32" and has_windows_drive_prefix(s) and s[0].isupper():
+    if sys.platform == "win32" and _has_windows_drive_prefix(s) and s[0].isupper():
         s = s[0].lower() + s[1:]
     return s
 
