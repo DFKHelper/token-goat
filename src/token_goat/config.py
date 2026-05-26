@@ -148,6 +148,7 @@ class _CompactAssistToml(TypedDict, total=False):
     compact_skip_ttl_secs: float
     noise_floor_tokens: int
     edited_dir_group_threshold: int
+    max_section_lines: int
 
 
 class _BashCompressToml(TypedDict, total=False):
@@ -317,6 +318,12 @@ class CompactAssistConfig:
     # grouping (all files listed separately). Default 3 — matches the prior
     # hardcoded behavior; lower values group more aggressively.
     edited_dir_group_threshold: int = 3
+    # Per-section line cap for the manifest. When > 0, each list-shaped section
+    # (Edited files, Key Files Read, Symbols Accessed, Active Skills) is truncated
+    # to at most this many items. Truncated sections gain a final line of the form
+    # "- ... (+N more)". Prevents a single bloated section from dominating the
+    # manifest budget at the expense of other sections. Default 0 disables capping.
+    max_section_lines: int = 0
 
 
 @dataclass
@@ -812,6 +819,15 @@ def load() -> Config:
             ca_raw.get("compact_skip_ttl_secs", 300.0),
             300.0, 1.0, 3600.0, "compact_assist.compact_skip_ttl_secs",
         ),
+        noise_floor_tokens=_validated_int(
+            ca_raw.get("noise_floor_tokens", 0), 0, 0, 10000, "compact_assist.noise_floor_tokens"
+        ),
+        edited_dir_group_threshold=_validated_int(
+            ca_raw.get("edited_dir_group_threshold", 3), 3, 0, 100, "compact_assist.edited_dir_group_threshold"
+        ),
+        max_section_lines=_validated_int(
+            ca_raw.get("max_section_lines", 0), 0, 0, 10000, "compact_assist.max_section_lines"
+        ),
     )
 
     # Environment override: TOKEN_GOAT_COMPACT_ASSIST=0 / false / no / off disables
@@ -1015,6 +1031,9 @@ def save(config: Config) -> None:
             "max_manifest_tokens": ca.max_manifest_tokens,
             "auto_trigger_multiplier": ca.auto_trigger_multiplier,
             "compact_skip_ttl_secs": ca.compact_skip_ttl_secs,
+            "noise_floor_tokens": ca.noise_floor_tokens,
+            "edited_dir_group_threshold": ca.edited_dir_group_threshold,
+            "max_section_lines": ca.max_section_lines,
         },
         "bash_compress": {
             "enabled": bc.enabled,

@@ -6688,3 +6688,70 @@ class TestEditedDirGrouping:
         result = compact._group_edited_by_dir(entries, threshold=4)
         assert len(result) == 3
         assert all(line.startswith("- ✎") for line in result)
+
+
+class TestSectionLineCap:
+    """Test per-section line capping to prevent bloated sections from dominating budget."""
+
+    def test_cap_disabled_default_zero(self):
+        """When cap=0 (default disabled), lines are returned unchanged."""
+        lines = ["### Header", "- item1", "- item2", "- item3"]
+        result = compact._apply_section_line_cap(lines, cap=0)
+        assert result == lines
+
+    def test_cap_disabled_negative(self):
+        """When cap<0, lines are returned unchanged."""
+        lines = ["### Header", "- item1", "- item2"]
+        result = compact._apply_section_line_cap(lines, cap=-5)
+        assert result == lines
+
+    def test_cap_exceeds_items_no_truncation(self):
+        """When cap >= item count, lines are returned unchanged (no truncation)."""
+        lines = ["### Header", "- item1", "- item2"]
+        result = compact._apply_section_line_cap(lines, cap=10)
+        assert result == lines
+        assert "+more" not in "\n".join(result)
+
+    def test_cap_equals_item_count_no_truncation(self):
+        """When cap == item count, no truncation needed."""
+        lines = ["### Header", "- item1", "- item2", "- item3"]
+        result = compact._apply_section_line_cap(lines, cap=3)
+        assert result == lines
+        assert len(result) == 4
+
+    def test_cap_truncates_to_two_items_plus_overflow(self):
+        """When cap=2, keep header + 2 items + "+N more" tail."""
+        lines = ["### Header", "- item1", "- item2", "- item3", "- item4", "- item5"]
+        result = compact._apply_section_line_cap(lines, cap=2)
+        assert len(result) == 4  # header + 2 items + overflow line
+        assert result[0] == "### Header"
+        assert result[1] == "- item1"
+        assert result[2] == "- item2"
+        assert result[3] == "- ... (+3 more)"
+
+    def test_cap_one_item(self):
+        """When cap=1, keep header + 1 item + overflow."""
+        lines = ["**Symbols:**", "- symbol1", "- symbol2", "- symbol3"]
+        result = compact._apply_section_line_cap(lines, cap=1)
+        assert len(result) == 3  # header + 1 item + overflow
+        assert result[0] == "**Symbols:**"
+        assert result[1] == "- symbol1"
+        assert result[2] == "- ... (+2 more)"
+
+    def test_empty_lines_list_unchanged(self):
+        """Empty input returns unchanged."""
+        result = compact._apply_section_line_cap([], cap=5)
+        assert result == []
+
+    def test_header_only_unchanged(self):
+        """Header-only input (no items) returns unchanged."""
+        lines = ["### Header"]
+        result = compact._apply_section_line_cap(lines, cap=5)
+        assert result == lines
+
+    def test_overflow_count_accurate(self):
+        """Overflow count in '+N more' is accurate."""
+        lines = ["**Edited:**"] + [f"- file{i}.py" for i in range(20)]
+        result = compact._apply_section_line_cap(lines, cap=3)
+        assert result[-1] == "- ... (+17 more)"
+        assert len(result) == 5  # header + 3 items + overflow
