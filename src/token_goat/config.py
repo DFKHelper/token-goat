@@ -147,6 +147,7 @@ class _CompactAssistToml(TypedDict, total=False):
     auto_trigger_multiplier: float
     compact_skip_ttl_secs: float
     noise_floor_tokens: int
+    edited_dir_group_threshold: int
 
 
 class _BashCompressToml(TypedDict, total=False):
@@ -309,6 +310,13 @@ class CompactAssistConfig:
     # (no sections are dropped).  When > 0, only body subsections are dropped;
     # the header and critical sections (edited, blockers, skills) are always preserved.
     noise_floor_tokens: int = 0
+    # Directory-grouping threshold for edited files in the manifest. When the
+    # manifest's edited-files section contains >= N files in the same directory,
+    # they are rendered as a single grouped line (e.g. "src/foo/ (5 files): a.py,
+    # b.py, c.py, ...") instead of individual lines. Threshold 0 disables
+    # grouping (all files listed separately). Default 3 — matches the prior
+    # hardcoded behavior; lower values group more aggressively.
+    edited_dir_group_threshold: int = 3
 
 
 @dataclass
