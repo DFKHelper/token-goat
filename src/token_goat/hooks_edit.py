@@ -117,25 +117,33 @@ def _enqueue_for_reindex(file_path: str, cwd: str | None) -> None:
 
 
 _PREDICTIVE_SNAPSHOT_CAP = 3  # max pre-snapshots per post_edit call
+_IMPORT_SCAN_LINE_LIMIT = 200  # cap header scan so giant modules stay fast
 
 
 def _parse_local_imports(source: str, file_path: str, cwd: str | None) -> list[str]:
     """Parse top-of-file Python import statements and return resolved local file paths.
 
-    Scans *source* for ``import X`` and ``from X import Y`` lines at the top of the
-    file (stops at the first non-import, non-blank, non-comment line).  For each
-    module name, resolves relative imports (``from .foo import bar`` →
-    ``<parent>/foo.py``) and top-level project imports (``from token_goat.x import y``
-    → search for ``<project_root>/**/x.py``).  Returns at most
-    ``_PREDICTIVE_SNAPSHOT_CAP`` resolved absolute paths that actually exist on disk.
+    Scans the first ``_IMPORT_SCAN_LINE_LIMIT`` lines of *source* for ``import X``
+    and ``from X import Y`` statements.  Non-import lines (decorators, ``try:``,
+    ``if TYPE_CHECKING:``, class/function definitions) are skipped rather than
+    treated as a hard stop, so conditional imports below a ``try``/``if`` block
+    are still picked up.  Multi-line parenthesized imports
+    (``from foo import (\\n  bar,\\n  baz,\\n)``) and backslash continuations
+    are joined before matching.
 
-    Only ``.py`` files are considered; third-party/stdlib imports are silently skipped
-    when no matching file is found.  Errors are swallowed (best-effort).
+    Resolves relative imports (``from .foo import bar`` → ``<parent>/foo.py``)
+    and top-level project imports (``from token_goat.x import y`` → search for
+    ``<project_root>/**/x.py``).  Returns at most ``_PREDICTIVE_SNAPSHOT_CAP``
+    unique resolved absolute paths that actually exist on disk.
+
+    Only ``.py`` files are considered; third-party/stdlib imports are silently
+    skipped when no matching file is found.  Errors are swallowed (best-effort).
     """
     import re  # noqa: PLC0415
     from pathlib import Path  # noqa: PLC0415
 
     results: list[str] = []
+    seen: set[str] = set()
     try:
         src_path = Path(file_path) if Path(file_path).is_absolute() else (
             Path(cwd) / file_path if cwd else Path(file_path)
@@ -146,14 +154,63 @@ def _parse_local_imports(source: str, file_path: str, cwd: str | None) -> list[s
             r"^(?:from\s+(\.{0,3}[\w.]*)\s+import\s+[\w*, ]+|import\s+([\w., ]+))\s*$"
         )
 
-        for line in source.splitlines():
+        # Pre-pass: stitch multi-line parenthesized imports and backslash
+        # continuations into single logical lines so the per-line regex can
+        # match them.  Cap the input to the first _IMPORT_SCAN_LINE_LIMIT raw
+        # lines so a giant module body cannot make this loop slow.
+        raw_lines = source.splitlines()[:_IMPORT_SCAN_LINE_LIMIT]
+        logical_lines: list[str] = []
+        i = 0
+        while i < len(raw_lines):
+            line = raw_lines[i]
             stripped = line.strip()
-            if not stripped or stripped.startswith("#"):
+            # Handle ``from foo import (`` continuations: keep consuming until
+            # the closing ``)``.
+            if "(" in stripped and stripped.count("(") > stripped.count(")") \
+                    and stripped.startswith(("from ", "import ")):
+                acc = [stripped]
+                depth = stripped.count("(") - stripped.count(")")
+                i += 1
+                while i < len(raw_lines) and depth > 0:
+                    nxt = raw_lines[i].strip()
+                    acc.append(nxt)
+                    depth += nxt.count("(") - nxt.count(")")
+                    i += 1
+                # Flatten the parenthesized list into ``from foo import a, b, c``.
+                joined = " ".join(acc).replace("(", "").replace(")", "")
+                # Collapse internal whitespace so the regex matches.
+                joined = " ".join(joined.split())
+                logical_lines.append(joined)
                 continue
-            m = _import_re.match(stripped)
+            # Handle ``import foo \`` backslash continuations.
+            if stripped.endswith("\\"):
+                acc = [stripped.rstrip("\\").rstrip()]
+                i += 1
+                while i < len(raw_lines):
+                    nxt = raw_lines[i].strip()
+                    if nxt.endswith("\\"):
+                        acc.append(nxt.rstrip("\\").rstrip())
+                        i += 1
+                    else:
+                        acc.append(nxt)
+                        i += 1
+                        break
+                logical_lines.append(" ".join(acc))
+                continue
+            logical_lines.append(stripped)
+            i += 1
+
+        # Main pass: scan logical lines for import statements.  Unlike the
+        # previous implementation we *continue* on non-import lines instead of
+        # breaking, so imports below a ``try:`` block, ``if TYPE_CHECKING:``
+        # gate, or decorator stack are still discovered.
+        for logical in logical_lines:
+            if not logical or logical.startswith("#"):
+                continue
+            m = _import_re.match(logical)
             if not m:
-                # Stop scanning at first non-import line
-                break
+                # Not an import line — skip rather than abort the scan.
+                continue
 
             module_str = m.group(1) if m.group(1) is not None else m.group(2)
             if not module_str:
@@ -163,6 +220,7 @@ def _parse_local_imports(source: str, file_path: str, cwd: str | None) -> list[s
                 mod = mod.strip()
                 if not mod:
                     continue
+                candidate: Path | None = None
                 if mod.startswith("."):
                     # Relative import: resolve against src_dir
                     dots = len(mod) - len(mod.lstrip("."))
@@ -174,22 +232,27 @@ def _parse_local_imports(source: str, file_path: str, cwd: str | None) -> list[s
                         candidate = base / (mod_name.replace(".", "/") + ".py")
                     else:
                         candidate = base / "__init__.py"
-                    if candidate.exists():
-                        results.append(str(candidate))
+                    if not candidate.exists():
+                        candidate = None
                 else:
                     # Absolute import: try direct path relative to cwd/project
                     search_base = Path(cwd) if cwd else src_dir
-                    candidate = search_base / (mod.replace(".", "/") + ".py")
-                    if candidate.exists():
-                        results.append(str(candidate))
+                    c1 = search_base / (mod.replace(".", "/") + ".py")
+                    if c1.exists():
+                        candidate = c1
                     else:
                         # Try one level up (common for src-layout projects)
-                        candidate2 = search_base.parent / (mod.replace(".", "/") + ".py")
-                        if candidate2.exists():
-                            results.append(str(candidate2))
+                        c2 = search_base.parent / (mod.replace(".", "/") + ".py")
+                        if c2.exists():
+                            candidate = c2
 
-                if len(results) >= _PREDICTIVE_SNAPSHOT_CAP:
-                    return results[:_PREDICTIVE_SNAPSHOT_CAP]
+                if candidate is not None:
+                    resolved = str(candidate)
+                    if resolved not in seen:
+                        seen.add(resolved)
+                        results.append(resolved)
+                        if len(results) >= _PREDICTIVE_SNAPSHOT_CAP:
+                            return results[:_PREDICTIVE_SNAPSHOT_CAP]
 
     except Exception:  # noqa: BLE001
         pass

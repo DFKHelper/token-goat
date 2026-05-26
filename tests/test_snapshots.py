@@ -1,6 +1,8 @@
 """Tests for the per-session file-content snapshot store + diff-aware re-read."""
 from __future__ import annotations
 
+from pathlib import Path
+
 from hook_helpers import assert_continue as _assert_continue
 
 from token_goat import hints, hooks_read, session, snapshots
@@ -250,3 +252,93 @@ class TestPredictiveSnapshot:
         )
         assert snap_count <= 3, f"Expected at most 3 pre-snapshots, got {snap_count}"
         assert snap_count >= 1, "Expected at least 1 pre-snapshot to have been taken"
+
+    def test_imports_below_type_checking_block_picked_up(self, tmp_path):
+        """Imports under ``if TYPE_CHECKING:`` or ``try:`` are not a hard stop."""
+        from token_goat.hooks_edit import _parse_local_imports
+
+        # The real bug: legacy regex broke on the first non-import line, which
+        # meant ``if TYPE_CHECKING:`` (or a docstring, decorator, ``try:``)
+        # silently aborted the scan and the ``.util`` import below was lost.
+        util_py = tmp_path / "util.py"
+        util_py.write_text("def helper(): pass\n", encoding="utf-8")
+        other_py = tmp_path / "other.py"
+        other_py.write_text("def go(): pass\n", encoding="utf-8")
+
+        main_py = tmp_path / "main.py"
+        main_py.write_text(
+            '"""Module docstring."""\n'
+            "from __future__ import annotations\n"
+            "\n"
+            "from typing import TYPE_CHECKING\n"
+            "\n"
+            "if TYPE_CHECKING:\n"
+            "    from .util import helper\n"
+            "\n"
+            "try:\n"
+            "    from .other import go\n"
+            "except ImportError:\n"
+            "    go = None\n",
+            encoding="utf-8",
+        )
+
+        resolved = _parse_local_imports(
+            main_py.read_text(encoding="utf-8"), str(main_py), str(tmp_path),
+        )
+        # Both .util and .other should be discoverable — neither is at the
+        # top of the file, but neither should have been silently skipped.
+        assert any(r.endswith("util.py") for r in resolved), \
+            f"util.py missing from {resolved}"
+        assert any(r.endswith("other.py") for r in resolved), \
+            f"other.py missing from {resolved}"
+
+    def test_multiline_parenthesized_import(self, tmp_path):
+        """``from foo import (\\n  bar,\\n)`` resolves like its single-line form."""
+        from token_goat.hooks_edit import _parse_local_imports
+
+        (tmp_path / "util.py").write_text("def a(): pass\n", encoding="utf-8")
+
+        main_py = tmp_path / "main.py"
+        main_py.write_text(
+            "from .util import (\n"
+            "    a,\n"
+            "    b,\n"
+            "    c,\n"
+            ")\n"
+            "\n"
+            "def run(): pass\n",
+            encoding="utf-8",
+        )
+        resolved = _parse_local_imports(
+            main_py.read_text(encoding="utf-8"), str(main_py), str(tmp_path),
+        )
+        assert any(r.endswith("util.py") for r in resolved), \
+            f"util.py not found in multi-line import scan: {resolved}"
+
+    def test_duplicate_import_paths_deduped_before_cap(self, tmp_path):
+        """Two imports of the same module count as one toward the cap."""
+        from token_goat.hooks_edit import _parse_local_imports
+
+        # Three real modules + duplicate imports of one of them.  Without
+        # dedup, the duplicate would consume a slot in the cap-of-3 budget
+        # and starve a real third module.
+        for name in ("a", "b", "c"):
+            (tmp_path / f"{name}.py").write_text(f"# {name}\n", encoding="utf-8")
+
+        main_py = tmp_path / "main.py"
+        main_py.write_text(
+            "from .a import x\n"
+            "from .a import y\n"  # duplicate target — must not consume a slot
+            "from .b import z\n"
+            "from .c import w\n",
+            encoding="utf-8",
+        )
+        resolved = _parse_local_imports(
+            main_py.read_text(encoding="utf-8"), str(main_py), str(tmp_path),
+        )
+        # We should get three distinct resolved paths, not two-plus-a-duplicate.
+        assert len(resolved) == len(set(resolved)), \
+            f"duplicates leaked through dedup: {resolved}"
+        names = {Path(r).name for r in resolved}
+        assert {"a.py", "b.py", "c.py"} == names, \
+            f"expected all three distinct modules, got {names}"
