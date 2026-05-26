@@ -72,7 +72,7 @@ def _write_creds_secure(path: Path, content: str) -> None:
     import threading  # noqa: PLC0415
     import time  # noqa: PLC0415
 
-    path.parent.mkdir(parents=True, exist_ok=True)
+    paths.ensure_dir(path.parent)
     if sys.platform != "win32":
         # Write via a low-level fd opened with restrictive mode so the file is
         # never world-readable, even briefly before a post-write chmod.
@@ -322,7 +322,7 @@ def _download_to_cache(
     t_write_start = time.monotonic()
     download_elapsed = t_write_start - t_download_start
     try:
-        local_path.parent.mkdir(parents=True, exist_ok=True)
+        paths.ensure_dir(local_path.parent)
         # Atomic write: write to a temp file then rename so a killed/crashed
         # process never leaves a truncated cache file that looks valid.
         paths.atomic_write_bytes(local_path, buf.getvalue())

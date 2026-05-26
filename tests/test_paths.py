@@ -515,3 +515,86 @@ class TestNormalizeKey:
         ]
         for p in sample_paths:
             assert session._normalize_path(p) == paths.normalize_key(p)
+
+
+class TestEnsureDirRaceTolerance:
+    """Regression coverage for the Windows mkdir race captured in
+    feedback_windows_pathlib_mkdir_race.md. ``paths.ensure_dir`` must not
+    raise when two writers create the same target concurrently, even when
+    the underlying ``Path.mkdir(parents=True, exist_ok=True)`` spuriously
+    raises ``FileExistsError`` (the precise Windows failure mode)."""
+
+    def test_concurrent_threads_creating_same_dir(self, tmp_path):
+        """Two threads calling ensure_dir on the same target must both succeed."""
+        import threading
+
+        target = tmp_path / "deep" / "nested" / "race-target"
+        barrier = threading.Barrier(8)
+        errors: list[BaseException] = []
+        results: list[Path] = []
+        lock = threading.Lock()
+
+        def worker() -> None:
+            try:
+                barrier.wait(timeout=2.0)
+                out = paths.ensure_dir(target)
+                with lock:
+                    results.append(out)
+            except BaseException as exc:  # noqa: BLE001
+                with lock:
+                    errors.append(exc)
+
+        threads = [threading.Thread(target=worker) for _ in range(8)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(timeout=5.0)
+
+        assert not errors, f"ensure_dir raised under concurrent writers: {errors!r}"
+        assert len(results) == 8
+        assert target.is_dir()
+        for r in results:
+            assert r == target
+
+    def test_returns_path_when_target_already_exists(self, tmp_path):
+        """ensure_dir is idempotent: pre-existing directory returns unchanged."""
+        target = tmp_path / "already-there"
+        target.mkdir()
+        out = paths.ensure_dir(target)
+        assert out == target
+        assert target.is_dir()
+
+    def test_handles_spurious_fileexistserror(self, tmp_path, monkeypatch):
+        """Simulate the Windows race where Path.mkdir wrongly raises FileExistsError
+        on a directory that genuinely exists (stat-attribute lag). ensure_dir
+        must recover via the path.exists() fallback rather than propagating."""
+        from pathlib import Path as RealPath
+
+        target = tmp_path / "spurious-race"
+        target.mkdir()  # directory actually exists
+
+        original_mkdir = RealPath.mkdir
+        calls = {"n": 0}
+
+        def fake_mkdir(self, *args, **kwargs):  # noqa: ANN001
+            # Only intercept the race-target; let unrelated mkdir calls pass.
+            if self == target:
+                calls["n"] += 1
+                raise FileExistsError(17, "File exists", str(self))
+            return original_mkdir(self, *args, **kwargs)
+
+        monkeypatch.setattr(RealPath, "mkdir", fake_mkdir)
+
+        # Must not raise — the retry + exists() fallback handles the race.
+        out = paths.ensure_dir(target)
+        assert out == target
+        assert calls["n"] >= 1, "fake_mkdir was not exercised"
+
+    def test_raises_when_path_genuinely_cannot_be_created(self, tmp_path):
+        """When the path cannot exist (file in the way of a dir), raise."""
+        blocker = tmp_path / "blocker"
+        blocker.write_text("i am a file, not a directory")
+
+        # Creating a directory at a path occupied by a file must still surface.
+        with pytest.raises((FileExistsError, NotADirectoryError, OSError)):
+            paths.ensure_dir(blocker / "child")

@@ -238,7 +238,7 @@ def store(
     sha = hashlib.sha256(content).hexdigest()
     safe_kind = kind if kind in _VALID_KINDS else _KIND_READ
     with safe_cache_op(f"store:{sanitize_log_str(file_path)}", log=_LOG):
-        p.parent.mkdir(parents=True, exist_ok=True)
+        paths.ensure_dir(p.parent)
         _evict_oldest(p.parent, MAX_SNAPSHOTS_PER_SESSION - 1)
         paths.atomic_write_bytes(p, content)
         # Sidecar write is best-effort: if it fails the snapshot itself is

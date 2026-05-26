@@ -93,7 +93,7 @@ def set_entry(project_hash: str, key: str, value: str) -> None:
     """Set *key* to *value* in this project's memory."""
     _validate_key(key)
     p = memory_path(project_hash)
-    p.parent.mkdir(parents=True, exist_ok=True)
+    paths.ensure_dir(p.parent)
     entries = _load_raw(p)
     entries[key] = value
     _save(p, entries)

@@ -341,7 +341,7 @@ def _write_manifest_sidecar(
 
     try:
         sidecar = paths.manifest_sha_sidecar_path(session_id)
-        sidecar.parent.mkdir(parents=True, exist_ok=True)
+        paths.ensure_dir(sidecar.parent)
         payload_dict: dict[str, object] = {
             "v": _SIDECAR_VERSION,
             "sha": sha,

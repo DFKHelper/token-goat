@@ -964,7 +964,7 @@ def save(config: Config) -> None:
     import tomli_w  # noqa: PLC0415
 
     p = paths.config_path()
-    p.parent.mkdir(parents=True, exist_ok=True)
+    paths.ensure_dir(p.parent)
     ca = config.compact_assist
     bc = config.bash_compress
     sb = config.session_brief

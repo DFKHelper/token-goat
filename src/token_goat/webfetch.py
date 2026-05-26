@@ -403,7 +403,7 @@ def _write_content_index(content_sha256: str, cache_path: Path) -> None:
     """
     idx = _content_index_path(content_sha256)
     try:
-        idx.parent.mkdir(parents=True, exist_ok=True)
+        paths.ensure_dir(idx.parent)
         # Store the path as a POSIX-style absolute string so the file is portable
         # across platforms (matters on WSL where the same cache dir might be
         # opened from both Linux and Windows code paths).
