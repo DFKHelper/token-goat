@@ -14,4 +14,7 @@ pre-push:
     test:
       env:
         PYTHONIOENCODING: "utf-8:replace"
-      run: uv run pytest -q --tb=short
+      # Match CI's fast-tier filter — slow concurrency tests run in CI's
+      # opt-in slow tier where they get a clean runner. Locally under
+      # heavy disk pressure they go flaky and produce false alarms.
+      run: uv run pytest -m "not slow" -q --tb=short
