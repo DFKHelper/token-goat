@@ -891,6 +891,46 @@ def _strip_token_goat_entries(entries: list[dict[str, object]]) -> list[dict[str
     return kept
 
 
+def _merge_token_goat_hooks(
+    existing_hooks: dict[str, list[dict[str, object]]],
+    our_hooks: dict[str, list[_HookMatcherEntry]],
+) -> tuple[list[str], list[str]]:
+    """Idempotently merge *our_hooks* into *existing_hooks* in place.
+
+    For each event in *our_hooks*: strip any prior token-goat entries from the
+    existing list, then append the fresh ones.  Returns ``(added, replaced)``
+    where each list contains event names suitable for logging.
+
+    Used by both :func:`patch_settings_json` (Claude settings.json) and
+    :func:`patch_codex_config` (Codex config.toml) — same shape, two harnesses.
+    """
+    added: list[str] = []
+    replaced: list[str] = []
+    for event, entries in our_hooks.items():
+        existing_entries = existing_hooks.get(event, [])
+        kept = _strip_token_goat_entries(existing_entries)
+        stripped_count = len(existing_entries) - len(kept)
+        existing_hooks[event] = kept + cast(list[dict[str, object]], entries)
+        if stripped_count:
+            replaced.append(f"{event}(replaced {stripped_count})")
+        else:
+            added.append(event)
+    return added, replaced
+
+
+def _strip_token_goat_hooks(hooks: dict[str, list[dict[str, object]]]) -> None:
+    """Remove all token-goat entries from *hooks* in place, dropping empty events.
+
+    Used by both :func:`unpatch_settings_json` and :func:`unpatch_codex_config`.
+    """
+    for event in list(hooks.keys()):
+        cleaned = _strip_token_goat_entries(hooks.get(event, []))
+        if cleaned:
+            hooks[event] = cleaned
+        else:
+            del hooks[event]
+
+
 def _read_settings_json(settings_path: Path) -> dict[str, object] | None:
     """Parse *settings_path* as JSON and return the dict.
 
@@ -953,18 +993,7 @@ def patch_settings_json() -> tuple[bool, str]:
 
     raw_hooks = current.get("hooks", {})
     existing_hooks: dict[str, list[dict[str, object]]] = raw_hooks if isinstance(raw_hooks, dict) else {}
-    hooks_added: list[str] = []
-    hooks_replaced: list[str] = []
-    for event, entries in our_hooks.items():
-        existing_entries = existing_hooks.get(event, [])
-        # Strip any prior token-goat entries, then append fresh ones
-        kept = _strip_token_goat_entries(existing_entries)
-        stripped_count = len(existing_entries) - len(kept)
-        existing_hooks[event] = kept + cast(list[dict[str, object]], entries)
-        if stripped_count:
-            hooks_replaced.append(f"{event}(replaced {stripped_count})")
-        else:
-            hooks_added.append(event)
+    hooks_added, hooks_replaced = _merge_token_goat_hooks(existing_hooks, our_hooks)
     current["hooks"] = existing_hooks
     if hooks_replaced:
         _LOG.info("patch_settings_json: replaced existing entries for: %s", ", ".join(hooks_replaced))
@@ -1002,12 +1031,7 @@ def unpatch_settings_json() -> str:
 
     raw_hooks = current.get("hooks", {})
     hooks: dict[str, list[dict[str, object]]] = raw_hooks if isinstance(raw_hooks, dict) else {}
-    for event in list(hooks.keys()):
-        cleaned = _strip_token_goat_entries(hooks.get(event, []))
-        if cleaned:
-            hooks[event] = cleaned
-        else:
-            del hooks[event]
+    _strip_token_goat_hooks(hooks)
     current["hooks"] = hooks
 
     raw_perms = current.get("permissions", {})
@@ -1070,33 +1094,12 @@ def _patch_md_block(md_path: Path, begin_marker: str, end_marker: str, content: 
     return str(md_path)
 
 
-def _unpatch_md_block(md_path: Path, begin_marker: str, end_marker: str, not_found_msg: str) -> str:
+def _remove_md_block(md_path: Path, begin_marker: str, end_marker: str) -> bool:
     """Remove the delimited block between *begin_marker* and *end_marker* from *md_path*.
 
-    Returns a status string.  Extracted to eliminate the identical removal
-    pattern duplicated in ``unpatch_claude_md`` and ``unpatch_codex_agents_md``.
-    """
-    if not md_path.exists():
-        return not_found_msg
-    content = md_path.read_text(encoding="utf-8")
-    new = re.sub(
-        r"\n*" + re.escape(begin_marker) + r".*?" + re.escape(end_marker) + r"\n*",
-        "\n",
-        content,
-        flags=re.DOTALL,
-    ).strip()
-    # Atomic write: a crash mid-write must never leave a truncated markdown file behind.
-    paths.atomic_write_text(md_path, new + "\n" if new else "")
-    return str(md_path)
-
-
-def _strip_legacy_block(md_path: Path, begin_marker: str, end_marker: str) -> bool:
-    """Remove a legacy ``tokenwise``-era delimited block from *md_path* if present.
-
-    Returns ``True`` if a block was stripped, ``False`` otherwise. The modern
-    patch path calls this before writing its block so a single install run
-    leaves only the up-to-date content — even on machines that were installed
-    under the old binary name and never had their routing tables migrated.
+    Returns ``True`` when a block was stripped (file rewritten), ``False`` when
+    nothing matched (file unchanged or absent). Shared by :func:`_unpatch_md_block`
+    and :func:`_strip_legacy_block` — same regex, same atomic-write contract.
     """
     if not md_path.exists():
         return False
@@ -1109,8 +1112,34 @@ def _strip_legacy_block(md_path: Path, begin_marker: str, end_marker: str) -> bo
         content,
         flags=re.DOTALL,
     ).strip()
+    # Atomic write: a crash mid-write must never leave a truncated markdown file behind.
     paths.atomic_write_text(md_path, new + "\n" if new else "")
     return True
+
+
+def _unpatch_md_block(md_path: Path, begin_marker: str, end_marker: str, not_found_msg: str) -> str:
+    """Remove the delimited block between *begin_marker* and *end_marker* from *md_path*.
+
+    Returns a status string.  Extracted to eliminate the identical removal
+    pattern duplicated in ``unpatch_claude_md`` and ``unpatch_codex_agents_md``.
+    """
+    if not md_path.exists():
+        return not_found_msg
+    _remove_md_block(md_path, begin_marker, end_marker)
+    # Always return the path even when no block matched — the caller treats this
+    # as "we considered the file" rather than "we mutated it".
+    return str(md_path)
+
+
+def _strip_legacy_block(md_path: Path, begin_marker: str, end_marker: str) -> bool:
+    """Remove a legacy ``tokenwise``-era delimited block from *md_path* if present.
+
+    Returns ``True`` if a block was stripped, ``False`` otherwise. The modern
+    patch path calls this before writing its block so a single install run
+    leaves only the up-to-date content — even on machines that were installed
+    under the old binary name and never had their routing tables migrated.
+    """
+    return _remove_md_block(md_path, begin_marker, end_marker)
 
 
 # ---------------------------------------------------------------------------
@@ -1404,10 +1433,7 @@ def patch_codex_config(binary: str) -> str:
 
     our_hooks = _codex_hooks_block(binary)
     existing_hooks = existing.get("hooks", {})
-    for event, entries in our_hooks.items():
-        existing_entries = existing_hooks.get(event, [])
-        kept = _strip_token_goat_entries(existing_entries)
-        existing_hooks[event] = kept + cast(list[dict[str, object]], entries)
+    _merge_token_goat_hooks(existing_hooks, our_hooks)
     existing["hooks"] = existing_hooks
 
     # Atomic write: a crash mid-write must never leave a truncated config.toml behind.
@@ -1427,12 +1453,7 @@ def unpatch_codex_config() -> str:
 
     existing = tomllib.loads(cfg_path.read_text(encoding="utf-8"))
     hooks = existing.get("hooks", {})
-    for event in list(hooks.keys()):
-        cleaned = _strip_token_goat_entries(hooks[event])
-        if cleaned:
-            hooks[event] = cleaned
-        else:
-            del hooks[event]
+    _strip_token_goat_hooks(hooks)
     existing["hooks"] = hooks
 
     # Atomic write: a crash mid-write must never leave a truncated config.toml behind.

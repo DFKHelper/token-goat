@@ -23,6 +23,18 @@ import sys
 # Respects NO_COLOR — callers can check `USE_COLOR` before rendering.
 
 
+def _color_stream(stream: object) -> bool:
+    """Return True when *stream* is a TTY and the ``NO_COLOR`` env-var is unset.
+
+    Follows the `no-color.org <https://no-color.org/>`_ convention.  Shared by
+    :func:`color_stdout` and :func:`color_stderr` so the rule lives in one place.
+    """
+    if os.environ.get("NO_COLOR"):
+        return False
+    isatty = getattr(stream, "isatty", None)
+    return bool(isatty and isatty())
+
+
 def color_stdout() -> bool:
     """Return True when stdout supports ANSI colour.
 
@@ -30,7 +42,7 @@ def color_stdout() -> bool:
     `no-color.org <https://no-color.org/>`_ convention.  Use for output written
     to stdout (stats panels, map output, etc.).
     """
-    return not os.environ.get("NO_COLOR") and sys.stdout.isatty()
+    return _color_stream(sys.stdout)
 
 
 def color_stderr() -> bool:
@@ -40,7 +52,7 @@ def color_stderr() -> bool:
     Use for progress indicators, spinners, and diagnostic output written to
     stderr.
     """
-    return not os.environ.get("NO_COLOR") and sys.stderr.isatty()
+    return _color_stream(sys.stderr)
 
 
 USE_COLOR: bool = color_stdout()
