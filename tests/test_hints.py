@@ -2658,3 +2658,118 @@ class TestProximityCheck:
         )
         # Verify proximity constant is a positive integer (sanity check on the export).
         assert _PROXIMITY_SLOP_LINES > 0
+
+
+# ---------------------------------------------------------------------------
+# JSON sidecar (opt-in [hints] json_sidecar = true)
+# ---------------------------------------------------------------------------
+
+
+class TestJsonSidecar:
+    """The structured-JSON sidecar prepends a machine-readable line before the
+    existing prose hint when [hints] json_sidecar is enabled.  The prose itself
+    must stay byte-for-byte identical so existing tests, dedup, and curator
+    metrics keep working."""
+
+    def test_sidecar_off_by_default(self, tmp_data_dir, monkeypatch):
+        """Default config has json_sidecar=False; prose hint has no JSON prefix."""
+        monkeypatch.delenv("TOKEN_GOAT_HINT_JSON_SIDECAR", raising=False)
+        sid = "s_sidecar_off"
+        path = "C:/proj/sidecar_off.py"
+        _mark(tmp_data_dir, sid, path, offset=0, limit=200)
+
+        hint = build_read_hint(
+            session_id=sid, file_path=path, offset=0, limit=200, cwd=None,
+        )
+        assert hint is not None
+        # No leading JSON object — the prose starts with the backtick filename.
+        assert not str(hint).startswith("{")
+
+    def test_sidecar_on_prepends_json_line(self, tmp_data_dir, monkeypatch):
+        """Env-var opt-in prepends a JSON line carrying the hint kind + fields."""
+        import json as _json
+
+        from token_goat import config as _config
+
+        monkeypatch.setenv("TOKEN_GOAT_HINT_JSON_SIDECAR", "1")
+        _config._config_mtime_cache = None  # type: ignore[attr-defined]
+
+        sid = "s_sidecar_on"
+        path = "C:/proj/sidecar_on.py"
+        _mark(tmp_data_dir, sid, path, offset=0, limit=200)
+
+        hint = build_read_hint(
+            session_id=sid, file_path=path, offset=0, limit=200, cwd=None,
+        )
+        assert hint is not None
+        text = str(hint)
+        first_line, _, rest = text.partition("\n")
+        payload = _json.loads(first_line)
+        assert payload["hint"] == "already_read"
+        assert payload["file"] == path
+        assert payload["wasted"] > 0
+        # Prose portion still contains the cache marker — unchanged.
+        assert "⌘" in rest
+
+    def test_sidecar_preserves_tokens_saved(self, tmp_data_dir, monkeypatch):
+        """The ReadHint subclass attribute tokens_saved survives the wrap."""
+        from token_goat import config as _config
+
+        monkeypatch.setenv("TOKEN_GOAT_HINT_JSON_SIDECAR", "1")
+        _config._config_mtime_cache = None  # type: ignore[attr-defined]
+
+        sid = "s_sidecar_tokens"
+        path = "C:/proj/sidecar_tokens.py"
+        _mark(tmp_data_dir, sid, path, offset=0, limit=200)
+
+        hint = build_read_hint(
+            session_id=sid, file_path=path, offset=0, limit=200, cwd=None,
+        )
+        assert hint is not None
+        assert hint.tokens_saved > 0
+
+    def test_sidecar_failsoft_on_bad_payload(self, monkeypatch):
+        """Encoding errors degrade gracefully — return original prose untouched."""
+        from token_goat import config as _config
+        from token_goat.hints import ReadHint, _emit_json_sidecar
+
+        monkeypatch.setenv("TOKEN_GOAT_HINT_JSON_SIDECAR", "1")
+        _config._config_mtime_cache = None  # type: ignore[attr-defined]
+
+        original = ReadHint("prose only", tokens_saved=42)
+        # ``object()`` is not JSON-serialisable — helper must catch and fall back.
+        result = _emit_json_sidecar(original, "already_read", bad=object())
+        assert result is original
+
+    def test_sidecar_disabled_returns_original_hint(self, monkeypatch):
+        """When the feature flag is off the helper is a pure pass-through."""
+        from token_goat import config as _config
+        from token_goat.hints import ReadHint, _emit_json_sidecar
+
+        monkeypatch.delenv("TOKEN_GOAT_HINT_JSON_SIDECAR", raising=False)
+        _config._config_mtime_cache = None  # type: ignore[attr-defined]
+
+        original = ReadHint("untouched prose", tokens_saved=7)
+        result = _emit_json_sidecar(original, "already_read", file="x")
+        assert result is original
+        assert str(result) == "untouched prose"
+
+    def test_sidecar_drops_none_fields(self, monkeypatch):
+        """Optional fields with value None are not serialised (keeps JSON terse)."""
+        import json as _json
+
+        from token_goat import config as _config
+        from token_goat.hints import ReadHint, _emit_json_sidecar
+
+        monkeypatch.setenv("TOKEN_GOAT_HINT_JSON_SIDECAR", "1")
+        _config._config_mtime_cache = None  # type: ignore[attr-defined]
+
+        original = ReadHint("prose", tokens_saved=10)
+        wrapped = _emit_json_sidecar(
+            original, "diff_since_last_read", file="x.py", added=2, line=None,
+        )
+        assert wrapped is not None
+        first_line, _, _ = str(wrapped).partition("\n")
+        payload = _json.loads(first_line)
+        assert "line" not in payload
+        assert payload["added"] == 2
