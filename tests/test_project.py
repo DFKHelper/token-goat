@@ -27,6 +27,110 @@ def test_project_hash_is_stable_and_deterministic(tmp_path):
     assert len(h1) == 40  # sha1 hex
 
 
+def test_project_hash_known_vectors_durable_format():
+    """Lock down the on-disk DB filename format against silent algorithm swaps.
+
+    The hash output is the filename of ``projects/{hash}.db`` on the user's
+    machine.  Any algorithm change (e.g. "let's switch to xxhash for speed")
+    invalidates EVERY existing per-project DB on upgrade — the user loses
+    indexed symbols, embeddings, stats, and decision-log history without
+    so much as a warning.  These known-value vectors guarantee a CI failure
+    the moment such a swap is attempted.
+
+    If this test ever needs to change, the accompanying commit MUST include
+    a migration shim (try new-style hash, fall back to old-style hash if
+    not found) so live installs keep working.
+
+    Vectors are derived from the documented algorithm: sha1 of
+    ``canonical_root.as_posix().encode("utf-8")``.  ``canonicalize`` is
+    responsible for lowercasing the drive letter; the hash sees that already
+    in lowercase form.
+    """
+    from pathlib import PurePosixPath
+
+    # Use PurePosixPath so the canonical-posix surface is consistent across
+    # the Windows test runner and the Linux CI runner.  Real callers pass the
+    # output of ``canonicalize()`` which has already collapsed both shells
+    # onto this same posix form.
+    cases = {
+        # Lowercased Windows drive letter, posix separators — typical Windows
+        # canonical form coming out of canonicalize("C:\\work\\foo").
+        "c:/work/foo": "5009f1e60b77a0e38e173f99c447b9f004d9b338",
+        # POSIX/WSL form.
+        "/home/u/repo": "d971d9f4d1c16fc77a6f96201e08b16fd0d76cb4",
+    }
+    for posix_path, expected_hash in cases.items():
+        # The function signature takes Path, not str — passing PurePosixPath
+        # keeps the test cross-platform.  project_hash uses .as_posix() so any
+        # Path subclass with the same posix surface yields the same hash.
+        actual = project_hash(PurePosixPath(posix_path))  # type: ignore[arg-type]
+        assert actual == expected_hash, (
+            f"project_hash format change detected for {posix_path!r}: "
+            f"got {actual}, expected {expected_hash}. "
+            "If this is intentional, the commit MUST include a migration "
+            "shim that finds existing projects/{old_hash}.db files."
+        )
+    # Edge case: PurePosixPath("") normalises to "." (current dir), so the
+    # hash is sha1(b".") — NOT sha1(b""), because Path discards the empty
+    # string.  This vector confirms the canonical-string contract: project_hash
+    # operates on as_posix() output, not the raw constructor input.
+    assert (
+        project_hash(PurePosixPath(""))  # type: ignore[arg-type]
+        == "3a52ce780950d4d969792a2559cd519d7ee8c727"
+    )
+
+
+def test_root_hash_matches_project_hash_for_same_canonical_path():
+    """``stats._root_hash`` and ``project_hash`` MUST agree on the same canonical
+    posix string.  The stats module uses ``_root_hash`` for project roots that
+    have no entry in the global ``projects`` table (so the projects.id JOIN
+    cannot be used); a divergence between the two would silently double-count
+    or orphan stats rows.  This test guards the invariant.
+    """
+    from pathlib import PurePosixPath
+
+    from token_goat.stats import _root_hash
+
+    for posix_path in ("c:/work/foo", "/home/u/repo", "c:/long/path/with/many/segments"):
+        assert _root_hash(posix_path) == project_hash(
+            PurePosixPath(posix_path)  # type: ignore[arg-type]
+        )
+
+
+def test_grep_pattern_hash_known_vectors_durable_format():
+    """Lock down the SQL-primary-key format for ``global.db::grep_patterns``.
+
+    The hash is the primary key for cross-session grep pattern dedup.  Changing
+    it (e.g. switching to xxhash for speed) silently breaks every previously
+    recorded grep pattern: the new code can never find the old rows, and the
+    old rows become orphaned dead weight in global.db.
+
+    Same migration-shim requirement applies as for project_hash: if this test
+    ever needs to change, the commit MUST migrate existing rows.
+    """
+    from token_goat.session import _grep_pattern_hash
+
+    # ASCII pattern.
+    assert (
+        _grep_pattern_hash("def foo")
+        == "a56cfa66045cc9bb9983be19974153631bbce34a"
+    )
+    # Non-ASCII pattern — surrogateescape handling matters here, so a known
+    # vector also confirms the encoding contract.
+    assert (
+        _grep_pattern_hash("café")
+        == "f424452a9673918c6f09b0cdd35b20be8e6ae7d7"
+    )
+    # hints._cross_session_grep_hint computes the same hash inline; they MUST
+    # match or the cross-session hint never fires.  Verify the contract.
+    import hashlib
+
+    inline = hashlib.sha1(
+        "def foo".encode("utf-8", errors="replace")
+    ).hexdigest()
+    assert _grep_pattern_hash("def foo") == inline
+
+
 def test_find_project_with_git_marker(tmp_path):
     (tmp_path / ".git").mkdir()
     proj = find_project(tmp_path)
