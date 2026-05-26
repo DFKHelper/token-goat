@@ -64,16 +64,19 @@ _KIND_TO_SOURCE: dict[str, str] = {
     # the re-read entirely — same prevention mechanism, same bucket.  Grep
     # dedup is a "prevent another file-like read" hint and stays in this
     # bucket too; the cross-tool symmetry keeps stats scannable.
+    #
+    # Note: `*_overhead` kinds are NOT listed here.  ``kind_to_source()`` strips
+    # the ``_overhead`` suffix and re-looks up the base kind, so every overhead
+    # row inherits its parent's bucket automatically.  This keeps the table
+    # mechanical-pair-free and prevents drift when a new hint is added but its
+    # overhead row is forgotten.
     "session_hint": SOURCE_HINT,
-    "session_hint_overhead": SOURCE_HINT,
     "diff_hint": SOURCE_HINT,
-    "diff_hint_overhead": SOURCE_HINT,
     # structured_file_hint: per-config-file (.toml/.yaml/.json/.ini/Dockerfile)
     # hint emitted by hooks_read.handle_pre_read_structured.  Same prevention
     # mechanism as session_hint (steer the agent toward `token-goat section`)
     # so it shares the bucket.
     "structured_file_hint": SOURCE_HINT,
-    "structured_file_hint_overhead": SOURCE_HINT,
     # predictive_prefetch_hit: attribution row written when a diff_hint fires
     # against a snapshot that was captured speculatively by post_edit (kind=
     # "predictive") rather than by post_read.  bytes_saved / tokens_saved are
@@ -84,7 +87,6 @@ _KIND_TO_SOURCE: dict[str, str] = {
     # row is always preserved for telemetry queries.
     "predictive_prefetch_hit": SOURCE_HINT,
     "grep_dedup_hint": SOURCE_HINT,
-    "grep_dedup_hint_overhead": SOURCE_HINT,
     # surgical read family — every variant that replaces a full-file Read with
     # a narrower slice belongs here so the user can see one combined "read"
     # savings line in `token-goat stats`.
@@ -117,7 +119,6 @@ _KIND_TO_SOURCE: dict[str, str] = {
     "compact_manifest": SOURCE_COMPACT,
     "compact_assist": SOURCE_COMPACT,
     "compact_recovery": SOURCE_COMPACT,
-    "compact_recovery_overhead": SOURCE_COMPACT,
     # skill_body_recall: `token-goat skill-body <name>` — re-loads a skill
     # body (whole or sliced) after compaction.  Same recovery family as the
     # compact_recovery hint, so it shares the bucket: both let the agent
@@ -139,7 +140,6 @@ _KIND_TO_SOURCE: dict[str, str] = {
     # distinct from preventing file re-reads (no source file is involved), so
     # it gets its own user-visible bucket rather than folding into HINT.
     "bash_dedup_hint": SOURCE_BASH,
-    "bash_dedup_hint_overhead": SOURCE_BASH,
     "bash_output_cached": SOURCE_BASH,
     # bash_output_recall: fired by cmd_bash_output when the agent calls
     # `token-goat bash-output` to retrieve a cached output.  saved_bytes =
@@ -164,7 +164,6 @@ _KIND_TO_SOURCE: dict[str, str] = {
     # network-savings line is distinct from the local-execution-savings line
     # in the stats output.
     "web_dedup_hint": SOURCE_WEB,
-    "web_dedup_hint_overhead": SOURCE_WEB,
     "web_output_cached": SOURCE_WEB,
     # web_output_recall: fired by cmd_web_output when the agent calls
     # `token-goat web-output` to retrieve a cached web response.  Same
@@ -189,19 +188,36 @@ _KIND_PREFIX_TO_SOURCE: tuple[tuple[str, str], ...] = (
 )
 
 
+_OVERHEAD_SUFFIX = "_overhead"
+
+
 def kind_to_source(kind: str) -> str:
     """Map a raw stats event *kind* to a user-facing source bucket.
 
     Returns one of ``SOURCE_IMAGE``, ``SOURCE_HINT``, ``SOURCE_READ``,
     ``SOURCE_COMPACT``, ``SOURCE_BASH``, ``SOURCE_WEB``, or ``SOURCE_OTHER``
-    for unknown kinds.  Dynamic kinds with a ``<family>:<subkind>`` shape are
-    matched against ``_KIND_PREFIX_TO_SOURCE`` first; the static dict is the
-    fallback for exact matches.  Used by :func:`summarize` to populate
-    ``StatsSummary.by_source``.
+    for unknown kinds.
+
+    Resolution order:
+    1. Exact match against ``_KIND_TO_SOURCE`` (the canonical static table).
+    2. If the kind ends in ``_overhead`` (the canonical hint-cost suffix),
+       re-look up the base kind without the suffix.  Every overhead row pairs
+       1:1 with a parent kind and shares its bucket, so this saves the table
+       from having to enumerate both halves of every pair.
+    3. ``<family>:<subkind>`` dynamic kinds match against
+       ``_KIND_PREFIX_TO_SOURCE`` (used by ``bash_compress:<filter>``).
+    4. Fallback ``SOURCE_OTHER``.
+
+    Used by :func:`summarize` to populate ``StatsSummary.by_source``.
     """
     src = _KIND_TO_SOURCE.get(kind)
     if src is not None:
         return src
+    if kind.endswith(_OVERHEAD_SUFFIX):
+        base = kind[: -len(_OVERHEAD_SUFFIX)]
+        base_src = _KIND_TO_SOURCE.get(base)
+        if base_src is not None:
+            return base_src
     for prefix, prefix_src in _KIND_PREFIX_TO_SOURCE:
         if kind.startswith(prefix):
             return prefix_src

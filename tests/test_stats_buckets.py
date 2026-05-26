@@ -35,3 +35,47 @@ class TestSourceBucketMapping:
         assert stats.kind_to_source("session_hint") == stats.SOURCE_HINT
         assert stats.kind_to_source("read_replacement") == stats.SOURCE_READ
         assert stats.kind_to_source("compact_manifest") == stats.SOURCE_COMPACT
+
+    def test_overhead_suffix_inherits_from_base(self):
+        """Any ``<base>_overhead`` kind resolves via the base lookup.
+
+        The seven ``*_overhead`` rows were previously enumerated in
+        ``_KIND_TO_SOURCE``.  ``kind_to_source()`` now strips the suffix and
+        re-queries the static dict, so the table only holds the base kinds and
+        the pair is impossible to drift out of sync.  This test guards the
+        suffix routing for both registered and unregistered hypothetical
+        future overhead rows.
+        """
+        # Registered base + overhead pair
+        assert stats.kind_to_source("session_hint_overhead") == stats.SOURCE_HINT
+        # The seven overhead kinds collapsed from the static map
+        for overhead_kind, expected in (
+            ("session_hint_overhead", stats.SOURCE_HINT),
+            ("diff_hint_overhead", stats.SOURCE_HINT),
+            ("structured_file_hint_overhead", stats.SOURCE_HINT),
+            ("grep_dedup_hint_overhead", stats.SOURCE_HINT),
+            ("compact_recovery_overhead", stats.SOURCE_COMPACT),
+            ("bash_dedup_hint_overhead", stats.SOURCE_BASH),
+            ("web_dedup_hint_overhead", stats.SOURCE_WEB),
+        ):
+            assert stats.kind_to_source(overhead_kind) == expected, (
+                f"{overhead_kind} did not inherit from its base"
+            )
+        # Hypothetical future overhead pair (no entry in the static map)
+        assert stats.kind_to_source("nonexistent_kind_overhead") == stats.SOURCE_OTHER, (
+            "overhead suffix must not promote unknown bases out of SOURCE_OTHER"
+        )
+
+    def test_overhead_not_listed_in_static_map(self):
+        """Guard against re-introducing ``_overhead`` entries to the static map.
+
+        The whole point of the suffix routing is to eliminate the mechanical
+        pair-duplication.  Any future addition of ``"x_overhead": SOURCE_*``
+        to ``_KIND_TO_SOURCE`` would silently bypass the suffix path and
+        re-introduce drift risk.
+        """
+        offenders = [k for k in stats._KIND_TO_SOURCE if k.endswith("_overhead")]
+        assert offenders == [], (
+            f"_overhead kinds must be routed by suffix, not by static entry; "
+            f"found: {offenders}"
+        )
