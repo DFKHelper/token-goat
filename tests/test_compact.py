@@ -1562,6 +1562,230 @@ class TestBuildSealedBlock:
         assert reloaded.compact_assist.enabled is False
         assert reloaded.compact_assist.min_events == 99
 
+    def test_resume_pointer_uses_top_edited_basename(self):
+        """RESUME line points to the most-edited file (basename only)."""
+        edited = {
+            "/proj/src/auth.py": 5,
+            "/proj/src/db.py": 2,
+        }
+        result = compact._build_sealed_block(edited, [], {})
+        text = "\n".join(result)
+        assert "🎯 RESUME: auth.py" in text, (
+            f"Expected RESUME pointer to auth.py (most-edited), got:\n{text}"
+        )
+
+    def test_resume_pointer_falls_back_to_blocker_cmd(self):
+        """When no edits, RESUME points to the failing command's binary."""
+        import types
+        entry = types.SimpleNamespace(
+            cmd_preview="FOO=bar pytest tests/compact_test.py",
+            exit_code=1,
+            ts=time.time(),
+            output_id="",
+            stdout_bytes=0,
+            stderr_bytes=0,
+        )
+        result = compact._build_sealed_block({}, [entry], {})
+        text = "\n".join(result)
+        # FOO=bar is an env-assignment; the first non-flag/non-assign token wins.
+        assert "🎯 RESUME: re-run pytest" in text, (
+            f"Expected RESUME pointer to pytest, got:\n{text}"
+        )
+
+    def test_resume_pointer_omitted_for_skill_only_block(self):
+        """Skills-only sealed block has no RESUME line (the skill list is its own anchor)."""
+        import types
+        skill = types.SimpleNamespace(
+            skill_name="ralph", ts=time.time(),
+            body_bytes=1024, run_count=1, truncated=False,
+        )
+        result = compact._build_sealed_block({}, [], {"ralph": skill})
+        text = "\n".join(result)
+        assert "🎯 RESUME:" not in text, (
+            f"Skill-only block should not emit a RESUME line, got:\n{text}"
+        )
+
+    def test_blocker_slot_uses_error_preview_when_available(self, tmp_path, monkeypatch):
+        """When the cached bash output contains an error line, sealed-block uses it
+        instead of the bare '(exit N)' tail."""
+        import types
+
+        from token_goat import bash_cache
+
+        # Patch bash_cache.load_output to return a synthetic failure trace.
+        fake_output = (
+            "running tests...\n"
+            "test_foo PASSED\n"
+            "test_bar FAILED\n"
+            "AssertionError: expected 5, got 4\n"
+            "1 failed in 0.02s\n"
+        )
+        monkeypatch.setattr(bash_cache, "load_output", lambda oid: fake_output)
+        # Clear the per-process cache so the patched loader is exercised.
+        compact._blocker_preview_cache.clear()
+
+        entry = types.SimpleNamespace(
+            cmd_preview="pytest",
+            exit_code=1,
+            ts=time.time(),
+            output_id="abc123",
+            stdout_bytes=200,
+            stderr_bytes=0,
+        )
+        result = compact._build_sealed_block({}, [entry], {})
+        text = "\n".join(result)
+        assert "AssertionError" in text or "FAILED" in text, (
+            f"Expected error preview in sealed block, got:\n{text}"
+        )
+
+    def test_format_blocker_entry_appends_error_preview(self, monkeypatch):
+        """_format_blocker_entry surfaces a one-line error preview after the cmd."""
+        import types
+
+        from token_goat import bash_cache
+
+        fake_output = "ModuleNotFoundError: No module named 'foo'\n"
+        monkeypatch.setattr(bash_cache, "load_output", lambda oid: fake_output)
+        compact._blocker_preview_cache.clear()
+
+        entry = types.SimpleNamespace(
+            cmd_preview="python -m pytest tests/test_x.py",
+            exit_code=1,
+            ts=time.time(),
+            output_id="def456",
+            stdout_bytes=100,
+            stderr_bytes=0,
+        )
+        line = compact._format_blocker_entry(entry)
+        assert "ModuleNotFoundError" in line, (
+            f"Expected error preview in blocker line, got: {line!r}"
+        )
+        assert "(exit 1)" in line, f"Exit-code marker missing: {line!r}"
+
+    def test_format_blocker_entry_silent_on_cache_miss(self, monkeypatch):
+        """Cache miss on load_output produces a bare blocker line without raising."""
+        import types
+
+        from token_goat import bash_cache
+
+        monkeypatch.setattr(bash_cache, "load_output", lambda oid: None)
+        compact._blocker_preview_cache.clear()
+
+        entry = types.SimpleNamespace(
+            cmd_preview="make build",
+            exit_code=2,
+            ts=time.time(),
+            output_id="ghi789",
+            stdout_bytes=0,
+            stderr_bytes=0,
+        )
+        line = compact._format_blocker_entry(entry)
+        assert line == "- ✗ make build  (exit 2)", (
+            f"Expected bare blocker line on cache miss, got: {line!r}"
+        )
+
+    def test_extract_blocker_error_preview_fail_soft_on_exception(self, monkeypatch):
+        """Any exception from bash_cache.load_output returns empty string."""
+        import types
+
+        from token_goat import bash_cache
+
+        def _boom(_oid: str) -> str | None:
+            raise RuntimeError("synthetic disk failure")
+
+        monkeypatch.setattr(bash_cache, "load_output", _boom)
+        compact._blocker_preview_cache.clear()
+
+        entry = types.SimpleNamespace(output_id="boom_id")
+        # Must not raise.
+        result = compact._extract_blocker_error_preview(entry)
+        assert result == "", f"Expected empty preview on exception, got: {result!r}"
+
+
+class TestPreCompactPressureAwareSizing:
+    """pre_compact hook applies the auto_trigger_multiplier when trigger=auto."""
+
+    def _make_fake_cfg(self, *, multiplier: float = 2.0):
+        from unittest.mock import MagicMock
+        fake_cfg = MagicMock()
+        fake_cfg.compact_assist.enabled = True
+        fake_cfg.compact_assist.triggers = ["manual", "auto"]
+        fake_cfg.compact_assist.max_manifest_tokens = 400
+        fake_cfg.compact_assist.min_events = 0
+        fake_cfg.compact_assist.auto_trigger_multiplier = multiplier
+        return fake_cfg
+
+    def test_auto_trigger_doubles_budget_by_default(self, tmp_data_dir):
+        """trigger='auto' with multiplier=2.0 → effective_tokens = 800."""
+        from unittest.mock import MagicMock, patch
+
+        from token_goat import hooks_cli
+
+        captured: dict = {}
+
+        def _capture(session_id: str, max_tokens: int = 400):
+            captured["max_tokens"] = max_tokens
+            return ("## manifest body", 10)
+
+        fake_cfg = self._make_fake_cfg(multiplier=2.0)
+        with patch("token_goat.config.load", return_value=fake_cfg), \
+             patch("token_goat.session.safe_load", return_value=MagicMock()), \
+             patch("token_goat.compact.build_manifest_with_count", side_effect=_capture):
+            payload = {"session_id": "auto_boost_sess", "trigger": "auto"}
+            result = hooks_cli.pre_compact(payload)
+
+        assert result.get("continue") is True
+        assert captured.get("max_tokens") == 800, (
+            f"Expected auto-trigger boost 400→800, got {captured.get('max_tokens')}"
+        )
+
+    def test_manual_trigger_keeps_base_budget(self, tmp_data_dir):
+        """trigger='manual' → base budget is used unmodified."""
+        from unittest.mock import MagicMock, patch
+
+        from token_goat import hooks_cli
+
+        captured: dict = {}
+
+        def _capture(session_id: str, max_tokens: int = 400):
+            captured["max_tokens"] = max_tokens
+            return ("## manifest body", 10)
+
+        fake_cfg = self._make_fake_cfg(multiplier=2.0)
+        with patch("token_goat.config.load", return_value=fake_cfg), \
+             patch("token_goat.session.safe_load", return_value=MagicMock()), \
+             patch("token_goat.compact.build_manifest_with_count", side_effect=_capture):
+            payload = {"session_id": "manual_sess", "trigger": "manual"}
+            result = hooks_cli.pre_compact(payload)
+
+        assert result.get("continue") is True
+        assert captured.get("max_tokens") == 400, (
+            f"Expected manual trigger to use base 400, got {captured.get('max_tokens')}"
+        )
+
+    def test_multiplier_1_disables_boost(self, tmp_data_dir):
+        """multiplier=1.0 means no boost even for auto trigger."""
+        from unittest.mock import MagicMock, patch
+
+        from token_goat import hooks_cli
+
+        captured: dict = {}
+
+        def _capture(session_id: str, max_tokens: int = 400):
+            captured["max_tokens"] = max_tokens
+            return ("## manifest body", 10)
+
+        fake_cfg = self._make_fake_cfg(multiplier=1.0)
+        with patch("token_goat.config.load", return_value=fake_cfg), \
+             patch("token_goat.session.safe_load", return_value=MagicMock()), \
+             patch("token_goat.compact.build_manifest_with_count", side_effect=_capture):
+            payload = {"session_id": "no_boost_sess", "trigger": "auto"}
+            hooks_cli.pre_compact(payload)
+
+        assert captured.get("max_tokens") == 400, (
+            f"multiplier=1.0 should disable boost, got {captured.get('max_tokens')}"
+        )
+
 
 # ---------------------------------------------------------------------------
 # pre_compact hook handler

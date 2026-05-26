@@ -538,6 +538,9 @@ class TestCompactSkipSentinelWrite:
         fake_cfg.compact_assist.enabled = True
         fake_cfg.compact_assist.triggers = ["auto"]
         fake_cfg.compact_assist.max_manifest_tokens = 400
+        # Explicit float — MagicMock auto-vivified attributes are not comparable to
+        # numeric literals (see memory: feedback_mockobject_attribute_trap.md).
+        fake_cfg.compact_assist.auto_trigger_multiplier = 1.0
         fake_cfg.compact_assist.min_events = 5  # floor above 0 events → skip
 
         with patch("token_goat.config.load", return_value=fake_cfg), \
@@ -567,6 +570,9 @@ class TestCompactSkipSentinelWrite:
         fake_cfg.compact_assist.enabled = True
         fake_cfg.compact_assist.triggers = ["auto"]
         fake_cfg.compact_assist.max_manifest_tokens = 400
+        # Explicit float — MagicMock auto-vivified attributes are not comparable to
+        # numeric literals (see memory: feedback_mockobject_attribute_trap.md).
+        fake_cfg.compact_assist.auto_trigger_multiplier = 1.0
         fake_cfg.compact_assist.min_events = 0  # below floor → reaches manifest check
 
         with patch("token_goat.config.load", return_value=fake_cfg), \
@@ -595,6 +601,9 @@ class TestCompactSkipSentinelWrite:
         fake_cfg.compact_assist.enabled = True
         fake_cfg.compact_assist.triggers = ["auto"]
         fake_cfg.compact_assist.max_manifest_tokens = 400
+        # Explicit float — MagicMock auto-vivified attributes are not comparable to
+        # numeric literals (see memory: feedback_mockobject_attribute_trap.md).
+        fake_cfg.compact_assist.auto_trigger_multiplier = 1.0
         fake_cfg.compact_assist.min_events = 0
 
         real_manifest = "## Manifest\n- src/foo.py\n"

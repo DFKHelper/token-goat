@@ -126,6 +126,7 @@ class _CompactAssistToml(TypedDict, total=False):
     triggers: list[str]
     min_events: int
     max_manifest_tokens: int
+    auto_trigger_multiplier: float
 
 
 class _BashCompressToml(TypedDict, total=False):
@@ -240,6 +241,17 @@ class CompactAssistConfig:
             avoid injecting noise into tiny conversations.
         max_manifest_tokens: Approximate upper bound on manifest size in tokens.
             ``compact.build_manifest()`` trims output to stay within this budget.
+        auto_trigger_multiplier: Multiplier applied to ``max_manifest_tokens`` when
+            the PreCompact hook fires with ``trigger="auto"`` (Claude Code's
+            automatic compaction at high context pressure).  A larger manifest at
+            auto-trigger time is net-positive: when context is near-full and the
+            harness is forced to compact, every preserved fact saves a re-read in
+            the next iteration.  ``"manual"`` triggers keep the base budget — the
+            user explicitly chose to compact, usually with plenty of room to spare.
+            Default 2.0 (doubles the budget at auto-compact).  Clamped to
+            ``[1.0, 10.0]``; the product is also clamped by ``_MAX_MANIFEST_TOKENS_CAP``
+            inside ``build_manifest`` so an overzealous multiplier cannot blow past
+            the hard ceiling.
     """
 
     enabled: bool = True
@@ -257,6 +269,9 @@ class CompactAssistConfig:
     min_events: int = 3
     # Approximate token budget for the manifest injected as systemMessage
     max_manifest_tokens: int = 400
+    # Budget multiplier applied when trigger="auto" (context-pressure compaction).
+    # See class docstring for rationale.  1.0 disables the boost.
+    auto_trigger_multiplier: float = 2.0
 
 
 @dataclass
@@ -573,6 +588,31 @@ def _validated_int(val: object, default: int, lo: int, hi: int, name: str) -> in
         return default
 
 
+def _validated_float(val: object, default: float, lo: float, hi: float, name: str) -> float:
+    """Coerce *val* to a ``float`` within ``[lo, hi]``, returning *default* on failure.
+
+    Mirrors :func:`_validated_int` but accepts the broader numeric range needed
+    for ratios and multipliers (e.g. ``auto_trigger_multiplier``).  Bool is
+    rejected explicitly because ``True``/``False`` are technically convertible
+    via ``float()`` but never sensible as a TOML multiplier value.
+    """
+    if not isinstance(val, (int, float, str)):
+        _LOG.warning("config: %s=%r is not a float; using default %s", name, val, default)
+        return default
+    try:
+        if isinstance(val, bool):
+            _LOG.warning("config: %s=%r is not a float; using default %s", name, val, default)
+            return default
+        v = float(val)
+        if not lo <= v <= hi:
+            _LOG.warning("config: %s=%r out of range [%s, %s]; using default %s", name, val, lo, hi, default)
+            return default
+        return v
+    except (TypeError, ValueError):
+        _LOG.warning("config: %s=%r is not a float; using default %s", name, val, default)
+        return default
+
+
 def _validated_bool(val: object, default: bool, name: str) -> bool:
     """Coerce *val* to a ``bool``, returning *default* on failure.
 
@@ -702,6 +742,10 @@ def load() -> Config:
         min_events=_validated_int(ca_raw.get("min_events", 3), 3, 0, 1000, "compact_assist.min_events"),
         max_manifest_tokens=_validated_int(
             ca_raw.get("max_manifest_tokens", 400), 400, 50, 10000, "compact_assist.max_manifest_tokens"
+        ),
+        auto_trigger_multiplier=_validated_float(
+            ca_raw.get("auto_trigger_multiplier", 2.0),
+            2.0, 1.0, 10.0, "compact_assist.auto_trigger_multiplier",
         ),
     )
 

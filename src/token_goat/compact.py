@@ -1454,20 +1454,103 @@ def _session_activity_score(cache: SessionCache) -> int:
     )
 
 
+# Cache for blocker error previews keyed by output_id.  A render of the manifest
+# typically references each blocker output_id at most twice (once in
+# _build_sealed_block, once via _format_blocker_entry), so a small LRU is enough
+# to halve the disk reads without bounding growth across long sessions.  Sized
+# generously to cover the rare case where many blocker entries share a render.
+_BLOCKER_PREVIEW_CACHE_MAX: Final[int] = 32
+_blocker_preview_cache: dict[str, str] = {}
+
+
+def _extract_blocker_error_preview(entry: object, *, max_chars: int = 70) -> str:
+    """Return a short error line extracted from a blocker's cached bash output.
+
+    The cached output stored under ``entry.output_id`` is read via
+    :mod:`token_goat.bash_cache` and scanned for the most discriminating line:
+    lines containing ``"error"``, ``"failed"``, ``"traceback"``, ``"fatal"``,
+    or ``"exception"`` (case-insensitive) win first; otherwise the last
+    non-blank line is returned (typical exit summary or final stderr line).
+
+    Returns an empty string on any failure — missing output_id, cache miss,
+    permission error, parse error, etc.  Manifest assembly never blocks on
+    this helper.
+
+    Result is cached per-process by output_id so the sealed-block render and
+    the per-blocker entry render share one disk read.  Cache is bounded at
+    :data:`_BLOCKER_PREVIEW_CACHE_MAX`; FIFO eviction is good enough for the
+    short-lived cache lifetime (one manifest render).
+    """
+    output_id = getattr(entry, "output_id", "") or ""
+    if not output_id:
+        return ""
+    cached = _blocker_preview_cache.get(output_id)
+    if cached is not None:
+        return cached
+    try:
+        from . import bash_cache  # noqa: PLC0415  — deferred to keep cold-start cheap
+        raw_output = bash_cache.load_output(output_id)
+    except Exception:  # noqa: BLE001 — fail-soft per manifest contract
+        _blocker_preview_cache[output_id] = ""
+        return ""
+    if not raw_output:
+        _blocker_preview_cache[output_id] = ""
+        return ""
+
+    # Cap how many lines we scan so a huge cached output never adds latency
+    # to manifest construction.  Most real error output surfaces a tag in
+    # the first ~200 lines (or trails at the very end).
+    lines = raw_output.splitlines()
+    head = lines[:200]
+    tail = lines[-20:] if len(lines) > 220 else []
+    error_tokens = ("error", "failed", "traceback", "fatal", "exception", "✗")
+    picked: str = ""
+    for line in head + tail:
+        stripped = line.strip()
+        if not stripped:
+            continue
+        low = stripped.lower()
+        if any(tok in low for tok in error_tokens):
+            picked = stripped
+            break
+    if not picked:
+        # Fall back to last non-blank line — usually the exit summary.
+        for line in reversed(lines):
+            stripped = line.strip()
+            if stripped:
+                picked = stripped
+                break
+
+    picked = sanitize_log_str(picked, max_len=max_chars)
+    # FIFO eviction once we hit the cap.
+    if len(_blocker_preview_cache) >= _BLOCKER_PREVIEW_CACHE_MAX:
+        # Pop the oldest entry (insertion order is preserved in Python dicts).
+        oldest_key = next(iter(_blocker_preview_cache))
+        _blocker_preview_cache.pop(oldest_key, None)
+    _blocker_preview_cache[output_id] = picked
+    return picked
+
+
 def _format_blocker_entry(entry: object) -> str:
     """Render one failed :class:`session.BashEntry` as a "Current Blockers" line.
 
     Format::
 
-        - ✗ pytest tests/  (exit 1)
+        - ✗ pytest tests/  (exit 1) — AssertionError: expected 5, got 4
         - ✗ make build  (exit 2)
 
-    Kept deliberately terse — the compaction LLM only needs to know *what*
-    failed and *how* (exit code), not the full output size or cache ID.  The
-    agent can retrieve details via ``token-goat bash-output <id>`` if needed.
+    The trailing "—" clause is a one-line error preview pulled from the cached
+    output via :func:`_extract_blocker_error_preview` when available.  It is
+    omitted when the preview is empty (cache miss, no output_id, or no
+    discriminating line) — the compaction LLM still sees what failed and how,
+    and the agent can retrieve details via ``token-goat bash-output <id>`` for
+    the full trace.
     """
     cmd_preview = sanitize_log_str(getattr(entry, "cmd_preview", ""), max_len=80)
     exit_code = getattr(entry, "exit_code", "?")
+    error_preview = _extract_blocker_error_preview(entry, max_chars=70)
+    if error_preview:
+        return f"- ✗ {cmd_preview}  (exit {exit_code}) — {error_preview}"
     return f"- ✗ {cmd_preview}  (exit {exit_code})"
 
 
@@ -2918,19 +3001,29 @@ def _build_sealed_block(
     Format::
 
         <<MUST_PRESERVE>>
+        🎯 RESUME: auth.py
         ✎ auth.py×3  db.py  session.py
         ⛔ pytest tests/  (exit 1)
         🧠 ralph  plugin:improve
         <</MUST_PRESERVE>>
 
-    The block is omitted entirely (empty list) when all three slots are empty.
-    Content is bounded at 80 tokens (≤ 320 characters).  The explicit XML-like
-    markers are chosen so compaction LLMs are unlikely to summarise them away.
+    The RESUME line tells the post-compact agent which single file to re-read
+    first to recover state — the same anchor recovery that Ralph's
+    ``RESUME_POINT`` protocol calls for after a compaction event.  Priority
+    order: most-edited file > most-recent blocker's command > skipped.  This
+    line is small (~14-25 chars) and sits inside the MUST_PRESERVE markers
+    so the compaction LLM is unlikely to summarise it away.
+
+    The block is omitted entirely (empty list) when all three content slots
+    are empty.  Content is bounded at 80 tokens (≤ 320 characters).  The
+    explicit XML-like markers are chosen so compaction LLMs are unlikely to
+    summarise them away.
     """
     import os
 
     # Slot (a): ≤3 edited basenames with edit counts
     edit_slot = ""
+    top_edited_basename = ""  # for the RESUME line below
     if edited_clean:
         # Sort by edit count descending, take top 3
         top_edits = sorted(edited_clean.items(), key=_BY_EDIT_COUNT, reverse=True)[:3]
@@ -2939,15 +3032,38 @@ def _build_sealed_block(
             basename = sanitize_log_str(os.path.basename(path) or path, max_len=40)
             parts.append(f"{basename}×{count}" if count > 1 else basename)
         edit_slot = "✎ " + "  ".join(parts)
+        # First (most-edited) basename anchors the RESUME pointer.
+        if top_edits:
+            top_edited_basename = sanitize_log_str(
+                os.path.basename(top_edits[0][0]) or top_edits[0][0], max_len=40
+            )
 
-    # Slot (b): most-recent blocker (truncated to 80 chars)
+    # Slot (b): most-recent blocker (truncated to 80 chars).
+    # When the cached output yields a usable error preview, prefer it over
+    # the bare "(exit N)" tail — the preview carries WHY the command failed
+    # (e.g. "AssertionError: …", "ModuleNotFoundError: …"), which lets a
+    # post-compact agent skip re-running the command to diagnose.
     blocker_slot = ""
+    blocker_cmd_word = ""  # first word of the failing cmd, fallback RESUME anchor
     if blocker_entries:
         most_recent = max(blocker_entries, key=lambda e: getattr(e, "ts", 0.0))
         cmd = sanitize_log_str(getattr(most_recent, "cmd_preview", ""), max_len=70)
         exit_code = getattr(most_recent, "exit_code", "?")
-        raw = f"⛔ {cmd}  (exit {exit_code})"
+        # Compute remaining char budget for the rationale clause: the sealed
+        # block hard-caps each slot at 80 chars, so subtract the cmd + "⛔ " +
+        # " — " framing to know how much room is left for the preview text.
+        framing = f"⛔ {cmd} — "
+        room = max(0, 80 - len(framing))
+        preview = _extract_blocker_error_preview(most_recent, max_chars=room) if room >= 12 else ""
+        raw = f"⛔ {cmd} — {preview}" if preview else f"⛔ {cmd}  (exit {exit_code})"
         blocker_slot = raw[:80]
+        # Strip leading flags / env vars to land on the actual binary, e.g.
+        # "FOO=bar pytest tests/" → "pytest".  Falls back to the first token
+        # when no obvious binary is present.
+        for tok in cmd.split():
+            if "=" not in tok and not tok.startswith("-"):
+                blocker_cmd_word = sanitize_log_str(tok, max_len=30)
+                break
 
     # Slot (c): ≤2 active skill names
     skill_slot = ""
@@ -2960,19 +3076,37 @@ def _build_sealed_block(
         if names:
             skill_slot = "🧠 " + "  ".join(names)
 
-    # Skip the entire block when all three slots are empty
+    # Skip the entire block when all three content slots are empty.
+    # The RESUME line is derived from those slots so an empty block stays empty.
     if not edit_slot and not blocker_slot and not skill_slot:
         return []
 
-    inner = [s for s in (edit_slot, blocker_slot, skill_slot) if s]
+    # RESUME pointer — first inner line so post-compact attention lands on it first.
+    # Prefer the most-edited file (ongoing work); fall back to the failing command
+    # (the most recent thing the agent tried).  Skip silently when neither applies
+    # (e.g. skills-only sealed block — the skill list already implies the anchor).
+    resume_slot = ""
+    if top_edited_basename:
+        resume_slot = f"🎯 RESUME: {top_edited_basename}"
+    elif blocker_cmd_word:
+        resume_slot = f"🎯 RESUME: re-run {blocker_cmd_word}"
+
+    inner = [s for s in (resume_slot, edit_slot, blocker_slot, skill_slot) if s]
     block = ["<<MUST_PRESERVE>>"] + inner + ["<</MUST_PRESERVE>>"]
 
-    # Enforce 80-token cap: if the block is too large, truncate inner content
+    # Enforce 80-token cap: if the block is too large, truncate inner content.
+    # The RESUME line is the highest-priority anchor — keep it intact and trim
+    # the other slots first.  If still over after trimming, drop the skill slot.
     block_text = "\n".join(block)
     if _token_count(block_text) > 80:
-        # Trim each inner line to fit; if still over, drop skill_slot first
-        inner_trimmed = [line[:60] for line in inner]
+        # Preserve resume_slot verbatim; trim the rest to 60 chars each.
+        trimmed_rest = [line[:60] for line in (edit_slot, blocker_slot, skill_slot) if line]
+        inner_trimmed = ([resume_slot] if resume_slot else []) + trimmed_rest
         block = ["<<MUST_PRESERVE>>"] + inner_trimmed + ["<</MUST_PRESERVE>>"]
+        # If still over the cap, drop the skill slot (lowest signal of the three).
+        if _token_count("\n".join(block)) > 80 and skill_slot in inner_trimmed:
+            inner_trimmed.remove(skill_slot)
+            block = ["<<MUST_PRESERVE>>"] + inner_trimmed + ["<</MUST_PRESERVE>>"]
 
     return block
 
