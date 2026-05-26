@@ -378,6 +378,32 @@ class TestIsSsrfSafe:
     def test_private_rfc1918_172_blocked(self):
         assert webfetch._is_ssrf_safe("http://172.16.0.1/internal") is False
 
+    # Audit: RFC1918 172.16/12 spans 172.16.0.0–172.31.255.255.  Only the lower
+    # boundary was previously covered; verify the middle and upper bounds are
+    # also rejected so a regex-style implementation that drops the high octet
+    # cannot regress unnoticed.
+    @pytest.mark.parametrize(
+        "ip_url",
+        [
+            "http://172.17.0.1/",        # docker bridge default
+            "http://172.20.10.1/",       # iOS personal hotspot range
+            "http://172.31.255.254/",    # upper bound of the /12
+        ],
+    )
+    def test_private_rfc1918_172_middle_and_upper_blocked(self, ip_url):
+        assert webfetch._is_ssrf_safe(ip_url) is False
+
+    # Audit: 127.0.0.0/8 — verify the upper edge and a non-canonical zero-padded
+    # form are also rejected.  The IPv4 octet parser is strict so the leading-zero
+    # form is rejected by `ipaddress.ip_address` itself, which we still want covered.
+    def test_loopback_upper_edge_blocked(self):
+        assert webfetch._is_ssrf_safe("http://127.255.255.254/") is False
+
+    # Audit: link-local /16 — verify a non-IMDS link-local address is also blocked
+    # so a wildcard exception for "non-metadata link-local" cannot silently appear.
+    def test_link_local_non_imds_blocked(self):
+        assert webfetch._is_ssrf_safe("http://169.254.99.99/") is False
+
     def test_empty_url_blocked(self):
         assert webfetch._is_ssrf_safe("") is False
 
@@ -405,6 +431,48 @@ class TestFetchUrlSsrfGuard:
         with patch("httpx.Client") as mock_cls, \
                 pytest.raises(ValueError):
             webfetch.fetch_url("http://127.0.0.1/image.png")
+        mock_cls.assert_not_called()
+
+    # Audit: DNS-rebind class.  A hostname (not an IP literal) that resolves to
+    # a private IP must be rejected at the _is_ssrf_safe stage *before* the IP
+    # pin step runs and *before* any httpx.Client is constructed.  This proves
+    # the end-to-end gate closes on a hostile DNS server that returns a private
+    # IP for an otherwise-arbitrary hostname.
+    @pytest.mark.parametrize(
+        "private_ip",
+        [
+            "127.0.0.1",        # loopback
+            "10.0.0.5",         # RFC1918 /8
+            "172.16.7.7",       # RFC1918 /12 lower
+            "172.24.0.99",      # RFC1918 /12 middle
+            "192.168.1.50",     # RFC1918 /16
+            "169.254.169.254",  # link-local IMDS
+        ],
+    )
+    def test_hostname_resolving_to_private_ip_blocked(self, tmp_data_dir, private_ip):
+        """A hostname that DNS-resolves to a private IP must raise ValueError
+        without httpx.Client ever being constructed (DNS-rebind class)."""
+        import socket
+
+        fake_addrinfo = [(socket.AF_INET, socket.SOCK_STREAM, 6, "", (private_ip, 0))]
+        with patch("socket.getaddrinfo", return_value=fake_addrinfo), \
+                patch("httpx.Client") as mock_cls, \
+                pytest.raises(ValueError, match="SSRF"):
+            webfetch.fetch_url("http://rebind.attacker.example/image.png")
+        mock_cls.assert_not_called()
+
+    def test_hostname_resolving_to_ipv4_mapped_private_blocked(self, tmp_data_dir):
+        """A hostname whose only address is an IPv4-mapped IPv6 private address
+        must be rejected (no httpx.Client ever constructed)."""
+        import socket
+
+        fake_addrinfo = [
+            (socket.AF_INET6, socket.SOCK_STREAM, 6, "", ("::ffff:192.168.1.1", 0, 0, 0)),
+        ]
+        with patch("socket.getaddrinfo", return_value=fake_addrinfo), \
+                patch("httpx.Client") as mock_cls, \
+                pytest.raises(ValueError, match="SSRF"):
+            webfetch.fetch_url("http://v6mapped.attacker.example/image.png")
         mock_cls.assert_not_called()
 
 
@@ -560,6 +628,55 @@ class TestFetchImageCli:
         assert result.exit_code == 0, f"Expected exit 0, got {result.exit_code}"
         # output contains the error message (typer CliRunner merges stderr into output by default)
         assert "WebFetch failed" in (result.output or "")
+
+    # Audit: user-supplied URL on the CLI surface must be gated by the same SSRF
+    # check as the hook surface.  `token-goat fetch-image <url>` is the only
+    # public CLI that accepts a URL argument and forwards it to httpx; if this
+    # gate ever weakens an unsanitized URL would reach the network layer.
+    @pytest.mark.parametrize(
+        "ssrf_url",
+        [
+            "http://localhost/admin",
+            "http://127.0.0.1/private",
+            "http://169.254.169.254/latest/meta-data/",
+            "http://10.0.0.1/internal",
+            "http://172.16.0.1/internal",
+            "http://192.168.1.1/router",
+            "file:///etc/passwd",
+            "ftp://example.com/image.jpg",
+        ],
+    )
+    def test_cli_blocks_ssrf_url(self, tmp_data_dir, ssrf_url):
+        """`token-goat fetch-image` must fail-soft on an SSRF-blocked URL and
+        never construct an httpx.Client."""
+        from typer.testing import CliRunner
+
+        from token_goat.cli import app
+
+        runner = CliRunner()
+        with patch("httpx.Client") as mock_cls:
+            result = runner.invoke(app, ["fetch-image", ssrf_url])
+        # CLI is fail-soft (exit 0 with stderr message); the meaningful assertion
+        # is that no HTTP request ever fired for the blocked URL.
+        assert result.exit_code == 0, f"Expected exit 0, got {result.exit_code}: {result.output}"
+        mock_cls.assert_not_called()
+
+    def test_cli_blocks_hostname_resolving_to_private_ip(self, tmp_data_dir):
+        """DNS-rebind class through the CLI: hostname must be rejected before
+        httpx fires."""
+        import socket
+
+        from typer.testing import CliRunner
+
+        from token_goat.cli import app
+
+        fake_addrinfo = [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("169.254.169.254", 0))]
+        runner = CliRunner()
+        with patch("socket.getaddrinfo", return_value=fake_addrinfo), \
+                patch("httpx.Client") as mock_cls:
+            result = runner.invoke(app, ["fetch-image", "http://rebind-cli.example/photo.png"])
+        assert result.exit_code == 0
+        mock_cls.assert_not_called()
 
 
 # ---------------------------------------------------------------------------
