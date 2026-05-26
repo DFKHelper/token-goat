@@ -653,12 +653,13 @@ def test_compact_under_threshold_emits_full_list(tmp_path, tmp_data_dir, make_pr
 
 
 def test_compact_over_threshold_emits_summary_line(tmp_path, tmp_data_dir, make_project):
-    """80 files + --compact: over the default threshold — 1-line summary, not per-file list."""
+    """80 files + --compact + tight budget: 1-line summary with 3 top modules."""
     proj = _make_synthetic_project(tmp_path, tmp_data_dir, make_project, 80)
 
+    # Tight budget (<400 tokens) keeps the summary at the legacy top-3 width.
     text = repomap.build_map(
         proj,
-        budget_tokens=10000,
+        budget_tokens=300,
         compact=True,
         compact_file_threshold=50,
     )
@@ -675,8 +676,7 @@ def test_compact_over_threshold_emits_summary_line(tmp_path, tmp_data_dir, make_
     m = re.search(r"Top modules: ([^\n]+)", text)
     assert m is not None, "Top modules line not found"
     modules_part = m.group(1)
-    # Count names before "(+N more)" — should be exactly 3 for 80-file project.
-    # Names are separated by ", "; strip trailing (+N more) if present.
+    # Count names before "(+N more)" — should be exactly 3 at budget<400.
     names_raw = re.sub(r"\s*\(\+\d+ more\)", "", modules_part)
     names = [n.strip() for n in names_raw.split(",") if n.strip()]
     assert len(names) == 3, (
@@ -696,6 +696,41 @@ def test_compact_over_threshold_emits_summary_line(tmp_path, tmp_data_dir, make_
     assert "(+77 more)" in text, (
         f"expected '(+77 more)' in summary for 80-file project (80 - 3 = 77); got: {modules_part!r}"
     )
+
+
+def test_compact_summary_scales_top_n_with_budget(tmp_path, tmp_data_dir, make_project):
+    """top_n in the summary line scales with available token budget.
+
+    Tight budgets (<400 tokens) keep the legacy 3-module width to stay within
+    ~35 tokens total.  Mid budgets surface 5, then 8, then 12 module names so
+    a caller with headroom gets a more useful orientation snapshot without
+    paying for the full per-file detail rendering.
+    """
+    import re
+    proj = _make_synthetic_project(tmp_path, tmp_data_dir, make_project, 80)
+
+    # Each tier should produce its mapped top_n count.
+    cases = [
+        (300, 3),
+        (500, 5),
+        (1500, 8),
+        (4000, 12),
+    ]
+    for budget, expected_top_n in cases:
+        text = repomap.build_map(
+            proj,
+            budget_tokens=budget,
+            compact=True,
+            compact_file_threshold=50,
+        )
+        m = re.search(r"Top modules: ([^\n]+)", text)
+        assert m is not None, f"summary line missing at budget={budget}"
+        names_raw = re.sub(r"\s*\(\+\d+ more\)", "", m.group(1))
+        names = [n.strip() for n in names_raw.split(",") if n.strip()]
+        assert len(names) == expected_top_n, (
+            f"budget={budget} → expected {expected_top_n} modules, "
+            f"got {len(names)}: {names}"
+        )
 
 
 def test_compact_over_threshold_full_flag_restores_list(tmp_path, tmp_data_dir, make_project):
@@ -886,3 +921,109 @@ def test_compact_false_no_collapse(tmp_path, tmp_data_dir, make_project):
     assert "minor files" not in text, (
         "minor-files annotation must not appear in full (non-compact) mode"
     )
+
+
+# ---------------------------------------------------------------------------
+# Path-exclusion: prefix / substring / basename filters
+# ---------------------------------------------------------------------------
+
+class TestExcludedPaths:
+    """``_is_excluded_path`` filters generated/transient artifacts.
+
+    Three categories of pollution have historically distorted the map:
+      * Test-fixture stubs (the original exclusion, prefix-matched).
+      * uv-cache directories that co-locate with the source tree on
+        Windows + uv layouts and leak vendored ``_manylinux.py`` rows.
+      * Coverage artifacts (``coverage.json`` etc.) that survive the
+        parser's lockfile filter because ``.json`` is an indexed extension.
+    """
+
+    def setup_method(self):
+        # _is_excluded_path is lru_cached at module scope; clear before each
+        # case so prior assertions don't leak through and mask a regression.
+        repomap._is_excluded_path.cache_clear()
+
+    def test_tests_fixtures_excluded(self):
+        assert repomap._is_excluded_path("tests/fixtures/foo.py")
+        assert repomap._is_excluded_path("tests/fixtures/sub/bar.py")
+
+    def test_normal_source_not_excluded(self):
+        assert not repomap._is_excluded_path("src/token_goat/parser.py")
+        assert not repomap._is_excluded_path("tests/test_repomap.py")
+        assert not repomap._is_excluded_path("README.md")
+
+    def test_uv_cache_root_excluded(self):
+        # Both the standard and -local variants pollute the index when uv runs
+        # with the cache co-located in the repo (default on Windows).
+        assert repomap._is_excluded_path(".uv-cache/x.py")
+        assert repomap._is_excluded_path(".uv-cache-local/x.py")
+        assert repomap._is_excluded_path(
+            ".uv-cache-local/.tmpHZ08Ai/python/packaging/_manylinux.py"
+        )
+
+    def test_uv_tmp_subdir_excluded_anywhere(self):
+        # The substring filter catches random-suffixed tmp build dirs
+        # regardless of which parent they appear under.
+        assert repomap._is_excluded_path(".uv-cache/.tmp2VqIvs/wheel.py")
+        assert repomap._is_excluded_path("some/path/.tmpABC/inner.py")
+
+    def test_coverage_artifacts_excluded(self):
+        # coverage.json sits at the repo root with the indexable .json
+        # extension; it pollutes "Top modules" with a non-source entry.
+        assert repomap._is_excluded_path("coverage.json")
+        assert repomap._is_excluded_path("coverage.xml")
+        assert repomap._is_excluded_path("lcov.info")
+        # Subdirectory variant (some tools emit subreports).
+        assert repomap._is_excluded_path("subproj/coverage.json")
+
+    def test_basename_match_is_case_insensitive(self):
+        # Windows tooling sometimes emits Coverage.JSON; the filter must
+        # still drop it even though the basename casing differs.
+        assert repomap._is_excluded_path("Coverage.JSON")
+        assert repomap._is_excluded_path("LCOV.info")
+
+    def test_windows_backslash_paths_normalized(self):
+        # _load_project_data stores POSIX-rel paths but callers can in
+        # principle pass Windows-style separators (e.g. parser hand-off
+        # before normalisation).  Both should produce the same verdict.
+        assert repomap._is_excluded_path(".uv-cache\\foo.py")
+        assert repomap._is_excluded_path("tests\\fixtures\\foo.py")
+
+
+# ---------------------------------------------------------------------------
+# Compact summary top_n widening
+# ---------------------------------------------------------------------------
+
+class TestBuildCompactFileSummary:
+    """The 1-line summary widens with the available token budget.
+
+    Helper-level coverage so tier-boundary tweaks are easy to spot without
+    spinning up a synthetic indexed project for each tier.
+    """
+
+    def _ranked(self, n):
+        return [(f"src/mod_{i}.py", {"language": "python", "size": 1000, "mtime": 0.0}) for i in range(n)]
+
+    def test_default_top_n_is_three(self):
+        # Back-compat: callers that don't pass top_n see the legacy width.
+        out = repomap._build_compact_file_summary(self._ranked(20), 20)
+        assert "Top modules: mod_0.py, mod_1.py, mod_2.py" in out
+        assert "(+17 more)" in out
+
+    def test_top_n_widens(self):
+        out = repomap._build_compact_file_summary(self._ranked(20), 20, top_n=5)
+        # Five basenames before the (+N more) annotation.
+        modules = out.split("Top modules: ", 1)[1].split(" (+")[0]
+        assert modules.count(",") == 4  # 5 names → 4 commas
+        assert "(+15 more)" in out
+
+    def test_top_n_floor_one(self):
+        # Defensive: top_n<1 collapses to 1 rather than emitting an empty list.
+        out = repomap._build_compact_file_summary(self._ranked(20), 20, top_n=0)
+        assert "Top modules: mod_0.py (+19 more)" in out
+
+    def test_top_n_capped_by_available_files(self):
+        # When ranked has fewer entries than top_n, only available ones appear
+        # and no (+N more) tail is emitted (no remainder).
+        out = repomap._build_compact_file_summary(self._ranked(2), 2, top_n=10)
+        assert out.split("indexed. ", 1)[1] == "Top modules: mod_0.py, mod_1.py\n"

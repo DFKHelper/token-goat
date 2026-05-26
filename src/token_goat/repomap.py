@@ -145,8 +145,39 @@ _MIN_DISPLAY_LINES: Final[int] = 4
 # Maximum symbol names shown per kind group in render_summary output.
 # Keeping this small prevents any one kind from dominating the text budget.
 _MAX_NAMES_PER_KIND: Final[int] = 6
-# POSIX path prefixes excluded from the map — these dirs are test fixtures, not source
-_EXCLUDED_PREFIXES: Final[tuple[str, ...]] = ("tests/fixtures/",)
+# POSIX path prefixes excluded from the map — these dirs are test fixtures or
+# generated/transient artifacts that distort PageRank and pollute "Top modules"
+# with non-source content.  Test fixture stubs accumulate refs from every
+# parser test; uv build/cache dirs leak vendored packaging code when the cache
+# is co-located with the source tree (a common Windows + uv layout).
+_EXCLUDED_PREFIXES: Final[tuple[str, ...]] = (
+    "tests/fixtures/",
+    ".uv-cache/",
+    ".uv-cache-local/",
+)
+
+# POSIX path substrings excluded from the map — used for transient directories
+# whose name varies per run (uv-cache tmp dirs are named ``.tmp<random>``).
+# Substring check is intentional so ``.uv-cache/.tmp2VqIvs/...`` is dropped
+# without having to list every random suffix.  Kept separate from
+# ``_EXCLUDED_PREFIXES`` because substring checks are O(n) per call; keeping
+# the list tiny preserves the lru_cache benefit on the hot path.
+_EXCLUDED_SUBSTRINGS: Final[tuple[str, ...]] = (
+    "/.tmp",  # uv tmp build/cache dirs (``.uv-cache/.tmp<hash>/``)
+)
+
+# Generated artifact filenames (exact match on basename, lowercase) that
+# survive the parser's SKIP_FILE_BASENAMES check (because they are not
+# language lockfiles) but still pollute the map.  ``coverage.json`` lands at
+# the repo root with a high PageRank-adjacent rank simply because it has the
+# indexable ``.json`` extension, but the LLM never benefits from seeing it
+# listed alongside source modules.
+_EXCLUDED_BASENAMES: Final[frozenset[str]] = frozenset({
+    "coverage.json",
+    "coverage.xml",
+    ".coverage",
+    "lcov.info",
+})
 # Bytes-per-line divisor used to estimate line count from file size.
 # Code files average 30–60 bytes/line; 50 gives a conservative (slightly
 # over-counting) estimate so we include borderline files rather than drop them.
@@ -163,15 +194,31 @@ _PAGERANK_TOL_FALLBACK: Final[float] = 1e-4
 
 @lru_cache(maxsize=2048)
 def _is_excluded_path(rel_path: str) -> bool:
-    """Return True if rel_path is under an excluded prefix.
+    """Return True if rel_path is under an excluded prefix, substring, or basename.
+
+    Three filters apply, in cheap-to-expensive order:
+      1. ``_EXCLUDED_BASENAMES`` — exact basename match (generated coverage
+         artifacts that survive ``SKIP_FILE_BASENAMES``).
+      2. ``_EXCLUDED_PREFIXES`` — POSIX path prefix match (test fixtures, uv
+         cache roots).
+      3. ``_EXCLUDED_SUBSTRINGS`` — substring match (uv tmp dirs whose suffix
+         is random per build).
 
     Cached with lru_cache so repeated calls across build_map invocations for
     the same file pay only a dict lookup.  The result depends only on rel_path
-    and the module-level _EXCLUDED_PREFIXES constant, both of which are stable
-    within a process lifetime.
+    and the module-level exclusion constants, all of which are stable within
+    a process lifetime.
     """
     posix = rel_path.replace("\\", "/") if "\\" in rel_path else rel_path
-    return any(posix.startswith(p) for p in _EXCLUDED_PREFIXES)
+    # 1. basename (cheapest — single rsplit + frozenset lookup)
+    basename = posix.rsplit("/", 1)[-1].lower()
+    if basename in _EXCLUDED_BASENAMES:
+        return True
+    # 2. prefix
+    if any(posix.startswith(p) for p in _EXCLUDED_PREFIXES):
+        return True
+    # 3. substring (variable-suffix tmp dirs)
+    return any(s in posix for s in _EXCLUDED_SUBSTRINGS)
 
 
 def _is_map_worthy(rel_path: str, approx_lines: int) -> bool:
@@ -756,19 +803,32 @@ def _get_rendered_summary(
     return rendered, False
 
 
-def _build_compact_file_summary(ranked: list[tuple[str, _FileInfo]], total: int) -> str:
+def _build_compact_file_summary(
+    ranked: list[tuple[str, _FileInfo]],
+    total: int,
+    *,
+    top_n: int = 3,
+) -> str:
     """Return the 1-line file-list preamble used when compact mode suppresses the full list.
 
     Format: ``"N files indexed. Top modules: a.py, b.py, c.py (+M more)\\n"``
 
-    *ranked* is the full PageRank-sorted list; we take the top 3 basenames.
-    *total* is the total map-worthy file count (== len(ranked)).
+    *ranked* is the full PageRank-sorted list; we take the top ``top_n``
+    basenames.  *total* is the total map-worthy file count (== len(ranked)).
+
+    ``top_n`` defaults to 3 to preserve the original compact-output budget
+    (~30 tokens) used by the auto-engaged 300-token compact mode.  Callers
+    with larger budgets can pass higher values to expose more head-of-rank
+    files for orientation without dropping into the full per-file detail
+    rendering — adding 5 extra basenames costs roughly 10 additional tokens.
     """
     import os  # noqa: PLC0415
 
-    top3 = [os.path.basename(rel) for rel, _ in ranked[:3]]
-    rest = total - len(top3)
-    modules_str = ", ".join(top3)
+    if top_n < 1:
+        top_n = 1
+    top = [os.path.basename(rel) for rel, _ in ranked[:top_n]]
+    rest = total - len(top)
+    modules_str = ", ".join(top)
     if rest > 0:
         modules_str += f" (+{rest} more)"
     return f"{total} files indexed. Top modules: {modules_str}\n"
@@ -855,7 +915,29 @@ def build_map(
     )
 
     if use_summary_line:
-        summary_line = _build_compact_file_summary(data.ranked, len(data.ranked))
+        # Scale top_n with the available token budget.  The default of 3 keeps
+        # the auto-engaged 300-token compact mode within ~35 tokens (header +
+        # one short summary line).  When the caller passes a larger budget
+        # (e.g. ``--compact --budget 2000``) we have headroom to surface more
+        # head-of-rank module names — each extra basename costs ~2 tokens.
+        #
+        # Mapping (chosen so the summary never consumes more than ~10% of the
+        # budget):
+        #   <  400 tokens → 3 modules   (legacy default)
+        #   <  800 tokens → 5 modules
+        #   <2000 tokens → 8 modules
+        #   ≥2000 tokens → 12 modules
+        if budget_tokens < 400:
+            top_n = 3
+        elif budget_tokens < 800:
+            top_n = 5
+        elif budget_tokens < 2000:
+            top_n = 8
+        else:
+            top_n = 12
+        summary_line = _build_compact_file_summary(
+            data.ranked, len(data.ranked), top_n=top_n,
+        )
         out.append(summary_line)
         used += estimate_tokens(summary_line)
     else:

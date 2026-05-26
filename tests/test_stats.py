@@ -1146,6 +1146,35 @@ class TestLookupStatRecording:
         read_bucket = summary.by_source[stats.SOURCE_READ]
         assert read_bucket["events"] == 2
 
+    def test_map_lookup_aggregates_into_read_bucket(self, tmp_data_dir):
+        """``token-goat map`` records a map_lookup row that lands in SOURCE_READ.
+
+        Same adoption-tracking shape as symbol_lookup / semantic_search: zero
+        savings, but the row exists so we can measure how often agents reach
+        for the ranked overview instead of recursive ``ls`` + multiple Reads.
+        """
+        from token_goat import cli
+
+        cli._record_lookup_stat(
+            "map_lookup", "budget=4000,mode=text,compact=False,full=False",
+            42,
+            scope="project",
+            project_hash=None,
+        )
+        summary = stats.summarize(window_days=30)
+        assert "map_lookup" in summary.by_kind
+        assert summary.by_kind["map_lookup"]["events"] == 1
+        assert summary.by_kind["map_lookup"]["bytes_saved"] == 0
+        assert summary.by_kind["map_lookup"]["tokens_saved"] == 0
+        # The row contributes to the read bucket so the user-facing
+        # "read" line reflects orientation usage as well as surgical reads.
+        read_bucket = summary.by_source[stats.SOURCE_READ]
+        assert read_bucket["events"] >= 1
+
+    def test_map_lookup_classified_as_read_source(self):
+        """Direct check on kind_to_source — no DB round-trip needed."""
+        assert stats.kind_to_source("map_lookup") == stats.SOURCE_READ
+
     def test_bash_compress_prefix_aggregates_into_bash_bucket(self, tmp_data_dir):
         """Multiple bash_compress:<filter> rows collapse into the bash bucket
         without each filter name being enumerated in _KIND_TO_SOURCE."""
