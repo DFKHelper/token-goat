@@ -1067,6 +1067,40 @@ def test_verify_install_idempotent_count_stable(patched_home, monkeypatch):
     assert count_first > 0
 
 
+def test_verify_install_omits_codex_when_absent(patched_home, monkeypatch):
+    """verify_install must not include a codex row when codex was never set up.
+
+    Codex is an opt-in integration; users who never ran `install --codex` should
+    not see a noisy 'codex config.toml: missing' line in the verify summary.
+    """
+    import sys as _sys
+
+    monkeypatch.setattr(_sys, "platform", "linux")
+    report = install.verify_install()
+    components = {r["component"] for r in report}
+    assert "codex config.toml" not in components
+
+
+def test_verify_install_reports_codex_when_installed(patched_home, monkeypatch):
+    """verify_install must surface codex config.toml status when codex IS installed."""
+    import sys as _sys
+
+    monkeypatch.setattr(_sys, "platform", "linux")
+    monkeypatch.setattr(install, "token_goat_binary", lambda: "token-goat")
+
+    # Install codex side so the file exists.
+    install.patch_codex_config("token-goat")
+
+    report = install.verify_install()
+    actions_by_component = {r["component"]: r["action"] for r in report}
+    assert "codex config.toml" in actions_by_component
+    assert actions_by_component["codex config.toml"] == "ok"
+
+    # Detail string should include the count
+    details_by_component = {r["component"]: r["detail"] for r in report}
+    assert "token-goat hook entries present" in details_by_component["codex config.toml"]
+
+
 def test_probe_image_codecs_ok_when_all_present(monkeypatch):
     """Every codec present + WebP encode works → ok=True, no hint."""
     import PIL.features as pil_features  # noqa: PLC0415

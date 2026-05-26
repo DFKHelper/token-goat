@@ -1768,6 +1768,26 @@ class _PlanEntry(TypedDict):
     detail: str
 
 
+def _count_token_goat_hooks(hooks: dict[str, object]) -> int:
+    """Return the number of token-goat hook entries in a hooks dict.
+
+    Shared by :func:`_settings_json_token_goat_count` and
+    :func:`_codex_config_token_goat_count` — same shape, two harnesses.  The
+    structure is ``{event: [{matcher, hooks: [{command, ...}]}, ...], ...}``
+    which is identical between Claude's settings.json and Codex's config.toml.
+    """
+    count = 0
+    for entries in hooks.values():
+        entry_list = entries if isinstance(entries, list) else []
+        for entry in entry_list:
+            if not isinstance(entry, dict):
+                continue
+            for h in (entry.get("hooks", []) or []):
+                if isinstance(h, dict) and _is_token_goat_hook(str(h.get("command", ""))):
+                    count += 1
+    return count
+
+
 def _settings_json_token_goat_count() -> int:
     """Return the number of token-goat hook entries currently in settings.json.
 
@@ -1784,16 +1804,29 @@ def _settings_json_token_goat_count() -> int:
         return 0
     raw_hooks = data.get("hooks", {})
     hooks: dict[str, object] = raw_hooks if isinstance(raw_hooks, dict) else {}
-    count = 0
-    for entries in hooks.values():
-        entry_list = entries if isinstance(entries, list) else []
-        for entry in entry_list:
-            if not isinstance(entry, dict):
-                continue
-            for h in (entry.get("hooks", []) or []):
-                if isinstance(h, dict) and _is_token_goat_hook(str(h.get("command", ""))):
-                    count += 1
-    return count
+    return _count_token_goat_hooks(hooks)
+
+
+def _codex_config_token_goat_count() -> int:
+    """Return the number of token-goat hook entries currently in codex config.toml.
+
+    Codex-side counterpart of :func:`_settings_json_token_goat_count`.  Used to
+    verify that ``patch_codex_config`` is idempotent — a re-install must not
+    double the entry count.  Returns 0 when the config is absent or malformed
+    so tests can compare counts without special-casing those branches.
+    """
+    import tomllib  # noqa: PLC0415
+
+    cfg_path = codex_config_path()
+    if not cfg_path.exists():
+        return 0
+    try:
+        data = tomllib.loads(cfg_path.read_text(encoding="utf-8"))
+    except (tomllib.TOMLDecodeError, OSError):
+        return 0
+    raw_hooks = data.get("hooks", {})
+    hooks: dict[str, object] = raw_hooks if isinstance(raw_hooks, dict) else {}
+    return _count_token_goat_hooks(hooks)
 
 
 def plan_install(
@@ -2044,6 +2077,22 @@ def verify_install() -> list[_PlanEntry]:
         action="ok" if skill_md.exists() else "missing",
         detail="SKILL.md present" if skill_md.exists() else "SKILL.md missing",
     ))
+
+    # 3b. codex config.toml — only verified when the file exists, so users who
+    # never ran `install --codex` don't see a noisy "missing" entry.
+    codex_cfg = codex_config_path()
+    if codex_cfg.exists():
+        codex_count = _codex_config_token_goat_count()
+        report.append(_PlanEntry(
+            component="codex config.toml",
+            target=str(codex_cfg),
+            action="ok" if codex_count > 0 else "missing",
+            detail=(
+                f"{codex_count} token-goat hook entries present"
+                if codex_count > 0
+                else "no token-goat hook entries found"
+            ),
+        ))
 
     # 4. platform autostart
     if sys.platform == "win32":
