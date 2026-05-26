@@ -698,6 +698,34 @@ class Filter:
             return f"{stdout.rstrip()}\n---\n{stderr.rstrip()}"
         return stdout.rstrip() if stdout.strip() else stderr.rstrip()
 
+    @staticmethod
+    def _emit_notes(
+        kept: list[str], notes: list[str], *, prefix: str = "token-goat: ",
+    ) -> None:
+        """Append a ``[token-goat: <joined notes>]`` summary line to *kept*.
+
+        Centralises the common pattern of building a list of ``"N <label>"``
+        fragments during a line-walk and emitting them as a single bracketed
+        marker at the end.  No-op when *notes* is empty so callers can append
+        unconditionally.
+
+        Joined with ``"; "`` so multi-fragment markers stay legible
+        (``[token-goat: dropped 3 X; dropped 5 Y]``).
+        """
+        if notes:
+            kept.append(f"[{prefix}{'; '.join(notes)}]")
+
+    @staticmethod
+    def _finalize(kept: list[str]) -> str:
+        """Join *kept* with newlines and squeeze runs of blank lines.
+
+        The standard last step of any filter that builds a ``kept`` list during
+        a line-walk.  Centralises the ``_squeeze_blank_lines("\\n".join(kept))``
+        idiom that appears in 14 filters.
+        """
+        joined = "\n".join(kept)
+        return _squeeze_blank_lines(joined)
+
     def compress(
         self, stdout: str, stderr: str, exit_code: int, argv: list[str],
     ) -> str:
@@ -1023,7 +1051,7 @@ class PytestFilter(Filter):
         if passed_count:
             kept.append(f"[token-goat: collapsed {passed_count} PASSED lines]")
         # Drop runs of consecutive blank lines (pytest pads blocks with them).
-        return _squeeze_blank_lines("\n".join(kept))
+        return self._finalize(kept)
 
 
 # --- Jest / Vitest / Mocha -------------------------------------------------
@@ -1086,7 +1114,7 @@ class JestFilter(Filter):
             kept.append(line)
         if pass_count:
             kept.append(f"[token-goat: collapsed {pass_count} PASS files]")
-        return _squeeze_blank_lines("\n".join(kept))
+        return self._finalize(kept)
 
 
 # --- Cargo ------------------------------------------------------------------
@@ -1155,7 +1183,7 @@ class CargoFilter(Filter):
                 ]
         if dropped_progress:
             kept.append(f"[token-goat: dropped {dropped_progress} cargo progress lines]")
-        return _squeeze_blank_lines("\n".join(kept))
+        return self._finalize(kept)
 
 
 # --- Node package managers (npm / pnpm / yarn) -----------------------------
@@ -1228,7 +1256,7 @@ class NodePackageFilter(Filter):
                 f"[token-goat: dropped {audit_lines_dropped} per-package audit lines; "
                 "run `npm audit` for detail]"
             )
-        return _squeeze_blank_lines("\n".join(kept))
+        return self._finalize(kept)
 
 
 # --- Docker ----------------------------------------------------------------
@@ -1302,7 +1330,7 @@ class DockerFilter(Filter):
                 f"[token-goat: dropped {dropped_digest} digest, "
                 f"{dropped_progress} transfer, {dropped_body} body lines]"
             )
-        return _squeeze_blank_lines("\n".join(kept))
+        return self._finalize(kept)
 
 
 # --- kubectl / helm --------------------------------------------------------
@@ -1447,8 +1475,7 @@ def _compress_gh_run_view(text: str) -> str:
         notes.append(f"collapsed {pass_steps} passing step headers")
     if dropped_preamble:
         notes.append(f"dropped {dropped_preamble} action-preamble lines")
-    if notes:
-        kept.append(f"[token-goat: {'; '.join(notes)}]")
+    Filter._emit_notes(kept, notes)
     return _squeeze_blank_lines("\n".join(kept))
 
 
@@ -1865,7 +1892,7 @@ class MypyFilter(Filter):
                 f"[token-goat: suppressed {dropped_notes} duplicate/cross-reference note lines]"
             )
 
-        return _squeeze_blank_lines("\n".join(kept))
+        return self._finalize(kept)
 
 
 # --- Git -------------------------------------------------------------------
@@ -2179,9 +2206,8 @@ class GoTestFilter(Filter):
             notes.append(f"dropped {dropped_run} === RUN/PAUSE/CONT lines")
         if dropped_download:
             notes.append(f"dropped {dropped_download} 'go: downloading' lines")
-        if notes:
-            kept.append(f"[token-goat: {'; '.join(notes)}]")
-        return _squeeze_blank_lines("\n".join(kept))
+        self._emit_notes(kept, notes)
+        return self._finalize(kept)
 
 
 # --- Make / Ninja / Gradle / Maven / Go build ------------------------------
@@ -2246,9 +2272,12 @@ class MakeFilter(Filter):
             notes.append(f"{dropped_echo} compiler-invocation echoes")
         if dropped_go_download:
             notes.append(f"{dropped_go_download} 'go: downloading' lines")
+        # MakeFilter uses ", " join + "dropped" prefix (verbatim grammar match)
+        # rather than the standard ";" join, since all entries share the
+        # "dropped X" verb.
         if notes:
             kept.append(f"[token-goat: dropped {', '.join(notes)}]")
-        return _squeeze_blank_lines("\n".join(kept))
+        return self._finalize(kept)
 
 
 # --- Terraform -------------------------------------------------------------
@@ -2293,7 +2322,7 @@ class TerraformFilter(Filter):
             kept.append(line)
         if dropped:
             kept.append(f"[token-goat: dropped {dropped} terraform refresh/read lines]")
-        return _squeeze_blank_lines("\n".join(kept))
+        return self._finalize(kept)
 
 
 # --- Ansible ---------------------------------------------------------------
@@ -2406,7 +2435,7 @@ class AnsibleFilter(Filter):
                 continue
             kept.append(line)
         flush_status()
-        return _squeeze_blank_lines("\n".join(kept))
+        return self._finalize(kept)
 
 
 # --- pre-commit ------------------------------------------------------------
@@ -2500,7 +2529,7 @@ class PreCommitFilter(Filter):
             kept.append(
                 f"[token-goat: dropped {info_dropped} pre-commit [INFO] env-setup lines]"
             )
-        return _squeeze_blank_lines("\n".join(kept))
+        return self._finalize(kept)
 
 
 # --- grep / rg / ag / ack / git grep -----------------------------------------
@@ -2661,7 +2690,7 @@ class PipFilter(Filter):
             kept.append(f"[token-goat: +{collects - 5} more 'Collecting' lines elided]")
         if downloads:
             kept.append(f"[token-goat: dropped {downloads} 'Downloading' progress lines]")
-        return _squeeze_blank_lines("\n".join(kept))
+        return self._finalize(kept)
 
 
 # --- Python ----------------------------------------------------------------
@@ -2935,7 +2964,7 @@ class UvFilter(Filter):
             kept.append(
                 f"[token-goat: dropped {diff_lines} per-package +/- diff lines]"
             )
-        return _squeeze_blank_lines("\n".join(kept))
+        return self._finalize(kept)
 
 
 # ---------------------------------------------------------------------------
