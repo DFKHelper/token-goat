@@ -26,6 +26,7 @@ import json
 import math
 import operator
 import shutil
+from collections.abc import Iterable
 from datetime import date
 from pathlib import Path
 from typing import TypedDict, cast
@@ -330,6 +331,54 @@ def _token_or_byte_share(
     return 0.0
 
 
+def _bar_fraction(item_bytes: int, gross_bytes: int) -> float:
+    """Savings-bar fill fraction. Positive-only: overhead rows render as empty bar.
+
+    *gross_bytes* (sum of all positive bytes, clamped to >= 1) is the reference
+    so the dominant positive item fills to 100%.
+    """
+    return item_bytes / gross_bytes if item_bytes > 0 else 0.0
+
+
+def _compute_share_denominators(items: Iterable[object]) -> tuple[int, int, int]:
+    """Single-pass aggregation → ``(gross_bytes, share_bytes_denom, share_tokens_denom)``.
+
+    Each *item* must expose ``.bytes`` and ``.tokens`` (KindStat, SourceStat, …):
+
+    * ``gross_bytes`` — sum of strictly positive ``.bytes`` (clamped >= 1) for
+      bar-scaling so the dominant positive row fills 100%.
+    * ``share_bytes_denom`` — sum of ``abs(.bytes)`` (clamped >= 1), share fallback.
+    * ``share_tokens_denom`` — sum of ``abs(.tokens)`` (NOT clamped); callers
+      test ``== 0`` to fall back to byte-share.
+
+    Extracted from the identical three-formula idiom previously inlined in
+    ``_render_by_kind_section`` and ``_render_by_source_section``.
+    """
+    gross_bytes_sum = 0
+    share_bytes_sum = 0
+    share_tokens_sum = 0
+    for item in items:
+        b = item.bytes  # type: ignore[attr-defined]
+        t = item.tokens  # type: ignore[attr-defined]
+        if b > 0:
+            gross_bytes_sum += b
+        share_bytes_sum += abs(b)
+        share_tokens_sum += abs(t)
+    return max(gross_bytes_sum, 1), max(share_bytes_sum, 1), share_tokens_sum
+
+
+def _abs_share(item_bytes: int, item_tokens: int, share_bytes_denom: int, share_tokens_denom: int) -> float:
+    """Share fraction using absolute-value denominators (kind/source pattern).
+
+    Prefers tokens when non-zero; otherwise falls back to bytes.  Mirrors
+    ``_token_or_byte_share`` but reuses pre-computed *abs* denominators so the
+    kind/source sections do not re-aggregate inside the sort closure.
+    """
+    if share_tokens_denom == 0:
+        return item_bytes / share_bytes_denom
+    return item_tokens / share_tokens_denom
+
+
 # ── Section header helper ──────────────────────────────────────────────────────
 
 def _section_header(title: str, subtitle: str = "") -> list[str]:
@@ -494,37 +543,27 @@ def _render_by_kind_section(stats: StatsData) -> list[str]:
     # Bar scaling uses positive-only gross so the widest positive bar fills to 100%.
     # Share % uses absolute-value totals so overhead kinds (negative bytes/tokens)
     # reduce the denominator and prevent the dominant positive kind from hitting 100%.
-    # Single pass over by_kind to compute all three aggregates and collect metadata.
-    _gross_bytes_sum = 0
-    _share_bytes_sum = 0
-    _share_tokens_sum = 0
-    _kind_names: set[str] = set()
-    bytes_mode_kinds: list[str] = []
-    for _k in stats.by_kind:
-        if _k.bytes > 0:
-            _gross_bytes_sum += _k.bytes
-        _share_bytes_sum += abs(_k.bytes)
-        _share_tokens_sum += abs(_k.tokens)
-        _kind_names.add(_k.kind)
-        if _k.bytes_mode_only:
-            bytes_mode_kinds.append(_k.kind)
-    gross_bytes = max(_gross_bytes_sum, 1)
-    share_bytes_denom = max(_share_bytes_sum, 1)
-    share_tokens_denom = _share_tokens_sum
+    gross_bytes, share_bytes_denom, share_tokens_denom = _compute_share_denominators(stats.by_kind)
+    _kind_names = {k.kind for k in stats.by_kind}
+    bytes_mode_kinds = [k.kind for k in stats.by_kind if k.bytes_mode_only]
 
     def _share(k: KindStat) -> float:
-        """Fraction of the period total this kind represents (see section docstring)."""
-        if k.bytes_mode_only or share_tokens_denom == 0:
+        """Fraction of the period total this kind represents (see section docstring).
+
+        Bytes-mode-only kinds (e.g. image_shrink) ignore the token denominator
+        because they have no meaningful token count; falling through to the
+        absolute-byte share keeps the column truthful for those rows.
+        """
+        if k.bytes_mode_only:
             return k.bytes / share_bytes_denom
-        return k.tokens / share_tokens_denom
+        return _abs_share(k.bytes, k.tokens, share_bytes_denom, share_tokens_denom)
 
     # Rows are ordered by share of the period total, largest first — matching
     # the share column the row renders, so the column reads monotonically.
     for k in sorted(stats.by_kind, key=_share, reverse=True):
         share = _share(k)
-        bar_fraction = k.bytes / gross_bytes if k.bytes > 0 else 0.0
         lines.append(_table_row(
-            k.kind, bar_fraction, k.bytes, k.tokens, k.events, share,
+            k.kind, _bar_fraction(k.bytes, gross_bytes), k.bytes, k.tokens, k.events, share,
             bytes_mode_only=k.bytes_mode_only,
         ))
 
@@ -588,23 +627,18 @@ def _render_by_source_section(stats: StatsData) -> list[str]:
     # Bar scaling: positive-only gross so the widest positive bar reaches 100%.
     # Share %: absolute-value totals so any overhead rows (negative bytes) shrink
     # the denominator instead of pushing the dominant positive row past 100%.
-    gross_bytes = max(sum(s.bytes for s in stats.by_source if s.bytes > 0), 1)
-    share_bytes_denom = max(sum(abs(s.bytes) for s in stats.by_source), 1)
-    share_tokens_denom = sum(abs(s.tokens) for s in stats.by_source)
+    gross_bytes, share_bytes_denom, share_tokens_denom = _compute_share_denominators(stats.by_source)
 
     def _share(s: SourceStat) -> float:
         """Fraction of the period total this source represents."""
-        if share_tokens_denom == 0:
-            return s.bytes / share_bytes_denom
-        return s.tokens / share_tokens_denom
+        return _abs_share(s.bytes, s.tokens, share_bytes_denom, share_tokens_denom)
 
     # Rows are ordered by share of the period total, largest first.
     for s in sorted(stats.by_source, key=_share, reverse=True):
         share = _share(s)
-        bar_fraction = s.bytes / gross_bytes if s.bytes > 0 else 0.0
         color = _source_color(s.source)
         lines.append(_table_row(
-            s.source, bar_fraction, s.bytes, s.tokens, s.events, share,
+            s.source, _bar_fraction(s.bytes, gross_bytes), s.bytes, s.tokens, s.events, share,
             name_prefix=f"{fg(*color)}●{RESET} ",
             name_color=C.TEXT_PRIMARY,
         ))
