@@ -38,6 +38,7 @@ __all__ = [
     "list_outputs",
     "load_output",
     "load_output_meta",
+    "lookup_all_by_name",
     "lookup_by_name",
     "output_id_for",
     "read_sidecar",
@@ -398,11 +399,26 @@ def lookup_by_name(skill_name: str) -> SkillMeta | None:
     Skips invalid skill names defensively rather than scanning the directory
     with a name that could never have produced a valid entry.
     """
+    matches = lookup_all_by_name(skill_name)
+    return matches[0] if matches else None
+
+
+def lookup_all_by_name(skill_name: str) -> list[SkillMeta]:
+    """Return every cached entry for *skill_name*, newest first.
+
+    Used by the CLI recall path: when the most-recent entry's body file has
+    been evicted (the sidecar may outlive the body since both go through
+    independent unlinks under the byte-cap eviction loop), the caller can
+    walk older entries to find a still-loadable body.  Each entry is paired
+    with its sidecar metadata so callers can inspect ``ts`` and decide which
+    is acceptable.
+
+    Returns an empty list when no entry exists or the skill name is invalid.
+    """
     name = _safe_skill_name(skill_name)
     if name is None:
-        return None
-    best: SkillMeta | None = None
-    best_ts: float = 0.0
+        return []
+    results: list[SkillMeta] = []
     for entry in list_outputs():
         oid = entry.get("output_id")
         if not oid:
@@ -410,9 +426,9 @@ def lookup_by_name(skill_name: str) -> SkillMeta | None:
         meta = read_sidecar(oid)
         if meta is None or meta.skill_name != name:
             continue
-        if meta.ts > best_ts:
-            best, best_ts = meta, meta.ts
-    return best
+        results.append(meta)
+    results.sort(key=lambda m: m.ts, reverse=True)
+    return results
 
 
 def list_by_session(session_id: str) -> list[SkillMeta]:
@@ -435,6 +451,10 @@ def list_by_session(session_id: str) -> list[SkillMeta]:
     # prefix is 16 chars; output_id is "{prefix}-{safe_name}-{sha16}".
     # Split off the prefix+dash, then split on "-" from the right to extract sha.
     prefix_dash = prefix + "-"
+    # sha portion is short_content_hash output: 16 lowercase hex chars.  Validate
+    # both length and alphabet so a malformed filename that happens to share the
+    # session prefix can't pollute the parsed result.
+    _SHA_RE = re.compile(r"^[0-9a-f]{16}$")
     results: list[SkillMeta] = []
     for entry in list_outputs():
         oid = entry.get("output_id")
@@ -448,7 +468,7 @@ def list_by_session(session_id: str) -> list[SkillMeta]:
             continue
         safe_name = remainder[:dash_pos]
         sha = remainder[dash_pos + 1:]
-        if not safe_name or not sha:
+        if not safe_name or not _SHA_RE.match(sha):
             continue
         # Restore ":" from "_" in plugin-namespaced names (best-effort; may be
         # ambiguous if the skill name itself contains underscores, but the

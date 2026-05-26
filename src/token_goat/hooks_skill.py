@@ -65,25 +65,69 @@ def _extract_skill_body(payload: HookPayload) -> str:
 def _resolve_skill_body_path(skill_name: str) -> str:
     """Best-effort lookup of the skill body file on the local filesystem.
 
-    Claude Code skills typically live under ``~/.claude/skills/<name>/SKILL.md``
-    (user-installed) or ``~/.claude/plugins/<plugin>/skills/<name>/SKILL.md``
-    (plugin-provided).  Resolving the on-disk path lets the CLI fall back to
-    reading the source file when the cache has been evicted, and lets the
-    manifest cite a stable location for the body.
+    Claude Code skills can live in three shapes:
 
-    Returns the resolved absolute path as a string when a file exists, else
-    an empty string.  Never raises — caller treats empty as "no source path".
+    * User-installed (no namespace):
+      ``~/.claude/skills/<name>/SKILL.md``
+    * Plugin-installed, legacy flat layout:
+      ``~/.claude/plugins/<plugin>/skills/<name>/SKILL.md``
+    * Plugin-installed, marketplace layout (current Claude Code default):
+      ``~/.claude/plugins/cache/<marketplace>/<plugin>/<version>/skills/<name>/SKILL.md``
+
+    For the plugin-namespaced form ``plugin:skill`` we walk the marketplace
+    layout because that is where modern Claude Code installs plugins (the flat
+    layout is kept as a fallback for older or hand-installed plugins).  When
+    the namespace lookup fails we also try the user-skills directory under the
+    bare skill name — some plugin skills surface under a short alias the user
+    has hand-installed (or hand-mirrored) at ``~/.claude/skills/<name>``.
+
+    Resolving the on-disk path lets the CLI fall back to reading the source
+    file when the cache has been evicted, and lets the manifest cite a stable
+    location for the body.  Returns the resolved absolute path as a string
+    when a file exists, else an empty string.  Never raises — caller treats
+    empty as "no source path".
     """
     if not skill_name:
         return ""
 
-    candidates: list[Path] = []
     home = Path.home()
+    candidates: list[Path] = []
+
     if ":" in skill_name:
         plugin, _sep, name = skill_name.partition(":")
         if plugin and name:
+            # Legacy flat layout first (cheaper — direct path stat without globbing).
             candidates.append(home / ".claude" / "plugins" / plugin / "skills" / name / "SKILL.md")
             candidates.append(home / ".claude" / "plugins" / plugin / "skills" / name / f"{name}.md")
+            # Marketplace layout: ``cache/<marketplace>/<plugin>/<version>/skills/<name>/SKILL.md``.
+            # Glob iteratively so a missing intermediate dir aborts early without
+            # raising.  We pick the first plugin-dir match by alphabetical version
+            # order — newest install path tends to sort last so we walk in reverse.
+            cache_root = home / ".claude" / "plugins" / "cache"
+            try:
+                if cache_root.is_dir():
+                    for mkt in cache_root.iterdir():
+                        if not mkt.is_dir():
+                            continue
+                        plugin_dir = mkt / plugin
+                        if not plugin_dir.is_dir():
+                            continue
+                        try:
+                            versions = sorted(
+                                (v for v in plugin_dir.iterdir() if v.is_dir()),
+                                reverse=True,
+                            )
+                        except OSError:
+                            continue
+                        for ver in versions:
+                            candidates.append(ver / "skills" / name / "SKILL.md")
+                            candidates.append(ver / "skills" / name / f"{name}.md")
+            except OSError:
+                pass
+            # Fallback: a user may also have mirrored the plugin skill under the
+            # bare name in ``~/.claude/skills/<name>/SKILL.md``.
+            candidates.append(home / ".claude" / "skills" / name / "SKILL.md")
+            candidates.append(home / ".claude" / "skills" / name / f"{name}.md")
     else:
         candidates.append(home / ".claude" / "skills" / skill_name / "SKILL.md")
         candidates.append(home / ".claude" / "skills" / skill_name / f"{skill_name}.md")

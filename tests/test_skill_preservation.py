@@ -110,6 +110,38 @@ class TestSkillCacheStoreAndLoad:
         assert found is not None
         assert found.output_id == meta_new.output_id
 
+    def test_lookup_all_by_name_returns_newest_first(self, tmp_data_dir):
+        """Every cached entry for the same skill is returned, newest first."""
+        meta_a = skill_cache.store_output("sess-all", "ralph", "v1 body " * 100)
+        assert meta_a is not None
+        skill_cache.write_sidecar(meta_a)
+        time.sleep(0.05)
+        meta_b = skill_cache.store_output("sess-all", "ralph", "v2 body " * 100)
+        assert meta_b is not None
+        skill_cache.write_sidecar(meta_b)
+        time.sleep(0.05)
+        meta_c = skill_cache.store_output("sess-all2", "ralph", "v3 body " * 100)
+        assert meta_c is not None
+        skill_cache.write_sidecar(meta_c)
+        result = skill_cache.lookup_all_by_name("ralph")
+        assert len(result) == 3
+        assert result[0].output_id == meta_c.output_id  # newest first
+        assert result[2].output_id == meta_a.output_id
+
+    def test_lookup_all_by_name_filters_other_skills(self, tmp_data_dir):
+        meta_ralph = skill_cache.store_output("s1", "ralph", "ralph body " * 100)
+        meta_improve = skill_cache.store_output("s1", "improve", "improve body " * 100)
+        assert meta_ralph is not None and meta_improve is not None
+        skill_cache.write_sidecar(meta_ralph)
+        skill_cache.write_sidecar(meta_improve)
+        result = skill_cache.lookup_all_by_name("ralph")
+        assert len(result) == 1
+        assert result[0].skill_name == "ralph"
+
+    def test_lookup_all_by_name_invalid_returns_empty(self, tmp_data_dir):
+        assert skill_cache.lookup_all_by_name("") == []
+        assert skill_cache.lookup_all_by_name("../etc/passwd") == []
+
 
 # ---------------------------------------------------------------------------
 # session.SkillEntry
@@ -175,6 +207,86 @@ class TestSessionSkillEntry:
         }
         migrated = session._migrate_session(dict(legacy))
         assert migrated["skill_history"] == {}
+
+
+# ---------------------------------------------------------------------------
+# hooks_skill._resolve_skill_body_path
+# ---------------------------------------------------------------------------
+
+class TestResolveSkillBodyPath:
+    """Plugin-installed skills live under the marketplace cache, not a flat dir."""
+
+    def test_user_skill_resolves(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HOME", str(tmp_path))
+        monkeypatch.setenv("USERPROFILE", str(tmp_path))
+        skill_dir = tmp_path / ".claude" / "skills" / "ralph"
+        skill_dir.mkdir(parents=True)
+        skill_md = skill_dir / "SKILL.md"
+        skill_md.write_text("# ralph", encoding="utf-8")
+        resolved = hooks_skill._resolve_skill_body_path("ralph")
+        assert resolved == str(skill_md)
+
+    def test_plugin_marketplace_layout_resolves(self, tmp_path, monkeypatch):
+        """Marketplace plugins under cache/<marketplace>/<plugin>/<version>/skills/..."""
+        monkeypatch.setenv("HOME", str(tmp_path))
+        monkeypatch.setenv("USERPROFILE", str(tmp_path))
+        # ~/.claude/plugins/cache/claude-plugins-official/commit-commands/1.0.0/skills/commit/SKILL.md
+        skill_md = (
+            tmp_path / ".claude" / "plugins" / "cache" / "claude-plugins-official"
+            / "commit-commands" / "1.0.0" / "skills" / "commit" / "SKILL.md"
+        )
+        skill_md.parent.mkdir(parents=True)
+        skill_md.write_text("# commit", encoding="utf-8")
+        resolved = hooks_skill._resolve_skill_body_path("commit-commands:commit")
+        assert resolved == str(skill_md)
+
+    def test_plugin_legacy_flat_layout_resolves(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HOME", str(tmp_path))
+        monkeypatch.setenv("USERPROFILE", str(tmp_path))
+        skill_md = (
+            tmp_path / ".claude" / "plugins" / "myplug" / "skills"
+            / "doit" / "SKILL.md"
+        )
+        skill_md.parent.mkdir(parents=True)
+        skill_md.write_text("# doit", encoding="utf-8")
+        resolved = hooks_skill._resolve_skill_body_path("myplug:doit")
+        assert resolved == str(skill_md)
+
+    def test_plugin_skill_falls_back_to_user_skills_dir(self, tmp_path, monkeypatch):
+        """A plugin-prefixed skill that the user mirrored to ~/.claude/skills/<name>/."""
+        monkeypatch.setenv("HOME", str(tmp_path))
+        monkeypatch.setenv("USERPROFILE", str(tmp_path))
+        skill_md = tmp_path / ".claude" / "skills" / "improve" / "SKILL.md"
+        skill_md.parent.mkdir(parents=True)
+        skill_md.write_text("# improve", encoding="utf-8")
+        resolved = hooks_skill._resolve_skill_body_path("plugin:improve")
+        assert resolved == str(skill_md)
+
+    def test_unknown_skill_returns_empty(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HOME", str(tmp_path))
+        monkeypatch.setenv("USERPROFILE", str(tmp_path))
+        assert hooks_skill._resolve_skill_body_path("does-not-exist") == ""
+        assert hooks_skill._resolve_skill_body_path("plugin:also-gone") == ""
+
+    def test_empty_name_returns_empty(self):
+        assert hooks_skill._resolve_skill_body_path("") == ""
+
+    def test_marketplace_picks_newest_version(self, tmp_path, monkeypatch):
+        """When a plugin has multiple cached versions, prefer the newest."""
+        monkeypatch.setenv("HOME", str(tmp_path))
+        monkeypatch.setenv("USERPROFILE", str(tmp_path))
+        base = (
+            tmp_path / ".claude" / "plugins" / "cache" / "mkt" / "plug"
+        )
+        old = base / "1.0.0" / "skills" / "x" / "SKILL.md"
+        new = base / "2.0.0" / "skills" / "x" / "SKILL.md"
+        old.parent.mkdir(parents=True)
+        new.parent.mkdir(parents=True)
+        old.write_text("# v1", encoding="utf-8")
+        new.write_text("# v2", encoding="utf-8")
+        resolved = hooks_skill._resolve_skill_body_path("plug:x")
+        # Reverse-sorted version order = newest first.
+        assert resolved == str(new)
 
 
 # ---------------------------------------------------------------------------

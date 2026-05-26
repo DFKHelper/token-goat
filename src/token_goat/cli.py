@@ -1838,20 +1838,46 @@ def cmd_skill_body(
     appends a ``**Sections available:** ...`` line listing them.
     """
     from . import db as _db  # noqa: PLC0415
-    from . import skill_cache  # noqa: PLC0415
+    from . import hooks_skill, skill_cache  # noqa: PLC0415
 
-    meta = skill_cache.lookup_by_name(name)
+    # Walk every cached entry for this skill, newest first.  An older entry's
+    # body may still be on disk even when the most-recent entry's body has
+    # been LRU-evicted (sidecar + body are unlinked independently inside the
+    # byte-cap eviction loop).  This avoids "no cached body" failures when the
+    # cache has been partially evicted.
+    meta_candidates = skill_cache.lookup_all_by_name(name)
+    meta: skill_cache.SkillMeta | None = meta_candidates[0] if meta_candidates else None
     body: str | None = None
     source_label = "cache"
-    if meta is not None:
-        body = skill_cache.load_output(meta.output_id)
-        if body is None and meta.source_path:
-            # Cache file evicted but the source path was recorded — read it back.
+    for candidate in meta_candidates:
+        body = skill_cache.load_output(candidate.output_id)
+        if body is not None:
+            meta = candidate
+            break
+        # Body evicted; try the source path the hook recorded at capture.
+        if candidate.source_path:
             try:
                 from pathlib import Path  # noqa: PLC0415
 
-                body = Path(meta.source_path).read_text(encoding="utf-8", errors="replace")
-                source_label = f"source:{meta.source_path}"
+                body = Path(candidate.source_path).read_text(encoding="utf-8", errors="replace")
+                source_label = f"source:{candidate.source_path}"
+                meta = candidate
+                break
+            except OSError:
+                continue
+    # Final fallback: even if no cached entry has a usable body, the skill may
+    # still be installed on disk.  Re-resolve the source path at recall time
+    # (the install location may have changed since capture, or the original
+    # resolve attempt may have failed because the plugin was installed after
+    # the body was captured).
+    if body is None:
+        resolved = hooks_skill._resolve_skill_body_path(name)
+        if resolved:
+            try:
+                from pathlib import Path  # noqa: PLC0415
+
+                body = Path(resolved).read_text(encoding="utf-8", errors="replace")
+                source_label = f"source:{resolved}"
             except OSError:
                 body = None
 
