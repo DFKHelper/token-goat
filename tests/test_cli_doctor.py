@@ -2,12 +2,13 @@
 from __future__ import annotations
 
 import subprocess
+import time
 from unittest.mock import patch
 
 from typer.testing import CliRunner
 
 import token_goat.paths as paths
-from token_goat import cli
+from token_goat import cli, db
 
 runner = CliRunner()
 
@@ -143,3 +144,87 @@ class TestDoctorHookWrapper:
         assert result.exit_code == 0
         assert "[WARN]" in result.output
         assert "timed out" in result.output
+
+
+# ---------------------------------------------------------------------------
+# Stats section in doctor output: top kinds, last-write recency, kind coverage
+# ---------------------------------------------------------------------------
+
+
+class TestDoctorStatsSection:
+    """doctor surfaces stats-DB health: top mechanisms, recency, kind coverage."""
+
+    def test_top_kinds_listed_when_rows_exist(self, tmp_data_dir):
+        """When stats has rows, doctor shows the top mechanisms by tokens."""
+        db.record_stat(None, "image_shrink", bytes_saved=10000, tokens_saved=2500)
+        db.record_stat(None, "read_replacement", bytes_saved=4000, tokens_saved=1000)
+        db.record_stat(None, "session_hint", bytes_saved=2000, tokens_saved=500)
+
+        result = runner.invoke(cli.app, ["doctor"])
+        assert result.exit_code == 0
+        assert "top kind: image_shrink" in result.output
+        assert "2500 tokens" in result.output
+
+    def test_unmapped_kind_surfaces_as_warn(self, tmp_data_dir):
+        """A record_stat with an unknown kind name lands in SOURCE_OTHER and
+        doctor flags it as ``[WARN] unmapped kinds`` so a future regression
+        (someone adds a kind but forgets to map it) does not silently lose
+        attribution in `token-goat stats`."""
+        db.record_stat(None, "totally_new_kind_2026", bytes_saved=500, tokens_saved=125)
+
+        result = runner.invoke(cli.app, ["doctor"])
+        assert result.exit_code == 0
+        assert "unmapped kinds" in result.output
+        assert "totally_new_kind_2026" in result.output
+        # Must surface as a [WARN] so doctor exit reflects the problem.
+        warn_pos = result.output.find("[WARN] unmapped kinds")
+        assert warn_pos != -1, (
+            "expected '[WARN] unmapped kinds' line, got:\n" + result.output
+        )
+
+    def test_all_mapped_kinds_show_all_clear(self, tmp_data_dir):
+        """When every kind has a source-bucket mapping, doctor shows OK."""
+        db.record_stat(None, "image_shrink", bytes_saved=1000, tokens_saved=250)
+        db.record_stat(None, "session_hint", bytes_saved=500, tokens_saved=125)
+
+        result = runner.invoke(cli.app, ["doctor"])
+        assert result.exit_code == 0
+        assert "kind coverage" in result.output
+        assert "all kinds mapped" in result.output
+
+    def test_recent_write_shows_minutes(self, tmp_data_dir):
+        """A row written moments ago surfaces as ``last write: Nm ago``."""
+        db.record_stat(None, "image_shrink", bytes_saved=1000, tokens_saved=250)
+
+        result = runner.invoke(cli.app, ["doctor"])
+        assert result.exit_code == 0
+        assert "last write" in result.output
+        assert "m ago" in result.output  # minute granularity
+
+    def test_stale_write_surfaces_as_warn(self, tmp_data_dir, monkeypatch):
+        """A stats DB with no fresh rows in the last week is a leading
+        indicator of broken hook wiring — doctor surfaces this as [WARN]."""
+        # Write a row, then back-date its ts to 10 days ago.
+        db.record_stat(None, "image_shrink", bytes_saved=1000, tokens_saved=250)
+        ten_days_ago = int(time.time()) - 10 * 86400
+        with db.open_global() as conn:
+            conn.execute("UPDATE stats SET ts = ? WHERE kind = ?", (ten_days_ago, "image_shrink"))
+            conn.commit()
+
+        result = runner.invoke(cli.app, ["doctor"])
+        assert result.exit_code == 0
+        assert "last write" in result.output
+        assert "stats DB looks stale" in result.output
+
+    def test_bash_compress_prefix_does_not_count_as_unmapped(self, tmp_data_dir):
+        """``bash_compress:<filter>`` rows must NOT show up as unmapped — they
+        are routed by the _KIND_PREFIX_TO_SOURCE table."""
+        db.record_stat(None, "bash_compress:pytest", bytes_saved=500, tokens_saved=125)
+        db.record_stat(None, "bash_compress:npm", bytes_saved=300, tokens_saved=75)
+
+        result = runner.invoke(cli.app, ["doctor"])
+        assert result.exit_code == 0
+        # No [WARN] unmapped kinds line.
+        assert "[WARN] unmapped kinds" not in result.output
+        # The all-clear line should be present.
+        assert "all kinds mapped" in result.output

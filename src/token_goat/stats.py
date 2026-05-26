@@ -68,6 +68,12 @@ _KIND_TO_SOURCE: dict[str, str] = {
     "session_hint_overhead": SOURCE_HINT,
     "diff_hint": SOURCE_HINT,
     "diff_hint_overhead": SOURCE_HINT,
+    # structured_file_hint: per-config-file (.toml/.yaml/.json/.ini/Dockerfile)
+    # hint emitted by hooks_read.handle_pre_read_structured.  Same prevention
+    # mechanism as session_hint (steer the agent toward `token-goat section`)
+    # so it shares the bucket.
+    "structured_file_hint": SOURCE_HINT,
+    "structured_file_hint_overhead": SOURCE_HINT,
     # predictive_prefetch_hit: attribution row written when a diff_hint fires
     # against a snapshot that was captured speculatively by post_edit (kind=
     # "predictive") rather than by post_read.  bytes_saved / tokens_saved are
@@ -79,11 +85,24 @@ _KIND_TO_SOURCE: dict[str, str] = {
     "predictive_prefetch_hit": SOURCE_HINT,
     "grep_dedup_hint": SOURCE_HINT,
     "grep_dedup_hint_overhead": SOURCE_HINT,
-    # surgical read family
+    # surgical read family — every variant that replaces a full-file Read with
+    # a narrower slice belongs here so the user can see one combined "read"
+    # savings line in `token-goat stats`.
     "read_replacement": SOURCE_READ,
     "section_replacement": SOURCE_READ,
     "symbol_read": SOURCE_READ,
     "section_read": SOURCE_READ,
+    # stub_view: `token-goat skeleton <file>` — signatures-only view.  Saving
+    # is the difference between the full file body and the signature block.
+    "stub_view": SOURCE_READ,
+    # symbol_lookup / semantic_search: not direct file slices, but they steer
+    # the agent toward a surgical read instead of a Grep walk.  Realised
+    # bytes_saved is 0 (the lookup itself is not a content fetch), so they
+    # only appear in `token-goat stats` when [stats] record_zero_savings is
+    # on — exactly like image_shrink_skipped.  Their presence in the bucket
+    # exists so adoption (invocations per day, per project) can be measured.
+    "symbol_lookup": SOURCE_READ,
+    "semantic_search": SOURCE_READ,
     # compaction assist family — includes the post-compact recovery hint and
     # its injection overhead.  Recovery overhead is a real cost even though
     # its realized saving is attributed downstream (bash_dedup_hint /
@@ -92,6 +111,15 @@ _KIND_TO_SOURCE: dict[str, str] = {
     "compact_assist": SOURCE_COMPACT,
     "compact_recovery": SOURCE_COMPACT,
     "compact_recovery_overhead": SOURCE_COMPACT,
+    # skill_body_recall: `token-goat skill-body <name>` — re-loads a skill
+    # body (whole or sliced) after compaction.  Same recovery family as the
+    # compact_recovery hint, so it shares the bucket: both let the agent
+    # rebuild context that compaction stripped.
+    "skill_body_recall": SOURCE_COMPACT,
+    # resume_packet: `token-goat resume <id>` — emits the saved resume packet
+    # for a prior session.  Always bytes_saved=0; the row is an adoption
+    # signal (how often agents fall back on resume) rather than a saving.
+    "resume_packet": SOURCE_COMPACT,
     # bash output cache family — preventing repeat command runs is structurally
     # distinct from preventing file re-reads (no source file is involved), so
     # it gets its own user-visible bucket rather than folding into HINT.
@@ -115,14 +143,32 @@ _KIND_TO_SOURCE: dict[str, str] = {
 }
 
 
+# Prefix → source bucket for dynamic kind names.  `bash_runner` records one
+# kind per filter (``bash_compress:pytest``, ``bash_compress:npm``, ...), so the
+# static dict cannot enumerate them.  Order does not matter — at most one
+# prefix can ever match a given kind because all prefixes end with ``:``.
+_KIND_PREFIX_TO_SOURCE: tuple[tuple[str, str], ...] = (
+    ("bash_compress:", SOURCE_BASH),
+)
+
+
 def kind_to_source(kind: str) -> str:
     """Map a raw stats event *kind* to a user-facing source bucket.
 
     Returns one of ``SOURCE_IMAGE``, ``SOURCE_HINT``, ``SOURCE_READ``,
-    ``SOURCE_COMPACT``, or ``SOURCE_OTHER`` for unknown kinds.  Used by
-    :func:`summarize` to populate ``StatsSummary.by_source``.
+    ``SOURCE_COMPACT``, ``SOURCE_BASH``, ``SOURCE_WEB``, or ``SOURCE_OTHER``
+    for unknown kinds.  Dynamic kinds with a ``<family>:<subkind>`` shape are
+    matched against ``_KIND_PREFIX_TO_SOURCE`` first; the static dict is the
+    fallback for exact matches.  Used by :func:`summarize` to populate
+    ``StatsSummary.by_source``.
     """
-    return _KIND_TO_SOURCE.get(kind, SOURCE_OTHER)
+    src = _KIND_TO_SOURCE.get(kind)
+    if src is not None:
+        return src
+    for prefix, prefix_src in _KIND_PREFIX_TO_SOURCE:
+        if kind.startswith(prefix):
+            return prefix_src
+    return SOURCE_OTHER
 
 
 __all__ = [

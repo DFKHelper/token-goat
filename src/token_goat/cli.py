@@ -316,6 +316,51 @@ def _query_project(proj_hash: str, sql: str, params: tuple[object, ...]) -> list
         raise typer.Exit(1) from None
 
 
+def _record_lookup_stat(
+    kind: str,
+    query_text: str,
+    result_count: int,
+    *,
+    scope: str,
+    project_hash: str | None = None,
+) -> None:
+    """Record an adoption-tracking stat for a CLI lookup command.
+
+    Lookup commands (``token-goat symbol`` / ``token-goat semantic``) are not
+    content fetches — their job is to steer the agent toward a narrow surgical
+    read instead of a full-file Read or shotgun Grep.  ``bytes_saved`` /
+    ``tokens_saved`` are always 0; the row only shows up in ``token-goat
+    stats`` when ``[stats] record_zero_savings = true`` (same opt-in policy as
+    ``image_shrink_skipped`` and ``predictive_prefetch_hit``).
+
+    The row exists so adoption — how often the agent reaches for a lookup
+    instead of a raw Read/Grep — is measurable.  ``detail`` packs ``query``,
+    ``scope`` (``project`` | ``all_projects``), and ``hits`` so a follow-up
+    query can split adoption by hit/miss without re-reading the source query
+    text.
+
+    Best-effort: a DB error must never block the user-visible command output,
+    so all exceptions are caught and logged at debug level.
+    """
+    try:
+        _db = _lazy_import("db")
+
+        # Detail capped to 200 chars to keep ``stats.detail`` modest under a
+        # long natural-language semantic query; the truncation marker is
+        # explicit so ``token-goat stats --json`` consumers can detect it.
+        q = query_text[:180] + ("…" if len(query_text) > 180 else "")
+        detail = f"q={q!r} scope={scope} hits={result_count}"
+        _db.record_stat(
+            project_hash,
+            kind,
+            bytes_saved=0,
+            tokens_saved=0,
+            detail=detail,
+        )
+    except Exception as exc:  # noqa: BLE001
+        _LOG.debug("record lookup stat failed kind=%s: %s", kind, exc)
+
+
 app = typer.Typer(name="token-goat", no_args_is_help=True)
 hook_app = typer.Typer(name="hook", no_args_is_help=True)
 config_app = typer.Typer(
@@ -543,6 +588,7 @@ def symbol(
                     name, pool,
                     n=_SYMBOL_DIDYOUMEAN_LIMIT, cutoff=_SYMBOL_DIDYOUMEAN_CUTOFF,
                 )
+        _record_lookup_stat("symbol_lookup", name, len(results), scope="all_projects")
         _emit_results(results, close_matches=close, redirected_from=redirected)
         return
 
@@ -596,6 +642,10 @@ def symbol(
                 name, pool,
                 n=_SYMBOL_DIDYOUMEAN_LIMIT, cutoff=_SYMBOL_DIDYOUMEAN_CUTOFF,
             )
+    _record_lookup_stat(
+        "symbol_lookup", name, len(results), scope="project",
+        project_hash=proj.hash,
+    )
     _emit_results(
         results,
         not_found_extra=hint,
@@ -707,6 +757,11 @@ def semantic(
             "or use `token-goat symbol`/`token-goat map` for non-semantic navigation."
         )
         raise typer.Exit(0) from None
+
+    _record_lookup_stat(
+        "semantic_search", query, len(hits), scope="project",
+        project_hash=proj.hash,
+    )
 
     if json_output:
         out = [
