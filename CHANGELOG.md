@@ -2,6 +2,72 @@
 
 All notable changes to Token-Goat are documented in this file. Format follows Keep a Changelog. Token-Goat follows Semantic Versioning starting at 1.0.
 
+## [Unreleased]
+
+Bundles the work from the 35-iter `/improve` run (six themed loops, 2026-05-25 → 2026-05-26): compaction hardening, doctor visibility, opt-in observability, four new bash-compress filters, and a stack of reliability fixes.
+
+### Compaction
+
+- **`compact-hint` mirrors live PreCompact gates.** The CLI preview now applies the same `enabled` flag, trigger membership, compact-skip sentinel fast-path, `min_events` gate, sidecar cache, and `auto_trigger_multiplier` boost as the live hook, so the previewed output matches what would actually be emitted. New `--trigger auto|manual` option simulates each trigger class (`4d0a618`).
+- **Pressure-aware manifest sizing.** Auto-trigger compactions (Claude Code's context-pressure-fired `/compact`) get a `auto_trigger_multiplier`-scaled budget (default 2.0×). Manifests gain a `RESUME` pointer and a blocker-error preview block so the post-compact recovery hint can surface the in-progress work and the most recent error without a round-trip (`c827767`, `09d2dc5`).
+- **Priority-aware safety trim.** When the per-section budget split is still over budget after row-level compaction, low-signal sections are dropped wholesale rather than soft-truncated mid-row (`305a650`).
+- **Activity floor + configurable TTL on compact-skip sentinel.** `[compact_assist] compact_skip_ttl_secs` (default 300 s) replaces the hard-coded fast-path window; the sentinel is busted whenever session mtime > sentinel mtime, so an idle session can short-circuit aggressively while an active session always re-evaluates (`0c1beea`).
+- **Manifest sidecar hardening.** Sidecars with future-dated `emit_ts` or corrupt headers are rejected and re-emitted from scratch rather than served as stale cache hits (`8f5c003`).
+- **Opt-in decision log.** New `[compact_assist] decision_log` surfaces the agent's recent reasoning as a manifest section, so post-compact the LLM can pick up the why behind the last batch of edits (`0ffb741`).
+- **Manifest budget telemetry.** Per-emit budget / actual-tokens / scaled-budget triples are recorded as stat kinds and surfaced in `doctor` (`48d477b`).
+
+### Doctor
+
+- **Installation-status section.** `doctor` now reports each of the four install targets (settings.json, CLAUDE.md, skill, autostart) with present / drift / missing, plus a fastembed ONNX model file check (`f2fa89c`).
+- **Cold-import timing + cache hit rates.** Surfaces the first-call import budget for the heavy modules (`compact`, `session`, `parser`) and the cache hit rate per cache type, so degraded performance is visible at a glance (`fc19a1c`).
+- **Opt-in flag inventory.** `doctor` lists every opt-in flag's current value (json_sidecar, decision_log, skill_preservation, …) with the durable hash format used to detect drift between runs (`008e937`).
+- **`canonical_root` sanity.** Doctor confirms project root → canonical-root → project-hash round-trips cleanly, catching the cross-platform path-normalisation edge cases tested in `tests/test_paths.py::test_normalize_key_*` (`97a9af2`).
+
+### Bash compression
+
+- **Four new filters.** `gh` (GitHub CLI output, with progress-line and JSON-block awareness), `go test` (test result grouping with `--- FAIL` block preservation), `ansible` (play-recap + task summary), and `pre-commit` (hook-by-hook grouping with full diff preservation). Filter count: 18 → 22 (`22d501f`, `bb63b40`).
+- **Filter base refactor.** Shared `_finalize` and `_emit_notes` helpers extracted onto `Filter` base; eliminates ~120 lines of per-subclass boilerplate (`a8db957`).
+
+### Hints + recovery
+
+- **Opt-in structured-JSON sidecar.** `[hints] json_sidecar` (or `TOKEN_GOAT_HINT_JSON_SIDECAR=1`) prepends a single-line JSON sidecar to every dedup / re-read / unchanged-file / structured-file hint. Prose lines are preserved verbatim — dedup fingerprints, curator metrics, and tests stay intact (`3a2b102`).
+- **Post-compact recovery hint upgrades.** Surfaces current-blocker error preview, `RESUME` anchor, and per-file edit badges (`09d2dc5`).
+- **Predictive snapshot attribution.** Predictive prefetched snapshots are tagged so diff-hint records can be attributed back to the prefetch path; new `predictive_prefetch_hit` stat kind captures the win (`c79aca5`). Snapshots also survive `TYPE_CHECKING` blocks and multi-line imports (`b8211a1`).
+
+### Reliability
+
+- **`paths.ensure_dir` on hot-path mkdirs.** Eliminates the residual race-tolerant-mkdir bug class on Windows under heavy disk pressure (`e0a34e4`).
+- **`paths.has_windows_drive_prefix` promoted to public API.** Single canonical check used by `safe_join`, `canonical_root`, and doctor (`97a9af2`).
+- **Snapshot SHA-verification before diff hint.** A corrupt snapshot file no longer fires a phantom diff hint; SHA is validated against the recorded hash before the bytes are trusted (`0192634`).
+- **Orphan `json.lock` sidecar reaping.** `session.cleanup_stale` now also removes orphaned session lock sidecars; was leaking sidecars on hard process kills (`21fbdcf`).
+- **`worker.heartbeat_stale_threshold()` derived from interval.** No more magic numbers — staleness threshold is `2× worker interval`. New `is_heartbeat_stale_for_nudge()` consumer for the session-start "worker is down" nudge (`42615e5`).
+- **Operator-tunable hook watchdog.** `TOKEN_GOAT_HOOK_WATCHDOG_MS` overrides the hook deadline for slow CI / cold-cache machines (`0f6ee8f`).
+- **Cache truncation respects UTF-8 boundaries.** Byte-bounded cache writes now truncate on a valid UTF-8 codepoint boundary; orphan-sweep gains an ownership guard so a foreign sidecar in the cache dir is never deleted (`a1a3990`).
+- **Marketplace skill plugin path resolution.** `skill_cache` now also resolves the `~/.claude/plugins/<marketplace>/skills/...` layout, with a walk-based eviction fallback for skills that escaped the LRU index (`5d54b6d`).
+
+### Stats
+
+- **Surgical-read adoption surface.** New stat kinds (`<read>_lookup` and `<read>_overhead` per `symbol|read|section|semantic|map`) track each surgical-read command's adoption + per-call overhead. `doctor` now warns on unmapped kinds so silent stat drift is loud (`a775c11`, `bf8f45b`).
+- **Bash + web telemetry.** `bash_dedup_stale`, `web_dedup_stale`, `bash_output_recall_miss`, `web_output_recall_miss` stat kinds added (`cecdb68`).
+- **Repomap cache-pollution fix.** Filter cache pollution at the source; scale `compact_top_n` instead of using a flat constant; new `map_lookup` stat kind (`8a652f2`).
+- **Format-aware image-shrink threshold.** Per-format byte thresholds (PNG vs JPEG vs WebP) prevent over-eager compression; new `image_shrink_skipped` stat kind tracks the bypass rate so the threshold can be tuned against data (`a47ad53`).
+
+### Security
+
+- **SSRF audit gaps closed.** WebFetch now blocks `172.16.0.0/12`, `127.0.0.0/8`, CLI-supplied bypass attempts, and a DNS-rebinding edge that previously slipped through the resolver pin (`8060f67`).
+
+### Refactors
+
+- **Shared pre-read hint pipeline.** Pre-read hint sequence + stats denominators extracted into a shared helper; eliminates the four near-duplicate pipelines (`37843fd`).
+- **Install hooks merge/strip + color-stream helpers extracted** (`cccece1`).
+- **`scan_flat_headers` unifies the flat-config index loop** across `toml_idx`, `yaml_idx`, `json_idx`, `ini_idx`, and `dockerfile_idx` (`517133e`).
+
+### CI / test infra
+
+- **Per-test timeout raised 30 → 60 s** for the lock-loop tests that trip Windows runner load (`3130f79`).
+- **`xdist` stdio reconfigure removed.** A `sys.stdout.reconfigure(...)` call in `conftest.py` was corrupting the `execnet` pipe pytest-xdist uses to talk between controller and workers on Windows. Replaced with a worker-scoped skip + `contextlib.suppress` (`72fab20`, `136c983`, `4ef6e64`).
+- **`MSYS_NO_PATHCONV` documented** for Git Bash `gh api /repos/...` calls (`4e43ab8`).
+
 ## [0.9.0] - 2026-05-25
 
 Bundles three improvement loops landed since 0.8.0 (37-iter context/compaction on 2026-05-25, 68-iter reliability/perf on 2026-05-24, 55-iter context-savings baseline). Headlines: SSRF DNS-rebinding fix, hook registry single-source-of-truth with startup alignment gate, race-tolerant Windows `mkdir`, manifest format shortening + delta tracking, CI split into fast/slow tiers, and cross-harness wire-format compatibility coverage.
