@@ -2246,6 +2246,86 @@ def cmd_resume(
     typer.echo(packet)
 
 
+@app.command("recovery", rich_help_panel="Core")
+def cmd_recovery(
+    session_id: str = typer.Argument(
+        ...,
+        help=(
+            "Session ID (full or 8-char short form) to inspect. "
+            "Same form as `token-goat resume` accepts."
+        ),
+    ),
+    pending: bool = typer.Option(  # noqa: B008
+        False,
+        "--pending",
+        help=(
+            "Read the deferred recovery sidecar if present (what would be "
+            "injected on the next tool call), instead of rebuilding from cache."
+        ),
+    ),
+) -> None:
+    """Inspect the post-compact recovery hint for a session.
+
+    By default rebuilds the hint from the current session cache so you can
+    preview what a fresh ``/compact`` followed by a SessionStart-with-source=
+    compact would surface.  Use ``--pending`` to read the deferred sidecar
+    (``sentinels/recovery_pending_{session_id}``) for sessions where the
+    SessionStart hook has already fired but the first tool call has not
+    consumed the hint yet.
+
+    Useful for:
+
+    \\b
+    1. Debugging the recovery hint shape after a code change.
+    2. Verifying the sidecar contents for an already-deferred session.
+    3. A human peeking at "what would the agent see if it resumed here?"
+       without actually triggering a compact event.
+    """
+    from . import hooks_session as _hs  # noqa: PLC0415
+    from . import paths as _paths  # noqa: PLC0415
+
+    # Resolve short session IDs the same way `resume` does.
+    resolved_id: str | None = None
+    if len(session_id) >= 32:
+        resolved_id = session_id
+    else:
+        try:
+            sessions_dir = _paths.data_dir() / "sessions"
+            for f in sessions_dir.glob(f"{session_id}*.json"):
+                resolved_id = f.stem
+                break
+        except Exception:  # noqa: BLE001
+            pass
+        if resolved_id is None:
+            _error(f"no session found for short id: {session_id!r}")
+            raise typer.Exit(1)
+
+    if pending:
+        sidecar = _paths.recovery_pending_path(resolved_id)
+        if not sidecar.exists():
+            _warn(
+                f"no deferred recovery sidecar for {resolved_id[:16]!r} "
+                "(either the SessionStart hook has not fired with source=compact, "
+                "or the next tool call already consumed it)"
+            )
+            raise typer.Exit(0)
+        try:
+            typer.echo(sidecar.read_text(encoding="utf-8"))
+        except OSError as exc:
+            _error(f"failed to read sidecar: {exc}")
+            raise typer.Exit(1) from exc
+        return
+
+    hint = _hs._build_recovery_hint(resolved_id)
+    if not hint:
+        _warn(
+            f"session {resolved_id[:16]!r} has no recoverable state "
+            "(empty cache or no qualifying entries)"
+        )
+        raise typer.Exit(0)
+    typer.echo(hint)
+
+
 @app.command(rich_help_panel="Install")
 def doctor(  # noqa: C901
     fix: bool = typer.Option(  # noqa: B008
