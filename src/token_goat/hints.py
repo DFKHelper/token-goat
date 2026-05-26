@@ -11,7 +11,7 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any, Final, TypedDict, TypeVar, cast
 
-from . import db, session, snapshots
+from . import config, db, session, snapshots
 from .hooks_common import sanitize_log_str, validate_cwd
 from .project import find_project
 from .util import get_logger
@@ -697,6 +697,22 @@ def _build_read_hint_inner(
 _PROXIMITY_SLOP_LINES: int = 200
 
 
+def _should_suppress_full_file_hint(n_lines: int | None) -> bool:
+    """Return True when a full-file hint should be suppressed based on line count.
+
+    Surgical hints (symbol/section/diff) always bypass this check; only full-file
+    hints (already-read dedup, index-based large-file suggestions) are gated.
+    When min_file_lines_for_hint is 0 (default), no suppression occurs.
+    When n_lines is None (no cached line count), suppression is skipped to avoid
+    adding new stat calls to the hot path.
+    """
+    cfg = config.load()
+    threshold = cfg.hints.min_file_lines_for_hint
+    if threshold <= 0 or n_lines is None:
+        return False
+    return n_lines < threshold
+
+
 def _hint_from_cache(
     entry: session.FileEntry,
     req_start: int,
@@ -780,6 +796,22 @@ def _hint_from_cache(
             ),
             0,  # No tokens saved — the file is in context; this is informational.
         )
+
+    # Line-count threshold suppression: when min_file_lines_for_hint is configured,
+    # suppress full-file dedup hints for tiny files where the hint cost exceeds savings.
+    # Compute the max line from cached ranges. This suppression applies only to the
+    # "already read" dedup hint pathway; surgical hints (symbols/sections) bypass this.
+    if entry.line_ranges and entry.line_ranges != [(0, 0)]:
+        max_line = max(cached_end for cached_start, cached_end in entry.line_ranges)
+        if _should_suppress_full_file_hint(max_line):
+            _LOG.debug(
+                "_hint_from_cache: suppressing full-file hint for %s "
+                "(line_count=%d < threshold=%d)",
+                fname, max_line, config.load().hints.min_file_lines_for_hint,
+            )
+            # Symbol-only hints are still emitted (surgical reads are never suppressed).
+            if not entry.symbols_read:
+                return None
 
     # Frequently-read files: emit a one-time surgical-read nudge instead of
     # repeating the line-range nag on every re-read.  The hint text is stable
@@ -992,6 +1024,16 @@ def _hint_from_index(
     n_lines = _confirmed_line_count(estimated_lines, line_count_is_exact, abs_path)
     if n_lines is None:
         _LOG.debug("_hint_from_index: %s below large-file threshold (estimated=%s)", fname, estimated_lines)
+        return None
+
+    # Line-count threshold suppression: suppress index-based hints for tiny files
+    # when the hint cost exceeds the value of a surgical read suggestion.
+    if _should_suppress_full_file_hint(n_lines):
+        _LOG.debug(
+            "_hint_from_index: suppressing index hint for %s "
+            "(line_count=%d < threshold=%d)",
+            fname, n_lines, config.load().hints.min_file_lines_for_hint,
+        )
         return None
 
     full_tokens = _est_tokens_from_lines(n_lines)

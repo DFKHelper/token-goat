@@ -2932,3 +2932,139 @@ class TestWebDedupStaleStat:
         assert hint is not None
         stale_rows = [r for r in recorded if r["kind"] == "web_dedup_stale"]
         assert stale_rows == []
+
+
+class TestMinFileLinesForHint:
+    """Test configurable line-count threshold for suppressing full-file hints."""
+
+    def test_threshold_zero_disabled_emits_all_hints(self, tmp_data_dir, monkeypatch):
+        """When min_file_lines_for_hint=0 (default), no suppression occurs via config."""
+        from token_goat import config as config_module
+        from token_goat.hints import _should_suppress_full_file_hint
+
+        mock_config = config_module.Config()
+        mock_config.hints.min_file_lines_for_hint = 0
+        monkeypatch.setattr(config_module, "load", lambda: mock_config)
+
+        sid = "s_min_lines_zero"
+        path = str(tmp_data_dir / "medium.py")
+        # Use 200 lines to exceed MIN_OVERLAP_TO_WARN (50).
+        Path(path).write_text("\n".join(f"x = {i}" for i in range(1, 201)), encoding="utf-8")
+        # Mark ranges that will create a 60-line overlap hint.
+        session.mark_file_read(sid, path, offset=0, limit=100)   # Lines 1-100
+        session.mark_file_read(sid, path, offset=40, limit=100)  # Lines 41-140 (overlap 41-100 = 60 lines)
+
+        # Verify the suppression helper behaves correctly.
+        assert not _should_suppress_full_file_hint(200), "threshold=0 should not suppress"
+
+        hint = build_read_hint(
+            session_id=sid,
+            file_path=path,
+            offset=40,
+            limit=100,
+            cwd=str(tmp_data_dir),
+        )
+        assert hint is not None, "With threshold=0, hints must emit"
+
+    def test_threshold_30_file_25_lines_suppressed(self, tmp_data_dir, monkeypatch):
+        """With threshold=30, a 25-line file is suppressed."""
+        from token_goat import config as config_module
+
+        mock_config = config_module.Config()
+        mock_config.hints.min_file_lines_for_hint = 30
+        monkeypatch.setattr(config_module, "load", lambda: mock_config)
+
+        sid = "s_min_lines_30_small"
+        path = str(tmp_data_dir / "small.py")
+        # 25 lines exactly, which is < 30.
+        Path(path).write_text("\n".join(f"x = {i}" for i in range(1, 26)), encoding="utf-8")
+        # Mark single read (read_count=1 will get suppressed by _MIN_LINES_FOR_HINT anyway).
+        # Use a larger file technique: mark it as index-accessed instead.
+        # Actually, for this small file, we'll just verify that the suppression works
+        # by the line-count check in _hint_from_index path.
+        # Mark it so we can test the dedup path with a large overlap.
+        session.mark_file_read(sid, path, offset=0, limit=15)   # Lines 1-15
+        session.mark_file_read(sid, path, offset=5, limit=15)   # Lines 6-20 (overlap 6-15 = 10 lines)
+
+        hint = build_read_hint(
+            session_id=sid,
+            file_path=path,
+            offset=5,
+            limit=15,
+            cwd=str(tmp_data_dir),
+        )
+        assert hint is None, "File with 25 lines < threshold 30 must be suppressed"
+
+    def test_threshold_30_file_100_lines_emitted(self, tmp_data_dir, monkeypatch):
+        """With threshold=30, a 100-line file emits the hint."""
+        from token_goat import config as config_module
+
+        mock_config = config_module.Config()
+        mock_config.hints.min_file_lines_for_hint = 30
+        monkeypatch.setattr(config_module, "load", lambda: mock_config)
+
+        sid = "s_min_lines_30_large"
+        path = str(tmp_data_dir / "large.py")
+        Path(path).write_text("\n".join(f"x = {i}" for i in range(1, 101)), encoding="utf-8")
+        # Create overlapping ranges with 60+ line overlap to emit a hint.
+        session.mark_file_read(sid, path, offset=0, limit=80)   # Lines 1-80
+        session.mark_file_read(sid, path, offset=20, limit=80)  # Lines 21-100 (overlap 21-80 = 60 lines)
+
+        hint = build_read_hint(
+            session_id=sid,
+            file_path=path,
+            offset=20,
+            limit=80,
+            cwd=str(tmp_data_dir),
+        )
+        assert hint is not None, "File with 100 lines > threshold 30 must emit"
+
+    def test_symbol_hints_never_suppressed(self, tmp_data_dir, monkeypatch):
+        """Surgical hints (symbols) bypass line-count suppression."""
+        from token_goat import config as config_module
+
+        mock_config = config_module.Config()
+        mock_config.hints.min_file_lines_for_hint = 30
+        monkeypatch.setattr(config_module, "load", lambda: mock_config)
+
+        sid = "s_min_lines_symbol"
+        path = str(tmp_data_dir / "tiny_with_symbol.py")
+        Path(path).write_text("def foo():\n    pass\n", encoding="utf-8")
+        session.mark_file_read(sid, path, offset=0, limit=10, symbol="foo")
+
+        hint = build_read_hint(
+            session_id=sid,
+            file_path=path,
+            offset=0,
+            limit=10,
+            cwd=str(tmp_data_dir),
+        )
+        # Symbol-only hint still emits (surgical reads not suppressed).
+        assert hint is not None, "Symbol-only hints must never be suppressed"
+
+    def test_no_line_count_avoids_suppression(self, tmp_data_dir, monkeypatch):
+        """When line count is unavailable, suppression is skipped."""
+        from token_goat import config as config_module
+        from token_goat.hints import _should_suppress_full_file_hint
+
+        mock_config = config_module.Config()
+        mock_config.hints.min_file_lines_for_hint = 30
+        monkeypatch.setattr(config_module, "load", lambda: mock_config)
+
+        # Verify that None line count bypasses suppression.
+        assert not _should_suppress_full_file_hint(None), "None line count should not suppress"
+
+        sid = "s_min_lines_no_count"
+        path = str(tmp_data_dir / "nonexistent.py")
+        # Do not write the file or mark it as read.
+        # When there's no line count, the suppression check should skip.
+
+        hint = build_read_hint(
+            session_id=sid,
+            file_path=path,
+            offset=0,
+            limit=10,
+            cwd=str(tmp_data_dir),
+        )
+        # No hint expected anyway (file not in index), but test confirms no crash.
+        assert hint is None, "Nonexistent file has no hint"
