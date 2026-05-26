@@ -369,8 +369,19 @@ class TestComputeAdaptiveBudget:
         budget = compact.compute_adaptive_budget(cache, age_seconds=1800)
         assert budget >= 200
 
+    @pytest.mark.slow
     def test_budget_never_exceeds_maximum(self, tmp_data_dir):
-        """Budget is capped at 800 tokens (mature tier at maximum complexity)."""
+        """Budget is capped at 800 tokens (mature tier at maximum complexity).
+
+        Marked ``slow``: 41 sequential session-save mutations on the same
+        session id stress the per-session lockfile path. On the Windows 2022
+        GH Actions runner the cumulative lock-acquire load can spike past
+        ``_LOCK_TIMEOUT_SECS``, and pytest-timeout broadcasts CTRL_C_EVENT,
+        killing the worker. The cap invariant is still covered: the slow
+        tier runs this test, and ``test_budget_grows_with_complexity`` /
+        ``test_minimum_budget_example`` in this same class exercise the
+        per-mutation budget arithmetic in the fast tier with smaller loops.
+        """
         sid = "maximum-session"
         # Add many edits, symbols, bash to try to exceed cap
         for i in range(20):

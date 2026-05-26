@@ -3,6 +3,15 @@
 All extractors must satisfy two invariants regardless of input:
   1. Never raise — return ([], [], [], []) on any error.
   2. All returned objects pass structural validity checks (line >= 1, etc.).
+
+Marked ``slow`` at module level: hypothesis fuzz across nine tree-sitter
+adapters churns the parser's C allocator with arbitrary bytes. On the
+Windows 2022 GH Actions runner this destabilises the worker process —
+manifesting later in the suite as ``Windows fatal exception: code
+0xc000001d`` (illegal instruction) / access violations / ``<freed thread
+state>`` in unrelated tests. The invariants are still covered: the slow
+tier runs them, and the per-adapter unit tests in test_parser_*.py
+exercise the happy path in the fast tier.
 """
 from __future__ import annotations
 
@@ -21,6 +30,8 @@ from token_goat.languages.rust import extract as rust_extract
 from token_goat.languages.toml_idx import extract as toml_extract
 from token_goat.languages.typescript import extract as ts_extract
 from token_goat.languages.yaml_idx import extract as yaml_extract
+
+pytestmark = pytest.mark.slow
 
 # ---------------------------------------------------------------------------
 # Helpers
