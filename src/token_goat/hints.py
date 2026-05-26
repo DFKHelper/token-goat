@@ -67,6 +67,20 @@ def _apply_terse(text: str) -> str:
     return text
 
 
+def _make_short_stub_hint(seen_count: int) -> ReadHint:
+    """Return a short stub hint for when a fingerprint has been seen Nx already.
+
+    Used when verbose_until_seen_count has been reached — replaces the full
+    hint text with a terse "(↳ same hint seen Nx, see prior context)" reminder.
+    Carries 0 tokens_saved because suppressing the verbose text is the saving
+    (no duplicate action needed from the agent).
+    """
+    return ReadHint(
+        f"(↳ same hint seen {seen_count}×, see prior context)",
+        0,
+    )
+
+
 # ---------------------------------------------------------------------------
 # Structured-JSON sidecar (opt-in via [hints] json_sidecar = true)
 # ---------------------------------------------------------------------------

@@ -418,17 +418,49 @@ def _emit_dedup_budgeted_hint(
     if hint is None:
         return None
 
-    from .hints import _hint_budget_check, _hint_fingerprint  # noqa: PLC0415
+    from .hints import _hint_budget_check, _hint_fingerprint, _make_short_stub_hint  # noqa: PLC0415
 
-    # Dedup: suppress if identical hint already seen this session for this path.
+    # Dedup: check if identical hint already seen this session for this path.
     fingerprint = _hint_fingerprint(str(hint), path=file_path)
-    has_seen = getattr(cache, "has_hint_fingerprint", lambda _: False)(fingerprint)  # type: ignore[arg-type]
-    if has_seen:
-        _LOG.debug(
-            "pre-read: %s hint already seen for %s; suppressing",
-            display_name, sanitize_log_str(file_path),
-        )
-        return None
+    hints_seen_dict = getattr(cache, "hints_seen", {})  # type: ignore[arg-type]
+    seen_count = hints_seen_dict.get(fingerprint, 0) if isinstance(hints_seen_dict, dict) else 0
+
+    if seen_count > 0:
+        # Hint has been emitted before in this session.
+        # Check if we should emit a short stub instead of suppressing entirely.
+        try:
+            from . import config as _config  # noqa: PLC0415
+            cfg = _config.load().hints
+            verbose_until = cfg.verbose_until_seen_count
+        except Exception:  # noqa: BLE001
+            verbose_until = 2  # default
+
+        if verbose_until == 0:
+            # Feature disabled: always suppress duplicate hints entirely.
+            _LOG.debug(
+                "pre-read: %s hint already seen for %s; suppressing (verbose_until_seen_count=0)",
+                display_name, sanitize_log_str(file_path),
+            )
+            return None
+        elif seen_count > verbose_until:
+            # Threshold reached: emit short stub instead of full hint.
+            stub_hint = _make_short_stub_hint(seen_count)
+            # Still mark as seen to increment the counter for next time.
+            mark_seen = getattr(cache, "mark_hint_seen", None)
+            if callable(mark_seen):
+                mark_seen(fingerprint)
+            _LOG.debug(
+                "pre-read: %s hint short-stub for %s (seen %d times)",
+                display_name, sanitize_log_str(file_path), seen_count,
+            )
+            return pre_tool_use_with_context(str(stub_hint))
+        else:
+            # Within verbose threshold: suppress entirely (first or second occurrence).
+            _LOG.debug(
+                "pre-read: %s hint already seen for %s; suppressing (seen_count=%d <= verbose_until=%d)",
+                display_name, sanitize_log_str(file_path), seen_count, verbose_until,
+            )
+            return None
 
     # Budget: hard cap on hints of this kind per session.
     _session = _get_session()

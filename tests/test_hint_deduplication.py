@@ -58,7 +58,7 @@ class TestSessionCacheHintMethods:
         assert cache.has_hint_fingerprint(fp)
 
     def test_mark_hint_seen_idempotent(self, tmp_data_dir) -> None:
-        """Calling mark_hint_seen twice with same fingerprint is safe."""
+        """Calling mark_hint_seen twice with same fingerprint increments count."""
         cache = session.SessionCache("test_session", 0, 0)
         fp = "abc123def456"
 
@@ -66,9 +66,9 @@ class TestSessionCacheHintMethods:
         cache.mark_hint_seen(fp)
         cache.mark_hint_seen(fp)
 
-        # Still in the set (only once)
+        # Still in the dict, count incremented to 2
         assert cache.has_hint_fingerprint(fp)
-        assert len(cache.hints_seen) == 1
+        assert cache.hints_seen[fp] == 2
 
     def test_mark_hint_seen_persists_to_disk(self, tmp_data_dir) -> None:
         """mark_hint_seen updates in-memory state; save() flushes to disk."""
@@ -93,25 +93,27 @@ class TestSessionCacheHintMethods:
     def test_hints_seen_serialization_round_trip(self) -> None:
         """hints_seen serializes to JSON and deserializes correctly."""
         cache = session.SessionCache("test_session", 0, 0)
-        cache.hints_seen.add("abc123def456")
-        cache.hints_seen.add("xyz789uvw012")
+        cache.hints_seen["abc123def456"] = 1
+        cache.hints_seen["xyz789uvw012"] = 2
 
         # Serialize
         d = cache.to_dict()
         assert "hints_seen" in d
-        assert isinstance(d["hints_seen"], list)
+        assert isinstance(d["hints_seen"], dict)
         assert len(d["hints_seen"]) == 2
 
         # Deserialize
         cache2 = session.SessionCache.from_dict(d)
         assert cache2.has_hint_fingerprint("abc123def456")
         assert cache2.has_hint_fingerprint("xyz789uvw012")
+        assert cache2.hints_seen["abc123def456"] == 1
+        assert cache2.hints_seen["xyz789uvw012"] == 2
 
-    def test_hints_seen_empty_list_on_new_cache(self) -> None:
-        """New cache serializes with empty hints_seen list."""
+    def test_hints_seen_empty_dict_on_new_cache(self) -> None:
+        """New cache serializes with empty hints_seen dict."""
         cache = session.SessionCache("test", 0, 0)
         d = cache.to_dict()
-        assert d.get("hints_seen") == []
+        assert d.get("hints_seen") == {}
 
     def test_hints_seen_missing_field_backward_compat(self) -> None:
         """from_dict handles missing hints_seen field gracefully."""
@@ -126,11 +128,11 @@ class TestSessionCacheHintMethods:
             "edited_files": {},
         }
         cache = session.SessionCache.from_dict(d)
-        assert isinstance(cache.hints_seen, set)
+        assert isinstance(cache.hints_seen, dict)
         assert len(cache.hints_seen) == 0
 
     def test_hints_seen_corrupt_entry_skipped(self) -> None:
-        """from_dict skips non-string entries in hints_seen list."""
+        """from_dict (legacy format) converts list[str] to dict[str, int]."""
         d = {
             "schema_version": session.SESSION_SCHEMA_VERSION,
             "created_by": "token-goat",
@@ -146,6 +148,9 @@ class TestSessionCacheHintMethods:
         assert cache.has_hint_fingerprint("abc123def456")
         assert cache.has_hint_fingerprint("xyz789uvw012")
         assert len(cache.hints_seen) == 2
+        # Legacy list format is converted to count=1 for each entry
+        assert cache.hints_seen["abc123def456"] == 1
+        assert cache.hints_seen["xyz789uvw012"] == 1
 
 
 class TestReadHintIntegration:
@@ -213,3 +218,72 @@ class TestHintsSeenLifecycle:
         cache = session.load(session_id)
 
         assert cache.has_hint_fingerprint(fp)
+
+
+class TestVerboseHintSuppression:
+    """Tests for verbose-until-seen-count feature (short stub on repeated hints)."""
+
+    def test_first_emit_is_verbose(self) -> None:
+        """First emit of a hint is always verbose (full text)."""
+
+        # Stub should only be used for counts > 1
+        cache = session.SessionCache("test", 0, 0)
+        fp = "abc123def456"
+
+        # First emit: count goes from 0 → 1
+        cache.mark_hint_seen(fp)
+        assert cache.hints_seen[fp] == 1
+
+    def test_second_emit_is_verbose_by_default(self) -> None:
+        """Second emit is still verbose with default config (verbose_until_seen_count=2)."""
+        cache = session.SessionCache("test", 0, 0)
+        fp = "abc123def456"
+
+        # First emit: count 1
+        cache.mark_hint_seen(fp)
+        # Second emit: count 2 (still <= verbose_until=2)
+        cache.mark_hint_seen(fp)
+        assert cache.hints_seen[fp] == 2
+
+    def test_third_emit_triggers_short_stub(self) -> None:
+        """Third emit uses short stub when verbose_until_seen_count=2."""
+        from token_goat.hints import _make_short_stub_hint
+
+        stub = _make_short_stub_hint(3)
+        assert "same hint seen 3×" in str(stub)
+        assert stub.tokens_saved == 0
+
+    def test_short_stub_format(self) -> None:
+        """Short stub has correct format for any count."""
+        from token_goat.hints import _make_short_stub_hint
+
+        for count in [3, 4, 5, 10]:
+            stub = _make_short_stub_hint(count)
+            assert f"seen {count}×" in str(stub)
+            assert "↳" in str(stub)
+
+    def test_hint_count_increments_on_mark(self) -> None:
+        """mark_hint_seen increments count each time."""
+        cache = session.SessionCache("test", 0, 0)
+        fp = "abc123def456"
+
+        # Mark 5 times
+        for i in range(1, 6):
+            cache.mark_hint_seen(fp)
+            assert cache.hints_seen[fp] == i
+
+    def test_count_survives_serialization(self) -> None:
+        """Hint counts survive round-trip to disk."""
+        session_id = "test_count_persist"
+        cache1 = session.SessionCache(session_id, 0, 0)
+        fp = "abc123def456"
+
+        # Mark 3 times
+        for _ in range(3):
+            cache1.mark_hint_seen(fp)
+        cache1._pending_hint_save = False
+        session.save(cache1)
+
+        # Reload
+        cache2 = session.load(session_id)
+        assert cache2.hints_seen[fp] == 3
