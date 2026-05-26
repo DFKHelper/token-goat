@@ -25,6 +25,8 @@ from __future__ import annotations
 __all__ = [
     "BASH_HISTORY_MAX",
     "BashEntry",
+    "DECISION_HISTORY_MAX",
+    "DecisionEntry",
     "EDITED_FILES_MAX",
     "FILES_MAX",
     "FileEntry",
@@ -54,6 +56,7 @@ __all__ = [
     "lookup_skill_entry",
     "lookup_web_entry",
     "mark_bash_run",
+    "mark_decision",
     "mark_file_edited",
     "mark_file_read",
     "mark_glob_run",
@@ -589,6 +592,31 @@ class SkillEntry:
 
 
 @dataclass
+class DecisionEntry:
+    """One agent decision captured via ``token-goat decision "<text>"``.
+
+    Decision logs preserve the *why* behind a step — option-A-vs-B trade-offs,
+    invariants locked, approaches ruled out — through compaction events.  Edited
+    files, manifest blockers, and skill bodies already survive compaction, but
+    the reasoning that produced them does not; this entry plugs that gap.
+
+    Stored in :attr:`SessionCache.decisions` as an append-only list (newest at
+    the end), capped at :data:`DECISION_HISTORY_MAX` with FIFO eviction.  The
+    text is hard-trimmed to :data:`_MAX_DECISION_TEXT_LEN` so a runaway loop
+    cannot bloat the session JSON.
+
+    ``tag`` is an optional short label ("rationale", "ruled-out", "invariant")
+    that the manifest renderer uses to colour-prefix the entry; an empty string
+    renders the entry without a leading bracket.  ``ts`` is recorded in seconds
+    since the epoch so the manifest can sort by recency.
+    """
+
+    text: str
+    ts: float
+    tag: str = ""
+
+
+@dataclass
 class ResultCacheEntry:
     """A cached read_symbol/read_section result, keyed elsewhere by (rel_path, item).
 
@@ -671,6 +699,18 @@ _MAX_SKILL_NAME_LEN: Final[int] = 128
 # FIFO eviction (keep most recent) prevents unbounded growth in long sessions.
 GREPS_HISTORY_MAX: Final[int] = 75
 _GREPS_HISTORY_EVICT: Final[int] = 15
+
+# Maximum number of decision-log entries retained per session.  Decisions are
+# opt-in (the agent calls ``token-goat decision "<text>"``), so the volume is
+# self-limited — but a misbehaving loop could pin one entry per iteration; the
+# cap is a safety net.  FIFO eviction keeps the most-recent decisions, which
+# are the ones most likely to remain load-bearing for the next compaction.
+DECISION_HISTORY_MAX: Final[int] = 30
+_DECISION_HISTORY_EVICT: Final[int] = 5
+# Hard cap on the persisted decision text length.  Long enough for "Chose option
+# A because Y; rejected B (cost too high); locked invariant: X must hold" but
+# short enough to keep session JSON bounded even at the cap.
+_MAX_DECISION_TEXT_LEN: Final[int] = 280
 
 # Maximum number of glob entries retained per session.  Glob calls are typically
 # less frequent than Grep calls, so a cap of 20 is sufficient; FIFO eviction keeps
@@ -775,6 +815,12 @@ class SessionCache:
     # increment ``run_count`` and update ``ts`` rather than allocating a new
     # entry, so the history naturally deduplicates by name.
     skill_history: dict[str, SkillEntry] = field(default_factory=dict)
+    # Opt-in decision log captured via ``token-goat decision "<text>"``.  Append-only,
+    # newest-last; FIFO-capped at :data:`DECISION_HISTORY_MAX`.  Surfaced by the
+    # compact manifest in a dedicated **Decisions:** section so the *why* behind
+    # in-flight work survives compaction alongside the *what* (edited files,
+    # blockers, skills).  Missing in older session JSON → empty list.
+    decisions: list[DecisionEntry] = field(default_factory=list)
     # Per-session content snapshots used by the diff-aware re-read hint.  Maps
     # normalized file path → SHA of the snapshot bytes stored on disk under
     # ``data_dir() / "session_snapshots" / <session_short> / <pathhash>.bin``.
@@ -888,6 +934,7 @@ class SessionCache:
                 k: _serialize_skill_entry(v)
                 for k, v in self.skill_history.items()
             },
+            decisions=[_serialize_decision_entry(d) for d in self.decisions],
             snapshot_shas=dict(self.snapshot_shas),
             hints_seen=self._get_hints_seen_sorted(),
             bash_dedup_emitted_ids=self._get_bash_dedup_sorted(),
@@ -1082,6 +1129,24 @@ class SessionCache:
             if sk_entry is not None:
                 skill_history[k] = sk_entry
 
+        # decisions: list[DecisionEntry] — missing in older session JSON → empty.
+        # Each malformed entry is dropped silently so a partially-upgraded file
+        # never crashes the load path.
+        decisions: list[DecisionEntry] = []
+        raw_decisions = d.get("decisions", [])
+        if isinstance(raw_decisions, list):
+            for de_raw in raw_decisions:
+                if not isinstance(de_raw, dict):
+                    continue
+                de_entry = _parse_decision_entry(de_raw)
+                if de_entry is not None:
+                    decisions.append(de_entry)
+            # Defensive trim: a manually-edited cache could exceed the cap, so
+            # we keep the newest DECISION_HISTORY_MAX entries (list is append-only,
+            # newest-last per the contract).
+            if len(decisions) > DECISION_HISTORY_MAX:
+                decisions = decisions[-DECISION_HISTORY_MAX:]
+
         # snapshot_shas: dict[str, str] — coerce values defensively so a
         # malformed entry written by a future version (e.g. structured object)
         # is dropped silently rather than poisoning the lookup path.
@@ -1153,6 +1218,7 @@ class SessionCache:
             glob_history=glob_history,
             web_history=web_history,
             skill_history=skill_history,
+            decisions=decisions,
             snapshot_shas=snapshot_shas,
             hints_seen=hints_seen,
             bash_dedup_emitted_ids=bash_dedup_emitted_ids,
@@ -1338,6 +1404,44 @@ def _parse_skill_entry(v: dict[str, Any]) -> SkillEntry | None:
     return _safe_parse(_inner, v, "skill")
 
 
+def _serialize_decision_entry(entry: DecisionEntry) -> _DecisionEntryDict:
+    """Serialize a DecisionEntry to its wire dict with rounded timestamp.
+
+    Omits ``tag`` when empty (the default) to keep the JSON compact for the
+    common case where the caller passes a free-form rationale without a label.
+    """
+    d = _DecisionEntryDict(text=entry.text, ts=_round_ts(entry.ts))
+    if entry.tag:
+        d["tag"] = entry.tag
+    return d
+
+
+def _parse_decision_entry(v: dict[str, Any]) -> DecisionEntry | None:
+    """Deserialize one decision-log dict from JSON, returning None on parse error.
+
+    Strips the text to ``_MAX_DECISION_TEXT_LEN`` so a hand-edited cache with
+    an oversized entry never bloats the in-memory representation.  Empty text
+    is treated as invalid (the entry carries no signal); the parser drops it.
+    """
+    def _inner(d: dict[str, Any]) -> DecisionEntry:
+        raw_text = str(d.get("text", "")).strip()
+        if not raw_text:
+            raise ValueError("decision text is empty")
+        if len(raw_text) > _MAX_DECISION_TEXT_LEN:
+            raw_text = raw_text[:_MAX_DECISION_TEXT_LEN]
+        raw_tag = str(d.get("tag", "")).strip()
+        # Tag length is bounded to keep the manifest column predictable —
+        # anything longer than 24 chars is almost certainly a misuse.
+        if len(raw_tag) > 24:
+            raw_tag = raw_tag[:24]
+        return DecisionEntry(
+            text=raw_text,
+            ts=_coerce_ts(d.get("ts", 0.0)),
+            tag=raw_tag,
+        )
+    return _safe_parse(_inner, v, "decision")
+
+
 def _parse_file_entry(key: str, v: dict[str, Any], now: float) -> FileEntry | None:
     """Deserialize one file-entry dict from JSON, returning None on any parse error.
 
@@ -1485,6 +1589,19 @@ class _SkillEntryDict(TypedDict, total=False):
     source_path: str
 
 
+class _DecisionEntryDict(TypedDict, total=False):
+    """Wire format of a single :class:`DecisionEntry` in the session JSON.
+
+    ``tag`` is optional (``total=False``) — the common case is a free-form
+    rationale without a leading label, which is serialized without the field
+    so the JSON stays compact.
+    """
+
+    text: str
+    ts: float
+    tag: str
+
+
 def _parse_web_entry(v: dict[str, Any]) -> WebEntry | None:
     """Deserialize one web-history dict from JSON, returning None on parse error.
 
@@ -1595,6 +1712,7 @@ class _SessionDict(TypedDict, total=False):
     glob_history: list[_GlobEntryDict]
     web_history: dict[str, _WebEntryDict]
     skill_history: dict[str, _SkillEntryDict]
+    decisions: list[_DecisionEntryDict]
     snapshot_shas: dict[str, str]
     hints_seen: list[str]
     bash_dedup_emitted_ids: list[str]
@@ -2982,6 +3100,72 @@ def lookup_skill_entry(
 ) -> SkillEntry | None:
     """Return the :class:`SkillEntry` for *skill_name* in *session_id*, or None."""
     return _lookup_in_cache(session_id, lambda c: c.skill_history, skill_name, cache)
+
+
+def mark_decision(
+    session_id: str,
+    text: str,
+    *,
+    tag: str = "",
+    cache: SessionCache | None = None,
+) -> SessionCache:
+    """Append a decision-log entry to *session_id* and persist the session cache.
+
+    The append-only ``decisions`` list survives every compaction event — the
+    compact manifest renderer surfaces the most recent entries in a dedicated
+    section so the *why* behind in-flight work is recoverable alongside the
+    *what* (edited files, blockers).
+
+    *text* is stripped, sanitized, and trimmed to :data:`_MAX_DECISION_TEXT_LEN`.
+    Empty/whitespace text is rejected (returns the cache unchanged with a debug
+    log) — the entry would carry no signal.  *tag* is an optional short label
+    capped at 24 characters; pass it to colour-prefix the entry ("rationale",
+    "ruled-out", "invariant").  FIFO-capped at :data:`DECISION_HISTORY_MAX`.
+    """
+    try:
+        cache = _resolve_cache(session_id, cache)
+    except ValueError as exc:
+        _LOG.warning("mark_decision: invalid session_id (%s); skipping", exc)
+        return cache or _fresh_cache(session_id)
+    if cache.unavailable:
+        return cache
+
+    # Strip leading/trailing whitespace BEFORE sanitization so a caller passing
+    # ``" \n\t "`` is rejected as empty.  sanitize_log_str escapes ``\n`` to the
+    # two-char literal ``\\n`` which would otherwise survive a post-sanitize
+    # ``.strip()`` and produce a noise entry.  After the empty check we still
+    # sanitize (defence-in-depth against bidi controls and log injection) and
+    # apply a precise slice — sanitize_log_str appends a ``…`` truncation marker
+    # that overshoots ``max_len`` by one character, which a naive use would
+    # silently exceed the per-entry cap by.
+    stripped_text = text.strip() if isinstance(text, str) else ""
+    if not stripped_text:
+        _LOG.debug("mark_decision: text sanitized to empty; skipping")
+        return cache
+    sanitized_text = sanitize_log_str(stripped_text, max_len=_MAX_DECISION_TEXT_LEN * 2)
+    safe_text = sanitized_text[:_MAX_DECISION_TEXT_LEN]
+    if not safe_text:
+        _LOG.debug("mark_decision: text sanitized to empty; skipping")
+        return cache
+    if tag:
+        stripped_tag = tag.strip()
+        if stripped_tag:
+            sanitized_tag = sanitize_log_str(stripped_tag, max_len=48)
+            safe_tag = sanitized_tag[:24]
+        else:
+            safe_tag = ""
+    else:
+        safe_tag = ""
+
+    now = time.time()
+    entry = DecisionEntry(text=safe_text, ts=now, tag=safe_tag)
+    cache.decisions.append(entry)
+    # Batched FIFO eviction when the cap is exceeded — same shape as the
+    # bash/web history paths.  Trims oldest entries (head of the list).
+    if len(cache.decisions) > DECISION_HISTORY_MAX:
+        excess = len(cache.decisions) - DECISION_HISTORY_MAX + _DECISION_HISTORY_EVICT
+        del cache.decisions[: max(1, excess)]
+    return _commit_mutation(cache, now)
 
 
 def set_snapshot_sha(

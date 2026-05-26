@@ -2194,6 +2194,143 @@ def cmd_skill_diff(
             typer.echo(line)
 
 
+@app.command("decision", rich_help_panel="Core")
+def cmd_decision(
+    text: str = typer.Argument(
+        "",
+        help=(
+            "Decision text. Pass an empty string with --list to inspect the log instead. "
+            "Example: token-goat decision \"Picked option A over B because lower risk\"."
+        ),
+    ),
+    session_id: str = typer.Option(
+        "",
+        "--session-id",
+        "-s",
+        help=(
+            "Session to record the decision against (full or 8-char short form). "
+            "When omitted, the most-recently-active session in the cache directory is used."
+        ),
+    ),
+    tag: str = typer.Option(
+        "",
+        "--tag",
+        "-t",
+        help=(
+            "Optional short label rendered as a column-style prefix in the compact manifest. "
+            "Conventions: 'rationale', 'ruled-out', 'invariant'. Capped at 24 characters."
+        ),
+    ),
+    list_log: bool = typer.Option(
+        False,
+        "--list",
+        help=(
+            "List the recent decisions for the resolved session instead of appending one. "
+            "Pairs well with the compact manifest **Decisions:** overflow recall hint."
+        ),
+    ),
+    limit: int = typer.Option(
+        10,
+        "--limit",
+        min=1,
+        max=100,
+        help="When --list is set, the maximum number of entries to display (newest last).",
+    ),
+) -> None:
+    """Record or list opt-in decisions for the current session.
+
+    Decision logs preserve the *why* behind a step — option-A-vs-B trade-offs,
+    invariants locked, approaches ruled out — through compaction events.  The
+    compact manifest surfaces the most recent decisions in a dedicated section
+    so the post-compact agent inherits the reasoning, not just the artifacts.
+
+    Without ``--list``, the command appends a new entry::
+
+        token-goat decision "Picked option A because lower regression risk"
+        token-goat decision --tag invariant "Every save() must bump version"
+
+    With ``--list``, the recent decisions are printed newest-last so the agent
+    (or a human reviewer) can audit the running rationale without parsing the
+    raw session JSON.  No session ID is needed in the common case; the most
+    recently active cache file in ``data_dir() / "sessions"`` is selected.
+
+    A ``decision_log`` stats event is recorded on append so ``token-goat stats``
+    can track adoption alongside the other compact-assist mechanisms.
+    """
+    from . import db as _db  # noqa: PLC0415
+    from . import paths as _paths  # noqa: PLC0415
+    from . import session as session_mod  # noqa: PLC0415
+
+    sessions_dir = _paths.data_dir() / "sessions"
+
+    def _resolve_session_id(raw: str) -> str | None:
+        """Resolve full / short / empty session id against the on-disk cache."""
+        if raw and len(raw) >= 32:
+            return raw
+        if raw:
+            # Short prefix lookup.
+            if sessions_dir.exists():
+                for f in sessions_dir.glob(f"{raw}*.json"):
+                    return f.stem
+            return None
+        # No session id given → pick the most recently modified cache file.
+        if not sessions_dir.exists():
+            return None
+        candidates = []
+        for f in sessions_dir.glob("*.json"):
+            try:
+                candidates.append((f.stat().st_mtime, f.stem))
+            except OSError:
+                continue
+        if not candidates:
+            return None
+        candidates.sort(key=lambda t: t[0], reverse=True)
+        return candidates[0][1]
+
+    resolved = _resolve_session_id(session_id.strip())
+    if resolved is None:
+        if session_id:
+            _error(f"no session cache found for: {session_id!r}")
+        else:
+            _error(
+                "no session cache files present in "
+                f"{sessions_dir} — start a Claude/Codex session first or pass --session-id"
+            )
+        raise typer.Exit(1)
+
+    if list_log:
+        cache = session_mod.safe_load(resolved)
+        if cache is None or not cache.decisions:
+            typer.echo(f"(no decisions recorded for session {resolved[:8]})")
+            raise typer.Exit(0)
+        # Print newest-last, capped at `limit`.  The list is append-only newest-last
+        # already; slice the tail without rebuilding the list.
+        shown = cache.decisions[-limit:]
+        for entry in shown:
+            tag_str = f"[{entry.tag}] " if entry.tag else ""
+            typer.echo(f"{tag_str}{entry.text}")
+        raise typer.Exit(0)
+
+    if not text or not text.strip():
+        _error(
+            "decision text is empty — pass a non-empty string, or use --list to view the log"
+        )
+        raise typer.Exit(1)
+
+    session_mod.mark_decision(resolved, text, tag=tag)
+    # Record stats so adoption is visible in `token-goat stats`.  Tokens saved is
+    # 0 (the row is an adoption signal, like resume_packet), bytes is the entry
+    # text length so a total-decisions-by-bytes line is meaningful over time.
+    _db.record_stat(
+        None,
+        "decision_log",
+        bytes_saved=len(text.encode("utf-8")),
+        tokens_saved=0,
+        detail=resolved[:32],
+    )
+    typer.echo(f"recorded decision for session {resolved[:8]}")
+
+
 @app.command("resume", rich_help_panel="Core")
 def cmd_resume(
     session_id: str = typer.Argument(

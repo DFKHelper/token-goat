@@ -270,6 +270,7 @@ def _compute_manifest_fingerprint(cache: SessionCache) -> str:  # type: ignore[n
             "bash_dedup_emitted_ids": bash_dedup_ids,
             "bash_history": _dict_payload(getattr(cache, "bash_history", None)),
             "cwd": getattr(cache, "cwd", None),
+            "decisions": _list_payload(getattr(cache, "decisions", None)),
             "edited_files": sorted(edited_files.items()),
             "files": _dict_payload(getattr(cache, "files", None)),
             "glob_history": _list_payload(getattr(cache, "glob_history", None)),
@@ -380,6 +381,7 @@ def _compute_section_counts(cache: object) -> dict[str, int]:
         "grep": _len(getattr(cache, "greps", None) or []),
         "glob": _len(getattr(cache, "glob_history", None) or []),
         "skill": _len(getattr(cache, "skill_history", None) or {}),
+        "decision": _len(getattr(cache, "decisions", None) or []),
     }
 
 
@@ -400,7 +402,7 @@ def _format_manifest_delta(
     if not prior:
         return None
     # Stable display order — matches the manifest's own section emission order.
-    _ORDER = ("edited", "files", "bash", "web", "grep", "glob", "skill", "symbols")
+    _ORDER = ("edited", "files", "bash", "web", "grep", "glob", "skill", "decision", "symbols")
     parts: list[str] = []
     for key in _ORDER:
         cur = int(current.get(key, 0))
@@ -459,6 +461,17 @@ _MAX_COLD_OUTPUTS: Final[int] = 4
 # load a handful of skills at most (Ralph + improve + a few specialist skills);
 # 6 covers any realistic session without crowding higher-priority blockers.
 _MAX_ACTIVE_SKILLS: Final[int] = 6
+
+# Maximum decisions surfaced in the **Decisions:** manifest section.  Opt-in via
+# ``token-goat decision "<text>"``, so the volume is self-limited — typical
+# sessions log 0–3 decisions per task.  5 covers heavier sessions while keeping
+# the section bounded; older entries are still on disk for ``token-goat
+# decision --list`` recall.
+_MAX_DECISIONS: Final[int] = 5
+# Hard per-line cap when rendering a decision into the manifest.  Long enough
+# to surface the reasoning ("Chose option A because Y; rejected B due to Z")
+# but short enough that 5 entries fit comfortably in a 60–80 token slice.
+_MAX_DECISION_RENDER_LEN: Final[int] = 140
 
 # Item #24 — Wide-session threshold.  When the session has accessed at least
 # this many unique files, the per-file Symbols Accessed section is replaced by
@@ -2037,6 +2050,38 @@ def _format_skill_entry(entry: object) -> str:
     return f"- 🧠 {name}{count_str}  ({size_str}{trunc_marker})  recall: `token-goat skill-body {name}`"
 
 
+def _select_top_decision_entries(decisions: object) -> list[object]:
+    """Pick up to :data:`_MAX_DECISIONS` recent decision entries for the manifest.
+
+    The session ``decisions`` list is append-only, newest-last, so returning the
+    last ``_MAX_DECISIONS`` slice preserves chronological order without a sort.
+    Older entries remain on disk and are reachable via ``token-goat decision
+    --list``; this selector intentionally favours recency over breadth.
+    """
+    if not isinstance(decisions, list) or not decisions:
+        return []
+    return list(decisions[-_MAX_DECISIONS:])
+
+
+def _format_decision_entry(entry: object) -> str:
+    """Render one :class:`session.DecisionEntry` as a single manifest line.
+
+    Format::
+
+        - 💡 [rationale] Picked option A because lower risk
+        - 💡 Chose plan B — fits budget
+
+    The tag (if any) is wrapped in square brackets as a column-style prefix so
+    grep + tag-filtering is straightforward.  Text is hard-trimmed at
+    :data:`_MAX_DECISION_RENDER_LEN`; the on-disk entry retains the full body
+    for the ``token-goat decision --list`` recall path.
+    """
+    text = sanitize_log_str(getattr(entry, "text", ""), max_len=_MAX_DECISION_RENDER_LEN)
+    tag = sanitize_log_str(getattr(entry, "tag", ""), max_len=24)
+    tag_str = f"[{tag}] " if tag else ""
+    return f"- 💡 {tag_str}{text}"
+
+
 def _select_top_glob_entries(glob_history: object) -> list[object]:
     """Pick up to :data:`_MAX_GLOB_ENTRIES` glob scans worth surfacing in the manifest.
 
@@ -3204,13 +3249,16 @@ def _render(cache: SessionCache, session_id: str, max_tokens: int) -> tuple[str,
     raw_web: dict = _raw_web if isinstance(_raw_web, dict) else {}
     _raw_skills = getattr(cache, "skill_history", None)
     raw_skills: dict = _raw_skills if isinstance(_raw_skills, dict) else {}
+    _raw_decisions = getattr(cache, "decisions", None)
+    raw_decisions_for_activity: list = _raw_decisions if isinstance(_raw_decisions, list) else []
     if (
         not edited_clean and not files_clean and not raw_greps
         and not raw_bash and not raw_web and not raw_skills
+        and not raw_decisions_for_activity
     ):
         _LOG.info(
             "_render: manifest suppressed for session=%s "
-            "(no activity tracked: edited=0 files_read=0 greps=0 bash=0 skills=0)",
+            "(no activity tracked: edited=0 files_read=0 greps=0 bash=0 skills=0 decisions=0)",
             session_id[:8],
         )
         return "", 0
@@ -3342,6 +3390,28 @@ def _render(cache: SessionCache, session_id: str, max_tokens: int) -> tuple[str,
     # the recall pattern from one example; the per-skill body is available via
     # the recovery hint that fires after compaction.  Use the summary format
     # unconditionally: one line, names + a single generic recall example.
+    # ── 0a-bis. Decisions — opt-in agent decision log ───────────────────────
+    # Built right next to skills because both carry load-bearing *intent* that
+    # compaction otherwise drops.  The list is opt-in (the agent must call
+    # ``token-goat decision "<text>"``) so the typical session has 0 entries
+    # and the section is suppressed entirely.  When present, we surface the
+    # most recent ``_MAX_DECISIONS`` items so the post-compact agent inherits
+    # the *why* behind the work-in-progress, not just the *what*.
+    raw_decisions = getattr(cache, "decisions", None)
+    decision_entries = _select_top_decision_entries(raw_decisions)
+    if decision_entries:
+        decision_lines: list[str] = ["**Decisions:**"]
+        for _de in decision_entries:
+            decision_lines.append(_format_decision_entry(_de))
+        # Overflow note when older decisions exist beyond the surfaced slice.
+        if isinstance(raw_decisions, list) and len(raw_decisions) > len(decision_entries):
+            overflow_n = len(raw_decisions) - len(decision_entries)
+            decision_lines.append(
+                f"- …+{overflow_n} more — recall via `token-goat decision --list`"
+            )
+    else:
+        decision_lines = []
+
     skill_entries = _select_top_skill_entries(raw_skills)
     if skill_entries:
         # Build summary: "ralph ×3, improve ×1 — recall via token-goat skill-body <name>"
@@ -3494,7 +3564,8 @@ def _render(cache: SessionCache, session_id: str, max_tokens: int) -> tuple[str,
     # accurate.  The uncommitted-changes section is additional fixed context and
     # is not counted against any per-section proportional budget.
     fixed_text = "\n".join(
-        header_lines + blocker_lines + skill_lines + uncommitted_lines + edited_lines + stale_lines
+        header_lines + blocker_lines + decision_lines + skill_lines
+        + uncommitted_lines + edited_lines + stale_lines
     )
     fixed_tokens = _token_count(fixed_text)
     sec_budgets = _section_budgets(max_tokens, fixed_tokens)
@@ -3927,6 +3998,7 @@ def _render(cache: SessionCache, session_id: str, max_tokens: int) -> tuple[str,
         sealed_block
         + header_lines
         + blocker_lines
+        + decision_lines
         + skill_lines
         + uncommitted_lines
         + edited_lines
