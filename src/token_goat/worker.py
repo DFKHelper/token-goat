@@ -412,7 +412,7 @@ def _try_claim_worker_slot() -> int | None:
     both saw "no worker alive" and both ran the main loop.
     """
     claim_path = _worker_claim_path()
-    claim_path.parent.mkdir(parents=True, exist_ok=True)
+    paths.ensure_dir(claim_path.parent)
     for attempt in (1, 2):
         try:
             fd = os.open(str(claim_path), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
@@ -457,7 +457,7 @@ def _dirty_queue_lock(lock_path: Path) -> Iterator[None]:
 
     try:
         # Ensure lock file exists
-        lock_path.parent.mkdir(parents=True, exist_ok=True)
+        paths.ensure_dir(lock_path.parent)
         lock_path.touch(exist_ok=True)
 
         if sys.platform == "win32":
@@ -526,7 +526,7 @@ def enqueue_dirty(
     Uses an OS-level lock (fcntl.flock on POSIX, msvcrt.locking on Windows)
     to ensure the JSON line is written atomically without interleaving.
     """
-    paths.dirty_queue_path().parent.mkdir(parents=True, exist_ok=True)
+    paths.ensure_dir(paths.dirty_queue_path().parent)
     entry: dict[str, object] = {"path": rel_path, "project_hash": project_hash, "ts": time.time()}
     if project_root is not None:
         entry["project_root"] = project_root
@@ -1141,7 +1141,7 @@ def evict_image_cache_if_over_limit() -> tuple[int, int]:
     # startup but defending here keeps the function callable from tests and
     # one-shot CLI invocations that bypass the normal startup path.
     with contextlib.suppress(OSError):
-        lock_path.parent.mkdir(parents=True, exist_ok=True)
+        paths.ensure_dir(lock_path.parent)
     lock_fd = _acquire_eviction_lock(lock_path)
     if lock_fd is None:
         _LOG.debug("image cache eviction already in progress; skipping this pass")
@@ -1230,7 +1230,7 @@ def spawn_detached() -> int | None:
     stderr_file: IO[str] | None = None
     try:
         stderr_path = paths.logs_dir() / "worker-stderr.log"
-        stderr_path.parent.mkdir(parents=True, exist_ok=True)
+        paths.ensure_dir(stderr_path.parent)
         paths.roll_log_if_oversized(stderr_path, STDERR_LOG_MAX_BYTES)
         stderr_file = open(stderr_path, "a", encoding="utf-8")  # noqa: SIM115
         stderr_sink = stderr_file
@@ -1396,7 +1396,7 @@ def spawn_index_detached(project_root: str, project_hash: str) -> int | None:
     # Record the spawn so concurrent SessionStart hooks don't pile on. The
     # marker self-expires via PID-liveness + TTL — no explicit cleanup needed.
     with contextlib.suppress(OSError):
-        marker.parent.mkdir(parents=True, exist_ok=True)
+        paths.ensure_dir(marker.parent)
         marker.write_text(f"{proc.pid}\n{time.time()}", encoding="utf-8")
     _LOG.info("auto-index spawned for %s (root=%s, pid=%d)", project_hash[:8], project_root, proc.pid)
     return proc.pid
