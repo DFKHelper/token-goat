@@ -393,3 +393,88 @@ class TestDoctorBranches:
         result = runner.invoke(cli.app, ["doctor"])
         assert result.exit_code == 0
         assert str(pid) in result.stdout
+
+
+class TestDoctorConfigurationSection:
+    """Lock down the Configuration section so every opt-in flag stays visible.
+
+    Run 1-5 added a stream of config-toggleable features (session_brief,
+    image_shrink AVIF/JPEG fallback + decompression-bomb cap, curator,
+    hint_budget, repomap compact threshold, stats record_zero_savings,
+    webfetch allow/deny).  All of them are reachable via ``token-goat
+    config show``, but doctor is the surface that flags "is feature X
+    actually on for this install?".  A missing line here means a user
+    debugging a misbehaving feature has to grep config.toml by hand —
+    exactly the failure mode the section exists to prevent.
+
+    The Configuration block was previously untested (see the doctor smoke
+    suite above), so this class establishes the contract: every top-level
+    config dataclass field that controls user-observable behaviour must be
+    surfaced.
+    """
+
+    def test_configuration_lists_every_opt_in_feature(self, tmp_data_dir):
+        result = runner.invoke(cli.app, ["doctor"])
+        assert result.exit_code == 0, result.stdout
+        # One representative field per config section.  If a future refactor
+        # drops a section from doctor, exactly one of these assertions fires
+        # and points at the missing surface.
+        required_labels = [
+            "Configuration",  # the section header itself
+            "compact_assist.enabled",  # CompactAssistConfig
+            "compact_assist.auto_trigger_multiplier",
+            "compact_assist.max_manifest_tokens",
+            "skill_preservation.enabled",  # SkillPreservationConfig
+            "hints.json_sidecar",  # HintsConfig
+            "hints.suppress_after_ignored",
+            "bash_compress.enabled",  # BashCompressConfig
+            "bash_compress.max_lines",
+            "session_brief.enabled",  # SessionBriefConfig
+            "image_shrink.prefer_avif",  # ImageShrinkConfig
+            "image_shrink.avif_quality",
+            "image_shrink.jpeg_quality",
+            "image_shrink.max_image_pixels",
+            "curator.enabled",  # CuratorConfig
+            "curator.min_samples",
+            "curator.threshold_pct",
+            "hint_budget.enabled",  # HintBudgetConfig
+            "hint_budget.max_per_session",
+            "hint_budget.max_structured_per_session",
+            "hint_budget.max_index_only_per_session",
+            "repomap.compact_file_threshold",  # RepomapConfig
+            "stats.record_zero_savings",  # StatsConfig
+            "webfetch.allow",  # WebFetchConfig
+            "webfetch.deny",
+            "decision_log.max_per_session",  # session.DECISION_HISTORY_MAX
+        ]
+        missing = [lbl for lbl in required_labels if lbl not in result.stdout]
+        assert not missing, (
+            f"doctor Configuration block is missing {missing}; if a config "
+            f"section was intentionally removed, drop the corresponding "
+            f"assertion. Full output:\n{result.stdout}"
+        )
+
+    def test_webfetch_allowlist_count_shown_not_contents(self, tmp_data_dir):
+        """Doctor must NOT leak full URL allow/deny lists.
+
+        The list contents may contain sensitive internal hostnames that a
+        user could accidentally paste into a public bug report.  Showing
+        only the count keeps the diagnostic useful without the disclosure
+        risk.  This test would catch a future "helpful" change that prints
+        the patterns verbatim.
+        """
+        from unittest.mock import patch
+
+        from token_goat import config as _config
+
+        cfg = _config.Config()
+        cfg.webfetch.allow = ["https://internal.example.com/*"]
+        cfg.webfetch.deny = ["https://leak.example.com/*"]
+        with patch.object(_config, "load", return_value=cfg):
+            result = runner.invoke(cli.app, ["doctor"])
+        assert result.exit_code == 0, result.stdout
+        assert "webfetch.allow" in result.stdout
+        assert "1 pattern" in result.stdout
+        # The actual URL must NOT appear in the doctor output.
+        assert "internal.example.com" not in result.stdout
+        assert "leak.example.com" not in result.stdout

@@ -665,8 +665,47 @@ def doctor(  # noqa: C901
         # the safety net is intact.
         ok("bash_compress.enabled", str(cfg.bash_compress.enabled).lower())
         ok("bash_compress.max_lines", str(cfg.bash_compress.max_lines))
-        # decision log (this iteration): always-on opt-in CLI feature; surface
-        # the per-session cap so the user knows the implicit ceiling.
+        # session_brief (r1): startup git-status orientation brief.
+        ok("session_brief.enabled", str(cfg.session_brief.enabled).lower())
+        # image_shrink (r1): AVIF/JPEG fallback + decode pixel cap.  Surfaces
+        # the format threshold knobs added in run 1 so a user wondering "why
+        # is my screenshot still 800 KB" can confirm AVIF is on (or see that
+        # libaom is missing via the Pillow codec line above).
+        ok("image_shrink.prefer_avif", str(cfg.image_shrink.prefer_avif).lower())
+        ok("image_shrink.avif_quality", str(cfg.image_shrink.avif_quality))
+        ok("image_shrink.jpeg_quality", str(cfg.image_shrink.jpeg_quality))
+        ok("image_shrink.max_image_pixels", str(cfg.image_shrink.max_image_pixels))
+        # curator (r2-r3): adaptive hint suppression once the agent ignores too
+        # many.  Threshold + sample size answer "why did dedup hints go quiet?".
+        ok("curator.enabled", str(cfg.curator.enabled).lower())
+        ok("curator.min_samples", str(cfg.curator.min_samples))
+        ok("curator.threshold_pct", str(cfg.curator.threshold_pct))
+        # hint_budget: hard per-session caps that take over after curator.
+        ok("hint_budget.enabled", str(cfg.hint_budget.enabled).lower())
+        ok("hint_budget.max_per_session", str(cfg.hint_budget.max_per_session))
+        ok(
+            "hint_budget.max_structured_per_session",
+            str(cfg.hint_budget.max_structured_per_session),
+        )
+        ok(
+            "hint_budget.max_index_only_per_session",
+            str(cfg.hint_budget.max_index_only_per_session),
+        )
+        # repomap (r1): compact-mode file threshold for `token-goat map --compact`.
+        ok("repomap.compact_file_threshold", str(cfg.repomap.compact_file_threshold))
+        # stats (r2): record_zero_savings switch.  Suggestion-only hints (zero
+        # tokens saved, zero injection cost) skip writing stat rows by default
+        # to keep the hot pre-read path cheap.  Surfacing it explicitly avoids
+        # a "where did my zero-savings rows go?" investigation.
+        ok("stats.record_zero_savings", str(cfg.stats.record_zero_savings).lower())
+        # webfetch (security-relevant): URL allowlist / denylist sizes.  Showing
+        # the list lengths rather than full contents avoids leaking sensitive
+        # internal hostnames into doctor output that the user might paste into
+        # a bug report.
+        ok("webfetch.allow", f"{len(cfg.webfetch.allow)} pattern(s)")
+        ok("webfetch.deny", f"{len(cfg.webfetch.deny)} pattern(s)")
+        # decision log: always-on opt-in CLI feature; surface the per-session
+        # cap so the user knows the implicit ceiling.
         try:
             from . import session as _session  # noqa: PLC0415
 
