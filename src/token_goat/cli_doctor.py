@@ -621,6 +621,9 @@ def doctor(  # noqa: C901
     _row: object = None
     _cache_row: object = None
     _proj_row: object = None
+    _top_kinds: list[tuple[str, int]] = []
+    _unknown_kinds: list[tuple[str, int]] = []
+    _last_write_ts: float | None = None
     try:
         with _db.open_global_readonly() as conn:
             _row = conn.execute(
@@ -634,6 +637,49 @@ def doctor(  # noqa: C901
             _proj_row = conn.execute(
                 "SELECT SUM(tokens_saved), MIN(ts), MAX(ts) FROM stats"
             ).fetchone()
+
+            # Top three mechanisms by tokens_saved over the last 30 days.  A
+            # quick health signal: an install where one mechanism dominates
+            # may be missing adoption of the others (e.g. surgical reads).
+            _cutoff = int(time.time()) - 30 * 86400
+            _top_kinds = [
+                (r[0], int(r[1] or 0))
+                for r in conn.execute(
+                    "SELECT kind, SUM(tokens_saved) AS s "
+                    "FROM stats WHERE ts >= ? "
+                    "GROUP BY kind ORDER BY s DESC LIMIT 3",
+                    (_cutoff,),
+                ).fetchall()
+            ]
+
+            # Unknown kinds — anything that lands in SOURCE_OTHER.  A non-zero
+            # count means a record_stat call uses a kind name that is not yet
+            # in _KIND_TO_SOURCE (or its prefix table); the rows still appear
+            # in totals but lose their mechanism attribution in the rollup.
+            _all_kinds = [
+                r[0]
+                for r in conn.execute(
+                    "SELECT DISTINCT kind FROM stats"
+                ).fetchall()
+            ]
+            from . import stats as _stats_mod  # noqa: PLC0415
+            _unknown_kind_names = [
+                k for k in _all_kinds
+                if _stats_mod.kind_to_source(k) == _stats_mod.SOURCE_OTHER
+            ]
+            if _unknown_kind_names:
+                # Surface up to three with their event counts so the user can
+                # tell whether the unmapped kind is a one-off or a leak.
+                placeholders = ",".join("?" * len(_unknown_kind_names))
+                _unknown_kinds = [
+                    (r[0], int(r[1]))
+                    for r in conn.execute(
+                        f"SELECT kind, COUNT(*) FROM stats "
+                        f"WHERE kind IN ({placeholders}) "
+                        f"GROUP BY kind ORDER BY COUNT(*) DESC LIMIT 3",
+                        tuple(_unknown_kind_names),
+                    ).fetchall()
+                ]
     except FileNotFoundError:
         ok("(none)", "no recorded savings yet")
     except Exception as e:  # noqa: BLE001
@@ -645,6 +691,43 @@ def doctor(  # noqa: C901
         ok("bytes saved", str(_row[2] or 0))  # type: ignore[index]
     elif _row is not None:
         ok("(none)", "no recorded savings yet")
+
+    # Last-write recency — a stats DB with no fresh rows in the last 24 h on a
+    # supposedly-active install is a leading indicator of broken hook wiring.
+    if _proj_row and _proj_row[2]:  # type: ignore[index]
+        _last_write_ts = float(_proj_row[2])  # type: ignore[index]
+        _age_s = max(0.0, time.time() - _last_write_ts)
+        if _age_s < 3600:
+            ok("last write", f"{_age_s/60:.0f}m ago")
+        elif _age_s < 86400:
+            ok("last write", f"{_age_s/3600:.1f}h ago")
+        elif _age_s < 7 * 86400:
+            flag("last write", f"{_age_s/86400:.1f}d ago (no recent activity)", warn=True)
+        else:
+            flag("last write", f"{_age_s/86400:.0f}d ago (stats DB looks stale)", warn=True)
+
+    # Top 3 mechanisms by tokens_saved in the last 30 days — answers the
+    # question "which intercept is paying off the most" at a glance, and
+    # surfaces any mechanism that is silently underperforming.
+    if _top_kinds:
+        for kind_name, tokens in _top_kinds:
+            ok(f"top kind: {kind_name}", f"{tokens} tokens (30d)")
+
+    # Unknown-kind leak — surfaces invisible-bucket rows so a new record_stat
+    # call site that forgot to register its kind in _KIND_TO_SOURCE gets
+    # caught the next time someone runs doctor.
+    if _unknown_kinds:
+        names = ", ".join(f"{k} ({c})" for k, c in _unknown_kinds)
+        flag(
+            "unmapped kinds",
+            f"{names} (add to _KIND_TO_SOURCE or _KIND_PREFIX_TO_SOURCE)",
+            warn=True,
+        )
+    elif _row and _row[0]:  # type: ignore[index]
+        # Only show the all-clear line when there ARE rows; otherwise the
+        # absence is just an empty DB, not a successful mapping audit.
+        ok("kind coverage", "all kinds mapped to a source bucket")
+
     if _cache_row and _cache_row[0]:  # type: ignore[index]
         flag(
             "session-cache",

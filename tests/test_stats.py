@@ -764,6 +764,16 @@ class TestKindToSource:
         # source bucket so the user sees a net number for the hint mechanism.
         assert kind_to_source("session_hint") == SOURCE_HINT
         assert kind_to_source("session_hint_overhead") == SOURCE_HINT
+        assert kind_to_source("diff_hint") == SOURCE_HINT
+        assert kind_to_source("diff_hint_overhead") == SOURCE_HINT
+        assert kind_to_source("predictive_prefetch_hit") == SOURCE_HINT
+        assert kind_to_source("grep_dedup_hint") == SOURCE_HINT
+        assert kind_to_source("grep_dedup_hint_overhead") == SOURCE_HINT
+        # Structured-file hints (TOML/YAML/JSON/INI/Dockerfile) share the
+        # bucket — they steer the agent toward `token-goat section` instead
+        # of a full-file Read, same mechanism as session_hint.
+        assert kind_to_source("structured_file_hint") == SOURCE_HINT
+        assert kind_to_source("structured_file_hint_overhead") == SOURCE_HINT
 
     def test_read_family_kinds_map_to_read(self):
         from token_goat.stats import SOURCE_READ, kind_to_source
@@ -787,6 +797,65 @@ class TestKindToSource:
         from token_goat.stats import SOURCE_OTHER, kind_to_source
         assert kind_to_source("some_new_kind_added_later") == SOURCE_OTHER
         assert kind_to_source("") == SOURCE_OTHER
+
+    def test_stub_view_and_lookup_kinds_map_to_read(self):
+        """skeleton/symbol/semantic adoption kinds belong in the read bucket
+        so all four narrow-the-read mechanisms surface together in stats."""
+        from token_goat.stats import SOURCE_READ, kind_to_source
+        assert kind_to_source("stub_view") == SOURCE_READ
+        assert kind_to_source("symbol_lookup") == SOURCE_READ
+        assert kind_to_source("semantic_search") == SOURCE_READ
+
+    def test_compact_recovery_family_maps_to_compact(self):
+        """skill-body recall and resume packets are post-compact recovery."""
+        from token_goat.stats import SOURCE_COMPACT, kind_to_source
+        assert kind_to_source("skill_body_recall") == SOURCE_COMPACT
+        assert kind_to_source("resume_packet") == SOURCE_COMPACT
+        assert kind_to_source("compact_recovery") == SOURCE_COMPACT
+        assert kind_to_source("compact_recovery_overhead") == SOURCE_COMPACT
+
+    def test_bash_compress_prefix_maps_to_bash(self):
+        """Dynamic kinds with a ``bash_compress:`` prefix go to the bash bucket
+        without needing each filter name enumerated in the static map."""
+        from token_goat.stats import SOURCE_BASH, kind_to_source
+        assert kind_to_source("bash_compress:pytest") == SOURCE_BASH
+        assert kind_to_source("bash_compress:npm") == SOURCE_BASH
+        assert kind_to_source("bash_compress:docker") == SOURCE_BASH
+        # An unknown subkind must still route through the prefix.
+        assert kind_to_source("bash_compress:some-future-filter") == SOURCE_BASH
+
+    def test_bash_dedup_kinds_map_to_bash(self):
+        """Bash output cache and dedup overhead share the SOURCE_BASH bucket."""
+        from token_goat.stats import SOURCE_BASH, kind_to_source
+        assert kind_to_source("bash_dedup_hint") == SOURCE_BASH
+        assert kind_to_source("bash_dedup_hint_overhead") == SOURCE_BASH
+        assert kind_to_source("bash_output_cached") == SOURCE_BASH
+        assert kind_to_source("bash_output_recall") == SOURCE_BASH
+
+    def test_web_family_kinds_map_to_web(self):
+        """WebFetch caching, dedup, and recall live in SOURCE_WEB."""
+        from token_goat.stats import SOURCE_WEB, kind_to_source
+        assert kind_to_source("web_dedup_hint") == SOURCE_WEB
+        assert kind_to_source("web_dedup_hint_overhead") == SOURCE_WEB
+        assert kind_to_source("web_output_cached") == SOURCE_WEB
+        assert kind_to_source("web_output_recall") == SOURCE_WEB
+
+    def test_kind_to_source_static_map_only_known_buckets(self):
+        """Every entry in the static map must point at a real SOURCE_* constant.
+
+        Catches a future typo like ``"read"`` (a string literal) instead of
+        ``SOURCE_READ`` — the test fails fast at import time rather than at
+        render time.  The list of valid sources is the union of the constants
+        exported from the module.
+        """
+        from token_goat import stats
+        valid = {
+            stats.SOURCE_IMAGE, stats.SOURCE_HINT, stats.SOURCE_READ,
+            stats.SOURCE_COMPACT, stats.SOURCE_BASH, stats.SOURCE_WEB,
+            stats.SOURCE_OTHER,
+        }
+        for kind, src in stats._KIND_TO_SOURCE.items():
+            assert src in valid, f"kind {kind!r} maps to unknown source {src!r}"
 
 
 class TestBySourceAggregation:
@@ -984,3 +1053,107 @@ class TestVersionInStatsOutput:
         ):
             text = stats.render_text(summary)
         assert f"v{__version__}" in text
+
+
+class TestLookupStatRecording:
+    """Lookup commands (symbol/semantic) record adoption telemetry rows.
+
+    ``_record_lookup_stat`` is the single recorder used by both commands, so
+    direct unit coverage protects both call sites without spinning up a full
+    project + index for each.  Stat rows are zero-saving by design — the goal
+    is adoption tracking, not byte attribution.
+    """
+
+    def test_record_writes_zero_saving_row(self, tmp_data_dir):
+        """A lookup call writes a row with bytes_saved=tokens_saved=0."""
+        from token_goat import cli
+
+        cli._record_lookup_stat(
+            "symbol_lookup", "getUser", 3, scope="project",
+            project_hash=None,
+        )
+        summary = stats.summarize(window_days=30)
+        assert "symbol_lookup" in summary.by_kind
+        assert summary.by_kind["symbol_lookup"]["events"] == 1
+        assert summary.by_kind["symbol_lookup"]["bytes_saved"] == 0
+        assert summary.by_kind["symbol_lookup"]["tokens_saved"] == 0
+
+    def test_record_packs_query_scope_and_hits_into_detail(self, tmp_data_dir):
+        """Detail string carries query, scope, and hit count for later
+        adoption analysis (``token-goat stats --json | jq``)."""
+        from token_goat import cli
+
+        cli._record_lookup_stat(
+            "semantic_search", "rate limit retry", 5, scope="project",
+            project_hash=None,
+        )
+        with db.open_global() as conn:
+            row = conn.execute(
+                "SELECT detail FROM stats WHERE kind = 'semantic_search'"
+            ).fetchone()
+        assert row is not None
+        detail = row["detail"]
+        assert "q='rate limit retry'" in detail
+        assert "scope=project" in detail
+        assert "hits=5" in detail
+
+    def test_record_truncates_long_query(self, tmp_data_dir):
+        """Long natural-language queries are truncated to keep the detail
+        column under the 200-char policy used by other event kinds."""
+        from token_goat import cli
+
+        long_q = "a" * 500
+        cli._record_lookup_stat(
+            "semantic_search", long_q, 0, scope="project",
+            project_hash=None,
+        )
+        with db.open_global() as conn:
+            row = conn.execute(
+                "SELECT detail FROM stats WHERE kind = 'semantic_search'"
+            ).fetchone()
+        # 180-char truncated query + ellipsis sentinel
+        assert "…" in row["detail"]
+        assert len(row["detail"]) < 240
+
+    def test_record_swallows_db_errors(self, tmp_data_dir, monkeypatch):
+        """A DB write failure must NOT raise from a user-facing lookup."""
+        from token_goat import cli
+        from token_goat import db as db_mod
+
+        def _boom(*_a, **_kw):
+            raise db_mod.DBError("simulated DB outage")
+
+        monkeypatch.setattr(db_mod, "record_stat", _boom)
+        # Must NOT raise.
+        cli._record_lookup_stat(
+            "symbol_lookup", "anything", 0, scope="project",
+            project_hash=None,
+        )
+
+    def test_symbol_lookup_row_aggregates_into_read_bucket(self, tmp_data_dir):
+        """A symbol_lookup row contributes to SOURCE_READ in by_source."""
+        from token_goat import cli
+
+        cli._record_lookup_stat(
+            "symbol_lookup", "foo", 1, scope="project",
+            project_hash=None,
+        )
+        cli._record_lookup_stat(
+            "semantic_search", "bar", 2, scope="project",
+            project_hash=None,
+        )
+        summary = stats.summarize(window_days=30)
+        read_bucket = summary.by_source[stats.SOURCE_READ]
+        assert read_bucket["events"] == 2
+
+    def test_bash_compress_prefix_aggregates_into_bash_bucket(self, tmp_data_dir):
+        """Multiple bash_compress:<filter> rows collapse into the bash bucket
+        without each filter name being enumerated in _KIND_TO_SOURCE."""
+        db.record_stat(None, "bash_compress:pytest", bytes_saved=1000, tokens_saved=250)
+        db.record_stat(None, "bash_compress:npm", bytes_saved=500, tokens_saved=125)
+        db.record_stat(None, "bash_compress:docker", bytes_saved=200, tokens_saved=50)
+        summary = stats.summarize(window_days=30)
+        bash_bucket = summary.by_source[stats.SOURCE_BASH]
+        assert bash_bucket["events"] >= 3
+        # Sums should include all three rows even though the kind names differ.
+        assert bash_bucket["bytes_saved"] >= 1700
