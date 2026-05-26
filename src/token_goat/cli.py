@@ -1530,6 +1530,23 @@ def _run_output_recall_command(
 
     body = load_output(output_id)
     if body is None:
+        # Adoption-telemetry: the agent attempted a recall but the cached
+        # body is gone (evicted, mistyped, or from a different session).
+        # Record a zero-savings stat so `token-goat stats` can surface a
+        # miss rate without conflating it with successful recalls.  The
+        # miss kind is the hit kind with a ``_miss`` suffix
+        # (``bash_output_recall_miss`` / ``web_output_recall_miss``); both
+        # are registered in ``stats._KIND_TO_SOURCE``.  Telemetry must never
+        # block the error path, hence the broad suppress.
+        import contextlib  # noqa: PLC0415
+        with contextlib.suppress(Exception):
+            _db.record_stat(
+                None,
+                f"{stat_kind}_miss",
+                bytes_saved=0,
+                tokens_saved=0,
+                detail=output_id[:64],
+            )
         _error(not_found_msg)
         raise typer.Exit(1)
 

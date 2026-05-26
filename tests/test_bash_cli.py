@@ -333,12 +333,15 @@ class TestBashOutputRecallStat:
         assert recall_rows[0]["bytes_saved"] == 0, "full recall must record zero bytes_saved"
         assert recall_rows[0]["tokens_saved"] == 0, "full recall must record zero tokens_saved"
 
-    def test_invalid_id_records_nothing(self, tmp_data_dir):
-        """An invalid / missing output_id exits with error and records no stat."""
+    def test_invalid_id_records_recall_miss(self, tmp_data_dir):
+        """An invalid id exits with error, records bash_output_recall_miss (not _recall)."""
         recorded: list[dict] = []
 
         def capture(project_hash, kind, *, bytes_saved=0, tokens_saved=0, detail=None):
-            recorded.append({"kind": kind})
+            recorded.append({
+                "kind": kind, "bytes_saved": bytes_saved,
+                "tokens_saved": tokens_saved, "detail": detail,
+            })
 
         with patch("token_goat.db.record_stat", side_effect=capture):
             runner = CliRunner()
@@ -346,8 +349,18 @@ class TestBashOutputRecallStat:
 
         assert result.exit_code != 0
 
+        # No successful recall row for a missing id.
         recall_rows = [r for r in recorded if r["kind"] == "bash_output_recall"]
-        assert recall_rows == [], "invalid id must not record any recall stat"
+        assert recall_rows == [], "invalid id must not record a successful recall stat"
+
+        # But a recall_miss row IS written so adoption telemetry can surface
+        # the stale/wrong-id rate.  Always zero savings.
+        miss_rows = [r for r in recorded if r["kind"] == "bash_output_recall_miss"]
+        assert len(miss_rows) == 1, "invalid id must record exactly one recall_miss row"
+        assert miss_rows[0]["bytes_saved"] == 0
+        assert miss_rows[0]["tokens_saved"] == 0
+        # detail carries (a truncated form of) the requested id for diagnosis.
+        assert "no-such-id-deadbeef" in (miss_rows[0]["detail"] or "")
 
     def test_empty_body_records_zero_without_error(self, tmp_data_dir):
         """An empty cached output: saved = 0 with no division-by-zero or crash."""
@@ -452,12 +465,15 @@ class TestWebOutputRecallStat:
         assert recall_rows[0]["bytes_saved"] == 0
         assert recall_rows[0]["tokens_saved"] == 0
 
-    def test_invalid_id_records_nothing(self, tmp_data_dir):
-        """An invalid / missing output_id exits with error and records no stat."""
+    def test_invalid_id_records_recall_miss(self, tmp_data_dir):
+        """An invalid id exits with error, records web_output_recall_miss (not _recall)."""
         recorded: list[dict] = []
 
         def capture(project_hash, kind, *, bytes_saved=0, tokens_saved=0, detail=None):
-            recorded.append({"kind": kind})
+            recorded.append({
+                "kind": kind, "bytes_saved": bytes_saved,
+                "tokens_saved": tokens_saved, "detail": detail,
+            })
 
         with patch("token_goat.db.record_stat", side_effect=capture):
             runner = CliRunner()
@@ -466,6 +482,14 @@ class TestWebOutputRecallStat:
         assert result.exit_code != 0
         recall_rows = [r for r in recorded if r["kind"] == "web_output_recall"]
         assert recall_rows == []
+
+        # The new contract: an invalid id writes one web_output_recall_miss
+        # row (zero savings, used for adoption telemetry).
+        miss_rows = [r for r in recorded if r["kind"] == "web_output_recall_miss"]
+        assert len(miss_rows) == 1, "invalid id must record exactly one recall_miss row"
+        assert miss_rows[0]["bytes_saved"] == 0
+        assert miss_rows[0]["tokens_saved"] == 0
+        assert "no-such-id-deadbeef" in (miss_rows[0]["detail"] or "")
 
     def test_kind_to_source_maps_web_output_recall(self):
         """web_output_recall must be in _KIND_TO_SOURCE → SOURCE_WEB."""

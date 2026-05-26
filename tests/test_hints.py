@@ -2773,3 +2773,162 @@ class TestJsonSidecar:
         payload = _json.loads(first_line)
         assert "line" not in payload
         assert payload["added"] == 2
+
+
+# ---------------------------------------------------------------------------
+# TestDedupStaleStat — bash/web dedup stale-suppression telemetry
+# ---------------------------------------------------------------------------
+#
+# When a prior bash/web cache entry exists in the session cache but is older
+# than the stale threshold, the dedup hint is suppressed.  These tests verify
+# that the suppression also writes a zero-savings ``*_dedup_stale`` stat row
+# so the bypass rate (stale / (stale + hit)) is measurable in
+# ``token-goat stats``.  Parallel to ``image_shrink_skipped``.
+
+
+class TestBashDedupStaleStat:
+    """A stale bash entry suppresses the hint AND records bash_dedup_stale."""
+
+    def _record_stale(self, sid: str, cmd: str, *, stdout_bytes: int = 1000) -> None:
+        from token_goat import bash_cache
+
+        cmd_sha = bash_cache.command_hash(cmd)
+        output_id = f"out_{cmd_sha[:8]}"
+        session.mark_bash_run(
+            sid, cmd_sha, cmd[:120], output_id,
+            stdout_bytes=stdout_bytes, stderr_bytes=0,
+            exit_code=0, truncated=False,
+        )
+        # Backdate the entry past the stale threshold so the next
+        # build_bash_dedup_hint call falls through to the suppression branch.
+        cache = session.load(sid)
+        entry = cache.bash_history[cmd_sha]
+        entry.ts = time.time() - (STALE_READ_AGE_SECONDS + 60)
+        cache._invalidate_json_cache()
+        session.save(cache)
+
+    def test_stale_entry_records_bash_dedup_stale(self, tmp_data_dir):
+        """Stale bash hint suppression must write one bash_dedup_stale row."""
+        sid = "s_bash_stale"
+        cmd = "uv run pytest tests/ -v"
+        self._record_stale(sid, cmd, stdout_bytes=2000)
+
+        recorded: list[dict] = []
+
+        def capture(project_hash, kind, *, bytes_saved=0, tokens_saved=0, detail=None):
+            recorded.append({
+                "kind": kind, "bytes_saved": bytes_saved,
+                "tokens_saved": tokens_saved, "detail": detail,
+            })
+
+        with patch("token_goat.db.record_stat", side_effect=capture):
+            hint = build_bash_dedup_hint(session_id=sid, command=cmd)
+
+        assert hint is None, "stale entry must suppress the hint"
+
+        stale_rows = [r for r in recorded if r["kind"] == "bash_dedup_stale"]
+        assert len(stale_rows) == 1, "stale suppression must record exactly one row"
+        assert stale_rows[0]["bytes_saved"] == 0
+        assert stale_rows[0]["tokens_saved"] == 0
+        # No companion bash_dedup_hint row should fire when suppressed.
+        hit_rows = [r for r in recorded if r["kind"] == "bash_dedup_hint"]
+        assert hit_rows == [], "no hit row when the hint is suppressed"
+
+    def test_fresh_entry_does_not_record_stale(self, tmp_data_dir):
+        """A fresh entry produces a hint and writes no bash_dedup_stale row."""
+        sid = "s_bash_fresh"
+        cmd = "uv run pytest tests/ -v"
+        from token_goat import bash_cache
+
+        cmd_sha = bash_cache.command_hash(cmd)
+        session.mark_bash_run(
+            sid, cmd_sha, cmd[:120], f"out_{cmd_sha[:8]}",
+            stdout_bytes=2000, stderr_bytes=0, exit_code=0, truncated=False,
+        )
+
+        recorded: list[dict] = []
+
+        def capture(project_hash, kind, *, bytes_saved=0, tokens_saved=0, detail=None):
+            recorded.append({"kind": kind})
+
+        with patch("token_goat.db.record_stat", side_effect=capture):
+            hint = build_bash_dedup_hint(session_id=sid, command=cmd)
+
+        assert hint is not None, "fresh entry must emit a hint"
+        stale_rows = [r for r in recorded if r["kind"] == "bash_dedup_stale"]
+        assert stale_rows == [], "fresh entry must not record a stale row"
+
+
+class TestWebDedupStaleStat:
+    """A stale web entry suppresses the hint AND records web_dedup_stale."""
+
+    def _record_stale(self, sid: str, url: str, *, body_bytes: int = 2000) -> None:
+        from token_goat import web_cache
+        from token_goat.hints import build_web_dedup_hint  # noqa: F401 — import-time
+
+        url_sha = web_cache.url_hash(url)
+        output_id = f"web_{url_sha[:8]}"
+        session.mark_web_fetch(
+            session_id=sid, url_sha=url_sha, url_preview=url,
+            output_id=output_id, body_bytes=body_bytes,
+            status_code=200, truncated=False,
+        )
+        cache = session.load(sid)
+        entry = cache.web_history[url_sha]
+        entry.ts = time.time() - (STALE_READ_AGE_SECONDS + 60)
+        cache._invalidate_json_cache()
+        session.save(cache)
+
+    def test_stale_entry_records_web_dedup_stale(self, tmp_data_dir):
+        """Stale web hint suppression must write one web_dedup_stale row."""
+        from token_goat.hints import build_web_dedup_hint
+
+        sid = "s_web_stale"
+        url = "https://example.com/doc.html"
+        self._record_stale(sid, url, body_bytes=4000)
+
+        recorded: list[dict] = []
+
+        def capture(project_hash, kind, *, bytes_saved=0, tokens_saved=0, detail=None):
+            recorded.append({
+                "kind": kind, "bytes_saved": bytes_saved,
+                "tokens_saved": tokens_saved, "detail": detail,
+            })
+
+        with patch("token_goat.db.record_stat", side_effect=capture):
+            hint = build_web_dedup_hint(session_id=sid, url=url)
+
+        assert hint is None, "stale entry must suppress the hint"
+
+        stale_rows = [r for r in recorded if r["kind"] == "web_dedup_stale"]
+        assert len(stale_rows) == 1
+        assert stale_rows[0]["bytes_saved"] == 0
+        assert stale_rows[0]["tokens_saved"] == 0
+        hit_rows = [r for r in recorded if r["kind"] == "web_dedup_hint"]
+        assert hit_rows == []
+
+    def test_fresh_entry_does_not_record_stale(self, tmp_data_dir):
+        """A fresh web entry must not record web_dedup_stale."""
+        from token_goat import web_cache
+        from token_goat.hints import build_web_dedup_hint
+
+        sid = "s_web_fresh"
+        url = "https://example.com/doc.html"
+        url_sha = web_cache.url_hash(url)
+        session.mark_web_fetch(
+            session_id=sid, url_sha=url_sha, url_preview=url,
+            output_id=f"web_{url_sha[:8]}", body_bytes=4000,
+            status_code=200, truncated=False,
+        )
+
+        recorded: list[dict] = []
+
+        def capture(project_hash, kind, *, bytes_saved=0, tokens_saved=0, detail=None):
+            recorded.append({"kind": kind})
+
+        with patch("token_goat.db.record_stat", side_effect=capture):
+            hint = build_web_dedup_hint(session_id=sid, url=url)
+
+        assert hint is not None
+        stale_rows = [r for r in recorded if r["kind"] == "web_dedup_stale"]
+        assert stale_rows == []
