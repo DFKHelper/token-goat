@@ -685,6 +685,27 @@ def pre_compact(payload: HookPayload) -> HookResponse:
         "pre-compact: injecting manifest (%d chars, trigger=%s, events=%d)",
         len(manifest), sanitize_log_str(trigger), n_events,
     )
+
+    # Manifest-budget envelope telemetry (r5 iter 4): record an informational
+    # stat row capturing budget vs. realised token cost.  ``token-goat doctor``
+    # reads these rows to surface p50/p95/max utilization over the trailing 30
+    # days, so the budget caps can be tuned against real data instead of
+    # guessed.  Best-effort — a stat-write failure never blocks the manifest
+    # injection.
+    try:
+        from . import db  # noqa: PLC0415
+
+        actual_tokens = compact_mod.estimate_tokens(manifest)
+        detail = (
+            f"budget={effective_tokens},actual={actual_tokens},"
+            f"trigger={trigger},events={n_events}"
+        )
+        db.record_stat(
+            None, "compact_manifest", tokens_saved=0, bytes_saved=0, detail=detail
+        )
+    except Exception:  # noqa: BLE001
+        _LOG.debug("pre-compact: telemetry record failed", exc_info=True)
+
     return {"continue": True, "systemMessage": manifest}
 
 
