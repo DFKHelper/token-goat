@@ -119,6 +119,124 @@ class TestDiffHint:
         )
         assert hint is None
 
+    def test_diff_hint_suppressed_on_snapshot_integrity_mismatch(
+        self, tmp_data_dir,
+    ):
+        """A snapshot whose on-disk bytes drift from the recorded SHA is
+        treated as untrusted and the diff hint is suppressed.
+
+        Models the edge case where a snapshot file is overwritten out-of-band
+        (partial-write recovery, manual tampering, or an evict-and-rewrite
+        race that lands a different file under the same hashed key) between
+        the post-read SHA persistence and the next pre-read diff attempt.
+        Without the integrity check the diff would be computed against the
+        wrong bytes and emitted as if the bytes were authoritative.
+
+        The tampered snapshot bytes are chosen so the resulting diff against
+        ``current_text`` is *small* — well under :data:`hints.DIFF_HINT_MAX_BYTES`
+        — to ensure suppression is driven by the integrity gate rather than
+        the size cap.  Any larger tampering would short-circuit on the diff
+        size check and never exercise the freshness path.
+
+        This test is a regression guard for the snapshot-freshness audit:
+        with the integrity check in place the hint is None; without it the
+        hint fires against tampered content.
+        """
+        body = "".join(f"# unique line {i}\n" for i in range(500))
+        old = "x = 1\n" + body
+        new = "x = 2\n" + body
+
+        sid = "diff-integrity-1"
+        fp = "/tmp/tampered.py"
+        store_result = snapshots.store(sid, fp, old.encode())
+        assert store_result is not None
+        session.set_snapshot_sha(sid, fp, store_result.content_sha)
+
+        # Sanity baseline: with an untouched snapshot, a meaningful diff
+        # would normally fire.  Anchors the rest of the test.
+        baseline = hints.build_diff_hint(
+            session_id=sid, file_path=fp, current_text=new,
+        )
+        assert baseline is not None
+
+        # Tamper with the snapshot bytes on disk.  Use *near-identical* bytes
+        # (only the second line differs) so the resulting diff is tiny and
+        # cannot be suppressed by the size cap — only the SHA gate stops it.
+        # Without the gate, this would emit a "x = 2 -> x = 3" diff hint that
+        # bears no relation to what the agent actually saw at the prior Read.
+        tampered = "x = 3\n" + body
+        snap_path = snapshots.snapshot_path(sid, fp)
+        assert snap_path is not None
+        snap_path.write_bytes(tampered.encode())
+
+        # The freshness gate must suppress the hint.  Otherwise a misleading
+        # diff against tampered bytes is presented to the agent.
+        hint = hints.build_diff_hint(
+            session_id=sid, file_path=fp, current_text=new,
+        )
+        assert hint is None, (
+            "diff hint must not fire when the snapshot bytes no longer match "
+            "the recorded SHA — the diff would mislead the agent"
+        )
+
+    def test_diff_hint_still_fires_when_sha_unrecorded(self, tmp_data_dir):
+        """Legacy snapshots (no recorded SHA) keep the unverified-load path.
+
+        When the session cache has no ``snapshot_sha`` entry for the file —
+        e.g. a snapshot written before ``set_snapshot_sha`` was wired, or a
+        predictive snapshot whose sha persist failed — the integrity check
+        is skipped and the diff hint still fires.  Without this fallback the
+        new gate would silently disable diff hints for every legacy snapshot.
+        """
+        body = "".join(f"# unique line {i}\n" for i in range(500))
+        old = "x = 1\n" + body
+        new = "x = 2\n" + body
+        sid = "diff-legacy-1"
+        fp = "/tmp/legacy.py"
+        store_result = snapshots.store(sid, fp, old.encode())
+        assert store_result is not None
+        # Note: we deliberately do NOT call set_snapshot_sha here.
+
+        # Without a recorded sha the integrity check is skipped and the diff
+        # hint behaves identically to its pre-integrity behaviour.
+        hint = hints.build_diff_hint(
+            session_id=sid, file_path=fp, current_text=new,
+        )
+        assert hint is not None
+        assert hint.tokens_saved > 0
+
+
+class TestSnapshotLoadIntegrity:
+    def test_load_returns_bytes_when_expected_sha_matches(self, tmp_data_dir):
+        """``snapshots.load`` returns bytes when the expected sha matches."""
+        content = b"def foo(): pass\n"
+        result = snapshots.store("integ1", "/tmp/match.py", content)
+        assert result is not None
+        loaded = snapshots.load(
+            "integ1", "/tmp/match.py", expected_sha=result.content_sha,
+        )
+        assert loaded == content
+
+    def test_load_returns_none_on_sha_mismatch(self, tmp_data_dir):
+        """``snapshots.load`` discards the load when sha disagrees."""
+        result = snapshots.store("integ2", "/tmp/mismatch.py", b"original\n")
+        assert result is not None
+        # Pass a bogus expected sha that cannot match the stored bytes.
+        loaded = snapshots.load(
+            "integ2", "/tmp/mismatch.py",
+            expected_sha="0" * 64,
+        )
+        assert loaded is None
+
+    def test_load_without_expected_sha_skips_integrity_check(
+        self, tmp_data_dir,
+    ):
+        """Omitting *expected_sha* preserves the legacy unchecked load path."""
+        snapshots.store("integ3", "/tmp/legacy.py", b"hello\n")
+        # No expected_sha keyword — should return the stored bytes.
+        loaded = snapshots.load("integ3", "/tmp/legacy.py")
+        assert loaded == b"hello\n"
+
 
 class TestPostReadSnapshots:
     def test_post_read_captures_snapshot(self, tmp_data_dir, tmp_path):
