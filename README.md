@@ -211,7 +211,7 @@ FAILED tests/test_x.py::test_one
 [token-goat: pytest filter compressed 4.8 KiB to 0.1 KiB (97% saved)]
 ```
 
-Twelve built-in filters cover the noisiest dev commands: `pytest`, `jest` / `vitest`, `cargo`, `npm` / `pnpm` / `yarn`, `docker`, `kubectl` / `helm`, `aws`, `ruff` / `eslint` / `mypy`, `git`, `make` / `gradle` / `mvn` / `go`, `terraform`, and `pip`. Each one strips ANSI escapes, collapses `\r` progress bars, dedupes repeated lines, groups linter issues by rule, keeps every error block verbatim, and caps total output at 1000 lines / 64 KiB. Disable globally with `TOKEN_GOAT_BASH_COMPRESS=0`, per-filter via `[bash_compress] disabled_filters = ["docker"]` in config.toml, or preview the output of any command with `token-goat compress --cmd '<your command>'`.
+Twenty-two built-in filters cover the noisiest dev commands: `pytest`, `jest` / `vitest`, `cargo`, `npm` / `pnpm` / `yarn`, `docker`, `kubectl` / `helm`, `aws`, `ruff` / `eslint` / `mypy`, `git`, `make` / `gradle` / `mvn`, `go test`, `terraform`, `pip`, `python`, `uv`, `gh`, `ansible`, `pre-commit`, and `grep`. Each one strips ANSI escapes, collapses `\r` progress bars, dedupes repeated lines, groups linter issues by rule, keeps every error block verbatim, and caps total output at 1000 lines / 64 KiB. Disable globally with `TOKEN_GOAT_BASH_COMPRESS=0`, per-filter via `[bash_compress] disabled_filters = ["docker"]` in config.toml, or preview the output of any command with `token-goat compress --cmd '<your command>'`.
 
 ## Install
 
@@ -289,9 +289,13 @@ Manual paths:
 | `token-goat web-history` | List cached WebFetch responses (newest first) with their IDs, byte sizes, status codes, and URL previews. |
 | `token-goat skill-body <name>` | Retrieve a cached Skill body by name without re-invoking the skill (which would replay side effects). Same head+tail default, `--full`, and `--head`/`--tail`/`--grep` slicers as `bash-output`. |
 | `token-goat skill-history` | List cached Skill bodies (newest first) with their IDs, byte sizes, truncation status, and skill names. |
-| `token-goat compact-hint --session-id <id>` | Inspect the compaction manifest for a session |
+| `token-goat compact-hint --session-id <id>` | Inspect the compaction manifest for a session. Add `--trigger auto` to preview the pressure-aware budget the live PreCompact hook would use. |
+| `token-goat resume <session_id>` | Emit a single post-compact recovery packet — top skills, last two Bash outputs, top edited-file diffs, and `git diff --stat`, capped at ~2000 tokens. Replaces 5-10 round-trips. |
+| `token-goat config list / get / set / validate` | Inspect or edit `config.toml` from the CLI. `validate` reports unknown keys with did-you-mean suggestions. |
+| `token-goat clean-cache` | Prune on-disk caches to their configured floor without waiting for the worker. |
+| `token-goat cache-audit` | Audit your Claude Code config for patterns that bust the prompt cache. |
 | `token-goat install` | Wire up hooks and autostart. `--dry-run` previews the changes, `--verify` audits an existing install. |
-| `token-goat doctor` | Confirm everything is wired correctly |
+| `token-goat doctor` | Confirm everything is wired correctly. Surfaces install state, cold-import timing, cache hit rates, compaction-budget telemetry, opt-in flag status, and canonical-root sanity. |
 
 First `token-goat semantic` call downloads a small embedding model, about 130 MB, into the token-goat data directory. One-time. Offline after that.
 
