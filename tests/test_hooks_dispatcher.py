@@ -1043,3 +1043,113 @@ def test_dispatch_watchdog_logs_warning_on_trip(monkeypatch, caplog):
     assert any("watchdog tripped" in m for m in msgs), (
         f"expected a 'watchdog tripped' warning, got: {msgs!r}"
     )
+
+
+# ---------------------------------------------------------------------------
+# Watchdog budget: operator-tunable via TOKEN_GOAT_HOOK_WATCHDOG_MS env var.
+# Slow Windows boxes (cold sqlite-vec import, lock contention) need a wider
+# budget; CI may want a tighter one.  These tests pin the contract: env var
+# overrides the default, invalid values fall back fail-soft, and clamping
+# keeps the budget in a safe band.
+# ---------------------------------------------------------------------------
+
+
+def test_resolved_watchdog_ms_unset_returns_default(monkeypatch):
+    """No env var → fall back to the compiled default constant."""
+    monkeypatch.delenv("TOKEN_GOAT_HOOK_WATCHDOG_MS", raising=False)
+    monkeypatch.setattr(hooks_cli, "_HOOK_WATCHDOG_MS", 1234)
+    assert hooks_cli._resolved_watchdog_ms() == 1234
+
+
+def test_resolved_watchdog_ms_blank_returns_default(monkeypatch):
+    """Blank/whitespace-only env value is treated as unset (fail-soft on typos)."""
+    monkeypatch.setenv("TOKEN_GOAT_HOOK_WATCHDOG_MS", "   ")
+    monkeypatch.setattr(hooks_cli, "_HOOK_WATCHDOG_MS", 2222)
+    assert hooks_cli._resolved_watchdog_ms() == 2222
+
+
+def test_resolved_watchdog_ms_valid_in_band(monkeypatch):
+    """An in-band integer overrides the compiled default."""
+    monkeypatch.setenv("TOKEN_GOAT_HOOK_WATCHDOG_MS", "5000")
+    monkeypatch.setattr(hooks_cli, "_HOOK_WATCHDOG_MS", 100)
+    assert hooks_cli._resolved_watchdog_ms() == 5000
+
+
+def test_resolved_watchdog_ms_clamps_too_low(monkeypatch):
+    """A value below the floor is clamped to the floor, not rejected.
+
+    Rationale: a hook firing on every tool call must never crash on a bad
+    env value.  Clamping preserves fail-soft semantics while still nudging
+    behavior toward the operator's intent.
+    """
+    monkeypatch.setenv("TOKEN_GOAT_HOOK_WATCHDOG_MS", "1")
+    assert hooks_cli._resolved_watchdog_ms() == hooks_cli._HOOK_WATCHDOG_MS_FLOOR
+
+
+def test_resolved_watchdog_ms_clamps_too_high(monkeypatch):
+    """A value above the ceiling is clamped, capping the worst-case agent stall."""
+    monkeypatch.setenv("TOKEN_GOAT_HOOK_WATCHDOG_MS", "999999999")
+    assert hooks_cli._resolved_watchdog_ms() == hooks_cli._HOOK_WATCHDOG_MS_CEIL
+
+
+def test_resolved_watchdog_ms_garbage_returns_default(monkeypatch):
+    """Non-numeric garbage falls back to the default rather than raising."""
+    monkeypatch.setenv("TOKEN_GOAT_HOOK_WATCHDOG_MS", "definitely-not-a-number")
+    monkeypatch.setattr(hooks_cli, "_HOOK_WATCHDOG_MS", 3333)
+    assert hooks_cli._resolved_watchdog_ms() == 3333
+
+
+def test_resolved_watchdog_ms_negative_returns_default(monkeypatch):
+    """A negative or zero value falls back to the default (no infinite-loop risk)."""
+    monkeypatch.setenv("TOKEN_GOAT_HOOK_WATCHDOG_MS", "-50")
+    monkeypatch.setattr(hooks_cli, "_HOOK_WATCHDOG_MS", 4444)
+    assert hooks_cli._resolved_watchdog_ms() == 4444
+    monkeypatch.setenv("TOKEN_GOAT_HOOK_WATCHDOG_MS", "0")
+    assert hooks_cli._resolved_watchdog_ms() == 4444
+
+
+def test_dispatch_respects_env_watchdog_budget(monkeypatch):
+    """End-to-end: env var widens the watchdog so a slow handler still completes.
+
+    With the default monkeypatched to a tiny 50ms, a 200ms handler would
+    normally trip the watchdog.  Setting the env var to 1000ms must let it
+    finish normally — proves the env override is wired into dispatch.
+    """
+    import time as _time
+
+    monkeypatch.setattr(hooks_cli, "_HOOK_WATCHDOG_MS", 50)
+    monkeypatch.setenv("TOKEN_GOAT_HOOK_WATCHDOG_MS", "1000")
+
+    def slowish(_payload):
+        _time.sleep(0.2)
+        return {"continue": True, "_marker": "completed"}
+
+    monkeypatch.setitem(hooks_cli.EVENTS, "session-start", slowish)
+    result = hooks_cli.dispatch("session-start", {"session_id": "env-widened"})
+
+    _assert_continue(result)
+    assert result.get("_marker") == "completed"
+    assert "_tg_watchdog_tripped" not in result
+
+
+def test_dispatch_watchdog_records_budget_on_trip(monkeypatch):
+    """When the watchdog trips, the effective budget is recorded in the result.
+
+    This is the observability hook the doctor / stats path can read to
+    distinguish a 2s default trip from a 500ms env-tightened trip without
+    having to read the daily log file.
+    """
+    import time as _time
+
+    monkeypatch.setenv("TOKEN_GOAT_HOOK_WATCHDOG_MS", "120")
+
+    def hung(_payload):
+        _time.sleep(0.6)
+        return {"continue": True}
+
+    monkeypatch.setitem(hooks_cli.EVENTS, "session-start", hung)
+    result = hooks_cli.dispatch("session-start", {"session_id": "budget-recorded"})
+
+    _assert_continue(result)
+    assert result.get("_tg_watchdog_tripped") is True
+    assert result.get("_tg_watchdog_budget_ms") == 120
