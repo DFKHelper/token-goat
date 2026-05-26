@@ -786,7 +786,8 @@ def doctor(  # noqa: C901
         names = ", ".join(f"{k} ({c})" for k, c in _unknown_kinds)
         flag(
             "unmapped kinds",
-            f"{names} (add to _KIND_TO_SOURCE or _KIND_PREFIX_TO_SOURCE)",
+            f"{names} (add the base kind to _KIND_TO_SOURCE or a family to _KIND_PREFIX_TO_SOURCE; "
+            f"`_overhead` suffix routes via the parent kind automatically)",
             warn=True,
         )
     elif _row and _row[0]:  # type: ignore[index]
