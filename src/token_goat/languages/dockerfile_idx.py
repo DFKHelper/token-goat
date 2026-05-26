@@ -53,6 +53,20 @@ _MAX_STAGES: int = 50
 _MAX_HEADING_LEN: int = 200
 
 
+def _docker_get_name(m: re.Match[str]) -> str:
+    """Return the stage heading from a ``_FROM_RE`` match.
+
+    Prefers the ``AS <alias>`` clause when present — that is the stage's
+    *intended* name and the one ``COPY --from=<alias>`` will reference.
+    Falls back to the image reference (e.g. ``python:3.11``) so unnamed
+    stages remain addressable.
+    """
+    alias = (m.group("alias") or "").strip()
+    if alias:
+        return alias
+    return (m.group("image") or "").strip()
+
+
 def extract(
     source: bytes, rel_path: str
 ) -> tuple[list[Symbol], list[Ref], list[ImpExp], list[Section]]:
@@ -61,33 +75,20 @@ def extract(
     Refs and imports are always empty for Dockerfiles — there is no
     cross-file reference model.
     """
-    text = common.decode_source_text(source, _LOG, "dockerfile_idx")
-    if text is None:
+    result = common.scan_flat_headers(
+        source,
+        _LOG,
+        "dockerfile_idx",
+        pattern=_FROM_RE,
+        get_name=_docker_get_name,
+        symbol_kind="dockerfile_stage",
+        max_entries=_MAX_STAGES,
+        max_heading_len=_MAX_HEADING_LEN,
+        # No useful single-character prefilter: ``FROM`` is case-insensitive
+        # and may be preceded by whitespace, so the regex must run on every
+        # line.  ``scan_flat_headers`` handles this when ``prefilter`` is None.
+    )
+    if result is None:
         return [], [], [], []
-
-    lines = text.split("\n")
-    sections: list[Section] = []
-    symbols: list[Symbol] = []
-
-    for idx, line in enumerate(lines, start=1):
-        # BOM-strip on line 1 (Notepad-on-Windows defaults to UTF-8-BOM).
-        candidate = common.bom_strip_first_line(line, idx)
-        m = _FROM_RE.match(candidate)
-        if m is None:
-            continue
-        alias = (m.group("alias") or "").strip()
-        image = (m.group("image") or "").strip()
-        # Prefer the AS-alias when present — it is the stage's *intended*
-        # name, the one ``COPY --from=<name>`` will reference.  Fall back to
-        # the image reference so unnamed stages remain addressable.
-        heading = alias or image
-        if not heading or len(heading) > _MAX_HEADING_LEN:
-            continue
-        sections.append(Section(heading=heading, level=1, line=idx))
-        symbols.append(Symbol(name=heading, kind="dockerfile_stage", line=idx))
-        if len(sections) >= _MAX_STAGES:
-            break
-
-    common.assign_flat_end_lines(sections, len(lines))
-
+    symbols, sections = result
     return symbols, [], [], sections

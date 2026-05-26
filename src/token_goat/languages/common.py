@@ -23,6 +23,7 @@ __all__ = [
     "make_process_config",
     "offset_to_line",
     "parse_source",
+    "scan_flat_headers",
     "sym_kind_str",
 ]
 
@@ -832,3 +833,113 @@ def assign_flat_end_lines(sections: list[Section], total_lines: int) -> None:
             sec.end_line = max(sec.line, sections[i + 1].line - 1)
         else:
             sec.end_line = max(sec.line, total_lines)
+
+
+def scan_flat_headers(
+    source: bytes,
+    log: logging.Logger,
+    label: str,
+    *,
+    pattern: re.Pattern[str],
+    get_name: Callable[[re.Match[str]], str],
+    symbol_kind: str,
+    max_entries: int,
+    max_heading_len: int,
+    emit_sections: bool = True,
+    level_from_match: Callable[[re.Match[str]], int] | None = None,
+    prefilter: Callable[[str], bool] | None = None,
+) -> tuple[list[Symbol], list[Section]] | None:
+    """Line-by-line header scan shared by flat config extractors.
+
+    Consolidates the near-identical loops in :mod:`toml_idx`, :mod:`ini_idx`,
+    and :mod:`dockerfile_idx` (and the ``.env`` path in :mod:`ini_idx` when
+    ``emit_sections=False``).  Every flat extractor follows the same shape:
+
+    1. Decode source bytes via :func:`decode_source_text`.
+    2. Split into lines and iterate, BOM-stripping line 1.
+    3. Optional cheap prefilter (e.g. ``candidate.startswith("[")``) to skip
+       lines that cannot possibly match the regex without paying the regex cost.
+    4. Match a column-0 ``pattern``; on hit extract a heading via ``get_name``,
+       enforce ``max_heading_len``, and emit a :class:`Symbol` (always) and a
+       :class:`Section` (when ``emit_sections`` is True).
+    5. Stop at ``max_entries`` to bound pathological inputs.
+    6. For section-emitting callers, end-lines are computed via
+       :func:`assign_flat_end_lines` against the line count.
+
+    Returns ``(symbols, sections)`` on success or ``None`` on decode failure
+    so callers can ``return [], [], [], []`` directly.  Refs and imports are
+    not modelled for these formats — they are always empty.
+
+    Parameters
+    ----------
+    source:
+        Raw file bytes.
+    log:
+        Caller's logger; threaded into :func:`decode_source_text` for the
+        decode-failure message.
+    label:
+        Short adapter label (e.g. ``"toml_idx"``) prepended to log messages.
+    pattern:
+        Compiled regex matched against each candidate line.  Should be
+        column-0-anchored (start with ``^``) so leading whitespace excludes
+        the line — every flat-config grammar enforces this.
+    get_name:
+        Maps a regex :class:`~re.Match` to the heading string used for both
+        the :class:`Section.heading` and :class:`Symbol.name`.  Allowed to
+        return an empty string to signal "skip this match" (Go-style import
+        block headers use this trick).
+    symbol_kind:
+        Static ``kind`` string assigned to every emitted :class:`Symbol`
+        (e.g. ``"toml_key"``, ``"ini_section"``, ``"env_key"``,
+        ``"dockerfile_stage"``).
+    max_entries:
+        Cap on the number of matches recorded per file.  Bounds pathological
+        auto-generated configs (Apache vhost dumps, etc.).
+    max_heading_len:
+        Reject matches whose heading exceeds this length.  Real names are
+        short; longer matches are almost always parse confusion.
+    emit_sections:
+        When True, append a :class:`Section` alongside every :class:`Symbol`
+        and compute end-lines.  When False (``.env`` path), only symbols are
+        emitted and the returned section list is empty.
+    level_from_match:
+        Optional hook returning a 1-based level per match.  Defaults to 1
+        for every match; TOML uses 2 for ``[[array]]`` entries.
+    prefilter:
+        Optional cheap per-line predicate evaluated before the regex.  When
+        provided, lines for which it returns False are skipped without
+        running the pattern.  TOML/INI use ``candidate.startswith("[")``;
+        Dockerfile has no useful single-character signature and skips this.
+    """
+    text = decode_source_text(source, log, label)
+    if text is None:
+        return None
+    lines = text.split("\n")
+    sections: list[Section] = []
+    symbols: list[Symbol] = []
+
+    # Lazy import to avoid a circular import at module load time.
+    from ..parser import Section as _Section
+    from ..parser import Symbol as _Symbol
+
+    for idx, line in enumerate(lines, start=1):
+        candidate = bom_strip_first_line(line, idx)
+        if prefilter is not None and not prefilter(candidate):
+            continue
+        m = pattern.match(candidate)
+        if m is None:
+            continue
+        name = get_name(m)
+        if not name or len(name) > max_heading_len:
+            continue
+        symbols.append(_Symbol(name=name, kind=symbol_kind, line=idx))
+        if emit_sections:
+            level = level_from_match(m) if level_from_match is not None else 1
+            sections.append(_Section(heading=name, level=level, line=idx))
+        if len(symbols) >= max_entries:
+            break
+
+    if emit_sections:
+        assign_flat_end_lines(sections, len(lines))
+
+    return symbols, sections
