@@ -475,17 +475,6 @@ def safe_session_fragment(session_id: str) -> str:
 # Shared path / I/O helpers for bash_cache and web_cache
 # ---------------------------------------------------------------------------
 
-class _OutputStatDict(TypedDict, total=False):
-    """Stat-derived metadata shape shared by :mod:`bash_cache` and :mod:`web_cache`.
-
-    Both modules expose this as their own ``_OutputStatDict``; the fields are
-    identical so the construction and consumption code is shared here.
-    """
-
-    output_id: str
-    size_bytes: int
-    mtime: float
-
 
 def safe_join_output_id(
     output_id: str,
