@@ -51,6 +51,7 @@ from . import paths
 from .cache_common import (
     OUTPUT_FILENAME_RE,
     OutputStatDict,
+    build_keyed_output_id,
     build_output_id,
     evict_cache_dir,
     get_cache_dir,
@@ -171,8 +172,9 @@ def store_glob_result(
     try:
         g_hash = glob_hash(pattern, path)
         # Build a stable output_id: glob_ prefix + session fragment + hash.
-        from .cache_common import safe_session_fragment  # noqa: PLC0415
-        out_id = f"{_GLOB_RESULT_PREFIX}{safe_session_fragment(session_id)}-{g_hash}"
+        # No timestamp: same (session, pattern, path) deliberately collides so
+        # repeat Glob calls refresh the cache in place rather than accumulate.
+        out_id = build_keyed_output_id(_GLOB_RESULT_PREFIX, session_id, g_hash)
         if store_blob(out_id, result_text, _bash_outputs_dir, "bash_cache") is None:
             return None
         evict_old_entries(max_total_bytes=max_total_bytes)
@@ -195,8 +197,7 @@ def load_glob_result(
     """
     try:
         g_hash = glob_hash(pattern, path)
-        from .cache_common import safe_session_fragment  # noqa: PLC0415
-        out_id = f"{_GLOB_RESULT_PREFIX}{safe_session_fragment(session_id)}-{g_hash}"
+        out_id = build_keyed_output_id(_GLOB_RESULT_PREFIX, session_id, g_hash)
         return load_output_text(out_id, _bash_outputs_dir, "bash_cache")
     except Exception:  # noqa: BLE001
         return None
@@ -250,10 +251,26 @@ def store_output(
             # combined stream as stdout then a blank line then stderr; this
             # matches what the agent would have seen had it copied the tool
             # result directly.
+            #
+            # Slice on raw utf-8 bytes (not codepoints) so the stored body's
+            # byte length is bounded by _MAX_STORED_BYTES even when the output
+            # contains multi-byte characters (CJK, emoji).  Codepoint slicing
+            # could otherwise store up to 4× the cap on disk for non-ASCII
+            # output and silently break the 16 MB directory cap.
             combined = stdout
             if stderr:
                 combined = f"{stdout}\n--- stderr ---\n{stderr}" if stdout else stderr
-            keep = combined[-_MAX_STORED_BYTES:]
+            combined_bytes = combined.encode("utf-8", errors="replace")
+            keep_bytes = combined_bytes[-_MAX_STORED_BYTES:]
+            # Advance past any utf-8 continuation bytes at the cut boundary so
+            # the decode does not insert a U+FFFD (3 bytes) that would push
+            # the stored slice over the cap.
+            skip = 0
+            while skip < len(keep_bytes) and (keep_bytes[skip] & 0xC0) == 0x80:
+                skip += 1
+            if skip:
+                keep_bytes = keep_bytes[skip:]
+            keep = keep_bytes.decode("utf-8", errors="replace")
             body_parts.append(_TRUNC_MARKER.format(n=_MAX_STORED_BYTES, total=total))
             body_parts.append(keep)
             truncated = True

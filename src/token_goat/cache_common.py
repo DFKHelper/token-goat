@@ -9,6 +9,7 @@ from __future__ import annotations
 __all__ = [
     "OUTPUT_FILENAME_RE",
     "OutputStatDict",
+    "build_keyed_output_id",
     "build_output_id",
     "evict_cache_dir",
     "get_cache_dir",
@@ -163,6 +164,25 @@ def build_output_id(session_id: str, content_token: str, ts: float | None = None
     return f"{safe_session}-{ms:013d}-{content_token}"
 
 
+def build_keyed_output_id(prefix: str, session_id: str, content_token: str) -> str:
+    """Build a timestamp-less ``{prefix}{session_short}-{content_token}`` output ID.
+
+    Used by deduplicating caches where two invocations with the same content
+    should collide (i.e. overwrite each other) rather than create a new entry.
+    The bash glob-result cache uses this with ``prefix="glob_"`` so re-running
+    the same ``Glob`` call in a session refreshes the cached result without
+    accumulating one entry per call.
+
+    The result is structurally compatible with :data:`OUTPUT_FILENAME_RE` as
+    long as the *prefix* and *content_token* contain only ``[A-Za-z0-9_-]``
+    characters.  Callers are responsible for ensuring this; the
+    :func:`safe_join_output_id` validator on the write path will reject any
+    malformed ID.
+    """
+    safe_session = safe_session_fragment(session_id)
+    return f"{prefix}{safe_session}-{content_token}"
+
+
 def evict_cache_dir(
     *,
     cache_dir_fn: Callable[[], Path],
@@ -256,9 +276,23 @@ def evict_cache_dir(
     # forever.  We sweep BEFORE the early-return so orphans are cleaned even
     # when both caps are already satisfied.  Cost: one additional iterdir pass,
     # which is the same order as the scan pass we already paid above.
+    #
+    # Defensive: only consider .json files whose stem would form a valid cache
+    # filename (the .txt sibling that would have to exist).  Without this guard,
+    # an unrelated .json file dropped into the cache dir — e.g. a user-managed
+    # ``config.json`` or a debugger artifact — would be silently deleted on the
+    # next eviction pass.  The cache directory belongs to token-goat but the
+    # token-goat philosophy is "fail-soft, never own more than you wrote": we
+    # touch only files whose names we would have generated.
     try:
         for sp in d.iterdir():
             if not sp.name.endswith(".json"):
+                continue
+            # Validate that the corresponding .txt name would be a cache file
+            # we own.  This prevents the sweep from deleting unrelated .json
+            # files that happen to live in the cache dir.
+            body_name = sp.stem + ".txt"
+            if not OUTPUT_FILENAME_RE.match(body_name):
                 continue
             body = sp.with_suffix(".txt")
             if body.exists():
@@ -369,19 +403,47 @@ def truncate_tail_preserve(
     """Tail-preserve *content* if its utf-8 byte length exceeds ``max_bytes``.
 
     Returns ``(stored, was_truncated)``. When the content fits, returns the
-    content unchanged and ``False``. When it doesn't, returns the last
-    ``max_bytes`` characters with ``marker_template`` (a format string accepting
-    ``{n}`` for the kept size and ``{total}`` for the original byte count)
-    prepended, and ``True``.
+    content unchanged and ``False``. When it doesn't, returns the trailing
+    portion whose utf-8 byte length is at or under ``max_bytes`` with
+    ``marker_template`` (a format string accepting ``{n}`` for the kept byte
+    count and ``{total}`` for the original byte count) prepended, and ``True``.
 
     Both bash_cache and web_cache pages favour the tail because page footers,
     JSON response bodies, error stack traces, and the latest portion of test
     output all tend to live there.
+
+    Implementation note: the slice is computed in bytes, not codepoints, so
+    the stored body's byte length is guaranteed to be at or under
+    ``max_bytes``.  For ASCII-only content the two are equivalent; for
+    multi-byte UTF-8 (CJK, emoji) codepoint slicing would store up to 4×
+    ``max_bytes`` on disk, which would silently break the directory byte
+    cap.  Slicing on raw bytes then decoding with ``errors="replace"``
+    handles split-codepoint boundaries safely — at most one trailing
+    replacement character (``\\ufffd``) may appear at the head of the kept
+    region.
     """
-    body_bytes = len(content.encode("utf-8", errors="replace"))
+    encoded = content.encode("utf-8", errors="replace")
+    body_bytes = len(encoded)
     if body_bytes <= max_bytes:
         return content, False
-    keep = content[-max_bytes:]
+    keep_bytes = encoded[-max_bytes:]
+    # Advance the slice start to the next valid utf-8 codepoint boundary so a
+    # cut mid-codepoint does not produce a leading U+FFFD that re-encodes to 3
+    # bytes (which would push us over the cap).  Continuation bytes have the
+    # high bits 10xxxxxx (i.e. 0x80..0xBF).  Walking forward at most 3 bytes
+    # finds a leading byte or exhausts the slice (worst case empty slice if
+    # the entire window is continuations, which cannot happen in valid utf-8
+    # of non-trivial length but the guard is cheap).
+    skip = 0
+    while skip < len(keep_bytes) and (keep_bytes[skip] & 0xC0) == 0x80:
+        skip += 1
+    if skip:
+        keep_bytes = keep_bytes[skip:]
+    # Decode the tail.  errors="replace" is retained as a final safety net —
+    # the boundary advance above already eliminates the common mid-codepoint
+    # case, but malformed input (e.g. lone surrogates from errors="replace"
+    # in the encode step) can still trigger replacement during decode.
+    keep = keep_bytes.decode("utf-8", errors="replace")
     return marker_template.format(n=max_bytes, total=body_bytes) + keep, True
 
 
