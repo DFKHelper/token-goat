@@ -143,7 +143,13 @@ def doctor(  # noqa: C901
         prefix = "WARN" if warn else "FAIL"
         typer.echo(f"  [{prefix}] {label}: {value}")
 
-    def _check_step(label: str, fn: Callable[[], object], *, warn: bool = False) -> None:
+    def _check_step(
+        label: str,
+        fn: Callable[[], object],
+        *,
+        warn: bool = False,
+        time_ms: bool = False,
+    ) -> None:
         """Execute a check step, emitting a pass or failure message.
 
         Wraps the try/except pattern for doctor check steps: calls *fn()*, emits
@@ -160,10 +166,22 @@ def doctor(  # noqa: C901
         warn
             If True, failures are emitted as warnings; otherwise as failures.
             Defaults to False.
+        time_ms
+            If True, append the elapsed wall-clock time of *fn()* (in ms) to
+            the passing message.  Useful for cold-import probes (sqlite-vec,
+            fastembed) where a slow load points to a fresh-install model
+            download or a slow filesystem — both are operationally relevant
+            even though the check itself succeeded.
         """
         try:
+            t0 = time.monotonic() if time_ms else 0.0
             result = fn()
-            ok(label, str(result) if result is not None else "")
+            if time_ms:
+                elapsed_ms = (time.monotonic() - t0) * 1000
+                base = str(result) if result is not None else ""
+                ok(label, f"{base} ({elapsed_ms:.0f} ms)" if base else f"{elapsed_ms:.0f} ms")
+            else:
+                ok(label, str(result) if result is not None else "")
         except Exception as e:  # noqa: BLE001
             flag(label, str(e), warn=warn)
 
@@ -288,7 +306,7 @@ def doctor(  # noqa: C901
         return vec_ver
 
     if ext_ok:
-        _check_step("sqlite-vec", _check_sqlite_vec)
+        _check_step("sqlite-vec", _check_sqlite_vec, time_ms=True)
     else:
         flag("sqlite-vec", "skipped (no extension support)", warn=True)
 
@@ -299,7 +317,12 @@ def doctor(  # noqa: C901
         importlib.import_module("fastembed")
         return "importable"
 
-    _check_step("fastembed", _check_fastembed)
+    # time_ms=True surfaces the cold-import duration: fastembed pulls in
+    # onnxruntime, huggingface_hub, and tokenizers, so an "importable" check
+    # that takes >1 s is a flag that the venv is on a slow disk or the model
+    # cache is being initialised; either way it explains slow first-time
+    # `token-goat semantic` invocations.
+    _check_step("fastembed", _check_fastembed, time_ms=True)
 
     # ------------------------------------------------------------------
     # 6. Pillow
@@ -623,6 +646,91 @@ def doctor(  # noqa: C901
         ("session snapshots", "session_snapshots", None, None),
     ):
         _render_cache_section(label, dir_name, cap_bytes, cap_file_count, ok, flag)
+
+    # ------------------------------------------------------------------
+    # 13a. Cache hit-rate telemetry (30 d)
+    # ------------------------------------------------------------------
+    # The cache directories above show *capacity* (size / count) but not how
+    # *useful* the cache has been.  A cache that is at 80% of its byte cap but
+    # has a 5% hit rate is wasting space; one with a 95% hit rate has the cap
+    # tuned right.  Reads `kind`-grouped stats over the trailing 30 days and
+    # reports hit / (hit + miss) for the three caches that record both halves:
+    #
+    #   • image_shrink_cache_hit vs image_shrink (fresh shrink) — content-hash
+    #     dedup on the same image showing up twice in a session.
+    #   • bash_output_recall vs bash_output_recall_miss — agent calling
+    #     `token-goat bash-output <id>` for a known vs an evicted ID.
+    #   • web_output_recall vs web_output_recall_miss — same shape for
+    #     `token-goat web-output <id>`.
+    #
+    # Misses are only recorded when [stats] record_zero_savings = true, so a
+    # 100% rate may mean "miss telemetry is disabled" rather than "no misses".
+    # The note is surfaced inline so the user is not misled.
+    typer.echo("\nCache hit rates (30 d)")
+    try:
+        _cache_cutoff = int(time.time()) - 30 * 86400
+        _miss_telemetry_on = False
+        try:
+            from . import config as _config_for_rate  # noqa: PLC0415
+
+            _miss_telemetry_on = _config_for_rate.load().stats.record_zero_savings
+        except Exception:  # noqa: BLE001
+            pass
+        with _db.open_global_readonly() as conn:
+            for cache_label, hit_kind, miss_kind in (
+                ("image shrink", "image_shrink_cache_hit", "image_shrink"),
+                ("bash recall", "bash_output_recall", "bash_output_recall_miss"),
+                ("web recall", "web_output_recall", "web_output_recall_miss"),
+            ):
+                _hit_row = conn.execute(
+                    "SELECT COUNT(*) FROM stats WHERE kind = ? AND ts >= ?",
+                    (hit_kind, _cache_cutoff),
+                ).fetchone()
+                _miss_row = conn.execute(
+                    "SELECT COUNT(*) FROM stats WHERE kind = ? AND ts >= ?",
+                    (miss_kind, _cache_cutoff),
+                ).fetchone()
+                _hits = int(_hit_row[0] if _hit_row else 0)
+                _misses = int(_miss_row[0] if _miss_row else 0)
+                _total = _hits + _misses
+                if _total == 0:
+                    ok(cache_label, "no events")
+                    continue
+                _rate = _hits / _total
+                # For image_shrink the "miss" column is "fresh shrink" — both
+                # are productive (a fresh shrink still saves tokens vs a raw
+                # image), so a lower rate is not a problem.  The note clarifies
+                # the asymmetry.
+                if hit_kind == "image_shrink_cache_hit":
+                    ok(
+                        cache_label,
+                        f"{_rate*100:.0f}% ({_hits} hits / {_total} shrinks; "
+                        f"misses are fresh shrinks, also productive)",
+                    )
+                elif _miss_telemetry_on:
+                    if _rate < 0.50 and _total >= 10:
+                        flag(
+                            cache_label,
+                            f"{_rate*100:.0f}% ({_hits} hits / {_misses} misses) "
+                            "— low; cap may be too small or eviction too aggressive",
+                            warn=True,
+                        )
+                    else:
+                        ok(
+                            cache_label,
+                            f"{_rate*100:.0f}% ({_hits} hits / {_misses} misses)",
+                        )
+                else:
+                    # Misses are not recorded when record_zero_savings=false;
+                    # we can still show hit count but not a rate.
+                    ok(
+                        cache_label,
+                        f"{_hits} hits (misses not tracked — set stats.record_zero_savings=true)",
+                    )
+    except FileNotFoundError:
+        ok("(none)", "no global.db yet")
+    except Exception as _e_cache_rate:  # noqa: BLE001
+        flag("cache hit rates", str(_e_cache_rate), warn=True)
 
     # ------------------------------------------------------------------
     # 13b. Configuration — opt-in flags + their effective values
