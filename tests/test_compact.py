@@ -6197,3 +6197,222 @@ class TestManifestDelta:
         assert "+2 edited" in result
         assert "-1 bash" in result
         assert "grep" not in result  # unchanged → omitted
+
+
+# ---------------------------------------------------------------------------
+# CLI compact-hint command — faithful preview of the PreCompact hook
+# ---------------------------------------------------------------------------
+
+class TestCompactHintCli:
+    """The ``token-goat compact-hint`` command must mirror the PreCompact hook's
+    gate chain so its output is a trustworthy preview of what would actually be
+    emitted as ``systemMessage``.  These tests exercise the gate chain end-to-end
+    via Typer's ``CliRunner`` so any regression in the preview path surfaces here.
+    """
+
+    def _runner(self):
+        from typer.testing import CliRunner
+
+        return CliRunner()
+
+    def _invoke(self, args):
+        from token_goat.cli import app
+
+        return self._runner().invoke(app, args)
+
+    def test_json_includes_full_gate_chain_keys(self, tmp_data_dir):
+        """JSON output exposes every gate the live hook applies so callers can
+        debug emit-or-skip decisions programmatically."""
+        import json as _json
+
+        sid = "hint-json-gates-test"
+        _populate_session(sid, files=3, greps=2, edits=2)  # 7 events, well above min
+
+        result = self._invoke(["compact-hint", "--session-id", sid, "--json"])
+        assert result.exit_code == 0
+        data = _json.loads(result.stdout)
+
+        # New keys (regression: these were absent in the pre-iter-3 CLI)
+        assert "trigger_requested" in data
+        assert "trigger_allowed" in data
+        assert "auto_trigger_multiplier" in data
+        assert "effective_max_tokens" in data
+        assert "events_sufficient" in data
+        assert "sentinel_fast_path" in data
+        assert "is_cached_stub" in data
+        assert "token_estimate" in data
+        assert "char_count" in data
+
+        # Pre-existing keys still present (no removals)
+        assert "enabled" in data
+        assert "triggers" in data
+        assert "min_events" in data
+        assert "max_manifest_tokens" in data
+        assert "event_count" in data
+        assert "would_emit" in data
+        assert "manifest" in data
+
+    def test_default_max_tokens_uses_config(self, tmp_data_dir, monkeypatch):
+        """Omitting --max-tokens (or passing 0) must resolve to
+        ``cfg.max_manifest_tokens`` — the same value the live hook uses."""
+        import json as _json
+
+        from token_goat import config as config_mod
+
+        sid = "hint-default-budget-test"
+        _populate_session(sid)
+
+        # Force a non-default config value so we can prove the CLI picks it up.
+        original_load = config_mod.load
+
+        def _fake_load():
+            cfg = original_load()
+            # Replace compact_assist with a dataclass-replaced copy bearing our
+            # synthetic budget.
+            import dataclasses
+            new_ca = dataclasses.replace(cfg.compact_assist, max_manifest_tokens=777)
+            return dataclasses.replace(cfg, compact_assist=new_ca)
+
+        monkeypatch.setattr(config_mod, "load", _fake_load)
+
+        result = self._invoke(["compact-hint", "--session-id", sid, "--json"])
+        assert result.exit_code == 0
+        data = _json.loads(result.stdout)
+
+        assert data["max_manifest_tokens"] == 777
+        # When --trigger=manual (default), no boost applies, so effective == base.
+        assert data["effective_max_tokens"] == 777
+
+    def test_auto_trigger_applies_multiplier(self, tmp_data_dir, monkeypatch):
+        """With --trigger=auto and auto_trigger_multiplier > 1, the effective
+        budget must be boosted — mirroring the hook's pressure-aware sizing."""
+        import json as _json
+
+        from token_goat import config as config_mod
+
+        sid = "hint-auto-multiplier-test"
+        _populate_session(sid)
+
+        original_load = config_mod.load
+
+        def _fake_load():
+            cfg = original_load()
+            import dataclasses
+            new_ca = dataclasses.replace(
+                cfg.compact_assist,
+                max_manifest_tokens=400,
+                auto_trigger_multiplier=2.5,
+                triggers=["manual", "auto"],
+            )
+            return dataclasses.replace(cfg, compact_assist=new_ca)
+
+        monkeypatch.setattr(config_mod, "load", _fake_load)
+
+        result = self._invoke([
+            "compact-hint", "--session-id", sid, "--json", "--trigger", "auto",
+        ])
+        assert result.exit_code == 0
+        data = _json.loads(result.stdout)
+
+        assert data["trigger_requested"] == "auto"
+        assert data["auto_trigger_multiplier"] == 2.5
+        # 400 * 2.5 = 1000
+        assert data["effective_max_tokens"] == 1000
+        assert data["trigger_allowed"] is True
+
+    def test_trigger_not_in_config_blocks_emit(self, tmp_data_dir, monkeypatch):
+        """A trigger absent from cfg.triggers must mark would_emit=False even
+        when every other gate would pass."""
+        import json as _json
+
+        from token_goat import config as config_mod
+
+        sid = "hint-trigger-blocked-test"
+        _populate_session(sid)
+
+        original_load = config_mod.load
+
+        def _fake_load():
+            cfg = original_load()
+            import dataclasses
+            # Only allow "auto"; the default "manual" must be rejected.
+            new_ca = dataclasses.replace(cfg.compact_assist, triggers=["auto"])
+            return dataclasses.replace(cfg, compact_assist=new_ca)
+
+        monkeypatch.setattr(config_mod, "load", _fake_load)
+
+        result = self._invoke([
+            "compact-hint", "--session-id", sid, "--json", "--trigger", "manual",
+        ])
+        assert result.exit_code == 0
+        data = _json.loads(result.stdout)
+
+        assert data["trigger_allowed"] is False
+        assert data["would_emit"] is False
+
+    def test_sentinel_fast_path_blocks_emit(self, tmp_data_dir):
+        """A fresh compact-skip sentinel must cause would_emit=False — the live
+        hook short-circuits before building the manifest, so the preview must
+        too."""
+        import json as _json
+
+        from token_goat import paths
+
+        sid = "hint-sentinel-fastpath-test"
+        _populate_session(sid)
+
+        # Drop a fresh sentinel for this session.
+        sentinel = paths.compact_skip_sentinel_path(sid)
+        paths.ensure_dir(sentinel.parent)
+        sentinel.touch()
+
+        result = self._invoke(["compact-hint", "--session-id", sid, "--json"])
+        assert result.exit_code == 0
+        data = _json.loads(result.stdout)
+
+        assert data["sentinel_fast_path"] is True
+        assert data["would_emit"] is False
+
+    def test_token_estimate_matches_canonical_helper(self, tmp_data_dir):
+        """The JSON ``token_estimate`` field uses ``compact.estimate_tokens``
+        rather than ``len // 4`` so the preview matches the actual emitted
+        size (under-counted by ~25% in the pre-iter-3 CLI)."""
+        import json as _json
+
+        sid = "hint-token-estimate-test"
+        _populate_session(sid, files=5, greps=3, edits=2)
+
+        result = self._invoke(["compact-hint", "--session-id", sid, "--json"])
+        assert result.exit_code == 0
+        data = _json.loads(result.stdout)
+
+        manifest = data["manifest"]
+        if manifest:
+            # estimate_tokens uses len // 3 + 1; len // 4 is strictly smaller for
+            # non-trivial manifests.  Asserting the new field matches the
+            # canonical helper proves we are no longer under-counting.
+            assert data["token_estimate"] == compact.estimate_tokens(manifest)
+            # Sanity: the new estimate is at least as large as the old approximation
+            # for any non-empty manifest.
+            assert data["token_estimate"] >= len(manifest) // 4
+
+    def test_text_output_shows_trigger_and_budget(self, tmp_data_dir):
+        """Human-readable mode surfaces the requested trigger and effective
+        budget so the user can debug emit decisions without parsing JSON."""
+        sid = "hint-text-output-test"
+        _populate_session(sid)
+
+        result = self._invoke(["compact-hint", "--session-id", sid])
+        assert result.exit_code == 0
+        # The new preamble exposes trigger + budget.
+        assert "trigger:" in result.stdout
+        assert "budget:" in result.stdout
+        assert "compact-skip sentinel:" in result.stdout
+
+    def test_session_id_validation_still_enforced(self, tmp_data_dir):
+        """Security: path-traversal session_id must still exit non-zero even
+        after the expanded preview surface area."""
+        result = self._invoke([
+            "compact-hint", "--session-id", "../../escape",
+        ])
+        assert result.exit_code == 1
