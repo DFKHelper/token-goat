@@ -237,6 +237,176 @@ def test_roll_log_if_oversized_exactly_at_cap_is_noop(tmp_path):
     assert not (tmp_path / "boundary.prev.log").exists()
 
 
+def test_roll_log_5mb_under_load_keeps_only_log_and_prev(tmp_path):
+    """Simulate a 5 MB burst against the 1 MB cap and verify the directory
+    settles to exactly two files: the active ``.log`` and one ``.prev.log``.
+
+    Models the production scenario CLAUDE.md calls out for ``hooks-stderr.log``:
+    a misbehaving plugin or hook event storm pushing the crash sink well past
+    the 1 MB threshold across many writes.  After the dust settles only the
+    most recent 1 MB is in ``.log`` and the previous 1 MB is in ``.prev.log``
+    — no additional rotation artefacts (e.g. ``.prev.prev.log``) accumulate.
+    """
+    log = tmp_path / "hooks-stderr.log"
+    cap = paths.HOOKS_STDERR_LOG_MAX_BYTES  # 1 MB
+    # Five writes of (cap + 1) bytes each ~= 5 MB total, mirroring a runaway
+    # hook session that keeps appending crashes faster than the rollover can
+    # catch them.  Each write triggers a roll check before appending.
+    for cycle in range(5):
+        # Pre-existing file (if any) plus this cycle's append both contribute
+        # to oversize detection; mimic the real hook flow: roll then write.
+        paths.roll_log_if_oversized(log, max_bytes=cap)
+        # Distinguishable marker per cycle so we can confirm the *latest*
+        # bytes win the .log slot and the *prior* cycle wins .prev.log.
+        marker = bytes([0x30 + cycle]) * (cap + 1)
+        with log.open("ab") as fh:
+            fh.write(marker)
+
+    # Final settle: one more roll-then-write cycle, mirroring the production
+    # contract where every hook-stderr write goes ``roll → append``.  Without
+    # the trailing write the .log slot would be empty (the last rename moved
+    # its content to .prev.log and nothing recreated it) — but that state
+    # never persists in practice because the *next* hook crash always writes
+    # again immediately.
+    paths.roll_log_if_oversized(log, max_bytes=cap)
+    with log.open("ab") as fh:
+        fh.write(b"final\n")
+
+    # Directory state: exactly the two files token-goat expects to exist.
+    survivors = sorted(p.name for p in tmp_path.iterdir())
+    assert survivors == ["hooks-stderr.log", "hooks-stderr.prev.log"], (
+        f"5 MB burst left unexpected files behind: {survivors}"
+    )
+    # Each surviving file is ≤ cap + 1 byte (the single-write quantum); the
+    # contract guarantees bounded footprint, not exact 1 MB sizing.
+    for survivor in tmp_path.iterdir():
+        size = survivor.stat().st_size
+        assert size <= cap + 1, (
+            f"{survivor.name} is {size} bytes — rotation did not bound footprint"
+        )
+
+
+def test_roll_log_if_oversized_concurrent_writers_are_safe(tmp_path):
+    """Race two threads through ``roll_log_if_oversized`` simultaneously.
+
+    Both threads see the same oversized file and both call ``os.replace`` —
+    on POSIX one rename wins atomically and the other returns successfully
+    (clobbering the first .prev), while on Windows the loser may hit
+    ``OSError`` which the function deliberately suppresses.  Either way the
+    directory must settle to a consistent state: at most one ``.log`` and at
+    most one ``.prev.log``, neither thread raises, no zero-byte or partial
+    files left behind.
+    """
+    import threading
+
+    log = tmp_path / "race.log"
+    log.write_bytes(b"R" * 5000)
+
+    errors: list[BaseException] = []
+    barrier = threading.Barrier(4)
+
+    def race() -> None:
+        try:
+            barrier.wait(timeout=5.0)
+            # Four concurrent calls simulate the realistic case of multiple
+            # hook subprocesses crashing in the same instant — each picks up
+            # the same oversized log and tries to roll it.
+            paths.roll_log_if_oversized(log, max_bytes=1000)
+        except BaseException as e:  # noqa: BLE001
+            errors.append(e)
+
+    threads = [threading.Thread(target=race) for _ in range(4)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(timeout=10.0)
+
+    assert not errors, f"concurrent rotation raised: {errors!r}"
+
+    # Directory invariant: no third file appeared, no temp turds left over.
+    survivors = sorted(p.name for p in tmp_path.iterdir())
+    assert set(survivors).issubset({"race.log", "race.prev.log"}), (
+        f"unexpected files after concurrent rotation: {survivors}"
+    )
+    # .prev.log must exist (one writer's rename won the race).
+    assert (tmp_path / "race.prev.log").exists(), (
+        "no .prev.log produced — concurrent rotation lost the rename entirely"
+    )
+    # And the rolled-over content is intact (5000 R bytes), not a partial.
+    prev_bytes = (tmp_path / "race.prev.log").read_bytes()
+    assert prev_bytes == b"R" * 5000, (
+        f"rolled content corrupted under concurrent writers: "
+        f"len={len(prev_bytes)} head={prev_bytes[:10]!r}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Worker heartbeat-staleness helpers — single source of truth for the
+# threshold consumed by hooks_edit._nudge_worker_if_down and cli_doctor.
+# ---------------------------------------------------------------------------
+
+
+class TestHeartbeatStalenessHelpers:
+    """Regression guard: the nudge threshold derives from the watchdog's
+    formula, so a tune of ``HEARTBEAT_INTERVAL`` can never leave the
+    post-edit nudge stuck on an old magic-number threshold.
+    """
+
+    def test_threshold_derives_from_interval_and_grace(self):
+        from token_goat import worker
+
+        # The watchdog formula is 2 * interval + grace.  Asserting on the
+        # arithmetic rather than the literal pins the contract: if either
+        # constant moves, the threshold tracks it automatically.
+        expected = 2 * worker.HEARTBEAT_INTERVAL + worker.HEARTBEAT_GRACE_SECONDS
+        assert worker.heartbeat_stale_threshold() == expected
+
+    def test_threshold_tracks_a_runtime_tune_of_the_interval(self, monkeypatch):
+        """If HEARTBEAT_INTERVAL is tuned at runtime, the threshold follows.
+
+        This is the bug the helper was extracted to prevent: the pre-fix
+        nudge hard-coded ``65.0`` so any tune of the interval would have
+        silently produced the wrong threshold.
+        """
+        from token_goat import worker
+
+        monkeypatch.setattr(worker, "HEARTBEAT_INTERVAL", 10.0)
+        monkeypatch.setattr(worker, "HEARTBEAT_GRACE_SECONDS", 2.0)
+        assert worker.heartbeat_stale_threshold() == 22.0
+
+    def test_is_stale_for_nudge_treats_missing_heartbeat_as_stale(self, tmp_path):
+        """A missing heartbeat is the same signal as a stale one — call
+        ``ensure_running``."""
+        from token_goat import worker
+
+        missing = tmp_path / "nope.heartbeat"
+        assert worker.is_heartbeat_stale_for_nudge(missing) is True
+
+    def test_is_stale_for_nudge_fresh_file_returns_false(self, tmp_path):
+        from token_goat import worker
+
+        hb = tmp_path / "hb"
+        hb.write_text("now", encoding="utf-8")
+        # Freshly written: well within the threshold.
+        assert worker.is_heartbeat_stale_for_nudge(hb) is False
+
+    def test_is_stale_for_nudge_old_file_returns_true(self, tmp_path):
+        """Backdate the heartbeat past the threshold and confirm staleness."""
+        import os
+        import time
+
+        from token_goat import worker
+
+        hb = tmp_path / "hb"
+        hb.write_text("old", encoding="utf-8")
+        # Backdate to (threshold + 60) seconds ago — comfortably stale even
+        # on slow filesystems where mtime resolution is coarse.
+        old = time.time() - (worker.heartbeat_stale_threshold() + 60)
+        os.utime(hb, (old, old))
+
+        assert worker.is_heartbeat_stale_for_nudge(hb) is True
+
+
 # ---------------------------------------------------------------------------
 # Path-traversal guard on project_db_path / session_cache_path
 # ---------------------------------------------------------------------------

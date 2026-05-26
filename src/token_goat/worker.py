@@ -279,15 +279,67 @@ considered stale.  Accounts for scheduler jitter and slow disk writes without
 requiring a large primary interval."""
 
 
+def heartbeat_stale_threshold() -> float:
+    """Seconds after which a heartbeat is considered stale by the watchdog.
+
+    The single source of truth for "is the worker still ticking?": derived
+    from :data:`HEARTBEAT_INTERVAL` so a future tune of the interval flows
+    through every call site without leaving a stale magic number behind.
+
+    Two intervals of leeway means the watchdog tolerates one missed write
+    (e.g. transient disk latency, GC pause, single-cycle worker stall);
+    :data:`HEARTBEAT_GRACE_SECONDS` adds a small fixed cushion for scheduler
+    jitter so a worker that wakes up exactly on the boundary is not falsely
+    declared stale.
+    """
+    return 2 * HEARTBEAT_INTERVAL + HEARTBEAT_GRACE_SECONDS
+
+
+def heartbeat_age(hb_path: Path | None = None) -> float | None:
+    """Seconds since the heartbeat file was last written, or ``None`` if it does
+    not exist (or could not be stat'ed).
+
+    Centralises the ``time.time() - hb_path.stat().st_mtime`` idiom that
+    every liveness call site previously inlined — three independent copies
+    (``_is_heartbeat_fresh``, ``_heartbeat_age``, ``_nudge_worker_if_down``,
+    ``cli_doctor``) had drifted into magic-number duplicates.
+    """
+    path = hb_path if hb_path is not None else paths.worker_heartbeat_path()
+    try:
+        return time.time() - path.stat().st_mtime
+    except OSError:
+        return None
+
+
+def is_heartbeat_stale_for_nudge(hb_path: Path | None = None) -> bool:
+    """True if the heartbeat is older than :func:`heartbeat_stale_threshold` —
+    i.e. the post-edit hook should respawn the worker via
+    :func:`ensure_running`.
+
+    A missing heartbeat file is also treated as stale: the worker either
+    never started or crashed before its first heartbeat write. The same
+    response (try to ensure_running) is correct in both cases.
+    """
+    age = heartbeat_age(hb_path)
+    if age is None:
+        return True
+    return age > heartbeat_stale_threshold()
+
+
 def _is_heartbeat_fresh(hb_path: Path) -> bool:
-    """Check if heartbeat file exists and is recent (within 2x interval + grace)."""
+    """Check if heartbeat file exists and is recent (within 2x interval + grace).
+
+    Inverse of :func:`is_heartbeat_stale_for_nudge`, but ``False`` rather
+    than ``True`` when the file is missing — the missing-file case here is
+    a separate signal handled by :func:`is_worker_alive` (startup grace
+    window applies instead).
+    """
     if not hb_path.exists():
         return False
-    try:
-        last = hb_path.stat().st_mtime
-        return time.time() - last <= 2 * HEARTBEAT_INTERVAL + HEARTBEAT_GRACE_SECONDS
-    except OSError:
+    age = heartbeat_age(hb_path)
+    if age is None:
         return False
+    return age <= heartbeat_stale_threshold()
 
 
 def _is_process_recent(pid: int) -> bool:
@@ -1403,11 +1455,13 @@ def spawn_index_detached(project_root: str, project_hash: str) -> int | None:
 
 
 def _heartbeat_age() -> float | None:
-    """Seconds since the worker last heartbeat, or None if there is no heartbeat file."""
-    try:
-        return time.time() - paths.worker_heartbeat_path().stat().st_mtime
-    except OSError:
-        return None
+    """Seconds since the worker last heartbeat, or None if there is no heartbeat file.
+
+    Thin alias for :func:`heartbeat_age` retained for backward-compat with
+    in-module call sites (``_reap_hung_worker``). New code outside this
+    module should call the public ``heartbeat_age`` instead.
+    """
+    return heartbeat_age()
 
 
 def _is_token_goat_worker(pid: int) -> bool:
