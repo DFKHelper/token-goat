@@ -485,10 +485,20 @@ class TestDeferredImports:
         # We do NOT remove hooks_session itself — the module may already be loaded
         # by other tests.  What matters is that compact stays absent unless the
         # compact path runs.
+        #
+        # ``monkeypatch.delitem`` saves the current value and restores it at
+        # teardown.  A bare ``del sys.modules[mod]`` would orphan every
+        # already-loaded reference in other test modules' namespaces — the next
+        # ``import`` would build a fresh class object, breaking ``is``-identity
+        # invariants (TypedDict classes are recreated on each module execution)
+        # and silently bypassing ``mock.patch`` calls that target the new module
+        # while ``from token_goat import compact`` in the caller still points at
+        # the old one.  Both failure modes were reproduced as deterministic
+        # CI-only failures and traced to this exact site.
         import sys
-        for mod in list(sys.modules):
-            if mod in ("token_goat.compact", "token_goat.cache_common"):
-                del sys.modules[mod]
+        for mod_name in ("token_goat.compact", "token_goat.cache_common"):
+            if mod_name in sys.modules:
+                monkeypatch.delitem(sys.modules, mod_name)
 
         # Re-import hooks_session to ensure module-level code re-runs cleanly.
         import importlib
