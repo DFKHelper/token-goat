@@ -406,6 +406,64 @@ class TestCleanupStale:
         after_cleanup = session.load("old")
         assert after_cleanup.files == {}
 
+    def test_cleanup_stale_reaps_orphan_lockfiles(self, tmp_data_dir):
+        """cleanup_stale removes orphan ``*.json.lock`` sidecars older than _LOCK_STALE_SECS.
+
+        Regression: orphan locks were previously left behind indefinitely when a
+        hook process died after creating the lockfile but before unlinking it.
+        ``_acquire_session_lock`` only cleared the lock on contention; absent
+        contention, the orphan file would sit in the sessions directory forever.
+        """
+        import os
+
+        sessions_dir = session.paths.session_cache_path("dummy").parent
+        session.paths.ensure_dir(sessions_dir)
+        # Build an orphan lockfile with a dead PID and old mtime.
+        lock_path = sessions_dir / "orphan_sess.json.lock"
+        lock_path.write_text("999999999", encoding="utf-8")  # PID definitely not alive
+        old_mtime = time.time() - (session._LOCK_STALE_SECS + 60)
+        os.utime(lock_path, (old_mtime, old_mtime))
+
+        assert lock_path.exists()
+        removed = session.cleanup_stale(max_age_hours=24.0)
+        assert removed >= 1
+        assert not lock_path.exists()
+
+    def test_cleanup_stale_skips_fresh_orphan_lock(self, tmp_data_dir):
+        """Lockfile present, parent .json present, lock mtime fresh — must not be reaped."""
+        import os
+
+        # Create a real live session, then drop a freshly minted lock for it.
+        cache = session.mark_file_read("live_sess", "f.py")
+        session.save(cache)
+
+        lock_path = session._session_lock_path("live_sess")
+        # Write a fresh lock holding the current PID — _lock_is_stale should
+        # return False since the PID is alive and mtime is current.
+        lock_path.write_text(str(os.getpid()), encoding="utf-8")
+        assert lock_path.exists()
+
+        session.cleanup_stale(max_age_hours=24.0)
+        # The live session JSON should still exist and the fresh lock too.
+        assert lock_path.exists()
+
+    def test_cleanup_stale_skips_non_session_id_lock(self, tmp_data_dir):
+        """Files in sessions/ that don't match the session-ID pattern are left alone."""
+        import os
+
+        sessions_dir = session.paths.session_cache_path("dummy").parent
+        session.paths.ensure_dir(sessions_dir)
+        # Use a stem with a forbidden character ("$") — _SESSION_ID_RE rejects it.
+        weird = sessions_dir / "weird$name.json.lock"
+        weird.write_text("999999999", encoding="utf-8")
+
+        old_mtime = time.time() - (session._LOCK_STALE_SECS + 60)
+        os.utime(weird, (old_mtime, old_mtime))
+
+        session.cleanup_stale(max_age_hours=24.0)
+        # File with non-session-ID name must be left untouched.
+        assert weird.exists()
+
 
 class TestUpdateReadCount:
     """Read count increments."""
