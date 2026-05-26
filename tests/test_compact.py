@@ -1968,15 +1968,17 @@ class TestPreCompactPressureAwareSizing:
             assert "token_goat/hints.py" not in line
 
     def test_manifest_strips_common_prefix_when_3plus_paths(self, tmp_data_dir):
-        """Manifest groups files when 3+ share a common directory, avoiding need for prefix stripping."""
+        """Manifest groups files when 5+ share a common directory (default threshold)."""
         sid = "prefix-strip-session-abc"
-        # Add 3+ files in the same directory
+        # Add 5+ files in the same directory (to meet the threshold=5 default)
         session.mark_file_edited(sid, "/proj/src/token_goat/compact.py")
         session.mark_file_edited(sid, "/proj/src/token_goat/hints.py")
         session.mark_file_edited(sid, "/proj/src/token_goat/session.py")
+        session.mark_file_edited(sid, "/proj/src/token_goat/config.py")
+        session.mark_file_edited(sid, "/proj/src/token_goat/util.py")
         result = compact.build_manifest(sid)
-        # Manifest should group the files under the directory with (3 files) header
-        assert "(3 files)" in result
+        # Manifest should group the files under the directory with (5 files) header
+        assert "(5 files)" in result
         assert "token_goat/" in result
         # Files should be listed in the grouped format
         assert "compact.py" in result and "hints.py" in result and "session.py" in result
@@ -4032,7 +4034,7 @@ class TestGroupEditedByDir:
             ("src/token_goat/session.py", 2),
             ("src/token_goat/hints.py", 1),
         ]
-        result = compact._group_edited_by_dir(entries)
+        result = compact._group_edited_by_dir(entries, threshold=3)
         # Should produce a grouped line, not three separate lines
         assert len(result) == 1
         line = result[0]
@@ -4047,7 +4049,7 @@ class TestGroupEditedByDir:
             ("src/compact.py", 2),
             ("src/hints.py", 1),
         ]
-        result = compact._group_edited_by_dir(entries)
+        result = compact._group_edited_by_dir(entries, threshold=3)
         # Two files should not be grouped — threshold is 3
         assert len(result) == 2
         assert all(line.startswith("- ✎") for line in result), \
@@ -4059,7 +4061,7 @@ class TestGroupEditedByDir:
             ("src/token_goat/compact.py", 2),
             ("tests/test_compact.py", 1),
         ]
-        result = compact._group_edited_by_dir(entries)
+        result = compact._group_edited_by_dir(entries, threshold=3)
         # Two different directories → two separate lines
         assert len(result) == 2
         assert all(line.startswith("- ✎") for line in result)
@@ -6587,3 +6589,102 @@ class TestNoiseFloor:
         # The manifest should still have header and edited sections (protected)
         assert "**Edited:**" in result
         # Some optional sections might be dropped if they are small
+
+
+class TestEditedDirGrouping:
+    """Test directory-level grouping of edited files in the manifest."""
+
+    def test_threshold_zero_disables_grouping(self):
+        """When threshold=0, all files are listed individually."""
+        entries = [
+            ("src/foo/a.py", 2),
+            ("src/foo/b.py", 1),
+            ("src/foo/c.py", 1),
+        ]
+        result = compact._group_edited_by_dir(entries, threshold=0)
+        assert len(result) == 3
+        for line in result:
+            assert line.startswith("- ✎")
+
+    def test_under_threshold_no_grouping(self):
+        """When directory has fewer than threshold files, they are not grouped."""
+        entries = [
+            ("src/foo/a.py", 3),
+            ("src/foo/b.py", 2),
+        ]
+        result = compact._group_edited_by_dir(entries, threshold=5)
+        assert len(result) == 2
+        assert all(line.startswith("- ✎") for line in result)
+
+    def test_at_threshold_grouped(self):
+        """When directory has >= threshold files, they are grouped."""
+        entries = [
+            ("src/foo/a.py", 5),
+            ("src/foo/b.py", 4),
+            ("src/foo/c.py", 3),
+            ("src/foo/d.py", 2),
+            ("src/foo/e.py", 1),
+        ]
+        result = compact._group_edited_by_dir(entries, threshold=5)
+        assert len(result) == 1
+        grouped_line = result[0]
+        assert "(5 files):" in grouped_line
+        assert "a.py" in grouped_line
+        assert "5" in grouped_line
+        assert "b.py" in grouped_line
+        assert "4" in grouped_line
+
+    def test_grouping_preserves_edit_counts(self):
+        """Edit counts are preserved in grouped output."""
+        entries = [
+            ("src/foo/edited1.py", 10),
+            ("src/foo/edited2.py", 5),
+            ("src/foo/edited3.py", 3),
+            ("src/foo/edited4.py", 2),
+            ("src/foo/edited5.py", 1),
+        ]
+        result = compact._group_edited_by_dir(entries, threshold=5)
+        assert len(result) == 1
+        line = result[0]
+        # Files should be sorted by count descending
+        assert "edited1.py" in line
+        assert "10" in line
+        assert "edited2.py" in line
+        assert "5" in line
+
+    def test_mixed_dirs_some_grouped_some_not(self):
+        """Some directories grouped, others not, based on file count."""
+        entries = [
+            ("src/a/f1.py", 5),
+            ("src/a/f2.py", 4),
+            ("src/a/f3.py", 3),
+            ("src/a/f4.py", 2),
+            ("src/a/f5.py", 1),
+            ("src/b/g1.py", 3),
+            ("src/b/g2.py", 2),
+        ]
+        result = compact._group_edited_by_dir(entries, threshold=5)
+        assert len(result) == 3
+        grouped_lines = [line for line in result if "(5 files):" in line]
+        assert len(grouped_lines) == 1
+        individual_lines = [line for line in result if line.startswith("- ✎")]
+        assert len(individual_lines) == 2
+
+    def test_custom_threshold_values(self):
+        """Verify behavior with various threshold values."""
+        entries = [
+            ("src/x/a.py", 3),
+            ("src/x/b.py", 2),
+            ("src/x/c.py", 1),
+        ]
+        result = compact._group_edited_by_dir(entries, threshold=1)
+        assert len(result) == 1
+        assert "(3 files):" in result[0]
+
+        result = compact._group_edited_by_dir(entries, threshold=3)
+        assert len(result) == 1
+        assert "(3 files):" in result[0]
+
+        result = compact._group_edited_by_dir(entries, threshold=4)
+        assert len(result) == 3
+        assert all(line.startswith("- ✎") for line in result)

@@ -37,6 +37,7 @@ from urllib.parse import urlparse
 from . import paths
 from .cache_common import short_content_hash as _short_content_hash
 from .cache_common import short_output_id as _short_id
+from .config import load as _load_config
 from .hooks_common import sanitize_log_str
 from .util import _humanize_bytes, ellipsize, get_logger
 from .util import run_git as _util_run_git
@@ -1051,26 +1052,37 @@ def _count_suffix(n: int) -> str:
 def _group_edited_by_dir(
     entries: list[tuple[str, int]],
     project_root: str | None = None,
+    threshold: int = 3,
 ) -> list[str]:
-    """Group edited files by directory when 3+ files share the same parent.
+    """Group edited files by directory when >= threshold files share the same parent.
 
     When multiple files share a common parent directory, group them under one
-    directory header to save tokens. Single-file or two-file directories remain
-    on their own lines (grouping overhead is not justified).
+    directory header to save tokens. Directories with fewer than threshold files
+    remain on their own lines. Set threshold=0 to disable grouping entirely.
 
     Args:
         entries: List of (path, edit_count) tuples, already sorted by edit count descending.
+        project_root: Optional project root for path shortening.
+        threshold: Minimum number of files in a directory to trigger grouping.
+                  Set to 0 to disable grouping. Defaults to 5.
 
     Returns:
         A list of formatted strings ready for the manifest. Each string is either:
         - A single-file line: "- ✎ path/to/file.py  ×N"
-        - A grouped line: "  path/to/dir/ (3 files):  file1.py ×2, file2.py ×1, file3.py"
+        - A grouped line: "  path/to/dir/ (N files):  file1.py ×2, file2.py ×1, ..."
     """
     import os
     from collections import defaultdict
 
-    if not entries:
+    if not entries or threshold < 0:
         return []
+
+    # Special case: threshold=0 disables grouping
+    if threshold == 0:
+        ungrouped_result = []
+        for path, count in entries:
+            ungrouped_result.append(f"- ✎ {_short_path(path, project_root=project_root)}{_count_suffix(count)}")
+        return ungrouped_result
 
     # Group by directory
     dir_groups: dict[str, list[tuple[str, int]]] = defaultdict(list)
@@ -1083,7 +1095,7 @@ def _group_edited_by_dir(
     for dirname in sorted(dir_groups.keys()):
         group = dir_groups[dirname]
 
-        if len(group) < 3:
+        if len(group) < threshold:
             # Below threshold: list each file on its own line
             for basename, count in group:
                 full_path = os.path.join(dirname, basename) if dirname != "." else basename
@@ -2540,7 +2552,13 @@ def build_manifest_adaptive(session_id: str) -> str:
         bool(uncommitted),
         activity_score,
     )
-    return _build_manifest_from_cache(cache, session_id, budget)
+    cfg = _load_config()
+    return _build_manifest_from_cache(
+        cache,
+        session_id,
+        budget,
+        edited_dir_group_threshold=cfg.compact_assist.edited_dir_group_threshold,
+    )
 
 
 def event_count(session_id: str) -> int:
@@ -2567,6 +2585,7 @@ def _build_manifest_from_cache(
     cache: SessionCache,
     session_id: str,
     max_tokens: int,
+    edited_dir_group_threshold: int = 3,
 ) -> str:
     """Render the manifest from an already-loaded *cache*.
 
@@ -2586,7 +2605,12 @@ def _build_manifest_from_cache(
         )
     max_tokens = clamped
     start = time.monotonic()
-    result, files_with_symbols_count = _render(cache, session_id, max_tokens)
+    result, files_with_symbols_count = _render(
+        cache,
+        session_id,
+        max_tokens,
+        edited_dir_group_threshold=edited_dir_group_threshold,
+    )
     elapsed = time.monotonic() - start
 
     # Check if we exceeded the wall-clock timeout
@@ -2709,7 +2733,13 @@ def build_manifest(session_id: str, *, max_tokens: int = 400) -> str:
         _cached_sha, cached_fp, cached_ts, prior_counts = sidecar_data
 
     # Cache miss or TTL expired: render the full manifest.
-    full_manifest = _build_manifest_from_cache(cache, session_id, max_tokens)
+    cfg = _load_config()
+    full_manifest = _build_manifest_from_cache(
+        cache,
+        session_id,
+        max_tokens,
+        edited_dir_group_threshold=cfg.compact_assist.edited_dir_group_threshold,
+    )
     if not full_manifest:
         return full_manifest
 
@@ -2766,7 +2796,13 @@ def build_manifest_with_count(
         + len(cache.edited_files)
         + len(getattr(cache, "bash_history", {}) or {})
     )
-    manifest = _build_manifest_from_cache(cache, session_id, max_tokens)
+    cfg = _load_config()
+    manifest = _build_manifest_from_cache(
+        cache,
+        session_id,
+        max_tokens,
+        edited_dir_group_threshold=cfg.compact_assist.edited_dir_group_threshold,
+    )
     return manifest, n_events
 
 
@@ -3252,7 +3288,12 @@ def _apply_noise_floor(
     return filtered
 
 
-def _render(cache: SessionCache, session_id: str, max_tokens: int) -> tuple[str, int]:
+def _render(
+    cache: SessionCache,
+    session_id: str,
+    max_tokens: int,
+    edited_dir_group_threshold: int = 3,
+) -> tuple[str, int]:
     """Build the Markdown session manifest string from *cache* for the PreCompact hook.
 
     Priority order (inverted pyramid — most critical first so truncation hurts least):
@@ -3597,7 +3638,11 @@ def _render(cache: SessionCache, session_id: str, max_tokens: int) -> tuple[str,
             # Remaining files (not inlined) use the grouped directory format.
             remaining_shown = [item for item in shown_edited if item[0] not in _inlined_paths]
             if remaining_shown:
-                grouped_lines = _group_edited_by_dir(remaining_shown, project_root=cwd)
+                grouped_lines = _group_edited_by_dir(
+                    remaining_shown,
+                    project_root=cwd,
+                    threshold=edited_dir_group_threshold,
+                )
                 edited_lines.extend(grouped_lines)
         else:
             _inlined_paths = set()
