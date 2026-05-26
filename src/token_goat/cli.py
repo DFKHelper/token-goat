@@ -831,6 +831,13 @@ def cmd_map(
             data = repomap.build_map_json(proj)
             elapsed = time.monotonic() - t0
             _LOG.info("map complete: project=%s files=%d dur=%.3fs", proj.root.name, len(data), elapsed)
+            _record_lookup_stat(
+                "map_lookup",
+                f"budget={budget},mode=json,compact={compact},full={full}",
+                len(data),
+                scope="project",
+                project_hash=proj.hash,
+            )
             typer.echo(json.dumps(data, separators=(",", ":")))
             return
         # Pass compact=True only if the user opted in; None lets build_map
@@ -843,6 +850,18 @@ def cmd_map(
         )
         elapsed = time.monotonic() - t0
         _LOG.info("map complete: project=%s dur=%.3fs", proj.root.name, elapsed)
+        # Adoption telemetry: count map calls so token-goat stats can show
+        # how often agents reach for the ranked overview instead of recursive
+        # ls + multiple Reads.  result_count = number of file-entry lines
+        # actually emitted (approximate, but stable across compact / full).
+        file_lines = sum(1 for line in text.splitlines() if "[" in line)
+        _record_lookup_stat(
+            "map_lookup",
+            f"budget={budget},mode=text,compact={compact},full={full}",
+            file_lines,
+            scope="project",
+            project_hash=proj.hash,
+        )
         typer.echo(text)
     except Exception as exc:  # noqa: BLE001
         _error(f"failed to build repo map: {exc}. Try `token-goat index --full` to rebuild the index.")

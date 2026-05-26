@@ -103,6 +103,13 @@ _KIND_TO_SOURCE: dict[str, str] = {
     # exists so adoption (invocations per day, per project) can be measured.
     "symbol_lookup": SOURCE_READ,
     "semantic_search": SOURCE_READ,
+    # map_lookup: ``token-goat map`` — orientation overview of the project.
+    # Same adoption-tracking shape as symbol_lookup / semantic_search: zero
+    # realised savings, but the row records how often agents reach for the
+    # ranked file list instead of recursive ``ls`` + several Read calls.  Per
+    # the [stats] record_zero_savings policy the row only surfaces in
+    # ``token-goat stats`` when zero-saving rows are opted-in.
+    "map_lookup": SOURCE_READ,
     # compaction assist family — includes the post-compact recovery hint and
     # its injection overhead.  Recovery overhead is a real cost even though
     # its realized saving is attributed downstream (bash_dedup_hint /
