@@ -201,6 +201,90 @@ def _allocate_recovery_slots(
     return files_keep, bash_keep, web_keep, skill_keep
 
 
+def _resume_anchor_for_recovery(
+    raw_edited: dict[str, int], cache: object,  # noqa: ARG001 — symmetry with sealed-block helper
+) -> str:
+    """Return the RESUME anchor string for the recovery hint header.
+
+    Returns the top-edited basename ("auth.py") when edits exist, otherwise
+    an empty string.  The blocker fallback ("re-run pytest") is intentionally
+    not handled here — that path runs through
+    :func:`_build_blocker_section` so the bare command word and the prefix
+    have one place to be derived, matching compact.py's sealed-block contract.
+
+    Returns the bare basename — the caller wraps it with the prefix/emoji
+    formatting.  The *cache* parameter is accepted but unused; kept for
+    symmetry with compact.py::_build_sealed_block so future signal
+    sources (e.g. WIP commit titles) can join without a signature change.
+    """
+    import os  # noqa: PLC0415
+
+    from .util import sanitize_surrogates as _san  # noqa: PLC0415
+
+    if not raw_edited:
+        return ""
+    try:
+        # Reuse _BY_EDIT_COUNT semantics: sort by count desc, then by path
+        # so the choice is deterministic on ties.
+        top = max(raw_edited.items(), key=lambda kv: (kv[1], kv[0]))
+        basename = os.path.basename(top[0]) or top[0]
+        if basename:
+            return _san(basename)[:40]
+    except Exception:  # noqa: BLE001 — fail-soft
+        pass
+    return ""
+
+
+def _build_blocker_section(cache: object) -> tuple[str, str]:
+    """Return ``(section_text, anchor_word)`` for the Blockers part of the hint.
+
+    *section_text* is the rendered ``**Blockers**`` markdown block, or empty
+    string when no qualifying failures exist.  *anchor_word* is the first
+    token of the most-recent blocker command (e.g. ``"pytest"``) used as a
+    fallback RESUME anchor when no edited files are present.
+
+    The blocker selection and error-preview helpers live in
+    :mod:`token_goat.compact` — reuse them here so the recovery hint stays
+    in lockstep with the pre-compact manifest's vocabulary (✗ cmd  (exit N)
+    — preview).  Fail-soft: any error returns ``("", "")``.
+    """
+    try:
+        import time as _time  # noqa: PLC0415
+
+        from . import compact as _compact_mod  # noqa: PLC0415
+
+        bash_hist = getattr(cache, "bash_history", None)
+        if not isinstance(bash_hist, dict) or not bash_hist:
+            return "", ""
+        now_ts = _time.time()
+        blockers = _compact_mod._select_failed_bash_entries(bash_hist, now_ts)
+        if not blockers:
+            return "", ""
+        lines = ["**Blockers**:"]
+        anchor = ""
+        for entry in blockers:
+            lines.append(_compact_mod._format_blocker_entry(entry))
+        # Anchor: first non-flag, non-env token of the most-recent blocker.
+        try:
+            latest = max(blockers, key=lambda e: getattr(e, "ts", 0.0))
+            cmd = getattr(latest, "cmd_preview", "")
+            for tok in cmd.split():
+                if "=" not in tok and not tok.startswith("-"):
+                    anchor = tok[:30]
+                    break
+        except Exception:  # noqa: BLE001
+            pass
+        # Surface the recall command so the agent knows where to fetch the
+        # full failing output (the inline preview is one line; the full body
+        # has the traceback).
+        lines.append(
+            "- _retrieve full output via `token-goat bash-output <id>`_"
+        )
+        return "\n".join(lines), anchor
+    except Exception:  # noqa: BLE001 — never break the hint on a blocker render
+        return "", ""
+
+
 def _build_recovery_hint(session_id: str) -> str | None:
     """Return a compact recovery hint summarising pre-compaction state.
 
@@ -263,6 +347,56 @@ def _build_recovery_hint(session_id: str) -> str | None:
 
     sections: list[str] = []
 
+    # Pre-compute the edited-files map keyed by the same normalised key that
+    # files-dict uses, so we can annotate file entries with their edit count.
+    # Falling back to a basename match handles the case where the read path and
+    # edit path differ only in absolute-vs-relative form.
+    from . import paths as _paths_mod  # noqa: PLC0415
+
+    raw_edited = (
+        cache.edited_files if isinstance(cache.edited_files, dict) else {}
+    )
+    edit_count_by_norm: dict[str, int] = {}
+    edit_count_by_basename: dict[str, int] = {}
+    import contextlib as _contextlib  # noqa: PLC0415
+    import os as _os  # noqa: PLC0415
+    for _ep, _ec in raw_edited.items():
+        with _contextlib.suppress(Exception):
+            edit_count_by_norm[_paths_mod.normalize_key(_ep).lower()] = _ec
+        with _contextlib.suppress(Exception):
+            _bn = _os.path.basename(_ep).lower()
+            if _bn:
+                # Keep the max edit count when multiple paths share a basename.
+                edit_count_by_basename[_bn] = max(
+                    edit_count_by_basename.get(_bn, 0), _ec,
+                )
+
+    def _edit_count_for(entry: object) -> int:
+        """Return the edit count for ``entry`` (file dict value), 0 if unedited."""
+        try:
+            key = getattr(entry, "key", "") or getattr(entry, "rel_or_abs", "")
+            if key:
+                norm = _paths_mod.normalize_key(str(key)).lower()
+                if norm in edit_count_by_norm:
+                    return edit_count_by_norm[norm]
+            # Fallback: basename match catches absolute-vs-relative mismatches.
+            rel = getattr(entry, "rel_or_abs", "")
+            if rel:
+                import os as _os  # noqa: PLC0415
+                bn = _os.path.basename(rel).lower()
+                if bn and bn in edit_count_by_basename:
+                    return edit_count_by_basename[bn]
+        except Exception:  # noqa: BLE001
+            pass
+        return 0
+
+    # Compute the RESUME anchor once (used in the header section below).
+    # Priority order mirrors compact.py::_build_sealed_block:
+    #   1. Top-edited basename (ongoing work)
+    #   2. First-word of the most-recent blocker command (most-recent attempt)
+    # Both helpers fail-soft to "" when their inputs are missing.
+    resume_anchor = _resume_anchor_for_recovery(raw_edited, cache)
+
     # 0. Loaded skills — single-line format matching compact.py's manifest.
     if skill_entries:
         skill_names = [getattr(se, "skill_name", "?") for se in skill_entries]
@@ -271,6 +405,19 @@ def _build_recovery_hint(session_id: str) -> str | None:
         skill_str = ", ".join(skill_names[:8]) + suffix
         line = f"**Skills:** {skill_str} (recall via `token-goat skill-body <name>`)"
         sections.append(line)
+
+    # 0.5. Active blockers — failed bash commands within the blocker window.
+    # The post-compact agent's most-load-bearing question is "what was failing?";
+    # surfacing it with an error preview from the cached output gives a
+    # one-glance answer without re-running the failing command to diagnose.
+    blocker_section, blocker_anchor = _build_blocker_section(cache)
+    if blocker_section:
+        sections.append(blocker_section)
+        # If no edit anchor was available, fall back to the blocker command word
+        # so the RESUME line always points somewhere when there is something
+        # actionable in the hint.
+        if not resume_anchor and blocker_anchor:
+            resume_anchor = f"re-run {blocker_anchor}"
 
     # 1. Recently-touched files — the agent will likely want these back.
     if files_keep:
@@ -283,7 +430,13 @@ def _build_recovery_hint(session_id: str) -> str | None:
                 sym_str = f" syms={','.join(entry.symbols_read)}"
             else:
                 sym_str = ""
-            lines.append(f"- {entry.rel_or_abs}{sym_str}")
+            # Edit count badge: surfaces actively-worked files at a glance.
+            # ✎×N is the same notation used in compact.py's sealed block so a
+            # developer comparing pre- and post-compact outputs sees a stable
+            # vocabulary.  Only emit for count >= 1 to avoid noise on read-only entries.
+            ec = _edit_count_for(entry)
+            edit_str = f" ✎×{ec}" if ec >= 1 else ""
+            lines.append(f"- {entry.rel_or_abs}{edit_str}{sym_str}")
         dropped = len(files_all) - len(files_keep)
         if dropped > 0:
             lines.append(f"- +{dropped} more")
@@ -331,7 +484,13 @@ def _build_recovery_hint(session_id: str) -> str | None:
         return None
 
     parts = ["## Post-Compact Recovery"]
-    # One-shot restoration shortcut: emit the resume pointer first so the agent
+    # RESUME pointer — same anchor format as compact.py's sealed block, so the
+    # pre-compact manifest's 🎯 RESUME line carries straight through to the
+    # post-compact recovery hint without translation.  Tells the agent in one
+    # glance which single file/command is the load-bearing thread to pick up.
+    if resume_anchor:
+        parts.append(f"🎯 **RESUME**: {resume_anchor}")
+    # One-shot restoration shortcut: emit the resume command next so the agent
     # can use a single command instead of individual recall calls.
     parts.append(f"**Quick restore:** `token-goat resume {session_id[:8]}`")
     # Name the individual recall commands for sections that actually appear.

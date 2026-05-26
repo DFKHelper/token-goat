@@ -566,3 +566,251 @@ class TestRecoveryStatAccounting:
             ).fetchone()
 
         assert row is None, "compact_recovery base row must not be written"
+
+
+class TestResumeAnchor:
+    """Recovery hint surfaces a 🎯 RESUME line matching the sealed-block format."""
+
+    def test_resume_anchor_picks_top_edited_basename(self, tmp_data_dir):
+        """When a file was edited, RESUME points at its basename."""
+        sid = "anchor-1"
+        session.mark_file_read(sid, "/proj/src/auth.py", offset=0, limit=200)
+        # Three edits to auth.py, one to other.py — auth.py wins.
+        session.mark_file_edited(sid, "/proj/src/auth.py")
+        session.mark_file_edited(sid, "/proj/src/auth.py")
+        session.mark_file_edited(sid, "/proj/src/auth.py")
+        session.mark_file_edited(sid, "/proj/src/other.py")
+        hint = hooks_session._build_recovery_hint(sid)
+        assert hint is not None
+        # Resume line surfaces the basename, not the full path.
+        resume_lines = [ln for ln in hint.splitlines() if "RESUME" in ln]
+        assert len(resume_lines) == 1, f"Expected one RESUME line:\n{hint}"
+        assert "auth.py" in resume_lines[0]
+        # Bare basename — not the full /proj/src/ prefix.
+        assert "/proj/src/auth.py" not in resume_lines[0]
+
+    def test_resume_anchor_falls_back_to_blocker_cmd(self, tmp_data_dir):
+        """No edits but a recent failing command → RESUME points at the cmd word."""
+        sid = "anchor-2"
+        session.mark_bash_run(
+            session_id=sid,
+            cmd_sha="fail0001",
+            cmd_preview="pytest tests/",
+            output_id=f"{sid[:16]}-0000000000099-fail0001",
+            stdout_bytes=4000,
+            stderr_bytes=1500,
+            exit_code=1,
+            truncated=False,
+        )
+        hint = hooks_session._build_recovery_hint(sid)
+        assert hint is not None
+        resume_lines = [ln for ln in hint.splitlines() if "RESUME" in ln]
+        assert len(resume_lines) == 1, f"Expected one RESUME line:\n{hint}"
+        # Strip env/flag prefixes — should land on the binary "pytest".
+        assert "pytest" in resume_lines[0]
+        assert "re-run" in resume_lines[0]
+
+    def test_resume_anchor_omitted_when_nothing_to_point_at(self, tmp_data_dir):
+        """Reads-only session with no edits and no failures → no RESUME line."""
+        sid = "anchor-3"
+        # Reads only: no edits, no failing bash, but a green pytest (high signal).
+        session.mark_file_read(sid, "/proj/src/auth.py", offset=0, limit=100)
+        session.mark_bash_run(
+            session_id=sid,
+            cmd_sha="ok0001",
+            cmd_preview="pytest -q",
+            output_id=f"{sid[:16]}-0000000000010-ok0001",
+            stdout_bytes=8000,
+            stderr_bytes=0,
+            exit_code=0,
+            truncated=False,
+        )
+        hint = hooks_session._build_recovery_hint(sid)
+        assert hint is not None
+        assert "RESUME" not in hint, (
+            f"RESUME line should not appear when no edits and no failures:\n{hint}"
+        )
+
+
+class TestBlockersSection:
+    """Active failing bash commands surface in a **Blockers** section with previews."""
+
+    def test_blocker_section_renders_failed_pytest(self, tmp_data_dir):
+        """A failed pytest run appears in the blockers section with exit code."""
+        sid = "blk-1"
+        # Seed cached output containing an AssertionError so the preview helper
+        # has something to scan.  The output_id is computed by bash_cache from
+        # (session_id, command) so we use the same command in mark_bash_run.
+        from token_goat import bash_cache
+
+        meta = bash_cache.store_output(
+            sid,
+            "pytest tests/test_x.py",
+            "running tests...\n"
+            "FAILED tests/test_x.py::test_foo - AssertionError: expected 5 got 4\n"
+            "1 failed, 3 passed\n",
+            "",
+            1,
+        )
+        assert meta is not None
+        session.mark_bash_run(
+            session_id=sid,
+            cmd_sha=meta.cmd_sha,
+            cmd_preview="pytest tests/test_x.py",
+            output_id=meta.output_id,
+            stdout_bytes=meta.stdout_bytes,
+            stderr_bytes=meta.stderr_bytes,
+            exit_code=1,
+            truncated=False,
+        )
+        hint = hooks_session._build_recovery_hint(sid)
+        assert hint is not None
+        assert "**Blockers**" in hint, (
+            f"Blockers section missing from hint:\n{hint}"
+        )
+        assert "pytest tests/test_x.py" in hint
+        # Exit code is surfaced verbatim.
+        assert "(exit 1)" in hint
+        # Preview pulls a discriminating line (AssertionError) from the cache.
+        assert "AssertionError" in hint, (
+            f"Blocker error preview missing AssertionError:\n{hint}"
+        )
+
+    def test_blocker_section_skipped_when_all_green(self, tmp_data_dir):
+        """No failing commands → no Blockers section."""
+        sid = "blk-2"
+        # All exit_code=0 — nothing to surface.
+        session.mark_bash_run(
+            session_id=sid,
+            cmd_sha="green01",
+            cmd_preview="pytest -q",
+            output_id=f"{sid[:16]}-0000000000200-green01",
+            stdout_bytes=4000,
+            stderr_bytes=0,
+            exit_code=0,
+            truncated=False,
+        )
+        session.mark_file_read(sid, "/proj/foo.py", offset=0, limit=50)
+        hint = hooks_session._build_recovery_hint(sid)
+        assert hint is not None
+        assert "**Blockers**" not in hint, (
+            f"Blockers section should be omitted when all commands pass:\n{hint}"
+        )
+
+    def test_blocker_section_lists_recall_command(self, tmp_data_dir):
+        """The Blockers section names the bash-output recall command."""
+        sid = "blk-3"
+        session.mark_bash_run(
+            session_id=sid,
+            cmd_sha="failcmd1",
+            cmd_preview="make build",
+            output_id=f"{sid[:16]}-0000000000300-failcmd1",
+            stdout_bytes=1000,
+            stderr_bytes=2000,
+            exit_code=2,
+            truncated=False,
+        )
+        hint = hooks_session._build_recovery_hint(sid)
+        assert hint is not None
+        assert "**Blockers**" in hint
+        # The recall pointer tells the agent where the full output lives.
+        assert "token-goat bash-output" in hint
+
+
+class TestEditCountBadges:
+    """File entries surface ✎×N badges when the file was edited in-session."""
+
+    def test_edit_count_appears_for_edited_file(self, tmp_data_dir):
+        """A file edited 3× shows ✎×3 next to its path in the Files section."""
+        sid = "ec-1"
+        session.mark_file_read(sid, "/proj/src/auth.py", offset=0, limit=200)
+        session.mark_file_edited(sid, "/proj/src/auth.py")
+        session.mark_file_edited(sid, "/proj/src/auth.py")
+        session.mark_file_edited(sid, "/proj/src/auth.py")
+        hint = hooks_session._build_recovery_hint(sid)
+        assert hint is not None
+        # Locate the auth.py line in the Files section.
+        auth_lines = [ln for ln in hint.splitlines() if "auth.py" in ln and ln.startswith("- ")]
+        assert auth_lines, f"auth.py file entry missing:\n{hint}"
+        assert "✎×3" in auth_lines[0], (
+            f"edit-count badge ✎×3 missing from auth.py entry: {auth_lines[0]!r}"
+        )
+
+    def test_no_badge_for_unedited_file(self, tmp_data_dir):
+        """A read-only file gets no ✎ badge."""
+        sid = "ec-2"
+        session.mark_file_read(sid, "/proj/src/readonly.py", offset=0, limit=100)
+        hint = hooks_session._build_recovery_hint(sid)
+        assert hint is not None
+        readonly_lines = [ln for ln in hint.splitlines() if "readonly.py" in ln]
+        assert readonly_lines
+        assert "✎" not in readonly_lines[0], (
+            f"unedited file should not have ✎ badge: {readonly_lines[0]!r}"
+        )
+
+
+class TestRecoveryCli:
+    """``token-goat recovery <session_id>`` surfaces the same hint shape."""
+
+    def test_recovery_cli_renders_hint(self, tmp_data_dir):
+        """CLI prints the recovery hint for a seeded session."""
+        import uuid
+
+        from typer.testing import CliRunner
+
+        from token_goat.cli import app
+
+        sid = str(uuid.uuid4())
+        _seed_state(sid)
+        runner = CliRunner()
+        result = runner.invoke(app, ["recovery", sid[:8]])
+        assert result.exit_code == 0, result.output
+        assert "Post-Compact Recovery" in result.output
+        assert "auth.py" in result.output
+
+    def test_recovery_cli_pending_reads_sidecar(self, tmp_data_dir):
+        """``--pending`` reads the deferred sidecar instead of rebuilding."""
+        import uuid
+
+        from typer.testing import CliRunner
+
+        from token_goat.cli import app
+
+        sid = str(uuid.uuid4())
+        _seed_state(sid)
+        # Trigger SessionStart with source=compact → writes sidecar.
+        hooks_session.session_start({
+            "session_id": sid,
+            "source": "compact",
+            "cwd": "/proj",
+        })
+        runner = CliRunner()
+        result = runner.invoke(app, ["recovery", sid[:8], "--pending"])
+        assert result.exit_code == 0, result.output
+        assert "Post-Compact Recovery" in result.output
+
+    def test_recovery_cli_pending_warns_when_no_sidecar(self, tmp_data_dir):
+        """``--pending`` exits 0 with a warning when no sidecar exists."""
+        import uuid
+
+        from typer.testing import CliRunner
+
+        from token_goat.cli import app
+
+        sid = str(uuid.uuid4())
+        _seed_state(sid)
+        # No SessionStart fired → no sidecar.
+        runner = CliRunner()
+        result = runner.invoke(app, ["recovery", sid[:8], "--pending"])
+        # Exit code 0: this is informational, not an error.
+        assert result.exit_code == 0, result.output
+
+    def test_recovery_cli_unknown_short_id_exits_nonzero(self, tmp_data_dir):
+        """Unknown short id → exit 1 with an error."""
+        from typer.testing import CliRunner
+
+        from token_goat.cli import app
+
+        runner = CliRunner()
+        result = runner.invoke(app, ["recovery", "00000000"])
+        assert result.exit_code == 1
