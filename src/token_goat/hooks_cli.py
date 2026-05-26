@@ -477,30 +477,113 @@ def __getattr__(name: str) -> object:
 
 # --- dispatcher entry point used by cli.py ---
 
+# Default TTL for the compact-skip sentinel.  The runtime value can be tuned via
+# ``[compact_assist] compact_skip_ttl_secs`` — see ``config.CompactAssistConfig``.
+# The constant is preserved as the fall-back used when config has not been
+# loaded yet (e.g. test paths that exercise ``_check_compact_skip_sentinel``
+# directly without going through ``pre_compact``).
 _COMPACT_SKIP_TTL_SECS: float = 300.0  # 5 minutes
+
+
+def _compact_skip_ttl_secs() -> float:
+    """Return the active TTL for the compact-skip sentinel.
+
+    Resolves from ``[compact_assist] compact_skip_ttl_secs`` when the config
+    module is importable, falling back to ``_COMPACT_SKIP_TTL_SECS`` otherwise.
+    Wrapped in a broad try/except because this helper is called on the hot
+    sentinel-fast-path: a config load failure must never crash the hook, and a
+    sane default is always preferable to falling through to the slow path on a
+    transient TOML parse error.
+    """
+    try:
+        from . import config as config_mod  # noqa: PLC0415
+
+        ttl = float(config_mod.load().compact_assist.compact_skip_ttl_secs)
+        if 0.0 < ttl <= 3600.0:  # mirror validator clamp; reject NaN/inf via comparison
+            return ttl
+    except Exception:  # noqa: BLE001
+        pass
+    return _COMPACT_SKIP_TTL_SECS
 
 
 def _check_compact_skip_sentinel(session_id: str) -> bool:
     """Return True if a fresh compact-skip sentinel exists for *session_id*.
 
-    Reads only ``paths`` (already imported at module load) — no other
-    token_goat module is touched.  The sentinel is considered fresh when its
-    mtime is within the last ``_COMPACT_SKIP_TTL_SECS`` seconds.
+    Reads only ``paths`` (already imported at module load) on the fast path —
+    no other token_goat module is touched when the sentinel is absent or
+    stale.  The sentinel is considered fresh when its mtime is within the
+    configured TTL (default ``_COMPACT_SKIP_TTL_SECS`` seconds).
+
+    Activity floor (iter 60): the sentinel is invalidated when the session
+    JSON file's mtime is newer than the sentinel's mtime.  Every session-state
+    update (post-Read, post-Edit, post-Bash, ...) touches the session file, so
+    "session file mtime > sentinel mtime" is a sufficient proxy for "the user
+    has been active since we wrote the sentinel".  Without this floor a quiet
+    session that fires PreCompact once (sentinel written) could suppress every
+    PreCompact for the next 5 minutes even after the agent generates dozens of
+    edits — exactly when a manifest is most valuable.
+
+    Negative-age defence (iter 60): if the sentinel mtime is in the future
+    (clock skew, NTP step, manually edited file), log a warning and return
+    False so the slow path rebuilds the manifest.  Mirrors the manifest
+    sidecar's negative-age defence in ``compact._read_manifest_sidecar``.
 
     Any filesystem error (missing file, permission denied, stat failure)
     returns False so the normal path runs.
     """
-    import time  # already in stdlib cache — free  # noqa: PLC0415
-
     try:
         sentinel = paths.compact_skip_sentinel_path(session_id)
     except ValueError:
         return False
     try:
-        age = time.time() - sentinel.stat().st_mtime
-        return 0 <= age < _COMPACT_SKIP_TTL_SECS
+        sentinel_mtime = sentinel.stat().st_mtime
     except OSError:
         return False
+
+    now = time.time()
+    age = now - sentinel_mtime
+    if age < 0.0:
+        # Future-dated sentinel: clock skew, NTP step, manual edit, or a stale
+        # file copied from another machine.  Log once per occurrence and fall
+        # through to the slow path; the slow path will rewrite the sentinel
+        # with a sane mtime on the next no-op exit.
+        _LOG.warning(
+            "compact-skip sentinel mtime is in the future session=%s skew=%.0fs"
+            " — ignoring sentinel, falling back to full pre-compact path",
+            session_id[:16], -age,
+        )
+        return False
+    if age >= _compact_skip_ttl_secs():
+        return False
+
+    # Activity floor: any session-state update since the sentinel was written
+    # should bust the cache.  ``session_cache_path`` returns the JSON we write
+    # on every post-tool hook; its mtime tracks "last session activity".
+    try:
+        session_file = paths.session_cache_path(session_id)
+    except ValueError:
+        # Bad session_id (path traversal etc.) — already a no-op for the
+        # session subsystem, no manifest to be had.  Skip is safe.
+        return True
+    try:
+        session_mtime = session_file.stat().st_mtime
+    except OSError:
+        # No session file → nothing to invalidate against.  Original behaviour
+        # (skip is fine) preserved.
+        return True
+    # +0.5 s grace handles the case where the sentinel was written immediately
+    # after a session save in the same hook firing — filesystem mtime
+    # resolution on Windows (FAT/exFAT) is 2 s; on NTFS/ext4 it is ~ns.  The
+    # grace prevents a same-tick race from looking like "activity after
+    # sentinel" on coarse-resolution clocks.
+    if session_mtime > sentinel_mtime + 0.5:
+        _LOG.debug(
+            "compact-skip sentinel busted by activity session=%s"
+            " (session_mtime=%.3f > sentinel_mtime=%.3f)",
+            session_id[:16], session_mtime, sentinel_mtime,
+        )
+        return False
+    return True
 
 
 def _write_compact_skip_sentinel(session_id: str) -> None:

@@ -773,6 +773,173 @@ class TestCompactSkipSentinel:
         result = hc.pre_compact({"trigger": "auto"})
         assert result.get("continue") is True
 
+    # ----- Activity-floor: session activity busts the sentinel ----------------
+
+    def test_sentinel_busted_by_session_activity(self, tmp_path, monkeypatch):
+        """Sentinel must be invalidated when the session JSON mtime is newer.
+
+        Regression for iter 60 activity floor: without it, a fresh sentinel
+        suppresses the manifest for the full TTL even when the user has
+        generated dozens of edits/reads in the interim.
+        """
+        import os
+        import time
+
+        from token_goat import hooks_cli as hc
+        from token_goat import paths
+
+        monkeypatch.setattr(paths, "data_dir", lambda: tmp_path)
+
+        session_id = "sentinel_activity_floor"
+        # Write the sentinel first…
+        hc._write_compact_skip_sentinel(session_id)
+        sentinel = paths.compact_skip_sentinel_path(session_id)
+        sentinel_mtime = sentinel.stat().st_mtime
+
+        # …then write a session file with a clearly-newer mtime (simulating
+        # post-Edit / post-Read activity after the sentinel was laid down).
+        session_file = paths.session_cache_path(session_id)
+        session_file.parent.mkdir(parents=True, exist_ok=True)
+        session_file.write_text("{}", encoding="utf-8")
+        newer = sentinel_mtime + 60.0  # 1 min of activity
+        os.utime(session_file, (newer, newer))
+
+        # Sanity: sentinel is otherwise "fresh" (mtime within TTL).
+        assert time.time() - sentinel_mtime < hc._COMPACT_SKIP_TTL_SECS
+
+        assert hc._check_compact_skip_sentinel(session_id) is False, (
+            "compact-skip sentinel must be invalidated when the session JSON "
+            "mtime is newer (activity floor)"
+        )
+
+    def test_sentinel_holds_when_no_session_activity(self, tmp_path, monkeypatch):
+        """No session file → sentinel stays valid (no activity to compare against).
+
+        Preserves the original fast-path behaviour for sessions that have
+        never persisted state (Codex startup, fresh session_id with no tool
+        calls between hook fires).
+        """
+        from token_goat import hooks_cli as hc
+        from token_goat import paths
+
+        monkeypatch.setattr(paths, "data_dir", lambda: tmp_path)
+
+        session_id = "sentinel_no_session_file"
+        hc._write_compact_skip_sentinel(session_id)
+        # Deliberately do NOT create the session JSON.
+        assert hc._check_compact_skip_sentinel(session_id) is True
+
+    def test_sentinel_holds_when_session_older_than_sentinel(self, tmp_path, monkeypatch):
+        """Session file older than sentinel → sentinel still valid.
+
+        The activity floor only triggers when *new* activity has occurred
+        since the sentinel was written.  A session file that was last touched
+        before the sentinel does not invalidate it — that's exactly the case
+        the fast-path is designed for (one no-op pre-compact, then idle).
+        """
+        import os
+
+        from token_goat import hooks_cli as hc
+        from token_goat import paths
+
+        monkeypatch.setattr(paths, "data_dir", lambda: tmp_path)
+
+        session_id = "sentinel_session_older"
+        # Write the session file FIRST, then back-date its mtime by 10 min.
+        session_file = paths.session_cache_path(session_id)
+        session_file.parent.mkdir(parents=True, exist_ok=True)
+        session_file.write_text("{}", encoding="utf-8")
+        old_mtime = paths.session_cache_path(session_id).stat().st_mtime - 600.0
+        os.utime(session_file, (old_mtime, old_mtime))
+
+        # Then write the sentinel (mtime = now, well after session mtime).
+        hc._write_compact_skip_sentinel(session_id)
+
+        assert hc._check_compact_skip_sentinel(session_id) is True
+
+    # ----- Negative-age defence (clock skew / NTP step / manual edit) --------
+
+    def test_future_dated_sentinel_returns_false(self, tmp_path, monkeypatch):
+        """Sentinel mtime in the future → check returns False (mirrors sidecar)."""
+        import os
+        import time
+
+        from token_goat import hooks_cli as hc
+        from token_goat import paths
+
+        monkeypatch.setattr(paths, "data_dir", lambda: tmp_path)
+
+        session_id = "sentinel_future_dated"
+        hc._write_compact_skip_sentinel(session_id)
+        sentinel = paths.compact_skip_sentinel_path(session_id)
+
+        # Push mtime 1 hour into the future (clock skew / manually copied file).
+        future = time.time() + 3600.0
+        os.utime(sentinel, (future, future))
+
+        assert hc._check_compact_skip_sentinel(session_id) is False, (
+            "future-dated sentinel must not short-circuit the slow path"
+        )
+
+    # ----- Configurable TTL --------------------------------------------------
+
+    def test_compact_skip_ttl_respects_config(self, tmp_path, monkeypatch):
+        """[compact_assist] compact_skip_ttl_secs overrides the default TTL.
+
+        At ttl=10s a sentinel written 30s ago must be stale even though
+        the hardcoded default (300s) would still consider it fresh.
+        """
+        import os
+        import time
+        from unittest.mock import MagicMock, patch
+
+        from token_goat import hooks_cli as hc
+        from token_goat import paths
+
+        monkeypatch.setattr(paths, "data_dir", lambda: tmp_path)
+
+        session_id = "sentinel_short_ttl"
+        hc._write_compact_skip_sentinel(session_id)
+        sentinel = paths.compact_skip_sentinel_path(session_id)
+        # Make it 30s old — fresh under default 300s TTL, stale under 10s TTL.
+        backdated = time.time() - 30.0
+        os.utime(sentinel, (backdated, backdated))
+
+        fake_cfg = MagicMock()
+        fake_cfg.compact_assist.compact_skip_ttl_secs = 10.0
+        with patch("token_goat.config.load", return_value=fake_cfg):
+            assert hc._check_compact_skip_sentinel(session_id) is False
+
+        # Bypass the config: with default TTL (300s) the same sentinel is fresh.
+        with patch.object(hc, "_compact_skip_ttl_secs", return_value=300.0):
+            assert hc._check_compact_skip_sentinel(session_id) is True
+
+    def test_compact_skip_ttl_helper_clamps_invalid_values(self, monkeypatch):
+        """_compact_skip_ttl_secs() falls back to default for NaN / zero / huge values."""
+        import math
+        from unittest.mock import MagicMock, patch
+
+        from token_goat import hooks_cli as hc
+
+        # Negative / zero / out-of-range values fall back to default
+        for bad in (-1.0, 0.0, 4000.0, math.nan, math.inf):
+            fake_cfg = MagicMock()
+            fake_cfg.compact_assist.compact_skip_ttl_secs = bad
+            with patch("token_goat.config.load", return_value=fake_cfg):
+                assert hc._compact_skip_ttl_secs() == hc._COMPACT_SKIP_TTL_SECS, (
+                    f"_compact_skip_ttl_secs() did not fall back to default for {bad!r}"
+                )
+
+    def test_compact_skip_ttl_helper_survives_config_failure(self, monkeypatch):
+        """_compact_skip_ttl_secs() must never raise even if config.load explodes."""
+        from unittest.mock import patch
+
+        from token_goat import hooks_cli as hc
+
+        with patch("token_goat.config.load", side_effect=RuntimeError("boom")):
+            # Must not raise; must return the hardcoded default.
+            assert hc._compact_skip_ttl_secs() == hc._COMPACT_SKIP_TTL_SECS
+
 
 # ---------------------------------------------------------------------------
 # Item D: dispatch top-level continue-field sanitization
