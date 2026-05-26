@@ -97,6 +97,15 @@ _DISPATCH_CASES: list[tuple[list[str], str]] = [
     (["ninja", "-C", "build/"], "make"),
     (["go", "build", "./..."], "make"),
     (["gradle", "build"], "make"),
+    # ---- GoTestFilter ----
+    (["go", "test", "./..."], "go-test"),
+    (["go", "test", "-v", "./pkg/..."], "go-test"),
+    (["go", "test", "-run", "TestFoo", "./..."], "go-test"),
+    # ---- GhFilter ----
+    (["gh", "run", "view", "1234"], "gh"),
+    (["gh", "pr", "view", "42"], "gh"),
+    (["gh", "pr", "list"], "gh"),
+    (["gh", "api", "repos/foo/bar"], "gh"),
     # ---- TerraformFilter ----
     (["terraform", "plan"], "terraform"),
     (["terraform", "apply", "-auto-approve"], "terraform"),
@@ -1105,6 +1114,187 @@ class TestKubectlFilter:
         assert ratio >= 0.20, f"KubectlFilter savings {ratio:.0%} < 20%"
 
 
+# --- GoTestFilter ----------------------------------------------------------
+
+# Synthetic `go test -v` output exercising every line shape the filter
+# recognises: package result, per-test RUN/PASS/FAIL lifecycle, indented
+# Errorf body under a FAIL, download-progress noise.
+_GO_TEST_OUTPUT = """\
+go: downloading github.com/stretchr/testify v1.8.0
+=== RUN   TestAdd
+--- PASS: TestAdd (0.00s)
+=== RUN   TestSub
+--- PASS: TestSub (0.00s)
+=== RUN   TestDiv
+=== PAUSE TestDiv
+=== CONT  TestDiv
+    math_test.go:42: divisor must be non-zero
+    math_test.go:43: got 0, want 1
+--- FAIL: TestDiv (0.00s)
+=== RUN   TestMul
+--- PASS: TestMul (0.00s)
+FAIL
+exit status 1
+FAIL	example.com/mypkg	0.123s
+ok  	example.com/otherpkg	0.045s
+?   	example.com/emptypkg	[no test files]
+"""
+
+
+class TestGoTestFilter:
+    def test_fail_block_preserved(self) -> None:
+        f = bc.GoTestFilter()
+        out = _apply(f, stdout=_GO_TEST_OUTPUT)
+        assert "--- FAIL: TestDiv" in out
+        # The indented body lines under the FAIL must survive verbatim so the
+        # agent can see the actual failure message.
+        assert "math_test.go:42: divisor must be non-zero" in out
+        assert "math_test.go:43: got 0, want 1" in out
+
+    def test_pass_lines_collapsed(self) -> None:
+        f = bc.GoTestFilter()
+        out = _apply(f, stdout=_GO_TEST_OUTPUT)
+        # Passing testcases are summarised to a count, not listed individually.
+        assert "--- PASS: TestAdd" not in out
+        assert "--- PASS: TestMul" not in out
+        # …and a collapse marker is present.
+        assert "collapsed 3 PASS testcases" in out
+
+    def test_package_results_kept(self) -> None:
+        f = bc.GoTestFilter()
+        out = _apply(f, stdout=_GO_TEST_OUTPUT)
+        assert "FAIL\texample.com/mypkg" in out
+        assert "ok  \texample.com/otherpkg" in out
+        assert "?   \texample.com/emptypkg" in out
+
+    def test_run_lines_dropped_outside_fail(self) -> None:
+        f = bc.GoTestFilter()
+        out = _apply(f, stdout=_GO_TEST_OUTPUT)
+        # === RUN for passing testcases dropped (no signal value).
+        assert "=== RUN   TestAdd" not in out
+
+    def test_download_lines_dropped(self) -> None:
+        f = bc.GoTestFilter()
+        out = _apply(f, stdout=_GO_TEST_OUTPUT)
+        # The original verbatim line is removed; the summary marker
+        # ("dropped 1 'go: downloading' lines") may quote the string by
+        # design, so check for the verbatim package@version reference.
+        assert "go: downloading github.com/stretchr/testify v1.8.0" not in out
+        assert "dropped 1 'go: downloading' lines" in out
+
+    def test_savings_ratio_large_pass_run(self) -> None:
+        f = bc.GoTestFilter()
+        big_lines = []
+        for i in range(200):
+            big_lines.append(f"=== RUN   TestCase{i:03d}")
+            big_lines.append(f"--- PASS: TestCase{i:03d} (0.00s)")
+        big_lines.append("PASS")
+        big_lines.append("ok  \texample.com/big\t0.500s")
+        big = "\n".join(big_lines) + "\n"
+        ratio = _savings_ratio(f, stdout=big)
+        assert ratio >= 0.80, f"GoTestFilter savings {ratio:.0%} < 80% on big pass run"
+
+
+# --- GhFilter --------------------------------------------------------------
+
+_GH_RUN_VIEW_OUTPUT = """\
+X main · 1234567 · push
+Triggered via push about 2 minutes ago
+
+JOBS
+✓ build (ID 9876)
+  Set up job
+  Run actions/checkout@v4
+  Run actions/setup-node@v4
+  Install dependencies
+  Build
+  Complete job
+✓ lint (ID 9877)
+  Set up job
+  Run actions/checkout@v4
+  Run ESLint
+  Complete job
+X test (ID 9878)
+  Set up job
+  Run actions/checkout@v4
+  Run tests
+  Error: Test failed at src/foo.test.js:42
+  Process completed with exit code 1
+  Complete job
+
+ANNOTATIONS
+X test
+  Test failed at src/foo.test.js:42
+"""
+
+_GH_PR_LIST_OUTPUT = """\
+Showing 3 of 3 open pull requests in owner/repo
+
+#42  Add feature X     feat/x        about 1 hour ago
+#41  Fix bug Y         fix/y         about 2 hours ago
+#40  Refactor module Z refactor/z    about 1 day ago
+"""
+
+
+class TestGhFilter:
+    def test_run_view_failing_step_preserved(self) -> None:
+        f = bc.GhFilter()
+        out = f.compress(_GH_RUN_VIEW_OUTPUT, "", 1, ["gh", "run", "view", "1234"])
+        # The X (failing step) line and everything under it must be preserved.
+        assert "X test (ID 9878)" in out
+        assert "Error: Test failed at src/foo.test.js:42" in out
+        assert "Process completed with exit code 1" in out
+
+    def test_run_view_passing_steps_collapsed(self) -> None:
+        f = bc.GhFilter()
+        out = f.compress(_GH_RUN_VIEW_OUTPUT, "", 1, ["gh", "run", "view", "1234"])
+        # Passing step headers (✓ build, ✓ lint) collapsed to a count.
+        assert "✓ build" not in out
+        assert "✓ lint" not in out
+        assert "collapsed 2 passing step headers" in out
+
+    def test_run_view_action_preamble_dropped(self) -> None:
+        f = bc.GhFilter()
+        out = f.compress(_GH_RUN_VIEW_OUTPUT, "", 1, ["gh", "run", "view", "1234"])
+        # The "  Run actions/checkout@v4" preamble lines under PASSING steps
+        # should be dropped; the same lines under the FAILING step are
+        # preserved because that block stays verbatim.
+        # Count occurrences in the output: passing-step preambles are gone.
+        # 1 occurrence remains (under the failing X test step).
+        assert out.count("Run actions/checkout@v4") == 1
+
+    def test_run_view_annotations_kept(self) -> None:
+        f = bc.GhFilter()
+        out = f.compress(_GH_RUN_VIEW_OUTPUT, "", 1, ["gh", "run", "view", "1234"])
+        assert "ANNOTATIONS" in out
+        assert "Test failed at src/foo.test.js:42" in out
+
+    def test_pr_list_passes_through(self) -> None:
+        f = bc.GhFilter()
+        out = f.compress(_GH_PR_LIST_OUTPUT, "", 0, ["gh", "pr", "list"])
+        # Every PR row is load-bearing — pass-through preserves them all.
+        assert "#42" in out
+        assert "#41" in out
+        assert "#40" in out
+
+    def test_run_view_savings_ratio(self) -> None:
+        f = bc.GhFilter()
+        # Many passing steps with deep preambles.
+        big_lines = []
+        for i in range(50):
+            big_lines.append(f"✓ step-{i:03d} (ID {i})")
+            for action in ("checkout@v4", "setup-node@v4", "cache@v3"):
+                big_lines.append(f"  Run actions/{action}")
+            big_lines.append("  Build")
+            big_lines.append("  Complete job")
+        big_lines.append("X test (ID 999)")
+        big_lines.append("  Error: kaboom")
+        big = "\n".join(big_lines) + "\n"
+        result = f.apply(big, "", 1, ["gh", "run", "view", "1"])
+        ratio = result.percent_saved / 100.0
+        assert ratio >= 0.50, f"GhFilter savings {ratio:.0%} < 50% on big run view"
+
+
 # ---------------------------------------------------------------------------
 # 5. detect_from_command convenience wrapper
 # ---------------------------------------------------------------------------
@@ -1161,8 +1351,35 @@ def test_filters_list_covers_expected_tools() -> None:
     names = {f.name for f in bc.FILTERS}
     expected = {
         "pytest", "jest", "cargo", "npm", "docker", "kubectl",
-        "aws", "ruff", "mypy", "linter", "grep", "git",
-        "make", "terraform", "pip", "uv", "python",
+        "aws", "gh", "ruff", "mypy", "linter", "grep", "git",
+        "make", "go-test", "terraform", "pip", "uv", "python",
     }
     missing = expected - names
     assert not missing, f"Missing filters in FILTERS registry: {missing}"
+
+
+def test_go_test_precedes_make_in_registry() -> None:
+    """GoTestFilter must precede MakeFilter so `go test` wins over `go build`."""
+    names = [f.name for f in bc.FILTERS]
+    assert "go-test" in names and "make" in names
+    assert names.index("go-test") < names.index("make"), (
+        "GoTestFilter must be registered before MakeFilter; otherwise "
+        "MakeFilter.matches() (binaries={'go', ...}) wins for `go test`."
+    )
+
+
+def test_go_build_routes_to_make_not_go_test() -> None:
+    """`go build ./...` continues to route to MakeFilter, not GoTestFilter."""
+    f = bc.select_filter(["go", "build", "./..."])
+    assert f is not None
+    assert f.name == "make", (
+        "go build is not a test command; GoTestFilter.matches() must return "
+        "False so MakeFilter handles it."
+    )
+
+
+def test_go_vet_routes_to_make() -> None:
+    """`go vet ./...` is not a test command either, so MakeFilter handles it."""
+    f = bc.select_filter(["go", "vet", "./..."])
+    assert f is not None
+    assert f.name == "make"

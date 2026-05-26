@@ -1354,6 +1354,104 @@ def _compress_kubectl_table(text: str, max_rows: int = 25) -> str:
     )
 
 
+# --- GitHub CLI ------------------------------------------------------------
+
+# `gh run view <id>` prints step-by-step CI logs with status glyphs (`✓` /
+# `X` / `*`) per step, and long blocks of repeated noise like ``Run actions/...``
+# preamble lines.  We collapse passing step blocks, dedupe identical noise
+# lines, and preserve every line that signals a failure.
+_GH_RUN_PASS_STEP_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\s*[✓√]\s"
+)
+_GH_RUN_FAIL_STEP_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\s*[X✗❌]\s|^\s*FAIL(:|ED|URE)\b|^\s*Error:\s"
+)
+# Table-row separator emitted by ``gh pr list`` / ``gh issue list`` /
+# ``gh run list``: ``OPEN \t #123 \t title \t branch \t 2h ago``.  Each row
+# is a tab-separated record.  We never truncate the rows themselves (each is
+# load-bearing), only deduplicate identical adjacent lines.
+
+
+class GhFilter(Filter):
+    """Compress ``gh`` (GitHub CLI) output.
+
+    The GitHub CLI is high-volume in agent sessions: ``gh run view`` dumps
+    full CI logs (hundreds of lines per failed run), ``gh pr view`` repeats
+    the full body twice when ``--comments`` is set, and ``gh api`` returns
+    raw JSON that the caller usually pipes through ``jq``.
+
+    Compression model:
+
+    * **``gh run view``**: keep every line in a failed-step block; drop
+      ``✓`` passing-step headers (collapse to count); strip the
+      ``Run actions/checkout@v4`` action-preamble noise.
+    * **``gh pr view`` / ``gh issue view``**: pass through verbatim (these
+      have load-bearing metadata in every line, and agents almost always need
+      the full body).
+    * **``gh pr list`` / ``gh run list`` / ``gh issue list``**: pass through
+      (table rows are inherently compact; truncation would hide the entry
+      the caller is searching for).
+    * **Everything else** (``gh api``, ``gh release view``, …): generic
+      ANSI/progress strip only (already handled by :meth:`apply`).
+    """
+
+    name = "gh"
+    binaries = frozenset(["gh"])
+
+    def compress(
+        self, stdout: str, stderr: str, exit_code: int, argv: list[str],
+    ) -> str:
+        positionals = _positional_args(argv[1:])
+        subcommand = positionals[0] if positionals else ""
+        action = positionals[1] if len(positionals) > 1 else ""
+        merged = self._combine_output(stdout, stderr)
+        if subcommand == "run" and action == "view":
+            return _compress_gh_run_view(merged)
+        # Everything else passes through with just blank-line squeezing.
+        return _squeeze_blank_lines(merged)
+
+
+def _compress_gh_run_view(text: str) -> str:
+    """Collapse passing ``✓`` step headers in ``gh run view`` output.
+
+    Keeps every line under a failing step and the final ``Annotations`` block;
+    drops the long lists of ``Run actions/foo@v1`` action-preamble lines that
+    appear under each passing step.
+    """
+    lines = text.split("\n")
+    kept: list[str] = []
+    pass_steps = 0
+    dropped_preamble = 0
+    # When True, we are inside a passing step block and should drop the
+    # indented child lines (the action preamble) until the next non-indented
+    # line.  Failing steps are always preserved verbatim.
+    in_pass_block = False
+    for line in lines:
+        if _GH_RUN_PASS_STEP_RE.match(line):
+            pass_steps += 1
+            in_pass_block = True
+            continue
+        if _GH_RUN_FAIL_STEP_RE.match(line):
+            in_pass_block = False
+            kept.append(line)
+            continue
+        if in_pass_block and (line.startswith(("  ", "\t"))):
+            dropped_preamble += 1
+            continue
+        # A non-indented line closes any open pass block.
+        if line and not line[0].isspace():
+            in_pass_block = False
+        kept.append(line)
+    notes: list[str] = []
+    if pass_steps:
+        notes.append(f"collapsed {pass_steps} passing step headers")
+    if dropped_preamble:
+        notes.append(f"dropped {dropped_preamble} action-preamble lines")
+    if notes:
+        kept.append(f"[token-goat: {'; '.join(notes)}]")
+    return _squeeze_blank_lines("\n".join(kept))
+
+
 # --- AWS CLI ---------------------------------------------------------------
 
 class AwsFilter(Filter):
@@ -1972,6 +2070,120 @@ def _compress_git_remote(stdout: str, stderr: str) -> str:
     return "\n".join(kept)
 
 
+# --- Go test ---------------------------------------------------------------
+
+# `go test [-v] ./...` emits a distinctive line shape per testcase that is
+# disjoint from `go build` output, so it warrants a dedicated filter.  The
+# patterns below match the official ``testing`` package format documented at
+# https://pkg.go.dev/testing#hdr-Subtests_and_Sub_benchmarks.
+_GO_TEST_RUN_RE: Final[re.Pattern[str]] = re.compile(
+    r"^=== (RUN|PAUSE|CONT|NAME)\s"
+)
+_GO_TEST_PASS_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\s*--- PASS:\s"
+)
+_GO_TEST_FAIL_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\s*--- (FAIL|SKIP):\s"
+)
+# Final per-package result lines: ``ok pkg 1.234s`` / ``FAIL pkg 0.5s`` /
+# ``?  pkg [no test files]``.  Preserved verbatim so the agent sees per-package
+# outcomes.
+_GO_TEST_PKG_RESULT_RE: Final[re.Pattern[str]] = re.compile(
+    r"^(ok|FAIL|---\sFAIL|\?)\s+\S"
+)
+
+
+class GoTestFilter(Filter):
+    """Compress ``go test`` output (with or without ``-v``).
+
+    ``go test ./...`` on a large repo emits one ``=== RUN`` plus one
+    ``--- PASS`` line per testcase plus subtests, often hundreds of lines of
+    pure noise when everything passes.  The filter keeps failures, package
+    results, and the final summary verbatim while collapsing the passing
+    test list to a count.
+
+    Compression model:
+
+    * **Drop** ``=== RUN`` / ``=== PAUSE`` / ``=== CONT`` lines (test lifecycle
+      noise) when not inside a FAIL block.
+    * **Drop** ``--- PASS:`` lines (collapse to a single count).
+    * **Keep** ``--- FAIL:`` and ``--- SKIP:`` lines and any indented body
+      under them (the ``t.Errorf`` / ``t.Fatalf`` traceback).
+    * **Keep** ``ok pkg time`` / ``FAIL pkg time`` / ``? pkg [no test files]``
+      per-package results unchanged.
+    * **Keep** the final ``PASS`` / ``FAIL`` summary line.
+    * **Drop** ``go: downloading mod@ver`` progress (same as MakeFilter).
+    """
+
+    name = "go-test"
+    binaries = frozenset(["go"])
+
+    def matches(self, argv: list[str]) -> bool:  # noqa: D102
+        if not argv:
+            return False
+        stem = Path(argv[0]).stem.lower()
+        if stem != "go":
+            return False
+        # Only fire for ``go test`` — every other subcommand (build, vet, run,
+        # mod, …) stays with MakeFilter or falls through.
+        positionals = _positional_args(argv[1:])[:2]
+        return positionals[:1] == ["test"]
+
+    def compress(
+        self, stdout: str, stderr: str, exit_code: int, argv: list[str],
+    ) -> str:
+        merged = self._combine_output(stdout, stderr)
+        lines = merged.split("\n")
+        kept: list[str] = []
+        pass_count = 0
+        in_fail_block = False
+        dropped_run = 0
+        dropped_download = 0
+        for line in lines:
+            if line.startswith("go: downloading"):
+                dropped_download += 1
+                continue
+            # FAIL / SKIP open a multi-line block that is preserved verbatim
+            # until the next testcase delimiter.
+            if _GO_TEST_FAIL_RE.match(line):
+                in_fail_block = True
+                kept.append(line)
+                continue
+            if _GO_TEST_PASS_RE.match(line):
+                # A PASS line closes any open FAIL block (next testcase).
+                in_fail_block = False
+                pass_count += 1
+                continue
+            if _GO_TEST_RUN_RE.match(line):
+                # === RUN inside a FAIL block is the next testcase header —
+                # close the block but keep the new RUN line so structure is
+                # readable.  Outside a FAIL block, drop the RUN entirely.
+                if in_fail_block:
+                    in_fail_block = False
+                else:
+                    dropped_run += 1
+                    continue
+            # Indented continuation lines under a FAIL block (test_runner.go:42:
+            # Errorf output, panic traceback, …) — preserve them.
+            if in_fail_block and (line.startswith(("    ", "\t")) or not line.strip()):
+                kept.append(line)
+                continue
+            # Anything else (per-package results, final summary, untyped
+            # diagnostic): preserve and exit the fail block.
+            in_fail_block = False
+            kept.append(line)
+        notes: list[str] = []
+        if pass_count:
+            notes.append(f"collapsed {pass_count} PASS testcases")
+        if dropped_run:
+            notes.append(f"dropped {dropped_run} === RUN/PAUSE/CONT lines")
+        if dropped_download:
+            notes.append(f"dropped {dropped_download} 'go: downloading' lines")
+        if notes:
+            kept.append(f"[token-goat: {'; '.join(notes)}]")
+        return _squeeze_blank_lines("\n".join(kept))
+
+
 # --- Make / Ninja / Gradle / Maven / Go build ------------------------------
 
 _MAKE_RECURSE_RE: Final[re.Pattern[str]] = re.compile(
@@ -2572,11 +2784,15 @@ FILTERS: list[Filter] = [
     DockerFilter(),
     KubectlFilter(),
     AwsFilter(),
+    GhFilter(),
     RuffFilter(),
     MypyFilter(),
     LinterFilter(),
     GrepFilter(),
     GitFilter(),
+    # GoTestFilter must precede MakeFilter so `go test ./...` routes to the
+    # specialised testing filter; `go build` falls through to MakeFilter.
+    GoTestFilter(),
     MakeFilter(),
     TerraformFilter(),
     PipFilter(),
