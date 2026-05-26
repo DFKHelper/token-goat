@@ -86,6 +86,35 @@ def test_patch_codex_config_idempotent(patched_home, monkeypatch):
     assert len(tw_cmds) == 1, f"expected 1 token-goat SessionStart entry, got {len(tw_cmds)}"
 
 
+def test_patch_codex_config_total_count_stable_across_three_installs(patched_home, monkeypatch):
+    """patch_codex_config three times → token-goat hook count must be stable.
+
+    Parallel to ``test_verify_install_idempotent_count_stable`` on the Claude
+    side.  Previously only SessionStart had per-event coverage; this catches
+    drift across the full event registry (PreToolUse, PostToolUse, PreCompact).
+    """
+    install.patch_codex_config("token-goat")
+    count_first = install._codex_config_token_goat_count()
+    install.patch_codex_config("token-goat")
+    count_second = install._codex_config_token_goat_count()
+    install.patch_codex_config("token-goat")
+    count_third = install._codex_config_token_goat_count()
+    assert count_first == count_second == count_third, (
+        f"non-idempotent: {count_first} → {count_second} → {count_third}"
+    )
+    assert count_first > 0, "fresh codex install should produce >=1 hook entry"
+
+
+def test_codex_config_token_goat_count_zero_when_absent(patched_home):
+    """_codex_config_token_goat_count returns 0 when the config doesn't exist.
+
+    Guards the helper's tolerance contract — verify/plan should never crash
+    just because codex was never installed.
+    """
+    # patched_home gives us a fresh ~/.codex directory that doesn't exist yet.
+    assert install._codex_config_token_goat_count() == 0
+
+
 # ---------------------------------------------------------------------------
 # 4. unpatch_codex_config removes only token-goat entries
 # ---------------------------------------------------------------------------

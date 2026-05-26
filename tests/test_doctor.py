@@ -32,6 +32,14 @@ def test_doctor_exits_zero_and_prints_sections():
     assert "claim file" in out
     assert "index marker" in out  # "index markers: none" or per-marker "index marker:"
     assert "Dirty queue" in out
+    # Installation status section surfaces whether token-goat hooks landed in
+    # the harness configs.  Previously doctor only checked runtime/cache health.
+    assert "Installation" in out
+    assert "settings.json" in out
+    assert "CLAUDE.md" in out
+    assert "skill" in out
+    # Fastembed model presence check (file-level, not just dir-level)
+    assert "fastembed model" in out
 
 
 def test_doctor_via_entry_point():
@@ -478,3 +486,102 @@ class TestDoctorConfigurationSection:
         # The actual URL must NOT appear in the doctor output.
         assert "internal.example.com" not in result.stdout
         assert "leak.example.com" not in result.stdout
+
+
+class TestDoctorInstallationStatus:
+    """Cover the Installation section that surfaces hook-install status.
+
+    Doctor previously checked runtime/cache health but never told the user
+    whether token-goat was *actually wired* into the harness configs.  This
+    closes the gap.
+    """
+
+    def test_installation_section_flags_uninstalled_state(self, tmp_data_dir, monkeypatch):
+        """When no install has happened, every entry should warn 'not installed'."""
+        from unittest.mock import patch
+
+        from token_goat import install as _install
+
+        # Force every check to report not-installed to exercise the warning path.
+        monkeypatch.setattr(_install, "_check_settings_json", lambda: "not installed")
+        monkeypatch.setattr(_install, "_check_claude_md", lambda: "not installed")
+        monkeypatch.setattr(_install, "_check_skill", lambda: "not installed")
+        with patch.object(_install, "detect_harnesses", return_value=["claude"]):
+            result = runner.invoke(cli.app, ["doctor"])
+        assert result.exit_code == 0, result.stdout
+        assert "Installation" in result.stdout
+        # Every "not installed" row hints at the remediation command.
+        assert "token-goat install" in result.stdout
+
+    def test_installation_section_reports_ok_when_installed(self, tmp_data_dir, monkeypatch):
+        """When checks return 'installed', doctor reports them green (no warn marker)."""
+        from token_goat import install as _install
+
+        monkeypatch.setattr(_install, "_check_settings_json", lambda: "installed")
+        monkeypatch.setattr(_install, "_check_claude_md", lambda: "installed")
+        monkeypatch.setattr(_install, "_check_skill", lambda: "installed")
+        monkeypatch.setattr(_install, "detect_harnesses", lambda: [])
+        result = runner.invoke(cli.app, ["doctor"])
+        assert result.exit_code == 0, result.stdout
+        # The Installation section's three core rows are present.
+        assert "Installation" in result.stdout
+        # The ok-line format puts "installed" after the label.
+        assert "settings.json" in result.stdout
+        assert "CLAUDE.md" in result.stdout
+
+    def test_codex_check_only_shown_when_codex_detected(self, tmp_data_dir, monkeypatch):
+        """codex config.toml row should only appear when the codex harness is detected.
+
+        Users without Codex installed shouldn't see a spurious "codex config:
+        not installed" warning since they don't need it.
+        """
+        from unittest.mock import patch
+
+        from token_goat import install as _install
+
+        monkeypatch.setattr(_install, "_check_settings_json", lambda: "installed")
+        monkeypatch.setattr(_install, "_check_claude_md", lambda: "installed")
+        monkeypatch.setattr(_install, "_check_skill", lambda: "installed")
+        monkeypatch.setattr(_install, "_check_codex_config", lambda: "not installed")
+
+        # Case 1: Codex NOT detected → row absent.
+        with patch.object(_install, "detect_harnesses", return_value=["claude"]):
+            result_no_codex = runner.invoke(cli.app, ["doctor"])
+        assert result_no_codex.exit_code == 0
+        assert "codex config.toml" not in result_no_codex.stdout
+
+        # Case 2: Codex detected → row present.
+        with patch.object(_install, "detect_harnesses", return_value=["claude", "codex"]):
+            result_with_codex = runner.invoke(cli.app, ["doctor"])
+        assert result_with_codex.exit_code == 0
+        assert "codex config.toml" in result_with_codex.stdout
+
+    def test_fastembed_model_warns_when_no_onnx_file(self, tmp_data_dir):
+        """When models_dir exists but contains no .onnx file, doctor warns."""
+        # tmp_data_dir creates models_dir but does not populate it; perfect for this.
+        paths.ensure_dirs()
+        assert paths.models_dir().exists()
+        # Confirm no onnx file exists.
+        onnx_files = list(paths.models_dir().rglob("*.onnx"))
+        assert onnx_files == [], "test precondition: models_dir must be empty"
+
+        result = runner.invoke(cli.app, ["doctor"])
+        assert result.exit_code == 0, result.stdout
+        assert "fastembed model" in result.stdout
+        assert "no .onnx file" in result.stdout
+
+    def test_fastembed_model_ok_when_onnx_file_present(self, tmp_data_dir):
+        """When a .onnx file is in models_dir, doctor surfaces its size."""
+        paths.ensure_dirs()
+        models = paths.models_dir()
+        # Fastembed stores the model under models_dir/<name>/...; mimic that.
+        model_subdir = models / "bge-small-en-v1.5"
+        model_subdir.mkdir(parents=True, exist_ok=True)
+        fake_onnx = model_subdir / "model.onnx"
+        fake_onnx.write_bytes(b"x" * 1024)  # 1 KiB sentinel
+
+        result = runner.invoke(cli.app, ["doctor"])
+        assert result.exit_code == 0, result.stdout
+        # ok line shows the file count and the humanized size.
+        assert "fastembed model" in result.stdout
+        assert "1 onnx file" in result.stdout

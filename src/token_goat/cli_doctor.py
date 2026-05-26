@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import contextlib
 import sqlite3
+import sys
 import time
 from collections.abc import Callable
 from datetime import date
@@ -127,7 +128,6 @@ def doctor(  # noqa: C901
     """
     import importlib
     import subprocess
-    import sys
 
     import psutil
 
@@ -235,6 +235,66 @@ def doctor(  # noqa: C901
             ok(label, str(p))
         else:
             flag(label, f"{p}  (missing)", warn=True)
+
+    # Fastembed ONNX model file: models_dir exists is not enough — the embedding
+    # path silently degrades to zero-vectors if the .onnx blob is missing.
+    # Surface the actual file presence so a fresh-install user without network
+    # gets an actionable signal.
+    try:
+        models_dir = paths.models_dir()
+        if models_dir.exists():
+            onnx_files = list(models_dir.rglob("*.onnx"))
+            if onnx_files:
+                total_size = sum(f.stat().st_size for f in onnx_files if f.is_file())
+                ok(
+                    "fastembed model",
+                    f"{len(onnx_files)} onnx file(s), {_humanize_bytes_doctor(total_size)}",
+                )
+            else:
+                flag(
+                    "fastembed model",
+                    "no .onnx file found in models_dir — semantic search will be unavailable until first download",
+                    warn=True,
+                )
+    except OSError as _e:
+        flag("fastembed model", f"could not enumerate models_dir — {_e}", warn=True)
+
+    # ------------------------------------------------------------------
+    # 2b. Installation status — verify token-goat artefacts actually landed in
+    # the harness configs.  Doctor previously only checked runtime/cache health;
+    # if `token-goat install` had never been run (or had partially failed),
+    # nothing surfaced that fact.  Pulls _check_* status strings from install.py
+    # so the wire is the same as `token-goat install --verify`.
+    # ------------------------------------------------------------------
+    typer.echo("\nInstallation")
+    try:
+        from . import install as _install  # noqa: PLC0415
+
+        # Always check the Claude side (settings.json + CLAUDE.md + skill).
+        # Codex side only when the harness is detected, so users without Codex
+        # don't see a confusing "codex config: not installed" warning.
+        installation_checks: list[tuple[str, str]] = [
+            ("settings.json", _install._check_settings_json()),
+            ("CLAUDE.md", _install._check_claude_md()),
+            ("skill", _install._check_skill()),
+        ]
+        try:
+            harnesses = _install.detect_harnesses()
+        except Exception:  # noqa: BLE001 — detect_harnesses is best-effort
+            harnesses = []
+        if "codex" in harnesses:
+            installation_checks.append(("codex config.toml", _install._check_codex_config()))
+        if sys.platform == "win32":
+            installation_checks.append(("worker autostart", _install._check_worker_task()))
+        for label, status in installation_checks:
+            if status.startswith("installed"):
+                ok(label, status)
+            elif status.startswith("not installed"):
+                flag(label, status + " — run `token-goat install`", warn=True)
+            else:
+                flag(label, status, warn=True)
+    except Exception as _e:  # noqa: BLE001 — installation check must never abort doctor
+        flag("installation", f"check failed — {_e}", warn=True)
 
     # ------------------------------------------------------------------
     # 3. SQLite
