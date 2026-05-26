@@ -37,25 +37,23 @@ from .hooks_common import (
 def _nudge_worker_if_down() -> None:
     """Respawn the background worker if its heartbeat file is stale.
 
-    The worker daemon updates a heartbeat file every 2 seconds. If the mtime is
-    >65 seconds old, the worker is assumed dead and a respawn is attempted.
+    Delegates the staleness decision to
+    :func:`worker.is_heartbeat_stale_for_nudge`, which derives the threshold
+    from :data:`worker.HEARTBEAT_INTERVAL` and :data:`worker.HEARTBEAT_GRACE_SECONDS`
+    — so this nudge stays in lock-step with the watchdog's own freshness
+    check, even if a future tune changes the interval. The historical
+    hard-coded 65 s threshold drifted from the watchdog's
+    ``2 * HEARTBEAT_INTERVAL + GRACE`` formula and would have silently
+    stopped nudging if the interval changed.
+
     Failures are logged but not raised (fail-soft hook pattern).
     """
-    import time  # noqa: PLC0415
-
-    from . import paths  # noqa: PLC0415
-
     try:
-        hb_path = paths.worker_heartbeat_path()
-        try:
-            fresh = (time.time() - hb_path.stat().st_mtime) <= 65.0
-        except OSError:
-            fresh = False
-        if fresh:
-            return
-        _LOG.info("worker heartbeat stale — attempting respawn")
         from . import worker  # noqa: PLC0415
 
+        if not worker.is_heartbeat_stale_for_nudge():
+            return
+        _LOG.info("worker heartbeat stale — attempting respawn")
         pid = worker.ensure_running()
         if pid:
             _LOG.info("worker respawned: pid=%s", pid)

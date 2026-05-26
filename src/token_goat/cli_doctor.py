@@ -443,11 +443,25 @@ def doctor(  # noqa: C901
             if psutil.pid_exists(pid_val):
                 ok("pid file", f"present (PID {pid_val})")
                 if hb_path.exists():
+                    # Derive the doctor's freshness threshold from the
+                    # worker's authoritative formula rather than a hard-coded
+                    # 120s — keeps `doctor` consistent with `_is_heartbeat_fresh`
+                    # and `_nudge_worker_if_down` if HEARTBEAT_INTERVAL is ever
+                    # tuned.  Doctor is a snapshot rather than a watchdog, so
+                    # any age above the stale threshold is reported verbatim.
+                    from . import worker as _worker_hb  # noqa: PLC0415
+
                     hb_age = time.time() - hb_path.stat().st_mtime
-                    if hb_age < 120:
+                    stale_after = _worker_hb.heartbeat_stale_threshold()
+                    if hb_age <= stale_after:
                         ok("heartbeat", f"{int(hb_age)}s ago — fresh")
                     else:
-                        flag("heartbeat", f"{int(hb_age)}s ago — stale", warn=True)
+                        flag(
+                            "heartbeat",
+                            f"{int(hb_age)}s ago — stale "
+                            f"(threshold {int(stale_after)}s)",
+                            warn=True,
+                        )
                 else:
                     flag("heartbeat", "missing", warn=True)
             else:
