@@ -1743,6 +1743,19 @@ def _fresh_cache(session_id: str, *, unavailable: bool = False) -> SessionCache:
     )
 
 
+def _has_windows_drive_prefix(s: str) -> bool:
+    """Return True when *s* starts with a Windows drive letter followed by a colon.
+
+    Matches both uppercase and lowercase drive letters (e.g. ``C:``, ``c:``) so
+    the predicate is usable in both normalization contexts (where we need to
+    detect an uppercase letter to lowercase it) and path-classification contexts
+    (where we only need to know whether the path is absolute).
+    Callers that only want to detect *uppercase* drives (for lowercasing) should
+    additionally check ``s[0].isupper()``.
+    """
+    return len(s) >= 2 and s[1] == ":" and s[0].isalpha()
+
+
 def _normalize_path(p: str) -> str:
     """Normalize a path for use as a cache key (thin alias to ``paths.normalize_key``).
 
@@ -2281,7 +2294,7 @@ def _sanitize_path(path: str) -> str:
         path = path[:_MAX_PATH_LEN]
     normalized = paths.normalize_key(path)
     # Relative paths must not contain traversal components
-    is_absolute = normalized.startswith("/") or paths.has_windows_drive_prefix(normalized)
+    is_absolute = normalized.startswith("/") or _has_windows_drive_prefix(normalized)
     if not is_absolute:
         parts = normalized.split("/")
         if ".." in parts:
@@ -3194,17 +3207,7 @@ def get_snapshot_sha(
 
 
 def cleanup_stale(max_age_hours: float = 24.0) -> int:
-    """Delete session cache files older than max_age_hours. Returns count removed.
-
-    Also reaps orphan ``*.json.lock`` sidecar files: a lock can be left behind
-    when a hook process dies after ``os.open(O_CREAT|O_EXCL)`` but before
-    ``unlink``.  ``_acquire_session_lock`` clears stale locks only when another
-    process contends for the same session; an orphan lock for an inactive
-    session would otherwise sit in the sessions directory forever.  Orphan
-    locks are removed when ``_lock_is_stale`` reports them dead, regardless of
-    the ``max_age_hours`` cutoff (the staleness probe is independently more
-    conservative — PID liveness + ``_LOCK_STALE_SECS``).
-    """
+    """Delete session cache files older than max_age_hours. Returns count removed."""
     removed = 0
     sessions_dir = paths.session_cache_path("dummy").parent
     if not sessions_dir.exists():
@@ -3239,48 +3242,11 @@ def cleanup_stale(max_age_hours: float = 24.0) -> int:
                 removed += 1
         except OSError as e:
             _LOG.debug("cleanup_stale: could not remove %s: %s", f.name, e)
-
-    # Reap orphan session lockfiles.  These live alongside the *.json files as
-    # ``<session_id>.json.lock`` sidecars.  Two flavours are interesting:
-    #   (a) lock present, parent .json absent — the .json was already cleaned
-    #       above (or never existed because the hook crashed before writing
-    #       the cache);
-    #   (b) lock present, parent .json present — only reap if the lock itself
-    #       is stale per ``_lock_is_stale``.  We do not touch locks for
-    #       sessions that may still be live.
-    lock_examined = 0
-    lock_removed = 0
-    for lf in sessions_dir.glob("*.json.lock"):
-        lock_examined += 1
-        # Filename must match ``<session_id>.json.lock`` — same validation as
-        # the .json sweep above, applied to the stem with ``.json`` stripped.
-        name = lf.name
-        if not name.endswith(".json.lock"):
-            continue
-        session_stem = name[: -len(".json.lock")]
-        if not _SESSION_ID_RE.match(session_stem):
-            _LOG.debug("cleanup_stale: skipping non-session-ID lock %r", name)
-            continue
-        try:
-            lst = os.lstat(lf)
-        except OSError as e:
-            _LOG.debug("cleanup_stale: could not stat lock %s: %s", name, e)
-            continue
-        if _stat_module.S_ISLNK(lst.st_mode):
-            _LOG.warning("cleanup_stale: skipping symlink lock: %s", name)
-            continue
-        if _lock_is_stale(lf):
-            try:
-                lf.unlink()
-                lock_removed += 1
-            except OSError as e:
-                _LOG.debug("cleanup_stale: could not remove lock %s: %s", name, e)
-
     _LOG.info(
-        "cleanup_stale: examined=%d removed=%d lock_examined=%d lock_removed=%d (max_age_hours=%.1f)",
-        examined, removed, lock_examined, lock_removed, max_age_hours,
+        "cleanup_stale: examined=%d removed=%d (max_age_hours=%.1f)",
+        examined, removed, max_age_hours,
     )
-    return removed + lock_removed
+    return removed
 
 
 # ---------------------------------------------------------------------------
