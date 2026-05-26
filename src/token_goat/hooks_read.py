@@ -33,6 +33,7 @@ from __future__ import annotations
 
 __all__ = ["post_bash", "post_read", "pre_read"]
 
+from collections.abc import Callable
 from pathlib import Path
 
 from .hooks_common import (
@@ -394,6 +395,65 @@ def _build_git_hint(cwd: str | None, file_path: str) -> str | None:
         return None
 
 
+def _emit_dedup_budgeted_hint(
+    *,
+    hint: object,
+    file_path: str,
+    cache: object,
+    budget_kind: str,
+    record_emitted_fn: Callable[[object], None],
+    stat_kind: str,
+    display_name: str,
+) -> HookResponse | None:
+    """Shared dedup → budget → mark-seen → record → emit pipeline for one-shot pre-read hints.
+
+    Caller supplies the already-built *hint* (or ``None`` for "do nothing") plus
+    four event-specific knobs: *budget_kind* (``_HINT_KIND_*`` constant),
+    *record_emitted_fn* (per-session emit counter), *stat_kind* (stats DB label),
+    *display_name* (hyphenated label for log lines).  Returns the hook response
+    when the hint fires, or ``None`` when suppressed (already seen, budget
+    exhausted) or no hint was supplied.  Previously inlined identically in
+    ``_handle_index_only_file`` and ``_handle_structured_file``.
+    """
+    if hint is None:
+        return None
+
+    from .hints import _hint_budget_check, _hint_fingerprint  # noqa: PLC0415
+
+    # Dedup: suppress if identical hint already seen this session for this path.
+    fingerprint = _hint_fingerprint(str(hint), path=file_path)
+    has_seen = getattr(cache, "has_hint_fingerprint", lambda _: False)(fingerprint)  # type: ignore[arg-type]
+    if has_seen:
+        _LOG.debug(
+            "pre-read: %s hint already seen for %s; suppressing",
+            display_name, sanitize_log_str(file_path),
+        )
+        return None
+
+    # Budget: hard cap on hints of this kind per session.
+    _session = _get_session()
+    if isinstance(cache, _session.SessionCache) and not _hint_budget_check(cache, budget_kind):
+        _LOG.debug(
+            "pre-read: %s hint budget exhausted for %s",
+            display_name, sanitize_log_str(file_path),
+        )
+        return None
+
+    mark_seen = getattr(cache, "mark_hint_seen", None)
+    if callable(mark_seen):
+        mark_seen(fingerprint)
+
+    if isinstance(cache, _session.SessionCache):
+        record_emitted_fn(cache)
+
+    record_hint_stat_pair(stat_kind, hint, sanitize_log_str(file_path, max_len=512))
+    _LOG.info(
+        "pre-read: %s hint injected for %s (%s)",
+        display_name, sanitize_log_str(file_path), str(hint)[:60],
+    )
+    return pre_tool_use_with_context(str(hint))
+
+
 def _handle_index_only_file(
     session_id: str,
     file_path: str,
@@ -410,53 +470,26 @@ def _handle_index_only_file(
     Returns ``None`` when the file is small, not an index-only type, or the
     caller already scoped the read with offset AND limit (surgical intent).
     """
-    from .hints import _hint_fingerprint, build_index_only_file_hint  # noqa: PLC0415
-
-    offset = tool_input.get("offset")
-    limit = tool_input.get("limit")
+    from .hints import (  # noqa: PLC0415
+        _HINT_KIND_INDEX_ONLY,
+        _record_index_only_hint_emitted,
+        build_index_only_file_hint,
+    )
 
     hint = build_index_only_file_hint(
         file_path=file_path,
-        offset=offset,
-        limit=limit,
+        offset=tool_input.get("offset"),
+        limit=tool_input.get("limit"),
     )
-    if hint is None:
-        return None
-
-    # Dedup: suppress if identical hint already seen this session for this path.
-    fingerprint = _hint_fingerprint(str(hint), path=file_path)
-    has_seen = getattr(cache, "has_hint_fingerprint", lambda _: False)(fingerprint)  # type: ignore[arg-type]
-    if has_seen:
-        _LOG.debug(
-            "pre-read: index-only hint already seen for %s; suppressing",
-            sanitize_log_str(file_path),
-        )
-        return None
-
-    # Budget: hard cap on index-only hints per session.
-    _session = _get_session()
-    from .hints import (  # noqa: PLC0415
-        _HINT_KIND_INDEX_ONLY,
-        _hint_budget_check,
-        _record_index_only_hint_emitted,
+    return _emit_dedup_budgeted_hint(
+        hint=hint,
+        file_path=file_path,
+        cache=cache,
+        budget_kind=_HINT_KIND_INDEX_ONLY,
+        record_emitted_fn=_record_index_only_hint_emitted,
+        stat_kind="index_only_hint",
+        display_name="index-only",
     )
-    if isinstance(cache, _session.SessionCache) and not _hint_budget_check(cache, _HINT_KIND_INDEX_ONLY):
-        _LOG.debug("pre-read: index-only hint budget exhausted for %s", sanitize_log_str(file_path))
-        return None
-
-    mark_seen = getattr(cache, "mark_hint_seen", None)
-    if callable(mark_seen):
-        mark_seen(fingerprint)
-
-    if isinstance(cache, _session.SessionCache):
-        _record_index_only_hint_emitted(cache)
-
-    record_hint_stat_pair("index_only_hint", hint, sanitize_log_str(file_path, max_len=512))
-    _LOG.info(
-        "pre-read: index-only hint injected for %s (%s)",
-        sanitize_log_str(file_path), str(hint)[:60],
-    )
-    return pre_tool_use_with_context(str(hint))
 
 
 def _handle_structured_file(
@@ -474,53 +507,26 @@ def _handle_structured_file(
     Returns ``None`` when the file is small, not a structured type, or the caller
     already scoped the read with offset AND limit (surgical intent).
     """
-    from .hints import _hint_fingerprint, build_structured_file_hint  # noqa: PLC0415
-
-    offset = tool_input.get("offset")
-    limit = tool_input.get("limit")
+    from .hints import (  # noqa: PLC0415
+        _HINT_KIND_STRUCTURED,
+        _record_structured_hint_emitted,
+        build_structured_file_hint,
+    )
 
     hint = build_structured_file_hint(
         file_path=file_path,
-        offset=offset,
-        limit=limit,
+        offset=tool_input.get("offset"),
+        limit=tool_input.get("limit"),
     )
-    if hint is None:
-        return None
-
-    # Dedup: suppress if identical hint already seen this session for this path.
-    fingerprint = _hint_fingerprint(str(hint), path=file_path)
-    has_seen = getattr(cache, "has_hint_fingerprint", lambda _: False)(fingerprint)  # type: ignore[arg-type]
-    if has_seen:
-        _LOG.debug(
-            "pre-read: structured-file hint already seen for %s; suppressing",
-            sanitize_log_str(file_path),
-        )
-        return None
-
-    # Budget: hard cap on structured-file hints per session.
-    _session = _get_session()
-    from .hints import (  # noqa: PLC0415
-        _HINT_KIND_STRUCTURED,
-        _hint_budget_check,
-        _record_structured_hint_emitted,
+    return _emit_dedup_budgeted_hint(
+        hint=hint,
+        file_path=file_path,
+        cache=cache,
+        budget_kind=_HINT_KIND_STRUCTURED,
+        record_emitted_fn=_record_structured_hint_emitted,
+        stat_kind="structured_file_hint",
+        display_name="structured-file",
     )
-    if isinstance(cache, _session.SessionCache) and not _hint_budget_check(cache, _HINT_KIND_STRUCTURED):
-        _LOG.debug("pre-read: structured-file hint budget exhausted for %s", sanitize_log_str(file_path))
-        return None
-
-    mark_seen = getattr(cache, "mark_hint_seen", None)
-    if callable(mark_seen):
-        mark_seen(fingerprint)
-
-    if isinstance(cache, _session.SessionCache):
-        _record_structured_hint_emitted(cache)
-
-    record_hint_stat_pair("structured_file_hint", hint, sanitize_log_str(file_path, max_len=512))
-    _LOG.info(
-        "pre-read: structured-file hint injected for %s (%s)",
-        sanitize_log_str(file_path), hint[:60],
-    )
-    return pre_tool_use_with_context(str(hint))
 
 
 def _record_session_hint_impact(file_path: str, hint: str) -> None:
