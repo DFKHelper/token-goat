@@ -145,6 +145,7 @@ class _CompactAssistToml(TypedDict, total=False):
     min_events: int
     max_manifest_tokens: int
     auto_trigger_multiplier: float
+    compact_skip_ttl_secs: float
 
 
 class _BashCompressToml(TypedDict, total=False):
@@ -291,6 +292,16 @@ class CompactAssistConfig:
     # Budget multiplier applied when trigger="auto" (context-pressure compaction).
     # See class docstring for rationale.  1.0 disables the boost.
     auto_trigger_multiplier: float = 2.0
+    # TTL (seconds) for the compact-skip sentinel written by no-op pre-compact
+    # exits.  When a fresh sentinel exists and the session JSON file has not
+    # been modified since the sentinel was written, the next PreCompact returns
+    # immediately without importing the heavy compact/session modules.  Lower
+    # this to make the hook more eager to re-emit manifests after activity;
+    # raise it to suppress more redundant fast-path work on near-idle sessions.
+    # The activity floor (session mtime > sentinel mtime) busts the cache
+    # whenever the user is active, so a long TTL only affects truly quiet
+    # sessions.  Clamped to (0, 3600] s.
+    compact_skip_ttl_secs: float = 300.0
 
 
 @dataclass
@@ -779,6 +790,13 @@ def load() -> Config:
             ca_raw.get("auto_trigger_multiplier", 2.0),
             2.0, 1.0, 10.0, "compact_assist.auto_trigger_multiplier",
         ),
+        # Clamp (0, 3600] seconds.  0 would disable the fast-path entirely, which
+        # is fine but better expressed via [compact_assist] enabled=false; the
+        # lower bound prevents accidental "never skip" + log spam.
+        compact_skip_ttl_secs=_validated_float(
+            ca_raw.get("compact_skip_ttl_secs", 300.0),
+            300.0, 1.0, 3600.0, "compact_assist.compact_skip_ttl_secs",
+        ),
     )
 
     # Environment override: TOKEN_GOAT_COMPACT_ASSIST=0 / false / no / off disables
@@ -980,6 +998,8 @@ def save(config: Config) -> None:
             "triggers": ca.triggers,
             "min_events": ca.min_events,
             "max_manifest_tokens": ca.max_manifest_tokens,
+            "auto_trigger_multiplier": ca.auto_trigger_multiplier,
+            "compact_skip_ttl_secs": ca.compact_skip_ttl_secs,
         },
         "bash_compress": {
             "enabled": bc.enabled,
