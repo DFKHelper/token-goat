@@ -687,6 +687,101 @@ class TestNormalizeKey:
             assert session._normalize_path(p) == paths.normalize_key(p)
 
 
+class TestNormalizeKeyCrossPlatformAudit:
+    """Cross-platform audit coverage for ``paths.normalize_key``.
+
+    These tests pin down behavior on the edges that gave the canonical-form
+    contract its ambiguity: UNC paths, the Windows long-path ``\\\\?\\``
+    prefix, the fast-path branch (no backslash) for forward-slash drive
+    inputs, and the by-design string-only limitations (symlinks, WSL bind
+    mounts, NTFS case folding).
+
+    The string-only limitations are pinned as *negative* assertions: the
+    function does NOT collapse these aliases. If a future change adds
+    filesystem resolution, these tests must be updated *deliberately* (not
+    silently) — that is the point of asserting current behavior.
+    """
+
+    # ---- (b) UNC paths ---------------------------------------------------
+
+    def test_unc_backslash_normalizes_to_double_slash(self) -> None:
+        # Pure-backslash UNC share root: leading \\ -> //, separators flipped.
+        assert paths.normalize_key("\\\\server\\share\\file.py") == "//server/share/file.py"
+
+    def test_unc_mixed_separators(self) -> None:
+        # Mixed UNC form: \\server/share\file -> //server/share/file.
+        assert paths.normalize_key("\\\\server/share\\file.py") == "//server/share/file.py"
+
+    def test_unc_already_forward_slash(self) -> None:
+        # Already-canonical UNC: idempotent, no double-collapse to single /.
+        p = "//server/share/file.py"
+        assert paths.normalize_key(p) == p
+        assert paths.normalize_key(paths.normalize_key(p)) == p
+
+    def test_unc_long_path_prefix(self) -> None:
+        # Windows long-path prefix \\?\C:\... must survive the conversion
+        # without collapsing the leading //? or losing the embedded drive.
+        assert paths.normalize_key("\\\\?\\C:\\foo\\bar.py") == "//?/C:/foo/bar.py"
+
+    def test_unc_lone_double_backslash(self) -> None:
+        # Just \\: the bare UNC root marker -> //.
+        assert paths.normalize_key("\\\\") == "//"
+
+    # ---- (e) Drive-letter case on the fast path --------------------------
+
+    @pytest.mark.skipif(sys.platform != "win32", reason="Drive-letter casing is Windows-only")
+    def test_fast_path_forward_slash_drive_lowercased(self) -> None:
+        # Fast path (no backslashes) must still lowercase an uppercase drive.
+        assert paths.normalize_key("C:/Projects/foo.py") == "c:/Projects/foo.py"
+
+    @pytest.mark.skipif(sys.platform != "win32", reason="Drive-letter casing is Windows-only")
+    def test_fast_path_drive_only(self) -> None:
+        # Drive-only string ``C:`` -> ``c:``.
+        assert paths.normalize_key("C:") == "c:"
+
+    @pytest.mark.skipif(sys.platform != "win32", reason="Drive-letter casing is Windows-only")
+    def test_drive_root_backslash(self) -> None:
+        # ``C:\`` -> ``c:/`` (drive + root separator).
+        assert paths.normalize_key("C:\\") == "c:/"
+
+    # ---- (a) Symlinks / WSL bind mount — known string-only limitation ----
+
+    def test_wsl_bind_mount_distinct_from_windows_form(self) -> None:
+        # /mnt/c/Projects/X (WSL bind-mount form) and C:\Projects\X
+        # (Windows form) point to the same physical file under WSL but
+        # normalize_key is a string canonicalizer and emits distinct keys.
+        # Callers that need filesystem identity must resolve via
+        # Path.resolve() *before* calling normalize_key.
+        wsl = "/mnt/c/Projects/X"
+        win = "C:\\Projects\\X"
+        # If this assertion ever fails, the function gained symlink
+        # resolution — update both the docstring and this test deliberately.
+        assert paths.normalize_key(wsl) != paths.normalize_key(win)
+
+    # ---- (c) NTFS case folding — known string-only limitation ------------
+
+    def test_ntfs_case_variants_distinct_keys(self) -> None:
+        # NTFS treats Bar.py and bar.py as the same file but normalize_key
+        # preserves component case. Same rationale as the WSL case: a
+        # case-folding pass would clobber genuine case-sensitive paths on
+        # POSIX. Callers that need filesystem identity must resolve first.
+        a = "C:/foo/Bar.py"
+        b = "C:/foo/bar.py"
+        # Distinct inputs -> distinct keys. Update deliberately if
+        # filesystem-aware folding is ever introduced.
+        assert paths.normalize_key(a) != paths.normalize_key(b)
+
+    # ---- Hardening: surrogate and control bytes don't crash --------------
+
+    def test_does_not_crash_on_surrogate(self) -> None:
+        # Lone surrogate (U+D800) survives the function — no UnicodeError.
+        # The function never encodes; it only does .replace and slicing.
+        s = "C:\\foo\\\ud800.py"
+        result = paths.normalize_key(s)
+        assert "\ud800" in result
+        assert result.startswith("c:/") if sys.platform == "win32" else result.startswith("C:/")
+
+
 class TestEnsureDirRaceTolerance:
     """Regression coverage for the Windows mkdir race captured in
     feedback_windows_pathlib_mkdir_race.md. ``paths.ensure_dir`` must not
