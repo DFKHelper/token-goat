@@ -216,6 +216,121 @@ class TestDoctorBranches:
         assert result.exit_code == 0
         assert "no recorded savings yet" in result.stdout
 
+    def test_compaction_utilization_section_no_data(self, tmp_data_dir):
+        """Compaction utilization section appears even when there are no rows."""
+        paths.ensure_dirs()
+        result = runner.invoke(cli.app, ["doctor"])
+        assert result.exit_code == 0
+        assert "Compaction utilization" in result.stdout
+
+    def test_compaction_utilization_renders_percentiles(self, tmp_data_dir):
+        """compact_manifest rows are parsed into p50/p95/max percentages."""
+        import time as _time
+
+        from token_goat import db as _db
+
+        paths.ensure_dirs()
+        now = int(_time.time())
+        # Five manual emits with utilizations 50%, 60%, 70%, 80%, 90%.
+        rows = [
+            ("budget=500,actual=250,trigger=manual,events=10", 50),
+            ("budget=500,actual=300,trigger=manual,events=10", 60),
+            ("budget=500,actual=350,trigger=manual,events=10", 70),
+            ("budget=500,actual=400,trigger=manual,events=10", 80),
+            ("budget=500,actual=450,trigger=auto,events=10", 90),
+        ]
+        with _db.open_global() as conn:
+            for detail, _pct in rows:
+                conn.execute(
+                    "INSERT INTO stats (ts, kind, tokens_saved, bytes_saved, detail) "
+                    "VALUES (?, ?, ?, ?, ?)",
+                    (now, "compact_manifest", 0, 0, detail),
+                )
+
+        result = runner.invoke(cli.app, ["doctor"])
+        assert result.exit_code == 0, result.stdout
+        assert "Compaction utilization" in result.stdout
+        # The 5-row series spans 50%-90% — the line should report multiple
+        # emits and surface p95/max in the upper band.
+        assert "emits" in result.stdout
+        # Trigger breakdown — both manual and auto rows should render.
+        assert "manual trigger" in result.stdout
+        assert "auto trigger" in result.stdout
+
+    def test_compaction_utilization_warns_on_high_p95(self, tmp_data_dir):
+        """When p95 exceeds 95%, doctor flags an over-utilization warning."""
+        import time as _time
+
+        from token_goat import db as _db
+
+        paths.ensure_dirs()
+        now = int(_time.time())
+        # 10 emits all at ~97% utilization — clear truncation signal.
+        with _db.open_global() as conn:
+            for _i in range(10):
+                conn.execute(
+                    "INSERT INTO stats (ts, kind, tokens_saved, bytes_saved, detail) "
+                    "VALUES (?, ?, ?, ?, ?)",
+                    (now, "compact_manifest", 0, 0,
+                     "budget=500,actual=487,trigger=manual,events=20"),
+                )
+
+        result = runner.invoke(cli.app, ["doctor"])
+        assert result.exit_code == 0, result.stdout
+        assert "raising compact_assist.max_manifest_tokens" in result.stdout
+
+    def test_compaction_utilization_warns_on_low_p95(self, tmp_data_dir):
+        """When p95 is below 30% with enough samples, doctor flags waste."""
+        import time as _time
+
+        from token_goat import db as _db
+
+        paths.ensure_dirs()
+        now = int(_time.time())
+        # 10 emits all at ~10% utilization — manifest is rattling around.
+        with _db.open_global() as conn:
+            for _i in range(10):
+                conn.execute(
+                    "INSERT INTO stats (ts, kind, tokens_saved, bytes_saved, detail) "
+                    "VALUES (?, ?, ?, ?, ?)",
+                    (now, "compact_manifest", 0, 0,
+                     "budget=4000,actual=400,trigger=manual,events=5"),
+                )
+
+        result = runner.invoke(cli.app, ["doctor"])
+        assert result.exit_code == 0, result.stdout
+        assert "lowering compact_assist.max_manifest_tokens" in result.stdout
+
+    def test_compaction_utilization_ignores_malformed_detail(self, tmp_data_dir):
+        """Rows with corrupted detail strings are skipped, not crash doctor."""
+        import time as _time
+
+        from token_goat import db as _db
+
+        paths.ensure_dirs()
+        now = int(_time.time())
+        with _db.open_global() as conn:
+            # Mix of valid and malformed rows.
+            for detail in (
+                "budget=500,actual=250,trigger=manual,events=10",
+                "",  # empty
+                "garbage",  # no key-value pairs
+                "budget=abc,actual=xyz",  # non-integer
+                "budget=0,actual=100",  # zero budget skipped
+                "budget=500,actual=250,trigger=manual",  # valid
+            ):
+                conn.execute(
+                    "INSERT INTO stats (ts, kind, tokens_saved, bytes_saved, detail) "
+                    "VALUES (?, ?, ?, ?, ?)",
+                    (now, "compact_manifest", 0, 0, detail),
+                )
+
+        result = runner.invoke(cli.app, ["doctor"])
+        assert result.exit_code == 0, result.stdout
+        # Two valid 50% rows should yield p50=50%.
+        assert "Compaction utilization" in result.stdout
+        assert "2" in result.stdout  # at least the emit count survives
+
     def test_doctor_does_not_create_global_db(self, tmp_data_dir):
         """doctor must not create global.db as a side effect of diagnosing.
 

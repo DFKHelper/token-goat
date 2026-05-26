@@ -677,6 +677,120 @@ def doctor(  # noqa: C901
         flag("config load", str(e), warn=True)
 
     # ------------------------------------------------------------------
+    # 13c. Compaction budget utilization (r5 iter 4)
+    # ------------------------------------------------------------------
+    # Reads compact_manifest stat rows (written by pre_compact hook) and reports
+    # p50/p95/max utilization (actual_tokens / budget) over the trailing 30
+    # days, plus a manual-vs-auto trigger breakdown.  Answers "are real
+    # manifests landing near their budget caps or always under?" so the caps
+    # can be tuned against data instead of guessed.  Warns when consistently
+    # >95 % (sections being truncated, raise the cap) or <30 % (waste budget,
+    # lower the cap).
+    typer.echo("\nCompaction utilization (30 d)")
+    try:
+        _compact_cutoff = int(time.time()) - 30 * 86400
+        _compact_rows: list[tuple[int, int, str]] = []
+        with _db.open_global_readonly() as conn:
+            for _detail_row in conn.execute(
+                "SELECT detail FROM stats WHERE kind = ? AND ts >= ?",
+                ("compact_manifest", _compact_cutoff),
+            ).fetchall():
+                _detail = _detail_row[0]
+                if not _detail or not isinstance(_detail, str):
+                    continue
+                # Parse "budget=N,actual=M,trigger=T,events=E" — tolerant to
+                # ordering, extra keys, and partial corruption.  Anything that
+                # does not yield a positive budget+actual is silently skipped.
+                _kv: dict[str, str] = {}
+                for _part in _detail.split(","):
+                    if "=" in _part:
+                        _k, _v = _part.split("=", 1)
+                        _kv[_k.strip()] = _v.strip()
+                try:
+                    _budget = int(_kv.get("budget", "0"))
+                    _actual = int(_kv.get("actual", "0"))
+                except ValueError:
+                    continue
+                if _budget <= 0 or _actual < 0:
+                    continue
+                _trigger = _kv.get("trigger", "unknown")
+                _compact_rows.append((_budget, _actual, _trigger))
+
+        if not _compact_rows:
+            ok("(none)", "no manifest emits in last 30 d")
+        else:
+            _utils = sorted(_a / _b for _b, _a, _ in _compact_rows)
+            _n = len(_utils)
+            # p50/p95 via nearest-rank (no numpy dep): index = ceil(p/100 * n) - 1.
+            _p50 = _utils[max(0, (_n * 50) // 100 - 1 if _n > 1 else 0)]
+            _p95 = _utils[max(0, (_n * 95 + 99) // 100 - 1)]
+            _u_max = _utils[-1]
+            ok(
+                "emits",
+                f"{_n} (p50={_p50*100:.0f}%, p95={_p95*100:.0f}%, max={_u_max*100:.0f}%)",
+            )
+
+            # Trigger breakdown — auto-trigger manifests get the multiplier,
+            # so their effective budget is larger; separating them avoids
+            # blending two distinct distributions into one summary line.
+            _by_trigger: dict[str, list[float]] = {}
+            for _b, _a, _t in _compact_rows:
+                _by_trigger.setdefault(_t, []).append(_a / _b)
+            for _t in ("manual", "auto"):
+                _vals = _by_trigger.get(_t)
+                if _vals:
+                    _avg = sum(_vals) / len(_vals)
+                    ok(
+                        f"{_t} trigger",
+                        f"{len(_vals)} emits, avg={_avg*100:.0f}% utilization",
+                    )
+
+            # Tier breakdown — group emits by budget bucket so a single
+            # outlier budget does not skew the global p50/p95.  Buckets
+            # follow the repomap token tiers (300/500/1500/4000+) to surface
+            # whether each tier hits its cap consistently.
+            _tiers: list[tuple[str, int, int]] = [
+                ("≤300", 0, 300),
+                ("301-500", 301, 500),
+                ("501-1500", 501, 1500),
+                (">1500", 1501, 10**9),
+            ]
+            for _label, _lo, _hi in _tiers:
+                _bucket = [
+                    _a / _b
+                    for _b, _a, _ in _compact_rows
+                    if _lo <= _b <= _hi
+                ]
+                if _bucket:
+                    _bucket_avg = sum(_bucket) / len(_bucket)
+                    ok(
+                        f"tier {_label}",
+                        f"{len(_bucket)} emits, avg={_bucket_avg*100:.0f}% utilization",
+                    )
+
+            # Warnings — consistent over-utilization means sections are being
+            # truncated; consistent under-utilization means the budget cap is
+            # too generous and the manifest could afford a wider scope.
+            if _p95 > 0.95:
+                flag(
+                    "utilization",
+                    f"p95={_p95*100:.0f}% — manifests routinely hit the budget cap; "
+                    "consider raising compact_assist.max_manifest_tokens",
+                    warn=True,
+                )
+            elif _p95 < 0.30 and _n >= 5:
+                flag(
+                    "utilization",
+                    f"p95={_p95*100:.0f}% — manifests rarely fill the budget; "
+                    "consider lowering compact_assist.max_manifest_tokens to free context",
+                    warn=True,
+                )
+    except FileNotFoundError:
+        ok("(none)", "no global.db yet")
+    except Exception as _e_compact:  # noqa: BLE001
+        flag("compaction utilization", str(_e_compact), warn=True)
+
+    # ------------------------------------------------------------------
     # 14. Stats summary + 14b. Cumulative-savings projection (item 11)
     # ------------------------------------------------------------------
     # Both sections read from global.db, so they share a single connection.

@@ -1786,6 +1786,74 @@ class TestPreCompactPressureAwareSizing:
             f"multiplier=1.0 should disable boost, got {captured.get('max_tokens')}"
         )
 
+    def test_telemetry_row_written_on_successful_emit(self, tmp_data_dir):
+        """pre_compact writes a compact_manifest stat row capturing budget vs actual.
+
+        Regression for r5 iter 4 telemetry: every successful manifest injection
+        must produce a parseable stats row so `token-goat doctor` can compute
+        utilization percentiles over the trailing 30 days.
+        """
+        from unittest.mock import MagicMock, patch
+
+        from token_goat import db as _db
+        from token_goat import hooks_cli
+
+        # Build a manifest of known size — actual_tokens should be deterministic.
+        manifest_text = "x" * 600  # estimate_tokens = max(1, 600//3 + 1) = 201
+
+        fake_cfg = self._make_fake_cfg(multiplier=1.0)
+        with patch("token_goat.config.load", return_value=fake_cfg), \
+             patch("token_goat.session.safe_load", return_value=MagicMock()), \
+             patch(
+                 "token_goat.compact.build_manifest_with_count",
+                 return_value=(manifest_text, 10),
+             ):
+            payload = {"session_id": "telemetry_sess", "trigger": "manual"}
+            result = hooks_cli.pre_compact(payload)
+        assert result.get("continue") is True
+
+        # Verify the stat row was persisted with the expected detail format.
+        with _db.open_global() as conn:
+            rows = conn.execute(
+                "SELECT detail FROM stats WHERE kind = ?",
+                ("compact_manifest",),
+            ).fetchall()
+        assert len(rows) == 1, f"expected exactly one compact_manifest row, got {len(rows)}"
+        detail = rows[0][0]
+        assert "budget=400" in detail, detail
+        assert "actual=201" in detail, detail
+        assert "trigger=manual" in detail, detail
+        assert "events=10" in detail, detail
+
+    def test_telemetry_records_boosted_budget_under_auto(self, tmp_data_dir):
+        """Auto-trigger telemetry must reflect the multiplied (effective) budget."""
+        from unittest.mock import MagicMock, patch
+
+        from token_goat import db as _db
+        from token_goat import hooks_cli
+
+        fake_cfg = self._make_fake_cfg(multiplier=2.0)
+        with patch("token_goat.config.load", return_value=fake_cfg), \
+             patch("token_goat.session.safe_load", return_value=MagicMock()), \
+             patch(
+                 "token_goat.compact.build_manifest_with_count",
+                 return_value=("## manifest body " + "y" * 100, 20),
+             ):
+            payload = {"session_id": "tele_auto_sess", "trigger": "auto"}
+            hooks_cli.pre_compact(payload)
+
+        with _db.open_global() as conn:
+            rows = conn.execute(
+                "SELECT detail FROM stats WHERE kind = ?",
+                ("compact_manifest",),
+            ).fetchall()
+        assert len(rows) == 1
+        detail = rows[0][0]
+        # Base 400 × 2.0 = 800; the recorded budget must be the boosted value
+        # so doctor's tier breakdown bucket-aligns correctly with the cap.
+        assert "budget=800" in detail, detail
+        assert "trigger=auto" in detail, detail
+
 
 # ---------------------------------------------------------------------------
 # pre_compact hook handler
