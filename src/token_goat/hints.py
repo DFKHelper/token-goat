@@ -699,7 +699,7 @@ def _build_read_hint_inner(
 _PROXIMITY_SLOP_LINES: int = 200
 
 
-def _should_suppress_full_file_hint(n_lines: int | None) -> bool:
+def _should_suppress_full_file_hint(n_lines: int | None, threshold: int | None = None) -> bool:
     """Return True when a full-file hint should be suppressed based on line count.
 
     Surgical hints (symbol/section/diff) always bypass this check; only full-file
@@ -707,9 +707,13 @@ def _should_suppress_full_file_hint(n_lines: int | None) -> bool:
     When min_file_lines_for_hint is 0 (default), no suppression occurs.
     When n_lines is None (no cached line count), suppression is skipped to avoid
     adding new stat calls to the hot path.
+
+    Pass *threshold* explicitly when the caller already holds the config value to
+    avoid a second ``config.load()`` call (e.g. for debug logging).  When
+    omitted, the threshold is read from ``config.load()``.
     """
-    cfg = config.load()
-    threshold = cfg.hints.min_file_lines_for_hint
+    if threshold is None:
+        threshold = config.load().hints.min_file_lines_for_hint
     if threshold <= 0 or n_lines is None:
         return False
     return n_lines < threshold
@@ -805,11 +809,12 @@ def _hint_from_cache(
     # "already read" dedup hint pathway; surgical hints (symbols/sections) bypass this.
     if entry.line_ranges and entry.line_ranges != [(0, 0)]:
         max_line = max(cached_end for cached_start, cached_end in entry.line_ranges)
-        if _should_suppress_full_file_hint(max_line):
+        _min_lines = config.load().hints.min_file_lines_for_hint
+        if _should_suppress_full_file_hint(max_line, _min_lines):
             _LOG.debug(
                 "_hint_from_cache: suppressing full-file hint for %s "
                 "(line_count=%d < threshold=%d)",
-                fname, max_line, config.load().hints.min_file_lines_for_hint,
+                fname, max_line, _min_lines,
             )
             # Symbol-only hints are still emitted (surgical reads are never suppressed).
             if not entry.symbols_read:
@@ -1030,11 +1035,12 @@ def _hint_from_index(
 
     # Line-count threshold suppression: suppress index-based hints for tiny files
     # when the hint cost exceeds the value of a surgical read suggestion.
-    if _should_suppress_full_file_hint(n_lines):
+    _min_lines = config.load().hints.min_file_lines_for_hint
+    if _should_suppress_full_file_hint(n_lines, _min_lines):
         _LOG.debug(
             "_hint_from_index: suppressing index hint for %s "
             "(line_count=%d < threshold=%d)",
-            fname, n_lines, config.load().hints.min_file_lines_for_hint,
+            fname, n_lines, _min_lines,
         )
         return None
 
