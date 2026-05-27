@@ -379,15 +379,20 @@ def _compute_section_counts(cache: object) -> dict[str, int]:
         except (TypeError, AttributeError):
             return 0
 
+    files: object = getattr(cache, "files", None) or {}
     return {
         "edited": _len(getattr(cache, "edited_files", None) or {}),
-        "files": _len(getattr(cache, "files", None) or {}),
+        "files": _len(files),
         "bash": _len(getattr(cache, "bash_history", None) or {}),
         "web": _len(getattr(cache, "web_history", None) or {}),
         "grep": _len(getattr(cache, "greps", None) or []),
         "glob": _len(getattr(cache, "glob_history", None) or []),
         "skill": _len(getattr(cache, "skill_history", None) or {}),
         "decision": _len(getattr(cache, "decisions", None) or []),
+        "symbols": sum(
+            1 for e in (files.values() if hasattr(files, "values") else [])  # type: ignore[union-attr]
+            if getattr(e, "symbols_read", None)
+        ),
     }
 
 
