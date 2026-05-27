@@ -1345,6 +1345,22 @@ def _get_bash_dedup_min_bytes() -> int:
         return _BASH_DEDUP_MIN_BYTES
 
 
+def _get_grep_dedup_min_matches() -> int:
+    """Return the configured grep dedup minimum match count threshold.
+
+    Reads from hints.grep_dedup_min_matches in config (or TOKEN_GOAT_GREP_DEDUP_MIN_MATCHES
+    env var). Defaults to _GREP_DEDUP_MIN_RESULT_COUNT (5) on any error or when config
+    is unavailable. Never raises; fail-soft returns the fallback default.
+    """
+    try:
+        from . import config as _config  # noqa: PLC0415
+
+        cfg = _config.load().hints
+        return cfg.grep_dedup_min_matches
+    except Exception:  # noqa: BLE001 — fail-soft
+        return _GREP_DEDUP_MIN_RESULT_COUNT
+
+
 # Curator pass: suppress dedup hints when the agent ignores them
 # ---------------------------------------------------------------------------
 
@@ -1729,11 +1745,11 @@ def _build_bash_dedup_hint_inner(
 # Grep dedup hint
 # ---------------------------------------------------------------------------
 
-# Minimum result_count before the grep dedup hint fires.  At 8 results ×
-# 120 B ≈ 960 B ≈ 240 tokens saved; the hint itself costs ~30 tokens, so the
-# break-even is around 1 result — but low counts rarely recur, so 8 filters
-# out noise while keeping the economic margin large.
-_GREP_DEDUP_MIN_RESULT_COUNT: int = 8
+# Minimum result_count before the grep dedup hint fires.  At 5 results ×
+# 120 B ≈ 600 B ≈ 150 tokens saved; the hint itself costs ~12 tokens, netting
+# ~138 tokens saved. Configurable via hints.grep_dedup_min_matches or
+# TOKEN_GOAT_GREP_DEDUP_MIN_MATCHES env var.
+_GREP_DEDUP_MIN_RESULT_COUNT: int = 5  # fallback default; use _get_grep_dedup_min_matches() at runtime
 
 # Rough bytes-per-Grep-result estimate.  A real grep result line is one line of
 # match + path + line-number context, typically 80-160 bytes.  120 is a
@@ -1833,7 +1849,8 @@ def _build_grep_dedup_hint_inner(
         if age > STALE_READ_AGE_SECONDS:
             # Older entries are even older — short-circuit the scan.
             return None
-        if entry.result_count is None or entry.result_count < _GREP_DEDUP_MIN_RESULT_COUNT:
+        min_matches = _get_grep_dedup_min_matches()
+        if entry.result_count is None or entry.result_count < min_matches:
             return None
         # Estimate the bytes that would land in context if the agent re-runs.
         bytes_avoided = entry.result_count * _GREP_AVG_BYTES_PER_RESULT

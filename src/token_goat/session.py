@@ -2563,7 +2563,7 @@ _MAX_RESULT_COUNT = 1_000_000
 # Defined here as a local constant to avoid importing hints at module level
 # (which would create a circular import: hints → session → hints).
 # Keep in sync with hints._GREP_DEDUP_MIN_RESULT_COUNT.
-_GREP_GLOBAL_MIN_RESULT_COUNT: int = 8
+_GREP_GLOBAL_MIN_RESULT_COUNT: int = 5
 
 
 def _grep_pattern_hash(pattern: str) -> str:
