@@ -312,3 +312,41 @@ class TestHintsConfigRoundTrip:
         assert reloaded.hints.bash_dedup_min_bytes == 500
         assert reloaded.hints.web_dedup_min_bytes == 600
         assert reloaded.hints.grep_dedup_min_matches == 10
+
+
+class TestSkillPreservationRoundTrip:
+    """orphan_sweep_enabled and orphan_age_secs must survive a save/load cycle."""
+
+    def _reset_cache(self) -> None:
+        import token_goat.config as cfg_mod
+        cfg_mod._config_mtime_cache = None
+
+    def test_orphan_sweep_enabled_round_trips(self, tmp_path, monkeypatch):
+        import token_goat.config as cfg_mod
+        import token_goat.paths as paths_mod
+
+        config_file = tmp_path / "config.toml"
+        monkeypatch.setattr(paths_mod, "config_path", lambda: config_file)
+        self._reset_cache()
+
+        cfg = cfg_mod.load()
+        cfg.skill_preservation.orphan_sweep_enabled = False
+        cfg_mod.save(cfg)
+        self._reset_cache()
+
+        assert cfg_mod.load().skill_preservation.orphan_sweep_enabled is False
+
+    def test_orphan_age_secs_round_trips(self, tmp_path, monkeypatch):
+        import token_goat.config as cfg_mod
+        import token_goat.paths as paths_mod
+
+        config_file = tmp_path / "config.toml"
+        monkeypatch.setattr(paths_mod, "config_path", lambda: config_file)
+        self._reset_cache()
+
+        cfg = cfg_mod.load()
+        cfg.skill_preservation.orphan_age_secs = 86400
+        cfg_mod.save(cfg)
+        self._reset_cache()
+
+        assert cfg_mod.load().skill_preservation.orphan_age_secs == 86400
