@@ -1,6 +1,7 @@
 """Tests for token_goat.db."""
 from __future__ import annotations
 
+import contextlib
 import os
 import sqlite3
 import threading
@@ -792,3 +793,51 @@ def test_update_global_grep_pattern_three_distinct_sessions(tmp_data_dir):
         ).fetchone()
     assert row is not None
     assert row["count"] == 3, f"expected count=3 after 3 sessions, got {row['count']}"
+
+
+# ---------------------------------------------------------------------------
+# Connection-leak invariant: context managers must close connections on exit
+# ---------------------------------------------------------------------------
+
+
+def test_open_global_closes_connection_on_normal_exit(tmp_data_dir):
+    """The connection yielded by open_global() must be closed after the block exits."""
+    leaked: list[sqlite3.Connection] = []
+    with db.open_global() as conn:
+        leaked.append(conn)
+    # A closed connection raises ProgrammingError on any operation.
+    with pytest.raises(sqlite3.ProgrammingError):
+        leaked[0].execute("SELECT 1")
+
+
+def test_open_global_closes_connection_on_exception(tmp_data_dir):
+    """open_global() must close the connection even when the block body raises."""
+    leaked: list[sqlite3.Connection] = []
+    with contextlib.suppress(RuntimeError), db.open_global() as conn:
+        leaked.append(conn)
+        raise RuntimeError("body error")
+    assert leaked, "connection was never yielded"
+    with pytest.raises(sqlite3.ProgrammingError):
+        leaked[0].execute("SELECT 1")
+
+
+def test_open_project_closes_connection_on_normal_exit(tmp_data_dir):
+    """The connection yielded by open_project() must be closed after the block exits."""
+    h = "c105ec105ec105ec105ec105ec105ec105e00099"
+    leaked: list[sqlite3.Connection] = []
+    with db.open_project(h) as conn:
+        leaked.append(conn)
+    with pytest.raises(sqlite3.ProgrammingError):
+        leaked[0].execute("SELECT 1")
+
+
+def test_open_project_closes_connection_on_exception(tmp_data_dir):
+    """open_project() must close the connection even when the block body raises."""
+    h = "c105ec105ec105ec105ec105ec105ec105e00098"
+    leaked: list[sqlite3.Connection] = []
+    with contextlib.suppress(RuntimeError), db.open_project(h) as conn:
+        leaked.append(conn)
+        raise RuntimeError("project body error")
+    assert leaked, "connection was never yielded"
+    with pytest.raises(sqlite3.ProgrammingError):
+        leaked[0].execute("SELECT 1")
