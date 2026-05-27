@@ -6734,6 +6734,31 @@ class TestNoiseFloor:
         assert "**Edited:**" in result
         # Some optional sections might be dropped if they are small
 
+    def test_render_uses_noise_floor_tokens_parameter_not_config(self, tmp_data_dir, monkeypatch):
+        """_render must apply the noise_floor_tokens kwarg, not re-read config.
+
+        Before the fix, _render ignored its noise_floor_tokens parameter and
+        did config.load() internally, so callers could not control the floor.
+        """
+        sid = "noise-floor-param-direct-test"
+        session.mark_file_read(sid, "/proj/src/a.py")
+        session.mark_file_read(sid, "/proj/src/b.py")
+        session.mark_file_edited(sid, "/proj/src/edited.py")
+        cache = session.load(sid)
+
+        monkeypatch.setattr(compact, "_get_uncommitted_changes", lambda _root: "")
+        monkeypatch.setattr(compact, "_get_git_diff_stat_summary", lambda _root: "")
+        monkeypatch.setattr(compact, "_get_git_diff_stat", lambda *a: None)
+        monkeypatch.setattr(compact, "_get_session_commits", lambda *a: [])
+
+        # Pass a high noise floor directly to _render; config is NOT touched.
+        # Before the fix this parameter was silently ignored and config (0) was used.
+        result, _ = compact._render(cache, sid, 400, noise_floor_tokens=10000)
+
+        assert "**Edited:**" in result  # protected — always survives
+        assert "**Files:**" not in result   # should be dropped: token count < 10000
+        assert "**Syms:**" not in result    # should be dropped: token count < 10000
+
 
 class TestEditedDirGrouping:
     """Test directory-level grouping of edited files in the manifest."""

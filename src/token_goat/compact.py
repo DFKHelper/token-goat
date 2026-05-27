@@ -2569,7 +2569,7 @@ def event_count(session_id: str) -> int:
 
 
 def _compact_render_kwargs(cfg: _Config) -> dict[str, int]:
-    """Unpack the three render-tuning fields from *cfg* into a kwargs dict.
+    """Unpack the render-tuning fields from *cfg* into a kwargs dict.
 
     Used by the three public ``build_manifest*`` entry points so the field
     list lives in exactly one place.
@@ -2578,6 +2578,7 @@ def _compact_render_kwargs(cfg: _Config) -> dict[str, int]:
     return {
         "edited_dir_group_threshold": ca.edited_dir_group_threshold,
         "max_section_lines": ca.max_section_lines,
+        "noise_floor_tokens": ca.noise_floor_tokens,
         "wide_session_threshold": ca.wide_session_threshold,
     }
 
@@ -2588,6 +2589,7 @@ def _build_manifest_from_cache(
     max_tokens: int,
     edited_dir_group_threshold: int = 3,
     max_section_lines: int = 0,
+    noise_floor_tokens: int = 0,
     wide_session_threshold: int = 15,
 ) -> str:
     """Render the manifest from an already-loaded *cache*.
@@ -2614,6 +2616,7 @@ def _build_manifest_from_cache(
         max_tokens,
         edited_dir_group_threshold=edited_dir_group_threshold,
         max_section_lines=max_section_lines,
+        noise_floor_tokens=noise_floor_tokens,
         wide_session_threshold=wide_session_threshold,
     )
     elapsed = time.monotonic() - start
@@ -3332,6 +3335,7 @@ def _render(
     max_tokens: int,
     edited_dir_group_threshold: int = 3,
     max_section_lines: int = 0,
+    noise_floor_tokens: int = 0,
     wide_session_threshold: int = 15,
 ) -> tuple[str, int]:
     """Build the Markdown session manifest string from *cache* for the PreCompact hook.
@@ -4216,12 +4220,8 @@ def _render(
         ("todos",       todo_lines,          False),
     ]
     # ── Apply noise floor: drop small unprotected sections ───────────────────
-    # Load config to get the noise floor setting (default 0 = disabled).
-    from . import config as config_mod  # noqa: PLC0415
-    cfg = config_mod.load()
-    noise_floor = cfg.compact_assist.noise_floor_tokens
-    max_section_lines_cap = cfg.compact_assist.max_section_lines
-    _section_groups = _apply_noise_floor(_section_groups, noise_floor)
+    _section_groups = _apply_noise_floor(_section_groups, noise_floor_tokens)
+    max_section_lines_cap = max_section_lines
 
     # ── Apply per-section line cap to prevent bloated sections dominating budget ─
     # The cap is applied AFTER directory-grouping so grouped lines count as 1 item.
