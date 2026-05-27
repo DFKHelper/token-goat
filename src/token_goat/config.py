@@ -1230,6 +1230,8 @@ def save(config: Config) -> None:
         "skill_preservation": {
             "enabled": sp.enabled,
             "max_cache_bytes": sp.max_cache_bytes,
+            "orphan_sweep_enabled": sp.orphan_sweep_enabled,
+            "orphan_age_secs": sp.orphan_age_secs,
         },
         "image_shrink": {
             "prefer_avif": is_cfg.prefer_avif,
