@@ -317,8 +317,17 @@ def safe_run(event: str, input_file: Path | None = None, harness: Harness = "cla
             tb = traceback.format_exc()
             # safe_msg was sanitized above; only tb needs sanitization here.
             safe_tb = sanitize_surrogates(tb)
+            # Prepend a structured JSON header so entries are machine-parseable.
+            # Use locals() to recover raw/session_id regardless of which
+            # statement inside the try block raised.
+            _raw: dict = locals().get("raw") or {}  # type: ignore[assignment]
+            _sid = str(_raw.get("session_id", ""))[:16]
+            header = json.dumps(
+                {"ts": time.time(), "event": event, "sid": _sid, "err": f"{type(exc).__name__}: {exc}"},
+                ensure_ascii=False,
+            )
             with sink.open("a", encoding="utf-8") as fh:
-                fh.write(safe_msg + "\n" + safe_tb)
+                fh.write(header + "\n" + safe_msg + "\n" + safe_tb + "\n")
         except Exception:  # noqa: BLE001
             pass
         emit(result)
