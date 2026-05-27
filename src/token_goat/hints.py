@@ -571,6 +571,8 @@ def build_read_hint(
             hint = _emit_json_sidecar(
                 hint, kind, file=file_path, wasted=hint.tokens_saved or None,
             )
+            if cache is not None:
+                cache.record_hint_emitted("read_dedup")
         return hint
     except Exception as exc:  # noqa: BLE001
         _LOG.warning(
@@ -1471,12 +1473,14 @@ def _hint_budget_check(cache: session.SessionCache, hint_kind: str) -> bool:
 def _record_structured_hint_emitted(cache: session.SessionCache) -> None:
     """Increment structured_hints_emitted counter on *cache*. Never raises."""
     cache.structured_hints_emitted += 1
+    cache.record_hint_emitted("structured_file")
     cache._invalidate_json_cache()
 
 
 def _record_index_only_hint_emitted(cache: session.SessionCache) -> None:
     """Increment index_only_hints_emitted counter on *cache*. Never raises."""
     cache.index_only_hints_emitted += 1
+    cache.record_hint_emitted("index_only_file")
     cache._invalidate_json_cache()
 
 
@@ -1668,6 +1672,8 @@ def _build_bash_dedup_hint_inner(
     total_bytes = entry.stdout_bytes + entry.stderr_bytes
     min_bytes = _get_bash_dedup_min_bytes()
     if total_bytes < min_bytes:
+        if cache is not None:
+            cache.record_hint_suppressed("bash_dedup_below_threshold")
         return None
 
     # Content-aware dedup: only emit hint if we've seen this exact output before.
@@ -1714,6 +1720,7 @@ def _build_bash_dedup_hint_inner(
             cache._invalidate_json_cache()
         if cache is not None:
             _record_hint_emitted(cache, cmd_sha)
+            cache.record_hint_emitted("bash_dedup")
         return ReadHint(_apply_terse(hint_text), tokens_avoided)
 
     grep_suffix = " (add --grep PATTERN to filter)" if total_bytes >= _BASH_DEDUP_GREP_SUGGEST_BYTES else ""
@@ -1738,6 +1745,7 @@ def _build_bash_dedup_hint_inner(
         cache._invalidate_json_cache()
     if cache is not None:
         _record_hint_emitted(cache, cmd_sha)
+        cache.record_hint_emitted("bash_dedup")
     return ReadHint(_apply_terse(hint_text), tokens_avoided)
 
 
@@ -1851,6 +1859,8 @@ def _build_grep_dedup_hint_inner(
             return None
         min_matches = _get_grep_dedup_min_matches()
         if entry.result_count is None or entry.result_count < min_matches:
+            if cache is not None:
+                cache.record_hint_suppressed("grep_dedup_below_threshold")
             return None
         # Estimate the bytes that would land in context if the agent re-runs.
         bytes_avoided = entry.result_count * _GREP_AVG_BYTES_PER_RESULT
@@ -1859,6 +1869,7 @@ def _build_grep_dedup_hint_inner(
         path_str = f" in `{_sanitize_hint_path(path)}`" if path else ""
         # Curator: record emission keyed on the pattern (grep has no file path).
         _record_hint_emitted(cache, f"grep:{pattern}")
+        cache.record_hint_emitted("grep_dedup")
         return ReadHint(
             _apply_terse(
                 f"Grep `{pattern_short}`{path_str} ({int(age)}s): {entry.result_count} matches, ~{tokens_avoided}t."
@@ -1999,6 +2010,7 @@ def _build_glob_dedup_hint_inner(
     path_str = f" in `{_sanitize_hint_path(path)}`" if path else ""
     # Curator: record emission keyed on the pattern (glob has no file path).
     _record_hint_emitted(cache, f"glob:{pattern}")
+    cache.record_hint_emitted("glob_dedup")
     return ReadHint(
         _apply_terse(
             f"Glob `{pattern_short}`{path_str} ({int(age)}s): {entry.result_count} results, ~{tokens_avoided}t."
@@ -2078,6 +2090,8 @@ def _build_web_dedup_hint_inner(
         return None
     cfg = config.load()
     if cfg.hints.web_dedup_min_bytes == 0 or entry.body_bytes < cfg.hints.web_dedup_min_bytes:
+        if cache is not None:
+            cache.record_hint_suppressed("web_dedup_below_threshold")
         return None
 
     tokens_avoided = _est_tokens_from_chars(entry.body_bytes)
@@ -2104,6 +2118,7 @@ def _build_web_dedup_hint_inner(
     # Curator: record emission keyed on url_sha (web dedup is URL-keyed, not file-keyed).
     if cache is not None:
         _record_hint_emitted(cache, f"web:{url_sha}")
+        cache.record_hint_emitted("web_dedup")
     # After the agent has seen the verbose recall pointer twice, drop the
     # full command string and emit just the bare ID — see _should_emit_recall_command.
     short_id = _cc.short_output_id(entry.output_id)
@@ -2250,6 +2265,7 @@ def _build_unchanged_file_hint_inner(
         full_tokens,
     )
     # Opt-in machine-readable sidecar; no-op when [hints] json_sidecar is off.
+    cache.record_hint_emitted("unchanged_file")
     return _emit_json_sidecar(
         prose, "unchanged_since_edit",
         file=safe_path, age_s=age_s, wasted=full_tokens,

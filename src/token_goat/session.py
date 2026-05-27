@@ -434,6 +434,18 @@ def _merge_session_caches(local: SessionCache, remote: SessionCache) -> SessionC
     merged.structured_hints_emitted = max(local.structured_hints_emitted, remote.structured_hints_emitted)
     merged.index_only_hints_emitted = max(local.index_only_hints_emitted, remote.index_only_hints_emitted)
 
+    # --- per-type counters: sum (accumulate events across both caches) ---
+    # hints_emitted_by_type and hints_suppressed_by_type are additive: merge by summing counts.
+    merged_emitted_by_type = dict(remote.hints_emitted_by_type)
+    for hint_type, count in local.hints_emitted_by_type.items():
+        merged_emitted_by_type[hint_type] = merged_emitted_by_type.get(hint_type, 0) + count
+    merged.hints_emitted_by_type = merged_emitted_by_type
+
+    merged_suppressed_by_type = dict(remote.hints_suppressed_by_type)
+    for hint_type, count in local.hints_suppressed_by_type.items():
+        merged_suppressed_by_type[hint_type] = merged_suppressed_by_type.get(hint_type, 0) + count
+    merged.hints_suppressed_by_type = merged_suppressed_by_type
+
     # --- lists: take the longer one, capped ---
     # recent_hints cap is 3 (enforced in from_dict); re-apply after merge so
     # a union of two near-full lists cannot silently double the size.
@@ -884,6 +896,17 @@ class SessionCache:
     # ``last_manifest_ts`` is the epoch timestamp of that emit; 0.0 means not yet set.
     last_manifest_sha: str = ""
     last_manifest_ts: float = 0.0
+    # Per-hint-type emission counters: tracks how many hints of each type
+    # were emitted in this session. Maps hint type → count (e.g. "read_dedup" → 5).
+    # Used to measure the effectiveness of configurable thresholds and dedup knobs.
+    # Missing in older sessions → empty dict. Persisted via to_dict/from_dict.
+    hints_emitted_by_type: dict[str, int] = field(default_factory=dict)
+    # Per-hint-type suppression counters: tracks how many hints of each type
+    # were suppressed (below a threshold or skipped). Maps hint type → count
+    # (e.g. "bash_dedup_below_threshold" → 3). Distinguishes emitted vs suppressed
+    # so operators can tune thresholds based on real session data.
+    # Missing in older sessions → empty dict. Persisted via to_dict/from_dict.
+    hints_suppressed_by_type: dict[str, int] = field(default_factory=dict)
     # Monotonically-incrementing version counter for optimistic CAS in save().
     # Starts at 0 for a new session; each successful save() increments by 1.
     # When two concurrent processes both load version N, the second to save
@@ -953,6 +976,8 @@ class SessionCache:
             hints_ignored=self.hints_ignored,
             structured_hints_emitted=self.structured_hints_emitted,
             index_only_hints_emitted=self.index_only_hints_emitted,
+            hints_emitted_by_type=self.hints_emitted_by_type,
+            hints_suppressed_by_type=self.hints_suppressed_by_type,
             recent_hints=[[p, t] for p, t in self.recent_hints],
             last_manifest_sha=self.last_manifest_sha,
             last_manifest_ts=self.last_manifest_ts,
@@ -1048,6 +1073,28 @@ class SessionCache:
         self.last_activity_ts = time.time()
         self._invalidate_json_cache()
         self._pending_hint_save = True
+
+    def record_hint_emitted(self, hint_type: str) -> None:
+        """Increment the emission counter for a specific hint type.
+
+        Called when a hint of the given type is emitted. Mutates *self* in place.
+        The caller is responsible for persisting via save().
+        """
+        current = self.hints_emitted_by_type.get(hint_type, 0)
+        self.hints_emitted_by_type[hint_type] = current + 1
+        self.last_activity_ts = time.time()
+        self._invalidate_json_cache()
+
+    def record_hint_suppressed(self, hint_type: str) -> None:
+        """Increment the suppression counter for a specific hint type.
+
+        Called when a hint of the given type is suppressed (below threshold, etc.).
+        Mutates *self* in place. The caller is responsible for persisting via save().
+        """
+        current = self.hints_suppressed_by_type.get(hint_type, 0)
+        self.hints_suppressed_by_type[hint_type] = current + 1
+        self.last_activity_ts = time.time()
+        self._invalidate_json_cache()
 
     @classmethod
     def from_dict(cls, d: dict[str, Any]) -> SessionCache:
@@ -1209,6 +1256,24 @@ class SessionCache:
         structured_hints_emitted = _coerce_nonneg_int(d.get("structured_hints_emitted", 0))
         index_only_hints_emitted = _coerce_nonneg_int(d.get("index_only_hints_emitted", 0))
 
+        # hints_emitted_by_type / hints_suppressed_by_type: dict[str, int] maps hint type → count.
+        # Missing in older sessions → empty dict (backward compat). Malformed entries are skipped.
+        hints_emitted_by_type: dict[str, int] = {}
+        raw_emitted_by_type = d.get("hints_emitted_by_type", {})
+        if isinstance(raw_emitted_by_type, dict):
+            for hint_type, count in raw_emitted_by_type.items():
+                if isinstance(hint_type, str) and hint_type:
+                    with contextlib.suppress(TypeError, ValueError):
+                        hints_emitted_by_type[hint_type] = max(0, int(count))
+
+        hints_suppressed_by_type: dict[str, int] = {}
+        raw_suppressed_by_type = d.get("hints_suppressed_by_type", {})
+        if isinstance(raw_suppressed_by_type, dict):
+            for hint_type, count in raw_suppressed_by_type.items():
+                if isinstance(hint_type, str) and hint_type:
+                    with contextlib.suppress(TypeError, ValueError):
+                        hints_suppressed_by_type[hint_type] = max(0, int(count))
+
         # recent_hints: list[[path, ts]], stored as list[list[str|float]] for JSON.
         # Cap to 3 entries for safety; drop malformed entries silently.
         recent_hints: list[tuple[str, float]] = []
@@ -1253,6 +1318,8 @@ class SessionCache:
             hints_ignored=hints_ignored,
             structured_hints_emitted=structured_hints_emitted,
             index_only_hints_emitted=index_only_hints_emitted,
+            hints_emitted_by_type=hints_emitted_by_type,
+            hints_suppressed_by_type=hints_suppressed_by_type,
             recent_hints=recent_hints,
             last_manifest_sha=str(d.get("last_manifest_sha", "")),
             last_manifest_ts=_coerce_ts(d.get("last_manifest_ts", 0.0)),
@@ -1751,6 +1818,8 @@ class _SessionDict(TypedDict, total=False):
     hints_ignored: int
     structured_hints_emitted: int
     index_only_hints_emitted: int
+    hints_emitted_by_type: dict[str, int]
+    hints_suppressed_by_type: dict[str, int]
     recent_hints: list[list[object]]
     last_manifest_sha: str
     last_manifest_ts: float
