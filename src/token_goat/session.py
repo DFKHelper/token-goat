@@ -428,13 +428,23 @@ def _merge_session_caches(local: SessionCache, remote: SessionCache) -> SessionC
             remote.glob_history.append(glob)
     merged.glob_history = remote.glob_history[-GLOB_HISTORY_MAX:]
 
-    # --- counts: max ---
+    # --- counts: max (conservative; no base-value tracking) ---
+    # Without storing the value at fork time we cannot compute the true delta
+    # each process added.  max() is safe (never overcounts) but undercounts by
+    # ~1 when two processes each emit exactly one hint in the same CAS window.
+    # These counters are used for display/stats only, so the approximation is
+    # acceptable.  The per-type dicts below use sum() which can overcount in
+    # the same scenario but is preferable for budget enforcement logic.
     merged.hints_emitted = max(local.hints_emitted, remote.hints_emitted)
     merged.hints_ignored = max(local.hints_ignored, remote.hints_ignored)
     merged.structured_hints_emitted = max(local.structured_hints_emitted, remote.structured_hints_emitted)
     merged.index_only_hints_emitted = max(local.index_only_hints_emitted, remote.index_only_hints_emitted)
 
     # --- per-type counters: sum (accumulate events across both caches) ---
+    # Summing can overcount by the shared base value when both processes forked
+    # from the same non-zero starting point, but erring on the side of
+    # over-counting is preferable for hint budget enforcement: it makes the
+    # budget cap fire slightly early rather than silently run past it.
     # hints_emitted_by_type and hints_suppressed_by_type are additive: merge by summing counts.
     merged_emitted_by_type = dict(remote.hints_emitted_by_type)
     for hint_type, count in local.hints_emitted_by_type.items():
@@ -983,6 +993,7 @@ class SessionCache:
             last_manifest_ts=self.last_manifest_ts,
             version=self.version,
             hint_category_history={k: [1 if v else 0 for v in lst] for k, lst in self.hint_category_history.items()},
+            cwd=self.cwd,
         )
 
     def to_json(self) -> str:
@@ -1325,6 +1336,7 @@ class SessionCache:
             last_manifest_ts=_coerce_ts(d.get("last_manifest_ts", 0.0)),
             version=_coerce_nonneg_int(d.get("version", 0)) if isinstance(d.get("version"), (int, float)) else 0,
             hint_category_history=hint_category_history,
+            cwd=str(d["cwd"]) if isinstance(d.get("cwd"), str) else None,
         )
 
 
@@ -1825,6 +1837,7 @@ class _SessionDict(TypedDict, total=False):
     last_manifest_ts: float
     version: int
     hint_category_history: dict[str, list[int]]
+    cwd: str | None
 
 
 def _fresh_cache(session_id: str, *, unavailable: bool = False) -> SessionCache:

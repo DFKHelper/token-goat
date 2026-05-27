@@ -835,9 +835,13 @@ def _evict_bash_outputs() -> int:
     directory slightly over budget at shutdown time.  Returns the number of
     cache files removed.
     """
-    from . import bash_cache  # noqa: PLC0415
+    from . import bash_cache, config  # noqa: PLC0415
 
-    return bash_cache.evict_old_entries()
+    cfg = config.load().bash_compress
+    return bash_cache.evict_old_entries(
+        max_total_bytes=cfg.cache_max_bytes,
+        max_file_count=cfg.cache_max_file_count,
+    )
 
 
 def _checkpoint_global_wal() -> int:

@@ -785,6 +785,44 @@ class TestSessionCreatedTs:
         after = time.time()
         assert before <= cache.created_ts <= after
 
+    def test_cwd_persists_roundtrip(self, tmp_data_dir):
+        """SessionCache.cwd survives a save() → load() cycle."""
+        sid = "test_cwd_roundtrip"
+        cache = session.load(sid)
+        cache.cwd = "/some/project/root"
+        session.save(cache)
+        reloaded = session.load(sid)
+        assert reloaded.cwd == "/some/project/root"
+
+    def test_cwd_none_persists_roundtrip(self, tmp_data_dir):
+        """cwd=None survives a save() → load() cycle (not coerced to string)."""
+        sid = "test_cwd_none_roundtrip"
+        cache = session.load(sid)
+        assert cache.cwd is None
+        session.save(cache)
+        reloaded = session.load(sid)
+        assert reloaded.cwd is None
+
+    def test_cwd_absent_from_legacy_dict(self):
+        """from_dict without a 'cwd' key returns cwd=None (backward compat)."""
+        d = {
+            "schema_version": 1,
+            "created_by": "token-goat",
+            "session_id": "legacy_cwd_missing",
+            "started_ts": time.time(),
+            "last_activity_ts": time.time(),
+            "files": {},
+            "greps": [],
+            "edited_files": {},
+            "result_cache": {},
+            "bash_history": {},
+            "web_history": {},
+            "snapshot_shas": {},
+            "hints_seen": [],
+        }
+        cache = session.SessionCache.from_dict(d)
+        assert cache.cwd is None
+
 
 class TestGrepHistoryCap:
     """GREPS_HISTORY_MAX cap — oldest entries are evicted FIFO when exceeded."""
