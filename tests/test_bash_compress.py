@@ -41,6 +41,21 @@ class TestStripAnsi:
         text = "\x1b[1m日本語\x1b[0m"
         assert bc.strip_ansi(text) == "日本語"
 
+    def test_removes_osc_st_terminated(self):
+        # OSC with ST (ESC \) terminator — used by hyperlink sequences
+        text = "\x1b]8;;https://example.com\x1b\\click\x1b]8;;\x1b\\after"
+        assert bc.strip_ansi(text) == "clickafter"
+
+    def test_removes_dcs_sequence(self):
+        # DCS string terminated by ST — used by tmux passthrough, sixel, etc.
+        text = "before\x1bPsomedata\x1b\\after"
+        assert bc.strip_ansi(text) == "beforeafter"
+
+    def test_is_same_function_as_render_ansi(self):
+        # bc.strip_ansi must be the same object as render.ansi.strip_ansi
+        from token_goat.render.ansi import strip_ansi as render_strip
+        assert bc.strip_ansi is render_strip
+
 
 # ---------------------------------------------------------------------------
 # strip_progress

@@ -62,11 +62,21 @@ RGB = tuple[int, int, int]
 _E = "\x1b"
 RESET = f"{_E}[0m"
 
-# Full VT/ANSI escape sequence pattern — covers SGR colour codes, cursor
-# controls, and any other CSI/OSC/DCS/PM/SOS/APC/ST sequences.  Compiled once
-# here and shared by vlen(), strip_ansi(), and callers in stats.py /
+# Full VT/ANSI escape sequence pattern — covers CSI (colour, cursor, erase),
+# OSC (title/hyperlink sequences used by pip/docker/cargo progress UIs),
+# DCS/SOS/PM/APC strings, and bare 2-byte ESC sequences.  Compiled once here
+# and shared by vlen(), strip_ansi(), and callers in stats.py /
 # stats_renderer.py so there is exactly one copy of this pattern in the process.
-_ANSI_ESCAPE_RE = re.compile(r"\x1b(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])")
+# bash_compress.strip_ansi re-exports this via `from .render.ansi import strip_ansi`.
+_ANSI_ESCAPE_RE = re.compile(
+    r"""
+    \x1B \[ [0-?]* [ -/]* [@-~]       # CSI sequence (SGR, cursor, erase, …)
+    | \x1B \] .*? (?: \x07 | \x1B \\) # OSC sequence (title, hyperlinks, …)
+    | \x1B [PX^_] .*? \x1B \\         # DCS / SOS / PM / APC (before 2-byte: P/X/^/_ are in [@-Z\\-_])
+    | \x1B [@-Z\\-_]                  # 2-byte ESC sequence (fallback for bare single-byte payloads)
+    """,
+    re.VERBOSE | re.DOTALL,
+)
 
 
 def strip_ansi(s: str) -> str:

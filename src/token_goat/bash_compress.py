@@ -82,6 +82,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Final
 
+from .render.ansi import strip_ansi
 from .util import get_logger
 
 _LOG = get_logger("bash_compress")
@@ -116,47 +117,10 @@ _COMPRESSION_MARKER_FMT: Final[str] = (
 )
 
 # ---------------------------------------------------------------------------
-# Regex tables
-# ---------------------------------------------------------------------------
-
-# CSI (Control Sequence Introducer): ESC [ ... <final byte>
-# OSC (Operating System Command):    ESC ] ... BEL  | ESC ] ... ESC \
-# Plus a few stragglers used by progress UIs (cursor save/restore, etc.).
-# Matches every escape Pillow / pip / docker / jest / pytest emit.
-_ANSI_RE: Final[re.Pattern[str]] = re.compile(
-    r"""
-    \x1B \[ [0-?]* [ -/]* [@-~]       # CSI sequence
-    | \x1B \] .*? (?: \x07 | \x1B \\) # OSC sequence
-    | \x1B [@-Z\\-_]                  # 2-byte ESC sequence
-    | \x1B [PX^_].*?\x1B\\            # DCS/SOS/PM/APC
-    """,
-    re.VERBOSE | re.DOTALL,
-)
-
-# Cursor-movement escapes that some progress UIs emit in lieu of \r.
-# Stripped along with ANSI to collapse multi-line spinners onto a single line.
-_CURSOR_RE: Final[re.Pattern[str]] = re.compile(r"\x1B\[[0-9]*[ABCDEFGJKST]")
-
-
-# ---------------------------------------------------------------------------
 # Common text-shaping helpers
 # ---------------------------------------------------------------------------
 
-def strip_ansi(text: str) -> str:
-    """Remove ANSI / OSC / cursor escape sequences.
-
-    Strips every ``ESC [ ... <final>`` (CSI) and ``ESC ] ... BEL`` (OSC)
-    sequence as well as standalone 2-byte ``ESC X`` codes.  Idempotent on text
-    that has no escapes.  Does *not* attempt to interpret colours (just deletes
-    them), the goal is byte reduction, not faithful reproduction.
-
-    On a 10 KB pytest output with full colour the savings are typically 30–40%
-    before any structural compression has even fired.
-    """
-    out = _ANSI_RE.sub("", text)
-    out = _CURSOR_RE.sub("", out)
-    return out
-
+# strip_ansi imported from render.ansi (single authoritative implementation).
 
 def strip_progress(text: str) -> str:
     """Collapse ``\\r``-overwrite progress lines to their final state.
