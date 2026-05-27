@@ -350,3 +350,89 @@ class TestSkillPreservationRoundTrip:
         self._reset_cache()
 
         assert cfg_mod.load().skill_preservation.orphan_age_secs == 86400
+
+
+class TestBashCacheConfig:
+    """BashCompressConfig.cache_max_file_count and cache_max_bytes must load,
+    save, and honour env-var overrides."""
+
+    def _reset_cache(self) -> None:
+        import token_goat.config as cfg_mod
+        cfg_mod._config_mtime_cache = None
+
+    def test_defaults(self):
+        from token_goat.config import BashCompressConfig
+        bc = BashCompressConfig()
+        assert bc.cache_max_file_count == 4096
+        assert bc.cache_max_bytes == 16 * 1024 * 1024
+
+    def test_cache_max_file_count_from_toml(self, tmp_path, monkeypatch):
+        import token_goat.config as cfg_mod
+        import token_goat.paths as paths_mod
+
+        config_file = tmp_path / "config.toml"
+        config_file.write_text("[bash_compress]\ncache_max_file_count = 512\n", encoding="utf-8")
+        monkeypatch.setattr(paths_mod, "config_path", lambda: config_file)
+        self._reset_cache()
+
+        cfg = cfg_mod.load()
+        assert cfg.bash_compress.cache_max_file_count == 512
+
+    def test_cache_max_bytes_from_toml(self, tmp_path, monkeypatch):
+        import token_goat.config as cfg_mod
+        import token_goat.paths as paths_mod
+
+        config_file = tmp_path / "config.toml"
+        config_file.write_text("[bash_compress]\ncache_max_bytes = 8388608\n", encoding="utf-8")
+        monkeypatch.setattr(paths_mod, "config_path", lambda: config_file)
+        self._reset_cache()
+
+        cfg = cfg_mod.load()
+        assert cfg.bash_compress.cache_max_bytes == 8388608
+
+    def test_env_override_max_files(self, tmp_path, monkeypatch):
+        """TOKEN_GOAT_BASH_CACHE_MAX_FILES overrides the TOML value."""
+        import token_goat.config as cfg_mod
+        import token_goat.paths as paths_mod
+
+        config_file = tmp_path / "config.toml"
+        config_file.write_text("[bash_compress]\ncache_max_file_count = 2048\n", encoding="utf-8")
+        monkeypatch.setattr(paths_mod, "config_path", lambda: config_file)
+        monkeypatch.setenv("TOKEN_GOAT_BASH_CACHE_MAX_FILES", "256")
+        self._reset_cache()
+
+        cfg = cfg_mod.load()
+        assert cfg.bash_compress.cache_max_file_count == 256
+
+    def test_env_override_max_bytes(self, tmp_path, monkeypatch):
+        """TOKEN_GOAT_BASH_CACHE_MAX_BYTES overrides the TOML value."""
+        import token_goat.config as cfg_mod
+        import token_goat.paths as paths_mod
+
+        config_file = tmp_path / "config.toml"
+        config_file.write_text("[bash_compress]\ncache_max_bytes = 8388608\n", encoding="utf-8")
+        monkeypatch.setattr(paths_mod, "config_path", lambda: config_file)
+        monkeypatch.setenv("TOKEN_GOAT_BASH_CACHE_MAX_BYTES", "4194304")
+        self._reset_cache()
+
+        cfg = cfg_mod.load()
+        assert cfg.bash_compress.cache_max_bytes == 4194304
+
+    def test_round_trip(self, tmp_path, monkeypatch):
+        """cache_max_file_count and cache_max_bytes survive a save → load cycle."""
+        import token_goat.config as cfg_mod
+        import token_goat.paths as paths_mod
+
+        config_file = tmp_path / "config.toml"
+        monkeypatch.setattr(paths_mod, "config_path", lambda: config_file)
+        self._reset_cache()
+
+        cfg = cfg_mod.load()
+        cfg.bash_compress.cache_max_file_count = 1024
+        cfg.bash_compress.cache_max_bytes = 4 * 1024 * 1024
+        cfg_mod.save(cfg)
+        self._reset_cache()
+
+        reloaded = cfg_mod.load()
+        assert reloaded.bash_compress.cache_max_file_count == 1024
+        assert reloaded.bash_compress.cache_max_bytes == 4 * 1024 * 1024

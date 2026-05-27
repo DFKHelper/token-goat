@@ -142,6 +142,26 @@ class TestStoreAndLoad:
         # must remove the sidecar.
         assert not orphan.exists()
 
+    def test_evict_old_entries_respects_max_file_count(self, tmp_data_dir):
+        """evict_old_entries honours the max_file_count parameter."""
+        # Store 5 small outputs (each well under max_total_bytes).
+        for i in range(5):
+            bash_cache.store_output(
+                f"sess_fc_{i}", f"echo {i}", "hello", "", 0,
+                max_total_bytes=999_999_999,  # no byte-cap eviction
+                max_file_count=999_999,       # no file-count eviction during store
+            )
+        # Now evict down to 2 files.
+        evicted = bash_cache.evict_old_entries(max_total_bytes=999_999_999, max_file_count=2)
+        assert evicted >= 3  # at least 3 entries removed to reach the 2-file target
+
+    def test_evict_old_entries_default_max_file_count_is_constant(self):
+        """DEFAULT_MAX_FILE_COUNT matches the evict_old_entries default."""
+        import inspect
+        sig = inspect.signature(bash_cache.evict_old_entries)
+        default = sig.parameters["max_file_count"].default
+        assert default == bash_cache.DEFAULT_MAX_FILE_COUNT
+
 
 class TestPostBashHook:
     def test_small_output_skipped(self, tmp_data_dir):

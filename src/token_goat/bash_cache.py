@@ -158,6 +158,7 @@ def store_glob_result(
     result_text: str,
     *,
     max_total_bytes: int = DEFAULT_MAX_TOTAL_BYTES,
+    max_file_count: int = DEFAULT_MAX_FILE_COUNT,
 ) -> str | None:
     """Cache the text result of a Glob call and return the output_id, or None on error.
 
@@ -177,7 +178,7 @@ def store_glob_result(
         out_id = build_keyed_output_id(_GLOB_RESULT_PREFIX, session_id, g_hash)
         if store_blob(out_id, result_text, _bash_outputs_dir, "bash_cache") is None:
             return None
-        evict_old_entries(max_total_bytes=max_total_bytes)
+        evict_old_entries(max_total_bytes=max_total_bytes, max_file_count=max_file_count)
         _LOG.debug("bash_cache: stored glob result id=%s pattern=%s", out_id, sanitize_log_str(pattern))
         return out_id
     except OSError as exc:
@@ -221,6 +222,7 @@ def store_output(
     exit_code: int | None,
     *,
     max_total_bytes: int = DEFAULT_MAX_TOTAL_BYTES,
+    max_file_count: int = DEFAULT_MAX_FILE_COUNT,
 ) -> BashOutputMeta | None:
     """Write *stdout* + *stderr* to the cache and return descriptive metadata.
 
@@ -228,9 +230,9 @@ def store_output(
     Output larger than ``_MAX_STORED_BYTES`` is tail-preserved (head truncated)
     because failing test output is typically at the bottom.  After the write the
     function opportunistically evicts the oldest files until the total store size
-    is back under ``max_total_bytes``; the eviction is best-effort and a failed
-    pass simply leaves the directory slightly over budget — the next call will
-    try again.
+    is back under ``max_total_bytes`` and the file count is at or under
+    ``max_file_count``; the eviction is best-effort and a failed pass simply
+    leaves the directory slightly over budget — the next call will try again.
     """
     with safe_cache_op("store_output", log=_LOG):
         out_id = output_id_for(session_id, command)
@@ -299,7 +301,7 @@ def store_output(
         # Best-effort eviction.  We do not wait or retry: if the directory
         # walk fails (e.g. concurrent worker activity, antivirus lock) the
         # cap is enforced on the next call.
-        evict_old_entries(max_total_bytes=max_total_bytes)
+        evict_old_entries(max_total_bytes=max_total_bytes, max_file_count=max_file_count)
 
         _LOG.debug(
             "bash_cache: stored id=%s bytes=%d truncated=%s",
@@ -323,7 +325,11 @@ def load_output_meta(output_id: str) -> OutputStatDict | None:
     return load_output_meta_stat(output_id, _bash_outputs_dir, "bash_cache")
 
 
-def evict_old_entries(*, max_total_bytes: int = DEFAULT_MAX_TOTAL_BYTES) -> int:
+def evict_old_entries(
+    *,
+    max_total_bytes: int = DEFAULT_MAX_TOTAL_BYTES,
+    max_file_count: int = DEFAULT_MAX_FILE_COUNT,
+) -> int:
     """Evict the oldest entries until total size is at or under *max_total_bytes*.
 
     Each cached output is a pair of files: the body (``<id>.txt``) and the
@@ -340,12 +346,14 @@ def evict_old_entries(*, max_total_bytes: int = DEFAULT_MAX_TOTAL_BYTES) -> int:
 
     The shared algorithm lives in :func:`cache_common.evict_cache_dir`; this
     wrapper supplies the bash-specific directory, log name, and default caps.
+    Override caps via ``TOKEN_GOAT_BASH_CACHE_MAX_FILES`` and
+    ``TOKEN_GOAT_BASH_CACHE_MAX_BYTES`` env vars, or pass them explicitly.
     """
     return evict_cache_dir(
         cache_dir_fn=_bash_outputs_dir,
         log_name="bash_cache",
         max_total_bytes=max_total_bytes,
-        max_file_count=DEFAULT_MAX_FILE_COUNT,
+        max_file_count=max_file_count,
     )
 
 

@@ -56,6 +56,8 @@ _CONFIG_ENV_KEYS: tuple[str, ...] = (
     "TOKEN_GOAT_REPOMAP_COMPACT_THRESHOLD",
     "TOKEN_GOAT_WEB_CACHE_MAX_FILES",
     "TOKEN_GOAT_WEB_CACHE_MAX_BYTES",
+    "TOKEN_GOAT_BASH_CACHE_MAX_FILES",
+    "TOKEN_GOAT_BASH_CACHE_MAX_BYTES",
 )
 
 
@@ -92,6 +94,8 @@ _ENV_GREP_DEDUP_MIN_MATCHES: Final[str] = "TOKEN_GOAT_GREP_DEDUP_MIN_MATCHES"  #
 _ENV_REPOMAP_COMPACT_THRESHOLD: Final[str] = "TOKEN_GOAT_REPOMAP_COMPACT_THRESHOLD"  # integer override
 _ENV_WEB_CACHE_MAX_FILES: Final[str] = "TOKEN_GOAT_WEB_CACHE_MAX_FILES"  # integer override (file count)
 _ENV_WEB_CACHE_MAX_BYTES: Final[str] = "TOKEN_GOAT_WEB_CACHE_MAX_BYTES"  # integer override (bytes)
+_ENV_BASH_CACHE_MAX_FILES: Final[str] = "TOKEN_GOAT_BASH_CACHE_MAX_FILES"  # integer override (file count)
+_ENV_BASH_CACHE_MAX_BYTES: Final[str] = "TOKEN_GOAT_BASH_CACHE_MAX_BYTES"  # integer override (bytes)
 
 CONFIG_SCHEMA_VERSION: Final[int] = 1
 
@@ -172,6 +176,8 @@ class _BashCompressToml(TypedDict, total=False):
     max_lines: int
     max_bytes: int
     timeout_seconds: int
+    cache_max_file_count: int
+    cache_max_bytes: int
 
 
 class _SessionBriefToml(TypedDict, total=False):
@@ -380,6 +386,11 @@ class BashCompressConfig:
             Default 600 s covers ``npm install`` on a fresh ``node_modules``;
             raise for longer-running builds (e.g. ``terraform apply`` on a
             large stack).
+        cache_max_file_count: Maximum number of cached bash-output body files
+            before oldest-first eviction fires (default 4096, matching web cache).
+            Override via ``TOKEN_GOAT_BASH_CACHE_MAX_FILES`` env var.
+        cache_max_bytes: Maximum total bytes for the bash-output cache directory
+            (default 16 MiB).  Override via ``TOKEN_GOAT_BASH_CACHE_MAX_BYTES``.
     """
 
     enabled: bool = True
@@ -387,6 +398,8 @@ class BashCompressConfig:
     max_lines: int = 1000
     max_bytes: int = 64 * 1024
     timeout_seconds: int = 600
+    cache_max_file_count: int = 4096
+    cache_max_bytes: int = 16 * 1024 * 1024
 
 
 @dataclass
@@ -946,8 +959,28 @@ def load() -> Config:
         timeout_seconds=_validated_int(
             bc_raw.get("timeout_seconds", 600), 600, 5, 7200, "bash_compress.timeout_seconds"
         ),
+        cache_max_file_count=_validated_int(
+            bc_raw.get("cache_max_file_count", 4096), 4096, 1, 1_000_000, "bash_compress.cache_max_file_count"
+        ),
+        cache_max_bytes=_validated_int(
+            bc_raw.get("cache_max_bytes", 16 * 1024 * 1024),
+            16 * 1024 * 1024, 1024, 4 * 1024 * 1024 * 1024, "bash_compress.cache_max_bytes",
+        ),
     )
     _apply_env_disable(bc, "enabled", _ENV_BASH_COMPRESS, "bash_compress")
+    # Apply env overrides for bash output cache caps
+    try:
+        env_bash_max_files = os.environ.get(_ENV_BASH_CACHE_MAX_FILES)
+        if env_bash_max_files:
+            bc.cache_max_file_count = int(env_bash_max_files)
+    except ValueError:
+        _LOG.warning("TOKEN_GOAT_BASH_CACHE_MAX_FILES must be an integer")
+    try:
+        env_bash_max_bytes = os.environ.get(_ENV_BASH_CACHE_MAX_BYTES)
+        if env_bash_max_bytes:
+            bc.cache_max_bytes = int(env_bash_max_bytes)
+    except ValueError:
+        _LOG.warning("TOKEN_GOAT_BASH_CACHE_MAX_BYTES must be an integer")
 
     sb_raw: _SessionBriefToml = cast("_SessionBriefToml", raw.get("session_brief", {}))
     sb = SessionBriefConfig(
@@ -1137,7 +1170,7 @@ def load() -> Config:
 
     _LOG.debug(
         "config resolved: compact_assist enabled=%s triggers=%s min_events=%d max_tokens=%d; "
-        "bash_compress enabled=%s disabled_filters=%s max_lines=%d max_bytes=%d timeout=%d; "
+        "bash_compress enabled=%s disabled_filters=%s max_lines=%d max_bytes=%d timeout=%d cache_files=%d cache_bytes=%d; "
         "session_brief enabled=%s; "
         "skill_preservation enabled=%s max_cache_bytes=%d; "
         "image_shrink prefer_avif=%s avif_quality=%d jpeg_quality=%d max_image_pixels=%d; "
@@ -1156,6 +1189,8 @@ def load() -> Config:
         bc.max_lines,
         bc.max_bytes,
         bc.timeout_seconds,
+        bc.cache_max_file_count,
+        bc.cache_max_bytes,
         sb.enabled,
         sp.enabled,
         sp.max_cache_bytes,
@@ -1223,6 +1258,8 @@ def save(config: Config) -> None:
             "max_lines": bc.max_lines,
             "max_bytes": bc.max_bytes,
             "timeout_seconds": bc.timeout_seconds,
+            "cache_max_file_count": bc.cache_max_file_count,
+            "cache_max_bytes": bc.cache_max_bytes,
         },
         "session_brief": {
             "enabled": sb.enabled,

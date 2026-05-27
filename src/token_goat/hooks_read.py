@@ -1382,7 +1382,13 @@ def post_read(payload: HookPayload) -> HookResponse:
             if output_text:
                 try:
                     from . import bash_cache as _bc  # noqa: PLC0415
-                    _bc.store_glob_result(session_id, pattern, path, output_text)
+                    from . import config as _cfg_mod
+                    _bc_cfg = _cfg_mod.load().bash_compress
+                    _bc.store_glob_result(
+                        session_id, pattern, path, output_text,
+                        max_total_bytes=_bc_cfg.cache_max_bytes,
+                        max_file_count=_bc_cfg.cache_max_file_count,
+                    )
                 except Exception:  # noqa: BLE001
                     pass
             _LOG.debug(
@@ -1683,12 +1689,16 @@ def post_bash(payload: HookPayload) -> HookResponse:
         return CONTINUE()
 
     from . import bash_cache  # noqa: PLC0415
+    from . import config as _config
     session = _get_session()
 
+    _bc_cfg = _config.load().bash_compress
     # Hash and preview the *original* command so reruns of the same logical
     # invocation (whether wrapped or not) collide on the same cache entry.
     meta = bash_cache.store_output(
         session_id, display_cmd, stdout, stderr, exit_code,
+        max_total_bytes=_bc_cfg.cache_max_bytes,
+        max_file_count=_bc_cfg.cache_max_file_count,
     )
     if meta is None:
         return CONTINUE()

@@ -278,3 +278,66 @@ class TestPreFetchWebFetchDedup:
         ctx = result.get("hookSpecificOutput", {}).get("additionalContext", "")
         assert ctx, "Expected a non-empty additionalContext"
         assert not ctx.startswith("Note:"), f"Hint starts with 'Note:': {ctx[:60]!r}"
+
+
+# ---------------------------------------------------------------------------
+# _check_url_allowdeny unit tests
+# ---------------------------------------------------------------------------
+
+class TestCheckUrlAllowDeny:
+    """Unit tests for the deny/allow glob-pattern gating in pre_fetch."""
+
+    def _invoke(self, url: str, *, allow: list[str] | None = None, deny: list[str] | None = None) -> object:
+        """Call _check_url_allowdeny with patched config."""
+        import unittest.mock as mock
+
+        from token_goat import hooks_fetch
+        from token_goat.config import Config, WebFetchConfig
+
+        wf = WebFetchConfig(allow=allow or [], deny=deny or [])
+        cfg = mock.MagicMock(spec=Config)
+        cfg.webfetch = wf
+
+        with mock.patch("token_goat.config.load", return_value=cfg):
+            return hooks_fetch._check_url_allowdeny(url)
+
+    def test_no_lists_passes_everything(self):
+        """Empty deny + empty allow → all URLs pass."""
+        assert self._invoke("https://example.com/page") is None
+
+    def test_deny_match_blocks_url(self):
+        """URL matching a deny pattern → HookResponse deny (not None)."""
+        result = self._invoke("https://evil.com/bad", deny=["*evil.com*"])
+        assert result is not None
+        reason = result.get("hookSpecificOutput", {}).get("permissionDecisionReason", "")
+        assert "deny" in reason.lower() or "block" in reason.lower() or "deny list" in reason.lower()
+
+    def test_deny_match_takes_priority_over_allow(self):
+        """URL that matches both deny and allow → blocked (deny wins)."""
+        result = self._invoke("https://example.com/path", deny=["*example.com*"], allow=["*example.com*"])
+        assert result is not None
+
+    def test_allow_match_passes_url(self):
+        """Non-empty allow list + URL that matches → pass (returns None)."""
+        result = self._invoke("https://docs.python.org/3/", allow=["*docs.python.org*"])
+        assert result is None
+
+    def test_allow_miss_blocks_url(self):
+        """Non-empty allow list + URL that does NOT match → blocked."""
+        result = self._invoke("https://random-site.io/", allow=["*docs.python.org*"])
+        assert result is not None
+        reason = result.get("hookSpecificOutput", {}).get("permissionDecisionReason", "")
+        assert "allow" in reason.lower()
+
+    def test_empty_deny_nonempty_allow_passes_matching(self):
+        """No deny, non-empty allow — URL in allow list passes."""
+        assert self._invoke("https://github.com/foo", allow=["*github.com*"]) is None
+
+    def test_empty_deny_nonempty_allow_blocks_nonmatching(self):
+        """No deny, non-empty allow — URL not in allow list is blocked."""
+        result = self._invoke("https://example.com/", allow=["*github.com*"])
+        assert result is not None
+
+    def test_deny_non_match_passes(self):
+        """URL that does NOT match any deny pattern → passes."""
+        assert self._invoke("https://safe.com/page", deny=["*evil.com*"]) is None
