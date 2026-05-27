@@ -237,6 +237,23 @@ def store(
         return None
     sha = hashlib.sha256(content).hexdigest()
     safe_kind = kind if kind in _VALID_KINDS else _KIND_READ
+
+    # Content-hash dedup: skip the disk write when the existing snapshot is
+    # byte-for-byte identical.  Common when a file is re-read without edits
+    # between reads — this avoids writing 256 KB of unchanged bytes on every
+    # subsequent read of a large file, which also keeps the session snapshot
+    # directory mtime stable so stale-cleanup does not evict live snapshots.
+    if p.exists():
+        try:
+            if p.read_bytes() == content:
+                _LOG.debug(
+                    "snapshots: content unchanged, skipping write for %s",
+                    sanitize_log_str(file_path),
+                )
+                return SnapshotResult(path=p, content_sha=sha, size_bytes=len(content))
+        except OSError:
+            pass  # fall through to normal write
+
     with safe_cache_op(f"store:{sanitize_log_str(file_path)}", log=_LOG):
         paths.ensure_dir(p.parent)
         _evict_oldest(p.parent, MAX_SNAPSHOTS_PER_SESSION - 1)
