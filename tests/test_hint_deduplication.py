@@ -287,3 +287,93 @@ class TestVerboseHintSuppression:
         # Reload
         cache2 = session.load(session_id)
         assert cache2.hints_seen[fp] == 3
+
+
+class TestEmitDedupBudgetedHintVerboseWindow:
+    """Regression tests for _emit_dedup_budgeted_hint verbose window behaviour.
+
+    Before the fix, seen_count values within [1, verbose_until] (i.e. the 2nd and
+    3rd reads with verbose_until=2) hit an ``else: return None`` branch and were
+    suppressed entirely.  The correct behaviour is to fall through to the full emit
+    path so those reads still see the hint.
+    """
+
+    def _call(
+        self,
+        cache: session.SessionCache,
+        seen_count: int,
+        *,
+        verbose_until: int = 2,
+        monkeypatch: object | None = None,
+    ) -> object:
+        from unittest import mock
+
+        from token_goat.config import Config, HintsConfig
+        from token_goat.hints import ReadHint, _hint_fingerprint
+        from token_goat.hooks_read import _emit_dedup_budgeted_hint
+
+        hint = ReadHint("Note: already read src/x.py", tokens_saved=100)
+        fp = _hint_fingerprint(str(hint), path="src/x.py")
+        # Pre-seed seen count.
+        for _ in range(seen_count):
+            cache.mark_hint_seen(fp)
+
+        # Use a real Config so regex code paths (quiet_hours etc.) don't see MagicMock.
+        cfg = Config(hints=HintsConfig(verbose_until_seen_count=verbose_until))
+
+        with mock.patch("token_goat.config.load", return_value=cfg):
+            return _emit_dedup_budgeted_hint(
+                hint=hint,
+                file_path="src/x.py",
+                cache=cache,
+                budget_kind="index_only",
+                record_emitted_fn=lambda _c: None,
+                stat_kind="index_only",
+                display_name="index-only",
+            )
+
+    def test_first_read_emits_full_hint(self, tmp_data_dir) -> None:
+        """seen_count=0 (first read): always emits full hint."""
+        cache = session.SessionCache("vw-test-0", 0, 0)
+        result = self._call(cache, seen_count=0)
+        assert result is not None
+
+    def test_second_read_emits_full_hint_within_verbose_window(self, tmp_data_dir) -> None:
+        """seen_count=1 (second read) with verbose_until=2: must emit full hint, not None."""
+        cache = session.SessionCache("vw-test-1", 0, 0)
+        result = self._call(cache, seen_count=1)
+        assert result is not None, "second read within verbose window must not be suppressed"
+        # Full hint contains the hint text, not a stub marker.
+        assert "already read" in str(result)
+
+    def test_third_read_emits_full_hint_within_verbose_window(self, tmp_data_dir) -> None:
+        """seen_count=2 (third read) with verbose_until=2: must emit full hint, not None."""
+        cache = session.SessionCache("vw-test-2", 0, 0)
+        result = self._call(cache, seen_count=2)
+        assert result is not None, "third read within verbose window must not be suppressed"
+        assert "already read" in str(result)
+
+    def test_fourth_read_emits_stub_past_verbose_window(self, tmp_data_dir) -> None:
+        """seen_count=3 with verbose_until=2: must emit short stub, not full hint."""
+        cache = session.SessionCache("vw-test-3", 0, 0)
+        result = self._call(cache, seen_count=3)
+        assert result is not None, "past verbose window should emit a stub, not None"
+        assert "seen 3×" in str(result)
+
+    def test_verbose_until_zero_suppresses_all_repeats(self, tmp_data_dir) -> None:
+        """verbose_until=0 (feature disabled): second read returns None."""
+        cache = session.SessionCache("vw-test-4", 0, 0)
+        result = self._call(cache, seen_count=1, verbose_until=0)
+        assert result is None, "verbose_until=0 must suppress all duplicate hints"
+
+    def test_verbose_until_one_stubs_at_third_read(self, tmp_data_dir) -> None:
+        """verbose_until=1: second read emits full hint; third read emits stub."""
+        cache_full = session.SessionCache("vw-test-5a", 0, 0)
+        result_full = self._call(cache_full, seen_count=1, verbose_until=1)
+        assert result_full is not None
+        assert "already read" in str(result_full)
+
+        cache_stub = session.SessionCache("vw-test-5b", 0, 0)
+        result_stub = self._call(cache_stub, seen_count=2, verbose_until=1)
+        assert result_stub is not None
+        assert "seen 2×" in str(result_stub)

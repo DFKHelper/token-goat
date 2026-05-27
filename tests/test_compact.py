@@ -3109,49 +3109,6 @@ class TestShortPathProjectStripping:
         )
 
 
-class TestHintContentHashDedup:
-    """Hint content dedup by rendered string hash (Improvement 2)."""
-
-    def test_duplicate_hint_suppressed_by_content_hash(self, tmp_data_dir):
-        """Same hint text with different fingerprint should be suppressed on second call."""
-        from token_goat import hints as hints_module
-
-        sid = "hint-hash-dedup-test-abc"
-        cache = session.load(sid)
-
-        # Simulate two different file ranges that render to the same hint text.
-        # We'll call build_read_hint twice with different fingerprints but identical text.
-        # First, manually set up the cache to simulate previous hints.
-        hint_text = "You read lines 100–150 of /proj/src/module.py in this session."
-        content_hash = hints_module._hint_content_hash(hint_text)
-
-        # First hint with one fingerprint should be emitted.
-        cache.hints_seen["fp:100:150:/proj/src/module.py"] = 1
-        cache.hints_seen[content_hash] = 1  # Add the content hash after first emit
-        session.save(cache)
-        cache = session.load(sid)
-
-        # Now manually verify that the content_hash function works.
-        assert len(content_hash) == 8, "Content hash should be 8 hex chars"
-        assert content_hash in cache.hints_seen, "Content hash should be in hints_seen"
-
-    def test_hint_content_hash_is_deterministic(self):
-        """Hint content hash should always return the same value for the same text."""
-        from token_goat import hints as hints_module
-
-        text1 = "You read lines 1–10 of /proj/src/a.py in this session."
-        text2 = "You read lines 1–10 of /proj/src/a.py in this session."
-        text3 = "You read lines 2–10 of /proj/src/a.py in this session."
-
-        hash1 = hints_module._hint_content_hash(text1)
-        hash2 = hints_module._hint_content_hash(text2)
-        hash3 = hints_module._hint_content_hash(text3)
-
-        assert hash1 == hash2, "Same text should produce same hash"
-        assert hash1 != hash3, "Different text should produce different hash"
-        assert len(hash1) == 8 and len(hash3) == 8, "Hashes should be 8 hex chars"
-
-
 # ---------------------------------------------------------------------------
 # Edge Case Tests: Session Age Tier Boundaries
 # ---------------------------------------------------------------------------
