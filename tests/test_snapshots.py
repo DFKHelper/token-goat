@@ -604,3 +604,92 @@ class TestPredictivePrefetchAttribution:
 
         # The prefetched util.py snapshot must carry the predictive tag.
         assert snapshots.load_kind(sid, str(util_py)) == "predictive"
+
+
+# ---------------------------------------------------------------------------
+# Content-hash dedup
+# ---------------------------------------------------------------------------
+
+class TestSnapshotContentHashDedup:
+    """store() skips the disk write when content is unchanged (C3.4)."""
+
+    def test_second_store_same_content_skips_write(self, tmp_data_dir, monkeypatch):
+        """Storing the same content twice does not rewrite the file."""
+        import os
+        content = b"def foo(): pass\n"
+        sid = "dedup-01"
+        fp = "/proj/src/foo.py"
+
+        r1 = snapshots.store(sid, fp, content)
+        assert r1 is not None
+        mtime1 = os.stat(r1.path).st_mtime
+
+        # Small sleep so a write would produce a different mtime.
+        import time
+        time.sleep(0.05)
+
+        r2 = snapshots.store(sid, fp, content)
+        assert r2 is not None
+        assert r2.content_sha == r1.content_sha
+        # File must not have been rewritten — mtime unchanged.
+        mtime2 = os.stat(r2.path).st_mtime
+        assert mtime1 == mtime2, "snapshot should not be rewritten for identical content"
+
+    def test_different_content_rewrites_snapshot(self, tmp_data_dir):
+        """Changed content triggers a write; new snapshot replaces old."""
+        content_v1 = b"def foo(): return 1\n"
+        content_v2 = b"def foo(): return 2\n"
+        sid = "dedup-02"
+        fp = "/proj/src/bar.py"
+
+        r1 = snapshots.store(sid, fp, content_v1)
+        assert r1 is not None
+
+        r2 = snapshots.store(sid, fp, content_v2)
+        assert r2 is not None
+        assert r2.content_sha != r1.content_sha
+        loaded = snapshots.load(sid, fp)
+        assert loaded == content_v2
+
+    def test_first_store_writes_when_no_existing_snapshot(self, tmp_data_dir):
+        """When no snapshot exists, the first store() always writes."""
+        content = b"brand new content\n"
+        sid = "dedup-03"
+        fp = "/proj/src/new_file.py"
+        r = snapshots.store(sid, fp, content)
+        assert r is not None
+        assert snapshots.load(sid, fp) == content
+
+    def test_returns_correct_sha_even_on_cache_hit(self, tmp_data_dir):
+        """SHA in the returned SnapshotResult is always the content hash."""
+        import hashlib
+        content = b"class Baz:\n    pass\n"
+        sid = "dedup-04"
+        fp = "/proj/src/baz.py"
+        snapshots.store(sid, fp, content)
+        r = snapshots.store(sid, fp, content)
+        assert r is not None
+        expected_sha = hashlib.sha256(content).hexdigest()
+        assert r.content_sha == expected_sha
+
+    def test_read_error_on_existing_falls_through_to_write(self, tmp_data_dir, monkeypatch):
+        """If reading the existing snapshot fails, we fall through to a normal write."""
+        content = b"def boo(): pass\n"
+        sid = "dedup-05"
+        fp = "/proj/src/boo.py"
+        r1 = snapshots.store(sid, fp, content)
+        assert r1 is not None
+
+        # Simulate a read error on the second call.
+        orig_read_bytes = Path.read_bytes
+        call_count = [0]
+        def fail_read(self):
+            call_count[0] += 1
+            if call_count[0] == 1:
+                raise OSError("simulated read error")
+            return orig_read_bytes(self)
+        monkeypatch.setattr(Path, "read_bytes", fail_read)
+
+        # Must not raise; falls through to write.
+        r2 = snapshots.store(sid, fp, content)
+        assert r2 is not None
