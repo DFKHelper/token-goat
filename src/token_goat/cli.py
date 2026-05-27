@@ -3167,21 +3167,10 @@ def config_validate(
     def _section_keys(cls: type) -> frozenset[str]:
         return frozenset(f.name for f in _dc_fields(cls))
 
-    # Known top-level section keys from _ConfigToml
-    _KNOWN_TOP_LEVEL: frozenset[str] = frozenset({
-        "schema_version",
-        "compact_assist",
-        "bash_compress",
-        "session_brief",
-        "skill_preservation",
-        "image_shrink",
-        "curator",
-        "hint_budget",
-        "hints",
-        "repomap",
-        "stats",
-        "webfetch",
-    })
+    # Reuse the module-level set from config.py so a new section only needs
+    # to be registered in one place — adding it to _KNOWN_SECTIONS there
+    # automatically makes config validate accept it here.
+    _KNOWN_TOP_LEVEL: frozenset[str] = config_mod._KNOWN_SECTIONS
 
     # Derived from dataclasses.fields() — auto-tracks new config fields.
     _KNOWN_SECTION_KEYS: dict[str, frozenset[str]] = {
