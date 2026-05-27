@@ -814,3 +814,43 @@ class TestRecoveryCli:
         runner = CliRunner()
         result = runner.invoke(app, ["recovery", "00000000"])
         assert result.exit_code == 1
+
+
+class TestRecoveryPendingAtomicWrite:
+    """The recovery_pending sentinel must be written via paths.atomic_write_text.
+
+    A non-atomic write can leave a partially-written hint file if the process is
+    killed mid-write (common on Windows where large write_text calls may not be
+    atomic at the OS level).  The pre-read hook reads this file on the next tool
+    call; a torn read would surface a garbled recovery hint to the model.
+    """
+
+    def test_recovery_pending_uses_atomic_write_text(self, tmp_data_dir, monkeypatch):
+        """_try_recovery_response must write the sidecar via paths.atomic_write_text.
+
+        The recovery_pending sidecar carries the full recovery hint text; a torn
+        partial write would surface garbled content to the model on the next tool call.
+        """
+        from token_goat import hooks_session, paths
+
+        HINT_TEXT = "## Compact Recovery\n- file1.py edited\n"
+        monkeypatch.setattr(hooks_session, "_build_recovery_hint", lambda _sid: HINT_TEXT)
+
+        atomic_calls: list[tuple[object, str]] = []
+        original_atomic = paths.atomic_write_text
+
+        def _spy(path, content):
+            if "recovery_pending" in str(path):
+                atomic_calls.append((path, content))
+            original_atomic(path, content)
+
+        monkeypatch.setattr(paths, "atomic_write_text", _spy)
+
+        sid = "recovery-atomic-test-001"
+        result = hooks_session._try_recovery_response(sid, "compact")
+
+        assert result is None, "_try_recovery_response must return None"
+        assert atomic_calls, "atomic_write_text was not called for recovery_pending sidecar"
+        sidecar_path, content = atomic_calls[0]
+        assert "recovery_pending" in str(sidecar_path)
+        assert content == HINT_TEXT

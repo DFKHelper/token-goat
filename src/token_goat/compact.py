@@ -360,10 +360,7 @@ def _write_manifest_sidecar(
         if counts:
             payload_dict["counts"] = {k: int(v) for k, v in counts.items()}
         payload = json.dumps(payload_dict, separators=(",", ":"), sort_keys=True)
-        # Atomic write via temp file + rename (same volume guaranteed).
-        tmp = sidecar.with_suffix(".tmp")
-        tmp.write_text(payload, encoding="utf-8")
-        tmp.replace(sidecar)
+        paths.atomic_write_text(sidecar, payload)
     except Exception:  # noqa: BLE001
         pass
 

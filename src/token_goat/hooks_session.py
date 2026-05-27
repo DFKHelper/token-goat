@@ -540,8 +540,7 @@ def _try_recovery_response(session_id: str | None, source: str) -> HookResponse 
         from . import paths  # noqa: PLC0415
 
         sidecar = paths.recovery_pending_path(session_id)
-        paths.ensure_dir(sidecar.parent)
-        sidecar.write_text(hint, encoding="utf-8")
+        paths.atomic_write_text(sidecar, hint)
         _LOG.info(
             "session-start: compact-recovery hint deferred to sidecar for session=%s (%d chars)",
             session_id[:16], len(hint),
