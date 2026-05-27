@@ -1,6 +1,7 @@
 """Tests for the hook dispatcher's fail-soft and dispatch behavior."""
 import json
 
+import pytest
 from hook_helpers import assert_continue as _assert_continue
 
 from token_goat import hooks_cli
@@ -1402,3 +1403,51 @@ def test_dispatch_watchdog_records_budget_on_trip(monkeypatch):
     _assert_continue(result)
     assert result.get("_tg_watchdog_tripped") is True
     assert result.get("_tg_watchdog_budget_ms") == 120
+
+
+# ---------------------------------------------------------------------------
+# Exit-0 invariant — parametrized across all registered hook events
+# ---------------------------------------------------------------------------
+
+
+def _all_event_names() -> list[str]:
+    from token_goat.hook_registry import HOOK_EVENTS
+    return [e.name for e in HOOK_EVENTS]
+
+
+@pytest.mark.parametrize("event", _all_event_names())
+def test_exit_zero_invariant_all_events(event, tmp_path, monkeypatch, capsys):
+    """CRITICAL: every hook event must return {"continue": true} even when the
+    registered handler raises BaseException.
+
+    This parametrized test enforces the fail-soft contract for every event in
+    HOOK_EVENTS.  A new event that bypasses fail_soft or has a double-decorator
+    stack will show up here before it can reach production.
+    """
+    import json as _json
+
+    from token_goat import hooks_cli as hc
+    from token_goat import paths
+
+    # Redirect crash sink so tests stay isolated.
+    monkeypatch.setattr(paths, "_hooks_stderr_log_override", tmp_path / "hooks-stderr.log")
+    monkeypatch.setattr(paths, "logs_dir", lambda: tmp_path / "logs")
+
+    # Inject a handler that raises RuntimeError for this event.
+    def _crashing(_payload):
+        raise RuntimeError(f"deliberate crash in {event}")
+
+    monkeypatch.setitem(hc.EVENTS, event, _crashing)
+
+    payload_file = tmp_path / "payload.json"
+    payload_file.write_text(
+        _json.dumps({"session_id": f"invariant-{event}"}),
+        encoding="utf-8",
+    )
+    hc.safe_run(event, input_file=payload_file)
+
+    out = capsys.readouterr().out
+    parsed = _json.loads(out)
+    assert parsed.get("continue") is True, (
+        f"event {event!r}: expected {{\"continue\": true}}, got {parsed!r}"
+    )
