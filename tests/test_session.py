@@ -3390,3 +3390,98 @@ class TestProcLoadCache:
         assert len(session._proc_load_cache) <= cap, (
             f"proc cache grew to {len(session._proc_load_cache)}, expected <= {cap}"
         )
+
+
+class TestPerTypeHintCounters:
+    """Tests for per-hint-type emission and suppression tracking."""
+
+    def test_record_hint_emitted_increments_counter(self, tmp_data_dir):
+        """record_hint_emitted increments the counter for a given hint type."""
+        cache = session._fresh_cache("test-per-type-1")
+        assert cache.hints_emitted_by_type.get("bash_dedup", 0) == 0
+
+        cache.record_hint_emitted("bash_dedup")
+        assert cache.hints_emitted_by_type["bash_dedup"] == 1
+
+        cache.record_hint_emitted("bash_dedup")
+        assert cache.hints_emitted_by_type["bash_dedup"] == 2
+
+    def test_record_hint_suppressed_increments_counter(self, tmp_data_dir):
+        """record_hint_suppressed increments the suppression counter for a given hint type."""
+        cache = session._fresh_cache("test-per-type-2")
+        assert cache.hints_suppressed_by_type.get("bash_dedup_below_threshold", 0) == 0
+
+        cache.record_hint_suppressed("bash_dedup_below_threshold")
+        assert cache.hints_suppressed_by_type["bash_dedup_below_threshold"] == 1
+
+        cache.record_hint_suppressed("bash_dedup_below_threshold")
+        assert cache.hints_suppressed_by_type["bash_dedup_below_threshold"] == 2
+
+    def test_per_type_counters_persist_roundtrip(self, tmp_data_dir):
+        """Per-type counters survive serialization and deserialization."""
+        sid = "test-per-type-roundtrip-3"
+        cache = session._fresh_cache(sid)
+        cache.record_hint_emitted("read_dedup")
+        cache.record_hint_emitted("bash_dedup")
+        cache.record_hint_emitted("bash_dedup")
+        cache.record_hint_suppressed("web_dedup_below_threshold")
+        session.save(cache)
+
+        loaded = session.load(sid)
+        assert loaded.hints_emitted_by_type["read_dedup"] == 1
+        assert loaded.hints_emitted_by_type["bash_dedup"] == 2
+        assert loaded.hints_suppressed_by_type["web_dedup_below_threshold"] == 1
+
+    def test_backward_compat_missing_fields_default_to_empty_dict(self, tmp_data_dir):
+        """Loading an old session JSON without per-type fields defaults to empty dicts."""
+        sid = "test-per-type-compat-4"
+        cache = session._fresh_cache(sid)
+        # Simulate an old session by manually creating a dict without the new fields
+        old_dict = cache.to_dict()
+        del old_dict["hints_emitted_by_type"]
+        del old_dict["hints_suppressed_by_type"]
+
+        # Write the old-format dict to disk
+        import json
+        path = session.paths.session_cache_path(sid)
+        session.paths.ensure_dir(path.parent)
+        path.write_text(json.dumps(old_dict, ensure_ascii=False), encoding="utf-8")
+
+        # Load it back - should not crash and should default to empty dicts
+        loaded = session.load(sid)
+        assert loaded.hints_emitted_by_type == {}
+        assert loaded.hints_suppressed_by_type == {}
+
+    def test_merge_sums_per_type_counters(self, tmp_data_dir):
+        """Merging two caches sums the per-type counters."""
+        local = session._fresh_cache("test-per-type-merge-5")
+        local.hints_emitted_by_type = {"bash_dedup": 3, "grep_dedup": 1}
+        local.hints_suppressed_by_type = {"bash_dedup_below_threshold": 2}
+
+        remote = session._fresh_cache("test-per-type-merge-5")
+        remote.hints_emitted_by_type = {"bash_dedup": 2, "read_dedup": 1}
+        remote.hints_suppressed_by_type = {"bash_dedup_below_threshold": 1, "web_dedup_below_threshold": 3}
+
+        merged = session._merge_session_caches(local, remote)
+
+        # Sums should be additive
+        assert merged.hints_emitted_by_type["bash_dedup"] == 5
+        assert merged.hints_emitted_by_type["grep_dedup"] == 1
+        assert merged.hints_emitted_by_type["read_dedup"] == 1
+        assert merged.hints_suppressed_by_type["bash_dedup_below_threshold"] == 3
+        assert merged.hints_suppressed_by_type["web_dedup_below_threshold"] == 3
+
+    def test_multiple_hint_types_tracked_independently(self, tmp_data_dir):
+        """Different hint types are tracked independently."""
+        cache = session._fresh_cache("test-per-type-indep-6")
+
+        cache.record_hint_emitted("read_dedup")
+        cache.record_hint_emitted("bash_dedup")
+        cache.record_hint_emitted("bash_dedup")
+        cache.record_hint_suppressed("grep_dedup_below_threshold")
+        cache.record_hint_suppressed("grep_dedup_below_threshold")
+        cache.record_hint_suppressed("grep_dedup_below_threshold")
+
+        assert cache.hints_emitted_by_type["read_dedup"] == 1
+        assert cache.hints_emitted_by_type["bash_dedup"] == 2
+        assert cache.hints_suppressed_by_type["grep_dedup_below_threshold"] == 3
