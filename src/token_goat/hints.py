@@ -1325,6 +1325,26 @@ def _require_cache(
     return cache
 
 
+# Configurable bash_dedup_min_bytes
+# ---------------------------------------------------------------------------
+
+
+def _get_bash_dedup_min_bytes() -> int:
+    """Return the configured bash dedup minimum bytes threshold.
+
+    Reads from hints.bash_dedup_min_bytes in config (or TOKEN_GOAT_BASH_DEDUP_MIN_BYTES
+    env var). Defaults to _BASH_DEDUP_MIN_BYTES (200) on any error or when config
+    is unavailable. Never raises; fail-soft returns the fallback default.
+    """
+    try:
+        from . import config as _config  # noqa: PLC0415
+
+        cfg = _config.load().hints
+        return cfg.bash_dedup_min_bytes
+    except Exception:  # noqa: BLE001 — fail-soft
+        return _BASH_DEDUP_MIN_BYTES
+
+
 # Curator pass: suppress dedup hints when the agent ignores them
 # ---------------------------------------------------------------------------
 
@@ -1578,9 +1598,11 @@ def build_bash_dedup_hint(
     )
 
 
-# Minimum output size before the bash dedup hint fires.  At 200 bytes the output
-# is ~50 tokens; a short hint costs ~12 tokens, so the net saving is positive.
-_BASH_DEDUP_MIN_BYTES: int = 200
+# Minimum output size before the bash dedup hint fires. Default 200 bytes (~50 tokens);
+# a short hint costs ~12 tokens, netting ~38 tokens saved. Configurable via
+# hints.bash_dedup_min_bytes or TOKEN_GOAT_BASH_DEDUP_MIN_BYTES env var.
+# When below threshold, dedup hint is suppressed and the command re-runs.
+_BASH_DEDUP_MIN_BYTES: int = 200  # fallback default; use _get_bash_dedup_min_bytes() at runtime
 # Below this threshold use a compact one-liner hint to keep net savings positive.
 _BASH_DEDUP_LIGHT_MAX_BYTES: int = 999
 # At this size suggest --grep filtering; the output is large enough that loading
@@ -1628,7 +1650,21 @@ def _build_bash_dedup_hint_inner(
         return None
 
     total_bytes = entry.stdout_bytes + entry.stderr_bytes
-    if total_bytes < _BASH_DEDUP_MIN_BYTES:
+    min_bytes = _get_bash_dedup_min_bytes()
+    if total_bytes < min_bytes:
+        return None
+
+    # Content-aware dedup: only emit hint if we've seen this exact output before.
+    # When output_sha is set (new entries), check if we've already shown this
+    # output content. When output_sha is empty (old sessions), fall back to
+    # checking if we've shown this output_id.
+    dedup_key = entry.output_sha or entry.output_id
+    if dedup_key and dedup_key in (cache.bash_dedup_emitted_ids if cache else set()):
+        # Already showed this output or its content earlier — suppress to avoid repetition.
+        _LOG.debug(
+            "build_bash_dedup_hint: dedup key %s already shown; suppressing",
+            dedup_key[:8] if dedup_key else "?",
+        )
         return None
 
     tokens_avoided = _est_tokens_from_chars(total_bytes)
@@ -1657,8 +1693,8 @@ def _build_bash_dedup_hint_inner(
 
     if total_bytes <= _BASH_DEDUP_LIGHT_MAX_BYTES:
         hint_text = f"{fail_prefix}`{cmd_short}` cached ({int(age)}s, {total_bytes}B{exit_str}). `{recall_cmd}`"
-        if cache is not None and entry.output_id:
-            cache.bash_dedup_emitted_ids.add(entry.output_id)
+        if cache is not None and dedup_key:
+            cache.bash_dedup_emitted_ids.add(dedup_key)
             cache._invalidate_json_cache()
         if cache is not None:
             _record_hint_emitted(cache, cmd_sha)
@@ -1681,8 +1717,8 @@ def _build_bash_dedup_hint_inner(
             f"{fail_prefix}`{cmd_short}` ({int(age)}s): {total_bytes:,}B{exit_str} cached. "
             f"`{recall_cmd}`{grep_suffix}"
         )
-    if cache is not None and entry.output_id:
-        cache.bash_dedup_emitted_ids.add(entry.output_id)
+    if cache is not None and dedup_key:
+        cache.bash_dedup_emitted_ids.add(dedup_key)
         cache._invalidate_json_cache()
     if cache is not None:
         _record_hint_emitted(cache, cmd_sha)

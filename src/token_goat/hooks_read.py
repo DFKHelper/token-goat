@@ -1656,6 +1656,9 @@ def post_bash(payload: HookPayload) -> HookResponse:
             # Inline snippet capped at 200 chars so the manifest line stays short.
             _snippet = (stdout + stderr)[:200].strip()
             _output_id = f"small:{_cmd_sha[:8]}:{int(exit_code)}"
+            # Compute content hash for small outputs too.
+            from . import cache_common as _cc  # noqa: PLC0415
+            _output_sha = _cc.short_content_hash(stdout + stderr)
             try:
                 session.mark_bash_run(
                     session_id=session_id,
@@ -1666,6 +1669,7 @@ def post_bash(payload: HookPayload) -> HookResponse:
                     stderr_bytes=len(stderr.encode("utf-8")),
                     exit_code=exit_code,
                     truncated=False,
+                    output_sha=_output_sha,
                 )
                 _LOG.debug(
                     "post-bash: recorded failed small command exit=%s bytes=%d cmd=%.60s",
@@ -1690,6 +1694,10 @@ def post_bash(payload: HookPayload) -> HookResponse:
         return CONTINUE()
     bash_cache.write_sidecar(meta)
 
+    # Compute content hash of post-compression output for content-aware dedup.
+    from . import cache_common as _cc  # noqa: PLC0415
+    output_sha = _cc.short_content_hash(stdout + stderr)
+
     try:
         session.mark_bash_run(
             session_id=session_id,
@@ -1700,6 +1708,7 @@ def post_bash(payload: HookPayload) -> HookResponse:
             stderr_bytes=meta.stderr_bytes,
             exit_code=meta.exit_code,
             truncated=meta.truncated,
+            output_sha=output_sha,
         )
     except (ValueError, OSError) as exc:
         _LOG.debug("post-bash: session record failed: %s", exc)

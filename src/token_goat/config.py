@@ -49,6 +49,7 @@ _CONFIG_ENV_KEYS: tuple[str, ...] = (
     "TOKEN_GOAT_CURATOR",
     "TOKEN_GOAT_HINT_BUDGET",
     "TOKEN_GOAT_HINT_JSON_SIDECAR",
+    "TOKEN_GOAT_BASH_DEDUP_MIN_BYTES",
     "TOKEN_GOAT_REPOMAP_COMPACT_THRESHOLD",
 )
 
@@ -79,6 +80,7 @@ _ENV_PREFER_AVIF: Final[str] = "TOKEN_GOAT_PREFER_AVIF"  # set to "0"/"false"/"n
 _ENV_CURATOR: Final[str] = "TOKEN_GOAT_CURATOR"  # set to "0"/"false"/"no"/"off" to disable
 _ENV_HINT_BUDGET: Final[str] = "TOKEN_GOAT_HINT_BUDGET"  # set to "0"/"false"/"no"/"off" to disable
 _ENV_HINT_JSON_SIDECAR: Final[str] = "TOKEN_GOAT_HINT_JSON_SIDECAR"  # set to "1"/"true"/"yes"/"on" to enable
+_ENV_BASH_DEDUP_MIN_BYTES: Final[str] = "TOKEN_GOAT_BASH_DEDUP_MIN_BYTES"  # integer override (bytes)
 _ENV_REPOMAP_COMPACT_THRESHOLD: Final[str] = "TOKEN_GOAT_REPOMAP_COMPACT_THRESHOLD"  # integer override
 
 CONFIG_SCHEMA_VERSION: Final[int] = 1
@@ -219,6 +221,7 @@ class _HintsToml(TypedDict, total=False):
     quiet_hours: str
     json_sidecar: bool
     verbose_until_seen_count: int
+    bash_dedup_min_bytes: int
 
 
 class _WebFetchToml(TypedDict, total=False):
@@ -586,6 +589,11 @@ class HintsConfig:
             Default 0 (disabled). When >0, files with fewer lines are not hinted,
             since the cost of the hint (~25 tokens) exceeds the saving on a cheap
             re-read. Surgical hints (symbol/section/diff) are never suppressed.
+        bash_dedup_min_bytes: Minimum output size (bytes of post-compression
+            stdout+stderr) before bash output dedup hints are emitted. Default 200.
+            At 200 bytes output is ~50 tokens; a short dedup hint costs ~12 tokens,
+            netting ~38 tokens saved. Below this threshold the hint cost exceeds
+            the saving and dedup is suppressed. Clamped to [0, 100000].
     """
 
     suppress_after_ignored: int = 5
@@ -596,6 +604,8 @@ class HintsConfig:
     verbose_until_seen_count: int = 2
     # Minimum line count for full-file hints. 0 disables suppression.
     min_file_lines_for_hint: int = 0
+    # Minimum output size (bytes) for bash dedup hints. Default 200.
+    bash_dedup_min_bytes: int = 200
 
 
 @dataclass
@@ -962,9 +972,28 @@ def load() -> Config:
         json_sidecar=_validated_bool(
             hints_raw.get("json_sidecar", False), False, "hints.json_sidecar"
         ),
+        bash_dedup_min_bytes=_validated_int(
+            hints_raw.get("bash_dedup_min_bytes", 200), 200, 0, 100000, "hints.bash_dedup_min_bytes"
+        ),
     )
     # Opt-in env override: TOKEN_GOAT_HINT_JSON_SIDECAR=1/true/yes/on enables.
     _apply_env_enable(hints_cfg, "json_sidecar", _ENV_HINT_JSON_SIDECAR, "hints.json_sidecar")
+    # Integer env override: TOKEN_GOAT_BASH_DEDUP_MIN_BYTES=<bytes> (0-100000)
+    bash_dedup_env = os.environ.get(_ENV_BASH_DEDUP_MIN_BYTES, "").strip()
+    if bash_dedup_env:
+        try:
+            bash_dedup_bytes = int(bash_dedup_env)
+            if 0 <= bash_dedup_bytes <= 100000:
+                _LOG.info(
+                    "hints.bash_dedup_min_bytes overridden by environment: %d",
+                    bash_dedup_bytes,
+                )
+                hints_cfg.bash_dedup_min_bytes = bash_dedup_bytes
+        except ValueError:
+            _LOG.warning(
+                "hints.bash_dedup_min_bytes env override invalid (not an int): %s; ignoring",
+                bash_dedup_env,
+            )
 
     wf_raw: _WebFetchToml = cast("_WebFetchToml", raw.get("webfetch", {}))
     wf_cfg = WebFetchConfig(
