@@ -240,3 +240,75 @@ class TestWebFetchConfig:
 
         cfg = cfg_mod.load()
         assert cfg.webfetch.max_bytes == 8388608
+
+
+class TestHintsConfigRoundTrip:
+    """All HintsConfig fields must survive a load() → save() → load() round-trip.
+
+    These tests guard against the bug where fields added to HintsConfig were
+    not wired into the load() parser or save() serializer, silently discarding
+    any user-configured values.
+    """
+
+    def _reset_cache(self) -> None:
+        import token_goat.config as cfg_mod
+        cfg_mod._config_mtime_cache = None
+
+    def test_verbose_until_seen_count_loads_from_toml(self, tmp_path, monkeypatch):
+        """verbose_until_seen_count is read from [hints] in config.toml."""
+        import token_goat.config as cfg_mod
+        import token_goat.paths as paths_mod
+
+        config_file = tmp_path / "config.toml"
+        config_file.write_text("[hints]\nverbose_until_seen_count = 7\n", encoding="utf-8")
+        monkeypatch.setattr(paths_mod, "config_path", lambda: config_file)
+        self._reset_cache()
+
+        cfg = cfg_mod.load()
+        assert cfg.hints.verbose_until_seen_count == 7
+
+    def test_min_file_lines_for_hint_loads_from_toml(self, tmp_path, monkeypatch):
+        """min_file_lines_for_hint is read from [hints] in config.toml."""
+        import token_goat.config as cfg_mod
+        import token_goat.paths as paths_mod
+
+        config_file = tmp_path / "config.toml"
+        config_file.write_text("[hints]\nmin_file_lines_for_hint = 50\n", encoding="utf-8")
+        monkeypatch.setattr(paths_mod, "config_path", lambda: config_file)
+        self._reset_cache()
+
+        cfg = cfg_mod.load()
+        assert cfg.hints.min_file_lines_for_hint == 50
+
+    def test_all_hints_fields_survive_save_load_roundtrip(self, tmp_path, monkeypatch):
+        """Every HintsConfig field survives a save() → load() cycle."""
+        import token_goat.config as cfg_mod
+        import token_goat.paths as paths_mod
+
+        config_file = tmp_path / "config.toml"
+        monkeypatch.setattr(paths_mod, "config_path", lambda: config_file)
+        self._reset_cache()
+
+        # Build a config with non-default values for all hints fields.
+        cfg = cfg_mod.load()
+        cfg.hints.suppress_after_ignored = 3
+        cfg.hints.quiet_hours = "22:00-07:00"
+        cfg.hints.json_sidecar = True
+        cfg.hints.verbose_until_seen_count = 5
+        cfg.hints.min_file_lines_for_hint = 30
+        cfg.hints.bash_dedup_min_bytes = 500
+        cfg.hints.web_dedup_min_bytes = 600
+        cfg.hints.grep_dedup_min_matches = 10
+
+        cfg_mod.save(cfg)
+        self._reset_cache()
+
+        reloaded = cfg_mod.load()
+        assert reloaded.hints.suppress_after_ignored == 3
+        assert reloaded.hints.quiet_hours == "22:00-07:00"
+        assert reloaded.hints.json_sidecar is True
+        assert reloaded.hints.verbose_until_seen_count == 5
+        assert reloaded.hints.min_file_lines_for_hint == 30
+        assert reloaded.hints.bash_dedup_min_bytes == 500
+        assert reloaded.hints.web_dedup_min_bytes == 600
+        assert reloaded.hints.grep_dedup_min_matches == 10

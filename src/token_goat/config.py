@@ -236,6 +236,7 @@ class _HintsToml(TypedDict, total=False):
     quiet_hours: str
     json_sidecar: bool
     verbose_until_seen_count: int
+    min_file_lines_for_hint: int
     bash_dedup_min_bytes: int
     web_dedup_min_bytes: int
     grep_dedup_min_matches: int
@@ -1046,6 +1047,12 @@ def load() -> Config:
         json_sidecar=_validated_bool(
             hints_raw.get("json_sidecar", False), False, "hints.json_sidecar"
         ),
+        verbose_until_seen_count=_validated_int(
+            hints_raw.get("verbose_until_seen_count", 2), 2, 0, 1000, "hints.verbose_until_seen_count"
+        ),
+        min_file_lines_for_hint=_validated_int(
+            hints_raw.get("min_file_lines_for_hint", 0), 0, 0, 100000, "hints.min_file_lines_for_hint"
+        ),
         bash_dedup_min_bytes=_validated_int(
             hints_raw.get("bash_dedup_min_bytes", 200), 200, 0, 100000, "hints.bash_dedup_min_bytes"
         ),
@@ -1208,6 +1215,7 @@ def save(config: Config) -> None:
             "noise_floor_tokens": ca.noise_floor_tokens,
             "edited_dir_group_threshold": ca.edited_dir_group_threshold,
             "max_section_lines": ca.max_section_lines,
+            "wide_session_threshold": ca.wide_session_threshold,
         },
         "bash_compress": {
             "enabled": bc.enabled,
@@ -1252,6 +1260,11 @@ def save(config: Config) -> None:
             "suppress_after_ignored": config.hints.suppress_after_ignored,
             "quiet_hours": config.hints.quiet_hours,
             "json_sidecar": config.hints.json_sidecar,
+            "verbose_until_seen_count": config.hints.verbose_until_seen_count,
+            "min_file_lines_for_hint": config.hints.min_file_lines_for_hint,
+            "bash_dedup_min_bytes": config.hints.bash_dedup_min_bytes,
+            "web_dedup_min_bytes": config.hints.web_dedup_min_bytes,
+            "grep_dedup_min_matches": config.hints.grep_dedup_min_matches,
         },
         "webfetch": {
             "allow": config.webfetch.allow,
