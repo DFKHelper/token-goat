@@ -36,6 +36,7 @@ from urllib.parse import urlparse
 from . import paths
 from .cache_common import short_content_hash as _short_content_hash
 from .cache_common import short_output_id as _short_id
+from .config import Config as _Config
 from .config import load as _load_config
 from .hooks_common import sanitize_log_str
 from .util import _humanize_bytes, ellipsize, get_logger
@@ -2539,14 +2540,7 @@ def build_manifest_adaptive(session_id: str) -> str:
         activity_score,
     )
     cfg = _load_config()
-    return _build_manifest_from_cache(
-        cache,
-        session_id,
-        budget,
-        edited_dir_group_threshold=cfg.compact_assist.edited_dir_group_threshold,
-        max_section_lines=cfg.compact_assist.max_section_lines,
-        wide_session_threshold=cfg.compact_assist.wide_session_threshold,
-    )
+    return _build_manifest_from_cache(cache, session_id, budget, **_compact_render_kwargs(cfg))
 
 
 def event_count(session_id: str) -> int:
@@ -2567,6 +2561,20 @@ def event_count(session_id: str) -> int:
         + len(getattr(cache, "bash_history", {}) or {})
         + len(getattr(cache, "skill_history", {}) or {})
     )
+
+
+def _compact_render_kwargs(cfg: _Config) -> dict[str, int]:
+    """Unpack the three render-tuning fields from *cfg* into a kwargs dict.
+
+    Used by the three public ``build_manifest*`` entry points so the field
+    list lives in exactly one place.
+    """
+    ca = cfg.compact_assist
+    return {
+        "edited_dir_group_threshold": ca.edited_dir_group_threshold,
+        "max_section_lines": ca.max_section_lines,
+        "wide_session_threshold": ca.wide_session_threshold,
+    }
 
 
 def _build_manifest_from_cache(
@@ -2727,12 +2735,7 @@ def build_manifest(session_id: str, *, max_tokens: int = 400) -> str:
     # Cache miss or TTL expired: render the full manifest.
     cfg = _load_config()
     full_manifest = _build_manifest_from_cache(
-        cache,
-        session_id,
-        max_tokens,
-        edited_dir_group_threshold=cfg.compact_assist.edited_dir_group_threshold,
-        max_section_lines=cfg.compact_assist.max_section_lines,
-        wide_session_threshold=cfg.compact_assist.wide_session_threshold,
+        cache, session_id, max_tokens, **_compact_render_kwargs(cfg)
     )
     if not full_manifest:
         return full_manifest
@@ -2792,12 +2795,7 @@ def build_manifest_with_count(
     )
     cfg = _load_config()
     manifest = _build_manifest_from_cache(
-        cache,
-        session_id,
-        max_tokens,
-        edited_dir_group_threshold=cfg.compact_assist.edited_dir_group_threshold,
-        max_section_lines=cfg.compact_assist.max_section_lines,
-        wide_session_threshold=cfg.compact_assist.wide_session_threshold,
+        cache, session_id, max_tokens, **_compact_render_kwargs(cfg)
     )
     return manifest, n_events
 
