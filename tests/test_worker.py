@@ -995,6 +995,75 @@ def test_is_worker_alive_no_heartbeat_dead_pid(tmp_data_dir):
 
 
 # ---------------------------------------------------------------------------
+# 16c. is_worker_alive — startup grace (live pid, no heartbeat yet)
+# ---------------------------------------------------------------------------
+
+
+def test_is_worker_alive_startup_grace_no_heartbeat(tmp_data_dir, monkeypatch):
+    """A live process with no heartbeat file yet must be treated as alive during
+    the startup grace window.  This prevents spurious re-spawns in the first
+    WORKER_STARTUP_GRACE seconds of a fresh worker process.
+    """
+    paths.ensure_dirs()
+    pid = os.getpid()
+    paths.worker_pid_path().write_text(str(pid), encoding="utf-8")
+    # Ensure no heartbeat file exists.
+    hb = paths.worker_heartbeat_path()
+    hb.unlink(missing_ok=True)
+
+    # Patch _is_process_recent to return True (simulating a very new process).
+    monkeypatch.setattr(worker, "_is_process_recent", lambda _pid: True)
+
+    assert worker.is_worker_alive() is True
+
+
+def test_is_worker_alive_startup_grace_expired_no_heartbeat(tmp_data_dir, monkeypatch):
+    """Once the startup grace period expires, a missing heartbeat means the
+    worker is not alive — it should not be left indefinitely un-restarted.
+    """
+    paths.ensure_dirs()
+    pid = os.getpid()
+    paths.worker_pid_path().write_text(str(pid), encoding="utf-8")
+    hb = paths.worker_heartbeat_path()
+    hb.unlink(missing_ok=True)
+
+    # Patch _is_process_recent to return False (grace window expired).
+    monkeypatch.setattr(worker, "_is_process_recent", lambda _pid: False)
+
+    assert worker.is_worker_alive() is False
+
+
+def test_is_heartbeat_stale_for_nudge_missing_file(tmp_data_dir):
+    """A missing heartbeat file must be treated as stale so the post-edit hook
+    triggers ensure_running and a new worker is spawned.
+    """
+    hb = paths.worker_heartbeat_path()
+    hb.unlink(missing_ok=True)
+    assert worker.is_heartbeat_stale_for_nudge(hb) is True
+
+
+def test_ensure_running_clears_pid_before_spawn(tmp_data_dir, monkeypatch):
+    """ensure_running must call _clear_pid() before spawning a new worker so the
+    fresh worker can claim the pid slot without finding a stale PID file.
+    """
+    clear_calls: list[int] = []
+
+    def _spy_clear_pid():
+        clear_calls.append(1)
+
+    monkeypatch.setattr(worker, "is_worker_alive", lambda: False)
+    monkeypatch.setattr(worker, "_reap_hung_worker", lambda: False)
+    monkeypatch.setattr(worker, "_live_worker_pid", lambda: None)
+    monkeypatch.setattr(worker, "_clear_pid", _spy_clear_pid)
+    monkeypatch.setattr(worker, "spawn_detached", lambda: 999)
+
+    result = worker.ensure_running()
+
+    assert result == 999
+    assert len(clear_calls) == 1, "_clear_pid must be called exactly once before spawn"
+
+
+# ---------------------------------------------------------------------------
 # 17. cleanup_on_startup with mixed stale/fresh locks
 # ---------------------------------------------------------------------------
 
