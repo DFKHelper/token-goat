@@ -1994,11 +1994,6 @@ def _build_glob_dedup_hint_inner(
 # WebFetch dedup hint
 # ---------------------------------------------------------------------------
 
-# Minimum response body size (bytes) before a WebFetch re-run is worth
-# deduplicating.  Pages under this threshold are cheap to re-fetch and the
-# hint preamble would approach the saving.  1 KB matches the typical
-# "interesting" threshold for HTML/JSON responses.
-_WEB_DEDUP_MIN_BYTES: int = 1024
 
 
 @_failsoft_hint
@@ -2064,7 +2059,8 @@ def _build_web_dedup_hint_inner(
         )
         _record_dedup_stale("web_dedup_stale", _sanitize_hint_path(url))
         return None
-    if entry.body_bytes < _WEB_DEDUP_MIN_BYTES:
+    cfg = config.load()
+    if cfg.hints.web_dedup_min_bytes == 0 or entry.body_bytes < cfg.hints.web_dedup_min_bytes:
         return None
 
     tokens_avoided = _est_tokens_from_chars(entry.body_bytes)
