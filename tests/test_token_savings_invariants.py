@@ -403,7 +403,7 @@ class TestMarkerStringConciseness:
         from token_goat.hints import _GREP_DEDUP_MIN_RESULT_COUNT
 
         assert _GREP_DEDUP_MIN_RESULT_COUNT > 0
-        assert _GREP_DEDUP_MIN_RESULT_COUNT == 8
+        assert _GREP_DEDUP_MIN_RESULT_COUNT == 5
 
 
 # ---------------------------------------------------------------------------

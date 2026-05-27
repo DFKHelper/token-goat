@@ -184,6 +184,8 @@ class _SkillPreservationToml(TypedDict, total=False):
 
     enabled: bool
     max_cache_bytes: int
+    orphan_sweep_enabled: bool
+    orphan_age_secs: int
 
 
 class _ImageShrinkToml(TypedDict, total=False):
@@ -420,10 +422,21 @@ class SkillPreservationConfig:
             exceeded, oldest entries are evicted until the cap is met.
             Default 5 MB holds dozens of skill bodies; raise for environments
             that load very large skills repeatedly.
+        orphan_sweep_enabled: When ``True``, a one-shot sweep at startup removes
+            skill body blobs older than ``orphan_age_secs``.  Sessions never
+            last more than a few hours, so any body older than the default
+            7 days is dead by definition.  Disable via
+            ``TOKEN_GOAT_ORPHAN_SWEEP=0`` or ``orphan_sweep_enabled = false``
+            in ``[skill_preservation]``.
+        orphan_age_secs: Age threshold for the orphan sweep (default 7 days).
+            Blobs whose mtime is older than this are removed.  Valid range:
+            1 s – 30 days (2 592 000 s).
     """
 
     enabled: bool = True
     max_cache_bytes: int = 5 * 1024 * 1024
+    orphan_sweep_enabled: bool = True
+    orphan_age_secs: int = 604800
 
 
 @dataclass
@@ -941,8 +954,15 @@ def load() -> Config:
             512 * 1024 * 1024,   # 512 MB ceiling — generous; skills are not that big
             "skill_preservation.max_cache_bytes",
         ),
+        orphan_sweep_enabled=_validated_bool(
+            sp_raw.get("orphan_sweep_enabled", True), True, "skill_preservation.orphan_sweep_enabled",
+        ),
+        orphan_age_secs=_validated_int(
+            sp_raw.get("orphan_age_secs", 604800), 604800, 1, 2_592_000, "skill_preservation.orphan_age_secs",
+        ),
     )
     _apply_env_disable(sp, "enabled", _ENV_SKILL_PRESERVATION, "skill_preservation")
+    _apply_env_disable(sp, "orphan_sweep_enabled", _ENV_ORPHAN_SWEEP, "skill_preservation.orphan_sweep_enabled")
 
     is_raw: _ImageShrinkToml = cast("_ImageShrinkToml", raw.get("image_shrink", {}))
     is_cfg = ImageShrinkConfig(
