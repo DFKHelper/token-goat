@@ -2314,3 +2314,94 @@ def test_gc_orphaned_projects_toctou_concurrent_touch_preserves_row(tmp_data_dir
     with _db.open_global() as gconn:
         row = gconn.execute("SELECT root FROM projects WHERE hash = ?", (ph,)).fetchone()
     assert row is not None, "TOCTOU: row was deleted despite concurrent last_seen update"
+
+
+# ---------------------------------------------------------------------------
+# _cleanup_old_sessions — session JSON eviction
+# ---------------------------------------------------------------------------
+
+
+def _make_session_file(sessions_dir, name: str, age_secs: float):
+    """Create a session JSON file backdated by age_secs."""
+    f = sessions_dir / name
+    f.write_text("{}", encoding="utf-8")
+    old = time.time() - age_secs
+    os.utime(f, (old, old))
+    return f
+
+
+def test_cleanup_old_sessions_removes_stale(tmp_data_dir):
+    """Session JSONs older than SESSION_RETENTION_DAYS are removed."""
+    from token_goat import paths as _paths
+
+    sessions_dir = _paths.data_dir() / "sessions"
+    sessions_dir.mkdir(parents=True, exist_ok=True)
+
+    old_age = (worker._SESSION_RETENTION_DAYS + 1) * 86400
+    stale = _make_session_file(sessions_dir, "stale-session.json", old_age)
+    fresh = _make_session_file(sessions_dir, "fresh-session.json", 3600)
+
+    removed = worker._cleanup_old_sessions()
+
+    assert removed == 1
+    assert not stale.exists()
+    assert fresh.exists()
+
+
+def test_cleanup_old_sessions_spares_fresh(tmp_data_dir):
+    """Session JSONs within the retention window are left alone."""
+    from token_goat import paths as _paths
+
+    sessions_dir = _paths.data_dir() / "sessions"
+    sessions_dir.mkdir(parents=True, exist_ok=True)
+
+    recent = _make_session_file(sessions_dir, "recent.json", 60)
+
+    removed = worker._cleanup_old_sessions()
+
+    assert removed == 0
+    assert recent.exists()
+
+
+def test_cleanup_old_sessions_ignores_non_json(tmp_data_dir):
+    """Non-JSON files in the sessions directory are not touched."""
+    from token_goat import paths as _paths
+
+    sessions_dir = _paths.data_dir() / "sessions"
+    sessions_dir.mkdir(parents=True, exist_ok=True)
+
+    old_age = (worker._SESSION_RETENTION_DAYS + 1) * 86400
+    non_json = _make_session_file(sessions_dir, "not-a-session.txt", old_age)
+
+    removed = worker._cleanup_old_sessions()
+
+    assert removed == 0
+    assert non_json.exists()
+
+
+def test_cleanup_old_sessions_no_dir_returns_zero(tmp_data_dir):
+    """Returns 0 gracefully when the sessions directory does not exist."""
+    from token_goat import paths as _paths
+
+    sessions_dir = _paths.data_dir() / "sessions"
+    assert not sessions_dir.exists()
+
+    removed = worker._cleanup_old_sessions()
+
+    assert removed == 0
+
+
+def test_cleanup_old_sessions_wired_into_cleanup_on_startup(tmp_data_dir, monkeypatch):
+    """cleanup_on_startup must call _cleanup_old_sessions and record its result."""
+    calls: list[int] = []
+
+    def _fake_cleanup() -> int:
+        calls.append(1)
+        return 3
+
+    monkeypatch.setattr(worker, "_cleanup_old_sessions", _fake_cleanup)
+
+    stats = worker.cleanup_on_startup()
+
+    assert len(calls) == 1
+    assert stats.get("old_sessions_removed") == 3

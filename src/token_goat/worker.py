@@ -77,6 +77,7 @@ class CleanupStats(TypedDict, total=False):
     wal_bytes_reclaimed: int
     project_wal_bytes_reclaimed: int
     orphaned_projects_removed: int
+    old_sessions_removed: int
     failures: list[str]  # task names that raised during cleanup
 
 
@@ -994,6 +995,45 @@ def _gc_orphaned_projects() -> int:
     return removed
 
 
+_SESSION_RETENTION_DAYS = 7
+
+
+def _cleanup_old_sessions() -> int:
+    """Remove session JSON files older than SESSION_RETENTION_DAYS days.
+
+    Session JSONs accumulate indefinitely under ``sessions/`` — one per Claude
+    Code session.  Each file is at most a few KB, but long-lived installations
+    can accumulate thousands.  Files are safe to remove once the session they
+    describe has been over for a week: no running hook will reference a session
+    that old.
+    """
+    from . import paths as _paths  # noqa: PLC0415
+
+    sessions_dir = _paths.data_dir() / "sessions"
+    if not sessions_dir.is_dir():
+        return 0
+    max_age = _SESSION_RETENTION_DAYS * 86400
+    now = time.time()
+    removed = 0
+    try:
+        for fp in sessions_dir.iterdir():
+            if fp.suffix != ".json":
+                continue
+            try:
+                if now - fp.stat().st_mtime > max_age:
+                    fp.unlink()
+                    removed += 1
+                    _LOG.debug("_cleanup_old_sessions: removed %s", fp.name)
+            except OSError:
+                continue
+    except OSError as exc:
+        _LOG.debug("_cleanup_old_sessions: directory scan failed: %s", exc)
+        return removed
+    if removed > 0:
+        _LOG.info("_cleanup_old_sessions: removed %d stale session JSON(s)", removed)
+    return removed
+
+
 def cleanup_on_startup() -> CleanupStats:
     """Run all self-healing tasks on daemon startup. Returns a summary with counts and failures.
 
@@ -1007,6 +1047,7 @@ def cleanup_on_startup() -> CleanupStats:
     * ``evict_image_cache_if_over_limit`` — LRU-evict images when cache exceeds 500 MB.
     * ``_checkpoint_global_wal``   — TRUNCATE-checkpoint global.db's WAL so it cannot grow unbounded.
     * ``_gc_orphaned_projects``    — delete rows/DBs for projects whose root dirs no longer exist.
+    * ``_cleanup_old_sessions``    — delete session JSON files older than SESSION_RETENTION_DAYS days.
     """
     stats: CleanupStats = {
         "stale_locks_cleared": 0,
@@ -1016,6 +1057,7 @@ def cleanup_on_startup() -> CleanupStats:
         "image_files_evicted": 0,
         "stats_rows_pruned": 0,
         "orphaned_projects_removed": 0,
+        "old_sessions_removed": 0,
     }
     failures: list[str] = []
 
@@ -1032,6 +1074,7 @@ def cleanup_on_startup() -> CleanupStats:
         ("wal_checkpoint", _checkpoint_global_wal, "wal_bytes_reclaimed"),
         ("project_wal_checkpoint", _checkpoint_project_wals, "project_wal_bytes_reclaimed"),
         ("gc_orphaned_projects", _gc_orphaned_projects, "orphaned_projects_removed"),
+        ("old_sessions", _cleanup_old_sessions, "old_sessions_removed"),
     ]
     for task_name, task_fn, stat_key in _int_tasks:
         try:
@@ -1063,7 +1106,7 @@ def cleanup_on_startup() -> CleanupStats:
         "startup cleanup complete: locks_cleared=%d index_markers_cleared=%d logs_deleted=%d "
         "stats_rows_pruned=%d image_bytes_evicted=%d image_files_evicted=%d "
         "snapshots_cleared=%d bash_outputs_evicted=%d wal_bytes_reclaimed=%d "
-        "orphaned_projects_removed=%d%s",
+        "orphaned_projects_removed=%d old_sessions_removed=%d%s",
         stats.get("stale_locks_cleared", 0),
         stats.get("stale_index_markers_cleared", 0),
         stats.get("logs_deleted", 0),
@@ -1074,6 +1117,7 @@ def cleanup_on_startup() -> CleanupStats:
         stats.get("bash_outputs_evicted", 0),
         stats.get("wal_bytes_reclaimed", 0),
         stats.get("orphaned_projects_removed", 0),
+        stats.get("old_sessions_removed", 0),
         f" failures={failures}" if failures else "",
     )
     return stats
