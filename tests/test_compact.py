@@ -6108,6 +6108,41 @@ class TestManifestCacheStub:
         # manifest, since the future ts indicates a corrupted/stale sidecar.
         assert "Δ since last compact" not in rebuilt
 
+    def test_sidecar_uses_atomic_write_text(self, tmp_data_dir, monkeypatch):
+        """_save_manifest_sha_sidecar must call paths.atomic_write_text, not write_text.
+
+        The old implementation used a fixed .tmp suffix + replace(), which races
+        when two processes write for the same session.  The shared atomic_write
+        uses thread-id + monotonic_ns temp names and Windows-retry rename.
+        """
+        import json as _json
+
+        from token_goat import compact as _compact
+        from token_goat import paths
+
+        atomic_calls: list[tuple[object, str]] = []
+        original_atomic = paths.atomic_write_text
+
+        def _spy(path, content):
+            if "manifest_sha" in str(path):
+                atomic_calls.append((path, content))
+            original_atomic(path, content)
+
+        monkeypatch.setattr(paths, "atomic_write_text", _spy)
+
+        sid = "sidecar-atomic-test-001"
+        _compact._manifest_sha_written_this_process.discard(sid)
+        # Give the session some edited files so build_manifest emits a full manifest
+        # (and therefore writes the sidecar) rather than hitting the activity floor.
+        session.mark_file_edited(sid, "/proj/src/auth.py")
+        session.mark_file_edited(sid, "/proj/src/utils.py")
+        _compact.build_manifest(sid)
+
+        assert atomic_calls, "atomic_write_text was not called for manifest-sha sidecar"
+        sidecar_path, payload = atomic_calls[0]
+        data = _json.loads(payload)
+        assert "sha" in data and "fp" in data
+
 
 class TestManifestDelta:
     """Item #26: **Δ since last compact:** mini-section at top of manifest.

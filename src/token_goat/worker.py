@@ -377,12 +377,12 @@ def is_worker_alive() -> bool:
 
 def _write_pid() -> None:
     """Write the current process ID to the worker PID file for liveness tracking."""
-    paths.worker_pid_path().write_text(str(os.getpid()), encoding="utf-8")
+    paths.atomic_write_text(paths.worker_pid_path(), str(os.getpid()))
 
 
 def _heartbeat() -> None:
     """Write current timestamp to heartbeat file to indicate the worker is alive."""
-    paths.worker_heartbeat_path().write_text(str(time.time()), encoding="utf-8")
+    paths.atomic_write_text(paths.worker_heartbeat_path(), str(time.time()))
 
 
 def _clear_pid() -> None:
@@ -1492,8 +1492,7 @@ def spawn_index_detached(project_root: str, project_hash: str) -> int | None:
     # Record the spawn so concurrent SessionStart hooks don't pile on. The
     # marker self-expires via PID-liveness + TTL — no explicit cleanup needed.
     with contextlib.suppress(OSError):
-        paths.ensure_dir(marker.parent)
-        marker.write_text(f"{proc.pid}\n{time.time()}", encoding="utf-8")
+        paths.atomic_write_text(marker, f"{proc.pid}\n{time.time()}")
     _LOG.info("auto-index spawned for %s (root=%s, pid=%d)", project_hash[:8], project_root, proc.pid)
     return proc.pid
 

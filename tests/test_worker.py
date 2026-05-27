@@ -73,6 +73,47 @@ def test_is_worker_alive_stale_heartbeat(tmp_data_dir):
 
 
 # ---------------------------------------------------------------------------
+# _write_pid / _heartbeat — atomic write contract
+# ---------------------------------------------------------------------------
+
+
+def test_write_pid_calls_atomic_write_text(tmp_data_dir, monkeypatch):
+    """_write_pid() must delegate to paths.atomic_write_text, not write_text."""
+    calls: list[tuple[object, str]] = []
+
+    def _spy(path, content):
+        calls.append((path, content))
+
+    monkeypatch.setattr(paths, "atomic_write_text", _spy)
+    worker._write_pid()
+
+    assert len(calls) == 1
+    assert calls[0][0] == paths.worker_pid_path()
+    assert calls[0][1] == str(os.getpid())
+
+
+def test_heartbeat_calls_atomic_write_text(tmp_data_dir, monkeypatch):
+    """_heartbeat() must delegate to paths.atomic_write_text, not write_text."""
+    import math
+
+    calls: list[tuple[object, str]] = []
+
+    def _spy(path, content):
+        calls.append((path, content))
+
+    monkeypatch.setattr(paths, "atomic_write_text", _spy)
+    before = time.time()
+    worker._heartbeat()
+    after = time.time()
+
+    assert len(calls) == 1
+    assert calls[0][0] == paths.worker_heartbeat_path()
+    written_ts = float(calls[0][1])
+    assert not math.isnan(written_ts)
+    assert before <= written_ts <= after + 1.0
+
+
+# ---------------------------------------------------------------------------
 # 5. enqueue_dirty + drain_dirty_queue: append-read-clear cycle
 # ---------------------------------------------------------------------------
 
