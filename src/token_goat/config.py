@@ -161,6 +161,7 @@ class _CompactAssistToml(TypedDict, total=False):
     noise_floor_tokens: int
     edited_dir_group_threshold: int
     max_section_lines: int
+    wide_session_threshold: int
 
 
 class _BashCompressToml(TypedDict, total=False):
@@ -346,6 +347,12 @@ class CompactAssistConfig:
     # "- ... (+N more)". Prevents a single bloated section from dominating the
     # manifest budget at the expense of other sections. Default 0 disables capping.
     max_section_lines: int = 0
+    # Wide-session threshold: when a session has accessed at least this many
+    # unique files, the Symbols Accessed section is replaced by a single
+    # ``token-goat map --compact`` pointer. At wide-session scale the per-file
+    # symbol listing consumes 200–300 tokens the compaction LLM cannot usefully
+    # retain. Clamped to [1, 10000]. Default 15.
+    wide_session_threshold: int = 15
 
 
 @dataclass
@@ -907,6 +914,9 @@ def load() -> Config:
         ),
         max_section_lines=_validated_int(
             ca_raw.get("max_section_lines", 0), 0, 0, 10000, "compact_assist.max_section_lines"
+        ),
+        wide_session_threshold=_validated_int(
+            ca_raw.get("wide_session_threshold", 15), 15, 1, 10000, "compact_assist.wide_session_threshold"
         ),
     )
 
