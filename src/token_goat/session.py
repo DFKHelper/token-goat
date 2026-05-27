@@ -554,6 +554,11 @@ class BashEntry:
     human-readable display in ``token-goat bash-history``; the full command is
     not persisted because it is recoverable from agent context if needed and
     storing arbitrary user input in session JSON is a privacy concern.
+
+    ``output_sha`` is the content hash of post-compression stdout+stderr
+    (first 16 hex chars of SHA-256). Used for content-aware dedup so the same
+    command with different output does not trigger a false dedup hint.
+    Empty string for backward compatibility with old session caches.
     """
 
     cmd_sha: str
@@ -565,6 +570,7 @@ class BashEntry:
     exit_code: int | None = None
     truncated: bool = False
     run_count: int = 1
+    output_sha: str = ""  # Content hash of post-compression output (16 hex chars)
 
 
 @dataclass
@@ -1366,6 +1372,7 @@ def _serialize_bash_entry(entry: BashEntry) -> _BashEntryDict:
         exit_code=entry.exit_code,
         truncated=entry.truncated,
         run_count=entry.run_count,
+        output_sha=entry.output_sha,
     )
 
 
@@ -1578,6 +1585,7 @@ class _BashEntryDict(TypedDict, total=False):
     exit_code: int | None
     truncated: bool
     run_count: int
+    output_sha: str  # Content hash of post-compression output (new field, optional)
 
 
 class _WebEntryDict(TypedDict, total=False):
@@ -1661,6 +1669,7 @@ def _parse_bash_entry(v: dict[str, Any]) -> BashEntry | None:
             exit_code = raw_exit
         raw_run_count = d.get("run_count", 1)
         run_count = max(1, int(raw_run_count)) if isinstance(raw_run_count, (int, float)) else 1
+        output_sha = str(d.get("output_sha", ""))  # Empty string for backward compat
         return BashEntry(
             cmd_sha=str(d.get("cmd_sha", "")),
             cmd_preview=str(d.get("cmd_preview", "")),
@@ -1671,6 +1680,7 @@ def _parse_bash_entry(v: dict[str, Any]) -> BashEntry | None:
             exit_code=exit_code,
             truncated=bool(d.get("truncated", False)),
             run_count=run_count,
+            output_sha=output_sha if isinstance(output_sha, str) else "",
         )
     return _safe_parse(_inner, v, "bash")
 
@@ -2907,6 +2917,7 @@ def mark_bash_run(
     exit_code: int | None,
     truncated: bool,
     *,
+    output_sha: str = "",
     cache: SessionCache | None = None,
 ) -> SessionCache:
     """Record a Bash invocation in the per-session history.
@@ -2917,6 +2928,9 @@ def mark_bash_run(
     (credentials, file paths) longer than necessary.  ``cmd_preview`` is the
     first 120 characters of the command, which is enough to identify a re-run
     while remaining bounded.
+
+    *output_sha* is the content hash of post-compression stdout+stderr
+    (first 16 hex chars) for content-aware dedup. Empty string for backward compat.
 
     FIFO eviction batches removals at ``_BASH_HISTORY_EVICT`` so a hot retry
     loop does not rewrite the dict on every single insert.
@@ -2945,6 +2959,7 @@ def mark_bash_run(
         exit_code=exit_code if is_real_int(exit_code) else None,
         truncated=bool(truncated),
         run_count=prior_run_count + 1,
+        output_sha=output_sha if isinstance(output_sha, str) else "",
     )
     _append_to_dict_history(
         cache.bash_history,
