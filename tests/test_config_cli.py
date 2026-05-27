@@ -214,3 +214,116 @@ def test_config_list_marks_changed_keys(tmp_data_dir):
     )
     assert changed_line is not None
     assert changed_line.startswith("*")
+
+
+class TestConfigValidate:
+    """Tests for ``token-goat config validate``."""
+
+    def test_no_config_file_reports_ok(self, tmp_data_dir):
+        runner = CliRunner()
+        result = runner.invoke(app, ["config", "validate", "--json"])
+        assert result.exit_code == 0
+        data = json.loads(result.output)
+        assert data["ok"] is True
+
+    def test_empty_config_reports_ok(self, tmp_data_dir, tmp_path):
+        cfg_path = tmp_path / "config.toml"
+        cfg_path.write_text("", encoding="utf-8")
+        import unittest.mock as mock
+
+        import token_goat.paths as _paths
+        runner = CliRunner()
+        with mock.patch.object(_paths, "config_path", return_value=cfg_path):
+            result = runner.invoke(app, ["config", "validate", "--json"])
+        assert result.exit_code == 0
+        assert json.loads(result.output)["ok"] is True
+
+    def test_all_known_section_keys_pass(self, tmp_data_dir, tmp_path):
+        import dataclasses
+        import unittest.mock as mock
+
+        import token_goat.paths as _paths
+
+        sections = {
+            "compact_assist": config_mod.CompactAssistConfig,
+            "bash_compress": config_mod.BashCompressConfig,
+            "session_brief": config_mod.SessionBriefConfig,
+            "skill_preservation": config_mod.SkillPreservationConfig,
+            "image_shrink": config_mod.ImageShrinkConfig,
+            "curator": config_mod.CuratorConfig,
+            "hint_budget": config_mod.HintBudgetConfig,
+            "hints": config_mod.HintsConfig,
+            "repomap": config_mod.RepomapConfig,
+            "stats": config_mod.StatsConfig,
+            "webfetch": config_mod.WebFetchConfig,
+        }
+        lines = ["schema_version = 1\n"]
+        for section, cls in sections.items():
+            lines.append(f"[{section}]\n")
+            for f in dataclasses.fields(cls):
+                val = getattr(cls(), f.name)
+                if isinstance(val, bool):
+                    lines.append(f"{f.name} = {'true' if val else 'false'}\n")
+                elif isinstance(val, (int, float)):
+                    lines.append(f"{f.name} = {val}\n")
+                elif isinstance(val, list):
+                    items = ", ".join(f'"{x}"' for x in val)
+                    lines.append(f"{f.name} = [{items}]\n")
+                elif isinstance(val, str):
+                    lines.append(f'{f.name} = "{val}"\n')
+
+        cfg_path = tmp_path / "config.toml"
+        cfg_path.write_text("".join(lines), encoding="utf-8")
+        runner = CliRunner()
+        with mock.patch.object(_paths, "config_path", return_value=cfg_path):
+            result = runner.invoke(app, ["config", "validate", "--json"])
+        data = json.loads(result.output)
+        assert data["ok"] is True, f"Unexpected issues: {data.get('issues')}"
+
+    def test_unknown_top_level_key_flagged(self, tmp_data_dir, tmp_path):
+        import unittest.mock as mock
+
+        import token_goat.paths as _paths
+
+        cfg_path = tmp_path / "config.toml"
+        cfg_path.write_text("[compac_assist]\nenabled = true\n", encoding="utf-8")
+        runner = CliRunner()
+        with mock.patch.object(_paths, "config_path", return_value=cfg_path):
+            result = runner.invoke(app, ["config", "validate", "--json"])
+        assert result.exit_code == 1
+        data = json.loads(result.output)
+        assert data["ok"] is False
+        assert any("compac_assist" in i["key"] for i in data["issues"])
+        assert any("compact_assist" in i.get("suggestion", "") for i in data["issues"])
+
+    def test_unknown_section_sub_key_flagged(self, tmp_data_dir, tmp_path):
+        import unittest.mock as mock
+
+        import token_goat.paths as _paths
+
+        cfg_path = tmp_path / "config.toml"
+        cfg_path.write_text("[compact_assist]\nmin_eventss = 5\n", encoding="utf-8")
+        runner = CliRunner()
+        with mock.patch.object(_paths, "config_path", return_value=cfg_path):
+            result = runner.invoke(app, ["config", "validate", "--json"])
+        assert result.exit_code == 1
+        data = json.loads(result.output)
+        assert data["ok"] is False
+        assert any("min_eventss" in i["key"] for i in data["issues"])
+        assert any("min_events" in i.get("suggestion", "") for i in data["issues"])
+
+    def test_hints_and_webfetch_sections_accepted(self, tmp_data_dir, tmp_path):
+        import unittest.mock as mock
+
+        import token_goat.paths as _paths
+
+        cfg_path = tmp_path / "config.toml"
+        cfg_path.write_text(
+            "[hints]\njson_sidecar = true\n\n[webfetch]\nmax_file_count = 1000\n",
+            encoding="utf-8",
+        )
+        runner = CliRunner()
+        with mock.patch.object(_paths, "config_path", return_value=cfg_path):
+            result = runner.invoke(app, ["config", "validate", "--json"])
+        data = json.loads(result.output)
+        assert data["ok"] is True, f"Unexpected issues: {data.get('issues')}"
