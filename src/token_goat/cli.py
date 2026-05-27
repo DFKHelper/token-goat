@@ -3160,8 +3160,12 @@ def config_validate(
     """
     import difflib  # noqa: PLC0415
     import tomllib  # noqa: PLC0415
+    from dataclasses import fields as _dc_fields  # noqa: PLC0415
 
     from . import paths as _paths  # noqa: PLC0415
+
+    def _section_keys(cls: type) -> frozenset[str]:
+        return frozenset(f.name for f in _dc_fields(cls))
 
     # Known top-level section keys from _ConfigToml
     _KNOWN_TOP_LEVEL: frozenset[str] = frozenset({
@@ -3173,21 +3177,25 @@ def config_validate(
         "image_shrink",
         "curator",
         "hint_budget",
+        "hints",
         "repomap",
         "stats",
+        "webfetch",
     })
 
-    # Known keys per section (from the TypedDict definitions in config.py)
+    # Derived from dataclasses.fields() — auto-tracks new config fields.
     _KNOWN_SECTION_KEYS: dict[str, frozenset[str]] = {
-        "compact_assist": frozenset({"enabled", "triggers", "min_events", "max_manifest_tokens"}),
-        "bash_compress": frozenset({"enabled", "disabled_filters", "max_lines", "max_bytes", "timeout_seconds"}),
-        "session_brief": frozenset({"enabled"}),
-        "skill_preservation": frozenset({"enabled", "max_cache_bytes"}),
-        "image_shrink": frozenset({"prefer_avif", "avif_quality", "jpeg_quality", "max_image_pixels"}),
-        "curator": frozenset({"enabled", "min_samples", "threshold_pct"}),
-        "hint_budget": frozenset({"enabled", "max_per_session", "max_structured_per_session", "max_index_only_per_session"}),
-        "repomap": frozenset({"compact_file_threshold"}),
-        "stats": frozenset({"record_zero_savings"}),
+        "compact_assist":    _section_keys(config_mod.CompactAssistConfig),
+        "bash_compress":     _section_keys(config_mod.BashCompressConfig),
+        "session_brief":     _section_keys(config_mod.SessionBriefConfig),
+        "skill_preservation": _section_keys(config_mod.SkillPreservationConfig),
+        "image_shrink":      _section_keys(config_mod.ImageShrinkConfig),
+        "curator":           _section_keys(config_mod.CuratorConfig),
+        "hint_budget":       _section_keys(config_mod.HintBudgetConfig),
+        "hints":             _section_keys(config_mod.HintsConfig),
+        "repomap":           _section_keys(config_mod.RepomapConfig),
+        "stats":             _section_keys(config_mod.StatsConfig),
+        "webfetch":          _section_keys(config_mod.WebFetchConfig),
     }
 
     cfg_path = _paths.config_path()
