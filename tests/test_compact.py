@@ -79,9 +79,17 @@ class TestBuildManifest:
         # must read enough other plain (no-symbol) files that parser.py's
         # importance score falls below the `_MAX_FILES_READ` (10) cap, leaving
         # the symbol file out of **Files:** so its detail surfaces in **Syms:**.
-        # Bump _WIDE_SESSION_THRESHOLD so the padding doesn't flip the session
-        # into wide mode (which replaces per-file symbol lines with a pointer).
-        monkeypatch.setattr(compact, "_WIDE_SESSION_THRESHOLD", 200)
+        # Set wide_session_threshold=200 via config so the noise padding doesn't
+        # flip the session into wide mode (replaces per-file symbol lines with a
+        # single pointer).
+        import dataclasses as _dc
+
+        import token_goat.config as _cfg_mod
+        monkeypatch.setattr(compact, "_load_config", lambda: _dc.replace(
+            _cfg_mod.load(), compact_assist=_dc.replace(
+                _cfg_mod.load().compact_assist, wide_session_threshold=200,
+            ),
+        ))
         sid = "symbols-session-abc"
         for i in range(16):
             for _ in range(5):
@@ -1310,11 +1318,18 @@ class TestSymbolRankingByRecency:
     """Symbols Accessed must be ranked most-recently-read first, not insertion order."""
 
     def test_recent_symbol_file_appears_before_older(self, tmp_data_dir, monkeypatch):
+        import dataclasses as _dc
         import itertools as _it
-        # Bump wide-session threshold so the noise padding doesn't flip the
-        # session into "wide" mode (which collapses **Syms:** to a single
+
+        import token_goat.config as _cfg_mod
+        # Set wide_session_threshold=200 via config so the noise padding doesn't
+        # flip the session into "wide" mode (which collapses **Syms:** to a single
         # pointer line and would defeat the recency-ordering check below).
-        monkeypatch.setattr(compact, "_WIDE_SESSION_THRESHOLD", 200)
+        monkeypatch.setattr(compact, "_load_config", lambda: _dc.replace(
+            _cfg_mod.load(), compact_assist=_dc.replace(
+                _cfg_mod.load().compact_assist, wide_session_threshold=200,
+            ),
+        ))
         sid = "symbol-recency-session-abc"
         _ts = _it.count(1_000_000_000.0, 0.01)
         monkeypatch.setattr(session.time, "time", lambda: next(_ts))
@@ -1394,6 +1409,41 @@ class TestConfigLoad:
         monkeypatch.delenv("TOKEN_GOAT_COMPACT_ASSIST", raising=False)
         cfg = config.load()
         assert cfg.compact_assist.enabled is True  # fell back to default
+
+    def test_wide_session_threshold_default(self, tmp_path, monkeypatch):
+        from token_goat import paths
+        monkeypatch.setattr(paths, "config_path", lambda: tmp_path / "config.toml")
+        cfg = config.load()
+        assert cfg.compact_assist.wide_session_threshold == 15
+
+    def test_wide_session_threshold_from_toml(self, tmp_path, monkeypatch):
+        from token_goat import paths
+        cfg_path = tmp_path / "config.toml"
+        cfg_path.write_text("[compact_assist]\nwide_session_threshold = 5\n", encoding="utf-8")
+        monkeypatch.setattr(paths, "config_path", lambda: cfg_path)
+        cfg = config.load()
+        assert cfg.compact_assist.wide_session_threshold == 5
+
+    def test_wide_session_threshold_respected_by_build_manifest(self, tmp_data_dir, monkeypatch):
+        """build_manifest switches to wide-session mode at the configured threshold."""
+        import dataclasses as _dc
+
+        import token_goat.config as _cfg_mod
+        # Use threshold=3: a session with 3 files should flip into wide mode.
+        monkeypatch.setattr(compact, "_load_config", lambda: _dc.replace(
+            _cfg_mod.load(), compact_assist=_dc.replace(
+                _cfg_mod.load().compact_assist, wide_session_threshold=3,
+            ),
+        ))
+        sid = "wide-cfg-threshold-abc"
+        for i in range(3):
+            session.mark_file_read(sid, f"src/cfg_{i}.py", symbol=f"fn_{i}")
+        session.mark_file_edited(sid, "src/anchor.py")
+        result = compact.build_manifest(sid, max_tokens=2000)
+        assert "**Syms:**" in result
+        syms_line = next((ln for ln in result.splitlines() if "**Syms:**" in ln), None)
+        assert syms_line is not None
+        assert "files accessed" in syms_line  # wide mode triggered at threshold=3
 
 
 # ---------------------------------------------------------------------------
@@ -5705,8 +5755,9 @@ class TestWideSessionSymbolReplacement:
 
     def test_under_threshold_emits_full_symbol_section(self, tmp_data_dir):
         """Fewer than threshold files: per-file symbol list is emitted normally."""
+        from token_goat.config import CompactAssistConfig
         sid = "wide-under-threshold-abc"
-        threshold = compact._WIDE_SESSION_THRESHOLD
+        threshold = CompactAssistConfig().wide_session_threshold
         # Stay under threshold: read (threshold - 2) files, each with a symbol.
         n = max(1, threshold - 2)
         for i in range(n):
@@ -5727,8 +5778,9 @@ class TestWideSessionSymbolReplacement:
 
     def test_at_threshold_emits_map_pointer(self, tmp_data_dir, monkeypatch):
         """Exactly at threshold files: symbol section replaced by map pointer."""
+        from token_goat.config import CompactAssistConfig
         sid = "wide-at-threshold-abc"
-        threshold = compact._WIDE_SESSION_THRESHOLD
+        threshold = CompactAssistConfig().wide_session_threshold
 
         # Read exactly `threshold` files (each with a symbol so Syms section fires).
         for i in range(threshold):

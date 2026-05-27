@@ -16,7 +16,6 @@ __all__ = [
     "_build_sealed_block",
     "_get_inline_diff_for_file",
     "_get_whole_repo_diff",
-    "_WIDE_SESSION_THRESHOLD",
 ]
 
 import hashlib
@@ -479,15 +478,6 @@ _MAX_DECISIONS: Final[int] = 5
 # but short enough that 5 entries fit comfortably in a 60–80 token slice.
 _MAX_DECISION_RENDER_LEN: Final[int] = 140
 
-# Item #24 — Wide-session threshold.  When the session has accessed at least
-# this many unique files, the per-file Symbols Accessed section is replaced by
-# a single "N files accessed — use token-goat map --compact" pointer.  This
-# prevents the symbols section from consuming 200–300 tokens on wide orientation
-# sessions where the compaction LLM can't usefully retain the full symbol list.
-# Configurable via env TOKEN_GOAT_WIDE_SESSION_THRESHOLD.
-_WIDE_SESSION_THRESHOLD: Final[int] = int(
-    os.environ.get("TOKEN_GOAT_WIDE_SESSION_THRESHOLD", "15")
-)
 
 # Minimum weighted activity score required to emit a full session manifest.
 # Below this floor the manifest is suppressed entirely (or replaced by a 1-line
@@ -1068,7 +1058,6 @@ def _group_edited_by_dir(
         - A single-file line: "- ✎ path/to/file.py  ×N"
         - A grouped line: "  path/to/dir/ (N files):  file1.py ×2, file2.py ×1, ..."
     """
-    import os
     from collections import defaultdict
 
     if not entries or threshold < 0:
@@ -2556,6 +2545,7 @@ def build_manifest_adaptive(session_id: str) -> str:
         budget,
         edited_dir_group_threshold=cfg.compact_assist.edited_dir_group_threshold,
         max_section_lines=cfg.compact_assist.max_section_lines,
+        wide_session_threshold=cfg.compact_assist.wide_session_threshold,
     )
 
 
@@ -2585,6 +2575,7 @@ def _build_manifest_from_cache(
     max_tokens: int,
     edited_dir_group_threshold: int = 3,
     max_section_lines: int = 0,
+    wide_session_threshold: int = 15,
 ) -> str:
     """Render the manifest from an already-loaded *cache*.
 
@@ -2610,6 +2601,7 @@ def _build_manifest_from_cache(
         max_tokens,
         edited_dir_group_threshold=edited_dir_group_threshold,
         max_section_lines=max_section_lines,
+        wide_session_threshold=wide_session_threshold,
     )
     elapsed = time.monotonic() - start
 
@@ -2740,6 +2732,7 @@ def build_manifest(session_id: str, *, max_tokens: int = 400) -> str:
         max_tokens,
         edited_dir_group_threshold=cfg.compact_assist.edited_dir_group_threshold,
         max_section_lines=cfg.compact_assist.max_section_lines,
+        wide_session_threshold=cfg.compact_assist.wide_session_threshold,
     )
     if not full_manifest:
         return full_manifest
@@ -2804,6 +2797,7 @@ def build_manifest_with_count(
         max_tokens,
         edited_dir_group_threshold=cfg.compact_assist.edited_dir_group_threshold,
         max_section_lines=cfg.compact_assist.max_section_lines,
+        wide_session_threshold=cfg.compact_assist.wide_session_threshold,
     )
     return manifest, n_events
 
@@ -3196,7 +3190,6 @@ def _build_sealed_block(
     explicit XML-like markers are chosen so compaction LLMs are unlikely to
     summarise them away.
     """
-    import os
 
     # Slot (a): ≤3 edited basenames with edit counts
     edit_slot = ""
@@ -3336,6 +3329,7 @@ def _render(
     max_tokens: int,
     edited_dir_group_threshold: int = 3,
     max_section_lines: int = 0,
+    wide_session_threshold: int = 15,
 ) -> tuple[str, int]:
     """Build the Markdown session manifest string from *cache* for the PreCompact hook.
 
@@ -3761,10 +3755,10 @@ def _render(
     # ── 2. Symbols accessed — up to 40 % of remaining budget ─────────────────
     sym_budget = sec_budgets["symbols"]
     # Item #24 — Wide session: replace per-file symbol list with map pointer.
-    # When the session has accessed >= _WIDE_SESSION_THRESHOLD unique files,
+    # When the session has accessed >= wide_session_threshold unique files,
     # the per-file symbol listing consumes 200–300 tokens the compaction LLM
     # can't usefully retain.  Emit a single actionable pointer instead.
-    _wide_session = len(cache.files) >= _WIDE_SESSION_THRESHOLD
+    _wide_session = len(cache.files) >= wide_session_threshold
     if _wide_session:
         _wide_line = (
             f"**Syms:** {len(cache.files)} files accessed"
