@@ -46,6 +46,7 @@ _CONFIG_ENV_KEYS: tuple[str, ...] = (
     "TOKEN_GOAT_SESSION_BRIEF",
     "TOKEN_GOAT_SKILL_PRESERVATION",
     "TOKEN_GOAT_PREFER_AVIF",
+    "TOKEN_GOAT_ORPHAN_SWEEP",
     "TOKEN_GOAT_CURATOR",
     "TOKEN_GOAT_HINT_BUDGET",
     "TOKEN_GOAT_HINT_JSON_SIDECAR",
@@ -79,6 +80,7 @@ _ENV_BASH_COMPRESS: Final[str] = "TOKEN_GOAT_BASH_COMPRESS"  # set to "0"/"false
 _ENV_SESSION_BRIEF: Final[str] = "TOKEN_GOAT_SESSION_BRIEF"  # set to "0"/"false"/"no"/"off" to disable
 _ENV_SKILL_PRESERVATION: Final[str] = "TOKEN_GOAT_SKILL_PRESERVATION"  # set to "0"/"false"/"no"/"off" to disable
 _ENV_PREFER_AVIF: Final[str] = "TOKEN_GOAT_PREFER_AVIF"  # set to "0"/"false"/"no"/"off" to force JPEG/WebP
+_ENV_ORPHAN_SWEEP: Final[str] = "TOKEN_GOAT_ORPHAN_SWEEP"  # set to "0"/"false"/"no"/"off" to disable
 _ENV_CURATOR: Final[str] = "TOKEN_GOAT_CURATOR"  # set to "0"/"false"/"no"/"off" to disable
 _ENV_HINT_BUDGET: Final[str] = "TOKEN_GOAT_HINT_BUDGET"  # set to "0"/"false"/"no"/"off" to disable
 _ENV_HINT_JSON_SIDECAR: Final[str] = "TOKEN_GOAT_HINT_JSON_SIDECAR"  # set to "1"/"true"/"yes"/"on" to enable
@@ -187,6 +189,8 @@ class _ImageShrinkToml(TypedDict, total=False):
     avif_quality: int
     jpeg_quality: int
     max_image_pixels: int
+    orphan_sweep_enabled: bool
+    orphan_age_secs: int
 
 
 class _CuratorToml(TypedDict, total=False):
@@ -518,6 +522,8 @@ class ImageShrinkConfig:
     avif_quality: int = 60
     jpeg_quality: int = 75
     max_image_pixels: int = 16_000_000
+    orphan_sweep_enabled: bool = True
+    orphan_age_secs: int = 604800  # 7 days
 
 
 @dataclass
@@ -935,8 +941,11 @@ def load() -> Config:
             500_000_000,
             "image_shrink.max_image_pixels",
         ),
+        orphan_sweep_enabled=_validated_bool(is_raw.get("orphan_sweep_enabled", True), True, "image_shrink.orphan_sweep_enabled"),
+        orphan_age_secs=_validated_int(is_raw.get("orphan_age_secs", 604800), 604800, 1, 2_592_000, "image_shrink.orphan_age_secs"),
     )
     _apply_env_disable(is_cfg, "prefer_avif", _ENV_PREFER_AVIF, "image_shrink.prefer_avif")
+    _apply_env_disable(is_cfg, "orphan_sweep_enabled", _ENV_ORPHAN_SWEEP, "image_shrink.orphan_sweep_enabled")
 
     cur_raw: _CuratorToml = cast("_CuratorToml", raw.get("curator", {}))
     cur = CuratorConfig(
@@ -1157,6 +1166,8 @@ def save(config: Config) -> None:
             "avif_quality": is_cfg.avif_quality,
             "jpeg_quality": is_cfg.jpeg_quality,
             "max_image_pixels": is_cfg.max_image_pixels,
+            "orphan_sweep_enabled": is_cfg.orphan_sweep_enabled,
+            "orphan_age_secs": is_cfg.orphan_age_secs,
         },
         "curator": {
             "enabled": cur.enabled,

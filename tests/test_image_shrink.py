@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import os
+import time
 
 import pytest
 from hook_helpers import make_large_jpeg as _make_large_jpeg
@@ -870,3 +871,107 @@ class TestImageShrinkDiagramLossless:
             data = result.read_bytes()
             # Lossy WebP uses VP8 (not VP8L); check it does NOT have lossless marker
             assert b"VP8L" not in data, "Expected lossy WebP for screenshot, got lossless"
+
+
+class TestOrphanSweep:
+    """Tests for the one-shot orphan cache sweep (Item 17)."""
+
+    def test_sweep_function_exists(self):
+        """_sweep_orphans() function is defined and callable."""
+        assert hasattr(image_shrink, "_sweep_orphans")
+        assert callable(image_shrink._sweep_orphans)
+
+    def test_sweep_handles_missing_cache_dir(self, tmp_path, monkeypatch):
+        """Sweep handles missing cache directory gracefully."""
+        # Set cache dir to a non-existent path
+        monkeypatch.setattr(image_shrink.paths, "image_cache_dir", lambda: tmp_path / "nonexistent")
+
+        # Should not raise
+        image_shrink._sweep_orphans()
+
+    def test_sweep_leaves_referenced_blob(self, tmp_path, monkeypatch):
+        """Recent blobs (referenced) are not removed by _sweep_orphans()."""
+        pytest.importorskip("PIL")
+        from PIL import Image
+
+        monkeypatch.setattr(image_shrink.paths, "image_cache_dir", lambda: tmp_path)
+
+        # Create a blob and ensure it's recent
+        blob = tmp_path / "xyz789.shrunk.webp"
+        img = Image.new("RGB", (100, 100), (200, 100, 50))
+        img.save(blob, "WEBP")
+
+        # Set mtime to 1 hour ago (within 7-day threshold)
+        recent_time = time.time() - 3600
+        os.utime(blob, (recent_time, recent_time))
+
+        # Call sweep
+        image_shrink._sweep_orphans()
+
+        # Recent blob should remain
+        assert blob.exists()
+
+    def test_sweep_disabled_by_config(self, tmp_path, monkeypatch):
+        """When orphan_sweep_enabled=False, _sweep_orphans() does nothing."""
+        pytest.importorskip("PIL")
+        from PIL import Image
+
+        from token_goat import config as cfg_module
+
+        monkeypatch.setattr(image_shrink.paths, "image_cache_dir", lambda: tmp_path)
+
+        # Create an orphan
+        orphan = tmp_path / "notdeleted.shrunk.webp"
+        img = Image.new("RGB", (100, 100), (100, 100, 100))
+        img.save(orphan, "WEBP")
+        old_time = time.time() - (10 * 86400)
+        os.utime(orphan, (old_time, old_time))
+
+        # Mock config to disable sweep
+        orig_load = cfg_module.load
+        def mock_load():
+            c = orig_load()
+            c.image_shrink.orphan_sweep_enabled = False
+            return c
+        monkeypatch.setattr(cfg_module, "load", mock_load)
+
+        # Call sweep (should be skipped)
+        image_shrink._sweep_orphans()
+
+        # Orphan should still exist because sweep was disabled
+        assert orphan.exists()
+
+    def test_sweep_handles_io_error(self, tmp_path, monkeypatch):
+        """Sweep continues on file removal error; never raises."""
+        pytest.importorskip("PIL")
+        from PIL import Image
+
+        monkeypatch.setattr(image_shrink.paths, "image_cache_dir", lambda: tmp_path)
+
+        # Create an orphan
+        orphan = tmp_path / "errortest.shrunk.webp"
+        img = Image.new("RGB", (100, 100), (75, 75, 75))
+        img.save(orphan, "WEBP")
+        old_time = time.time() - (8 * 86400)
+        os.utime(orphan, (old_time, old_time))
+
+        # Mock unlink to raise OSError on first file
+        orig_unlink = image_shrink.Path.unlink
+        call_count = [0]
+        def mock_unlink(self):
+            call_count[0] += 1
+            if call_count[0] == 1:
+                # Fail on the orphan; succeed on other files
+                raise OSError("simulated disk error")
+            return orig_unlink(self)
+
+        monkeypatch.setattr(image_shrink.Path, "unlink", mock_unlink)
+
+        # Call sweep — should not raise despite the error
+        try:
+            image_shrink._sweep_orphans()
+        except OSError:
+            pytest.fail("_sweep_orphans() raised OSError; should swallow it")
+
+        # Orphan still exists due to the error
+        assert orphan.exists()
