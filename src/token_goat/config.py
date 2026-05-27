@@ -51,6 +51,7 @@ _CONFIG_ENV_KEYS: tuple[str, ...] = (
     "TOKEN_GOAT_HINT_JSON_SIDECAR",
     "TOKEN_GOAT_BASH_DEDUP_MIN_BYTES",
     "TOKEN_GOAT_WEB_DEDUP_MIN_BYTES",
+    "TOKEN_GOAT_GREP_DEDUP_MIN_MATCHES",
     "TOKEN_GOAT_REPOMAP_COMPACT_THRESHOLD",
 )
 
@@ -83,6 +84,7 @@ _ENV_HINT_BUDGET: Final[str] = "TOKEN_GOAT_HINT_BUDGET"  # set to "0"/"false"/"n
 _ENV_HINT_JSON_SIDECAR: Final[str] = "TOKEN_GOAT_HINT_JSON_SIDECAR"  # set to "1"/"true"/"yes"/"on" to enable
 _ENV_BASH_DEDUP_MIN_BYTES: Final[str] = "TOKEN_GOAT_BASH_DEDUP_MIN_BYTES"  # integer override (bytes)
 _ENV_WEB_DEDUP_MIN_BYTES: Final[str] = "TOKEN_GOAT_WEB_DEDUP_MIN_BYTES"  # integer override (bytes)
+_ENV_GREP_DEDUP_MIN_MATCHES: Final[str] = "TOKEN_GOAT_GREP_DEDUP_MIN_MATCHES"  # integer override (result count)
 _ENV_REPOMAP_COMPACT_THRESHOLD: Final[str] = "TOKEN_GOAT_REPOMAP_COMPACT_THRESHOLD"  # integer override
 
 CONFIG_SCHEMA_VERSION: Final[int] = 1
@@ -225,6 +227,7 @@ class _HintsToml(TypedDict, total=False):
     verbose_until_seen_count: int
     bash_dedup_min_bytes: int
     web_dedup_min_bytes: int
+    grep_dedup_min_matches: int
 
 
 class _WebFetchToml(TypedDict, total=False):
@@ -602,6 +605,11 @@ class HintsConfig:
             response is ~50 tokens; a short dedup hint costs ~12 tokens, netting
             ~38 tokens saved. Below this threshold the hint cost exceeds the saving
             and dedup is suppressed. Clamped to [0, 100000].
+        grep_dedup_min_matches: Minimum number of match results before grep dedup
+            hints are emitted. Default 5. At 5 matches × 120 bytes/match ≈ 600 bytes
+            ≈ 150 tokens saved; a short dedup hint costs ~12 tokens, netting ~138
+            tokens saved. Below this threshold the hint cost exceeds the saving and
+            dedup is suppressed. Clamped to [0, 100000].
     """
 
     suppress_after_ignored: int = 5
@@ -616,6 +624,8 @@ class HintsConfig:
     bash_dedup_min_bytes: int = 200
     # Minimum response body size (bytes) for web dedup hints. Default 200.
     web_dedup_min_bytes: int = 200
+    # Minimum match result count for grep dedup hints. Default 5.
+    grep_dedup_min_matches: int = 5
 
 
 @dataclass
@@ -988,6 +998,9 @@ def load() -> Config:
         web_dedup_min_bytes=_validated_int(
             hints_raw.get("web_dedup_min_bytes", 200), 200, 0, 100000, "hints.web_dedup_min_bytes"
         ),
+        grep_dedup_min_matches=_validated_int(
+            hints_raw.get("grep_dedup_min_matches", 5), 5, 0, 100000, "hints.grep_dedup_min_matches"
+        ),
     )
     # Opt-in env override: TOKEN_GOAT_HINT_JSON_SIDECAR=1/true/yes/on enables.
     _apply_env_enable(hints_cfg, "json_sidecar", _ENV_HINT_JSON_SIDECAR, "hints.json_sidecar")
@@ -1022,6 +1035,22 @@ def load() -> Config:
             _LOG.warning(
                 "hints.web_dedup_min_bytes env override invalid (not an int): %s; ignoring",
                 web_dedup_env,
+            )
+    # Integer env override: TOKEN_GOAT_GREP_DEDUP_MIN_MATCHES=<count> (0-100000)
+    grep_dedup_env = os.environ.get(_ENV_GREP_DEDUP_MIN_MATCHES, "").strip()
+    if grep_dedup_env:
+        try:
+            grep_dedup_matches = int(grep_dedup_env)
+            if 0 <= grep_dedup_matches <= 100000:
+                _LOG.info(
+                    "hints.grep_dedup_min_matches overridden by environment: %d",
+                    grep_dedup_matches,
+                )
+                hints_cfg.grep_dedup_min_matches = grep_dedup_matches
+        except ValueError:
+            _LOG.warning(
+                "hints.grep_dedup_min_matches env override invalid (not an int): %s; ignoring",
+                grep_dedup_env,
             )
 
     wf_raw: _WebFetchToml = cast("_WebFetchToml", raw.get("webfetch", {}))

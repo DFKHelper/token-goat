@@ -57,8 +57,8 @@ class TestGrepDedupHint:
         assert "hookSpecificOutput" not in result
 
     def test_tiny_match_count_no_hint(self, tmp_data_dir):
-        """A pattern that matched only a few lines is not worth deduplicating."""
-        _seed_grep("g-4", "TODO", result_count=5)
+        """A pattern with fewer than minimum matches is not worth deduplicating."""
+        _seed_grep("g-4", "TODO", result_count=4)
         payload = {
             "session_id": "g-4",
             "tool_name": "Grep",
@@ -86,3 +86,50 @@ class TestGrepDedupHint:
         result = hooks_read.pre_read(payload)
         _assert_continue(result)
         assert "hookSpecificOutput" not in result
+
+    def test_grep_dedup_min_matches_default(self, tmp_data_dir, monkeypatch):
+        """Grep with fewer than 5 matches (default min) should not produce hint."""
+        # Default threshold is 5
+        _seed_grep("g-6", "SPECIFIC", result_count=4)
+        payload = {
+            "session_id": "g-6",
+            "tool_name": "Grep",
+            "tool_input": {"pattern": "SPECIFIC"},
+        }
+        result = hooks_read.pre_read(payload)
+        _assert_continue(result)
+        assert "hookSpecificOutput" not in result
+
+    def test_grep_dedup_min_matches_at_threshold(self, tmp_data_dir):
+        """Grep with exactly the min match count should produce hint."""
+        _seed_grep("g-7", "TODO", result_count=5)
+        payload = {
+            "session_id": "g-7",
+            "tool_name": "Grep",
+            "tool_input": {"pattern": "TODO"},
+        }
+        result = hooks_read.pre_read(payload)
+        _assert_continue(result)
+        hso = result.get("hookSpecificOutput")
+        assert hso is not None
+        ctx = hso.get("additionalContext", "")
+        assert "Grep `TODO`" in ctx or "Grep for `TODO`" in ctx
+        assert "5 matches" in ctx
+
+    def test_grep_dedup_min_matches_env_override(self, tmp_data_dir, monkeypatch):
+        """Environment variable TOKEN_GOAT_GREP_DEDUP_MIN_MATCHES overrides config."""
+        monkeypatch.setenv("TOKEN_GOAT_GREP_DEDUP_MIN_MATCHES", "0")
+        # With min=0, even a single match should produce a hint (if non-stale)
+        _seed_grep("g-8", "RARE", result_count=1)
+        payload = {
+            "session_id": "g-8",
+            "tool_name": "Grep",
+            "tool_input": {"pattern": "RARE"},
+        }
+        result = hooks_read.pre_read(payload)
+        _assert_continue(result)
+        hso = result.get("hookSpecificOutput")
+        assert hso is not None
+        ctx = hso.get("additionalContext", "")
+        assert "Grep `RARE`" in ctx or "Grep for `RARE`" in ctx
+        assert "1 match" in ctx
