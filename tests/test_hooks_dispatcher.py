@@ -1083,6 +1083,88 @@ class TestCrashSinkSurrogateSafety:
 
 
 # ---------------------------------------------------------------------------
+# Structured crash-sink header
+# ---------------------------------------------------------------------------
+
+
+class TestCrashSinkStructuredHeader:
+    """Each crash-sink entry must begin with a JSON header line.
+
+    The header makes entries machine-parseable (``grep '^{' hooks-stderr.log | jq``)
+    while preserving the human-readable msg + traceback on the lines that follow.
+    """
+
+    def test_crash_sink_entry_starts_with_json_header(self, tmp_path, monkeypatch):
+        """First line of each crash entry must be a valid JSON object with ts, event, err."""
+        import json as _json
+
+        from token_goat import hooks_cli as hc
+        from token_goat import paths
+
+        sink_path = tmp_path / "logs" / "hooks-stderr.log"
+        monkeypatch.setattr(paths, "_hooks_stderr_log_override", sink_path)
+        monkeypatch.setattr(paths, "logs_dir", lambda: tmp_path / "logs")
+        monkeypatch.setattr(hc, "dispatch", lambda ev, pl: (_ for _ in ()).throw(RuntimeError("structured-test")))
+
+        payload_file = tmp_path / "payload.json"
+        payload_file.write_text('{"session_id": "sess-structured-01"}', encoding="utf-8")
+        hc.safe_run("pre-read", input_file=payload_file)
+
+        content = sink_path.read_text(encoding="utf-8")
+        first_line = content.splitlines()[0]
+        header = _json.loads(first_line)
+
+        assert "ts" in header and isinstance(header["ts"], float)
+        assert header["event"] == "pre-read"
+        assert "RuntimeError" in header["err"]
+        assert "structured-test" in header["err"]
+
+    def test_crash_sink_header_includes_session_id(self, tmp_path, monkeypatch):
+        """The JSON header sid field must reflect the session_id from the payload."""
+        import json as _json
+
+        from token_goat import hooks_cli as hc
+        from token_goat import paths
+
+        sink_path = tmp_path / "logs" / "hooks-stderr.log"
+        monkeypatch.setattr(paths, "_hooks_stderr_log_override", sink_path)
+        monkeypatch.setattr(paths, "logs_dir", lambda: tmp_path / "logs")
+        monkeypatch.setattr(hc, "dispatch", lambda ev, pl: (_ for _ in ()).throw(ValueError("boom")))
+
+        sid = "ses-1234-abcd-5678"
+        payload_file = tmp_path / "payload.json"
+        payload_file.write_text(_json.dumps({"session_id": sid}), encoding="utf-8")
+        hc.safe_run("post-edit", input_file=payload_file)
+
+        first_line = sink_path.read_text(encoding="utf-8").splitlines()[0]
+        header = _json.loads(first_line)
+        assert header["sid"] == sid[:16]
+
+    def test_crash_sink_header_present_when_read_payload_fails(self, tmp_path, monkeypatch):
+        """JSON header must appear even when the crash occurs before payload is parsed."""
+        import json as _json
+
+        from token_goat import hooks_cli as hc
+        from token_goat import paths
+
+        sink_path = tmp_path / "logs" / "hooks-stderr.log"
+        monkeypatch.setattr(paths, "_hooks_stderr_log_override", sink_path)
+        monkeypatch.setattr(paths, "logs_dir", lambda: tmp_path / "logs")
+        # Make read_payload itself raise so payload is never set.
+        monkeypatch.setattr(hc, "read_payload", lambda _: (_ for _ in ()).throw(OSError("payload gone")))
+
+        payload_file = tmp_path / "payload.json"
+        payload_file.write_text("{}", encoding="utf-8")
+        hc.safe_run("pre-read", input_file=payload_file)
+
+        first_line = sink_path.read_text(encoding="utf-8").splitlines()[0]
+        header = _json.loads(first_line)
+        assert header["event"] == "pre-read"
+        assert "OSError" in header["err"]
+        assert header["sid"] == ""  # no payload was parsed
+
+
+# ---------------------------------------------------------------------------
 # hooks-stderr.log isolation — crash-sink writes must not touch the real log
 # ---------------------------------------------------------------------------
 
