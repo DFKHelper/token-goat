@@ -55,6 +55,10 @@ from .util import get_logger
 
 _LOG = get_logger("image_shrink")
 
+# One-shot orphan sweep flag: set to True after the sweep runs in this process.
+# Module init fires the sweep once, idempotent across repeated imports.
+_sweep_done = False
+
 # Maximum pixel count on the long axis after resizing.  1024 px keeps the image
 # legible for Claude while roughly halving token cost versus the Claude API's own
 # 1568 px ceiling (see CLAUDE_MAX_VISION_EDGE_PX below).
@@ -383,6 +387,66 @@ def _ensure_rgb(img: _PilImage.Image, Image_module: types.ModuleType) -> _PilIma
     return bg
 
 
+def _sweep_orphans() -> None:
+    """One-shot cleanup of orphan image-cache blobs (files older than orphan_age_secs).
+
+    An orphan is a ``.shrunk.*`` blob in the image cache directory that was
+    written but never looked up. This can accumulate when a hook is interrupted
+    between writing the blob and recording/accessing the index (in our case,
+    content-addressed lookups via _cache_key).
+
+    Runs once per process (guarded by _sweep_done flag) at module init so the
+    LRU eviction does not have to compete with dead bytes. Fail-soft: any IO
+    error is logged as a warning and the sweep skips to the next file without
+    crashing. Never raises; safe to call from hot paths.
+
+    The age threshold is configurable via config.toml [image_shrink]
+    orphan_age_secs (default 7 days) or disabled via TOKEN_GOAT_ORPHAN_SWEEP=0.
+    """
+    global _sweep_done  # noqa: PLW0603
+    if _sweep_done:
+        return
+    _sweep_done = True
+
+    try:
+        from .config import load as _load_config  # noqa: PLC0415
+        _cfg = _load_config()
+        if not _cfg.image_shrink.orphan_sweep_enabled:
+            _LOG.debug("_sweep_orphans: disabled by config")
+            return
+        age_secs = _cfg.image_shrink.orphan_age_secs
+    except Exception as exc:  # noqa: BLE001
+        _LOG.debug("_sweep_orphans: config load failed, skipping: %s", exc)
+        return
+
+    cache_dir = paths.image_cache_dir()
+    if not cache_dir.is_dir():
+        return
+
+    now = time.time()
+    removed = 0
+    try:
+        for fp in cache_dir.iterdir():
+            if not fp.name.endswith((".shrunk.avif", ".shrunk.webp", ".shrunk.jpg", ".shrunk.png")):
+                continue
+            try:
+                st = fp.stat()
+                age = now - st.st_mtime
+                if age > age_secs:
+                    fp.unlink()
+                    removed += 1
+                    _LOG.debug("_sweep_orphans: removed %s (age=%.1f days)", fp.name, age / 86400.0)
+            except OSError as exc:
+                _LOG.debug("_sweep_orphans: failed to remove %s: %s", fp.name, exc)
+                continue
+    except OSError as exc:
+        _LOG.debug("_sweep_orphans: directory scan failed: %s", exc)
+        return
+
+    if removed > 0:
+        _LOG.info("_sweep_orphans: removed %d orphan blob(s)", removed)
+
+
 def shrink(src_path: Path) -> Path | None:
     """Compress and cache a large image; return the cached output path, or None on failure.
 
@@ -405,6 +469,10 @@ def shrink(src_path: Path) -> Path | None:
     Callers that want an alt-text summary should reopen the result with PIL and
     pass it to :func:`extract_image_summary`.
     """
+    # Fire the one-shot orphan sweep on first shrink call in this process.
+    # The sweep is fail-soft: any error is logged and skipped, never blocking.
+    _sweep_orphans()
+
     t0 = time.time()
     # Validate input path for safety
     if not _is_safe_path(src_path):
