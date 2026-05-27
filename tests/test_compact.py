@@ -6366,6 +6366,63 @@ class TestManifestDelta:
         assert "-1 bash" in result
         assert "grep" not in result  # unchanged → omitted
 
+    def test_compute_section_counts_symbols_nonzero_when_symbols_read(self):
+        """_compute_section_counts returns symbols > 0 when files have symbols_read."""
+        from types import SimpleNamespace
+
+        cache = SimpleNamespace(
+            edited_files={},
+            files={
+                "a.py": SimpleNamespace(symbols_read=["foo", "bar"]),
+                "b.py": SimpleNamespace(symbols_read=["baz"]),
+                "c.py": SimpleNamespace(symbols_read=[]),
+            },
+            bash_history={},
+            web_history={},
+            greps=[],
+            glob_history=[],
+            skill_history={},
+            decisions=[],
+        )
+        counts = compact._compute_section_counts(cache)
+        assert counts["symbols"] == 2  # a.py and b.py have non-empty symbols_read; c.py is falsy
+
+    def test_compute_section_counts_symbols_zero_when_no_symbols_read(self):
+        """_compute_section_counts returns symbols == 0 when no file has symbols_read."""
+        from types import SimpleNamespace
+
+        cache = SimpleNamespace(
+            edited_files={},
+            files={
+                "a.py": SimpleNamespace(symbols_read=[]),
+                "b.py": SimpleNamespace(symbols_read=None),
+            },
+            bash_history={},
+            web_history={},
+            greps=[],
+            glob_history=[],
+            skill_history={},
+            decisions=[],
+        )
+        counts = compact._compute_section_counts(cache)
+        assert counts["symbols"] == 0
+
+    def test_format_manifest_delta_includes_symbol_growth(self):
+        """_format_manifest_delta surfaces symbol-count growth in the delta line."""
+        prior = {"edited": 1, "symbols": 0}
+        current = {"edited": 1, "symbols": 4}
+        result = compact._format_manifest_delta(prior, current)
+        assert result is not None
+        assert "+4 symbols" in result
+
+    def test_format_manifest_delta_symbols_unchanged_omitted(self):
+        """_format_manifest_delta omits the symbols field when unchanged."""
+        prior = {"edited": 2, "symbols": 3}
+        current = {"edited": 3, "symbols": 3}
+        result = compact._format_manifest_delta(prior, current)
+        assert result is not None
+        assert "symbols" not in result
+
 
 # ---------------------------------------------------------------------------
 # CLI compact-hint command — faithful preview of the PreCompact hook
