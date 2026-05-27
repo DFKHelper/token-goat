@@ -3076,8 +3076,8 @@ class TestHintContentHashDedup:
         content_hash = hints_module._hint_content_hash(hint_text)
 
         # First hint with one fingerprint should be emitted.
-        cache.hints_seen.add("fp:100:150:/proj/src/module.py")
-        cache.hints_seen.add(content_hash)  # Add the content hash after first emit
+        cache.hints_seen["fp:100:150:/proj/src/module.py"] = 1
+        cache.hints_seen[content_hash] = 1  # Add the content hash after first emit
         session.save(cache)
         cache = session.load(sid)
 

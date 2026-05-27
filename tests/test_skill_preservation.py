@@ -615,3 +615,161 @@ class TestCliSkillCommands:
         )
         # Should exit cleanly whether or not entries exist.
         assert result.returncode == 0, f"stderr: {result.stderr}"
+
+
+# ---------------------------------------------------------------------------
+# Orphan sweep
+# ---------------------------------------------------------------------------
+
+class TestSkillCacheOrphanSweep:
+    """One-shot orphan blob sweep for the skill body cache."""
+
+    def _reset_sweep(self, monkeypatch):
+        """Reset the module-level _sweep_done flag so each test starts fresh."""
+        monkeypatch.setattr(skill_cache, "_sweep_done", False)
+        monkeypatch.delenv("TOKEN_GOAT_ORPHAN_SWEEP", raising=False)
+
+    def _force_sweep_enabled(self, monkeypatch):
+        """Patch config.load to always return orphan_sweep_enabled=True.
+
+        The process-level config cache can carry stale config from earlier tests
+        in the same worker (e.g. a test that set orphan_sweep_enabled=False).
+        Patching load() guarantees the sweep actually runs, making tests that
+        assert file removal deterministic.
+        """
+        from token_goat import config as cfg_module
+        orig_load = cfg_module.load
+        def _enabled_load():
+            c = orig_load()
+            c.skill_preservation.orphan_sweep_enabled = True
+            return c
+        monkeypatch.setattr(cfg_module, "load", _enabled_load)
+
+    def _make_blob(self, cache_dir, name: str, age_secs: float):
+        blob = cache_dir / name
+        blob.write_text("dummy skill body", encoding="utf-8")
+        old = time.time() - age_secs
+        os.utime(blob, (old, old))
+        return blob
+
+    def test_sweep_function_exists(self):
+        assert hasattr(skill_cache, "_sweep_skill_orphans")
+        assert callable(skill_cache._sweep_skill_orphans)
+
+    def test_sweep_runs_once_per_process(self, tmp_data_dir, monkeypatch):
+        """_sweep_done gate: second call is a no-op."""
+        self._reset_sweep(monkeypatch)
+        self._force_sweep_enabled(monkeypatch)
+        calls = []
+        orig = skill_cache._skill_outputs_dir
+        def mock_dir():
+            calls.append(1)
+            return orig()
+        monkeypatch.setattr(skill_cache, "_skill_outputs_dir", mock_dir)
+        skill_cache._sweep_skill_orphans()
+        skill_cache._sweep_skill_orphans()
+        assert len(calls) == 1
+
+    def test_removes_old_blobs(self, tmp_data_dir, monkeypatch):
+        """Blobs older than orphan_age_secs are deleted."""
+        self._reset_sweep(monkeypatch)
+        self._force_sweep_enabled(monkeypatch)
+        cache_dir = skill_cache._skill_outputs_dir()
+        # Name must match OUTPUT_FILENAME_RE: {chars}.txt
+        old_name = "a" * 16 + "-ralph-" + "b" * 16 + ".txt"
+        old_blob = self._make_blob(cache_dir, old_name, age_secs=8 * 86400)
+        skill_cache._sweep_skill_orphans()
+        assert not old_blob.exists(), "old blob should have been swept"
+
+    def test_leaves_recent_blobs(self, tmp_data_dir, monkeypatch):
+        """Blobs newer than orphan_age_secs are untouched."""
+        self._reset_sweep(monkeypatch)
+        self._force_sweep_enabled(monkeypatch)
+        cache_dir = skill_cache._skill_outputs_dir()
+        recent_name = "c" * 16 + "-improve-" + "d" * 16 + ".txt"
+        recent_blob = self._make_blob(cache_dir, recent_name, age_secs=3600)
+        skill_cache._sweep_skill_orphans()
+        assert recent_blob.exists(), "recent blob must not be swept"
+
+    def test_skips_json_sidecars(self, tmp_data_dir, monkeypatch):
+        """Sidecar .json files are not deleted directly by the sweep."""
+        self._reset_sweep(monkeypatch)
+        self._force_sweep_enabled(monkeypatch)
+        cache_dir = skill_cache._skill_outputs_dir()
+        # A stale .json with no matching .txt blob — must not be deleted
+        sidecar_name = "e" * 16 + "-skill-" + "f" * 16 + ".json"
+        sidecar = cache_dir / sidecar_name
+        sidecar.write_text("{}", encoding="utf-8")
+        old = time.time() - 8 * 86400
+        os.utime(sidecar, (old, old))
+        skill_cache._sweep_skill_orphans()
+        assert sidecar.exists(), "orphaned sidecar without blob must survive"
+
+    def test_also_removes_sidecar_when_blob_removed(self, tmp_data_dir, monkeypatch):
+        """When an old blob is removed, its sidecar is removed too."""
+        self._reset_sweep(monkeypatch)
+        self._force_sweep_enabled(monkeypatch)
+        cache_dir = skill_cache._skill_outputs_dir()
+        blob_name = "1" * 16 + "-myskill-" + "2" * 16 + ".txt"
+        blob = self._make_blob(cache_dir, blob_name, age_secs=8 * 86400)
+        sidecar = blob.with_suffix(".json")
+        sidecar.write_text('{"skill_name": "myskill"}', encoding="utf-8")
+        skill_cache._sweep_skill_orphans()
+        assert not blob.exists()
+        assert not sidecar.exists(), "sidecar should be removed alongside blob"
+
+    def test_disabled_by_config(self, tmp_data_dir, monkeypatch):
+        """orphan_sweep_enabled=False disables the sweep."""
+        self._reset_sweep(monkeypatch)
+        from token_goat import config as cfg_module
+        cache_dir = skill_cache._skill_outputs_dir()
+        old_name = "3" * 16 + "-oldskill-" + "4" * 16 + ".txt"
+        old_blob = self._make_blob(cache_dir, old_name, age_secs=8 * 86400)
+        orig_load = cfg_module.load
+        def mock_load():
+            c = orig_load()
+            c.skill_preservation.orphan_sweep_enabled = False
+            return c
+        monkeypatch.setattr(cfg_module, "load", mock_load)
+        skill_cache._sweep_skill_orphans()
+        assert old_blob.exists(), "blob should survive when sweep is disabled"
+
+    def test_handles_missing_cache_dir(self, tmp_path, monkeypatch):
+        """Sweep handles a non-existent cache directory gracefully."""
+        self._reset_sweep(monkeypatch)
+        monkeypatch.setattr(skill_cache, "_skill_outputs_dir", lambda: tmp_path / "nonexistent")
+        skill_cache._sweep_skill_orphans()  # must not raise
+
+    def test_handles_io_error_on_unlink(self, tmp_data_dir, monkeypatch):
+        """File-removal errors are swallowed; sweep continues."""
+        from pathlib import Path
+        self._reset_sweep(monkeypatch)
+        cache_dir = skill_cache._skill_outputs_dir()
+        old_name = "5" * 16 + "-errskill-" + "6" * 16 + ".txt"
+        self._make_blob(cache_dir, old_name, age_secs=8 * 86400)
+        orig_unlink = Path.unlink
+        calls = [0]
+        def fail_unlink(self, missing_ok=False):
+            calls[0] += 1
+            if calls[0] == 1:
+                raise OSError("disk full")
+            return orig_unlink(self, missing_ok=missing_ok)
+        monkeypatch.setattr(Path, "unlink", fail_unlink)
+        try:
+            skill_cache._sweep_skill_orphans()
+        except OSError:
+            pytest.fail("_sweep_skill_orphans() raised OSError")
+
+    def test_env_override_disables(self, tmp_data_dir, monkeypatch):
+        """TOKEN_GOAT_ORPHAN_SWEEP=0 disables the skill orphan sweep."""
+        self._reset_sweep(monkeypatch)
+        monkeypatch.setenv("TOKEN_GOAT_ORPHAN_SWEEP", "0")
+        monkeypatch.delenv("TOKEN_GOAT_SKILL_PRESERVATION", raising=False)
+        cfg = config.load()
+        assert cfg.skill_preservation.orphan_sweep_enabled is False
+
+    def test_config_orphan_age_secs_default(self, monkeypatch):
+        """Default orphan_age_secs is 7 days."""
+        monkeypatch.delenv("TOKEN_GOAT_ORPHAN_SWEEP", raising=False)
+        cfg = config.load()
+        assert cfg.skill_preservation.orphan_age_secs == 604800

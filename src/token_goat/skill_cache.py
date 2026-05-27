@@ -46,6 +46,7 @@ __all__ = [
     "write_sidecar",
 ]
 
+import contextlib
 import re
 import time
 from dataclasses import dataclass
@@ -73,6 +74,9 @@ from .hooks_common import sanitize_log_str
 from .util import get_logger
 
 _LOG = get_logger("skill_cache")
+
+# One-shot orphan sweep flag: set to True after the sweep runs in this process.
+_sweep_done = False
 
 # Total byte budget for the on-disk skill body store.  When exceeded, the
 # oldest entries (by mtime) are evicted until the cap is met.  5 MB is small
@@ -305,6 +309,65 @@ def extract_named_section(body: str, heading: str) -> str | None:
     return text if text else None
 
 
+def _sweep_skill_orphans() -> None:
+    """One-shot cleanup of stale skill body blobs older than ``orphan_age_secs``.
+
+    Sessions are short-lived (hours). Any body file older than the threshold
+    (default 7 days) belongs to a dead session and can be safely removed.
+    Sidecars (``.json``) next to removed blobs are also deleted.
+
+    Runs once per process (guarded by ``_sweep_done`` flag) at first
+    ``store_output()`` call. Fail-soft: any I/O error is logged and skipped.
+    Never raises.
+    """
+    global _sweep_done  # noqa: PLW0603
+    if _sweep_done:
+        return
+    _sweep_done = True
+
+    try:
+        from .config import load as _load_config  # noqa: PLC0415
+        _cfg = _load_config()
+        if not _cfg.skill_preservation.orphan_sweep_enabled:
+            _LOG.debug("_sweep_skill_orphans: disabled by config")
+            return
+        age_secs = _cfg.skill_preservation.orphan_age_secs
+    except Exception as exc:  # noqa: BLE001
+        _LOG.debug("_sweep_skill_orphans: config load failed, skipping: %s", exc)
+        return
+
+    cache_dir = _skill_outputs_dir()
+    if not cache_dir.is_dir():
+        return
+
+    now = time.time()
+    removed = 0
+    try:
+        for fp in cache_dir.iterdir():
+            if fp.suffix == ".json":
+                continue
+            if not OUTPUT_FILENAME_RE.match(fp.name):
+                continue
+            try:
+                age = now - fp.stat().st_mtime
+                if age <= age_secs:
+                    continue
+                fp.unlink()
+                removed += 1
+                _LOG.debug("_sweep_skill_orphans: removed %s (age=%.1f days)", fp.name, age / 86400.0)
+                sidecar = fp.with_suffix(".json")
+                with contextlib.suppress(OSError):
+                    sidecar.unlink()
+            except OSError as exc:
+                _LOG.debug("_sweep_skill_orphans: failed to remove %s: %s", fp.name, exc)
+    except OSError as exc:
+        _LOG.debug("_sweep_skill_orphans: directory scan failed: %s", exc)
+        return
+
+    if removed > 0:
+        _LOG.info("_sweep_skill_orphans: removed %d stale skill body blob(s)", removed)
+
+
 def store_output(
     session_id: str,
     skill_name: str,
@@ -324,6 +387,8 @@ def store_output(
     Rejects invalid skill names (returns ``None`` without writing) to keep the
     filesystem layout safe from injection attacks.
     """
+    _sweep_skill_orphans()
+
     name = _safe_skill_name(skill_name)
     if name is None:
         _LOG.warning(
