@@ -177,3 +177,66 @@ class TestConfigUnknownSectionWarning:
         assert cfg.compact_assist.min_events == 7
         # And a warning was emitted for the typo
         assert any("compact_assit" in r.message for r in caplog.records if r.levelno == logging.WARNING)
+
+
+class TestWebFetchConfig:
+    """Tests for WebFetch cache configuration (file-count and byte-cap eviction)."""
+
+    def _reset_cache(self):
+        """Reset the process-level config cache (used between tests)."""
+        import token_goat.config as cfg_mod
+        cfg_mod._config_mtime_cache = None
+
+    def test_webfetch_defaults(self):
+        """WebFetchConfig has sensible defaults matching bash_cache."""
+        from token_goat.config import WebFetchConfig
+        wf = WebFetchConfig()
+        assert wf.max_file_count == 4096
+        assert wf.max_bytes == 32 * 1024 * 1024
+        assert wf.allow == []
+        assert wf.deny == []
+
+    def test_webfetch_config_from_toml(self, tmp_path, monkeypatch):
+        """WebFetch cache caps can be configured via TOML."""
+        import token_goat.config as cfg_mod
+        import token_goat.paths as paths_mod
+
+        config_file = tmp_path / "config.toml"
+        config_file.write_text(
+            "[webfetch]\nmax_file_count = 2048\nmax_bytes = 16777216\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(paths_mod, "config_path", lambda: config_file)
+        self._reset_cache()
+
+        cfg = cfg_mod.load()
+        assert cfg.webfetch.max_file_count == 2048
+        assert cfg.webfetch.max_bytes == 16777216
+
+    def test_webfetch_env_override_files(self, tmp_path, monkeypatch):
+        """TOKEN_GOAT_WEB_CACHE_MAX_FILES env override takes precedence."""
+        import token_goat.config as cfg_mod
+        import token_goat.paths as paths_mod
+
+        config_file = tmp_path / "config.toml"
+        config_file.write_text("[webfetch]\nmax_file_count = 2048\n", encoding="utf-8")
+        monkeypatch.setattr(paths_mod, "config_path", lambda: config_file)
+        monkeypatch.setenv("TOKEN_GOAT_WEB_CACHE_MAX_FILES", "512")
+        self._reset_cache()
+
+        cfg = cfg_mod.load()
+        assert cfg.webfetch.max_file_count == 512
+
+    def test_webfetch_env_override_bytes(self, tmp_path, monkeypatch):
+        """TOKEN_GOAT_WEB_CACHE_MAX_BYTES env override takes precedence."""
+        import token_goat.config as cfg_mod
+        import token_goat.paths as paths_mod
+
+        config_file = tmp_path / "config.toml"
+        config_file.write_text("[webfetch]\nmax_bytes = 16777216\n", encoding="utf-8")
+        monkeypatch.setattr(paths_mod, "config_path", lambda: config_file)
+        monkeypatch.setenv("TOKEN_GOAT_WEB_CACHE_MAX_BYTES", "8388608")
+        self._reset_cache()
+
+        cfg = cfg_mod.load()
+        assert cfg.webfetch.max_bytes == 8388608

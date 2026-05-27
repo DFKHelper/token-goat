@@ -55,6 +55,48 @@ class TestStoreAndLoad:
             if not body.exists():
                 assert not sidecar.exists()
 
+    def test_evict_by_file_count(self, tmp_data_dir):
+        """Eviction removes oldest entries when file count cap is exceeded."""
+        metas = []
+        for i in range(5):
+            m = web_cache.store_output(
+                f"sess{i}", f"https://f.example/{i}", "X" * 10_000, 200,
+            )
+            assert m is not None
+            metas.append(m)
+
+        removed = web_cache.evict_old_entries(max_file_count=3, max_total_bytes=10 * 1024 * 1024)
+        assert removed >= 2  # At least the two oldest should be evicted
+
+        from pathlib import Path as _Path
+        remaining = 0
+        for m in metas:
+            body = _Path(web_cache._web_outputs_dir()) / f"{m.output_id}.txt"
+            if body.exists():
+                remaining += 1
+        assert remaining <= 3
+
+    def test_evict_by_byte_cap(self, tmp_data_dir):
+        """Eviction removes oldest entries when byte cap is exceeded."""
+        metas = []
+        for i in range(5):
+            m = web_cache.store_output(
+                f"sess{i}", f"https://b.example/{i}", "X" * 50_000, 200,
+            )
+            assert m is not None
+            metas.append(m)
+
+        removed = web_cache.evict_old_entries(max_total_bytes=100_000, max_file_count=100)
+        assert removed >= 2  # At least the two oldest should be evicted
+
+        from pathlib import Path as _Path
+        total_size = 0
+        for m in metas:
+            body = _Path(web_cache._web_outputs_dir()) / f"{m.output_id}.txt"
+            if body.exists():
+                total_size += body.stat().st_size
+        assert total_size <= 100_000
+
 
 class TestPostFetchHook:
     def test_small_body_skipped(self, tmp_data_dir):

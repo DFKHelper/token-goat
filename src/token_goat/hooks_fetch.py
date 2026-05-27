@@ -384,9 +384,14 @@ def post_fetch(payload: HookPayload) -> HookResponse:
         )
         return CONTINUE()
 
-    from . import session, web_cache  # noqa: PLC0415
+    from . import config, session, web_cache  # noqa: PLC0415
 
-    meta = web_cache.store_output(session_id, url, body, status_code)
+    cfg = config.load()
+    meta = web_cache.store_output(
+        session_id, url, body, status_code,
+        max_total_bytes=cfg.webfetch.max_bytes,
+        max_file_count=cfg.webfetch.max_file_count,
+    )
     if meta is None:
         return CONTINUE()
     web_cache.write_sidecar(meta)

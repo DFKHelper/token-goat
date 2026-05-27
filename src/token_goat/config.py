@@ -54,6 +54,8 @@ _CONFIG_ENV_KEYS: tuple[str, ...] = (
     "TOKEN_GOAT_WEB_DEDUP_MIN_BYTES",
     "TOKEN_GOAT_GREP_DEDUP_MIN_MATCHES",
     "TOKEN_GOAT_REPOMAP_COMPACT_THRESHOLD",
+    "TOKEN_GOAT_WEB_CACHE_MAX_FILES",
+    "TOKEN_GOAT_WEB_CACHE_MAX_BYTES",
 )
 
 
@@ -88,6 +90,8 @@ _ENV_BASH_DEDUP_MIN_BYTES: Final[str] = "TOKEN_GOAT_BASH_DEDUP_MIN_BYTES"  # int
 _ENV_WEB_DEDUP_MIN_BYTES: Final[str] = "TOKEN_GOAT_WEB_DEDUP_MIN_BYTES"  # integer override (bytes)
 _ENV_GREP_DEDUP_MIN_MATCHES: Final[str] = "TOKEN_GOAT_GREP_DEDUP_MIN_MATCHES"  # integer override (result count)
 _ENV_REPOMAP_COMPACT_THRESHOLD: Final[str] = "TOKEN_GOAT_REPOMAP_COMPACT_THRESHOLD"  # integer override
+_ENV_WEB_CACHE_MAX_FILES: Final[str] = "TOKEN_GOAT_WEB_CACHE_MAX_FILES"  # integer override (file count)
+_ENV_WEB_CACHE_MAX_BYTES: Final[str] = "TOKEN_GOAT_WEB_CACHE_MAX_BYTES"  # integer override (bytes)
 
 CONFIG_SCHEMA_VERSION: Final[int] = 1
 
@@ -239,6 +243,8 @@ class _WebFetchToml(TypedDict, total=False):
 
     allow: list[str]
     deny: list[str]
+    max_file_count: int
+    max_bytes: int
 
 
 class _ConfigToml(TypedDict, total=False):
@@ -636,20 +642,29 @@ class HintsConfig:
 
 @dataclass
 class WebFetchConfig:
-    """Configuration for pre-WebFetch URL allowlist and denylist.
+    """Configuration for pre-WebFetch URL allowlist, denylist, and output cache.
 
     Patterns are Unix-style globs matched against the full URL.  The denylist
     is checked first; if the URL matches any deny pattern the fetch is blocked.
     If the allowlist is non-empty the URL must match at least one allow pattern
     to proceed.  Empty allowlist means "allow everything not denied".
 
+    The cache caps (max_file_count and max_bytes) mirror the bash_cache caps:
+    entries are evicted oldest-first when either cap is exceeded.
+
     Attributes:
         allow: List of glob patterns; if non-empty, only matching URLs are allowed.
         deny: List of glob patterns; matching URLs are blocked before allow check.
+        max_file_count: Maximum number of cached response body files (default 4096).
+            Set to 0 to disable file-count eviction.
+        max_bytes: Maximum total bytes stored across all cached responses (default 32 MB).
+            Set to 0 to disable byte-based eviction (not recommended).
     """
 
     allow: list[str] = field(default_factory=list)
     deny: list[str] = field(default_factory=list)
+    max_file_count: int = 4096
+    max_bytes: int = 32 * 1024 * 1024
 
 
 @dataclass
@@ -1066,7 +1081,22 @@ def load() -> Config:
     wf_cfg = WebFetchConfig(
         allow=_validated_str_list(wf_raw.get("allow", []), [], "webfetch.allow"),
         deny=_validated_str_list(wf_raw.get("deny", []), [], "webfetch.deny"),
+        max_file_count=wf_raw.get("max_file_count", 4096),
+        max_bytes=wf_raw.get("max_bytes", 32 * 1024 * 1024),
     )
+    # Apply env overrides for web cache caps
+    try:
+        env_max_files = os.environ.get(_ENV_WEB_CACHE_MAX_FILES)
+        if env_max_files:
+            wf_cfg.max_file_count = int(env_max_files)
+    except ValueError:
+        _LOG.warning("TOKEN_GOAT_WEB_CACHE_MAX_FILES must be an integer")
+    try:
+        env_max_bytes = os.environ.get(_ENV_WEB_CACHE_MAX_BYTES)
+        if env_max_bytes:
+            wf_cfg.max_bytes = int(env_max_bytes)
+    except ValueError:
+        _LOG.warning("TOKEN_GOAT_WEB_CACHE_MAX_BYTES must be an integer")
 
     _LOG.debug(
         "config resolved: compact_assist enabled=%s triggers=%s min_events=%d max_tokens=%d; "
@@ -1079,7 +1109,7 @@ def load() -> Config:
         "repomap compact_file_threshold=%d; "
         "stats record_zero_savings=%s; "
         "hints suppress_after_ignored=%d quiet_hours=%r; "
-        "webfetch allow=%s deny=%s",
+        "webfetch allow=%s deny=%s max_files=%d max_bytes=%d",
         ca.enabled,
         ca.triggers,
         ca.min_events,
@@ -1109,6 +1139,8 @@ def load() -> Config:
         hints_cfg.quiet_hours,
         wf_cfg.allow,
         wf_cfg.deny,
+        wf_cfg.max_file_count,
+        wf_cfg.max_bytes,
     )
     result = Config(
         compact_assist=ca, bash_compress=bc, session_brief=sb, skill_preservation=sp,
@@ -1194,6 +1226,8 @@ def save(config: Config) -> None:
         "webfetch": {
             "allow": config.webfetch.allow,
             "deny": config.webfetch.deny,
+            "max_file_count": config.webfetch.max_file_count,
+            "max_bytes": config.webfetch.max_bytes,
         },
     }
     try:

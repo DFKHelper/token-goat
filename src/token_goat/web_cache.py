@@ -152,6 +152,7 @@ def store_output(
     status_code: int | None,
     *,
     max_total_bytes: int = DEFAULT_MAX_TOTAL_BYTES,
+    max_file_count: int = 4096,
 ) -> WebOutputMeta | None:
     """Write *body* to the cache and return descriptive metadata.
 
@@ -161,9 +162,9 @@ def store_output(
     bodies, and error stack traces all tend to sit at the bottom of the
     fetched content.  After the write the function opportunistically evicts
     the oldest files until the total store size is back under
-    ``max_total_bytes``; the eviction is best-effort and a failed pass simply
-    leaves the directory slightly over budget — the next call will try
-    again.
+    ``max_total_bytes`` AND the file count is at or under ``max_file_count``;
+    the eviction is best-effort and a failed pass simply leaves the
+    directory slightly over budget — the next call will try again.
     """
     with safe_cache_op("store_output", log=_LOG):
         out_id = output_id_for(session_id, url)
@@ -186,7 +187,7 @@ def store_output(
             truncated=truncated,
         )
 
-        evict_old_entries(max_total_bytes=max_total_bytes)
+        evict_old_entries(max_total_bytes=max_total_bytes, max_file_count=max_file_count)
 
         _LOG.debug(
             "web_cache: stored id=%s bytes=%d truncated=%s",
@@ -206,19 +207,31 @@ def load_output_meta(output_id: str) -> OutputStatDict | None:
     return load_output_meta_stat(output_id, _web_outputs_dir, "web_cache")
 
 
-def evict_old_entries(*, max_total_bytes: int = DEFAULT_MAX_TOTAL_BYTES) -> int:
+def evict_old_entries(
+    *,
+    max_total_bytes: int = DEFAULT_MAX_TOTAL_BYTES,
+    max_file_count: int = 4096,
+) -> int:
     """Evict the oldest entries until total size is at or under *max_total_bytes*.
 
     Removes body + sidecar pairs together, then runs an orphan-sidecar sweep
     at the end.  Same shape as :func:`bash_cache.evict_old_entries`.
 
     The shared algorithm lives in :func:`cache_common.evict_cache_dir`; this
-    wrapper supplies the web-specific directory, log name, and default cap.
+    wrapper supplies the web-specific directory, log name, and default caps.
+
+    Parameters
+    ----------
+    max_total_bytes:
+        Byte budget for the cache directory (default 32 MB).
+    max_file_count:
+        Maximum number of cached response body files (default 4096).
     """
     return evict_cache_dir(
         cache_dir_fn=_web_outputs_dir,
         log_name="web_cache",
         max_total_bytes=max_total_bytes,
+        max_file_count=max_file_count,
     )
 
 
