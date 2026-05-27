@@ -3523,3 +3523,54 @@ class TestPerTypeHintCounters:
         assert cache.hints_emitted_by_type["read_dedup"] == 1
         assert cache.hints_emitted_by_type["bash_dedup"] == 2
         assert cache.hints_suppressed_by_type["grep_dedup_below_threshold"] == 3
+
+
+class TestEditedFilesMerge:
+    """_merge_session_caches uses max() not sum() for edited_files counters."""
+
+    def test_edited_files_merge_takes_max(self, tmp_data_dir):
+        """When local and remote diverge, the merged count is max(r, l), not sum."""
+        from token_goat.session import _merge_session_caches
+
+        local = session.SessionCache("efm-1", 0, 0)
+        remote = session.SessionCache("efm-1", 0, 0)
+        local.edited_files["src/a.py"] = 3
+        remote.edited_files["src/a.py"] = 5
+
+        merged = _merge_session_caches(local, remote)
+        assert merged.edited_files["src/a.py"] == 5  # max(5, 3)
+
+    def test_edited_files_merge_local_higher_wins(self, tmp_data_dir):
+        """Local count higher than remote: result is local's value."""
+        from token_goat.session import _merge_session_caches
+
+        local = session.SessionCache("efm-2", 0, 0)
+        remote = session.SessionCache("efm-2", 0, 0)
+        local.edited_files["src/b.py"] = 7
+        remote.edited_files["src/b.py"] = 2
+
+        merged = _merge_session_caches(local, remote)
+        assert merged.edited_files["src/b.py"] == 7  # max(2, 7)
+
+    def test_edited_files_merge_local_only_key_added(self, tmp_data_dir):
+        """Key present only in local appears in merged result."""
+        from token_goat.session import _merge_session_caches
+
+        local = session.SessionCache("efm-3", 0, 0)
+        remote = session.SessionCache("efm-3", 0, 0)
+        local.edited_files["src/new.py"] = 4
+
+        merged = _merge_session_caches(local, remote)
+        assert merged.edited_files["src/new.py"] == 4
+
+    def test_edited_files_merge_does_not_sum(self, tmp_data_dir):
+        """Concurrent edits do not double-count: result is max, not r+l."""
+        from token_goat.session import _merge_session_caches
+
+        local = session.SessionCache("efm-4", 0, 0)
+        remote = session.SessionCache("efm-4", 0, 0)
+        local.edited_files["src/c.py"] = 3
+        remote.edited_files["src/c.py"] = 3
+
+        merged = _merge_session_caches(local, remote)
+        assert merged.edited_files["src/c.py"] == 3  # max(3,3)=3, not sum=6

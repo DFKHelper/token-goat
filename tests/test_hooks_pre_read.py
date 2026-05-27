@@ -751,8 +751,8 @@ class TestStructuredFileHint:
             ctx = result["hookSpecificOutput"].get("additionalContext", "")
             assert "📊" not in ctx
 
-    def test_session_dedup_fires_only_once(self, tmp_data_dir, tmp_path):
-        """Same large CSV read twice in a session → hint fires only on first read."""
+    def test_session_dedup_within_verbose_window(self, tmp_data_dir, tmp_path):
+        """Same large CSV read twice stays within verbose window → hint re-emits on both reads."""
         fpath = self._make_large_file(tmp_path, ".csv")
         sid = "struct-dedup"
         payload = self._read_payload(sid, fpath)
@@ -761,14 +761,34 @@ class TestStructuredFileHint:
         _assert_continue(result1)
         assert "hookSpecificOutput" in result1
 
-        # Second read of same file same session → hint suppressed (fingerprint dedup).
+        # Second read: within verbose_until_seen_count=2 window → must re-emit full hint.
         result2 = hooks_cli.pre_read(payload)
         _assert_continue(result2)
-        # The second result may have a different hint (session cache hint) or none,
-        # but the structured-file specific text must not repeat.
-        if "hookSpecificOutput" in result2:
-            ctx2 = result2["hookSpecificOutput"].get("additionalContext", "")
-            assert "📊" not in ctx2 and "large csv" not in ctx2.lower()
+        assert "hookSpecificOutput" in result2, "second read within verbose window must emit hint"
+        ctx2 = result2["hookSpecificOutput"].get("additionalContext", "")
+        assert "csv" in ctx2.lower() or "📊" in ctx2, (
+            "second read must re-emit the structured-file hint, not suppress it"
+        )
+
+    def test_session_dedup_emits_stub_past_verbose_window(self, tmp_data_dir, tmp_path):
+        """Same large CSV read 4× → 4th read emits short stub, not full structured-file hint."""
+        fpath = self._make_large_file(tmp_path, ".csv")
+        sid = "struct-dedup-stub"
+        payload = self._read_payload(sid, fpath)
+
+        # Reads 1–3: full hint (verbose window for default verbose_until_seen_count=2).
+        for _ in range(3):
+            hooks_cli.pre_read(payload)
+
+        # 4th read: past verbose window → short stub only.
+        result4 = hooks_cli.pre_read(payload)
+        _assert_continue(result4)
+        if "hookSpecificOutput" in result4:
+            ctx4 = result4["hookSpecificOutput"].get("additionalContext", "")
+            # Stub contains "seen Nx" marker; full structured-file hint must not repeat.
+            assert "📊" not in ctx4 and "large csv" not in ctx4.lower(), (
+                "4th read must emit a short stub, not the full structured-file hint"
+            )
 
     def test_jsonl_treated_as_tabular(self, tmp_data_dir, tmp_path):
         """.jsonl is classified as tabular, not document-json."""
@@ -872,8 +892,8 @@ class TestIndexOnlyFileHint:
             ctx = result["hookSpecificOutput"].get("additionalContext", "")
             assert "lockfile" not in ctx.lower()
 
-    def test_session_dedup_fires_only_once(self, tmp_data_dir, tmp_path):
-        """Same lockfile read twice in a session → index-only hint fires only on first read."""
+    def test_session_dedup_within_verbose_window(self, tmp_data_dir, tmp_path):
+        """Same lockfile read twice → within verbose window, hint re-emits on both reads."""
         fpath = self._make_lockfile(tmp_path, "cargo.lock")
         payload = self._read_payload("io-dedup", fpath)
 
@@ -883,11 +903,32 @@ class TestIndexOnlyFileHint:
         ctx1 = result1["hookSpecificOutput"]["additionalContext"]
         assert "lockfile" in ctx1.lower()
 
+        # Second read: within verbose_until_seen_count=2 window → must re-emit full hint.
         result2 = hooks_cli.pre_read(payload)
         _assert_continue(result2)
-        if "hookSpecificOutput" in result2:
-            ctx2 = result2["hookSpecificOutput"].get("additionalContext", "")
-            assert "lockfile" not in ctx2.lower()
+        assert "hookSpecificOutput" in result2, "second read within verbose window must emit hint"
+        ctx2 = result2["hookSpecificOutput"].get("additionalContext", "")
+        assert "lockfile" in ctx2.lower(), (
+            "second read must re-emit the index-only hint, not suppress it"
+        )
+
+    def test_session_dedup_emits_stub_past_verbose_window(self, tmp_data_dir, tmp_path):
+        """Same lockfile read 4× → 4th read emits short stub, not full index-only hint."""
+        fpath = self._make_lockfile(tmp_path, "cargo.lock")
+        payload = self._read_payload("io-dedup-stub", fpath)
+
+        # Reads 1–3: full hint (verbose window for default verbose_until_seen_count=2).
+        for _ in range(3):
+            hooks_cli.pre_read(payload)
+
+        # 4th read: past verbose window → short stub only.
+        result4 = hooks_cli.pre_read(payload)
+        _assert_continue(result4)
+        if "hookSpecificOutput" in result4:
+            ctx4 = result4["hookSpecificOutput"].get("additionalContext", "")
+            assert "lockfile" not in ctx4.lower(), (
+                "4th read must emit a short stub, not the full index-only hint"
+            )
 
 
 # ---------------------------------------------------------------------------

@@ -378,10 +378,16 @@ def _merge_session_caches(local: SessionCache, remote: SessionCache) -> SessionC
                 remote.files[k] = v
     merged.files = remote.files
 
-    # edited_files: sum counts (each process independently incremented).
+    # edited_files: max (same conservative approximation as aggregate hint counters).
+    # The formula r + max(0, l - r) = max(r, l) — the comment previously said "sum"
+    # which was misleading.  Without tracking the fork-point base value we cannot
+    # reconstruct the true sum, so max() is used: it never overcounts but may
+    # undercount by ~1 when two processes each make one edit in the same CAS window.
+    # The consequence is that heavily-edited files appear slightly less important
+    # in the compact manifest, which is acceptable for a display-only counter.
     ec: int
     for efk, ec in local.edited_files.items():
-        remote.edited_files[efk] = remote.edited_files.get(efk, 0) + max(0, ec - remote.edited_files.get(efk, 0))
+        remote.edited_files[efk] = max(remote.edited_files.get(efk, 0), ec)
     merged.edited_files = remote.edited_files
 
     # result_cache, bash_history, web_history, skill_history: newer ts wins.

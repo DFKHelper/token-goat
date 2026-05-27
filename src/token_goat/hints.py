@@ -196,18 +196,6 @@ def _hint_fingerprint(hint_text: str, path: str = "") -> str:
     return digest[:12]
 
 
-def _hint_content_hash(hint_text: str) -> str:
-    """Return a short MD5 hash (first 8 hex chars) of hint text for dedup.
-
-    Used as secondary dedup to suppress hints with identical rendered content
-    even when the fingerprint differs (e.g., same semantic content with slightly
-    different line ranges). The 8-char prefix balances collision risk against
-    session JSON size and is sufficient for content dedup within a session.
-    """
-    digest = hashlib.md5(hint_text.encode("utf-8")).hexdigest()
-    return digest[:8]
-
-
 def _sanitize_hint_path(p: str) -> str:
     """Strip newlines/CRs and cap length for a path embedded in an LLM hint string.
 
@@ -549,22 +537,13 @@ def build_read_hint(
             cwd=cwd,
             cache=cache,
         )
-        # Secondary dedup: suppress if the rendered hint content was already seen.
-        if hint is not None and session_id and cache:
-            content_hash = _hint_content_hash(str(hint))
-            if content_hash in cache.hints_seen:
-                _LOG.debug(
-                    "build_read_hint: suppressed (content hash %s already seen)",
-                    content_hash,
-                )
-                return None
-            # Curator: record this file-level dedup hint emission.
-            if hint.tokens_saved > 0:
-                from . import session as _sess  # noqa: PLC0415
-                norm_path = _sess._normalize_path(file_path)  # type: ignore[attr-defined]
-                _record_hint_emitted(cache, norm_path)
+        # Curator: record this file-level dedup hint emission.
+        if hint is not None and session_id and cache and hint.tokens_saved > 0:
+            from . import session as _sess  # noqa: PLC0415
+            norm_path = _sess._normalize_path(file_path)  # type: ignore[attr-defined]
+            _record_hint_emitted(cache, norm_path)
         # JSON sidecar: opt-in machine-readable line prepended after dedup so
-        # the prose-only hash above keeps deduping correctly. No-op when the
+        # fingerprint dedup above keeps deduping correctly. No-op when the
         # [hints] json_sidecar feature flag is off (default).
         if hint is not None:
             kind = "already_read" if hint.tokens_saved > 0 else "read_suggestion"

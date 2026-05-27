@@ -454,13 +454,8 @@ def _emit_dedup_budgeted_hint(
                 display_name, sanitize_log_str(file_path), seen_count,
             )
             return pre_tool_use_with_context(str(stub_hint))
-        else:
-            # Within verbose threshold: suppress entirely (first or second occurrence).
-            _LOG.debug(
-                "pre-read: %s hint already seen for %s; suppressing (seen_count=%d <= verbose_until=%d)",
-                display_name, sanitize_log_str(file_path), seen_count, verbose_until,
-            )
-            return None
+        # else: within verbose_until window — fall through to the full emit path below.
+        # The budget check, mark-seen, and record steps all apply to re-emissions too.
 
     # Budget: hard cap on hints of this kind per session.
     _session = _get_session()
