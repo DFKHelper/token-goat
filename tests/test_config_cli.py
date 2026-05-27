@@ -327,3 +327,64 @@ class TestConfigValidate:
             result = runner.invoke(app, ["config", "validate", "--json"])
         data = json.loads(result.output)
         assert data["ok"] is True, f"Unexpected issues: {data.get('issues')}"
+
+    def test_validate_known_top_level_matches_config_known_sections(self, tmp_data_dir, tmp_path):
+        """config validate must accept every section listed in config._KNOWN_SECTIONS.
+
+        Guards against the two-place update bug where a new section is added to
+        config._KNOWN_SECTIONS but the validate command's local set is not updated,
+        causing valid configs to be falsely flagged as unknown sections.
+        """
+        import dataclasses
+        import unittest.mock as mock
+
+        import token_goat.paths as _paths
+
+        # Build a TOML file that contains every section listed in _KNOWN_SECTIONS
+        # (excluding schema_version, which is a scalar, not a table).
+        section_to_cls = {
+            "compact_assist": config_mod.CompactAssistConfig,
+            "bash_compress": config_mod.BashCompressConfig,
+            "session_brief": config_mod.SessionBriefConfig,
+            "skill_preservation": config_mod.SkillPreservationConfig,
+            "image_shrink": config_mod.ImageShrinkConfig,
+            "curator": config_mod.CuratorConfig,
+            "hint_budget": config_mod.HintBudgetConfig,
+            "hints": config_mod.HintsConfig,
+            "repomap": config_mod.RepomapConfig,
+            "stats": config_mod.StatsConfig,
+            "webfetch": config_mod.WebFetchConfig,
+        }
+        # Verify that section_to_cls covers exactly _KNOWN_SECTIONS minus schema_version.
+        expected = config_mod._KNOWN_SECTIONS - {"schema_version"}
+        assert set(section_to_cls) == expected, (
+            f"Test out-of-sync: _KNOWN_SECTIONS has {expected - set(section_to_cls)!r} "
+            f"not in section_to_cls. Update this test when adding a new config section."
+        )
+
+        lines = ["schema_version = 1\n"]
+        for section, cls in section_to_cls.items():
+            lines.append(f"[{section}]\n")
+            for f in dataclasses.fields(cls):
+                val = getattr(cls(), f.name)
+                if isinstance(val, bool):
+                    lines.append(f"{f.name} = {'true' if val else 'false'}\n")
+                elif isinstance(val, (int, float)):
+                    lines.append(f"{f.name} = {val}\n")
+                elif isinstance(val, list):
+                    items = ", ".join(f'"{x}"' for x in val)
+                    lines.append(f"{f.name} = [{items}]\n")
+                elif isinstance(val, str):
+                    lines.append(f'{f.name} = "{val}"\n')
+
+        cfg_path = tmp_path / "config.toml"
+        cfg_path.write_text("".join(lines), encoding="utf-8")
+        runner = CliRunner()
+        with mock.patch.object(_paths, "config_path", return_value=cfg_path):
+            result = runner.invoke(app, ["config", "validate", "--json"])
+        data = json.loads(result.output)
+        assert data["ok"] is True, (
+            f"config validate rejected a known section. Issues: {data.get('issues')}\n"
+            "Did you add a section to config._KNOWN_SECTIONS without also updating "
+            "config_validate()'s _KNOWN_TOP_LEVEL?"
+        )
