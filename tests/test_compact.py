@@ -3714,6 +3714,34 @@ class TestSafetyTrimAndBudgetFloor:
         _, files_count = compact.build_manifest_with_count(sid)
         assert files_count > 0
 
+    def test_build_manifest_with_count_uses_sidecar_cache_on_second_call(self, tmp_data_dir):
+        """build_manifest_with_count must honour the sidecar cache on repeat calls.
+
+        Regression: the function called _build_manifest_from_cache directly, bypassing
+        the sidecar fast-path in build_manifest.  This meant every PreCompact hook call
+        re-rendered the full manifest even when nothing had changed (redundant git
+        subprocess calls, ~300-600 wasted tokens per idle compaction).
+        """
+        sid = "bmwc-sidecar-regression"
+        session.mark_file_edited(sid, "src/main.py")
+
+        # First call: cache miss → renders full manifest and writes sidecar.
+        manifest1, count1 = compact.build_manifest_with_count(sid)
+        assert manifest1, "first call must return a non-empty manifest"
+        assert count1 > 0
+
+        # Clear the in-process guard so the next call can hit the sidecar.
+        compact._manifest_sha_written_this_process.discard(sid)
+
+        # Second call with identical session state: must return sidecar stub.
+        manifest2, count2 = compact.build_manifest_with_count(sid)
+        assert "unchanged since" in manifest2, (
+            "second call with no session changes must return the sidecar stub, "
+            "not a full re-render.  If the sidecar is not used, this assertion "
+            "fails because the full manifest does not contain 'unchanged since'."
+        )
+        assert count2 == count1, "event count must be consistent between calls"
+
 
 # ---------------------------------------------------------------------------
 # Stale read files + estimate_tokens + cold-output blocker path

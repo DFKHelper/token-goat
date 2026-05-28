@@ -221,6 +221,7 @@ def test_run_dedup_hint_returns_context_when_builder_returns_hint(monkeypatch):
 
     fake_cache = object()
     monkeypatch.setattr(_session, "load", lambda sid: fake_cache)
+    monkeypatch.setattr(_session, "save", lambda _c: None)
     monkeypatch.setattr(_db, "record_stat", lambda *a, **kw: None)
     monkeypatch.setattr(_hints, "CHARS_PER_TOKEN", 4)
 
@@ -281,6 +282,7 @@ def test_run_dedup_hint_builder_receives_session_id_and_cache(monkeypatch):
     captured: dict = {}
 
     monkeypatch.setattr(_session, "load", lambda sid: fake_cache)
+    monkeypatch.setattr(_session, "save", lambda _c: None)
     monkeypatch.setattr(_db, "record_stat", lambda *a, **kw: None)
     monkeypatch.setattr(_hints, "CHARS_PER_TOKEN", 4)
 
@@ -294,6 +296,64 @@ def test_run_dedup_hint_builder_receives_session_id_and_cache(monkeypatch):
 
     assert captured["sid"] == "test-builder-args"
     assert captured["cache"] is fake_cache
+
+
+def test_run_dedup_hint_saves_cache_when_hint_emitted(monkeypatch):
+    """run_dedup_hint must call session.save(cache) when the builder returns a hint.
+
+    Regression: the function never called session.save after the builder mutated
+    the cache (bash_dedup_emitted_ids, hints_emitted_by_type, etc.), so all
+    mutations were discarded at hook-process exit.  The same bash output could
+    then generate a dedup hint on every subsequent call for the entire session.
+    """
+    import token_goat.db as _db  # noqa: PLC0415
+    import token_goat.hints as _hints  # noqa: PLC0415
+    import token_goat.session as _session  # noqa: PLC0415
+
+    fake_cache = object()
+    save_calls: list[object] = []
+
+    monkeypatch.setattr(_session, "load", lambda sid: fake_cache)
+    monkeypatch.setattr(_session, "save", lambda c: save_calls.append(c))
+    monkeypatch.setattr(_db, "record_stat", lambda *a, **kw: None)
+    monkeypatch.setattr(_hints, "CHARS_PER_TOKEN", 4)
+
+    payload = _sid_payload("test-save-on-emit")
+    result = run_dedup_hint(
+        payload,
+        builder=lambda sid, cache: _FakeHint("cached result", tokens_saved=50),
+        stat_kind="bash_dedup_hint",
+        detail="cmd",
+    )
+
+    assert result is not None, "hint must be emitted"
+    assert len(save_calls) == 1, "session.save must be called once when hint is emitted"
+    assert save_calls[0] is fake_cache, "session.save must receive the same cache object"
+
+
+def test_run_dedup_hint_does_not_save_when_builder_returns_none(monkeypatch):
+    """run_dedup_hint must NOT call session.save when builder returns None.
+
+    Avoids unnecessary disk writes on every suppressed dedup call.
+    """
+    import token_goat.session as _session  # noqa: PLC0415
+
+    fake_cache = object()
+    save_calls: list[object] = []
+
+    monkeypatch.setattr(_session, "load", lambda sid: fake_cache)
+    monkeypatch.setattr(_session, "save", lambda c: save_calls.append(c))
+
+    payload = _sid_payload("test-no-save-on-none")
+    result = run_dedup_hint(
+        payload,
+        builder=lambda sid, cache: None,
+        stat_kind="bash_dedup_hint",
+        detail="cmd",
+    )
+
+    assert result is None
+    assert len(save_calls) == 0, "session.save must not be called when builder returns None"
 
 
 # ---------------------------------------------------------------------------

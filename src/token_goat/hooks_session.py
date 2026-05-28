@@ -1029,7 +1029,7 @@ def user_prompt_submit(payload: HookPayload) -> HookResponse:
 
         cache = _session.safe_load(session_id, caller="user-prompt-submit")
         if cache is not None:
-            edit_count = len(getattr(cache, "edited_files", set()))
+            edit_count = len(getattr(cache, "edited_files", {}))
             parts.append(f"edits: {edit_count}")
     except Exception:  # noqa: BLE001
         pass
@@ -1095,7 +1095,7 @@ def subagent_stop(payload: HookPayload) -> HookResponse:
         cache = _session.safe_load(session_id, caller="subagent-stop")
         if cache is None:
             return CONTINUE()
-        edited: set[str] = getattr(cache, "edited_files", set())
+        edited: dict[str, int] = getattr(cache, "edited_files", {})
         if not edited:
             return CONTINUE()
     except Exception:  # noqa: BLE001

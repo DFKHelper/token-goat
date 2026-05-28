@@ -723,6 +723,11 @@ def run_dedup_hint(
     if hint is None:
         return None
 
+    # Persist mutations made by the builder (bash_dedup_emitted_ids, budget counters,
+    # hints_seen, etc.) before the hook process exits.  Without this, every field the
+    # builder touched is silently discarded at process exit.
+    session.save(cache)
+
     record_hint_stat_pair(stat_kind, hint, detail)
     LOG.info(
         "%s: %s injected (tokens_saved=%d)",
