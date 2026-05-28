@@ -626,6 +626,7 @@ def _build_read_hint_inner(
             fname=fname, recall_path=recall_path,
             has_explicit_limit=has_explicit_limit,
             cache=cache,
+            cwd=cwd,
         )
         if hint is not None:
             _LOG.debug(
@@ -696,6 +697,43 @@ def _should_suppress_full_file_hint(n_lines: int | None, threshold: int | None =
     return n_lines < threshold
 
 
+def _indexed_line_count(file_path: str, cwd: str | None) -> int | None:
+    """Return the DB-indexed line count for *file_path*, or None if unavailable.
+
+    Used to verify the max_line proxy before applying the min_file_lines_for_hint
+    suppression: a partial read of a large file yields a small max_line value that
+    would otherwise incorrectly suppress the hint.  The DB lookup is skipped
+    (returns None) when cwd is absent, the project isn't found, or the file isn't
+    indexed — the caller falls back to the max_line proxy in all those cases.
+    """
+    if not cwd:
+        return None
+    try:
+        from pathlib import Path as _Path
+
+        from token_goat import db as _db
+        from token_goat.project import find_project as _find_project
+
+        cwd_path = _Path(cwd)
+        project = _find_project(cwd_path)
+        if project is None:
+            return None
+        abs_p = _Path(file_path)
+        if not abs_p.is_absolute():
+            abs_p = (project.root / file_path).resolve()
+        try:
+            rel = abs_p.relative_to(project.root).as_posix()
+        except ValueError:
+            return None
+        with _db.open_project_readonly(project.hash) as conn:
+            row = conn.execute(
+                "SELECT line_count FROM files WHERE rel_path = ?", (rel,)
+            ).fetchone()
+        return int(row[0]) if row and row[0] is not None else None
+    except Exception:  # noqa: BLE001
+        return None
+
+
 def _hint_from_cache(
     entry: session.FileEntry,
     req_start: int,
@@ -706,6 +744,7 @@ def _hint_from_cache(
     recall_path: str | None = None,
     has_explicit_limit: bool = False,
     cache: session.SessionCache | None = None,
+    cwd: str | None = None,
 ) -> ReadHint | None:
     """Build hint when the file was already accessed this session.
 
@@ -782,20 +821,33 @@ def _hint_from_cache(
 
     # Line-count threshold suppression: when min_file_lines_for_hint is configured,
     # suppress full-file dedup hints for tiny files where the hint cost exceeds savings.
-    # Compute the max line from cached ranges. This suppression applies only to the
-    # "already read" dedup hint pathway; surgical hints (symbols/sections) bypass this.
+    # max_line is the highest cached_end from stored ranges — a lower bound on file size,
+    # not the actual total.  For a 500-line file read only up to line 40, max_line=40,
+    # which would incorrectly trigger suppression.  When max_line falls below the
+    # threshold, verify the actual line count before suppressing.
     if entry.line_ranges and entry.line_ranges != [(0, 0)]:
         max_line = max(cached_end for cached_start, cached_end in entry.line_ranges)
         _min_lines = config.load().hints.min_file_lines_for_hint
         if _should_suppress_full_file_hint(max_line, _min_lines):
-            _LOG.debug(
-                "_hint_from_cache: suppressing full-file hint for %s "
-                "(line_count=%d < threshold=%d)",
-                fname, max_line, _min_lines,
-            )
-            # Symbol-only hints are still emitted (surgical reads are never suppressed).
-            if not entry.symbols_read:
-                return None
+            # max_line proxy says "maybe suppress".  Resolve the true line count:
+            # 1. Indexed DB count (no extra I/O, most reliable).
+            # 2. Disk count via _line_count (one file read; handles unindexed files).
+            # If the true count is at or above the threshold, the file is large —
+            # do not suppress.  Fall back to suppressing only if count is unavailable.
+            _true_lines: int | None = _indexed_line_count(file_path, cwd)
+            if _true_lines is None:
+                _true_lines = _line_count(Path(file_path))
+            if _true_lines is not None and _true_lines >= _min_lines:
+                pass  # File is large; max_line undercount — do not suppress.
+            else:
+                _LOG.debug(
+                    "_hint_from_cache: suppressing full-file hint for %s "
+                    "(line_count=%d < threshold=%d)",
+                    fname, _true_lines if _true_lines is not None else max_line, _min_lines,
+                )
+                # Symbol-only hints are still emitted (surgical reads are never suppressed).
+                if not entry.symbols_read:
+                    return None
 
     # Frequently-read files: emit a one-time surgical-read nudge instead of
     # repeating the line-range nag on every re-read.  The hint text is stable

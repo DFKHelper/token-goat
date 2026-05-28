@@ -4199,6 +4199,43 @@ class TestDedupGrepEntries:
         assert "target [×2]" in patterns, f"Expected 'target [×2]' in {patterns}"
         assert "unique" in patterns, f"Expected 'unique' in {patterns}"
 
+    def test_raw_counts_override_internal_count(self):
+        """raw_counts= lets the caller supply pre-computed occurrence totals.
+
+        This is the production path: _select_top_grep_entries deduplicates by
+        pattern before calling _dedup_grep_entries, so the internal count is
+        always 1 without raw_counts.  The override restores the true [×N] label.
+        """
+        import types
+
+        now = time.time()
+        # After dedup by _select_top_grep_entries, only the most-recent entry
+        # survives — but the original session had 4 occurrences.
+        survivor = types.SimpleNamespace(pattern="find_all", path="/proj/src", result_count=5, ts=now)
+        result = compact._dedup_grep_entries([survivor], raw_counts={"find_all": 4})
+        assert len(result) == 1
+        assert result[0].pattern == "find_all [×4]", (
+            f"Expected 'find_all [×4]' but got '{result[0].pattern}'"
+        )
+
+    def test_build_manifest_grep_times_four_annotation(self, tmp_data_dir):
+        """Running the same grep 4 times must surface [×4] in the manifest.
+
+        Regression for the case where _select_top_grep_entries deduplicates by
+        pattern before _dedup_grep_entries sees the list, so count is always 1
+        and [×N] never fires without the raw_counts fix.
+        """
+        sid = "grep-times-four-abc"
+        # Call mark_grep 4× with different scopes; the session accumulates
+        # 4 raw GrepEntry rows for the same pattern.
+        for path in ("/proj/src", "/proj/tests", "/proj/docs", "/proj/lib"):
+            session.mark_grep(sid, "needle_pattern", path, result_count=3)
+
+        result = compact.build_manifest(sid)
+        assert "[×4]" in result, (
+            "Expected '[×4]' annotation for a pattern run 4 times, got:\n" + result
+        )
+
 
 # ---------------------------------------------------------------------------
 # compact._group_edited_by_dir

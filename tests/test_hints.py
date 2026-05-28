@@ -3087,6 +3087,49 @@ class TestMinFileLinesForHint:
         )
         assert hint is not None, "File with 100 lines > threshold 30 must emit"
 
+    def test_large_file_partially_read_not_suppressed(self, tmp_data_dir, monkeypatch):
+        """A large file (500 lines) that was only partially read must NOT be suppressed.
+
+        Regression for the max_line proxy bug: max(cached_end) returns the highest
+        line number read so far — a lower bound on file size, not the actual total.
+        For a 500-line file where only lines 1-200 were read, max_line=200.  With
+        threshold=300, that incorrectly triggers suppression.  The fix verifies the
+        actual file line count before suppressing.
+
+        Setup: threshold=300, 500-line file, read lines 1-200 twice (60+ overlap),
+        re-read with limit=200 (> _NARROW_EXPLICIT_READ_LINES=50 to bypass the
+        surgical-nag guard).  Without the fix, max_line=200 < 300 → suppressed.
+        With the fix, on-disk count=500 >= 300 → not suppressed.
+        """
+        from token_goat import config as config_module
+
+        mock_config = config_module.Config()
+        mock_config.hints.min_file_lines_for_hint = 300
+        monkeypatch.setattr(config_module, "load", lambda: mock_config)
+
+        sid = "s_large_partial_no_suppress"
+        path = str(tmp_data_dir / "large_partially_read.py")
+        # 500-line file: actual line count (500) > threshold (300), but partial read
+        # produces max_line=200 < threshold=300 — the proxy would incorrectly suppress.
+        Path(path).write_text("\n".join(f"x = {i}" for i in range(1, 501)), encoding="utf-8")
+
+        # Two overlapping reads of lines 1-200 (overlap = 200 lines >> MIN_OVERLAP_TO_WARN=50).
+        session.mark_file_read(sid, path, offset=0, limit=200)   # Lines 1-200
+        session.mark_file_read(sid, path, offset=50, limit=150)  # Lines 51-200 (overlap 51-200)
+
+        # Re-read with limit=200 (> _NARROW_EXPLICIT_READ_LINES=50 → not narrow surgical).
+        hint = build_read_hint(
+            session_id=sid,
+            file_path=path,
+            offset=50,
+            limit=150,
+            cwd=str(tmp_data_dir),
+        )
+        # File is 500 lines (> threshold 300), so hint must NOT be suppressed.
+        assert hint is not None, (
+            "Large file (500 lines) partially read must not be suppressed by max_line proxy"
+        )
+
     def test_symbol_hints_never_suppressed(self, tmp_data_dir, monkeypatch):
         """Surgical hints (symbols) bypass line-count suppression."""
         from token_goat import config as config_module
