@@ -4206,6 +4206,29 @@ class TestGroupEditedByDir:
         assert len(line) <= 140 or "+more" in line, \
             f"Expected line length <= 140 or '+more' marker, got: {line}"
 
+    def test_dirs_sorted_by_edit_weight_not_alphabetically(self):
+        """Directories must appear in edit-weight order, not alphabetical order.
+
+        If dir 'zzz/' has highly-edited files and 'aaa/' has low-edit files,
+        'zzz/' must appear first so the compaction LLM sees the most important
+        content before any token-budget truncation discards the tail.
+        """
+        entries = [
+            ("zzz/hot.py", 10),
+            ("zzz/warm.py", 8),
+            ("zzz/cool.py", 6),
+            ("aaa/cold1.py", 1),
+            ("aaa/cold2.py", 1),
+            ("aaa/cold3.py", 1),
+        ]
+        result = compact._group_edited_by_dir(entries, threshold=3)
+        assert len(result) == 2, f"Expected 2 grouped lines, got: {result}"
+        # zzz/ has max edit-count 10; aaa/ has max 1 — zzz must come first.
+        assert "zzz" in result[0], (
+            f"Expected 'zzz/' (higher edit-weight) first, got: {result}"
+        )
+        assert "aaa" in result[1]
+
 
 # ---------------------------------------------------------------------------
 # build_manifest timeout guard tests

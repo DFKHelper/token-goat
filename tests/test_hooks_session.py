@@ -428,6 +428,30 @@ class TestParseStatusZB:
         assert total == 1
         assert lines[0][:1] == "M"  # staged in index
 
+    def test_rename_old_name_not_counted(self):
+        """Rename entries: old-name field must be skipped; total_count reflects
+        one entry per rename, not two."""
+        import token_goat.hooks_session as hs_mod
+        # git status -z -b rename: "R  new.py\0old.py\0" plus an unrelated edit
+        output = "## main\0R  new_name.py\0old_name.py\0M  other.py\0"
+        branch, lines, total = hs_mod._parse_status_z_b(output)
+        assert branch == "main"
+        assert total == 2, f"Expected 2 (rename + modify), got {total}"
+        assert len(lines) == 2
+        path_fields = [ln[3:] for ln in lines]  # strip "XY " prefix
+        assert "new_name.py" in path_fields
+        assert "old_name.py" not in path_fields, "old-name field must be skipped"
+        assert "other.py" in path_fields
+
+    def test_copy_old_name_not_counted(self):
+        """Copy entries (C XY code) behave the same as renames: source skipped."""
+        import token_goat.hooks_session as hs_mod
+        output = "## main\0C  dest.py\0source.py\0"
+        branch, lines, total = hs_mod._parse_status_z_b(output)
+        assert total == 1
+        assert len(lines) == 1
+        assert lines[0][3:] == "dest.py"
+
 
 # ---------------------------------------------------------------------------
 # Item #9 — TimeoutExpired regression: _build_session_brief returns None

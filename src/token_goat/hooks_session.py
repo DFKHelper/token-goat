@@ -581,9 +581,13 @@ def _parse_status_z_b(output: str) -> tuple[str, list[str], int]:
     branch = "unknown"
     status_lines: list[str] = []
     total_count: int = 0
+    skip_next = False
 
-    for _i, field in enumerate(fields):
+    for field in fields:
         if not field:
+            continue
+        if skip_next:
+            skip_next = False
             continue
         if field.startswith("## "):
             # Branch header: "## main...origin/main" or "## HEAD (no branch)"
@@ -598,8 +602,12 @@ def _parse_status_z_b(output: str) -> tuple[str, list[str], int]:
             elif local in ("HEAD (no branch)", "HEAD"):
                 branch = "HEAD"
         elif len(field) >= 3 and field[2] == " ":
-            # Porcelain v1-style "XY filename"; for renames the *next* field is
-            # the old name — skip it (we only count the destination).
+            # Porcelain v1-style "XY filename"; for renames/copies the *next*
+            # NUL-delimited field is the old/source name — skip it so we only
+            # count the destination.
+            xy = field[:2]
+            if xy[0] in ("R", "C") or xy[1] in ("R", "C"):
+                skip_next = True
             total_count += 1
             if len(status_lines) < 50:
                 status_lines.append(field)
