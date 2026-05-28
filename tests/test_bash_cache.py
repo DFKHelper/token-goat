@@ -162,6 +162,23 @@ class TestStoreAndLoad:
         default = sig.parameters["max_file_count"].default
         assert default == bash_cache.DEFAULT_MAX_FILE_COUNT
 
+    def test_store_output_eviction_oserror_does_not_discard_write(self, tmp_data_dir, monkeypatch):
+        """A confirmed write must return metadata even if eviction raises OSError.
+
+        Regression: evict_old_entries previously ran inside safe_cache_op, so an OSError
+        during the directory walk caused the context manager to suppress the exception and
+        return None — discarding a successful write even though the file was on disk.
+        """
+        def _bad_evict(**kwargs):
+            raise OSError("antivirus lock simulation")
+
+        monkeypatch.setattr(bash_cache, "evict_old_entries", _bad_evict)
+
+        meta = bash_cache.store_output("sess_evict_err", "ls -lh", "output here", "", 0)
+        assert meta is not None, "store_output must succeed even when eviction raises OSError"
+        body = bash_cache.load_output(meta.output_id)
+        assert body is not None and "output here" in body
+
 
 class TestPostBashHook:
     def test_small_output_skipped(self, tmp_data_dir):

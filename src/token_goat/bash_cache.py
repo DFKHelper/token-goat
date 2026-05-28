@@ -234,6 +234,7 @@ def store_output(
     ``max_file_count``; the eviction is best-effort and a failed pass simply
     leaves the directory slightly over budget — the next call will try again.
     """
+    meta: BashOutputMeta | None = None
     with safe_cache_op("store_output", log=_LOG):
         out_id = output_id_for(session_id, command)
         path = safe_join_output_id(out_id, _bash_outputs_dir, "bash_cache")
@@ -298,17 +299,18 @@ def store_output(
             truncated=truncated,
         )
 
-        # Best-effort eviction.  We do not wait or retry: if the directory
-        # walk fails (e.g. concurrent worker activity, antivirus lock) the
-        # cap is enforced on the next call.
-        evict_old_entries(max_total_bytes=max_total_bytes, max_file_count=max_file_count)
-
         _LOG.debug(
             "bash_cache: stored id=%s bytes=%d truncated=%s",
             out_id, total, truncated,
         )
-        return meta
-    return None
+    # Best-effort eviction runs outside safe_cache_op so an OSError during the
+    # directory walk never discards a confirmed write (the file is already on disk).
+    if meta is not None:
+        try:
+            evict_old_entries(max_total_bytes=max_total_bytes, max_file_count=max_file_count)
+        except OSError as _exc:
+            _LOG.warning("bash_cache: eviction failed (best-effort): %s", _exc)
+    return meta
 
 
 def load_output(output_id: str) -> str | None:

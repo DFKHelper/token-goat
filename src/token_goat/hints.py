@@ -848,6 +848,21 @@ def _hint_from_cache(
                 # Symbol-only hints are still emitted (surgical reads are never suppressed).
                 if not entry.symbols_read:
                     return None
+                # File is small but has surgical-read symbols — emit the symbol-only hint and
+                # return immediately.  Without this return, execution falls through to the
+                # line-range hint path below; the dedicated symbol-only path at line ~891
+                # (`if entry.symbols_read and not entry.line_ranges:`) is unreachable here
+                # because entry.line_ranges is truthy inside this branch.
+                n_syms = len(entry.symbols_read)
+                sym_list = ", ".join(f"`{s}`" for s in entry.symbols_read[:3])
+                more = f" +{n_syms - 3}" if n_syms > 3 else ""
+                return ReadHint(
+                    _apply_terse(
+                        f"`{fname}` read via `token-goat read`: {sym_list}{more}. "
+                        f"Use `token-goat read \"{recall_path}::symbol\"` for more."
+                    ),
+                    0,
+                )
 
     # Frequently-read files: emit a one-time surgical-read nudge instead of
     # repeating the line-range nag on every re-read.  The hint text is stable

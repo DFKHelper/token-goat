@@ -97,6 +97,23 @@ class TestStoreAndLoad:
                 total_size += body.stat().st_size
         assert total_size <= 100_000
 
+    def test_store_output_eviction_oserror_does_not_discard_write(self, tmp_data_dir, monkeypatch):
+        """A confirmed write must return metadata even if eviction raises OSError.
+
+        Regression: evict_old_entries previously ran inside safe_cache_op, so an OSError
+        during the directory walk caused the context manager to suppress the exception and
+        return None — discarding a successful write even though the file was on disk.
+        """
+        def _bad_evict(**kwargs):
+            raise OSError("antivirus lock simulation")
+
+        monkeypatch.setattr(web_cache, "evict_old_entries", _bad_evict)
+
+        meta = web_cache.store_output("sess_evict_err", "https://example.com/test", "page content", 200)
+        assert meta is not None, "store_output must succeed even when eviction raises OSError"
+        body = web_cache.load_output(meta.output_id)
+        assert body is not None and "page content" in body
+
 
 class TestPostFetchHook:
     def test_small_body_skipped(self, tmp_data_dir):

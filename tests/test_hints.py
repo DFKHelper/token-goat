@@ -3130,6 +3130,50 @@ class TestMinFileLinesForHint:
             "Large file (500 lines) partially read must not be suppressed by max_line proxy"
         )
 
+    def test_symbol_hint_emitted_when_line_ranges_also_present(self, tmp_data_dir, monkeypatch):
+        """When a file has both line_ranges AND symbols_read, and is below threshold,
+        a symbol-only hint is emitted — not a line-range hint and not None.
+
+        Regression for the fallthrough bug: after `if not entry.symbols_read: return None`
+        did not fire (symbols exist), execution fell through to line-range hint generation.
+        The symbol-only path at `if entry.symbols_read and not entry.line_ranges:` is
+        unreachable inside the `if entry.line_ranges:` branch that guards the suppression
+        block, so a separate early-return was needed.
+        """
+        from token_goat import config as config_module
+
+        mock_config = config_module.Config()
+        mock_config.hints.min_file_lines_for_hint = 100  # threshold above file size
+        monkeypatch.setattr(config_module, "load", lambda: mock_config)
+
+        sid = "s_symbol_plus_ranges_small"
+        path = str(tmp_data_dir / "small_mixed_access.py")
+        # 60-line file: below threshold=100, but 60 lines of overlap > MIN_OVERLAP_TO_WARN=50
+        # so the overlap path would emit a hint if the suppression fallthrough bug fires.
+        Path(path).write_text("\n".join(f"x = {i}" for i in range(1, 61)), encoding="utf-8")
+
+        # Regular read → populates line_ranges[(1, 60)]
+        session.mark_file_read(sid, path, offset=0, limit=60)
+        # Symbol read → populates symbols_read["foo"] without adding line ranges
+        session.mark_file_read(sid, path, offset=0, limit=60, symbol="foo")
+
+        # Re-read with no explicit limit: has_explicit_limit=False, overlap=60 > 50,
+        # so the overlap path would produce a hint if the suppression fallthrough bug fires.
+        hint = build_read_hint(
+            session_id=sid,
+            file_path=path,
+            offset=0,
+            limit=None,
+            cwd=str(tmp_data_dir),
+        )
+        assert hint is not None, (
+            "File with symbols_read must emit symbol-only hint when below min_file_lines threshold"
+        )
+        assert "token-goat read" in hint, (
+            "Hint must be the symbol-only format, not a line-range overlap hint — "
+            "line-range hints are suppressed for files below min_file_lines_for_hint"
+        )
+
     def test_symbol_hints_never_suppressed(self, tmp_data_dir, monkeypatch):
         """Surgical hints (symbols) bypass line-count suppression."""
         from token_goat import config as config_module
