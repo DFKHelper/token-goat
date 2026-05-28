@@ -3068,3 +3068,49 @@ class TestMinFileLinesForHint:
         )
         # No hint expected anyway (file not in index), but test confirms no crash.
         assert hint is None, "Nonexistent file has no hint"
+
+
+# ---------------------------------------------------------------------------
+# record_hint_emitted routes to kind, not hard-coded "read_dedup"
+# ---------------------------------------------------------------------------
+
+
+class TestReadHintEmittedByTypeRouting:
+    """build_read_hint must route the per-type counter to the hint's kind.
+
+    Regression: the counter was hard-coded to "read_dedup" regardless of
+    whether the hint was a re-read dedup or a first-read suggestion, making
+    the "read_dedup" bucket meaningless for threshold tuning.
+    """
+
+    def test_reread_hint_increments_already_read_not_read_dedup(self, tmp_data_dir):
+        """A re-read hint (tokens_saved > 0) increments 'already_read', not 'read_dedup'."""
+        sid = "kind_routing_reread"
+        path = "C:/proj/routing_test.py"
+        _mark(tmp_data_dir, sid, path, offset=0, limit=200)
+        cache = session.load(sid)
+
+        hint = build_read_hint(
+            session_id=sid, file_path=path, offset=0, limit=200, cwd=None, cache=cache,
+        )
+
+        assert hint is not None
+        assert hint.tokens_saved > 0
+        assert cache.hints_emitted_by_type.get("already_read", 0) == 1
+        assert cache.hints_emitted_by_type.get("read_dedup", 0) == 0
+
+    def test_suggestion_hint_does_not_increment_read_dedup(self, tmp_data_dir):
+        """A suggestion hint (tokens_saved == 0) does not increment 'read_dedup'."""
+        sid = "kind_routing_suggest"
+        path = "C:/proj/routing_suggest.py"
+        # Mark a partial read so cache is warmed, but use a mismatched range so
+        # no re-read dedup fires.  Call with no cache entry at all also works.
+        cache = session.load(sid)
+
+        build_read_hint(
+            session_id=sid, file_path=path, offset=0, limit=200, cwd=None, cache=cache,
+        )
+
+        # Whether hint is None (unindexed) or a suggestion (indexed), "read_dedup"
+        # must NOT be incremented.
+        assert cache.hints_emitted_by_type.get("read_dedup", 0) == 0

@@ -551,7 +551,7 @@ def build_read_hint(
                 hint, kind, file=file_path, wasted=hint.tokens_saved or None,
             )
             if cache is not None:
-                cache.record_hint_emitted("read_dedup")
+                cache.record_hint_emitted(kind)
         return hint
     except Exception as exc:  # noqa: BLE001
         _LOG.warning(
@@ -1833,13 +1833,16 @@ def _build_grep_dedup_hint_inner(
     if not _hint_budget_check(cache, _HINT_KIND_DEDUP):
         return None
 
+    _grep_created_ts = getattr(cache, "created_ts", None)
+    grep_session_age = (now - _grep_created_ts) if _grep_created_ts is not None else STALE_READ_AGE_SECONDS
+    grep_stale_threshold = compute_stale_threshold(grep_session_age)
     for entry in reversed(cache.greps):
         if entry.pattern != pattern:
             continue
         if entry.path != path:
             continue
         age = now - entry.ts
-        if age > STALE_READ_AGE_SECONDS:
+        if age > grep_stale_threshold:
             # Older entries are even older — short-circuit the scan.
             return None
         min_matches = _get_grep_dedup_min_matches()
@@ -1983,8 +1986,12 @@ def _build_glob_dedup_hint_inner(
     if entry is None:
         return None
 
-    age = time.time() - entry.ts
-    if age > STALE_READ_AGE_SECONDS:
+    now = time.time()
+    age = now - entry.ts
+    _glob_created_ts = getattr(cache, "created_ts", None)
+    glob_session_age = (now - _glob_created_ts) if _glob_created_ts is not None else STALE_READ_AGE_SECONDS
+    glob_stale_threshold = compute_stale_threshold(glob_session_age)
+    if age > glob_stale_threshold:
         return None
     if entry.result_count is None or entry.result_count < _GLOB_DEDUP_MIN_RESULT_COUNT:
         return None
@@ -2065,11 +2072,15 @@ def _build_web_dedup_hint_inner(
     if entry is None:
         return None
 
-    age = time.time() - entry.ts
-    if age > STALE_READ_AGE_SECONDS:
+    now = time.time()
+    age = now - entry.ts
+    _web_created_ts = getattr(cache, "created_ts", None)
+    web_session_age = (now - _web_created_ts) if _web_created_ts is not None else STALE_READ_AGE_SECONDS
+    web_stale_threshold = compute_stale_threshold(web_session_age)
+    if age > web_stale_threshold:
         _LOG.debug(
-            "build_web_dedup_hint: prior fetch stale (age=%.0fs > %ds); suppressing",
-            age, STALE_READ_AGE_SECONDS,
+            "build_web_dedup_hint: prior fetch stale (age=%.0fs > %.0fs); suppressing",
+            age, web_stale_threshold,
         )
         _record_dedup_stale("web_dedup_stale", _sanitize_hint_path(url))
         return None
