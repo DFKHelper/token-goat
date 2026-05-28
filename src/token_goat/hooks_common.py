@@ -607,9 +607,10 @@ def _coerce_content_array(items: list[object]) -> str:
     parts: list[str] = []
     for item in items:
         if isinstance(item, dict):
-            txt = item.get("text") if item.get("type") == "text" else None
-            if txt is None:
-                txt = item.get("text")
+            if item.get("type") in ("text", None):
+                txt: str | None = item.get("text")  # type: ignore[assignment]
+            else:
+                txt = None
             if isinstance(txt, str):
                 parts.append(txt)
         elif isinstance(item, str):

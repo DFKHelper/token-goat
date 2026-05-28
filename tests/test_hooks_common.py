@@ -52,11 +52,20 @@ def test_mcp_array_skips_non_text_typed_items():
         {"type": "image", "text": "should be skipped"},
         {"type": "text", "text": "kept"},
     ]
-    # type != "text" items: text key is still returned (fallback branch)
-    # because _coerce_content_array falls back to item.get("text") when
-    # type != "text".  Verify at least "kept" is present.
     result = extract_tool_response_text(_payload(items))
     assert "kept" in result
+    assert "should be skipped" not in result
+
+
+def test_mcp_array_no_type_key_included():
+    """Items that omit the type field entirely (older harnesses) are included."""
+    items = [
+        {"text": "legacy item"},
+        {"type": "text", "text": "typed item"},
+    ]
+    result = extract_tool_response_text(_payload(items))
+    assert "legacy item" in result
+    assert "typed item" in result
 
 
 def test_mcp_array_empty():

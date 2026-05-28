@@ -1473,10 +1473,12 @@ def _coerce_text(value: object) -> str:
         for item in value:
             if isinstance(item, dict):
                 # MCP CallToolResult shape: {"type": "text", "text": "..."}
-                # Older harnesses use "text" as the only key.
-                txt = item.get("text") if item.get("type") == "text" else None
-                if txt is None:
-                    txt = item.get("text")
+                # Older harnesses omit the type key entirely; accept those.
+                # Explicitly non-text types (image, resource, …) are skipped.
+                if item.get("type") in ("text", None):
+                    txt: str | None = item.get("text")  # type: ignore[assignment]
+                else:
+                    txt = None
                 if isinstance(txt, str):
                     parts.append(txt)
             elif isinstance(item, str):
