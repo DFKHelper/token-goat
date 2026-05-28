@@ -720,13 +720,16 @@ def run_dedup_hint(
         return None
 
     hint = builder(session_id, cache)
-    if hint is None:
-        return None
 
     # Persist mutations made by the builder (bash_dedup_emitted_ids, budget counters,
-    # hints_seen, etc.) before the hook process exits.  Without this, every field the
-    # builder touched is silently discarded at process exit.
+    # hints_seen, hints_suppressed_by_type, etc.) before the hook process exits.
+    # Without this, every field the builder touched is silently discarded at process
+    # exit.  Save unconditionally: the suppression path (hint is None) also mutates
+    # hints_suppressed_by_type and those counters must survive the process boundary.
     session.save(cache)
+
+    if hint is None:
+        return None
 
     record_hint_stat_pair(stat_kind, hint, detail)
     LOG.info(
