@@ -2465,6 +2465,44 @@ class TestSessionCAS:
         restored = SessionCache.from_dict(raw)
         assert restored.version == 0
 
+    def test_version_does_not_regress_when_stale_disk_version_present(self, tmp_data_dir):
+        """CAS version must never decrease when disk has a stale (lower) version.
+
+        Regression: `cache.version = disk_cache.version + 1` with a stale disk
+        (e.g. disk=3, memory=5) produced version 4 — a regression from 5.  The
+        next process to load the stale file would compute 4 > 3, skip a merge it
+        should have done, and silently discard in-flight writes.
+        """
+        import json as _json
+
+        from token_goat import paths as _paths
+
+        sid = "cas_no_regress"
+
+        # Build an in-memory cache with version=5 (simulates several prior saves).
+        c = session.load(sid)
+        c.version = 5
+
+        # Plant a stale on-disk file with version=3 (simulates a concurrent
+        # slow writer that hadn't yet caught up).
+        stale_data = c.to_dict()
+        stale_data["version"] = 3
+        p = _paths.session_cache_path(sid)
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(_json.dumps(stale_data), encoding="utf-8")
+        # Corrupt the fingerprint so the fast-path CAS skip does NOT fire.
+        c._disk_mtime = 0.0
+        c._disk_size = 0
+
+        session.save(c)
+
+        written = session.load(sid)
+        # Written version must be strictly greater than the in-memory version,
+        # not just disk_version + 1.
+        assert written.version > 5, (
+            f"version regressed: expected >5 after save, got {written.version}"
+        )
+
     def test_concurrent_threads_both_edits_preserved(self, tmp_data_dir):
         """Two threads that concurrently load+mark_file_edited both persist their edit."""
         import threading
