@@ -2801,10 +2801,11 @@ def build_manifest_with_count(
         + len(cache.edited_files)
         + len(getattr(cache, "bash_history", {}) or {})
     )
-    cfg = _load_config()
-    manifest = _build_manifest_from_cache(
-        cache, session_id, max_tokens, **_compact_render_kwargs(cfg)
-    )
+    # Delegate to build_manifest so the sidecar cache fast-path, delta-line,
+    # and session write-back all apply.  The extra JSON deserialisation inside
+    # build_manifest is negligible vs. the git subprocess calls in the cache-miss
+    # path, and the sidecar hit path avoids those entirely.
+    manifest = build_manifest(session_id, max_tokens=max_tokens)
     return manifest, n_events
 
 
