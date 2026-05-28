@@ -1110,26 +1110,20 @@ class SessionCache:
         self._pending_hint_save = True
 
     def record_hint_emitted(self, hint_type: str) -> None:
-        """Increment the emission counter for a specific hint type.
-
-        Called when a hint of the given type is emitted. Mutates *self* in place.
-        The caller is responsible for persisting via save().
-        """
+        """Increment the emission counter for a specific hint type."""
         current = self.hints_emitted_by_type.get(hint_type, 0)
         self.hints_emitted_by_type[hint_type] = current + 1
         self.last_activity_ts = time.time()
         self._invalidate_json_cache()
+        self._pending_hint_save = True
 
     def record_hint_suppressed(self, hint_type: str) -> None:
-        """Increment the suppression counter for a specific hint type.
-
-        Called when a hint of the given type is suppressed (below threshold, etc.).
-        Mutates *self* in place. The caller is responsible for persisting via save().
-        """
+        """Increment the suppression counter for a specific hint type."""
         current = self.hints_suppressed_by_type.get(hint_type, 0)
         self.hints_suppressed_by_type[hint_type] = current + 1
         self.last_activity_ts = time.time()
         self._invalidate_json_cache()
+        self._pending_hint_save = True
 
     @classmethod
     def from_dict(cls, d: dict[str, Any]) -> SessionCache:

@@ -3482,6 +3482,15 @@ class TestPerTypeHintCounters:
         cache.record_hint_emitted("bash_dedup")
         assert cache.hints_emitted_by_type["bash_dedup"] == 2
 
+    def test_record_hint_emitted_sets_pending_hint_save(self, tmp_data_dir):
+        """record_hint_emitted must set _pending_hint_save so callers that don't
+        explicitly call session.save() (e.g. the unchanged-file hint path in
+        hooks_read.py) still get their counter persisted via _flush_pending_hint_save."""
+        cache = session._fresh_cache("test-per-type-emitted-pending")
+        cache._pending_hint_save = False  # type: ignore[attr-defined]
+        cache.record_hint_emitted("unchanged_file")
+        assert cache._pending_hint_save is True  # type: ignore[attr-defined]
+
     def test_record_hint_suppressed_increments_counter(self, tmp_data_dir):
         """record_hint_suppressed increments the suppression counter for a given hint type."""
         cache = session._fresh_cache("test-per-type-2")
@@ -3492,6 +3501,15 @@ class TestPerTypeHintCounters:
 
         cache.record_hint_suppressed("bash_dedup_below_threshold")
         assert cache.hints_suppressed_by_type["bash_dedup_below_threshold"] == 2
+
+    def test_record_hint_suppressed_sets_pending_hint_save(self, tmp_data_dir):
+        """record_hint_suppressed must set _pending_hint_save for the same reason as
+        record_hint_emitted — any call site not inside run_dedup_hint would silently
+        drop its counter without this flag."""
+        cache = session._fresh_cache("test-per-type-suppressed-pending")
+        cache._pending_hint_save = False  # type: ignore[attr-defined]
+        cache.record_hint_suppressed("bash_dedup_below_threshold")
+        assert cache._pending_hint_save is True  # type: ignore[attr-defined]
 
     def test_per_type_counters_persist_roundtrip(self, tmp_data_dir):
         """Per-type counters survive serialization and deserialization."""
