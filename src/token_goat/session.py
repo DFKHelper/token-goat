@@ -434,6 +434,14 @@ def _merge_session_caches(local: SessionCache, remote: SessionCache) -> SessionC
             remote.glob_history.append(glob)
     merged.glob_history = remote.glob_history[-GLOB_HISTORY_MAX:]
 
+    # decisions: same append-only pattern as greps.  Dedup key is (ts, text) —
+    # two entries with the same timestamp and text are the same decision.
+    remote_decision_keys = {(d.ts, d.text) for d in remote.decisions}
+    for d in local.decisions:
+        if (d.ts, d.text) not in remote_decision_keys:
+            remote.decisions.append(d)
+    merged.decisions = remote.decisions[-DECISION_HISTORY_MAX:]
+
     # --- counts: max (conservative; no base-value tracking) ---
     # Without storing the value at fork time we cannot compute the true delta
     # each process added.  max() is safe (never overcounts) but undercounts by
@@ -949,10 +957,9 @@ class SessionCache:
     # Dirty flag set by mark_hint_seen() to defer its save() until the next
     # post-read/post-bash/post-edit save() picks it up.  Not persisted.
     _pending_hint_save: bool = field(default=False, repr=False, compare=False)
-    # Sorted-list caches for hints_seen and bash_dedup_emitted_ids.  Avoids
-    # repeated sorted() calls in to_dict() when neither set has changed.
-    # Invalidated by _invalidate_json_cache() on any mutation.  Not persisted.
-    _hints_seen_sorted_cache: list[str] | None = field(default=None, repr=False, compare=False)
+    # Sorted-list cache for bash_dedup_emitted_ids.  Avoids repeated sorted()
+    # calls in to_dict() when the set has not changed.  Invalidated by
+    # _invalidate_json_cache() on any mutation.  Not persisted.
     _bash_dedup_sorted_cache: list[str] | None = field(default=None, repr=False, compare=False)
 
     def to_dict(self) -> _SessionDict:
@@ -1016,7 +1023,6 @@ class SessionCache:
     def _invalidate_json_cache(self) -> None:
         """Invalidate the serialization cache after any mutation."""
         self._json_cache = None
-        self._hints_seen_sorted_cache = None
         self._bash_dedup_sorted_cache = None
 
     def _get_hints_seen_sorted(self) -> dict[str, int]:
