@@ -377,3 +377,74 @@ class TestEmitDedupBudgetedHintVerboseWindow:
         result_stub2 = self._call(cache_stub2, seen_count=2, verbose_until=1)
         assert result_stub2 is not None
         assert "seen 2×" in str(result_stub2)
+
+    def test_stub_path_calls_record_emitted_fn(self, tmp_data_dir) -> None:
+        """Stub path must call record_emitted_fn so emission counters stay accurate.
+
+        Regression: the stub branch returned early before record_emitted_fn,
+        leaving counters deflated and budget-check logic working off an undercount.
+        """
+        from unittest import mock
+
+        from token_goat.config import Config, HintsConfig
+        from token_goat.hints import ReadHint, _hint_fingerprint
+        from token_goat.hooks_read import _emit_dedup_budgeted_hint
+
+        cache = session.SessionCache("vw-stub-record", 0, 0)
+        hint = ReadHint("Note: already read src/x.py", tokens_saved=100)
+        fp = _hint_fingerprint(str(hint), path="src/x.py")
+        for _ in range(2):  # seen_count=2 >= verbose_until=2 → stub path
+            cache.mark_hint_seen(fp)
+
+        cfg = Config(hints=HintsConfig(verbose_until_seen_count=2))
+        record_calls: list[object] = []
+
+        with mock.patch("token_goat.config.load", return_value=cfg):
+            result = _emit_dedup_budgeted_hint(
+                hint=hint,
+                file_path="src/x.py",
+                cache=cache,
+                budget_kind="index_only",
+                record_emitted_fn=lambda c: record_calls.append(c),
+                stat_kind="index_only",
+                display_name="index-only",
+            )
+
+        assert result is not None, "stub must be emitted"
+        assert len(record_calls) == 1, "record_emitted_fn must be called once for stubs"
+
+    def test_stub_path_respects_budget_cap(self, tmp_data_dir) -> None:
+        """Stub path must obey budget cap — unlimited stubs cannot bypass max_per_session.
+
+        Regression: the stub branch bypassed _hint_budget_check, allowing unlimited
+        emissions once verbose_until was reached.
+        """
+        from unittest import mock
+
+        from token_goat import config as config_mod
+        from token_goat.hints import ReadHint, _hint_fingerprint
+        from token_goat.hooks_read import _emit_dedup_budgeted_hint
+
+        cache = session.SessionCache("vw-stub-budget", 0, 0)
+        hint = ReadHint("Note: already read src/x.py", tokens_saved=100)
+        fp = _hint_fingerprint(str(hint), path="src/x.py")
+        for _ in range(2):  # seen_count=2 >= verbose_until=2 → stub path
+            cache.mark_hint_seen(fp)
+
+        # Exhaust the index_only budget by setting the counter at the cap.
+        cfg = config_mod.load()
+        cap = cfg.hint_budget.max_index_only_per_session
+        cache.index_only_hints_emitted = cap  # budget exhausted
+
+        with mock.patch("token_goat.config.load", return_value=cfg):
+            result = _emit_dedup_budgeted_hint(
+                hint=hint,
+                file_path="src/x.py",
+                cache=cache,
+                budget_kind="index_only",
+                record_emitted_fn=lambda _c: None,
+                stat_kind="index_only",
+                display_name="index-only",
+            )
+
+        assert result is None, "stub must be suppressed when budget is exhausted"

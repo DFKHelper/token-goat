@@ -3122,15 +3122,21 @@ class TestMinFileLinesForHint:
 
 
 class TestReadHintEmittedByTypeRouting:
-    """build_read_hint must route the per-type counter to the hint's kind.
+    """build_read_hint must NOT increment per-type counters; pre_read does it.
 
-    Regression: the counter was hard-coded to "read_dedup" regardless of
-    whether the hint was a re-read dedup or a first-read suggestion, making
-    the "read_dedup" bucket meaningless for threshold tuning.
+    Regression guard for two bugs fixed together:
+    1. Counter was hard-coded to "read_dedup" regardless of hint kind.
+    2. Counter was incremented inside build_read_hint, before pre_read's
+       fingerprint dedup check — inflating counts for hints that never
+       entered context.  Counters now live in pre_read's else-branch.
     """
 
-    def test_reread_hint_increments_already_read_not_read_dedup(self, tmp_data_dir):
-        """A re-read hint (tokens_saved > 0) increments 'already_read', not 'read_dedup'."""
+    def test_build_read_hint_does_not_increment_any_counter(self, tmp_data_dir):
+        """build_read_hint alone must NOT increment hints_emitted_by_type.
+
+        Counter increments are deferred to pre_read so fingerprint-suppressed
+        hints are not counted as emitted.
+        """
         sid = "kind_routing_reread"
         path = "C:/proj/routing_test.py"
         _mark(tmp_data_dir, sid, path, offset=0, limit=200)
@@ -3142,21 +3148,20 @@ class TestReadHintEmittedByTypeRouting:
 
         assert hint is not None
         assert hint.tokens_saved > 0
-        assert cache.hints_emitted_by_type.get("already_read", 0) == 1
-        assert cache.hints_emitted_by_type.get("read_dedup", 0) == 0
+        # Counters must NOT be incremented here — pre_read does it after
+        # fingerprint dedup.  If anything is incremented, Bug A regressed.
+        assert cache.hints_emitted_by_type == {}
+        assert cache.hints_emitted == 0
 
-    def test_suggestion_hint_does_not_increment_read_dedup(self, tmp_data_dir):
-        """A suggestion hint (tokens_saved == 0) does not increment 'read_dedup'."""
+    def test_suggestion_hint_also_defers_counter(self, tmp_data_dir):
+        """For suggestion hints (tokens_saved == 0) build_read_hint also defers counters."""
         sid = "kind_routing_suggest"
         path = "C:/proj/routing_suggest.py"
-        # Mark a partial read so cache is warmed, but use a mismatched range so
-        # no re-read dedup fires.  Call with no cache entry at all also works.
         cache = session.load(sid)
 
         build_read_hint(
             session_id=sid, file_path=path, offset=0, limit=200, cwd=None, cache=cache,
         )
 
-        # Whether hint is None (unindexed) or a suggestion (indexed), "read_dedup"
-        # must NOT be incremented.
-        assert cache.hints_emitted_by_type.get("read_dedup", 0) == 0
+        assert cache.hints_emitted_by_type == {}
+        assert cache.hints_emitted == 0

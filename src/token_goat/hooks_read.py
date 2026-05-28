@@ -444,11 +444,21 @@ def _emit_dedup_budgeted_hint(
             return None
         elif seen_count >= verbose_until:
             # Threshold reached: emit short stub instead of full hint.
+            # Apply the same budget gate as the full-emit path so the cap
+            # cannot be bypassed via unlimited stub emissions.
+            _session_mod = _get_session()
+            if isinstance(cache, _session_mod.SessionCache) and not _hint_budget_check(cache, budget_kind):
+                _LOG.debug(
+                    "pre-read: %s stub budget exhausted for %s",
+                    display_name, sanitize_log_str(file_path),
+                )
+                return None
             stub_hint = _make_short_stub_hint(seen_count)
-            # Still mark as seen to increment the counter for next time.
             mark_seen = getattr(cache, "mark_hint_seen", None)
             if callable(mark_seen):
                 mark_seen(fingerprint)
+            if isinstance(cache, _session_mod.SessionCache):
+                record_emitted_fn(cache)
             _LOG.debug(
                 "pre-read: %s hint short-stub for %s (seen %d times)",
                 display_name, sanitize_log_str(file_path), seen_count,
@@ -1228,17 +1238,24 @@ def pre_read(payload: HookPayload) -> HookResponse:
                     sanitize_log_str(file_path),
                 )
             else:
+                _hint_kind = "already_read" if hint.tokens_saved > 0 else "read_suggestion"
                 if hint.tokens_saved > 0:
                     _LOG.debug(
                         "pre-read: hint injected for %s (tokens_saved=%d)",
                         sanitize_log_str(file_path), hint.tokens_saved,
                     )
                     _record_session_hint_impact(file_path, hint)
+                    # Curator: record emission keyed by path — only after confirming the
+                    # hint passes fingerprint dedup and will actually enter context.
+                    from .hints import _record_hint_emitted as _rhe  # noqa: PLC0415
+                    _rhe(cache, session._normalize_path(file_path))  # type: ignore[attr-defined]
                 else:
                     _LOG.debug(
                         "pre-read: hint built for %s but tokens_saved=0; no stat recorded",
                         sanitize_log_str(file_path),
                     )
+                # per-type counter: increment only when hint enters context.
+                cache.record_hint_emitted(_hint_kind)
                 context_parts.append(hint_text)
                 cache.mark_hint_seen(fingerprint)
 
