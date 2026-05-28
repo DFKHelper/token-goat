@@ -3751,11 +3751,21 @@ def _render(
     # rarely consume more than ~15 tokens, but we count them to keep the budget
     # accurate.  The uncommitted-changes section is additional fixed context and
     # is not counted against any per-section proportional budget.
+    # Compute sealed block early (same inputs as the final call below) so its
+    # token cost can be deducted from the section-budget pool.  The sealed block
+    # is protected — the safety-trim pass can never remove it — so any tokens it
+    # consumes are not available to the proportional sections.  Without this
+    # deduction _section_budgets over-allocates by ~20-80 tokens and the assembled
+    # manifest consistently exceeds max_tokens on sessions with active blockers /
+    # edited files / skills.
+    sealed_block = _build_sealed_block(edited_clean, blocker_entries, raw_skills)
+    sealed_tokens = _token_count("\n".join(sealed_block)) if sealed_block else 0
+
     fixed_text = "\n".join(
         header_lines + blocker_lines + decision_lines + skill_lines
         + uncommitted_lines + edited_lines + stale_lines
     )
-    fixed_tokens = _token_count(fixed_text)
+    fixed_tokens = _token_count(fixed_text) + sealed_tokens
     sec_budgets = _section_budgets(max_tokens, fixed_tokens)
     _LOG.debug(
         "_render: fixed_tokens=%d  section_budgets=%s  (session=%s)",
@@ -4168,7 +4178,7 @@ def _render(
     # raw_skills).  Prepended before the header so it appears at the very top of the
     # manifest — compaction LLMs attend most to the top of long documents, and the
     # explicit <<MUST_PRESERVE>> markers are unlikely to be summarised away.
-    sealed_block = _build_sealed_block(edited_clean, blocker_entries, raw_skills)
+    # (sealed_block is computed earlier near the fixed_tokens calculation — reuse it.)
 
     # Assemble the final manifest in inverted-pyramid order: most critical first
     # so that if the manifest is truncated mid-token the surviving content is

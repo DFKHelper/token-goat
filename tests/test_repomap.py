@@ -1027,3 +1027,58 @@ class TestBuildCompactFileSummary:
         # and no (+N more) tail is emitted (no remainder).
         out = repomap._build_compact_file_summary(self._ranked(2), 2, top_n=10)
         assert out.split("indexed. ", 1)[1] == "Top modules: mod_0.py, mod_1.py\n"
+
+
+# ---------------------------------------------------------------------------
+# size-fallback path: minor-file collapsing must be disabled
+# ---------------------------------------------------------------------------
+
+
+def test_build_map_size_fallback_no_minor_file_collapse(tmp_path, tmp_data_dir, make_project):
+    """When PageRank scores are uniform (no cross-file refs), ranks are replaced
+    with byte sizes and the minor-file-collapsing feature must be disabled.
+
+    With size-based ranks every file has rank >> 0.05, so the _LOW_RANK_THRESHOLD
+    check would always be False and minor_file_count would be 0 anyway — but the
+    guard must be explicit so the feature cannot silently misfire if the threshold
+    is ever changed.
+    """
+    proj_root = tmp_path / "sizefallbackproj"
+    src = proj_root / "src"
+    src.mkdir(parents=True)
+    (proj_root / ".git").mkdir()
+
+    # 8 isolated files — no imports, no cross-refs.  PageRank will be uniform,
+    # triggering the size-fallback path.  Without the guard, these would have
+    # size-based ranks (e.g. 80.0) which are all >> 0.05, giving minor_file_count=0
+    # and no collapse — correct, but for the wrong reason.  The test asserts that
+    # using_size_fallback is propagated and the annotation is absent.
+    for i in range(8):
+        (src / f"iso_{i:02d}.py").write_text(
+            f"# isolated {i}\ndef fn_{i}(): return {i}\n",
+            encoding="utf-8",
+        )
+
+    from token_goat.parser import index_project
+
+    proj = make_project(proj_root)
+    index_project(proj, full=True)
+
+    # Load the ranked data directly to verify using_size_fallback is set.
+    data = repomap._load_and_rank(proj)
+    assert data is not None
+    assert data.using_size_fallback, (
+        "_load_and_rank must set using_size_fallback=True when all ranks are equal"
+    )
+
+    text = repomap.build_map(
+        proj,
+        budget_tokens=10000,
+        compact=True,
+        compact_file_threshold=200,
+    )
+    assert text, "build_map must return non-empty output"
+    assert "minor files" not in text, (
+        "minor-files annotation must not appear in the size-fallback path — "
+        "the _LOW_RANK_THRESHOLD is meaningless when ranks are byte sizes"
+    )

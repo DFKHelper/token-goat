@@ -113,6 +113,7 @@ class _RankedProjectData:
     ranked: list[tuple[str, _FileInfo]]
     ranks: dict[str, float]
     summary_cache: dict[tuple[str, float, int], str]  # (rel_path, mtime, size) → rendered text
+    using_size_fallback: bool = False  # True when PageRank was uniform; ranks are byte sizes
 
 
 class FileMapItem(TypedDict):
@@ -752,6 +753,7 @@ def _load_and_rank(project: Project) -> _RankedProjectData | None:
         ranked=ranked,
         ranks=ranks,
         summary_cache=summary_cache,
+        using_size_fallback=all_ranks_equal,
     )
 
 
@@ -948,7 +950,11 @@ def build_map(
         # files would otherwise consume a disproportionate share of the budget.
         _LOW_RANK_THRESHOLD: float = 0.05
         _MIN_MINOR_FILES: int = 5
-        if use_compact:
+        # Minor-file collapsing is only meaningful when ranks are true PageRank
+        # scores (0.0–1.0).  When the fallback replaced them with raw file sizes
+        # (bytes), every file has a "rank" well above 0.05, so the threshold is
+        # meaningless — skip the feature to avoid the silent no-op.
+        if use_compact and not data.using_size_fallback:
             minor_file_count = sum(
                 1 for rel, _ in data.ranked
                 if data.ranks.get(rel, 0.0) < _LOW_RANK_THRESHOLD

@@ -1646,6 +1646,34 @@ class TestBuildSealedBlock:
             f"Detail section should still appear alongside sealed block:\n{result}"
         )
 
+    def test_sealed_block_tokens_within_max_tokens(self, tmp_data_dir):
+        """Manifest with a sealed block must not exceed max_tokens.
+
+        Before the fix, the sealed block's token cost was not subtracted from
+        the section-budget pool.  Since the sealed block is protected (cannot be
+        trimmed by the safety pass), the assembled manifest could silently exceed
+        max_tokens when the block was present.
+        """
+        from token_goat.compact import estimate_tokens
+
+        sid = "sealed-budget-test-abc"
+        # Three edited files with long paths to produce a non-trivial sealed block.
+        for name in ("authentication_service.py", "database_connection.py", "session_manager.py"):
+            session.mark_file_edited(sid, f"/proj/src/services/{name}")
+        # A failing bash command triggers the sealed block's blocker slot.
+        session.mark_bash_run(
+            sid, "bash_sha_budget", "pytest tests/", "out_budget", 1500, 600, 1, False,
+        )
+
+        max_tokens = 200
+        result = compact.build_manifest(sid, max_tokens=max_tokens)
+        assert result, "manifest must be non-empty"
+        actual_tokens = estimate_tokens(result)
+        assert actual_tokens <= max_tokens, (
+            f"manifest ({actual_tokens} tokens) exceeds max_tokens={max_tokens}; "
+            "sealed block cost must be subtracted from section budgets before assembly"
+        )
+
     def test_save_and_reload(self, tmp_path, monkeypatch):
         from token_goat import paths
         cfg_path = tmp_path / "config.toml"
