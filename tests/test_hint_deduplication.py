@@ -346,12 +346,12 @@ class TestEmitDedupBudgetedHintVerboseWindow:
         # Full hint contains the hint text, not a stub marker.
         assert "already read" in str(result)
 
-    def test_third_read_emits_full_hint_within_verbose_window(self, tmp_data_dir) -> None:
-        """seen_count=2 (third read) with verbose_until=2: must emit full hint, not None."""
+    def test_third_read_emits_stub_at_verbose_until_boundary(self, tmp_data_dir) -> None:
+        """seen_count=2 with verbose_until=2: boundary hit → stub, not full hint."""
         cache = session.SessionCache("vw-test-2", 0, 0)
         result = self._call(cache, seen_count=2)
-        assert result is not None, "third read within verbose window must not be suppressed"
-        assert "already read" in str(result)
+        assert result is not None, "stub must be emitted at the verbose_until boundary"
+        assert "seen 2×" in str(result), "must be a short stub at the threshold, not the full hint"
 
     def test_fourth_read_emits_stub_past_verbose_window(self, tmp_data_dir) -> None:
         """seen_count=3 with verbose_until=2: must emit short stub, not full hint."""
@@ -366,14 +366,14 @@ class TestEmitDedupBudgetedHintVerboseWindow:
         result = self._call(cache, seen_count=1, verbose_until=0)
         assert result is None, "verbose_until=0 must suppress all duplicate hints"
 
-    def test_verbose_until_one_stubs_at_third_read(self, tmp_data_dir) -> None:
-        """verbose_until=1: second read emits full hint; third read emits stub."""
-        cache_full = session.SessionCache("vw-test-5a", 0, 0)
-        result_full = self._call(cache_full, seen_count=1, verbose_until=1)
-        assert result_full is not None
-        assert "already read" in str(result_full)
-
-        cache_stub = session.SessionCache("vw-test-5b", 0, 0)
-        result_stub = self._call(cache_stub, seen_count=2, verbose_until=1)
+    def test_verbose_until_one_stubs_at_second_read(self, tmp_data_dir) -> None:
+        """verbose_until=1: only the first read is full; second read emits stub."""
+        cache_stub = session.SessionCache("vw-test-5a", 0, 0)
+        result_stub = self._call(cache_stub, seen_count=1, verbose_until=1)
         assert result_stub is not None
-        assert "seen 2×" in str(result_stub)
+        assert "seen 1×" in str(result_stub), "second read must emit stub when verbose_until=1"
+
+        cache_stub2 = session.SessionCache("vw-test-5b", 0, 0)
+        result_stub2 = self._call(cache_stub2, seen_count=2, verbose_until=1)
+        assert result_stub2 is not None
+        assert "seen 2×" in str(result_stub2)

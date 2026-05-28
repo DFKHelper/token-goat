@@ -442,7 +442,7 @@ def _emit_dedup_budgeted_hint(
                 display_name, sanitize_log_str(file_path),
             )
             return None
-        elif seen_count > verbose_until:
+        elif seen_count >= verbose_until:
             # Threshold reached: emit short stub instead of full hint.
             stub_hint = _make_short_stub_hint(seen_count)
             # Still mark as seen to increment the counter for next time.

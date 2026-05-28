@@ -771,23 +771,23 @@ class TestStructuredFileHint:
         )
 
     def test_session_dedup_emits_stub_past_verbose_window(self, tmp_data_dir, tmp_path):
-        """Same large CSV read 4× → 4th read emits short stub, not full structured-file hint."""
+        """Same large CSV read 3× → 3rd read emits short stub (verbose_until_seen_count=2)."""
         fpath = self._make_large_file(tmp_path, ".csv")
         sid = "struct-dedup-stub"
         payload = self._read_payload(sid, fpath)
 
-        # Reads 1–3: full hint (verbose window for default verbose_until_seen_count=2).
-        for _ in range(3):
+        # Reads 1–2: full hint (within verbose_until_seen_count=2 window).
+        for _ in range(2):
             hooks_cli.pre_read(payload)
 
-        # 4th read: past verbose window → short stub only.
-        result4 = hooks_cli.pre_read(payload)
-        _assert_continue(result4)
-        if "hookSpecificOutput" in result4:
-            ctx4 = result4["hookSpecificOutput"].get("additionalContext", "")
+        # 3rd read: seen_count=2 >= verbose_until=2 → short stub only.
+        result3 = hooks_cli.pre_read(payload)
+        _assert_continue(result3)
+        if "hookSpecificOutput" in result3:
+            ctx3 = result3["hookSpecificOutput"].get("additionalContext", "")
             # Stub contains "seen Nx" marker; full structured-file hint must not repeat.
-            assert "📊" not in ctx4 and "large csv" not in ctx4.lower(), (
-                "4th read must emit a short stub, not the full structured-file hint"
+            assert "📊" not in ctx3 and "large csv" not in ctx3.lower(), (
+                "3rd read must emit a short stub, not the full structured-file hint"
             )
 
     def test_jsonl_treated_as_tabular(self, tmp_data_dir, tmp_path):
@@ -913,21 +913,21 @@ class TestIndexOnlyFileHint:
         )
 
     def test_session_dedup_emits_stub_past_verbose_window(self, tmp_data_dir, tmp_path):
-        """Same lockfile read 4× → 4th read emits short stub, not full index-only hint."""
+        """Same lockfile read 3× → 3rd read emits short stub (verbose_until_seen_count=2)."""
         fpath = self._make_lockfile(tmp_path, "cargo.lock")
         payload = self._read_payload("io-dedup-stub", fpath)
 
-        # Reads 1–3: full hint (verbose window for default verbose_until_seen_count=2).
-        for _ in range(3):
+        # Reads 1–2: full hint (within verbose_until_seen_count=2 window).
+        for _ in range(2):
             hooks_cli.pre_read(payload)
 
-        # 4th read: past verbose window → short stub only.
-        result4 = hooks_cli.pre_read(payload)
-        _assert_continue(result4)
-        if "hookSpecificOutput" in result4:
-            ctx4 = result4["hookSpecificOutput"].get("additionalContext", "")
-            assert "lockfile" not in ctx4.lower(), (
-                "4th read must emit a short stub, not the full index-only hint"
+        # 3rd read: seen_count=2 >= verbose_until=2 → short stub only.
+        result3 = hooks_cli.pre_read(payload)
+        _assert_continue(result3)
+        if "hookSpecificOutput" in result3:
+            ctx3 = result3["hookSpecificOutput"].get("additionalContext", "")
+            assert "lockfile" not in ctx3.lower(), (
+                "3rd read must emit a short stub, not the full index-only hint"
             )
 
 

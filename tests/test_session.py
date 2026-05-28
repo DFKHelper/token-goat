@@ -824,6 +824,44 @@ class TestSessionCreatedTs:
         assert cache.cwd is None
 
 
+class TestCwdMerge:
+    """_merge_session_caches cwd semantics: local wins; None local preserves remote."""
+
+    def test_cwd_local_wins_when_both_set(self, tmp_data_dir):
+        """local.cwd takes priority over remote.cwd."""
+        from token_goat.session import _merge_session_caches
+
+        local = session.SessionCache("cwd-merge-1", 0, 0)
+        remote = session.SessionCache("cwd-merge-1", 0, 0)
+        local.cwd = "/new/path"
+        remote.cwd = "/old/path"
+
+        merged = _merge_session_caches(local, remote)
+        assert merged.cwd == "/new/path"
+
+    def test_cwd_none_local_preserves_remote(self, tmp_data_dir):
+        """When local.cwd is None, remote.cwd is kept (not overwritten by None)."""
+        from token_goat.session import _merge_session_caches
+
+        local = session.SessionCache("cwd-merge-2", 0, 0)
+        remote = session.SessionCache("cwd-merge-2", 0, 0)
+        local.cwd = None
+        remote.cwd = "/project"
+
+        merged = _merge_session_caches(local, remote)
+        assert merged.cwd == "/project"
+
+    def test_cwd_both_none_stays_none(self, tmp_data_dir):
+        """When both are None, merged cwd is None."""
+        from token_goat.session import _merge_session_caches
+
+        local = session.SessionCache("cwd-merge-3", 0, 0)
+        remote = session.SessionCache("cwd-merge-3", 0, 0)
+
+        merged = _merge_session_caches(local, remote)
+        assert merged.cwd is None
+
+
 class TestGrepHistoryCap:
     """GREPS_HISTORY_MAX cap — oldest entries are evicted FIFO when exceeded."""
 

@@ -972,13 +972,21 @@ def load() -> Config:
     try:
         env_bash_max_files = os.environ.get(_ENV_BASH_CACHE_MAX_FILES)
         if env_bash_max_files:
-            bc.cache_max_file_count = int(env_bash_max_files)
+            v = int(env_bash_max_files)
+            if 1 <= v <= 1_000_000:
+                bc.cache_max_file_count = v
+            else:
+                _LOG.warning("TOKEN_GOAT_BASH_CACHE_MAX_FILES must be in [1, 1_000_000]")
     except ValueError:
         _LOG.warning("TOKEN_GOAT_BASH_CACHE_MAX_FILES must be an integer")
     try:
         env_bash_max_bytes = os.environ.get(_ENV_BASH_CACHE_MAX_BYTES)
         if env_bash_max_bytes:
-            bc.cache_max_bytes = int(env_bash_max_bytes)
+            v = int(env_bash_max_bytes)
+            if 1024 <= v <= 4 * 1024 * 1024 * 1024:
+                bc.cache_max_bytes = v
+            else:
+                _LOG.warning("TOKEN_GOAT_BASH_CACHE_MAX_BYTES must be in [1024, 4GiB]")
     except ValueError:
         _LOG.warning("TOKEN_GOAT_BASH_CACHE_MAX_BYTES must be an integer")
 
@@ -1151,20 +1159,33 @@ def load() -> Config:
     wf_cfg = WebFetchConfig(
         allow=_validated_str_list(wf_raw.get("allow", []), [], "webfetch.allow"),
         deny=_validated_str_list(wf_raw.get("deny", []), [], "webfetch.deny"),
-        max_file_count=wf_raw.get("max_file_count", 4096),
-        max_bytes=wf_raw.get("max_bytes", 32 * 1024 * 1024),
+        max_file_count=_validated_int(
+            wf_raw.get("max_file_count", 4096), 4096, 1, 1_000_000, "webfetch.max_file_count",
+        ),
+        max_bytes=_validated_int(
+            wf_raw.get("max_bytes", 32 * 1024 * 1024),
+            32 * 1024 * 1024, 1024, 4 * 1024 * 1024 * 1024, "webfetch.max_bytes",
+        ),
     )
     # Apply env overrides for web cache caps
     try:
         env_max_files = os.environ.get(_ENV_WEB_CACHE_MAX_FILES)
         if env_max_files:
-            wf_cfg.max_file_count = int(env_max_files)
+            v = int(env_max_files)
+            if 1 <= v <= 1_000_000:
+                wf_cfg.max_file_count = v
+            else:
+                _LOG.warning("TOKEN_GOAT_WEB_CACHE_MAX_FILES must be in [1, 1_000_000]")
     except ValueError:
         _LOG.warning("TOKEN_GOAT_WEB_CACHE_MAX_FILES must be an integer")
     try:
         env_max_bytes = os.environ.get(_ENV_WEB_CACHE_MAX_BYTES)
         if env_max_bytes:
-            wf_cfg.max_bytes = int(env_max_bytes)
+            v = int(env_max_bytes)
+            if 1024 <= v <= 4 * 1024 * 1024 * 1024:
+                wf_cfg.max_bytes = v
+            else:
+                _LOG.warning("TOKEN_GOAT_WEB_CACHE_MAX_BYTES must be in [1024, 4GiB]")
     except ValueError:
         _LOG.warning("TOKEN_GOAT_WEB_CACHE_MAX_BYTES must be an integer")
 
