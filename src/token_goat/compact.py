@@ -2287,7 +2287,10 @@ def _select_top_grep_entries(greps: list[object]) -> list[object]:
     return heapq.nlargest(_MAX_GREP_ENTRIES, fresh, key=lambda g: _grep_sort_key(g, now_ts))
 
 
-def _dedup_grep_entries(entries: list[object]) -> list[object]:
+def _dedup_grep_entries(
+    entries: list[object],
+    raw_counts: dict[str, int] | None = None,
+) -> list[object]:
     """Deduplicate and annotate grep entries: group by pattern, keep best representative.
 
     When the same grep pattern appears multiple times in the entries list,
@@ -2296,8 +2299,16 @@ def _dedup_grep_entries(entries: list[object]) -> list[object]:
     matches (or the latest timestamp if counts tie) is chosen as the
     representative.
 
+    ``raw_counts`` is an optional pre-computed dict mapping pattern text to its
+    total occurrence count in the *original* (unfiltered) session history.
+    When provided, its count overrides the internal count that would otherwise
+    always be 1 (because callers typically pass already-deduped entries from
+    :func:`_select_top_grep_entries`).  This lets the annotation reflect how
+    many times the agent actually ran each search.
+
     Args:
         entries: List of grep entry objects.
+        raw_counts: Optional mapping of pattern → raw occurrence count.
 
     Returns:
         A deduplicated list where each unique pattern appears once,
@@ -2337,27 +2348,27 @@ def _dedup_grep_entries(entries: list[object]) -> list[object]:
             else:
                 pattern_groups[pattern] = (existing_entry, count + 1)
 
-    # Build result: create modified entries with annotated patterns when count > 1
+    # Build result: create modified entries with annotated patterns when count > 1.
+    # When raw_counts is provided, use its value — the internal count is always 1
+    # because _select_top_grep_entries already deduplicated before calling us.
+    class _AugmentedEntry:
+        """Wrapper that substitutes an annotated pattern without mutating the original."""
+        def __init__(self, orig: object, new_pattern: str) -> None:
+            self._orig = orig
+            self._pattern = new_pattern
+
+        def __getattr__(self, name: str) -> Any:
+            if name == "pattern":
+                return self._pattern
+            return getattr(self._orig, name)
+
     result: list[object] = []
     for pattern, (entry, count) in pattern_groups.items():
-        if count == 1:
-            # Single occurrence: return as-is
+        effective_count = (raw_counts or {}).get(pattern, count)
+        if effective_count == 1:
             result.append(entry)
         else:
-            # Multiple occurrences: create a wrapper object with modified pattern
-            # We use a simple namespace-like object to avoid mutation
-            class _AugmentedEntry:
-                """Wrapper object that adds a count suffix to the pattern."""
-                def __init__(self, orig: object, new_pattern: str) -> None:
-                    self._orig = orig
-                    self._pattern = new_pattern
-
-                def __getattr__(self, name: str) -> Any:
-                    if name == "pattern":
-                        return self._pattern
-                    return getattr(self._orig, name)
-
-            annotated_pattern = f"{pattern} [×{count}]"
+            annotated_pattern = f"{pattern} [×{effective_count}]"
             result.append(_AugmentedEntry(entry, annotated_pattern))
 
     return result
@@ -3959,7 +3970,17 @@ def _render(
 
     # ── 4. Grep patterns — up to 15 % of remaining budget ────────────────────
     grep_budget = sec_budgets["greps"]
-    grep_entries = _dedup_grep_entries(_select_top_grep_entries(raw_greps))
+    # Tally raw occurrence counts BEFORE _select_top_grep_entries deduplicates by
+    # pattern; otherwise _dedup_grep_entries always sees count=1 and [×N] never fires.
+    _raw_grep_counts: dict[str, int] = {}
+    for _rg in raw_greps:
+        _rp = getattr(_rg, "pattern", "")
+        if _rp:
+            _raw_grep_counts[_rp] = _raw_grep_counts.get(_rp, 0) + 1
+    grep_entries = _dedup_grep_entries(
+        _select_top_grep_entries(raw_greps),
+        raw_counts=_raw_grep_counts,
+    )
     # #35: when the all-zero fallback is active (every remaining entry has 0 hits)
     # AND the session is older than 5 minutes, the section carries no useful signal —
     # drop it entirely.  Young sessions keep the section so the agent sees it tried.
