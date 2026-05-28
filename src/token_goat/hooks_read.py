@@ -459,6 +459,7 @@ def _emit_dedup_budgeted_hint(
                 mark_seen(fingerprint)
             if isinstance(cache, _session_mod.SessionCache):
                 record_emitted_fn(cache)
+            record_hint_stat_pair(stat_kind, stub_hint, sanitize_log_str(file_path, max_len=512))
             _LOG.debug(
                 "pre-read: %s hint short-stub for %s (seen %d times)",
                 display_name, sanitize_log_str(file_path), seen_count,

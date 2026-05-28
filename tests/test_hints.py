@@ -2503,6 +2503,28 @@ class TestCrossSessionGrepDedup:
             ).fetchone()
         assert row is None, "low-result pattern must not be written to global.db"
 
+    def test_cross_session_hint_increments_grep_dedup_type_counter(self, tmp_data_dir):
+        """Cross-session hits must call cache.record_hint_emitted('grep_dedup').
+
+        Regression: the cross-session early-return path called _record_hint_emitted
+        (aggregate curator counter) but omitted cache.record_hint_emitted('grep_dedup'),
+        so hints_emitted_by_type['grep_dedup'] stayed zero for cross-session events
+        — the most valuable dedup events were invisible to per-type stats.
+        """
+        from token_goat.hints import build_grep_dedup_hint
+
+        now = time.time()
+        self._seed_global(tmp_data_dir, count=5, last_ts=now - 30)
+
+        sid = "xsess_type_counter"
+        cache = session.load(sid)
+        hint = build_grep_dedup_hint(session_id=sid, pattern=self._PATTERN, path=None, cache=cache)
+
+        assert hint is not None, "cross-session hint must fire"
+        assert cache.hints_emitted_by_type.get("grep_dedup", 0) == 1, (
+            "cross-session hit must increment hints_emitted_by_type['grep_dedup']"
+        )
+
     def test_none_result_count_not_written_to_global_db(self, tmp_data_dir):
         """mark_grep with result_count=None must not write to global.db."""
         sid = "xsess_none_results"
@@ -3165,3 +3187,66 @@ class TestReadHintEmittedByTypeRouting:
 
         assert cache.hints_emitted_by_type == {}
         assert cache.hints_emitted == 0
+
+
+# ---------------------------------------------------------------------------
+# TestGlobDedupBelowThresholdSuppression
+# ---------------------------------------------------------------------------
+
+
+class TestGlobDedupBelowThresholdSuppression:
+    """Glob dedup must record hint_suppressed_by_type when below the result threshold.
+
+    Regression: the below-threshold early return in _build_glob_dedup_hint_inner
+    returned None without calling cache.record_hint_suppressed('glob_dedup_below_threshold'),
+    so the suppression counter stayed zero and the configurable threshold could not
+    be tuned — there was no signal to observe how often it triggered.
+    """
+
+    def test_glob_below_threshold_records_suppression(self, tmp_data_dir):
+        """result_count below _GLOB_DEDUP_MIN_RESULT_COUNT must increment suppressed counter."""
+        from token_goat.hints import _GLOB_DEDUP_MIN_RESULT_COUNT, build_glob_dedup_hint
+
+        sid = "glob_below_thresh"
+        pattern = "**/*.py"
+        # Record a glob run with a result count one below the threshold.
+        session.mark_glob_run(sid, pattern, path=None, result_count=max(0, _GLOB_DEDUP_MIN_RESULT_COUNT - 1))
+        cache = session.load(sid)
+
+        result = build_glob_dedup_hint(session_id=sid, pattern=pattern, path=None, cache=cache)
+
+        assert result is None, "below-threshold glob must not produce a hint"
+        assert cache.hints_suppressed_by_type.get("glob_dedup_below_threshold", 0) == 1, (
+            "below-threshold return must increment hints_suppressed_by_type['glob_dedup_below_threshold']"
+        )
+
+    def test_glob_none_result_count_records_suppression(self, tmp_data_dir):
+        """result_count=None must also record suppression, not silently return None."""
+        from token_goat.hints import build_glob_dedup_hint
+
+        sid = "glob_none_count"
+        pattern = "src/**/*.ts"
+        session.mark_glob_run(sid, pattern, path=None, result_count=None)
+        cache = session.load(sid)
+
+        result = build_glob_dedup_hint(session_id=sid, pattern=pattern, path=None, cache=cache)
+
+        assert result is None
+        assert cache.hints_suppressed_by_type.get("glob_dedup_below_threshold", 0) == 1, (
+            "None result_count must also increment the suppression counter"
+        )
+
+    def test_glob_above_threshold_does_not_record_suppression(self, tmp_data_dir):
+        """result_count above threshold must NOT record suppression."""
+        from token_goat.hints import _GLOB_DEDUP_MIN_RESULT_COUNT, build_glob_dedup_hint
+
+        sid = "glob_above_thresh"
+        pattern = "**/*.go"
+        session.mark_glob_run(sid, pattern, path=None, result_count=_GLOB_DEDUP_MIN_RESULT_COUNT + 5)
+        cache = session.load(sid)
+
+        build_glob_dedup_hint(session_id=sid, pattern=pattern, path=None, cache=cache)
+
+        assert cache.hints_suppressed_by_type.get("glob_dedup_below_threshold", 0) == 0, (
+            "above-threshold glob must not record a below-threshold suppression"
+        )
