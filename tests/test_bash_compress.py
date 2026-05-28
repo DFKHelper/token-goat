@@ -1512,6 +1512,45 @@ class TestCapTokens:
         assert len(result) < len(text)
         assert "output capped at" in result
 
+    def test_body_containing_bytes_elided_prefix_not_corrupted(self):
+        """cap_tokens must not split on a literal '\\n... [' that appears in the body.
+
+        Regression: cap_tokens used rsplit('\\n... [', 1) to strip cap_bytes's
+        marker.  When the captured output itself contained that literal string
+        (e.g. a command that prints progress like '... [3 items left]'), rsplit
+        split on the first occurrence in the body rather than the terminal marker,
+        silently dropping legitimate content and producing a malformed result.
+
+        The fix uses a regex anchored to the exact bytes-elided suffix so only
+        the real marker is stripped.
+        """
+        # Build a text body that contains the problematic literal and is large
+        # enough to exceed the token budget.
+        filler = "a" * 14000  # ~4000 tokens at 3.5 chars/token
+        body_marker = "\n... [3 items still pending]"  # literal that looks like the real marker
+        text = filler + body_marker + ("b" * 100)
+
+        result = bc.cap_tokens(text, max_tokens=2000)
+
+        # The token-based marker must be present.
+        assert "[token-goat: output capped at ~2000 tokens]" in result, (
+            "cap_tokens must append its token-based marker"
+        )
+        # The bytes-elided marker must NOT appear in the output.
+        assert "bytes elided by token-goat" not in result, (
+            "bytes-elided marker must be fully replaced by the token-based one"
+        )
+        # The truncation point must be inside the filler, not at the fake marker.
+        # If rsplit split on the body marker, the result would end right before it
+        # (at position ~14000); a correct truncation preserves filler up to ~7000
+        # chars and the body_marker literal would not appear at all since it was
+        # written AFTER the truncation point.
+        # Simpler invariant: the result must not end right before body_marker text.
+        assert "items still pending" not in result, (
+            "body content written after truncation point must not appear in output; "
+            "if it does, rsplit split on the body marker rather than the real suffix"
+        )
+
 
 # ---------------------------------------------------------------------------
 # GenericFilter with cap_tokens

@@ -187,6 +187,13 @@ def dedupe_consecutive(
 # Pre-compiled pattern used by dedupe_numeric_runs for digit normalisation.
 _DIGITS_RE: Final[re.Pattern[str]] = re.compile(r"\d+")
 
+# Matches the exact bytes-elided marker appended by cap_bytes so cap_tokens can
+# replace it with a token-based equivalent.  Using rsplit("\n... [", 1) was
+# fragile — it could split on literal "\n... [" content in the captured output.
+_BYTES_ELIDED_MARKER_RE: Final[re.Pattern[str]] = re.compile(
+    r"\n\.\.\. \[\d+ bytes elided by token-goat\]$"
+)
+
 
 def dedupe_numeric_runs(
     lines: Iterable[str],
@@ -481,8 +488,11 @@ def cap_tokens(text: str, max_tokens: int) -> str:
     truncated = cap_bytes(text, max_bytes)
     # Replace the byte-based marker with a token-based one.
     if "[token-goat: output capped at" not in truncated:
-        # cap_bytes added a marker; replace it with token-aware version.
-        truncated = truncated.rsplit("\n... [", 1)[0]
+        # cap_bytes added a bytes-elided marker; replace it with the token-aware
+        # version.  Use a regex anchored to the exact marker format rather than
+        # rsplit("\n... [", …) which would split on any literal "\n... [" content
+        # appearing inside the captured command output.
+        truncated = _BYTES_ELIDED_MARKER_RE.sub("", truncated)
         truncated += f"\n[token-goat: output capped at ~{max_tokens} tokens]"
     return truncated
 
