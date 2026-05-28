@@ -74,6 +74,7 @@ class CleanupStats(TypedDict, total=False):
     stats_rows_pruned: int
     snapshots_cleared: int
     bash_outputs_evicted: int
+    web_outputs_evicted: int
     wal_bytes_reclaimed: int
     project_wal_bytes_reclaimed: int
     orphaned_projects_removed: int
@@ -844,6 +845,24 @@ def _evict_bash_outputs() -> int:
     )
 
 
+def _evict_web_outputs() -> int:
+    """Enforce the on-disk web-output store byte cap.
+
+    The post-WebFetch hook calls this opportunistically after every write, but
+    if that eviction is suppressed by a transient OSError (e.g. AV lock on
+    Windows), the directory can silently exceed its byte and file-count caps
+    until the next write.  This startup/maintenance pass closes that gap.
+    Returns the number of cache files removed.
+    """
+    from . import config, web_cache  # noqa: PLC0415
+
+    cfg = config.load().webfetch
+    return web_cache.evict_old_entries(
+        max_total_bytes=cfg.max_bytes,
+        max_file_count=cfg.max_file_count,
+    )
+
+
 def _checkpoint_global_wal() -> int:
     """Force a TRUNCATE checkpoint of global.db's WAL, returning bytes reclaimed.
 
@@ -1075,6 +1094,7 @@ def cleanup_on_startup() -> CleanupStats:
         ("stats_prune", _prune_stats_table, "stats_rows_pruned"),
         ("snapshots", _cleanup_stale_snapshots, "snapshots_cleared"),
         ("bash_outputs", _evict_bash_outputs, "bash_outputs_evicted"),
+        ("web_outputs", _evict_web_outputs, "web_outputs_evicted"),
         ("wal_checkpoint", _checkpoint_global_wal, "wal_bytes_reclaimed"),
         ("project_wal_checkpoint", _checkpoint_project_wals, "project_wal_bytes_reclaimed"),
         ("gc_orphaned_projects", _gc_orphaned_projects, "orphaned_projects_removed"),
@@ -1109,7 +1129,7 @@ def cleanup_on_startup() -> CleanupStats:
     _LOG.info(
         "startup cleanup complete: locks_cleared=%d index_markers_cleared=%d logs_deleted=%d "
         "stats_rows_pruned=%d image_bytes_evicted=%d image_files_evicted=%d "
-        "snapshots_cleared=%d bash_outputs_evicted=%d wal_bytes_reclaimed=%d "
+        "snapshots_cleared=%d bash_outputs_evicted=%d web_outputs_evicted=%d wal_bytes_reclaimed=%d "
         "orphaned_projects_removed=%d old_sessions_removed=%d%s",
         stats.get("stale_locks_cleared", 0),
         stats.get("stale_index_markers_cleared", 0),
@@ -1119,6 +1139,7 @@ def cleanup_on_startup() -> CleanupStats:
         stats.get("image_files_evicted", 0),
         stats.get("snapshots_cleared", 0),
         stats.get("bash_outputs_evicted", 0),
+        stats.get("web_outputs_evicted", 0),
         stats.get("wal_bytes_reclaimed", 0),
         stats.get("orphaned_projects_removed", 0),
         stats.get("old_sessions_removed", 0),
