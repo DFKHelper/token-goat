@@ -1057,7 +1057,7 @@ def _group_edited_by_dir(
         entries: List of (path, edit_count) tuples, already sorted by edit count descending.
         project_root: Optional project root for path shortening.
         threshold: Minimum number of files in a directory to trigger grouping.
-                  Set to 0 to disable grouping. Defaults to 5.
+                  Set to 0 to disable grouping. Defaults to 3.
 
     Returns:
         A list of formatted strings ready for the manifest. Each string is either:
