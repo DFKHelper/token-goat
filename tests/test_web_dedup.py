@@ -98,14 +98,13 @@ class TestWebDedupHintWithMinBytes:
 
         assert hint is None
 
-    def test_zero_threshold_disables_dedup(self, mock_cache) -> None:
-        """web_dedup_min_bytes=0 suppresses all dedup hints."""
+    def test_zero_threshold_fires_on_all_sizes(self, mock_cache) -> None:
+        """web_dedup_min_bytes=0 fires for any body size (consistent with bash/grep thresholds)."""
         with patch("token_goat.hints.session.lookup_web_entry") as mock_lookup, patch(
             "token_goat.hints.config.load"
         ) as mock_config_load, patch(
             "token_goat.hints.time.time", return_value=1010.0
         ):
-            # Setup config with zero threshold
             mock_cfg = MagicMock()
             mock_cfg.hints.web_dedup_min_bytes = 0
             mock_config_load.return_value = mock_cfg
@@ -114,7 +113,7 @@ class TestWebDedupHintWithMinBytes:
             entry.url_sha = "test_sha"
             entry.url_preview = "https://example.com"
             entry.output_id = "out_123"
-            entry.body_bytes = 5000  # Very large, but threshold is 0
+            entry.body_bytes = 1  # tiny body — should still emit with threshold=0
             entry.status_code = 200
             entry.ts = 1000.0
             entry.truncated = False
@@ -126,4 +125,4 @@ class TestWebDedupHintWithMinBytes:
                 cache=mock_cache,
             )
 
-        assert hint is None
+        assert hint is not None, "threshold=0 must fire for any body size, not suppress"

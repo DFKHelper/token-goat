@@ -2074,7 +2074,7 @@ def _build_web_dedup_hint_inner(
         _record_dedup_stale("web_dedup_stale", _sanitize_hint_path(url))
         return None
     cfg = config.load()
-    if cfg.hints.web_dedup_min_bytes == 0 or entry.body_bytes < cfg.hints.web_dedup_min_bytes:
+    if entry.body_bytes < cfg.hints.web_dedup_min_bytes:
         if cache is not None:
             cache.record_hint_suppressed("web_dedup_below_threshold")
         return None

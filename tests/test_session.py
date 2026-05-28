@@ -3612,3 +3612,56 @@ class TestEditedFilesMerge:
 
         merged = _merge_session_caches(local, remote)
         assert merged.edited_files["src/c.py"] == 3  # max(3,3)=3, not sum=6
+
+
+class TestDecisionsMerge:
+    """_merge_session_caches must include decisions in the append-union."""
+
+    def test_local_decision_added_when_not_in_remote(self, tmp_data_dir):
+        """A decision in local but not in remote appears in the merged result."""
+        from token_goat.session import DecisionEntry, _merge_session_caches
+
+        local = session.SessionCache("dm-1", 0, 0)
+        remote = session.SessionCache("dm-1", 0, 0)
+        local.decisions.append(DecisionEntry(text="chose option A", ts=1.0))
+
+        merged = _merge_session_caches(local, remote)
+        assert any(d.text == "chose option A" for d in merged.decisions)
+
+    def test_remote_decision_preserved_when_local_empty(self, tmp_data_dir):
+        """Remote decisions are preserved when local.decisions is empty."""
+        from token_goat.session import DecisionEntry, _merge_session_caches
+
+        local = session.SessionCache("dm-2", 0, 0)
+        remote = session.SessionCache("dm-2", 0, 0)
+        remote.decisions.append(DecisionEntry(text="remote decision", ts=2.0))
+
+        merged = _merge_session_caches(local, remote)
+        assert any(d.text == "remote decision" for d in merged.decisions)
+
+    def test_duplicate_decision_not_duplicated_in_merge(self, tmp_data_dir):
+        """Same decision in both local and remote appears only once."""
+        from token_goat.session import DecisionEntry, _merge_session_caches
+
+        local = session.SessionCache("dm-3", 0, 0)
+        remote = session.SessionCache("dm-3", 0, 0)
+        d = DecisionEntry(text="same decision", ts=3.0)
+        local.decisions.append(d)
+        remote.decisions.append(d)
+
+        merged = _merge_session_caches(local, remote)
+        assert sum(1 for x in merged.decisions if x.text == "same decision") == 1
+
+    def test_decisions_merge_union_both(self, tmp_data_dir):
+        """Distinct decisions from both local and remote all appear in merged."""
+        from token_goat.session import DecisionEntry, _merge_session_caches
+
+        local = session.SessionCache("dm-4", 0, 0)
+        remote = session.SessionCache("dm-4", 0, 0)
+        local.decisions.append(DecisionEntry(text="local only", ts=4.0))
+        remote.decisions.append(DecisionEntry(text="remote only", ts=5.0))
+
+        merged = _merge_session_caches(local, remote)
+        texts = {d.text for d in merged.decisions}
+        assert "local only" in texts
+        assert "remote only" in texts
