@@ -1084,7 +1084,7 @@ def _group_edited_by_dir(
         dir_groups[dirname].append((basename, count))
 
     result: list[str] = []
-    for dirname in sorted(dir_groups.keys()):
+    for dirname in sorted(dir_groups.keys(), key=lambda d: -max(c for _, c in dir_groups[d])):
         group = dir_groups[dirname]
 
         if len(group) < threshold:
