@@ -2346,7 +2346,10 @@ def save(cache: SessionCache) -> None:
                     cache = _merge_session_caches(cache, disk_cache)
 
                 # Bump version and write.
-                cache.version = (disk_cache.version if disk_cache is not None else cache.version) + 1
+                cache.version = max(
+                    disk_cache.version if disk_cache is not None else 0,
+                    cache.version,
+                ) + 1
                 cache._invalidate_json_cache()
 
                 try:
