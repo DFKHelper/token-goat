@@ -228,3 +228,40 @@ class TestDoctorStatsSection:
         assert "[WARN] unmapped kinds" not in result.output
         # The all-clear line should be present.
         assert "all kinds mapped" in result.output
+
+
+class TestDoctorCompactionUtilization:
+    """Compaction budget utilization section in doctor output."""
+
+    def _write_compact_row(self, budget: int, actual: int, trigger: str = "manual") -> None:
+        detail = f"budget={budget},actual={actual},trigger={trigger},events=1"
+        db.record_stat(None, "compact_manifest", tokens_saved=0, bytes_saved=0, detail=detail)
+
+    def test_p50_correct_for_three_values(self, tmp_data_dir):
+        """p50 must return the median (index 1 of 3) not the minimum (index 0).
+
+        With n=3 and values [0.3, 0.6, 0.9] the floor formula gives index 0 (30%)
+        but the correct ceiling nearest-rank formula gives index 1 (60%).
+        """
+        # utilizations: 30/100=0.30, 60/100=0.60, 90/100=0.90
+        self._write_compact_row(100, 30)
+        self._write_compact_row(100, 60)
+        self._write_compact_row(100, 90)
+
+        result = runner.invoke(cli.app, ["doctor"])
+        assert result.exit_code == 0
+        # p50 must be 60% (median), not 30% (minimum)
+        assert "p50=60%" in result.output
+
+    def test_p50_correct_for_five_values(self, tmp_data_dir):
+        """p50 must return the middle value (index 2 of 5) not index 1.
+
+        With n=5 and sorted values [10%, 20%, 50%, 80%, 90%] the floor formula
+        gives index 1 (20%) but the ceiling formula gives index 2 (50%).
+        """
+        for actual in (10, 20, 50, 80, 90):
+            self._write_compact_row(100, actual)
+
+        result = runner.invoke(cli.app, ["doctor"])
+        assert result.exit_code == 0
+        assert "p50=50%" in result.output

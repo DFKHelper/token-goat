@@ -934,7 +934,8 @@ def doctor(  # noqa: C901
             _utils = sorted(_a / _b for _b, _a, _ in _compact_rows)
             _n = len(_utils)
             # p50/p95 via nearest-rank (no numpy dep): index = ceil(p/100 * n) - 1.
-            _p50 = _utils[max(0, (_n * 50) // 100 - 1 if _n > 1 else 0)]
+            # Both use the same ceiling formula: (n*p + 99) // 100 - 1.
+            _p50 = _utils[max(0, (_n * 50 + 99) // 100 - 1)]
             _p95 = _utils[max(0, (_n * 95 + 99) // 100 - 1)]
             _u_max = _utils[-1]
             ok(
