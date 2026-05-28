@@ -537,11 +537,6 @@ def build_read_hint(
             cwd=cwd,
             cache=cache,
         )
-        # Curator: record this file-level dedup hint emission.
-        if hint is not None and session_id and cache and hint.tokens_saved > 0:
-            from . import session as _sess  # noqa: PLC0415
-            norm_path = _sess._normalize_path(file_path)  # type: ignore[attr-defined]
-            _record_hint_emitted(cache, norm_path)
         # JSON sidecar: opt-in machine-readable line prepended after dedup so
         # fingerprint dedup above keeps deduping correctly. No-op when the
         # [hints] json_sidecar feature flag is off (default).
@@ -550,8 +545,11 @@ def build_read_hint(
             hint = _emit_json_sidecar(
                 hint, kind, file=file_path, wasted=hint.tokens_saved or None,
             )
-            if cache is not None:
-                cache.record_hint_emitted(kind)
+        # NOTE: _record_hint_emitted and cache.record_hint_emitted are NOT called
+        # here.  pre_read performs a second fingerprint dedup after receiving the
+        # hint; incrementing counters before that check would count suppressed
+        # hints as emitted.  Both calls live in hooks_read._handle_session_hint
+        # inside the else-branch that only runs when the hint enters context.
         return hint
     except Exception as exc:  # noqa: BLE001
         _LOG.warning(
