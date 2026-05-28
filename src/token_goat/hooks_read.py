@@ -1161,6 +1161,7 @@ def pre_read(payload: HookPayload) -> HookResponse:
         session_id, file_path, tool_input, cache
     )
     if unchanged_response is not None:
+        _flush_pending_hint_save(cache)
         return unchanged_response
 
     # Diff-aware path: file was read AND edited in this session AND we have

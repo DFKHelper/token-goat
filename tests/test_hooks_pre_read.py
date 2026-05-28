@@ -1180,3 +1180,72 @@ class TestCuratorIgnoredHintCounting:
         # Second call — path was already removed from ring buffer.
         _check_ignored_hint(cache, norm_path)
         assert cache.hints_ignored == 1  # still 1, not 2
+
+
+# ---------------------------------------------------------------------------
+# Unchanged-file hint flush regression
+# ---------------------------------------------------------------------------
+
+
+class TestUnchangedFileHintFlushRegression:
+    """Regression: unchanged-file early-return was missing _flush_pending_hint_save."""
+
+    def test_unchanged_file_path_flushes_pending_save(self, tmp_data_dir, monkeypatch):
+        """pre_read must flush deferred saves when the unchanged-file branch fires.
+
+        Regression: the unchanged-file early-return in pre_read lacked the
+        _flush_pending_hint_save(cache) call present on every other early-return
+        branch.  Any mark_hint_seen() call that set _pending_hint_save=True
+        before the unchanged-file check would be silently discarded at hook
+        process exit.
+        """
+        import token_goat.hints as _hints
+        import token_goat.session as _session
+        from token_goat.hints import ReadHint
+
+        sid = "unchanged_flush_regression"
+
+        # Build a real cache with _pending_hint_save=True to simulate a
+        # preceding mark_hint_seen() call.
+        cache = session.load(sid)
+        cache._pending_hint_save = True  # type: ignore[attr-defined]
+
+        save_calls: list[object] = []
+
+        def _capturing_save(c: object) -> None:
+            save_calls.append(c)
+            # Reset the flag so _flush_pending_hint_save considers it handled.
+            if getattr(c, "_pending_hint_save", False):
+                c._pending_hint_save = False  # type: ignore[attr-defined]
+
+        monkeypatch.setattr(_session, "save", _capturing_save)
+
+        # Ensure safe_load returns our prepared cache object.
+        monkeypatch.setattr(_session, "load", lambda sid: cache)
+
+        # Make build_unchanged_file_hint fire unconditionally.
+        fake_hint = ReadHint("`mod.py` unchanged since your edit. Already in context.", tokens_saved=50)
+        monkeypatch.setattr(_hints, "build_unchanged_file_hint", lambda **kw: fake_hint)
+
+        import token_goat.db as _db
+        monkeypatch.setattr(_db, "record_stat", lambda *a, **kw: None)
+
+        payload = {
+            "session_id": sid,
+            "tool_name": "Read",
+            "tool_input": {"file_path": "/proj/mod.py"},
+            "cwd": "/proj",
+        }
+        result = hooks_cli.pre_read(payload)
+
+        # The hint must have fired (unchanged-file branch taken).
+        assert "hookSpecificOutput" in result
+        ctx = result["hookSpecificOutput"]
+        assert "unchanged since" in ctx.get("additionalContext", "")
+
+        # session.save must have been called — _flush_pending_hint_save ran and
+        # found _pending_hint_save=True, so it persisted the deferred mutations.
+        assert len(save_calls) >= 1, (
+            "session.save must be called when _pending_hint_save is set and "
+            "the unchanged-file branch is taken"
+        )

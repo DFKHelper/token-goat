@@ -198,6 +198,7 @@ def test_run_dedup_hint_returns_none_when_builder_returns_none(tmp_path, monkeyp
 
     import token_goat.session as _session  # noqa: PLC0415
     monkeypatch.setattr(_session, "load", lambda sid: fake_cache)
+    monkeypatch.setattr(_session, "save", lambda _c: None)
 
     # Patch db.record_stat to no-op so no DB is needed.
     import token_goat.db as _db  # noqa: PLC0415
@@ -331,10 +332,13 @@ def test_run_dedup_hint_saves_cache_when_hint_emitted(monkeypatch):
     assert save_calls[0] is fake_cache, "session.save must receive the same cache object"
 
 
-def test_run_dedup_hint_does_not_save_when_builder_returns_none(monkeypatch):
-    """run_dedup_hint must NOT call session.save when builder returns None.
+def test_run_dedup_hint_saves_cache_when_builder_returns_none(monkeypatch):
+    """run_dedup_hint must call session.save even when builder returns None.
 
-    Avoids unnecessary disk writes on every suppressed dedup call.
+    Regression: suppression paths mutate hints_suppressed_by_type on the cache
+    but those counters were silently discarded at process exit because save was
+    only called on the emit path.  Save must be unconditional so suppression
+    counters survive the hook process boundary.
     """
     import token_goat.session as _session  # noqa: PLC0415
 
@@ -344,7 +348,7 @@ def test_run_dedup_hint_does_not_save_when_builder_returns_none(monkeypatch):
     monkeypatch.setattr(_session, "load", lambda sid: fake_cache)
     monkeypatch.setattr(_session, "save", lambda c: save_calls.append(c))
 
-    payload = _sid_payload("test-no-save-on-none")
+    payload = _sid_payload("test-save-on-none")
     result = run_dedup_hint(
         payload,
         builder=lambda sid, cache: None,
@@ -353,7 +357,8 @@ def test_run_dedup_hint_does_not_save_when_builder_returns_none(monkeypatch):
     )
 
     assert result is None
-    assert len(save_calls) == 0, "session.save must not be called when builder returns None"
+    assert len(save_calls) == 1, "session.save must be called even when builder returns None"
+    assert save_calls[0] is fake_cache, "session.save must receive the same cache object"
 
 
 # ---------------------------------------------------------------------------
