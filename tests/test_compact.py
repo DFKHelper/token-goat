@@ -2042,6 +2042,24 @@ class TestPreCompactPressureAwareSizing:
             assert "token_goat/compact.py" not in line
             assert "token_goat/hints.py" not in line
 
+    def test_strip_common_prefix_from_sections_no_session_header(self):
+        """Body-only slices (no 'Session: ' line) must not double lines."""
+        sections = [
+            "### Files Edited (preserve in summary)",
+            "- ✎ token_goat/compact.py  ×2",
+            "- ✎ token_goat/hints.py",
+            "- ✎ token_goat/session.py",
+        ]
+        result = compact._strip_common_prefix_from_sections(sections, "token_goat/")
+        # Each original line must appear exactly once in the output.
+        assert len(result) == len(sections), (
+            f"Expected {len(sections)} lines, got {len(result)}: {result}"
+        )
+        # Prefix must be stripped from path-bearing lines.
+        path_lines = [line for line in result if line.startswith("- ✎")]
+        for line in path_lines:
+            assert "token_goat/" not in line, f"Prefix not stripped: {line!r}"
+
     def test_manifest_strips_common_prefix_when_3plus_paths(self, tmp_data_dir):
         """Manifest groups files when 5+ share a common directory (default threshold)."""
         sid = "prefix-strip-session-abc"
