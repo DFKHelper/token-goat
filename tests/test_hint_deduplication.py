@@ -448,3 +448,42 @@ class TestEmitDedupBudgetedHintVerboseWindow:
             )
 
         assert result is None, "stub must be suppressed when budget is exhausted"
+
+    def test_stub_path_calls_record_hint_stat_pair(self, tmp_data_dir) -> None:
+        """Stub path must call record_hint_stat_pair so stub emissions appear in stats.
+
+        Regression: the stub branch returned before record_hint_stat_pair, leaving
+        stub emissions invisible to the stats DB entirely.
+        """
+        from unittest import mock
+
+        from token_goat.config import Config, HintsConfig
+        from token_goat.hints import ReadHint, _hint_fingerprint
+        from token_goat.hooks_read import _emit_dedup_budgeted_hint
+
+        cache = session.SessionCache("vw-stub-stat", 0, 0)
+        hint = ReadHint("Note: already read src/x.py", tokens_saved=100)
+        fp = _hint_fingerprint(str(hint), path="src/x.py")
+        for _ in range(2):  # seen_count=2 >= verbose_until=2 → stub path
+            cache.mark_hint_seen(fp)
+
+        cfg = Config(hints=HintsConfig(verbose_until_seen_count=2))
+        stat_calls: list[tuple[str, object, str]] = []
+
+        with mock.patch("token_goat.config.load", return_value=cfg), mock.patch(
+            "token_goat.hooks_read.record_hint_stat_pair",
+            side_effect=lambda kind, h, detail: stat_calls.append((kind, h, detail)),
+        ):
+            result = _emit_dedup_budgeted_hint(
+                hint=hint,
+                file_path="src/x.py",
+                cache=cache,
+                budget_kind="index_only",
+                record_emitted_fn=lambda _c: None,
+                stat_kind="index_only",
+                display_name="index-only",
+            )
+
+        assert result is not None, "stub must be emitted"
+        assert len(stat_calls) == 1, "record_hint_stat_pair must be called once for stubs"
+        assert stat_calls[0][0] == "index_only", "stat_kind must be forwarded to stat pair"

@@ -1825,6 +1825,7 @@ def _build_grep_dedup_hint_inner(
         cross_session_hint = _build_grep_cross_session_hint(pattern, now)
         if cross_session_hint is not None:
             _record_hint_emitted(cache, f"grep_xsess:{pattern}")
+            cache.record_hint_emitted("grep_dedup")
             return cross_session_hint
 
     # Intra-session scan: requires at least one prior grep in this session.
@@ -1996,6 +1997,8 @@ def _build_glob_dedup_hint_inner(
     if age > glob_stale_threshold:
         return None
     if entry.result_count is None or entry.result_count < _GLOB_DEDUP_MIN_RESULT_COUNT:
+        if cache is not None:
+            cache.record_hint_suppressed("glob_dedup_below_threshold")
         return None
 
     bytes_avoided = entry.result_count * _GLOB_AVG_BYTES_PER_RESULT
