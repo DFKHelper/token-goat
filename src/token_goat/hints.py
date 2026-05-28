@@ -834,6 +834,10 @@ def _hint_from_cache(
 
     # Case: file accessed only via token-goat read <file>::<symbol>.
     # A suggestion, not a realized saving → tokens_saved=0.
+    # Suppress for stale symbol-only accesses — symbol names don't shift on
+    # edit, but a very old access is no longer worth reminding the agent about.
+    if read_is_stale and not entry.line_ranges:
+        return None
     if entry.symbols_read and not entry.line_ranges:
         n_syms = len(entry.symbols_read)
         sym_list = ", ".join(f"`{s}`" for s in entry.symbols_read[:3])

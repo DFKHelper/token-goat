@@ -855,7 +855,11 @@ def _handle_glob_dedup(payload: HookPayload) -> HookResponse | None:
     Falls back to the standard advisory dedup hint when no cached result exists.
     Returns ``None`` when no dedup applies (first run, or cache evicted).
     """
-    from .hints import STALE_READ_AGE_SECONDS, build_glob_dedup_hint  # noqa: PLC0415
+    from .hints import (  # noqa: PLC0415,E501
+        STALE_READ_AGE_SECONDS,
+        build_glob_dedup_hint,
+        compute_stale_threshold,
+    )
     from .hooks_common import run_dedup_hint  # noqa: PLC0415
 
     tool_input = get_tool_input(payload)
@@ -882,8 +886,12 @@ def _handle_glob_dedup(payload: HookPayload) -> HookResponse | None:
         glob_entry = _sess.lookup_glob_entry(session_id, pattern, path, cache=cache)
         if glob_entry is not None:
             import time as _time  # noqa: PLC0415
-            age = _time.time() - glob_entry.ts
-            if age <= STALE_READ_AGE_SECONDS:
+            _now = _time.time()
+            age = _now - glob_entry.ts
+            _glob_created_ts = getattr(cache, "created_ts", None)
+            _glob_session_age = (_now - _glob_created_ts) if _glob_created_ts is not None else STALE_READ_AGE_SECONDS
+            _glob_stale_threshold = compute_stale_threshold(_glob_session_age)
+            if age <= _glob_stale_threshold:
                 cached_result = _bc.load_glob_result(session_id, pattern, path)
                 if cached_result is not None:
                     path_label = f" in {path!r}" if path else ""
