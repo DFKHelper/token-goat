@@ -1324,16 +1324,15 @@ def _strip_common_prefix_from_sections(
             session_line_idx = i
             break
 
-    # Insert the prefix note after the session line
     if session_line_idx >= 0:
+        # Insert the prefix note after the session line, then process the tail.
         result.insert(session_line_idx + 1, f"(paths relative to {common_prefix})")
-
-    # Process remaining lines via the shared per-line stripper.  This keeps the
-    # rewrite logic in exactly one place (DRY) so both call sites — the full
-    # manifest assembly and the priority-aware safety trim — apply identical
-    # transformations.
-    tail_start = session_line_idx + 1 if session_line_idx >= 0 else 0
-    result.extend(_strip_common_prefix_lines(sections[tail_start:], common_prefix))
+        result.extend(_strip_common_prefix_lines(sections[session_line_idx + 1:], common_prefix))
+    else:
+        # No session header (e.g. body-only slices from the safety-trim path).
+        # The loop already consumed every line into result, but those copies are
+        # unprocessed originals.  Replace them with the prefix-stripped version.
+        result = _strip_common_prefix_lines(sections, common_prefix)
 
     return result
 
