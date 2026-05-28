@@ -1762,6 +1762,31 @@ class TestBuildSealedBlock:
         result = compact._extract_blocker_error_preview(entry)
         assert result == "", f"Expected empty preview on exception, got: {result!r}"
 
+    def test_block_bounded_at_80_tokens_with_long_skill_name(self):
+        """Sealed block stays within 80 tokens even when skill names exceed 60 chars.
+
+        Regression: the second-pass pruning used `skill_slot in inner_trimmed`
+        where inner_trimmed holds truncated ([:60]) copies.  When len(skill_slot)
+        > 60 the membership test was False and .remove() was never called, so
+        the block could silently exceed its 80-token cap.
+        """
+        now = time.time()
+        # Skill name longer than 60 chars triggers the truncation-mismatch bug.
+        long_name = "plugin:very-long-skill-name-" + "x" * 40
+        skill = self._make_skill_entry(long_name, now)
+
+        # Add edited files and a blocker to fill the block before the skill slot.
+        edited = {f"/proj/src/component_{i}.py": i + 1 for i in range(3)}
+        entry = self._make_bash_entry("pytest --timeout=60 tests/test_very_long_suite.py", 1, now)
+
+        result = compact._build_sealed_block(edited, [entry], {"s": skill})
+        text = "\n".join(result)
+        token_count = compact._token_count(text)
+        assert token_count <= 80, (
+            f"Sealed block exceeds 80-token cap ({token_count} tokens) "
+            f"when skill name > 60 chars:\n{text!r}"
+        )
+
 
 class TestPreCompactPressureAwareSizing:
     """pre_compact hook applies the auto_trigger_multiplier when trigger=auto."""
@@ -3741,6 +3766,43 @@ class TestSafetyTrimAndBudgetFloor:
             "fails because the full manifest does not contain 'unchanged since'."
         )
         assert count2 == count1, "event count must be consistent between calls"
+
+    def test_build_manifest_with_count_includes_skill_history(self, tmp_data_dir):
+        """build_manifest_with_count must include skill_history in its event count.
+
+        Regression: n_events omitted the skill_history term present in event_count,
+        causing skills-only sessions to return n_events==0 and suppress the manifest
+        at compaction time even though event_count returned >= 1.
+        """
+        from token_goat.session import SkillEntry
+
+        sid = "bmwc-skill-history-regression"
+        cache = session.load(sid)
+        # Populate skill_history only — no file reads, greps, edits, or bash runs.
+        cache.skill_history = {
+            "ralph": SkillEntry(
+                skill_name="ralph",
+                output_id="oid-ralph",
+                content_sha="abc123",
+                ts=1000.0,
+                body_bytes=2048,
+                run_count=1,
+            )
+        }
+        session.save(cache)
+
+        _, n_events_bmwc = compact.build_manifest_with_count(sid)
+        n_events_standalone = compact.event_count(sid)
+
+        assert n_events_bmwc == n_events_standalone, (
+            f"build_manifest_with_count event count ({n_events_bmwc}) must match "
+            f"event_count ({n_events_standalone}); skill_history is missing from "
+            f"build_manifest_with_count's formula"
+        )
+        assert n_events_bmwc > 0, (
+            "skills-only session must produce n_events > 0 so the manifest is not "
+            "suppressed by the min_events gate in the PreCompact hook"
+        )
 
 
 # ---------------------------------------------------------------------------

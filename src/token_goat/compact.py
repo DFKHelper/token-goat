@@ -2800,6 +2800,7 @@ def build_manifest_with_count(
         + len(cache.greps)
         + len(cache.edited_files)
         + len(getattr(cache, "bash_history", {}) or {})
+        + len(getattr(cache, "skill_history", {}) or {})
     )
     # Delegate to build_manifest so the sidecar cache fast-path, delta-line,
     # and session write-back all apply.  The extra JSON deserialisation inside
@@ -3281,8 +3282,10 @@ def _build_sealed_block(
         inner_trimmed = ([resume_slot] if resume_slot else []) + trimmed_rest
         block = ["<<MUST_PRESERVE>>"] + inner_trimmed + ["<</MUST_PRESERVE>>"]
         # If still over the cap, drop the skill slot (lowest signal of the three).
-        if _token_count("\n".join(block)) > 80 and skill_slot in inner_trimmed:
-            inner_trimmed.remove(skill_slot)
+        # Compare the truncated form: inner_trimmed holds line[:60] copies, not originals.
+        truncated_skill = skill_slot[:60] if skill_slot else ""
+        if _token_count("\n".join(block)) > 80 and truncated_skill and truncated_skill in inner_trimmed:
+            inner_trimmed.remove(truncated_skill)
             block = ["<<MUST_PRESERVE>>"] + inner_trimmed + ["<</MUST_PRESERVE>>"]
 
     return block
