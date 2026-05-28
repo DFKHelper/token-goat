@@ -2094,6 +2094,52 @@ def test_cleanup_on_startup_includes_project_wal_bytes_reclaimed(tmp_data_dir, m
     assert stats["project_wal_bytes_reclaimed"] == 42
 
 
+def test_cleanup_on_startup_includes_web_outputs_evicted(tmp_data_dir, monkeypatch):
+    """cleanup_on_startup must include 'web_outputs_evicted' in its result dict.
+
+    Regression guard: web_cache had no periodic eviction backstop in the worker
+    maintenance cycle (bash_cache had one, web_cache did not). This test locks
+    in the contract so a future refactor cannot silently drop _evict_web_outputs
+    from _int_tasks.
+    """
+    monkeypatch.setattr(worker, "_cleanup_stale_locks", lambda: 0)
+    monkeypatch.setattr(worker, "_cleanup_old_logs", lambda: 0)
+    monkeypatch.setattr(worker, "_prune_stats_table", lambda: 0)
+    monkeypatch.setattr(worker, "_cleanup_stale_snapshots", lambda: 0)
+    monkeypatch.setattr(worker, "_evict_bash_outputs", lambda: 0)
+    monkeypatch.setattr(worker, "_evict_web_outputs", lambda: 7)
+    monkeypatch.setattr(worker, "_checkpoint_global_wal", lambda: 0)
+    monkeypatch.setattr(worker, "_checkpoint_project_wals", lambda: 0)
+    monkeypatch.setattr(worker, "reap_stale_index_markers", lambda: 0)
+    monkeypatch.setattr(worker, "evict_image_cache_if_over_limit", lambda: (0, 0))
+
+    stats = worker.cleanup_on_startup()
+    assert "web_outputs_evicted" in stats
+    assert stats["web_outputs_evicted"] == 7
+
+
+def test_evict_web_outputs_calls_web_cache(tmp_data_dir, monkeypatch):
+    """_evict_web_outputs must delegate to web_cache.evict_old_entries with the
+    correct config values — not hardcoded defaults."""
+    from token_goat import config, web_cache
+
+    calls: list[dict] = []
+
+    def fake_evict(*, max_total_bytes: int, max_file_count: int) -> int:
+        calls.append({"max_total_bytes": max_total_bytes, "max_file_count": max_file_count})
+        return 3
+
+    monkeypatch.setattr(web_cache, "evict_old_entries", fake_evict)
+
+    result = worker._evict_web_outputs()
+
+    cfg = config.load().webfetch
+    assert result == 3
+    assert len(calls) == 1
+    assert calls[0]["max_total_bytes"] == cfg.max_bytes
+    assert calls[0]["max_file_count"] == cfg.max_file_count
+
+
 # ---------------------------------------------------------------------------
 # Dirty-queue deduplication
 # ---------------------------------------------------------------------------
