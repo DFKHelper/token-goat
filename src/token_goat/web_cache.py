@@ -166,6 +166,7 @@ def store_output(
     the eviction is best-effort and a failed pass simply leaves the
     directory slightly over budget — the next call will try again.
     """
+    meta: WebOutputMeta | None = None
     with safe_cache_op("store_output", log=_LOG):
         out_id = output_id_for(session_id, url)
 
@@ -187,14 +188,18 @@ def store_output(
             truncated=truncated,
         )
 
-        evict_old_entries(max_total_bytes=max_total_bytes, max_file_count=max_file_count)
-
         _LOG.debug(
             "web_cache: stored id=%s bytes=%d truncated=%s",
             out_id, body_bytes, truncated,
         )
-        return meta
-    return None
+    # Best-effort eviction runs outside safe_cache_op so an OSError during the
+    # directory walk never discards a confirmed write (the file is already on disk).
+    if meta is not None:
+        try:
+            evict_old_entries(max_total_bytes=max_total_bytes, max_file_count=max_file_count)
+        except OSError as _exc:
+            _LOG.warning("web_cache: eviction failed (best-effort): %s", _exc)
+    return meta
 
 
 def load_output(output_id: str) -> str | None:
