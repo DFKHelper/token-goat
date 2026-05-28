@@ -974,6 +974,44 @@ class TestGrepSection:
             f"All-zero grep section should be kept for young sessions:\n{result}"
         )
 
+    def test_grep_overflow_count_excludes_filtered_entries(self, tmp_data_dir, monkeypatch):
+        """The '+N more patterns' overflow note must count only selector-surviving
+        entries, not raw_greps.  Stale/zero-result entries are intentionally
+        discarded by _select_top_grep_entries; they must not inflate the count
+        the compaction LLM sees.
+
+        Regression: the note counted distinct patterns across raw_greps, so
+        every dropped stale or zero-result entry bloated the overflow number.
+        """
+        import time as _time
+        sid = "grep-overflow-count-abc"
+
+        # Add one fresh, useful pattern that will survive selection.
+        session.mark_grep(sid, "live_pattern", "/proj/src", result_count=5)
+
+        # Add several stale patterns (>3h) that _select_top_grep_entries drops.
+        cache = session.load(sid)
+        stale_ts = _time.time() - (3 * 3600 + 60)
+        for i in range(5):
+            session.mark_grep(sid, f"stale_pattern_{i}", "/proj/src", result_count=1)
+        # Back-date the stale entries we just added.
+        cache = session.load(sid)
+        for grep in cache.greps[1:]:  # index 0 is live_pattern
+            grep.ts = stale_ts
+        session.save(cache)
+
+        result = compact.build_manifest(sid)
+
+        # The live pattern must appear.
+        assert "live_pattern" in result, f"live pattern missing:\n{result}"
+        # No overflow note should appear: only 1 entry survived selection,
+        # and it fits in the budget — overflow > 0 only when surviving
+        # entries exceed the rendered count.
+        assert "more patterns" not in result, (
+            "overflow note must not count stale entries that were filtered out;\n"
+            f"result:\n{result}"
+        )
+
 
 class TestColdOutputs:
     """Cold outputs (old cached bash runs) must exclude failed commands."""
