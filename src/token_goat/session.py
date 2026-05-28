@@ -470,6 +470,18 @@ def _merge_session_caches(local: SessionCache, remote: SessionCache) -> SessionC
         merged_suppressed_by_type[hint_type] = merged_suppressed_by_type.get(hint_type, 0) + count
     merged.hints_suppressed_by_type = merged_suppressed_by_type
 
+    # hint_category_history: union-with-cap per category.
+    # Take whichever process observed more events for each category (longer list
+    # wins), capped to _HINT_CAT_HISTORY_MAX — mirrors the per-entry eviction
+    # in record_hint_category_event().  This preserves suppression signal that
+    # would otherwise be silently dropped when a CAS collision occurs.
+    merged_cat_hist: dict[str, list[bool]] = dict(remote.hint_category_history)
+    for cat_key, local_vals in local.hint_category_history.items():
+        remote_vals = remote.hint_category_history.get(cat_key, [])
+        combined = local_vals if len(local_vals) >= len(remote_vals) else remote_vals
+        merged_cat_hist[cat_key] = combined[-_HINT_CAT_HISTORY_MAX:]
+    merged.hint_category_history = merged_cat_hist
+
     # --- lists: take the longer one, capped ---
     # recent_hints cap is 3 (enforced in from_dict); re-apply after merge so
     # a union of two near-full lists cannot silently double the size.

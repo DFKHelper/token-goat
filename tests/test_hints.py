@@ -1385,6 +1385,52 @@ class TestComputeStaleThreshold:
         )
         assert hint is None, "Read 1000s ago in 1h session should be stale (threshold=900s)"
 
+    def test_stale_symbol_only_access_suppressed(self, tmp_data_dir):
+        """A symbol-only access (no line_ranges) older than the stale threshold is suppressed.
+
+        Regression: the stale guard was gated on `entry.line_ranges` which meant
+        symbol-only entries were always emitted regardless of age.
+        """
+        from token_goat.session import _normalize_path
+
+        sid, path = "s_stale_sym", "C:/proj/stale_sym.py"
+        session.mark_file_read(sid, path, symbol="MyClass")
+
+        # Short session (1h). threshold = clamp(3600*0.25, 900, 1800) = 900s.
+        # Make the symbol access 1000s old — beyond the 900s threshold.
+        cache = session.load(sid)
+        cache.created_ts = time.time() - 3600
+        entry = cache.files[_normalize_path(path)]
+        entry.last_read_ts = time.time() - 1000
+        cache._invalidate_json_cache()
+        session.save(cache)
+
+        hint = build_read_hint(
+            session_id=sid, file_path=path, offset=None, limit=None, cwd=None,
+        )
+        assert hint is None, "Stale symbol-only access must be suppressed"
+
+    def test_fresh_symbol_only_access_still_emits(self, tmp_data_dir):
+        """A symbol-only access within the stale threshold still emits a hint."""
+        from token_goat.session import _normalize_path
+
+        sid, path = "s_fresh_sym", "C:/proj/fresh_sym.py"
+        session.mark_file_read(sid, path, symbol="MyClass")
+
+        # Long session (4h). threshold = min(14400*0.25, 1800) = 1800s.
+        # Read 500s ago — well within the 1800s threshold.
+        cache = session.load(sid)
+        cache.created_ts = time.time() - 14400
+        entry = cache.files[_normalize_path(path)]
+        entry.last_read_ts = time.time() - 500
+        cache._invalidate_json_cache()
+        session.save(cache)
+
+        hint = build_read_hint(
+            session_id=sid, file_path=path, offset=None, limit=None, cwd=None,
+        )
+        assert hint is not None, "Fresh symbol-only access must still emit a hint"
+
 
 # ---------------------------------------------------------------------------
 # Edge cases: hints.py

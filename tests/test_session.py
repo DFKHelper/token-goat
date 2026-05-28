@@ -3665,3 +3665,54 @@ class TestDecisionsMerge:
         texts = {d.text for d in merged.decisions}
         assert "local only" in texts
         assert "remote only" in texts
+
+
+class TestHintCategoryHistoryMerge:
+    """_merge_session_caches must include hint_category_history in the union."""
+
+    def test_local_only_category_appears_in_merge(self, tmp_data_dir):
+        """A category present only in local survives the merge."""
+        from token_goat.session import _merge_session_caches
+
+        local = session.SessionCache("hch-1", 0, 0)
+        remote = session.SessionCache("hch-1", 0, 0)
+        local.hint_category_history["read_dedup"] = [True, False, True]
+
+        merged = _merge_session_caches(local, remote)
+        assert "read_dedup" in merged.hint_category_history
+        assert merged.hint_category_history["read_dedup"] == [True, False, True]
+
+    def test_remote_only_category_preserved(self, tmp_data_dir):
+        """A category present only in remote is preserved."""
+        from token_goat.session import _merge_session_caches
+
+        local = session.SessionCache("hch-2", 0, 0)
+        remote = session.SessionCache("hch-2", 0, 0)
+        remote.hint_category_history["bash_dedup"] = [False, False]
+
+        merged = _merge_session_caches(local, remote)
+        assert merged.hint_category_history["bash_dedup"] == [False, False]
+
+    def test_longer_list_wins_per_category(self, tmp_data_dir):
+        """For the same category, the longer observation list is kept."""
+        from token_goat.session import _merge_session_caches
+
+        local = session.SessionCache("hch-3", 0, 0)
+        remote = session.SessionCache("hch-3", 0, 0)
+        local.hint_category_history["web_dedup"] = [True, False, True, False]
+        remote.hint_category_history["web_dedup"] = [True]
+
+        merged = _merge_session_caches(local, remote)
+        assert merged.hint_category_history["web_dedup"] == [True, False, True, False]
+
+    def test_category_capped_at_history_max(self, tmp_data_dir):
+        """Category history is capped at _HINT_CAT_HISTORY_MAX after merge."""
+        from token_goat.session import _HINT_CAT_HISTORY_MAX, _merge_session_caches
+
+        local = session.SessionCache("hch-4", 0, 0)
+        remote = session.SessionCache("hch-4", 0, 0)
+        over_limit = [True] * (_HINT_CAT_HISTORY_MAX + 5)
+        local.hint_category_history["grep_dedup"] = over_limit
+
+        merged = _merge_session_caches(local, remote)
+        assert len(merged.hint_category_history["grep_dedup"]) == _HINT_CAT_HISTORY_MAX
