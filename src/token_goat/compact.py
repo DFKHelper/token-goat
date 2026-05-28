@@ -3965,8 +3965,10 @@ def _render(
     )
     if grep_lines:
         included_greps = len(grep_lines) - 1  # index 0 is the header
-        distinct_patterns = len({getattr(g, "pattern", "") for g in raw_greps})
-        dropped_greps = distinct_patterns - included_greps
+        # Count only selector-surviving entries — stale/zero-result patterns
+        # were intentionally discarded by _select_top_grep_entries and must
+        # not inflate the "+N more" count shown to the compaction LLM.
+        dropped_greps = len(grep_entries) - included_greps
         if dropped_greps > 0:
             overflow_line = f"- …+{dropped_greps} more patterns"
             if grep_used + _token_count(overflow_line) <= grep_budget:

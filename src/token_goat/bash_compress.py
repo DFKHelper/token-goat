@@ -482,10 +482,11 @@ def cap_tokens(text: str, max_tokens: int) -> str:
     if estimated_tokens <= max_tokens:
         return text
     # Convert max_tokens back to bytes for truncation (conservative: 3.5 chars/token).
-    # Use the clean text for byte budget calculation so ANSI codes don't steal space.
+    # Truncate clean_text so the byte budget is consumed entirely by readable
+    # content — ANSI escape sequences in the original would otherwise steal
+    # space and clip visible output more aggressively than the token cap implies.
     max_bytes = int(max_tokens * 3.5)
-    # Use cap_bytes to handle UTF-8 boundaries and line breaks correctly.
-    truncated = cap_bytes(text, max_bytes)
+    truncated = cap_bytes(clean_text, max_bytes)
     # Replace the byte-based marker with a token-based one.
     if "[token-goat: output capped at" not in truncated:
         # cap_bytes added a bytes-elided marker; replace it with the token-aware

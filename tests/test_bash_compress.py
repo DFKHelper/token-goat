@@ -1551,6 +1551,31 @@ class TestCapTokens:
             "if it does, rsplit split on the body marker rather than the real suffix"
         )
 
+    def test_ansi_codes_do_not_steal_token_budget(self):
+        """ANSI escape sequences must not consume the byte budget.
+
+        cap_tokens measures the budget against ANSI-stripped content, so
+        ANSI codes in the original must not cause visible content to be
+        clipped more aggressively than the stated token cap implies.
+        """
+        # 1000 visible 'x' characters plus heavy ANSI colouring (~500 extra bytes).
+        ansi_reset = "\x1b[0m"
+        ansi_red = "\x1b[31m"
+        # Interleave ANSI codes to simulate coloured pytest output.
+        coloured_line = ansi_red + "x" * 50 + ansi_reset
+        # Repeat to get ~3500 visible chars (~1000 tokens) with ~1750 ANSI bytes on top.
+        text_with_ansi = (coloured_line + "\n") * 70  # 70 * 52 = ~3640 visible chars
+        clean_chars = len(bc.strip_ansi(text_with_ansi))
+
+        # Budget covers the full visible content (no truncation expected).
+        max_tokens = clean_chars // 3  # comfortably above len/3.5
+        result = bc.cap_tokens(text_with_ansi, max_tokens=max_tokens)
+        assert "output capped at" not in result, (
+            "ANSI overhead should not cause truncation when visible content fits "
+            f"within the token budget (budget={max_tokens} tokens, "
+            f"visible chars={clean_chars})"
+        )
+
 
 # ---------------------------------------------------------------------------
 # GenericFilter with cap_tokens
