@@ -1930,6 +1930,39 @@ class TestBuildSealedBlock:
             f"when skill name > 60 chars:\n{text!r}"
         )
 
+    def test_stale_skills_filtered_from_manifest(self):
+        """Skills older than 30 minutes are excluded from the manifest."""
+        now = time.time()
+        # Create skills: one recent, one stale (> 30 minutes old)
+        recent_skill = self._make_skill_entry("ralph", now - 60)  # 1 minute ago
+        stale_skill = self._make_skill_entry("improve", now - (31 * 60))  # 31 minutes ago
+
+        result = compact._build_sealed_block({}, [], {
+            "ralph": recent_skill,
+            "improve": stale_skill
+        })
+        text = "\n".join(result)
+
+        # Recent skill should be present; stale skill should not
+        assert "ralph" in text, "Recent skill should appear in manifest"
+        assert "improve" not in text, "Stale skill (>30 min) should be excluded from manifest"
+
+    def test_all_skills_stale_results_in_empty_manifest(self):
+        """When all skills are >30 minutes old, the skills section is omitted entirely."""
+        now = time.time()
+        # Create only stale skills
+        stale1 = self._make_skill_entry("ralph", now - (31 * 60))
+        stale2 = self._make_skill_entry("improve", now - (45 * 60))
+
+        result = compact._build_sealed_block({}, [], {
+            "ralph": stale1,
+            "improve": stale2
+        })
+        text = "\n".join(result)
+
+        # No skills section should appear when all skills are stale
+        assert "**Skills:**" not in text, "Skills section should be absent when all skills are stale"
+
 
 class TestPreCompactPressureAwareSizing:
     """pre_compact hook applies the auto_trigger_multiplier when trigger=auto."""
