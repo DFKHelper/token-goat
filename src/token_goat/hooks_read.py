@@ -33,6 +33,7 @@ from __future__ import annotations
 
 __all__ = ["post_bash", "post_read", "pre_read"]
 
+import re as _re
 from collections.abc import Callable
 from pathlib import Path
 
@@ -918,6 +919,112 @@ def _handle_grep_written_not_read(payload: HookPayload) -> HookResponse | None:
     return pre_tool_use_with_context(hint_text)
 
 
+# Matches pure code identifiers (letters, digits, underscores, $) that are
+# valid symbol names in Python, JS, TS, Go, Rust, etc.  Patterns with regex
+# metacharacters, spaces, dots, slashes, or other special chars are excluded
+# so we only query the index for unambiguous symbol-name greps.
+_IDENTIFIER_RE = _re.compile(r"^[A-Za-z_$][A-Za-z0-9_$]{2,}$")
+
+
+def _try_grep_symbol_hint(pattern: str, cwd: str | None) -> str | None:
+    """Return a `token-goat symbol` suggestion when the grep pattern is a known indexed symbol.
+
+    When the agent greps for a pure identifier (no regex metacharacters, no dots,
+    no path separators), the pattern is almost certainly a symbol name.  Querying
+    the project index is orders of magnitude cheaper than scanning the codebase
+    file-by-file: one SQL WHERE-clause lookup vs. reading thousands of files.
+
+    Returns a hint string when 1–5 matching symbols are found in the project
+    index, or None when the pattern is not identifier-shaped, the project is
+    not indexed, or no matching symbol exists.  Always fail-soft.
+    """
+    if not _IDENTIFIER_RE.match(pattern):
+        return None
+    try:
+        from . import db as _db  # noqa: PLC0415
+        from .hooks_common import validate_cwd  # noqa: PLC0415
+        from .project import find_project  # noqa: PLC0415
+
+        cwd_path = validate_cwd(cwd, caller="grep-symbol-hint")
+        if cwd_path is None:
+            return None
+        proj = find_project(cwd_path)
+        if proj is None:
+            return None
+
+        with _db.open_project_readonly(proj.hash) as conn:
+            rows = conn.execute(
+                "SELECT name, kind, file_rel, line FROM symbols "
+                "WHERE name = ? AND end_line IS NOT NULL "
+                "ORDER BY kind, line LIMIT 6",
+                (pattern,),
+            ).fetchall()
+
+        if not rows or len(rows) > 5:
+            return None
+
+        locations = []
+        for row in rows:
+            file_short = Path(row["file_rel"]).name
+            locations.append(f"`{file_short}:{row['line']}` ({row['kind']})")
+
+        loc_str = ", ".join(locations)
+        return (
+            f"Symbol `{pattern}` is indexed — use `token-goat symbol {pattern}` "
+            f"to jump directly to its definition(s) ({loc_str}) "
+            f"instead of scanning files with grep (~95% fewer tokens)."
+        )
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _handle_grep_symbol_redirect(payload: HookPayload) -> HookResponse | None:
+    """Inject a `token-goat symbol` suggestion when the Grep pattern is an indexed symbol.
+
+    Advisory only — the grep is allowed to proceed so the agent still receives
+    full match results.  The hint teaches the agent a cheaper lookup path for
+    repeat access and definition navigation.
+
+    Returns None when the pattern is not identifier-shaped, the symbol is not
+    indexed, or the hint was already seen this session (fingerprint dedup).
+    """
+    from . import session as _sess  # noqa: PLC0415
+    from .hints import _hint_fingerprint  # noqa: PLC0415
+
+    session_id, cwd = get_session_context(payload)
+    if not session_id:
+        return None
+
+    tool_input = get_tool_input(payload)
+    pattern = tool_input.get("pattern")
+    if not isinstance(pattern, str) or not pattern:
+        return None
+    # Fast-path guard: skip DB lookup for patterns that are clearly not
+    # identifier-shaped (regex metacharacters, spaces, dots).  This runs at
+    # the handler level so it gates correctly even in tests that monkeypatch
+    # _try_grep_symbol_hint.
+    if not _IDENTIFIER_RE.match(pattern):
+        return None
+
+    hint_text = _try_grep_symbol_hint(pattern, cwd)
+    if not hint_text:
+        return None
+
+    try:
+        cache = _sess.load(session_id)
+    except Exception:  # noqa: BLE001
+        return None
+
+    fp = _hint_fingerprint(hint_text, path=pattern)
+    if cache.has_hint_fingerprint(fp):
+        return None
+
+    cache.mark_hint_seen(fp)
+    cache.record_hint_emitted("grep_symbol_redirect")
+    _sess.save(cache)
+    return pre_tool_use_with_context(hint_text)
+
+
 def _handle_glob_dedup(payload: HookPayload) -> HookResponse | None:
     """Return cached Glob results or a dedup hint when the same pattern ran recently.
 
@@ -1156,6 +1263,9 @@ def pre_read(payload: HookPayload) -> HookResponse:
         written = _handle_grep_written_not_read(payload)
         if written is not None:
             return written
+        symbol_redirect = _handle_grep_symbol_redirect(payload)
+        if symbol_redirect is not None:
+            return symbol_redirect
         return CONTINUE()
 
     if tool_name == "Glob":

@@ -1407,6 +1407,219 @@ class TestSurgicalReadHint:
         assert "login" in ctx
 
 
+class TestGrepSymbolRedirect:
+    """Tests for _handle_grep_symbol_redirect and _try_grep_symbol_hint."""
+
+    def test_hint_fires_for_indexed_identifier(self, tmp_data_dir, monkeypatch):
+        """When grep pattern is an indexed symbol, the hint suggests token-goat symbol."""
+        import token_goat.hooks_read as _hr
+
+        def _fake_symbol_hint(pattern, cwd):
+            if pattern == "my_function":
+                return (
+                    "Symbol `my_function` is indexed — use `token-goat symbol my_function` "
+                    "to jump directly to its definition(s) (`auth.py:42` (function)) "
+                    "instead of scanning files with grep (~95% fewer tokens)."
+                )
+            return None
+
+        monkeypatch.setattr(_hr, "_try_grep_symbol_hint", _fake_symbol_hint)
+
+        payload = {
+            "session_id": "grep-sym-1",
+            "tool_name": "Grep",
+            "tool_input": {"pattern": "my_function", "path": "src/"},
+            "cwd": "/proj",
+        }
+        result = hooks_cli.pre_read(payload)
+        hso = result.get("hookSpecificOutput", {})
+        ctx = hso.get("additionalContext", "") if isinstance(hso, dict) else ""
+        assert "token-goat symbol" in ctx
+        assert "my_function" in ctx
+
+    def test_hint_deduped_on_second_grep(self, tmp_data_dir, monkeypatch):
+        """The symbol-redirect hint is suppressed when the fingerprint was already seen."""
+        import token_goat.hooks_read as _hr
+
+        def _fake_symbol_hint(pattern, cwd):
+            return (
+                "Symbol `my_function` is indexed — use `token-goat symbol my_function` "
+                "to jump directly to its definition(s) (`auth.py:42` (function)) "
+                "instead of scanning files with grep (~95% fewer tokens)."
+            )
+
+        monkeypatch.setattr(_hr, "_try_grep_symbol_hint", _fake_symbol_hint)
+
+        payload = {
+            "session_id": "grep-sym-2",
+            "tool_name": "Grep",
+            "tool_input": {"pattern": "my_function"},
+            "cwd": "/proj",
+        }
+        hooks_cli.pre_read(payload)
+        result2 = hooks_cli.pre_read(payload)
+        # Second call must NOT contain the symbol redirect (fingerprint dedup).
+        hso2 = result2.get("hookSpecificOutput", {})
+        ctx2 = hso2.get("additionalContext", "") if isinstance(hso2, dict) else ""
+        assert "token-goat symbol" not in ctx2
+
+    def test_no_hint_for_regex_pattern(self, tmp_data_dir, monkeypatch):
+        """Patterns with regex metacharacters do not trigger the symbol lookup."""
+        import token_goat.hooks_read as _hr
+
+        called = []
+
+        def _fake_symbol_hint(pattern, cwd):
+            called.append(pattern)
+            return None
+
+        monkeypatch.setattr(_hr, "_try_grep_symbol_hint", _fake_symbol_hint)
+
+        for regex_pattern in ["def\\s+foo", "import.*os", "foo.bar", "foo|bar"]:
+            hooks_cli.pre_read({
+                "session_id": "grep-sym-3",
+                "tool_name": "Grep",
+                "tool_input": {"pattern": regex_pattern},
+                "cwd": "/proj",
+            })
+        # _try_grep_symbol_hint should not have been called for any of these
+        # because _IDENTIFIER_RE filtering happens before it.
+        assert not called, f"should not call hint for regex patterns, called for: {called}"
+
+    def test_try_grep_symbol_hint_rejects_short_pattern(self, tmp_data_dir):
+        """Patterns shorter than 3 chars are rejected by _IDENTIFIER_RE."""
+        from token_goat.hooks_read import _try_grep_symbol_hint
+
+        assert _try_grep_symbol_hint("ab", "/proj") is None
+        assert _try_grep_symbol_hint("_x", "/proj") is None
+
+    def test_try_grep_symbol_hint_rejects_regex_metacharacters(self, tmp_data_dir):
+        """Patterns with metacharacters are rejected by _IDENTIFIER_RE."""
+        from token_goat.hooks_read import _try_grep_symbol_hint
+
+        assert _try_grep_symbol_hint("foo.bar", "/proj") is None
+        assert _try_grep_symbol_hint("foo|bar", "/proj") is None
+        assert _try_grep_symbol_hint("def.*foo", "/proj") is None
+        assert _try_grep_symbol_hint("my func", "/proj") is None
+
+    def test_try_grep_symbol_hint_names_symbol(self, tmp_data_dir, monkeypatch):
+        """_try_grep_symbol_hint returns a hint naming the matching symbol location."""
+        from pathlib import Path as _Path
+
+        from token_goat.project import Project
+
+        fake_proj = Project(root=_Path(tmp_data_dir), hash="deadbeef", marker=".git")
+
+        import token_goat.project as _proj_mod
+        monkeypatch.setattr(_proj_mod, "find_project", lambda cwd: fake_proj)
+
+        class _FakeConn:
+            def execute(self, sql, params):
+                return self
+            def fetchall(self):
+                class _Row:
+                    def __init__(self):
+                        self.name = "my_function"
+                        self.kind = "function"
+                        self.file_rel = "src/auth.py"
+                        self.line = 42
+                    def __getitem__(self, key):
+                        return {"name": "my_function", "kind": "function", "file_rel": "src/auth.py", "line": 42}[key]
+                return [_Row()]
+            def __enter__(self):
+                return self
+            def __exit__(self, *a):
+                pass
+
+        from contextlib import contextmanager
+
+        import token_goat.db as _db
+        @contextmanager
+        def _fake_open(hash):
+            yield _FakeConn()
+        monkeypatch.setattr(_db, "open_project_readonly", _fake_open)
+
+        from token_goat.hooks_read import _try_grep_symbol_hint
+        result = _try_grep_symbol_hint("my_function", str(tmp_data_dir))
+        assert result is not None
+        assert "token-goat symbol my_function" in result
+        assert "auth.py:42" in result
+
+    def test_try_grep_symbol_hint_returns_none_for_too_many_symbols(self, tmp_data_dir, monkeypatch):
+        """Returns None when >5 symbols match (pattern is too common to suggest a specific one)."""
+        from pathlib import Path as _Path
+
+        from token_goat.project import Project
+
+        fake_proj = Project(root=_Path(tmp_data_dir), hash="deadbeef", marker=".git")
+
+        import token_goat.project as _proj_mod
+        monkeypatch.setattr(_proj_mod, "find_project", lambda cwd: fake_proj)
+
+        class _FakeConn:
+            def execute(self, sql, params):
+                return self
+            def fetchall(self):
+                class _Row:
+                    def __init__(self, i):
+                        self.name = "func"
+                        self.kind = "function"
+                        self.file_rel = f"src/mod{i}.py"
+                        self.line = i * 10
+                    def __getitem__(self, key):
+                        return {"name": "func", "kind": "function", "file_rel": self.file_rel, "line": self.line}[key]
+                return [_Row(i) for i in range(6)]  # 6 rows → too many
+            def __enter__(self):
+                return self
+            def __exit__(self, *a):
+                pass
+
+        from contextlib import contextmanager
+
+        import token_goat.db as _db
+        @contextmanager
+        def _fake_open(hash):
+            yield _FakeConn()
+        monkeypatch.setattr(_db, "open_project_readonly", _fake_open)
+
+        from token_goat.hooks_read import _try_grep_symbol_hint
+        result = _try_grep_symbol_hint("func", str(tmp_data_dir))
+        assert result is None
+
+    def test_grep_dedup_takes_priority_over_symbol_redirect(self, tmp_data_dir, monkeypatch):
+        """grep dedup fires first; symbol redirect is skipped when dedup already returned."""
+        import token_goat.hooks_read as _hr
+
+        symbol_redirect_called = []
+
+        def _fake_symbol_hint(pattern, cwd):
+            symbol_redirect_called.append(pattern)
+            return "Symbol `my_function` is indexed — use `token-goat symbol my_function`..."
+
+        monkeypatch.setattr(_hr, "_try_grep_symbol_hint", _fake_symbol_hint)
+
+        # Prime the session with a prior grep so dedup fires.
+        sid = "grep-priority-1"
+        session.mark_grep(
+            session_id=sid, pattern="my_function", path=None,
+            result_count=50,
+        )
+
+        payload = {
+            "session_id": sid,
+            "tool_name": "Grep",
+            "tool_input": {"pattern": "my_function"},
+            "cwd": "/proj",
+        }
+        hooks_cli.pre_read(payload)
+        # The dedup should have fired (or CONTINUE if below threshold).
+        # Either way, _try_grep_symbol_hint should NOT have been called because
+        # _handle_grep_dedup short-circuited.
+        assert not symbol_redirect_called, (
+            "_try_grep_symbol_hint must not be called when grep dedup already returned"
+        )
+
+
 class TestUnchangedFileHintFlushRegression:
     """Regression: unchanged-file early-return was missing _flush_pending_hint_save."""
 
