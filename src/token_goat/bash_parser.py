@@ -605,7 +605,9 @@ def _parse_read(binary: str, args: list[str]) -> BashIntent:
         if binary == "head" and limit is not None:
             offset = 1
         elif tail_skip_start is not None:
-            offset = tail_skip_start  # 1-indexed; hooks_read normalises to 0-indexed
+            # ``tail -n +0`` is semantically ``+1`` on GNU tail (floor at 1 so
+            # the hooks_read normalisation never produces a negative offset).
+            offset = max(1, tail_skip_start)  # 1-indexed; hooks_read normalises to 0-indexed
 
     # ``type`` ambiguity guard: in bash / POSIX shells ``type`` is a
     # command-lookup builtin (``type ls`` reports where ``ls`` lives), not a

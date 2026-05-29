@@ -1694,6 +1694,9 @@ class TestGrepSymbolRedirect:
         from token_goat.hooks_read import _try_grep_symbol_hint
         result = _try_grep_symbol_hint("my_function", str(tmp_data_dir))
         assert result is not None
+        # Single-symbol path: includes direct read command AND symbol command.
+        assert "token-goat read" in result
+        assert "auth.py::my_function" in result
         assert "token-goat symbol my_function" in result
         assert "auth.py:42" in result
 
