@@ -26,6 +26,7 @@ from .hooks_common import (
     HookResponse,
     get_session_context,
     get_tool_input,
+    load_session_safe,
     sanitize_log_str,
     validate_cwd,
 )
@@ -338,8 +339,9 @@ def post_edit(payload: HookPayload) -> HookResponse:
     file_path = tool_input.get("file_path")
 
     if session_id and file_path:
-        cache = session.load(session_id)
-        session.mark_file_edited(session_id, file_path, cache=cache)
+        cache = load_session_safe(session_id)
+        if cache is not None:
+            session.mark_file_edited(session_id, file_path, cache=cache)
 
     if file_path:
         _LOG.debug("post-edit: enqueuing %s for reindex", sanitize_log_str(file_path))

@@ -41,6 +41,7 @@ __all__ = [
     "get_session_context",
     "get_tool_input",
     "is_real_int",
+    "load_session_safe",
     "pre_tool_use_with_context",
     "pre_tool_use_with_update",
     "record_cached_stat",
@@ -596,6 +597,32 @@ def is_real_int(value: object) -> TypeGuard[int]:
     returns ``True``.
     """
     return isinstance(value, int) and not isinstance(value, bool)
+
+
+def load_session_safe(session_id: str) -> object | None:
+    """Load the session cache, returning None on any error (fail-soft).
+
+    Centralises the ``try: session.load(session_id) except ...: return None``
+    pattern that appears in 6+ places across hook_read.py, hooks_edit.py,
+    hints.py, and other modules.  Avoids repeated error handling boilerplate
+    and ensures consistent fail-soft behaviour — any OSError, ValueError, or
+    JSON corruption silently returns None so hooks never abort on cache issues.
+
+    Args:
+        session_id: The session ID string (from the hook payload).
+
+    Returns:
+        The loaded :class:`session.SessionCache` on success, or ``None`` if the
+        session cannot be loaded for any reason.
+    """
+    from . import session  # noqa: PLC0415
+
+    try:
+        return session.load(session_id)
+    except (OSError, ValueError):
+        return None
+    except Exception:  # noqa: BLE001 — catch JSON corruption and unexpected errors
+        return None
 
 
 def _coerce_content_array(items: list[object]) -> str:

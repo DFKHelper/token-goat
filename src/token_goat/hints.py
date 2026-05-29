@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Any, Final, TypedDict, TypeVar, cast
 
 from . import config, db, session, snapshots
-from .hooks_common import sanitize_log_str, validate_cwd
+from .hooks_common import load_session_safe, sanitize_log_str, validate_cwd
 from .project import find_project
 from .util import get_logger
 
@@ -632,7 +632,7 @@ def _build_read_hint_inner(
     # Load the cache once and pass it explicitly so _hint_from_cache can access
     # created_ts for the adaptive staleness threshold without a second disk read.
     if cache is None:
-        cache = session.load(session_id)
+        cache = load_session_safe(session_id)
     entry = session.get_file_entry(session_id, file_path, cache=cache)
     if entry is not None:
         # Curator: if the agent has been ignoring re-read dedup hints, stop emitting them.
@@ -1384,8 +1384,8 @@ def _require_cache(
     Consolidates the four-line guard that every inner hint function repeats::
 
         if cache is None:
-            cache = session.load(session_id)
-        if cache.unavailable:
+            cache = load_session_safe(session_id)
+        if cache is None or cache.unavailable:
             return None
 
     into a single call.  Callers that need additional post-load checks (e.g.
@@ -1394,8 +1394,8 @@ def _require_cache(
     guard on the returned cache.
     """
     if cache is None:
-        cache = session.load(session_id)
-    if cache.unavailable:
+        cache = load_session_safe(session_id)
+    if cache is None or cache.unavailable:
         return None
     return cache
 
