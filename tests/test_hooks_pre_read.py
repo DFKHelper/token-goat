@@ -1187,6 +1187,226 @@ class TestCuratorIgnoredHintCounting:
 # ---------------------------------------------------------------------------
 
 
+class TestSurgicalReadHint:
+    """Tests for _try_surgical_read_hint and its integration into pre_read."""
+
+    def test_hint_fires_when_symbols_overlap_range(self, tmp_data_dir, monkeypatch):
+        """When a line-range read overlaps indexed symbols, a token-goat read suggestion is injected."""
+        import token_goat.hooks_read as _hr
+
+        def _fake_surgical(file_path, offset, limit, cwd):
+            return (
+                "Lines 10–30 of `auth.py` span `login`. "
+                "Use `token-goat read \"src/auth.py::login\"` for a surgical read (~90% fewer tokens on repeat access)."
+            )
+
+        monkeypatch.setattr(_hr, "_try_surgical_read_hint", _fake_surgical)
+
+        payload = {
+            "session_id": "surg-1",
+            "tool_name": "Read",
+            "tool_input": {"file_path": "/proj/src/auth.py", "offset": 10, "limit": 21},
+            "cwd": "/proj",
+        }
+        result = hooks_cli.pre_read(payload)
+        hso = result.get("hookSpecificOutput", {})
+        ctx = hso.get("additionalContext", "") if isinstance(hso, dict) else ""
+        assert "token-goat read" in ctx
+        assert "login" in ctx
+
+    def test_hint_deduped_on_second_read(self, tmp_data_dir, monkeypatch):
+        """The surgical hint is suppressed when the same fingerprint was already seen this session."""
+        import token_goat.hooks_read as _hr
+
+        call_count = 0
+
+        def _fake_surgical(file_path, offset, limit, cwd):
+            nonlocal call_count
+            call_count += 1
+            return "Lines 10–30 of `auth.py` span `login`. Use `token-goat read \"src/auth.py::login\"` for a surgical read (~90% fewer tokens on repeat access)."
+
+        monkeypatch.setattr(_hr, "_try_surgical_read_hint", _fake_surgical)
+
+        payload = {
+            "session_id": "surg-2",
+            "tool_name": "Read",
+            "tool_input": {"file_path": "/proj/src/auth.py", "offset": 10, "limit": 21},
+            "cwd": "/proj",
+        }
+        hooks_cli.pre_read(payload)
+        result2 = hooks_cli.pre_read(payload)
+        hso2 = result2.get("hookSpecificOutput", {})
+        ctx2 = hso2.get("additionalContext", "") if isinstance(hso2, dict) else ""
+        # Second call: surgical hint must be absent (fingerprint dedup fired).
+        assert "token-goat read" not in ctx2 or "login" not in ctx2
+
+    def test_no_hint_when_no_offset_limit(self, tmp_data_dir, monkeypatch):
+        """A full-file read (no offset/limit) does not call _try_surgical_read_hint."""
+        import token_goat.hooks_read as _hr
+
+        called = []
+
+        def _fake_surgical(file_path, offset, limit, cwd):
+            called.append((offset, limit))
+            return None
+
+        monkeypatch.setattr(_hr, "_try_surgical_read_hint", _fake_surgical)
+
+        payload = {
+            "session_id": "surg-3",
+            "tool_name": "Read",
+            "tool_input": {"file_path": "/proj/src/auth.py"},
+            "cwd": "/proj",
+        }
+        hooks_cli.pre_read(payload)
+        assert not called, "_try_surgical_read_hint must not be called for full-file reads"
+
+    def test_try_surgical_read_hint_returns_none_when_no_project(self, tmp_data_dir, monkeypatch):
+        """_try_surgical_read_hint returns None when no indexed project is found."""
+        from token_goat.hooks_read import _try_surgical_read_hint
+
+        result = _try_surgical_read_hint("/some/random/file.py", 10, 20, "/some/random")
+        assert result is None
+
+    def test_try_surgical_read_hint_returns_none_on_db_error(self, tmp_data_dir, monkeypatch):
+        """_try_surgical_read_hint returns None when DB access fails."""
+        from pathlib import Path as _Path
+
+        from token_goat.hooks_read import _try_surgical_read_hint
+
+        # Monkeypatch find_project to return a non-None project so we reach the DB.
+        from token_goat.project import Project
+
+        fake_proj = Project(root=_Path(tmp_data_dir), hash="deadbeef", marker=".git")
+
+        import token_goat.project as _proj_mod
+        monkeypatch.setattr(_proj_mod, "find_project", lambda cwd: fake_proj)
+
+        import token_goat.read_replacement as _rr
+        monkeypatch.setattr(_rr, "resolve_file_rel", lambda proj, path: "src/auth.py")
+
+        import token_goat.db as _db
+        def _bad_open(hash):
+            raise OSError("DB unavailable")
+        monkeypatch.setattr(_db, "open_project_readonly", _bad_open)
+
+        result = _try_surgical_read_hint("/proj/src/auth.py", 10, 20, str(tmp_data_dir))
+        assert result is None
+
+    def test_try_surgical_read_hint_names_symbol(self, tmp_data_dir, monkeypatch):
+        """_try_surgical_read_hint returns a string naming the overlapping symbol."""
+        from pathlib import Path as _Path
+
+        from token_goat.project import Project
+
+        fake_proj = Project(root=_Path(tmp_data_dir), hash="deadbeef", marker=".git")
+
+        import token_goat.project as _proj_mod
+        monkeypatch.setattr(_proj_mod, "find_project", lambda cwd: fake_proj)
+
+        import token_goat.read_replacement as _rr
+        monkeypatch.setattr(_rr, "resolve_file_rel", lambda proj, path: "src/auth.py")
+
+        # Fake DB connection returning one symbol row.
+        class _FakeConn:
+            def execute(self, sql, params):
+                return self
+            def fetchall(self):
+                # Return a dict-accessible row via a namedtuple-like object.
+                class _Row:
+                    def __init__(self):
+                        self.name = "login"
+                        self.kind = "function"
+                    def __getitem__(self, key):
+                        return {"name": "login", "kind": "function"}[key]
+                return [_Row()]
+            def __enter__(self):
+                return self
+            def __exit__(self, *a):
+                pass
+
+        from contextlib import contextmanager
+
+        import token_goat.db as _db
+        @contextmanager
+        def _fake_open(hash):
+            yield _FakeConn()
+        monkeypatch.setattr(_db, "open_project_readonly", _fake_open)
+
+        from token_goat.hooks_read import _try_surgical_read_hint
+        result = _try_surgical_read_hint("/proj/src/auth.py", 10, 21, str(tmp_data_dir))
+        assert result is not None
+        assert "login" in result
+        assert "token-goat read" in result
+        assert "src/auth.py::login" in result
+
+    def test_try_surgical_read_hint_returns_none_for_too_many_symbols(self, tmp_data_dir, monkeypatch):
+        """_try_surgical_read_hint returns None when the range spans >3 symbols."""
+        from pathlib import Path as _Path
+
+        from token_goat.project import Project
+
+        fake_proj = Project(root=_Path(tmp_data_dir), hash="deadbeef", marker=".git")
+
+        import token_goat.project as _proj_mod
+        monkeypatch.setattr(_proj_mod, "find_project", lambda cwd: fake_proj)
+
+        import token_goat.read_replacement as _rr
+        monkeypatch.setattr(_rr, "resolve_file_rel", lambda proj, path: "src/auth.py")
+
+        class _FakeConn:
+            def execute(self, sql, params):
+                return self
+            def fetchall(self):
+                class _Row:
+                    def __init__(self, name):
+                        self.name = name
+                        self.kind = "function"
+                    def __getitem__(self, key):
+                        return {"name": self.name, "kind": "function"}[key]
+                return [_Row("a"), _Row("b"), _Row("c"), _Row("d")]  # 4 rows → too many
+            def __enter__(self):
+                return self
+            def __exit__(self, *a):
+                pass
+
+        from contextlib import contextmanager
+
+        import token_goat.db as _db
+        @contextmanager
+        def _fake_open(hash):
+            yield _FakeConn()
+        monkeypatch.setattr(_db, "open_project_readonly", _fake_open)
+
+        from token_goat.hooks_read import _try_surgical_read_hint
+        result = _try_surgical_read_hint("/proj/src/auth.py", 1, 500, str(tmp_data_dir))
+        assert result is None
+
+    def test_sed_command_triggers_surgical_hint(self, tmp_data_dir, monkeypatch):
+        """A `sed -n 'M,Np' file` Bash command triggers the surgical-read hint via pre_read."""
+        import token_goat.hooks_read as _hr
+
+        def _fake_surgical(file_path, offset, limit, cwd):
+            return (
+                "Lines 10–30 of `auth.py` span `login`. "
+                "Use `token-goat read \"src/auth.py::login\"` for a surgical read (~90% fewer tokens on repeat access)."
+            )
+
+        monkeypatch.setattr(_hr, "_try_surgical_read_hint", _fake_surgical)
+
+        payload = {
+            "session_id": "surg-sed-1",
+            "tool_name": "Bash",
+            "tool_input": {"command": "sed -n '10,30p' /proj/src/auth.py"},
+            "cwd": "/proj",
+        }
+        result = hooks_cli.pre_read(payload)
+        hso = result.get("hookSpecificOutput", {})
+        ctx = hso.get("additionalContext", "") if isinstance(hso, dict) else ""
+        assert "token-goat read" in ctx
+        assert "login" in ctx
+
+
 class TestUnchangedFileHintFlushRegression:
     """Regression: unchanged-file early-return was missing _flush_pending_hint_save."""
 

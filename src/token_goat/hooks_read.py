@@ -367,6 +367,70 @@ def _try_snapshot(
         )
 
 
+def _try_surgical_read_hint(
+    file_path: str,
+    offset: int,
+    limit: int,
+    cwd: str | None,
+) -> str | None:
+    """Return a symbol-level suggestion when a line-range read maps to known symbols.
+
+    When the agent uses a Bash read-equivalent command (``sed -n 'M,Np'``,
+    ``head``, ``tail``) to read a specific line range, this function queries the
+    project index for symbols that overlap [offset, offset+limit-1].  If 1–3
+    symbols are found, it returns a hint naming them with the exact
+    ``token-goat read`` command, so the agent knows the cheaper path for the
+    next access.
+
+    Returns None on any error, when the file is not indexed, or when the range
+    overlaps too many symbols (>3) to name usefully.
+    """
+    if offset <= 0 or limit <= 0:
+        return None
+    req_start = offset
+    req_end = offset + limit - 1
+    try:
+        from . import db as _db  # noqa: PLC0415
+        from . import read_replacement as _rr
+        from .hooks_common import validate_cwd  # noqa: PLC0415
+        from .project import find_project  # noqa: PLC0415
+
+        cwd_path = validate_cwd(cwd, caller="surgical-read-hint")
+        if cwd_path is None:
+            return None
+        proj = find_project(cwd_path)
+        if proj is None:
+            return None
+
+        abs_path = Path(file_path) if Path(file_path).is_absolute() else (cwd_path / file_path)
+        file_rel = _rr.resolve_file_rel(proj, str(abs_path))
+        if not file_rel:
+            return None
+
+        with _db.open_project_readonly(proj.hash) as conn:
+            rows = conn.execute(
+                "SELECT name, kind FROM symbols "
+                "WHERE file_rel = ? AND line <= ? AND end_line >= ? AND end_line IS NOT NULL "
+                "ORDER BY line LIMIT 4",
+                (file_rel, req_end, req_start),
+            ).fetchall()
+
+        if not rows or len(rows) > 3:
+            return None
+
+        fname = Path(file_rel).name
+        sym_names = [row["name"] for row in rows]
+        sym_list = ", ".join(f"`{n}`" for n in sym_names)
+        primary = sym_names[0]
+        cmd = f'token-goat read "{file_rel}::{primary}"'
+        return (
+            f"Lines {req_start}–{req_end} of `{fname}` span {sym_list}. "
+            f"Use `{cmd}` for a surgical read (~90% fewer tokens on repeat access)."
+        )
+    except Exception:  # noqa: BLE001
+        return None
+
+
 def _build_git_hint(cwd: str | None, file_path: str) -> str | None:
     """Return a compact git-history hint for *file_path*, or None on any failure.
 
@@ -1281,6 +1345,28 @@ def pre_read(payload: HookPayload) -> HookResponse:
                 "pre-read: written-not-read hint for %s (edit_count=%d)",
                 sanitize_log_str(file_path), _edit_count,
             )
+
+    # Surgical-read suggestion: when the read covers a specific line range that
+    # maps to known indexed symbols, name them so the agent has the precise
+    # `token-goat read` command for repeat access.  Fires even on the first
+    # read — the value is teaching the cheaper path before the second trip.
+    # Uses fingerprint dedup so it only fires once per unique (file, range) pair.
+    _raw_offset = tool_input.get("offset")
+    _raw_limit = tool_input.get("limit")
+    if _raw_offset is not None and _raw_limit is not None:
+        try:
+            _surg_hint = _try_surgical_read_hint(
+                file_path, int(_raw_offset), int(_raw_limit), cwd
+            )
+        except (TypeError, ValueError):
+            _surg_hint = None
+        if _surg_hint:
+            from .hints import _hint_fingerprint  # noqa: PLC0415
+            _surg_fp = _hint_fingerprint(_surg_hint, path=file_path)
+            if not cache.has_hint_fingerprint(_surg_fp):
+                context_parts.append(_surg_hint)
+                cache.mark_hint_seen(_surg_fp)
+                cache.record_hint_emitted("surgical_suggestion")
 
     # Append git commit history for the file (always, when available).
     git_ctx = _build_git_hint(cwd, file_path)
