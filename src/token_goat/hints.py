@@ -1765,6 +1765,23 @@ def _build_bash_dedup_hint_inner(
     run_count = getattr(entry, "run_count", 1)
     from . import cache_common as _cc  # noqa: PLC0415
     short_id = _cc.short_output_id(entry.output_id)
+
+    # Two-phase dedup: check the fingerprint key BEFORE constructing expensive hint text.
+    # We compute a lightweight key fingerprint based on command+run_count pattern to avoid
+    # building the full hint text when it would be suppressed anyway by the content-hash
+    # dedup in hooks_read.
+    key_for_dedup = f"{cmd_sha}|{run_count}"
+    fp_key = _hint_fingerprint(key_for_dedup, path="bash")
+    if cache is not None and cache.has_hint_fingerprint(fp_key):
+        # Fingerprint already seen in this session — skip hint construction and return None.
+        # The full content-hash dedup in hooks_read will catch identical hints, but this
+        # early-exit avoids ~50-80 tokens of construction work.
+        _LOG.debug(
+            "build_bash_dedup_hint: fingerprint key %s already seen; skipping construction",
+            fp_key,
+        )
+        return None
+
     # After the agent has seen the verbose recall pointer twice, drop the
     # full command string and emit just the bare ID — the agent has learned
     # the recall convention and the extra ~13 tokens per hint are noise.
@@ -1792,6 +1809,7 @@ def _build_bash_dedup_hint_inner(
         if cache is not None:
             _record_hint_emitted(cache, cmd_sha)
             cache.record_hint_emitted("bash_dedup")
+            cache.mark_hint_seen(fp_key)
         return ReadHint(_apply_terse(hint_text), tokens_avoided)
 
     grep_suffix = " (add --grep PATTERN to filter)" if total_bytes >= _BASH_DEDUP_GREP_SUGGEST_BYTES else ""
@@ -1817,6 +1835,7 @@ def _build_bash_dedup_hint_inner(
     if cache is not None:
         _record_hint_emitted(cache, cmd_sha)
         cache.record_hint_emitted("bash_dedup")
+        cache.mark_hint_seen(fp_key)
     return ReadHint(_apply_terse(hint_text), tokens_avoided)
 
 
@@ -1906,11 +1925,16 @@ def _build_grep_dedup_hint_inner(
     # start (where cache.greps is still empty).  Check this before the
     # intra-session guard so new sessions benefit from cross-session dedup.
     if _curator_should_emit(cache) and _hint_budget_check(cache, _HINT_KIND_DEDUP):
-        cross_session_hint = _build_grep_cross_session_hint(pattern, now)
-        if cross_session_hint is not None:
-            _record_hint_emitted(cache, f"grep_xsess:{pattern}")
-            cache.record_hint_emitted("grep_dedup")
-            return cross_session_hint
+        # Two-phase dedup: check fingerprint BEFORE calling the cross-session hint builder.
+        key_for_xsess = f"{pattern}|xsess"
+        fp_key_xsess = _hint_fingerprint(key_for_xsess, path="grep_xsess")
+        if not cache.has_hint_fingerprint(fp_key_xsess):
+            cross_session_hint = _build_grep_cross_session_hint(pattern, now)
+            if cross_session_hint is not None:
+                _record_hint_emitted(cache, f"grep_xsess:{pattern}")
+                cache.record_hint_emitted("grep_dedup")
+                cache.mark_hint_seen(fp_key_xsess)
+                return cross_session_hint
 
     # Intra-session scan: requires at least one prior grep in this session.
     if not cache.greps:
@@ -1935,6 +1959,19 @@ def _build_grep_dedup_hint_inner(
             if cache is not None:
                 cache.record_hint_suppressed("grep_dedup_below_threshold")
             return None
+
+        # Two-phase dedup: check the fingerprint key BEFORE constructing expensive hint text.
+        # Key is pattern+path to avoid rebuilding identical hints.
+        key_for_dedup = f"{pattern}|{path or ''}"
+        fp_key = _hint_fingerprint(key_for_dedup, path="grep")
+        if cache.has_hint_fingerprint(fp_key):
+            # Fingerprint already seen — skip hint construction.
+            _LOG.debug(
+                "build_grep_dedup_hint: fingerprint key %s already seen; skipping construction",
+                fp_key,
+            )
+            return None
+
         # Estimate the bytes that would land in context if the agent re-runs.
         bytes_avoided = entry.result_count * _GREP_AVG_BYTES_PER_RESULT
         tokens_avoided = _est_tokens_from_chars(bytes_avoided)
@@ -1943,6 +1980,7 @@ def _build_grep_dedup_hint_inner(
         # Curator: record emission keyed on the pattern (grep has no file path).
         _record_hint_emitted(cache, f"grep:{pattern}")
         cache.record_hint_emitted("grep_dedup")
+        cache.mark_hint_seen(fp_key)
         return ReadHint(
             _apply_terse(
                 f"Grep `{pattern_short}`{path_str} ({int(age)}s): {entry.result_count} matches, ~{tokens_avoided}t."
@@ -2081,6 +2119,19 @@ def _build_glob_dedup_hint_inner(
             cache.record_hint_suppressed("glob_dedup_below_threshold")
         return None
 
+    # Two-phase dedup: check the fingerprint key BEFORE constructing expensive hint text.
+    # Key is pattern+path to avoid rebuilding identical hints when the dedup fingerprint
+    # would suppress them anyway in hooks_read.
+    key_for_dedup = f"{pattern}|{path or ''}"
+    fp_key = _hint_fingerprint(key_for_dedup, path="glob")
+    if cache.has_hint_fingerprint(fp_key):
+        # Fingerprint already seen in this session — skip hint construction.
+        _LOG.debug(
+            "build_glob_dedup_hint: fingerprint key %s already seen; skipping construction",
+            fp_key,
+        )
+        return None
+
     bytes_avoided = entry.result_count * _GLOB_AVG_BYTES_PER_RESULT
     tokens_avoided = _est_tokens_from_chars(bytes_avoided)
     pattern_short = _sanitize_hint_path(pattern)
@@ -2088,6 +2139,7 @@ def _build_glob_dedup_hint_inner(
     # Curator: record emission keyed on the pattern (glob has no file path).
     _record_hint_emitted(cache, f"glob:{pattern}")
     cache.record_hint_emitted("glob_dedup")
+    cache.mark_hint_seen(fp_key)
     return ReadHint(
         _apply_terse(
             f"Glob `{pattern_short}`{path_str} ({int(age)}s): {entry.result_count} results, ~{tokens_avoided}t."
@@ -2173,6 +2225,17 @@ def _build_web_dedup_hint_inner(
             cache.record_hint_suppressed("web_dedup_below_threshold")
         return None
 
+    # Two-phase dedup: check the fingerprint key BEFORE constructing expensive hint text.
+    # Key is url_sha to avoid rebuilding identical hints.
+    fp_key = _hint_fingerprint(url_sha, path="web")
+    if cache is not None and cache.has_hint_fingerprint(fp_key):
+        # Fingerprint already seen — skip hint construction.
+        _LOG.debug(
+            "build_web_dedup_hint: fingerprint key %s already seen; skipping construction",
+            fp_key,
+        )
+        return None
+
     tokens_avoided = _est_tokens_from_chars(entry.body_bytes)
     status_str = (
         f" status={entry.status_code}" if entry.status_code is not None else ""
@@ -2198,6 +2261,7 @@ def _build_web_dedup_hint_inner(
     if cache is not None:
         _record_hint_emitted(cache, f"web:{url_sha}")
         cache.record_hint_emitted("web_dedup")
+        cache.mark_hint_seen(fp_key)
     # After the agent has seen the verbose recall pointer twice, drop the
     # full command string and emit just the bare ID — see _should_emit_recall_command.
     short_id = _cc.short_output_id(entry.output_id)
