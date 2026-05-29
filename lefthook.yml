@@ -14,9 +14,7 @@ pre-push:
     test:
       env:
         PYTHONIOENCODING: "utf-8:replace"
-        TOKEN_GOAT_NO_WORKER_SPAWN: "1"
-      # Mirror CI: -n 0 (serial) avoids xdist INTERNALERROR worker crashes.
-      # shell: bash ensures "not slow" quotes are handled correctly on Windows
-      # (lefthook.exe uses cmd.exe by default, mangling quoted arguments).
-      run: uv run pytest -n 0 -m "not slow" -q --tb=short
-      shell: bash
+      # Script file avoids Windows quote-mangling of "not slow" that breaks
+      # both cmd.exe and shell: bash inline forms. The script sets -n 0 to
+      # override the -n auto addopts and avoids xdist INTERNALERROR crashes.
+      run: bash .lefthook/pre-push/test.sh
