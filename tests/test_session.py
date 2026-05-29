@@ -3983,3 +3983,580 @@ class TestHintCategoryHistoryMerge:
 
         merged = _merge_session_caches(local, remote)
         assert len(merged.hint_category_history["grep_dedup"]) == _HINT_CAT_HISTORY_MAX
+
+
+# ---------------------------------------------------------------------------
+# Task A: Session merge edge cases
+# ---------------------------------------------------------------------------
+
+
+class TestMergeEmptyDictFields:
+    """_merge_session_caches: one side has an empty dict for a normally non-empty dict field."""
+
+    def test_files_local_empty_remote_has_entries(self, tmp_data_dir):
+        """When local.files is empty, remote's file entries are preserved verbatim."""
+        from token_goat.session import FileEntry, _merge_session_caches
+
+        local = session.SessionCache("med-f1", 0.0, 1.0)
+        remote = session.SessionCache("med-f1", 0.0, 2.0)
+        remote.files["src/foo.py"] = FileEntry(
+            rel_or_abs="src/foo.py",
+            last_read_ts=2.0,
+            read_count=3,
+            line_ranges=[(1, 50)],
+            symbols_read=["bar"],
+        )
+
+        merged = _merge_session_caches(local, remote)
+        assert "src/foo.py" in merged.files
+        assert merged.files["src/foo.py"].read_count == 3
+
+    def test_files_remote_empty_local_has_entries(self, tmp_data_dir):
+        """When remote.files is empty, local's file entries are propagated to merged."""
+        from token_goat.session import FileEntry, _merge_session_caches
+
+        local = session.SessionCache("med-f2", 0.0, 1.0)
+        remote = session.SessionCache("med-f2", 0.0, 2.0)
+        local.files["src/bar.py"] = FileEntry(
+            rel_or_abs="src/bar.py",
+            last_read_ts=1.0,
+            read_count=1,
+            line_ranges=[],
+            symbols_read=[],
+        )
+
+        merged = _merge_session_caches(local, remote)
+        assert "src/bar.py" in merged.files
+
+    def test_bash_history_local_empty(self, tmp_data_dir):
+        """When local.bash_history is empty, remote's bash history survives the merge."""
+        from token_goat.session import BashEntry, _merge_session_caches
+
+        local = session.SessionCache("med-b1", 0.0, 1.0)
+        remote = session.SessionCache("med-b1", 0.0, 2.0)
+        remote.bash_history["abc123"] = BashEntry(
+            cmd_sha="abc123",
+            cmd_preview="pytest",
+            output_id="out1",
+            ts=2.0,
+            stdout_bytes=512,
+            stderr_bytes=0,
+        )
+
+        merged = _merge_session_caches(local, remote)
+        assert "abc123" in merged.bash_history
+
+    def test_bash_history_remote_empty(self, tmp_data_dir):
+        """When remote.bash_history is empty, local's bash history is propagated."""
+        from token_goat.session import BashEntry, _merge_session_caches
+
+        local = session.SessionCache("med-b2", 0.0, 1.0)
+        remote = session.SessionCache("med-b2", 0.0, 2.0)
+        local.bash_history["def456"] = BashEntry(
+            cmd_sha="def456",
+            cmd_preview="ruff check",
+            output_id="out2",
+            ts=1.0,
+            stdout_bytes=128,
+            stderr_bytes=0,
+        )
+
+        merged = _merge_session_caches(local, remote)
+        assert "def456" in merged.bash_history
+
+    def test_web_history_remote_empty_local_has_entries(self, tmp_data_dir):
+        """When remote.web_history is empty, local's web entries survive."""
+        from token_goat.session import WebEntry, _merge_session_caches
+
+        local = session.SessionCache("med-w1", 0.0, 1.0)
+        remote = session.SessionCache("med-w1", 0.0, 2.0)
+        local.web_history["sha1"] = WebEntry(
+            url_sha="sha1",
+            url_preview="https://example.com/doc",
+            output_id="web-out1",
+            ts=1.0,
+            body_bytes=4096,
+        )
+
+        merged = _merge_session_caches(local, remote)
+        assert "sha1" in merged.web_history
+
+    def test_skill_history_remote_empty_local_has_entries(self, tmp_data_dir):
+        """When remote.skill_history is empty, local's skill entries survive."""
+        from token_goat.session import SkillEntry, _merge_session_caches
+
+        local = session.SessionCache("med-sk1", 0.0, 1.0)
+        remote = session.SessionCache("med-sk1", 0.0, 2.0)
+        local.skill_history["ralph"] = SkillEntry(
+            skill_name="ralph",
+            output_id="skill-out1",
+            content_sha="deadbeef",
+            ts=1.0,
+            body_bytes=2048,
+        )
+
+        merged = _merge_session_caches(local, remote)
+        assert "ralph" in merged.skill_history
+
+    def test_hints_seen_local_empty_remote_non_empty(self, tmp_data_dir):
+        """When local.hints_seen is empty, remote's fingerprints are preserved."""
+        from token_goat.session import _merge_session_caches
+
+        local = session.SessionCache("med-hs1", 0.0, 1.0)
+        remote = session.SessionCache("med-hs1", 0.0, 2.0)
+        remote.hints_seen["fp-abc"] = 5
+
+        merged = _merge_session_caches(local, remote)
+        assert merged.hints_seen.get("fp-abc") == 5
+
+    def test_hints_seen_remote_empty_local_non_empty(self, tmp_data_dir):
+        """When remote.hints_seen is empty, local's fingerprints propagate."""
+        from token_goat.session import _merge_session_caches
+
+        local = session.SessionCache("med-hs2", 0.0, 1.0)
+        remote = session.SessionCache("med-hs2", 0.0, 2.0)
+        local.hints_seen["fp-xyz"] = 3
+
+        merged = _merge_session_caches(local, remote)
+        assert merged.hints_seen.get("fp-xyz") == 3
+
+    def test_result_cache_remote_empty_local_has_entry(self, tmp_data_dir):
+        """When remote.result_cache is empty, local's cached read results survive."""
+        from token_goat.session import ResultCacheEntry, _merge_session_caches
+
+        local = session.SessionCache("med-rc1", 0.0, 1.0)
+        remote = session.SessionCache("med-rc1", 0.0, 2.0)
+        local.result_cache["src/a.py::my_fn::symbol"] = ResultCacheEntry(
+            file_sha="aabbcc",
+            kind="symbol",
+            result={"text": "def my_fn(): pass"},
+            ts=1.0,
+        )
+
+        merged = _merge_session_caches(local, remote)
+        assert "src/a.py::my_fn::symbol" in merged.result_cache
+
+    def test_edited_files_local_empty_remote_non_empty(self, tmp_data_dir):
+        """When local.edited_files is empty, remote's edit counts are preserved."""
+        from token_goat.session import _merge_session_caches
+
+        local = session.SessionCache("med-ef1", 0.0, 1.0)
+        remote = session.SessionCache("med-ef1", 0.0, 2.0)
+        remote.edited_files["src/utils.py"] = 4
+
+        merged = _merge_session_caches(local, remote)
+        assert merged.edited_files["src/utils.py"] == 4
+
+    def test_edited_files_remote_empty_local_non_empty(self, tmp_data_dir):
+        """When remote.edited_files is empty, local's edit counts propagate."""
+        from token_goat.session import _merge_session_caches
+
+        local = session.SessionCache("med-ef2", 0.0, 1.0)
+        remote = session.SessionCache("med-ef2", 0.0, 2.0)
+        local.edited_files["src/models.py"] = 2
+
+        merged = _merge_session_caches(local, remote)
+        assert merged.edited_files["src/models.py"] == 2
+
+    def test_hints_emitted_by_type_local_empty(self, tmp_data_dir):
+        """When local.hints_emitted_by_type is empty, remote's per-type counts survive."""
+        from token_goat.session import _merge_session_caches
+
+        local = session.SessionCache("med-hbt1", 0.0, 1.0)
+        remote = session.SessionCache("med-hbt1", 0.0, 2.0)
+        remote.hints_emitted_by_type["already_read"] = 7
+
+        merged = _merge_session_caches(local, remote)
+        assert merged.hints_emitted_by_type.get("already_read") == 7
+
+    def test_hints_suppressed_by_type_remote_empty(self, tmp_data_dir):
+        """When remote.hints_suppressed_by_type is empty, local's counts propagate."""
+        from token_goat.session import _merge_session_caches
+
+        local = session.SessionCache("med-hst1", 0.0, 1.0)
+        remote = session.SessionCache("med-hst1", 0.0, 2.0)
+        local.hints_suppressed_by_type["bash_dedup"] = 9
+
+        merged = _merge_session_caches(local, remote)
+        assert merged.hints_suppressed_by_type.get("bash_dedup") == 9
+
+    def test_hint_category_history_local_empty(self, tmp_data_dir):
+        """When local.hint_category_history is empty, remote's categories survive."""
+        from token_goat.session import _merge_session_caches
+
+        local = session.SessionCache("med-hch1", 0.0, 1.0)
+        remote = session.SessionCache("med-hch1", 0.0, 2.0)
+        remote.hint_category_history["web_dedup"] = [True, False]
+
+        merged = _merge_session_caches(local, remote)
+        assert merged.hint_category_history.get("web_dedup") == [True, False]
+
+
+class TestMergeNaNTimestamps:
+    """_merge_session_caches: NaN timestamps must not propagate into the merged result."""
+
+    def test_last_activity_ts_nan_in_local_uses_remote(self, tmp_data_dir):
+        """When local.last_activity_ts is NaN, merged must not be NaN — remote value used."""
+        import math
+
+        from token_goat.session import _merge_session_caches
+
+        local = session.SessionCache("nan-ts1", 0.0, math.nan)
+        remote = session.SessionCache("nan-ts1", 0.0, 5.0)
+
+        merged = _merge_session_caches(local, remote)
+        assert not math.isnan(merged.last_activity_ts), (
+            "NaN last_activity_ts from local must not propagate; expected remote's 5.0"
+        )
+        assert merged.last_activity_ts == 5.0
+
+    def test_last_activity_ts_nan_in_remote_uses_local(self, tmp_data_dir):
+        """When remote.last_activity_ts is NaN, merged must not be NaN — local value used."""
+        import math
+
+        from token_goat.session import _merge_session_caches
+
+        local = session.SessionCache("nan-ts2", 0.0, 7.0)
+        remote = session.SessionCache("nan-ts2", 0.0, math.nan)
+
+        merged = _merge_session_caches(local, remote)
+        assert not math.isnan(merged.last_activity_ts), (
+            "NaN last_activity_ts from remote must not propagate; expected local's 7.0"
+        )
+        assert merged.last_activity_ts == 7.0
+
+    def test_hints_emitted_nan_in_local_uses_remote(self, tmp_data_dir):
+        """When local.hints_emitted is NaN, merged must not be NaN."""
+        import math
+
+        from token_goat.session import _merge_session_caches
+
+        local = session.SessionCache("nan-he1", 0.0, 1.0)
+        remote = session.SessionCache("nan-he1", 0.0, 1.0)
+        local.hints_emitted = math.nan  # type: ignore[assignment]
+        remote.hints_emitted = 3
+
+        merged = _merge_session_caches(local, remote)
+        assert not math.isnan(merged.hints_emitted), (
+            "NaN hints_emitted from local must not propagate; expected remote's 3"
+        )
+
+    def test_last_manifest_ts_nan_in_local(self, tmp_data_dir):
+        """NaN last_manifest_ts in local: remote manifest fields kept (comparison is False)."""
+        import math
+
+        from token_goat.session import _merge_session_caches
+
+        local = session.SessionCache("nan-mt1", 0.0, 1.0)
+        remote = session.SessionCache("nan-mt1", 0.0, 1.0)
+        local.last_manifest_ts = math.nan
+        local.last_manifest_sha = "local-sha"
+        remote.last_manifest_ts = 10.0
+        remote.last_manifest_sha = "remote-sha"
+
+        merged = _merge_session_caches(local, remote)
+        # NaN >= 10.0 is False, so remote branch taken: remote sha kept
+        assert merged.last_manifest_sha == "remote-sha"
+        assert not math.isnan(merged.last_manifest_ts)
+
+    def test_file_entry_last_read_ts_nan(self, tmp_data_dir):
+        """When a FileEntry's last_read_ts is NaN, the remote entry's ts comparison works.
+
+        NaN > x is always False, so the remote entry is kept (safe default).
+        """
+        import math
+
+        from token_goat.session import FileEntry, _merge_session_caches
+
+        local = session.SessionCache("nan-fe1", 0.0, 1.0)
+        remote = session.SessionCache("nan-fe1", 0.0, 1.0)
+
+        # local entry with NaN last_read_ts
+        local.files["src/z.py"] = FileEntry(
+            rel_or_abs="src/z.py",
+            last_read_ts=math.nan,
+            read_count=1,
+            line_ranges=[],
+            symbols_read=[],
+        )
+        remote.files["src/z.py"] = FileEntry(
+            rel_or_abs="src/z.py",
+            last_read_ts=5.0,
+            read_count=2,
+            line_ranges=[(1, 10)],
+            symbols_read=[],
+        )
+
+        # Must not raise; remote entry kept because NaN > 5.0 is False
+        merged = _merge_session_caches(local, remote)
+        assert "src/z.py" in merged.files
+        assert not math.isnan(merged.files["src/z.py"].last_read_ts)
+        assert merged.files["src/z.py"].read_count == 2
+
+
+class TestMergeEditedFilesConflicts:
+    """_merge_session_caches edited_files: multi-key and asymmetric conflict cases."""
+
+    def test_multiple_keys_some_shared_some_unique(self, tmp_data_dir):
+        """Merge of edited_files with shared + unique keys across local and remote."""
+        from token_goat.session import _merge_session_caches
+
+        local = session.SessionCache("ef-multi1", 0.0, 1.0)
+        remote = session.SessionCache("ef-multi1", 0.0, 2.0)
+
+        local.edited_files["shared.py"] = 3
+        local.edited_files["local_only.py"] = 5
+
+        remote.edited_files["shared.py"] = 7
+        remote.edited_files["remote_only.py"] = 2
+
+        merged = _merge_session_caches(local, remote)
+
+        # shared key: max(7, 3) = 7
+        assert merged.edited_files["shared.py"] == 7
+        # local-only key: propagated as-is
+        assert merged.edited_files["local_only.py"] == 5
+        # remote-only key: preserved from remote base
+        assert merged.edited_files["remote_only.py"] == 2
+
+    def test_all_keys_conflict_local_wins_each(self, tmp_data_dir):
+        """All keys present in both sides; local has higher counts everywhere."""
+        from token_goat.session import _merge_session_caches
+
+        local = session.SessionCache("ef-multi2", 0.0, 1.0)
+        remote = session.SessionCache("ef-multi2", 0.0, 2.0)
+
+        for i in range(5):
+            local.edited_files[f"file{i}.py"] = i + 10
+            remote.edited_files[f"file{i}.py"] = i + 1
+
+        merged = _merge_session_caches(local, remote)
+
+        for i in range(5):
+            # local value (i+10) is always larger than remote (i+1)
+            assert merged.edited_files[f"file{i}.py"] == i + 10
+
+    def test_all_keys_conflict_remote_wins_each(self, tmp_data_dir):
+        """All keys present in both sides; remote has higher counts everywhere."""
+        from token_goat.session import _merge_session_caches
+
+        local = session.SessionCache("ef-multi3", 0.0, 1.0)
+        remote = session.SessionCache("ef-multi3", 0.0, 2.0)
+
+        for i in range(5):
+            local.edited_files[f"file{i}.py"] = i + 1
+            remote.edited_files[f"file{i}.py"] = i + 10
+
+        merged = _merge_session_caches(local, remote)
+
+        for i in range(5):
+            # remote value (i+10) is always larger
+            assert merged.edited_files[f"file{i}.py"] == i + 10
+
+    def test_zero_counts_preserved(self, tmp_data_dir):
+        """A zero edit-count is the correct max when both sides are zero."""
+        from token_goat.session import _merge_session_caches
+
+        local = session.SessionCache("ef-zero1", 0.0, 1.0)
+        remote = session.SessionCache("ef-zero1", 0.0, 2.0)
+        local.edited_files["untouched.py"] = 0
+        remote.edited_files["untouched.py"] = 0
+
+        merged = _merge_session_caches(local, remote)
+        assert merged.edited_files["untouched.py"] == 0
+
+    def test_large_key_set_no_entries_lost(self, tmp_data_dir):
+        """Merging many distinct keys (no overlap) preserves all from both sides."""
+        from token_goat.session import _merge_session_caches
+
+        local = session.SessionCache("ef-large1", 0.0, 1.0)
+        remote = session.SessionCache("ef-large1", 0.0, 2.0)
+
+        for i in range(50):
+            local.edited_files[f"local_{i}.py"] = i + 1
+        for i in range(50):
+            remote.edited_files[f"remote_{i}.py"] = i + 1
+
+        merged = _merge_session_caches(local, remote)
+        assert len(merged.edited_files) == 100
+        for i in range(50):
+            assert merged.edited_files[f"local_{i}.py"] == i + 1
+            assert merged.edited_files[f"remote_{i}.py"] == i + 1
+
+
+# ---------------------------------------------------------------------------
+# Task B: TypedDict / dataclass alignment meta-tests
+# ---------------------------------------------------------------------------
+
+
+class TestTypedDictDataclassAlignment:
+    """Meta-tests verifying TypedDict wire-format dicts stay in sync with dataclasses.
+
+    These tests are compile-time / structural checks, not runtime checks.
+    They exist so that adding a field to a dataclass without updating the
+    corresponding TypedDict is caught immediately by the test suite.
+
+    The session module uses TypedDict classes that mirror entry dataclasses
+    (FileEntry <-> _FileEntryDict, etc.) for JSON serialization.  Since Python
+    has no mechanism to automatically derive one from the other, this class
+    acts as the mechanical guardrail.
+
+    Intentional mismatches in _SessionDict / SessionCache:
+    - SessionCache has ``recovery_injected`` and ``unavailable``: transient
+      runtime-only flags (repr=False, compare=False) that are never persisted.
+    - _SessionDict has ``schema_version`` and ``created_by``: JSON envelope
+      metadata that has no corresponding dataclass field.
+    These are explicitly whitelisted in the assertions below.
+    """
+
+    def _get_dataclass_fields(self, cls: type) -> set[str]:
+        """Return the set of public non-dunder annotated field names for a dataclass."""
+        import dataclasses
+
+        return {f.name for f in dataclasses.fields(cls) if not f.name.startswith("_")}
+
+    def _get_typeddict_keys(self, cls: type) -> set[str]:
+        """Return the set of keys declared on a TypedDict class (non-inherited)."""
+        return set(cls.__annotations__)
+
+    def test_file_entry_matches_file_entry_dict(self):
+        """FileEntry fields match _FileEntryDict keys exactly."""
+        from token_goat.session import FileEntry, _FileEntryDict
+
+        dc_fields = self._get_dataclass_fields(FileEntry)
+        td_keys = self._get_typeddict_keys(_FileEntryDict)
+        assert dc_fields == td_keys, (
+            f"FileEntry <-> _FileEntryDict mismatch.\n"
+            f"  In dataclass only: {dc_fields - td_keys}\n"
+            f"  In TypedDict only: {td_keys - dc_fields}"
+        )
+
+    def test_bash_entry_matches_bash_entry_dict(self):
+        """BashEntry fields match _BashEntryDict keys exactly."""
+        from token_goat.session import BashEntry, _BashEntryDict
+
+        dc_fields = self._get_dataclass_fields(BashEntry)
+        td_keys = self._get_typeddict_keys(_BashEntryDict)
+        assert dc_fields == td_keys, (
+            f"BashEntry <-> _BashEntryDict mismatch.\n"
+            f"  In dataclass only: {dc_fields - td_keys}\n"
+            f"  In TypedDict only: {td_keys - dc_fields}"
+        )
+
+    def test_web_entry_matches_web_entry_dict(self):
+        """WebEntry fields match _WebEntryDict keys exactly."""
+        from token_goat.session import WebEntry, _WebEntryDict
+
+        dc_fields = self._get_dataclass_fields(WebEntry)
+        td_keys = self._get_typeddict_keys(_WebEntryDict)
+        assert dc_fields == td_keys, (
+            f"WebEntry <-> _WebEntryDict mismatch.\n"
+            f"  In dataclass only: {dc_fields - td_keys}\n"
+            f"  In TypedDict only: {td_keys - dc_fields}"
+        )
+
+    def test_skill_entry_matches_skill_entry_dict(self):
+        """SkillEntry fields match _SkillEntryDict keys exactly."""
+        from token_goat.session import SkillEntry, _SkillEntryDict
+
+        dc_fields = self._get_dataclass_fields(SkillEntry)
+        td_keys = self._get_typeddict_keys(_SkillEntryDict)
+        assert dc_fields == td_keys, (
+            f"SkillEntry <-> _SkillEntryDict mismatch.\n"
+            f"  In dataclass only: {dc_fields - td_keys}\n"
+            f"  In TypedDict only: {td_keys - dc_fields}"
+        )
+
+    def test_decision_entry_matches_decision_entry_dict(self):
+        """DecisionEntry fields match _DecisionEntryDict keys exactly."""
+        from token_goat.session import DecisionEntry, _DecisionEntryDict
+
+        dc_fields = self._get_dataclass_fields(DecisionEntry)
+        td_keys = self._get_typeddict_keys(_DecisionEntryDict)
+        assert dc_fields == td_keys, (
+            f"DecisionEntry <-> _DecisionEntryDict mismatch.\n"
+            f"  In dataclass only: {dc_fields - td_keys}\n"
+            f"  In TypedDict only: {td_keys - dc_fields}"
+        )
+
+    def test_result_cache_entry_matches_result_cache_entry_dict(self):
+        """ResultCacheEntry fields match _ResultCacheEntryDict keys exactly."""
+        from token_goat.session import ResultCacheEntry, _ResultCacheEntryDict
+
+        dc_fields = self._get_dataclass_fields(ResultCacheEntry)
+        td_keys = self._get_typeddict_keys(_ResultCacheEntryDict)
+        assert dc_fields == td_keys, (
+            f"ResultCacheEntry <-> _ResultCacheEntryDict mismatch.\n"
+            f"  In dataclass only: {dc_fields - td_keys}\n"
+            f"  In TypedDict only: {td_keys - dc_fields}"
+        )
+
+    def test_grep_entry_matches_grep_entry_dict(self):
+        """GrepEntry fields match _GrepEntryDict keys exactly."""
+        from token_goat.session import GrepEntry, _GrepEntryDict
+
+        dc_fields = self._get_dataclass_fields(GrepEntry)
+        td_keys = self._get_typeddict_keys(_GrepEntryDict)
+        assert dc_fields == td_keys, (
+            f"GrepEntry <-> _GrepEntryDict mismatch.\n"
+            f"  In dataclass only: {dc_fields - td_keys}\n"
+            f"  In TypedDict only: {td_keys - dc_fields}"
+        )
+
+    def test_glob_entry_matches_glob_entry_dict(self):
+        """GlobEntry fields match _GlobEntryDict keys exactly."""
+        from token_goat.session import GlobEntry, _GlobEntryDict
+
+        dc_fields = self._get_dataclass_fields(GlobEntry)
+        td_keys = self._get_typeddict_keys(_GlobEntryDict)
+        assert dc_fields == td_keys, (
+            f"GlobEntry <-> _GlobEntryDict mismatch.\n"
+            f"  In dataclass only: {dc_fields - td_keys}\n"
+            f"  In TypedDict only: {td_keys - dc_fields}"
+        )
+
+    def test_session_cache_vs_session_dict_intentional_exclusions(self):
+        """SessionCache <-> _SessionDict alignment with documented intentional exclusions.
+
+        Verifies:
+        1. The only SessionCache fields missing from _SessionDict are the two
+           transient runtime-only flags: ``recovery_injected`` and ``unavailable``.
+        2. The only _SessionDict keys missing from SessionCache are the two
+           JSON envelope metadata fields: ``schema_version`` and ``created_by``.
+        3. All other fields align exactly.
+
+        If a new dataclass field is added without updating _SessionDict (or vice
+        versa), this test will fail with a clear diff of what drifted.
+        """
+        from token_goat.session import SessionCache, _SessionDict
+
+        dc_fields = self._get_dataclass_fields(SessionCache)
+        td_keys = self._get_typeddict_keys(_SessionDict)
+
+        # Fields intentionally in dataclass but NOT in TypedDict (transient runtime state)
+        dc_only_allowed = {"recovery_injected", "unavailable"}
+        # Fields intentionally in TypedDict but NOT in dataclass (JSON envelope metadata)
+        td_only_allowed = {"schema_version", "created_by"}
+
+        actual_dc_only = dc_fields - td_keys
+        actual_td_only = td_keys - dc_fields
+
+        unexpected_dc_only = actual_dc_only - dc_only_allowed
+        unexpected_td_only = actual_td_only - td_only_allowed
+
+        assert not unexpected_dc_only, (
+            f"New SessionCache fields not in _SessionDict (add them or whitelist): "
+            f"{unexpected_dc_only}"
+        )
+        assert not unexpected_td_only, (
+            f"New _SessionDict keys not in SessionCache (add them or whitelist): "
+            f"{unexpected_td_only}"
+        )
+        # Also verify we don't have *fewer* intentional exclusions than expected
+        # (catching the case where someone removes a field without updating this test)
+        assert actual_dc_only == dc_only_allowed, (
+            f"Expected dc-only exclusions {dc_only_allowed}, got {actual_dc_only}"
+        )
+        assert actual_td_only == td_only_allowed, (
+            f"Expected td-only exclusions {td_only_allowed}, got {actual_td_only}"
+        )

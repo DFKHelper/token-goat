@@ -96,6 +96,7 @@ __all__ = [
 import contextlib
 import hashlib
 import json
+import math
 import os
 import random
 import re
@@ -121,6 +122,23 @@ _T = TypeVar("_T")
 def _coerce_ts(raw: Any) -> float:
     """Return *raw* as float if it is numeric, else 0.0."""
     return float(raw) if isinstance(raw, (int, float)) else 0.0
+
+
+def _safe_max_ts(a: float, b: float) -> float:
+    """Return max(a, b) but treat NaN as -inf so a valid timestamp always wins.
+
+    Python's built-in max() propagates NaN: max(nan, 5.0) returns nan.
+    Timestamps in session caches should be non-negative finite floats; NaN can
+    arrive via a corrupt session file that round-tripped through JSON (JSON
+    supports the string "NaN" as a float literal in Python, even though it is
+    not valid JSON per RFC 8259).  Treating NaN as -inf means the other side's
+    valid value is always preferred over a nonsensical NaN.
+    """
+    a_val = a if not math.isnan(a) else -math.inf
+    b_val = b if not math.isnan(b) else -math.inf
+    result = a_val if a_val >= b_val else b_val
+    # If both were NaN, result is -inf — return 0.0 (epoch) as the least-bad default.
+    return result if result != -math.inf else 0.0
 
 
 def _coerce_nonneg_int(raw: Any, default: int = 0) -> int:
@@ -454,10 +472,13 @@ def _merge_session_caches(local: SessionCache, remote: SessionCache) -> SessionC
     #   sum(hints_emitted_by_type.values()) <= hints_emitted
     # which would break under additive merges when both processes start from the
     # same non-zero base.
-    merged.hints_emitted = max(local.hints_emitted, remote.hints_emitted)
-    merged.hints_ignored = max(local.hints_ignored, remote.hints_ignored)
-    merged.structured_hints_emitted = max(local.structured_hints_emitted, remote.structured_hints_emitted)
-    merged.index_only_hints_emitted = max(local.index_only_hints_emitted, remote.index_only_hints_emitted)
+    # Use int() coercion via _safe_max_ts to guard against NaN sneaking into
+    # these counters from a corrupt session file.  Under normal operation these
+    # fields are always int; the _safe_max_ts path is purely defensive.
+    merged.hints_emitted = int(_safe_max_ts(local.hints_emitted, remote.hints_emitted))
+    merged.hints_ignored = int(_safe_max_ts(local.hints_ignored, remote.hints_ignored))
+    merged.structured_hints_emitted = int(_safe_max_ts(local.structured_hints_emitted, remote.structured_hints_emitted))
+    merged.index_only_hints_emitted = int(_safe_max_ts(local.index_only_hints_emitted, remote.index_only_hints_emitted))
 
     # --- per-type counters: max (consistent with the flat scalars above) ---
     # Using max() per key — rather than sum() — keeps these dicts consistent with
@@ -497,12 +518,19 @@ def _merge_session_caches(local: SessionCache, remote: SessionCache) -> SessionC
     )[-3:]
 
     # --- scalars: max ---
-    merged.last_activity_ts = max(local.last_activity_ts, remote.last_activity_ts)
+    # Use _safe_max_ts instead of plain max() to guard against NaN timestamps.
+    # A NaN can arrive from a corrupt-or-hand-edited session JSON file:
+    # Python's json.loads accepts the non-standard "NaN" float literal, and
+    # max(nan, x) returns nan — silently poisoning every subsequent comparison.
+    merged.last_activity_ts = _safe_max_ts(local.last_activity_ts, remote.last_activity_ts)
 
     # --- manifest delta-cache: take the newer emit ---
-    if local.last_manifest_ts >= remote.last_manifest_ts:
+    # Compare timestamps safely: treat NaN as -inf so a valid timestamp always wins.
+    local_ts = local.last_manifest_ts if not math.isnan(local.last_manifest_ts) else -math.inf
+    remote_ts = remote.last_manifest_ts if not math.isnan(remote.last_manifest_ts) else -math.inf
+    if local_ts >= remote_ts:
         merged.last_manifest_sha = local.last_manifest_sha
-        merged.last_manifest_ts = local.last_manifest_ts
+        merged.last_manifest_ts = local.last_manifest_ts if not math.isnan(local.last_manifest_ts) else 0.0
     # else remote already has the newer manifest fields (kept from base)
 
     # cwd: prefer local (the hook that fired knows the current working directory).
