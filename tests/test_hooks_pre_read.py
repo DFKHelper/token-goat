@@ -2295,6 +2295,55 @@ class TestGrepSymbolRedirect:
                 f"the qualifier — got: {result}"
             )
 
+    def test_grep_symbol_redirect_hint_delivered_when_session_save_raises(self, tmp_data_dir, monkeypatch):
+        """Symbol redirect hint is still delivered when session.save raises OSError.
+
+        Regression test for the bare _sess.save(cache) call that propagated OSError
+        up through pre_read into fail_soft, silently discarding the computed hint.
+        All other hint paths use _flush_pending_hint_save (which swallows save errors);
+        the symbol/dotted redirect path must behave consistently.
+
+        _handle_grep_dedup runs first and also calls save (to record the grep for
+        future dedup), so we let the first save succeed and raise only on the second
+        (the redirect's save).
+        """
+        import token_goat.hooks_read as _hr
+        import token_goat.session as _session_mod
+
+        def _fake_symbol_hint(pattern, cwd):
+            return "Symbol `compute` is indexed — use `token-goat read \"src/util.py::compute\"`..."
+
+        monkeypatch.setattr(_hr, "_try_grep_symbol_hint", _fake_symbol_hint)
+
+        # Let the dedup's save (first call) succeed; raise on the redirect's save (second call).
+        original_save = _session_mod.save
+        save_calls: list[int] = []
+
+        def _patched_save(cache):
+            save_calls.append(1)
+            if len(save_calls) >= 2:
+                raise OSError("disk full")
+            return original_save(cache)
+
+        monkeypatch.setattr(_session_mod, "save", _patched_save)
+
+        payload = {
+            "session_id": "save-error-1",
+            "tool_name": "Grep",
+            "tool_input": {"pattern": "compute"},
+            "cwd": str(tmp_data_dir),
+        }
+        result = hooks_cli.pre_read(payload)
+
+        # Hint must still be delivered despite the save failure.
+        hso = result.get("hookSpecificOutput", {})
+        ctx = hso.get("additionalContext", "") if isinstance(hso, dict) else ""
+        assert "token-goat read" in ctx, (
+            "Symbol redirect hint must be delivered even when session.save raises"
+        )
+        # The redirect's save must have been attempted (len >= 2).
+        assert len(save_calls) >= 2, "save must have been called at least twice (dedup + redirect)"
+
     def test_grep_dedup_takes_priority_over_symbol_redirect(self, tmp_data_dir, monkeypatch):
         """grep dedup fires first; symbol redirect is skipped when dedup already returned."""
         import token_goat.hooks_read as _hr
@@ -2320,10 +2369,12 @@ class TestGrepSymbolRedirect:
             "tool_input": {"pattern": "my_function"},
             "cwd": "/proj",
         }
-        hooks_cli.pre_read(payload)
-        # The dedup should have fired (or CONTINUE if below threshold).
-        # Either way, _try_grep_symbol_hint should NOT have been called because
-        # _handle_grep_dedup short-circuited.
+        result = hooks_cli.pre_read(payload)
+        # Dedup must have fired: result must contain additionalContext.
+        hso = result.get("hookSpecificOutput", {})
+        ctx = hso.get("additionalContext", "") if isinstance(hso, dict) else ""
+        assert ctx, "grep dedup must return an additionalContext hint for result_count=50"
+        # Symbol redirect must not have been called — dedup short-circuited before it.
         assert not symbol_redirect_called, (
             "_try_grep_symbol_hint must not be called when grep dedup already returned"
         )
