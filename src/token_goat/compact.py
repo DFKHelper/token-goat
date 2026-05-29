@@ -2174,35 +2174,43 @@ def _token_count(text: str) -> int:
     return len(text) // 4
 
 
-def _section_budgets(total_budget: int, edited_tokens: int) -> dict[str, int]:
+def _section_budgets(total_budget: int, edited_tokens: int, section_content_counts: dict[str, int] | None = None) -> dict[str, int]:
     """Distribute the manifest token budget across variable sections.
 
     The edited-files section is must-preserve and gets its full allocation first.
-    The remaining budget is split proportionally:
+    The remaining budget is split proportionally among sections with content:
 
-        - ``symbols``  — 40 %
-        - ``files``    — 30 %
+        - ``symbols``  — 38 %
+        - ``files``    — 22 %
         - ``greps``    — 15 %
-        - ``bash``     — 15 %
+        - ``bash``     — 10 %
+        - ``web``      — 10 %
+        - ``glob``     — 5 %
 
-    Every section is guaranteed at least *_MIN_SECTION_TOKENS* tokens so that a
+    Sections with zero entries are excluded from budget allocation, and their share
+    flows proportionally to sections with content.
+
+    Every non-empty section is guaranteed at least *_MIN_SECTION_TOKENS* tokens so that a
     section with a very tight budget still renders at least one line.
 
     Args:
-        total_budget:  The global token ceiling for the entire manifest.
-        edited_tokens: Token estimate for the already-rendered edited-files block
-                       (header + file lines + diff stat + commits).  This is
-                       subtracted from *total_budget* before distribution.
+        total_budget:          The global token ceiling for the entire manifest.
+        edited_tokens:         Token estimate for the already-rendered edited-files block
+                               (header + file lines + diff stat + commits).  This is
+                               subtracted from *total_budget* before distribution.
+        section_content_counts: Optional dict mapping section names to entry counts.
+                               If provided, sections with count==0 get 0 allocation.
+                               If None, all sections are treated as potentially having content
+                               (backward-compat mode: static proportions).
 
     Returns:
-        A dict with keys ``"symbols"``, ``"files"``, ``"greps"``, ``"bash"``
+        A dict with keys ``"symbols"``, ``"files"``, ``"greps"``, ``"bash"``, ``"web"``, ``"glob"``
         mapping to their respective token budgets.
     """
-    _MIN_SECTION_TOKENS = 20
     remaining = max(0, total_budget - edited_tokens)
 
     # Proportions must sum to 1.0.
-    proportions: dict[str, float] = {
+    base_proportions: dict[str, float] = {
         "symbols": 0.38,
         "files":   0.22,
         "greps":   0.15,
@@ -2210,9 +2218,44 @@ def _section_budgets(total_budget: int, edited_tokens: int) -> dict[str, int]:
         "web":     0.10,
         "glob":    0.05,
     }
+
+    # If no content info provided, use static proportions (backward compatible).
+    if section_content_counts is None:
+        _MIN_SECTION_TOKENS = 20  # Old minimum for backward compat
+        budgets: dict[str, int] = {}
+        for name, ratio in base_proportions.items():
+            budgets[name] = max(_MIN_SECTION_TOKENS, int(remaining * ratio))
+        return budgets
+
+    # Content-aware mode: filter out empty sections and redistribute their budget.
+    # Identify which sections have content.
+    sections_with_content = {
+        name for name in base_proportions
+        if section_content_counts.get(name, 0) > 0
+    }
+
+    # If no sections have content, return all zeros.
+    if not sections_with_content:
+        return {name: 0 for name in base_proportions}
+
+    # Redistribute proportions: renormalize to sum to 1.0 among non-empty sections.
+    active_proportions = {
+        name: base_proportions[name] for name in sections_with_content
+    }
+    proportion_sum = sum(active_proportions.values())
+    normalized_proportions = {
+        name: (prop / proportion_sum) for name, prop in active_proportions.items()
+    }
+
+    # Allocate: empty sections get 0, others get proportional share with floor applied.
+    _MIN_SECTION_TOKENS = 40  # Minimum for non-empty sections in content-aware mode
     budgets: dict[str, int] = {}
-    for name, ratio in proportions.items():
-        budgets[name] = max(_MIN_SECTION_TOKENS, int(remaining * ratio))
+    for name in base_proportions:
+        if name not in sections_with_content:
+            budgets[name] = 0
+        else:
+            budgets[name] = max(_MIN_SECTION_TOKENS, int(remaining * normalized_proportions[name]))
+
     return budgets
 
 
@@ -3783,10 +3826,23 @@ def _render(
         + uncommitted_lines + edited_lines + stale_lines
     )
     fixed_tokens = _token_count(fixed_text) + sealed_tokens
-    sec_budgets = _section_budgets(max_tokens, fixed_tokens)
+
+    # Compute content-aware section budgets: identify which sections have entries
+    # so empty sections (e.g., no web fetches) don't consume budget.
+    # Count from raw/candidate sets to avoid redundant selection function calls.
+    section_content_counts: dict[str, int] = {
+        "symbols": len(files_with_symbols),  # files with accessed symbols
+        "files": len(top_files),  # top files by read count
+        "greps": len(raw_greps),  # grep searches (raw count; dedup is for rendering)
+        "bash": len(raw_bash),  # bash commands in history
+        "web": len(raw_web),  # web fetches
+        "glob": len(getattr(cache, "glob_history", None) or []),  # glob scans
+    }
+
+    sec_budgets = _section_budgets(max_tokens, fixed_tokens, section_content_counts)
     _LOG.debug(
-        "_render: fixed_tokens=%d  section_budgets=%s  (session=%s)",
-        fixed_tokens, sec_budgets, session_id[:8],
+        "_render: fixed_tokens=%d  section_budgets=%s content_counts=%s (session=%s)",
+        fixed_tokens, sec_budgets, section_content_counts, session_id[:8],
     )
 
     # ── 2. Symbols accessed — up to 40 % of remaining budget ─────────────────

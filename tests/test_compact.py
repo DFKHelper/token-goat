@@ -2578,6 +2578,44 @@ class TestSectionBudgets:
         budgets = compact._section_budgets(400, 100)
         assert set(budgets.keys()) == {"symbols", "files", "greps", "bash", "web", "glob"}
 
+    def test_content_aware_empty_section_gets_zero_allocation(self):
+        """Empty sections (count=0) get 0 tokens in content-aware mode."""
+        # All sections empty: all should get 0 allocation
+        empty_counts = {"symbols": 0, "files": 0, "greps": 0, "bash": 0, "web": 0, "glob": 0}
+        budgets = compact._section_budgets(400, 0, section_content_counts=empty_counts)
+        for key in ("symbols", "files", "greps", "bash", "web", "glob"):
+            assert budgets[key] == 0, f"empty section {key!r} should get 0 allocation"
+
+    def test_content_aware_only_web_gets_allocation(self):
+        """When only one section has content, it gets full remaining budget."""
+        # Only web has content
+        counts = {"symbols": 0, "files": 0, "greps": 0, "bash": 0, "web": 5, "glob": 0}
+        budgets = compact._section_budgets(200, 0, section_content_counts=counts)
+        # Web should get allocated budget (full budget minus floor cap)
+        assert budgets["web"] > 0, "web should get allocation when it has content"
+        # All others should be 0
+        for key in ("symbols", "files", "greps", "bash", "glob"):
+            assert budgets[key] == 0, f"empty section {key!r} should get 0 when only web has content"
+
+    def test_content_aware_redistributes_empty_section_budget(self):
+        """Empty sections' budget redistributes to sections with content."""
+        # Only symbols and files have content
+        counts = {"symbols": 2, "files": 3, "greps": 0, "bash": 0, "web": 0, "glob": 0}
+        budgets_aware = compact._section_budgets(600, 0, section_content_counts=counts)
+        # Symbols: 38%, Files: 22%, so split is 38/(38+22) and 22/(38+22)
+        # Symbols should get ~63% of 600, Files ~37% of 600
+        # With a floor of 40 tokens per non-empty section
+        assert budgets_aware["symbols"] > budgets_aware["files"], (
+            "symbols (38%) should get more than files (22%) in redistribution"
+        )
+        assert budgets_aware["greps"] == 0
+        assert budgets_aware["bash"] == 0
+        assert budgets_aware["web"] == 0
+        assert budgets_aware["glob"] == 0
+        # Total should be ~600 (minus floor adjustments)
+        total_aware = sum(budgets_aware.values())
+        assert total_aware <= 600
+
     def test_manifest_stays_within_budget_simple_session(self, tmp_data_dir):
         """A simple session manifest stays within the requested token budget."""
         from token_goat.repomap import estimate_tokens
