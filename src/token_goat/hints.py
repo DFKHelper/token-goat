@@ -1495,6 +1495,34 @@ def _record_hint_emitted(
     cache._invalidate_json_cache()
 
 
+def _record_dedup_hint_emitted(
+    cache: session.SessionCache,
+    hint_key: str,
+    hint_type: str,
+    fp_key: str,
+) -> None:
+    """Consolidate the triple recording call for dedup hints.
+
+    Combines _record_hint_emitted, cache.record_hint_emitted, and
+    cache.mark_hint_seen into a single call to eliminate repeated patterns.
+    """
+    _record_hint_emitted(cache, hint_key)
+    cache.record_hint_emitted(hint_type)
+    cache.mark_hint_seen(fp_key)
+
+
+def _record_bash_dedup_emitted(
+    cache: session.SessionCache,
+    dedup_key: str,
+) -> None:
+    """Record that a bash dedup was emitted to avoid re-emitting the same output.
+
+    Adds *dedup_key* to the bash_dedup_emitted_ids set and invalidates the JSON cache.
+    """
+    cache.bash_dedup_emitted_ids.add(dedup_key)
+    cache._invalidate_json_cache()
+
+
 # ---------------------------------------------------------------------------
 # Hint budget check — hard cap on total hints per session
 # ---------------------------------------------------------------------------
@@ -1904,12 +1932,9 @@ def _build_bash_dedup_hint_inner(
     if total_bytes <= _BASH_DEDUP_LIGHT_MAX_BYTES:
         hint_text = f"{fail_prefix}`{cmd_short}` cached ({int(age)}s, {total_bytes}B{exit_str}). `{recall_cmd}`"
         if cache is not None and dedup_key:
-            cache.bash_dedup_emitted_ids.add(dedup_key)
-            cache._invalidate_json_cache()
+            _record_bash_dedup_emitted(cache, dedup_key)
         if cache is not None:
-            _record_hint_emitted(cache, cmd_sha)
-            cache.record_hint_emitted("bash_dedup")
-            cache.mark_hint_seen(fp_key)
+            _record_dedup_hint_emitted(cache, cmd_sha, "bash_dedup", fp_key)
         return ReadHint(_apply_terse(hint_text), tokens_avoided)
 
     grep_suffix = " (add --grep PATTERN to filter)" if total_bytes >= _BASH_DEDUP_GREP_SUGGEST_BYTES else ""
@@ -1930,12 +1955,9 @@ def _build_bash_dedup_hint_inner(
             f"`{recall_cmd}`{grep_suffix}"
         )
     if cache is not None and dedup_key:
-        cache.bash_dedup_emitted_ids.add(dedup_key)
-        cache._invalidate_json_cache()
+        _record_bash_dedup_emitted(cache, dedup_key)
     if cache is not None:
-        _record_hint_emitted(cache, cmd_sha)
-        cache.record_hint_emitted("bash_dedup")
-        cache.mark_hint_seen(fp_key)
+        _record_dedup_hint_emitted(cache, cmd_sha, "bash_dedup", fp_key)
     return ReadHint(_apply_terse(hint_text), tokens_avoided)
 
 
@@ -2036,9 +2058,7 @@ def _build_grep_dedup_hint_inner(
         if not cache.has_hint_fingerprint(fp_key_xsess):
             cross_session_hint = _build_grep_cross_session_hint(pattern, now)
             if cross_session_hint is not None:
-                _record_hint_emitted(cache, f"grep_xsess:{pattern}")
-                cache.record_hint_emitted("grep_dedup")
-                cache.mark_hint_seen(fp_key_xsess)
+                _record_dedup_hint_emitted(cache, f"grep_xsess:{pattern}", "grep_dedup", fp_key_xsess)
                 return cross_session_hint
 
     # Intra-session scan: requires at least one prior grep in this session.
@@ -2081,9 +2101,7 @@ def _build_grep_dedup_hint_inner(
         pattern_short = _truncate_pattern_display(pattern)
         path_str = f" in `{_sanitize_hint_path(path)}`" if path else ""
         # Curator: record emission keyed on the pattern (grep has no file path).
-        _record_hint_emitted(cache, f"grep:{pattern}")
-        cache.record_hint_emitted("grep_dedup")
-        cache.mark_hint_seen(fp_key)
+        _record_dedup_hint_emitted(cache, f"grep:{pattern}", "grep_dedup", fp_key)
         return ReadHint(
             _apply_terse(
                 f"Grep `{pattern_short}`{path_str} ({int(age)}s): {entry.result_count} matches, ~{tokens_avoided}t."
@@ -2246,9 +2264,7 @@ def _build_glob_dedup_hint_inner(
     pattern_short = _sanitize_hint_path(pattern)
     path_str = f" in `{_sanitize_hint_path(path)}`" if path else ""
     # Curator: record emission keyed on the pattern (glob has no file path).
-    _record_hint_emitted(cache, f"glob:{pattern}")
-    cache.record_hint_emitted("glob_dedup")
-    cache.mark_hint_seen(fp_key)
+    _record_dedup_hint_emitted(cache, f"glob:{pattern}", "glob_dedup", fp_key)
     return ReadHint(
         _apply_terse(
             f"Glob `{pattern_short}`{path_str} ({int(age)}s): {entry.result_count} results, ~{tokens_avoided}t."
@@ -2368,9 +2384,7 @@ def _build_web_dedup_hint_inner(
 
     # Curator: record emission keyed on url_sha (web dedup is URL-keyed, not file-keyed).
     if cache is not None:
-        _record_hint_emitted(cache, f"web:{url_sha}")
-        cache.record_hint_emitted("web_dedup")
-        cache.mark_hint_seen(fp_key)
+        _record_dedup_hint_emitted(cache, f"web:{url_sha}", "web_dedup", fp_key)
     # After the agent has seen the verbose recall pointer twice, drop the
     # full command string and emit just the bare ID — see _should_emit_recall_command.
     short_id = _cc.short_output_id(entry.output_id)
