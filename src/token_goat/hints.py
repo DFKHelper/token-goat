@@ -298,6 +298,26 @@ def compute_stale_threshold(session_age_secs: float) -> float:
     return max(900.0, min(STALE_READ_AGE_SECONDS, session_age_secs * 0.25))
 
 
+def _session_stale_threshold(cache: session.SessionCache, now: float) -> float:
+    """Extract session age and compute stale threshold in one helper.
+
+    This DRY helper eliminates the repeated pattern:
+        _X_created_ts = getattr(cache, "created_ts", None)
+        X_session_age = (now - _X_created_ts) if _X_created_ts is not None else STALE_READ_AGE_SECONDS
+        X_stale_threshold = compute_stale_threshold(X_session_age)
+
+    Args:
+        cache: SessionCache object with optional created_ts attribute.
+        now: Current time in seconds (e.g., time.time()).
+
+    Returns:
+        Stale threshold in seconds, computed adaptively from session age.
+    """
+    created_ts = getattr(cache, "created_ts", None)
+    session_age = (now - created_ts) if created_ts is not None else STALE_READ_AGE_SECONDS
+    return compute_stale_threshold(session_age)
+
+
 # How many bytes to assume per line when estimating line count from file size.
 # This is intentionally conservative (real code averages 30-50 bytes/line) so
 # we slightly overestimate the line count rather than underestimate it.
@@ -784,10 +804,9 @@ def _hint_from_cache(
     #    has likely scrolled out of the model's actual context window even
     #    though the session JSON still tracks it.  Re-reading is legitimate.
     edited_after_read = entry.last_edit_ts > entry.last_read_ts
-    _created_ts = getattr(cache, "created_ts", None)
-    session_age = (time.time() - _created_ts) if _created_ts is not None else STALE_READ_AGE_SECONDS
-    stale_threshold = compute_stale_threshold(session_age)
-    read_is_stale = (time.time() - entry.last_read_ts) > stale_threshold
+    now = time.time()
+    stale_threshold = _session_stale_threshold(cache, now)
+    read_is_stale = (now - entry.last_read_ts) > stale_threshold
     if (edited_after_read or read_is_stale) and entry.line_ranges:
         _LOG.debug(
             "_hint_from_cache: suppressing line-range hint for %s "
@@ -1712,9 +1731,7 @@ def _build_bash_dedup_hint_inner(
 
     now = time.time()
     age = now - entry.ts
-    _bash_created_ts = getattr(cache, "created_ts", None)
-    bash_session_age = (now - _bash_created_ts) if _bash_created_ts is not None else STALE_READ_AGE_SECONDS
-    bash_stale_threshold = compute_stale_threshold(bash_session_age)
+    bash_stale_threshold = _session_stale_threshold(cache, now)
     if age > bash_stale_threshold:
         _LOG.debug(
             "build_bash_dedup_hint: prior run stale (age=%.0fs > %.0fs); suppressing",
@@ -1903,9 +1920,7 @@ def _build_grep_dedup_hint_inner(
     if not _hint_budget_check(cache, _HINT_KIND_DEDUP):
         return None
 
-    _grep_created_ts = getattr(cache, "created_ts", None)
-    grep_session_age = (now - _grep_created_ts) if _grep_created_ts is not None else STALE_READ_AGE_SECONDS
-    grep_stale_threshold = compute_stale_threshold(grep_session_age)
+    grep_stale_threshold = _session_stale_threshold(cache, now)
     for entry in reversed(cache.greps):
         if entry.pattern != pattern:
             continue
@@ -2058,9 +2073,7 @@ def _build_glob_dedup_hint_inner(
 
     now = time.time()
     age = now - entry.ts
-    _glob_created_ts = getattr(cache, "created_ts", None)
-    glob_session_age = (now - _glob_created_ts) if _glob_created_ts is not None else STALE_READ_AGE_SECONDS
-    glob_stale_threshold = compute_stale_threshold(glob_session_age)
+    glob_stale_threshold = _session_stale_threshold(cache, now)
     if age > glob_stale_threshold:
         return None
     if entry.result_count is None or entry.result_count < _GLOB_DEDUP_MIN_RESULT_COUNT:
@@ -2146,9 +2159,7 @@ def _build_web_dedup_hint_inner(
 
     now = time.time()
     age = now - entry.ts
-    _web_created_ts = getattr(cache, "created_ts", None)
-    web_session_age = (now - _web_created_ts) if _web_created_ts is not None else STALE_READ_AGE_SECONDS
-    web_stale_threshold = compute_stale_threshold(web_session_age)
+    web_stale_threshold = _session_stale_threshold(cache, now)
     if age > web_stale_threshold:
         _LOG.debug(
             "build_web_dedup_hint: prior fetch stale (age=%.0fs > %.0fs); suppressing",

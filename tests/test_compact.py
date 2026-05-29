@@ -64,6 +64,45 @@ class TestBuildManifest:
         result = compact.build_manifest(sid)
         assert "## Token-Goat Session Manifest" in result
 
+    def test_manifest_header_is_lightweight(self, tmp_data_dir, make_session):
+        """Manifest header should be minimal — only the title, no metadata like session ID or timestamp.
+
+        The compaction LLM doesn't use session ID or timestamp for preservation decisions.
+        Removing the metadata line saves ~15-25 tokens per compaction.
+        """
+        sid = "header-lightweight-session"
+        make_session(sid, files_read=1, edits=1)
+        result = compact.build_manifest(sid)
+
+        # Header should contain the title
+        assert "## Token-Goat Session Manifest" in result
+
+        # Header should NOT contain session ID or timestamp info
+        # (these are metadata not used by the compaction LLM)
+        # Find the header section (it comes after <</MUST_PRESERVE>>)
+        lines = result.split("\n")
+        sealed_end_idx = None
+        for i, line in enumerate(lines):
+            if line.strip() == "<</MUST_PRESERVE>>":
+                sealed_end_idx = i
+                break
+
+        # Get the lines after the sealed block until the next section
+        if sealed_end_idx is not None:
+            post_sealed = lines[sealed_end_idx + 1:]
+            # Skip blank lines
+            header_lines = [ln for ln in post_sealed[:5] if ln.strip()]
+            # The header should be the markdown title; check it's the first substantive line
+            if header_lines:
+                assert "## Token-Goat Session Manifest" in header_lines[0]
+        else:
+            # If no sealed block, the header should be early
+            header_lines = [ln for ln in lines[:5] if ln.strip()]
+            assert "## Token-Goat Session Manifest" in header_lines[0]
+
+        # Verify "Session:" line is not present (was removed as part of token reduction)
+        assert "Session:" not in result
+
     def test_edited_files_section_present(self, tmp_data_dir):
         sid = "edited-files-session-abc"
         session.mark_file_edited(sid, "/proj/src/auth.py")
@@ -2253,7 +2292,12 @@ class TestSessionAgeInManifest:
         assert compact._format_duration(3600) == "1h"
 
     def test_manifest_includes_age_when_session_is_old(self, tmp_data_dir):
-        """Manifest header includes age when session is > 60 seconds old."""
+        """Manifest header no longer includes session metadata (age, timestamp) to reduce tokens.
+
+        The session metadata (Session ID, timestamp, age) was removed as part of token
+        reduction — these are metadata not used by the compaction LLM for preservation
+        decisions. The manifest still contains all necessary activity data.
+        """
         sid = "age-test-session"
         cache = session.load(sid)
         # Simulate a session that's 2 hours old
@@ -2262,13 +2306,13 @@ class TestSessionAgeInManifest:
         # Add activity so manifest is not suppressed
         session.mark_file_read(sid, "file.py")
         result = compact.build_manifest(sid)
-        # Should contain the session line with age
-        assert "Session:" in result
-        assert "age:" in result
-        assert "2h" in result
+        # Session metadata line removed; manifest should contain only the title header
+        assert "Session:" not in result
+        assert "age:" not in result
+        assert "## Token-Goat Session Manifest" in result
 
     def test_manifest_omits_age_when_session_is_very_young(self, tmp_data_dir):
-        """Manifest header omits age when session is < 60 seconds old."""
+        """Session metadata no longer appears in manifest header (was removed for token reduction)."""
         sid = "young-session"
         cache = session.load(sid)
         # Keep the session very young (30 seconds old)
@@ -2277,13 +2321,17 @@ class TestSessionAgeInManifest:
         # Add activity so manifest is not suppressed
         session.mark_file_read(sid, "file.py")
         result = compact.build_manifest(sid)
-        # Should contain the session line without age
-        lines = result.split("\n")
-        session_line = [line for line in lines if line.startswith("Session:")][0]
-        assert "age:" not in session_line
+        # Session line no longer present; manifest contains only the title
+        assert "Session:" not in result
+        assert "## Token-Goat Session Manifest" in result
 
     def test_manifest_age_format_with_min_threshold(self, tmp_data_dir):
-        """Manifest shows age only when >= 60 seconds."""
+        """Session age metadata was removed from manifest header to reduce tokens.
+
+        The age calculation logic (_format_duration) still functions and is tested above,
+        but it's no longer displayed in the manifest header as part of the token reduction
+        effort — the metadata is not used by the compaction LLM.
+        """
         sid = "threshold-session"
         cache = session.load(sid)
         # Exactly 60 seconds old
@@ -2291,9 +2339,10 @@ class TestSessionAgeInManifest:
         session.save(cache)
         session.mark_file_read(sid, "file.py")
         result = compact.build_manifest(sid)
-        # Should include age at the 60-second boundary
-        assert "age:" in result
-        assert "1m" in result
+        # Age metadata no longer in manifest
+        assert "age:" not in result
+        # But _format_duration still works (tested above)
+        assert compact._format_duration(60) == "1m"
 
 
 # ---------------------------------------------------------------------------
