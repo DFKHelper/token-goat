@@ -157,6 +157,38 @@ class TestLineRanges:
         cache = session.mark_file_read("s6", "f.py", symbol="foo")
         assert cache.files["f.py"].symbols_read == ["foo"]
 
+    def test_last_activity_ts_updated_when_symbol_sanitized_to_empty(self, tmp_data_dir):
+        """last_activity_ts is stamped even on the sanitized-to-empty early return.
+
+        Regression: bare save(cache) skipped _commit_mutation, so last_activity_ts
+        was never updated on that path.
+        """
+        import time
+
+        before = time.time() - 1
+        # A symbol string that sanitize_log_str collapses to empty (newline only).
+        cache = session.mark_file_read("s_sanitize_empty", "f.py", symbol="\n")
+        assert cache.last_activity_ts > before
+
+    def test_last_activity_ts_updated_when_symbols_cap_reached(self, tmp_data_dir):
+        """last_activity_ts is stamped even when the symbols-per-file cap is hit.
+
+        Regression: bare save(cache) skipped _commit_mutation, so last_activity_ts
+        was never updated on that path.
+        """
+        import time
+
+        from token_goat.session import _MAX_SYMBOLS_PER_FILE
+
+        sid = "s_symbols_cap"
+        # Fill up to the cap.
+        for i in range(_MAX_SYMBOLS_PER_FILE):
+            session.mark_file_read(sid, "f.py", symbol=f"sym_{i}")
+
+        before = time.time() - 1
+        cache = session.mark_file_read(sid, "f.py", symbol="overflow_sym")
+        assert cache.last_activity_ts > before
+
     def test_idempotency_same_range_twice(self, tmp_data_dir):
         """Adding the same range twice produces the same result as once."""
         cache = session.mark_file_read("s_ident", "f.py", offset=10, limit=40)
