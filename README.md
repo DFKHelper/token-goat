@@ -33,19 +33,23 @@ Restart your AI sessions. Run <code>token-goat stats</code> a couple of minutes 
 </p>
 
 <p align="center">
-  smaller reads via surgical CLI.  
+  • <b>85%</b> smaller reads via surgical CLI.  
 </p>
 
 <p align="center">
-  <b>97.4%</b> image compression.
+  • <b>97.4%</b> image compression.
 </p>
 
 <p align="center">
-  Better compaction. &nbsp;·&nbsp; <b>85%</b>&nbsp;·&nbsp; <b>zero</b> ongoing maintenance
+  • Better compaction. &nbsp;·&nbsp;
+
+
+<p align="center">
+  • <b>Zero</b> ongoing maintenance
 </p>
 
 <p align="center">
-  Built and constantly improved free by one person. If it saves you tokens, drop a ⭐️ at the top of this page. One click. Makes my day. Also, if you'd like anything added, drop me a line.
+  Built and continually improved, free, by one person. If it saves you tokens, drop a ⭐️ at the top of this page. One click. Makes my day. Also, if you'd like anything added, drop me a line.
 </p>
 
 ---
