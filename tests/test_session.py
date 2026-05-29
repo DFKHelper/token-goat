@@ -1603,6 +1603,110 @@ class TestCompactSerialization:
         d = session._serialize_web_entry(entry)
         assert d["ts"] == round(1_747_000_000.5551234, 3)
 
+    def test_bash_entry_omits_default_fields(self):
+        """_serialize_bash_entry omits exit_code/truncated/run_count/output_sha when default."""
+        entry = session.BashEntry(
+            cmd_sha="abc123",
+            cmd_preview="ls",
+            output_id="out_1",
+            ts=1_747_000_000.0,
+            stdout_bytes=100,
+            stderr_bytes=0,
+            # All remaining fields are defaults: exit_code=None, truncated=False,
+            # run_count=1, output_sha=""
+        )
+        d = session._serialize_bash_entry(entry)
+        # Required fields always present
+        assert "cmd_sha" in d
+        assert "ts" in d
+        # Default-valued optional fields must be absent (saves ~15-35 bytes per entry)
+        assert "exit_code" not in d
+        assert "truncated" not in d
+        assert "run_count" not in d
+        assert "output_sha" not in d
+
+    def test_bash_entry_includes_non_default_fields(self):
+        """_serialize_bash_entry includes optional fields only when they differ from defaults."""
+        entry = session.BashEntry(
+            cmd_sha="def456",
+            cmd_preview="pytest -x",
+            output_id="out_2",
+            ts=1_747_000_000.0,
+            stdout_bytes=4096,
+            stderr_bytes=512,
+            exit_code=1,
+            truncated=True,
+            run_count=3,
+            output_sha="deadbeef01234567",
+        )
+        d = session._serialize_bash_entry(entry)
+        assert d["exit_code"] == 1
+        assert d["truncated"] is True
+        assert d["run_count"] == 3
+        assert d["output_sha"] == "deadbeef01234567"
+
+    def test_bash_entry_roundtrip_with_defaults(self, tmp_data_dir):
+        """Round-trip of a BashEntry with all defaults preserves the correct values."""
+        entry = session.BashEntry(
+            cmd_sha="aaa000",
+            cmd_preview="echo hi",
+            output_id="out_rt",
+            ts=1_747_000_000.0,
+            stdout_bytes=10,
+            stderr_bytes=0,
+        )
+        d = session._serialize_bash_entry(entry)
+        parsed = session._parse_bash_entry(d)
+        assert parsed is not None
+        assert parsed.exit_code is None
+        assert parsed.truncated is False
+        assert parsed.run_count == 1
+        assert parsed.output_sha == ""
+
+    def test_web_entry_omits_default_fields(self):
+        """_serialize_web_entry omits status_code/truncated when they are defaults."""
+        entry = session.WebEntry(
+            url_sha="abc_sha",
+            url_preview="https://example.com",
+            output_id="web_out",
+            ts=1_747_000_000.0,
+            body_bytes=1024,
+            # Default: status_code=None, truncated=False
+        )
+        d = session._serialize_web_entry(entry)
+        assert "status_code" not in d
+        assert "truncated" not in d
+
+    def test_web_entry_includes_non_default_fields(self):
+        """_serialize_web_entry includes status_code/truncated when they differ from defaults."""
+        entry = session.WebEntry(
+            url_sha="abc_sha",
+            url_preview="https://example.com",
+            output_id="web_out",
+            ts=1_747_000_000.0,
+            body_bytes=1024,
+            status_code=200,
+            truncated=True,
+        )
+        d = session._serialize_web_entry(entry)
+        assert d["status_code"] == 200
+        assert d["truncated"] is True
+
+    def test_web_entry_roundtrip_with_defaults(self, tmp_data_dir):
+        """Round-trip of a WebEntry with all defaults preserves the correct values."""
+        entry = session.WebEntry(
+            url_sha="rt_sha",
+            url_preview="https://rt.example.com",
+            output_id="web_rt",
+            ts=1_747_000_000.0,
+            body_bytes=512,
+        )
+        d = session._serialize_web_entry(entry)
+        parsed = session._parse_web_entry(d)
+        assert parsed is not None
+        assert parsed.status_code is None
+        assert parsed.truncated is False
+
     def test_timestamp_roundtrip_within_millisecond(self, tmp_data_dir):
         """Round-trip preserves timestamp value within 0.001 seconds."""
         sid = "ts_roundtrip_1"

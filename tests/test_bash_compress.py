@@ -1394,6 +1394,29 @@ class TestUvFilter:
         assert "token-goat" in result.text
         assert "dropped" in result.text
 
+    def test_dropping_note_merged_into_single_line(self):
+        """When both download and diff lines are dropped, they produce a single merged note.
+
+        Merging the two notes saves ~25-35 bytes per uv invocation where both
+        download-progress and +/- diff lines are present (the common case for
+        'uv sync' with any package changes).
+        """
+        text = _make_uv_sync_output(n_packages=4)
+        f = bc.UvFilter()
+        result = f.apply(text, "", 0, ["uv", "sync"])
+        # Count how many [token-goat: ...] note lines are in the output.
+        note_lines = [
+            line for line in result.text.splitlines()
+            if line.startswith("[token-goat:")
+        ]
+        # Both dropping reasons must appear in the output
+        assert any("Downloading" in ln or "Fetching" in ln for ln in note_lines)
+        assert any("+/-" in ln or "diff" in ln.lower() for ln in note_lines)
+        # They should be merged into one line (not two separate [token-goat: ...] lines)
+        assert len(note_lines) == 1, (
+            f"Expected 1 merged note line, got {len(note_lines)}: {note_lines}"
+        )
+
     def test_error_output_preserved(self):
         """Error lines in output survive compression."""
         lines = [

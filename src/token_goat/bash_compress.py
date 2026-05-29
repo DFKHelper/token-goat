@@ -2681,10 +2681,12 @@ class PipFilter(Filter):
                 kept.append(line) if collects <= 5 else None
                 continue
             kept.append(line)
+        notes: list[str] = []
         if collects > 5:
-            kept.append(f"[token-goat: +{collects - 5} more 'Collecting' lines elided]")
+            notes.append(f"+{collects - 5} more 'Collecting' lines elided")
         if downloads:
-            kept.append(f"[token-goat: dropped {downloads} 'Downloading' progress lines]")
+            notes.append(f"dropped {downloads} 'Downloading' progress lines")
+        self._emit_notes(kept, notes)
         return self._finalize(kept)
 
 
@@ -2951,14 +2953,12 @@ class UvFilter(Filter):
                 diff_lines += 1
                 continue
             kept.append(line)
+        notes: list[str] = []
         if downloads:
-            kept.append(
-                f"[token-goat: dropped {downloads} Downloading/Fetching progress lines]"
-            )
+            notes.append(f"dropped {downloads} Downloading/Fetching progress lines")
         if diff_lines:
-            kept.append(
-                f"[token-goat: dropped {diff_lines} per-package +/- diff lines]"
-            )
+            notes.append(f"dropped {diff_lines} per-package +/- diff lines")
+        self._emit_notes(kept, notes)
         return self._finalize(kept)
 
 
