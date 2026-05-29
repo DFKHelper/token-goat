@@ -35,6 +35,7 @@ __all__ = ["post_bash", "post_read", "pre_read"]
 
 import contextlib
 import re as _re
+import time
 from collections.abc import Callable
 from pathlib import Path
 
@@ -1601,10 +1602,27 @@ def pre_read(payload: HookPayload) -> HookResponse:
                 cache.mark_hint_seen(_surg_fp)
                 cache.record_hint_emitted("surgical_suggestion")
 
-    # Append git commit history for the file (always, when available).
-    git_ctx = _build_git_hint(cwd, file_path)
-    if git_ctx:
-        context_parts.append(git_ctx)
+    # Append git commit history for the file (with dedup and session-age gate).
+    # Skip git hint for files edited this session (agent already knows they changed).
+    # Skip for new sessions (<120s) where git history is not yet relevant.
+    _written_key = session._normalize_path(file_path)  # type: ignore[attr-defined]
+    _edited: dict[str, int] = cache.edited_files if isinstance(cache.edited_files, dict) else {}
+    _created_ts = getattr(cache, 'created_ts', time.time())
+    _is_edited = _written_key in _edited
+    _is_new_session = False
+    if isinstance(_created_ts, (int, float)):
+        _session_age = time.time() - _created_ts
+        _is_new_session = _session_age < 120.0
+
+    if not _is_edited and not _is_new_session:
+        git_ctx = _build_git_hint(cwd, file_path)
+        if git_ctx:
+            from .hints import _hint_fingerprint  # noqa: PLC0415
+            _git_fp = _hint_fingerprint(git_ctx, path=file_path)
+            if not cache.has_hint_fingerprint(_git_fp):
+                context_parts.append(git_ctx)
+                cache.mark_hint_seen(_git_fp)
+                cache.record_hint_emitted("git_history")
 
     if not context_parts:
         _LOG.debug("pre-read: no hint for %s", sanitize_log_str(file_path))
