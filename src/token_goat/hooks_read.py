@@ -33,6 +33,7 @@ from __future__ import annotations
 
 __all__ = ["post_bash", "post_read", "pre_read"]
 
+import contextlib
 import re as _re
 from collections.abc import Callable
 from pathlib import Path
@@ -1134,7 +1135,8 @@ def _handle_grep_symbol_redirect(payload: HookPayload) -> HookResponse | None:
 
     cache.mark_hint_seen(fp)
     cache.record_hint_emitted(stat_key)
-    _sess.save(cache)
+    with contextlib.suppress(Exception):
+        _sess.save(cache)
     return pre_tool_use_with_context(hint_text)
 
 
