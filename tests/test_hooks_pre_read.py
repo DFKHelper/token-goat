@@ -2156,6 +2156,85 @@ class TestGrepSymbolRedirect:
         # Multi-row path must NOT include a read command.
         assert "token-goat read" not in result
 
+    def _make_dotted_hint_fake_conn(self, stem_prefix: str, count: int):
+        """Helper: build a _FakeConn returning `count` rows all with stem matching `stem_prefix`."""
+        class _FakeConn:
+            def __init__(self, stem_prefix, count):
+                self._stem_prefix = stem_prefix
+                self._count = count
+            def execute(self, sql, params):
+                return self
+            def fetchall(self):
+                class _Row:
+                    def __init__(self, stem_prefix, i):
+                        self.name = "load"
+                        self.kind = "function"
+                        self.file_rel = f"src/{stem_prefix}_{i}.py"
+                        self.line = i * 10 + 5
+                    def __getitem__(self, key):
+                        return {"name": "load", "kind": "function",
+                                "file_rel": self.file_rel, "line": self.line}[key]
+                return [_Row(self._stem_prefix, i) for i in range(self._count)]
+            def __enter__(self):
+                return self
+            def __exit__(self, *a):
+                pass
+        return _FakeConn(stem_prefix, count)
+
+    def test_try_grep_dotted_hint_3_preferred_rows_fires(self, tmp_data_dir, monkeypatch):
+        """_try_grep_dotted_hint fires when exactly 3 preferred rows match (boundary: ≤3 = emit)."""
+        from pathlib import Path as _Path
+
+        from token_goat.project import Project
+
+        fake_proj = Project(root=_Path(tmp_data_dir), hash="deadbeef", marker=".git")
+
+        import token_goat.project as _proj_mod
+        monkeypatch.setattr(_proj_mod, "find_project", lambda cwd: fake_proj)
+
+        from contextlib import contextmanager
+
+        import token_goat.db as _db
+        fake_conn = self._make_dotted_hint_fake_conn("session", 3)
+        @contextmanager
+        def _fake_open(hash):
+            yield fake_conn
+        monkeypatch.setattr(_db, "open_project_readonly", _fake_open)
+
+        from token_goat.hooks_read import _try_grep_dotted_hint
+        result = _try_grep_dotted_hint("Session.load", str(tmp_data_dir))
+        assert result is not None, "exactly 3 preferred rows must produce a hint (boundary ≤3)"
+        assert "token-goat symbol load" in result
+        assert "token-goat read" not in result
+
+    def test_try_grep_dotted_hint_4_preferred_rows_returns_none(self, tmp_data_dir, monkeypatch):
+        """_try_grep_dotted_hint returns None when exactly 4 preferred rows match (>3 boundary).
+
+        Pins the suppression threshold: the first value above the display cap must
+        produce None, not a noisy partial-result hint.
+        """
+        from pathlib import Path as _Path
+
+        from token_goat.project import Project
+
+        fake_proj = Project(root=_Path(tmp_data_dir), hash="deadbeef", marker=".git")
+
+        import token_goat.project as _proj_mod
+        monkeypatch.setattr(_proj_mod, "find_project", lambda cwd: fake_proj)
+
+        from contextlib import contextmanager
+
+        import token_goat.db as _db
+        fake_conn = self._make_dotted_hint_fake_conn("session", 4)
+        @contextmanager
+        def _fake_open(hash):
+            yield fake_conn
+        monkeypatch.setattr(_db, "open_project_readonly", _fake_open)
+
+        from token_goat.hooks_read import _try_grep_dotted_hint
+        result = _try_grep_dotted_hint("Session.load", str(tmp_data_dir))
+        assert result is None, "4 preferred rows must return None (threshold: >3)"
+
     def test_try_grep_dotted_hint_returns_none_for_non_dotted_pattern(self, tmp_data_dir):
         """_try_grep_dotted_hint returns None for patterns that aren't Qualifier.method."""
         from token_goat.hooks_read import _try_grep_dotted_hint
