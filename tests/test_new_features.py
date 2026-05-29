@@ -408,7 +408,9 @@ class TestPreReadGitHint:
             patch("token_goat.hooks_read._try_diff_hint", return_value=None),
             patch("token_goat.hints.build_read_hint", return_value=None),
             patch("token_goat.hooks_read._build_git_hint", return_value="git only"),
-            patch("token_goat.session.load", return_value=MagicMock(files={})),
+            patch("token_goat.session.load", return_value=MagicMock(
+                files={}, edited_files={}, has_hint_fingerprint=lambda fp: False,
+            )),
         ):
             payload = {
                 "tool_name": "Read",
