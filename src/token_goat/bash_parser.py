@@ -43,6 +43,7 @@ are populated so session-tracking and hint generation can record exactly which
 lines were consumed:
 
 * ``head -n N FILE`` → ``offset=1, limit=N``
+* ``tail -n +N FILE`` → ``offset=N, limit=None`` (skip-to-line; normalized to 0-indexed in hooks_read)
 * ``sed -n 'M,Np' FILE`` → ``offset=M, limit=N-M+1``
 * ``sed -n 'Np' FILE`` (single line) → ``offset=N, limit=1``
 * ``awk 'NR==N' FILE`` → ``offset=N, limit=1``
@@ -107,8 +108,10 @@ class BashIntent:
             for grep/glob/unknown.
         pattern: Search pattern for ``kind='grep'`` or root/name pattern for
             ``kind='glob'``.  ``None`` for read/unknown.
-        offset: Line offset for ``kind='read'`` (from ``tail -n +N`` style args).
-            Currently always ``None`` — reserved for future tail-offset parsing.
+        offset: Line offset for ``kind='read'`` — 1-indexed start line.  Set by
+            ``tail -n +N`` (skip-to-line form), ``head -n N`` (always 1), and
+            scripted readers (sed/awk).  ``None`` for plain ``tail -n N`` reads
+            where the start line depends on total file length.
         limit: Line count for ``kind='read'`` (from ``head -n N`` / ``tail -n N``).
             ``None`` means the whole file.
         reason: Human-readable explanation for ``kind='unknown'``, used for debug
@@ -490,28 +493,38 @@ def _build_read_intent(target_path: str) -> BashIntent:
     return BashIntent(kind="read", target_path=target_path)
 
 
-def _parse_line_count_flag(args: list[str], i: int) -> tuple[int | None, int]:
-    """Parse a line-count flag at position *i* and return ``(value, tokens_consumed)``.
+def _parse_line_count_flag(args: list[str], i: int) -> tuple[int | None, int, bool]:
+    """Parse a line-count flag at position *i* and return ``(value, tokens_consumed, is_skip)``.
 
     Recognises three forms used by ``head`` and ``tail``:
-    - ``-n N`` / ``--lines N`` — two-token form; returns ``(N, 2)`` when the next
-      token exists and parses as an integer, else ``(None, 2)`` (still skips the
-      next token to avoid treating it as a positional argument).
-    - ``-nN`` (compact form, e.g. ``-n10``) — single-token; returns ``(N, 1)``.
-    - ``--lines=N`` — single-token with ``=``; returns ``(N, 1)``.
+    - ``-n N`` / ``--lines N`` — two-token form; returns ``(N, 2, ...)`` when the
+      next token exists and parses as an integer, else ``(None, 2, False)`` (still
+      skips the next token to avoid treating it as a positional argument).
+    - ``-nN`` (compact form, e.g. ``-n10``) — single-token; returns ``(N, 1, ...)``.
+    - ``--lines=N`` — single-token with ``=``; returns ``(N, 1, ...)``.
 
-    Returns ``(None, 0)`` when the token at *i* is not a line-count flag, so the
-    caller can fall through to the generic flag / positional-argument handling.
+    ``is_skip`` is True when the numeric token is prefixed with ``+`` (e.g.
+    ``tail -n +10``), meaning "output starting at line N" rather than "output
+    the last N lines".
+
+    Returns ``(None, 0, False)`` when the token at *i* is not a line-count flag,
+    so the caller can fall through to generic flag / positional-argument handling.
     """
     a = args[i]
     if a in ("-n", "--lines"):
-        value = _try_parse_int(args[i + 1]) if i + 1 < len(args) else None
-        return value, 2
+        raw = args[i + 1] if i + 1 < len(args) else None
+        is_skip = isinstance(raw, str) and raw.startswith("+")
+        value = _try_parse_int(raw.lstrip("+")) if raw else None
+        return value, 2, is_skip
     if a.startswith("-n") and len(a) > 2:
-        return _try_parse_int(a[2:]), 1
+        raw = a[2:]
+        is_skip = raw.startswith("+")
+        return _try_parse_int(raw.lstrip("+")), 1, is_skip
     if a.startswith("--lines="):
-        return _try_parse_int(a.split("=", 1)[1]), 1
-    return None, 0
+        raw = a.split("=", 1)[1]
+        is_skip = raw.startswith("+")
+        return _try_parse_int(raw.lstrip("+")), 1, is_skip
+    return None, 0, False
 
 
 def _parse_read(binary: str, args: list[str]) -> BashIntent:
@@ -542,15 +555,19 @@ def _parse_read(binary: str, args: list[str]) -> BashIntent:
     # lookup on every iteration of the arg loop.
     is_line_count_binary = binary in ("head", "tail")
     limit: int | None = None
+    tail_skip_start: int | None = None  # 1-indexed start line for ``tail -n +N``
     positional_args: list[str] = []
     i = 0
     while i < len(args):
         a = args[i]
         if is_line_count_binary:
-            value, consumed = _parse_line_count_flag(args, i)
+            value, consumed, is_skip = _parse_line_count_flag(args, i)
             if consumed:
                 if value is not None:
-                    limit = value
+                    if is_skip and binary == "tail":
+                        tail_skip_start = value  # ``tail -n +N``: output from line N
+                    else:
+                        limit = value
                 i += consumed
                 continue
         if a.startswith("-"):
@@ -581,11 +598,14 @@ def _parse_read(binary: str, args: list[str]) -> BashIntent:
     else:
         target_path = positional_args[0]
         # ``head -n N FILE`` reads lines 1..N.  Record the offset so session
-        # tracking can mark the exact slice as already-read.  ``tail`` is
-        # intentionally left without an offset: without the file's total line
-        # count we cannot derive the starting line number.
+        # tracking can mark the exact slice as already-read.  Plain ``tail -n N``
+        # is left without an offset: the starting line depends on the file's
+        # total length.  ``tail -n +N`` is the skip-to-line form — output starts
+        # at line N regardless of file length — so the offset IS known.
         if binary == "head" and limit is not None:
             offset = 1
+        elif tail_skip_start is not None:
+            offset = tail_skip_start  # 1-indexed; hooks_read normalises to 0-indexed
 
     # ``type`` ambiguity guard: in bash / POSIX shells ``type`` is a
     # command-lookup builtin (``type ls`` reports where ``ls`` lives), not a

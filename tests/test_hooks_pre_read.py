@@ -1888,6 +1888,57 @@ class TestGrepSymbolRedirect:
         assert _try_grep_dotted_hint("foo.", "/proj") is None           # no method
         assert _try_grep_dotted_hint(".bar", "/proj") is None            # no qualifier
 
+    def test_try_grep_dotted_hint_suppresses_self_like_qualifiers(self, tmp_data_dir, monkeypatch):
+        """self.load, cls.run, this.process must not fire when no file stem matches.
+
+        Regression test for the case where instance-reference qualifiers (self,
+        cls, this, obj, base, super) produce noise by falling back to the
+        unfiltered DB rows when no file stem contains the qualifier word.
+        """
+        from pathlib import Path as _Path
+
+        from token_goat.project import Project
+
+        fake_proj = Project(root=_Path(tmp_data_dir), hash="deadbeef", marker=".git")
+
+        import token_goat.project as _proj_mod
+        monkeypatch.setattr(_proj_mod, "find_project", lambda cwd: fake_proj)
+
+        class _FakeConn:
+            def execute(self, sql, params):
+                return self
+            def fetchall(self):
+                class _Row:
+                    def __init__(self, file_rel, line):
+                        self.name = "load"
+                        self.kind = "function"
+                        self.file_rel = file_rel
+                        self.line = line
+                    def __getitem__(self, key):
+                        return {"name": "load", "kind": "function", "file_rel": self.file_rel, "line": self.line}[key]
+                # Symbol named 'load' exists in auth.py (no "self" in stem).
+                return [_Row("src/auth.py", 42)]
+            def __enter__(self):
+                return self
+            def __exit__(self, *a):
+                pass
+
+        from contextlib import contextmanager
+
+        import token_goat.db as _db
+        @contextmanager
+        def _fake_open(hash):
+            yield _FakeConn()
+        monkeypatch.setattr(_db, "open_project_readonly", _fake_open)
+
+        from token_goat.hooks_read import _try_grep_dotted_hint
+        for self_like_pattern in ["self.load", "cls.load", "this.load", "obj.load"]:
+            result = _try_grep_dotted_hint(self_like_pattern, str(tmp_data_dir))
+            assert result is None, (
+                f"'{self_like_pattern}' should not fire a hint when no file stem matches "
+                f"the qualifier — got: {result}"
+            )
+
     def test_grep_dedup_takes_priority_over_symbol_redirect(self, tmp_data_dir, monkeypatch):
         """grep dedup fires first; symbol redirect is skipped when dedup already returned."""
         import token_goat.hooks_read as _hr
