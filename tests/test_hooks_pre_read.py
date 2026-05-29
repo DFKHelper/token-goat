@@ -1584,10 +1584,20 @@ class TestSurgicalReadHint:
         assert "2009" not in ctx and "2000" not in ctx, "sentinel must not appear in hint text"
 
     def test_sed_command_triggers_surgical_hint(self, tmp_data_dir, monkeypatch):
-        """A `sed -n 'M,Np' file` Bash command triggers the surgical-read hint via pre_read."""
+        """A `sed -n 'M,Np' file` Bash command triggers the surgical-read hint via pre_read.
+
+        Verifies that the parsed offset, limit, and limit_is_sentinel flag are
+        correct — not just that some hint fires.  For `sed -n '10,30p'`:
+          - offset=9  (line 10 normalised to 0-indexed)
+          - limit=21  (lines 10–30 inclusive: 30-10+1)
+          - limit_is_sentinel=False  (explicit range, not an open-ended tail)
+        """
         import token_goat.hooks_read as _hr
 
+        received: list[tuple[int, int, bool]] = []
+
         def _fake_surgical(file_path, offset, limit, cwd, *, limit_is_sentinel=False):
+            received.append((offset, limit, limit_is_sentinel))
             return (
                 "Lines 10–30 of `auth.py` span `login`. "
                 "Use `token-goat read \"src/auth.py::login\"` for a surgical read (~90% fewer tokens on repeat access)."
@@ -1606,6 +1616,12 @@ class TestSurgicalReadHint:
         ctx = hso.get("additionalContext", "") if isinstance(hso, dict) else ""
         assert "token-goat read" in ctx
         assert "login" in ctx
+
+        assert received, "_try_surgical_read_hint should have been called"
+        offset_seen, limit_seen, sentinel_seen = received[0]
+        assert offset_seen == 9, f"expected offset=9 (line 10 normalised to 0-indexed), got {offset_seen}"
+        assert limit_seen == 21, f"expected limit=21 (30-10+1 lines), got {limit_seen}"
+        assert sentinel_seen is False, "sed explicit range must not set limit_is_sentinel"
 
     def test_offset_zero_does_not_suppress_hint(self, tmp_data_dir, monkeypatch):
         """offset=0 is a valid Read tool value (start from line 1) and must not suppress the hint.
@@ -2085,6 +2101,60 @@ class TestGrepSymbolRedirect:
         assert "token.py:77" in result, "location must be named in hint"
         # Must NOT fall back to the symbol-only format.
         assert "token-goat symbol" not in result
+
+    def test_try_grep_dotted_hint_2_preferred_rows_uses_symbol_command(self, tmp_data_dir, monkeypatch):
+        """_try_grep_dotted_hint with 2 preferred rows emits symbol command, not read.
+
+        Boundary test for the multi-row preferred path: when the qualifier matches
+        two files (e.g. session.py and session_mgr.py both define load()), the
+        result must list both locations and use 'token-goat symbol', not a read
+        command.
+        """
+        from pathlib import Path as _Path
+
+        from token_goat.project import Project
+
+        fake_proj = Project(root=_Path(tmp_data_dir), hash="deadbeef", marker=".git")
+
+        import token_goat.project as _proj_mod
+        monkeypatch.setattr(_proj_mod, "find_project", lambda cwd: fake_proj)
+
+        class _FakeConn:
+            def execute(self, sql, params):
+                return self
+            def fetchall(self):
+                class _Row:
+                    def __init__(self, file_rel, line):
+                        self.name = "load"
+                        self.kind = "function"
+                        self.file_rel = file_rel
+                        self.line = line
+                    def __getitem__(self, key):
+                        return {"name": "load", "kind": "function",
+                                "file_rel": self.file_rel, "line": self.line}[key]
+                # Both files have "session" in their stem → 2 preferred rows.
+                return [_Row("src/session.py", 42), _Row("src/session_mgr.py", 77)]
+            def __enter__(self):
+                return self
+            def __exit__(self, *a):
+                pass
+
+        from contextlib import contextmanager
+
+        import token_goat.db as _db
+        @contextmanager
+        def _fake_open(hash):
+            yield _FakeConn()
+        monkeypatch.setattr(_db, "open_project_readonly", _fake_open)
+
+        from token_goat.hooks_read import _try_grep_dotted_hint
+        result = _try_grep_dotted_hint("Session.load", str(tmp_data_dir))
+        assert result is not None, "2 preferred rows must produce a hint"
+        assert "token-goat symbol load" in result
+        assert "session.py:42" in result
+        assert "session_mgr.py:77" in result
+        # Multi-row path must NOT include a read command.
+        assert "token-goat read" not in result
 
     def test_try_grep_dotted_hint_returns_none_for_non_dotted_pattern(self, tmp_data_dir):
         """_try_grep_dotted_hint returns None for patterns that aren't Qualifier.method."""
