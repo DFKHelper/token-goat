@@ -3337,3 +3337,50 @@ class TestGlobDedupBelowThresholdSuppression:
         assert cache.hints_suppressed_by_type.get("glob_dedup_below_threshold", 0) == 0, (
             "above-threshold glob must not record a below-threshold suppression"
         )
+
+
+# ---------------------------------------------------------------------------
+# _get_indexed_symbols_and_line_count — NULL end_line regression
+# ---------------------------------------------------------------------------
+
+
+class TestGetIndexedSymbolsNullEndLine:
+    """Regression: symbols with end_line IS NULL must be excluded from results.
+
+    Prior to the fix, int(r["end_line"]) on a NULL row raised TypeError, which
+    was not caught by the local (DBError, sqlite3.Error, OSError) handler and
+    propagated to build_read_hint's outer except-Exception, silently disabling
+    all index-based hint generation for the file.
+    """
+
+    def test_null_end_line_rows_excluded_not_crash(self, tmp_data_dir, tmp_path, make_project):
+        proj_root = tmp_path / "null_end_line_proj"
+        proj_root.mkdir()
+        proj = make_project(proj_root)
+
+        file_rel = "src/sample.py"
+
+        with db.open_project(proj.hash) as conn:
+            conn.execute(
+                "INSERT INTO files (rel_path, language, size, mtime, content_sha256, indexed_at)"
+                " VALUES (?, ?, ?, ?, ?, ?)",
+                (file_rel, "python", 100, 0.0, "abc123", 0),
+            )
+            # Symbol with valid end_line — should be returned.
+            conn.execute(
+                "INSERT INTO symbols (name, kind, file_rel, line, end_line, signature)"
+                " VALUES (?, ?, ?, ?, ?, ?)",
+                ("good_func", "function", file_rel, 1, 10, "def good_func():"),
+            )
+            # Symbol with NULL end_line — must be silently excluded, not crash.
+            conn.execute(
+                "INSERT INTO symbols (name, kind, file_rel, line, end_line, signature)"
+                " VALUES (?, ?, ?, ?, ?, ?)",
+                ("stub_func", "function", file_rel, 12, None, "def stub_func():"),
+            )
+            conn.commit()
+
+        syms, n_lines, _ = _get_indexed_symbols_and_line_count(file_rel, proj.hash)
+
+        assert len(syms) == 1, "only the non-NULL end_line symbol should be returned"
+        assert syms[0]["name"] == "good_func"

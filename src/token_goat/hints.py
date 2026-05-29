@@ -478,7 +478,7 @@ def _get_indexed_symbols_and_line_count(
                 f"""
                 SELECT kind, name, line, end_line
                 FROM symbols
-                WHERE file_rel = ? AND name IS NOT NULL
+                WHERE file_rel = ? AND name IS NOT NULL AND end_line IS NOT NULL
                 ORDER BY line
                 LIMIT {_MAX_INDEXED_SYMBOLS_FETCHED}
                 """,
