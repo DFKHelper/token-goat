@@ -3053,11 +3053,9 @@ class TestSessionLockfileConcurrent:
     def test_two_processes_200_edits_no_loss(self, tmp_data_dir, tmp_path):
         """Two parallel subprocesses each writing 100 edits produce 200 unique entries.
 
-        Marked ``slow``: under heavy concurrent IO load on Windows the per-call
-        full-file save can spike past the lock timeout, and pytest-rerunfailures
-        masks most occurrences. The cross-process correctness invariant is still
-        exercised by the threaded variant below (which runs in default suites);
-        this subprocess variant is opt-in via ``-m slow``.
+        Marked ``slow``: spawning two real Python subprocesses takes ~2 s on a
+        cold machine.  The cross-process correctness invariant is also exercised
+        by the threaded variant below (which runs in default suites).
         """
         import json
         import subprocess
@@ -3070,14 +3068,29 @@ class TestSessionLockfileConcurrent:
 
         script = self._worker_script(str(tmp_data_dir), sid, 100)
 
-        p1 = subprocess.Popen([sys.executable, "-c", script])
-        p2 = subprocess.Popen([sys.executable, "-c", script])
+        # Redirect stdout/stderr to PIPE so the subprocesses do not inherit pytest's
+        # captured fd-2.  On Windows the subprocess runtime can write cp1252 bytes
+        # (e.g. em-dash U+2014 = 0x97) to the inherited file descriptor, which
+        # corrupts pytest's UTF-8 capture buffer and causes UnicodeDecodeError errors
+        # in subsequent tests that run in the same xdist worker.
+        p1 = subprocess.Popen(
+            [sys.executable, "-c", script],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+        p2 = subprocess.Popen(
+            [sys.executable, "-c", script],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
 
-        rc1 = p1.wait(timeout=60)
-        rc2 = p2.wait(timeout=60)
+        _, stderr1 = p1.communicate(timeout=60)
+        _, stderr2 = p2.communicate(timeout=60)
+        rc1 = p1.returncode
+        rc2 = p2.returncode
 
-        assert rc1 == 0, f"worker 1 exited with {rc1}"
-        assert rc2 == 0, f"worker 2 exited with {rc2}"
+        assert rc1 == 0, f"worker 1 exited with {rc1}; stderr: {stderr1.decode('utf-8', errors='replace')}"
+        assert rc2 == 0, f"worker 2 exited with {rc2}; stderr: {stderr2.decode('utf-8', errors='replace')}"
 
         # Reload the session and check that all 200 unique paths are present.
         final = session.load(sid)
