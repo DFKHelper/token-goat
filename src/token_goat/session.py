@@ -1463,32 +1463,59 @@ def _serialize_result_cache_entry(entry: ResultCacheEntry) -> _ResultCacheEntryD
 
 
 def _serialize_bash_entry(entry: BashEntry) -> _BashEntryDict:
-    """Serialize a BashEntry to its wire dict with rounded timestamp."""
-    return _BashEntryDict(
+    """Serialize a BashEntry to its wire dict, omitting fields that equal their defaults.
+
+    Skip-if-default rules (reduce JSON verbosity on the common case):
+    - ``exit_code`` is omitted when None (default; means not yet recorded).
+    - ``truncated`` is omitted when False (default; most commands are not truncated).
+    - ``run_count`` is omitted when 1 (default; only repeated commands need it).
+    - ``output_sha`` is omitted when empty string (default; backward-compat field).
+
+    These four fields are present on nearly every entry.  Omitting them on entries
+    with default values saves ~15–35 bytes per entry (depends on JSON key lengths),
+    which compounds materially on sessions with large bash histories.
+    """
+    d = _BashEntryDict(
         cmd_sha=entry.cmd_sha,
         cmd_preview=entry.cmd_preview,
         output_id=entry.output_id,
         ts=_round_ts(entry.ts),
         stdout_bytes=entry.stdout_bytes,
         stderr_bytes=entry.stderr_bytes,
-        exit_code=entry.exit_code,
-        truncated=entry.truncated,
-        run_count=entry.run_count,
-        output_sha=entry.output_sha,
     )
+    if entry.exit_code is not None:
+        d["exit_code"] = entry.exit_code
+    if entry.truncated:
+        d["truncated"] = True
+    if entry.run_count != 1:
+        d["run_count"] = entry.run_count
+    if entry.output_sha:
+        d["output_sha"] = entry.output_sha
+    return d
 
 
 def _serialize_web_entry(entry: WebEntry) -> _WebEntryDict:
-    """Serialize a WebEntry to its wire dict with rounded timestamp."""
-    return _WebEntryDict(
+    """Serialize a WebEntry to its wire dict, omitting fields that equal their defaults.
+
+    Skip-if-default rules:
+    - ``status_code`` is omitted when None (default; means not yet recorded or unknown).
+    - ``truncated`` is omitted when False (default; most fetches are not truncated).
+
+    The parse path already uses ``.get()`` with these defaults so omitting them
+    is fully backward-compatible with older session JSON.
+    """
+    d = _WebEntryDict(
         url_sha=entry.url_sha,
         url_preview=entry.url_preview,
         output_id=entry.output_id,
         ts=_round_ts(entry.ts),
         body_bytes=entry.body_bytes,
-        status_code=entry.status_code,
-        truncated=entry.truncated,
     )
+    if entry.status_code is not None:
+        d["status_code"] = entry.status_code
+    if entry.truncated:
+        d["truncated"] = True
+    return d
 
 
 def _serialize_skill_entry(entry: SkillEntry) -> _SkillEntryDict:
