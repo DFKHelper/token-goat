@@ -246,7 +246,13 @@ def _compute_manifest_fingerprint(cache: SessionCache) -> str:  # type: ignore[n
 
     def _entry_payload(entry: object) -> object:
         if hasattr(entry, "__dataclass_fields__"):
-            return asdict(entry)  # type: ignore[call-overload]
+            entry_dict = asdict(entry)  # type: ignore[call-overload]
+            # Exclude symbols_ts from FileEntry — it changes on every symbol access
+            # but doesn't affect the manifest output (only symbols_read matters).
+            # This prevents unnecessary fingerprint cache invalidation.
+            if isinstance(entry_dict, dict) and "symbols_ts" in entry_dict:
+                entry_dict = {k: v for k, v in entry_dict.items() if k != "symbols_ts"}
+            return entry_dict
         return entry
 
     def _dict_payload(mapping: object) -> dict[str, object]:
