@@ -2483,3 +2483,108 @@ class TestUnchangedFileHintFlushRegression:
             "session.save must be called when _pending_hint_save is set and "
             "the unchanged-file branch is taken"
         )
+
+    def test_pre_read_flushes_hint_save_on_early_recovery_return(
+        self, tmp_data_dir, monkeypatch
+    ):
+        """pre_read must flush deferred saves even on early recovery-hint return.
+
+        Regression: the recovery-hint early-return in pre_read did not call
+        _flush_pending_hint_save.  The try/finally wrapping the Read-tool path
+        ensures _flush_pending_hint_save runs on ANY return, including
+        recovery-hint returns that bypass the rest of the hint logic.
+        """
+
+        import token_goat.hooks_cli as hooks_cli
+        import token_goat.session as _session
+
+        sid = "recovery_flush_regression"
+        recovery_text = "Recovery hint injected"
+
+        # Prepare a cache with _pending_hint_save=True.
+        cache = session.load(sid)
+        cache._pending_hint_save = True  # type: ignore[attr-defined]
+
+        save_calls: list[object] = []
+
+        def _capturing_save(c: object) -> None:
+            save_calls.append(c)
+            if getattr(c, "_pending_hint_save", False):
+                c._pending_hint_save = False  # type: ignore[attr-defined]
+
+        monkeypatch.setattr(_session, "save", _capturing_save)
+        monkeypatch.setattr(_session, "load", lambda sid: cache)
+
+        # Make _check_recovery_pending return text so recovery-hint branch fires.
+        import token_goat.hooks_read as _hr
+        monkeypatch.setattr(_hr, "_check_recovery_pending", lambda *a, **kw: recovery_text)
+
+        payload = {
+            "session_id": sid,
+            "tool_name": "Read",
+            "tool_input": {"file_path": "/proj/test.py"},
+            "cwd": "/proj",
+        }
+        result = hooks_cli.pre_read(payload)
+
+        # The recovery hint must have fired (early return taken).
+        assert "hookSpecificOutput" in result
+        assert recovery_text in result["hookSpecificOutput"].get("additionalContext", "")
+
+        # The try/finally must have flushed the hint save even on early return.
+        assert len(save_calls) >= 1, (
+            "session.save must be called in finally block even when "
+            "recovery-hint early-return fires"
+        )
+
+    def test_pre_read_try_finally_guarantees_flush_on_any_return(
+        self, tmp_data_dir, monkeypatch
+    ):
+        """pre_read finally-block guarantees hint save flush on ANY return path.
+
+        This test documents the core invariant: no matter which early-return is
+        taken in the Read-tool path (recovery, index-only, structured-file, etc.),
+        the finally block will execute and call _flush_pending_hint_save.  This
+        makes it impossible for a developer to accidentally add a new return path
+        and lose dedup fingerprints.
+        """
+        import token_goat.hooks_cli as hooks_cli
+        import token_goat.session as _session
+
+        sid = "finally_flush_invariant"
+
+        # Prepare a cache with _pending_hint_save=True.
+        cache = session.load(sid)
+        cache._pending_hint_save = True  # type: ignore[attr-defined]
+
+        save_calls: list[object] = []
+
+        def _capturing_save(c: object) -> None:
+            save_calls.append(c)
+            if getattr(c, "_pending_hint_save", False):
+                c._pending_hint_save = False  # type: ignore[attr-defined]
+
+        monkeypatch.setattr(_session, "save", _capturing_save)
+        monkeypatch.setattr(_session, "load", lambda sid: cache)
+
+        # Make index-only-file hint fire so we hit the first early-return in the
+        # try block (just after the Read-tool path starts).
+        import token_goat.hooks_read as _hr
+        monkeypatch.setattr(_hr, "_handle_index_only_file", lambda *a, **kw: {"continue": True})
+
+        payload = {
+            "session_id": sid,
+            "tool_name": "Read",
+            "tool_input": {"file_path": "/proj/uv.lock"},
+            "cwd": "/proj",
+        }
+        result = hooks_cli.pre_read(payload)
+
+        # The index-only branch must have returned (CONTINUE).
+        assert result.get("continue") is True
+
+        # The finally block must have executed even though we returned early.
+        assert len(save_calls) >= 1, (
+            "session.save must be called in finally block when index-only "
+            "early-return is taken (demonstrates finally-block invariant)"
+        )

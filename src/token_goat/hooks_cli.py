@@ -580,12 +580,13 @@ def _check_compact_skip_sentinel(session_id: str) -> bool:
         # No session file → nothing to invalidate against.  Original behaviour
         # (skip is fine) preserved.
         return True
-    # +0.5 s grace handles the case where the sentinel was written immediately
+    # +2.0 s grace handles the case where the sentinel was written immediately
     # after a session save in the same hook firing — filesystem mtime
     # resolution on Windows (FAT/exFAT) is 2 s; on NTFS/ext4 it is ~ns.  The
     # grace prevents a same-tick race from looking like "activity after
-    # sentinel" on coarse-resolution clocks.
-    if session_mtime > sentinel_mtime + 0.5:
+    # sentinel" on coarse-resolution clocks. FAT32 requires the full 2s grace
+    # (NTFS clocks tick ns but FAT32 has 2s granularity).
+    if session_mtime > sentinel_mtime + 2.0:
         _LOG.debug(
             "compact-skip sentinel busted by activity session=%s"
             " (session_mtime=%.3f > sentinel_mtime=%.3f)",
