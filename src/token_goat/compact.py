@@ -3601,13 +3601,8 @@ def _render(
         noise_skipped,
     )
 
-    now = datetime.now(UTC).strftime("%Y-%m-%d %H:%M")
-    sid = session_id[:8]
-    age_str = _format_duration(age_secs) if age_secs >= 60 else None
-    age_part = f"  |  age: {age_str}" if age_str else ""
     header_lines: list[str] = [
         "## Token-Goat Session Manifest",
-        f"Session: {sid}  |  {now}{age_part}",
     ]
 
     # Get cwd early so it can be used by both diff summary and commits section.

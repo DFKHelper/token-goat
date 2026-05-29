@@ -1410,6 +1410,64 @@ class TestComputeStaleThreshold:
         )
         assert hint is None, "Stale symbol-only access must be suppressed"
 
+
+class TestSessionStaleThreshold:
+    """_session_stale_threshold() extracts session age and computes threshold."""
+
+    def test_extracts_created_ts_from_cache(self, tmp_data_dir):
+        """_session_stale_threshold extracts created_ts from cache object."""
+        from token_goat.hints import _session_stale_threshold
+        from token_goat.session import SessionCache
+
+        now = time.time()
+        session_age = 3600  # 1h old session
+        cache = SessionCache(
+            session_id="test_extract",
+            started_ts=now - session_age,
+            last_activity_ts=now,
+        )
+        cache.created_ts = now - session_age  # 1h old session
+
+        # 1h session → threshold = clamp(3600*0.25, 900, 1800) = 900s
+        result = _session_stale_threshold(cache, now)
+        assert result == 900.0
+
+    def test_uses_stale_read_age_when_created_ts_missing(self, tmp_data_dir):
+        """_session_stale_threshold falls back to STALE_READ_AGE_SECONDS when created_ts is None."""
+        from token_goat.hints import _session_stale_threshold
+        from token_goat.session import SessionCache
+
+        now = time.time()
+        cache = SessionCache(
+            session_id="test_fallback",
+            started_ts=now,
+            last_activity_ts=now,
+        )
+        # Don't set created_ts — it defaults to None or not present
+
+        result = _session_stale_threshold(cache, now)
+        # With session_age = STALE_READ_AGE_SECONDS (1800s), threshold
+        # = clamp(1800*0.25, 900, 1800) = clamp(450, 900, 1800) = 900s
+        assert result == 900.0
+
+    def test_agrees_with_compute_stale_threshold(self, tmp_data_dir):
+        """_session_stale_threshold(cache, now) == compute_stale_threshold(now - cache.created_ts)."""
+        from token_goat.hints import _session_stale_threshold, compute_stale_threshold
+        from token_goat.session import SessionCache
+
+        now = time.time()
+        for session_age in [0, 1800, 3600, 7200, 14400]:
+            cache = SessionCache(
+                session_id=f"test_agree_{session_age}",
+                started_ts=now - session_age,
+                last_activity_ts=now,
+            )
+            cache.created_ts = now - session_age
+
+            result1 = _session_stale_threshold(cache, now)
+            result2 = compute_stale_threshold(session_age)
+            assert result1 == result2, f"Mismatch for session_age={session_age}"
+
     def test_fresh_symbol_only_access_still_emits(self, tmp_data_dir):
         """A symbol-only access within the stale threshold still emits a hint."""
         from token_goat.session import _normalize_path
