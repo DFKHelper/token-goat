@@ -2,7 +2,7 @@
   <img src="assets/logo.png" alt="Token-Goat" width="700">
 </p>
 
-<p align="center"><b>Claude Code re-reads the same file three times. You pay every time. Compactions cause dementia and waste.</b></p>
+<p align="center"><b>Claude Code re-reads the same file three times. You pay every time. Compactions cause dementia and waste. Token-goat fixes it.</b></p>
 
 <p align="center">
 Token-Goat sits between your AI (Claude Code, Codex, OpenCode, OpenClaw) and your tools. When it asks for a file it already read, it gets a one-line "you already read this" hint with a narrow slice suggestion. When it grabs a screenshot or large image, it gets a 100&nbsp;KB copy instead for context use, saving a fortune. The <code>pytest&nbsp;-v</code> output the model just saw arrives stripped to the failures. Sessions drop 40–90%+ in cost/token use. You don't change how you prompt or anything else: works automagically in the background. It even improves compactions, giving each compaction a clean, thorough summary of what it needs to remember, improving AI smarts AND reducing token waste after each compaction.
