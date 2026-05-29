@@ -152,10 +152,15 @@ class TestRenderTrimLoop:
     def _build_large_session(self, session_id: str, n: int = 60) -> None:
         from token_goat import session  # noqa: PLC0415
 
+        # Load cache once and pass it to each mark_* call to avoid repeated
+        # disk I/O — we save only once at the end instead of n+n/2 times.
+        cache = None
         for i in range(n):
-            session.mark_file_read(session_id, f"/very/long/path/to/module_{i:04d}.py", offset=0, limit=500)
+            cache = session.mark_file_read(
+                session_id, f"/very/long/path/to/module_{i:04d}.py", offset=0, limit=500, cache=cache
+            )
         for i in range(n // 2):
-            session.mark_file_edited(session_id, f"/very/long/path/to/edited_{i:04d}.py")
+            cache = session.mark_file_edited(session_id, f"/very/long/path/to/edited_{i:04d}.py", cache=cache)
 
     def test_trim_produces_output_within_token_budget(self, tmp_data_dir):
         from token_goat.compact import build_manifest, estimate_tokens  # noqa: PLC0415
