@@ -1867,9 +1867,29 @@ class TestPreCompactPressureAwareSizing:
         fake_cfg.compact_assist.auto_trigger_multiplier = multiplier
         return fake_cfg
 
+    def _make_fake_session_cache(self):
+        """Create a mock SessionCache with minimal required attributes.
+
+        The adaptive budget computation needs created_ts and various history
+        attributes. This helper ensures the mock has all required fields set
+        to non-MagicMock values so comparisons work correctly.
+        """
+        import time
+        from unittest.mock import MagicMock
+
+        cache = MagicMock()
+        # Use current time, so age_seconds will be near 0 (young session)
+        cache.created_ts = time.time()
+        # Stub attributes that compute_adaptive_budget checks with isinstance/getattr
+        cache.edited_files = {}  # Not a dict → 0 bonus
+        cache.files = {}  # Empty → 0 symbols accessed
+        cache.bash_history = None  # No bash history
+        cache.web_history = None  # No web history
+        return cache
+
     def test_auto_trigger_doubles_budget_by_default(self, tmp_data_dir):
         """trigger='auto' with multiplier=2.0 → effective_tokens = 800."""
-        from unittest.mock import MagicMock, patch
+        from unittest.mock import patch
 
         from token_goat import hooks_cli
 
@@ -1880,20 +1900,22 @@ class TestPreCompactPressureAwareSizing:
             return ("## manifest body", 10)
 
         fake_cfg = self._make_fake_cfg(multiplier=2.0)
+        fake_cache = self._make_fake_session_cache()
         with patch("token_goat.config.load", return_value=fake_cfg), \
-             patch("token_goat.session.safe_load", return_value=MagicMock()), \
+             patch("token_goat.session.safe_load", return_value=fake_cache), \
              patch("token_goat.compact.build_manifest_with_count", side_effect=_capture):
             payload = {"session_id": "auto_boost_sess", "trigger": "auto"}
             result = hooks_cli.pre_compact(payload)
 
         assert result.get("continue") is True
-        assert captured.get("max_tokens") == 800, (
-            f"Expected auto-trigger boost 400→800, got {captured.get('max_tokens')}"
+        # With adaptive budget: simple session gets 200, auto-trigger boosts it to 400
+        assert captured.get("max_tokens") == 400, (
+            f"Expected auto-trigger boost 200→400, got {captured.get('max_tokens')}"
         )
 
     def test_manual_trigger_keeps_base_budget(self, tmp_data_dir):
         """trigger='manual' → base budget is used unmodified."""
-        from unittest.mock import MagicMock, patch
+        from unittest.mock import patch
 
         from token_goat import hooks_cli
 
@@ -1904,20 +1926,22 @@ class TestPreCompactPressureAwareSizing:
             return ("## manifest body", 10)
 
         fake_cfg = self._make_fake_cfg(multiplier=2.0)
+        fake_cache = self._make_fake_session_cache()
         with patch("token_goat.config.load", return_value=fake_cfg), \
-             patch("token_goat.session.safe_load", return_value=MagicMock()), \
+             patch("token_goat.session.safe_load", return_value=fake_cache), \
              patch("token_goat.compact.build_manifest_with_count", side_effect=_capture):
             payload = {"session_id": "manual_sess", "trigger": "manual"}
             result = hooks_cli.pre_compact(payload)
 
         assert result.get("continue") is True
-        assert captured.get("max_tokens") == 400, (
-            f"Expected manual trigger to use base 400, got {captured.get('max_tokens')}"
+        # With adaptive budget: simple session gets 200 tokens (minimum for empty session)
+        assert captured.get("max_tokens") == 200, (
+            f"Expected manual trigger to use adaptive base 200, got {captured.get('max_tokens')}"
         )
 
     def test_multiplier_1_disables_boost(self, tmp_data_dir):
         """multiplier=1.0 means no boost even for auto trigger."""
-        from unittest.mock import MagicMock, patch
+        from unittest.mock import patch
 
         from token_goat import hooks_cli
 
@@ -1928,14 +1952,16 @@ class TestPreCompactPressureAwareSizing:
             return ("## manifest body", 10)
 
         fake_cfg = self._make_fake_cfg(multiplier=1.0)
+        fake_cache = self._make_fake_session_cache()
         with patch("token_goat.config.load", return_value=fake_cfg), \
-             patch("token_goat.session.safe_load", return_value=MagicMock()), \
+             patch("token_goat.session.safe_load", return_value=fake_cache), \
              patch("token_goat.compact.build_manifest_with_count", side_effect=_capture):
             payload = {"session_id": "no_boost_sess", "trigger": "auto"}
             hooks_cli.pre_compact(payload)
 
-        assert captured.get("max_tokens") == 400, (
-            f"multiplier=1.0 should disable boost, got {captured.get('max_tokens')}"
+        # With adaptive budget: simple session gets 200, multiplier 1.0 keeps it at 200
+        assert captured.get("max_tokens") == 200, (
+            f"multiplier=1.0 should keep adaptive base 200, got {captured.get('max_tokens')}"
         )
 
     def test_telemetry_row_written_on_successful_emit(self, tmp_data_dir):
@@ -1944,8 +1970,11 @@ class TestPreCompactPressureAwareSizing:
         Regression for r5 iter 4 telemetry: every successful manifest injection
         must produce a parseable stats row so `token-goat doctor` can compute
         utilization percentiles over the trailing 30 days.
+
+        With adaptive budgets, a simple session (empty edited_files, no history)
+        gets the minimum 200 tokens, not the fixed config 400.
         """
-        from unittest.mock import MagicMock, patch
+        from unittest.mock import patch
 
         from token_goat import db as _db
         from token_goat import hooks_cli
@@ -1954,8 +1983,9 @@ class TestPreCompactPressureAwareSizing:
         manifest_text = "x" * 600  # estimate_tokens = max(1, 600//3 + 1) = 201
 
         fake_cfg = self._make_fake_cfg(multiplier=1.0)
+        fake_cache = self._make_fake_session_cache()
         with patch("token_goat.config.load", return_value=fake_cfg), \
-             patch("token_goat.session.safe_load", return_value=MagicMock()), \
+             patch("token_goat.session.safe_load", return_value=fake_cache), \
              patch(
                  "token_goat.compact.build_manifest_with_count",
                  return_value=(manifest_text, 10),
@@ -1972,21 +2002,27 @@ class TestPreCompactPressureAwareSizing:
             ).fetchall()
         assert len(rows) == 1, f"expected exactly one compact_manifest row, got {len(rows)}"
         detail = rows[0][0]
-        assert "budget=400" in detail, detail
+        # With adaptive budget: simple session → 200 tokens (minimum), not 400
+        assert "budget=200" in detail, detail
         assert "actual=201" in detail, detail
         assert "trigger=manual" in detail, detail
         assert "events=10" in detail, detail
 
     def test_telemetry_records_boosted_budget_under_auto(self, tmp_data_dir):
-        """Auto-trigger telemetry must reflect the multiplied (effective) budget."""
-        from unittest.mock import MagicMock, patch
+        """Auto-trigger telemetry must reflect the multiplied (effective) budget.
+
+        With adaptive budgets, base becomes the adaptive value (200 for simple
+        session), then the multiplier is applied: 200 × 2.0 = 400.
+        """
+        from unittest.mock import patch
 
         from token_goat import db as _db
         from token_goat import hooks_cli
 
         fake_cfg = self._make_fake_cfg(multiplier=2.0)
+        fake_cache = self._make_fake_session_cache()
         with patch("token_goat.config.load", return_value=fake_cfg), \
-             patch("token_goat.session.safe_load", return_value=MagicMock()), \
+             patch("token_goat.session.safe_load", return_value=fake_cache), \
              patch(
                  "token_goat.compact.build_manifest_with_count",
                  return_value=("## manifest body " + "y" * 100, 20),
@@ -2001,9 +2037,9 @@ class TestPreCompactPressureAwareSizing:
             ).fetchall()
         assert len(rows) == 1
         detail = rows[0][0]
-        # Base 400 × 2.0 = 800; the recorded budget must be the boosted value
+        # Adaptive base 200 × 2.0 = 400; the recorded budget must be the boosted value
         # so doctor's tier breakdown bucket-aligns correctly with the cap.
-        assert "budget=800" in detail, detail
+        assert "budget=400" in detail, detail
         assert "trigger=auto" in detail, detail
 
 
