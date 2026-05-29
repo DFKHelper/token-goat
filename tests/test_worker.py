@@ -2561,3 +2561,141 @@ def test_cleanup_old_sessions_wired_into_cleanup_on_startup(tmp_data_dir, monkey
 
     assert len(calls) == 1
     assert stats.get("old_sessions_removed") == 3
+
+
+# ---------------------------------------------------------------------------
+# Eviction Lock Reliability Tests
+# ---------------------------------------------------------------------------
+
+
+class TestEvictionLockConflictLogging:
+    """Verify lock conflict detection logs at WARNING level."""
+
+    def test_acquire_lock_logs_warning_on_stale_lock_collision(self, tmp_data_dir, caplog):
+        """When lock conflicts during stale-lock recovery, log WARNING."""
+        paths.ensure_dirs()
+        lock_path = paths.locks_dir() / "image_cache_eviction.lock"
+
+        # Create a stale lock file
+        now = time.time()
+        stale_age = worker._EVICTION_LOCK_STALE_SECONDS + 60
+        stale_mtime = now - stale_age
+        lock_path.write_text("stale_pid\nstale_time\n")
+        os.utime(lock_path, (stale_mtime, stale_mtime))
+
+        # Verify lock is stale
+        assert worker._eviction_lock_is_stale(lock_path)
+
+        # Mock os.open to raise FileExistsError on both attempts (simulating
+        # another process grabbing the lock between our unlink and O_CREAT)
+        original_open = os.open
+        call_count = [0]
+
+        def fake_open(path, flags, mode=0o644):
+            call_count[0] += 1
+            if call_count[0] <= 2:  # First call (original), second after unlink
+                raise FileExistsError("Simulated lock conflict")
+            return original_open(path, flags, mode)
+
+        with caplog.at_level(logging.WARNING), patch("os.open", fake_open):
+            result = worker._acquire_eviction_lock(lock_path)
+
+        # Should return None (lock not acquired)
+        assert result is None
+
+        # Should log WARNING about contention
+        assert any(
+            "image-cache eviction lock contention" in record.message
+            for record in caplog.records
+            if record.levelno == logging.WARNING
+        )
+
+    def test_acquire_lock_logs_warning_on_fresh_lock_conflict(self, tmp_data_dir, caplog):
+        """When lock held by another live process, log WARNING."""
+        paths.ensure_dirs()
+        lock_path = paths.locks_dir() / "image_cache_eviction.lock"
+
+        # Create a fresh (non-stale) lock file
+        lock_path.write_text("current_pid\ncurrent_time\n")
+        now = time.time()
+        os.utime(lock_path, (now, now))
+
+        # Verify lock is NOT stale
+        assert not worker._eviction_lock_is_stale(lock_path)
+
+        with caplog.at_level(logging.WARNING):
+            result = worker._acquire_eviction_lock(lock_path)
+
+        # Should return None (lock not acquired)
+        assert result is None
+
+        # Should log WARNING about contention
+        assert any(
+            "image-cache eviction lock contention" in record.message
+            and "fresh" in record.message
+            for record in caplog.records
+            if record.levelno == logging.WARNING
+        )
+
+
+class TestEvictionLockAutoClears:
+    """Verify stale eviction locks are auto-cleared at worker startup."""
+
+    def test_clear_stale_eviction_lock_removes_old_lock(self, tmp_data_dir):
+        """_clear_stale_eviction_lock removes locks older than threshold."""
+        paths.ensure_dirs()
+        lock_path = paths.locks_dir() / "image_cache_eviction.lock"
+
+        # Create a stale lock
+        lock_path.write_text("dead_pid\nstale_time\n")
+        now = time.time()
+        stale_age = worker._EVICTION_LOCK_STALE_SECONDS + 100
+        stale_mtime = now - stale_age
+        os.utime(lock_path, (stale_mtime, stale_mtime))
+
+        assert lock_path.exists()
+        assert worker._eviction_lock_is_stale(lock_path)
+
+        # Clear it
+        worker._clear_stale_eviction_lock()
+
+        # Should be gone
+        assert not lock_path.exists()
+
+    def test_clear_stale_eviction_lock_preserves_fresh_lock(self, tmp_data_dir):
+        """_clear_stale_eviction_lock does NOT remove fresh locks."""
+        paths.ensure_dirs()
+        lock_path = paths.locks_dir() / "image_cache_eviction.lock"
+
+        # Create a fresh lock
+        lock_path.write_text("current_pid\ncurrent_time\n")
+        now = time.time()
+        os.utime(lock_path, (now, now))
+
+        assert lock_path.exists()
+        assert not worker._eviction_lock_is_stale(lock_path)
+
+        # Clear it (should be a no-op)
+        worker._clear_stale_eviction_lock()
+
+        # Should still exist
+        assert lock_path.exists()
+
+    def test_clear_stale_eviction_lock_wired_into_cleanup_on_startup(self, tmp_data_dir):
+        """cleanup_on_startup must call _clear_stale_eviction_lock."""
+        paths.ensure_dirs()
+        lock_path = paths.locks_dir() / "image_cache_eviction.lock"
+
+        # Create a stale lock
+        lock_path.write_text("dead\nold\n")
+        now = time.time()
+        stale_age = worker._EVICTION_LOCK_STALE_SECONDS + 60
+        os.utime(lock_path, (now - stale_age, now - stale_age))
+
+        assert lock_path.exists()
+
+        # Run cleanup
+        worker.cleanup_on_startup()
+
+        # Stale lock should have been cleared
+        assert not lock_path.exists()

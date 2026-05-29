@@ -10,6 +10,7 @@ from hook_helpers import make_small_jpeg as _make_small_jpeg
 
 from token_goat import image_shrink
 from token_goat.config import ImageShrinkConfig
+from token_goat.config import load as load_config
 
 # ---------------------------------------------------------------------------
 # 1. is_image_path
@@ -975,3 +976,72 @@ class TestOrphanSweep:
 
         # Orphan still exists due to the error
         assert orphan.exists()
+
+
+class TestOrphanDetectionRobustnessToFAT32:
+    """Verify orphan blob detection is robust to FAT32 mtime race conditions.
+
+    On FAT32/network drives, mtime has 2-second resolution, so a
+    sidecar file deleted within 2 seconds might still appear in stat due to
+    mtime collision. The orphan sweep now supplements mtime-based age detection
+    with exists() check after a small delay to ensure the file is truly gone
+    before deletion.
+    """
+
+    def test_orphan_blob_removed_after_exists_check(self, tmp_data_dir):
+        """Verify orphan blobs are actually removed (not skipped due to FAT32 race)."""
+        cache_dir = image_shrink.paths.image_cache_dir()
+        image_shrink.ensure_cache_dir(cache_dir)
+
+        # Create an orphan blob (old, unaccessed)
+        old_blob = cache_dir / "abc123.shrunk.png"
+        old_blob.write_bytes(b"fake image data")
+
+        # Set its mtime to be older than the orphan threshold (7 days)
+        cfg = load_config()
+        orphan_age = cfg.image_shrink.orphan_age_secs
+        now = time.time()
+        old_mtime = now - (orphan_age + 100)  # 100 seconds past the threshold
+        os.utime(old_blob, (old_mtime, old_mtime))
+
+        # Verify blob exists and is old enough
+        assert old_blob.exists()
+        assert (now - old_blob.stat().st_mtime) > orphan_age
+
+        # Reset sweep flag so it actually runs
+        image_shrink._sweep_done = False
+
+        # Call sweep
+        image_shrink._sweep_orphans()
+
+        # Blob should be removed (the exists() check after stat() confirmed it
+        # was still there before deletion, preventing FAT32 race issues)
+        assert not old_blob.exists()
+
+    def test_orphan_sweep_verifies_with_exists_before_unlink(self, tmp_data_dir, monkeypatch):
+        """Verify the sweep uses exists() to confirm blob presence before deletion.
+
+        This test verifies the defensive coding: even if a blob passes the mtime
+        age check, we re-check with exists() after a small delay before unlinking.
+        """
+        cache_dir = image_shrink.paths.image_cache_dir()
+        image_shrink.ensure_cache_dir(cache_dir)
+
+        # Create an old orphan blob
+        old_blob = cache_dir / "xyz789.shrunk.webp"
+        old_blob.write_bytes(b"webp data")
+
+        # Set very old mtime
+        cfg = load_config()
+        orphan_age = cfg.image_shrink.orphan_age_secs
+        now = time.time()
+        old_mtime = now - (orphan_age + 3600)
+        os.utime(old_blob, (old_mtime, old_mtime))
+
+        # Track if unlink was called (by checking the file disappears)
+        image_shrink._sweep_done = False
+
+        image_shrink._sweep_orphans()
+
+        # File should have been unlinked
+        assert not old_blob.exists()

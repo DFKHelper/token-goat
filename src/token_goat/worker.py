@@ -1115,6 +1115,13 @@ def cleanup_on_startup() -> CleanupStats:
         _LOG.exception("cleanup task stale_index_markers failed")
         failures.append(f"stale_index_markers: {type(exc).__name__}: {exc}")
 
+    # Clear stale image-cache eviction lock before attempting eviction
+    try:
+        _clear_stale_eviction_lock()
+    except Exception as exc:  # noqa: BLE001
+        _LOG.exception("cleanup task clear_stale_eviction_lock failed")
+        failures.append(f"clear_stale_eviction_lock: {type(exc).__name__}: {exc}")
+
     # Image LRU eviction — already has its own error handling
     try:
         bytes_evicted, files_evicted = evict_image_cache_if_over_limit()
@@ -1194,14 +1201,39 @@ def _acquire_eviction_lock(lock_path: Path) -> int | None:
                 fd = os.open(str(lock_path), flags, 0o644)
             except FileExistsError:
                 # Another evictor grabbed it in the gap — that's fine, they win.
+                _LOG.warning("image-cache eviction lock contention: another process holds %s", lock_path)
                 return None
         else:
+            _LOG.warning("image-cache eviction lock contention: another process holds %s (lock is fresh)", lock_path)
             return None
     # Best-effort PID stamp so cli_doctor can identify the holder; not required
     # for correctness.
     with contextlib.suppress(OSError):
         os.write(fd, f"{os.getpid()}\n{time.time()}\n".encode())
     return fd
+
+
+def _clear_stale_eviction_lock() -> None:
+    """Clear stale image-cache eviction lock at startup.
+
+    Runs from cleanup_on_startup to ensure any lock left by a crashed evictor
+    does not block cache maintenance for the lifetime of the daemon. Unlike
+    _acquire_eviction_lock (which clears a stale lock only when it tries to
+    acquire), this proactively removes stale locks at startup so a maintenance
+    pass can proceed without waiting for the first (potential) eviction call.
+
+    Never raises; all errors are logged and suppressed.
+    """
+    lock_path = paths.locks_dir() / "image_cache_eviction.lock"
+    if not lock_path.exists():
+        return
+    try:
+        if _eviction_lock_is_stale(lock_path):
+            with contextlib.suppress(OSError):
+                lock_path.unlink()
+            _LOG.info("cleared stale image-cache eviction lock at startup: %s", lock_path)
+    except Exception as exc:  # noqa: BLE001
+        _LOG.debug("_clear_stale_eviction_lock failed: %s", exc)
 
 
 def evict_image_cache_if_over_limit() -> tuple[int, int]:
