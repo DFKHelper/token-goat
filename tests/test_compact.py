@@ -174,6 +174,9 @@ class TestBuildManifest:
         assert len(result) <= max_chars
 
     def test_edited_files_sorted_by_edit_count(self, tmp_data_dir):
+        # Neither file is ever *read*, so no FileEntry exists and last_edit_ts=0.0
+        # for both.  The recency tiebreaker therefore falls back to edit count:
+        # b.py (3×) must appear before a.py (1×).
         sid = "sort-edits-session-abc"
         session.mark_file_edited(sid, "/proj/a.py")
         session.mark_file_edited(sid, "/proj/b.py")
@@ -182,6 +185,41 @@ class TestBuildManifest:
         result = compact.build_manifest(sid)
         # b.py was edited 3× — should appear before a.py
         assert result.index("b.py") < result.index("a.py")
+
+    def test_edited_files_sorted_by_recency_beats_count(self, tmp_data_dir, monkeypatch):
+        # a.py edited many times (high count) but a long time ago;
+        # b.py edited once but very recently.
+        # Recency must win: b.py should appear before a.py.
+        sid = "recency-beats-count-session-abc"
+        import time as _time
+
+        # Edit a.py 5× at a simulated old timestamp.
+        old_ts = _time.time() - 3600.0  # 1 hour ago
+        with monkeypatch.context() as m:
+            m.setattr(_time, "time", lambda: old_ts)
+            for _ in range(5):
+                session.mark_file_edited(sid, "/proj/a.py")
+            # Also mark read so FileEntry is created and last_edit_ts is stamped.
+            session.mark_file_read(sid, "/proj/a.py", offset=0, limit=10)
+            # Re-edit so last_edit_ts > last_read_ts (ensures FileEntry.last_edit_ts is set).
+            session.mark_file_edited(sid, "/proj/a.py")
+
+        # Edit b.py once at a recent timestamp.
+        recent_ts = _time.time() - 5.0  # 5 seconds ago
+        with monkeypatch.context() as m:
+            m.setattr(_time, "time", lambda: recent_ts)
+            session.mark_file_edited(sid, "/proj/b.py")
+            session.mark_file_read(sid, "/proj/b.py", offset=0, limit=10)
+            session.mark_file_edited(sid, "/proj/b.py")
+
+        result = compact.build_manifest(sid)
+        # The Edited section lists files in recency order.  Extract just that body
+        # section to avoid the sealed block header (RESUME / ✎ lines) which uses
+        # edit-count ordering and would cause false negatives here.
+        edited_section = result[result.find("**Edited:**"):]
+        assert edited_section.index("b.py") < edited_section.index("a.py"), (
+            "recency should rank b.py (recent) before a.py (older, higher count)\n" + result
+        )
 
     def test_edit_count_suffix_in_manifest(self, tmp_data_dir):
         sid = "suffix-session-abc"

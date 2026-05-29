@@ -3697,10 +3697,28 @@ def _render(
     # section and the adaptive budget computation can use the cached result.
     pending_diff_stat: str = _get_git_diff_stat_summary(cwd)
 
+    # Pre-compute a normalized-path → last_edit_ts lookup from files_clean once here.
+    # Used both by the Edited section sort and (via sorted_edited) by the merged-files
+    # section, so we pay the O(|files_clean|) build cost only once per manifest render.
+    # Files only edited but never read have no FileEntry, so they map to 0.0.
+    _edit_ts_by_norm: dict[str, float] = {
+        _norm_key(key): getattr(entry, "last_edit_ts", 0.0)
+        for key, entry in files_clean.items()
+        if getattr(entry, "last_edit_ts", 0.0) > 0.0
+    }
+
     if edited_clean:
         edited_lines.append("**Edited:**")
-        # Sort by edit count descending so the most-touched files appear first.
-        sorted_edited = sorted(edited_clean.items(), key=_BY_EDIT_COUNT, reverse=True)
+        # Sort by recency (most recently edited first) so truncation at
+        # _MAX_EDITED_FILES_SHOWN drops the OLDEST edits rather than the newest.
+        # When two files share the same last_edit_ts (e.g. both only edited, never read —
+        # no FileEntry so last_edit_ts=0.0), edit count is the tiebreaker so the
+        # most-touched file still wins within that cohort.
+        sorted_edited = sorted(
+            edited_clean.items(),
+            key=lambda item: (_edit_ts_by_norm.get(_norm_key(item[0]), 0.0), item[1]),
+            reverse=True,
+        )
         shown_edited = sorted_edited[:_MAX_EDITED_FILES_SHOWN]
         overflow_edited = len(sorted_edited) - len(shown_edited)
 
@@ -4191,7 +4209,7 @@ def _render(
     )
     if _do_merge:
         # Build a merged **Files:** section.
-        # Collect all unique paths: edited paths first (preserving edit-count order),
+        # Collect all unique paths: edited paths first (preserving recency-then-count order),
         # then read-only top-files not in edited.
         merged_entries: list[str] = []
         _read_count_map = {
@@ -4203,8 +4221,9 @@ def _render(
             _norm_key(key): entry
             for key, entry in files_clean.items()
         }
-        # Sort edited paths by edit count descending (same as current edited section).
-        for _ep, _ec in sorted(edited_clean.items(), key=_BY_EDIT_COUNT, reverse=True):
+        # Reuse sorted_edited (pre-computed above) — same recency-then-count ordering
+        # as the Edited section, so the merged section is consistent with it.
+        for _ep, _ec in sorted_edited:
             _ep_norm = _norm_key(_ep)
             # Prefer read-count from included_top_files; fall back to files_clean.
             _re = _read_count_map.get(_ep_norm) or _files_clean_norm.get(_ep_norm)
