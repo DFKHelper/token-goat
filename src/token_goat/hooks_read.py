@@ -1232,11 +1232,10 @@ def _handle_glob_dedup(payload: HookPayload) -> HookResponse | None:
                 if cached_result is not None:
                     path_label = f" in {path!r}" if path else ""
                     # Cap the replayed path list to avoid injecting 200-path blobs.
-                    _GLOB_CACHE_MAX_PATHS = 20
                     _cached_lines = cached_result.splitlines()
-                    _overflow = len(_cached_lines) - _GLOB_CACHE_MAX_PATHS
+                    _overflow = len(_cached_lines) - _GLOB_RESULT_CACHE_MAX_PATHS
                     if _overflow > 0:
-                        _cached_display = "\n".join(_cached_lines[:_GLOB_CACHE_MAX_PATHS])
+                        _cached_display = "\n".join(_cached_lines[:_GLOB_RESULT_CACHE_MAX_PATHS])
                         _cached_display += f"\n(+{_overflow} more)"
                     else:
                         _cached_display = cached_result
@@ -1673,6 +1672,41 @@ def pre_read(payload: HookPayload) -> HookResponse:
         _flush_pending_hint_save(cache)
 
 
+def _check_ignored_hint_by_key(cache: object, key: str, label: str) -> None:
+    """Increment hints_ignored when *key* is found in ``cache.recent_hints``.
+
+    Shared implementation for :func:`_check_ignored_hint` (file-path key) and
+    :func:`_check_ignored_bash_hint` (command SHA key).  Both use the same
+    ring-buffer scan: find the key, increment ``hints_ignored``, remove the
+    entry so a second hit in the same session does not double-count, and log.
+
+    *label* is used only in the debug log line to distinguish the two callers.
+
+    Fail-soft: any exception is swallowed — the hook must never fail due to
+    curator bookkeeping.
+    """
+    try:
+        recent_hints = getattr(cache, "recent_hints", [])
+        if not recent_hints:
+            return
+        for hint_key, _ts in recent_hints:
+            if hint_key == key:
+                cache.hints_ignored += 1  # type: ignore[union-attr, attr-defined]
+                cache._invalidate_json_cache()  # type: ignore[union-attr, attr-defined]
+                # Remove from ring buffer so a second Read/Bash doesn't double-count.
+                cache.recent_hints = [  # type: ignore[union-attr, attr-defined]
+                    (k, t) for k, t in cache.recent_hints  # type: ignore[union-attr, attr-defined]
+                    if k != key
+                ]
+                _LOG.debug(
+                    "curator: hints_ignored++ for %s (total=%d)",
+                    label, cache.hints_ignored,  # type: ignore[union-attr, attr-defined]
+                )
+                break
+    except Exception:  # noqa: BLE001 — fail-soft
+        pass
+
+
 def _check_ignored_hint(cache: object, file_path: str) -> None:
     """Increment hints_ignored when a Read fires for a recently-hinted path.
 
@@ -1690,27 +1724,10 @@ def _check_ignored_hint(cache: object, file_path: str) -> None:
     """
     try:
         _sess = _get_session()
-
-        recent_hints = getattr(cache, "recent_hints", [])
-        if not recent_hints:
-            return
         norm = _sess._normalize_path(file_path)  # type: ignore[attr-defined]
-        for hint_path, _ts in recent_hints:
-            if hint_path == norm:
-                cache.hints_ignored += 1  # type: ignore[union-attr, attr-defined]
-                cache._invalidate_json_cache()  # type: ignore[union-attr, attr-defined]
-                # Remove from ring buffer so a second Read doesn't double-count.
-                cache.recent_hints = [  # type: ignore[union-attr, attr-defined]
-                    (p, t) for p, t in cache.recent_hints  # type: ignore[union-attr, attr-defined]
-                    if p != norm
-                ]
-                _LOG.debug(
-                    "curator: hints_ignored++ for %s (total=%d)",
-                    sanitize_log_str(file_path), cache.hints_ignored,  # type: ignore[union-attr, attr-defined]
-                )
-                break
     except Exception:  # noqa: BLE001 — fail-soft
-        pass
+        return
+    _check_ignored_hint_by_key(cache, norm, sanitize_log_str(file_path))
 
 
 def _check_ignored_bash_hint(cache: object, command: str) -> None:
@@ -1732,27 +1749,10 @@ def _check_ignored_bash_hint(cache: object, command: str) -> None:
     """
     try:
         from . import bash_cache as _bc  # noqa: PLC0415
-
         cmd_sha = _bc.command_hash(command)
-        recent_hints = getattr(cache, "recent_hints", [])
-        if not recent_hints:
-            return
-        for hint_key, _ts in recent_hints:
-            if hint_key == cmd_sha:
-                cache.hints_ignored += 1  # type: ignore[union-attr, attr-defined]
-                cache._invalidate_json_cache()  # type: ignore[union-attr, attr-defined]
-                # Remove from ring buffer so a second run doesn't double-count.
-                cache.recent_hints = [  # type: ignore[union-attr, attr-defined]
-                    (k, t) for k, t in cache.recent_hints  # type: ignore[union-attr, attr-defined]
-                    if k != cmd_sha
-                ]
-                _LOG.debug(
-                    "curator: hints_ignored++ for bash cmd %.60s (total=%d)",
-                    sanitize_log_str(command), cache.hints_ignored,  # type: ignore[union-attr, attr-defined]
-                )
-                break
     except Exception:  # noqa: BLE001 — fail-soft
-        pass
+        return
+    _check_ignored_hint_by_key(cache, cmd_sha, f"bash cmd {sanitize_log_str(command, max_len=60)}")
 
 
 def post_read(payload: HookPayload) -> HookResponse:
@@ -1856,6 +1856,11 @@ def post_read(payload: HookPayload) -> HookResponse:
 # savings.  Aligned with the dedup minimum so we never cache something we
 # would later refuse to surface.
 _BASH_CACHE_MIN_BYTES: int = 400
+
+# Maximum number of path lines replayed inline when serving a cached Glob result.
+# Capping prevents injecting large path lists (e.g. 200+ matches) into context.
+# Excess entries are summarised as "(+N more)".
+_GLOB_RESULT_CACHE_MAX_PATHS: int = 20
 
 # Lazy-load cache for the session module.  All function bodies that previously
 # did ``from . import session`` (or ``as _session``/``as _sess``) now call
