@@ -487,3 +487,44 @@ class TestEmitDedupBudgetedHintVerboseWindow:
         assert result is not None, "stub must be emitted"
         assert len(stat_calls) == 1, "record_hint_stat_pair must be called once for stubs"
         assert stat_calls[0][0] == "index_only", "stat_kind must be forwarded to stat pair"
+
+    def test_suppressed_hint_does_not_increment_counter(self, tmp_data_dir) -> None:
+        """When verbose_until_seen_count=0 suppresses a repeat hint, record_emitted_fn must NOT fire.
+
+        Budget semantics: max_structured_per_session counts total hint *firings*
+        (messages the model actually received).  A hint suppressed by the dedup gate
+        was never emitted, so it must not consume budget.  This test verifies that
+        the counter stays at zero when a second visit to the same path is suppressed
+        by the verbose_until=0 path.
+        """
+        from unittest import mock
+
+        from token_goat.config import Config, HintsConfig
+        from token_goat.hints import ReadHint, _hint_fingerprint
+        from token_goat.hooks_read import _emit_dedup_budgeted_hint
+
+        cache = session.SessionCache("vw-no-counter", 0, 0)
+        hint = ReadHint("Note: already read src/x.py", tokens_saved=100)
+        fp = _hint_fingerprint(str(hint), path="src/x.py")
+        # Simulate one prior emission so seen_count=1 on the next call.
+        cache.mark_hint_seen(fp)
+
+        cfg = Config(hints=HintsConfig(verbose_until_seen_count=0))
+        record_calls: list[object] = []
+
+        with mock.patch("token_goat.config.load", return_value=cfg):
+            result = _emit_dedup_budgeted_hint(
+                hint=hint,
+                file_path="src/x.py",
+                cache=cache,
+                budget_kind="index_only",
+                record_emitted_fn=lambda c: record_calls.append(c),
+                stat_kind="index_only",
+                display_name="index-only",
+            )
+
+        assert result is None, "verbose_until=0 must suppress repeat hint"
+        assert len(record_calls) == 0, (
+            "record_emitted_fn must NOT be called for suppressed hints — "
+            "budget counts firings (emitted messages), not dedup-gate visits"
+        )

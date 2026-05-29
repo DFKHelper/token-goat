@@ -528,6 +528,15 @@ def _emit_dedup_budgeted_hint(
     when the hint fires, or ``None`` when suppressed (already seen, budget
     exhausted) or no hint was supplied.  Previously inlined identically in
     ``_handle_index_only_file`` and ``_handle_structured_file``.
+
+    Budget semantics — ``record_emitted_fn`` (and therefore the per-kind counter
+    such as ``structured_hints_emitted``) is called **only when a hint or stub is
+    actually emitted**.  Hints suppressed entirely by the dedup gate (seen in this
+    session and ``verbose_until_seen_count == 0``) do **not** increment the counter.
+    This is intentional: the ``max_structured_per_session`` cap counts
+    *total hint firings* (i.e., messages the model actually received), not the
+    number of file paths that triggered the check.  A suppressed hint consumes no
+    model context, so it should not be charged against the budget.
     """
     if hint is None:
         return None

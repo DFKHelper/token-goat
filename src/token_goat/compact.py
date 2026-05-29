@@ -727,7 +727,14 @@ def _get_git_diff_stat(
 
 
 _INLINE_DIFF_MAX_BYTES: Final[int] = 500  # per-file diff size gate (#7)
-_INLINE_DIFF_TOTAL_CAP: Final[int] = 800  # total inlined diff bytes in manifest (#7)
+_INLINE_DIFF_TOTAL_CAP: Final[int] = 800  # total inlined diff bytes in manifest (#7); ~200 tokens at typical code density (4 bytes/token).
+# NOTE: _INLINE_DIFF_TOTAL_CAP is denominated in bytes, while the manifest budget
+# (_render's max_tokens arg) is denominated in tokens.  The inline diff section can
+# therefore consume up to ~200 tokens without the token-budget system being aware.
+# For the default 400-token manifest this is ≤50 % of budget, acceptable because
+# inline diffs displace the (lower-value) edited-file list entries they replace.
+# If the manifest budget is shrunk significantly, revisit this constant or convert
+# it to a token-denominated cap derived from max_tokens.
 _SINGLE_FILE_DIFF_CAP: Final[int] = 400  # whole-repo diff cap for single-file replace (#17)
 
 # Item #2: short-TTL cache for the whole-repo ``git diff HEAD`` output keyed
