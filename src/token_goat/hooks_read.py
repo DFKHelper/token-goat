@@ -980,6 +980,17 @@ def _try_grep_symbol_hint(pattern: str, cwd: str | None) -> str | None:
         if not rows or len(rows) > 5:
             return None
 
+        if len(rows) == 1:
+            row = rows[0]
+            file_short = Path(row["file_rel"]).name
+            loc = f"`{file_short}:{row['line']}` ({row['kind']})"
+            read_cmd = f'token-goat read "{row["file_rel"]}::{pattern}"'
+            return (
+                f"Symbol `{pattern}` is indexed at {loc} — use `{read_cmd}` "
+                f"to read its body directly, or `token-goat symbol {pattern}` "
+                f"for all references (~95% fewer tokens than grep)."
+            )
+
         locations = []
         for row in rows:
             file_short = Path(row["file_rel"]).name
@@ -1033,17 +1044,25 @@ def _try_grep_dotted_hint(pattern: str, cwd: str | None) -> str | None:
 
         qual_lower = qualifier.lower()
         preferred = [r for r in rows if qual_lower in Path(r["file_rel"]).stem.lower()]
-        # When the qualifier is a well-known instance-reference keyword (self,
-        # cls, this, …) and no file stem matches, the fallback to unfiltered
-        # rows would surface every method named "load"/"run"/etc. in the
-        # project — noise that is almost certainly not what the agent wanted.
-        # Return None in that case rather than emitting a misleading hint.
-        _SELF_LIKE = frozenset(["self", "cls", "this", "obj", "base", "super"])
-        if not preferred and qual_lower in _SELF_LIKE:
+        # Require at least one file-stem match.  Without it, any hint would
+        # name unrelated symbols (e.g., every method called "load" in the
+        # project when the qualifier is "self", "response", or any other
+        # variable name that never appears in a file stem).
+        if not preferred:
             return None
-        display_rows = preferred if preferred else rows
+        display_rows = preferred
         if len(display_rows) > 3:
             return None
+
+        if len(display_rows) == 1:
+            row = display_rows[0]
+            file_short = Path(row["file_rel"]).name
+            loc = f"`{file_short}:{row['line']}` ({row['kind']})"
+            read_cmd = f'token-goat read "{row["file_rel"]}::{method}"'
+            return (
+                f"For `{pattern}`, `{method}` is indexed at {loc} — use "
+                f"`{read_cmd}` to read its body directly (~95% fewer tokens than grep)."
+            )
 
         locations = []
         for row in display_rows:
@@ -1549,10 +1568,16 @@ def pre_read(payload: HookPayload) -> HookResponse:
     # Uses fingerprint dedup so it only fires once per unique (file, range) pair.
     _raw_offset = tool_input.get("offset")
     _raw_limit = tool_input.get("limit")
-    if _raw_offset is not None and _raw_limit is not None:
+    # Fire the surgical hint for any bounded read (offset known).  When limit
+    # is absent (open-ended ``tail -n +N`` reads), use 2000 as a proxy for
+    # "rest of file" — matches the Read tool's default page size and is large
+    # enough to cover typical function/class bodies while the ≤3-symbol guard
+    # prevents false-positive hints on files with dense symbol coverage.
+    if _raw_offset is not None:
         try:
+            _eff_limit = int(_raw_limit) if _raw_limit is not None else 2000
             _surg_hint = _try_surgical_read_hint(
-                file_path, int(_raw_offset), int(_raw_limit), cwd
+                file_path, int(_raw_offset), _eff_limit, cwd
             )
         except (TypeError, ValueError):
             _surg_hint = None

@@ -420,8 +420,9 @@ def test_tail_records_limit_only():
     ("tail -n +10 file.py", 10),
     ("tail -n +1 file.py", 1),
     ("tail -n +100 src/main.py", 100),
-    ("tail -n+50 file.py", 50),   # compact form: no space between -n and +50
+    ("tail -n+50 file.py", 50),    # compact form: no space between -n and +50
     ("tail --lines +25 file.py", 25),
+    ("tail -n +0 file.py", 1),     # +0 floors to 1 (GNU tail semantics; avoids offset=-1 bleed)
 ])
 def test_tail_skip_to_line_sets_offset(cmd, expected_offset):
     # ``tail -n +N`` outputs from line N to EOF — offset IS known (1-indexed).
