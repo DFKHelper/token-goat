@@ -254,9 +254,10 @@ def _try_shrink_image(
                     ),
                 )
                 return None
-        except OSError:
+        except OSError as _exc:
             # Missing file / permission: fall through to image_shrink.shrink
             # which has its own OSError handling and returns None silently.
+            _LOG.debug("image-shrink: pre-check failed for %s: %s", sanitize_log_str(file_path), _exc)
             pass
         shrunken = image_shrink.shrink(src_path)
         if shrunken is None:
@@ -271,7 +272,9 @@ def _try_shrink_image(
 
             with _PILImage.open(shrunken) as _img:
                 img_summary = image_shrink.extract_image_summary(src_path, _img)
-        except Exception:  # noqa: BLE001
+        except (OSError, AttributeError):
+            # OSError: file not found or permission denied (transient race)
+            # AttributeError: PIL module issues or missing image methods
             pass
 
         # Detect cache hit: if shrunken path is in the image cache directory and
@@ -284,8 +287,11 @@ def _try_shrink_image(
             # Cache hit means the shrunken path matches the cache stem pattern.
             if shrunken.parent == stem.parent and shrunken.stem == stem.stem:
                 is_cache_hit = True
-        except Exception:  # noqa: BLE001
+        except (AttributeError, ValueError, TypeError):
+            # AttributeError: private _cache_path_for not found (API change)
+            # ValueError/TypeError: src_path validation failed in the function
             # Safe to ignore; we just won't differentiate cache hits from fresh shrinks.
+            _LOG.debug("image-shrink: cache-hit detection failed for %s", sanitize_log_str(file_path))
             pass
 
         img_stats = image_shrink.stats_for(src_path, shrunken)
@@ -327,8 +333,14 @@ def _try_shrink_image(
         if img_summary:
             note = f"{note}\n{img_summary}"
         return pre_tool_use_with_update(shrink_response, note)
-    except Exception:  # noqa: BLE001
-        _LOG.exception("image-shrink failed during pre-read")
+    except (OSError, ValueError, TypeError, AttributeError) as exc:
+        # OSError: file I/O failures, permission denied, disk full
+        # ValueError/TypeError: invalid path or type conversion failure
+        # AttributeError: API changes or missing methods on shrink result
+        _LOG.exception("image-shrink failed during pre-read: %s", type(exc).__name__)
+        return None
+    except Exception:  # noqa: BLE001 — truly unknown failures
+        _LOG.warning("image-shrink: unexpected exception type during pre-read", exc_info=True)
         return None
 
 
@@ -448,7 +460,13 @@ def _try_surgical_read_hint(
             f"{range_str} of `{fname}` span {sym_list}. "
             f"Use `{cmd}` for a surgical read (~90% fewer tokens on repeat access)."
         )
-    except Exception:  # noqa: BLE001
+    except (OSError, ValueError, AttributeError):
+        # OSError: DB/file access errors (transient locks, permission)
+        # ValueError: path resolution failures, invalid line ranges
+        # AttributeError: missing DB column, project attributes
+        return None
+    except Exception:  # noqa: BLE001 — catch truly unknown errors
+        _LOG.warning("surgical-read-hint: unexpected exception", exc_info=True)
         return None
 
 
@@ -476,7 +494,13 @@ def _build_git_hint(cwd: str | None, file_path: str) -> str | None:
         except ValueError:
             return None
         return git_history.build_hint(proj.hash, rel_path)
-    except Exception:  # noqa: BLE001
+    except (OSError, ValueError, AttributeError):
+        # OSError: DB/git access failures
+        # ValueError: path validation or conversion failures
+        # AttributeError: missing git module or project attributes
+        return None
+    except Exception:  # noqa: BLE001 — truly unexpected errors
+        _LOG.warning("git-history hint: unexpected exception", exc_info=True)
         return None
 
 
@@ -555,7 +579,13 @@ def _emit_dedup_budgeted_hint(
             from . import config as _config  # noqa: PLC0415
             cfg = _config.load().hints
             verbose_until = cfg.verbose_until_seen_count
-        except Exception:  # noqa: BLE001
+        except (OSError, ValueError, AttributeError):
+            # OSError: config file not found or unreadable
+            # ValueError: invalid TOML/config format
+            # AttributeError: missing config sections
+            verbose_until = 2  # default
+        except Exception:  # noqa: BLE001 — very unexpected config errors
+            _LOG.debug("dedup budget check: config load failed unexpectedly", exc_info=True)
             verbose_until = 2  # default
 
         if verbose_until == 0:
@@ -836,7 +866,13 @@ def _try_diff_hint(
     # double-counting the saving (we record bytes_saved=0 to avoid that).
     try:
         snapshot_kind = snapshots.load_kind(session_id, file_path)
-    except Exception:  # noqa: BLE001
+    except (OSError, KeyError, AttributeError):
+        # OSError: snapshot file not found or unreadable
+        # KeyError: session entry missing from snapshot index
+        # AttributeError: missing snapshot attributes
+        snapshot_kind = None
+    except Exception:  # noqa: BLE001 — unexpected snapshot errors
+        _LOG.debug("diff-hint: snapshot kind lookup failed", exc_info=True)
         snapshot_kind = None
     if snapshot_kind == "predictive":
         from . import db as _db  # noqa: PLC0415
@@ -849,8 +885,12 @@ def _try_diff_hint(
                 tokens_saved=0,
                 detail=sanitize_log_str(file_path, max_len=512),
             )
-        except Exception:  # noqa: BLE001
+        except (OSError, ValueError):
+            # OSError: database write failure (disk full, permission denied)
+            # ValueError: invalid stat kind or detail format
             _LOG.debug("predictive-snapshot: stat record failed", exc_info=True)
+        except Exception:  # noqa: BLE001 — catch very unexpected DB errors
+            _LOG.warning("predictive-snapshot: unexpected error during stat record", exc_info=True)
         _LOG.info(
             "pre-read: predictive-snapshot hit for %s (tokens_saved=%d)",
             sanitize_log_str(file_path), hint.tokens_saved,
@@ -1515,7 +1555,13 @@ def pre_read(payload: HookPayload) -> HookResponse:
 
                 if _snap_mod.load_kind(session_id, file_path) == "predictive":
                     _predictive_unlock = True
-            except Exception:  # noqa: BLE001
+            except (OSError, KeyError, AttributeError):
+                # OSError: snapshot file not found or unreadable
+                # KeyError: session entry missing from snapshot index
+                # AttributeError: missing snapshot module or attributes
+                _predictive_unlock = False
+            except Exception:  # noqa: BLE001 — unexpected snapshot errors
+                _LOG.debug("pre-read: predictive unlock check failed", exc_info=True)
                 _predictive_unlock = False
         if (entry is not None and entry.last_edit_ts > entry.last_read_ts) or _predictive_unlock:
             # Compute requested read range for the overlap guard in _try_diff_hint.
