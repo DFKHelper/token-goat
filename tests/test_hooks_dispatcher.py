@@ -941,6 +941,64 @@ class TestCompactSkipSentinel:
             # Must not raise; must return the hardcoded default.
             assert hc._compact_skip_ttl_secs() == hc._COMPACT_SKIP_TTL_SECS
 
+    def test_sentinel_fat32_mtime_grace_1_5s_does_not_bust(self, tmp_path, monkeypatch):
+        """Session mtime 1.5s after sentinel should NOT bust (grace is 2.0s).
+
+        Regression: with grace=0.5s, FAT32's 2s mtime resolution could cause
+        a false-negative where a session write 1.5s after the sentinel appeared
+        to have the same mtime, incorrectly skipping manifest injection.  With
+        grace=2.0s, a 1.5s delta correctly keeps the sentinel valid.
+        """
+        import os
+
+        from token_goat import hooks_cli as hc
+        from token_goat import paths
+
+        monkeypatch.setattr(paths, "data_dir", lambda: tmp_path)
+
+        session_id = "fat32_grace_1_5s"
+        hc._write_compact_skip_sentinel(session_id)
+        sentinel = paths.compact_skip_sentinel_path(session_id)
+        sentinel_mtime = sentinel.stat().st_mtime
+
+        # Write session file 1.5s after sentinel (less than the 2.0s grace).
+        session_file = paths.session_cache_path(session_id)
+        session_file.parent.mkdir(parents=True, exist_ok=True)
+        session_file.write_text("{}", encoding="utf-8")
+        session_mtime_1_5s = sentinel_mtime + 1.5
+        os.utime(session_file, (session_mtime_1_5s, session_mtime_1_5s))
+
+        # The sentinel should still be valid (1.5s < 2.0s grace).
+        assert hc._check_compact_skip_sentinel(session_id) is True
+
+    def test_sentinel_fat32_mtime_grace_2_5s_does_bust(self, tmp_path, monkeypatch):
+        """Session mtime 2.5s after sentinel SHOULD bust (grace is 2.0s).
+
+        With grace=2.0s, a session write 2.5s after the sentinel (exceeding the
+        grace) correctly invalidates the sentinel.
+        """
+        import os
+
+        from token_goat import hooks_cli as hc
+        from token_goat import paths
+
+        monkeypatch.setattr(paths, "data_dir", lambda: tmp_path)
+
+        session_id = "fat32_grace_2_5s"
+        hc._write_compact_skip_sentinel(session_id)
+        sentinel = paths.compact_skip_sentinel_path(session_id)
+        sentinel_mtime = sentinel.stat().st_mtime
+
+        # Write session file 2.5s after sentinel (more than the 2.0s grace).
+        session_file = paths.session_cache_path(session_id)
+        session_file.parent.mkdir(parents=True, exist_ok=True)
+        session_file.write_text("{}", encoding="utf-8")
+        session_mtime_2_5s = sentinel_mtime + 2.5
+        os.utime(session_file, (session_mtime_2_5s, session_mtime_2_5s))
+
+        # The sentinel should be invalidated (2.5s > 2.0s grace).
+        assert hc._check_compact_skip_sentinel(session_id) is False
+
 
 # ---------------------------------------------------------------------------
 # Item D: dispatch top-level continue-field sanitization

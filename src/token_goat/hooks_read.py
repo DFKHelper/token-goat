@@ -1332,6 +1332,11 @@ def pre_read(payload: HookPayload) -> HookResponse:
 
     Returns hook response dict with optional updatedInput (image shrinking) or
     additionalContext (hint text).
+
+    Hint dedup state is protected by a try/finally: _flush_pending_hint_save
+    is guaranteed to run regardless of which return path is taken from the
+    Read-tool path, so no new early-return can silently drop the dedup
+    fingerprint.
     """
     from .hints import build_read_hint  # noqa: PLC0415
 
@@ -1413,223 +1418,221 @@ def pre_read(payload: HookPayload) -> HookResponse:
     session = _get_session()
 
     cache = session.load(session_id)
+    try:
+        # Deferred recovery hint: inject on the first Read after compaction.
+        # This fires before all other hints so the recovery context is the first
+        # additionalContext the agent receives in its new post-compact window.
+        _recovery_text = _check_recovery_pending(session_id, cache)
+        if _recovery_text:
+            return pre_tool_use_with_context(_recovery_text)
 
-    # Deferred recovery hint: inject on the first Read after compaction.
-    # This fires before all other hints so the recovery context is the first
-    # additionalContext the agent receives in its new post-compact window.
-    _recovery_text = _check_recovery_pending(session_id, cache)
-    if _recovery_text:
-        return pre_tool_use_with_context(_recovery_text)
+        # Index-only file hint: fires first so machine-generated lockfiles and bundles
+        # (uv.lock, package-lock.json, *.min.js, *.map, …) are intercepted before any
+        # other hint logic runs.  These files are never worth reading in full and the
+        # hint saves thousands of tokens per avoided read.
+        index_only_response = _handle_index_only_file(session_id, file_path, tool_input, cache)
+        if index_only_response is not None:
+            return index_only_response
 
-    # Index-only file hint: fires first so machine-generated lockfiles and bundles
-    # (uv.lock, package-lock.json, *.min.js, *.map, …) are intercepted before any
-    # other hint logic runs.  These files are never worth reading in full and the
-    # hint saves thousands of tokens per avoided read.
-    index_only_response = _handle_index_only_file(session_id, file_path, tool_input, cache)
-    if index_only_response is not None:
-        _flush_pending_hint_save(cache)
-        return index_only_response
+        # Structured-file hint: fires before session/diff hints so a first-time read
+        # of a large CSV/JSON/log is intercepted immediately.  Short-circuits when
+        # the caller already uses offset+limit (surgical intent) or the file is small.
+        structured_response = _handle_structured_file(session_id, file_path, tool_input, cache)
+        if structured_response is not None:
+            return structured_response
 
-    # Structured-file hint: fires before session/diff hints so a first-time read
-    # of a large CSV/JSON/log is intercepted immediately.  Short-circuits when
-    # the caller already uses offset+limit (surgical intent) or the file is small.
-    structured_response = _handle_structured_file(session_id, file_path, tool_input, cache)
-    if structured_response is not None:
-        _flush_pending_hint_save(cache)
-        return structured_response
+        # Collect context parts from all hint sources; combine and return once.
+        context_parts: list[str] = []
 
-    # Collect context parts from all hint sources; combine and return once.
-    context_parts: list[str] = []
-
-    # Content-unchanged short-circuit: file was edited in this session AND the
-    # current on-disk SHA matches the snapshot taken after the last Read.  This
-    # means the agent's edit IS the current file content — a full re-read
-    # returns bytes already visible in the Edit tool result.  Fires before the
-    # diff-hint path because SHA-match is a stronger signal (no diff to show).
-    # Only fires for unscooped full reads (no offset/limit).
-    unchanged_response = _try_unchanged_file_hint(
-        session_id, file_path, tool_input, cache
-    )
-    if unchanged_response is not None:
-        _flush_pending_hint_save(cache)
-        return unchanged_response
-
-    # Diff-aware path: file was read AND edited in this session AND we have
-    # a snapshot to compare against.  When applicable, the diff hint replaces
-    # the standard cache hint — both communicate the same idea (you've seen
-    # this file before) but the diff carries the actually-changed bytes.
-    #
-    # Predictive-prefetch unlock: when the file has never been read in this
-    # session BUT a predictive snapshot exists (written by post_edit's
-    # import-following path), still route through the diff hint.  The
-    # snapshot represents what the agent would have seen at the moment of
-    # the editing peer's last read of the disk file; if the file has changed
-    # since then the diff is genuinely useful, and if it hasn't,
-    # build_diff_hint returns None (its size + min-saving thresholds remain
-    # the only emission gate).  Without this branch, every predictive
-    # snapshot is pure overhead with no payoff path.
-    entry = cache.files.get(session._normalize_path(file_path))  # type: ignore[attr-defined]
-    _predictive_unlock = False
-    if entry is None or entry.last_edit_ts <= entry.last_read_ts:
-        try:
-            from . import snapshots as _snap_mod  # noqa: PLC0415
-
-            if _snap_mod.load_kind(session_id, file_path) == "predictive":
-                _predictive_unlock = True
-        except Exception:  # noqa: BLE001
-            _predictive_unlock = False
-    if (entry is not None and entry.last_edit_ts > entry.last_read_ts) or _predictive_unlock:
-        # Compute requested read range for the overlap guard in _try_diff_hint.
-        _raw_offset = tool_input.get("offset")
-        _raw_limit = tool_input.get("limit")
-        _req_start: int | None = None
-        _req_end: int | None = None
-        try:
-            from .hints import DEFAULT_READ_LIMIT  # noqa: PLC0415
-
-            _safe_offset = max(0, int(_raw_offset)) if _raw_offset is not None else 0
-            _safe_limit = max(0, int(_raw_limit)) if _raw_limit is not None else 0
-            _req_start = _safe_offset + 1
-            _req_end = _req_start + (_safe_limit or DEFAULT_READ_LIMIT) - 1
-        except (TypeError, ValueError):
-            pass
-        diff_response = _try_diff_hint(
-            session_id,
-            file_path,
-            req_start=_req_start,
-            req_end=_req_end,
-            entry_line_ranges=entry.line_ranges if entry is not None else None,
+        # Content-unchanged short-circuit: file was edited in this session AND the
+        # current on-disk SHA matches the snapshot taken after the last Read.  This
+        # means the agent's edit IS the current file content — a full re-read
+        # returns bytes already visible in the Edit tool result.  Fires before the
+        # diff-hint path because SHA-match is a stronger signal (no diff to show).
+        # Only fires for unscooped full reads (no offset/limit).
+        unchanged_response = _try_unchanged_file_hint(
+            session_id, file_path, tool_input, cache
         )
-        if diff_response is not None:
-            # Extract the text so we can combine with the git hint if present.
-            hso = diff_response.get("hookSpecificOutput") or {}
-            diff_text = hso.get("additionalContext", "") if isinstance(hso, dict) else ""
-            if diff_text:
-                context_parts.append(diff_text)
+        if unchanged_response is not None:
+            return unchanged_response
 
-    if not context_parts:
-        hint = build_read_hint(
-            session_id=session_id,
-            file_path=file_path,
-            offset=tool_input.get("offset"),
-            limit=tool_input.get("limit"),
-            cwd=cwd,
-            cache=cache,
-        )
-        if hint:
-            from .hints import _hint_fingerprint  # noqa: PLC0415
+        # Diff-aware path: file was read AND edited in this session AND we have
+        # a snapshot to compare against.  When applicable, the diff hint replaces
+        # the standard cache hint — both communicate the same idea (you've seen
+        # this file before) but the diff carries the actually-changed bytes.
+        #
+        # Predictive-prefetch unlock: when the file has never been read in this
+        # session BUT a predictive snapshot exists (written by post_edit's
+        # import-following path), still route through the diff hint.  The
+        # snapshot represents what the agent would have seen at the moment of
+        # the editing peer's last read of the disk file; if the file has changed
+        # since then the diff is genuinely useful, and if it hasn't,
+        # build_diff_hint returns None (its size + min-saving thresholds remain
+        # the only emission gate).  Without this branch, every predictive
+        # snapshot is pure overhead with no payoff path.
+        entry = cache.files.get(session._normalize_path(file_path))  # type: ignore[attr-defined]
+        _predictive_unlock = False
+        if entry is None or entry.last_edit_ts <= entry.last_read_ts:
+            try:
+                from . import snapshots as _snap_mod  # noqa: PLC0415
 
-            hint_text = str(hint)
-            fingerprint = _hint_fingerprint(hint_text, path=file_path)
+                if _snap_mod.load_kind(session_id, file_path) == "predictive":
+                    _predictive_unlock = True
+            except Exception:  # noqa: BLE001
+                _predictive_unlock = False
+        if (entry is not None and entry.last_edit_ts > entry.last_read_ts) or _predictive_unlock:
+            # Compute requested read range for the overlap guard in _try_diff_hint.
+            _raw_offset = tool_input.get("offset")
+            _raw_limit = tool_input.get("limit")
+            _req_start: int | None = None
+            _req_end: int | None = None
+            try:
+                from .hints import DEFAULT_READ_LIMIT  # noqa: PLC0415
 
-            # Suppress hint if identical hint was already seen in this session.
-            if cache.has_hint_fingerprint(fingerprint):
-                _LOG.debug(
-                    "pre-read: hint fingerprint %s already seen; suppressing duplicate for %s",
-                    fingerprint,
-                    sanitize_log_str(file_path),
-                )
-            else:
-                _hint_kind = "already_read" if hint.tokens_saved > 0 else "read_suggestion"
-                if hint.tokens_saved > 0:
+                _safe_offset = max(0, int(_raw_offset)) if _raw_offset is not None else 0
+                _safe_limit = max(0, int(_raw_limit)) if _raw_limit is not None else 0
+                _req_start = _safe_offset + 1
+                _req_end = _req_start + (_safe_limit or DEFAULT_READ_LIMIT) - 1
+            except (TypeError, ValueError):
+                pass
+            diff_response = _try_diff_hint(
+                session_id,
+                file_path,
+                req_start=_req_start,
+                req_end=_req_end,
+                entry_line_ranges=entry.line_ranges if entry is not None else None,
+            )
+            if diff_response is not None:
+                # Extract the text so we can combine with the git hint if present.
+                hso = diff_response.get("hookSpecificOutput") or {}
+                diff_text = hso.get("additionalContext", "") if isinstance(hso, dict) else ""
+                if diff_text:
+                    context_parts.append(diff_text)
+
+        if not context_parts:
+            hint = build_read_hint(
+                session_id=session_id,
+                file_path=file_path,
+                offset=tool_input.get("offset"),
+                limit=tool_input.get("limit"),
+                cwd=cwd,
+                cache=cache,
+            )
+            if hint:
+                from .hints import _hint_fingerprint  # noqa: PLC0415
+
+                hint_text = str(hint)
+                fingerprint = _hint_fingerprint(hint_text, path=file_path)
+
+                # Suppress hint if identical hint was already seen in this session.
+                if cache.has_hint_fingerprint(fingerprint):
                     _LOG.debug(
-                        "pre-read: hint injected for %s (tokens_saved=%d)",
-                        sanitize_log_str(file_path), hint.tokens_saved,
-                    )
-                    _record_session_hint_impact(file_path, hint)
-                    # Curator: record emission keyed by path — only after confirming the
-                    # hint passes fingerprint dedup and will actually enter context.
-                    from .hints import _record_hint_emitted as _rhe  # noqa: PLC0415
-                    _rhe(cache, session._normalize_path(file_path))  # type: ignore[attr-defined]
-                else:
-                    _LOG.debug(
-                        "pre-read: hint built for %s but tokens_saved=0; no stat recorded",
+                        "pre-read: hint fingerprint %s already seen; suppressing duplicate for %s",
+                        fingerprint,
                         sanitize_log_str(file_path),
                     )
-                # per-type counter: increment only when hint enters context.
-                cache.record_hint_emitted(_hint_kind)
-                context_parts.append(hint_text)
-                cache.mark_hint_seen(fingerprint)
+                else:
+                    _hint_kind = "already_read" if hint.tokens_saved > 0 else "read_suggestion"
+                    if hint.tokens_saved > 0:
+                        _LOG.debug(
+                            "pre-read: hint injected for %s (tokens_saved=%d)",
+                            sanitize_log_str(file_path), hint.tokens_saved,
+                        )
+                        _record_session_hint_impact(file_path, hint)
+                        # Curator: record emission keyed by path — only after confirming the
+                        # hint passes fingerprint dedup and will actually enter context.
+                        from .hints import _record_hint_emitted as _rhe  # noqa: PLC0415
+                        _rhe(cache, session._normalize_path(file_path))  # type: ignore[attr-defined]
+                    else:
+                        _LOG.debug(
+                            "pre-read: hint built for %s but tokens_saved=0; no stat recorded",
+                            sanitize_log_str(file_path),
+                        )
+                    # per-type counter: increment only when hint enters context.
+                    cache.record_hint_emitted(_hint_kind)
+                    context_parts.append(hint_text)
+                    cache.mark_hint_seen(fingerprint)
 
-    # File written this session but never read back — the content the model
-    # wrote may still be in context from the Write/Edit tool result, making a
-    # full re-read redundant.  Only fires when no other hint was emitted, so
-    # it never shadows a more specific diff-hint or cache-overlap hint.
-    if not context_parts:
+        # File written this session but never read back — the content the model
+        # wrote may still be in context from the Write/Edit tool result, making a
+        # full re-read redundant.  Only fires when no other hint was emitted, so
+        # it never shadows a more specific diff-hint or cache-overlap hint.
+        if not context_parts:
+            _written_key = session._normalize_path(file_path)  # type: ignore[attr-defined]
+            _edited: dict[str, int] = cache.edited_files if isinstance(cache.edited_files, dict) else {}
+            _edit_count = _edited.get(_written_key, 0)
+            if _edit_count >= 1 and _written_key not in cache.files:
+                _fname = sanitize_log_str(Path(file_path).name, max_len=256)
+                context_parts.append(
+                    f"Note: `{_fname}` was written {_edit_count}x this session and not yet read back. "
+                    f"The content you wrote may still be in context from the tool result — "
+                    f"verify there rather than re-reading. For a specific symbol use "
+                    f"`token-goat read \"{file_path}::SymbolName\"`."
+                )
+                _LOG.debug(
+                    "pre-read: written-not-read hint for %s (edit_count=%d)",
+                    sanitize_log_str(file_path), _edit_count,
+                )
+
+        # Surgical-read suggestion: when the read covers a specific line range that
+        # maps to known indexed symbols, name them so the agent has the precise
+        # `token-goat read` command for repeat access.  Fires even on the first
+        # read — the value is teaching the cheaper path before the second trip.
+        # Uses fingerprint dedup so it only fires once per unique (file, range) pair.
+        _raw_offset = tool_input.get("offset")
+        _raw_limit = tool_input.get("limit")
+        # Fire the surgical hint for any bounded read (offset known).  When limit
+        # is absent (open-ended ``tail -n +N`` reads), use 2000 as a proxy for
+        # "rest of file" — matches the Read tool's default page size and is large
+        # enough to cover typical function/class bodies while the ≤3-symbol guard
+        # prevents false-positive hints on files with dense symbol coverage.
+        if _raw_offset is not None:
+            try:
+                _limit_is_sentinel = _raw_limit is None
+                _eff_limit = int(_raw_limit) if _raw_limit is not None else 2000
+                _surg_hint = _try_surgical_read_hint(
+                    file_path, int(_raw_offset), _eff_limit, cwd,
+                    limit_is_sentinel=_limit_is_sentinel,
+                )
+            except (TypeError, ValueError):
+                _surg_hint = None
+            if _surg_hint:
+                from .hints import _hint_fingerprint  # noqa: PLC0415
+                _surg_fp = _hint_fingerprint(_surg_hint, path=file_path)
+                if not cache.has_hint_fingerprint(_surg_fp):
+                    context_parts.append(_surg_hint)
+                    cache.mark_hint_seen(_surg_fp)
+                    cache.record_hint_emitted("surgical_suggestion")
+
+        # Append git commit history for the file (with dedup and session-age gate).
+        # Skip git hint for files edited this session (agent already knows they changed).
+        # Skip for new sessions (<120s) where git history is not yet relevant.
         _written_key = session._normalize_path(file_path)  # type: ignore[attr-defined]
         _edited: dict[str, int] = cache.edited_files if isinstance(cache.edited_files, dict) else {}
-        _edit_count = _edited.get(_written_key, 0)
-        if _edit_count >= 1 and _written_key not in cache.files:
-            _fname = sanitize_log_str(Path(file_path).name, max_len=256)
-            context_parts.append(
-                f"Note: `{_fname}` was written {_edit_count}x this session and not yet read back. "
-                f"The content you wrote may still be in context from the tool result — "
-                f"verify there rather than re-reading. For a specific symbol use "
-                f"`token-goat read \"{file_path}::SymbolName\"`."
-            )
-            _LOG.debug(
-                "pre-read: written-not-read hint for %s (edit_count=%d)",
-                sanitize_log_str(file_path), _edit_count,
-            )
+        _created_ts = getattr(cache, 'created_ts', time.time())
+        _is_edited = _written_key in _edited
+        _is_new_session = False
+        if isinstance(_created_ts, (int, float)):
+            _session_age = time.time() - _created_ts
+            _is_new_session = _session_age < 120.0
 
-    # Surgical-read suggestion: when the read covers a specific line range that
-    # maps to known indexed symbols, name them so the agent has the precise
-    # `token-goat read` command for repeat access.  Fires even on the first
-    # read — the value is teaching the cheaper path before the second trip.
-    # Uses fingerprint dedup so it only fires once per unique (file, range) pair.
-    _raw_offset = tool_input.get("offset")
-    _raw_limit = tool_input.get("limit")
-    # Fire the surgical hint for any bounded read (offset known).  When limit
-    # is absent (open-ended ``tail -n +N`` reads), use 2000 as a proxy for
-    # "rest of file" — matches the Read tool's default page size and is large
-    # enough to cover typical function/class bodies while the ≤3-symbol guard
-    # prevents false-positive hints on files with dense symbol coverage.
-    if _raw_offset is not None:
-        try:
-            _limit_is_sentinel = _raw_limit is None
-            _eff_limit = int(_raw_limit) if _raw_limit is not None else 2000
-            _surg_hint = _try_surgical_read_hint(
-                file_path, int(_raw_offset), _eff_limit, cwd,
-                limit_is_sentinel=_limit_is_sentinel,
-            )
-        except (TypeError, ValueError):
-            _surg_hint = None
-        if _surg_hint:
-            from .hints import _hint_fingerprint  # noqa: PLC0415
-            _surg_fp = _hint_fingerprint(_surg_hint, path=file_path)
-            if not cache.has_hint_fingerprint(_surg_fp):
-                context_parts.append(_surg_hint)
-                cache.mark_hint_seen(_surg_fp)
-                cache.record_hint_emitted("surgical_suggestion")
+        if not _is_edited and not _is_new_session:
+            git_ctx = _build_git_hint(cwd, file_path)
+            if git_ctx:
+                from .hints import _hint_fingerprint  # noqa: PLC0415
+                _git_fp = _hint_fingerprint(git_ctx, path=file_path)
+                if not cache.has_hint_fingerprint(_git_fp):
+                    context_parts.append(git_ctx)
+                    cache.mark_hint_seen(_git_fp)
+                    cache.record_hint_emitted("git_history")
 
-    # Append git commit history for the file (with dedup and session-age gate).
-    # Skip git hint for files edited this session (agent already knows they changed).
-    # Skip for new sessions (<120s) where git history is not yet relevant.
-    _written_key = session._normalize_path(file_path)  # type: ignore[attr-defined]
-    _edited: dict[str, int] = cache.edited_files if isinstance(cache.edited_files, dict) else {}
-    _created_ts = getattr(cache, 'created_ts', time.time())
-    _is_edited = _written_key in _edited
-    _is_new_session = False
-    if isinstance(_created_ts, (int, float)):
-        _session_age = time.time() - _created_ts
-        _is_new_session = _session_age < 120.0
+        if not context_parts:
+            _LOG.debug("pre-read: no hint for %s", sanitize_log_str(file_path))
+            return CONTINUE()
 
-    if not _is_edited and not _is_new_session:
-        git_ctx = _build_git_hint(cwd, file_path)
-        if git_ctx:
-            from .hints import _hint_fingerprint  # noqa: PLC0415
-            _git_fp = _hint_fingerprint(git_ctx, path=file_path)
-            if not cache.has_hint_fingerprint(_git_fp):
-                context_parts.append(git_ctx)
-                cache.mark_hint_seen(_git_fp)
-                cache.record_hint_emitted("git_history")
-
-    if not context_parts:
-        _LOG.debug("pre-read: no hint for %s", sanitize_log_str(file_path))
-        return CONTINUE()
-
-    _flush_pending_hint_save(cache)
-    return pre_tool_use_with_context("\n\n".join(context_parts))
+        return pre_tool_use_with_context("\n\n".join(context_parts))
+    finally:
+        _flush_pending_hint_save(cache)
 
 
 def _check_ignored_hint(cache: object, file_path: str) -> None:

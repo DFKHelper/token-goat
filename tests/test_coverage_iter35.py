@@ -355,11 +355,12 @@ class TestRenderManifest:
         # Should still be a string (possibly truncated)
         assert isinstance(result, str)
 
-    def test_session_id_truncated_to_8(self):
-        """Only the first 8 chars of session_id appear in the manifest."""
+    def test_session_id_not_in_manifest_body(self):
+        """Session ID no longer emitted in manifest body (saves ~20 tokens per compaction)."""
         result, _ = _render(self._cache_with_edits(), "aabbccdd-long-session-id", 400)
-        assert "aabbccdd" in result
+        assert "aabbccdd" not in result
         assert "long-session-id" not in result
+        assert "## Token-Goat Session Manifest" in result
 
     def test_build_manifest_load_failure_returns_empty(self):
         """build_manifest returns '' when session cannot be loaded."""
