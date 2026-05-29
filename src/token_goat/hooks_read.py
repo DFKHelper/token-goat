@@ -480,6 +480,35 @@ def _build_git_hint(cwd: str | None, file_path: str) -> str | None:
         return None
 
 
+def _append_hint_if_new(
+    cache: object,
+    fingerprint: str,
+    hint_text: str,
+    stat_key: str,
+    context_parts: list[str],
+) -> bool:
+    """Append *hint_text* to *context_parts* and record it iff *fingerprint* is new.
+
+    Shared emit helper used by the surgical-suggestion and git-history blocks in
+    ``pre_read``.  The ``already_read/read_suggestion`` block is intentionally
+    excluded here because it has additional side effects (tokens_saved guard,
+    ``_record_session_hint_impact``, curator ``_record_hint_emitted``) that would
+    need extra parameters and make the helper harder to read than the inlined form.
+
+    The fingerprint check, ``mark_hint_seen``, and ``record_hint_emitted`` calls
+    are the same three-step sequence used by ``run_dedup_hint`` in
+    ``hooks_common.py`` for the bash/grep/glob/web dedup handlers.
+
+    Returns True when the hint was appended, False when suppressed.
+    """
+    if cache.has_hint_fingerprint(fingerprint):  # type: ignore[union-attr]
+        return False
+    context_parts.append(hint_text)
+    cache.mark_hint_seen(fingerprint)  # type: ignore[union-attr]
+    cache.record_hint_emitted(stat_key)  # type: ignore[union-attr]
+    return True
+
+
 def _emit_dedup_budgeted_hint(
     *,
     hint: object,
@@ -1525,6 +1554,12 @@ def pre_read(payload: HookPayload) -> HookResponse:
                 fingerprint = _hint_fingerprint(hint_text, path=file_path)
 
                 # Suppress hint if identical hint was already seen in this session.
+                # NOTE: this block intentionally does NOT use _append_hint_if_new()
+                # because it has unique side effects absent from the surgical/git paths:
+                # a tokens_saved branch that calls _record_session_hint_impact() and the
+                # curator's _record_hint_emitted() (hints.py), plus a separate log line for
+                # the tokens_saved=0 case.  Adding those as optional callbacks would make
+                # _append_hint_if_new more complex than the inlined form.
                 if cache.has_hint_fingerprint(fingerprint):
                     _LOG.debug(
                         "pre-read: hint fingerprint %s already seen; suppressing duplicate for %s",
@@ -1599,10 +1634,7 @@ def pre_read(payload: HookPayload) -> HookResponse:
             if _surg_hint:
                 from .hints import _hint_fingerprint  # noqa: PLC0415
                 _surg_fp = _hint_fingerprint(_surg_hint, path=file_path)
-                if not cache.has_hint_fingerprint(_surg_fp):
-                    context_parts.append(_surg_hint)
-                    cache.mark_hint_seen(_surg_fp)
-                    cache.record_hint_emitted("surgical_suggestion")
+                _append_hint_if_new(cache, _surg_fp, _surg_hint, "surgical_suggestion", context_parts)
 
         # Append git commit history for the file (with dedup and session-age gate).
         # Skip git hint for files edited this session (agent already knows they changed).
@@ -1621,10 +1653,7 @@ def pre_read(payload: HookPayload) -> HookResponse:
             if git_ctx:
                 from .hints import _hint_fingerprint  # noqa: PLC0415
                 _git_fp = _hint_fingerprint(git_ctx, path=file_path)
-                if not cache.has_hint_fingerprint(_git_fp):
-                    context_parts.append(git_ctx)
-                    cache.mark_hint_seen(_git_fp)
-                    cache.record_hint_emitted("git_history")
+                _append_hint_if_new(cache, _git_fp, git_ctx, "git_history", context_parts)
 
         if not context_parts:
             _LOG.debug("pre-read: no hint for %s", sanitize_log_str(file_path))

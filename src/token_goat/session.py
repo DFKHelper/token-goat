@@ -446,28 +446,34 @@ def _merge_session_caches(local: SessionCache, remote: SessionCache) -> SessionC
     # Without storing the value at fork time we cannot compute the true delta
     # each process added.  max() is safe (never overcounts) but undercounts by
     # ~1 when two processes each emit exactly one hint in the same CAS window.
-    # These counters are used for display/stats only, so the approximation is
-    # acceptable.  The per-type dicts below use sum() which can overcount in
-    # the same scenario but is preferable for budget enforcement logic.
+    # All hint counters — both the flat scalars and the per-type dicts — are
+    # stats/display values only.  None are used for budget gate logic (the gate
+    # reads hints_emitted, structured_hints_emitted, and index_only_hints_emitted
+    # directly via _hint_budget_check; hints_emitted_by_type is never read there).
+    # Uniform max() semantics across all of them keeps the invariant:
+    #   sum(hints_emitted_by_type.values()) <= hints_emitted
+    # which would break under additive merges when both processes start from the
+    # same non-zero base.
     merged.hints_emitted = max(local.hints_emitted, remote.hints_emitted)
     merged.hints_ignored = max(local.hints_ignored, remote.hints_ignored)
     merged.structured_hints_emitted = max(local.structured_hints_emitted, remote.structured_hints_emitted)
     merged.index_only_hints_emitted = max(local.index_only_hints_emitted, remote.index_only_hints_emitted)
 
-    # --- per-type counters: sum (accumulate events across both caches) ---
-    # Summing can overcount by the shared base value when both processes forked
-    # from the same non-zero starting point, but erring on the side of
-    # over-counting is preferable for hint budget enforcement: it makes the
-    # budget cap fire slightly early rather than silently run past it.
-    # hints_emitted_by_type and hints_suppressed_by_type are additive: merge by summing counts.
+    # --- per-type counters: max (consistent with the flat scalars above) ---
+    # Using max() per key — rather than sum() — keeps these dicts consistent with
+    # hints_emitted.  Additive merges could produce
+    #   hints_emitted_by_type["already_read"] > hints_emitted
+    # when two concurrent processes both start from a non-zero base (the shared
+    # base value is counted twice).  max() never overcounts; it undercounts by ~1
+    # in the same CAS window, which is acceptable for display-only counters.
     merged_emitted_by_type = dict(remote.hints_emitted_by_type)
     for hint_type, count in local.hints_emitted_by_type.items():
-        merged_emitted_by_type[hint_type] = merged_emitted_by_type.get(hint_type, 0) + count
+        merged_emitted_by_type[hint_type] = max(merged_emitted_by_type.get(hint_type, 0), count)
     merged.hints_emitted_by_type = merged_emitted_by_type
 
     merged_suppressed_by_type = dict(remote.hints_suppressed_by_type)
     for hint_type, count in local.hints_suppressed_by_type.items():
-        merged_suppressed_by_type[hint_type] = merged_suppressed_by_type.get(hint_type, 0) + count
+        merged_suppressed_by_type[hint_type] = max(merged_suppressed_by_type.get(hint_type, 0), count)
     merged.hints_suppressed_by_type = merged_suppressed_by_type
 
     # hint_category_history: union-with-cap per category.
