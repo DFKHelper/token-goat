@@ -1657,6 +1657,108 @@ def _failsoft_dedup_hint(
         return None
 
 
+def _check_dedup_preconditions(
+    *,
+    session_id: str,
+    required_param: str | None,
+    cache: session.SessionCache | None,
+) -> bool:
+    """Check common preconditions for all dedup builders. Return True if should proceed.
+
+    All dedup builders (bash, grep, glob, web) share the same guards:
+    1. Require session_id and a required parameter (command/pattern/url)
+    2. When cache is available, check curator should emit
+    3. When cache is available, check hint budget
+
+    Args:
+        session_id:      Session ID (required).
+        required_param:  The required tool parameter (command/pattern/url). If falsy, return False.
+        cache:           Session cache (optional; only checked if not None).
+
+    Returns:
+        True if all available preconditions pass; False if any fails (should suppress hint).
+        Note: Returns True if session_id and required_param are valid, even if cache is None.
+    """
+    if not session_id or not required_param:
+        return False
+
+    # For dedup builders that have optional cache (bash, web), we only check
+    # curator/budget if cache is not None. For those that always have cache
+    # (grep, glob via _require_cache), the check still applies.
+    if cache is not None:
+        if not _curator_should_emit(cache):
+            return False
+        if not _hint_budget_check(cache, _HINT_KIND_DEDUP):
+            return False
+
+    return True
+
+
+def _check_entry_staleness(
+    entry: object,
+    cache: session.SessionCache | None,
+    log_label: str,
+    stale_reason_key: str,
+    detail: str = "",
+) -> tuple[bool, float]:
+    """Check if a cache entry is stale and record suppression. Return (is_stale, age).
+
+    Used by bash, grep, glob, web dedup builders to consolidate the age/threshold check.
+    When an entry is too old, logs and records a suppression stat.
+
+    Args:
+        entry:              The cache entry (must have ``.ts`` timestamp).
+        cache:              Session cache (for stale threshold).
+        log_label:          Label for the debug log, e.g. ``"build_bash_dedup_hint"``.
+        stale_reason_key:   Key for recording suppression, e.g. ``"bash_dedup_stale"``.
+        detail:             Optional detail string for the stale stat (e.g. the command or URL).
+
+    Returns:
+        Tuple of (is_stale: bool, age: float).  When is_stale is True, the entry
+        is too old to use; age is the entry's age in seconds either way.
+    """
+    now = time.time()
+    age = now - entry.ts  # type: ignore[attr-defined]
+    stale_threshold = _session_stale_threshold(cache, now)
+    if age > stale_threshold:
+        _LOG.debug(
+            "%s: entry stale (age=%.0fs > %.0fs); suppressing",
+            log_label,
+            age,
+            stale_threshold,
+        )
+        _record_dedup_stale(stale_reason_key, detail)
+        return True, age
+    return False, age
+
+
+def _check_dedup_min_threshold(
+    value: int | None,
+    min_fn: Callable[[], int],
+    cache: session.SessionCache | None,
+    suppression_key: str,
+) -> bool:
+    """Check if a value meets the dedup minimum threshold. Return True if it does NOT.
+
+    When a cache entry's result count / byte size is below threshold, suppresses the hint
+    and records the suppression in the cache. Used by bash, grep, glob, web builders.
+
+    Args:
+        value:              The value to check (result count or byte size).
+        min_fn:             Callable that returns the minimum threshold.
+        cache:              Session cache (records suppression).
+        suppression_key:    Key for recording suppression, e.g. ``"bash_dedup_below_threshold"``.
+
+    Returns:
+        True if the value is below threshold or None (i.e., should suppress the hint).
+    """
+    if value is None or value < min_fn():
+        if cache is not None:
+            cache.record_hint_suppressed(suppression_key)
+        return True
+    return False
+
+
 # ---------------------------------------------------------------------------
 # Bash dedup hint
 # ---------------------------------------------------------------------------
@@ -1715,11 +1817,11 @@ def _build_bash_dedup_hint_inner(
     import cost on every Read invocation — bash_cache is only needed when
     we are actually about to dispatch a Bash dedup.
     """
-    if not session_id or not command:
-        return None
-    if cache is not None and not _curator_should_emit(cache):
-        return None
-    if cache is not None and not _hint_budget_check(cache, _HINT_KIND_DEDUP):
+    if not _check_dedup_preconditions(
+        session_id=session_id,
+        required_param=command,
+        cache=cache,
+    ):
         return None
 
     from . import bash_cache  # noqa: PLC0415
@@ -1729,22 +1831,21 @@ def _build_bash_dedup_hint_inner(
     if entry is None:
         return None
 
-    now = time.time()
-    age = now - entry.ts
-    bash_stale_threshold = _session_stale_threshold(cache, now)
-    if age > bash_stale_threshold:
-        _LOG.debug(
-            "build_bash_dedup_hint: prior run stale (age=%.0fs > %.0fs); suppressing",
-            age, bash_stale_threshold,
-        )
-        _record_dedup_stale("bash_dedup_stale", _sanitize_hint_path(command))
+    cmd_short = _sanitize_hint_path(command)
+    is_stale, age = _check_entry_staleness(
+        entry, cache, "build_bash_dedup_hint", "bash_dedup_stale",
+        detail=cmd_short,
+    )
+    if is_stale:
         return None
 
     total_bytes = entry.stdout_bytes + entry.stderr_bytes
-    min_bytes = _get_bash_dedup_min_bytes()
-    if total_bytes < min_bytes:
-        if cache is not None:
-            cache.record_hint_suppressed("bash_dedup_below_threshold")
+    if _check_dedup_min_threshold(
+        total_bytes,
+        _get_bash_dedup_min_bytes,
+        cache,
+        "bash_dedup_below_threshold",
+    ):
         return None
 
     # Content-aware dedup: only emit hint if we've seen this exact output before.
@@ -1761,7 +1862,6 @@ def _build_bash_dedup_hint_inner(
         return None
 
     tokens_avoided = _est_tokens_from_chars(total_bytes)
-    cmd_short = _sanitize_hint_path(command)
     run_count = getattr(entry, "run_count", 1)
     from . import cache_common as _cc  # noqa: PLC0415
     short_id = _cc.short_output_id(entry.output_id)
@@ -1913,10 +2013,15 @@ def _build_grep_dedup_hint_inner(
     scan in reverse is cheap and avoids the cost of indexing by pattern up
     front, which would not pay back for the common case of distinct patterns.
     """
-    if not session_id or not pattern:
-        return None
     cache = _require_cache(session_id, cache)
     if cache is None:
+        return None
+
+    if not _check_dedup_preconditions(
+        session_id=session_id,
+        required_param=pattern,
+        cache=cache,
+    ):
         return None
 
     now = time.time()
@@ -1939,10 +2044,6 @@ def _build_grep_dedup_hint_inner(
     # Intra-session scan: requires at least one prior grep in this session.
     if not cache.greps:
         return None
-    if not _curator_should_emit(cache):
-        return None
-    if not _hint_budget_check(cache, _HINT_KIND_DEDUP):
-        return None
 
     grep_stale_threshold = _session_stale_threshold(cache, now)
     for entry in reversed(cache.greps):
@@ -1954,10 +2055,12 @@ def _build_grep_dedup_hint_inner(
         if age > grep_stale_threshold:
             # Older entries are even older — short-circuit the scan.
             return None
-        min_matches = _get_grep_dedup_min_matches()
-        if entry.result_count is None or entry.result_count < min_matches:
-            if cache is not None:
-                cache.record_hint_suppressed("grep_dedup_below_threshold")
+        if _check_dedup_min_threshold(
+            entry.result_count,
+            _get_grep_dedup_min_matches,
+            cache,
+            "grep_dedup_below_threshold",
+        ):
             return None
 
         # Two-phase dedup: check the fingerprint key BEFORE constructing expensive hint text.
@@ -2095,28 +2198,34 @@ def _build_glob_dedup_hint_inner(
     glob_history list in reverse-chronological order for the matching
     ``(pattern, path)`` pair.
     """
-    if not session_id or not pattern:
-        return None
     cache = _require_cache(session_id, cache)
     if cache is None or cache.is_glob_history_empty():
         return None
-    if not _curator_should_emit(cache):
-        return None
-    if not _hint_budget_check(cache, _HINT_KIND_DEDUP):
+
+    if not _check_dedup_preconditions(
+        session_id=session_id,
+        required_param=pattern,
+        cache=cache,
+    ):
         return None
 
     entry = session.lookup_glob_entry(session_id, pattern, path, cache=cache)
     if entry is None:
         return None
 
-    now = time.time()
-    age = now - entry.ts
-    glob_stale_threshold = _session_stale_threshold(cache, now)
-    if age > glob_stale_threshold:
+    is_stale, age = _check_entry_staleness(
+        entry, cache, "build_glob_dedup_hint", "glob_dedup_stale",
+        detail=_sanitize_hint_path(pattern),
+    )
+    if is_stale:
         return None
-    if entry.result_count is None or entry.result_count < _GLOB_DEDUP_MIN_RESULT_COUNT:
-        if cache is not None:
-            cache.record_hint_suppressed("glob_dedup_below_threshold")
+
+    if _check_dedup_min_threshold(
+        entry.result_count,
+        lambda: _GLOB_DEDUP_MIN_RESULT_COUNT,
+        cache,
+        "glob_dedup_below_threshold",
+    ):
         return None
 
     # Two-phase dedup: check the fingerprint key BEFORE constructing expensive hint text.
@@ -2195,11 +2304,11 @@ def _build_web_dedup_hint_inner(
     on every WebFetch invocation — web_cache is only needed when we are
     actually about to dispatch a dedup.
     """
-    if not session_id or not url:
-        return None
-    if cache is not None and not _curator_should_emit(cache):
-        return None
-    if cache is not None and not _hint_budget_check(cache, _HINT_KIND_DEDUP):
+    if not _check_dedup_preconditions(
+        session_id=session_id,
+        required_param=url,
+        cache=cache,
+    ):
         return None
 
     from . import web_cache  # noqa: PLC0415
@@ -2209,20 +2318,20 @@ def _build_web_dedup_hint_inner(
     if entry is None:
         return None
 
-    now = time.time()
-    age = now - entry.ts
-    web_stale_threshold = _session_stale_threshold(cache, now)
-    if age > web_stale_threshold:
-        _LOG.debug(
-            "build_web_dedup_hint: prior fetch stale (age=%.0fs > %.0fs); suppressing",
-            age, web_stale_threshold,
-        )
-        _record_dedup_stale("web_dedup_stale", _sanitize_hint_path(url))
+    is_stale, age = _check_entry_staleness(
+        entry, cache, "build_web_dedup_hint", "web_dedup_stale",
+        detail=_sanitize_hint_path(url),
+    )
+    if is_stale:
         return None
+
     cfg = config.load()
-    if entry.body_bytes < cfg.hints.web_dedup_min_bytes:
-        if cache is not None:
-            cache.record_hint_suppressed("web_dedup_below_threshold")
+    if _check_dedup_min_threshold(
+        entry.body_bytes,
+        lambda: cfg.hints.web_dedup_min_bytes,
+        cache,
+        "web_dedup_below_threshold",
+    ):
         return None
 
     # Two-phase dedup: check the fingerprint key BEFORE constructing expensive hint text.
