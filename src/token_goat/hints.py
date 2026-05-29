@@ -2439,7 +2439,7 @@ def _build_index_only_file_hint_inner(
 ) -> ReadHint | None:
     """Inner implementation; may raise."""
     # Surgical guard: both offset AND limit present means intentional scoped read.
-    has_offset = offset is not None and isinstance(offset, int) and offset > 0
+    has_offset = offset is not None and isinstance(offset, int) and offset >= 0
     has_limit = limit is not None and isinstance(limit, int) and limit > 0
     if has_offset and has_limit:
         return None
@@ -2598,7 +2598,7 @@ def _build_structured_file_hint_inner(
     """Inner implementation; may raise."""
     # If the caller already scoped the read with both offset AND limit, they are
     # reading surgically — do not nag them.
-    has_offset = offset is not None and isinstance(offset, int) and offset > 0
+    has_offset = offset is not None and isinstance(offset, int) and offset >= 0
     has_limit = limit is not None and isinstance(limit, int) and limit > 0
     if has_offset and has_limit:
         return None
