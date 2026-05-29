@@ -7151,3 +7151,65 @@ class TestSectionLineCap:
         result = compact._apply_section_line_cap(lines, cap=3)
         assert result[-1] == "- ... (+17 more)"
         assert len(result) == 5  # header + 3 items + overflow
+
+
+class TestManifestFingerprintStability:
+    """Fingerprint should be stable across symbol timestamp changes.
+
+    symbols_ts tracks when each symbol was accessed (for manifest ranking),
+    but it does not affect the fingerprint calculation. Only symbols_read (the list
+    of symbol names) matters for fingerprint. The fingerprint must remain stable when
+    symbols_ts is updated without any change to symbols_read, to prevent
+    unnecessary cache invalidation throughout long sessions.
+    """
+
+    def test_symbols_ts_change_does_not_affect_fingerprint(self, tmp_data_dir):
+        """Directly updating symbols_ts timestamps does NOT change fingerprint."""
+        sid = "fp-stability-symbols-ts"
+
+        # Initialize session with a file and symbol
+        session.mark_file_read(sid, "/proj/src/auth.py", symbol="login")
+
+        # Record fingerprint after initial symbol access
+        cache1 = session.load(sid)
+        fp1 = compact._compute_manifest_fingerprint(cache1)
+
+        # Directly update symbols_ts in the cached entry to simulate a later timestamp
+        # This does NOT change symbols_read (still has "login"), only the timestamp
+        file_key = list(cache1.files.keys())[0]
+        entry = cache1.files[file_key]
+        if "login" in entry.symbols_ts:
+            # Simulate the symbol being accessed 100 seconds later
+            entry.symbols_ts["login"] += 100.0
+
+        # Recompute fingerprint on the modified cache (without re-saving to disk)
+        fp2 = compact._compute_manifest_fingerprint(cache1)
+
+        assert fp1 == fp2, (
+            f"Fingerprint changed after symbols_ts update: {fp1} != {fp2}. "
+            "symbols_ts should be excluded from fingerprint computation."
+        )
+
+    def test_symbols_read_change_does_affect_fingerprint(self, tmp_data_dir):
+        """Adding a new symbol to symbols_read DOES change fingerprint."""
+        sid = "fp-stability-symbols-read-change"
+
+        # Initialize session with a file and one symbol
+        session.mark_file_read(sid, "/proj/src/auth.py", symbol="login")
+
+        # Record fingerprint after first symbol
+        fp1 = compact._compute_manifest_fingerprint(
+            session.load(sid)
+        )
+
+        # Add a second symbol — this SHOULD change the fingerprint
+        session.mark_file_read(sid, "/proj/src/auth.py", symbol="logout")
+
+        # Recompute fingerprint — it MUST change
+        fp2 = compact._compute_manifest_fingerprint(
+            session.load(sid)
+        )
+
+        assert (
+            fp1 != fp2
+        ), "Fingerprint should change when symbols_read list changes."
