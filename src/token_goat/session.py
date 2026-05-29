@@ -2954,8 +2954,7 @@ def get_result_cache(
             key, entry.file_sha[:8], file_sha[:8],
         )
         del cache.result_cache[key]
-        cache._invalidate_json_cache()
-        save(cache)
+        _commit_mutation(cache, time.time())
         return None
     _LOG.debug("result_cache: hit for %s (kind=%s sha=%s)", key, kind, file_sha[:8])
     return dict(entry.result)
@@ -3000,8 +2999,7 @@ def put_result_cache(
         result=dict(result),  # shallow copy — defensive against caller mutating after store
         ts=time.time(),
     )
-    cache._invalidate_json_cache()
-    save(cache)
+    _commit_mutation(cache, time.time())
     _LOG.debug(
         "result_cache: stored %s (kind=%s sha=%s size=%d)",
         key, kind, file_sha[:8], len(cache.result_cache),
@@ -3325,9 +3323,7 @@ def set_snapshot_sha(
     if key not in cache.snapshot_shas:
         _evict_oldest(cache.snapshot_shas, SNAPSHOT_SHAS_MAX, _SNAPSHOT_SHAS_EVICT, "snapshot_shas", session_id)
     cache.snapshot_shas[key] = content_sha
-    cache._invalidate_json_cache()
-    save(cache)
-    return cache
+    return _commit_mutation(cache, time.time())
 
 
 def get_snapshot_sha(
