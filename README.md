@@ -9,7 +9,7 @@ Token-Goat sits between your AI (Claude Code, Codex, OpenCode, OpenClaw) and you
 </p>
 
 <p align="center">
-<b>Ask your AI to install it fully (give it this GitHub link), or install in one command:</b>
+<b>Ask your AI to install it fully (give it this GitHub link), or install in one command (install UV first if needed):</b>
 </p>
 
 <pre align="center"><code>uv tool install token-goat && token-goat install</code></pre>
