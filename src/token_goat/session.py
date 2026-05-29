@@ -1085,12 +1085,11 @@ class SessionCache:
 
         Increments the count for this fingerprint (or sets it to 1 if new).
         Defers the disk write: sets ``_pending_hint_save = True`` instead of
-        calling ``save()`` inline.  The pending write is flushed by the next
-        ``mark_file_read`` / ``mark_bash_run`` / ``mark_grep`` / etc. that
-        calls ``save()`` at the end of the same hook invocation.  For hooks
-        that emit a hint but have no subsequent save (e.g. Glob dedup), the
-        dispatch layer in ``hooks_cli.py`` checks ``_pending_hint_save`` after
-        the handler returns and calls ``save()`` then.
+        calling ``save()`` inline.  The pending write is flushed by
+        ``_flush_pending_hint_save(cache)`` in ``hooks_read.py``, which is
+        called at every early-return path and at the end of each handler that
+        may emit a hint without a subsequent ``save()`` call (e.g. Glob dedup,
+        pre-read hint-only paths).
 
         If the hint fires in pre-read but the process exits before any
         post-read save (harness crash, tool denied), the count is lost
