@@ -1571,18 +1571,35 @@ def _hint_budget_check(cache: session.SessionCache, hint_kind: str) -> bool:
         return True
 
 
+def _record_non_dedup_hint_emitted(
+    cache: session.SessionCache,
+    counter_attr: str,
+    hint_type: str,
+) -> None:
+    """Record emission of a non-dedup hint by incrementing counter and recording type.
+
+    Generic helper for structured_file and index_only_file hints that follow the
+    same pattern: increment a per-cache counter, record the hint type, and invalidate
+    the JSON cache.
+
+    Args:
+        cache:          Session cache to mutate.
+        counter_attr:   Name of the counter attribute on cache (e.g., 'structured_hints_emitted').
+        hint_type:      Hint type string for record_hint_emitted (e.g., 'structured_file').
+    """
+    setattr(cache, counter_attr, getattr(cache, counter_attr) + 1)
+    cache.record_hint_emitted(hint_type)
+    cache._invalidate_json_cache()
+
+
 def _record_structured_hint_emitted(cache: session.SessionCache) -> None:
     """Increment structured_hints_emitted counter on *cache*. Never raises."""
-    cache.structured_hints_emitted += 1
-    cache.record_hint_emitted("structured_file")
-    cache._invalidate_json_cache()
+    _record_non_dedup_hint_emitted(cache, "structured_hints_emitted", "structured_file")
 
 
 def _record_index_only_hint_emitted(cache: session.SessionCache) -> None:
     """Increment index_only_hints_emitted counter on *cache*. Never raises."""
-    cache.index_only_hints_emitted += 1
-    cache.record_hint_emitted("index_only_file")
-    cache._invalidate_json_cache()
+    _record_non_dedup_hint_emitted(cache, "index_only_hints_emitted", "index_only_file")
 
 
 # ---------------------------------------------------------------------------
