@@ -14,7 +14,7 @@ pre-push:
     test:
       env:
         PYTHONIOENCODING: "utf-8:replace"
-      # Match CI's fast-tier filter — slow concurrency tests run in CI's
-      # opt-in slow tier where they get a clean runner. Locally under
-      # heavy disk pressure they go flaky and produce false alarms.
-      run: uv run pytest -m "not slow" -q --tb=short
+      # Match CI's fast-tier filter and Windows worker cap. CI pins to -n 2
+      # on Windows runners to avoid xdist INTERNALERROR worker crashes under
+      # heavy parallelism. The same pin applies locally.
+      run: uv run pytest -m "not slow" -n 2 -q --tb=short
