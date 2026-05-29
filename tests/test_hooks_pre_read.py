@@ -616,9 +616,12 @@ class TestGlobCacheCap:
 
     def test_glob_cache_caps_at_20_paths(self, tmp_data_dir):
         """Cached glob result with >20 files → only first 20 + overflow shown."""
+        from token_goat.hooks_read import _GLOB_RESULT_CACHE_MAX_PATHS
+        cap = _GLOB_RESULT_CACHE_MAX_PATHS
+        total = cap + 10
         sid = "glob-cap-30"
         pattern = "**/*.py"
-        files = [f"src/file_{i:03d}.py" for i in range(30)]
+        files = [f"src/file_{i:03d}.py" for i in range(total)]
         result_text = "\n".join(files) + "\n"
         self._post_glob(sid, pattern, result_text)
 
@@ -631,12 +634,12 @@ class TestGlobCacheCap:
         ctx = hso.get("additionalContext", "")
         if "cached result" not in ctx:
             return
-        # First 20 files should be present
+        # First `cap` files should be present
         assert "src/file_000.py" in ctx
-        assert "src/file_019.py" in ctx
-        # File 20 (index 20) should NOT appear verbatim
-        assert "src/file_020.py" not in ctx
-        # Overflow marker should appear
+        assert f"src/file_{cap - 1:03d}.py" in ctx
+        # File at index `cap` should NOT appear verbatim
+        assert f"src/file_{cap:03d}.py" not in ctx
+        # Overflow marker should appear showing 10 hidden files
         assert "(+10 more)" in ctx
 
     def test_glob_cache_under_cap_shows_all(self, tmp_data_dir):
@@ -1221,6 +1224,75 @@ class TestCuratorIgnoredHintCounting:
         assert reloaded.hints_ignored == 1, (
             "hints_ignored increment was not persisted for file exceeding MAX_SNAPSHOT_BYTES"
         )
+
+
+# ---------------------------------------------------------------------------
+# Curator: _check_ignored_hint_by_key shared helper
+# ---------------------------------------------------------------------------
+
+
+class TestCheckIgnoredHintByKey:
+    """_check_ignored_hint_by_key is the shared ring-buffer scan used by both
+    _check_ignored_hint (file path key) and _check_ignored_bash_hint (cmd SHA key)."""
+
+    def test_matching_key_increments_ignored(self, tmp_data_dir):
+        """Key found in recent_hints → hints_ignored++ and key removed from ring buffer."""
+        import time
+
+        from token_goat.hooks_read import _check_ignored_hint_by_key
+
+        cache = session.load("by_key_1")
+        key = "abc123"
+        cache.recent_hints = [(key, time.time())]
+        cache.hints_ignored = 0
+        cache._invalidate_json_cache()
+
+        _check_ignored_hint_by_key(cache, key, "test_label")
+
+        assert cache.hints_ignored == 1
+        assert all(k != key for k, _ in cache.recent_hints)
+
+    def test_non_matching_key_no_change(self, tmp_data_dir):
+        """Key not in recent_hints → hints_ignored unchanged."""
+        from token_goat.hooks_read import _check_ignored_hint_by_key
+
+        cache = session.load("by_key_2")
+        cache.recent_hints = [("other_key", 0.0)]
+        cache.hints_ignored = 0
+        cache._invalidate_json_cache()
+
+        _check_ignored_hint_by_key(cache, "target_key", "label")
+
+        assert cache.hints_ignored == 0
+
+    def test_empty_ring_buffer_no_change(self, tmp_data_dir):
+        """Empty recent_hints → no-op."""
+        from token_goat.hooks_read import _check_ignored_hint_by_key
+
+        cache = session.load("by_key_3")
+        cache.hints_ignored = 0
+
+        _check_ignored_hint_by_key(cache, "any_key", "label")
+
+        assert cache.hints_ignored == 0
+
+    def test_second_call_no_double_count(self, tmp_data_dir):
+        """After the key is removed from the ring buffer, a second call with the same key is a no-op."""
+        import time
+
+        from token_goat.hooks_read import _check_ignored_hint_by_key
+
+        cache = session.load("by_key_4")
+        key = "dedup_sha"
+        cache.recent_hints = [(key, time.time())]
+        cache.hints_ignored = 0
+        cache._invalidate_json_cache()
+
+        _check_ignored_hint_by_key(cache, key, "label")
+        assert cache.hints_ignored == 1
+
+        _check_ignored_hint_by_key(cache, key, "label")
+        assert cache.hints_ignored == 1  # still 1, not 2
 
 
 # ---------------------------------------------------------------------------
