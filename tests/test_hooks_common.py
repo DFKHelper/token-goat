@@ -669,3 +669,75 @@ class TestQuietHours:
     def test_midnight_wrap_outside(self):
         """Time clearly outside a midnight-crossing range (noon) returns False."""
         assert _quiet_hours_at("12:00", "22:00-07:00") is False
+
+
+# ---------------------------------------------------------------------------
+# normalize_payload schema validation
+# ---------------------------------------------------------------------------
+
+
+class TestNormalizePayloadValidation:
+    """Test that normalize_payload validates the payload schema."""
+
+    def test_valid_payload_returns_unchanged(self) -> None:
+        """Valid payload with tool_name passes through."""
+        from token_goat.hooks_cli import normalize_payload
+
+        payload = {"session_id": "s1", "tool_name": "Read", "tool_input": "file.txt"}
+        result = normalize_payload(payload)
+        assert result == payload
+
+    def test_empty_dict_returns_empty(self) -> None:
+        """Empty dict payload is rejected."""
+        from token_goat.hooks_cli import normalize_payload
+
+        result = normalize_payload({})
+        assert result == {}
+
+    def test_non_dict_payload_returns_empty(self) -> None:
+        """Non-dict payload (list, string, None) is rejected."""
+        from token_goat.hooks_cli import normalize_payload
+
+        assert normalize_payload([]) == {}
+        assert normalize_payload("string") == {}
+        assert normalize_payload(None) == {}
+
+    def test_missing_tool_name_returns_empty(self) -> None:
+        """Payload without tool_name is rejected."""
+        from token_goat.hooks_cli import normalize_payload
+
+        payload = {"session_id": "s1", "tool_input": "file.txt"}
+        result = normalize_payload(payload)
+        assert result == {}
+
+    def test_empty_tool_name_returns_empty(self) -> None:
+        """Payload with empty tool_name is rejected."""
+        from token_goat.hooks_cli import normalize_payload
+
+        payload = {"session_id": "s1", "tool_name": ""}
+        result = normalize_payload(payload)
+        assert result == {}
+
+    def test_whitespace_tool_name_returns_empty(self) -> None:
+        """Payload with whitespace-only tool_name is rejected."""
+        from token_goat.hooks_cli import normalize_payload
+
+        payload = {"session_id": "s1", "tool_name": "   "}
+        result = normalize_payload(payload)
+        assert result == {}
+
+    def test_non_string_tool_name_returns_empty(self) -> None:
+        """Payload with non-string tool_name is rejected."""
+        from token_goat.hooks_cli import normalize_payload
+
+        payload = {"session_id": "s1", "tool_name": 123}
+        result = normalize_payload(payload)
+        assert result == {}
+
+    def test_valid_payload_with_minimal_fields(self) -> None:
+        """Valid payload needs only tool_name."""
+        from token_goat.hooks_cli import normalize_payload
+
+        payload = {"tool_name": "Bash"}
+        result = normalize_payload(payload)
+        assert result == payload

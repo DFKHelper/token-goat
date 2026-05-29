@@ -758,11 +758,31 @@ class Filter:
         try:
             norm_out = normalise(stdout)
             norm_err = normalise(stderr)
-            if (
+            norm_bytes = (
                 len(norm_out.encode("utf-8", errors="replace"))
                 + len(norm_err.encode("utf-8", errors="replace"))
-                > MAX_INSPECT_BYTES
-            ):
+            )
+
+            # Early exit: if normalisation alone (ANSI + progress strip) achieved >=40%
+            # reduction, skip expensive per-tool filter and use simple dedup instead.
+            if original_bytes > 0 and norm_bytes <= original_bytes * 0.6:
+                # Significant reduction from normalisation alone; skip complex parsing.
+                _LOG.debug(
+                    "filter %s: normalisation reduced %d → %d bytes (%.0f%% saved); "
+                    "skipping expensive filter",
+                    self.name,
+                    original_bytes,
+                    norm_bytes,
+                    100 * (1 - norm_bytes / original_bytes),
+                )
+                body = "\n".join(dedupe_consecutive(norm_out.split("\n")))
+                if norm_err.strip():
+                    body = (
+                        body.rstrip() + "\n---\n"
+                        + "\n".join(dedupe_consecutive(norm_err.split("\n"))).rstrip()
+                    )
+                notes.append("early-exit: normalisation alone sufficient")
+            elif norm_bytes > MAX_INSPECT_BYTES:
                 notes.append(
                     f"input exceeded inspect budget ({MAX_INSPECT_BYTES // 1024} KiB); "
                     "fell back to truncation"

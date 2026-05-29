@@ -85,7 +85,28 @@ def normalize_payload(payload: HookPayload, harness: Harness = "claude") -> Hook
     Most fields (session_id, cwd, tool_name, tool_input) are already identical
     between the two harnesses — nothing needs remapping in the inbound direction.
     Output normalization (camelCase → snake_case) is handled by denormalize_response.
+
+    Validates that the payload has a non-empty tool_name (required by all handlers).
+    On invalid payload, logs a warning and returns an empty dict so handlers degrade
+    gracefully (no-op with continue:true).
     """
+    # Schema check: payload must be a dict with a valid tool_name.
+    if not isinstance(payload, dict):
+        _LOG.warning("normalize_payload: payload is not a dict; received %s", type(payload).__name__)
+        return cast("HookPayload", {})
+
+    if not payload:
+        _LOG.warning("normalize_payload: payload is empty")
+        return cast("HookPayload", {})
+
+    tool_name = payload.get("tool_name")
+    if not isinstance(tool_name, str) or not tool_name.strip():
+        _LOG.warning(
+            "normalize_payload: tool_name missing or invalid; received %s",
+            repr(tool_name),
+        )
+        return cast("HookPayload", {})
+
     # Both harnesses share the same inbound field names; no transformation needed.
     return payload
 
