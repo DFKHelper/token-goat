@@ -1033,6 +1033,14 @@ def _try_grep_dotted_hint(pattern: str, cwd: str | None) -> str | None:
 
         qual_lower = qualifier.lower()
         preferred = [r for r in rows if qual_lower in Path(r["file_rel"]).stem.lower()]
+        # When the qualifier is a well-known instance-reference keyword (self,
+        # cls, this, …) and no file stem matches, the fallback to unfiltered
+        # rows would surface every method named "load"/"run"/etc. in the
+        # project — noise that is almost certainly not what the agent wanted.
+        # Return None in that case rather than emitting a misleading hint.
+        _SELF_LIKE = frozenset(["self", "cls", "this", "obj", "base", "super"])
+        if not preferred and qual_lower in _SELF_LIKE:
+            return None
         display_rows = preferred if preferred else rows
         if len(display_rows) > 3:
             return None

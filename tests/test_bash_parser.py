@@ -416,6 +416,28 @@ def test_tail_records_limit_only():
     assert intent.limit == 20
 
 
+@pytest.mark.parametrize("cmd, expected_offset", [
+    ("tail -n +10 file.py", 10),
+    ("tail -n +1 file.py", 1),
+    ("tail -n +100 src/main.py", 100),
+    ("tail -n+50 file.py", 50),   # compact form: no space between -n and +50
+    ("tail --lines +25 file.py", 25),
+])
+def test_tail_skip_to_line_sets_offset(cmd, expected_offset):
+    # ``tail -n +N`` outputs from line N to EOF — offset IS known (1-indexed).
+    intent = parse(cmd)
+    assert intent.kind == "read"
+    assert intent.offset == expected_offset
+    assert intent.limit is None  # no upper bound: read to EOF
+
+
+def test_tail_plain_n_does_not_set_offset():
+    # Plain ``tail -n N`` (no +) reads the LAST N lines; starting line is unknown.
+    intent = parse("tail -n 20 file.txt")
+    assert intent.offset is None
+    assert intent.limit == 20
+
+
 # ---------------------------------------------------------------------------
 # 22. sed -n 'M,Np' line-range extraction
 # ---------------------------------------------------------------------------
