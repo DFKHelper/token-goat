@@ -2545,8 +2545,7 @@ def mark_file_read(
         symbol = sanitize_log_str(symbol, max_len=_MAX_SYMBOL_LEN)
         if not symbol:
             _LOG.debug("mark_file_read: symbol sanitized to empty string; skipping")
-            save(cache)
-            return cache
+            return _commit_mutation(cache, now)
         # Cap the number of symbols tracked per file to prevent unbounded growth.
         if len(entry.symbols_read) >= _MAX_SYMBOLS_PER_FILE:
             _LOG.debug(
@@ -2555,8 +2554,7 @@ def mark_file_read(
                 key,
                 symbol,
             )
-            save(cache)
-            return cache
+            return _commit_mutation(cache, now)
         # Direct list membership check — symbols_read is typically <10 entries so
         # the O(n) scan is cheaper than building a frozenset just to do one lookup.
         # _symbols_set() is retained for callers that do repeated lookups, but the
