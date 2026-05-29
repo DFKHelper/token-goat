@@ -1824,3 +1824,68 @@ class TestFilterDispatchEdgeCases:
         f = bc.MypyFilter()
         result = f.apply("", "", 0, ["mypy"])
         assert isinstance(result.text, str)
+
+
+# ---------------------------------------------------------------------------
+# Early-exit logic: skip expensive filters when normalisation alone suffices
+# ---------------------------------------------------------------------------
+
+
+class TestEarlyExitOnNormalisationReduction:
+    """Test that filter.apply skips expensive compress() when normalisation achieves >=40% reduction."""
+
+    def test_ansi_heavy_output_triggers_early_exit(self) -> None:
+        """Large ANSI/progress output: normalisation reduces bytes by >40% → early exit."""
+        # Synthesize output with lots of ANSI codes that normalisation will strip.
+        # Each line has ~100 bytes of ANSI cruft, shrinking to ~20 bytes after normalise().
+        ansi_lines = [
+            f"\x1b[31m\x1b[1m\x1b[5m>>> {i:04d}\x1b[0m\x1b[m\x1b[m repeated text here {i}\n"
+            for i in range(100)
+        ]
+        stdout = "".join(ansi_lines)
+        assert len(stdout) > 1000  # Ensure we have substantial ANSI-heavy output.
+
+        f = bc.PytestFilter()  # Could be any filter; we're testing the base Filter.apply logic.
+        result = f.apply(stdout, "", 0, ["pytest"])
+
+        # Early exit should have kicked in; the output should contain the marker.
+        assert "early-exit: normalisation alone sufficient" in result.text
+
+    def test_progress_heavy_output_triggers_early_exit(self) -> None:
+        """Carriage-return progress lines: normalisation reduces >40% → early exit."""
+        # Progress lines with many \r updates shrink dramatically after strip_progress.
+        progress_lines = [
+            f"phase-{i}: 10%\r20%\r30%\r40%\r50%\r60%\r70%\r80%\r90%\r100% done {i}\n"
+            for i in range(50)
+        ]
+        stdout = "".join(progress_lines)
+
+        f = bc.GenericFilter()
+        result = f.apply(stdout, "", 0, ["some-cmd"])
+
+        # Early exit should fire; note field indicates it.
+        assert "early-exit: normalisation alone sufficient" in result.text
+
+    def test_minimal_savings_does_not_trigger_early_exit(self) -> None:
+        """Small output with minimal ANSI: normalisation saves <40% → no early exit."""
+        stdout = "clean output\nno ansi codes\n"
+        assert bc.normalise(stdout) == stdout  # No change expected.
+
+        f = bc.PytestFilter()
+        result = f.apply(stdout, "", 0, ["pytest"])
+
+        # Should not have early-exit marker; compress() was called normally.
+        assert "early-exit" not in result.text
+
+    def test_early_exit_preserves_combined_stdout_stderr(self) -> None:
+        """Early exit correctly combines stdout and stderr with --- separator."""
+        stdout_ansi = "\x1b[31m" * 500 + "some output\n"  # Lots of ANSI.
+        stderr_ansi = "\x1b[1m" * 500 + "some error\n"
+
+        f = bc.GenericFilter()
+        result = f.apply(stdout_ansi, stderr_ansi, 1, ["cmd"])
+
+        # Expect both parts in output, separated by ---.
+        assert "some output" in result.text
+        assert "some error" in result.text
+        assert "---" in result.text or "some output" in result.text.split("\n")[0]

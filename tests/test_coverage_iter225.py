@@ -173,9 +173,15 @@ def test_normalize_payload_empty_dict() -> None:
 
 
 def test_normalize_payload_default_harness() -> None:
+    # Payload without tool_name is now rejected (schema validation added).
     payload: dict[str, Any] = {"key": "value"}
     result = normalize_payload(payload)
-    assert result == payload
+    assert result == {}  # Invalid payload returns empty dict.
+
+    # Valid payload with tool_name passes through.
+    valid_payload: dict[str, Any] = {"key": "value", "tool_name": "Read"}
+    result = normalize_payload(valid_payload)
+    assert result == valid_payload
 
 
 # ---------------------------------------------------------------------------
