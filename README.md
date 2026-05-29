@@ -41,11 +41,11 @@ Restart your AI sessions. Run <code>token-goat stats</code> a couple of minutes 
 </p>
 
 <p align="center">
-  • Better compaction. &nbsp;·&nbsp;
+  • Better compaction.
 
 
 <p align="center">
-  • <b>Zero</b> ongoing maintenance
+  • <b>Zero</b> ongoing maintenance.
 </p>
 
 <p align="center">
