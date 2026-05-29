@@ -771,6 +771,35 @@ class TestResultCache:
         assert again is not None
         assert again["text"] == "original"
 
+    def test_last_activity_ts_updated_by_put_result_cache(self, tmp_data_dir):
+        """put_result_cache stamps last_activity_ts via _commit_mutation.
+
+        Regression: bare save(cache) skipped _commit_mutation, leaving
+        last_activity_ts stale.
+        """
+        import time
+
+        before = time.time() - 1
+        session.put_result_cache("rc_ts_put", "f.py", "myfunc", "symbol", "sha_abc", {"text": "body"})
+        cache = session.load("rc_ts_put")
+        assert cache.last_activity_ts > before
+
+    def test_last_activity_ts_updated_on_stale_sha_eviction(self, tmp_data_dir):
+        """get_result_cache stamps last_activity_ts when dropping a stale-SHA entry.
+
+        Regression: bare save(cache) on the stale-SHA eviction path skipped
+        _commit_mutation, leaving last_activity_ts stale.
+        """
+        import time
+
+        sid = "rc_ts_stale"
+        session.put_result_cache(sid, "f.py", "fn", "symbol", "sha_old", {"text": "old"})
+        before = time.time() - 1
+        result = session.get_result_cache(sid, "f.py", "fn", "symbol", "sha_new")
+        assert result is None  # SHA mismatch → evicted
+        cache = session.load(sid)
+        assert cache.last_activity_ts > before
+
 
 class TestSessionCreatedTs:
     """Tests for the session creation timestamp tracking."""
@@ -1197,6 +1226,18 @@ class TestSnapshotShasMaxEviction:
             for i in range(session.SNAPSHOT_SHAS_MAX):
                 cache = session.set_snapshot_sha(sid, f"/abs/path/s_{i}.py", f"sha_{i}", cache=cache)
         assert len(cache.snapshot_shas) == session.SNAPSHOT_SHAS_MAX
+
+    def test_last_activity_ts_updated_by_set_snapshot_sha(self, tmp_data_dir):
+        """set_snapshot_sha stamps last_activity_ts via _commit_mutation.
+
+        Regression: bare save(cache) skipped _commit_mutation, leaving
+        last_activity_ts stale.
+        """
+        import time
+
+        before = time.time() - 1
+        cache = session.set_snapshot_sha("snap_ts_1", "/proj/foo.py", "deadbeef")
+        assert cache.last_activity_ts > before
 
 
 class TestWebHistoryMaxEviction:
