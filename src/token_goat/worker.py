@@ -1207,6 +1207,37 @@ def _acquire_eviction_lock(lock_path: Path) -> int | None:
 def evict_image_cache_if_over_limit() -> tuple[int, int]:
     """LRU-evict image cache entries if total size exceeds IMAGE_CACHE_LIMIT.
 
+    Why this does not delegate to ``cache_common.evict_cache_dir``
+    --------------------------------------------------------------
+    ``cache_common.evict_cache_dir`` is the shared eviction algorithm for the
+    bash-output and web-output caches.  The image cache has three structural
+    differences that make delegation incompatible without significant rework:
+
+    1. **Two-threshold design.**  ``evict_cache_dir`` takes a single
+       ``max_total_bytes`` cap and evicts until the total is *at or under* that
+       cap — limit equals target.  The image cache uses a separate
+       ``IMAGE_CACHE_TARGET`` (80% of ``IMAGE_CACHE_LIMIT``) to avoid thrash:
+       eviction runs only when the limit is exceeded and stops when the target
+       is reached, giving a 100 MB headroom buffer.  Adding a ``target_bytes``
+       parameter to the shared function would couple it to image-specific
+       policy that the bash/web callers do not need.
+
+    2. **Concurrency lock.**  Multiple agents on the same machine share the
+       image cache.  This function takes an ``O_CREAT | O_EXCL`` file lock in
+       ``paths.locks_dir()`` so concurrent eviction passes skip rather than
+       double-scan and race on ``unlink()``.  ``evict_cache_dir`` has no lock
+       because the bash/web caches are single-writer (only the session's worker
+       or hook writes to them).
+
+    3. **File naming and sidecar conventions.**  ``evict_cache_dir`` scans for
+       ``.txt`` body files and deletes their ``.json`` sidecars.  Image cache
+       files have content-addressed names with arbitrary image extensions
+       (``*.webp``, ``*.jpg``, ``*.png``, ``*.avif``) and no sidecars.
+
+    When ``evict_cache_dir`` gains a ``target_bytes`` parameter and a
+    caller-supplied lock mechanism, this function could be refactored to
+    delegate.  Until then the separate implementation is the correct choice.
+
     Threshold and target
     --------------------
     Eviction runs only when the on-disk total exceeds ``IMAGE_CACHE_LIMIT``

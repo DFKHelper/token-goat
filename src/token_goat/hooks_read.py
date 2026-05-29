@@ -1704,6 +1704,48 @@ def _check_ignored_hint(cache: object, file_path: str) -> None:
         pass
 
 
+def _check_ignored_bash_hint(cache: object, command: str) -> None:
+    """Increment hints_ignored when a Bash command runs after a bash-dedup hint.
+
+    When the agent was told "this command ran earlier, use bash-output <id>" and
+    then runs the same command anyway via Bash, the hint had no effect.  Recording
+    that as an ignored hint lets the curator reduce bash-dedup hint frequency once
+    the ignore rate exceeds the configured threshold — exactly the same feedback
+    loop that ``_check_ignored_hint`` provides for file-read hints.
+
+    ``_record_hint_emitted`` stores ``cmd_sha`` (a hex content hash of the command)
+    in ``cache.recent_hints`` alongside file paths.  We compute the same hash here
+    and scan the ring buffer for a match.  Because ``cmd_sha`` is already a
+    normalised hex string, no path-normalization step is needed.
+
+    Fail-soft: any exception is swallowed — the hook must never fail due to
+    curator bookkeeping.
+    """
+    try:
+        from . import bash_cache as _bc  # noqa: PLC0415
+
+        cmd_sha = _bc.command_hash(command)
+        recent_hints = getattr(cache, "recent_hints", [])
+        if not recent_hints:
+            return
+        for hint_key, _ts in recent_hints:
+            if hint_key == cmd_sha:
+                cache.hints_ignored += 1  # type: ignore[union-attr, attr-defined]
+                cache._invalidate_json_cache()  # type: ignore[union-attr, attr-defined]
+                # Remove from ring buffer so a second run doesn't double-count.
+                cache.recent_hints = [  # type: ignore[union-attr, attr-defined]
+                    (k, t) for k, t in cache.recent_hints  # type: ignore[union-attr, attr-defined]
+                    if k != cmd_sha
+                ]
+                _LOG.debug(
+                    "curator: hints_ignored++ for bash cmd %.60s (total=%d)",
+                    sanitize_log_str(command), cache.hints_ignored,  # type: ignore[union-attr, attr-defined]
+                )
+                break
+    except Exception:  # noqa: BLE001 — fail-soft
+        pass
+
+
 def post_read(payload: HookPayload) -> HookResponse:
     """Post-read hook: record file/symbol accesses to session cache.
 
@@ -2014,11 +2056,13 @@ def post_bash(payload: HookPayload) -> HookResponse:
     For every PostToolUse(Bash) invocation we:
 
     1. Extract stdout/stderr/exit_code from ``tool_response``.
-    2. If the combined output is large enough to be worth caching
+    2. Check whether this command matches a recently-emitted bash-dedup hint;
+       if so, increment ``hints_ignored`` so the curator can adapt.
+    3. If the combined output is large enough to be worth caching
        (``_BASH_CACHE_MIN_BYTES``), write it to the on-disk bash cache and
        record a :class:`BashEntry` in the session so a future ``pre_read`` can
        dedupe a repeat invocation.
-    3. Always return CONTINUE — this hook never blocks, never modifies output.
+    4. Always return CONTINUE — this hook never blocks, never modifies output.
 
     Failures at any step are logged at debug and the hook still returns
     CONTINUE so a transient I/O issue cannot interrupt the agent.
@@ -2036,6 +2080,20 @@ def post_bash(payload: HookPayload) -> HookResponse:
     # agent's intent ("pytest -v"), not ~200 bytes of wrapper boilerplate.
     # Falls through to *command* unchanged when the input was never wrapped.
     display_cmd = _unwrap_compress_command(command)
+
+    # Curator ignored-hint tracking: if a bash-dedup hint was recently emitted
+    # for this command and the agent ran it anyway, record the ignored hint so
+    # the curator can suppress future bash-dedup hints when the ignore rate is
+    # consistently high.  Must run before any early-return so even small-output
+    # reruns are counted.  Uses display_cmd (unwrapped) to match the hash stored
+    # by build_bash_dedup_hint, which also hashes the unwrapped command.
+    if session_id:
+        _sess_mod = _get_session()
+        _bash_ignored_cache = _sess_mod.safe_load(session_id, caller="post_bash_ignored")
+        if _bash_ignored_cache is not None:
+            _check_ignored_bash_hint(_bash_ignored_cache, display_cmd)
+            with contextlib.suppress(Exception):
+                _sess_mod.save(_bash_ignored_cache)
 
     stdout, stderr, exit_code = _extract_bash_response(payload)
     # Sanitize at the boundary: Windows subprocess can produce surrogate-escape

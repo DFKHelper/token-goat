@@ -1224,6 +1224,116 @@ class TestCuratorIgnoredHintCounting:
 
 
 # ---------------------------------------------------------------------------
+# Curator: ignored-hint counting via _check_ignored_bash_hint
+# ---------------------------------------------------------------------------
+
+
+class TestCuratorIgnoredBashHintCounting:
+    """_check_ignored_bash_hint increments hints_ignored when Bash reruns a hinted command."""
+
+    def _make_cache_with_bash_hint(self, sid: str, command: str):
+        """Load a fresh session and seed recent_hints with the command's cmd_sha."""
+        import time
+
+        from token_goat import bash_cache
+
+        cache = session.load(sid)
+        cmd_sha = bash_cache.command_hash(command)
+        cache.recent_hints = [(cmd_sha, time.time())]
+        cache.hints_emitted = 1
+        cache.hints_ignored = 0
+        cache._invalidate_json_cache()
+        return cache, cmd_sha
+
+    def test_bash_rerun_increments_ignored(self, tmp_data_dir):
+        """If a bash-dedup hint was emitted for a command and Bash reruns it, hints_ignored++."""
+        from token_goat.hooks_read import _check_ignored_bash_hint
+
+        sid = "bash_ignored_1"
+        command = "pytest -v tests/"
+        cache, cmd_sha = self._make_cache_with_bash_hint(sid, command)
+
+        _check_ignored_bash_hint(cache, command)
+
+        assert cache.hints_ignored == 1
+        # sha should be removed from ring buffer after counting
+        assert all(k != cmd_sha for k, _ in cache.recent_hints)
+
+    def test_no_prior_hint_does_not_increment(self, tmp_data_dir):
+        """If no bash-dedup hint was emitted for this command, hints_ignored stays 0."""
+        from token_goat.hooks_read import _check_ignored_bash_hint
+
+        sid = "bash_ignored_2"
+        cache = session.load(sid)
+        cache.recent_hints = []
+        cache.hints_ignored = 0
+        cache._invalidate_json_cache()
+
+        _check_ignored_bash_hint(cache, "pytest -v tests/")
+
+        assert cache.hints_ignored == 0
+
+    def test_different_command_does_not_increment(self, tmp_data_dir):
+        """A hint for a different command does not fire for the current command."""
+        from token_goat.hooks_read import _check_ignored_bash_hint
+
+        sid = "bash_ignored_3"
+        command_hinted = "rg foo src/"
+        command_run = "pytest -v tests/"
+        cache, _ = self._make_cache_with_bash_hint(sid, command_hinted)
+
+        _check_ignored_bash_hint(cache, command_run)
+
+        assert cache.hints_ignored == 0
+
+    def test_second_rerun_does_not_double_count(self, tmp_data_dir):
+        """After the first Bash run removes the sha from the ring buffer, a second run does not double-count."""
+        from token_goat.hooks_read import _check_ignored_bash_hint
+
+        sid = "bash_ignored_4"
+        command = "npm test"
+        cache, _ = self._make_cache_with_bash_hint(sid, command)
+
+        _check_ignored_bash_hint(cache, command)
+        assert cache.hints_ignored == 1
+
+        # Second call — sha already removed from ring buffer.
+        _check_ignored_bash_hint(cache, command)
+        assert cache.hints_ignored == 1  # still 1, not 2
+
+    def test_post_bash_increments_ignored_via_hook(self, tmp_data_dir):
+        """post_bash increments hints_ignored when the command matches a recent bash-dedup hint."""
+        import time
+
+        from token_goat import bash_cache
+
+        sid = "bash_ignored_hook_1"
+        command = "git log --oneline -10"
+        cmd_sha = bash_cache.command_hash(command)
+
+        # Seed a session that looks like a bash-dedup hint was emitted.
+        cache = session.load(sid)
+        cache.recent_hints = [(cmd_sha, time.time())]
+        cache.hints_emitted = 1
+        cache.hints_ignored = 0
+        cache._invalidate_json_cache()
+        session.save(cache)
+
+        payload = {
+            "session_id": sid,
+            "tool_name": "Bash",
+            "tool_input": {"command": command},
+            "tool_response": "abc123 Add feature\n",
+        }
+        hooks_cli.post_bash(payload)
+
+        reloaded = session.load(sid)
+        assert reloaded.hints_ignored == 1, (
+            "post_bash did not increment hints_ignored after a bash-dedup hint was ignored"
+        )
+
+
+# ---------------------------------------------------------------------------
 # Unchanged-file hint flush regression
 # ---------------------------------------------------------------------------
 
