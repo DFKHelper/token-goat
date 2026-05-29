@@ -46,6 +46,7 @@ from .hooks_common import (
     get_session_context,
     get_tool_input,
     is_real_int,
+    load_session_safe,
     pre_tool_use_with_context,
     pre_tool_use_with_update,
     record_cached_stat,
@@ -958,9 +959,8 @@ def _handle_grep_written_not_read(payload: HookPayload) -> HookResponse | None:
     if not isinstance(path, str) or not path:
         return None
 
-    try:
-        cache = session.load(session_id)
-    except (OSError, ValueError):
+    cache = load_session_safe(session_id)
+    if cache is None:
         return None
 
     _edited: dict[str, int] = cache.edited_files if isinstance(cache.edited_files, dict) else {}
@@ -1494,7 +1494,7 @@ def pre_read(payload: HookPayload) -> HookResponse:
 
     session = _get_session()
 
-    cache = session.load(session_id)
+    cache = load_session_safe(session_id)
     try:
         # Deferred recovery hint: inject on the first Read after compaction.
         # This fires before all other hints so the recovery context is the first
@@ -1816,7 +1816,9 @@ def post_read(payload: HookPayload) -> HookResponse:
 
     session = _get_session()
 
-    cache = session.load(session_id)
+    cache = load_session_safe(session_id)
+    if cache is None:
+        return CONTINUE()
 
     tool_name = payload.get("tool_name")
     tool_input = get_tool_input(payload)
