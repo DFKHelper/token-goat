@@ -2,20 +2,32 @@
   <img src="assets/logo.png" alt="Token-Goat" width="700">
 </p>
 
-<p align="center"><b>Claude Code re-reads the same file three times. You pay every time.</b></p>
+<p align="center">
+  • <b>85%</b> smaller reads.  
+</p>
+<p align="center">
+  • <b>97.4%</b> image compression.
+</p>
+<p align="center">
+  • Better compaction.
+<p align="center">
+  • <b>Zero</b> ongoing maintenance.
+</p>
+
+<p align="center"><b>Your AI re-reads the same file three times. You pay every time. Compactions cause amnesia and waste. Token-goat fixes all of it.</b></p>
 
 <p align="center">
-Token-Goat sits between Claude Code (or Codex) and your tools. When Claude grabs a 3&nbsp;MB screenshot, it gets a 100&nbsp;KB copy instead. When it asks for a file it already read, it gets a one-line "you already read this" hint with a narrow slice suggestion. The <code>pytest&nbsp;-v</code> output the model just saw arrives stripped to the failures. Sessions drop 40–90%. You don't change how you prompt.
+Token-Goat sits between your AI (Claude Code, Codex, OpenCode, OpenClaw) and your tools. When it asks for a file it already read, it gets a one-line "you already read this" hint with a narrow slice suggestion. When it grabs a screenshot or large image, it gets a 100&nbsp;KB copy instead for context use, saving a fortune. Shopify image handling?  Way faster, and in my case 96% more efficient. The <code>pytest&nbsp;-v</code> output the model just saw arrives stripped to the failures. Sessions drop 40–90%+ in cost/token use. You don't change how you prompt or anything else: works automagically in the background. It even improves compactions, giving each compaction a clean, thorough summary of what it needs to remember, improving AI smarts AND reducing token waste after each compaction.
 </p>
 
 <p align="center">
-<b>Install in one command:</b>
+<b>Ask your AI to install it fully (give it this GitHub link), or install in one command (install UV first if needed):</b>
 </p>
 
 <pre align="center"><code>uv tool install token-goat && token-goat install</code></pre>
 
 <p align="center">
-Restart Claude Code. Run <code>token-goat stats</code> after your next session to see the savings.
+Restart your AI sessions. Run <code>token-goat stats</code> a couple of minutes after your next session to see the massive savings. It also doubles as a great tracker of your work. Welcome to token efficiency.
 </p>
 
 <p align="center">
@@ -33,22 +45,18 @@ Restart Claude Code. Run <code>token-goat stats</code> after your next session t
 </p>
 
 <p align="center">
-  <b>97.4%</b> image compression &nbsp;·&nbsp; <b>85%</b> smaller reads via surgical CLI &nbsp;·&nbsp; <b>zero</b> ongoing maintenance
-</p>
-
-<p align="center">
-  Built free by one person. If it saves you tokens, drop a ⭐️ at the top of this page. One click. Makes my day.
+  Built and continually improved, free, by one person. If it saves you tokens, drop a ⭐️ at the top of this page. One click. Makes my day. Also, if you'd like anything added, drop me a line.
 </p>
 
 ---
 
 ## The problem
 
-Claude reads `auth.py`. Then reads it again. Then a third time after compaction wipes the session. You pay for every token.
+AIs read `auth.py`. Then reads it again. And again. Then a third time after compaction wipes the session. Then it can't find what it wanted and searches other lines and files. You pay for every token and most of it is waste.
 
-Long sessions accumulate waste four ways. Screenshots cross the model at full resolution. A single PNG can land at 3.3 MB. The agent re-reads files it already parsed earlier in the same conversation. When a session compacts, the summary LLM doesn't know which files were edited or which symbols mattered, so it preserves the wrong things. And every `pytest`, `npm install`, `docker build`, or `git log` dumps thousands of lines of progress bars, deprecation warnings, and passing-test names that bury the one line that actually matters.
+Long sessions accumulate waste four ways. Screenshots cross the model at full resolution. A single PNG can land at 10+ MB. The agent re-reads files it already parsed earlier in the same conversation. When a session compacts, the summary LLM doesn't know which files were edited or which symbols mattered, so it preserves the wrong things. And every `pytest`, `npm install`, `docker build`, or `git log` dumps thousands of lines of progress bars, deprecation warnings, and passing-test names that bury the one line that actually matters.
 
-The fastest way to reduce Claude Code token costs is fixing these four, not writing shorter prompts. Each one is preventable. Token-Goat intercepts all four, automatically.
+The fastest way to reduce AI token costs is fixing these four, not writing shorter prompts. Each one is preventable. Token-Goat intercepts all four, automatically.
 
 ## What changes
 
@@ -113,7 +121,7 @@ The fastest way to reduce Claude Code token costs is fixing these four, not writ
   <sub><b>Current build</b> — after several days, now with per-kind and per-source breakdowns</sub>
 </p>
 
-On a per-token API plan, 100K wasted tokens per session runs about $0.30. Five sessions a week is ~$450/year. AI coding cost reduction at that scale comes from fixing the waste, not from using the product less. Token-goat is free.
+On a per-token API plan, 100K wasted tokens per session runs about $0.30. Five sessions a week is ~$450/year. AI coding cost reduction at that scale comes from fixing the waste, not from using the product less. Token-goat is free. And on subscription plans, it can result in limits feeling 10x higher.
 
 ## Token savings, measured
 
