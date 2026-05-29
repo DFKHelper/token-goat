@@ -157,6 +157,20 @@ class TestLineRanges:
         cache = session.mark_file_read("s6", "f.py", symbol="foo")
         assert cache.files["f.py"].symbols_read == ["foo"]
 
+    def test_symbol_dedup_multiple_repeated_reads(self, tmp_data_dir):
+        """Reading the same symbol 10 times results in symbols_read with length 1."""
+        for _ in range(10):
+            cache = session.mark_file_read("s6b", "f.py", symbol="my_function")
+        entry = cache.files["f.py"]
+        assert entry.symbols_read == ["my_function"],             f"Expected 1 entry, got {len(entry.symbols_read)}: {entry.symbols_read}"
+
+    def test_repeated_identical_line_range_dedup(self, tmp_data_dir):
+        """Reading the same line range 5 times results in one merged range."""
+        for _ in range(5):
+            cache = session.mark_file_read("s4b", "f.py", offset=0, limit=50)
+        ranges = cache.files["f.py"].line_ranges
+        assert len(ranges) == 1, f"Expected 1 range, got {len(ranges)}: {ranges}"
+
     def test_last_activity_ts_updated_when_symbol_sanitized_to_empty(self, tmp_data_dir):
         """last_activity_ts is stamped even on the sanitized-to-empty early return.
 
