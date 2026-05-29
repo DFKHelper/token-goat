@@ -479,6 +479,12 @@ _MAX_COLD_OUTPUTS: Final[int] = 4
 # 6 covers any realistic session without crowding higher-priority blockers.
 _MAX_ACTIVE_SKILLS: Final[int] = 6
 
+# Skills not loaded in the last N minutes are excluded from the manifest to avoid
+# cluttering with "done" skills.  30 minutes is conservative: a typical task may
+# involve loading multiple skills sequentially (1–2 min each); 30 min covers that
+# plus a buffer for quick re-invocations of the same skill without stale noise.
+_SKILL_STALE_THRESHOLD_SECS: Final[int] = 30 * 60
+
 # Maximum decisions surfaced in the **Decisions:** manifest section.  Opt-in via
 # ``token-goat decision "<text>"``, so the volume is self-limited — typical
 # sessions log 0–3 decisions per task.  5 covers heavier sessions while keeping
@@ -2052,16 +2058,24 @@ def _group_web_entries_by_domain(entries: list[object]) -> list[str]:
 def _select_top_skill_entries(skill_history: object) -> list[object]:
     """Pick up to :data:`_MAX_ACTIVE_SKILLS` skill loads worth surfacing.
 
-    Returns the most-recently-loaded skills, newest first.  Sessions typically
-    load a handful of skills total so this is a thin wrapper over a sort —
-    unlike bash/web/grep, no size filter applies (every loaded skill is by
-    definition load-bearing context for the agent).
+    Returns the most-recently-loaded skills, newest first, filtering out
+    skills not loaded in the last :data:`_SKILL_STALE_THRESHOLD_SECS` to avoid
+    cluttering the manifest with "done" skills that linger in history.
+    Sessions typically load a handful of skills total; stale skills are excluded.
     """
     if not isinstance(skill_history, dict) or not skill_history:
         return []
+
+    now = time.time()
+    # Filter to recently-loaded skills only
+    recent_skills = [
+        entry for entry in skill_history.values()
+        if (now - getattr(entry, "ts", 0.0)) <= _SKILL_STALE_THRESHOLD_SECS
+    ]
+
     return heapq.nlargest(
         _MAX_ACTIVE_SKILLS,
-        skill_history.values(),
+        recent_skills,
         key=lambda e: getattr(e, "ts", 0.0),
     )
 
@@ -3309,11 +3323,17 @@ def _build_sealed_block(
                 blocker_cmd_word = sanitize_log_str(tok, max_len=30)
                 break
 
-    # Slot (c): ≤2 active skill names
+    # Slot (c): ≤2 active skill names (excluding stale skills)
     skill_slot = ""
     if raw_skills:
+        now = time.time()
+        # Filter to recently-loaded skills only
+        recent_skills = [
+            entry for entry in raw_skills.values()
+            if (now - getattr(entry, "ts", 0.0)) <= _SKILL_STALE_THRESHOLD_SECS
+        ]
         top_skills = heapq.nlargest(
-            2, raw_skills.values(), key=lambda e: getattr(e, "ts", 0.0)
+            2, recent_skills, key=lambda e: getattr(e, "ts", 0.0)
         )
         names = [sanitize_log_str(getattr(e, "skill_name", ""), max_len=40) for e in top_skills]
         names = [n for n in names if n]
