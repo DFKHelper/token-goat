@@ -3,7 +3,7 @@
 </p>
 
 <p align="center">
-  • <b>85%</b> smaller reads via surgical CLI.  
+  • <b>85%</b> smaller reads.  
 </p>
 <p align="center">
   • <b>97.4%</b> image compression.
