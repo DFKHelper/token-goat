@@ -1181,6 +1181,47 @@ class TestCuratorIgnoredHintCounting:
         _check_ignored_hint(cache, norm_path)
         assert cache.hints_ignored == 1  # still 1, not 2
 
+    def test_hints_ignored_persisted_for_large_file(self, tmp_data_dir, tmp_path):
+        """hints_ignored increment is saved even when _try_snapshot exits early.
+
+        _try_snapshot skips files exceeding MAX_SNAPSHOT_BYTES, so without an
+        explicit save after _check_ignored_hint the curator increment is lost
+        in memory and never written to disk.
+        """
+        import time
+
+        from token_goat import snapshots
+
+        sid = "curator_ignored_large_file"
+        fpath = tmp_path / "big.py"
+        # Write a file larger than the snapshot cap so _try_snapshot returns early.
+        fpath.write_bytes(b"x" * (snapshots.MAX_SNAPSHOT_BYTES + 1))
+
+        # Seed the session with recent_hints so _check_ignored_hint fires.
+        # Paths must be in the normalized form (forward slashes, lowercase drive)
+        # that _check_ignored_hint uses for comparison.
+        cache = session.load(sid)
+        norm_path = session._normalize_path(str(fpath))
+        cache.recent_hints = [(norm_path, time.time())]
+        cache.hints_emitted = 1
+        cache.hints_ignored = 0
+        cache._invalidate_json_cache()
+        session.save(cache)
+
+        payload = {
+            "session_id": sid,
+            "tool_name": "Read",
+            "tool_input": {"file_path": str(fpath)},
+            "cwd": str(tmp_path),
+        }
+        hooks_cli.post_read(payload)
+
+        # Reload from disk — hints_ignored must be 1, not 0.
+        reloaded = session.load(sid)
+        assert reloaded.hints_ignored == 1, (
+            "hints_ignored increment was not persisted for file exceeding MAX_SNAPSHOT_BYTES"
+        )
+
 
 # ---------------------------------------------------------------------------
 # Unchanged-file hint flush regression
