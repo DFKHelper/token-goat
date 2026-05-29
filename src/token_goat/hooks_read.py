@@ -1687,6 +1687,11 @@ def post_read(payload: HookPayload) -> HookResponse:
             # Curator: check if this Read is for a path that was recently hinted.
             # If the agent reads the file anyway within the hint window, it ignored the hint.
             _check_ignored_hint(cache, file_path)
+            # Persist curator mutations (hints_ignored, recent_hints) unconditionally.
+            # _try_snapshot only saves when it stores a snapshot, so for files that
+            # exceed MAX_SNAPSHOT_BYTES or fail to open the increment would be lost.
+            with contextlib.suppress(Exception):
+                session.save(cache)
             # Capture a content snapshot so a future re-read after an edit can
             # be served as a small unified diff instead of a full-file Read.
             # Best-effort — snapshot failures never block the hook.
