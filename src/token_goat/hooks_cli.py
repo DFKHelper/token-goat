@@ -652,31 +652,42 @@ def pre_compact(payload: HookPayload) -> HookResponse:
 
     from . import session as session_mod  # noqa: PLC0415
 
-    if session_mod.safe_load(session_id, caller="pre-compact") is None:
+    session_cache = session_mod.safe_load(session_id, caller="pre-compact")
+    if session_cache is None:
         _write_compact_skip_sentinel(str(session_id))
         return CONTINUE()
 
-    # Pressure-aware sizing: auto-triggered compaction means Claude Code's context
+    # Compute adaptive budget based on session complexity.
+    # This replaces the fixed config value as the base — complex sessions with
+    # many edited files, symbols accessed, and bash history get more space.
+    age_seconds = time.time() - session_cache.created_ts
+    base_tokens = compact_mod.compute_adaptive_budget(session_cache, age_seconds=age_seconds)
+    _LOG.debug(
+        "pre-compact: adaptive budget computed from session complexity: %d tokens",
+        base_tokens,
+    )
+
+    # Pressure-aware sizing multiplier: auto-triggered compaction means Claude Code's context
     # is near-full and the harness is forced to compact.  A larger manifest at that
     # moment is net-positive — every preserved fact saves a subsequent re-read.
     # Manual /compact, by contrast, fires while the agent still has headroom, so
-    # we keep the base budget to avoid wasting tokens the user might use elsewhere.
-    # ``build_manifest`` clamps internally so any out-of-range product is capped.
-    base_tokens = cfg.max_manifest_tokens
-    # ``isinstance`` guard handles the MagicMock-attribute trap in tests where the
-    # config is mocked and auto-vivified attributes are not real floats.  Real
-    # configs always populate the field via the loader, so this branch is only
-    # entered when something has gone wrong with config construction.
+    # we skip the multiplier to avoid wasting tokens the user might use elsewhere.
     raw_multiplier = getattr(cfg, "auto_trigger_multiplier", 1.0)
     multiplier = float(raw_multiplier) if isinstance(raw_multiplier, (int, float)) else 1.0
     if trigger == "auto" and multiplier > 1.0:
-        effective_tokens = int(base_tokens * multiplier)
+        pre_clamp_tokens = int(base_tokens * multiplier)
         _LOG.info(
             "pre-compact: auto-trigger detected — boosting manifest budget %d → %d (×%.2f)",
-            base_tokens, effective_tokens, multiplier,
+            base_tokens, pre_clamp_tokens, multiplier,
         )
     else:
-        effective_tokens = base_tokens
+        pre_clamp_tokens = base_tokens
+
+    # Hard ceiling: prevent unbounded manifests. Clamp to either config max or 1200,
+    # whichever is configured. Adaptive budget already returns [200, 800], so this
+    # only caps the multiplier-amplified value.
+    hard_max = max(cfg.max_manifest_tokens, 1200)
+    effective_tokens = min(pre_clamp_tokens, hard_max)
 
     manifest, n_events = compact_mod.build_manifest_with_count(
         session_id, max_tokens=effective_tokens

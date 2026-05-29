@@ -558,6 +558,26 @@ class TestDeferredImports:
 class TestCompactSkipSentinelWrite:
     """Verify that pre_compact writes the sentinel when the manifest is skipped."""
 
+    def _make_fake_session_cache(self):
+        """Create a mock SessionCache with minimal required attributes.
+
+        The adaptive budget computation needs created_ts and various history
+        attributes. This helper ensures the mock has all required fields set
+        to non-MagicMock values so comparisons work correctly.
+        """
+        import time
+        from unittest.mock import MagicMock
+
+        cache = MagicMock()
+        # Use current time, so age_seconds will be near 0 (young session)
+        cache.created_ts = time.time()
+        # Stub attributes that compute_adaptive_budget checks with isinstance/getattr
+        cache.edited_files = {}  # Not a dict → 0 bonus
+        cache.files = {}  # Empty → 0 symbols accessed
+        cache.bash_history = None  # No bash history
+        cache.web_history = None  # No web history
+        return cache
+
     def test_sentinel_written_when_no_session(self, tmp_data_dir, monkeypatch):
         """pre_compact writes sentinel when session_id is present but session is empty."""
         from unittest.mock import MagicMock, patch
@@ -577,8 +597,9 @@ class TestCompactSkipSentinelWrite:
         fake_cfg.compact_assist.auto_trigger_multiplier = 1.0
         fake_cfg.compact_assist.min_events = 5  # floor above 0 events → skip
 
+        fake_cache = self._make_fake_session_cache()
         with patch("token_goat.config.load", return_value=fake_cfg), \
-             patch("token_goat.session.safe_load", return_value=MagicMock()), \
+             patch("token_goat.session.safe_load", return_value=fake_cache), \
              patch("token_goat.compact.build_manifest_with_count", return_value=("", 0)):
 
             payload = {"session_id": session_id, "trigger": "auto"}
@@ -609,8 +630,9 @@ class TestCompactSkipSentinelWrite:
         fake_cfg.compact_assist.auto_trigger_multiplier = 1.0
         fake_cfg.compact_assist.min_events = 0  # below floor → reaches manifest check
 
+        fake_cache = self._make_fake_session_cache()
         with patch("token_goat.config.load", return_value=fake_cfg), \
-             patch("token_goat.session.safe_load", return_value=MagicMock()), \
+             patch("token_goat.session.safe_load", return_value=fake_cache), \
              patch("token_goat.compact.build_manifest_with_count", return_value=("", 0)):
 
             payload = {"session_id": session_id, "trigger": "auto"}
@@ -642,8 +664,9 @@ class TestCompactSkipSentinelWrite:
 
         real_manifest = "## Manifest\n- src/foo.py\n"
 
+        fake_cache = self._make_fake_session_cache()
         with patch("token_goat.config.load", return_value=fake_cfg), \
-             patch("token_goat.session.safe_load", return_value=MagicMock()), \
+             patch("token_goat.session.safe_load", return_value=fake_cache), \
              patch("token_goat.compact.build_manifest_with_count", return_value=(real_manifest, 10)):
 
             payload = {"session_id": session_id, "trigger": "auto"}
