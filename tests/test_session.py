@@ -3670,8 +3670,15 @@ class TestPerTypeHintCounters:
         assert loaded.hints_emitted_by_type == {}
         assert loaded.hints_suppressed_by_type == {}
 
-    def test_merge_sums_per_type_counters(self, tmp_data_dir):
-        """Merging two caches sums the per-type counters."""
+    def test_merge_max_per_type_counters(self, tmp_data_dir):
+        """Merging two caches takes max() per key for per-type counters.
+
+        Both processes may start from the same non-zero base (CAS fork).
+        Additive merges would double-count the shared base, producing totals
+        higher than hints_emitted.  max() is consistent with the flat scalar
+        counters (hints_emitted, structured_hints_emitted, etc.) and never
+        overcounts.
+        """
         local = session._fresh_cache("test-per-type-merge-5")
         local.hints_emitted_by_type = {"bash_dedup": 3, "grep_dedup": 1}
         local.hints_suppressed_by_type = {"bash_dedup_below_threshold": 2}
@@ -3682,12 +3689,12 @@ class TestPerTypeHintCounters:
 
         merged = session._merge_session_caches(local, remote)
 
-        # Sums should be additive
-        assert merged.hints_emitted_by_type["bash_dedup"] == 5
-        assert merged.hints_emitted_by_type["grep_dedup"] == 1
-        assert merged.hints_emitted_by_type["read_dedup"] == 1
-        assert merged.hints_suppressed_by_type["bash_dedup_below_threshold"] == 3
-        assert merged.hints_suppressed_by_type["web_dedup_below_threshold"] == 3
+        # max() per key — not additive — consistent with hints_emitted scalar
+        assert merged.hints_emitted_by_type["bash_dedup"] == 3   # max(3, 2)
+        assert merged.hints_emitted_by_type["grep_dedup"] == 1   # local-only key
+        assert merged.hints_emitted_by_type["read_dedup"] == 1   # remote-only key
+        assert merged.hints_suppressed_by_type["bash_dedup_below_threshold"] == 2  # max(2, 1)
+        assert merged.hints_suppressed_by_type["web_dedup_below_threshold"] == 3   # remote-only key
 
     def test_multiple_hint_types_tracked_independently(self, tmp_data_dir):
         """Different hint types are tracked independently."""
