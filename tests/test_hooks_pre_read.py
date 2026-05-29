@@ -1382,6 +1382,109 @@ class TestSurgicalReadHint:
         result = _try_surgical_read_hint("/proj/src/auth.py", 1, 500, str(tmp_data_dir))
         assert result is None
 
+    def test_try_surgical_read_hint_sql_params_are_1indexed(self, tmp_data_dir, monkeypatch):
+        """SQL query receives 1-indexed bounds even when offset=0 is passed.
+
+        Regression test for the off-by-one bug where the 0-indexed Read tool offset
+        was used directly as a DB line number.  The DB stores 1-indexed lines, so
+        offset=0 must become req_start=1 and limit=50 must become req_end=50.
+        """
+        from pathlib import Path as _Path
+
+        from token_goat.project import Project
+
+        fake_proj = Project(root=_Path(tmp_data_dir), hash="deadbeef", marker=".git")
+
+        import token_goat.project as _proj_mod
+        monkeypatch.setattr(_proj_mod, "find_project", lambda cwd: fake_proj)
+
+        import token_goat.read_replacement as _rr
+        monkeypatch.setattr(_rr, "resolve_file_rel", lambda proj, path: "src/auth.py")
+
+        captured_params: list[tuple[object, ...]] = []
+
+        class _FakeConn:
+            def execute(self, sql, params):
+                captured_params.append(params)
+                return self
+            def fetchall(self):
+                class _Row:
+                    def __init__(self):
+                        self.name = "init_module"
+                        self.kind = "function"
+                    def __getitem__(self, key):
+                        return {"name": "init_module", "kind": "function"}[key]
+                return [_Row()]
+            def __enter__(self):
+                return self
+            def __exit__(self, *a):
+                pass
+
+        from contextlib import contextmanager
+
+        import token_goat.db as _db
+        @contextmanager
+        def _fake_open(hash):
+            yield _FakeConn()
+        monkeypatch.setattr(_db, "open_project_readonly", _fake_open)
+
+        from token_goat.hooks_read import _try_surgical_read_hint
+        # offset=0, limit=50 → lines 1–50 in 1-indexed space.
+        _try_surgical_read_hint("/proj/src/auth.py", 0, 50, str(tmp_data_dir))
+
+        assert captured_params, "DB query must have been executed"
+        params = captured_params[0]
+        # params is (file_rel, req_end, req_start) per the SQL WHERE clause order.
+        file_rel, req_end, req_start = params
+        assert req_start == 1, f"req_start must be 1 (1-indexed), got {req_start}"
+        assert req_end == 50, f"req_end must be 50 (1-indexed), got {req_end}"
+
+    def test_try_surgical_read_hint_3_symbols_fires(self, tmp_data_dir, monkeypatch):
+        """_try_surgical_read_hint emits a multi-symbol hint when exactly 3 symbols overlap."""
+        from pathlib import Path as _Path
+
+        from token_goat.project import Project
+
+        fake_proj = Project(root=_Path(tmp_data_dir), hash="deadbeef", marker=".git")
+
+        import token_goat.project as _proj_mod
+        monkeypatch.setattr(_proj_mod, "find_project", lambda cwd: fake_proj)
+
+        import token_goat.read_replacement as _rr
+        monkeypatch.setattr(_rr, "resolve_file_rel", lambda proj, path: "src/auth.py")
+
+        class _FakeConn:
+            def execute(self, sql, params):
+                return self
+            def fetchall(self):
+                class _Row:
+                    def __init__(self, name):
+                        self.name = name
+                        self.kind = "function"
+                    def __getitem__(self, key):
+                        return {"name": self.name, "kind": "function"}[key]
+                return [_Row("alpha"), _Row("beta"), _Row("gamma")]  # exactly 3 → fires
+            def __enter__(self):
+                return self
+            def __exit__(self, *a):
+                pass
+
+        from contextlib import contextmanager
+
+        import token_goat.db as _db
+        @contextmanager
+        def _fake_open(hash):
+            yield _FakeConn()
+        monkeypatch.setattr(_db, "open_project_readonly", _fake_open)
+
+        from token_goat.hooks_read import _try_surgical_read_hint
+        result = _try_surgical_read_hint("/proj/src/auth.py", 10, 60, str(tmp_data_dir))
+        assert result is not None, "exactly 3 symbols must produce a hint"
+        assert "alpha" in result
+        assert "beta" in result
+        assert "gamma" in result
+        assert "token-goat read" in result
+
     def test_sed_command_triggers_surgical_hint(self, tmp_data_dir, monkeypatch):
         """A `sed -n 'M,Np' file` Bash command triggers the surgical-read hint via pre_read."""
         import token_goat.hooks_read as _hr
@@ -1634,6 +1737,156 @@ class TestGrepSymbolRedirect:
         from token_goat.hooks_read import _try_grep_symbol_hint
         result = _try_grep_symbol_hint("func", str(tmp_data_dir))
         assert result is None
+
+    def test_try_grep_symbol_hint_5_symbols_fires(self, tmp_data_dir, monkeypatch):
+        """_try_grep_symbol_hint fires when exactly 5 symbols match (boundary: ≤5 = emit)."""
+        from pathlib import Path as _Path
+
+        from token_goat.project import Project
+
+        fake_proj = Project(root=_Path(tmp_data_dir), hash="deadbeef", marker=".git")
+
+        import token_goat.project as _proj_mod
+        monkeypatch.setattr(_proj_mod, "find_project", lambda cwd: fake_proj)
+
+        class _FakeConn:
+            def execute(self, sql, params):
+                return self
+            def fetchall(self):
+                class _Row:
+                    def __init__(self, i):
+                        self.name = "func"
+                        self.kind = "function"
+                        self.file_rel = f"src/mod{i}.py"
+                        self.line = i * 10
+                    def __getitem__(self, key):
+                        return {"name": "func", "kind": "function", "file_rel": self.file_rel, "line": self.line}[key]
+                return [_Row(i) for i in range(5)]  # exactly 5 → must emit hint
+            def __enter__(self):
+                return self
+            def __exit__(self, *a):
+                pass
+
+        from contextlib import contextmanager
+
+        import token_goat.db as _db
+        @contextmanager
+        def _fake_open(hash):
+            yield _FakeConn()
+        monkeypatch.setattr(_db, "open_project_readonly", _fake_open)
+
+        from token_goat.hooks_read import _try_grep_symbol_hint
+        result = _try_grep_symbol_hint("func", str(tmp_data_dir))
+        assert result is not None, "exactly 5 symbols must produce a hint (boundary ≤5)"
+        assert "token-goat symbol func" in result
+        assert "mod0.py" in result
+
+    def test_hint_fires_for_dotted_pattern(self, tmp_data_dir, monkeypatch):
+        """A dotted grep pattern like 'Session.load' routes through _try_grep_dotted_hint."""
+        import token_goat.hooks_read as _hr
+
+        def _fake_dotted(pattern, cwd):
+            if pattern == "Session.load":
+                return (
+                    "For `Session.load`, `load` is indexed — use `token-goat symbol load` "
+                    "to jump to its definition(s) (`session.py:42` (function)) "
+                    "instead of scanning files with grep (~95% fewer tokens)."
+                )
+            return None
+
+        monkeypatch.setattr(_hr, "_try_grep_dotted_hint", _fake_dotted)
+
+        payload = {
+            "session_id": "grep-dotted-1",
+            "tool_name": "Grep",
+            "tool_input": {"pattern": "Session.load"},
+            "cwd": "/proj",
+        }
+        result = hooks_cli.pre_read(payload)
+        hso = result.get("hookSpecificOutput", {})
+        ctx = hso.get("additionalContext", "") if isinstance(hso, dict) else ""
+        assert "token-goat symbol load" in ctx
+        assert "Session.load" in ctx
+
+    def test_dotted_hint_deduped_on_second_grep(self, tmp_data_dir, monkeypatch):
+        """The dotted-name hint is suppressed on the second grep for the same pattern."""
+        import token_goat.hooks_read as _hr
+
+        def _fake_dotted(pattern, cwd):
+            return (
+                "For `Session.load`, `load` is indexed — use `token-goat symbol load` "
+                "to jump to its definition(s) (`session.py:42` (function)) "
+                "instead of scanning files with grep (~95% fewer tokens)."
+            )
+
+        monkeypatch.setattr(_hr, "_try_grep_dotted_hint", _fake_dotted)
+
+        payload = {
+            "session_id": "grep-dotted-2",
+            "tool_name": "Grep",
+            "tool_input": {"pattern": "Session.load"},
+            "cwd": "/proj",
+        }
+        hooks_cli.pre_read(payload)
+        result2 = hooks_cli.pre_read(payload)
+        hso2 = result2.get("hookSpecificOutput", {})
+        ctx2 = hso2.get("additionalContext", "") if isinstance(hso2, dict) else ""
+        assert "token-goat symbol load" not in ctx2
+
+    def test_try_grep_dotted_hint_prefers_qualifier_match(self, tmp_data_dir, monkeypatch):
+        """_try_grep_dotted_hint prefers symbols in files whose stem matches the qualifier."""
+        from pathlib import Path as _Path
+
+        from token_goat.project import Project
+
+        fake_proj = Project(root=_Path(tmp_data_dir), hash="deadbeef", marker=".git")
+
+        import token_goat.project as _proj_mod
+        monkeypatch.setattr(_proj_mod, "find_project", lambda cwd: fake_proj)
+
+        class _FakeConn:
+            def execute(self, sql, params):
+                return self
+            def fetchall(self):
+                class _Row:
+                    def __init__(self, file_rel, line):
+                        self.name = "load"
+                        self.kind = "function"
+                        self.file_rel = file_rel
+                        self.line = line
+                    def __getitem__(self, key):
+                        return {"name": "load", "kind": "function", "file_rel": self.file_rel, "line": self.line}[key]
+                # Two rows: one in session.py (matches qualifier "Session"), one elsewhere.
+                return [_Row("src/session.py", 42), _Row("src/config.py", 100)]
+            def __enter__(self):
+                return self
+            def __exit__(self, *a):
+                pass
+
+        from contextlib import contextmanager
+
+        import token_goat.db as _db
+        @contextmanager
+        def _fake_open(hash):
+            yield _FakeConn()
+        monkeypatch.setattr(_db, "open_project_readonly", _fake_open)
+
+        from token_goat.hooks_read import _try_grep_dotted_hint
+        result = _try_grep_dotted_hint("Session.load", str(tmp_data_dir))
+        assert result is not None
+        # Should prefer session.py (qualifier "Session" matches stem "session").
+        assert "session.py:42" in result
+        # config.py should be filtered out since only the preferred row is shown.
+        assert "config.py" not in result
+
+    def test_try_grep_dotted_hint_returns_none_for_non_dotted_pattern(self, tmp_data_dir):
+        """_try_grep_dotted_hint returns None for patterns that aren't Qualifier.method."""
+        from token_goat.hooks_read import _try_grep_dotted_hint
+
+        assert _try_grep_dotted_hint("my_function", "/proj") is None
+        assert _try_grep_dotted_hint("foo.bar.baz", "/proj") is None  # triple-dot
+        assert _try_grep_dotted_hint("foo.", "/proj") is None           # no method
+        assert _try_grep_dotted_hint(".bar", "/proj") is None            # no qualifier
 
     def test_grep_dedup_takes_priority_over_symbol_redirect(self, tmp_data_dir, monkeypatch):
         """grep dedup fires first; symbol redirect is skipped when dedup already returned."""

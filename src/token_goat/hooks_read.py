@@ -186,9 +186,15 @@ def _handle_bash_read_equivalent(payload: HookPayload) -> HookPayload | None:
 
     read_payload = dict(payload)
     read_payload["tool_name"] = "Read"
+    # bash_parser returns 1-indexed line offsets (head -n N → offset=1; sed -n
+    # '10,30p' → offset=10).  The native Read tool uses 0-indexed offset, where
+    # offset=0 means "start from line 1".  Subtract 1 here so downstream logic
+    # that receives the synthesised payload sees a uniform 0-indexed offset.
+    raw_offset = intent.offset
+    normalised_offset = (raw_offset - 1) if raw_offset is not None else None
     read_payload["tool_input"] = {
         "file_path": intent.target_path,
-        "offset": intent.offset,
+        "offset": normalised_offset,
         "limit": intent.limit,
     }
     return read_payload
@@ -385,11 +391,15 @@ def _try_surgical_read_hint(
 
     Returns None on any error, when the file is not indexed, or when the range
     overlaps too many symbols (>3) to name usefully.
+
+    ``offset`` is 0-indexed (native Read tool convention: 0 = start at line 1).
+    The DB stores 1-indexed line numbers, so the query uses ``offset + 1`` as
+    the lower bound and ``offset + limit`` as the inclusive upper bound.
     """
     if offset < 0 or limit <= 0:
         return None
-    req_start = offset
-    req_end = offset + limit - 1
+    req_start = offset + 1   # 0-indexed Read offset → 1-indexed DB line number
+    req_end = offset + limit  # inclusive upper bound in 1-indexed space
     try:
         from . import db as _db  # noqa: PLC0415
         from . import read_replacement as _rr
@@ -925,6 +935,13 @@ def _handle_grep_written_not_read(payload: HookPayload) -> HookResponse | None:
 # so we only query the index for unambiguous symbol-name greps.
 _IDENTIFIER_RE = _re.compile(r"^[A-Za-z_$][A-Za-z0-9_$]{2,}$")
 
+# Matches two-part dotted names (e.g. ``Session.load``, ``self.process``) where
+# each component is a valid identifier.  Used to recognise method-access greps
+# and redirect to the cheaper ``token-goat symbol <method>`` lookup.
+_DOTTED_NAME_RE = _re.compile(
+    r"^([A-Za-z_$][A-Za-z0-9_$]+)\.([A-Za-z_$][A-Za-z0-9_$]+)$"
+)
+
 
 def _try_grep_symbol_hint(pattern: str, cwd: str | None) -> str | None:
     """Return a `token-goat symbol` suggestion when the grep pattern is a known indexed symbol.
@@ -978,8 +995,65 @@ def _try_grep_symbol_hint(pattern: str, cwd: str | None) -> str | None:
         return None
 
 
+def _try_grep_dotted_hint(pattern: str, cwd: str | None) -> str | None:
+    """Return a ``token-goat symbol`` suggestion for a dotted-name grep pattern.
+
+    Handles two-part patterns like ``Session.load`` or ``self.process`` where the
+    agent is searching for a method definition.  The method-name component is
+    looked up in the project index; results whose file-stem fuzzy-matches the
+    qualifier (e.g. ``session.py`` for qualifier ``Session``) are preferred.
+    Returns None when no clear 1–3 result match exists.  Always fail-soft.
+    """
+    m = _DOTTED_NAME_RE.match(pattern)
+    if m is None:
+        return None
+    qualifier, method = m.group(1), m.group(2)
+    try:
+        from . import db as _db  # noqa: PLC0415
+        from .hooks_common import validate_cwd  # noqa: PLC0415
+        from .project import find_project  # noqa: PLC0415
+
+        cwd_path = validate_cwd(cwd, caller="grep-dotted-hint")
+        if cwd_path is None:
+            return None
+        proj = find_project(cwd_path)
+        if proj is None:
+            return None
+
+        with _db.open_project_readonly(proj.hash) as conn:
+            rows = conn.execute(
+                "SELECT name, kind, file_rel, line FROM symbols "
+                "WHERE name = ? AND end_line IS NOT NULL "
+                "ORDER BY kind, line LIMIT 8",
+                (method,),
+            ).fetchall()
+
+        if not rows:
+            return None
+
+        qual_lower = qualifier.lower()
+        preferred = [r for r in rows if qual_lower in Path(r["file_rel"]).stem.lower()]
+        display_rows = preferred if preferred else rows
+        if len(display_rows) > 3:
+            return None
+
+        locations = []
+        for row in display_rows:
+            file_short = Path(row["file_rel"]).name
+            locations.append(f"`{file_short}:{row['line']}` ({row['kind']})")
+
+        loc_str = ", ".join(locations)
+        return (
+            f"For `{pattern}`, `{method}` is indexed — use "
+            f"`token-goat symbol {method}` to jump to its definition(s) "
+            f"({loc_str}) instead of scanning files with grep (~95% fewer tokens)."
+        )
+    except Exception:  # noqa: BLE001
+        return None
+
+
 def _handle_grep_symbol_redirect(payload: HookPayload) -> HookResponse | None:
-    """Inject a `token-goat symbol` suggestion when the Grep pattern is an indexed symbol.
+    """Inject a ``token-goat symbol`` suggestion when the Grep pattern is an indexed symbol.
 
     Advisory only — the grep is allowed to proceed so the agent still receives
     full match results.  The hint teaches the agent a cheaper lookup path for
@@ -999,14 +1073,18 @@ def _handle_grep_symbol_redirect(payload: HookPayload) -> HookResponse | None:
     pattern = tool_input.get("pattern")
     if not isinstance(pattern, str) or not pattern:
         return None
-    # Fast-path guard: skip DB lookup for patterns that are clearly not
-    # identifier-shaped (regex metacharacters, spaces, dots).  This runs at
-    # the handler level so it gates correctly even in tests that monkeypatch
-    # _try_grep_symbol_hint.
-    if not _IDENTIFIER_RE.match(pattern):
+    # Fast-path guard: route to the appropriate lookup based on pattern shape.
+    # This check runs at the handler level so it gates correctly even in tests
+    # that monkeypatch the inner hint functions.
+    if _IDENTIFIER_RE.match(pattern):
+        hint_text = _try_grep_symbol_hint(pattern, cwd)
+        stat_key = "grep_symbol_redirect"
+    elif _DOTTED_NAME_RE.match(pattern):
+        hint_text = _try_grep_dotted_hint(pattern, cwd)
+        stat_key = "grep_dotted_redirect"
+    else:
         return None
 
-    hint_text = _try_grep_symbol_hint(pattern, cwd)
     if not hint_text:
         return None
 
@@ -1020,7 +1098,7 @@ def _handle_grep_symbol_redirect(payload: HookPayload) -> HookResponse | None:
         return None
 
     cache.mark_hint_seen(fp)
-    cache.record_hint_emitted("grep_symbol_redirect")
+    cache.record_hint_emitted(stat_key)
     _sess.save(cache)
     return pre_tool_use_with_context(hint_text)
 
