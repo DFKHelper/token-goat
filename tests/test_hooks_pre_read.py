@@ -1406,6 +1406,55 @@ class TestSurgicalReadHint:
         assert "token-goat read" in ctx
         assert "login" in ctx
 
+    def test_offset_zero_does_not_suppress_hint(self, tmp_data_dir, monkeypatch):
+        """offset=0 is a valid Read tool value (start from line 1) and must not suppress the hint.
+
+        Regression test for the bug where ``if offset <= 0`` incorrectly rejected reads
+        that started at the first line of the file (the standard 0-based Read tool offset).
+        """
+        from pathlib import Path as _Path
+
+        from token_goat.hooks_read import _try_surgical_read_hint
+        from token_goat.project import Project
+
+        fake_proj = Project(root=_Path(tmp_data_dir), hash="deadbeef", marker=".git")
+
+        import token_goat.project as _proj_mod
+        monkeypatch.setattr(_proj_mod, "find_project", lambda cwd: fake_proj)
+
+        import token_goat.read_replacement as _rr
+        monkeypatch.setattr(_rr, "resolve_file_rel", lambda proj, path: "src/auth.py")
+
+        class _FakeConn:
+            def execute(self, sql, params):
+                return self
+            def fetchall(self):
+                class _Row:
+                    def __init__(self):
+                        self.name = "module_init"
+                        self.kind = "function"
+                    def __getitem__(self, key):
+                        return {"name": "module_init", "kind": "function"}[key]
+                return [_Row()]
+            def __enter__(self):
+                return self
+            def __exit__(self, *a):
+                pass
+
+        from contextlib import contextmanager
+
+        import token_goat.db as _db
+        @contextmanager
+        def _fake_open(hash):
+            yield _FakeConn()
+        monkeypatch.setattr(_db, "open_project_readonly", _fake_open)
+
+        # offset=0 → read starts at the very first line; must still produce a hint.
+        result = _try_surgical_read_hint("/proj/src/auth.py", 0, 50, str(tmp_data_dir))
+        assert result is not None, "offset=0 is valid; hint must not be suppressed"
+        assert "module_init" in result
+        assert "token-goat read" in result
+
 
 class TestGrepSymbolRedirect:
     """Tests for _handle_grep_symbol_redirect and _try_grep_symbol_hint."""

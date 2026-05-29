@@ -386,7 +386,7 @@ def _try_surgical_read_hint(
     Returns None on any error, when the file is not indexed, or when the range
     overlaps too many symbols (>3) to name usefully.
     """
-    if offset <= 0 or limit <= 0:
+    if offset < 0 or limit <= 0:
         return None
     req_start = offset
     req_end = offset + limit - 1
