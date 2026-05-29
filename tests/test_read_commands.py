@@ -1,12 +1,16 @@
 """Tests for read_commands helpers — Item 15: --no-header / TTY auto-detection."""
 from __future__ import annotations
 
+import shutil
 import sys
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
 
 from token_goat.read_commands import _emit_text_result
+
+FIXTURE_DIR = Path(__file__).parent / "fixtures"
 
 # ---------------------------------------------------------------------------
 # Item 15 — _emit_text_result header suppression
@@ -134,3 +138,50 @@ def test_run_read_like_command_with_header_tty(capsys: pytest.CaptureFixture[str
     lines = out.splitlines()
     assert lines[0] == "## src/foo.py — symbol: my_func"
     assert "result text" in out
+
+
+# ---------------------------------------------------------------------------
+# stub_view — regression for start_line vs line column name
+# ---------------------------------------------------------------------------
+
+@pytest.fixture
+def indexed_py_dir(tmp_path, tmp_data_dir, make_project, monkeypatch):
+    """Small Python project indexed into tmp_data_dir."""
+    TS_SAMPLE = FIXTURE_DIR / "ts_sample"
+    proj_root = tmp_path / "py_sample"
+    shutil.copytree(TS_SAMPLE, proj_root)
+    (proj_root / ".git").mkdir(exist_ok=True)
+    from token_goat.parser import index_project
+    monkeypatch.chdir(proj_root)
+    proj = make_project(proj_root)
+    index_project(proj, full=True)
+    return proj_root, proj
+
+
+def test_stub_view_returns_symbols(indexed_py_dir, tmp_data_dir, monkeypatch, capsys):
+    """stub_view must query the 'line' column (not 'start_line') and return symbols.
+
+    Regression: a wrong column name was silently swallowed by the OperationalError
+    catch and caused stub_view to always report 'No indexed symbols found'.
+    """
+    from token_goat import db as _db
+    from token_goat.read_commands import stub_view
+
+    proj_root, proj = indexed_py_dir
+    monkeypatch.chdir(proj_root)
+
+    # Pick the first file that has at least one indexed symbol.
+    with _db.open_project_readonly(proj.hash) as conn:
+        row = conn.execute(
+            "SELECT file_rel FROM symbols WHERE end_line IS NOT NULL LIMIT 1"
+        ).fetchone()
+    assert row is not None, "fixture must contain at least one indexable symbol"
+    file_rel = row["file_rel"]
+
+    stub_view(str(proj_root / file_rel), json_output=False)
+    out = capsys.readouterr().out
+
+    assert "No indexed symbols found" not in out, (
+        "stub_view returned no symbols — likely a wrong column name in the SQL query"
+    )
+    assert "Skeleton:" in out

@@ -831,10 +831,10 @@ def stub_view(
     with db.open_project_readonly(proj.hash) as conn:
         try:
             rows = conn.execute(
-                "SELECT name, kind, start_line, signature "
+                "SELECT name, kind, line, signature "
                 "FROM symbols "
                 "WHERE file_rel = ? AND end_line IS NOT NULL "
-                "ORDER BY start_line",
+                "ORDER BY line",
                 (file_rel,),
             ).fetchall()
         except sqlite3.OperationalError:
@@ -856,7 +856,7 @@ def stub_view(
             {
                 "name": row["name"],
                 "kind": row["kind"],
-                "line": row["start_line"],
+                "line": row["line"],
                 "signature": row["signature"],
             }
             for row in filtered
@@ -866,14 +866,14 @@ def stub_view(
 
     typer.echo(f"# Skeleton: {file_rel}  ({len(filtered)} symbols)")
     for row in filtered:
-        typer.echo(_format_stub_line(row["name"], row["kind"], row["start_line"], row["signature"]))
+        typer.echo(_format_stub_line(row["name"], row["kind"], row["line"], row["signature"]))
 
     # Record savings: stub views cost ~5-15% of a full file read.
     try:
         abs_path = proj.root / file_rel
         src_bytes = abs_path.stat().st_size
         stub_bytes = sum(
-            len(_format_stub_line(r["name"], r["kind"], r["start_line"], r["signature"]).encode())
+            len(_format_stub_line(r["name"], r["kind"], r["line"], r["signature"]).encode())
             for r in filtered
         )
         saved = max(0, src_bytes - stub_bytes)
