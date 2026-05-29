@@ -379,6 +379,8 @@ def _try_surgical_read_hint(
     offset: int,
     limit: int,
     cwd: str | None,
+    *,
+    limit_is_sentinel: bool = False,
 ) -> str | None:
     """Return a symbol-level suggestion when a line-range read maps to known symbols.
 
@@ -395,6 +397,11 @@ def _try_surgical_read_hint(
     ``offset`` is 0-indexed (native Read tool convention: 0 = start at line 1).
     The DB stores 1-indexed line numbers, so the query uses ``offset + 1`` as
     the lower bound and ``offset + limit`` as the inclusive upper bound.
+
+    ``limit_is_sentinel`` — set to True when ``limit`` is a fabricated upper
+    bound (used as an EOF proxy for open-ended tail reads).  Prevents the
+    sentinel value from leaking into the displayed line range; instead the hint
+    shows "Lines N–EOF" rather than an arbitrary large number.
     """
     if offset < 0 or limit <= 0:
         return None
@@ -434,8 +441,9 @@ def _try_surgical_read_hint(
         sym_list = ", ".join(f"`{n}`" for n in sym_names)
         primary = sym_names[0]
         cmd = f'token-goat read "{file_rel}::{primary}"'
+        range_str = f"Lines {req_start}–EOF" if limit_is_sentinel else f"Lines {req_start}–{req_end}"
         return (
-            f"Lines {req_start}–{req_end} of `{fname}` span {sym_list}. "
+            f"{range_str} of `{fname}` span {sym_list}. "
             f"Use `{cmd}` for a surgical read (~90% fewer tokens on repeat access)."
         )
     except Exception:  # noqa: BLE001
@@ -1575,9 +1583,11 @@ def pre_read(payload: HookPayload) -> HookResponse:
     # prevents false-positive hints on files with dense symbol coverage.
     if _raw_offset is not None:
         try:
+            _limit_is_sentinel = _raw_limit is None
             _eff_limit = int(_raw_limit) if _raw_limit is not None else 2000
             _surg_hint = _try_surgical_read_hint(
-                file_path, int(_raw_offset), _eff_limit, cwd
+                file_path, int(_raw_offset), _eff_limit, cwd,
+                limit_is_sentinel=_limit_is_sentinel,
             )
         except (TypeError, ValueError):
             _surg_hint = None
