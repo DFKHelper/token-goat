@@ -475,10 +475,11 @@ class TestFullFileCollapseThreshold:
     def test_file_read_9_times_keeps_ranges(self, tmp_data_dir):
         """File read 9 times still tracks line ranges (not yet at threshold)."""
         s_id = "s_collapse_9"
-        # Read 9 times with different ranges
+        # Read 9 times with different ranges, passing cache to avoid repeated disk I/O
+        cache = None
         for i in range(9):
             offset = i * 100
-            session.mark_file_read(s_id, "f.py", offset=offset, limit=50)
+            cache = session.mark_file_read(s_id, "f.py", offset=offset, limit=50, cache=cache)
         cache = session.load(s_id)
         entry = cache.files["f.py"]
         assert entry.read_count == 9
@@ -489,10 +490,11 @@ class TestFullFileCollapseThreshold:
     def test_file_read_10_times_collapses_to_sentinel(self, tmp_data_dir):
         """File read 10 times collapses line_ranges to sentinel [(0, 0)]."""
         s_id = "s_collapse_10"
-        # Read 10 times with different ranges
+        # Read 10 times with different ranges, passing cache to avoid repeated disk I/O
+        cache = None
         for i in range(10):
             offset = i * 100
-            session.mark_file_read(s_id, "f.py", offset=offset, limit=50)
+            cache = session.mark_file_read(s_id, "f.py", offset=offset, limit=50, cache=cache)
         cache = session.load(s_id)
         entry = cache.files["f.py"]
         assert entry.read_count == 10
@@ -502,13 +504,14 @@ class TestFullFileCollapseThreshold:
     def test_sentinel_preserved_on_further_reads(self, tmp_data_dir):
         """Once collapsed to sentinel, further reads preserve the sentinel."""
         s_id = "s_sentinel_preserved"
-        # Collapse to sentinel at read 10
+        # Collapse to sentinel at read 10, passing cache to avoid repeated disk I/O
+        cache = None
         for i in range(10):
             offset = i * 100
-            session.mark_file_read(s_id, "f.py", offset=offset, limit=50)
+            cache = session.mark_file_read(s_id, "f.py", offset=offset, limit=50, cache=cache)
         # Read again several times
         for _ in range(3):
-            session.mark_file_read(s_id, "f.py", offset=999, limit=50)
+            cache = session.mark_file_read(s_id, "f.py", offset=999, limit=50, cache=cache)
         cache = session.load(s_id)
         entry = cache.files["f.py"]
         assert entry.read_count == 13
@@ -2041,9 +2044,10 @@ class TestLineRangesCap:
         sid = "lr-cap-2"
         path = "/proj/src/big.py"
         # Read 9 times (under full-file threshold of 10) to test range capping behavior
-        # without hitting the sentinel collapse.
+        # without hitting the sentinel collapse. Pass cache to avoid repeated disk I/O.
+        cache = None
         for i in range(9):
-            session.mark_file_read(sid, path, offset=i * 100, limit=10)
+            cache = session.mark_file_read(sid, path, offset=i * 100, limit=10, cache=cache)
         entry = session.get_file_entry(sid, path)
         assert entry is not None
         # At 9 reads, ranges should still be tracked (not sentinel)
@@ -2059,9 +2063,10 @@ class TestLineRangesCap:
         # For now, just verify the sentinel prevents spanning-range from being reached.
         sid = "lr-cap-3"
         path = "/proj/src/big.py"
-        # Read 10 times (hits sentinel threshold)
+        # Read 10 times (hits sentinel threshold), passing cache to avoid repeated disk I/O
+        cache = None
         for i in range(10):
-            session.mark_file_read(sid, path, offset=i * 100, limit=10)
+            cache = session.mark_file_read(sid, path, offset=i * 100, limit=10, cache=cache)
         entry = session.get_file_entry(sid, path)
         assert entry is not None
         # At read 10, should be collapsed to sentinel (not spanning range)
@@ -2074,8 +2079,10 @@ class TestLineRangesCap:
         # When _merge_ranges is called internally, it should produce a spanning range
         # if there are many disjoint ranges. With 9 reads at 500-line intervals,
         # each read adds one range, so we'll have ~9 ranges (no merging due to gaps).
+        # Pass cache to avoid repeated disk I/O.
+        cache = None
         for i in range(9):
-            session.mark_file_read(sid, path, offset=i * 500, limit=10)
+            cache = session.mark_file_read(sid, path, offset=i * 500, limit=10, cache=cache)
         entry = session.get_file_entry(sid, path)
         assert entry is not None
         # Should have multiple ranges (not sentinel, not a single spanning range yet)

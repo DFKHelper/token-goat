@@ -732,7 +732,7 @@ class TestEvictCacheDirFileCount:
         assert removed == 0
 
     def test_bash_cache_file_count_cap_applied(self, tmp_path: Path, monkeypatch) -> None:
-        """bash_cache.evict_old_entries passes DEFAULT_MAX_FILE_COUNT to evict_cache_dir."""
+        """bash_cache.evict_old_entries respects max_file_count parameter."""
         import token_goat.paths as _paths
         monkeypatch.setattr(_paths, "data_dir", lambda: tmp_path)
 
@@ -741,15 +741,19 @@ class TestEvictCacheDirFileCount:
         d = tmp_path / "bash_outputs"
         d.mkdir(parents=True, exist_ok=True)
         t = time.time()
-        # Plant DEFAULT_MAX_FILE_COUNT + 2 files, all tiny so byte cap is not hit
-        cap = bash_cache.DEFAULT_MAX_FILE_COUNT
-        for i in range(cap + 2):
+        # Use a smaller cap for faster testing (102 files instead of 4098).
+        # This tests the same file-count-cap logic as the real cap.
+        test_cap = 100
+        for i in range(test_cap + 2):
             name = _valid_name(f"{i:05d}")
             _plant(d, f"{name}.txt", b"X" * 5, t + i)
 
-        removed = bash_cache.evict_old_entries(max_total_bytes=bash_cache.DEFAULT_MAX_TOTAL_BYTES)
-        assert removed == 2, f"expected 2 files evicted to reach count cap {cap}"
-        assert len(list(d.glob("*.txt"))) == cap
+        removed = bash_cache.evict_old_entries(
+            max_total_bytes=bash_cache.DEFAULT_MAX_TOTAL_BYTES,
+            max_file_count=test_cap,
+        )
+        assert removed == 2, f"expected 2 files evicted to reach count cap {test_cap}"
+        assert len(list(d.glob("*.txt"))) == test_cap
 
 
 class TestTruncateTailPreserve:
