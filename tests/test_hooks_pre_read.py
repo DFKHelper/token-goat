@@ -1194,7 +1194,7 @@ class TestSurgicalReadHint:
         """When a line-range read overlaps indexed symbols, a token-goat read suggestion is injected."""
         import token_goat.hooks_read as _hr
 
-        def _fake_surgical(file_path, offset, limit, cwd):
+        def _fake_surgical(file_path, offset, limit, cwd, *, limit_is_sentinel=False):
             return (
                 "Lines 10–30 of `auth.py` span `login`. "
                 "Use `token-goat read \"src/auth.py::login\"` for a surgical read (~90% fewer tokens on repeat access)."
@@ -1220,7 +1220,7 @@ class TestSurgicalReadHint:
 
         call_count = 0
 
-        def _fake_surgical(file_path, offset, limit, cwd):
+        def _fake_surgical(file_path, offset, limit, cwd, *, limit_is_sentinel=False):
             nonlocal call_count
             call_count += 1
             return "Lines 10–30 of `auth.py` span `login`. Use `token-goat read \"src/auth.py::login\"` for a surgical read (~90% fewer tokens on repeat access)."
@@ -1246,7 +1246,7 @@ class TestSurgicalReadHint:
 
         called = []
 
-        def _fake_surgical(file_path, offset, limit, cwd):
+        def _fake_surgical(file_path, offset, limit, cwd, *, limit_is_sentinel=False):
             called.append((offset, limit))
             return None
 
@@ -1485,11 +1485,54 @@ class TestSurgicalReadHint:
         assert "gamma" in result
         assert "token-goat read" in result
 
+    def test_tail_skip_triggers_surgical_hint_with_eof_range(self, tmp_data_dir, monkeypatch):
+        """tail -n +N triggers the surgical hint; displayed range ends with 'EOF', not a sentinel.
+
+        Regression test for the bug where limit=None caused the 2000 sentinel to leak into
+        the emitted hint text, producing 'Lines 10-2009' for a tail -n +10 command.
+        """
+        import token_goat.hooks_read as _hr
+
+        received: list[tuple[int, int, bool]] = []
+
+        def _fake_surgical(file_path, offset, limit, cwd, *, limit_is_sentinel=False):
+            received.append((offset, limit, limit_is_sentinel))
+            if limit_is_sentinel:
+                return (
+                    f"Lines {offset + 1}–EOF of `auth.py` span `login`. "
+                    "Use `token-goat read \"src/auth.py::login\"` for a surgical read "
+                    "(~90% fewer tokens on repeat access)."
+                )
+            return None
+
+        monkeypatch.setattr(_hr, "_try_surgical_read_hint", _fake_surgical)
+
+        payload = {
+            "session_id": "surg-tail-skip-1",
+            "tool_name": "Bash",
+            "tool_input": {"command": "tail -n +10 /proj/src/auth.py"},
+            "cwd": "/proj",
+        }
+        result = hooks_cli.pre_read(payload)
+
+        # Verify _try_surgical_read_hint was called with the correct arguments.
+        assert received, "_try_surgical_read_hint should have been called"
+        offset_seen, limit_seen, sentinel_seen = received[0]
+        assert offset_seen == 9, f"expected offset=9 (10-1, normalised), got {offset_seen}"
+        assert limit_seen == 2000, f"expected effective limit=2000, got {limit_seen}"
+        assert sentinel_seen, "limit_is_sentinel must be True for open-ended tail reads"
+
+        # Verify the emitted hint uses 'EOF' not the sentinel number.
+        hso = result.get("hookSpecificOutput", {})
+        ctx = hso.get("additionalContext", "") if isinstance(hso, dict) else ""
+        assert "EOF" in ctx, "hint must display 'EOF' not the sentinel value"
+        assert "2009" not in ctx and "2000" not in ctx, "sentinel must not appear in hint text"
+
     def test_sed_command_triggers_surgical_hint(self, tmp_data_dir, monkeypatch):
         """A `sed -n 'M,Np' file` Bash command triggers the surgical-read hint via pre_read."""
         import token_goat.hooks_read as _hr
 
-        def _fake_surgical(file_path, offset, limit, cwd):
+        def _fake_surgical(file_path, offset, limit, cwd, *, limit_is_sentinel=False):
             return (
                 "Lines 10–30 of `auth.py` span `login`. "
                 "Use `token-goat read \"src/auth.py::login\"` for a surgical read (~90% fewer tokens on repeat access)."
