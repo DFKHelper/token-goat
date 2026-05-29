@@ -33,7 +33,7 @@ Restart your AI sessions. Run <code>token-goat stats</code> a couple of minutes 
 </p>
 
 <p align="center">
-  <b>97.4%</b> image compression &nbsp;·&nbsp; <b>85%</b> smaller reads via surgical CLI &nbsp;·&nbsp; <b>zero</b> ongoing maintenance
+  smaller reads via surgical CLI. <b>97.4%</b> image compression. Better compaction. &nbsp;·&nbsp; <b>85%</b>&nbsp;·&nbsp; <b>zero</b> ongoing maintenance
 </p>
 
 <p align="center">
