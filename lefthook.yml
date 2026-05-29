@@ -15,15 +15,8 @@ pre-push:
       env:
         PYTHONIOENCODING: "utf-8:replace"
         TOKEN_GOAT_NO_WORKER_SPAWN: "1"
-      # Mirror CI: -n 0 (serial) avoids xdist INTERNALERROR worker crashes
-      # from Windows C-extension corruption. Three attempts match the CI retry
-      # loop — a single run has ~40% crash rate; three independent tries give
-      # ~94% green without hiding real failures (real regressions fail all 3).
-      run: |
-        for attempt in 1 2 3; do
-          echo "=== Test attempt $attempt of 3 ==="
-          uv run pytest -n 0 -m "not slow" -q --tb=short && exit 0
-          echo "=== Attempt $attempt failed; retrying ==="
-        done
-        exit 1
+      # Mirror CI: -n 0 (serial) avoids xdist INTERNALERROR worker crashes.
+      # shell: bash ensures "not slow" quotes are handled correctly on Windows
+      # (lefthook.exe uses cmd.exe by default, mangling quoted arguments).
+      run: uv run pytest -n 0 -m "not slow" -q --tb=short
       shell: bash
