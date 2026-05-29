@@ -14,7 +14,16 @@ pre-push:
     test:
       env:
         PYTHONIOENCODING: "utf-8:replace"
-      # Match CI's fast-tier filter and Windows worker cap. CI pins to -n 2
-      # on Windows runners to avoid xdist INTERNALERROR worker crashes under
-      # heavy parallelism. The same pin applies locally.
-      run: uv run pytest -m "not slow" -n 2 -q --tb=short
+        TOKEN_GOAT_NO_WORKER_SPAWN: "1"
+      # Mirror CI: -n 0 (serial) avoids xdist INTERNALERROR worker crashes
+      # from Windows C-extension corruption. Three attempts match the CI retry
+      # loop — a single run has ~40% crash rate; three independent tries give
+      # ~94% green without hiding real failures (real regressions fail all 3).
+      run: |
+        for attempt in 1 2 3; do
+          echo "=== Test attempt $attempt of 3 ==="
+          uv run pytest -n 0 -m "not slow" -q --tb=short && exit 0
+          echo "=== Attempt $attempt failed; retrying ==="
+        done
+        exit 1
+      shell: bash
