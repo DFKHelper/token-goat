@@ -3384,3 +3384,48 @@ class TestGetIndexedSymbolsNullEndLine:
 
         assert len(syms) == 1, "only the non-NULL end_line symbol should be returned"
         assert syms[0]["name"] == "good_func"
+
+
+# ---------------------------------------------------------------------------
+# Surgical intent guard: offset=0 + limit must suppress hint (not just offset>0)
+# ---------------------------------------------------------------------------
+
+
+class TestSurgicalIntentGuardOffsetZero:
+    """Regression: offset=0 is a valid explicit offset; surgical guard must fire
+    for offset=0 + limit, not only for offset>0 + limit."""
+
+    def _make_large_file(self, tmp_path: Path, name: str, size: int = 500_000) -> str:
+        p = tmp_path / name
+        p.write_bytes(b"x" * size)
+        return str(p)
+
+    def test_index_only_hint_suppressed_when_offset_zero_and_limit(self, tmp_path: Path) -> None:
+        from token_goat.hints import build_index_only_file_hint
+
+        large_lock = self._make_large_file(tmp_path, "package-lock.json")
+        # offset=0 with a limit — surgical intent; must NOT emit a hint.
+        result = build_index_only_file_hint(file_path=large_lock, offset=0, limit=100)
+        assert result is None, "offset=0 + limit should suppress index-only hint"
+
+    def test_index_only_hint_emits_when_no_offset(self, tmp_path: Path) -> None:
+        from token_goat.hints import build_index_only_file_hint
+
+        large_lock = self._make_large_file(tmp_path, "package-lock.json")
+        # No offset — unsurgical read; may emit a hint.
+        result = build_index_only_file_hint(file_path=large_lock, offset=None, limit=None)
+        assert result is not None, "no offset/limit should emit index-only hint for large lockfile"
+
+    def test_structured_hint_suppressed_when_offset_zero_and_limit(self, tmp_path: Path) -> None:
+        from token_goat.hints import build_structured_file_hint
+
+        large_csv = self._make_large_file(tmp_path, "data.csv")
+        result = build_structured_file_hint(file_path=large_csv, offset=0, limit=50)
+        assert result is None, "offset=0 + limit should suppress structured-file hint"
+
+    def test_structured_hint_emits_when_no_offset(self, tmp_path: Path) -> None:
+        from token_goat.hints import build_structured_file_hint
+
+        large_csv = self._make_large_file(tmp_path, "data.csv")
+        result = build_structured_file_hint(file_path=large_csv, offset=None, limit=None)
+        assert result is not None, "no offset/limit should emit structured-file hint for large CSV"
