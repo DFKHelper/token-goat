@@ -1485,6 +1485,61 @@ class TestSurgicalReadHint:
         assert "gamma" in result
         assert "token-goat read" in result
 
+    def test_try_surgical_read_hint_limit_is_sentinel_shows_eof(self, tmp_data_dir, monkeypatch):
+        """_try_surgical_read_hint with limit_is_sentinel=True shows 'Lines N–EOF', not the sentinel.
+
+        Regression test for the sentinel-leak bug where open-ended tail reads
+        produced 'Lines 10–2009' instead of 'Lines 10–EOF'.
+        """
+        from pathlib import Path as _Path
+
+        from token_goat.project import Project
+
+        fake_proj = Project(root=_Path(tmp_data_dir), hash="deadbeef", marker=".git")
+
+        import token_goat.project as _proj_mod
+        monkeypatch.setattr(_proj_mod, "find_project", lambda cwd: fake_proj)
+
+        import token_goat.read_replacement as _rr
+        monkeypatch.setattr(_rr, "resolve_file_rel", lambda proj, path: "src/auth.py")
+
+        class _FakeConn:
+            def execute(self, sql, params):
+                return self
+            def fetchall(self):
+                class _Row:
+                    def __init__(self):
+                        self.name = "login"
+                        self.kind = "function"
+                    def __getitem__(self, key):
+                        return {"name": "login", "kind": "function"}[key]
+                return [_Row()]
+            def __enter__(self):
+                return self
+            def __exit__(self, *a):
+                pass
+
+        from contextlib import contextmanager
+
+        import token_goat.db as _db
+        @contextmanager
+        def _fake_open(hash):
+            yield _FakeConn()
+        monkeypatch.setattr(_db, "open_project_readonly", _fake_open)
+
+        from token_goat.hooks_read import _try_surgical_read_hint
+        # offset=9 (0-indexed, i.e. line 10), limit=2000 is the EOF sentinel.
+        result = _try_surgical_read_hint(
+            "/proj/src/auth.py", 9, 2000, str(tmp_data_dir), limit_is_sentinel=True
+        )
+        assert result is not None, "limit_is_sentinel=True must still produce a hint"
+        assert "EOF" in result, f"hint must show 'Lines 10–EOF', got: {result}"
+        assert "2000" not in result, f"sentinel value 2000 must not appear in hint: {result}"
+        assert "2009" not in result, f"sentinel-derived value 2009 must not appear in hint: {result}"
+        assert "Lines 10–EOF" in result, f"expected 'Lines 10–EOF' in hint: {result}"
+        assert "token-goat read" in result
+        assert "src/auth.py::login" in result
+
     def test_tail_skip_triggers_surgical_hint_with_eof_range(self, tmp_data_dir, monkeypatch):
         """tail -n +N triggers the surgical hint; displayed range ends with 'EOF', not a sentinel.
 
@@ -1826,6 +1881,57 @@ class TestGrepSymbolRedirect:
         assert result is not None, "exactly 5 symbols must produce a hint (boundary ≤5)"
         assert "token-goat symbol func" in result
         assert "mod0.py" in result
+        # Multi-symbol path must NOT include a 'token-goat read' command — that is
+        # reserved for the 1-symbol branch only.
+        assert "token-goat read" not in result
+
+    def test_try_grep_symbol_hint_2_symbols_uses_symbol_command(self, tmp_data_dir, monkeypatch):
+        """_try_grep_symbol_hint with exactly 2 results emits symbol command, not read.
+
+        Boundary test: 2 is the first multi-symbol case.  The result must contain
+        'token-goat symbol' but must NOT contain 'token-goat read'.
+        """
+        from pathlib import Path as _Path
+
+        from token_goat.project import Project
+
+        fake_proj = Project(root=_Path(tmp_data_dir), hash="deadbeef", marker=".git")
+
+        import token_goat.project as _proj_mod
+        monkeypatch.setattr(_proj_mod, "find_project", lambda cwd: fake_proj)
+
+        class _FakeConn:
+            def execute(self, sql, params):
+                return self
+            def fetchall(self):
+                class _Row:
+                    def __init__(self, i):
+                        self.name = "parse"
+                        self.kind = "function"
+                        self.file_rel = f"src/mod{i}.py"
+                        self.line = i * 10 + 5
+                    def __getitem__(self, key):
+                        return {"name": "parse", "kind": "function", "file_rel": self.file_rel, "line": self.line}[key]
+                return [_Row(0), _Row(1)]  # exactly 2 → multi-symbol path
+            def __enter__(self):
+                return self
+            def __exit__(self, *a):
+                pass
+
+        from contextlib import contextmanager
+
+        import token_goat.db as _db
+        @contextmanager
+        def _fake_open(hash):
+            yield _FakeConn()
+        monkeypatch.setattr(_db, "open_project_readonly", _fake_open)
+
+        from token_goat.hooks_read import _try_grep_symbol_hint
+        result = _try_grep_symbol_hint("parse", str(tmp_data_dir))
+        assert result is not None, "exactly 2 symbols must produce a hint"
+        assert "token-goat symbol parse" in result
+        assert "mod0.py" in result
+        assert "token-goat read" not in result, "2-symbol path must use symbol command, not read"
 
     def test_hint_fires_for_dotted_pattern(self, tmp_data_dir, monkeypatch):
         """A dotted grep pattern like 'Session.load' routes through _try_grep_dotted_hint."""
@@ -1924,6 +2030,61 @@ class TestGrepSymbolRedirect:
         assert "session.py:42" in result
         # config.py should be filtered out since only the preferred row is shown.
         assert "config.py" not in result
+        # The single preferred row must use the 'token-goat read' form, not 'symbol'.
+        assert "token-goat read" in result, "1-preferred-row path must emit 'token-goat read'"
+        assert "src/session.py::load" in result, "read command must name full relative path"
+
+    def test_try_grep_dotted_hint_1_preferred_row_uses_read_command(self, tmp_data_dir, monkeypatch):
+        """_try_grep_dotted_hint with exactly 1 preferred row emits a 'token-goat read' command.
+
+        Verifies the 1-row branch format in isolation: the hint names both the
+        full relative path and the method, and explicitly does not fall back to
+        'token-goat symbol'.
+        """
+        from pathlib import Path as _Path
+
+        from token_goat.project import Project
+
+        fake_proj = Project(root=_Path(tmp_data_dir), hash="deadbeef", marker=".git")
+
+        import token_goat.project as _proj_mod
+        monkeypatch.setattr(_proj_mod, "find_project", lambda cwd: fake_proj)
+
+        class _FakeConn:
+            def execute(self, sql, params):
+                return self
+            def fetchall(self):
+                class _Row:
+                    def __init__(self):
+                        self.name = "refresh"
+                        self.kind = "method"
+                        self.file_rel = "src/auth/token.py"
+                        self.line = 77
+                    def __getitem__(self, key):
+                        return {"name": "refresh", "kind": "method",
+                                "file_rel": "src/auth/token.py", "line": 77}[key]
+                return [_Row()]  # single row, stem "token" matches qualifier "Token"
+            def __enter__(self):
+                return self
+            def __exit__(self, *a):
+                pass
+
+        from contextlib import contextmanager
+
+        import token_goat.db as _db
+        @contextmanager
+        def _fake_open(hash):
+            yield _FakeConn()
+        monkeypatch.setattr(_db, "open_project_readonly", _fake_open)
+
+        from token_goat.hooks_read import _try_grep_dotted_hint
+        result = _try_grep_dotted_hint("Token.refresh", str(tmp_data_dir))
+        assert result is not None, "1 preferred row must produce a hint"
+        assert "token-goat read" in result, "1-row path must emit 'token-goat read'"
+        assert "src/auth/token.py::refresh" in result, "full path::method must appear in command"
+        assert "token.py:77" in result, "location must be named in hint"
+        # Must NOT fall back to the symbol-only format.
+        assert "token-goat symbol" not in result
 
     def test_try_grep_dotted_hint_returns_none_for_non_dotted_pattern(self, tmp_data_dir):
         """_try_grep_dotted_hint returns None for patterns that aren't Qualifier.method."""
