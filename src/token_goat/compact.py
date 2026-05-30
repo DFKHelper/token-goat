@@ -2270,14 +2270,14 @@ def _section_budgets(total_budget: int, edited_tokens: int, section_content_coun
 
     # Allocate: empty sections get 0, others get proportional share with floor applied.
     _MIN_SECTION_TOKENS = 40  # Minimum for non-empty sections in content-aware mode
-    budgets: dict[str, int] = {}
+    result_budgets: dict[str, int] = {}
     for name in base_proportions:
         if name not in sections_with_content:
-            budgets[name] = 0
+            result_budgets[name] = 0
         else:
-            budgets[name] = max(_MIN_SECTION_TOKENS, int(remaining * normalized_proportions[name]))
+            result_budgets[name] = max(_MIN_SECTION_TOKENS, int(remaining * normalized_proportions[name]))
 
-    return budgets
+    return result_budgets
 
 
 def _grep_sort_key(entry: object, now_ts: float) -> float:

@@ -808,13 +808,15 @@ def dispatch(event: str, payload: HookPayload) -> dict[str, object]:
     # daemon=True ensures the process can exit on Windows even if the thread
     # is wedged on an unkillable syscall.
     handler_result: dict[str, object] = {}
-    handler_error: list[BaseException] = []
 
     def _run_handler() -> None:
         try:
             handler_result.update(dict(handler(payload)))
-        except BaseException as exc:  # pragma: no cover — fail_soft catches first
-            handler_error.append(exc)
+        except BaseException:  # noqa: BLE001
+            # Top-level safety net: catch exceptions from handlers whose
+            # fail_soft decorator is missing or ineffective (e.g. test injection).
+            # Leave handler_result empty so the setdefault below adds continue:true.
+            _LOG.exception("handler %s raised; relying on dispatcher safety net", safe_event)
 
     worker = threading.Thread(
         target=_run_handler,
