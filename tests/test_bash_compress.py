@@ -3203,3 +3203,174 @@ class TestTreeFilterBoundaries:
 
         assert "5 directories, 58 files" in result
         assert "elided" in result  # compression did fire
+
+
+# ---------------------------------------------------------------------------
+# Gradle filter
+# ---------------------------------------------------------------------------
+
+class TestGradleFilter:
+    def test_drops_task_progress_lines(self) -> None:
+        """Gradle filter drops > Task : and > Configure project lines."""
+        text = "> Task :compileJava\n> Task :processResources\n> Task :classes\n"
+        text += "BUILD SUCCESSFUL in 2.5s"
+        f = bc.GradleFilter()
+        result = f.apply(text, "", 0, ["gradle", "build"])
+        assert "> Task" not in result.text
+        assert "BUILD SUCCESSFUL" in result.text
+        assert "dropped 3 task-progress" in result.text
+
+    def test_keeps_build_successful_line(self) -> None:
+        """BUILD SUCCESSFUL line is preserved."""
+        text = "> Task :build\nBUILD SUCCESSFUL in 1.0s"
+        f = bc.GradleFilter()
+        result = f.apply(text, "", 0, ["gradle", "build"])
+        assert "BUILD SUCCESSFUL" in result.text
+
+    def test_keeps_test_summary(self) -> None:
+        """Test summaries in the output are kept (in last 30 lines)."""
+        lines = [f"> Task :test_{i}" for i in range(5)]
+        lines += ["5 tests passed", "BUILD SUCCESSFUL"]
+        text = "\n".join(lines)
+        f = bc.GradleFilter()
+        result = f.apply(text, "", 0, ["gradle", "test"])
+        assert "5 tests passed" in result.text
+        assert "BUILD SUCCESSFUL" in result.text
+
+    def test_dependencies_head_tail_compression(self) -> None:
+        """gradle dependencies uses head=10, tail=10 compression."""
+        lines = [f"dependency{i}" for i in range(50)]
+        text = "\n".join(lines)
+        f = bc.GradleFilter()
+        result = f.apply(text, "", 0, ["gradle", "dependencies"])
+        # Should have head (10) + marker + tail (10) = at most 21 lines + overhead
+        assert "more items elided" in result.text or "more lines elided" in result.text
+
+    def test_tasks_head_tail_compression(self) -> None:
+        """gradle tasks uses head=20, tail=5 compression."""
+        lines = [f"task{i}: Description {i}" for i in range(100)]
+        text = "\n".join(lines)
+        f = bc.GradleFilter()
+        result = f.apply(text, "", 0, ["gradle", "tasks"])
+        # Should have head (20) + marker + tail (5)
+        assert "more items elided" in result.text or "more lines elided" in result.text
+
+    def test_failure_preserves_stderr_and_last_lines(self) -> None:
+        """On exit_code != 0, preserve stderr and last 20 lines of stdout."""
+        stdout = "\n".join([f"line {i}" for i in range(100)])
+        stderr = "FAILURE: Build failed with an exception."
+        f = bc.GradleFilter()
+        result = f.apply(stdout, stderr, 1, ["gradle", "build"])
+        assert "FAILURE: Build failed" in result.text
+        assert "line 99" in result.text
+
+    def test_short_build_output_passthrough(self) -> None:
+        """Short build output (< 30 lines) passes through."""
+        lines = ["line 1", "BUILD SUCCESSFUL"]
+        text = "\n".join(lines)
+        f = bc.GradleFilter()
+        result = f.apply(text, "", 0, ["gradle", "build"])
+        assert "line 1" in result.text
+        assert "BUILD SUCCESSFUL" in result.text
+        assert "elided" not in result.text
+
+    def test_matches_gradle_binaries(self) -> None:
+        """GradleFilter matches gradle, gradlew, ./gradlew."""
+        f = bc.GradleFilter()
+        assert f.matches(["gradle", "build"])
+        assert f.matches(["gradlew", "build"])
+        assert f.matches(["./gradlew", "build"])
+
+
+# ---------------------------------------------------------------------------
+# Maven filter
+# ---------------------------------------------------------------------------
+
+class TestMavenFilter:
+    def test_drops_download_progress_lines(self) -> None:
+        """Maven filter drops Downloading: and Downloaded: lines."""
+        text = "[INFO] Downloading: http://example.com/foo.jar\n"
+        text += "[INFO] Downloaded: http://example.com/foo.jar\n"
+        text += "[INFO] BUILD SUCCESS"
+        f = bc.MavenFilter()
+        result = f.apply(text, "", 0, ["mvn", "test"])
+        assert "Downloading" not in result.text
+        assert "Downloaded" not in result.text
+        assert "BUILD SUCCESS" in result.text
+        assert "dropped 2 download-progress" in result.text
+
+    def test_keeps_test_summary(self) -> None:
+        """Tests run: X summary lines are kept."""
+        text = "[INFO] Tests run: 42, Failures: 0, Errors: 0, Skipped: 0"
+        text += "\n[INFO] BUILD SUCCESS"
+        f = bc.MavenFilter()
+        result = f.apply(text, "", 0, ["mvn", "test"])
+        assert "Tests run: 42" in result.text
+        assert "BUILD SUCCESS" in result.text
+
+    def test_keeps_error_lines(self) -> None:
+        """[ERROR] lines are preserved."""
+        text = "[ERROR] Some compilation error\n[INFO] BUILD FAILURE"
+        f = bc.MavenFilter()
+        result = f.apply(text, "", 0, ["mvn", "test"])
+        assert "[ERROR]" in result.text
+
+    def test_dependency_tree_head_tail_compression(self) -> None:
+        """mvn dependency:tree uses head=10, tail=10 compression."""
+        lines = [f"dep{i}" for i in range(50)]
+        text = "\n".join(lines)
+        f = bc.MavenFilter()
+        result = f.apply(text, "", 0, ["mvn", "dependency:tree"])
+        assert "more items elided" in result.text or "more lines elided" in result.text
+
+    def test_install_keeps_last_30_lines(self) -> None:
+        """mvn install keeps last 30 lines."""
+        lines = [f"[INFO] line {i}" for i in range(100)]
+        text = "\n".join(lines)
+        f = bc.MavenFilter()
+        result = f.apply(text, "", 0, ["mvn", "install"])
+        # Should have head (30) + maybe tail
+        assert "line 99" in result.text
+
+    def test_failure_preserves_error_lines(self) -> None:
+        """On exit_code != 0, preserve ERROR lines and summary."""
+        stdout = "\n".join([f"[INFO] line {i}" for i in range(100)])
+        stderr = "[ERROR] Compilation failure"
+        f = bc.MavenFilter()
+        result = f.apply(stdout, stderr, 1, ["mvn", "package"])
+        assert "[ERROR]" in result.text
+        assert "line 99" in result.text
+
+    def test_verify_subcommand_compression(self) -> None:
+        """mvn verify compresses download lines but keeps summaries."""
+        text = "[INFO] Downloading: foo\n[INFO] Downloaded: foo\n"
+        text += "[INFO] Tests run: 10\n[INFO] BUILD SUCCESS"
+        f = bc.MavenFilter()
+        result = f.apply(text, "", 0, ["mvn", "verify"])
+        assert "Downloading" not in result.text
+        assert "Tests run: 10" in result.text
+        assert "BUILD SUCCESS" in result.text
+
+    def test_package_subcommand_compression(self) -> None:
+        """mvn package compresses download lines."""
+        text = "[INFO] Downloading: foo\n[INFO] BUILD SUCCESS"
+        f = bc.MavenFilter()
+        result = f.apply(text, "", 0, ["mvn", "package"])
+        assert "Downloading" not in result.text
+        assert "BUILD SUCCESS" in result.text
+
+    def test_matches_maven_binaries(self) -> None:
+        """MavenFilter matches mvn, mvnw, ./mvnw."""
+        f = bc.MavenFilter()
+        assert f.matches(["mvn", "test"])
+        assert f.matches(["mvnw", "test"])
+        assert f.matches(["./mvnw", "test"])
+
+    def test_unknown_subcommand_uses_default(self) -> None:
+        """Unknown Maven subcommands use default head/tail compression."""
+        lines = [f"line {i}" for i in range(50)]
+        text = "\n".join(lines)
+        f = bc.MavenFilter()
+        result = f.apply(text, "", 0, ["mvn", "unknown-command"])
+        # Default is head=10, tail=10, so should show compression
+        assert "more items elided" in result.text or "more lines elided" in result.text
