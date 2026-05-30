@@ -2054,6 +2054,51 @@ def validate_session_id(session_id: str) -> None:
         raise ValueError(f"session_id contains invalid characters: {session_id!r}")
 
 
+def _cleanup_stale_tmp_files(p: Path) -> None:
+    """Clean up any stale .tmp files left behind by interrupted writes.
+
+    On startup (or when loading the session cache), checks for orphaned .tmp
+    files in the same directory that may have been left by a prior process
+    that crashed mid-write. These files are deleted to prevent accumulation.
+
+    This is best-effort: any OSError is caught and logged but does not propagate,
+    since we always want to proceed with the load regardless of cleanup success.
+    """
+    try:
+        parent = p.parent
+        if not parent.exists():
+            return
+        for tmp_path in parent.glob(f"{p.name}.*.tmp"):
+            try:
+                tmp_path.unlink(missing_ok=True)
+                _LOG.debug("cleaned up stale tmp file: %s", tmp_path.name)
+            except OSError as e:
+                _LOG.debug("failed to clean up tmp file %s: %s", tmp_path.name, e)
+    except OSError as e:
+        _LOG.debug("failed to scan for tmp files near %s: %s", p.name, e)
+
+
+def _preserve_corrupt_file(p: Path) -> None:
+    """Move a corrupt session JSON file to a timestamped archive for forensics.
+
+    On corruption detection, the file is moved from ``path.json`` to
+    ``path.corrupt.{timestamp}`` instead of being silently deleted. This
+    preserves evidence for debugging while allowing the session to start fresh.
+
+    Failures are logged but do not propagate — we always want to proceed with
+    a fresh session regardless of archival success.
+    """
+    try:
+        if not p.exists():
+            return
+        timestamp = int(time.time())
+        corrupt_path = p.with_name(f"{p.name}.corrupt.{timestamp}")
+        p.rename(corrupt_path)
+        _LOG.warning("archived corrupt session file: %s → %s", p.name, corrupt_path.name)
+    except OSError as e:
+        _LOG.debug("failed to archive corrupt session file %s: %s", p.name, e)
+
+
 def _record_cache_contention(session_id: str, phase: str, exc: OSError) -> None:
     """Record a best-effort telemetry row when the session cache is locked.
 
@@ -2196,10 +2241,17 @@ def load(session_id: str) -> SessionCache:
     Corrupted JSON is treated the same as a missing file: the cache is reset
     rather than propagating an exception, because a stale hint is always
     preferable to a broken hook invocation.
+
+    Before loading, cleans up any stale .tmp files left behind by interrupted
+    atomic writes, and archives any corrupt .json file to .json.corrupt.{ts}
+    for forensic analysis.
     """
     validate_session_id(session_id)
     t0 = time.monotonic()
     p = paths.session_cache_path(session_id)
+
+    # Clean up orphaned .tmp files and prepare the path.
+    _cleanup_stale_tmp_files(p)
 
     # --- Process-local load cache ---
     # Within a single process invocation (e.g. dual user-prompt-submit +
@@ -2258,6 +2310,7 @@ def load(session_id: str) -> SessionCache:
             cache = SessionCache.from_dict(data)
         except (json.JSONDecodeError, KeyError, TypeError, ValueError) as e:
             _LOG.warning("session cache corrupted (%s); resetting", e)
+            _preserve_corrupt_file(p)
             return _fresh_cache(session_id)
         cache.unavailable = False
         # Record the on-disk fingerprint so save() can skip the CAS from_dict

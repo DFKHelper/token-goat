@@ -4605,3 +4605,180 @@ class TestTypedDictDataclassAlignment:
         assert actual_td_only == td_only_allowed, (
             f"Expected td-only exclusions {td_only_allowed}, got {actual_td_only}"
         )
+
+
+class TestSessionReliability:
+    """Tests for atomic writes, corruption recovery, and cleanup."""
+
+    def test_cleanup_stale_tmp_files_removes_orphaned_files(self, tmp_data_dir):
+        """_cleanup_stale_tmp_files removes orphaned .tmp files before load."""
+        session_id = "test_tmp_cleanup"
+        cache_path = session.paths.session_cache_path(session_id)
+        session.paths.ensure_dir(cache_path.parent)
+
+        # Create a couple of orphaned .tmp files that would be left by an
+        # interrupted atomic_write_text operation
+        tmp1 = cache_path.with_name(f"{cache_path.name}.12345.999999999.tmp")
+        tmp2 = cache_path.with_name(f"{cache_path.name}.67890.888888888.tmp")
+        tmp1.write_text("stale")
+        tmp2.write_text("stale")
+        assert tmp1.exists()
+        assert tmp2.exists()
+
+        # Call load() which should trigger cleanup
+        loaded = session.load(session_id)
+        assert loaded.session_id == session_id
+
+        # Verify tmp files were cleaned up
+        assert not tmp1.exists()
+        assert not tmp2.exists()
+
+    def test_cleanup_stale_tmp_files_tolerates_missing_parent(self, tmp_data_dir):
+        """_cleanup_stale_tmp_files does not crash if parent dir does not exist."""
+        # This should not raise even though the parent doesn't exist
+        nonexistent = pathlib.Path("/nonexistent/path/to/session.json")
+        session._cleanup_stale_tmp_files(nonexistent)  # Should be a no-op
+
+    def test_preserve_corrupt_file_archives_on_json_decode_error(self, tmp_data_dir):
+        """When JSON is corrupt, preserve_corrupt_file archives it to .corrupt.{ts}."""
+        session_id = "test_corrupt_archive"
+        cache_path = session.paths.session_cache_path(session_id)
+        session.paths.ensure_dir(cache_path.parent)
+
+        # Write an invalid JSON file
+        cache_path.write_text("{invalid json")
+
+        # Load should detect corruption, preserve the file, and return fresh cache
+        loaded = session.load(session_id)
+        assert loaded.session_id == session_id
+        assert loaded.files == {}
+
+        # Original cache_path should be gone; .corrupt file should exist
+        assert not cache_path.exists()
+        corrupt_files = list(cache_path.parent.glob(f"{cache_path.name}.corrupt.*"))
+        assert len(corrupt_files) == 1, f"Expected 1 corrupt file, found {len(corrupt_files)}"
+
+    def test_preserve_corrupt_file_tolerates_missing_file(self, tmp_data_dir):
+        """_preserve_corrupt_file is a no-op if the file doesn't exist."""
+        nonexistent_path = pathlib.Path("/nonexistent/cache.json")
+        # Should not raise
+        session._preserve_corrupt_file(nonexistent_path)
+
+    def test_load_recovers_from_corrupt_json_with_valid_fallback(self, tmp_data_dir):
+        """After corruption recovery, subsequent saves work correctly."""
+        session_id = "test_corrupt_recovery"
+        cache_path = session.paths.session_cache_path(session_id)
+        session.paths.ensure_dir(cache_path.parent)
+
+        # Write invalid JSON
+        cache_path.write_text("{bad")
+
+        # First load should recover and archive
+        loaded1 = session.load(session_id)
+        assert loaded1.files == {}
+
+        # Mark a file in the recovered cache and save
+        loaded1 = session.mark_file_read(session_id, "test.py", offset=0, limit=10)
+        session.save(loaded1)
+
+        # Load again and verify the file was persisted
+        loaded2 = session.load(session_id)
+        assert "test.py" in loaded2.files
+
+    def test_atomic_write_creates_valid_json_on_success(self, tmp_data_dir):
+        """Session cache persists as valid JSON after successful save."""
+        session_id = "test_atomic_write"
+        cache = session.load(session_id)
+        cache = session.mark_file_read(session_id, "file.py", offset=1, limit=50)
+        session.save(cache)
+
+        cache_path = session.paths.session_cache_path(session_id)
+        assert cache_path.exists()
+
+        # Verify the file contains valid JSON that can be loaded by Python
+        raw = cache_path.read_text(encoding="utf-8")
+        data = __import__("json").loads(raw)
+        assert data["session_id"] == session_id
+        assert "file.py" in data.get("files", {})
+
+    def test_load_handles_schema_version_mismatch(self, tmp_data_dir):
+        """Load drops cache with mismatched schema_version and returns fresh."""
+        session_id = "test_schema_mismatch"
+        cache_path = session.paths.session_cache_path(session_id)
+        session.paths.ensure_dir(cache_path.parent)
+
+        # Write a cache with a bogus schema version
+        bad_cache = {
+            "schema_version": 999,
+            "session_id": session_id,
+            "started_ts": time.time(),
+            "last_activity_ts": time.time(),
+            "created_by": "test",
+            "files": {},
+            "greps": [],
+            "edited_files": {},
+            "result_cache": {},
+            "bash_history": {},
+            "glob_history": [],
+            "web_history": {},
+            "skill_history": {},
+            "decisions": [],
+            "snapshot_shas": {},
+            "hints_seen": {},
+            "bash_dedup_emitted_ids": [],
+            "hints_emitted": 0,
+            "hints_ignored": 0,
+            "structured_hints_emitted": 0,
+            "index_only_hints_emitted": 0,
+            "hints_emitted_by_type": {},
+            "hints_suppressed_by_type": {},
+            "recent_hints": [],
+            "last_manifest_sha": "",
+            "last_manifest_ts": 0.0,
+            "version": 0,
+            "hint_category_history": {},
+            "cwd": None,
+        }
+        cache_path.write_text(__import__("json").dumps(bad_cache))
+
+        # Load should drop the cache and return fresh
+        loaded = session.load(session_id)
+        assert loaded.files == {}
+        # Original file should be gone or the cache should be fresh (not from disk)
+        assert loaded.version == 0  # Fresh cache starts at version 0
+
+    def test_tmp_cleanup_and_corrupt_preservation_end_to_end(self, tmp_data_dir):
+        """Full scenario: orphaned .tmp + corrupt cache both cleaned up on load."""
+        session_id = "test_e2e_reliability"
+        cache_path = session.paths.session_cache_path(session_id)
+        session.paths.ensure_dir(cache_path.parent)
+
+        # Step 1: Create a cache with some data
+        initial = session.mark_file_read(session_id, "original.py", offset=0, limit=50)
+        session.save(initial)
+        assert cache_path.exists()
+
+        # Step 2: Simulate an interrupted write by creating orphaned .tmp files
+        tmp_orphan = cache_path.with_name(f"{cache_path.name}.11111.99999999.tmp")
+        tmp_orphan.write_text("abandoned write content")
+        assert tmp_orphan.exists()
+
+        # Step 3: Corrupt the cache file
+        cache_path.write_text("{this is not valid json]")
+
+        # Step 4: Load should clean up .tmp, archive corrupt file, and recover
+        recovered = session.load(session_id)
+        assert recovered.session_id == session_id
+        assert recovered.files == {}  # Fresh start (corrupt file deleted)
+
+        # Step 5: Verify cleanup happened
+        assert not tmp_orphan.exists(), ".tmp file should be cleaned up"
+        assert not cache_path.exists(), "Corrupt cache should be moved away"
+        corrupt_archives = list(cache_path.parent.glob(f"{cache_path.name}.corrupt.*"))
+        assert len(corrupt_archives) == 1, "Corrupt file should be archived"
+
+        # Step 6: Verify we can continue using the recovered cache
+        recovered = session.mark_file_read(session_id, "recovered.py", offset=0, limit=100)
+        session.save(recovered)
+        assert cache_path.exists(), "New cache file should be created"
+        assert "recovered.py" in recovered.files
