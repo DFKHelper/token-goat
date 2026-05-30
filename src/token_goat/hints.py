@@ -2749,6 +2749,13 @@ def _build_index_only_file_hint_inner(
 _STRUCTURED_EXT_TABULAR: frozenset[str] = frozenset({".csv", ".tsv", ".jsonl", ".ndjson"})
 _STRUCTURED_EXT_JSON: frozenset[str] = frozenset({".json"})
 _STRUCTURED_EXT_LOG: frozenset[str] = frozenset({".log"})
+# Large XML / YAML / TOML / lock files benefit from surgical reads too.
+# These are typically config or dependency trees where a section read is
+# far cheaper than a full-file read.
+_STRUCTURED_EXT_XML: frozenset[str] = frozenset({".xml", ".plist", ".csproj", ".vbproj", ".fsproj", ".props", ".targets"})
+_STRUCTURED_EXT_YAML: frozenset[str] = frozenset({".yaml", ".yml"})
+_STRUCTURED_EXT_TOML: frozenset[str] = frozenset({".toml"})
+_STRUCTURED_EXT_LOCK: frozenset[str] = frozenset({".lock", ".lockb"})
 
 # Minimum size in bytes before the structured-file hint fires.  Below this the
 # file is cheap to read whole and the hint would approach the saving it advertises.
@@ -2824,8 +2831,12 @@ def _build_structured_file_hint_inner(
     is_tabular = ext in _STRUCTURED_EXT_TABULAR
     is_json = ext in _STRUCTURED_EXT_JSON
     is_log = ext in _STRUCTURED_EXT_LOG
+    is_xml = ext in _STRUCTURED_EXT_XML
+    is_yaml = ext in _STRUCTURED_EXT_YAML
+    is_toml = ext in _STRUCTURED_EXT_TOML
+    is_lock = ext in _STRUCTURED_EXT_LOCK
 
-    if not (is_tabular or is_json or is_log):
+    if not (is_tabular or is_json or is_log or is_xml or is_yaml or is_toml or is_lock):
         return None
 
     # Cheap size check first — skip the row-count probe for small files.
@@ -2860,12 +2871,50 @@ def _build_structured_file_hint_inner(
             0,
         )
 
-    # is_log
+    if is_log:
+        row_count = _estimate_row_count(path, file_size)
+        row_str = f"~{row_count:,}lines" if row_count > 0 else "many lines"
+        return ReadHint(
+            _apply_terse(
+                f"📜 log ({size_kb}KB, {row_str}) — use tail/head or grep instead of full Read"
+            ),
+            0,
+        )
+
+    if is_xml:
+        return ReadHint(
+            _apply_terse(
+                f"📋 large xml ({size_kb}KB) — "
+                f"use `token-goat section \"{safe_path}::ElementName\"` or yq/xmllint"
+            ),
+            0,
+        )
+
+    if is_yaml:
+        return ReadHint(
+            _apply_terse(
+                f"📋 large yaml ({size_kb}KB) — "
+                f"use `token-goat section \"{safe_path}::key\"` or yq"
+            ),
+            0,
+        )
+
+    if is_toml:
+        return ReadHint(
+            _apply_terse(
+                f"📋 large toml ({size_kb}KB) — "
+                f"use `token-goat section \"{safe_path}::section\"` to read one block"
+            ),
+            0,
+        )
+
+    # is_lock
     row_count = _estimate_row_count(path, file_size)
     row_str = f"~{row_count:,}lines" if row_count > 0 else "many lines"
     return ReadHint(
         _apply_terse(
-            f"📜 log ({size_kb}KB, {row_str}) — use tail/head or grep instead of full Read"
+            f"🔒 lock file ({size_kb}KB, {row_str}) — "
+            f"use grep/rg for specific package rather than full Read"
         ),
         0,
     )
