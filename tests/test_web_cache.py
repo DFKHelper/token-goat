@@ -234,3 +234,50 @@ class TestPreFetchDedup:
         hso = result.get("hookSpecificOutput")
         assert hso is not None
         assert hso.get("permissionDecision") == "deny"
+
+
+class TestUrlNormalization:
+    def test_fragment_stripped(self):
+        h1 = web_cache.url_hash("https://example.com/page")
+        h2 = web_cache.url_hash("https://example.com/page#section")
+        assert h1 == h2, "Fragment-only difference should yield the same cache key"
+
+    def test_scheme_case_normalized(self):
+        h1 = web_cache.url_hash("https://example.com/page")
+        h2 = web_cache.url_hash("HTTPS://example.com/page")
+        assert h1 == h2, "Scheme case difference should yield the same cache key"
+
+    def test_default_port_stripped_https(self):
+        h1 = web_cache.url_hash("https://example.com/page")
+        h2 = web_cache.url_hash("https://example.com:443/page")
+        assert h1 == h2, "Default HTTPS port 443 should be stripped from cache key"
+
+    def test_default_port_stripped_http(self):
+        h1 = web_cache.url_hash("http://example.com/page")
+        h2 = web_cache.url_hash("http://example.com:80/page")
+        assert h1 == h2, "Default HTTP port 80 should be stripped from cache key"
+
+    def test_non_default_port_preserved(self):
+        h1 = web_cache.url_hash("https://example.com/page")
+        h2 = web_cache.url_hash("https://example.com:8443/page")
+        assert h1 != h2, "Non-default port should produce a different cache key"
+
+    def test_query_string_preserved(self):
+        h1 = web_cache.url_hash("https://example.com/page?q=1")
+        h2 = web_cache.url_hash("https://example.com/page?q=2")
+        assert h1 != h2, "Different query strings should produce different cache keys"
+
+    def test_trailing_slash_preserved(self):
+        h1 = web_cache.url_hash("https://example.com/page")
+        h2 = web_cache.url_hash("https://example.com/page/")
+        assert h1 != h2, "Trailing slash difference should produce different cache keys"
+
+    def test_fragment_and_scheme_combined(self):
+        h1 = web_cache.url_hash("https://example.com/page")
+        h2 = web_cache.url_hash("HTTPS://example.com/page#anchor")
+        assert h1 == h2, "Combined scheme-case and fragment normalization should match"
+
+    def test_normalize_url_returns_string_on_malformed(self):
+        malformed = "not a url at all !!!"
+        result = web_cache._normalize_url(malformed)
+        assert isinstance(result, str)

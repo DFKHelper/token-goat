@@ -55,6 +55,7 @@ __all__ = [
 import time
 from dataclasses import dataclass
 from pathlib import Path
+from urllib.parse import urlparse, urlunparse
 
 from .cache_common import (
     OUTPUT_FILENAME_RE,
@@ -128,15 +129,66 @@ def _web_outputs_dir() -> Path:
     return get_cache_dir("web_outputs")
 
 
+_DEFAULT_PORTS: dict[str, int] = {"http": 80, "https": 443}
+
+
+def _normalize_url(url: str) -> str:
+    """Return a canonical form of *url* for use as a cache key.
+
+    Three normalizations are applied:
+
+    1. **Scheme lowercased** — ``HTTP://`` and ``http://`` are the same; the
+       scheme component is case-insensitive per RFC 3986 §3.1.
+    2. **Fragment stripped** — the fragment identifier (``#section``) is
+       evaluated entirely by the browser and is never sent to the server.
+       Two URLs differing only in fragment fetch identical bytes and must
+       share a cache entry.
+    3. **Default port removed** — ``https://example.com:443/`` is
+       indistinguishable from ``https://example.com/`` at the wire level.
+       Keeping the redundant port would create separate cache keys for the
+       same resource.
+
+    Query strings, paths, and trailing slashes are left unchanged because
+    they legitimately affect which resource the server returns.
+
+    Returns *url* unchanged if ``urlparse`` raises (malformed URL).
+    """
+    try:
+        p = urlparse(url)
+    except ValueError:
+        return url
+
+    scheme = p.scheme.lower()
+    netloc = p.netloc
+
+    # Strip default port from netloc.  netloc is "host" or "host:port" or
+    # "[ipv6]:port".  We only strip when the port matches the scheme default.
+    if ":" in netloc.lstrip("["):
+        # Extract host and port components safely via parsed attributes.
+        host = p.hostname or ""
+        port = p.port
+        if port is not None and _DEFAULT_PORTS.get(scheme) == port:
+            # Reassemble without the port.  For IPv6 the hostname includes the
+            # brackets (e.g. "[::1]"); we need to preserve them.
+            netloc = f"[{host}]" if ":" in host else host
+            if p.username:
+                userinfo = p.username + (f":{p.password}" if p.password else "")
+                netloc = f"{userinfo}@{netloc}"
+
+    normalized = urlunparse((scheme, netloc, p.path, p.params, p.query, ""))
+    return normalized
+
+
 def url_hash(url: str) -> str:
     """Return a short content hash for *url* (first 16 hex chars of SHA-256).
 
-    Thin wrapper around :func:`cache_common.short_content_hash`.  We hash the
-    raw URL bytes rather than a normalised form because two URLs that differ
-    only in trailing-slash or query-parameter order legitimately return
-    different content and should not collide in the cache.
+    Hashes the *normalized* URL so that variations that fetch identical
+    content — differing only in fragment, scheme case, or redundant default
+    port — map to the same cache entry.  Trailing-slash and query-parameter
+    differences are preserved because those can legitimately affect what the
+    server returns.
     """
-    return short_content_hash(url)
+    return short_content_hash(_normalize_url(url))
 
 
 def output_id_for(session_id: str, url: str, ts: float | None = None) -> str:
