@@ -4624,12 +4624,24 @@ def _render(
             # to bottom line-popping on what remains, but pin the legend so
             # marker explanations survive (they explain markers still in
             # the body — losing the legend leaves orphan symbols).
+            # Pop floor: never trim below sealed + header lines so the
+            # non-negotiable framing and MUST_PRESERVE markers always survive.
+            # (The edited section is protected from wholesale-drop above; if
+            # the budget is so tight that even protected sections can't fit,
+            # line-popping of lower-priority protected content is unavoidable.)
+            _pop_floor_names = {"sealed", "header"}
+            _pop_floor = sum(
+                len(_lines)
+                for _name, _lines, _ in _live_groups
+                if _name in _pop_floor_names
+            )
+            _pop_floor = max(3, _pop_floor)
             _body_lines: list[str] = []
             for _name, _lines, _ in _live_groups:
                 _body_lines.extend(_lines)
             _legend_suffix = [legend_line] if legend_line is not None else []
             _trimmed = _body_lines[:]
-            while len(_trimmed) > 3 and estimate_tokens(
+            while len(_trimmed) > _pop_floor and estimate_tokens(
                 "\n".join(
                     _strip_common_prefix_from_sections(
                         _trimmed + _legend_suffix, _applied_prefix,
@@ -4642,4 +4654,9 @@ def _render(
                 _final = _strip_common_prefix_from_sections(_final, _applied_prefix)
             result = "\n".join(_final).rstrip()
 
+    final_tokens = estimate_tokens(result)
+    _LOG.debug(
+        "_render: final manifest for session=%s; %d tokens (budget=%d, trimmed=%s)",
+        session_id[:8], final_tokens, max_tokens, str(token_count > max_tokens),
+    )
     return result, files_with_symbols_count
