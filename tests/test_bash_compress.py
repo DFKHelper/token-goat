@@ -2141,3 +2141,280 @@ class TestTreeFilter:
 
         # Final summary should be preserved
         assert "directories, 65 files" in result or "directories" in result
+
+
+# --- BatFilter tests --------------------------------------------------------
+
+class TestBatFilter:
+    def test_matches_bat_binary(self) -> None:
+        """BatFilter matches 'bat' binary."""
+        f = bc.BatFilter()
+        assert f.matches(["bat"])
+        assert f.matches(["batcat"])
+        assert not f.matches(["cat"])
+
+    def test_strips_ansi_codes(self) -> None:
+        """BatFilter strips ANSI escape sequences."""
+        f = bc.BatFilter()
+        # Simulated bat output with ANSI codes
+        output = "\x1b[1m1  \x1b[0mfn main() {"
+        result = f.compress(output, "", 0, ["bat", "file.rs"])
+        # ANSI codes should be stripped
+        assert "\x1b[" not in result
+        assert "fn main()" in result
+
+    def test_passthrough_short_output(self) -> None:
+        """BatFilter passes through output with ≤50 lines unchanged."""
+        f = bc.BatFilter()
+        lines = [f"line {i}: content" for i in range(30)]
+        output = "\n".join(lines)
+        result = f.compress(output, "", 0, ["bat", "file.txt"])
+        # Should pass through (minus ANSI) when short
+        assert "line 0" in result
+        assert "elided" not in result
+
+    def test_compress_long_bat_output(self) -> None:
+        """BatFilter compresses >50 lines: first 40 + last 10 + marker."""
+        f = bc.BatFilter()
+        lines = [f"    {i:3d}  line {i}: content with some text" for i in range(100)]
+        output = "\n".join(lines)
+        result = f.compress(output, "", 0, ["bat", "file.py"])
+        # Should contain marker
+        assert "elided" in result
+        # Result should be shorter
+        result_lines = [ln for ln in result.split("\n") if ln.strip()]
+        assert len(result_lines) <= 52  # 40 + 10 + marker
+
+    def test_removes_border_lines(self) -> None:
+        """BatFilter removes box-drawing border lines."""
+        f = bc.BatFilter()
+        lines = [
+            "───────────────",  # top border
+            "    1  code line 1",
+            "    2  code line 2",
+            "───────────────",  # bottom border
+        ]
+        output = "\n".join(lines)
+        result = f.compress(output, "", 0, ["bat", "file.txt"])
+        # Borders should be stripped
+        assert "code line 1" in result
+        assert "code line 2" in result
+        assert "───" not in result
+
+    def test_preserves_file_content(self) -> None:
+        """BatFilter preserves actual code content when removing chrome."""
+        f = bc.BatFilter()
+        code_lines = [
+            "def hello():",
+            "    print('hello')",
+            "    return True",
+        ]
+        output = "\n".join(code_lines)
+        result = f.compress(output, "", 0, ["bat", "test.py"])
+        # All code should be present
+        assert "def hello():" in result
+        assert "print" in result
+
+
+# --- DeltaFilter tests -------------------------------------------------------
+
+class TestDeltaFilter:
+    def test_matches_delta_binary(self) -> None:
+        """DeltaFilter matches 'delta' binary."""
+        f = bc.DeltaFilter()
+        assert f.matches(["delta"])
+        assert not f.matches(["diff"])
+
+    def test_strips_ansi_codes(self) -> None:
+        """DeltaFilter strips ANSI escape sequences."""
+        f = bc.DeltaFilter()
+        output = "\x1b[32m+added line\x1b[0m\n\x1b[31m-removed line\x1b[0m"
+        result = f.compress(output, "", 0, ["delta", "diff"])
+        # ANSI codes should be stripped
+        assert "\x1b[" not in result
+        assert "+added line" in result
+        assert "-removed line" in result
+
+    def test_passthrough_short_diff(self) -> None:
+        """DeltaFilter passes through short diffs (≤80 lines) unchanged."""
+        f = bc.DeltaFilter()
+        lines = [
+            "diff --git a/file.txt b/file.txt",
+            "--- a/file.txt",
+            "+++ b/file.txt",
+        ]
+        lines.extend([f"- old line {i}" for i in range(30)])
+        lines.extend([f"+ new line {i}" for i in range(30)])
+        output = "\n".join(lines)
+        result = f.compress(output, "", 0, ["delta"])
+        assert "old line" in result
+        assert "elided" not in result
+
+    def test_compress_long_diff(self) -> None:
+        """DeltaFilter compresses >80 lines: first 60 + last 20 + marker."""
+        f = bc.DeltaFilter()
+        lines = [
+            "diff --git a/file.txt b/file.txt",
+            "--- a/file.txt",
+            "+++ b/file.txt",
+        ]
+        lines.extend([f"-old line {i}" for i in range(100)])
+        lines.extend([f"+new line {i}" for i in range(100)])
+        output = "\n".join(lines)
+        result = f.compress(output, "", 0, ["delta"])
+        # Should contain marker
+        assert "elided" in result
+        result_lines = [ln for ln in result.split("\n") if ln.strip()]
+        assert len(result_lines) <= 83  # 60 + 20 + marker
+
+    def test_removes_decorative_separators(self) -> None:
+        """DeltaFilter removes decorative separator lines."""
+        f = bc.DeltaFilter()
+        lines = [
+            "─────────────────",
+            "+section 1 changes",
+            "─────────────────",
+            "-section 2 changes",
+        ]
+        output = "\n".join(lines)
+        result = f.compress(output, "", 0, ["delta"])
+        # Separators should be stripped
+        assert "section 1 changes" in result
+        assert "section 2 changes" in result
+        assert "─────" not in result
+
+    def test_preserves_diff_hunks(self) -> None:
+        """DeltaFilter preserves diff hunk headers."""
+        f = bc.DeltaFilter()
+        lines = [
+            "diff --git a/file.py b/file.py",
+            "--- a/file.py",
+            "+++ b/file.py",
+            "@@ -10,5 +10,6 @@",
+            " context line",
+            "-old implementation",
+            "+new implementation",
+        ]
+        output = "\n".join(lines)
+        result = f.compress(output, "", 0, ["delta"])
+        # Diff structure should be preserved
+        assert "@@ -10" in result
+        assert "-old implementation" in result
+        assert "+new implementation" in result
+
+
+# --- JqFilter tests ----------------------------------------------------------
+
+class TestJqFilter:
+    def test_matches_jq_binary(self) -> None:
+        """JqFilter matches 'jq' binary."""
+        f = bc.JqFilter()
+        assert f.matches(["jq"])
+        assert not f.matches(["grep"])
+
+    def test_passthrough_short_json(self) -> None:
+        """JqFilter passes through short JSON (≤200 lines) unchanged."""
+        f = bc.JqFilter()
+        json_lines = ["{", '  "key": "value",', '  "nested": {', '    "depth": 2', "  }", "}"]
+        output = "\n".join(json_lines)
+        result = f.compress(output, "", 0, ["jq", "."])
+        assert "key" in result
+        assert "value" in result
+        assert "elided" not in result
+
+    def test_compress_large_json(self) -> None:
+        """JqFilter compresses >200 lines: first 150 + last 50 + marker."""
+        f = bc.JqFilter()
+        lines = ["{"]
+        for i in range(300):
+            lines.append(f'  "item{i}": {i},')
+        lines[-1] = lines[-1].rstrip(",")  # Remove trailing comma from last item
+        lines.append("}")
+        output = "\n".join(lines)
+        result = f.compress(output, "", 0, ["jq", "."])
+        # Should contain marker
+        assert "elided" in result
+        result_lines = [ln for ln in result.split("\n") if ln.strip()]
+        assert len(result_lines) <= 204  # 150 + 50 + marker
+
+    def test_preserves_json_structure(self) -> None:
+        """JqFilter preserves JSON structure when truncating."""
+        f = bc.JqFilter()
+        lines = ["{"]
+        for i in range(250):
+            lines.append(f'  "key{i}": {i},')
+        lines[-1] = lines[-1].rstrip(",")
+        lines.append("}")
+        output = "\n".join(lines)
+        result = f.compress(output, "", 0, ["jq", "."])
+        # Result should still have JSON structure
+        result = result.strip()
+        assert result.startswith("{") or result.startswith("[")
+        # Last non-empty line should be a closing bracket
+        last_line = [ln for ln in result.split("\n") if ln.strip()][-1]
+        assert last_line.rstrip(",;") in ("}", "]")
+
+    def test_handles_empty_json(self) -> None:
+        """JqFilter handles empty JSON correctly."""
+        f = bc.JqFilter()
+        output = "{}"
+        result = f.compress(output, "", 0, ["jq", "."])
+        assert result == "{}"
+
+
+# --- YqFilter tests ----------------------------------------------------------
+
+class TestYqFilter:
+    def test_matches_yq_binary(self) -> None:
+        """YqFilter matches 'yq' binary."""
+        f = bc.YqFilter()
+        assert f.matches(["yq"])
+        assert not f.matches(["grep"])
+
+    def test_passthrough_short_yaml(self) -> None:
+        """YqFilter passes through short YAML (≤150 lines) unchanged."""
+        f = bc.YqFilter()
+        yaml_lines = [
+            "version: 1.0",
+            "services:",
+            "  - name: web",
+            "    port: 8080",
+        ]
+        output = "\n".join(yaml_lines)
+        result = f.compress(output, "", 0, ["yq", "."])
+        assert "version" in result
+        assert "services" in result
+        assert "elided" not in result
+
+    def test_compress_large_yaml(self) -> None:
+        """YqFilter compresses >150 lines: first 100 + last 50 + marker."""
+        f = bc.YqFilter()
+        lines = ["items:"]
+        for i in range(200):
+            lines.append(f"  - id: {i}")
+            lines.append(f"    value: item_{i}")
+        output = "\n".join(lines)
+        result = f.compress(output, "", 0, ["yq", "."])
+        # Should contain marker
+        assert "elided" in result
+        result_lines = [ln for ln in result.split("\n") if ln.strip()]
+        assert len(result_lines) <= 154  # 100 + 50 + marker
+
+    def test_preserves_yaml_structure(self) -> None:
+        """YqFilter preserves YAML structure when truncating."""
+        f = bc.YqFilter()
+        lines = ["data:"]
+        for i in range(180):
+            lines.append(f"  key{i}: value{i}")
+        output = "\n".join(lines)
+        result = f.compress(output, "", 0, ["yq", "."])
+        # Structure should be readable
+        assert "data:" in result
+        assert "key" in result
+
+    def test_handles_empty_yaml(self) -> None:
+        """YqFilter handles empty YAML correctly."""
+        f = bc.YqFilter()
+        output = "{}"
+        result = f.compress(output, "", 0, ["yq", "."])
+        assert result == "{}"

@@ -70,11 +70,15 @@ __all__ = [
     "strip_ansi",
     "strip_progress",
     "truncate_middle",
+    "BatFilter",
+    "DeltaFilter",
     "EzaFilter",
     "FdFilter",
+    "JqFilter",
     "PythonFilter",
     "TreeFilter",
     "UvFilter",
+    "YqFilter",
 ]
 
 import math
@@ -3184,6 +3188,252 @@ class TreeFilter(Filter):
         return "\n".join(result).rstrip()
 
 
+# --- bat / batcat (syntax-highlighted file viewer) ---------------------------
+
+class BatFilter(Filter):
+    """Compress ``bat`` / ``batcat`` syntax-highlighted file viewer output.
+
+    The ``bat`` command is a modern replacement for ``cat`` with syntax
+    highlighting, line numbers, and decorative box-drawing borders. This
+    filter strips the decorative chrome (ANSI codes, borders, headers) and
+    preserves only the file content.
+
+    Compression model:
+
+    * **Pass-through** when output is ≤ 50 lines — readable in full with
+      decorations stripped.
+    * **Summarise** when output exceeds 50 lines: keep first 40 lines +
+      last 10 lines + "... N lines elided ..." marker in between.
+    """
+
+    name = "bat"
+    binaries = frozenset(["bat", "batcat"])
+
+    def matches(self, argv: list[str]) -> bool:  # noqa: D102
+        if not argv:
+            return False
+        stem = Path(argv[0]).stem.lower()
+        # Strip .exe on Windows
+        if stem.endswith(".exe"):
+            stem = stem[:-4]
+        return stem in self.binaries
+
+    def compress(
+        self, stdout: str, stderr: str, exit_code: int, argv: list[str],
+    ) -> str:
+        merged = self._combine_output(stdout, stderr)
+
+        # Strip ANSI escape sequences
+        text = strip_ansi(merged)
+
+        # Strip bat's decorative box-drawing borders (lines with mostly ─ or ━)
+        lines = text.split("\n")
+        stripped_lines = []
+        for line in lines:
+            # Skip lines that are bat's header/footer borders (mostly ─, ━, or similar)
+            if line.strip() and all(c in "─━─┬┴┌┐└┘│├┤┼═╔╗╚╝║╠╡╢╣╤╥╦╧╨╩" for c in line.strip()):
+                continue
+            stripped_lines.append(line)
+
+        # Remove first and last lines if they appear to be headers/footers
+        if stripped_lines and (stripped_lines[0].strip() == "" or "──" in stripped_lines[0]):
+            stripped_lines.pop(0)
+        if stripped_lines and (stripped_lines[-1].strip() == "" or "──" in stripped_lines[-1]):
+            stripped_lines.pop()
+
+        text = "\n".join(stripped_lines)
+        text = normalise(text)
+
+        lines = text.split("\n")
+        non_empty = [ln for ln in lines if ln.strip()]
+
+        if len(non_empty) <= 50:
+            return text.rstrip()
+
+        # Keep first 40 + last 10 + marker
+        head_keep = 40
+        tail_keep = 10
+        elided = len(non_empty) - head_keep - tail_keep
+
+        head_lines = non_empty[:head_keep]
+        tail_lines = non_empty[-tail_keep:]
+
+        result = head_lines + [f"... [{elided} lines elided by token-goat]"] + tail_lines
+        return "\n".join(result).rstrip()
+
+
+# --- delta (diff viewer) ---------------------------------------------------
+
+class DeltaFilter(Filter):
+    """Compress ``delta`` diff viewer output.
+
+    The ``delta`` command wraps ``git diff`` output with ANSI colour and
+    decorative headers. This filter preserves the underlying diff content
+    (lines starting with +, -, @@, etc.) while stripping ANSI codes and
+    decorative separators.
+
+    Compression model:
+
+    * **Pass-through** when output is ≤ 80 lines — readable in full.
+    * **Summarise** when output exceeds 80 lines: keep first 60 lines +
+      last 20 lines + "... N lines elided ..." marker in between.
+    """
+
+    name = "delta"
+    binaries = frozenset(["delta"])
+
+    def matches(self, argv: list[str]) -> bool:  # noqa: D102
+        if not argv:
+            return False
+        stem = Path(argv[0]).stem.lower()
+        # Strip .exe on Windows
+        if stem.endswith(".exe"):
+            stem = stem[:-4]
+        return stem in self.binaries
+
+    def compress(
+        self, stdout: str, stderr: str, exit_code: int, argv: list[str],
+    ) -> str:
+        merged = self._combine_output(stdout, stderr)
+
+        # Strip ANSI escape sequences
+        text = strip_ansi(merged)
+
+        # Remove decorative separator lines (runs of ─, ━, or similar)
+        lines = text.split("\n")
+        stripped_lines = []
+        for line in lines:
+            # Skip lines that are delta's decorative separators
+            if line.strip() and all(c in "─━" for c in line.strip()):
+                continue
+            stripped_lines.append(line)
+
+        text = "\n".join(stripped_lines)
+        text = normalise(text)
+
+        lines = text.split("\n")
+        non_empty = [ln for ln in lines if ln.strip()]
+
+        if len(non_empty) <= 80:
+            return text.rstrip()
+
+        # Keep first 60 + last 20 + marker
+        head_keep = 60
+        tail_keep = 20
+        elided = len(non_empty) - head_keep - tail_keep
+
+        head_lines = non_empty[:head_keep]
+        tail_lines = non_empty[-tail_keep:]
+
+        result = head_lines + [f"... [{elided} lines elided by token-goat]"] + tail_lines
+        return "\n".join(result).rstrip()
+
+
+# --- jq (JSON processor) ---------------------------------------------------
+
+class JqFilter(Filter):
+    """Compress ``jq`` JSON processor output.
+
+    The ``jq`` command outputs pretty-printed JSON. Output is already
+    compact; compression mainly caps large JSON structures to prevent
+    bloat from deeply nested or large array outputs.
+
+    Compression model:
+
+    * **Pass-through** when output is ≤ 200 lines — readable in full.
+    * **Summarise** when output exceeds 200 lines: keep first 150 lines +
+      last 50 lines + "... N lines elided ..." marker in between.
+      The final closing bracket/brace is preserved when truncating.
+    """
+
+    name = "jq"
+    binaries = frozenset(["jq"])
+
+    def matches(self, argv: list[str]) -> bool:  # noqa: D102
+        if not argv:
+            return False
+        stem = Path(argv[0]).stem.lower()
+        # Strip .exe on Windows
+        if stem.endswith(".exe"):
+            stem = stem[:-4]
+        return stem in self.binaries
+
+    def compress(
+        self, stdout: str, stderr: str, exit_code: int, argv: list[str],
+    ) -> str:
+        merged = self._combine_output(stdout, stderr)
+        text = normalise(merged)
+
+        lines = text.split("\n")
+        non_empty = [ln for ln in lines if ln.strip()]
+
+        if len(non_empty) <= 200:
+            return text.rstrip()
+
+        # Keep first 150 + last 50 + marker
+        head_keep = 150
+        tail_keep = 50
+        elided = len(non_empty) - head_keep - tail_keep
+
+        head_lines = non_empty[:head_keep]
+        tail_lines = non_empty[-tail_keep:]
+
+        result = head_lines + [f"... [{elided} lines elided by token-goat]"] + tail_lines
+        return "\n".join(result).rstrip()
+
+
+# --- yq (YAML processor) ---------------------------------------------------
+
+class YqFilter(Filter):
+    """Compress ``yq`` YAML processor output.
+
+    The ``yq`` command outputs pretty-printed YAML or other structured
+    formats. Output is already compact; compression mainly caps large
+    structures to prevent bloat from deeply nested or large array outputs.
+
+    Compression model:
+
+    * **Pass-through** when output is ≤ 150 lines — readable in full.
+    * **Summarise** when output exceeds 150 lines: keep first 100 lines +
+      last 50 lines + "... N lines elided ..." marker in between.
+    """
+
+    name = "yq"
+    binaries = frozenset(["yq"])
+
+    def matches(self, argv: list[str]) -> bool:  # noqa: D102
+        if not argv:
+            return False
+        stem = Path(argv[0]).stem.lower()
+        # Strip .exe on Windows
+        if stem.endswith(".exe"):
+            stem = stem[:-4]
+        return stem in self.binaries
+
+    def compress(
+        self, stdout: str, stderr: str, exit_code: int, argv: list[str],
+    ) -> str:
+        merged = self._combine_output(stdout, stderr)
+        text = normalise(merged)
+
+        lines = text.split("\n")
+        non_empty = [ln for ln in lines if ln.strip()]
+
+        if len(non_empty) <= 150:
+            return text.rstrip()
+
+        # Keep first 100 + last 50 + marker
+        head_keep = 100
+        tail_keep = 50
+        elided = len(non_empty) - head_keep - tail_keep
+
+        head_lines = non_empty[:head_keep]
+        tail_lines = non_empty[-tail_keep:]
+
+        result = head_lines + [f"... [{elided} lines elided by token-goat]"] + tail_lines
+        return "\n".join(result).rstrip()
+
+
 # ---------------------------------------------------------------------------
 # Helpers shared by filters
 # ---------------------------------------------------------------------------
@@ -3259,6 +3509,10 @@ FILTERS: list[Filter] = [
     EzaFilter(),
     FdFilter(),
     TreeFilter(),
+    BatFilter(),
+    DeltaFilter(),
+    JqFilter(),
+    YqFilter(),
     PythonFilter(),
 ]
 
