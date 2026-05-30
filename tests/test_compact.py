@@ -79,11 +79,11 @@ class TestBuildManifest:
 
         # Header should NOT contain session ID or timestamp info
         # (these are metadata not used by the compaction LLM)
-        # Find the header section (it comes after <</MUST_PRESERVE>>)
+        # Find the header section (it comes after <</preserve>>)
         lines = result.split("\n")
         sealed_end_idx = None
         for i, line in enumerate(lines):
-            if line.strip() == "<</MUST_PRESERVE>>":
+            if line.strip() == "<</preserve>>":
                 sealed_end_idx = i
                 break
 
@@ -1185,8 +1185,8 @@ class TestDedupAcrossSections:
         # occurrences in the body sections.  The dedup invariant is: the file must
         # not appear in BOTH "Files Edited" AND "Key Files Read" body sections.
         body = result
-        if "<<MUST_PRESERVE>>" in result and "<</MUST_PRESERVE>>" in result:
-            body = result[result.index("<</MUST_PRESERVE>>") + len("<</MUST_PRESERVE>>"):]
+        if "<</preserve>>" in result:
+            body = result[result.index("<</preserve>>") + len("<</preserve>>"):]
         assert body.count("shared.py") == 1, (
             f"expected 1 in body sections, got {body.count('shared.py')}\n{result}"
         )
@@ -1602,15 +1602,17 @@ class TestBuildSealedBlock:
         result = compact._build_sealed_block({"/proj/src/auth.py": 2}, [], {})
         assert result != []
         text = "\n".join(result)
-        assert "<<MUST_PRESERVE>>" in text
-        assert "<</MUST_PRESERVE>>" in text
+        assert "### MUST_PRESERVE" in text
+        assert "<<preserve>>" in text
+        assert "<</preserve>>" in text
 
     def test_block_present_when_blocker(self):
         """A recent failure alone triggers the block."""
         entry = self._make_bash_entry("pytest tests/", 1, time.time())
         result = compact._build_sealed_block({}, [entry], {})
         text = "\n".join(result)
-        assert "<<MUST_PRESERVE>>" in text
+        assert "### MUST_PRESERVE" in text
+        assert "<<preserve>>" in text
         assert "pytest" in text
 
     def test_block_present_when_skills(self):
@@ -1618,7 +1620,8 @@ class TestBuildSealedBlock:
         skill = self._make_skill_entry("ralph", time.time())
         result = compact._build_sealed_block({}, [], {"ralph": skill})
         text = "\n".join(result)
-        assert "<<MUST_PRESERVE>>" in text
+        assert "### MUST_PRESERVE" in text
+        assert "<<preserve>>" in text
         assert "ralph" in text
 
     def test_edit_slot_shows_at_most_three_files(self):
@@ -1695,11 +1698,11 @@ class TestBuildSealedBlock:
         assert "ralph" in text, "skill slot must be in block"
 
     def test_manifest_starts_with_sealed_block_when_data_present(self, tmp_data_dir):
-        """Full manifest starts with <<MUST_PRESERVE>> when edited files exist."""
+        """Full manifest starts with ### MUST_PRESERVE when edited files exist."""
         sid = "sealed-block-manifest-test-abc"
         session.mark_file_edited(sid, "/proj/src/auth.py")
         result = compact.build_manifest(sid)
-        assert result.startswith("<<MUST_PRESERVE>>"), (
+        assert result.startswith("### MUST_PRESERVE"), (
             f"Manifest should start with sealed block, got:\n{result[:200]}"
         )
 
@@ -1709,7 +1712,7 @@ class TestBuildSealedBlock:
         sid = "sealed-block-absent-test-abc"
         session.mark_file_read(sid, "/proj/src/db.py", offset=0, limit=100)
         result = compact.build_manifest(sid)
-        assert "<<MUST_PRESERVE>>" not in result, (
+        assert "### MUST_PRESERVE" not in result, (
             f"No sealed block expected for read-only session:\n{result[:300]}"
         )
 
@@ -1718,7 +1721,8 @@ class TestBuildSealedBlock:
         sid = "sealed-coexist-test-abc"
         session.mark_file_edited(sid, "/proj/src/compact.py")
         result = compact.build_manifest(sid)
-        assert "<<MUST_PRESERVE>>" in result
+        assert "### MUST_PRESERVE" in result
+        assert "<<preserve>>" in result
         assert "**Edited:**" in result, (
             f"Detail section should still appear alongside sealed block:\n{result}"
         )
@@ -5693,14 +5697,17 @@ class TestHumanizeBytes:
         assert "### Current Blockers" not in result
 
     def test_no_h3_headers_in_manifest(self, tmp_data_dir, make_session):
-        """No ### H3 section headers (other than MUST_PRESERVE and the top-level ##) appear."""
+        """No ### H3 section headers except ### MUST_PRESERVE and the top-level ##."""
         sid = "bold-no-h3-abc"
         make_session(sid, age_seconds=7200, edits=1,
                      bash_runs={"pytest tests/": (12_000, 0)})
         session.mark_file_read(sid, "src/foo.py", offset=0, limit=50)
         result = compact.build_manifest(sid)
         h3_lines = [ln for ln in result.splitlines() if ln.startswith("### ")]
-        assert h3_lines == [], f"unexpected ### headers: {h3_lines}"
+        # Only ### MUST_PRESERVE is allowed (for the sealed block header)
+        allowed_h3 = {"### MUST_PRESERVE"}
+        unexpected = [ln for ln in h3_lines if ln not in allowed_h3]
+        assert unexpected == [], f"unexpected ### headers: {unexpected}"
 
     def test_skills_section_uses_bold_label(self, tmp_data_dir):
         """**Skills:** label is emitted when a skill is recorded."""
@@ -5881,7 +5888,7 @@ class TestAdaptiveDirectoryGrouping:
         manifest = compact._build_manifest_from_cache(cache, sid, 800)
         # The manifest should use directory grouping (parentheses indicate grouped format)
         # Result varies by implementation; key is that no exception is raised
-        assert "**Edited:**" in manifest or "<<MUST_PRESERVE>>" in manifest
+        assert "**Edited:**" in manifest or "### MUST_PRESERVE" in manifest
 
 
 # ---------------------------------------------------------------------------
