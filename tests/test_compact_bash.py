@@ -23,7 +23,7 @@ class TestManifestBashSection:
     def test_bash_section_emitted(self, tmp_data_dir, make_session):
         sid = "mb-1"
         # A failed run goes to "**Blocked:**"; a successful run goes to
-        # "**Ran:**". Both must appear for this test to pass.
+        # "**Recent Commands:**". Both must appear for this test to pass.
         make_session(
             sid,
             age_seconds=7200,
@@ -37,7 +37,7 @@ class TestManifestBashSection:
         assert "**Blocked:**" in m
         assert "pytest -v tests/" in m
         assert "exit 1" in m  # blocker format uses full "exit X"
-        assert "**Ran:**" in m
+        assert "**Recent Commands:**" in m
         assert "ruff check" in m
         # Exit code metadata appears in Commands Run for the successful run.
         assert "e=0" in m
@@ -47,7 +47,7 @@ class TestManifestBashSection:
         make_session(sid, edits=1, bash_runs={"ls": (20, 0)})
         m = compact.build_manifest(sid, max_tokens=400)
         # Output too small to be useful — section omitted.
-        assert "**Ran:**" not in m
+        assert "**Recent Commands:**" not in m
 
     def test_only_bash_still_renders_manifest(self, tmp_data_dir, make_session):
         sid = "mb-3"
@@ -979,7 +979,7 @@ class TestFormatBashEntryInlineSnippet:
         lines = m.splitlines()
         in_commands_run = False
         for line in lines:
-            if line.startswith("**Ran:**"):
+            if line.startswith("**Recent Commands:**"):
                 in_commands_run = True
                 continue
             if in_commands_run and line.startswith("**"):
@@ -1121,7 +1121,7 @@ class TestRenderBashGrouped:
         lines, used = compact._render_bash_grouped(
             entries, budget=1_000, should_inline=self._never_inline,
         )
-        assert lines[0] == "**Ran:**"
+        assert lines[0] == "**Recent Commands:**"
         assert "**Failed:**" in lines
         # No **Slow:** / **Ok:** headers when those groups are empty.
         assert "**Slow:**" not in lines
@@ -1148,7 +1148,7 @@ class TestRenderBashGrouped:
 
     def test_all_ok_omits_ok_subheader(self):
         """When every entry is ok, the **Ok:** sub-header is omitted entirely
-        (the **Ran:** label is sufficient context).
+        (the **Recent Commands:** label is sufficient context).
         """
         entries: list[object] = [
             self._make("ls", exit_code=0, idx=0),
@@ -1157,7 +1157,7 @@ class TestRenderBashGrouped:
         lines, _ = compact._render_bash_grouped(
             entries, budget=1_000, should_inline=self._never_inline,
         )
-        assert lines[0] == "**Ran:**"
+        assert lines[0] == "**Recent Commands:**"
         assert "**Ok:**" not in lines
         assert "**Failed:**" not in lines
         assert "**Slow:**" not in lines

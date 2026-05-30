@@ -147,7 +147,7 @@ def _seed_saturated_manifest_state(sid: str) -> None:
         session.mark_file_read(
             sid, f"/proj/src/edited_{i:02d}.py", offset=0, limit=40,
         )
-    # Symbol reads — produces "**Syms:**".
+    # Symbol reads — produces "**Symbols Accessed:**".
     for i in range(10):
         session.mark_file_read(
             sid, f"/proj/src/symbols_{i:02d}.py", symbol=f"handle_event_{i:02d}",
@@ -157,10 +157,10 @@ def _seed_saturated_manifest_state(sid: str) -> None:
         session.mark_file_read(
             sid, f"/proj/src/read_{i:02d}.py", offset=0, limit=100,
         )
-    # Grep patterns — produces "**Grep:**".
+    # Grep patterns — produces "**Patterns Searched:**".
     for i in range(10):
         session.mark_grep(sid, f"distinct_pattern_{i:02d}", "/proj/src")
-    # Bash history — produces "**Ran:**" and "Cold Outputs".
+    # Bash history — produces "**Recent Commands:**" and "Cold Outputs".
     for i in range(20):
         cmd_sha = f"manishabc{i:02d}{'x' * 8}"[:16]
         session.mark_bash_run(
@@ -194,7 +194,7 @@ class TestManifestBudget:
         # Item 16: when edited/read overlap >= 50%, both sections merge into **Files:**.
         edited_present = "**Edited:**" in manifest or "**Files:**" in manifest
         assert edited_present, f"missing edited/files section; rendered:\n{manifest}"
-        assert "**Syms:**" in manifest, f"missing **Syms:**; rendered:\n{manifest}"
+        assert "**Symbols Accessed:**" in manifest, f"missing **Symbols Accessed:**; rendered:\n{manifest}"
 
         tokens = estimate_tokens(manifest)
         assert tokens <= _MANIFEST_BUDGET, (
@@ -215,7 +215,7 @@ class TestManifestBudget:
         # Use a 700-token budget — what compute_adaptive_budget gives a heavily
         # saturated mature session — so bash section is not crowded out.
         manifest, _ = compact.build_manifest_with_count(sid, max_tokens=700)
-        assert "**Ran:**" in manifest, (
+        assert "**Recent Commands:**" in manifest, (
             f"Commands Run missing at 700-token budget; rendered:\n{manifest}"
         )
 
@@ -312,7 +312,7 @@ class TestEditedFilesCap:
 
         manifest, _ = compact.build_manifest_with_count(sid, max_tokens=400)
 
-        assert "**Syms:**" in manifest, (
+        assert "**Symbols Accessed:**" in manifest, (
             f"Symbols Accessed crowded out by 30 long-named edited files;\n{manifest}"
         )
 
@@ -470,8 +470,8 @@ class TestPriorityAwareSafetyTrim:
         lines = manifest.splitlines()
         # Known section headers that could orphan.
         header_markers = (
-            "**Files:**", "**Grep:**", "**Web:**", "**Syms:**",
-            "**Ran:**", "**Cold:**", "**Skills:**", "**Decisions:**",
+            "**Files:**", "**Patterns Searched:**", "**Web Fetches:**", "**Symbols Accessed:**",
+            "**Recent Commands:**", "**Cold:**", "**Skills:**", "**Decisions:**",
             "### Cold Outputs", "### Diff Summary", "### Commits This Session",
             "### TODOs", "Directory Scans",
         )
@@ -556,15 +556,15 @@ class TestPriorityAwareSafetyTrim:
         # Budget tight enough to force *some* drops but not all sections.
         manifest, _ = compact.build_manifest_with_count(sid, max_tokens=400)
 
-        # If Grep was dropped (low priority), Bash should still be present
+        # If Patterns Searched was dropped (low priority), Bash should still be present
         # (higher priority).  This guards the priority ordering.
-        grep_dropped = "**Grep:**" not in manifest
-        bash_dropped = "**Ran:**" not in manifest
+        grep_dropped = "**Patterns Searched:**" not in manifest
+        bash_dropped = "**Recent Commands:**" not in manifest
         if grep_dropped and not bash_dropped:
             pass  # correct: low dropped first
         elif not grep_dropped and bash_dropped:
             raise AssertionError(
-                "priority inversion: **Ran:** dropped while **Grep:** survived; "
+                "priority inversion: **Recent Commands:** dropped while **Patterns Searched:** survived; "
                 f"rendered:\n{manifest}"
             )
         # else: both present or both absent — both are fine outcomes here.

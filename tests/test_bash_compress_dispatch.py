@@ -1350,7 +1350,7 @@ class TestFzfFilter:
         assert "candidate-039" in out
         assert "candidate-064" not in out  # Middle section elided
         assert "candidate-065" in out  # Last 10 kept
-        assert "25 lines elided" in out  # 75 - 40 - 10 = 25
+        assert "25 more lines elided" in out  # 75 - 40 - 10 = 25
 
 
 # ---------------------------------------------------------------------------
