@@ -14,7 +14,7 @@
   • <b>Zero</b> ongoing maintenance.
 </p>
 
-<p align="center"><b>Your AI re-reads the same file three times. You pay every time. Compactions cause amnesia and waste. Token-goat fixes all of it.</b></p>
+<p align="center"><b>Your AI re-reads the same file three times, and inefficiently. You pay every time. Compactions cause amnesia and waste. Token-goat fixes all of it.</b></p>
 
 <p align="center">
 Token-Goat sits between your AI (Claude Code, Codex, OpenCode, OpenClaw) and your tools. When it asks for a file it already read, it gets a one-line "you already read this" hint with a narrow slice suggestion. When it grabs a screenshot or large image, it gets a 100&nbsp;KB copy instead for context use, saving a fortune. Shopify image handling?  Way faster, and in my case 96% more efficient. The <code>pytest&nbsp;-v</code> output the model just saw arrives stripped to the failures. Sessions drop 40–90%+ in cost/token use. You don't change how you prompt or anything else: works automagically in the background. It even improves compactions, giving each compaction a clean, thorough summary of what it needs to remember, improving AI smarts AND reducing token waste after each compaction.
