@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import math
 import sqlite3
 import struct
@@ -14,10 +15,12 @@ from token_goat import db
 from token_goat import embeddings as emb
 from token_goat.embeddings import (
     EmbeddingsUnavailable,
+    SearchHit,
     _check_vec_available,
     _pack_vec,
     extract_chunks_for_file,
     is_available,
+    merge_nearby_hits,
 )
 
 # ---------------------------------------------------------------------------
@@ -491,6 +494,133 @@ def test_cli_semantic_max_distance_flag(ts_project, monkeypatch):
     # With a near-zero threshold, the gibberish query should leave no survivors.
     assert result.exit_code == 0
     assert "(no results)" in result.output
+
+
+# ---------------------------------------------------------------------------
+# merge_nearby_hits: pure-function unit tests
+# ---------------------------------------------------------------------------
+
+def _make_hit(file_rel: str, start: int, end: int, distance: float = 0.5) -> SearchHit:
+    return SearchHit(
+        file_rel=file_rel, start_line=start, end_line=end,
+        kind="function", text="x", distance=distance,
+    )
+
+
+def test_merge_nearby_hits_empty():
+    assert merge_nearby_hits([]) == []
+
+
+def test_merge_nearby_hits_single():
+    h = _make_hit("a.py", 1, 10)
+    assert merge_nearby_hits([h]) == [h]
+
+
+def test_merge_nearby_hits_overlapping_same_file():
+    hits = [
+        _make_hit("a.py", 1, 30, distance=0.3),
+        _make_hit("a.py", 25, 50, distance=0.4),
+    ]
+    merged = merge_nearby_hits(hits)
+    assert len(merged) == 1
+    assert merged[0].start_line == 1
+    assert merged[0].end_line == 50
+    assert merged[0].distance == pytest.approx(0.3)
+
+
+def test_merge_nearby_hits_within_proximity():
+    hits = [
+        _make_hit("a.py", 1, 10, distance=0.3),
+        _make_hit("a.py", 25, 35, distance=0.2),
+    ]
+    merged = merge_nearby_hits(hits, proximity=20)
+    assert len(merged) == 1
+    assert merged[0].start_line == 1
+    assert merged[0].end_line == 35
+    assert merged[0].distance == pytest.approx(0.2)
+
+
+def test_merge_nearby_hits_beyond_proximity_not_merged():
+    hits = [
+        _make_hit("a.py", 1, 10),
+        _make_hit("a.py", 50, 60),
+    ]
+    merged = merge_nearby_hits(hits, proximity=20)
+    assert len(merged) == 2
+
+
+def test_merge_nearby_hits_different_files_not_merged():
+    hits = [
+        _make_hit("a.py", 1, 10),
+        _make_hit("b.py", 5, 15),
+    ]
+    merged = merge_nearby_hits(hits)
+    assert len(merged) == 2
+
+
+def test_merge_nearby_hits_sorted_by_distance():
+    hits = [
+        _make_hit("a.py", 1, 10, distance=0.8),
+        _make_hit("b.py", 1, 10, distance=0.3),
+    ]
+    merged = merge_nearby_hits(hits)
+    assert len(merged) == 2
+    assert merged[0].file_rel == "b.py"
+    assert merged[1].file_rel == "a.py"
+
+
+def test_merge_nearby_hits_three_chunk_function():
+    hits = [
+        _make_hit("a.py", 1, 30, distance=0.4),
+        _make_hit("a.py", 25, 60, distance=0.3),
+        _make_hit("a.py", 55, 90, distance=0.5),
+    ]
+    merged = merge_nearby_hits(hits)
+    assert len(merged) == 1
+    assert merged[0].start_line == 1
+    assert merged[0].end_line == 90
+    assert merged[0].distance == pytest.approx(0.3)
+
+
+def test_cli_semantic_keyword_fallback(ts_project, monkeypatch):
+    """token-goat semantic falls back to keyword search when embeddings unavailable."""
+    from typer.testing import CliRunner  # noqa: PLC0415
+
+    from token_goat import cli  # noqa: PLC0415
+
+    monkeypatch.chdir(ts_project.root)
+    with patch.object(emb, "embed_texts", side_effect=EmbeddingsUnavailable("not ready")):
+        runner = CliRunner()
+        result = runner.invoke(
+            cli.app, ["semantic", "greet hello", "-k", "5"],
+            catch_exceptions=False,
+        )
+    assert result.exit_code == 0
+    assert "keyword fallback" in result.output.lower()
+
+
+def test_cli_semantic_keyword_fallback_json(ts_project, monkeypatch):
+    """Keyword fallback JSON output includes a 'fallback' key."""
+    from typer.testing import CliRunner  # noqa: PLC0415
+
+    from token_goat import cli  # noqa: PLC0415
+
+    monkeypatch.chdir(ts_project.root)
+    with patch.object(emb, "embed_texts", side_effect=EmbeddingsUnavailable("not ready")):
+        runner = CliRunner()
+        result = runner.invoke(
+            cli.app, ["semantic", "greet hello", "-k", "5", "--json"],
+            catch_exceptions=False,
+        )
+    assert result.exit_code == 0
+    # Find the JSON line (last line that starts with '{')
+    json_line = next(
+        (line for line in reversed(result.output.splitlines()) if line.startswith("{")),
+        None,
+    )
+    assert json_line is not None, f"no JSON in output: {result.output!r}"
+    data = json.loads(json_line)
+    assert "fallback" in data
 
 
 # ---------------------------------------------------------------------------

@@ -787,6 +787,71 @@ def ref(
             typer.echo(f"No references found for {name!r}")
 
 
+def _keyword_fallback_hits(
+    proj: Project,
+    query: str,
+    k: int,
+) -> list[dict[str, object]]:
+    """Keyword grep fallback when embeddings are unavailable.
+
+    Tokenises the query into words (>=3 chars), builds a case-insensitive
+    pattern from the first two distinct tokens, and scans indexed project
+    files for matching lines.  Returns up to *k* results as dicts with the
+    same keys as the JSON output of ``semantic_search``.
+
+    This is intentionally lightweight: it uses Python's ``re`` module (no
+    subprocess) so it works on all platforms and requires no extra deps.
+    The caller is responsible for printing the ``(keyword fallback …)`` note.
+    """
+    import re as _re  # noqa: PLC0415
+
+    from . import db as _db  # noqa: PLC0415
+
+    tokens = [w.lower() for w in _re.findall(r"\w+", query) if len(w) >= 3]
+    if not tokens:
+        return []
+
+    # Build an OR-pattern from up to two tokens so a two-word query still
+    # returns results when no line contains both words.
+    pattern = _re.compile(
+        "|".join(_re.escape(t) for t in dict.fromkeys(tokens[:2])),
+        _re.IGNORECASE,
+    )
+
+    results: list[dict[str, object]] = []
+    try:
+        with _db.open_project_readonly(proj.hash) as conn:
+            file_rows = conn.execute(
+                "SELECT rel_path FROM files ORDER BY rel_path"
+            ).fetchall()
+    except Exception:  # noqa: BLE001
+        return []
+
+    for frow in file_rows:
+        if len(results) >= k:
+            break
+        rel = frow["rel_path"]
+        try:
+            text = (proj.root / rel).read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        for lineno, line in enumerate(text.splitlines(), 1):
+            if pattern.search(line):
+                snippet = line.strip()[:120]
+                results.append({
+                    "file": rel,
+                    "start": lineno,
+                    "end": lineno,
+                    "kind": "keyword",
+                    "distance": 0.0,
+                    "preview": snippet,
+                })
+                if len(results) >= k:
+                    break
+
+    return results
+
+
 @app.command(rich_help_panel="Core")
 def semantic(
     query: str = typer.Argument(...),
@@ -837,10 +902,26 @@ def semantic(
         )
     except embeddings.EmbeddingsUnavailable as e:
         _warn(
-            f"embeddings unavailable ({e}). Try `token-goat index --embeddings` first, "
-            "or use `token-goat symbol`/`token-goat map` for non-semantic navigation."
+            f"embeddings unavailable ({e}). Falling back to keyword search "
+            "(run `token-goat index --embeddings` for full semantic search)."
         )
-        raise typer.Exit(0) from None
+        fallback = _keyword_fallback_hits(proj, query, k)
+        _record_lookup_stat(
+            "semantic_search", query, len(fallback), scope="project",
+            project_hash=proj.hash,
+        )
+        if json_output:
+            note = "(keyword fallback — embeddings not ready)"
+            typer.echo(json.dumps({"fallback": note, "results": fallback}, separators=(",", ":")))
+            return
+        if not fallback:
+            typer.echo("(no results)")
+            return
+        typer.echo("(keyword fallback — embeddings not ready)")
+        for r in fallback:
+            snippet = str(r.get("preview", ""))[:100]
+            typer.echo(f"{r['file']}:{r['start']}  {snippet}")
+        return
 
     _record_lookup_stat(
         "semantic_search", query, len(hits), scope="project",

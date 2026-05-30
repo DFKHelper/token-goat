@@ -12,6 +12,7 @@ __all__ = [
     "extract_chunks_for_file",
     "index_project_embeddings",
     "is_available",
+    "merge_nearby_hits",
     "semantic_search",
 ]
 
@@ -233,6 +234,76 @@ def _verbatim_boost(text: str, tokens: frozenset[str]) -> float:
     text_lower = text.lower()
     hits = sum(1 for tok in tokens if tok in text_lower)
     return min(hits * _VERBATIM_TOKEN_BOOST, _MAX_VERBATIM_BOOST)
+
+
+def merge_nearby_hits(hits: list[SearchHit], *, proximity: int = 20) -> list[SearchHit]:
+    """Merge consecutive hits from the same file whose line ranges overlap or sit within
+    ``proximity`` lines of each other.
+
+    When the same function spans multiple chunks (beginning/middle/end), all three
+    may surface as top results.  Merging them into a single hit with the combined
+    line range (and the best distance) prevents the output from being dominated by
+    one large function.
+
+    Algorithm: sort hits by (file_rel, start_line), then do a single-pass merge.
+    After merging, re-sort by the minimum (best) distance among merged candidates
+    so the merged result inherits the rank of its best constituent chunk.
+    Preserves the original order for non-merged hits.
+    """
+    if len(hits) <= 1:
+        return hits
+
+    # Group by file, stable within each group (sort by start_line).
+    by_file: dict[str, list[SearchHit]] = {}
+    for h in hits:
+        by_file.setdefault(h.file_rel, []).append(h)
+
+    merged: list[SearchHit] = []
+    for file_hits in by_file.values():
+        file_hits.sort(key=lambda h: h.start_line)
+        current = file_hits[0]
+        cur_start = current.start_line
+        cur_end = current.end_line
+        cur_dist = current.distance
+        cur_kind = current.kind
+        cur_text = current.text
+
+        for nxt in file_hits[1:]:
+            # Merge if the next chunk starts within (cur_end + proximity).
+            if nxt.start_line <= cur_end + proximity:
+                # Expand range and keep the best (lowest) distance.
+                cur_end = max(cur_end, nxt.end_line)
+                if nxt.distance < cur_dist:
+                    cur_dist = nxt.distance
+                    cur_kind = nxt.kind
+                    cur_text = nxt.text
+            else:
+                merged.append(SearchHit(
+                    file_rel=current.file_rel,
+                    start_line=cur_start,
+                    end_line=cur_end,
+                    kind=cur_kind,
+                    text=cur_text,
+                    distance=cur_dist,
+                ))
+                current = nxt
+                cur_start = nxt.start_line
+                cur_end = nxt.end_line
+                cur_dist = nxt.distance
+                cur_kind = nxt.kind
+                cur_text = nxt.text
+
+        merged.append(SearchHit(
+            file_rel=current.file_rel,
+            start_line=cur_start,
+            end_line=cur_end,
+            kind=cur_kind,
+            text=cur_text,
+            distance=cur_dist,
+        ))
+
+    merged.sort(key=lambda h: h.distance)
+    return merged
 
 
 def _rerank_hits(
@@ -950,6 +1021,7 @@ def semantic_search(
         boost_verbatim=boost_verbatim,
         demote_generated=demote_generated,
     )
+    hits = merge_nearby_hits(hits)
 
     if rows:
         raw_distances = [r["distance"] for r in rows]
