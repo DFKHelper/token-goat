@@ -2,6 +2,7 @@ use std::collections::HashMap;
 use std::fmt;
 
 pub const VERSION: &str = "0.1.0";
+pub static MAX_CONNECTIONS: usize = 100;
 
 pub struct Server {
     pub name: String,
@@ -10,6 +11,7 @@ pub struct Server {
 
 pub trait Handler {
     fn serve(&self, req: &str) -> Result<(), Box<dyn std::error::Error>>;
+    async fn preflight(&self, req: &str) -> bool;
 }
 
 pub enum Error {

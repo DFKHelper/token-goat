@@ -142,3 +142,19 @@ def test_rust_index_updates_global_registry(rust_project):
         ).fetchone()
     assert row is not None
     assert "rust" in row["languages"]
+
+
+def test_rust_index_trait_methods(rust_project):
+    index_project(rust_project, full=True)
+    with db.open_project(rust_project.hash) as conn:
+        rows = conn.execute("SELECT name, kind FROM symbols WHERE name='serve'").fetchall()
+    assert rows, "trait method 'serve' should be indexed"
+    assert any(r["kind"] == "method" for r in rows)
+
+
+def test_rust_index_static(rust_project):
+    index_project(rust_project, full=True)
+    with db.open_project(rust_project.hash) as conn:
+        rows = conn.execute("SELECT name, kind FROM symbols WHERE name='MAX_CONNECTIONS'").fetchall()
+    assert rows, "static MAX_CONNECTIONS should be indexed"
+    assert rows[0]["kind"] == "const"

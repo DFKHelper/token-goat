@@ -125,6 +125,35 @@ def test_impl_block_recorded(rust_extracted):
     assert any(s.name == "Server" for s in impl_syms)
 
 
+def test_trait_method_serve_extracted(rust_extracted):
+    symbols, _, _, _ = rust_extracted
+    serve = [s for s in symbols if s.name == "serve"]
+    assert serve, "trait method 'serve' should be extracted"
+    assert serve[0].kind == "method"
+    assert serve[0].parent_name == "Handler"
+
+
+def test_trait_method_preflight_extracted(rust_extracted):
+    symbols, _, _, _ = rust_extracted
+    preflight = [s for s in symbols if s.name == "preflight"]
+    assert preflight, "async trait method 'preflight' should be extracted"
+    assert preflight[0].kind == "method"
+    assert preflight[0].parent_name == "Handler"
+
+
+def test_static_extracted(rust_extracted):
+    symbols, _, _, _ = rust_extracted
+    statics = [s for s in symbols if s.name == "MAX_CONNECTIONS"]
+    assert statics, "static declaration MAX_CONNECTIONS should be extracted"
+    assert statics[0].kind == "const"
+
+
+def test_trait_methods_not_duplicated(rust_extracted):
+    symbols, _, _, _ = rust_extracted
+    serve_syms = [s for s in symbols if s.name == "serve"]
+    assert len(serve_syms) == 1, f"serve should appear exactly once, got {len(serve_syms)}"
+
+
 def test_invalid_source_returns_empty():
     result = extract(b"\xff\xfe garbage \x00\x01", "bad.rs")
     for lst in result:
