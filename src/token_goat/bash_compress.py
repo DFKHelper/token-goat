@@ -585,6 +585,50 @@ def _head_tail_compress(
     return "\n".join(result)
 
 
+def _pass_if_short(text: str, threshold: int = 30) -> str | None:
+    """Return *text* unchanged if it contains <= *threshold* non-empty lines.
+
+    Used by filters that skip expensive processing when input is already short.
+    Returns the text if short (no processing needed), or ``None`` to signal
+    the caller to proceed with detailed compression logic.
+
+    Args:
+        text: The text to check.
+        threshold: Maximum number of non-empty lines to consider "short".
+
+    Returns:
+        *text* if short, ``None`` if the filter should proceed with compression.
+    """
+    non_empty = [ln for ln in text.split("\n") if ln.strip()]
+    if len(non_empty) <= threshold:
+        return text
+    return None
+
+
+def _preserve_stderr_on_error(
+    stdout: str, stderr: str, exit_code: int,
+) -> str | None:
+    """Return combined output when exit_code != 0 and stderr is non-empty.
+
+    Centralises the pattern: when a command fails (non-zero exit code) and
+    produces stderr, preserve both stdout and stderr with a separator. Returns
+    ``None`` when no error condition is detected, signalling the caller to
+    continue with normal (non-error) compression logic.
+
+    Args:
+        stdout: Standard output.
+        stderr: Standard error.
+        exit_code: The exit code of the command.
+
+    Returns:
+        Combined ``stdout + "\\n---\\n" + stderr`` if exit_code != 0 and stderr
+        is non-empty, else ``None`` (continue with normal logic).
+    """
+    if exit_code != 0 and stderr.strip():
+        return (stdout.rstrip() + "\n---\n" + stderr.rstrip()) if stdout.strip() else stderr
+    return None
+
+
 # ---------------------------------------------------------------------------
 # Public dataclass
 # ---------------------------------------------------------------------------
@@ -1405,8 +1449,9 @@ class KubectlFilter(Filter):
         self, stdout: str, stderr: str, exit_code: int, argv: list[str],
     ) -> str:
         # Always preserve stderr on error
-        if exit_code != 0 and stderr.strip():
-            return (stdout.rstrip() + "\n---\n" + stderr.rstrip()) if stdout.strip() else stderr
+        err_output = _preserve_stderr_on_error(stdout, stderr, exit_code)
+        if err_output is not None:
+            return err_output
 
         positionals = _positional_args(argv[1:])
         subcommand = positionals[0] if positionals else ""
@@ -1647,6 +1692,11 @@ class AwsFilter(Filter):
     def compress(
         self, stdout: str, stderr: str, exit_code: int, argv: list[str],
     ) -> str:
+        # Preserve stderr if command failed
+        err_output = _preserve_stderr_on_error(stdout, stderr, exit_code)
+        if err_output is not None:
+            return err_output
+
         text = stdout
         # Try JSON compression first; fall back to table truncation.
         compressed = _try_compress_json_list(text)
@@ -2574,8 +2624,9 @@ class TerraformFilter(Filter):
         self, stdout: str, stderr: str, exit_code: int, argv: list[str],
     ) -> str:
         # Preserve all stderr on error.
-        if exit_code != 0 and stderr.strip():
-            return (stdout.rstrip() + "\n---\n" + stderr.rstrip()) if stdout.strip() else stderr
+        err_output = _preserve_stderr_on_error(stdout, stderr, exit_code)
+        if err_output is not None:
+            return err_output
 
         positionals = _positional_args(argv[1:])
         subcommand = positionals[0] if positionals else ""
@@ -4318,8 +4369,9 @@ class GradleFilter(Filter):
         # On failure, preserve stderr and last 20 lines of output.
         if exit_code != 0:
             last_lines = "\n".join(lines[-20:])
-            if stderr.strip():
-                return f"{last_lines}\n---\n{stderr.rstrip()}"
+            err_output = _preserve_stderr_on_error(last_lines, stderr, exit_code)
+            if err_output is not None:
+                return err_output
             return last_lines
 
         # Subcommand-specific compression.
@@ -4409,11 +4461,9 @@ class MavenFilter(Filter):
         if exit_code != 0:
             error_lines = [line for line in lines if _MAVEN_FAILURE_RE.match(line)]
             if error_lines:
-                return (
-                    "\n".join(lines[-20:])
-                    + "\n---\n"
-                    + "\n".join(error_lines)
-                )
+                tail_output = "\n".join(lines[-20:])
+                errors_output = "\n".join(error_lines)
+                return tail_output + "\n---\n" + errors_output
             return "\n".join(lines[-20:])
 
         # Subcommand-specific compression.
