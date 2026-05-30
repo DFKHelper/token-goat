@@ -60,6 +60,8 @@ class SymbolResult(TypedDict):
     kind: str
     start_line: int
     end_line: int
+    core_start_line: int
+    core_end_line: int
     text: str
     signature: str | None
     bytes_total: int
@@ -75,6 +77,8 @@ class SectionResult(TypedDict):
     level: int
     start_line: int
     end_line: int
+    core_start_line: int
+    core_end_line: int
     text: str
     bytes_total: int
     bytes_extracted: int
@@ -882,6 +886,8 @@ def read_symbol(
 
     sym_line: int = _coerce_line(chosen["line"], 1)
     sym_end_line: int | None = _coerce_end_line(chosen["end_line"])
+    core_start = max(1, sym_line)
+    core_end = min(len(lines), sym_end_line if sym_end_line is not None else sym_line)
     snippet, snippet_bytes, start, end = _extract_snippet(
         lines, full_bytes, sym_line, sym_end_line, context_lines
     )
@@ -904,6 +910,8 @@ def read_symbol(
         kind=chosen["kind"],
         start_line=start,
         end_line=end,
+        core_start_line=core_start,
+        core_end_line=core_end,
         text=snippet,
         signature=chosen["signature"],
         bytes_total=full_bytes,
@@ -1026,6 +1034,8 @@ def read_section(
 
     sec_line: int = _coerce_line(chosen["line"], 1)
     sec_end_line: int | None = _coerce_end_line(chosen["end_line"])
+    core_start = max(1, sec_line)
+    core_end = min(len(lines), sec_end_line if sec_end_line is not None else sec_line)
     snippet, snippet_bytes, start, end = _extract_snippet(
         lines, full_bytes, sec_line, sec_end_line, context_lines
     )
@@ -1058,6 +1068,8 @@ def read_section(
         level=chosen["level"],
         start_line=start,
         end_line=end,
+        core_start_line=core_start,
+        core_end_line=core_end,
         text=snippet,
         bytes_total=full_bytes,
         bytes_extracted=snippet_bytes,
