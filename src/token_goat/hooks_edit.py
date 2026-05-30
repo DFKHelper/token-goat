@@ -47,17 +47,46 @@ def _nudge_worker_if_down() -> None:
     ``2 * HEARTBEAT_INTERVAL + GRACE`` formula and would have silently
     stopped nudging if the interval changed.
 
+    A restart throttle prevents tight restart loops if the worker is crashing
+    immediately (corrupt DB, bad queue entry). If a worker was nudged and
+    respawned within the last WORKER_RESTART_THROTTLE_SECS (30 s), this call
+    skips the respawn and lets the previous attempt settle.
+
     Failures are logged but not raised (fail-soft hook pattern).
     """
     try:
-        from . import worker  # noqa: PLC0415
+        from . import paths, worker  # noqa: PLC0415
 
         if not worker.is_heartbeat_stale_for_nudge():
             return
+
+        # Check restart throttle to prevent restart loops on persistent failures.
+        sentinel = paths.data_dir() / "sentinels" / "last_worker_restart"
+        throttle_secs = getattr(worker, "WORKER_RESTART_THROTTLE_SECS", 30.0)
+        try:
+            import time  # noqa: PLC0415
+            if sentinel.exists():
+                age = time.time() - sentinel.stat().st_mtime
+                if age < throttle_secs:
+                    _LOG.debug(
+                        "worker restart throttle: skipping respawn (last attempt %.1f s ago, "
+                        "throttle %.1f s)",
+                        age, throttle_secs,
+                    )
+                    return
+        except OSError:
+            pass  # Ignore sentinel check errors; proceed with respawn attempt.
+
         _LOG.info("worker heartbeat stale — attempting respawn")
         pid = worker.ensure_running()
         if pid:
             _LOG.info("worker respawned: pid=%s", pid)
+            # Update the restart sentinel to mark when the respawn happened.
+            try:
+                paths.ensure_dir(sentinel.parent)
+                paths.atomic_write_text(sentinel, "")
+            except OSError:
+                pass  # Sentinel update is best-effort.
         else:
             _LOG.warning("worker nudge: ensure_running returned no pid (already running or failed)")
     except Exception:  # noqa: BLE001
