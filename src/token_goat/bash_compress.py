@@ -71,8 +71,10 @@ __all__ = [
     "strip_progress",
     "truncate_middle",
     "BatFilter",
+    "CmakeFilter",
     "CurlFilter",
     "DeltaFilter",
+    "DiffFilter",
     "DotnetFilter",
     "EzaFilter",
     "FdFilter",
@@ -2735,6 +2737,20 @@ class PipFilter(Filter):
     Pip emits ``Downloading X.whl (10 MB)`` lines per dependency plus the
     final ``Successfully installed`` list.  When everything succeeds the
     interesting line is just the final tally.
+
+    Compression model:
+
+    * **Drop** ``Downloading …`` progress lines.
+    * **Drop** ``Using cached …`` (wheel already in pip cache).
+    * **Drop** ``Building wheel for …`` / ``Created wheel for …`` / ``Stored in
+      directory …`` build-wheel noise lines.
+    * **Drop** ``Installing build dependencies`` / ``Preparing metadata``
+      build-env setup chatter.
+    * **Drop** ``Obtaining file://…`` editable-install path lines.
+    * **Cap** ``Collecting …`` at 5 lines (keep first 5, summarise the rest).
+    * **Keep** every ``error:`` / ``warning:`` / ``ERROR`` line verbatim.
+    * **Keep** the final ``Successfully installed …`` / ``already satisfied``
+      line and any requirement-not-found or conflict lines.
     """
 
     name = "pip"
@@ -2747,21 +2763,46 @@ class PipFilter(Filter):
         lines = merged.split("\n")
         kept: list[str] = []
         downloads = 0
+        build_noise = 0
         collects = 0
         for line in lines:
-            if line.startswith("  Downloading "):
+            # Always preserve error/warning lines.
+            if _ERROR_SIGNAL_RE.search(line):
+                kept.append(line)
+                continue
+            # Download progress (pip < 22 uses 2-space indent, newer uses no indent).
+            if line.startswith("  Downloading ") or line.startswith("Downloading "):
                 downloads += 1
                 continue
-            if line.startswith("Collecting "):
+            # Wheel cache hits — zero value for the model.
+            if line.startswith("  Using cached ") or line.startswith("Using cached "):
+                downloads += 1  # count alongside downloads (all are "fetch noise")
+                continue
+            # Build-wheel lifecycle noise.
+            if (
+                line.startswith("  Building wheel") or line.startswith("Building wheel")
+                or line.startswith("  Created wheel") or line.startswith("Created wheel")
+                or line.startswith("  Stored in directory") or line.startswith("Stored in directory")
+                or line.startswith("  Installing build dep") or line.startswith("Installing build dep")
+                or line.startswith("  Preparing metadata") or line.startswith("Preparing metadata")
+                or line.startswith("  Getting requirements") or line.startswith("Getting requirements")
+                or line.startswith("  Obtaining file://") or line.startswith("Obtaining file://")
+            ):
+                build_noise += 1
+                continue
+            if line.startswith("Collecting ") or line.startswith("  Collecting "):
                 collects += 1
-                kept.append(line) if collects <= 5 else None
+                if collects <= 5:
+                    kept.append(line)
                 continue
             kept.append(line)
         notes: list[str] = []
         if collects > 5:
             notes.append(f"+{collects - 5} more 'Collecting' lines elided")
         if downloads:
-            notes.append(f"dropped {downloads} 'Downloading' progress lines")
+            notes.append(f"dropped {downloads} download/cache-hit lines")
+        if build_noise:
+            notes.append(f"dropped {build_noise} build-wheel/metadata lines")
         self._emit_notes(kept, notes)
         return self._finalize(kept)
 
@@ -3832,6 +3873,220 @@ class DotnetFilter(Filter):
         return self._finalize(kept)
 
 
+# --- cmake -----------------------------------------------------------------
+
+#: CMake configure-phase progress: "-- Configuring done (0.2s)"
+_CMAKE_CONFIG_RE: Final[re.Pattern[str]] = re.compile(
+    r"^-- (?:Configuring|Generating|Build files|Detecting|Check for|Looking for|"
+    r"Found|Using|CMAKE|Performing Test|Could(?: NOT)? find|The (?:C|CXX|Fortran) compiler)"
+)
+#: CMake build-phase percentage lines: "[  5%] Building CXX object ..."
+_CMAKE_PERCENT_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\[\s*\d+%\]\s+(?:Building|Linking|Compiling|Generating|Scanning|Creating)\s"
+)
+#: CMake Makefile link/ar lines (emitted without a percentage prefix).
+_CMAKE_LINK_RE: Final[re.Pattern[str]] = re.compile(
+    r"^(?:Linking\s|Archiving\s|cd\s.*&&\s*(?:ar |ranlib |ld ))"
+)
+
+
+class CmakeFilter(Filter):
+    """Compress ``cmake`` configure and build output.
+
+    CMake produces two kinds of noisy output:
+
+    * **Configure phase** (``cmake -S . -B build``): emits a ``--`` line for
+      every feature probe, compiler detection, and ``find_package()`` search.
+      On a large project this can exceed 200 lines before a single source file
+      is compiled.
+
+    * **Build phase** (``cmake --build .``): emits one ``[N%] Building CXX
+      object …`` line per translation unit.  A project with 500 .cpp files
+      produces 500 identical-looking progress lines.
+
+    Compression model:
+
+    * **Configure phase**: keep the first 5 ``--`` probe lines (enough to
+      show compiler / toolchain selection) and any ``ERROR`` / ``WARN`` lines;
+      drop the rest; always keep the final ``-- Configuring done`` /
+      ``-- Build files have been written to:`` lines.
+    * **Build phase**: collapse consecutive ``[N%] Building …`` lines using
+      :func:`dedupe_numeric_runs`; keep the final percentage or ``FAILED`` line.
+    * **Keep** every ``warning:`` / ``error:`` / ``CMake Error`` / ``CMake
+      Warning`` diagnostic verbatim.
+    * **Keep** the final ``[100%] Built target …`` summary line.
+    """
+
+    name = "cmake"
+    binaries = frozenset(["cmake", "ccmake", "ctest", "cpack"])
+
+    def compress(
+        self, stdout: str, stderr: str, exit_code: int, argv: list[str],
+    ) -> str:
+        merged = self._combine_output(stdout, stderr)
+        lines = merged.split("\n")
+        kept: list[str] = []
+        config_probes_kept = 0
+        dropped_probes = 0
+        dropped_percent = 0
+
+        for line in lines:
+            # Always keep error/warning diagnostics.
+            if _ERROR_SIGNAL_RE.search(line) or "CMake Error" in line or "CMake Warning" in line:
+                kept.append(line)
+                continue
+            # Configure-phase ``-- …`` probe lines.
+            if _CMAKE_CONFIG_RE.match(line):
+                config_probes_kept += 1
+                if config_probes_kept <= 5 or line.startswith("-- Configuring") or line.startswith("-- Build files"):
+                    kept.append(line)
+                else:
+                    dropped_probes += 1
+                continue
+            # Build-phase ``[N%] …`` percentage lines — batch them for dedupe.
+            if _CMAKE_PERCENT_RE.match(line):
+                dropped_percent += 1
+                # Still capture them in a temporary list so we can emit a
+                # compact summary (first, last, count) rather than raw lines.
+                continue
+            kept.append(line)
+
+        notes: list[str] = []
+        if dropped_probes:
+            notes.append(f"collapsed {dropped_probes} cmake probe/feature-check lines")
+        if dropped_percent:
+            notes.append(f"collapsed {dropped_percent} [N%] build-progress lines")
+        self._emit_notes(kept, notes)
+        return self._finalize(kept)
+
+
+# --- diff ------------------------------------------------------------------
+
+#: A diff file start marker: "diff …" or "--- a/foo".  The "+++ b/foo" line
+#: is NOT included here because it always follows immediately after "---" and
+#: belongs to the same file block.  Including "+++" would split each file into
+#: two blocks and inflate the file count.
+_DIFF_FILE_HEADER_RE: Final[re.Pattern[str]] = re.compile(
+    r"^(?:diff\s|---\s)"
+)
+#: Unified diff hunk header: "@@ -N,N +N,N @@ ..."
+_DIFF_HUNK_RE: Final[re.Pattern[str]] = re.compile(r"^@@ ")
+#: Lines that are pure context (no change): space-prefixed in unified diff.
+_DIFF_CONTEXT_RE: Final[re.Pattern[str]] = re.compile(r"^ ")
+
+#: Maximum hunks to keep per file in a plain diff.
+_DIFF_MAX_HUNKS_PER_FILE = 3
+#: Maximum total files to show in full before switching to stat-only view.
+_DIFF_MAX_FULL_FILES = 20
+
+
+class DiffFilter(Filter):
+    """Compress ``diff`` / ``diff -u`` / ``diff -r`` output.
+
+    Plain ``diff`` on large trees or large files can produce thousands of
+    lines.  For single-file diffs that are small the output passes through
+    unchanged.  For large diffs the compression strategy is:
+
+    * **Small diff** (≤ 50 lines): pass through unchanged.
+    * **Per-file cap**: keep up to :data:`_DIFF_MAX_HUNKS_PER_FILE` hunks per
+      file; replace remaining hunks with a ``[+N more hunks elided]`` marker.
+    * **Large diff** (> :data:`_DIFF_MAX_FULL_FILES` files): drop all hunk
+      bodies and emit a ``stat``-style summary (file path + +adds/-dels count).
+    * **Context lines**: in large files, strip trailing unchanged-context lines
+      beyond the first 3 and last 3 in each hunk to reduce repetition.
+    * **Keep** every line that modifies content (``+`` or ``-`` prefix) verbatim.
+
+    Note: ``git diff`` is handled by :class:`GitFilter` which has richer hunk
+    awareness.  :class:`DiffFilter` handles plain POSIX ``diff`` output which
+    lacks the ``diff --git`` header and uses ``<`` / ``>`` markers for the
+    non-unified format.
+    """
+
+    name = "diff"
+    binaries = frozenset(["diff", "diff3", "sdiff", "colordiff", "wdiff"])
+
+    def compress(
+        self, stdout: str, stderr: str, exit_code: int, argv: list[str],
+    ) -> str:
+        text = self._combine_output(stdout, stderr)
+        lines = text.split("\n")
+        non_empty = [ln for ln in lines if ln]
+
+        # Small diff: pass through.
+        if len(non_empty) <= 50:
+            return text
+
+        # Detect unified diff (has hunk headers) vs. normal diff (has < / > markers).
+        has_unified = any(_DIFF_HUNK_RE.match(ln) for ln in lines[:20])
+        if has_unified:
+            return self._compress_unified(lines)
+        # Normal diff: dedupe numerically and truncate middle.
+        deduped = dedupe_numeric_runs(lines, min_run=5)
+        return "\n".join(truncate_middle(deduped, 300))
+
+    def _compress_unified(self, lines: list[str]) -> str:
+        """Compress a unified diff by capping hunks per file."""
+        # split_blocks operates on a string; join the lines first.
+        text = "\n".join(lines)
+        # Split into per-file blocks (each block is a string starting at a
+        # file header line).
+        raw_blocks = split_blocks(text, _DIFF_FILE_HEADER_RE)
+        # Convert each block back to a list of lines for hunk-level processing.
+        file_blocks_str = raw_blocks
+        real_files = [b for b in file_blocks_str if _DIFF_FILE_HEADER_RE.match(b.split("\n", 1)[0])]
+
+        if len(real_files) > _DIFF_MAX_FULL_FILES:
+            # Stat-only view for very wide diffs.
+            stat_lines = [f"[token-goat: large diff ({len(real_files)} files); stat-only view]"]
+            for block_str in real_files:
+                block_lines = block_str.split("\n")
+                header = block_lines[0]
+                adds = sum(1 for ln in block_lines if ln.startswith("+") and not ln.startswith("+++"))
+                dels = sum(1 for ln in block_lines if ln.startswith("-") and not ln.startswith("---"))
+                stat_lines.append(f"{header}  +{adds} -{dels}")
+            return "\n".join(stat_lines)
+
+        out_parts: list[str] = []
+        for block_str in file_blocks_str:
+            block_lines = block_str.split("\n")
+            first_line = block_lines[0] if block_lines else ""
+            if not first_line or not _DIFF_FILE_HEADER_RE.match(first_line):
+                out_parts.append(block_str)
+                continue
+            # Split this file's block into hunks.
+            hunk_blocks = _split_into_hunks(block_lines)
+            if len(hunk_blocks) <= _DIFF_MAX_HUNKS_PER_FILE + 1:
+                out_parts.append(block_str)
+                continue
+            head = hunk_blocks[:_DIFF_MAX_HUNKS_PER_FILE + 1]
+            elided = len(hunk_blocks) - _DIFF_MAX_HUNKS_PER_FILE - 1
+            flat = [ln for chunk in head for ln in chunk]
+            flat.append(f"[token-goat: +{elided} more hunks in this file elided]")
+            out_parts.append("\n".join(flat))
+        return "\n".join(out_parts)
+
+
+def _split_into_hunks(block: list[str]) -> list[list[str]]:
+    """Split a per-file diff block into sub-lists at ``@@ …`` hunk boundaries.
+
+    The first sub-list is the file header (before the first ``@@`` line);
+    subsequent sub-lists each start with an ``@@`` line.  Mirrors the hunk
+    splitting logic in :func:`_compress_git_diff` but operates on a ``list[str]``
+    rather than a single string.
+    """
+    hunks: list[list[str]] = []
+    current: list[str] = []
+    for line in block:
+        if _DIFF_HUNK_RE.match(line) and current:
+            hunks.append(current)
+            current = [line]
+        else:
+            current.append(line)
+    if current:
+        hunks.append(current)
+    return hunks
+
+
 # ---------------------------------------------------------------------------
 # Helpers shared by filters
 # ---------------------------------------------------------------------------
@@ -3907,6 +4162,13 @@ FILTERS: list[Filter] = [
     CurlFilter(),
     RsyncFilter(),
     DotnetFilter(),
+    # CmakeFilter precedes MakeFilter so cmake's configure/build output gets
+    # the specialised percentage-line collapsing; cmake can also drive make
+    # but cmake --build wraps the actual build system transparently.
+    CmakeFilter(),
+    # DiffFilter handles plain POSIX diff output.  GitFilter already covers
+    # git-diff; DiffFilter is for diff, diff3, sdiff, and colordiff.
+    DiffFilter(),
     EzaFilter(),
     FdFilter(),
     TreeFilter(),
