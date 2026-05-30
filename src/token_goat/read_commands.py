@@ -653,6 +653,23 @@ def _run_read_like_command(
         detail=f"{file_target.rel_path}::{item_part}",
     )
 
+    # Emit a cross-project attribution note when the result came from a
+    # different project than the shell's cwd.  The user needs to know the
+    # result is from a foreign repo so they can verify path accuracy.
+    if (
+        file_target.project != file_target.current_project
+        and file_target.current_project is not None
+    ):
+        note = f"[from project: {file_target.project.root}]"
+        if json_output:
+            out = {k: v for k, v in result.items() if k not in ("bytes_total", "bytes_extracted")}
+            out["_project_root"] = str(file_target.project.root)
+            typer.echo(json.dumps(out, separators=(",", ":")))
+            return
+        typer.echo(note, err=True)
+        _emit_text_result(result["text"], file_target.rel_path, item_part, separator_label, no_header)
+        return
+
     if json_output:
         # Strip internal stat fields — model never acts on them; stats are recorded above.
         out = {k: v for k, v in result.items() if k not in ("bytes_total", "bytes_extracted")}
@@ -759,8 +776,88 @@ def deps(
                    + (" ..." if len(unresolved) > 20 else ""))
 
 
+def _run_read_line_range(
+    *,
+    target: str,
+    session_id: str | None,
+    json_output: bool,
+    no_header: bool,
+) -> None:
+    """Handle ``token-goat read file::N-M`` (line-range variant).
+
+    Called from :func:`read` after :func:`~read_replacement.parse_line_range`
+    confirms the item part is a ``start-end`` integer pair.  Resolves the file,
+    reads the requested lines, emits result, and records stats.
+    """
+    file_part, _, item_part = target.partition("::")
+    range_parsed = read_replacement.parse_line_range(item_part)
+    if range_parsed is None:
+        _emit_read_error(
+            code="invalid_target",
+            message=f"Error: line range '{item_part}' is invalid (expected 'N-M' with N≥1 and M≥N)",
+            json_output=json_output,
+            target=target,
+        )
+        raise typer.Exit(2)
+
+    start, end = range_parsed
+
+    try:
+        file_target = _resolve_file_target(file_part)
+    except read_replacement.ProjectIndexUnavailable as exc:
+        _emit_read_error(code=exc.code, message=str(exc), json_output=json_output, file_part=file_part)
+        raise typer.Exit(0) from None
+    except read_replacement.AmbiguousFileMatch as exc:
+        _emit_ambiguous_file_match(file_part, exc.candidates, json_output=json_output)
+        raise typer.Exit(0) from None
+
+    if file_target.rel_path is None:
+        _emit_file_not_found_error(file_part, file_target.current_project, json_output=json_output)
+        raise typer.Exit(0)
+
+    assert file_target.project is not None
+
+    result = read_replacement.read_line_range(file_target.project, file_target.rel_path, start, end)
+    if result is None:
+        _emit_read_error(
+            code="line_range_out_of_bounds",
+            message=f"Line range {start}-{end} is out of bounds for {file_target.rel_path}",
+            json_output=json_output,
+            rel_path=file_target.rel_path,
+            item=item_part,
+        )
+        raise typer.Exit(0)
+
+    if session_id:
+        session.mark_file_read(session_id, file_target.rel_path)
+
+    bytes_saved = result.get("bytes_saved", 0)
+    db.record_stat(
+        file_target.project.hash,
+        "read_replacement",
+        tokens_saved=bytes_saved // 4,
+        bytes_saved=bytes_saved,
+        detail=f"{file_target.rel_path}::{item_part}",
+    )
+
+    cross_project = (
+        file_target.project != file_target.current_project
+        and file_target.current_project is not None
+    )
+    if json_output:
+        out: dict[str, object] = {k: v for k, v in result.items() if k not in ("bytes_total", "bytes_extracted")}
+        if cross_project:
+            out["_project_root"] = str(file_target.project.root)
+        typer.echo(json.dumps(out, separators=(",", ":")))
+        return
+
+    if cross_project:
+        typer.echo(f"[from project: {file_target.project.root}]", err=True)
+    _emit_text_result(result["text"], file_target.rel_path, item_part, "lines", no_header)
+
+
 def read(
-    target: str = typer.Argument(..., help="<file>::<symbol> — e.g., 'parser.py::index_project' or 'auth.py::Session.refresh' for a qualified method."),
+    target: str = typer.Argument(..., help="<file>::<symbol|N-M> — e.g., 'parser.py::index_project', 'auth.py::Session.refresh' for a method, or 'parser.py::100-200' for a line range."),
     session_id: str | None = _OPT_SESSION_ID,
     json_output: bool = typer.Option(False, "--json"),
     context_lines: int = typer.Option(0, "--context", "-c", help="Extra lines before/after"),
@@ -769,11 +866,29 @@ def read(
 ) -> None:
     """Read just <symbol> from <file>, not the whole file.
 
+    Accepts a symbol name (``file::MyFunc``), a qualified method
+    (``file::Class.method``), or a line range (``file::100-200``).
+
     In agent/capture contexts (non-TTY stdout) the path header is suppressed
     by default to avoid paying ~10 tokens per call for information the agent
     already has.  Pass ``--header`` to force it on, or ``--no-header`` to
     force it off regardless of TTY state.
     """
+    _no_header = no_header or not header and not sys.stdout.isatty()
+
+    # Route line-range syntax ``file::N-M`` to a dedicated handler that skips
+    # the symbol DB entirely and slices the file directly by line numbers.
+    if "::" in target:
+        _, _, item_part = target.partition("::")
+        if read_replacement.parse_line_range(item_part) is not None:
+            _run_read_line_range(
+                target=target,
+                session_id=session_id,
+                json_output=json_output,
+                no_header=_no_header,
+            )
+            return
+
     _run_read_like_command(
         target=target,
         session_id=session_id,
@@ -783,7 +898,7 @@ def read(
         missing_label="Symbol",
         stat_kind="read_replacement",
         reader=read_replacement.read_symbol,
-        no_header=no_header or not header and not sys.stdout.isatty(),
+        no_header=_no_header,
     )
 
 

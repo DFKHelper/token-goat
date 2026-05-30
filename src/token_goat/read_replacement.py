@@ -3,18 +3,22 @@ from __future__ import annotations
 
 __all__ = [
     "AmbiguousFileMatch",
+    "LineRangeResult",
     "ProjectIndexUnavailable",
     "ReadLookupError",
     "SectionResult",
     "SymbolResult",
     "find_in_all_projects",
     "invalidate_file_cache",
+    "parse_line_range",
+    "read_line_range",
     "read_section",
     "read_symbol",
     "resolve_file_rel",
 ]
 
 import operator
+import re
 import sqlite3
 import time
 from collections.abc import Sequence
@@ -75,6 +79,88 @@ class SectionResult(TypedDict):
     bytes_total: int
     bytes_extracted: int
     bytes_saved: int
+
+
+class LineRangeResult(TypedDict):
+    """Return value of :func:`read_line_range`."""
+
+    file: str
+    start_line: int
+    end_line: int
+    text: str
+    bytes_total: int
+    bytes_extracted: int
+    bytes_saved: int
+
+
+# Regex matching the ``start-end`` line-range suffix, e.g. ``100-200``.
+# Both numbers are required; ``start`` must be ≥ 1; ``end`` ≥ ``start`` is
+# validated at runtime.  The pattern is anchored so ``read_symbol`` fallback
+# for names like ``MY-CONST`` is not mis-parsed as a range.
+_LINE_RANGE_RE = re.compile(r"^(\d+)-(\d+)$")
+
+
+def parse_line_range(item: str) -> tuple[int, int] | None:
+    """Return ``(start, end)`` when *item* matches ``"N-M"`` syntax, else ``None``.
+
+    Validates that both numbers are positive integers and that start ≤ end.
+    A match of ``"0-5"`` returns ``None`` because line numbers are 1-based.
+    """
+    m = _LINE_RANGE_RE.match(item)
+    if m is None:
+        return None
+    start, end = int(m.group(1)), int(m.group(2))
+    if start < 1 or end < start:
+        return None
+    return start, end
+
+
+def read_line_range(
+    project: Project,
+    rel_path: str,
+    start: int,
+    end: int,
+) -> LineRangeResult | None:
+    """Return the lines ``start``..``end`` (1-based, inclusive) from *rel_path*.
+
+    Returns a :class:`LineRangeResult` or ``None`` when the file cannot be read
+    or the requested range is entirely outside the file's line count.  The range
+    is clamped to ``[1, total_lines]`` so callers do not need to guard against
+    an ``end`` that exceeds the actual file length.
+    """
+    t0 = time.monotonic()
+    read_result = _read_file_lines(project.root / rel_path)
+    if read_result is None:
+        _LOG.debug("read_line_range: cannot read file %s in project %s", rel_path, project.hash[:8])
+        return None
+    lines, full_bytes = read_result
+
+    safe_start = max(1, start)
+    safe_end = min(len(lines), end)
+    if safe_start > len(lines):
+        _LOG.debug(
+            "read_line_range: start=%d beyond file length=%d in %s",
+            start, len(lines), rel_path,
+        )
+        return None
+
+    snippet = "\n".join(lines[safe_start - 1 : safe_end])
+    snippet_bytes = len(snippet.encode("utf-8"))
+    elapsed = time.monotonic() - t0
+    _LOG.debug(
+        "read_line_range: %s lines %d-%d, %d/%d bytes extracted (%.1f%% saved, %.3fs)",
+        rel_path, safe_start, safe_end, snippet_bytes, full_bytes,
+        _pct_saved(snippet_bytes, full_bytes), elapsed,
+    )
+    return LineRangeResult(
+        file=rel_path,
+        start_line=safe_start,
+        end_line=safe_end,
+        text=snippet,
+        bytes_total=full_bytes,
+        bytes_extracted=snippet_bytes,
+        bytes_saved=max(0, full_bytes - snippet_bytes),
+    )
 
 
 # Lower value = higher priority when multiple symbols share the same name.

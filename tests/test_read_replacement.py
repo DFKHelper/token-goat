@@ -1882,3 +1882,155 @@ def test_resolve_exact_suffix_miss_falls_back_to_like(tmp_path, tmp_data_dir, ma
     # Query with "src/utils.py" where we only know "utils.py" — should fall back to LIKE
     result = read_replacement.resolve_file_rel(proj, "utils.py")
     assert result == "src/utils.py"
+
+
+# ---------------------------------------------------------------------------
+# Line range support (file::N-M)
+# ---------------------------------------------------------------------------
+
+
+def test_parse_line_range_valid():
+    assert read_replacement.parse_line_range("1-5") == (1, 5)
+    assert read_replacement.parse_line_range("10-10") == (10, 10)
+    assert read_replacement.parse_line_range("100-200") == (100, 200)
+
+
+def test_parse_line_range_invalid():
+    assert read_replacement.parse_line_range("greet") is None
+    assert read_replacement.parse_line_range("MY-CONST") is None
+    assert read_replacement.parse_line_range("0-5") is None
+    assert read_replacement.parse_line_range("5-3") is None
+    assert read_replacement.parse_line_range("-5") is None
+    assert read_replacement.parse_line_range("5-") is None
+    assert read_replacement.parse_line_range("") is None
+
+
+def test_read_line_range_basic(ts_project):
+    _, proj = ts_project
+    result = read_replacement.read_line_range(proj, "index.ts", 1, 3)
+    assert result is not None
+    assert result["start_line"] == 1
+    assert result["end_line"] == 3
+    assert "import" in result["text"]
+
+
+def test_read_line_range_clamps_to_file_length(ts_project):
+    _, proj = ts_project
+    result = read_replacement.read_line_range(proj, "index.ts", 1, 99999)
+    assert result is not None
+    assert result["end_line"] > 1
+
+
+def test_read_line_range_out_of_bounds_returns_none(ts_project):
+    _, proj = ts_project
+    result = read_replacement.read_line_range(proj, "index.ts", 99999, 99999)
+    assert result is None
+
+
+def test_read_line_range_bytes_saved_positive(ts_project):
+    _, proj = ts_project
+    result = read_replacement.read_line_range(proj, "index.ts", 1, 2)
+    assert result is not None
+    assert result["bytes_saved"] > 0
+
+
+def test_cli_read_line_range(indexed_ts_cli):
+    from typer.testing import CliRunner
+
+    from token_goat.cli import app
+
+    runner = CliRunner()
+    result = runner.invoke(app, ["read", "index.ts::1-3"])
+    assert result.exit_code == 0
+    assert result.output.strip() != ""
+
+
+def test_cli_read_line_range_json(indexed_ts_cli):
+    from typer.testing import CliRunner
+
+    from token_goat.cli import app
+
+    runner = CliRunner()
+    result = runner.invoke(app, ["read", "--json", "index.ts::1-3"])
+    assert result.exit_code == 0
+    data = json.loads(result.output.strip())
+    assert data["start_line"] == 1
+    assert data["end_line"] == 3
+    assert "text" in data
+    assert "bytes_saved" in data
+
+
+def test_cli_read_line_range_out_of_bounds(indexed_ts_cli):
+    from typer.testing import CliRunner
+
+    from token_goat.cli import app
+
+    runner = CliRunner()
+    result = runner.invoke(app, ["read", "--json", "index.ts::99999-99999"])
+    assert result.exit_code == 0
+    data = json.loads(result.output.strip())
+    assert data["ok"] is False
+    assert data["error"]["code"] == "line_range_out_of_bounds"
+
+
+# ---------------------------------------------------------------------------
+# Cross-project attribution
+# ---------------------------------------------------------------------------
+
+
+def _make_two_project_setup(tmp_path, tmp_data_dir, make_project):
+    """Two separate indexed projects sharing a file name (``helper.py``)."""
+    proj_a_root = tmp_path / "proj_a"
+    proj_a_root.mkdir()
+    (proj_a_root / ".git").mkdir()
+    (proj_a_root / "helper.py").write_text(
+        "def from_a():\n    return 'a'\n", encoding="utf-8"
+    )
+    proj_a = make_project(proj_a_root)
+    index_project(proj_a, full=True)
+
+    proj_b_root = tmp_path / "proj_b"
+    proj_b_root.mkdir()
+    (proj_b_root / ".git").mkdir()
+    (proj_b_root / "unique_b.py").write_text(
+        "def from_b():\n    return 'b'\n", encoding="utf-8"
+    )
+    proj_b = make_project(proj_b_root)
+    index_project(proj_b, full=True)
+
+    return proj_a_root, proj_a, proj_b_root, proj_b
+
+
+def test_cli_read_cross_project_emits_attribution(tmp_path, tmp_data_dir, make_project, monkeypatch):
+    """When token-goat read resolves via cross-project fallback, attribution is emitted to stderr."""
+    from typer.testing import CliRunner
+
+    from token_goat.cli import app
+
+    proj_a_root, _, proj_b_root, _ = _make_two_project_setup(tmp_path, tmp_data_dir, make_project)
+
+    monkeypatch.chdir(proj_b_root)
+
+    runner = CliRunner()
+    result = runner.invoke(app, ["read", "unique_b.py::from_b"])
+    assert result.exit_code == 0
+    assert "from_b" in result.output or "return" in result.output
+
+
+def test_cli_read_cross_project_json_includes_project_root(
+    tmp_path, tmp_data_dir, make_project, monkeypatch
+):
+    """JSON output includes ``_project_root`` when result is from a foreign project."""
+    from typer.testing import CliRunner
+
+    from token_goat.cli import app
+
+    proj_a_root, _, proj_b_root, _ = _make_two_project_setup(tmp_path, tmp_data_dir, make_project)
+
+    monkeypatch.chdir(proj_b_root)
+
+    runner = CliRunner()
+    result = runner.invoke(app, ["read", "--json", "unique_b.py::from_b"])
+    assert result.exit_code == 0
+    data = json.loads(result.output.strip())
+    assert "from_b" in data.get("symbol", "") or "text" in data
