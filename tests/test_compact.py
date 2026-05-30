@@ -114,10 +114,10 @@ class TestBuildManifest:
 
     def test_symbols_section_present(self, tmp_data_dir, monkeypatch):
         # Item #8: a symbol-bearing file that also appears in **Files:** has its
-        # symbol-detail line suppressed.  To exercise the **Syms:** section we
+        # symbol-detail line suppressed.  To exercise the **Symbols Accessed:** section we
         # must read enough other plain (no-symbol) files that parser.py's
         # importance score falls below the `_MAX_FILES_READ` (10) cap, leaving
-        # the symbol file out of **Files:** so its detail surfaces in **Syms:**.
+        # the symbol file out of **Files:** so its detail surfaces in **Symbols Accessed:**.
         # Set wide_session_threshold=200 via config so the noise padding doesn't
         # flip the session into wide mode (replaces per-file symbol lines with a
         # single pointer).
@@ -135,7 +135,7 @@ class TestBuildManifest:
                 session.mark_file_read(sid, f"/proj/src/noise{i:02d}.py", offset=0, limit=400)
         session.mark_file_read(sid, "/proj/src/parser.py", symbol="index_project")
         result = compact.build_manifest(sid)
-        assert "**Syms:**" in result
+        assert "**Symbols Accessed:**" in result
         assert "index_project" in result
 
     def test_symbol_detail_suppressed_when_file_in_files_section(self, tmp_data_dir):
@@ -143,15 +143,15 @@ class TestBuildManifest:
         per-file symbol-detail line is suppressed (the read entry implies it)."""
         sid = "sym-suppress-session-abc"
         # Single file with one symbol — will end up in **Files:** as the only
-        # candidate, so its symbol-detail line must NOT appear in **Syms:**.
+        # candidate, so its symbol-detail line must NOT appear in **Symbols Accessed:**.
         session.mark_file_read(sid, "/proj/src/lonely.py", symbol="solo_symbol")
         result = compact.build_manifest(sid)
         # The file is interesting enough to appear in **Files:**
         assert "lonely.py" in result
         # But the symbol-detail line for it must not appear — extract any
-        # **Syms:** section and verify it doesn't list this file's symbols.
-        if "**Syms:**" in result:
-            syms_part = result.split("**Syms:**", 1)[1].split("\n**", 1)[0]
+        # **Symbols Accessed:** section and verify it doesn't list this file's symbols.
+        if "**Symbols Accessed:**" in result:
+            syms_part = result.split("**Symbols Accessed:**", 1)[1].split("\n**", 1)[0]
             assert "solo_symbol" not in syms_part, (
                 "Symbol detail should be suppressed when file is in **Files:**.\n"
                 f"Manifest:\n{result}"
@@ -759,14 +759,14 @@ class TestGrepSection:
         sid = "grep-section-session-abc"
         session.mark_grep(sid, "mark_file_read", "/proj/src")
         result = compact.build_manifest(sid)
-        assert "**Grep:**" in result
+        assert "**Patterns Searched:**" in result
         assert "mark_file_read" in result
 
     def test_grep_section_absent_when_no_greps(self, tmp_data_dir):
         sid = "no-grep-session-abc"
         session.mark_file_read(sid, "/proj/src/db.py", offset=0, limit=100)
         result = compact.build_manifest(sid)
-        assert "**Grep:**" not in result
+        assert "**Patterns Searched:**" not in result
 
     def test_grep_section_includes_path_scope(self, tmp_data_dir):
         sid = "grep-path-session-abc"
@@ -1029,7 +1029,7 @@ class TestGrepSection:
 
         result = compact.build_manifest(sid)
 
-        assert "**Grep:**" not in result, (
+        assert "**Patterns Searched:**" not in result, (
             f"All-zero grep section should be dropped for mature sessions:\n{result}"
         )
 
@@ -1047,7 +1047,7 @@ class TestGrepSection:
         result = compact.build_manifest(sid)
 
         # The section should still appear for young sessions.
-        assert "**Grep:**" in result, (
+        assert "**Patterns Searched:**" in result, (
             f"All-zero grep section should be kept for young sessions:\n{result}"
         )
 
@@ -1341,7 +1341,7 @@ class TestDedupHintEmittedIdsFilterBash:
         monkeypatch.setattr(compact, "_get_git_diff_stat_summary", lambda _root: "")
         monkeypatch.setattr(compact, "_get_git_diff_stat", lambda *a: None)
         result = compact.build_manifest(sid)
-        assert "**Ran:**" in result, f"Commands Run section missing:\n{result}"
+        assert "**Recent Commands:**" in result, f"Commands Run section missing:\n{result}"
         assert "(cached output)" not in result, (
             f"'(cached output)' qualifier must be dropped:\n{result}"
         )
@@ -1361,7 +1361,7 @@ class TestDedupHintEmittedIdsFilterBash:
         monkeypatch.setattr(compact, "_get_git_diff_stat_summary", lambda _root: "")
         monkeypatch.setattr(compact, "_get_git_diff_stat", lambda *a: None)
         result = compact.build_manifest(sid)
-        assert "**Web:**" in result, f"Web Fetches section missing:\n{result}"
+        assert "**Web Fetches:**" in result, f"Web Fetches section missing:\n{result}"
         assert "(cached body)" not in result, (
             f"'(cached body)' qualifier must be dropped:\n{result}"
         )
@@ -1438,7 +1438,7 @@ class TestSymbolRankingByRecency:
 
         import token_goat.config as _cfg_mod
         # Set wide_session_threshold=200 via config so the noise padding doesn't
-        # flip the session into "wide" mode (which collapses **Syms:** to a single
+        # flip the session into "wide" mode (which collapses **Symbols Accessed:** to a single
         # pointer line and would defeat the recency-ordering check below).
         monkeypatch.setattr(compact, "_load_config", lambda: _dc.replace(
             _cfg_mod.load(), compact_assist=_dc.replace(
@@ -1457,13 +1457,13 @@ class TestSymbolRankingByRecency:
         session.mark_file_read(sid, "/proj/src/recent.py", symbol="recent_sym")
         # Item #8 pads: heavily-read no-symbol files dominate **Files:** so the
         # symbol-bearing files above stay out of **Files:** and therefore keep
-        # their symbol-detail lines in **Syms:**.
+        # their symbol-detail lines in **Symbols Accessed:**.
         for i in range(16):
             for _ in range(8):
                 session.mark_file_read(sid, f"/proj/src/noise{i:02d}.py", offset=0, limit=600)
         result = compact.build_manifest(sid)
         # In Symbols Accessed section, recent.py should appear before older.py
-        symbols_section = result.split("**Syms:**")[1] if "**Syms:**" in result else result
+        symbols_section = result.split("**Symbols Accessed:**")[1] if "**Symbols Accessed:**" in result else result
         # Truncate to next section if present, so older.py listed in Key Files Read
         # doesn't fool the index check
         symbols_section = symbols_section.split("**")[0]
@@ -1555,8 +1555,8 @@ class TestConfigLoad:
             session.mark_file_read(sid, f"src/cfg_{i}.py", symbol=f"fn_{i}")
         session.mark_file_edited(sid, "src/anchor.py")
         result = compact.build_manifest(sid, max_tokens=2000)
-        assert "**Syms:**" in result
-        syms_line = next((ln for ln in result.splitlines() if "**Syms:**" in ln), None)
+        assert "**Symbols Accessed:**" in result
+        syms_line = next((ln for ln in result.splitlines() if "**Symbols Accessed:**" in ln), None)
         assert syms_line is not None
         assert "files accessed" in syms_line  # wide mode triggered at threshold=3
 
@@ -2793,7 +2793,7 @@ class TestSectionBudgets:
         session.save(cache)
 
         result = compact.build_manifest(sid, max_tokens=400)
-        assert "**Ran:**" in result, (
+        assert "**Recent Commands:**" in result, (
             f"bash section missing when files section is small:\n{result}"
         )
         assert estimate_tokens(result) <= 400
@@ -3125,7 +3125,7 @@ class TestYoungSessionOmitsBashSection:
 
         result = compact.build_manifest(sid)
 
-        assert "**Ran:**" not in result, (
+        assert "**Recent Commands:**" not in result, (
             f"bash section must be absent for young session:\n{result}"
         )
 
@@ -3173,7 +3173,7 @@ class TestYoungSessionOmitsBashSection:
 
         result = compact.build_manifest(sid)
 
-        assert "**Ran:**" in result, (
+        assert "**Recent Commands:**" in result, (
             f"bash section must be present for mature session:\n{result}"
         )
 
@@ -3252,14 +3252,14 @@ class TestEmptySectionSuppression:
 
         result = compact.build_manifest(sid)
         lines = result.splitlines()
-        # Check that "**Ran:**" header does not appear when bash_history is empty
+        # Check that "**Recent Commands:**" header does not appear when bash_history is empty
         bash_header_idx = next(
-            (i for i, line in enumerate(lines) if "**Ran:**" in line), None
+            (i for i, line in enumerate(lines) if "**Recent Commands:**" in line), None
         )
-        assert bash_header_idx is None, "**Ran:** header should not appear when no bash history"
+        assert bash_header_idx is None, "**Recent Commands:** header should not appear when no bash history"
 
     def test_grep_section_suppressed_when_no_patterns(self, tmp_data_dir, monkeypatch):
-        """**Grep:** section header not emitted when no grep history in session."""
+        """**Patterns Searched:** section header not emitted when no grep history in session."""
         sid = "empty-grep-test-abc"
         session.mark_file_read(sid, "/proj/src/a.py")
         cache = session.load(sid)
@@ -3273,14 +3273,14 @@ class TestEmptySectionSuppression:
 
         result = compact.build_manifest(sid)
         lines = result.splitlines()
-        # Check that "**Grep:**" header does not appear when greps is empty
+        # Check that "**Patterns Searched:**" header does not appear when greps is empty
         grep_header_idx = next(
-            (i for i, line in enumerate(lines) if "**Grep:**" in line), None
+            (i for i, line in enumerate(lines) if "**Patterns Searched:**" in line), None
         )
-        assert grep_header_idx is None, "**Grep:** header should not appear when no grep history"
+        assert grep_header_idx is None, "**Patterns Searched:** header should not appear when no grep history"
 
     def test_web_section_suppressed_when_no_fetches(self, tmp_data_dir, monkeypatch):
-        """**Web:** section header not emitted when no web history in session."""
+        """**Web Fetches:** section header not emitted when no web history in session."""
         sid = "empty-web-test-abc"
         session.mark_file_read(sid, "/proj/src/a.py")
         cache = session.load(sid)
@@ -3294,11 +3294,11 @@ class TestEmptySectionSuppression:
 
         result = compact.build_manifest(sid)
         lines = result.splitlines()
-        # Check that "**Web:**" header does not appear when web_history is empty
+        # Check that "**Web Fetches:**" header does not appear when web_history is empty
         web_header_idx = next(
-            (i for i, line in enumerate(lines) if "**Web:**" in line), None
+            (i for i, line in enumerate(lines) if "**Web Fetches:**" in line), None
         )
-        assert web_header_idx is None, "**Web:** header should not appear when no web history"
+        assert web_header_idx is None, "**Web Fetches:** header should not appear when no web history"
 
     def test_web_section_rendered_with_single_entry(self, tmp_data_dir):
         """A single web fetch IS rendered — one fetched URL is genuine signal."""
@@ -3313,10 +3313,10 @@ class TestEmptySectionSuppression:
         cache = session.load(sid)
 
         manifest = compact._build_manifest_from_cache(cache, sid, 800)
-        assert "**Web:**" in manifest
+        assert "**Web Fetches:**" in manifest
 
     def test_web_section_present_when_two_domain_entries(self, tmp_data_dir):
-        """**Web:** section emitted when two different domains produce two output lines."""
+        """**Web Fetches:** section emitted when two different domains produce two output lines."""
         import time as _time
         sid = "two-web-test-abc"
         session.mark_file_edited(sid, "/proj/app.py")
@@ -3337,8 +3337,8 @@ class TestEmptySectionSuppression:
         cache = session.load(sid)
 
         manifest = compact._build_manifest_from_cache(cache, sid, 800)
-        assert "**Web:**" in manifest, (
-            "**Web:** header should appear when two different-domain entries exist"
+        assert "**Web Fetches:**" in manifest, (
+            "**Web Fetches:** header should appear when two different-domain entries exist"
         )
 
 
@@ -3496,7 +3496,7 @@ class TestSessionAgeTierBoundaries:
         # Build manifest with young tier
         manifest = compact._build_manifest_from_cache(cache, sid, 400)
         # Young sessions skip bash section
-        assert "**Ran:**" not in manifest, "Young sessions should not show bash section"
+        assert "**Recent Commands:**" not in manifest, "Young sessions should not show bash section"
 
     def test_active_tier_includes_bash_section(self, tmp_data_dir):
         """Active tier sessions should include bash section."""
@@ -3657,7 +3657,7 @@ class TestManifestRenderingEdgeCases:
         manifest = compact._build_manifest_from_cache(cache, sid, 400)
 
         # Bash section should not appear
-        assert "**Ran:**" not in manifest
+        assert "**Recent Commands:**" not in manifest
 
     def test_render_with_no_web_history(self, tmp_data_dir):
         """Manifest should skip web section when no fetches exist."""
@@ -3669,7 +3669,7 @@ class TestManifestRenderingEdgeCases:
         manifest = compact._build_manifest_from_cache(cache, sid, 400)
 
         # Web section should not appear
-        assert "**Web:**" not in manifest
+        assert "**Web Fetches:**" not in manifest
 
     def test_render_with_no_symbols_accessed(self, tmp_data_dir):
         """Manifest should skip symbols section when no symbols read."""
@@ -3681,7 +3681,7 @@ class TestManifestRenderingEdgeCases:
         manifest = compact._build_manifest_from_cache(cache, sid, 400)
 
         # Symbols section should not appear
-        assert "**Syms:**" not in manifest
+        assert "**Symbols Accessed:**" not in manifest
 
     def test_render_all_sections_empty(self, tmp_data_dir):
         """Manifest should return empty string when all activity is absent."""
@@ -5025,7 +5025,7 @@ class TestMinLinesSuppressionRegression:
             web_fetches={"https://docs.example.com/api": 12_000},
         )
         m = compact.build_manifest(sid, max_tokens=400)
-        assert "**Web:**" in m
+        assert "**Web Fetches:**" in m
 
     def test_two_web_fetches_section_appears(self, tmp_data_dir, make_session):
         """Two Web Fetches from different domains render normally."""
@@ -5040,7 +5040,7 @@ class TestMinLinesSuppressionRegression:
             },
         )
         m = compact.build_manifest(sid, max_tokens=600)
-        assert "**Web:**" in m
+        assert "**Web Fetches:**" in m
         assert "docs.example.com" in m
 
 
@@ -5649,14 +5649,14 @@ class TestHumanizeBytes:
         session.mark_file_read(sid, "src/foo.py", symbol="my_func")
         session.mark_file_edited(sid, "src/foo.py")
         result = compact.build_manifest(sid)
-        assert "**Syms:**" in result
+        assert "**Symbols Accessed:**" in result
         assert "### Symbols Accessed" not in result
 
     def test_ran_section_uses_bold_label(self, tmp_data_dir, make_session):
         sid = "bold-ran-abc"
         make_session(sid, age_seconds=7200, edits=1, bash_runs={"pytest tests/": (12_000, 0)})
         result = compact.build_manifest(sid)
-        assert "**Ran:**" in result
+        assert "**Recent Commands:**" in result
         assert "### Commands Run" not in result
 
     def test_grep_section_uses_bold_label(self, tmp_data_dir):
@@ -5665,7 +5665,7 @@ class TestHumanizeBytes:
         session.mark_grep(sid, "my_pattern", "/proj/src")
         session.mark_grep(sid, "another_pattern", "/proj/src")
         result = compact.build_manifest(sid)
-        assert "**Grep:**" in result
+        assert "**Patterns Searched:**" in result
         assert "### Patterns Searched" not in result
 
     def test_web_section_uses_bold_label(self, tmp_data_dir, make_session):
@@ -5673,7 +5673,7 @@ class TestHumanizeBytes:
         make_session(sid, age_seconds=7200, edits=1,
                      web_fetches={"https://docs.example.com/api": 12_000})
         result = compact.build_manifest(sid)
-        assert "**Web:**" in result
+        assert "**Web Fetches:**" in result
         assert "### Web Fetches" not in result
 
     def test_files_section_uses_bold_label(self, tmp_data_dir):
@@ -5747,8 +5747,8 @@ class TestSymbolDedup:
         # All three symbols must survive the dedup pass (only one copy each).
         # Exact order depends on _rank_symbols_by_recency; the regression
         # guard is that no symbol appears twice in the syms section.
-        if "**Syms:**" in result:
-            syms_section = result.split("**Syms:**", 1)[1].split("**", 1)[0]
+        if "**Symbols Accessed:**" in result:
+            syms_section = result.split("**Symbols Accessed:**", 1)[1].split("**", 1)[0]
             assert syms_section.count("alpha_func") == 1
             assert syms_section.count("beta_func") == 1
             assert syms_section.count("gamma_func") == 1
@@ -6151,9 +6151,9 @@ class TestWideSessionSymbolReplacement:
 
         result = compact.build_manifest(sid, max_tokens=2000)
 
-        # Should use the per-file format (contains "→" inside **Syms:** section).
-        if "**Syms:**" in result:
-            syms_part = result.split("**Syms:**", 1)[1]
+        # Should use the per-file format (contains "→" inside **Symbols Accessed:** section).
+        if "**Symbols Accessed:**" in result:
+            syms_part = result.split("**Symbols Accessed:**", 1)[1]
             end = syms_part.find("\n**")
             syms_content = syms_part[:end] if end >= 0 else syms_part
             # Per-file entries use "→" as the separator between path and symbols.
@@ -6175,9 +6175,9 @@ class TestWideSessionSymbolReplacement:
         result = compact.build_manifest(sid, max_tokens=2000)
 
         # The map-pointer one-liner must appear.
-        assert "**Syms:**" in result
+        assert "**Symbols Accessed:**" in result
         syms_line = next(
-            (ln for ln in result.splitlines() if "**Syms:**" in ln), None
+            (ln for ln in result.splitlines() if "**Symbols Accessed:**" in ln), None
         )
         assert syms_line is not None
         assert "files accessed" in syms_line
@@ -7049,12 +7049,12 @@ class TestNoiseFloor:
         monkeypatch.setattr(compact, "_get_session_commits", lambda *a: [])
 
         result = compact.build_manifest(sid)
-        # When noise floor is 0, even very small sections like "**Grep:**" should appear
+        # When noise floor is 0, even very small sections like "**Patterns Searched:**" should appear
         # (if they have any content)
-        assert "**Grep:**" in result or "**Grep:**" not in result  # May be suppressed by other logic
+        assert "**Patterns Searched:**" in result or "**Patterns Searched:**" not in result  # May be suppressed by other logic
         # But at minimum, key sections should exist
         assert "**Edited:**" in result
-        assert "**Syms:**" in result or "**Files:**" in result
+        assert "**Symbols Accessed:**" in result or "**Files:**" in result
 
     def test_noise_floor_high_value_drops_all_optional_sections(self, tmp_data_dir, monkeypatch):
         """When noise_floor_tokens is very high, only protected sections remain."""
@@ -7086,7 +7086,7 @@ class TestNoiseFloor:
         # Protected sections should still be present
         assert "**Edited:**" in result  # edited is protected
 
-        # Optional sections like **Syms:** and **Files:** should be dropped
+        # Optional sections like **Symbols Accessed:** and **Files:** should be dropped
         # when their token count is below 10000
         # (this depends on how many symbols/files are in the session)
 
@@ -7142,7 +7142,7 @@ class TestNoiseFloor:
 
         assert "**Edited:**" in result  # protected — always survives
         assert "**Files:**" not in result   # should be dropped: token count < 10000
-        assert "**Syms:**" not in result    # should be dropped: token count < 10000
+        assert "**Symbols Accessed:**" not in result    # should be dropped: token count < 10000
 
 
 class TestEditedDirGrouping:

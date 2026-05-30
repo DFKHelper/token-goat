@@ -21,7 +21,7 @@ class TestWebSection:
             },
         )
         m = compact.build_manifest(sid, max_tokens=400)
-        assert "**Web:**" in m
+        assert "**Web Fetches:**" in m
         assert "docs.example.com/api" in m
         assert "200" in m
 
@@ -49,7 +49,7 @@ class TestWebSection:
             web_fetches={"https://example.com/ping": 50},
         )
         m = compact.build_manifest(sid, max_tokens=400)
-        assert "**Web:**" not in m
+        assert "**Web Fetches:**" not in m
 
     def test_web_section_suppressed_for_young_session(self, tmp_data_dir, make_session):
         sid = "wm-4"
@@ -60,7 +60,7 @@ class TestWebSection:
             web_fetches={"https://docs.example.com/api": 15_000},
         )
         m = compact.build_manifest(sid, max_tokens=400)
-        assert "**Web:**" not in m
+        assert "**Web Fetches:**" not in m
 
     def test_web_section_shows_status_code(self, tmp_data_dir, make_session):
         sid = "wm-5"
@@ -85,7 +85,7 @@ class TestWebSection:
             web_fetches={"https://big.example.com/doc": 200_000},
         )
         m = compact.build_manifest(sid, max_tokens=400)
-        assert "truncated" in m or "**Web:**" in m
+        assert "truncated" in m or "**Web Fetches:**" in m
 
     def test_web_and_bash_coexist(self, tmp_data_dir, make_session):
         sid = "wm-7"
@@ -100,8 +100,8 @@ class TestWebSection:
             },
         )
         m = compact.build_manifest(sid, max_tokens=600)
-        assert "**Ran:**" in m
-        assert "**Web:**" in m
+        assert "**Recent Commands:**" in m
+        assert "**Web Fetches:**" in m
 
     def test_only_web_still_renders_manifest(self, tmp_data_dir, make_session):
         sid = "wm-8"
@@ -111,7 +111,7 @@ class TestWebSection:
             web_fetches={"https://docs.example.com/guide": 20_000},
         )
         m = compact.build_manifest(sid, max_tokens=400)
-        assert "**Web:**" in m
+        assert "**Web Fetches:**" in m
 
     def test_multiple_web_entries_capped_at_max(self, tmp_data_dir, make_session):
         sid = "wm-9"
@@ -164,7 +164,7 @@ class TestWebSection:
 
         # Use a large budget so both entries fit in the web section.
         m = compact.build_manifest(sid, max_tokens=800)
-        assert "**Web:**" in m
+        assert "**Web Fetches:**" in m
         old_pos = m.find("old.example.com")
         new_pos = m.find("new.example.com")
         # Both URLs present — newer one comes first (higher ts = ranked first)
@@ -491,7 +491,7 @@ class TestWebGroupingIntegration:
             },
         )
         m = compact.build_manifest(sid, max_tokens=600)
-        assert "**Web:**" in m
+        assert "**Web Fetches:**" in m
         # docs.anthropic.com should appear once with (2)
         assert "docs.anthropic.com" in m
         assert "(2)" in m

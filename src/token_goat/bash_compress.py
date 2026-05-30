@@ -547,6 +547,37 @@ def normalise(text: str) -> str:
     return text
 
 
+def _head_tail_compress(
+    lines: list[str],
+    head: int,
+    tail: int,
+    label: str = "items",
+) -> str:
+    """Return head lines + marker + tail lines when len(lines) > head + tail.
+
+    If len(lines) <= head + tail, returns the lines joined unchanged.
+    The marker reads: "... [N more <label> elided by token-goat]"
+
+    Args:
+        lines: List of non-empty lines to compress.
+        head: Number of lines to keep from the start.
+        tail: Number of lines to keep from the end.
+        label: Word to use in the marker (default "items"; can be "lines", "paths", etc).
+
+    Returns:
+        Joined string with marker inserted if compression was needed.
+    """
+    total = len(lines)
+    if total <= head + tail:
+        return "\n".join(lines)
+
+    elided = total - head - tail
+    head_lines = lines[:head]
+    tail_lines = lines[-tail:]
+    result = head_lines + [f"... [{elided} more {label} elided by token-goat]"] + tail_lines
+    return "\n".join(result)
+
+
 # ---------------------------------------------------------------------------
 # Public dataclass
 # ---------------------------------------------------------------------------
@@ -3063,58 +3094,35 @@ class EzaFilter(Filter):
 
     def _compress_tree(self, lines: list[str], non_empty: list[str]) -> str:
         """Compress tree output: keep first 40 + last 10 + marker."""
-        total = len(non_empty)
-        if total <= 60:
+        if len(non_empty) <= 60:
             return "\n".join(lines).rstrip()
-
-        # Keep first 40 + last 10
-        head_keep = 40
-        tail_keep = 10
-        elided = total - head_keep - tail_keep
-
-        head_lines = non_empty[:head_keep]
-        tail_lines = non_empty[-tail_keep:]
-
-        result = head_lines + [f"... [{elided} items elided by token-goat]"] + tail_lines
-        return "\n".join(result)
+        return _head_tail_compress(non_empty, head=40, tail=10, label="items").rstrip()
 
     def _compress_flat_listing(
         self, lines: list[str], non_empty: list[str], argv: list[str],
     ) -> str:
         """Compress flat listing: keep header, first 25 items, last 5."""
-        total = len(non_empty)
-        if total <= 30:
+        if len(non_empty) <= 30:
             return "\n".join(lines).rstrip()
 
         # Identify header line (usually contains column names like "permissions size date")
-        # Typical header: "Permissions Size User Date Modified Name" or similar
-        # Heuristic: first line that contains permission-like column or is notably
-        # different from data rows.
         header_idx = 0
         if non_empty and any(kw in non_empty[0].lower() for kw in ["permission", "size", "date", "user", "name"]):
             header_idx = 1
 
-        # Keep header, first 25 entries, last 5 entries
         kept: list[str] = []
 
         # Add header lines
         if header_idx > 0:
             kept.extend(non_empty[:header_idx])
 
-        # Add data lines with preference for target_path lines
-        data_start = header_idx
-        data_lines = non_empty[data_start:]
-        num_to_keep = 25 + 5  # head + tail
-
-        if len(data_lines) <= num_to_keep:
-            kept.extend(data_lines)
+        # Compress data lines using the helper
+        data_lines = non_empty[header_idx:]
+        if len(data_lines) > 30:
+            data_compressed = _head_tail_compress(data_lines, head=25, tail=5, label="entries")
+            kept.extend(data_compressed.split("\n"))
         else:
-            # Keep first 25
-            kept.extend(data_lines[:25])
-            elided = len(data_lines) - 30
-            kept.append(f"... [{elided} more entries elided by token-goat]")
-            # Keep last 5
-            kept.extend(data_lines[-5:])
+            kept.extend(data_lines)
 
         # Preserve summary lines (e.g., "3 directories, 14 files") if present
         summary_lines = [
@@ -3170,16 +3178,7 @@ class FdFilter(Filter):
         if len(non_empty) <= _FD_COMPRESS_THRESHOLD:
             return text.rstrip()
 
-        # Keep first 35 + last 5 + marker
-        head_keep = 35
-        tail_keep = 5
-        elided = len(non_empty) - head_keep - tail_keep
-
-        head_lines = non_empty[:head_keep]
-        tail_lines = non_empty[-tail_keep:]
-
-        result = head_lines + [f"... [{elided} more paths elided by token-goat]"] + tail_lines
-        return "\n".join(result)
+        return _head_tail_compress(non_empty, head=35, tail=5, label="paths")
 
 
 class TreeFilter(Filter):
@@ -3211,16 +3210,7 @@ class TreeFilter(Filter):
         if len(non_empty) <= 60:
             return text.rstrip()
 
-        # Keep first 50 + last 10 + marker
-        head_keep = 50
-        tail_keep = 10
-        elided = len(non_empty) - head_keep - tail_keep
-
-        head_lines = non_empty[:head_keep]
-        tail_lines = non_empty[-tail_keep:]
-
-        result = head_lines + [f"... [{elided} items elided by token-goat]"] + tail_lines
-        return "\n".join(result).rstrip()
+        return _head_tail_compress(non_empty, head=50, tail=10, label="items").rstrip()
 
 
 # --- bat / batcat (syntax-highlighted file viewer) ---------------------------
@@ -3285,16 +3275,7 @@ class BatFilter(Filter):
         if len(non_empty) <= 50:
             return text.rstrip()
 
-        # Keep first 40 + last 10 + marker
-        head_keep = 40
-        tail_keep = 10
-        elided = len(non_empty) - head_keep - tail_keep
-
-        head_lines = non_empty[:head_keep]
-        tail_lines = non_empty[-tail_keep:]
-
-        result = head_lines + [f"... [{elided} lines elided by token-goat]"] + tail_lines
-        return "\n".join(result).rstrip()
+        return _head_tail_compress(non_empty, head=40, tail=10, label="lines").rstrip()
 
 
 # --- delta (diff viewer) ---------------------------------------------------
@@ -3352,16 +3333,7 @@ class DeltaFilter(Filter):
         if len(non_empty) <= 80:
             return text.rstrip()
 
-        # Keep first 60 + last 20 + marker
-        head_keep = 60
-        tail_keep = 20
-        elided = len(non_empty) - head_keep - tail_keep
-
-        head_lines = non_empty[:head_keep]
-        tail_lines = non_empty[-tail_keep:]
-
-        result = head_lines + [f"... [{elided} lines elided by token-goat]"] + tail_lines
-        return "\n".join(result).rstrip()
+        return _head_tail_compress(non_empty, head=60, tail=20, label="lines").rstrip()
 
 
 # --- fzf (fuzzy finder) ----------------------------------------------------
@@ -3398,16 +3370,7 @@ class FzfFilter(Filter):
         if len(non_empty) <= 50:
             return text.rstrip()
 
-        # Keep first 40 + last 10 + marker
-        head_keep = 40
-        tail_keep = 10
-        elided = len(non_empty) - head_keep - tail_keep
-
-        head_lines = non_empty[:head_keep]
-        tail_lines = non_empty[-tail_keep:]
-
-        result = head_lines + [f"... [{elided} lines elided by token-goat]"] + tail_lines
-        return "\n".join(result).rstrip()
+        return _head_tail_compress(non_empty, head=40, tail=10, label="lines").rstrip()
 
 
 # --- lazygit (git TUI) -----------------------------------------------------
@@ -3492,16 +3455,7 @@ class JqFilter(Filter):
         if len(non_empty) <= 200:
             return text.rstrip()
 
-        # Keep first 150 + last 50 + marker
-        head_keep = 150
-        tail_keep = 50
-        elided = len(non_empty) - head_keep - tail_keep
-
-        head_lines = non_empty[:head_keep]
-        tail_lines = non_empty[-tail_keep:]
-
-        result = head_lines + [f"... [{elided} lines elided by token-goat]"] + tail_lines
-        return "\n".join(result).rstrip()
+        return _head_tail_compress(non_empty, head=150, tail=50, label="lines").rstrip()
 
 
 # --- yq (YAML processor) ---------------------------------------------------
@@ -3544,16 +3498,7 @@ class YqFilter(Filter):
         if len(non_empty) <= 150:
             return text.rstrip()
 
-        # Keep first 100 + last 50 + marker
-        head_keep = 100
-        tail_keep = 50
-        elided = len(non_empty) - head_keep - tail_keep
-
-        head_lines = non_empty[:head_keep]
-        tail_lines = non_empty[-tail_keep:]
-
-        result = head_lines + [f"... [{elided} lines elided by token-goat]"] + tail_lines
-        return "\n".join(result).rstrip()
+        return _head_tail_compress(non_empty, head=100, tail=50, label="lines").rstrip()
 
 
 # ---------------------------------------------------------------------------

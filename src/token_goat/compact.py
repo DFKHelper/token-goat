@@ -3138,7 +3138,7 @@ def _render_bash_grouped(
 
     Produces::
 
-        **Ran:**
+        **Recent Commands:**
         **Failed:**
         - $ pytest tests/  (e=1, ...)
         **Slow:**
@@ -3149,8 +3149,8 @@ def _render_bash_grouped(
     Within each group the existing entry order (recency-then-size, as built
     by :func:`_select_top_bash_entries`) is preserved.  Empty groups omit
     their sub-header.  When every retained entry is in a single group AND
-    that group is ``ok``, the sub-header is omitted entirely (**Ran:** alone
-    is sufficient context — saves ~3 tokens on the common all-passing case).
+    that group is ``ok``, the sub-header is omitted entirely (**Recent Commands:**
+    alone is sufficient context — saves ~3 tokens on the common all-passing case).
     Token budget is honoured greedily in group-priority order (failed first).
     """
     if not bash_entries:
@@ -3161,13 +3161,13 @@ def _render_bash_grouped(
     for be in bash_entries:
         by_class[_classify_bash_entry(be)].append(be)
 
-    header = "**Ran:**"
+    header = "**Recent Commands:**"
     header_cost = _token_count(header)
     out: list[str] = [header]
     used = header_cost
 
     # Item #28 micro-opt: skip the **Ok:** sub-header on the common case where
-    # every entry passes — the **Ran:** label is enough context and we save
+    # every entry passes — the **Recent Commands:** label is enough context and we save
     # ~3 tokens per all-green manifest.
     only_ok = (
         not by_class["failed"] and not by_class["slow"] and bool(by_class["ok"])
@@ -3439,12 +3439,12 @@ def _render(
        sections.  Omitted when the working tree is clean or git is unavailable.
     1. **Edited files** — always listed after blockers; the compaction LLM must preserve these.
        This section is uncapped — every edited file is must-preserve.
-    2. **Bash history** — cached command outputs; the current work context.
+    2. **Recent Commands** — cached command outputs from session; the current work context.
        Capped at 15 % of remaining budget.
-    3. **Symbols accessed** — files where specific symbols were read via ``token-goat read``.
-       Ranked by ``last_read_ts`` (most-recent first), capped at 40 % of remaining budget.
-    4. **Web fetches** — reference material loaded mid-session, capped at 10 %.
-    5. **Grep history** — recent search patterns, capped at 15 % of remaining budget.
+    3. **Symbols Accessed** — files where specific symbols were read via ``token-goat read``,
+       ranked by most-recent access first, capped at 40 % of remaining budget.
+    4. **Web Fetches** — reference material (docs, API responses) loaded mid-session, capped at 10 %.
+    5. **Patterns Searched** — recent grep/search patterns, capped at 15 % of remaining budget.
     6. **Key files read** — top files by ``read_count`` (most re-read first), capped at 30 %.
     6b.**TODOs** — pending/in-progress TaskList entries read from
        ``~/.claude/tasks/<session_id>/``.  No budget slice — the section is small
@@ -3894,7 +3894,7 @@ def _render(
     _wide_session = len(cache.files) >= wide_session_threshold
     if _wide_session:
         _wide_line = (
-            f"**Syms:** {len(cache.files)} files accessed"
+            f"**Symbols Accessed:** {len(cache.files)} files accessed"
             " — use `token-goat map --compact` to re-orient."
         )
         _wide_cost = _token_count(_wide_line)
@@ -3937,7 +3937,7 @@ def _render(
                 "_render: suppressed %d symbol-detail line(s) for files in **Files:** "
                 "(item #8)", _suppressed_sym_files,
             )
-        sym_lines, sym_used = _render_budget_lines("**Syms:**", sym_formatted, sym_budget)
+        sym_lines, sym_used = _render_budget_lines("**Symbols Accessed:**", sym_formatted, sym_budget)
 
     # ── 3. Bash history — up to 15 % of remaining budget ─────────────────────
     # Young sessions (< 10 min) skip bash/web sections: few commands have run
@@ -4065,7 +4065,7 @@ def _render(
     # entries.  Cold Outputs and Directory Scans keep min_lines=2 because a
     # single stale/empty-ish entry is genuinely noisy there.
     web_lines, web_used = _render_budget_lines(
-        "**Web:**",
+        "**Web Fetches:**",
         _group_web_entries_by_domain(web_entries) if web_entries else [],
         web_budget,
     )
@@ -4092,7 +4092,7 @@ def _render(
     if _all_grep_zero and age_secs > 300:
         grep_entries = []
     grep_lines, grep_used = _render_budget_lines(
-        "**Grep:**",
+        "**Patterns Searched:**",
         [_format_grep_entry(ge) for ge in grep_entries],
         grep_budget,
     )
