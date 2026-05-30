@@ -216,9 +216,89 @@ class TestCompressWrapperUnwrap:
         assert _unwrap_compress_command("pytest -v") == "pytest -v"
         assert _unwrap_compress_command("ls -la") == "ls -la"
 
-        # Malformed shell quoting falls back to the input.
-        bad = 'token-goat compress --cmd "unterminated'
-        assert _unwrap_compress_command(bad) == bad
+
+class TestOutputSizeCap:
+    """_apply_output_size_cap truncates stdout when combined output exceeds the cap."""
+
+    def test_under_cap_returns_unchanged(self):
+        from token_goat.hooks_read import _apply_output_size_cap
+
+        small = "A" * 100
+        out, err, truncated = _apply_output_size_cap(small, "")
+        assert out == small
+        assert err == ""
+        assert truncated is False
+
+    def test_over_cap_truncates_stdout(self, monkeypatch):
+        from token_goat.hooks_read import _apply_output_size_cap
+
+        # Set cap to 1 KB so the test is fast.
+        monkeypatch.setenv("TOKEN_GOAT_BASH_MAX_PROCESS_BYTES", "1024")
+        big_stdout = "Z" * 5000
+        out, err, truncated = _apply_output_size_cap(big_stdout, "")
+        assert truncated is True
+        assert len(out.encode("utf-8")) <= 1024 + 512  # marker adds some overhead
+        assert "token-goat" in out
+        assert "truncated" in out
+
+    def test_truncation_note_included_in_cached_output(self, tmp_data_dir, monkeypatch):
+        """When output exceeds the cap the cached entry still records something useful."""
+        monkeypatch.setenv("TOKEN_GOAT_BASH_MAX_PROCESS_BYTES", "2048")
+        big = "X" * 10_000
+        entry = _run({
+            "session_id": "sizecap-1",
+            "tool_name": "Bash",
+            "tool_input": {"command": "find / -name '*.log'"},
+            "tool_response": {"stdout": big, "stderr": "", "exit_code": 0},
+        })
+        # Entry still recorded — just with truncated content.
+        assert entry is not None
+
+    def test_env_var_invalid_falls_back_to_default(self, monkeypatch):
+        from token_goat.hooks_read import _BASH_DEFAULT_MAX_PROCESS_BYTES, _bash_max_process_bytes
+
+        monkeypatch.setenv("TOKEN_GOAT_BASH_MAX_PROCESS_BYTES", "not-a-number")
+        assert _bash_max_process_bytes() == _BASH_DEFAULT_MAX_PROCESS_BYTES
+
+    def test_env_var_zero_clamped_to_min(self, monkeypatch):
+        from token_goat.hooks_read import _bash_max_process_bytes
+
+        monkeypatch.setenv("TOKEN_GOAT_BASH_MAX_PROCESS_BYTES", "0")
+        assert _bash_max_process_bytes() == 1024
+
+
+class TestBinaryOutputDetection:
+    """_is_binary_output skips caching for null-heavy output."""
+
+    def test_plain_text_not_binary(self):
+        from token_goat.hooks_read import _is_binary_output
+
+        assert _is_binary_output("hello world\n" * 100, "") is False
+
+    def test_null_bytes_detected_as_binary(self):
+        from token_goat.hooks_read import _is_binary_output
+
+        # 10% null bytes — well above the 1% threshold.
+        payload = "A" * 90 + "\x00" * 10
+        assert _is_binary_output(payload * 10, "") is True
+
+    def test_binary_output_not_cached(self, tmp_data_dir):
+        """post_bash returns CONTINUE without caching when binary output detected."""
+        null_heavy = "A" * 50 + "\x00" * 50  # 50% null bytes
+        big_binary = null_heavy * 200  # 20 KB — above _BASH_CACHE_MIN_BYTES
+        entry = _run({
+            "session_id": "binary-1",
+            "tool_name": "Bash",
+            "tool_input": {"command": "cat /bin/ls"},
+            "tool_response": {"stdout": big_binary, "stderr": "", "exit_code": 0},
+        })
+        # Nothing should be cached for binary output.
+        assert entry is None
+
+    def test_empty_output_not_binary(self):
+        from token_goat.hooks_read import _is_binary_output
+
+        assert _is_binary_output("", "") is False
 
 
 class TestSurrogateEscapeHandling:

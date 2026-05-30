@@ -1924,6 +1924,19 @@ def post_read(payload: HookPayload) -> HookResponse:
 # would later refuse to surface.
 _BASH_CACHE_MIN_BYTES: int = 400
 
+# Hard cap on raw output size before any processing.  Outputs larger than this
+# are truncated to the *last* N bytes (tail bias keeps errors/summaries) before
+# passing to the rest of the post_bash pipeline.  Prevents OOM on runaway
+# commands like ``find / -name "*.log"`` returning 50 000 lines.
+# Override via TOKEN_GOAT_BASH_MAX_PROCESS_BYTES (integer, bytes).
+_BASH_DEFAULT_MAX_PROCESS_BYTES: int = 10 * 1024 * 1024  # 10 MB
+
+# Threshold used to classify output as "mostly binary": if the fraction of
+# null bytes or bytes outside the printable-UTF-8 range exceeds this fraction
+# of the total bytes, we skip compression and note the binary detection.
+_BINARY_DETECTION_SAMPLE_BYTES: int = 4096  # inspect only the first 4 KiB
+_BINARY_NULL_THRESHOLD: float = 0.01  # 1 % null bytes → binary
+
 # Maximum number of path lines replayed inline when serving a cached Glob result.
 # Capping prevents injecting large path lists (e.g. 200+ matches) into context.
 # Excess entries are summarised as "(+N more)".
@@ -2131,6 +2144,91 @@ def _extract_bash_response(payload: HookPayload) -> tuple[str, str, int | None]:
     return stdout, stderr, exit_code
 
 
+def _bash_max_process_bytes() -> int:
+    """Return the hard cap on raw Bash output size before processing.
+
+    Reads TOKEN_GOAT_BASH_MAX_PROCESS_BYTES from the environment; falls back to
+    ``_BASH_DEFAULT_MAX_PROCESS_BYTES`` on parse failure or when the variable is
+    unset.  Clamped to at least 1 KiB so a misconfigured zero does not truncate
+    all output.
+    """
+    import os  # noqa: PLC0415
+
+    raw = os.environ.get("TOKEN_GOAT_BASH_MAX_PROCESS_BYTES", "").strip()
+    if raw:
+        try:
+            return max(1024, int(raw))
+        except (ValueError, OverflowError):
+            pass
+    return _BASH_DEFAULT_MAX_PROCESS_BYTES
+
+
+def _apply_output_size_cap(stdout: str, stderr: str) -> tuple[str, str, bool]:
+    """Truncate combined output to the configured byte cap.
+
+    Returns ``(stdout, stderr, truncated)`` where *truncated* is ``True`` when
+    any trimming occurred.  When the combined size exceeds the cap we keep the
+    *last* N bytes of stdout (tail bias: errors and summaries usually appear at
+    the end) and pass stderr through unchanged up to the remaining budget, so
+    that error context is preserved.
+
+    The truncation note is appended to stdout so it is visible in the cached
+    output and in any hint that surfaces the text.
+    """
+    cap = _bash_max_process_bytes()
+    stdout_b = stdout.encode("utf-8", errors="replace")
+    stderr_b = stderr.encode("utf-8", errors="replace")
+    total = len(stdout_b) + len(stderr_b)
+    if total <= cap:
+        return stdout, stderr, False
+
+    # Reserve a slice for stderr (up to 20 % of cap or 100 KB, whichever is smaller).
+    stderr_budget = min(cap // 5, 100 * 1024)
+    stdout_budget = cap - min(len(stderr_b), stderr_budget)
+
+    original_total = total
+    truncated_stdout = stdout
+    if len(stdout_b) > stdout_budget and stdout_budget > 0:
+        # Keep the *tail* of stdout so error summaries survive.
+        tail = stdout_b[-stdout_budget:]
+        # Walk forward to the next newline boundary to avoid mid-line cuts.
+        nl = tail.find(b"\n")
+        if 0 < nl < 256:
+            tail = tail[nl + 1:]
+        truncated_stdout = (
+            f"[token-goat: stdout truncated to last {len(tail):,} bytes"
+            f" of {len(stdout_b):,} bytes total"
+            f" (TOKEN_GOAT_BASH_MAX_PROCESS_BYTES={cap:,})]\n"
+            + tail.decode("utf-8", errors="replace")
+        )
+    _LOG.info(
+        "post-bash: output size cap applied: %d → %d bytes (cap=%d)",
+        original_total, len(truncated_stdout.encode("utf-8", errors="replace")) + len(stderr_b),
+        cap,
+    )
+    return truncated_stdout, stderr, True
+
+
+def _is_binary_output(stdout: str, stderr: str) -> bool:
+    """Return True when the output looks like binary data.
+
+    Samples the first ``_BINARY_DETECTION_SAMPLE_BYTES`` bytes of the combined
+    output.  If the null-byte fraction exceeds ``_BINARY_NULL_THRESHOLD`` we
+    classify the output as binary and skip compression.  This handles commands
+    like ``xxd``, ``od``, ``strings``, and accidental reads of binary files via
+    shell redirects that leak raw bytes into the captured output.
+
+    Operates on encoded bytes derived from the already-decoded Python strings so
+    this works even after surrogate sanitisation.
+    """
+    sample_src = (stdout + stderr)[:_BINARY_DETECTION_SAMPLE_BYTES * 4]
+    sample_bytes = sample_src.encode("utf-8", errors="replace")[:_BINARY_DETECTION_SAMPLE_BYTES]
+    if not sample_bytes:
+        return False
+    null_count = sample_bytes.count(b"\x00")
+    return (null_count / len(sample_bytes)) > _BINARY_NULL_THRESHOLD
+
+
 def post_bash(payload: HookPayload) -> HookResponse:
     """Post-Bash hook: persist large outputs to disk and record in session history.
 
@@ -2181,6 +2279,22 @@ def post_bash(payload: HookPayload) -> HookResponse:
     # bytes (\udcXX) in stdout/stderr that crash utf-8 serialisation downstream.
     stdout = _sanitize_surrogates(stdout)
     stderr = _sanitize_surrogates(stderr)
+
+    # Binary output detection: if the output contains a high proportion of null
+    # bytes it is almost certainly binary data (compiled artifact, compressed
+    # stream, raw device read).  Skip caching entirely — binary blobs are not
+    # useful context and could corrupt the session JSON.
+    if _is_binary_output(stdout, stderr):
+        _LOG.info(
+            "post-bash: binary output detected; skipping cache (cmd=%.80s)",
+            display_cmd,
+        )
+        return CONTINUE()
+
+    # Hard size cap: truncate runaway output before any downstream processing.
+    # Tail-bias truncation keeps error summaries which appear at the end.
+    stdout, stderr, _was_truncated = _apply_output_size_cap(stdout, stderr)
+
     total_bytes = len(stdout.encode("utf-8")) + len(stderr.encode("utf-8"))
     if total_bytes < _BASH_CACHE_MIN_BYTES:
         _LOG.debug(
