@@ -159,7 +159,6 @@ def test_dispatch_matches(argv: list[str], expected_name: str) -> None:
 
 _NO_MATCH_COMMANDS: list[list[str]] = [
     ["cat", "file.txt"],
-    ["curl", "-s", "https://example.com"],
     ["ssh", "user@host"],
     ["custom-build-tool", "--all"],
     ["echo", "hello"],

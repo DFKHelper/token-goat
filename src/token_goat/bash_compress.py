@@ -71,11 +71,14 @@ __all__ = [
     "strip_progress",
     "truncate_middle",
     "BatFilter",
+    "CurlFilter",
     "DeltaFilter",
+    "DotnetFilter",
     "EzaFilter",
     "FdFilter",
     "JqFilter",
     "PythonFilter",
+    "RsyncFilter",
     "TreeFilter",
     "UvFilter",
     "YqFilter",
@@ -3501,6 +3504,334 @@ class YqFilter(Filter):
         return _head_tail_compress(non_empty, head=100, tail=50, label="lines").rstrip()
 
 
+# --- curl / wget (HTTP clients) --------------------------------------------
+
+# curl -v prefix characters: '*' = metadata, '>' = request, '<' = response headers.
+# The trailing bare '>' (empty separator after request headers) has no trailing space,
+# so we match '>' or '*' followed by optional whitespace or end-of-line.
+_CURL_VERBOSE_META_RE: Final[re.Pattern[str]] = re.compile(r"^[*>](\s|$)")
+# The response status line: "< HTTP/1.1 200 OK" or "< HTTP/2 404"
+_CURL_STATUS_RE: Final[re.Pattern[str]] = re.compile(
+    r"^<\s+HTTP/[\d.]+\s+(\d{3})"
+)
+# Response headers we care about (content-type, location, content-length)
+_CURL_USEFUL_HEADER_RE: Final[re.Pattern[str]] = re.compile(
+    r"^<\s+(content-type|location|content-length|www-authenticate|x-ratelimit):",
+    re.IGNORECASE,
+)
+# curl progress bars: "  % Total    % Received..." / "100  1234"
+_CURL_PROGRESS_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\s+%\s+Total|^\s+\d+\s+\d+\s+\d+\s+\d+\s+\d+"
+)
+# wget log lines: "--YYYY-MM-DD HH:MM:SS--" / "Resolving ..." / "Connecting ..."
+_WGET_NOISE_RE: Final[re.Pattern[str]] = re.compile(
+    r"^--\d{4}-\d{2}-\d{2}|^(Resolving|Connecting to|Reusing|Sending|Saving to|HTTP request sent|Length:|Location:)"
+)
+_WGET_STATUS_RE: Final[re.Pattern[str]] = re.compile(
+    r"^HTTP request sent|(\d{3} [A-Za-z ]+)\."
+)
+
+
+class CurlFilter(Filter):
+    """Compress ``curl`` and ``wget`` HTTP client output.
+
+    These tools are frequently invoked with ``-v`` (verbose) or ``-I`` flags,
+    producing TLS handshake details, per-header dumps, and progress bars that
+    overwhelm the actual signal (HTTP status code + response body).
+
+    Compression model:
+
+    * **curl -v / --verbose**: drop ``*`` (connection metadata) and ``>``
+      (request headers) lines entirely.  Of the ``<`` (response header) lines,
+      keep only the status line and a small allowlist of useful headers
+      (Content-Type, Location, Content-Length).
+    * **curl progress bars**: drop the ``  % Total  % Received …`` progress
+      table lines (emitted to stderr when not redirected).
+    * **wget**: drop connection-setup noise lines; keep the HTTP status and
+      the final ``saved`` / ``error`` line.
+    * **Response body**: always preserved verbatim (that is the payload).
+    * **Errors**: any line containing ``curl: (N)`` or ``wget: …`` error text
+      is preserved verbatim.
+    """
+
+    name = "curl"
+    binaries = frozenset(["curl", "wget"])
+
+    def compress(
+        self, stdout: str, stderr: str, exit_code: int, argv: list[str],
+    ) -> str:
+        binary = Path(argv[0]).stem.lower() if argv else "curl"
+        # curl writes body to stdout and verbose/progress to stderr by default.
+        # wget writes progress to stderr and body to stdout (or file).
+        combined = self._combine_output(stdout, stderr)
+        lines = combined.split("\n")
+        kept: list[str] = []
+        dropped_meta = 0
+        dropped_req_headers = 0
+        dropped_resp_headers = 0
+        dropped_progress = 0
+
+        if binary == "wget":
+            for line in lines:
+                if _WGET_NOISE_RE.match(line):
+                    dropped_meta += 1
+                    continue
+                kept.append(line)
+        else:
+            # curl
+            for line in lines:
+                if _CURL_PROGRESS_RE.match(line):
+                    dropped_progress += 1
+                    continue
+                if _CURL_STATUS_RE.match(line):
+                    # Keep response status verbatim (strip leading "< ")
+                    kept.append(line[2:].strip() if line.startswith("< ") else line)
+                    continue
+                if _CURL_USEFUL_HEADER_RE.match(line):
+                    # Keep useful response headers (strip leading "< ")
+                    kept.append(line[2:].strip() if line.startswith("< ") else line)
+                    dropped_resp_headers += 0  # counted below
+                    continue
+                if line.startswith("< "):
+                    # Other response headers: drop silently
+                    dropped_resp_headers += 1
+                    continue
+                if _CURL_VERBOSE_META_RE.match(line):
+                    if line.startswith(">"):
+                        dropped_req_headers += 1
+                    else:
+                        dropped_meta += 1
+                    continue
+                kept.append(line)
+
+        notes: list[str] = []
+        if dropped_meta:
+            notes.append(f"dropped {dropped_meta} connection-metadata lines")
+        if dropped_req_headers:
+            notes.append(f"dropped {dropped_req_headers} request-header lines")
+        if dropped_resp_headers:
+            notes.append(f"dropped {dropped_resp_headers} response-header lines")
+        if dropped_progress:
+            notes.append(f"dropped {dropped_progress} progress lines")
+        self._emit_notes(kept, notes)
+        return self._finalize(kept)
+
+
+# --- rsync -----------------------------------------------------------------
+
+# rsync per-file transfer lines: "     1,234 100%  123.45kB/s    0:00:00 (xfr#1, to-chk=99/100)"
+_RSYNC_FILE_PROGRESS_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\s+[\d,]+\s+\d+%\s"
+)
+# rsync summary lines we want to keep
+_RSYNC_SUMMARY_RE: Final[re.Pattern[str]] = re.compile(
+    r"^(sent|received|total size|Number of files|Number of created|Number of deleted|Number of regular|speedup)"
+)
+# rsync error / warning lines
+_RSYNC_ERROR_RE: Final[re.Pattern[str]] = re.compile(
+    r"\b(error|ERROR|failed|cannot|permission denied|No such file|rsync error)\b"
+)
+
+
+class RsyncFilter(Filter):
+    """Compress ``rsync`` file-synchronisation output.
+
+    ``rsync -av`` emits one line per transferred file (can be thousands of
+    lines for a large tree), followed by a compact statistics summary.  The
+    per-file list is noise unless something fails.
+
+    Compression model:
+
+    * **Drop** per-file transfer lines (``path/to/file``) except on error.
+    * **Drop** inline progress bars (``  100%  123kB/s``).
+    * **Keep** all lines matching error/warning patterns verbatim.
+    * **Keep** the statistics summary (``sent … received … total size …``).
+    * **Summarise** dropped file count so the agent knows how many were synced.
+    """
+
+    name = "rsync"
+    binaries = frozenset(["rsync"])
+
+    def compress(
+        self, stdout: str, stderr: str, exit_code: int, argv: list[str],
+    ) -> str:
+        merged = self._combine_output(stdout, stderr)
+        lines = merged.split("\n")
+        kept: list[str] = []
+        dropped_files = 0
+
+        for line in lines:
+            # Always keep errors/warnings
+            if _RSYNC_ERROR_RE.search(line):
+                kept.append(line)
+                continue
+            # Always keep summary statistics
+            if _RSYNC_SUMMARY_RE.match(line):
+                kept.append(line)
+                continue
+            # Drop inline progress bars
+            if _RSYNC_FILE_PROGRESS_RE.match(line):
+                continue
+            # Heuristic: rsync -av emits bare file paths (relative or absolute).
+            # Lines that don't start with whitespace and look like paths (contain
+            # "/" or are plain filenames) are per-file listing noise.
+            stripped = line.strip()
+            if stripped and "/" in stripped and not stripped.startswith("["):
+                dropped_files += 1
+                continue
+            # Keep everything else (blank lines, headers like "sending incremental…")
+            kept.append(line)
+
+        notes: list[str] = []
+        if dropped_files:
+            notes.append(f"collapsed {dropped_files} per-file transfer lines")
+        self._emit_notes(kept, notes)
+        return self._finalize(kept)
+
+
+# --- dotnet (MSBuild / .NET CLI) -------------------------------------------
+
+# MSBuild-style build output: "  Foo -> /path/to/Foo.dll"
+_DOTNET_BUILD_ARROW_RE: Final[re.Pattern[str]] = re.compile(r"^\s+\S+ ->\s+")
+# Restore/download progress lines
+_DOTNET_RESTORE_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\s*(Determining projects|Writing assets|Restoring packages for|Installing|Generating|"
+    r"OK https?://|log\s+:\s+Restore[d]? |MSBuild auto-detection|Feeds used:)\b",
+    re.IGNORECASE,
+)
+# Per-project build/pack lines (not errors)
+_DOTNET_BUILD_NOISE_RE: Final[re.Pattern[str]] = re.compile(
+    r"^(Build succeeded|Restore succeeded|\s+\d+ Warning\(s\)|\s+\d+ Error\(s\)|"
+    r"Time Elapsed|Build FAILED)",
+    re.IGNORECASE,
+)
+# MSBuild project evaluation noise
+_DOTNET_MSBUILD_NOISE_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\s*(Project|Target|Task|Using|Overriding) \"|"
+    r"^\s*MSBuild version",
+    re.IGNORECASE,
+)
+# Test result lines
+_DOTNET_TEST_PASS_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\s*(Passed|passed)\s+\S"
+)
+_DOTNET_TEST_FAIL_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\s*(Failed|failed|Error)\s+\S"
+)
+_DOTNET_TEST_SUMMARY_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\s*(Test Run|Total tests|Passed:|Failed:|Skipped:|Test results file)"
+)
+
+
+class DotnetFilter(Filter):
+    """Compress ``dotnet`` (.NET CLI) build, test, and restore output.
+
+    ``dotnet build`` emits per-project compilation lines and MSBuild noise.
+    ``dotnet restore`` emits per-package download lines.
+    ``dotnet test`` emits one line per passing test (similar to pytest verbose).
+
+    Compression model:
+
+    * **restore**: drop package download / feed / assets lines; keep errors and
+      the final ``Restore succeeded / failed`` summary.
+    * **build**: drop ``Project -> dll`` arrow lines beyond the first 5; drop
+      MSBuild evaluation noise; keep all warnings and errors verbatim.
+    * **test**: drop ``Passed TestName`` lines (collapse to count); keep
+      ``Failed`` / ``Error`` blocks verbatim; keep the ``Test Run`` summary.
+    * **run**: pass through — script output is load-bearing.
+    """
+
+    name = "dotnet"
+    binaries = frozenset(["dotnet"])
+
+    def matches(self, argv: list[str]) -> bool:  # noqa: D102
+        if not argv:
+            return False
+        stem = Path(argv[0]).stem.lower()
+        return stem == "dotnet"
+
+    def compress(
+        self, stdout: str, stderr: str, exit_code: int, argv: list[str],
+    ) -> str:
+        positionals = _positional_args(argv[1:])
+        subcommand = positionals[0].lower() if positionals else ""
+
+        merged = self._combine_output(stdout, stderr)
+        lines = merged.split("\n")
+
+        if subcommand == "test":
+            return self._compress_test(lines)
+        if subcommand in ("restore",):
+            return self._compress_restore(lines)
+        if subcommand in ("build", "publish", "pack"):
+            return self._compress_build(lines)
+        # run, ef, tool, etc. — pass through with basic dedup
+        return _squeeze_blank_lines("\n".join(dedupe_consecutive(lines)))
+
+    def _compress_restore(self, lines: list[str]) -> str:
+        kept: list[str] = []
+        dropped = 0
+        for line in lines:
+            if _DOTNET_RESTORE_RE.match(line) and _ERROR_SIGNAL_RE.search(line) is None:
+                dropped += 1
+                continue
+            kept.append(line)
+        notes = [f"dropped {dropped} restore-progress lines"] if dropped else []
+        self._emit_notes(kept, notes)
+        return self._finalize(kept)
+
+    def _compress_build(self, lines: list[str]) -> str:
+        kept: list[str] = []
+        arrow_count = 0
+        dropped_arrows = 0
+        dropped_msbuild = 0
+        for line in lines:
+            if _DOTNET_MSBUILD_NOISE_RE.match(line) and _ERROR_SIGNAL_RE.search(line) is None:
+                dropped_msbuild += 1
+                continue
+            if _DOTNET_BUILD_ARROW_RE.match(line) and _ERROR_SIGNAL_RE.search(line) is None:
+                arrow_count += 1
+                if arrow_count <= 5:
+                    kept.append(line)
+                else:
+                    dropped_arrows += 1
+                continue
+            kept.append(line)
+        notes: list[str] = []
+        if dropped_arrows:
+            notes.append(f"collapsed {dropped_arrows} additional project-output arrows")
+        if dropped_msbuild:
+            notes.append(f"dropped {dropped_msbuild} MSBuild evaluation lines")
+        self._emit_notes(kept, notes)
+        return self._finalize(kept)
+
+    def _compress_test(self, lines: list[str]) -> str:
+        kept: list[str] = []
+        pass_count = 0
+        in_fail_block = False
+        for line in lines:
+            if _DOTNET_TEST_FAIL_RE.match(line):
+                in_fail_block = True
+                kept.append(line)
+                continue
+            if _DOTNET_TEST_PASS_RE.match(line):
+                in_fail_block = False
+                pass_count += 1
+                continue
+            if _DOTNET_TEST_SUMMARY_RE.match(line):
+                in_fail_block = False
+                kept.append(line)
+                continue
+            if in_fail_block and (line.startswith(("  ", "\t")) or not line.strip()):
+                kept.append(line)
+                continue
+            in_fail_block = False
+            kept.append(line)
+        notes = [f"collapsed {pass_count} passing test lines"] if pass_count else []
+        self._emit_notes(kept, notes)
+        return self._finalize(kept)
+
+
 # ---------------------------------------------------------------------------
 # Helpers shared by filters
 # ---------------------------------------------------------------------------
@@ -3573,6 +3904,9 @@ FILTERS: list[Filter] = [
     PreCommitFilter(),
     PipFilter(),
     UvFilter(),
+    CurlFilter(),
+    RsyncFilter(),
+    DotnetFilter(),
     EzaFilter(),
     FdFilter(),
     TreeFilter(),
