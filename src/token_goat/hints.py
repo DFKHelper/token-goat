@@ -658,9 +658,10 @@ def _build_read_hint_inner(
             _LOG.debug("build_read_hint: no hint (non-overlapping prior read of %s)", fname)
         return hint
 
-    # 2. Not cached — consider "large file with indexed symbols" suggestion.
+    # 2. Not cached — consider "large file with indexed symbols" suggestion or
+    # "co-read import suggestions" for small Python files.
     # Fast-path: a file smaller than LARGE_FILE_LINE_THRESHOLD * _BYTES_PER_LINE_ESTIMATE
-    # bytes can never have enough lines to trigger a hint.  Skip the project-find + DB
+    # bytes can never have enough lines to trigger a hint.  Skip the large-file index
     # query entirely for small files (the common case on the hot pre-read path).
     # Stat failure (missing file, permission error) falls through to _hint_from_index
     # so it can handle those cases with its existing logic.
@@ -672,6 +673,21 @@ def _build_read_hint_inner(
                 "build_read_hint: stat-skip index for %s (%dB < %dB threshold)",
                 fname, _stat_size, LARGE_FILE_LINE_THRESHOLD * _BYTES_PER_LINE_ESTIMATE,
             )
+            # Before returning None, check for co-read suggestions on Python files
+            # on first read (when cache entry is None).
+            if file_path.endswith(".py"):
+                _cwd_path = validate_cwd(cwd, caller="_build_read_hint_inner (coread)")
+                if _cwd_path is not None:
+                    _project = find_project(_cwd_path)
+                    if _project is not None:
+                        _coread_hint = _build_coread_suggestion_hint(
+                            file_path, _project.hash, cache
+                        )
+                        if _coread_hint is not None:
+                            _LOG.debug(
+                                "build_read_hint: coread hint for %s", fname
+                            )
+                            return _coread_hint
             return None
     except OSError:
         pass
@@ -1156,6 +1172,143 @@ def _hint_from_index(
             f"Use `token-goat read \"{rel}::{first_sym_name}\"` (~85% faster)."
         ),
         0,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Co-read suggestion hint (predictive import suggestions)
+# ---------------------------------------------------------------------------
+
+def _get_unread_coread_files(
+    file_path: str,
+    project_hash: str,
+    cache: session.SessionCache | None = None,
+) -> list[tuple[str, str]] | None:
+    """Get unread Python files that are imported by the given file.
+
+    Returns a list of (rel_path, target_name) tuples for up to 3 unread,
+    in-project Python files that are imported by file_path, or None if
+    indexing is unavailable or no unread imports exist.
+
+    The target_name is a module or symbol name extracted from the import
+    statement (e.g., "session" from "from token_goat import session").
+    """
+    if not file_path.endswith(".py"):
+        return None
+
+    try:
+        with db.open_project_readonly(project_hash) as conn:
+            # Query imports from the imports_exports table for this file
+            # We look for rows where file_rel matches the input file
+            # and kind = 'import'
+            cursor = conn.execute(
+                """
+                SELECT DISTINCT target FROM imports_exports
+                WHERE kind = 'import' AND file_rel LIKE ?
+                LIMIT 10
+                """,
+                (f"%{Path(file_path).name[:-3]}%",),
+            )
+            imports = [row[0] for row in cursor.fetchall()]
+            if not imports:
+                return None
+
+            # For each import, try to find a corresponding Python file in the project
+            # that hasn't been read yet. Match simple heuristics:
+            # - target "session" -> "session.py"
+            # - target "token_goat.session" -> "session.py" or "token_goat/session.py"
+            unread_files: list[tuple[str, str]] = []
+            for target in imports:
+                # Extract module name from qualified import (e.g., "session" from
+                # "token_goat.session" or "session")
+                parts = target.split(".")
+                module_name = parts[-1]
+                candidate_files = [f"{module_name}.py"]
+
+                # Also try qualified paths
+                for i in range(len(parts) - 1, 0, -1):
+                    candidate_path = "/".join(parts[:i]) + f"/{parts[i]}.py"
+                    candidate_files.append(candidate_path)
+
+                # Query the files table for matching .py files
+                for candidate in candidate_files:
+                    cursor = conn.execute(
+                        """
+                        SELECT rel_path FROM files
+                        WHERE rel_path LIKE ? AND rel_path LIKE '%.py'
+                        LIMIT 1
+                        """,
+                        (f"%{candidate}",),
+                    )
+                    match = cursor.fetchone()
+                    if match:
+                        matched_rel = match[0]
+                        # Check if this file has been read in this session
+                        if cache and matched_rel not in cache.files:
+                            unread_files.append((matched_rel, module_name))
+                            break  # Found a match for this import; move to next
+
+                if len(unread_files) >= 3:
+                    break  # Cap at 3 suggestions
+
+            return unread_files if unread_files else None
+
+    except (sqlite3.OperationalError, sqlite3.DatabaseError, AttributeError):
+        _LOG.debug(
+            "_get_unread_coread_files: db query failed for %s (project=%s)",
+            file_path[:64],
+            project_hash[:8],
+            exc_info=True,
+        )
+        return None
+    except Exception:  # noqa: BLE001
+        _LOG.debug(
+            "_get_unread_coread_files: unexpected error for %s",
+            file_path[:64],
+            exc_info=True,
+        )
+        return None
+
+
+def _build_coread_suggestion_hint(
+    file_path: str,
+    project_hash: str,
+    cache: session.SessionCache | None = None,
+) -> ReadHint | None:
+    """Build a co-read suggestion hint when unread imports exist.
+
+    Returns a ReadHint suggesting related files to read, or None if:
+    - The file is not .py
+    - No unread imports found
+    - Indexing is unavailable
+    """
+    coread_files = _get_unread_coread_files(file_path, project_hash, cache)
+    if not coread_files:
+        return None
+
+    fname = _sanitize_hint_path(Path(file_path).name)
+
+    # Build suggestion text for up to 3 related files
+    if len(coread_files) == 1:
+        rel, mod = coread_files[0]
+        suggestion = f"`{mod}.py` (unread)"
+    elif len(coread_files) == 2:
+        suggestion = ", ".join(f"`{mod}.py`" for _, mod in coread_files)
+        suggestion += " (unread)"
+    else:
+        suggestion = ", ".join(f"`{mod}.py`" for _, mod in coread_files[:3])
+        suggestion += " (unread)"
+
+    # Build the hint text with a sample token-goat read command
+    first_rel, first_mod = coread_files[0]
+    sample_cmd = first_rel.replace("\\", "/")
+
+    return ReadHint(
+        _apply_terse(
+            f"Note: `{fname}` imports {suggestion}. "
+            f"Use `token-goat read \"{sample_cmd}::ClassName\"` to read selectively."
+        ),
+        0,  # This is a suggestion, not a realized saving
     )
 
 
