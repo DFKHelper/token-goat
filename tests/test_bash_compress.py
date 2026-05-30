@@ -3374,3 +3374,213 @@ class TestMavenFilter:
         result = f.apply(text, "", 0, ["mvn", "unknown-command"])
         # Default is head=10, tail=10, so should show compression
         assert "more items elided" in result.text or "more lines elided" in result.text
+
+
+# ---------------------------------------------------------------------------
+# DotnetFilter
+# ---------------------------------------------------------------------------
+
+
+def _make_dotnet_build_output(n_projects: int = 3) -> str:
+    """Synthetic `dotnet build` output for a multi-project solution."""
+    lines = ["Microsoft (R) Build Engine version 17.9.0+blah"]
+    for i in range(n_projects):
+        lines.append(f"  Project{i} -> /src/Project{i}/bin/Debug/net8.0/Project{i}.dll")
+        lines.append("Build succeeded.")
+        lines.append("    0 Warning(s)")
+        lines.append("    0 Error(s)")
+    lines.append("")
+    lines.append("Build succeeded.")
+    lines.append("    0 Warning(s)")
+    lines.append("    0 Error(s)")
+    lines.append("")
+    lines.append("Time Elapsed 00:00:03.12")
+    return "\n".join(lines)
+
+
+class TestDotnetFilter:
+    def test_matches_dotnet(self) -> None:
+        f = bc.DotnetFilter()
+        assert f.matches(["dotnet", "build"])
+        assert f.matches(["dotnet", "test"])
+        assert f.matches(["dotnet", "restore"])
+
+    def test_build_collapses_repeated_build_succeeded(self) -> None:
+        """Repeated 'Build succeeded.' lines from multi-project build are collapsed to one."""
+        text = _make_dotnet_build_output(n_projects=5)
+        f = bc.DotnetFilter()
+        result = f.apply(text, "", 0, ["dotnet", "build"])
+        # Only one "Build succeeded." should remain (the last/final one).
+        assert result.text.count("Build succeeded.") == 1
+
+    def test_build_keeps_single_build_succeeded(self) -> None:
+        """Single-project build: 'Build succeeded.' is kept unchanged."""
+        text = "  MyApp -> /src/MyApp/bin/Debug/net8.0/MyApp.dll\nBuild succeeded.\n    0 Warning(s)\n    0 Error(s)\n\nTime Elapsed 00:00:01.50"
+        f = bc.DotnetFilter()
+        result = f.apply(text, "", 0, ["dotnet", "build"])
+        assert "Build succeeded." in result.text
+
+    def test_build_note_emitted_when_collapsed(self) -> None:
+        """A note is emitted when Build succeeded. lines were collapsed."""
+        text = _make_dotnet_build_output(n_projects=4)
+        f = bc.DotnetFilter()
+        result = f.apply(text, "", 0, ["dotnet", "build"])
+        assert "token-goat" in result.text
+        assert "Build succeeded" in result.text
+
+    def test_build_drops_msbuild_noise(self) -> None:
+        """MSBuild evaluation lines starting with 'Project "...' are dropped."""
+        text = (
+            'Project "C:\\repo\\foo.csproj" on node 1\n'
+            "  MyApp -> /src/MyApp/bin/Debug/net8.0/MyApp.dll\n"
+            "Build succeeded.\n"
+        )
+        f = bc.DotnetFilter()
+        result = f.apply(text, "", 0, ["dotnet", "build"])
+        assert 'Project "C:\\repo\\foo.csproj"' not in result.text
+        assert "Build succeeded." in result.text
+
+    def test_build_keeps_error_lines(self) -> None:
+        """Error lines survive even if they match a drop pattern."""
+        text = (
+            "Build succeeded.\n"
+            "error CS0001: Unexpected error in compilation\n"
+            "Build succeeded.\n"
+        )
+        f = bc.DotnetFilter()
+        result = f.apply(text, "", 0, ["dotnet", "build"])
+        assert "error CS0001" in result.text
+
+    def test_restore_drops_progress_lines(self) -> None:
+        """Restore progress lines (Determining projects, Writing assets, etc.) are dropped."""
+        text = (
+            "Determining projects to restore...\n"
+            "  Restored /src/MyApp/MyApp.csproj (5.32 sec)\n"
+            "Restore succeeded.\n"
+        )
+        f = bc.DotnetFilter()
+        result = f.apply(text, "", 0, ["dotnet", "restore"])
+        assert "Determining projects" not in result.text
+        assert "Restore succeeded." in result.text
+
+    def test_test_collapses_passed_lines(self) -> None:
+        """Passed test lines are collapsed to a count."""
+        lines = ["Test run for /src/Tests/bin/net8.0/Tests.dll (.NETCoreApp,Version=v8.0)"]
+        for i in range(20):
+            lines.append(f"  Passed MyNamespace.Tests.TestMethod{i}")
+        lines.append("  Failed MyNamespace.Tests.TestMethodBroken")
+        lines.append("    Assert.Equal() Failure")
+        lines.append("Test Run Summary")
+        lines.append("  Total   : 21")
+        lines.append("  Passed  : 20")
+        lines.append("  Failed  : 1")
+        text = "\n".join(lines)
+        f = bc.DotnetFilter()
+        result = f.apply(text, "", 1, ["dotnet", "test"])
+        # All passing lines should be summarised away.
+        assert "TestMethod0" not in result.text
+        assert "TestMethodBroken" in result.text
+        assert "token-goat" in result.text
+        # The note should mention the collapsed count.
+        assert "collapsed" in result.text
+
+    def test_select_filter_dispatches_dotnet_build(self) -> None:
+        """select_filter routes 'dotnet build' to DotnetFilter."""
+        f = bc.select_filter(["dotnet", "build"])
+        assert f is not None
+        assert f.name == "dotnet"
+
+    def test_select_filter_dispatches_dotnet_test(self) -> None:
+        """select_filter routes 'dotnet test' to DotnetFilter."""
+        f = bc.select_filter(["dotnet", "test"])
+        assert f is not None
+        assert f.name == "dotnet"
+
+
+# ---------------------------------------------------------------------------
+# PipFilter verbose mode
+# ---------------------------------------------------------------------------
+
+
+class TestPipFilterVerbose:
+    def test_verbose_flag_drops_debug_lines(self) -> None:
+        """DEBUG log lines from 'pip install -v' are dropped."""
+        text = (
+            "Collecting requests\n"
+            "DEBUG pip._internal.utils.logging: Checking if requests-2.31.0 is already installed\n"
+            "DEBUG pip._internal.network.session: Created new session\n"
+            "  Downloading requests-2.31.0-py3-none-any.whl (62 kB)\n"
+            "Installing collected packages: requests\n"
+            "Successfully installed requests-2.31.0\n"
+        )
+        f = bc.PipFilter()
+        result = f.apply(text, "", 0, ["pip", "install", "-v", "requests"])
+        assert "DEBUG" not in result.text
+        assert "Successfully installed requests" in result.text
+
+    def test_verbose_flag_drops_http_trace_lines(self) -> None:
+        """HTTP-trace indented lines from verbose pip are dropped."""
+        text = (
+            "Collecting numpy\n"
+            "  https://pypi.org/simple/numpy/\n"
+            "  Querying https://pypi.org/simple/numpy/\n"
+            "  Added numpy-1.26.0-cp311-cp311-win_amd64.whl to the build\n"
+            "Successfully installed numpy-1.26.0\n"
+        )
+        f = bc.PipFilter()
+        result = f.apply(text, "", 0, ["pip", "install", "-v", "numpy"])
+        assert "pypi.org" not in result.text
+        assert "Querying" not in result.text
+        assert "Successfully installed numpy" in result.text
+
+    def test_verbose_double_v_flag_drops_debug(self) -> None:
+        """'-vv' flag (double verbose) also triggers verbose mode dropping."""
+        text = (
+            "DEBUG high-verbosity line\n"
+            "Successfully installed numpy-1.26.0\n"
+        )
+        f = bc.PipFilter()
+        result = f.apply(text, "", 0, ["pip", "install", "-vv", "numpy"])
+        assert "DEBUG" not in result.text
+        assert "Successfully installed" in result.text
+
+    def test_verbose_long_flag_drops_debug(self) -> None:
+        """'--verbose' long flag triggers verbose mode dropping."""
+        text = (
+            "VERBOSE something\n"
+            "Successfully installed requests-2.31.0\n"
+        )
+        f = bc.PipFilter()
+        result = f.apply(text, "", 0, ["pip", "install", "--verbose", "requests"])
+        assert "VERBOSE" not in result.text
+        assert "Successfully installed" in result.text
+
+    def test_non_verbose_keeps_debug_like_output(self) -> None:
+        """Without -v, DEBUG-prefixed lines from user code are NOT stripped (pass-through)."""
+        text = (
+            "Successfully installed some-package-1.0\n"
+            "DEBUG this is from a post-install script\n"
+        )
+        f = bc.PipFilter()
+        result = f.apply(text, "", 0, ["pip", "install", "some-package"])
+        assert "DEBUG this is from a post-install script" in result.text
+
+    def test_verbose_preserves_error_lines(self) -> None:
+        """Error lines are kept even in verbose mode."""
+        text = (
+            "DEBUG something noisy\n"
+            "ERROR: Could not find a version that satisfies the requirement badpkg\n"
+        )
+        f = bc.PipFilter()
+        result = f.apply(text, "", 1, ["pip", "install", "-v", "badpkg"])
+        assert "ERROR: Could not find" in result.text
+
+    def test_verbose_note_included(self) -> None:
+        """A note is emitted when verbose debug lines are dropped."""
+        text = "\n".join([
+            "Collecting foo",
+            "DEBUG pip._internal.req.req_install: foo",
+        ] * 10 + ["Successfully installed foo-1.0"])
+        f = bc.PipFilter()
+        result = f.apply(text, "", 0, ["pip", "install", "-v", "foo"])
+        assert "verbose" in result.text.lower() or "debug" in result.text.lower()

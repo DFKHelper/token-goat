@@ -3248,6 +3248,20 @@ class GrepFilter(Filter):
 
 # --- pip / uv / poetry ------------------------------------------------------
 
+#: pip -v/-vv verbose debug lines: "DEBUG pip._internal...: ..."
+_PIP_VERBOSE_DEBUG_RE: Final[re.Pattern[str]] = re.compile(
+    r"^(?:DEBUG|VERBOSE|TRACE)\b"
+)
+#: pip -v HTTP/network trace lines: "  Added ... to ...", "  https?://...",
+#:   "  Querying PyPI", "  Checking if link is supported"
+_PIP_VERBOSE_HTTP_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\s+(?:https?://|Added \S+ to |Querying |Checking if link|"
+    r"Created temporary directory|Looking up|Skipping link|"
+    r"Local version label|File was already downloaded|"
+    r"\d+ location\(s\) for)\b"
+)
+
+
 class PipFilter(Filter):
     """Compress ``pip install`` / ``uv pip install`` / ``poetry install`` output.
 
@@ -3268,6 +3282,9 @@ class PipFilter(Filter):
     * **Keep** every ``error:`` / ``warning:`` / ``ERROR`` line verbatim.
     * **Keep** the final ``Successfully installed …`` / ``already satisfied``
       line and any requirement-not-found or conflict lines.
+    * **Verbose mode** (``-v`` / ``--verbose`` in argv): also drop ``DEBUG``/
+      ``VERBOSE``/``TRACE`` log lines and HTTP-trace chatter that pip emits
+      when verbose flags are present.
     """
 
     name = "pip"
@@ -3278,14 +3295,25 @@ class PipFilter(Filter):
     ) -> str:
         merged = self._combine_output(stdout, stderr)
         lines = merged.split("\n")
+        verbose = "-v" in argv or "--verbose" in argv or any(
+            a.startswith("-v") and all(c == "v" for c in a[1:]) for a in argv if a.startswith("-")
+        )
         kept: list[str] = []
         downloads = 0
         build_noise = 0
         collects = 0
+        verbose_dropped = 0
         for line in lines:
-            # Always preserve error/warning lines.
+            # Always preserve error/warning lines even in verbose mode.
             if _ERROR_SIGNAL_RE.search(line):
                 kept.append(line)
+                continue
+            # Verbose-mode extra noise: DEBUG/VERBOSE/TRACE log lines and HTTP trace.
+            if verbose and (
+                _PIP_VERBOSE_DEBUG_RE.match(line)
+                or _PIP_VERBOSE_HTTP_RE.match(line)
+            ):
+                verbose_dropped += 1
                 continue
             # Download progress (pip < 22 uses 2-space indent, newer uses no indent).
             if line.startswith("  Downloading ") or line.startswith("Downloading "):
@@ -3320,6 +3348,8 @@ class PipFilter(Filter):
             notes.append(f"dropped {downloads} download/cache-hit lines")
         if build_noise:
             notes.append(f"dropped {build_noise} build-wheel/metadata lines")
+        if verbose_dropped:
+            notes.append(f"dropped {verbose_dropped} verbose debug/trace lines")
         self._emit_notes(kept, notes)
         return self._finalize(kept)
 
@@ -4277,6 +4307,12 @@ _DOTNET_RESTORE_RE: Final[re.Pattern[str]] = re.compile(
     r"OK https?://|log\s+:\s+Restore[d]? |MSBuild auto-detection|Feeds used:)\b",
     re.IGNORECASE,
 )
+# Per-project build summary repetition lines — "Build succeeded" repeats once per project in
+# multi-project solutions; the final occurrence is the only one that matters.
+_DOTNET_BUILD_SUCCEEDED_RE: Final[re.Pattern[str]] = re.compile(
+    r"^Build succeeded\.\s*$",
+    re.IGNORECASE,
+)
 # Per-project build/pack lines (not errors)
 _DOTNET_BUILD_NOISE_RE: Final[re.Pattern[str]] = re.compile(
     r"^(Build succeeded|Restore succeeded|\s+\d+ Warning\(s\)|\s+\d+ Error\(s\)|"
@@ -4359,6 +4395,9 @@ class DotnetFilter(Filter):
         return self._finalize(kept)
 
     def _compress_build(self, lines: list[str]) -> str:
+        # Two-pass: first collect all lines with standard per-line drops, then
+        # collapse repeated "Build succeeded." lines (common in multi-project solutions
+        # where MSBuild emits one per project before the final global summary).
         kept: list[str] = []
         arrow_count = 0
         dropped_arrows = 0
@@ -4375,11 +4414,24 @@ class DotnetFilter(Filter):
                     dropped_arrows += 1
                 continue
             kept.append(line)
+
+        # Collapse repeated "Build succeeded." lines: keep only the last occurrence.
+        succeeded_indices = [
+            i for i, ln in enumerate(kept) if _DOTNET_BUILD_SUCCEEDED_RE.match(ln)
+        ]
+        dropped_succeeded = 0
+        if len(succeeded_indices) > 1:
+            drop_set = set(succeeded_indices[:-1])
+            kept = [ln for i, ln in enumerate(kept) if i not in drop_set]
+            dropped_succeeded = len(drop_set)
+
         notes: list[str] = []
         if dropped_arrows:
             notes.append(f"collapsed {dropped_arrows} additional project-output arrows")
         if dropped_msbuild:
             notes.append(f"dropped {dropped_msbuild} MSBuild evaluation lines")
+        if dropped_succeeded:
+            notes.append(f"collapsed {dropped_succeeded} repeated 'Build succeeded' lines")
         self._emit_notes(kept, notes)
         return self._finalize(kept)
 
