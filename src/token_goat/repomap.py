@@ -17,8 +17,10 @@ __all__ = [
     "FileMapItem",
     "build_map",
     "build_map_json",
+    "build_map_mermaid",
     "compute_ranks",
     "estimate_tokens",
+    "lang_breakdown",
     "render_summary",
 ]
 
@@ -1095,6 +1097,11 @@ def build_map(
                 # not what the budget was.
                 out.append(f"+{omitted} more\n")
 
+    # Language breakdown footer (one line, e.g. "Python: 60%  TypeScript: 40%")
+    breakdown = lang_breakdown(data.files)
+    if breakdown:
+        out.append(f"{breakdown}\n")
+
     # Persist new cache entries (best-effort; failure must not affect output)
     if cache_writes:
         try:
@@ -1159,3 +1166,122 @@ def build_map_json(project: Project) -> list[FileMapItem]:
     elapsed = time.monotonic() - t0
     _LOG.debug("build_map_json: project=%s files=%d dur=%.3fs", project.root.name, len(out), elapsed)
     return out
+
+
+def lang_breakdown(files: dict[str, _FileInfo]) -> str:
+    """Return a one-line language breakdown string, e.g. ``Python: 60%  TypeScript: 40%``.
+
+    Languages are sorted by file count descending, then alphabetically.  The
+    smallest languages are merged into ``Other`` when there are more than four
+    distinct languages so the line stays readable.  Returns an empty string when
+    *files* is empty.
+    """
+    if not files:
+        return ""
+    counts: Counter[str] = Counter()
+    for info in files.values():
+        lang = info["language"] or "unknown"
+        counts[lang.capitalize()] += 1
+    total = sum(counts.values())
+    ranked = counts.most_common()
+    # Keep top-4 languages; fold the rest into "Other"
+    _MAX_LANG_COLS = 4
+    if len(ranked) <= _MAX_LANG_COLS:
+        buckets = ranked
+        other_count = 0
+    else:
+        buckets = ranked[:_MAX_LANG_COLS]
+        other_count = total - sum(c for _, c in buckets)
+    parts = []
+    for lang, count in buckets:
+        pct = round(count * 100 / total)
+        parts.append(f"{lang}: {pct}%")
+    if other_count:
+        pct = round(other_count * 100 / total)
+        parts.append(f"Other: {pct}%")
+    return "  ".join(parts)
+
+
+def build_map_mermaid(
+    project: Project,
+    *,
+    top_n: int = 20,
+) -> str:
+    """Return a Mermaid ``graph TD`` diagram of the top-*n* files by PageRank.
+
+    Each node is labelled with the file's basename and approximate line count.
+    Edges represent cross-file symbol references (from the dependency graph):
+    an arrow from A to B means A imports / references a symbol defined in B.
+
+    The diagram is capped at *top_n* files (default 20) to keep it readable
+    inside a README or GitHub wiki page.  Only edges where both endpoints are
+    in the selected set are included.
+    """
+    t0 = time.monotonic()
+    data = _load_and_rank(project)
+    if data is None:
+        return "graph TD\n    empty[\"No files indexed — run `token-goat index --full`\"]\n"
+
+    import os  # noqa: PLC0415
+
+    top_files = {rel for rel, _ in data.ranked[:top_n]}
+
+    lines: list[str] = ["graph TD"]
+
+    # Node definitions — use the basename as the label to keep nodes compact.
+    for rel, info in data.ranked[:top_n]:
+        node_id = _mermaid_id(rel)
+        basename = os.path.basename(rel)
+        approx_lines = max(1, info["size"] // _BYTES_PER_APPROX_LINE)
+        lang = info["language"] or "?"
+        lines.append(f'    {node_id}["{basename}<br/>{lang}, ~{approx_lines}L"]')
+
+    # Build a set of edges for the top-N files from the ranked data.
+    # We rebuild a lightweight edge set without spinning up a full graph object.
+    try:
+        with db.open_project(project.hash) as conn:
+            try:
+                ref_rows = conn.execute("SELECT symbol_name, file_rel FROM refs").fetchall()
+            except Exception:  # noqa: BLE001
+                ref_rows = []
+    except Exception:  # noqa: BLE001
+        ref_rows = []
+
+    # name_to_files maps symbol_name → set of files that define it
+    name_to_files: dict[str, set[str]] = {}
+    for rel, _ in data.ranked:
+        for _kind, name in data.symbols_by_file.get(rel, []):
+            name_to_files.setdefault(name, set()).add(rel)
+
+    seen_edges: set[tuple[str, str]] = set()
+    for row in ref_rows:
+        src = row["file_rel"] if hasattr(row, "__getitem__") else row[1]
+        sym = row["symbol_name"] if hasattr(row, "__getitem__") else row[0]
+        if src not in top_files:
+            continue
+        for dst in name_to_files.get(sym, ()):
+            if dst != src and dst in top_files:
+                edge = (src, dst)
+                if edge not in seen_edges:
+                    seen_edges.add(edge)
+                    lines.append(f"    {_mermaid_id(src)} --> {_mermaid_id(dst)}")
+
+    breakdown = lang_breakdown(data.files)
+    if breakdown:
+        lines.append('    classDef note fill:#f9f,stroke:#333')
+        lines.append(f'    langs["{breakdown}"]:::note')
+
+    elapsed = time.monotonic() - t0
+    _LOG.debug("build_map_mermaid: project=%s top_n=%d edges=%d dur=%.3fs",
+               project.root.name, top_n, len(seen_edges), elapsed)
+    return "\n".join(lines) + "\n"
+
+
+def _mermaid_id(rel_path: str) -> str:
+    """Convert a relative file path to a safe Mermaid node identifier.
+
+    Replaces any character that is not alphanumeric or underscore with ``_``.
+    Prepends ``f_`` to guard against identifiers starting with a digit.
+    """
+    safe = "".join(c if c.isalnum() or c == "_" else "_" for c in rel_path)
+    return f"f_{safe}"

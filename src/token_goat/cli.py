@@ -1069,6 +1069,12 @@ def semantic(
 def cmd_map(
     budget: int = typer.Option(4000, "--budget", "-b", help="Approximate token budget"),
     json_output: bool = _OPT_JSON,
+    fmt: str = typer.Option(  # noqa: B008
+        "text",
+        "--format",
+        "-f",
+        help="Output format: text (default), json, or mermaid.",
+    ),
     compact: bool = typer.Option(
         False,
         "--compact",
@@ -1082,8 +1088,17 @@ def cmd_map(
              "project exceeds the compact_file_threshold. Overrides the 1-line "
              "summary that compact mode emits for large projects.",
     ),
+    top_n: int = typer.Option(  # noqa: B008
+        20,
+        "--top-n",
+        help="Number of top files to include in the mermaid diagram.",
+    ),
 ) -> None:
-    """Generate a PageRank-ranked, token-budgeted overview of the current project."""
+    """Generate a PageRank-ranked, token-budgeted overview of the current project.
+
+    Formats: text (default), json, mermaid.  Use --format mermaid to emit a
+    Mermaid graph TD diagram suitable for GitHub READMEs.
+    """
     from . import repomap  # noqa: PLC0415
 
     proj = _require_project(
@@ -1091,13 +1106,22 @@ def cmd_map(
         "Run from a project directory."
     )
 
+    # --json flag is a legacy alias for --format json
+    if json_output and fmt == "text":
+        fmt = "json"
+
+    _valid_formats = {"text", "json", "mermaid"}
+    if fmt not in _valid_formats:
+        _error(f"unknown format {fmt!r}. Choose one of: {', '.join(sorted(_valid_formats))}")
+        raise typer.Exit(1)
+
     _LOG.info(
-        "map start: project=%s budget=%d json=%s compact=%s full=%s",
-        proj.root.name, budget, json_output, compact, full,
+        "map start: project=%s budget=%d format=%s compact=%s full=%s",
+        proj.root.name, budget, fmt, compact, full,
     )
     t0 = time.monotonic()
     try:
-        if json_output:
+        if fmt == "json":
             data = repomap.build_map_json(proj)
             elapsed = time.monotonic() - t0
             _LOG.info("map complete: project=%s files=%d dur=%.3fs", proj.root.name, len(data), elapsed)
@@ -1110,6 +1134,21 @@ def cmd_map(
             )
             typer.echo(json.dumps(data, separators=(",", ":")))
             return
+
+        if fmt == "mermaid":
+            diagram = repomap.build_map_mermaid(proj, top_n=top_n)
+            elapsed = time.monotonic() - t0
+            _LOG.info("map complete: project=%s format=mermaid dur=%.3fs", proj.root.name, elapsed)
+            _record_lookup_stat(
+                "map_lookup",
+                f"budget={budget},mode=mermaid,top_n={top_n}",
+                top_n,
+                scope="project",
+                project_hash=proj.hash,
+            )
+            typer.echo(diagram)
+            return
+
         # Pass compact=True only if the user opted in; None lets build_map
         # auto-engage the compact path when the budget is below the threshold.
         text = repomap.build_map(
