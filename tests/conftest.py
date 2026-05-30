@@ -667,3 +667,59 @@ def make_session(tmp_data_dir) -> callable:
     return _make_session
 
 
+def make_mock_cache(
+    session_id: str,
+    *,
+    started_ts: float | None = None,
+    last_activity_ts: float | None = None,
+) -> SessionCache:
+    """Create a minimal SessionCache for testing hint-emission patterns.
+
+    This helper centralises the repeated pattern across test files::
+
+        cache = SessionCache(
+            session_id=session_id,
+            started_ts=now,
+            last_activity_ts=now,
+        )
+
+    Eliminates boilerplate for tests that don't need pre-populated file reads,
+    greps, edits, or web/bash history — only the basic dedup fingerprint
+    tracking and per-type counters used by hint-emission logic.
+
+    Args:
+        session_id:       Unique session identifier
+        started_ts:       Cache creation timestamp (default: now)
+        last_activity_ts: Last activity timestamp (default: now)
+
+    Returns:
+        A fresh SessionCache with default field values.
+
+    Example:
+        def test_surgical_hint(make_mock_cache):
+            cache = make_mock_cache("test-id")
+            assert cache.session_id == "test-id"
+    """
+    import time
+
+    now = time.time()
+    return SessionCache(
+        session_id=session_id,
+        started_ts=started_ts or now,
+        last_activity_ts=last_activity_ts or now,
+    )
+
+
+@pytest.fixture
+def make_mock_cache_fixture(make_mock_cache) -> callable:
+    """Fixture that provides make_mock_cache function for tests.
+
+    Use when you need a fresh cache in a test without the full session setup::
+
+        def test_something(make_mock_cache_fixture):
+            cache = make_mock_cache_fixture("test-id")
+            # use cache for hint dedup testing
+    """
+    return make_mock_cache
+
+
