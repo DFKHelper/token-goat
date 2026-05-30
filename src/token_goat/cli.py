@@ -555,7 +555,7 @@ def symbol(
     if all_projects:
         try:
             results = _global_query(name)
-        except _db.DBError as exc:
+        except (_db.DBError, sqlite3.OperationalError, sqlite3.DatabaseError) as exc:
             _error(f"global index unavailable: {exc}. Run `token-goat index` first.")
             raise typer.Exit(1) from None
 
@@ -573,7 +573,7 @@ def symbol(
                 if redirect_target is not None:
                     try:
                         redirect_results = _global_query(redirect_target)
-                    except _db.DBError as exc:
+                    except (_db.DBError, sqlite3.OperationalError, sqlite3.DatabaseError) as exc:
                         _error(f"global index unavailable: {exc}. Run `token-goat index` first.")
                         raise typer.Exit(1) from None
                     if redirect_results:
