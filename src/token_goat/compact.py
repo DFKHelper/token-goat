@@ -1673,6 +1673,40 @@ def _rank_symbols_by_recency(entry: FileEntry, now: float) -> list[str]:
     return [item[0] for item in scored_symbols]
 
 
+def _dedup_symbols_across_files(
+    entries: list,  # list[FileEntry]
+    now: float,
+) -> dict[str, tuple[str, float]]:
+    """Deduplicate symbols across multiple files, keeping only most-recent reference.
+
+    When the same symbol appears in multiple files, keep only the reference from
+    the file where it was most recently accessed. This saves manifest tokens by
+    eliminating redundant symbol listings.
+
+    Args:
+        entries: List of FileEntry objects with symbols_read.
+        now: Current timestamp for recency ranking.
+
+    Returns:
+        A dict mapping symbol name to (file_path, access_timestamp).
+        Only the most-recent file reference is kept per symbol.
+    """
+    symbol_map: dict[str, tuple[str, float]] = {}
+
+    for entry in entries:  # type: ignore[var-annotated]
+        if not getattr(entry, "symbols_read", None):
+            continue
+        ranked = _rank_symbols_by_recency(entry, now)  # type: ignore[arg-type]
+        symbols_ts = getattr(entry, "symbols_ts", None) or {}  # type: ignore[union-attr]
+        for symbol in ranked:
+            ts = symbols_ts.get(symbol, 0.0)
+            rel_or_abs = getattr(entry, "rel_or_abs", "")
+            if symbol not in symbol_map or ts > symbol_map[symbol][1]:
+                symbol_map[symbol] = (rel_or_abs, ts)
+
+    return symbol_map
+
+
 def _adaptive_bash_max(bash_history: object) -> int:
     """Compute the effective Bash entry cap based on session size.
 
@@ -3785,10 +3819,17 @@ def _render(
             # Remaining files (not inlined) use the grouped directory format.
             remaining_shown = [item for item in shown_edited if item[0] not in _inlined_paths]
             if remaining_shown:
+                # Item #35: adaptive directory grouping — increase grouping threshold
+                # when many files are edited to save tokens. If >= 15 edited files,
+                # group more aggressively (threshold=2 instead of 3) to consolidate
+                # the directory listing.
+                _adaptive_threshold = edited_dir_group_threshold
+                if len(remaining_shown) >= 15:
+                    _adaptive_threshold = max(2, edited_dir_group_threshold - 1)
                 grouped_lines = _group_edited_by_dir(
                     remaining_shown,
                     project_root=cwd,
-                    threshold=edited_dir_group_threshold,
+                    threshold=_adaptive_threshold,
                 )
                 edited_lines.extend(grouped_lines)
         else:
@@ -3913,6 +3954,17 @@ def _render(
             _norm_key(getattr(e, "rel_or_abs", ""))
             for e in top_files
         }
+
+        # Item #33: cross-file symbol deduplication. When the same symbol appears
+        # in multiple files, keep only the reference from the most-recently-accessed
+        # file. This saves manifest tokens by eliminating redundant listings.
+        _global_symbol_refs = _dedup_symbols_across_files(files_with_symbols, now_for_scoring)
+
+        # Item #34: stale symbol filtering when budget is tight (< 80 tokens remaining).
+        # Drop symbols accessed more than 60 min ago to preserve budget for recent context.
+        _budget_tight = sym_budget < 80
+        _stale_threshold_secs = 3600 if _budget_tight else float("inf")
+
         sym_formatted: list[str] = []
         _suppressed_sym_files = 0
         for entry in files_with_symbols:
@@ -3926,11 +3978,34 @@ def _render(
             # Item #11: dedup consecutive/repeated symbols before rendering (order-preserving).
             _seen_syms: set[str] = set()
             deduped_symbols = [s for s in ranked_symbols if not (_seen_syms.__contains__(s) or _seen_syms.add(s))]  # type: ignore[func-returns-value]
+
+            # Item #33: filter out symbols that are duplicated in other files
+            # (keep only if this file is the most-recent reference).
+            filtered_symbols = [
+                s for s in deduped_symbols
+                if _global_symbol_refs.get(s, ("", 0.0))[0] == entry.rel_or_abs
+            ]
+
+            # Item #34: filter stale symbols when budget is tight
+            if _budget_tight:
+                symbols_ts = getattr(entry, "symbols_ts", None) or {}
+                fresh_symbols = [
+                    s for s in filtered_symbols
+                    if (now_for_scoring - symbols_ts.get(s, 0.0)) < _stale_threshold_secs
+                ]
+                stale_removed = len(filtered_symbols) - len(fresh_symbols)
+                filtered_symbols = fresh_symbols
+            else:
+                stale_removed = 0
+
             dupes_removed = len(ranked_symbols) - len(deduped_symbols)
-            syms = [sanitize_log_str(s, max_len=80) for s in deduped_symbols[:_MAX_SYMBOLS_PER_FILE_ENTRY]]
-            overflow = len(deduped_symbols) - _MAX_SYMBOLS_PER_FILE_ENTRY
-            dupe_note = f" (+{dupes_removed} dupes removed)" if dupes_removed >= 3 else ""
-            sym_str = ", ".join(syms) + (f" +{overflow}" if overflow > 0 else "") + dupe_note
+            cross_file_dupes = len(deduped_symbols) - len(filtered_symbols) - stale_removed
+            syms = [sanitize_log_str(s, max_len=80) for s in filtered_symbols[:_MAX_SYMBOLS_PER_FILE_ENTRY]]
+            overflow = len(filtered_symbols) - _MAX_SYMBOLS_PER_FILE_ENTRY
+            dupe_note = f" (+{dupes_removed} dupes)" if dupes_removed >= 3 else ""
+            xfile_note = f" (-{cross_file_dupes} xfile)" if cross_file_dupes >= 1 else ""
+            stale_note = f" (-{stale_removed} stale)" if stale_removed >= 1 else ""
+            sym_str = ", ".join(syms) + (f" +{overflow}" if overflow > 0 else "") + dupe_note + xfile_note + stale_note
             sym_formatted.append(f"- {_short_path(entry.rel_or_abs, project_root=cwd)} → {sym_str}")
         if _suppressed_sym_files:
             _LOG.debug(
