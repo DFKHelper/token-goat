@@ -96,7 +96,7 @@ _DISPATCH_CASES: list[tuple[list[str], str]] = [
     (["make", "all"], "make"),
     (["ninja", "-C", "build/"], "make"),
     (["go", "build", "./..."], "make"),
-    (["gradle", "build"], "make"),
+    (["gradle", "build"], "gradle"),
     # ---- GoTestFilter ----
     (["go", "test", "./..."], "go-test"),
     (["go", "test", "-v", "./pkg/..."], "go-test"),

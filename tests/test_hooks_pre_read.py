@@ -1,6 +1,7 @@
 """Tests for the pre_read hook handler and its dispatcher integration."""
 from __future__ import annotations
 
+import json
 import subprocess
 import sys
 
@@ -804,6 +805,68 @@ class TestStructuredFileHint:
         assert "jsonl" in ctx.lower()
         # Tabular hint suggests offset/limit row-slice, NOT jq.
         assert "jq" not in ctx
+
+    def test_csv_includes_headers(self, tmp_data_dir, tmp_path):
+        """Large CSV hint includes column names from header."""
+        csv_file = tmp_path / "data.csv"
+        # Create CSV with headers and rows.
+        content = b"id,name,email,created_at\n1,Alice,alice@example.com,2025-01-01\n"
+        content += b"2,Bob,bob@example.com,2025-01-02\n" * 5000
+        csv_file.write_bytes(content)
+
+        sid = "struct-csv-headers"
+        result = hooks_cli.pre_read(self._read_payload(sid, str(csv_file)))
+        _assert_continue(result)
+        assert "hookSpecificOutput" in result
+        ctx = result["hookSpecificOutput"]["additionalContext"]
+        # Hint should include column names.
+        assert "id" in ctx and "name" in ctx and "email" in ctx
+        assert "columns:" in ctx.lower()
+
+    def test_ndjson_includes_first_record_schema(self, tmp_data_dir, tmp_path):
+        """Large NDJSON hint includes schema from first record."""
+        ndjson_file = tmp_path / "events.ndjson"
+        # Create NDJSON with typed records.
+        first_record = '{"event": "click", "ts": 1234567890, "user_id": "u123", "session": "s456"}\n'
+        content = first_record.encode()
+        # Add more records to reach size threshold.
+        for i in range(5000):
+            content += f'{{"event": "scroll", "ts": {1234567890 + i}, "user_id": "u{i}", "session": "s{i}"}}\n'.encode()
+        ndjson_file.write_bytes(content)
+
+        sid = "struct-ndjson-schema"
+        result = hooks_cli.pre_read(self._read_payload(sid, str(ndjson_file)))
+        _assert_continue(result)
+        assert "hookSpecificOutput" in result
+        ctx = result["hookSpecificOutput"]["additionalContext"]
+        # Hint should include first record schema with types.
+        assert "schema:" in ctx.lower()
+        # Should mention some of the keys from first record.
+        assert any(key in ctx for key in ["event", "ts", "user_id"])
+
+    def test_json_array_includes_schema(self, tmp_data_dir, tmp_path):
+        """Large JSON array hint includes schema from first element."""
+        json_file = tmp_path / "data.json"
+        # Create JSON array of objects.
+        json_obj = [
+            {"id": 1, "name": "Alice", "active": True, "score": 95.5},
+            {"id": 2, "name": "Bob", "active": False, "score": 87.3},
+        ]
+        # Pad with repeated JSON to reach size threshold.
+        full_content = "[" + ", ".join([json.dumps(json_obj[0])] * 5000) + "]"
+        while len(full_content.encode()) < 100_000:
+            full_content = full_content[:-1] + ", " + json.dumps(json_obj[0]) + "]"
+        json_file.write_text(full_content)
+
+        sid = "struct-json-schema"
+        result = hooks_cli.pre_read(self._read_payload(sid, str(json_file)))
+        _assert_continue(result)
+        assert "hookSpecificOutput" in result
+        ctx = result["hookSpecificOutput"]["additionalContext"]
+        # Hint should include array schema.
+        assert "array schema:" in ctx.lower()
+        # Should mention some of the keys from first object.
+        assert any(key in ctx for key in ["id", "name", "active", "score"])
 
 
 # ---------------------------------------------------------------------------
