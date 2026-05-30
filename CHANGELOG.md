@@ -4,6 +4,34 @@ All notable changes to Token-Goat are documented in this file. Format follows Ke
 
 ## [Unreleased]
 
+### Bash compression
+
+- **Nine new filters (22 → 31 total).** `eza` / `exa` / `ls` (directory listings trimmed to header + 25 + 5 entries; `--tree` mode keeps 40 + 10), `tree` (50 + 10 + final summary line), `fd` / `fdfind` (path lists trimmed to 35 + 5), `bat` / `batcat` (strips ANSI chrome and box-drawing borders, caps at 50 lines), `delta` (strips decorative separators, caps at 80), `jq` (caps at 200 preserving closing brackets), `yq` (caps at 150), `fzf` (compact selection output, caps long upstream pipes at 50), `lazygit` (detects TUI mode and returns an actionable note instead of raw control sequences).
+- **GhFilter list truncation.** `gh pr list`, `gh run list`, and `gh issue list` tabular output is now capped at 30 rows with a count summary.
+- **`_head_tail_compress` helper.** Shared head + tail + marker slicing extracted from 8 filter classes, eliminating repeated boilerplate.
+
+### Reliability
+
+- **`project not yet indexed` diagnosis.** `spawn_index_detached` now routes stderr to `index-spawn.log` instead of `DEVNULL`, making silent AV/import failures visible. `_not_indexed_hint` distinguishes three states: *indexing in progress* (PID alive), *spawn failed* (marker exists, PID dead), and *not yet started*. `_auto_index_if_needed` now warns in logs when the spawn returns no PID.
+- **Consistent LRU eviction for `hints_seen` cap.** `mark_hint_seen` and `_merge_session_caches` now apply the same LRU strategy (evict lowest-count entries) when `hints_seen` exceeds the 500-entry cap, preventing dedup state thrashing.
+- **Type annotation shadow fix.** Variable shadowing in `compact._allocate_manifest_budgets` eliminated; `no-redef` mypy error resolved.
+- **Hook dispatcher error logging.** Clarified the top-level exception safety net in `hooks_cli` dispatcher to log via `_LOG.exception()` instead of silently swallowing errors.
+
+### DRY
+
+- **`load_session_safe` helper in `hooks_common`.** Centralises the repeated `try/except(OSError, ValueError)` session-load pattern from `hooks_read`, `hooks_edit`, and `hints` into a single fail-soft helper.
+- **`hints.py` dedup guard helpers.** `_check_dedup_preconditions`, `_check_entry_staleness`, `_check_dedup_min_threshold`, and `_record_dedup_hint_emitted` extracted from the four dedup builders, eliminating ~150 lines of duplicated guard logic.
+
+### Compaction
+
+- **Clearer manifest section headers.** `Syms` → `Symbols Accessed`, `Ran` → `Recent Commands`, `Web` → `Web Fetches`, `Grep` → `Patterns Searched`.
+
+### Tests
+
+- **~20% test suite wall-time reduction.** Eviction tests reduced from 4098 to 100 files; session-cache parameter added to manifest-trim and line-range loops to avoid repeated disk I/O.
+- **Integration tests for new filters.** Nine integration tests verify each new filter family dispatches correctly through the hook pipeline.
+- **Edge case coverage for `_not_indexed_hint`.** Tests cover malformed marker files and missing locks directory.
+
 ## [1.0.0] - 2026-05-29
 
 Bundles the work from the 35-iter `/improve` run (six themed loops, 2026-05-25 → 2026-05-26): compaction hardening, doctor visibility, opt-in observability, four new bash-compress filters, and a stack of reliability fixes. First stable release under Semantic Versioning.
