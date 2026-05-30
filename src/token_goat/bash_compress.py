@@ -3019,7 +3019,7 @@ _UV_DIFF_LINE_RE: Final[re.Pattern[str]] = re.compile(
 
 
 class UvFilter(Filter):
-    """Compress ``uv sync`` / ``uv add`` / ``uv remove`` / ``uv pip install`` output.
+    """Compress ``uv sync`` / ``uv add`` / ``uv remove`` / ``uv pip`` / ``uv tool`` output.
 
     uv emits verbose per-package ``Downloading`` / ``Fetching`` lines while
     resolving and installing dependencies plus per-package ``+``/``-`` diff
@@ -3027,6 +3027,10 @@ class UvFilter(Filter):
     (``Resolved N packages``, ``Installed N packages``, ``Uninstalled N
     packages``, ``Audited N packages``).  Errors and warnings are always
     preserved.
+
+    Also handles ``uv tool install/upgrade/uninstall`` and ``uv python install``
+    which emit the same progress-bar noise while downloading tool binaries and
+    Python interpreter builds.
 
     Compression model:
 
@@ -3047,12 +3051,28 @@ class UvFilter(Filter):
         stem = Path(argv[0]).stem.lower()
         if stem != "uv":
             return False
-        # Only fire for package-management subcommands.
+        positionals = [tok for tok in argv[1:] if not tok.startswith("-")]
+        if not positionals:
+            return False
+        first = positionals[0]
+        # Direct package-management subcommands of ``uv``.
         pm_subcommands = frozenset([
             "sync", "add", "remove", "install", "uninstall", "pip", "lock",
         ])
-        positionals = _positional_args(argv[1:])[:3]
-        return any(tok in pm_subcommands for tok in positionals)
+        if first in pm_subcommands:
+            return True
+        # ``uv tool <action>`` — install/upgrade/uninstall emit the same
+        # Downloading/Fetching noise as package management.  Exclude ``uv tool
+        # run`` (handled by prefix-stripping + inner-tool filter).
+        if first == "tool" and len(positionals) >= 2:
+            tool_action = positionals[1]
+            return tool_action in {"install", "upgrade", "uninstall", "update"}
+        # ``uv python install`` / ``uv python pin`` — may emit interpreter
+        # download progress.
+        if first == "python" and len(positionals) >= 2:
+            python_action = positionals[1]
+            return python_action in {"install", "pin"}
+        return False
 
     def compress(
         self, stdout: str, stderr: str, exit_code: int, argv: list[str],
