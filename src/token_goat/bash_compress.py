@@ -1374,50 +1374,117 @@ class DockerFilter(Filter):
 # --- kubectl / helm --------------------------------------------------------
 
 class KubectlFilter(Filter):
-    """Compress ``kubectl`` and ``helm`` output.
+    """Compress ``kubectl``, ``k9s``, ``oc``, and ``helm`` output.
 
     ``kubectl get`` returns tabular output (NAME, READY, STATUS, RESTARTS, AGE);
     on a large cluster this is thousands of lines.  Truncate to header + first
-    25 rows + tail summary.
+    10 data rows + tail summary.
 
-    ``kubectl logs`` emits high-volume streaming text; dedupe identical
-    consecutive lines (the common "still waiting" / heartbeat pattern).
+    ``kubectl describe`` extracts key metadata (Name, Namespace, Status) and
+    the Events section (last 10 lines).
 
-    ``kubectl describe`` ends with a verbose Events section; preserve only
-    Warning events when there are many Normal ones.
+    ``kubectl apply`` / ``kubectl create`` / ``kubectl delete`` are typically
+    short; pass through with stderr appended if present.
 
-    ``helm`` output for ``install`` / ``upgrade`` includes the entire chart's
-    NOTES section which can be 100+ lines of post-install documentation;
-    truncate to the first 20.
+    ``kubectl logs`` emits high-volume streaming text; use head+tail compression
+    (head=30, tail=20) to preserve context without redundancy.
+
+    ``kubectl exec`` is interactive; pass through.
+
+    ``kubectl diff`` can produce large diffs; truncate to first 50 lines.
+
+    Errors (exit_code != 0) preserve all stderr unchanged.
     """
 
     name = "kubectl"
-    binaries = frozenset(["kubectl", "k", "helm", "oc"])
+    binaries = frozenset(["kubectl", "k", "k9s", "helm", "oc"])
 
     def compress(
         self, stdout: str, stderr: str, exit_code: int, argv: list[str],
     ) -> str:
+        # Always preserve stderr on error
+        if exit_code != 0 and stderr.strip():
+            return (stdout.rstrip() + "\n---\n" + stderr.rstrip()) if stdout.strip() else stderr
+
         positionals = _positional_args(argv[1:])
         subcommand = positionals[0] if positionals else ""
         text = stdout
-        if subcommand in ("get", "top") and "\n" in text:
-            text = _compress_kubectl_table(text)
+
+        if subcommand in ("get", "top"):
+            if "\n" in text:
+                text = _compress_kubectl_table(text, max_rows=10)
+        elif subcommand == "describe":
+            if "\n" in text:
+                text = _compress_kubectl_describe(text)
+        elif subcommand in ("apply", "create", "delete"):
+            # These are typically short; pass through
+            pass
         elif subcommand == "logs":
-            text = "\n".join(dedupe_consecutive(text.split("\n")))
+            if "\n" in text:
+                non_empty = [ln for ln in text.split("\n") if ln.strip()]
+                if len(non_empty) > 50:
+                    text = _head_tail_compress(non_empty, head=30, tail=20, label="log lines")
+                else:
+                    text = "\n".join(non_empty)
+        elif subcommand == "exec":
+            # Interactive; pass through
+            pass
+        elif subcommand == "diff":
+            lines = text.split("\n")
+            if len(lines) > 50:
+                text = _head_tail_compress(lines, head=50, tail=0, label="diff lines")
+
         if stderr.strip():
             text = (text.rstrip() + "\n---\n" + stderr.rstrip()) if text.strip() else stderr
         return text
 
 
-def _compress_kubectl_table(text: str, max_rows: int = 25) -> str:
-    """Truncate a kubectl tabular output to header + first *max_rows* rows."""
+def _compress_kubectl_table(text: str, max_rows: int = 10) -> str:
+    """Truncate a kubectl tabular output to header + first *max_rows* data rows."""
     lines = text.split("\n")
-    if len(lines) <= max_rows + 1:
+    # Skip empty lines at the end
+    non_empty = [ln for ln in lines if ln.strip()]
+    if len(non_empty) <= max_rows + 1:
         return text
     return (
-        "\n".join(lines[: max_rows + 1])
-        + f"\n[token-goat: {len(lines) - max_rows - 1} more rows; use --selector or -l to narrow]"
+        "\n".join(non_empty[: max_rows + 1])
+        + f"\n[token-goat: {len(non_empty) - max_rows - 1} more rows; use --selector or -l to narrow]"
     )
+
+
+def _compress_kubectl_describe(text: str) -> str:
+    """Extract Name/Namespace/Status and Events section from kubectl describe."""
+    lines = text.split("\n")
+    kept: list[str] = []
+
+    # Scan for key fields in the header
+    for line in lines:
+        if any(key in line for key in ["Name:", "Namespace:", "Status:", "State:"]):
+            kept.append(line)
+
+    # Scan for Events section; keep last 10 event lines
+    events_start = -1
+    for i, line in enumerate(lines):
+        if line.startswith("Events:"):
+            events_start = i
+            break
+
+    if events_start >= 0:
+        kept.append("")
+        kept.append("Events:")
+        event_lines = [ln for ln in lines[events_start + 1:] if ln.strip()]
+        if event_lines:
+            if len(event_lines) > 10:
+                kept.append(f"[token-goat: {len(event_lines) - 10} earlier events elided]")
+                kept.extend(event_lines[-10:])
+            else:
+                kept.extend(event_lines)
+
+    if not kept:
+        # Fallback: header + first 20 lines
+        return "\n".join(lines[:20]) + "\n[token-goat: describe output truncated]"
+
+    return "\n".join(kept)
 
 
 # --- GitHub CLI ------------------------------------------------------------

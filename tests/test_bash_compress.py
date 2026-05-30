@@ -679,19 +679,156 @@ class TestDockerFilter:
 
 
 class TestKubectlFilter:
-    def test_truncates_long_table(self):
-        rows = ["NAME READY STATUS RESTARTS AGE"] + [f"pod-{i} 1/1 Running 0 5m" for i in range(50)]
+    def test_get_truncates_long_table(self):
+        """Test kubectl get with many rows."""
+        rows = ["NAME READY STATUS RESTARTS AGE"] + [
+            f"pod-{i} 1/1 Running 0 5m" for i in range(50)
+        ]
         text = "\n".join(rows)
         f = bc.KubectlFilter()
         result = f.apply(text, "", 0, ["kubectl", "get", "pods"])
         assert "NAME READY STATUS" in result.text
         assert "more rows" in result.text
+        # Should preserve header + first 10 rows
+        assert "pod-0" in result.text
+        assert "pod-9" in result.text
 
-    def test_dedupes_logs(self):
-        text = "\n".join(["same line"] * 30)
+    def test_get_keeps_short_table(self):
+        """Test kubectl get with few rows (no truncation)."""
+        rows = ["NAME READY STATUS RESTARTS AGE"] + [
+            f"pod-{i} 1/1 Running 0 5m" for i in range(5)
+        ]
+        text = "\n".join(rows)
         f = bc.KubectlFilter()
-        result = f.apply(text, "", 0, ["kubectl", "logs", "pod-foo"])
-        assert "(×30)" in result.text
+        result = f.apply(text, "", 0, ["kubectl", "get", "pods"])
+        # No truncation marker for short output
+        assert "more rows" not in result.text
+        assert result.text == text
+
+    def test_top_truncates_long_table(self):
+        """Test kubectl top (also uses table compression)."""
+        rows = ["NAME CPU(cores) MEMORY(bytes)"] + [
+            f"pod-{i} 100m 256Mi" for i in range(30)
+        ]
+        text = "\n".join(rows)
+        f = bc.KubectlFilter()
+        result = f.apply(text, "", 0, ["kubectl", "top", "pods"])
+        assert "more rows" in result.text
+        assert "NAME CPU" in result.text
+
+    def test_describe_extracts_key_fields(self):
+        """Test kubectl describe extracts Name/Namespace/Status."""
+        text = (
+            "Name:         my-pod\n"
+            "Namespace:    default\n"
+            "Status:       Running\n"
+            "State:        Running\n"
+            "Some other field: value\n"
+            "Another field: data\n"
+        )
+        f = bc.KubectlFilter()
+        result = f.apply(text, "", 0, ["kubectl", "describe", "pod", "my-pod"])
+        assert "Name:         my-pod" in result.text
+        assert "Namespace:    default" in result.text
+        assert "Status:       Running" in result.text
+        # Non-key fields should be dropped
+        assert "Some other field" not in result.text
+
+    def test_describe_preserves_events(self):
+        """Test kubectl describe preserves Events section."""
+        text = (
+            "Name:         my-pod\n"
+            "Namespace:    default\n"
+            "Events:\n"
+            "  Type    Reason   Age  From  Message\n"
+            "  ----    ------   ---  ----  -------\n"
+        )
+        # Add 15 event lines
+        text += "\n".join(
+            [f"  Normal  Created  {i}s  ...  Event {i}" for i in range(15)]
+        )
+        text += "\n"
+        f = bc.KubectlFilter()
+        result = f.apply(text, "", 0, ["kubectl", "describe", "pod", "my-pod"])
+        assert "Events:" in result.text
+        assert "earlier events elided" in result.text
+        # Should keep last 10 events
+        assert "Event 14" in result.text or "Event 13" in result.text
+
+    def test_logs_compresses_large_output(self):
+        """Test kubectl logs with head+tail compression."""
+        lines = [f"Line {i}: log message" for i in range(100)]
+        text = "\n".join(lines)
+        f = bc.KubectlFilter()
+        result = f.apply(text, "", 0, ["kubectl", "logs", "my-pod"])
+        # Should use head=30, tail=20 when > 50 lines
+        assert "log lines elided" in result.text
+        assert "Line 0" in result.text
+        assert "Line 99" in result.text
+
+    def test_logs_keeps_short_output(self):
+        """Test kubectl logs with few lines (no compression)."""
+        lines = [f"Line {i}: log message" for i in range(10)]
+        text = "\n".join(lines)
+        f = bc.KubectlFilter()
+        result = f.apply(text, "", 0, ["kubectl", "logs", "my-pod"])
+        # No compression for short output
+        assert "elided" not in result.text
+        assert result.text == text
+
+    def test_apply_passes_through(self):
+        """Test kubectl apply (usually short, pass through)."""
+        text = "pod/my-pod created"
+        f = bc.KubectlFilter()
+        result = f.apply(text, "", 0, ["kubectl", "apply", "-f", "manifest.yaml"])
+        assert result.text == text
+
+    def test_delete_passes_through(self):
+        """Test kubectl delete (usually short, pass through)."""
+        text = "pod/my-pod deleted"
+        f = bc.KubectlFilter()
+        result = f.apply(text, "", 0, ["kubectl", "delete", "pod", "my-pod"])
+        assert result.text == text
+
+    def test_diff_truncates_large_diff(self):
+        """Test kubectl diff truncates large diffs to first 50 lines."""
+        lines = [f"diff line {i}" for i in range(100)]
+        text = "\n".join(lines)
+        f = bc.KubectlFilter()
+        result = f.apply(text, "", 0, ["kubectl", "diff", "-f", "manifest.yaml"])
+        assert "diff lines" in result.text
+        assert "diff line 0" in result.text
+
+    def test_error_preserves_stderr(self):
+        """Test that errors preserve all stderr."""
+        stdout_text = "Some output"
+        stderr_text = "Error: something failed"
+        f = bc.KubectlFilter()
+        result = f.apply(
+            stdout_text, stderr_text, 1, ["kubectl", "get", "pods"]
+        )
+        assert "Error: something failed" in result.text
+        assert "---" in result.text  # Separator between stdout and stderr
+
+    def test_k_alias_works(self):
+        """Test kubectl alias 'k' is recognized."""
+        rows = ["NAME READY STATUS RESTARTS AGE"] + [
+            f"pod-{i} 1/1 Running 0 5m" for i in range(50)
+        ]
+        text = "\n".join(rows)
+        f = bc.KubectlFilter()
+        result = f.apply(text, "", 0, ["k", "get", "pods"])
+        assert "more rows" in result.text
+
+    def test_k9s_alias_works(self):
+        """Test k9s alias is recognized."""
+        rows = ["NAME READY STATUS RESTARTS AGE"] + [
+            f"pod-{i} 1/1 Running 0 5m" for i in range(50)
+        ]
+        text = "\n".join(rows)
+        f = bc.KubectlFilter()
+        result = f.apply(text, "", 0, ["k9s", "get", "pods"])
+        assert "more rows" in result.text
 
 
 # ---------------------------------------------------------------------------
