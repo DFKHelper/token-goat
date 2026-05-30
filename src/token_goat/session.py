@@ -613,6 +613,8 @@ class WebEntry:
     display in ``token-goat web-history``; the full URL is not persisted
     because URLs longer than that are typically presigned download tokens or
     similar that should not live in session JSON longer than necessary.
+    ``content_type`` is the MIME type from the response (e.g. "text/html") when
+    captured, or None if not available.
     """
 
     url_sha: str
@@ -622,6 +624,7 @@ class WebEntry:
     body_bytes: int
     status_code: int | None = None
     truncated: bool = False
+    content_type: str | None = None
 
 
 @dataclass
@@ -1761,6 +1764,7 @@ class _WebEntryDict(TypedDict, total=False):
     body_bytes: int
     status_code: int | None
     truncated: bool
+    content_type: str | None
 
 
 class _SkillEntryDict(TypedDict, total=False):
@@ -3175,6 +3179,7 @@ def mark_web_fetch(
     status_code: int | None,
     truncated: bool,
     *,
+    content_type: str | None = None,
     cache: SessionCache | None = None,
 ) -> SessionCache:
     """Record a WebFetch invocation in the per-session history.
@@ -3184,7 +3189,8 @@ def mark_web_fetch(
     avoids persisting potentially-sensitive query parameters (auth tokens,
     presigned URL signatures) longer than necessary.  ``url_preview`` is the
     first 200 chars of the URL, which is enough to identify a repeat fetch
-    while remaining bounded.
+    while remaining bounded.  ``content_type`` is the MIME type from the
+    response when captured.
 
     FIFO eviction batches removals at ``_WEB_HISTORY_EVICT`` so a tight
     re-fetch loop does not rewrite the dict on every insert.
@@ -3212,6 +3218,7 @@ def mark_web_fetch(
             else None
         ),
         truncated=bool(truncated),
+        content_type=content_type,
     )
     _append_to_dict_history(
         cache.web_history,

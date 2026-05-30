@@ -1339,6 +1339,34 @@ def _handle_bash_dedup(payload: HookPayload) -> HookResponse | None:
     )
 
 
+def _handle_bash_cache_hit(payload: HookPayload) -> HookResponse | None:
+    """Return a cache-hit hint when this Bash command has a cached output from a prior session.
+
+    Fires when the command is not in the current session's bash history but there
+    is still output on disk from a previous session.  This is the cross-session
+    counterpart to :func:`_handle_bash_dedup`.  Returns ``None`` when no prior
+    cached entry exists or the session has already seen this command (the dedup
+    path handles that case).
+    """
+    from .hints import build_bash_cache_hit_hint  # noqa: PLC0415
+    from .hooks_common import run_dedup_hint  # noqa: PLC0415
+
+    tool_input = get_tool_input(payload)
+    command = tool_input.get("command")
+    if not isinstance(command, str) or not command:
+        return None
+
+    return run_dedup_hint(
+        payload,
+        builder=lambda sid, cache: build_bash_cache_hit_hint(
+            session_id=sid, command=command, cache=cache,
+        ),
+        stat_kind="bash_cache_hit_hint",
+        detail=sanitize_log_str(command, max_len=200),
+        log_label="pre-read",
+    )
+
+
 def _check_recovery_pending(session_id: str, cache: object) -> str | None:
     """Return the deferred recovery hint text and consume the sidecar, or None.
 
@@ -1444,6 +1472,13 @@ def pre_read(payload: HookPayload) -> HookResponse:
         dedup = _handle_bash_dedup(payload)
         if dedup is not None:
             return dedup
+
+        # Cross-session cache hit: the command was not run in this session but
+        # has a cached output on disk from a prior session.  Emit a hint so the
+        # agent can retrieve it without a network round-trip.
+        cache_hit = _handle_bash_cache_hit(payload)
+        if cache_hit is not None:
+            return cache_hit
 
         read_payload = _handle_bash_read_equivalent(payload)
         if read_payload:
