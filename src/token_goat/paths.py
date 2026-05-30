@@ -224,6 +224,13 @@ def _safe_child_path(base: Path, child_name: str, extension: str, label: str) ->
     treat these as path terminators) or if the resolved candidate escapes *base*
     (e.g. via ``../../evil`` sequences).
 
+    On Windows, also raises ``ValueError`` when *child_name* contains a colon.
+    A colon in a Windows filename silently creates an NTFS Alternate Data Stream
+    instead of a regular file — the write succeeds, ``os.path.exists`` returns
+    True, but the file never appears in directory listings and ``iterdir()`` skips
+    it.  Codex session IDs can contain ``:``; rejecting them here lets callers
+    either sanitize first or surface a clear error rather than silently losing data.
+
     Args:
         base:       The directory that must contain the returned path.
         child_name: The filename stem to join under *base* (no extension).
@@ -234,6 +241,11 @@ def _safe_child_path(base: Path, child_name: str, extension: str, label: str) ->
     """
     if "\x00" in child_name:
         raise ValueError(f"{label} contains null byte: {child_name!r}")
+    if sys.platform == "win32" and ":" in child_name:
+        raise ValueError(
+            f"{label} contains colon (would create NTFS Alternate Data Stream on Windows): "
+            f"{child_name!r}"
+        )
     candidate = (base / f"{child_name}{extension}").resolve()
     try:
         candidate.relative_to(base.resolve())
@@ -242,6 +254,30 @@ def _safe_child_path(base: Path, child_name: str, extension: str, label: str) ->
             f"{label} produces a path outside {base.name}/: {child_name!r}"
         ) from exc
     return candidate
+
+
+def _sanitize_session_id_for_filename(session_id: str) -> str:
+    """Return a filesystem-safe version of *session_id* for use in filenames.
+
+    On Windows, colons in filenames silently create NTFS Alternate Data Streams
+    instead of regular files (see ``_safe_child_path`` for details).  Codex
+    session IDs can contain ``:``; this helper replaces each colon with ``_`` so
+    the sanitized ID is safe to embed in compound filenames like
+    ``manifest_sha_{session_id}`` or ``recovery_pending_{session_id}``.
+
+    The substitution is reversible in context (the prefix ``manifest_sha_`` is
+    unique enough that collision with a genuine underscore in the session ID does
+    not matter — these files are never looked up by session_id in reverse), and
+    it is idempotent (already-safe IDs pass through unchanged).
+    """
+    if sys.platform == "win32" and ":" in session_id:
+        sanitized = session_id.replace(":", "_")
+        _LOG.debug(
+            "paths: session_id contains colon; sanitized for filename: %r -> %r",
+            session_id[:24], sanitized[:24],
+        )
+        return sanitized
+    return session_id
 
 
 def safe_join(base: Path, fragment: str, *, ext: str = "") -> Path:
@@ -579,8 +615,12 @@ def compact_skip_sentinel_path(session_id: str) -> Path:
 
     Raises ``ValueError`` if *session_id* contains a null byte or would
     produce a path outside the ``compact_skip/`` subdirectory.
+
+    On Windows, colons in *session_id* are sanitized to underscores before
+    path construction to prevent silent NTFS Alternate Data Stream creation.
     """
-    return _safe_child_path(data_dir() / "compact_skip", session_id, ".sentinel", "session_id")
+    safe_id = _sanitize_session_id_for_filename(session_id)
+    return _safe_child_path(data_dir() / "compact_skip", safe_id, ".sentinel", "session_id")
 
 
 def sentinels_dir() -> Path:
@@ -606,8 +646,12 @@ def recovery_pending_path(session_id: str) -> Path:
 
     Raises ``ValueError`` if *session_id* contains a null byte or escapes the
     ``sentinels/`` directory.
+
+    On Windows, colons in *session_id* are sanitized to underscores before
+    path construction to prevent silent NTFS Alternate Data Stream creation.
     """
-    return _safe_child_path(sentinels_dir(), f"recovery_pending_{session_id}", "", "session_id")
+    safe_id = _sanitize_session_id_for_filename(session_id)
+    return _safe_child_path(sentinels_dir(), f"recovery_pending_{safe_id}", "", "session_id")
 
 
 def manifest_sha_sidecar_path(session_id: str) -> Path:
@@ -620,8 +664,12 @@ def manifest_sha_sidecar_path(session_id: str) -> Path:
 
     Raises ``ValueError`` if *session_id* contains a null byte or would
     produce a path outside the ``sentinels/`` directory.
+
+    On Windows, colons in *session_id* are sanitized to underscores before
+    path construction to prevent silent NTFS Alternate Data Stream creation.
     """
-    return _safe_child_path(sentinels_dir(), f"manifest_sha_{session_id}", "", "session_id")
+    safe_id = _sanitize_session_id_for_filename(session_id)
+    return _safe_child_path(sentinels_dir(), f"manifest_sha_{safe_id}", "", "session_id")
 
 
 def claude_config_dir() -> Path:
