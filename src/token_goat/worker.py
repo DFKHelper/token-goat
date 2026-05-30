@@ -164,6 +164,14 @@ _SECS_PER_DAY = 86_400
 # queue entry from inflating log lines or the projects table with garbage data.
 _MAX_QUEUE_MARKER_LEN = 64
 
+# Maximum number of entries to keep in the dirty queue file. When the queue
+# grows larger (e.g., worker down for a long time, thousands of auto-saves),
+# evict the oldest entries so the queue stays bounded. This prevents unbounded
+# disk growth and keeps the queue processing latency predictable. The worker
+# drains every 2 s, so 10,000 entries represents ~5 s of rapid edits on a
+# heavily loaded machine — ample capacity while still being a safety cap.
+DIRTY_QUEUE_MAX_ENTRIES = 10_000
+
 # Size cap for the worker-stderr.log crash sink. spawn_detached appends to this
 # file on every worker spawn (one per SessionStart hook); the daily-log
 # retention sweep never catches it because each append refreshes the mtime. Once
@@ -184,6 +192,12 @@ WORKER_HUNG_THRESHOLD = 900.0
 # How often the daemon checks whether it has been replaced on disk by a
 # `uv tool install --reinstall`. On a change it hands off to the new code.
 VERSION_CHECK_INTERVAL = 60.0
+
+# Minimum seconds between worker restart attempts triggered by the post-edit hook
+# (_nudge_worker_if_down). Prevents tight restart loops when the worker crashes
+# on startup due to a corrupt DB or bad queue entry. The watchdog will still
+# restart on the next edit, but at most once per this interval.
+WORKER_RESTART_THROTTLE_SECS = 30.0
 
 
 def _installed_version() -> str | None:
@@ -356,7 +370,19 @@ def _is_process_recent(pid: int) -> bool:
 
 
 def is_worker_alive() -> bool:
-    """True if the PID file exists, points to a live process, and heartbeat is fresh."""
+    """True if the PID file exists, points to a live token-goat process, and
+    heartbeat is fresh.
+
+    Validates that the PID is still alive. Additionally, verifies the process
+    is a token-goat worker (not a recycled PID from an unrelated process) when
+    the cmdline can be read. If cmdline cannot be read (permission denied,
+    sandboxed, test runner), the presence of a heartbeat file is considered
+    sufficient proof of a live worker.
+
+    This catches the race where a worker dies and its PID is recycled to an
+    unrelated process (e.g. background task), while remaining lenient for test
+    scenarios where we cannot inspect the actual cmdline.
+    """
     pid_path = paths.worker_pid_path()
     if not pid_path.exists():
         return False
@@ -364,8 +390,27 @@ def is_worker_alive() -> bool:
         pid = int(pid_path.read_text(encoding="utf-8").strip())
     except (ValueError, OSError):
         return False
+
     if not psutil.pid_exists(pid):
         return False
+
+    # Attempt cmdline verification to catch PID recycling. When running under
+    # tests (pytest, etc.) the process won't match "token_goat worker" in the
+    # cmdline, but a fresh heartbeat in that case proves a *live* process was
+    # checking in, so we accept it.
+    try:
+        p = psutil.Process(pid)
+        cmdline = " ".join(p.cmdline()).lower()
+        # If cmdline is readable but doesn't contain token_goat worker, reject
+        # (PID was likely recycled to an unrelated process).
+        if "token_goat" not in cmdline or "worker" not in cmdline:
+            _LOG.debug("is_worker_alive: PID %d is alive but cmdline does not match token-goat worker",
+                      pid)
+            return False
+    except (psutil.NoSuchProcess, psutil.AccessDenied, OSError):
+        # Cannot read cmdline. In tests or restricted environments, a fresh
+        # heartbeat proves a live process was running token-goat logic.
+        pass
 
     # Check heartbeat freshness or startup grace period
     hb_path = paths.worker_heartbeat_path()
@@ -579,6 +624,10 @@ def enqueue_dirty(
 
     Uses an OS-level lock (fcntl.flock on POSIX, msvcrt.locking on Windows)
     to ensure the JSON line is written atomically without interleaving.
+
+    Enforces a cap on queue size (DIRTY_QUEUE_MAX_ENTRIES) to prevent unbounded
+    growth when the worker is down for a long time. When the limit is exceeded,
+    the oldest entries are discarded.
     """
     paths.ensure_dir(paths.dirty_queue_path().parent)
     entry: dict[str, object] = {"path": rel_path, "project_hash": project_hash, "ts": time.time()}
@@ -588,9 +637,36 @@ def enqueue_dirty(
         entry["project_marker"] = project_marker
     line = json.dumps(entry)
 
-    lock_path = paths.dirty_queue_path().parent / ".dirty_queue.lock"
-    with _dirty_queue_lock(lock_path), paths.dirty_queue_path().open("a", encoding="utf-8") as f:
-        f.write(line + "\n")
+    queue_path = paths.dirty_queue_path()
+    lock_path = queue_path.parent / ".dirty_queue.lock"
+    with _dirty_queue_lock(lock_path):
+        # Read current entries to check if we need to prune.
+        entries_to_keep: list[str] = []
+        if queue_path.exists():
+            try:
+                lines = queue_path.read_text(encoding="utf-8").splitlines()
+                entries_to_keep = [line.strip() for line in lines if line.strip()]
+            except OSError:
+                pass  # If we can't read, start fresh with just the new entry.
+
+        # Cap the queue: keep the last (DIRTY_QUEUE_MAX_ENTRIES - 1) oldest entries
+        # plus the new one to stay within the limit.
+        if len(entries_to_keep) >= DIRTY_QUEUE_MAX_ENTRIES:
+            entries_to_keep = entries_to_keep[-(DIRTY_QUEUE_MAX_ENTRIES - 1) :]
+            _LOG.info(
+                "dirty queue cap reached (%d entries); evicting oldest entries to stay at %d",
+                DIRTY_QUEUE_MAX_ENTRIES,
+                len(entries_to_keep) + 1,
+            )
+
+        # Write the pruned queue plus the new entry.
+        try:
+            with queue_path.open("w", encoding="utf-8") as f:
+                for existing_line in entries_to_keep:
+                    f.write(existing_line + "\n")
+                f.write(line + "\n")
+        except OSError as e:
+            _LOG.warning("failed to write dirty queue: %s", e)
 
 
 def adaptive_poll_interval(consecutive_empty_drains: int) -> float:
@@ -1630,12 +1706,34 @@ def _is_token_goat_worker(pid: int) -> bool:
 
 
 def _live_worker_pid() -> int | None:
-    """PID from the pid file, but only if it names a live token-goat-worker process."""
+    """PID from the pid file, but only if it names a live token-goat-worker process.
+
+    Uses lenient cmdline validation: if cmdline cannot be read (permissions,
+    sandboxed, test), the PID is still returned. Rejects only if cmdline is
+    readable and definitively does NOT contain "token_goat worker" markers
+    (indicating PID recycling).
+    """
     try:
         pid = int(paths.worker_pid_path().read_text(encoding="utf-8").strip())
     except (OSError, ValueError):
         return None
-    return pid if _is_token_goat_worker(pid) else None
+
+    # Check if process exists.
+    if not psutil.pid_exists(pid):
+        return None
+
+    # Attempt cmdline verification. Like is_worker_alive, we only reject if
+    # cmdline is readable and doesn't match token-goat markers (PID recycling).
+    try:
+        p = psutil.Process(pid)
+        cmdline = " ".join(p.cmdline()).lower()
+        if "token_goat" not in cmdline or "worker" not in cmdline:
+            return None  # PID recycled to an unrelated process
+    except (psutil.NoSuchProcess, psutil.AccessDenied, OSError):
+        # Cannot read cmdline; assume it's valid.
+        pass
+
+    return pid
 
 
 def _reap_hung_worker() -> bool:

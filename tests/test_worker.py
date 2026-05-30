@@ -20,6 +20,20 @@ from token_goat import worker
 # lets a test invoke the genuine self-registration logic on demand.
 _REAL_REGISTER_AUTOSTART = worker._register_autostart
 
+
+@pytest.fixture
+def mock_worker_cmdline():
+    """Mock psutil.Process to return a cmdline that looks like a token-goat worker.
+
+    This lets is_worker_alive() and related functions pass the cmdline verification
+    check when running under pytest (where the actual cmdline won't contain
+    "token_goat worker" markers).
+    """
+    mock_proc = MagicMock()
+    mock_proc.cmdline.return_value = ["pythonw.exe", "-m", "token_goat.cli", "worker", "--daemon"]
+    with patch.object(worker.psutil, "Process", return_value=mock_proc):
+        yield mock_proc
+
 # ---------------------------------------------------------------------------
 # 1. is_worker_alive() — no PID file
 # ---------------------------------------------------------------------------
@@ -45,7 +59,7 @@ def test_is_worker_alive_dead_pid(tmp_data_dir):
 # 3. is_worker_alive() — current process PID with fresh heartbeat
 # ---------------------------------------------------------------------------
 
-def test_is_worker_alive_current_process(tmp_data_dir):
+def test_is_worker_alive_current_process(tmp_data_dir, mock_worker_cmdline):
     paths.ensure_dirs()
     pid = os.getpid()
     paths.worker_pid_path().write_text(str(pid), encoding="utf-8")
@@ -538,7 +552,7 @@ def test_run_daemon_second_instance_exits_immediately(tmp_data_dir):
 # 10. ensure_running() — worker already alive returns existing PID, no spawn
 # ---------------------------------------------------------------------------
 
-def test_ensure_running_already_alive(tmp_data_dir):
+def test_ensure_running_already_alive(tmp_data_dir, mock_worker_cmdline):
     paths.ensure_dirs()
     pid = os.getpid()
     paths.worker_pid_path().write_text(str(pid), encoding="utf-8")
@@ -556,6 +570,45 @@ def test_ensure_running_already_alive(tmp_data_dir):
 # ---------------------------------------------------------------------------
 
 
+# ---------------------------------------------------------------------------
+# Dirty queue cap test
+# ---------------------------------------------------------------------------
+
+def test_enqueue_dirty_respects_max_entries_cap(tmp_data_dir, monkeypatch):
+    """enqueue_dirty enforces DIRTY_QUEUE_MAX_ENTRIES cap by evicting oldest entries."""
+    paths.ensure_dirs()
+
+    # Use a smaller cap for testing to avoid timeout
+    test_cap = 50
+    monkeypatch.setattr(worker, "DIRTY_QUEUE_MAX_ENTRIES", test_cap)
+
+    # Fill the queue up to the cap
+    for i in range(test_cap):
+        worker.enqueue_dirty(f"file_{i}.py", project_hash="proj123")
+
+    # Verify queue has exactly test_cap entries
+    queue_path = paths.dirty_queue_path()
+    lines = queue_path.read_text(encoding="utf-8").splitlines()
+    assert len(lines) == test_cap
+
+    # Add one more entry — should evict the oldest
+    worker.enqueue_dirty("file_new.py", project_hash="proj123")
+
+    # Queue should still be at cap (oldest was removed)
+    lines = queue_path.read_text(encoding="utf-8").splitlines()
+    assert len(lines) == test_cap
+
+    # The oldest entry should be gone, new one should be present
+    entries = [json.loads(line) for line in lines]
+    assert any(e["path"] == "file_new.py" for e in entries)
+    assert not any(e["path"] == "file_0.py" for e in entries)
+
+
+# ---------------------------------------------------------------------------
+# TestWorkerSelfHeal
+# ---------------------------------------------------------------------------
+
+
 class TestWorkerSelfHeal:
     """ensure_running() must respawn a crashed or hung worker, but never
     disturb a healthy-but-busy one (which would orphan it or spawn a
@@ -564,6 +617,25 @@ class TestWorkerSelfHeal:
     def test_is_token_goat_worker_false_for_dead_pid(self, tmp_data_dir):
         # 999999999 is not a real PID — cmdline lookup fails → not a worker.
         assert worker._is_token_goat_worker(999999999) is False
+
+    def test_is_worker_alive_rejects_recycled_pid(self, tmp_data_dir):
+        """PID liveness + cmdline verification catches PID recycling: worker dies,
+        PID is handed to an unrelated process. Cmdline check will fail.
+        """
+        paths.ensure_dirs()
+        pid = os.getpid()
+        paths.worker_pid_path().write_text(str(pid), encoding="utf-8")
+        hb_path = paths.worker_heartbeat_path()
+        hb_path.write_text(str(time.time()), encoding="utf-8")
+
+        # Mock psutil.Process to return a cmdline that does NOT contain token_goat.
+        # This simulates a PID recycled to an unrelated process (e.g. some background task).
+        mock_proc = MagicMock()
+        mock_proc.cmdline.return_value = ["some_random_process.exe", "--arg"]
+
+        with patch.object(worker.psutil, "Process", return_value=mock_proc):
+            # Should reject because cmdline doesn't match token-goat worker.
+            assert worker.is_worker_alive() is False
 
     def test_live_worker_pid_none_for_dead_pid(self, tmp_data_dir):
         paths.ensure_dirs()
@@ -966,7 +1038,7 @@ def test_is_worker_alive_empty_pid_file(tmp_data_dir):
 # 16. is_worker_alive with fresh heartbeat (current mtime)
 # ---------------------------------------------------------------------------
 
-def test_is_worker_alive_fresh_heartbeat_mtime(tmp_data_dir):
+def test_is_worker_alive_fresh_heartbeat_mtime(tmp_data_dir, mock_worker_cmdline):
     """is_worker_alive should return True for fresh heartbeat (mtime-based check)."""
     paths.ensure_dirs()
     pid = os.getpid()
@@ -999,7 +1071,7 @@ def test_is_worker_alive_no_heartbeat_dead_pid(tmp_data_dir):
 # ---------------------------------------------------------------------------
 
 
-def test_is_worker_alive_startup_grace_no_heartbeat(tmp_data_dir, monkeypatch):
+def test_is_worker_alive_startup_grace_no_heartbeat(tmp_data_dir, monkeypatch, mock_worker_cmdline):
     """A live process with no heartbeat file yet must be treated as alive during
     the startup grace window.  This prevents spurious re-spawns in the first
     WORKER_STARTUP_GRACE seconds of a fresh worker process.
@@ -1017,7 +1089,7 @@ def test_is_worker_alive_startup_grace_no_heartbeat(tmp_data_dir, monkeypatch):
     assert worker.is_worker_alive() is True
 
 
-def test_is_worker_alive_startup_grace_expired_no_heartbeat(tmp_data_dir, monkeypatch):
+def test_is_worker_alive_startup_grace_expired_no_heartbeat(tmp_data_dir, monkeypatch, mock_worker_cmdline):
     """Once the startup grace period expires, a missing heartbeat means the
     worker is not alive — it should not be left indefinitely un-restarted.
     """
