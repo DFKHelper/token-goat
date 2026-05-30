@@ -3859,6 +3859,246 @@ def _show_symbols_for_paths(paths: list[str], since: str, cwd: str, *, json_outp
             typer.echo(f"    {s}")
 
 
+def _format_relative_time(age_secs: float) -> str:
+    """Return a compact human-readable age string (e.g. '5m', '2h', '3d')."""
+    if age_secs < 60:
+        return f"{int(age_secs)}s"
+    if age_secs < 3600:
+        return f"{int(age_secs / 60)}m"
+    if age_secs < 86400:
+        return f"{int(age_secs / 3600)}h"
+    return f"{int(age_secs / 86400)}d"
+
+
+def _load_session_summaries(
+    limit: int,
+    project_filter: str | None,
+) -> list[dict[str, object]]:
+    """Scan the sessions directory and return summary dicts sorted by last_activity_ts desc."""
+    import contextlib  # noqa: PLC0415
+
+    from . import paths as _paths  # noqa: PLC0415
+
+    sessions_dir = _paths.data_dir() / "sessions"
+    if not sessions_dir.exists():
+        return []
+
+    rows: list[dict[str, object]] = []
+    for f in sessions_dir.iterdir():
+        if not f.is_file() or f.suffix != ".json":
+            continue
+        with contextlib.suppress(Exception):
+            raw = json.loads(f.read_text(encoding="utf-8", errors="replace"))
+            sid = str(raw.get("session_id", f.stem))
+            cwd = raw.get("cwd") or ""
+            last_ts = float(raw.get("last_activity_ts") or f.stat().st_mtime)
+            started_ts = float(raw.get("started_ts") or last_ts)
+            file_count = len(raw.get("files") or {})
+            edit_count = sum(int(v or 0) for v in (raw.get("edited_files") or {}).values())
+            hints_emitted = int(raw.get("hints_emitted") or 0)
+            bash_count = len(raw.get("bash_history") or {})
+            web_count = len(raw.get("web_history") or {})
+
+            project_basename = ""
+            if cwd:
+                project_basename = Path(cwd).name
+
+            if project_filter:
+                norm_filter = Path(project_filter).resolve()
+                cwd_path = Path(cwd).resolve() if cwd else None
+                if cwd_path != norm_filter:
+                    continue
+
+            rows.append({
+                "session_id": sid,
+                "project": project_basename,
+                "cwd": cwd,
+                "last_activity_ts": last_ts,
+                "started_ts": started_ts,
+                "file_count": file_count,
+                "edit_count": edit_count,
+                "hints_emitted": hints_emitted,
+                "bash_count": bash_count,
+                "web_count": web_count,
+            })
+
+    rows.sort(key=lambda r: float(r["last_activity_ts"]), reverse=True)  # type: ignore[arg-type]
+    if limit > 0:
+        rows = rows[:limit]
+    return rows
+
+
+@app.command("sessions", rich_help_panel="Core")
+def cmd_sessions(
+    limit: int = typer.Option(20, "--limit", "-n", help="Maximum sessions to show (newest first)"),  # noqa: B008
+    project: str | None = typer.Option(  # noqa: B008
+        None,
+        "--project",
+        help="Filter to sessions for this project root path (defaults to all projects).",
+    ),
+    json_output: bool = _OPT_JSON,
+) -> None:
+    """List recent sessions with per-session stats.
+
+    Shows session ID (truncated), project name, last active time, file count,
+    edit count, and hints emitted.  Use ``token-goat sessions show SESSION_ID``
+    for full details on one session.
+    """
+    rows = _load_session_summaries(limit, project)
+
+    if json_output:
+        typer.echo(json.dumps(rows, ensure_ascii=False, separators=(",", ":")))
+        return
+
+    if not rows:
+        typer.echo("(no sessions found)")
+        return
+
+    now = time.time()
+    header = f"{'SESSION':>26}  {'PROJECT':<20}  {'LAST ACTIVE':>11}  {'FILES':>5}  {'EDITS':>5}  {'HINTS':>5}  {'BASH':>4}  {'WEB':>4}"
+    typer.echo(header)
+    typer.echo("-" * len(header))
+    for r in rows:
+        sid = str(r["session_id"])
+        sid_short = sid[:24] if len(sid) > 24 else sid
+        proj = str(r["project"])[:20]
+        age = _format_relative_time(now - cast(float, r["last_activity_ts"]))
+        typer.echo(
+            f"{sid_short:>26}  {proj:<20}  {age:>11}  {cast(int, r['file_count']):>5}  "
+            f"{cast(int, r['edit_count']):>5}  {cast(int, r['hints_emitted']):>5}  "
+            f"{cast(int, r['bash_count']):>4}  {cast(int, r['web_count']):>4}"
+        )
+
+
+@app.command("sessions-show", rich_help_panel="Core")
+def cmd_sessions_show(
+    session_id: str = typer.Argument(..., help="Session ID to inspect (prefix match accepted)."),
+    json_output: bool = _OPT_JSON,
+) -> None:
+    """Show full details for one session: edited files, bash history, and web history.
+
+    Accepts a full session ID or a unique prefix.  Use ``token-goat sessions``
+    to list IDs.
+    """
+    import contextlib  # noqa: PLC0415
+
+    from . import paths as _paths  # noqa: PLC0415
+
+    sessions_dir = _paths.data_dir() / "sessions"
+    if not sessions_dir.exists():
+        _error("no sessions directory found")
+        raise typer.Exit(1)
+
+    matches: list[Path] = []
+    for f in sessions_dir.iterdir():
+        if f.is_file() and f.suffix == ".json":
+            stem = f.stem
+            if stem == session_id or stem.startswith(session_id):
+                matches.append(f)
+
+    if not matches:
+        _error(f"no session found matching {session_id!r}")
+        raise typer.Exit(1)
+    if len(matches) > 1:
+        _error(f"ambiguous prefix {session_id!r} matches {len(matches)} sessions; be more specific")
+        raise typer.Exit(1)
+
+    session_file = matches[0]
+    raw: dict[str, object] = {}
+    with contextlib.suppress(Exception):
+        raw = json.loads(session_file.read_text(encoding="utf-8", errors="replace"))
+
+    if not raw:
+        _error(f"could not read session file: {session_file}")
+        raise typer.Exit(1)
+
+    if json_output:
+        typer.echo(json.dumps(raw, ensure_ascii=False, separators=(",", ":")))
+        return
+
+    now = time.time()
+    sid = str(raw.get("session_id", session_file.stem))
+    cwd = str(raw.get("cwd") or "(unknown)")
+    _raw_last = raw.get("last_activity_ts")
+    last_ts = float(_raw_last) if _raw_last is not None else session_file.stat().st_mtime  # type: ignore[arg-type]
+    _raw_started = raw.get("started_ts")
+    started_ts = float(_raw_started) if _raw_started is not None else last_ts  # type: ignore[arg-type]
+    age = _format_relative_time(now - last_ts)
+    duration_secs = last_ts - started_ts
+    duration = _format_relative_time(duration_secs) if duration_secs > 0 else "0s"
+
+    typer.echo(f"session:     {sid}")
+    typer.echo(f"project:     {cwd}")
+    typer.echo(f"last active: {age} ago")
+    typer.echo(f"duration:    {duration}")
+    _hints_e = int(raw.get("hints_emitted") or 0)  # type: ignore[call-overload]
+    _hints_i = int(raw.get("hints_ignored") or 0)  # type: ignore[call-overload]
+    typer.echo(f"hints:       {_hints_e} emitted, {_hints_i} ignored")
+
+    edited: dict[str, int] = {}
+    raw_edited = raw.get("edited_files")
+    if isinstance(raw_edited, dict):
+        edited = {k: int(v or 0) for k, v in raw_edited.items()}
+    if edited:
+        typer.echo(f"\nEdited files ({len(edited)}):")
+        for path, count in sorted(edited.items(), key=lambda x: x[1], reverse=True):
+            typer.echo(f"  {count:>3}x  {path}")
+    else:
+        typer.echo("\nEdited files: (none)")
+
+    files: dict[str, object] = {}
+    raw_files = raw.get("files")
+    if isinstance(raw_files, dict):
+        files = raw_files
+    if files:
+        typer.echo(f"\nRead files ({len(files)}):")
+        file_list = sorted(
+            ((k, v) for k, v in files.items() if isinstance(v, dict)),
+            key=lambda x: float(x[1].get("last_read_ts") or 0),  # type: ignore[union-attr]
+            reverse=True,
+        )
+        for path, entry in file_list[:20]:
+            rc = int(entry.get("read_count") or 0)  # type: ignore[union-attr]
+            typer.echo(f"  {rc:>3}x  {path}")
+        if len(files) > 20:
+            typer.echo(f"  ... and {len(files) - 20} more")
+
+    bash_hist: dict[str, object] = {}
+    raw_bash = raw.get("bash_history")
+    if isinstance(raw_bash, dict):
+        bash_hist = raw_bash
+    if bash_hist:
+        typer.echo(f"\nBash history ({len(bash_hist)}):")
+        bash_entries = sorted(
+            ((k, v) for k, v in bash_hist.items() if isinstance(v, dict)),
+            key=lambda x: float(x[1].get("ts") or 0),  # type: ignore[union-attr]
+            reverse=True,
+        )
+        for _key, entry in bash_entries[:15]:
+            preview = str(entry.get("cmd_preview") or "(no preview)")[:80]  # type: ignore[union-attr]
+            rc = int(entry.get("run_count") or 1)  # type: ignore[union-attr]
+            typer.echo(f"  {'x'+str(rc):>4}  {preview}")
+        if len(bash_hist) > 15:
+            typer.echo(f"  ... and {len(bash_hist) - 15} more")
+
+    web_hist: dict[str, object] = {}
+    raw_web = raw.get("web_history")
+    if isinstance(raw_web, dict):
+        web_hist = raw_web
+    if web_hist:
+        typer.echo(f"\nWeb history ({len(web_hist)}):")
+        web_entries = sorted(
+            ((k, v) for k, v in web_hist.items() if isinstance(v, dict)),
+            key=lambda x: float(x[1].get("ts") or 0),  # type: ignore[union-attr]
+            reverse=True,
+        )
+        for _key, entry in web_entries[:15]:
+            preview = str(entry.get("url_preview") or "(no preview)")[:80]  # type: ignore[union-attr]
+            typer.echo(f"  {preview}")
+        if len(web_hist) > 15:
+            typer.echo(f"  ... and {len(web_hist) - 15} more")
+
+
 @app.command("clean", rich_help_panel="Advanced")
 def cmd_clean(
     images: bool = typer.Option(False, "--images", help="Clear the image shrink cache."),  # noqa: B008
