@@ -1549,11 +1549,13 @@ def index(
 def stats(
     window: int = typer.Option(30, "--window", "-w", help="Days to include (0 = all time)"),
     json_output: bool = _OPT_JSON,
+    by_project: bool = typer.Option(False, "--by-project", help="Show per-project breakdown table"),
+    top: int = typer.Option(10, "--top", help="Number of projects to show with --by-project"),
 ) -> None:
     """Show cumulative token savings."""
     from . import cli_stats  # noqa: PLC0415
 
-    cli_stats.stats(window=window, json_output=json_output)
+    cli_stats.stats(window=window, json_output=json_output, by_project=by_project, top=top)
 
 
 # Smart-default constants for no-flag recall of bash-output / web-output.
