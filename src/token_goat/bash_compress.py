@@ -78,7 +78,9 @@ __all__ = [
     "DotnetFilter",
     "EzaFilter",
     "FdFilter",
+    "GradleFilter",
     "JqFilter",
+    "MavenFilter",
     "PythonFilter",
     "RsyncFilter",
     "TreeFilter",
@@ -4253,6 +4255,188 @@ class DotnetFilter(Filter):
         return self._finalize(kept)
 
 
+# --- Gradle ----------------------------------------------------------------
+
+#: Gradle task progress: "> Task :foo:bar" or "> Configure project"
+_GRADLE_TASK_PROGRESS_RE: Final[re.Pattern[str]] = re.compile(
+    r"^>\s+(?:Task :|Configure project|Run tasks)"
+)
+#: Gradle build result: "BUILD SUCCESSFUL" or "BUILD FAILED"
+_GRADLE_BUILD_RESULT_RE: Final[re.Pattern[str]] = re.compile(
+    r"^BUILD (?:SUCCESSFUL|FAILED)"
+)
+#: Gradle failure section: "FAILURE: ..."
+_GRADLE_FAILURE_SECTION_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\* What went wrong:"
+)
+#: Gradle test summary: "X tests passed" or similar
+_GRADLE_TEST_SUMMARY_RE: Final[re.Pattern[str]] = re.compile(
+    r"^.*tests? (?:passed|failed)"
+)
+
+
+class GradleFilter(Filter):
+    """Compress Gradle build, test, and dependency output.
+
+    Gradle emits task progress lines, dependency resolution, and extensive
+    build output that is mostly noise unless there's a failure.
+
+    Compression model:
+
+    * **build/test/check**: keep ``BUILD SUCCESSFUL/FAILED`` line + last 30
+      lines (includes test summary). Drop progress output (``> Task :``,
+      ``> Configure project``).
+    * **dependencies**: head=10, tail=10 compression (dependency trees are
+      massive).
+    * **tasks**: head=20, tail=5 compression (task list can be large).
+    * **Failures** (exit_code != 0): keep all stderr + last 20 lines of stdout.
+    * **BUILD FAILED**: keep FAILURE section and "What went wrong:" block.
+    """
+
+    name = "gradle"
+    binaries = frozenset(["gradle", "gradlew", "./gradlew"])
+
+    def compress(
+        self, stdout: str, stderr: str, exit_code: int, argv: list[str],
+    ) -> str:
+        positionals = _positional_args(argv[1:])
+        subcommand = positionals[0].lower() if positionals else ""
+
+        merged = self._combine_output(stdout, stderr)
+        lines = merged.split("\n")
+
+        # On failure, preserve stderr and last 20 lines of output.
+        if exit_code != 0:
+            last_lines = "\n".join(lines[-20:])
+            if stderr.strip():
+                return f"{last_lines}\n---\n{stderr.rstrip()}"
+            return last_lines
+
+        # Subcommand-specific compression.
+        if subcommand in ("dependencies", "deps"):
+            return _head_tail_compress(lines, head=10, tail=10, label="lines")
+        if subcommand == "tasks":
+            return _head_tail_compress(lines, head=20, tail=5, label="lines")
+        if subcommand in ("build", "test", "check", "assemble", "verify"):
+            return self._compress_build(lines)
+
+        # Default: use head/tail for unknown subcommands.
+        return _head_tail_compress(lines, head=10, tail=10, label="lines")
+
+    def _compress_build(self, lines: list[str]) -> str:
+        """Compress build/test/check output: keep result + last 30 lines."""
+        kept: list[str] = []
+        dropped_progress = 0
+
+        for line in lines:
+            # Drop progress lines with > Task or > Configure.
+            if _GRADLE_TASK_PROGRESS_RE.match(line):
+                dropped_progress += 1
+                continue
+            kept.append(line)
+
+        # Keep last 30 lines (includes test summary and result).
+        tail_lines = kept[-30:] if len(kept) > 30 else kept
+
+        notes: list[str] = []
+        if dropped_progress:
+            notes.append(f"dropped {dropped_progress} task-progress lines")
+
+        self._emit_notes(tail_lines, notes)
+        return self._finalize(tail_lines)
+
+
+# --- Maven -----------------------------------------------------------------
+
+#: Maven test summary: "Tests run: X"
+_MAVEN_TEST_SUMMARY_RE: Final[re.Pattern[str]] = re.compile(
+    r"^(?:\[INFO\]\s+)?Tests run:"
+)
+#: Maven download progress: "Downloading:" or "Downloaded:"
+_MAVEN_DOWNLOAD_RE: Final[re.Pattern[str]] = re.compile(
+    r"^(?:\[INFO\]\s+)?(?:Downloading|Downloaded):"
+)
+#: Maven build result: "BUILD SUCCESS" or "BUILD FAILURE"
+_MAVEN_BUILD_RESULT_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\[INFO\]\s+BUILD (?:SUCCESS|FAILURE)"
+)
+#: Maven failure block start
+_MAVEN_FAILURE_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\[ERROR\]"
+)
+
+
+class MavenFilter(Filter):
+    """Compress Maven build, test, and dependency output.
+
+    Maven emits download progress, plugin info, and extensive build output
+    with [INFO], [WARN], [ERROR] prefixes.
+
+    Compression model:
+
+    * **test/verify/package**: keep ``BUILD SUCCESS/FAILURE``, test summary
+      lines (``Tests run: X``), and ERROR lines. Drop download progress
+      (``Downloading:``, ``Downloaded:``).
+    * **dependency:tree**: head=10, tail=10 compression (dependency trees are
+      large).
+    * **install**: keep last 30 lines + any ERROR lines.
+    * **BUILD FAILURE**: keep FAILURE block and full ERROR output.
+    """
+
+    name = "maven"
+    binaries = frozenset(["mvn", "mvnw", "./mvnw"])
+
+    def compress(
+        self, stdout: str, stderr: str, exit_code: int, argv: list[str],
+    ) -> str:
+        positionals = _positional_args(argv[1:])
+        subcommand = positionals[0].lower() if positionals else ""
+
+        merged = self._combine_output(stdout, stderr)
+        lines = merged.split("\n")
+
+        # On failure, preserve all errors.
+        if exit_code != 0:
+            error_lines = [line for line in lines if _MAVEN_FAILURE_RE.match(line)]
+            if error_lines:
+                return (
+                    "\n".join(lines[-20:])
+                    + "\n---\n"
+                    + "\n".join(error_lines)
+                )
+            return "\n".join(lines[-20:])
+
+        # Subcommand-specific compression.
+        if "dependency" in subcommand and "tree" in subcommand:
+            return _head_tail_compress(lines, head=10, tail=10, label="lines")
+        if subcommand == "install":
+            return _head_tail_compress(lines[-30:], head=30, tail=10, label="lines")
+        if subcommand in ("test", "verify", "package"):
+            return self._compress_test(lines)
+
+        # Default: use head/tail for unknown subcommands.
+        return _head_tail_compress(lines, head=10, tail=10, label="lines")
+
+    def _compress_test(self, lines: list[str]) -> str:
+        """Compress test output: keep result, summary, and errors."""
+        kept: list[str] = []
+        dropped_downloads = 0
+
+        for line in lines:
+            # Drop download progress lines.
+            if _MAVEN_DOWNLOAD_RE.match(line):
+                dropped_downloads += 1
+                continue
+            kept.append(line)
+
+        notes: list[str] = []
+        if dropped_downloads:
+            notes.append(f"dropped {dropped_downloads} download-progress lines")
+
+        self._emit_notes(kept, notes)
+        return self._finalize(kept)
+
+
 # --- cmake -----------------------------------------------------------------
 
 #: CMake configure-phase progress: "-- Configuring done (0.2s)"
@@ -4526,10 +4710,12 @@ FILTERS: list[Filter] = [
     LinterFilter(),
     GrepFilter(),
     GitFilter(),
-    # GoTestFilter must precede MakeFilter so `go test` routes to the specialised
-    # testing filter; `go build`, `go mod`, `go vet`, `go generate` fall through
-    # to MakeFilter for generic build-system compression.
+    # GoTestFilter, GradleFilter, and MavenFilter must precede MakeFilter so their
+    # specialized subcommands route correctly; other subcommands fall through to
+    # MakeFilter for generic build-system compression.
     GoTestFilter(),
+    GradleFilter(),
+    MavenFilter(),
     MakeFilter(),
     TerraformFilter(),
     # AnsibleFilter and PreCommitFilter have disjoint binaries from every
