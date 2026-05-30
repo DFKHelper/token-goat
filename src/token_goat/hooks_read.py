@@ -1300,10 +1300,11 @@ def _handle_bash_dedup(payload: HookPayload) -> HookResponse | None:
     if not isinstance(command, str) or not command:
         return None
 
+    _, cwd = get_session_context(payload)
     return run_dedup_hint(
         payload,
         builder=lambda sid, cache: build_bash_dedup_hint(
-            session_id=sid, command=command, cache=cache,
+            session_id=sid, command=command, cache=cache, cwd=cwd,
         ),
         stat_kind="bash_dedup_hint",
         detail=sanitize_log_str(command, max_len=200),
@@ -1328,10 +1329,11 @@ def _handle_bash_cache_hit(payload: HookPayload) -> HookResponse | None:
     if not isinstance(command, str) or not command:
         return None
 
+    _, cwd = get_session_context(payload)
     return run_dedup_hint(
         payload,
         builder=lambda sid, cache: build_bash_cache_hit_hint(
-            session_id=sid, command=command, cache=cache,
+            session_id=sid, command=command, cache=cache, cwd=cwd,
         ),
         stat_kind="bash_cache_hit_hint",
         detail=sanitize_log_str(command, max_len=200),
@@ -1793,7 +1795,7 @@ def _check_ignored_hint(cache: object, file_path: str) -> None:
     _check_ignored_hint_by_key(cache, norm, sanitize_log_str(file_path))
 
 
-def _check_ignored_bash_hint(cache: object, command: str) -> None:
+def _check_ignored_bash_hint(cache: object, command: str, cwd: str | None = None) -> None:
     """Increment hints_ignored when a Bash command runs after a bash-dedup hint.
 
     When the agent was told "this command ran earlier, use bash-output <id>" and
@@ -1802,17 +1804,17 @@ def _check_ignored_bash_hint(cache: object, command: str) -> None:
     the ignore rate exceeds the configured threshold — exactly the same feedback
     loop that ``_check_ignored_hint`` provides for file-read hints.
 
-    ``_record_hint_emitted`` stores ``cmd_sha`` (a hex content hash of the command)
-    in ``cache.recent_hints`` alongside file paths.  We compute the same hash here
-    and scan the ring buffer for a match.  Because ``cmd_sha`` is already a
-    normalised hex string, no path-normalization step is needed.
+    ``_record_hint_emitted`` stores ``cmd_sha`` (a hex content hash of the command
+    scoped to *cwd*) in ``cache.recent_hints`` alongside file paths.  We compute
+    the same hash here and scan the ring buffer for a match.  Because ``cmd_sha``
+    is already a normalised hex string, no path-normalization step is needed.
 
     Fail-soft: any exception is swallowed — the hook must never fail due to
     curator bookkeeping.
     """
     try:
         from . import bash_cache as _bc  # noqa: PLC0415
-        cmd_sha = _bc.command_hash(command)
+        cmd_sha = _bc.command_hash(command, cwd)
     except Exception:  # noqa: BLE001 — fail-soft
         return
     _check_ignored_hint_by_key(cache, cmd_sha, f"bash cmd {sanitize_log_str(command, max_len=60)}")
@@ -2146,7 +2148,7 @@ def post_bash(payload: HookPayload) -> HookResponse:
     Failures at any step are logged at debug and the hook still returns
     CONTINUE so a transient I/O issue cannot interrupt the agent.
     """
-    session_id, _cwd = get_session_context(payload)
+    session_id, cwd = get_session_context(payload)
     tool_input = get_tool_input(payload)
     command = tool_input.get("command")
     if not isinstance(command, str) or not command:
@@ -2170,7 +2172,7 @@ def post_bash(payload: HookPayload) -> HookResponse:
         _sess_mod = _get_session()
         _bash_ignored_cache = _sess_mod.safe_load(session_id, caller="post_bash_ignored")
         if _bash_ignored_cache is not None:
-            _check_ignored_bash_hint(_bash_ignored_cache, display_cmd)
+            _check_ignored_bash_hint(_bash_ignored_cache, display_cmd, cwd)
             with contextlib.suppress(Exception):
                 _sess_mod.save(_bash_ignored_cache)
 
@@ -2193,7 +2195,7 @@ def post_bash(payload: HookPayload) -> HookResponse:
         if exit_code not in (None, 0) and session_id:
             from . import bash_cache as _bc  # noqa: PLC0415
             session = _get_session()
-            _cmd_sha = _bc.command_hash(display_cmd)
+            _cmd_sha = _bc.command_hash(display_cmd, cwd)
             # Inline snippet capped at 200 chars so the manifest line stays short.
             _snippet = (stdout + stderr)[:200].strip()
             _output_id = f"small:{_cmd_sha[:8]}:{int(exit_code)}"
@@ -2232,6 +2234,7 @@ def post_bash(payload: HookPayload) -> HookResponse:
     # invocation (whether wrapped or not) collide on the same cache entry.
     meta = bash_cache.store_output(
         session_id, display_cmd, stdout, stderr, exit_code,
+        cwd=cwd,
         max_total_bytes=_bc_cfg.cache_max_bytes,
         max_file_count=_bc_cfg.cache_max_file_count,
     )
