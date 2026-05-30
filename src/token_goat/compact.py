@@ -3293,24 +3293,25 @@ def _build_sealed_block(
 
     Format::
 
-        <<MUST_PRESERVE>>
+        ### MUST_PRESERVE
+        <<preserve>>
         🎯 RESUME: auth.py
         ✎ auth.py×3  db.py  session.py
         ⛔ pytest tests/  (exit 1)
         🧠 ralph  plugin:improve
-        <</MUST_PRESERVE>>
+        <</preserve>>
 
     The RESUME line tells the post-compact agent which single file to re-read
     first to recover state — the same anchor recovery that Ralph's
     ``RESUME_POINT`` protocol calls for after a compaction event.  Priority
     order: most-edited file > most-recent blocker's command > skipped.  This
-    line is small (~14-25 chars) and sits inside the MUST_PRESERVE markers
+    line is small (~14-25 chars) and sits inside the preserve markers
     so the compaction LLM is unlikely to summarise it away.
 
     The block is omitted entirely (empty list) when all three content slots
     are empty.  Content is bounded at 80 tokens (≤ 320 characters).  The
-    explicit XML-like markers are chosen so compaction LLMs are unlikely to
-    summarise them away.
+    markdown header makes the block discoverable to structured queries while
+    the XML-like inner markers provide fail-safe signal for the compaction LLM.
     """
 
     # Slot (a): ≤3 edited basenames with edit counts
@@ -3390,7 +3391,7 @@ def _build_sealed_block(
         resume_slot = f"🎯 RESUME: re-run {blocker_cmd_word}"
 
     inner = [s for s in (resume_slot, edit_slot, blocker_slot, skill_slot) if s]
-    block = ["<<MUST_PRESERVE>>"] + inner + ["<</MUST_PRESERVE>>"]
+    block = ["### MUST_PRESERVE", "<<preserve>>"] + inner + ["<</preserve>>"]
 
     # Enforce 80-token cap: if the block is too large, truncate inner content.
     # The RESUME line is the highest-priority anchor — keep it intact and trim
@@ -3400,13 +3401,13 @@ def _build_sealed_block(
         # Preserve resume_slot verbatim; trim the rest to 60 chars each.
         trimmed_rest = [line[:60] for line in (edit_slot, blocker_slot, skill_slot) if line]
         inner_trimmed = ([resume_slot] if resume_slot else []) + trimmed_rest
-        block = ["<<MUST_PRESERVE>>"] + inner_trimmed + ["<</MUST_PRESERVE>>"]
+        block = ["### MUST_PRESERVE", "<<preserve>>"] + inner_trimmed + ["<</preserve>>"]
         # If still over the cap, drop the skill slot (lowest signal of the three).
         # Compare the truncated form: inner_trimmed holds line[:60] copies, not originals.
         truncated_skill = skill_slot[:60] if skill_slot else ""
         if _token_count("\n".join(block)) > 80 and truncated_skill and truncated_skill in inner_trimmed:
             inner_trimmed.remove(truncated_skill)
-            block = ["<<MUST_PRESERVE>>"] + inner_trimmed + ["<</MUST_PRESERVE>>"]
+            block = ["### MUST_PRESERVE", "<<preserve>>"] + inner_trimmed + ["<</preserve>>"]
 
     return block
 
