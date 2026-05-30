@@ -1912,3 +1912,132 @@ class TestEarlyExitOnNormalisationReduction:
         assert "some output" in result.text
         assert "some error" in result.text
         assert "---" in result.text or "some output" in result.text.split("\n")[0]
+
+
+# ---------------------------------------------------------------------------
+# EzaFilter and TreeFilter tests
+# ---------------------------------------------------------------------------
+
+class TestEzaFilter:
+    def test_matches_eza_binary(self) -> None:
+        """EzaFilter matches 'eza' binary."""
+        f = bc.EzaFilter()
+        assert f.matches(["eza", "--git", "--long"])
+
+    def test_matches_exa_binary(self) -> None:
+        """EzaFilter matches 'exa' (older name for eza)."""
+        f = bc.EzaFilter()
+        assert f.matches(["exa", "--long"])
+
+    def test_matches_ls_binary(self) -> None:
+        """EzaFilter matches 'ls' binary."""
+        f = bc.EzaFilter()
+        assert f.matches(["ls", "-la"])
+
+    def test_matches_ls_with_exe_extension(self) -> None:
+        """EzaFilter matches 'ls.exe' on Windows."""
+        f = bc.EzaFilter()
+        assert f.matches(["ls.exe", "-l"])
+
+    def test_passthrough_short_output(self) -> None:
+        """EzaFilter passes through output with ≤30 lines unchanged."""
+        f = bc.EzaFilter()
+        short_output = "\n".join([f"file{i}.txt" for i in range(20)])
+        result = f.compress(short_output, "", 0, ["ls", "-l"])
+        assert result == short_output
+
+    def test_compress_long_flat_listing(self) -> None:
+        """EzaFilter compresses flat listing >30 lines: head+marker+tail."""
+        f = bc.EzaFilter()
+        # Create a 50-line listing with header
+        lines = ["Name                Size    Date"]
+        lines.extend([f"file{i}.txt              1024    2026-05-29" for i in range(49)])
+        output = "\n".join(lines)
+
+        result = f.compress(output, "", 0, ["eza", "--long"])
+
+        # Should contain marker indicating items were elided
+        assert "elided" in result or "more" in result
+        # Should be shorter than original
+        result_lines = result.split("\n")
+        assert len(result_lines) < len(lines)
+        # Should still contain header and some entries
+        assert "Name" in result or "file0" in result
+
+    def test_compress_tree_output(self) -> None:
+        """EzaFilter compresses tree output (--tree flag detected)."""
+        f = bc.EzaFilter()
+        # Create a 100-line tree output
+        lines = ["root/"]
+        for i in range(99):
+            lines.append(f"  ├── dir{i}/")
+
+        output = "\n".join(lines)
+        result = f.compress(output, "", 0, ["eza", "--tree", "--long"])
+
+        # Tree mode should keep first 40 + last 10 = 50 lines max
+        result_lines = [ln for ln in result.split("\n") if ln.strip()]
+        assert len(result_lines) <= 55  # 50 + marker + some margin
+        # Should contain marker
+        assert "elided" in result or "items" in result
+
+    def test_tree_output_short_passthrough(self) -> None:
+        """EzaFilter passes through short tree output unchanged."""
+        f = bc.EzaFilter()
+        lines = ["root/", "  ├── file1.txt", "  └── file2.txt"]
+        output = "\n".join(lines)
+
+        result = f.compress(output, "", 0, ["eza", "--tree"])
+        assert result == output
+
+
+class TestTreeFilter:
+    def test_matches_tree_binary(self) -> None:
+        """TreeFilter matches 'tree' binary."""
+        f = bc.TreeFilter()
+        assert f.matches(["tree"])
+
+    def test_matches_tree_with_args(self) -> None:
+        """TreeFilter matches 'tree' with arguments."""
+        f = bc.TreeFilter()
+        assert f.matches(["tree", "-L", "2"])
+
+    def test_passthrough_short_output(self) -> None:
+        """TreeFilter passes through output with ≤60 lines unchanged."""
+        f = bc.TreeFilter()
+        short_output = "\n".join([f"├── file{i}.txt" for i in range(30)])
+        result = f.compress(short_output, "", 0, ["tree"])
+        assert result == short_output
+
+    def test_compress_long_tree_output(self) -> None:
+        """TreeFilter compresses >60 lines: first 50 + last 10 + marker."""
+        f = bc.TreeFilter()
+        # Create a 100-line tree output
+        lines = ["root/"]
+        for i in range(99):
+            lines.append(f"├── item{i}/")
+        # Add summary line
+        lines.append("10 directories")
+        output = "\n".join(lines)
+
+        result = f.compress(output, "", 0, ["tree"])
+
+        # Should contain marker
+        assert "elided" in result
+        # Result should be shorter
+        result_lines = [ln for ln in result.split("\n") if ln.strip()]
+        assert len(result_lines) <= 65  # 50 + 10 + marker + summary
+
+    def test_preserves_summary_line(self) -> None:
+        """TreeFilter preserves the final summary line."""
+        f = bc.TreeFilter()
+        lines = ["root/"]
+        for i in range(70):
+            lines.append(f"├── file{i}.txt")
+        lines.append("5 directories, 65 files")
+        output = "\n".join(lines)
+
+        result = f.compress(output, "", 0, ["tree"])
+
+        # Final summary should be preserved
+        assert "directories, 65 files" in result or "directories" in result

@@ -238,7 +238,7 @@ class TestPreReadCli:
         return _run_hook_subprocess("pre-read", payload)
 
     def test_cli_non_read_tool_no_hint(self, tmp_data_dir):
-        payload = {"session_id": "cli1", "tool_name": "Bash", "tool_input": {"command": "ls"}}
+        payload = {"session_id": "cli1", "tool_name": "Bash", "tool_input": {"command": "pwd"}}
         result = self._run_hook(payload, tmp_data_dir)
         _assert_continue(result)
         assert "hookSpecificOutput" not in result
