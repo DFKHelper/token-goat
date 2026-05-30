@@ -509,6 +509,16 @@ def shrink(src_path: Path, *, _session_id: str | None = None) -> Path | None:
                 _img_key = str(src_path.resolve())
                 _shrink_count = _sess.image_shrink_count.get(_img_key, 0) + 1
                 _sess.image_shrink_count[_img_key] = _shrink_count
+                # Enforce cap: evict lowest-count entries when the dict exceeds
+                # IMAGE_SHRINK_COUNT_MAX.  Drop _IMAGE_SHRINK_COUNT_EVICT at once
+                # to amortise dict-rewrite cost.
+                _img_cap = _session_module.IMAGE_SHRINK_COUNT_MAX
+                _img_evict = _session_module._IMAGE_SHRINK_COUNT_EVICT  # noqa: SLF001
+                if len(_sess.image_shrink_count) > _img_cap:
+                    _sorted_img = sorted(
+                        _sess.image_shrink_count.items(), key=lambda x: x[1]
+                    )
+                    _sess.image_shrink_count = dict(_sorted_img[_img_evict:])
                 # Log once every 10 shrinks to avoid log spam when count > 3.
                 # Helps operators notice the pattern without overwhelming the logs.
                 if _shrink_count > 3 and _shrink_count % 10 == 1:

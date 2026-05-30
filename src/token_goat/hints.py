@@ -1672,8 +1672,16 @@ def _record_bash_dedup_emitted(
     """Record that a bash dedup was emitted to avoid re-emitting the same output.
 
     Adds *dedup_key* to the bash_dedup_emitted_ids set and invalidates the JSON cache.
+    When the set exceeds BASH_DEDUP_IDS_MAX, the oldest entries (by sort order,
+    which approximates insertion order for hex-prefixed IDs) are dropped to keep
+    the set bounded even if bash_history entries have been evicted.
     """
     cache.bash_dedup_emitted_ids.add(dedup_key)
+    if len(cache.bash_dedup_emitted_ids) > session.BASH_DEDUP_IDS_MAX:
+        # Sets are unordered; keep a deterministic tail slice from the sorted
+        # representation.  Dropping half the set at once amortises the rebuild.
+        _sorted = sorted(cache.bash_dedup_emitted_ids)
+        cache.bash_dedup_emitted_ids = set(_sorted[session.BASH_HISTORY_MAX:])
     cache._invalidate_json_cache()
 
 

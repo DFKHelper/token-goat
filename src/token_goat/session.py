@@ -23,6 +23,7 @@ broken cache never blocks the agent.
 from __future__ import annotations
 
 __all__ = [
+    "BASH_DEDUP_IDS_MAX",
     "BASH_HISTORY_MAX",
     "BashEntry",
     "DECISION_HISTORY_MAX",
@@ -35,6 +36,7 @@ __all__ = [
     "GrepEntry",
     "GREPS_HISTORY_MAX",
     "HINTS_SEEN_MAX",
+    "IMAGE_SHRINK_COUNT_MAX",
     "RESULT_CACHE_MAX",
     "SKILL_HISTORY_MAX",
     "SNAPSHOT_SHAS_MAX",
@@ -863,6 +865,20 @@ _EDITED_FILES_EVICT: Final[int] = 50
 # unique edited file; 200 covers any realistic session while bounding JSON size.
 SNAPSHOT_SHAS_MAX: Final[int] = 200
 _SNAPSHOT_SHAS_EVICT: Final[int] = 50
+
+# Maximum number of unique image paths tracked in the per-session shrink count
+# dict.  In sessions that generate many screenshots with unique filenames, the
+# dict would otherwise grow without bound.  When the cap is hit, FIFO eviction
+# drops the entry with the smallest count (least likely to be a hot path).
+IMAGE_SHRINK_COUNT_MAX: Final[int] = 200
+_IMAGE_SHRINK_COUNT_EVICT: Final[int] = 40
+
+# Maximum size of the bash_dedup_emitted_ids set.  Bash history is capped at
+# BASH_HISTORY_MAX (75), but the id set is not evicted when history entries are
+# dropped, so the set can drift above the history cap in long sessions.  Cap the
+# set to 2× BASH_HISTORY_MAX to give the cross-run dedup logic headroom while
+# bounding growth.
+BASH_DEDUP_IDS_MAX: Final[int] = BASH_HISTORY_MAX * 2
 
 # _CONTENTION_MAX / _REPORTED_CONTENTION removed — replaced by disk touch-files.
 # See _contention_mark_path() and _record_cache_contention().
