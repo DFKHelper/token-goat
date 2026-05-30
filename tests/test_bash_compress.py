@@ -2490,3 +2490,163 @@ class TestLazyGitFilter:
         result = f.compress(output, "", 0, ["lazygit"])
         # Plain text without ANSI codes should pass through
         assert result.strip() == output.strip()
+
+    def test_lazygit_esc_paren_ansi_variant_detected(self) -> None:
+        """LazyGitFilter detects \\x1b( escape (character-set sequences) as TUI."""
+        f = bc.LazyGitFilter()
+        # \x1b( is a character-set designation sequence used by lazygit TUI
+        output = "\x1b(Bsome terminal data"
+        result = f.compress(output, "", 0, ["lazygit"])
+        assert "[lazygit is an interactive terminal UI" in result
+
+    def test_lazygit_exe_matches_on_windows(self) -> None:
+        """LazyGitFilter matches 'lazygit.exe' (Windows binary name)."""
+        f = bc.LazyGitFilter()
+        assert f.matches(["lazygit.exe"])
+        assert f.matches(["lazygit.exe", "--version"])
+
+
+# ---------------------------------------------------------------------------
+# _head_tail_compress — direct unit tests
+# ---------------------------------------------------------------------------
+
+class TestHeadTailCompress:
+    """Unit tests for the _head_tail_compress helper function."""
+
+    def test_short_list_returns_all_lines(self) -> None:
+        """Lines at or below head+tail budget are returned unchanged."""
+        lines = ["a", "b", "c", "d", "e"]
+        result = bc._head_tail_compress(lines, head=3, tail=3)
+        # 5 lines <= 3+3, so no compression
+        assert result == "a\nb\nc\nd\ne"
+
+    def test_exact_boundary_no_marker(self) -> None:
+        """Exactly head+tail lines produces no elision marker."""
+        lines = [f"line{i}" for i in range(6)]
+        result = bc._head_tail_compress(lines, head=3, tail=3)
+        assert "elided" not in result
+        assert result == "\n".join(lines)
+
+    def test_one_over_boundary_inserts_marker(self) -> None:
+        """head+tail+1 lines triggers compression with a marker."""
+        lines = [f"line{i}" for i in range(7)]
+        result = bc._head_tail_compress(lines, head=3, tail=3)
+        assert "elided" in result
+        assert "1 more items elided by token-goat" in result
+
+    def test_head_lines_preserved(self) -> None:
+        """The first ``head`` lines always appear in the result."""
+        lines = [f"item{i}" for i in range(50)]
+        result = bc._head_tail_compress(lines, head=5, tail=5)
+        for i in range(5):
+            assert f"item{i}" in result
+
+    def test_tail_lines_preserved(self) -> None:
+        """The last ``tail`` lines always appear in the result."""
+        lines = [f"item{i}" for i in range(50)]
+        result = bc._head_tail_compress(lines, head=5, tail=5)
+        for i in range(45, 50):
+            assert f"item{i}" in result
+
+    def test_middle_lines_elided(self) -> None:
+        """Lines in the middle are not present when compression fires."""
+        lines = [f"item{i}" for i in range(50)]
+        result = bc._head_tail_compress(lines, head=5, tail=5)
+        # Item in the middle should be gone
+        assert "item25" not in result
+
+    def test_elided_count_correct(self) -> None:
+        """The marker count equals total - head - tail."""
+        total = 40
+        head = 10
+        tail = 5
+        lines = [f"x{i}" for i in range(total)]
+        result = bc._head_tail_compress(lines, head=head, tail=tail)
+        expected_elided = total - head - tail
+        assert f"{expected_elided} more items elided" in result
+
+    def test_custom_label_used_in_marker(self) -> None:
+        """The ``label`` parameter appears in the elision marker."""
+        lines = [f"path{i}" for i in range(50)]
+        result = bc._head_tail_compress(lines, head=10, tail=5, label="paths")
+        assert "paths elided" in result
+
+    def test_default_label_is_items(self) -> None:
+        """The default label is 'items'."""
+        lines = [f"x{i}" for i in range(20)]
+        result = bc._head_tail_compress(lines, head=5, tail=5)
+        assert "items elided" in result
+
+    def test_empty_list_returns_empty_string(self) -> None:
+        """An empty list produces an empty string (no crash)."""
+        result = bc._head_tail_compress([], head=5, tail=5)
+        assert result == ""
+
+    def test_single_line_returns_that_line(self) -> None:
+        """A single-line list is always returned as-is."""
+        result = bc._head_tail_compress(["only line"], head=5, tail=5)
+        assert result == "only line"
+
+    def test_marker_format_token_goat_attribution(self) -> None:
+        """Elision marker always includes 'token-goat' attribution."""
+        lines = [f"l{i}" for i in range(20)]
+        result = bc._head_tail_compress(lines, head=3, tail=3)
+        assert "token-goat" in result
+
+
+# ---------------------------------------------------------------------------
+# Windows .exe matching — BatFilter, DeltaFilter, FzfFilter, JqFilter, YqFilter
+# ---------------------------------------------------------------------------
+
+class TestWindowsExeMatching:
+    """Verify that .exe suffix is stripped correctly for all new filter classes."""
+
+    def test_bat_exe_matches(self) -> None:
+        """BatFilter matches 'bat.exe' on Windows."""
+        f = bc.BatFilter()
+        assert f.matches(["bat.exe"])
+
+    def test_batcat_exe_matches(self) -> None:
+        """BatFilter matches 'batcat.exe' on Windows."""
+        f = bc.BatFilter()
+        assert f.matches(["batcat.exe"])
+
+    def test_bat_exe_does_not_match_cat(self) -> None:
+        """BatFilter does not match 'cat.exe'."""
+        f = bc.BatFilter()
+        assert not f.matches(["cat.exe"])
+
+    def test_delta_exe_matches(self) -> None:
+        """DeltaFilter matches 'delta.exe' on Windows."""
+        f = bc.DeltaFilter()
+        assert f.matches(["delta.exe"])
+
+    def test_delta_exe_does_not_match_diff(self) -> None:
+        """DeltaFilter does not match 'diff.exe'."""
+        f = bc.DeltaFilter()
+        assert not f.matches(["diff.exe"])
+
+    def test_fzf_exe_matches(self) -> None:
+        """FzfFilter matches 'fzf.exe' on Windows."""
+        f = bc.FzfFilter()
+        assert f.matches(["fzf.exe"])
+
+    def test_jq_exe_matches(self) -> None:
+        """JqFilter matches 'jq.exe' on Windows."""
+        f = bc.JqFilter()
+        assert f.matches(["jq.exe"])
+
+    def test_jq_exe_does_not_match_unrelated(self) -> None:
+        """JqFilter does not match 'xq.exe'."""
+        f = bc.JqFilter()
+        assert not f.matches(["xq.exe"])
+
+    def test_yq_exe_matches(self) -> None:
+        """YqFilter matches 'yq.exe' on Windows."""
+        f = bc.YqFilter()
+        assert f.matches(["yq.exe"])
+
+    def test_yq_exe_does_not_match_jq(self) -> None:
+        """YqFilter does not match 'jq.exe'."""
+        f = bc.YqFilter()
+        assert not f.matches(["jq.exe"])

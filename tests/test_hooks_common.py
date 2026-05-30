@@ -741,3 +741,80 @@ class TestNormalizePayloadValidation:
         payload = {"tool_name": "Bash"}
         result = normalize_payload(payload)
         assert result == payload
+
+
+# ---------------------------------------------------------------------------
+# load_session_safe — fail-soft session loader
+# ---------------------------------------------------------------------------
+
+class TestLoadSessionSafe:
+    """Tests for hooks_common.load_session_safe."""
+
+    def test_returns_fresh_cache_for_unknown_session(self, tmp_data_dir) -> None:
+        """load_session_safe returns a fresh SessionCache for an unknown session ID.
+
+        session.load() itself creates a fresh empty cache when the file is missing,
+        so load_session_safe passes it through (does not suppress the fresh object).
+        """
+        from token_goat import session as sess
+        from token_goat.hooks_common import load_session_safe
+
+        result = load_session_safe("no-such-session-id-xyz-9999")
+        # Returns a fresh (non-None) SessionCache — same as session.load() behaviour
+        assert result is not None
+        assert isinstance(result, sess.SessionCache)
+
+    def test_returns_session_cache_on_success(self, tmp_data_dir) -> None:
+        """load_session_safe returns a SessionCache when the session exists on disk."""
+        from token_goat import session as sess
+        from token_goat.hooks_common import load_session_safe
+
+        sid = "test-load-session-safe-ok"
+        cache = sess.load(sid)
+        sess.save(cache)
+
+        result = load_session_safe(sid)
+        assert result is not None
+        assert isinstance(result, sess.SessionCache)
+
+    def test_returns_none_on_oserror(self, tmp_data_dir, monkeypatch) -> None:
+        """load_session_safe returns None when session.load raises OSError."""
+        from token_goat import session as sess
+        from token_goat.hooks_common import load_session_safe
+
+        monkeypatch.setattr(sess, "load", lambda sid: (_ for _ in ()).throw(OSError("disk gone")))
+
+        result = load_session_safe("any-session-id")
+        assert result is None
+
+    def test_returns_none_on_value_error(self, tmp_data_dir, monkeypatch) -> None:
+        """load_session_safe returns None when session.load raises ValueError (corrupt JSON)."""
+        from token_goat import session as sess
+        from token_goat.hooks_common import load_session_safe
+
+        monkeypatch.setattr(sess, "load", lambda sid: (_ for _ in ()).throw(ValueError("bad json")))
+
+        result = load_session_safe("any-session-id")
+        assert result is None
+
+    def test_returns_none_on_unexpected_exception(self, tmp_data_dir, monkeypatch) -> None:
+        """load_session_safe returns None on any unexpected exception (broad except)."""
+        from token_goat import session as sess
+        from token_goat.hooks_common import load_session_safe
+
+        monkeypatch.setattr(sess, "load", lambda sid: (_ for _ in ()).throw(RuntimeError("unexpected")))
+
+        result = load_session_safe("any-session-id")
+        assert result is None
+
+    def test_does_not_raise(self, tmp_data_dir, monkeypatch) -> None:
+        """load_session_safe never raises; it is a strict fail-soft function."""
+        from token_goat import session as sess
+        from token_goat.hooks_common import load_session_safe
+
+        # Cause a completely unexpected exception type
+        monkeypatch.setattr(sess, "load", lambda sid: (_ for _ in ()).throw(MemoryError("OOM")))
+
+        # Must not raise
+        result = load_session_safe("any-id")
+        assert result is None
