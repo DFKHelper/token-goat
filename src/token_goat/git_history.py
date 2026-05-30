@@ -198,6 +198,7 @@ def _index_history_inner(project_root: Path, project_hash: str) -> int:
             "log",
             f"--max-count={_HISTORY_DEPTH}",
             f"--after={_MAX_COMMIT_AGE_DAYS} days ago",
+            "--no-merges",
             "--format=%x00%H%x01%s%x01%at",
             "--name-only",
             "--diff-filter=d",  # skip deleted-only commits
