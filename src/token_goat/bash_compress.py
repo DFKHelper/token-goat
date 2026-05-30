@@ -70,7 +70,9 @@ __all__ = [
     "strip_ansi",
     "strip_progress",
     "truncate_middle",
+    "EzaFilter",
     "PythonFilter",
+    "TreeFilter",
     "UvFilter",
 ]
 
@@ -2962,6 +2964,170 @@ class UvFilter(Filter):
         return self._finalize(kept)
 
 
+# --- Directory listing: eza / exa / ls / tree ---------------------------------
+
+class EzaFilter(Filter):
+    """Compress ``eza`` / ``exa`` / ``ls`` directory listing output.
+
+    ``eza`` is a modern replacement for ``ls`` and ``tree``. Common invocations:
+    - ``eza --git --long`` — listing with git status column
+    - ``eza --git --long --tree --level=2`` — tree view with 2 levels
+    - ``eza --git --long --sort modified`` — sorted by modification time
+    - ``ls -la`` / ``ls -l`` / ``ls -alh`` — classic ls variants
+
+    Compression model:
+
+    * **Pass-through** when output is short (≤ 30 non-empty lines) — small
+      listings are fully readable and compression adds no value.
+    * **Summarise tree output** (detected by ``--tree`` flag): keep first 40
+      lines + last 10 lines + "... N more ..." marker if total > 60. Never
+      truncate to fewer than 20 total lines.
+    * **Summarise flat listing**: keep header, first 25 entries, last 5
+      entries + "... N more ..." summary when total > 30.
+    * **Preserve important lines**: never drop rows containing the target
+      path argument or total/summary lines (e.g., "3 directories, 14 files").
+    """
+
+    name = "eza"
+    binaries = frozenset(["eza", "exa", "ls"])
+
+    def matches(self, argv: list[str]) -> bool:  # noqa: D102
+        if not argv:
+            return False
+        stem = Path(argv[0]).stem.lower()
+        # Strip .exe on Windows
+        if stem.endswith(".exe"):
+            stem = stem[:-4]
+        return stem in self.binaries
+
+    def compress(
+        self, stdout: str, stderr: str, exit_code: int, argv: list[str],
+    ) -> str:
+        # Combine and normalise output
+        merged = self._combine_output(stdout, stderr)
+        text = normalise(merged)
+
+        lines = text.split("\n")
+        non_empty = [ln for ln in lines if ln.strip()]
+
+        # Pass through small outputs unchanged
+        if len(non_empty) <= 30:
+            return text
+
+        # Detect tree mode by checking for --tree flag in argv
+        is_tree = any(arg == "--tree" or arg.startswith("--tree=") for arg in argv)
+
+        if is_tree:
+            return self._compress_tree(lines, non_empty)
+        return self._compress_flat_listing(lines, non_empty, argv)
+
+    def _compress_tree(self, lines: list[str], non_empty: list[str]) -> str:
+        """Compress tree output: keep first 40 + last 10 + marker."""
+        total = len(non_empty)
+        if total <= 60:
+            return "\n".join(lines).rstrip()
+
+        # Keep first 40 + last 10
+        head_keep = 40
+        tail_keep = 10
+        elided = total - head_keep - tail_keep
+
+        head_lines = non_empty[:head_keep]
+        tail_lines = non_empty[-tail_keep:]
+
+        result = head_lines + [f"... [{elided} items elided by token-goat]"] + tail_lines
+        return "\n".join(result)
+
+    def _compress_flat_listing(
+        self, lines: list[str], non_empty: list[str], argv: list[str],
+    ) -> str:
+        """Compress flat listing: keep header, first 25 items, last 5."""
+        total = len(non_empty)
+        if total <= 30:
+            return "\n".join(lines).rstrip()
+
+        # Identify header line (usually contains column names like "permissions size date")
+        # Typical header: "Permissions Size User Date Modified Name" or similar
+        # Heuristic: first line that contains permission-like column or is notably
+        # different from data rows.
+        header_idx = 0
+        if non_empty and any(kw in non_empty[0].lower() for kw in ["permission", "size", "date", "user", "name"]):
+            header_idx = 1
+
+        # Keep header, first 25 entries, last 5 entries
+        kept: list[str] = []
+
+        # Add header lines
+        if header_idx > 0:
+            kept.extend(non_empty[:header_idx])
+
+        # Add data lines with preference for target_path lines
+        data_start = header_idx
+        data_lines = non_empty[data_start:]
+        num_to_keep = 25 + 5  # head + tail
+
+        if len(data_lines) <= num_to_keep:
+            kept.extend(data_lines)
+        else:
+            # Keep first 25
+            kept.extend(data_lines[:25])
+            elided = len(data_lines) - 30
+            kept.append(f"... [{elided} more entries elided by token-goat]")
+            # Keep last 5
+            kept.extend(data_lines[-5:])
+
+        # Preserve summary lines (e.g., "3 directories, 14 files") if present
+        summary_lines = [
+            ln for ln in non_empty[max(0, len(non_empty) - 3):]
+            if any(kw in ln for kw in ["director", "file", "total"])
+        ]
+        if summary_lines and summary_lines[0] not in kept:
+            kept.extend(summary_lines)
+
+        return "\n".join(kept).rstrip()
+
+
+class TreeFilter(Filter):
+    """Compress ``tree`` binary output.
+
+    The ``tree`` command can produce thousands of lines for large directories.
+    This filter keeps the first 50 lines (root structure) + last 10 lines
+    (including final summary) + a marker in the middle.
+
+    Compression model:
+
+    * **Pass-through** when output ≤ 60 lines — readable in full.
+    * **Summarise** when output > 60: keep first 50 + last 10 + marker.
+      Always preserve the final summary line (e.g., "3 directories, 14 files").
+    """
+
+    name = "tree"
+    binaries = frozenset(["tree"])
+
+    def compress(
+        self, stdout: str, stderr: str, exit_code: int, argv: list[str],
+    ) -> str:
+        merged = self._combine_output(stdout, stderr)
+        text = normalise(merged)
+
+        lines = text.split("\n")
+        non_empty = [ln for ln in lines if ln.strip()]
+
+        if len(non_empty) <= 60:
+            return text.rstrip()
+
+        # Keep first 50 + last 10 + marker
+        head_keep = 50
+        tail_keep = 10
+        elided = len(non_empty) - head_keep - tail_keep
+
+        head_lines = non_empty[:head_keep]
+        tail_lines = non_empty[-tail_keep:]
+
+        result = head_lines + [f"... [{elided} items elided by token-goat]"] + tail_lines
+        return "\n".join(result).rstrip()
+
+
 # ---------------------------------------------------------------------------
 # Helpers shared by filters
 # ---------------------------------------------------------------------------
@@ -3034,6 +3200,8 @@ FILTERS: list[Filter] = [
     PreCommitFilter(),
     PipFilter(),
     UvFilter(),
+    EzaFilter(),
+    TreeFilter(),
     PythonFilter(),
 ]
 

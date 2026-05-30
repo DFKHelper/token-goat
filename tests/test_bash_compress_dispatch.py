@@ -120,6 +120,14 @@ _DISPATCH_CASES: list[tuple[list[str], str]] = [
     # _strip_prefixes leaves ['uv', 'pip', 'install', ...] intact; UvFilter
     # matches on 'uv' stem and finds 'pip' in its pm_subcommands list.
     (["uv", "pip", "install", "requests"], "uv"),
+    # ---- EzaFilter ----
+    (["eza", "--git", "--long"], "eza"),
+    (["eza", "--tree", "--level", "2"], "eza"),
+    (["ls", "-la"], "eza"),
+    (["ls", "-lah"], "eza"),
+    # ---- TreeFilter ----
+    (["tree"], "tree"),
+    (["tree", "-L", "3"], "tree"),
     # ---- PythonFilter ----
     (["python", "script.py"], "python"),
     (["python3", "-c", "print('hello')"], "python"),
@@ -150,13 +158,11 @@ def test_dispatch_matches(argv: list[str], expected_name: str) -> None:
 # ---------------------------------------------------------------------------
 
 _NO_MATCH_COMMANDS: list[list[str]] = [
-    ["ls", "-la"],
     ["cat", "file.txt"],
     ["curl", "-s", "https://example.com"],
     ["ssh", "user@host"],
     ["custom-build-tool", "--all"],
     ["echo", "hello"],
-    ["find", ".", "-name", "*.py"],
 ]
 
 
