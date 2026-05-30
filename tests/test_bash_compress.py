@@ -2650,3 +2650,153 @@ class TestWindowsExeMatching:
         """YqFilter does not match 'jq.exe'."""
         f = bc.YqFilter()
         assert not f.matches(["jq.exe"])
+
+
+# ---------------------------------------------------------------------------
+# EzaFilter tree mode — precision tests (iteration 3)
+# ---------------------------------------------------------------------------
+
+class TestEzaFilterTreeMode:
+    """Focused tests for EzaFilter tree-mode detection and limits."""
+
+    def test_tree_eq_depth_detected_as_tree_mode(self) -> None:
+        """--tree=N (value form) is recognised as tree mode."""
+        f = bc.EzaFilter()
+        # Build 80 non-empty lines so flat-mode would also compress — but
+        # the tree-mode limit (40+10=50 head+tail) should apply, not flat (25+5).
+        lines = [f"dir{i}/" for i in range(80)]
+        output = "\n".join(lines)
+
+        result = f.compress(output, "", 0, ["eza", "--tree=2", "--long"])
+
+        # Tree-mode uses head=40, tail=10; flat-mode uses head=25, tail=5.
+        # With 80 lines the elided count differs: tree elides 30, flat elides 50.
+        # The marker text reveals which branch ran.
+        assert "30 more items elided" in result
+
+    def test_tree_mode_bare_flag_elides_correct_count(self) -> None:
+        """--tree (bare flag) uses head=40, tail=10 so elided count = total - 50."""
+        f = bc.EzaFilter()
+        lines = [f"file{i}.txt" for i in range(70)]
+        output = "\n".join(lines)
+
+        result = f.compress(output, "", 0, ["eza", "--tree"])
+
+        # 70 total - 40 head - 10 tail = 20 elided
+        assert "20 more items elided" in result
+
+    def test_tree_mode_exactly_60_lines_passthrough(self) -> None:
+        """Tree mode: exactly 60 non-empty lines passes through unchanged."""
+        f = bc.EzaFilter()
+        lines = [f"node{i}" for i in range(60)]
+        output = "\n".join(lines)
+
+        result = f.compress(output, "", 0, ["eza", "--tree"])
+
+        # No truncation at exactly the threshold
+        assert "elided" not in result
+        assert result.rstrip() == output.rstrip()
+
+    def test_tree_mode_61_lines_triggers_compression(self) -> None:
+        """Tree mode: 61 non-empty lines triggers head+tail compression."""
+        f = bc.EzaFilter()
+        lines = [f"node{i}" for i in range(61)]
+        output = "\n".join(lines)
+
+        result = f.compress(output, "", 0, ["eza", "--tree"])
+
+        # 61 - 40 - 10 = 11 elided
+        assert "11 more items elided" in result
+
+    def test_tree_mode_preserves_first_lines_as_headers(self) -> None:
+        """Tree mode: first 40 lines (headers/root) are always in the output."""
+        f = bc.EzaFilter()
+        # Make first line a recognisable root header.
+        # Total: 1 root + 69 modules = 70 lines (>60 threshold so compression fires).
+        lines = ["project/"]
+        lines += [f"  ├── module_{i}/" for i in range(69)]
+        output = "\n".join(lines)
+
+        result = f.compress(output, "", 0, ["eza", "--tree"])
+
+        # The very first line must survive.
+        assert "project/" in result
+        # The first 40 non-empty lines are kept as the head.
+        # lines[0] = "project/", lines[1..40] = module_0..module_38 (39 modules).
+        # So module_38 is the last module guaranteed in the head.
+        assert "module_0" in result
+        assert "module_38" in result
+        # module_39..module_58 are in the elided middle (20 items).
+        assert "module_39" not in result
+
+    def test_flat_mode_does_not_use_tree_limits(self) -> None:
+        """Without --tree flag the flat limits (25+5) apply, not tree limits (40+10)."""
+        f = bc.EzaFilter()
+        lines = [f"file{i}.txt" for i in range(70)]
+        output = "\n".join(lines)
+
+        result = f.compress(output, "", 0, ["eza", "--long"])
+
+        # Flat mode elides 70 - 25 - 5 = 40; tree mode would elide 70 - 40 - 10 = 20.
+        assert "40 more entries elided" in result
+
+
+# ---------------------------------------------------------------------------
+# TreeFilter boundary tests (iteration 3)
+# ---------------------------------------------------------------------------
+
+class TestTreeFilterBoundaries:
+    """Exact boundary and summary-preservation tests for TreeFilter."""
+
+    def test_passthrough_at_exactly_60_lines(self) -> None:
+        """60 non-empty lines passes through without any elision marker."""
+        f = bc.TreeFilter()
+        lines = ["root/"]
+        lines += [f"├── file{i}.txt" for i in range(59)]
+        assert len(lines) == 60
+        output = "\n".join(lines)
+
+        result = f.compress(output, "", 0, ["tree"])
+
+        assert "elided" not in result
+        assert result.rstrip() == output.rstrip()
+
+    def test_truncation_at_61_lines(self) -> None:
+        """61 non-empty lines triggers compression: 61 - 50 - 10 = 1 elided."""
+        f = bc.TreeFilter()
+        lines = ["root/"]
+        lines += [f"├── file{i}.txt" for i in range(60)]
+        assert len(lines) == 61
+        output = "\n".join(lines)
+
+        result = f.compress(output, "", 0, ["tree"])
+
+        assert "1 more items elided" in result
+
+    def test_summary_line_always_in_tail(self) -> None:
+        """The canonical 'N directories, M files' summary is in the tail so it survives."""
+        f = bc.TreeFilter()
+        lines = ["root/"]
+        lines += [f"├── item{i}" for i in range(80)]
+        lines.append("3 directories, 77 files")  # summary as last line
+        output = "\n".join(lines)
+
+        result = f.compress(output, "", 0, ["tree"])
+
+        # Summary must survive — it is always the last line(s) so the tail keeps it.
+        assert "3 directories, 77 files" in result
+
+    def test_summary_line_preserved_near_60_boundary(self) -> None:
+        """Summary line at position 61+ still survives (tail keeps last 10 lines)."""
+        f = bc.TreeFilter()
+        # Build exactly 65 lines so tail covers positions 55-64.
+        lines = ["root/"]
+        lines += [f"├── file{i}" for i in range(63)]
+        lines.append("5 directories, 58 files")
+        assert len(lines) == 65
+        output = "\n".join(lines)
+
+        result = f.compress(output, "", 0, ["tree"])
+
+        assert "5 directories, 58 files" in result
+        assert "elided" in result  # compression did fire
