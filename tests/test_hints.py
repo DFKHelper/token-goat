@@ -3487,3 +3487,242 @@ class TestSurgicalIntentGuardOffsetZero:
         large_csv = self._make_large_file(tmp_path, "data.csv")
         result = build_structured_file_hint(file_path=large_csv, offset=None, limit=None)
         assert result is not None, "no offset/limit should emit structured-file hint for large CSV"
+
+
+# ---------------------------------------------------------------------------
+# Co-read suggestion hints
+# ---------------------------------------------------------------------------
+
+
+class TestCoreadSuggestions:
+    """Tests for co-read import suggestions."""
+
+    def test_coread_hint_fires_on_first_read_of_py_file(self, tmp_data_dir, tmp_path):
+        """Coread hint fires when a .py file is read for first time with indexed imports."""
+        from token_goat.project import find_project
+
+        # Create .git so find_project detects tmp_path as root
+        (tmp_path / ".git").mkdir()
+
+        # Create source files
+        src_file = tmp_path / "auth.py"
+        session_file = tmp_path / "session.py"
+        src_file.write_text("# auth module\ndef login(): pass\n")
+        session_file.write_text("# session module\nclass SessionCache: pass\n")
+
+        # Find project and index files
+        proj = find_project(tmp_path)
+        assert proj is not None
+
+        with db.open_project(proj.hash) as conn:
+            # Insert files
+            conn.execute(
+                "INSERT INTO files (rel_path, language, size, mtime, content_sha256, indexed_at) "
+                "VALUES (?, ?, ?, ?, ?, ?)",
+                ("auth.py", "python", 100, 0.0, "abc123", 0),
+            )
+            conn.execute(
+                "INSERT INTO files (rel_path, language, size, mtime, content_sha256, indexed_at) "
+                "VALUES (?, ?, ?, ?, ?, ?)",
+                ("session.py", "python", 50, 0.0, "def456", 0),
+            )
+            # Insert import from auth.py to session
+            conn.execute(
+                "INSERT INTO imports_exports (file_rel, kind, target, line) VALUES (?, ?, ?, ?)",
+                ("auth.py", "import", "session", 1),
+            )
+
+        # First read of auth.py — session.py not yet read
+        hint = build_read_hint(
+            session_id="s_coread_1",
+            file_path=str(src_file),
+            offset=None,
+            limit=None,
+            cwd=str(tmp_path),
+        )
+
+        # Should get a coread suggestion hint
+        assert hint is not None, "coread hint should fire on first read of .py file with imports"
+        assert "session" in str(hint).lower(), f"hint should mention imported module: {hint}"
+        assert "token-goat read" in str(hint), "hint should suggest using token-goat read"
+
+    def test_coread_hint_not_fired_on_cached_file(self, tmp_data_dir, tmp_path):
+        """Coread hint suppressed when file was already read in session."""
+        from token_goat.project import find_project
+
+        (tmp_path / ".git").mkdir()
+
+        src_file = tmp_path / "auth.py"
+        session_file = tmp_path / "session.py"
+        src_file.write_text("# auth\nimport session\n")
+        session_file.write_text("# session\n")
+
+        proj = find_project(tmp_path)
+        assert proj is not None
+
+        with db.open_project(proj.hash) as conn:
+            conn.execute(
+                "INSERT INTO files (rel_path, language, size, mtime, content_sha256, indexed_at) "
+                "VALUES (?, ?, ?, ?, ?, ?)",
+                ("auth.py", "python", 50, 0.0, "abc123", 0),
+            )
+            conn.execute(
+                "INSERT INTO files (rel_path, language, size, mtime, content_sha256, indexed_at) "
+                "VALUES (?, ?, ?, ?, ?, ?)",
+                ("session.py", "python", 50, 0.0, "def456", 0),
+            )
+            conn.execute(
+                "INSERT INTO imports_exports (file_rel, kind, target, line) VALUES (?, ?, ?, ?)",
+                ("auth.py", "import", "session", 1),
+            )
+
+        # Mark the file as already read in session
+        session_id = "s_coread_cached"
+        session.mark_file_read(session_id, str(src_file), offset=0, limit=100)
+
+        # Second read should return None or cache hint, not coread hint
+        hint = build_read_hint(
+            session_id=session_id,
+            file_path=str(src_file),
+            offset=None,
+            limit=None,
+            cwd=str(tmp_path),
+        )
+
+        # If there's a hint, it should be a cache hint (already-read), not coread
+        if hint is not None:
+            assert "session" not in str(hint).lower() or "already read" in str(hint).lower(), \
+                "cached file should not get coread suggestion"
+
+    def test_coread_hint_not_fired_for_non_py_files(self, tmp_path):
+        """Coread hint should not fire for non-.py files."""
+        src_file = tmp_path / "config.toml"
+        src_file.write_text("[project]\nname = 'test'\n")
+
+        hint = build_read_hint(
+            session_id="s_coread_toml",
+            file_path=str(src_file),
+            offset=None,
+            limit=None,
+            cwd=str(tmp_path),
+        )
+
+        # No hint expected for TOML files
+        assert hint is None or "import" not in str(hint).lower()
+
+    def test_coread_hint_suppressed_when_all_imports_read(self, tmp_data_dir, tmp_path):
+        """Coread hint suppressed when all imported files are already read."""
+        from token_goat.project import find_project
+
+        (tmp_path / ".git").mkdir()
+
+        src_file = tmp_path / "auth.py"
+        session_file = tmp_path / "session.py"
+        src_file.write_text("import session\n")
+        session_file.write_text("class Session: pass\n")
+
+        proj = find_project(tmp_path)
+        assert proj is not None
+
+        with db.open_project(proj.hash) as conn:
+            conn.execute(
+                "INSERT INTO files (rel_path, language, size, mtime, content_sha256, indexed_at) "
+                "VALUES (?, ?, ?, ?, ?, ?)",
+                ("auth.py", "python", 50, 0.0, "abc123", 0),
+            )
+            conn.execute(
+                "INSERT INTO files (rel_path, language, size, mtime, content_sha256, indexed_at) "
+                "VALUES (?, ?, ?, ?, ?, ?)",
+                ("session.py", "python", 50, 0.0, "def456", 0),
+            )
+            conn.execute(
+                "INSERT INTO imports_exports (file_rel, kind, target, line) VALUES (?, ?, ?, ?)",
+                ("auth.py", "import", "session", 1),
+            )
+
+        session_id = "s_coread_all_read"
+        # Mark both files as read
+        session.mark_file_read(session_id, str(src_file), offset=0, limit=100)
+        session.mark_file_read(session_id, str(session_file), offset=0, limit=50)
+
+        hint = build_read_hint(
+            session_id=session_id,
+            file_path=str(src_file),
+            offset=None,
+            limit=None,
+            cwd=str(tmp_path),
+        )
+
+        # Cache hint expected, not coread suggestion
+        if hint is not None:
+            assert "session" not in str(hint).lower() or "already" in str(hint).lower()
+
+    def test_coread_hint_limits_to_three_suggestions(self, tmp_data_dir, tmp_path):
+        """Coread hint should limit suggestions to max 3 files."""
+        from token_goat.project import find_project
+
+        (tmp_path / ".git").mkdir()
+
+        src_file = tmp_path / "main.py"
+        src_file.write_text("import a, b, c, d, e\n")
+
+        proj = find_project(tmp_path)
+        assert proj is not None
+
+        with db.open_project(proj.hash) as conn:
+            conn.execute(
+                "INSERT INTO files (rel_path, language, size, mtime, content_sha256, indexed_at) "
+                "VALUES (?, ?, ?, ?, ?, ?)",
+                ("main.py", "python", 50, 0.0, "abc123", 0),
+            )
+            # Insert 5 imported modules
+            for mod in ["a", "b", "c", "d", "e"]:
+                conn.execute(
+                    "INSERT INTO files (rel_path, language, size, mtime, content_sha256, indexed_at) "
+                    "VALUES (?, ?, ?, ?, ?, ?)",
+                    (f"{mod}.py", "python", 20, 0.0, f"sha_{mod}", 0),
+                )
+                conn.execute(
+                    "INSERT INTO imports_exports (file_rel, kind, target, line) VALUES (?, ?, ?, ?)",
+                    ("main.py", "import", mod, 1),
+                )
+
+        hint = build_read_hint(
+            session_id="s_coread_limit",
+            file_path=str(src_file),
+            offset=None,
+            limit=None,
+            cwd=str(tmp_path),
+        )
+
+        # Should get hint with max 3 suggestions
+        if hint is not None:
+            hint_str = str(hint)
+            # The hint should suggest at most 3 imported modules.
+            # Example: "Note: `main.py` imports `a.py`, `b.py`, `c.py` (unread)..."
+            # Check for the "(unread)" marker which indicates suggested modules
+            assert "(unread)" in hint_str, f"hint should have (unread) marker: {hint_str}"
+            # Extract the section between "imports" and "(unread)"
+            parts = hint_str.split("imports")
+            if len(parts) >= 2:
+                suggestion_part = parts[1].split("(unread)")[0]
+                # Count occurrences of ".py`" which marks the end of each module name
+                module_count = suggestion_part.count(".py")
+                assert module_count <= 3, f"hint should suggest max 3 modules, got {module_count}: {hint}"
+
+    def test_coread_hint_not_fired_without_project(self, tmp_path):
+        """Coread hint suppressed when project cannot be found."""
+        # No .git marker, so find_project will return None
+        src_file = tmp_path / "orphan.py"
+        src_file.write_text("import something\n")
+
+        hint = build_read_hint(
+            session_id="s_coread_noproject",
+            file_path=str(src_file),
+            offset=None,
+            limit=None,
+            cwd=str(tmp_path),
+        )
+
+        # No hint expected when project is not found
+        assert hint is None or "import" not in str(hint).lower()
