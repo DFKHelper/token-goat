@@ -1418,9 +1418,9 @@ class GhFilter(Filter):
     * **``gh pr view`` / ``gh issue view``**: pass through verbatim (these
       have load-bearing metadata in every line, and agents almost always need
       the full body).
-    * **``gh pr list`` / ``gh run list`` / ``gh issue list``**: pass through
-      (table rows are inherently compact; truncation would hide the entry
-      the caller is searching for).
+    * **``gh pr list`` / ``gh run list`` / ``gh issue list``**: truncate to
+      first 30 rows with a count summary (table rows can exceed 100 lines
+      when listing many runs/PRs; first 30 + count preserves search ability).
     * **Everything else** (``gh api``, ``gh release view``, …): generic
       ANSI/progress strip only (already handled by :meth:`apply`).
     """
@@ -1437,6 +1437,8 @@ class GhFilter(Filter):
         merged = self._combine_output(stdout, stderr)
         if subcommand == "run" and action == "view":
             return _compress_gh_run_view(merged)
+        if subcommand in ("pr", "run", "issue") and action == "list":
+            return _compress_gh_list(merged, subcommand)
         # Everything else passes through with just blank-line squeezing.
         return _squeeze_blank_lines(merged)
 
@@ -1479,6 +1481,39 @@ def _compress_gh_run_view(text: str) -> str:
         notes.append(f"dropped {dropped_preamble} action-preamble lines")
     Filter._emit_notes(kept, notes)
     return _squeeze_blank_lines("\n".join(kept))
+
+
+def _compress_gh_list(text: str, subcommand: str) -> str:
+    """Truncate ``gh pr/run/issue list`` output to first 30 rows + count.
+
+    These commands produce tabular output where each row represents a distinct
+    resource. When listing many items, output can exceed 100 lines. We keep
+    the first 30 rows (preserving search ability for recent items) and emit
+    a count summary of remaining items.
+    """
+    lines = text.split("\n")
+    # Find header line (usually the first non-empty line).
+    header_idx = 0
+    for i, line in enumerate(lines):
+        if line.strip():
+            header_idx = i
+            break
+    # Count data rows (lines after header until blank or end).
+    data_start = header_idx + 1
+    data_end = len(lines)
+    for i in range(data_start, len(lines)):
+        if not lines[i].strip():
+            data_end = i
+            break
+    total_data_rows = data_end - data_start
+    max_rows = 30
+    if total_data_rows <= max_rows:
+        return _squeeze_blank_lines(text)
+    # Keep header + first N data rows.
+    kept_lines = lines[:data_start] + lines[data_start:data_start + max_rows]
+    notes = [f"showing first {max_rows} of {total_data_rows} {subcommand}s"]
+    Filter._emit_notes(kept_lines, notes)
+    return _squeeze_blank_lines("\n".join(kept_lines))
 
 
 # --- AWS CLI ---------------------------------------------------------------
@@ -3329,6 +3364,93 @@ class DeltaFilter(Filter):
         return "\n".join(result).rstrip()
 
 
+# --- fzf (fuzzy finder) ----------------------------------------------------
+
+class FzfFilter(Filter):
+    """Compress ``fzf`` fuzzy finder output.
+
+    The ``fzf`` command is an interactive fuzzy picker. When run in pipelines
+    or with ``--print-query``, it outputs the selected items or query string,
+    which is typically compact (1–5 lines). However, when ``fzf`` is preceded
+    by commands that generate preview output or large upstream pipes, the
+    combined output can be verbose.
+
+    Compression model:
+
+    * **Pass-through** when output is ≤ 50 lines — fzf output is inherently
+      compact, so anything under 50 lines is already lean.
+    * **Summarise** when output exceeds 50 lines: keep first 40 lines +
+      last 10 lines + "... N lines elided ..." marker in between.
+    """
+
+    name = "fzf"
+    binaries = frozenset(["fzf"])
+
+    def compress(
+        self, stdout: str, stderr: str, exit_code: int, argv: list[str],
+    ) -> str:
+        merged = self._combine_output(stdout, stderr)
+        text = normalise(merged)
+
+        lines = text.split("\n")
+        non_empty = [ln for ln in lines if ln.strip()]
+
+        if len(non_empty) <= 50:
+            return text.rstrip()
+
+        # Keep first 40 + last 10 + marker
+        head_keep = 40
+        tail_keep = 10
+        elided = len(non_empty) - head_keep - tail_keep
+
+        head_lines = non_empty[:head_keep]
+        tail_lines = non_empty[-tail_keep:]
+
+        result = head_lines + [f"... [{elided} lines elided by token-goat]"] + tail_lines
+        return "\n".join(result).rstrip()
+
+
+# --- lazygit (git TUI) -----------------------------------------------------
+
+class LazyGitFilter(Filter):
+    """Compress ``lazygit`` terminal UI output.
+
+    The ``lazygit`` command is an interactive TUI (terminal user interface)
+    for git operations. Running it non-interactively (e.g., piped into
+    another command or captured without a TTY) produces terminal control
+    sequences and incomplete state dumps, which are not useful.
+
+    Compression model:
+
+    * **Detect TUI markers**: when output contains terminal control sequences
+      (ANSI escape codes for cursor control, colours, etc.) or is empty,
+      emit a single helpful note instead of confusing the agent with raw
+      terminal data.
+    * **Pass-through** when output appears to be actual log/status text
+      (no ANSI codes, non-empty).
+    """
+
+    name = "lazygit"
+    binaries = frozenset(["lazygit"])
+
+    def compress(
+        self, stdout: str, stderr: str, exit_code: int, argv: list[str],
+    ) -> str:
+        merged = self._combine_output(stdout, stderr)
+
+        # Check for terminal control sequences (ANSI escapes).
+        has_ansi = "\x1b[" in merged or "\x1b(" in merged
+        is_empty = not merged.strip()
+
+        if is_empty or has_ansi:
+            # Lazygit is a terminal UI — it's not meant to be run
+            # non-interactively. Return a helpful note.
+            return "[lazygit is an interactive terminal UI — run it in a terminal session, not piped]"
+
+        # If we got here, it's plain text (unusual for lazygit, but pass through).
+        return merged.rstrip()
+
+
 # --- jq (JSON processor) ---------------------------------------------------
 
 class JqFilter(Filter):
@@ -3511,6 +3633,8 @@ FILTERS: list[Filter] = [
     TreeFilter(),
     BatFilter(),
     DeltaFilter(),
+    FzfFilter(),
+    LazyGitFilter(),
     JqFilter(),
     YqFilter(),
     PythonFilter(),

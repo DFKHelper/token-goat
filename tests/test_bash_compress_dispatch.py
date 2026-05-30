@@ -1292,6 +1292,19 @@ class TestGhFilter:
         assert "#41" in out
         assert "#40" in out
 
+    def test_run_list_truncates_large_output(self) -> None:
+        f = bc.GhFilter()
+        # Build a large list with 50 runs (>30 threshold).
+        header = "Showing 50 of 50 runs in owner/repo\n"
+        rows = [f"status-{i:03d}\t#run-{i:04d}\thttps://github.com/run/{i}" for i in range(50)]
+        big_output = header + "\n".join(rows)
+        out = f.compress(big_output, "", 0, ["gh", "run", "list"])
+        # Should truncate to 30 rows and emit count.
+        assert "showing first 30 of 50 runs" in out
+        # Check that some early rows are present and some late rows are not.
+        assert "run-0000" in out or "run-0001" in out
+        assert "run-0049" not in out  # Last row should be elided
+
     def test_run_view_savings_ratio(self) -> None:
         f = bc.GhFilter()
         # Many passing steps with deep preambles.
@@ -1308,6 +1321,65 @@ class TestGhFilter:
         result = f.apply(big, "", 1, ["gh", "run", "view", "1"])
         ratio = result.percent_saved / 100.0
         assert ratio >= 0.50, f"GhFilter savings {ratio:.0%} < 50% on big run view"
+
+
+# ---------------------------------------------------------------------------
+# 4b. FzfFilter — fuzzy finder output
+# ---------------------------------------------------------------------------
+
+
+class TestFzfFilter:
+    def test_fzf_small_output_passes_through(self) -> None:
+        f = bc.FzfFilter()
+        # Fzf typically outputs 1-5 lines (selected items).
+        output = "file1.py\nfile2.py\nfile3.py"
+        out = f.compress(output, "", 0, ["fzf"])
+        assert "file1.py" in out
+        assert "file2.py" in out
+        assert "file3.py" in out
+
+    def test_fzf_large_output_truncates(self) -> None:
+        f = bc.FzfFilter()
+        # Generate >50 lines of output (e.g., from an upstream pipe).
+        lines = [f"candidate-{i:03d}" for i in range(75)]
+        output = "\n".join(lines)
+        out = f.compress(output, "", 0, ["fzf"])
+        # Should truncate and emit elision marker.
+        # Keeps first 40 (candidate-000 to candidate-039) + last 10 (candidate-065 to candidate-074).
+        assert "candidate-000" in out
+        assert "candidate-039" in out
+        assert "candidate-064" not in out  # Middle section elided
+        assert "candidate-065" in out  # Last 10 kept
+        assert "25 lines elided" in out  # 75 - 40 - 10 = 25
+
+
+# ---------------------------------------------------------------------------
+# 4c. LazyGitFilter — git TUI
+# ---------------------------------------------------------------------------
+
+
+class TestLazyGitFilter:
+    def test_lazygit_tui_output_returns_note(self) -> None:
+        f = bc.LazyGitFilter()
+        # Simulated terminal control output (ANSI escape codes).
+        output = "\x1b[2J\x1b[H\x1b[1;32mLazyGit\x1b[0m"
+        out = f.compress(output, "", 0, ["lazygit"])
+        assert "interactive terminal UI" in out
+        assert "not piped" in out
+
+    def test_lazygit_empty_output_returns_note(self) -> None:
+        f = bc.LazyGitFilter()
+        output = ""
+        out = f.compress(output, "", 0, ["lazygit"])
+        assert "interactive terminal UI" in out
+
+    def test_lazygit_plain_text_output_passes_through(self) -> None:
+        f = bc.LazyGitFilter()
+        # Unusual but possible: plain text output (no ANSI codes, non-empty).
+        output = "Commit: abc123\nAuthor: Someone\n"
+        out = f.compress(output, "", 0, ["lazygit"])
+        assert "Commit: abc123" in out
+        assert "Author: Someone" in out
 
 
 # ---------------------------------------------------------------------------
