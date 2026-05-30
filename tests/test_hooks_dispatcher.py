@@ -1509,3 +1509,107 @@ def test_exit_zero_invariant_all_events(event, tmp_path, monkeypatch, capsys):
     assert parsed.get("continue") is True, (
         f"event {event!r}: expected {{\"continue\": true}}, got {parsed!r}"
     )
+
+
+# ---------------------------------------------------------------------------
+# Thread safety: handler_result data race fix
+# ---------------------------------------------------------------------------
+
+
+def test_dispatch_handler_result_is_thread_safe():
+    """Verify that handler_result updates are guarded with a lock.
+
+    Regression: dispatch() created a shared dict that was updated by the worker
+    thread and read by the main thread without synchronization. This caused a
+    potential data race. The fix guards the update and read with a threading.Lock.
+
+    This test cannot directly observe the lock (it's internal), but it verifies
+    that the handler's result is correctly captured even when the handler returns
+    a complex dict with multiple keys.
+    """
+    # Create a handler that returns a dict with multiple keys and a nested structure.
+    def multi_key_handler(payload):
+        return {
+            "continue": True,
+            "field1": "value1",
+            "field2": {"nested": "data"},
+            "field3": [1, 2, 3],
+        }
+
+    # Register and dispatch.
+    import token_goat.hooks_cli as hc
+    original_handler = hc.EVENTS.get("session-start")
+    try:
+        hc.EVENTS["session-start"] = multi_key_handler
+        result = hc.dispatch("session-start", {"session_id": "test"})
+        # Verify all fields were correctly transferred from handler_result to result.
+        assert result["continue"] is True
+        assert result["field1"] == "value1"
+        assert result["field2"] == {"nested": "data"}
+        assert result["field3"] == [1, 2, 3]
+        # Verify timestamp is added by dispatch.
+        assert "_tg_elapsed_ms" in result
+    finally:
+        if original_handler:
+            hc.EVENTS["session-start"] = original_handler
+
+
+def test_get_hook_context_remaining_ms_outside_hook():
+    """get_hook_context_remaining_ms() returns a large value outside a hook."""
+    from token_goat.hooks_cli import get_hook_context_remaining_ms
+    remaining = get_hook_context_remaining_ms()
+    assert remaining == 1_000_000, f"expected 1_000_000, got {remaining}"
+
+
+def test_get_hook_context_remaining_ms_inside_hook():
+    """get_hook_context_remaining_ms() returns remaining budget inside a hook.
+
+    The hook context is set at the start of _run_handler() and cleared at the
+    end. This test verifies that a handler can query the remaining budget.
+    """
+    from token_goat.hooks_cli import get_hook_context_remaining_ms
+
+    remaining_values = []
+
+    def query_budget_handler(payload):
+        remaining = get_hook_context_remaining_ms()
+        remaining_values.append(remaining)
+        return {"continue": True}
+
+    import token_goat.hooks_cli as hc
+    original_handler = hc.EVENTS.get("session-start")
+    try:
+        hc.EVENTS["session-start"] = query_budget_handler
+        result = hc.dispatch("session-start", {"session_id": "budget-test"})
+        assert result["continue"] is True
+        assert len(remaining_values) == 1
+        # The remaining budget should be less than the max (2000 ms) but positive.
+        # Since the handler runs very fast, the remaining should be close to 2000 ms.
+        remaining = remaining_values[0]
+        assert 1900 <= remaining <= 2000, f"expected remaining ~2000ms, got {remaining}ms"
+    finally:
+        if original_handler:
+            hc.EVENTS["session-start"] = original_handler
+
+
+def test_get_hook_context_remaining_ms_after_hook():
+    """After a hook completes, get_hook_context_remaining_ms() returns large value."""
+    import token_goat.hooks_cli as hc
+    from token_goat.hooks_cli import get_hook_context_remaining_ms
+
+    # Dispatch a hook to set the context.
+    def simple_handler(payload):
+        return {"continue": True}
+
+    original_handler = hc.EVENTS.get("session-start")
+    try:
+        hc.EVENTS["session-start"] = simple_handler
+        result = hc.dispatch("session-start", {"session_id": "cleanup-test"})
+        assert result["continue"] is True
+    finally:
+        if original_handler:
+            hc.EVENTS["session-start"] = original_handler
+
+    # After dispatch, the context should be cleared (None).
+    remaining = get_hook_context_remaining_ms()
+    assert remaining == 1_000_000, "context should be cleared after hook completes"
