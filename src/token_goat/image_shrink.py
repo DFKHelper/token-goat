@@ -552,6 +552,30 @@ def shrink(src_path: Path, *, _session_id: str | None = None) -> Path | None:
     if src_size <= format_threshold(src_path):
         return None
 
+    # Animated images (multi-frame GIF, animated WebP, APNG) cannot be
+    # meaningfully compressed to a single-frame output without losing the
+    # animation.  Check before the cache lookup so a stale cache entry from
+    # an earlier (pre-check) run never gets served for an animated source.
+    # Only open PIL for formats that can carry animation — avoids overhead on
+    # the common JPEG/PNG path.  Use is_animated when available (Pillow 9.1+);
+    # fall back to n_frames > 1 for older builds.
+    _animated_suffixes = frozenset({".gif", ".webp", ".png"})
+    if src_path.suffix.lower() in _animated_suffixes:
+        try:
+            from PIL import Image as _AnimCheck  # noqa: PLC0415
+            with _AnimCheck.open(src_path) as _ac_img:
+                _is_anim = getattr(_ac_img, "is_animated", None)
+                if _is_anim is None:
+                    _is_anim = getattr(_ac_img, "n_frames", 1) > 1
+                if _is_anim:
+                    _LOG.debug(
+                        "shrink: skipping animated image %s (n_frames=%d)",
+                        src_path.name, getattr(_ac_img, "n_frames", "?"),
+                    )
+                    return None
+        except Exception:  # noqa: BLE001
+            pass  # Unreadable or exotic format; fall through to normal pipeline
+
     paths.ensure_dir(paths.image_cache_dir())
 
     stem = _cache_path_for(src_path)  # e.g. .../abc123.shrunk
@@ -742,7 +766,7 @@ def shrink(src_path: Path, *, _session_id: str | None = None) -> Path | None:
                             )
                     else:
                         final_path = stem.with_suffix(".jpg")
-                        img.save(final_path, "JPEG", quality=_cfg.image_shrink.jpeg_quality, optimize=True)
+                        img.save(final_path, "JPEG", quality=_cfg.image_shrink.jpeg_quality, optimize=True, progressive=True)
 
         out_size = final_path.stat().st_size
         savings_pct = 100.0 * (1.0 - out_size / src_size) if src_size > 0 else 0.0
