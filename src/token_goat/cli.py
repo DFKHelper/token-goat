@@ -3651,6 +3651,214 @@ def cmd_clean_cache(
             typer.echo(f"  {target}: ERROR — {info.get('error', 'unknown')}")
 
 
+@app.command("diff", rich_help_panel="Core")
+def cmd_diff(
+    since: str = typer.Option("HEAD~1", "--since", help="Git ref to diff against (commit, branch, tag). Default: HEAD~1."),  # noqa: B008
+    session_id: str | None = typer.Option(None, "--session", "-s", help="Show files edited in this session instead of running git diff."),  # noqa: B008
+    symbols: bool = typer.Option(False, "--symbols", help="List changed symbols (functions/classes) for each file."),  # noqa: B008
+    json_output: bool = _OPT_JSON,
+) -> None:
+    """Show files changed since a git ref, with optional symbol-level context.
+
+    By default diffs ``HEAD~1..HEAD`` (the last commit).  Use ``--since`` to
+    compare against any ref: a branch name, tag, or commit hash.
+
+    ``--session`` switches to session mode: shows files edited in the given
+    Claude session (from the session cache) rather than running ``git diff``.
+
+    ``--symbols`` parses the diff output for changed function/class names
+    extracted from ``git diff`` hunk headers (the text after the fourth ``@@``).
+
+    Examples::
+
+        token-goat diff
+        token-goat diff --since main
+        token-goat diff --since HEAD~5 --symbols
+        token-goat diff --session abc123 --symbols
+    """
+    import os as _os  # noqa: PLC0415
+    import sys as _sys  # noqa: PLC0415
+
+    from .util import run_git  # noqa: PLC0415
+
+    cwd = _os.getcwd()
+
+    # ---- session mode -------------------------------------------------------
+    if session_id is not None:
+        _validate_session_id(session_id)
+        from . import session as session_mod  # noqa: PLC0415
+
+        edited = session_mod.list_edited(session_id)
+        if not edited:
+            if json_output:
+                _emit_json({"mode": "session", "session_id": session_id, "files": []})
+            typer.echo("(no files edited in this session)")
+            return
+
+        # Sort by edit count descending so the most-edited files appear first.
+        sorted_edited = sorted(edited.items(), key=lambda kv: kv[1], reverse=True)
+
+        if json_output:
+            _emit_json({
+                "mode": "session",
+                "session_id": session_id,
+                "files": [{"path": p, "edits": c} for p, c in sorted_edited],
+            })
+
+        typer.echo(f"Files edited in session {session_id[:8]}:")
+        for path, count in sorted_edited:
+            edit_label = f"{count} edit{'s' if count != 1 else ''}"
+            typer.echo(f"  {path}  ({edit_label})")
+
+        if symbols:
+            # For session mode + --symbols: diff HEAD~1 for the edited files.
+            edited_paths = [p for p, _ in sorted_edited]
+            _show_symbols_for_paths(edited_paths, since, cwd, json_output=False)
+        return
+
+    # ---- git diff mode -------------------------------------------------------
+    # Verify this is a git repo and the ref exists.
+    check_ref = run_git(["rev-parse", "--verify", since], cwd=cwd)
+    if check_ref.returncode != 0:
+        _error(f"git ref not found: {since!r}")
+        raise typer.Exit(1)
+
+    # Get the summary (file names + insertions/deletions).
+    stat_result = run_git(["diff", "--stat", f"{since}..HEAD"], cwd=cwd)
+    if stat_result.returncode != 0:
+        _error(f"git diff failed: {stat_result.stderr.strip()}")
+        raise typer.Exit(1)
+
+    # Parse changed file paths from --stat output.
+    # Lines look like: " src/foo.py | 12 ++++-------"
+    # Last line is the summary: " 3 files changed, ..."
+    stat_lines = stat_result.stdout.splitlines()
+    file_lines = [ln for ln in stat_lines if "|" in ln]
+    changed_files: list[str] = []
+    for ln in file_lines:
+        path_part = ln.split("|")[0].strip()
+        # Handle rename notation "a => b" — keep the right-hand side.
+        if "=>" in path_part:
+            path_part = path_part.split("=>")[-1].strip().rstrip("}")
+        changed_files.append(path_part)
+
+    summary_line = next((ln for ln in reversed(stat_lines) if "changed" in ln), "")
+
+    if not changed_files:
+        if json_output:
+            _emit_json({"mode": "git", "since": since, "summary": summary_line.strip(), "files": []})
+        typer.echo(f"No changes between {since!r} and HEAD.")
+        return
+
+    # Build symbol data if requested.
+    symbol_map: dict[str, list[str]] = {}
+    if symbols:
+        symbol_map = _extract_diff_symbols(since, cwd)
+
+    if json_output:
+        files_out = []
+        for f in changed_files:
+            entry: dict[str, object] = {"path": f}
+            if symbols:
+                entry["symbols"] = symbol_map.get(f, [])
+            files_out.append(entry)
+        _emit_json({
+            "mode": "git",
+            "since": since,
+            "summary": summary_line.strip(),
+            "files": files_out,
+        })
+
+    # Human-readable output.
+    use_colour = _sys.stdout.isatty()
+    typer.echo(f"Changes since {since!r}:")
+    for ln in file_lines:
+        typer.echo(f"  {ln.strip()}")
+    if summary_line:
+        typer.echo(f"  {summary_line.strip()}")
+
+    if symbols and symbol_map:
+        typer.echo("")
+        typer.echo("Symbols changed:")
+        for f in changed_files:
+            syms = symbol_map.get(f)
+            if not syms:
+                continue
+            label = typer.style(f, bold=True) if use_colour else f
+            typer.echo(f"  {label}")
+            for s in syms:
+                typer.echo(f"    {s}")
+
+
+def _extract_diff_symbols(since: str, cwd: str) -> dict[str, list[str]]:
+    """Parse ``git diff --unified=0 <since>..HEAD`` hunk headers for symbol names.
+
+    Each ``@@`` header optionally ends with a function/class name after the
+    fourth ``@@``, e.g. ``@@ -10,3 +10,5 @@ def my_function``.  This function
+    collects those names, deduplicated and ordered by first appearance.
+
+    Returns a dict mapping relative file path → list of changed symbol names.
+    """
+    import re as _re  # noqa: PLC0415
+
+    from .util import run_git  # noqa: PLC0415
+
+    result = run_git(["diff", "--unified=0", f"{since}..HEAD"], cwd=cwd, timeout=30)
+    if result.returncode != 0:
+        return {}
+
+    symbol_map: dict[str, list[str]] = {}
+    current_file: str | None = None
+    _HUNK_RE = _re.compile(r"^@@ [^@]+ @@ ?(.+)$")
+    _FILE_RE = _re.compile(r"^\+\+\+ b/(.+)$")
+
+    for line in result.stdout.splitlines():
+        m_file = _FILE_RE.match(line)
+        if m_file:
+            current_file = m_file.group(1)
+            continue
+        if current_file is None:
+            continue
+        m_hunk = _HUNK_RE.match(line)
+        if m_hunk:
+            raw = m_hunk.group(1).strip()
+            if not raw:
+                continue
+            # Extract just the first identifier-like name (drop parameter list noise).
+            # "def foo(a, b):" → "foo", "class Bar:" → "Bar", "func baz() {" → "baz"
+            name_part = raw.split("(")[0].split("{")[0].strip()
+            # Drop leading keywords: def, func, function, class, async def, fn, pub fn, etc.
+            for kw in ("async def ", "def ", "func ", "function ", "class ", "fn ", "pub fn ", "pub async fn "):
+                if name_part.startswith(kw):
+                    name_part = name_part[len(kw):]
+                    break
+            # Strip trailing colon (Python class/def lines) and surrounding whitespace.
+            name_part = name_part.strip().rstrip(":")
+            if not name_part:
+                continue
+            syms = symbol_map.setdefault(current_file, [])
+            if name_part not in syms:
+                syms.append(name_part)
+
+    return symbol_map
+
+
+def _show_symbols_for_paths(paths: list[str], since: str, cwd: str, *, json_output: bool) -> None:
+    """Print symbol changes for the given file paths, filtering from a full diff."""
+    symbol_map = _extract_diff_symbols(since, cwd)
+    if not symbol_map:
+        return
+    filtered = {p: syms for p, syms in symbol_map.items() if p in paths}
+    if not filtered:
+        return
+    typer.echo("")
+    typer.echo("Symbols changed (vs HEAD~1):")
+    for f, syms in filtered.items():
+        typer.echo(f"  {f}")
+        for s in syms:
+            typer.echo(f"    {s}")
+
+
 @app.command("clean", rich_help_panel="Advanced")
 def cmd_clean(
     images: bool = typer.Option(False, "--images", help="Clear the image shrink cache."),  # noqa: B008
