@@ -673,9 +673,15 @@ def _build_read_hint_inner(
                 "build_read_hint: stat-skip index for %s (%dB < %dB threshold)",
                 fname, _stat_size, LARGE_FILE_LINE_THRESHOLD * _BYTES_PER_LINE_ESTIMATE,
             )
-            # Before returning None, check for co-read suggestions on Python files
-            # on first read (when cache entry is None).
-            if file_path.endswith(".py"):
+            # Before returning None, check for co-read suggestions on supported
+            # source files on first read (when cache entry is None).
+            _fp_lower = file_path.lower()
+            _coread_eligible = (
+                _fp_lower.endswith(_PY_SUFFIX)
+                or any(_fp_lower.endswith(s) for s in _TS_JS_SUFFIXES)
+                or _fp_lower.endswith(_GO_SUFFIX)
+            )
+            if _coread_eligible:
                 _cwd_path = validate_cwd(cwd, caller="_build_read_hint_inner (coread)")
                 if _cwd_path is not None:
                     _project = find_project(_cwd_path)
@@ -1179,79 +1185,235 @@ def _hint_from_index(
 # Co-read suggestion hint (predictive import suggestions)
 # ---------------------------------------------------------------------------
 
+# TS/JS source extensions tried when resolving a bare relative import path.
+# Order matters: .ts and .tsx first because most TS projects don't mix .js
+# files in the same tree, so the hit rate for the first two candidates is high.
+_TS_EXTENSIONS: tuple[str, ...] = (".ts", ".tsx", ".js", ".jsx")
+_TS_JS_SUFFIXES: tuple[str, ...] = (".ts", ".tsx", ".js", ".jsx")
+_GO_SUFFIX: str = ".go"
+_PY_SUFFIX: str = ".py"
+
+
+def _get_go_module_prefix(project_hash: str) -> str | None:
+    """Return the Go module path declared in go.mod, or None if absent/unreadable.
+
+    Reads the first ``module`` directive from go.mod using the project root
+    stored in the global DB.  Result is intentionally not cached — this
+    function is called at most once per co-read hint evaluation and go.mod is
+    tiny.
+    """
+    try:
+        import re as _re  # noqa: PLC0415
+
+        with db.open_global_readonly() as conn:
+            row = conn.execute("SELECT root FROM projects WHERE hash = ?", (project_hash,)).fetchone()
+        if not row:
+            return None
+        go_mod = Path(row[0]) / "go.mod"
+        if not go_mod.is_file():
+            return None
+        text = go_mod.read_text(encoding="utf-8", errors="replace")
+        m = _re.search(r"^\s*module\s+(\S+)", text, _re.MULTILINE)
+        return m.group(1) if m else None
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _resolve_ts_candidates(target: str, importing_rel: str) -> list[str]:
+    """Resolve a relative TS/JS import target to candidate rel_path strings.
+
+    ``target`` is the raw import string (e.g. ``'./styles'``, ``'../utils'``).
+    ``importing_rel`` is the project-relative path of the file containing the
+    import (e.g. ``'src/components/Button.tsx'``).
+
+    Returns a list of candidate rel_paths to check against the files table.
+    Only called for targets that start with ``'./'`` or ``'../'``.
+    """
+    importing_dir = Path(importing_rel).parent
+    # Strip leading ./ or ../
+    resolved_base = (importing_dir / target).as_posix()
+    # Normalise: collapse any .. segments that survived as literal dots
+    parts: list[str] = []
+    for part in resolved_base.split("/"):
+        if part == "..":
+            if parts:
+                parts.pop()
+        elif part not in ("", "."):
+            parts.append(part)
+    base = "/".join(parts)
+
+    candidates: list[str] = []
+    for ext in _TS_EXTENSIONS:
+        candidates.append(f"{base}{ext}")
+    # index file variants
+    for ext in _TS_EXTENSIONS:
+        candidates.append(f"{base}/index{ext}")
+    return candidates
+
+
+def _get_unread_coread_files_py(
+    file_path: str,
+    project_hash: str,
+    cache: session.SessionCache | None,
+    conn: sqlite3.Connection,
+) -> list[tuple[str, str]]:
+    """Python-specific co-read: resolve dot-separated module names to .py files."""
+    stem = Path(file_path).name[:-3]
+    cursor = conn.execute(
+        "SELECT DISTINCT target FROM imports_exports WHERE kind = 'import' AND file_rel LIKE ? LIMIT 10",
+        (f"%{stem}%",),
+    )
+    imports = [row[0] for row in cursor.fetchall()]
+    unread: list[tuple[str, str]] = []
+    for target in imports:
+        parts = target.split(".")
+        module_name = parts[-1]
+        candidates = [f"{module_name}.py"]
+        for i in range(len(parts) - 1, 0, -1):
+            candidates.append("/".join(parts[:i]) + f"/{parts[i]}.py")
+        for candidate in candidates:
+            row = conn.execute(
+                "SELECT rel_path FROM files WHERE rel_path LIKE ? AND rel_path LIKE '%.py' LIMIT 1",
+                (f"%{candidate}",),
+            ).fetchone()
+            if row:
+                matched_rel = row[0]
+                if not cache or matched_rel not in cache.files:
+                    unread.append((matched_rel, module_name))
+                break
+        if len(unread) >= 3:
+            break
+    return unread
+
+
+def _get_unread_coread_files_ts(
+    file_path: str,
+    project_hash: str,
+    cache: session.SessionCache | None,
+    conn: sqlite3.Connection,
+) -> list[tuple[str, str]]:
+    """TS/JS-specific co-read: resolve relative imports to local source files."""
+    try:
+        rel_path = conn.execute(
+            "SELECT rel_path FROM files WHERE rel_path LIKE ? LIMIT 1",
+            (f"%{Path(file_path).name}",),
+        ).fetchone()
+    except Exception:  # noqa: BLE001
+        return []
+    importing_rel = rel_path[0] if rel_path else Path(file_path).name
+
+    cursor = conn.execute(
+        "SELECT DISTINCT target FROM imports_exports WHERE kind = 'import' AND file_rel = ? LIMIT 20",
+        (importing_rel,),
+    )
+    all_targets = [row[0] for row in cursor.fetchall()]
+
+    # Only local relative imports
+    local_targets = [t for t in all_targets if t.startswith("./") or t.startswith("../")]
+    if not local_targets:
+        return []
+
+    unread: list[tuple[str, str]] = []
+    for target in local_targets:
+        candidates = _resolve_ts_candidates(target, importing_rel)
+        for candidate in candidates:
+            row = conn.execute(
+                "SELECT rel_path FROM files WHERE rel_path = ? LIMIT 1",
+                (candidate,),
+            ).fetchone()
+            if row:
+                matched_rel = row[0]
+                display_name = Path(matched_rel).name
+                if not cache or matched_rel not in cache.files:
+                    unread.append((matched_rel, display_name))
+                break
+        if len(unread) >= 3:
+            break
+    return unread
+
+
+def _get_unread_coread_files_go(
+    file_path: str,
+    project_hash: str,
+    cache: session.SessionCache | None,
+    conn: sqlite3.Connection,
+) -> list[tuple[str, str]]:
+    """Go-specific co-read: resolve intra-module imports to local .go files."""
+    module_prefix = _get_go_module_prefix(project_hash)
+    if not module_prefix:
+        return []
+
+    importing_rel = conn.execute(
+        "SELECT rel_path FROM files WHERE rel_path LIKE ? LIMIT 1",
+        (f"%{Path(file_path).name}",),
+    ).fetchone()
+    if not importing_rel:
+        return []
+    file_rel = importing_rel[0]
+
+    cursor = conn.execute(
+        "SELECT DISTINCT target FROM imports_exports WHERE kind = 'import' AND file_rel = ? LIMIT 20",
+        (file_rel,),
+    )
+    all_targets = [row[0] for row in cursor.fetchall()]
+
+    # Only imports that belong to this module
+    local_targets = [t for t in all_targets if t.startswith(module_prefix + "/")]
+    if not local_targets:
+        return []
+
+    unread: list[tuple[str, str]] = []
+    for target in local_targets:
+        # Strip the module prefix to get the directory path within the project
+        pkg_dir = target[len(module_prefix) + 1:]  # e.g. "internal/cache"
+        # Find any .go file in that directory
+        row = conn.execute(
+            "SELECT rel_path FROM files WHERE rel_path LIKE ? AND rel_path LIKE '%.go' LIMIT 1",
+            (f"{pkg_dir}/%",),
+        ).fetchone()
+        if row:
+            matched_rel = row[0]
+            display_name = pkg_dir.split("/")[-1]  # just the package name
+            if not cache or matched_rel not in cache.files:
+                unread.append((matched_rel, display_name))
+        if len(unread) >= 3:
+            break
+    return unread
+
+
 def _get_unread_coread_files(
     file_path: str,
     project_hash: str,
     cache: session.SessionCache | None = None,
 ) -> list[tuple[str, str]] | None:
-    """Get unread Python files that are imported by the given file.
+    """Get unread local-import files that are imported by the given file.
 
-    Returns a list of (rel_path, target_name) tuples for up to 3 unread,
-    in-project Python files that are imported by file_path, or None if
-    indexing is unavailable or no unread imports exist.
+    Supports Python (.py), TypeScript/JavaScript (.ts/.tsx/.js/.jsx), and Go
+    (.go) source files.  For each language only local imports are considered:
+    - Python: any dotted module that maps to a .py file in the project
+    - TS/JS: imports with a ``./`` or ``../`` prefix (relative paths only)
+    - Go: imports whose path starts with the current module prefix from go.mod
 
-    The target_name is a module or symbol name extracted from the import
-    statement (e.g., "session" from "from token_goat import session").
+    Returns a list of (rel_path, display_name) tuples for up to 3 unread
+    in-project files, or None if indexing is unavailable or no unread local
+    imports exist.
     """
-    if not file_path.endswith(".py"):
+    lower = file_path.lower()
+    is_py = lower.endswith(_PY_SUFFIX)
+    is_ts_js = any(lower.endswith(s) for s in _TS_JS_SUFFIXES)
+    is_go = lower.endswith(_GO_SUFFIX)
+    if not (is_py or is_ts_js or is_go):
         return None
 
     try:
         with db.open_project_readonly(project_hash) as conn:
-            # Query imports from the imports_exports table for this file
-            # We look for rows where file_rel matches the input file
-            # and kind = 'import'
-            cursor = conn.execute(
-                """
-                SELECT DISTINCT target FROM imports_exports
-                WHERE kind = 'import' AND file_rel LIKE ?
-                LIMIT 10
-                """,
-                (f"%{Path(file_path).name[:-3]}%",),
-            )
-            imports = [row[0] for row in cursor.fetchall()]
-            if not imports:
-                return None
-
-            # For each import, try to find a corresponding Python file in the project
-            # that hasn't been read yet. Match simple heuristics:
-            # - target "session" -> "session.py"
-            # - target "token_goat.session" -> "session.py" or "token_goat/session.py"
-            unread_files: list[tuple[str, str]] = []
-            for target in imports:
-                # Extract module name from qualified import (e.g., "session" from
-                # "token_goat.session" or "session")
-                parts = target.split(".")
-                module_name = parts[-1]
-                candidate_files = [f"{module_name}.py"]
-
-                # Also try qualified paths
-                for i in range(len(parts) - 1, 0, -1):
-                    candidate_path = "/".join(parts[:i]) + f"/{parts[i]}.py"
-                    candidate_files.append(candidate_path)
-
-                # Query the files table for matching .py files
-                for candidate in candidate_files:
-                    cursor = conn.execute(
-                        """
-                        SELECT rel_path FROM files
-                        WHERE rel_path LIKE ? AND rel_path LIKE '%.py'
-                        LIMIT 1
-                        """,
-                        (f"%{candidate}",),
-                    )
-                    match = cursor.fetchone()
-                    if match:
-                        matched_rel = match[0]
-                        # Check if this file has been read in this session
-                        if cache and matched_rel not in cache.files:
-                            unread_files.append((matched_rel, module_name))
-                            break  # Found a match for this import; move to next
-
-                if len(unread_files) >= 3:
-                    break  # Cap at 3 suggestions
-
-            return unread_files if unread_files else None
+            if is_py:
+                result = _get_unread_coread_files_py(file_path, project_hash, cache, conn)
+            elif is_ts_js:
+                result = _get_unread_coread_files_ts(file_path, project_hash, cache, conn)
+            else:
+                result = _get_unread_coread_files_go(file_path, project_hash, cache, conn)
+        return result if result else None
 
     except (sqlite3.OperationalError, sqlite3.DatabaseError, AttributeError):
         _LOG.debug(
@@ -1275,11 +1437,11 @@ def _build_coread_suggestion_hint(
     project_hash: str,
     cache: session.SessionCache | None = None,
 ) -> ReadHint | None:
-    """Build a co-read suggestion hint when unread imports exist.
+    """Build a co-read suggestion hint when unread local imports exist.
 
     Returns a ReadHint suggesting related files to read, or None if:
-    - The file is not .py
-    - No unread imports found
+    - The file extension is not supported (.py, .ts, .tsx, .js, .jsx, .go)
+    - No unread local imports found
     - Indexing is unavailable
     """
     coread_files = _get_unread_coread_files(file_path, project_hash, cache)
@@ -1288,27 +1450,21 @@ def _build_coread_suggestion_hint(
 
     fname = _sanitize_hint_path(Path(file_path).name)
 
-    # Build suggestion text for up to 3 related files
-    if len(coread_files) == 1:
-        rel, mod = coread_files[0]
-        suggestion = f"`{mod}.py` (unread)"
-    elif len(coread_files) == 2:
-        suggestion = ", ".join(f"`{mod}.py`" for _, mod in coread_files)
-        suggestion += " (unread)"
+    # Build suggestion text using actual filenames from DB rel_paths
+    display_names = [_sanitize_hint_path(Path(rel).name) for rel, _ in coread_files[:3]]
+    if len(display_names) == 1:
+        suggestion = f"`{display_names[0]}` (unread)"
     else:
-        suggestion = ", ".join(f"`{mod}.py`" for _, mod in coread_files[:3])
-        suggestion += " (unread)"
+        suggestion = ", ".join(f"`{n}`" for n in display_names) + " (unread)"
 
-    # Build the hint text with a sample token-goat read command
-    first_rel, first_mod = coread_files[0]
-    sample_cmd = first_rel.replace("\\", "/")
+    first_rel = coread_files[0][0].replace("\\", "/")
 
     return ReadHint(
         _apply_terse(
             f"Note: `{fname}` imports {suggestion}. "
-            f"Use `token-goat read \"{sample_cmd}::ClassName\"` to read selectively."
+            f"Use `token-goat read \"{first_rel}::ClassName\"` to read selectively."
         ),
-        0,  # This is a suggestion, not a realized saving
+        0,
     )
 
 

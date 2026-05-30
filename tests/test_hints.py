@@ -3726,3 +3726,214 @@ class TestCoreadSuggestions:
 
         # No hint expected when project is not found
         assert hint is None or "import" not in str(hint).lower()
+
+    def test_coread_hint_ts_relative_import(self, tmp_data_dir, tmp_path):
+        """Coread hint fires for a .tsx file with a relative ./import."""
+        from token_goat.project import find_project
+
+        (tmp_path / ".git").mkdir()
+        src_dir = tmp_path / "src" / "components"
+        src_dir.mkdir(parents=True)
+
+        button_file = src_dir / "Button.tsx"
+        styles_file = src_dir / "styles.ts"
+        button_file.write_text("import styles from './styles';\nexport const Button = () => null;\n")
+        styles_file.write_text("export const cls = 'btn';\n")
+
+        proj = find_project(tmp_path)
+        assert proj is not None
+
+        with db.open_project(proj.hash) as conn:
+            conn.execute(
+                "INSERT INTO files (rel_path, language, size, mtime, content_sha256, indexed_at) VALUES (?, ?, ?, ?, ?, ?)",
+                ("src/components/Button.tsx", "typescript", 80, 0.0, "sha_btn", 0),
+            )
+            conn.execute(
+                "INSERT INTO files (rel_path, language, size, mtime, content_sha256, indexed_at) VALUES (?, ?, ?, ?, ?, ?)",
+                ("src/components/styles.ts", "typescript", 30, 0.0, "sha_sty", 0),
+            )
+            conn.execute(
+                "INSERT INTO imports_exports (file_rel, kind, target, line) VALUES (?, ?, ?, ?)",
+                ("src/components/Button.tsx", "import", "./styles", 1),
+            )
+
+        hint = build_read_hint(
+            session_id="s_coread_ts_rel",
+            file_path=str(button_file),
+            offset=None,
+            limit=None,
+            cwd=str(tmp_path),
+        )
+
+        assert hint is not None, "coread hint should fire for .tsx file with relative import"
+        assert "styles.ts" in str(hint), f"hint should mention styles.ts: {hint}"
+        assert "token-goat read" in str(hint)
+
+    def test_coread_hint_ts_external_import_excluded(self, tmp_data_dir, tmp_path):
+        """External (non-relative) TS imports must NOT trigger co-read hints."""
+        from token_goat.project import find_project
+
+        (tmp_path / ".git").mkdir()
+        src_file = tmp_path / "App.tsx"
+        src_file.write_text("import React from 'react';\nimport { useState } from 'react';\n")
+
+        proj = find_project(tmp_path)
+        assert proj is not None
+
+        with db.open_project(proj.hash) as conn:
+            conn.execute(
+                "INSERT INTO files (rel_path, language, size, mtime, content_sha256, indexed_at) VALUES (?, ?, ?, ?, ?, ?)",
+                ("App.tsx", "typescript", 80, 0.0, "sha_app", 0),
+            )
+            conn.execute(
+                "INSERT INTO imports_exports (file_rel, kind, target, line) VALUES (?, ?, ?, ?)",
+                ("App.tsx", "import", "react", 1),
+            )
+
+        hint = build_read_hint(
+            session_id="s_coread_ts_ext",
+            file_path=str(src_file),
+            offset=None,
+            limit=None,
+            cwd=str(tmp_path),
+        )
+
+        assert hint is None or "react" not in str(hint).lower(), \
+            f"external 'react' import should not trigger coread: {hint}"
+
+    def test_coread_hint_ts_parent_relative_import(self, tmp_data_dir, tmp_path):
+        """Coread hint resolves '../utils' imports correctly."""
+        from token_goat.project import find_project
+
+        (tmp_path / ".git").mkdir()
+        src_dir = tmp_path / "src" / "components"
+        utils_dir = tmp_path / "src"
+        src_dir.mkdir(parents=True)
+
+        btn_file = src_dir / "Button.tsx"
+        utils_file = utils_dir / "utils.ts"
+        btn_file.write_text("import { cn } from '../utils';\n")
+        utils_file.write_text("export const cn = () => '';\n")
+
+        proj = find_project(tmp_path)
+        assert proj is not None
+
+        with db.open_project(proj.hash) as conn:
+            conn.execute(
+                "INSERT INTO files (rel_path, language, size, mtime, content_sha256, indexed_at) VALUES (?, ?, ?, ?, ?, ?)",
+                ("src/components/Button.tsx", "typescript", 50, 0.0, "sha_btn2", 0),
+            )
+            conn.execute(
+                "INSERT INTO files (rel_path, language, size, mtime, content_sha256, indexed_at) VALUES (?, ?, ?, ?, ?, ?)",
+                ("src/utils.ts", "typescript", 30, 0.0, "sha_utils", 0),
+            )
+            conn.execute(
+                "INSERT INTO imports_exports (file_rel, kind, target, line) VALUES (?, ?, ?, ?)",
+                ("src/components/Button.tsx", "import", "../utils", 1),
+            )
+
+        hint = build_read_hint(
+            session_id="s_coread_ts_parent",
+            file_path=str(btn_file),
+            offset=None,
+            limit=None,
+            cwd=str(tmp_path),
+        )
+
+        assert hint is not None, "coread hint should fire for '../utils' import"
+        assert "utils.ts" in str(hint), f"hint should mention utils.ts: {hint}"
+
+    def test_coread_hint_go_intramodule_import(self, tmp_data_dir, tmp_path):
+        """Coread hint fires for a .go file importing another package in the same module."""
+        from token_goat.project import find_project
+
+        (tmp_path / ".git").mkdir()
+        go_mod = tmp_path / "go.mod"
+        go_mod.write_text("module github.com/myorg/myapp\n\ngo 1.21\n")
+
+        main_file = tmp_path / "main.go"
+        cache_dir = tmp_path / "internal" / "cache"
+        cache_dir.mkdir(parents=True)
+        cache_file = cache_dir / "cache.go"
+        main_file.write_text('package main\nimport "github.com/myorg/myapp/internal/cache"\n')
+        cache_file.write_text("package cache\n")
+
+        proj = find_project(tmp_path)
+        assert proj is not None
+
+        # Register project root in global DB so _get_go_module_prefix can find it
+        import time as _time  # noqa: PLC0415
+        with db.open_global() as g_conn:
+            g_conn.execute(
+                "INSERT INTO projects (hash, root, marker, first_seen, last_seen) VALUES (?, ?, ?, ?, ?) "
+                "ON CONFLICT(hash) DO UPDATE SET root=excluded.root",
+                (proj.hash, str(tmp_path), "git", int(_time.time()), int(_time.time())),
+            )
+        with db.open_project(proj.hash) as conn:
+            conn.execute(
+                "INSERT INTO files (rel_path, language, size, mtime, content_sha256, indexed_at) VALUES (?, ?, ?, ?, ?, ?)",
+                ("main.go", "go", 80, 0.0, "sha_main", 0),
+            )
+            conn.execute(
+                "INSERT INTO files (rel_path, language, size, mtime, content_sha256, indexed_at) VALUES (?, ?, ?, ?, ?, ?)",
+                ("internal/cache/cache.go", "go", 30, 0.0, "sha_cache", 0),
+            )
+            conn.execute(
+                "INSERT INTO imports_exports (file_rel, kind, target, line) VALUES (?, ?, ?, ?)",
+                ("main.go", "import", "github.com/myorg/myapp/internal/cache", 2),
+            )
+
+        hint = build_read_hint(
+            session_id="s_coread_go_mod",
+            file_path=str(main_file),
+            offset=None,
+            limit=None,
+            cwd=str(tmp_path),
+        )
+
+        assert hint is not None, "coread hint should fire for intra-module Go import"
+        assert "cache" in str(hint).lower(), f"hint should mention cache package: {hint}"
+        assert "token-goat read" in str(hint)
+
+    def test_coread_hint_go_stdlib_excluded(self, tmp_data_dir, tmp_path):
+        """Go stdlib imports must NOT trigger co-read hints."""
+        import time as _time  # noqa: PLC0415
+
+        from token_goat.project import find_project
+
+        (tmp_path / ".git").mkdir()
+        go_mod = tmp_path / "go.mod"
+        go_mod.write_text("module github.com/myorg/myapp\n\ngo 1.21\n")
+
+        main_file = tmp_path / "main.go"
+        main_file.write_text('package main\nimport "fmt"\n')
+
+        proj = find_project(tmp_path)
+        assert proj is not None
+
+        with db.open_global() as g_conn:
+            g_conn.execute(
+                "INSERT INTO projects (hash, root, marker, first_seen, last_seen) VALUES (?, ?, ?, ?, ?) "
+                "ON CONFLICT(hash) DO UPDATE SET root=excluded.root",
+                (proj.hash, str(tmp_path), "git", int(_time.time()), int(_time.time())),
+            )
+        with db.open_project(proj.hash) as conn:
+            conn.execute(
+                "INSERT INTO files (rel_path, language, size, mtime, content_sha256, indexed_at) VALUES (?, ?, ?, ?, ?, ?)",
+                ("main.go", "go", 40, 0.0, "sha_main2", 0),
+            )
+            conn.execute(
+                "INSERT INTO imports_exports (file_rel, kind, target, line) VALUES (?, ?, ?, ?)",
+                ("main.go", "import", "fmt", 2),
+            )
+
+        hint = build_read_hint(
+            session_id="s_coread_go_std",
+            file_path=str(main_file),
+            offset=None,
+            limit=None,
+            cwd=str(tmp_path),
+        )
+
+        assert hint is None or "fmt" not in str(hint).lower(), \
+            f"stdlib 'fmt' import should not trigger coread: {hint}"
