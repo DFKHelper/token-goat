@@ -398,11 +398,37 @@ def _build_recovery_hint(session_id: str) -> str | None:
     resume_anchor = _resume_anchor_for_recovery(raw_edited, cache)
 
     # 0. Loaded skills — single-line format matching compact.py's manifest.
+    # Deduplicate by skill name to avoid listing the same skill multiple times
+    # if it was updated mid-session, and flag stale skills (loaded 6+ hours ago).
     if skill_entries:
-        skill_names = [getattr(se, "skill_name", "?") for se in skill_entries]
-        dropped = len(skill_all) - len(skill_entries)
+        import time as _time  # noqa: PLC0415
+        now = _time.time()
+        stale_threshold = 6 * 3600  # 6 hours, mirrors compact.py::_SKILL_STALE_FOR_SESSION_SECS
+
+        # Deduplicate: keep only the most-recent ts per skill name
+        deduped_skills: dict[str, object] = {}
+        for se in skill_entries:
+            sname = getattr(se, "skill_name", "")
+            ts = getattr(se, "ts", 0.0)
+            if sname and (sname not in deduped_skills or ts > getattr(deduped_skills[sname], "ts", 0.0)):
+                deduped_skills[sname] = se
+
+        # Sort by ts descending and flag stale ones
+        sorted_skills = sorted(deduped_skills.values(), key=lambda s: getattr(s, "ts", 0.0), reverse=True)
+        skill_parts = []
+        for se in sorted_skills[:8]:
+            sname = getattr(se, "skill_name", "?")
+            ts = getattr(se, "ts", 0.0)
+            age_secs = now - ts
+            stale_marker = ""
+            if age_secs > stale_threshold:
+                age_hours = int(age_secs / 3600)
+                stale_marker = f" (stale: {age_hours}h)"
+            skill_parts.append(f"{sname}{stale_marker}")
+
+        dropped = len(skill_all) - len(sorted_skills)
         suffix = f", +{dropped} more" if dropped > 0 else ""
-        skill_str = ", ".join(skill_names[:8]) + suffix
+        skill_str = ", ".join(skill_parts) + suffix
         line = f"**Skills:** {skill_str} (recall via `token-goat skill-body <name>`)"
         sections.append(line)
 

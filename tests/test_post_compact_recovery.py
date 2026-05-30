@@ -465,6 +465,58 @@ class TestSkillDedup:
         assert summary.count("ralph") == 1, f"Expected ralph once:\n{summary}"
         assert summary.count("improve") == 1, f"Expected improve once:\n{summary}"
 
+    def test_recent_skill_no_stale_flag_in_hint(self, tmp_data_dir):
+        """Recently-loaded skills (< 6 hours) don't get a stale flag in the hint."""
+        from unittest.mock import patch
+
+        sid = "dedup-recent-1"
+        body = "# improve\n\n## Overview\n\nImprove body.\n" + ("i" * 300)
+        meta = skill_cache.store_output(sid, "improve", body)
+        assert meta is not None
+
+        # Load skill at time T
+        base_time = 1000.0
+        with patch("time.time", return_value=base_time):
+            session.mark_skill_loaded(sid, "improve", meta.output_id, meta.content_sha, meta.body_bytes, meta.truncated)
+
+        # Now check the hint at time T+1h (skill is 1 hour old, below 6h threshold)
+        with patch("time.time", return_value=base_time + 3600):
+            hint = hooks_session._build_recovery_hint(sid)
+            assert hint is not None
+            # Skill summary should NOT flag staleness (1 hour old < 6 hour threshold)
+            skill_lines = [ln for ln in hint.splitlines() if "**Skills:**" in ln]
+            assert len(skill_lines) == 1, f"Expected 1 skill summary line:\n{hint}"
+            assert "(stale:" not in skill_lines[0], (
+                f"Recent skill should not be flagged as stale:\n{skill_lines[0]}"
+            )
+            assert "improve" in skill_lines[0]
+
+    def test_stale_skill_flagged_in_recovery_hint(self, tmp_data_dir):
+        """Skills loaded >6 hours ago are flagged with (stale: Xh) in recovery hint."""
+        from unittest.mock import patch
+
+        sid = "dedup-stale-1"
+        body = "# ralph\n\n## Overview\n\nRalph body.\n" + ("r" * 300)
+        meta = skill_cache.store_output(sid, "ralph", body)
+        assert meta is not None
+
+        # Load skill at time T
+        base_time = 1000.0
+        with patch("time.time", return_value=base_time):
+            session.mark_skill_loaded(sid, "ralph", meta.output_id, meta.content_sha, meta.body_bytes, meta.truncated)
+
+        # Now check the hint at time T+7h (skill is 7 hours old, above 6h threshold)
+        with patch("time.time", return_value=base_time + (7 * 3600)):
+            hint = hooks_session._build_recovery_hint(sid)
+            assert hint is not None
+            # Skill summary should flag staleness
+            skill_lines = [ln for ln in hint.splitlines() if "**Skills:**" in ln]
+            assert len(skill_lines) == 1, f"Expected 1 skill summary line:\n{hint}"
+            assert "(stale: 7h)" in skill_lines[0], (
+                f"Expected staleness flag (stale: 7h) in:\n{skill_lines[0]}"
+            )
+            assert "ralph" in skill_lines[0]
+
 
 class TestRecoveryStatAccounting:
     """Neither compact_recovery nor compact_recovery_overhead rows are written.

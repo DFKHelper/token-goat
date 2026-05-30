@@ -485,6 +485,11 @@ _MAX_ACTIVE_SKILLS: Final[int] = 6
 # plus a buffer for quick re-invocations of the same skill without stale noise.
 _SKILL_STALE_THRESHOLD_SECS: Final[int] = 30 * 60
 
+# Skills loaded more than N hours ago are flagged as potentially stale (old-session
+# data). Used in _format_skill_entry to warn the post-compact agent that the
+# cached body may be outdated if the underlying skill file was updated since.
+_SKILL_STALE_FOR_SESSION_SECS: Final[int] = 6 * 3600  # 6 hours
+
 # Maximum decisions surfaced in the **Decisions:** manifest section.  Opt-in via
 # ``token-goat decision "<text>"``, so the volume is self-limited — typical
 # sessions log 0–3 decisions per task.  5 covers heavier sessions while keeping
@@ -2095,6 +2100,10 @@ def _select_top_skill_entries(skill_history: object) -> list[object]:
     Returns the most-recently-loaded skills, newest first, filtering out
     skills not loaded in the last :data:`_SKILL_STALE_THRESHOLD_SECS` to avoid
     cluttering the manifest with "done" skills that linger in history.
+
+    When the same skill was loaded multiple times (e.g. loaded, then updated
+    on disk, then loaded again with different content_sha), returns only the
+    most recent version to avoid cluttering the manifest with superseded bodies.
     Sessions typically load a handful of skills total; stale skills are excluded.
     """
     if not isinstance(skill_history, dict) or not skill_history:
@@ -2107,9 +2116,20 @@ def _select_top_skill_entries(skill_history: object) -> list[object]:
         if (now - getattr(entry, "ts", 0.0)) <= _SKILL_STALE_THRESHOLD_SECS
     ]
 
+    # Deduplicate by skill name: keep only the most-recent content_sha per skill.
+    # When a skill file is updated mid-session, multiple entries may exist with
+    # the same name but different content_sha / output_id. Retaining all versions
+    # would clutter the manifest; the most-recent body is what the agent should use.
+    deduped: dict[str, object] = {}
+    for entry in recent_skills:
+        skill_name = getattr(entry, "skill_name", "")
+        ts = getattr(entry, "ts", 0.0)
+        if skill_name not in deduped or ts > getattr(deduped[skill_name], "ts", 0.0):
+            deduped[skill_name] = entry
+
     return heapq.nlargest(
         _MAX_ACTIVE_SKILLS,
-        recent_skills,
+        deduped.values(),
         key=lambda e: getattr(e, "ts", 0.0),
     )
 
@@ -2120,21 +2140,41 @@ def _format_skill_entry(entry: object) -> str:
     Format::
 
         - 🧠 ralph  ×3  (28KB)  recall: `token-goat skill-body ralph`
-        - 🧠 plugin:improve  (12KB)  recall: `token-goat skill-body plugin:improve`
+        - 🧠 plugin:improve  (12KB)  (stale: 8h)  recall: `token-goat skill-body plugin:improve`
+        - 🧠 brainstorm  (30KB)*  recall: `token-goat skill-body brainstorm`
 
-    The ``×N`` annotation appears when the skill was loaded more than once
-    in the session; the recall hint points the post-compact agent at the
-    cached body so the full prose can be retrieved without re-invoking the
-    skill (which would replay any side effects).
+    Annotations:
+    - ``×N``: skill was loaded N times in the session (only shown if N > 1)
+    - ``(stale: Xh)``: skill body cached more than :data:`_SKILL_STALE_FOR_SESSION_SECS`
+      ago; the underlying skill file may have been updated since and the cached
+      body could be outdated. Agent should verify freshness via ``token-goat
+      skill-body`` or re-invoke if critical.
+    - ``*`` (after byte size): skill body was truncated when stored; the cached
+      version is partial, typically last ~256 KB kept with head dropped.
+
+    The recall hint points the post-compact agent at the cached body so the full
+    prose can be retrieved without re-invoking the skill (which would replay any
+    side effects).
     """
     name = sanitize_log_str(getattr(entry, "skill_name", ""), max_len=80)
     body_bytes = int(getattr(entry, "body_bytes", 0))
     run_count = int(getattr(entry, "run_count", 1))
     truncated = bool(getattr(entry, "truncated", False))
+    ts = float(getattr(entry, "ts", time.time()))
+
     count_str = f"  ×{run_count}" if run_count > 1 else ""
     size_str = _humanize_bytes(body_bytes)
     trunc_marker = "*" if truncated else ""
-    return f"- 🧠 {name}{count_str}  ({size_str}{trunc_marker})  recall: `token-goat skill-body {name}`"
+
+    # Flag stale skills: loaded more than 6 hours ago
+    now = time.time()
+    age_secs = now - ts
+    stale_str = ""
+    if age_secs > _SKILL_STALE_FOR_SESSION_SECS:
+        age_hours = int(age_secs / 3600)
+        stale_str = f"  (stale: {age_hours}h)"
+
+    return f"- 🧠 {name}{count_str}  ({size_str}{trunc_marker}){stale_str}  recall: `token-goat skill-body {name}`"
 
 
 def _select_top_decision_entries(decisions: object) -> list[object]:
