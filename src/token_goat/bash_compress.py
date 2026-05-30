@@ -2170,10 +2170,10 @@ def _compress_git_remote(stdout: str, stderr: str) -> str:
     return "\n".join(kept)
 
 
-# --- Go test ---------------------------------------------------------------
+# --- Go ----------------------------------------------------------------
 
 # `go test [-v] ./...` emits a distinctive line shape per testcase that is
-# disjoint from `go build` output, so it warrants a dedicated filter.  The
+# disjoint from `go build` output, so it warrants dedicated handling.  The
 # patterns below match the official ``testing`` package format documented at
 # https://pkg.go.dev/testing#hdr-Subtests_and_Sub_benchmarks.
 _GO_TEST_RUN_RE: Final[re.Pattern[str]] = re.compile(
@@ -2192,27 +2192,40 @@ _GO_TEST_PKG_RESULT_RE: Final[re.Pattern[str]] = re.compile(
     r"^(ok|FAIL|---\sFAIL|\?)\s+\S"
 )
 
+# go build / go mod / go vet / go generate patterns
+_GO_BUILD_PKG_HEADER_RE: Final[re.Pattern[str]] = re.compile(
+    r"^#\s+[a-zA-Z0-9./\-]+"
+)
+_GO_MOD_DOWNLOADING_RE: Final[re.Pattern[str]] = re.compile(
+    r"^go: (downloading|extracting) "
+)
+_GO_VET_PROGRESS_RE: Final[re.Pattern[str]] = re.compile(
+    r"^go: vet "
+)
+_GO_GENERATE_TRIGGER_RE: Final[re.Pattern[str]] = re.compile(
+    r"^go:generate "
+)
+# Generic go error pattern: file:line:col: error|warning message
+_GO_ERROR_RE: Final[re.Pattern[str]] = re.compile(
+    r"^[^:\s]+:\d+:\d+:\s+(?:error|warning):"
+)
+
 
 class GoTestFilter(Filter):
-    """Compress ``go test`` output (with or without ``-v``).
+    """Compress ``go test`` output.
 
-    ``go test ./...`` on a large repo emits one ``=== RUN`` plus one
-    ``--- PASS`` line per testcase plus subtests, often hundreds of lines of
-    pure noise when everything passes.  The filter keeps failures, package
-    results, and the final summary verbatim while collapsing the passing
-    test list to a count.
+    Go test emits a line per testcase plus pass/fail summaries. When tests pass,
+    the output is hundreds of lines of ``=== RUN TestName`` / ``--- PASS: TestName``
+    pairs plus final summary. Failures emit stderr blocks interleaved with the
+    pass/fail lines.
 
     Compression model:
 
-    * **Drop** ``=== RUN`` / ``=== PAUSE`` / ``=== CONT`` lines (test lifecycle
-      noise) when not inside a FAIL block.
-    * **Drop** ``--- PASS:`` lines (collapse to a single count).
-    * **Keep** ``--- FAIL:`` and ``--- SKIP:`` lines and any indented body
-      under them (the ``t.Errorf`` / ``t.Fatalf`` traceback).
-    * **Keep** ``ok pkg time`` / ``FAIL pkg time`` / ``? pkg [no test files]``
-      per-package results unchanged.
-    * **Keep** the final ``PASS`` / ``FAIL`` summary line.
-    * **Drop** ``go: downloading mod@ver`` progress (same as MakeFilter).
+    * **Keep**: FAIL / ERROR blocks (entire stderr captured under the RUN line).
+    * **Keep**: Final summary (ok, FAILED, coverage %).
+    * **Drop**: All ``=== RUN TestName`` lines that don't precede a FAIL.
+    * **Drop**: All ``--- PASS: TestName`` / ``--- SKIP: TestName`` lines (count them).
+    * **Drop**: ``go: downloading ...`` lines (often hundreds when deps aren't cached).
     """
 
     name = "go-test"
@@ -2224,9 +2237,8 @@ class GoTestFilter(Filter):
         stem = Path(argv[0]).stem.lower()
         if stem != "go":
             return False
-        # Only fire for ``go test`` — every other subcommand (build, vet, run,
-        # mod, …) stays with MakeFilter or falls through.
-        positionals = _positional_args(argv[1:])[:2]
+        # Fire only for `go test` subcommand; other go subcommands fall through.
+        positionals = _positional_args(argv[1:])
         return positionals[:1] == ["test"]
 
     def compress(
@@ -2243,33 +2255,29 @@ class GoTestFilter(Filter):
             if line.startswith("go: downloading"):
                 dropped_download += 1
                 continue
-            # FAIL / SKIP open a multi-line block that is preserved verbatim
-            # until the next testcase delimiter.
+            # FAIL / SKIP open a multi-line block preserved until next testcase.
             if _GO_TEST_FAIL_RE.match(line):
                 in_fail_block = True
                 kept.append(line)
                 continue
             if _GO_TEST_PASS_RE.match(line):
-                # A PASS line closes any open FAIL block (next testcase).
                 in_fail_block = False
                 pass_count += 1
                 continue
             if _GO_TEST_RUN_RE.match(line):
                 # === RUN inside a FAIL block is the next testcase header —
-                # close the block but keep the new RUN line so structure is
-                # readable.  Outside a FAIL block, drop the RUN entirely.
+                # close the block but keep the new RUN line for structure.
+                # Outside a FAIL block, drop the RUN entirely.
                 if in_fail_block:
                     in_fail_block = False
                 else:
                     dropped_run += 1
                     continue
-            # Indented continuation lines under a FAIL block (test_runner.go:42:
-            # Errorf output, panic traceback, …) — preserve them.
+            # Indented continuation lines under a FAIL block — preserve.
             if in_fail_block and (line.startswith(("    ", "\t")) or not line.strip()):
                 kept.append(line)
                 continue
-            # Anything else (per-package results, final summary, untyped
-            # diagnostic): preserve and exit the fail block.
+            # Anything else: preserve and exit fail block.
             in_fail_block = False
             kept.append(line)
         notes: list[str] = []
@@ -2283,7 +2291,7 @@ class GoTestFilter(Filter):
         return self._finalize(kept)
 
 
-# --- Make / Ninja / Gradle / Maven / Go build ------------------------------
+# --- Make / Ninja / Gradle / Maven / Go build / mod / vet / generate ----------
 
 _MAKE_RECURSE_RE: Final[re.Pattern[str]] = re.compile(
     r"^make\[\d+\]: (Entering|Leaving) directory"
@@ -2292,10 +2300,12 @@ _MAKE_ECHO_RE: Final[re.Pattern[str]] = re.compile(r"^(echo |cc |gcc |clang |g\+
 
 
 class MakeFilter(Filter):
-    """Compress ``make`` / ``ninja`` / ``gradle`` / ``mvn`` / ``go build`` output.
+    """Compress ``make`` / ``ninja`` / ``gradle`` / ``mvn`` / ``go build`` / ``go mod``
+    / ``go vet`` / ``go generate`` output.
 
-    Build systems emit one line per compilation unit plus recursion markers.
-    Errors are the only thing the agent typically cares about.
+    Build systems and go subcommands emit one line per compilation unit, package,
+    or progress marker. Errors and warnings are the only things the agent
+    typically cares about.
 
     Compression model:
 
@@ -2304,8 +2314,10 @@ class MakeFilter(Filter):
       the diagnostic lines (warning / error / undefined reference).
     * **Keep** every ``warning:`` / ``error:`` block.
     * **Keep** the final ``Error 1`` / ``BUILD FAILED`` summary.
-    * **Go**: keep ``./path/file.go:N:M: error`` lines verbatim; drop
-      ``go: downloading mod@ver`` progress.
+    * **Go build**: suppress package header lines (``# pkg/path``), keep errors.
+    * **Go mod**: suppress ``go: downloading/extracting`` progress, keep require changes.
+    * **Go vet**: suppress ``go: vet`` progress lines, keep all warnings.
+    * **Go generate**: suppress ``go:generate`` trigger lines, keep errors.
     """
 
     name = "make"
@@ -2317,8 +2329,25 @@ class MakeFilter(Filter):
     def compress(
         self, stdout: str, stderr: str, exit_code: int, argv: list[str],
     ) -> str:
+        # Detect go subcommands (build, mod, vet, generate) for specialized handling.
+        positionals = _positional_args(argv)
+        go_subcommand = ""
+        if positionals and Path(positionals[0]).stem.lower() == "go":
+            go_subcommand = positionals[1] if len(positionals) > 1 else ""
+
         merged = self._combine_output(stdout, stderr)
         lines = merged.split("\n")
+
+        if go_subcommand == "build":
+            return self._compress_go_build(lines)
+        if go_subcommand == "mod":
+            return self._compress_go_mod(lines)
+        if go_subcommand == "vet":
+            return self._compress_go_vet(lines)
+        if go_subcommand == "generate":
+            return self._compress_go_generate(lines)
+
+        # Generic make/ninja/gradle compression.
         kept: list[str] = []
         dropped_recurse = 0
         dropped_echo = 0
@@ -2350,6 +2379,82 @@ class MakeFilter(Filter):
         # "dropped X" verb.
         if notes:
             kept.append(f"[token-goat: dropped {', '.join(notes)}]")
+        return self._finalize(kept)
+
+    def _compress_go_build(self, lines: list[str]) -> str:
+        """Compress ``go build`` output: drop headers, keep errors."""
+        kept: list[str] = []
+        dropped_headers = 0
+
+        for line in lines:
+            if line.startswith("go: downloading"):
+                # Suppress download progress lines.
+                continue
+            if _GO_BUILD_PKG_HEADER_RE.match(line):
+                # Suppress "# package/path" headers.
+                dropped_headers += 1
+                continue
+            # Always keep error and warning lines.
+            if _GO_ERROR_RE.match(line):
+                kept.append(line)
+                continue
+            # Keep build summary lines and blank lines.
+            kept.append(line)
+
+        if dropped_headers:
+            kept.append(
+                f"[token-goat: suppressed {dropped_headers} package header lines; "
+                f"compile succeeded]"
+            )
+        return self._finalize(kept)
+
+    def _compress_go_mod(self, lines: list[str]) -> str:
+        """Compress ``go mod tidy`` output: drop download progress, keep changes."""
+        kept: list[str] = []
+        dropped_downloads = 0
+
+        for line in lines:
+            if _GO_MOD_DOWNLOADING_RE.match(line):
+                dropped_downloads += 1
+                continue
+            kept.append(line)
+
+        if dropped_downloads:
+            kept.append(
+                f"[token-goat: dropped {dropped_downloads} 'go: downloading/extracting' lines]"
+            )
+        return self._finalize(kept)
+
+    def _compress_go_vet(self, lines: list[str]) -> str:
+        """Compress ``go vet`` output: drop progress, keep all warnings."""
+        kept: list[str] = []
+        dropped_progress = 0
+
+        for line in lines:
+            if _GO_VET_PROGRESS_RE.match(line):
+                dropped_progress += 1
+                continue
+            kept.append(line)
+
+        if dropped_progress:
+            kept.append(f"[token-goat: dropped {dropped_progress} 'go: vet' progress lines]")
+        return self._finalize(kept)
+
+    def _compress_go_generate(self, lines: list[str]) -> str:
+        """Compress ``go generate`` output: drop triggers, keep errors."""
+        kept: list[str] = []
+        dropped_triggers = 0
+
+        for line in lines:
+            if _GO_GENERATE_TRIGGER_RE.match(line):
+                dropped_triggers += 1
+                continue
+            kept.append(line)
+
+        if dropped_triggers:
+            kept.append(
+                f"[token-goat: dropped {dropped_triggers} 'go:generate' trigger lines]"
+            )
         return self._finalize(kept)
 
 
@@ -4166,8 +4271,9 @@ FILTERS: list[Filter] = [
     LinterFilter(),
     GrepFilter(),
     GitFilter(),
-    # GoTestFilter must precede MakeFilter so `go test ./...` routes to the
-    # specialised testing filter; `go build` falls through to MakeFilter.
+    # GoTestFilter must precede MakeFilter so `go test` routes to the specialised
+    # testing filter; `go build`, `go mod`, `go vet`, `go generate` fall through
+    # to MakeFilter for generic build-system compression.
     GoTestFilter(),
     MakeFilter(),
     TerraformFilter(),
