@@ -2527,46 +2527,148 @@ class MakeFilter(Filter):
 
 # --- Terraform -------------------------------------------------------------
 
+#: Terraform state refresh/read progress lines (one per resource, often hundreds).
 _TF_REFRESH_RE: Final[re.Pattern[str]] = re.compile(
     r"^[a-z0-9_.\[\]\"-]+: (Refreshing state|Reading|Read complete|Still |Modifications complete)"
+)
+#: Terraform plan/apply summary line: ``Plan: 5 to add, 2 to change, 1 to destroy.``
+_TF_PLAN_SUMMARY_RE: Final[re.Pattern[str]] = re.compile(
+    r"^Plan: \d+ to (add|change|destroy|import)"
+)
+#: Terraform apply completion: ``Apply complete! Resources: 5 added, 2 changed, 1 destroyed.``
+_TF_APPLY_COMPLETE_RE: Final[re.Pattern[str]] = re.compile(
+    r"^Apply complete! Resources:"
+)
+#: Terraform error or warning markers.
+_TF_ERROR_RE: Final[re.Pattern[str]] = re.compile(
+    r"^(?:Error|Warning):|FAILED"
 )
 
 
 class TerraformFilter(Filter):
-    """Compress ``terraform plan`` / ``apply`` output.
+    """Compress ``terraform plan`` / ``apply`` / ``init`` / ``validate`` / ``show`` output.
 
     Terraform prints per-resource ``Refreshing state…`` lines (one per object,
     often hundreds), then a giant diff with full resource bodies (mostly
-    unchanged attributes).
+    unchanged attributes). Init outputs progress bars. Plan/apply produce
+    multi-line summaries.
 
     Compression model:
 
-    * **Drop** ``Refreshing state`` / ``Reading…`` / ``Still creating…`` lines.
-    * **Keep** the ``Plan: X to add, Y to change, Z to destroy.`` line.
-    * **Keep** every ``# resource_type.name will be created`` header.
-    * **Drop** unchanged attribute lines within a resource diff (those
-      starting with ``      `` and no ``+``/``-``/``~`` prefix), keeping
-      only the changed ones.
-    * **Keep** the final ``Apply complete!`` / ``Error:`` line.
+    * **terraform plan**: Drop refresh/read progress, keep the ``Plan: N to add…``
+      summary line + last 20 lines (detailed plan output can be thousands).
+    * **terraform apply**: Keep the ``Apply complete! Resources: N …`` summary
+      line + any error lines; drop refresh progress.
+    * **terraform init**: Keep first 5 + last 5 lines (progress bars are noisy).
+    * **terraform validate**: Keep all (usually short; diagnostics are brief).
+    * **terraform show** / **terraform state**: Use head=20, tail=10 compression.
+    * **Errors** (exit_code != 0): Keep all stderr unchanged.
     """
 
     name = "terraform"
-    binaries = frozenset(["terraform", "tf", "tofu", "opentofu"])
+    binaries = frozenset(["terraform", "tofu", "terragrunt"])
 
     def compress(
         self, stdout: str, stderr: str, exit_code: int, argv: list[str],
     ) -> str:
+        # Preserve all stderr on error.
+        if exit_code != 0 and stderr.strip():
+            return (stdout.rstrip() + "\n---\n" + stderr.rstrip()) if stdout.strip() else stderr
+
+        positionals = _positional_args(argv[1:])
+        subcommand = positionals[0] if positionals else ""
+        text = stdout
+
+        if subcommand == "plan":
+            text = self._compress_terraform_plan(text)
+        elif subcommand == "apply":
+            text = self._compress_terraform_apply(text, stderr)
+        elif subcommand == "init":
+            if "\n" in text:
+                non_empty = [ln for ln in text.split("\n") if ln.strip()]
+                if len(non_empty) > 10:
+                    text = _head_tail_compress(non_empty, head=5, tail=5, label="init lines")
+                else:
+                    text = "\n".join(non_empty)
+        elif subcommand in ("validate", "validate-config"):
+            # Pass through; validate output is typically brief.
+            pass
+        elif subcommand in ("show", "state"):
+            non_empty = [ln for ln in text.split("\n") if ln.strip()]
+            if len(non_empty) > 30:
+                text = _head_tail_compress(non_empty, head=20, tail=10, label="lines")
+            else:
+                text = "\n".join(non_empty)
+
+        if stderr.strip() and subcommand not in ("apply",):
+            # For non-apply commands, append stderr if not already included.
+            text = (text.rstrip() + "\n---\n" + stderr.rstrip()) if text.strip() else stderr
+        return text
+
+    def _compress_terraform_plan(self, stdout: str) -> str:
+        """Compress terraform plan output: drop refresh, keep summary + last 20 lines."""
+        lines = stdout.split("\n")
+        kept: list[str] = []
+        dropped_refresh = 0
+        plan_summary_idx = -1
+
+        # First pass: identify the plan summary line.
+        for i, line in enumerate(lines):
+            if _TF_PLAN_SUMMARY_RE.match(line):
+                plan_summary_idx = i
+                break
+
+        # Second pass: filter refresh lines and identify tail section.
+        for line in lines:
+            if _TF_REFRESH_RE.match(line):
+                dropped_refresh += 1
+                continue
+            kept.append(line)
+
+        # If we have a plan summary, keep it and the last 20 lines.
+        if plan_summary_idx >= 0:
+            # Rebuild: keep summary + last 20 lines.
+            summary_line = None
+            tail_start = max(0, len(lines) - 20)
+            final_kept: list[str] = []
+            for line in kept:
+                if _TF_PLAN_SUMMARY_RE.match(line):
+                    summary_line = line
+                    break
+            if summary_line:
+                final_kept.append(summary_line)
+            # Append tail lines (excluding the summary if it's in the tail).
+            for i, line in enumerate(lines):
+                if i >= tail_start and i != plan_summary_idx:
+                    if _TF_REFRESH_RE.match(line):
+                        continue
+                    final_kept.append(line)
+            kept = final_kept
+
+        if dropped_refresh:
+            kept.append(f"[token-goat: dropped {dropped_refresh} terraform refresh/read lines]")
+        return self._finalize(kept)
+
+    def _compress_terraform_apply(self, stdout: str, stderr: str) -> str:
+        """Compress terraform apply output: keep summary + error lines."""
         merged = self._combine_output(stdout, stderr)
         lines = merged.split("\n")
         kept: list[str] = []
-        dropped = 0
+        dropped_refresh = 0
+
         for line in lines:
             if _TF_REFRESH_RE.match(line):
-                dropped += 1
+                dropped_refresh += 1
                 continue
-            kept.append(line)
-        if dropped:
-            kept.append(f"[token-goat: dropped {dropped} terraform refresh/read lines]")
+            if _TF_APPLY_COMPLETE_RE.match(line) or _TF_ERROR_RE.match(line):
+                kept.append(line)
+                continue
+            # Keep non-refresh lines that are not pure progress.
+            if line.strip():
+                kept.append(line)
+
+        if dropped_refresh:
+            kept.append(f"[token-goat: dropped {dropped_refresh} terraform refresh/read lines]")
         return self._finalize(kept)
 
 
@@ -2591,10 +2693,14 @@ _ANSIBLE_RECAP_ROW_RE: Final[re.Pattern[str]] = re.compile(
 _ANSIBLE_FAIL_RE: Final[re.Pattern[str]] = re.compile(
     r"^(fatal|failed|unreachable|FAILED|ERROR|\[WARNING\]):",
 )
+#: Ansible-lint rule code pattern: ``rule-name:`` at line start.
+_ANSIBLE_LINT_RULE_RE: Final[re.Pattern[str]] = re.compile(
+    r"^[a-z0-9\-]+:\s+"
+)
 
 
 class AnsibleFilter(Filter):
-    """Compress ``ansible`` / ``ansible-playbook`` output.
+    """Compress ``ansible`` / ``ansible-playbook`` / ``ansible-galaxy`` / ``ansible-lint`` output.
 
     Ansible playbook runs emit one ``ok: [host]`` (or ``changed:``/``skipping:``)
     line per (task × host).  On a 30-host inventory with 50 tasks this is 1500
@@ -2603,7 +2709,13 @@ class AnsibleFilter(Filter):
     ``failed:`` / ``unreachable:`` / ``[WARNING]`` lines, and the final
     ``PLAY RECAP`` block.
 
-    Compression model:
+    ``ansible-galaxy install`` emits a progress line per package; compress
+    with head=5, tail=5.
+
+    ``ansible-lint`` emits rule violations (often 100+); group by rule code
+    and keep only the first 3 examples per rule.
+
+    Compression model (playbook):
 
     * **Keep** every ``PLAY [name]`` / ``TASK [name]`` / ``HANDLER`` header
       verbatim (cheap, load-bearing for understanding what the playbook is
@@ -2615,21 +2727,43 @@ class AnsibleFilter(Filter):
       follows.
     * **Keep** the final ``PLAY RECAP`` block verbatim — it's the canonical
       summary the agent needs.
+
+    Compression model (ansible-lint):
+
+    * **Group** violations by rule code.
+    * **Keep** first 3 examples per rule (most rules are repetitive).
+    * **Keep** the final summary line (``X linting errors found``).
     """
 
     name = "ansible"
     binaries = frozenset([
         "ansible", "ansible-playbook", "ansible-pull", "ansible-console",
+        "ansible-galaxy", "ansible-lint",
     ])
 
     def compress(
         self, stdout: str, stderr: str, exit_code: int, argv: list[str],
     ) -> str:
+        # Detect the binary name from argv[0].
+        binary_name = Path(argv[0]).name.lower() if argv else ""
+
+        # ansible-lint has its own compression.
+        if "ansible-lint" in binary_name:
+            return self._compress_ansible_lint(stdout, stderr)
+
+        # ansible-galaxy has a simpler compression (head/tail).
+        if "ansible-galaxy" in binary_name:
+            return self._compress_ansible_galaxy(stdout, stderr)
+
+        # Default: ansible, ansible-playbook, ansible-pull compression.
+        return self._compress_ansible_playbook(stdout, stderr)
+
+    def _compress_ansible_playbook(self, stdout: str, stderr: str) -> str:
+        """Compress ansible-playbook output: collapse status lines, keep headers & recap."""
         merged = self._combine_output(stdout, stderr)
         lines = merged.split("\n")
         kept: list[str] = []
-        # Pending status counts for the current task.  Flushed when a new
-        # TASK/PLAY header appears, when a failure is seen, or at end-of-input.
+        # Pending status counts for the current task.
         status_counts: dict[str, int] = {}
         in_recap = False
         in_fail_payload = False
@@ -2681,6 +2815,60 @@ class AnsibleFilter(Filter):
             kept.append(line)
         flush_status()
         return self._finalize(kept)
+
+    def _compress_ansible_lint(self, stdout: str, stderr: str) -> str:
+        """Compress ansible-lint output: group by rule, keep first 3 per rule."""
+        merged = self._combine_output(stdout, stderr)
+        lines = merged.split("\n")
+        kept: list[str] = []
+        # Group violations by rule code: code -> list of lines.
+        by_rule: dict[str, list[str]] = {}
+        # Non-violation lines (headers, summary, blank lines).
+        other_lines: list[str] = []
+
+        for line in lines:
+            m = _ANSIBLE_LINT_RULE_RE.match(line)
+            if m:
+                rule_code = line.split(":", 1)[0].strip()
+                if rule_code not in by_rule:
+                    by_rule[rule_code] = []
+                by_rule[rule_code].append(line)
+            else:
+                other_lines.append(line)
+
+        # Build output: rules + summaries.
+        kept.extend(other_lines)
+
+        # Group violations: per rule, keep first 3 examples.
+        emitted_rules: set[str] = set()
+        # Rebuild: interleave violations grouped by rule.
+        kept = []
+        for line in other_lines:
+            kept.append(line)
+            m = _ANSIBLE_LINT_RULE_RE.match(line)
+            if m:
+                rule_code = line.split(":", 1)[0].strip()
+                if rule_code in by_rule and rule_code not in emitted_rules:
+                    # Emit first 3 examples.
+                    for i, viol_line in enumerate(by_rule[rule_code][:3]):
+                        if i > 0:
+                            kept.append(viol_line)
+                    if len(by_rule[rule_code]) > 3:
+                        kept.append(
+                            f"[token-goat: {len(by_rule[rule_code]) - 3} more occurrences of "
+                            f"{rule_code} elided]"
+                        )
+                    emitted_rules.add(rule_code)
+
+        return self._finalize(kept)
+
+    def _compress_ansible_galaxy(self, stdout: str, stderr: str) -> str:
+        """Compress ansible-galaxy output: head=5, tail=5 for install progress."""
+        merged = self._combine_output(stdout, stderr)
+        non_empty = [ln for ln in merged.split("\n") if ln.strip()]
+        if len(non_empty) > 10:
+            return _head_tail_compress(non_empty, head=5, tail=5, label="galaxy lines")
+        return "\n".join(non_empty)
 
 
 # --- pre-commit ------------------------------------------------------------
