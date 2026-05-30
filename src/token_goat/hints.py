@@ -3260,6 +3260,160 @@ def _estimate_row_count(path: Path, file_size: int) -> int:
         return 0
 
 
+def _extract_csv_headers(path: Path) -> str | None:
+    """Extract CSV header line from first 4 KB.
+
+    Returns comma-separated column names, or None on error/empty file.
+    Never raises.
+    """
+    try:
+        with path.open("r", encoding="utf-8", errors="replace") as fh:
+            first_line = fh.readline().strip()
+        if first_line:
+            # Truncate to fit in hint; max 60 chars for column list.
+            if len(first_line) > 60:
+                first_line = first_line[:57] + "..."
+            return first_line
+        return None
+    except (OSError, UnicodeDecodeError):
+        return None
+
+
+def _extract_json_array_schema(path: Path) -> str | None:
+    """Extract schema from first object in a JSON array.
+
+    Reads up to 4 KB, tries to locate first array element, returns schema
+    as comma-separated key types. Returns None on error or non-array.
+    Never raises.
+    """
+    try:
+        with path.open("r", encoding="utf-8", errors="replace") as fh:
+            chunk = fh.read(4096)
+        if not chunk:
+            return None
+
+        # Lightweight: look for [ and then first { to skip to object.
+        bracket_idx = chunk.find("[")
+        if bracket_idx == -1:
+            return None
+        brace_idx = chunk.find("{", bracket_idx)
+        if brace_idx == -1:
+            return None
+
+        # Try to extract a complete object by finding matching }.
+        # Start from the { and find the closing }.
+        obj_start = brace_idx
+        depth = 0
+        in_string = False
+        escape = False
+        for i, c in enumerate(chunk[obj_start:], obj_start):
+            if escape:
+                escape = False
+                continue
+            if c == "\\":
+                escape = True
+                continue
+            if c == '"':
+                in_string = not in_string
+                continue
+            if in_string:
+                continue
+            if c == "{":
+                depth += 1
+            elif c == "}":
+                depth -= 1
+                if depth == 0:
+                    obj_str = chunk[obj_start : i + 1]
+                    break
+        else:
+            return None
+
+        # Parse the extracted object and build schema.
+        obj = json.loads(obj_str)
+        if not isinstance(obj, dict):
+            return None
+
+        schema_parts = []
+        for key in list(obj.keys())[:5]:  # Limit to first 5 keys.
+            val = obj[key]
+            if isinstance(val, bool):
+                type_name = "bool"
+            elif isinstance(val, int):
+                type_name = "int"
+            elif isinstance(val, float):
+                type_name = "float"
+            elif isinstance(val, str):
+                type_name = "str"
+            elif isinstance(val, list):
+                type_name = "list"
+            elif isinstance(val, dict):
+                type_name = "dict"
+            elif val is None:
+                type_name = "null"
+            else:
+                type_name = "?"
+            schema_parts.append(f"{key}: {type_name}")
+
+        if schema_parts:
+            schema_str = ", ".join(schema_parts)
+            # Truncate if too long.
+            if len(schema_str) > 60:
+                schema_str = schema_str[:57] + "..."
+            return schema_str
+        return None
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError, ValueError):
+        return None
+
+
+def _extract_ndjson_first_line_schema(path: Path) -> str | None:
+    """Extract schema from first line of NDJSON/JSONL file.
+
+    Reads first line, parses as JSON, returns schema as comma-separated
+    key types. Returns None on error or non-object first line.
+    Never raises.
+    """
+    try:
+        with path.open("r", encoding="utf-8", errors="replace") as fh:
+            first_line = fh.readline().strip()
+        if not first_line:
+            return None
+
+        obj = json.loads(first_line)
+        if not isinstance(obj, dict):
+            return None
+
+        schema_parts = []
+        for key in list(obj.keys())[:5]:  # Limit to first 5 keys.
+            val = obj[key]
+            if isinstance(val, bool):
+                type_name = "bool"
+            elif isinstance(val, int):
+                type_name = "int"
+            elif isinstance(val, float):
+                type_name = "float"
+            elif isinstance(val, str):
+                type_name = "str"
+            elif isinstance(val, list):
+                type_name = "list"
+            elif isinstance(val, dict):
+                type_name = "dict"
+            elif val is None:
+                type_name = "null"
+            else:
+                type_name = "?"
+            schema_parts.append(f"{key}: {type_name}")
+
+        if schema_parts:
+            schema_str = ", ".join(schema_parts)
+            # Truncate if too long.
+            if len(schema_str) > 60:
+                schema_str = schema_str[:57] + "..."
+            return schema_str
+        return None
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError, ValueError):
+        return None
+
+
 @_failsoft_hint
 def build_structured_file_hint(
     *,
@@ -3326,20 +3480,34 @@ def _build_structured_file_hint_inner(
     if is_tabular:
         row_count = _estimate_row_count(path, file_size)
         row_str = f"~{row_count:,}rows" if row_count > 0 else "many rows"
+        hint_text = f"📊 large {ext} ({size_kb}KB, {row_str}) — "
+
+        # Add schema for CSV.
+        if ext == ".csv":
+            headers = _extract_csv_headers(path)
+            if headers:
+                hint_text += f"columns: {headers}. "
+        # Add schema for NDJSON/JSONL.
+        elif ext in (".jsonl", ".ndjson"):
+            schema = _extract_ndjson_first_line_schema(path)
+            if schema:
+                hint_text += f"schema: {schema}. "
+
+        hint_text += f"use offset/limit or `token-goat section \"{safe_path}::row N\"`"
         return ReadHint(
-            _apply_terse(
-                f"📊 large {ext} ({size_kb}KB, {row_str}) — "
-                f"use offset/limit or `token-goat section \"{safe_path}::row N\"`"
-            ),
+            _apply_terse(hint_text),
             0,
         )
 
     if is_json:
+        hint_text = f"📄 large json ({size_kb}KB) — "
+        # Add schema for JSON arrays.
+        schema = _extract_json_array_schema(path)
+        if schema:
+            hint_text += f"array schema: {schema}. "
+        hint_text += f"use `token-goat read \"{safe_path}::Key.path\"` or jq"
         return ReadHint(
-            _apply_terse(
-                f"📄 large json ({size_kb}KB) — "
-                f"use `token-goat read \"{safe_path}::Key.path\"` or jq"
-            ),
+            _apply_terse(hint_text),
             0,
         )
 

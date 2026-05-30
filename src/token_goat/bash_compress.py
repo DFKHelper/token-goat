@@ -2601,6 +2601,16 @@ class TerraformFilter(Filter):
                 text = _head_tail_compress(non_empty, head=20, tail=10, label="lines")
             else:
                 text = "\n".join(non_empty)
+        else:
+            # Unknown or missing subcommand: still strip terraform noise (Refreshing
+            # state / Read complete lines) that appears in any terraform output.
+            lines = text.split("\n")
+            filtered = [ln for ln in lines if not _TF_REFRESH_RE.search(ln)]
+            if len(filtered) > 30:
+                filtered = [ln for ln in filtered if ln.strip()]
+                text = _head_tail_compress(filtered, head=10, tail=20, label="lines")
+            elif len(filtered) < len(lines):
+                text = "\n".join(filtered)
 
         if stderr.strip() and subcommand not in ("apply",):
             # For non-apply commands, append stderr if not already included.
