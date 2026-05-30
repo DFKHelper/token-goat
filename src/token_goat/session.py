@@ -382,7 +382,10 @@ def _merge_session_caches(local: SessionCache, remote: SessionCache) -> SessionC
         merged_hints[fp] = max(merged_hints.get(fp, 0), count)
     merged.hints_seen = merged_hints
     if len(merged.hints_seen) > HINTS_SEEN_MAX:
-        merged.hints_seen = {}
+        # LRU eviction: keep the entries with the highest seen counts
+        # (most recent/frequently seen hints are more relevant for future dedup).
+        sorted_hints = sorted(merged_hints.items(), key=lambda x: x[1], reverse=True)
+        merged.hints_seen = dict(sorted_hints[:HINTS_SEEN_MAX])
     # bash_dedup_emitted_ids: set union
     merged.bash_dedup_emitted_ids = local.bash_dedup_emitted_ids | remote.bash_dedup_emitted_ids
 
@@ -1133,11 +1136,14 @@ class SessionCache:
         # Increment count (or initialize to 1)
         current_count = self.hints_seen.get(fingerprint, 0)
         self.hints_seen[fingerprint] = current_count + 1
-        # Enforce HINTS_SEEN_MAX by clearing when cap is exceeded.
+        # Enforce HINTS_SEEN_MAX via LRU eviction.
+        # When the dict exceeds the cap, keep entries with the highest seen counts
+        # (most relevant for dedup) and discard the lowest-count (least recent/important).
         # False-positive re-emission of a suppressed hint is acceptable;
         # unbounded growth is not.
         if len(self.hints_seen) > HINTS_SEEN_MAX:
-            self.hints_seen.clear()
+            sorted_hints = sorted(self.hints_seen.items(), key=lambda x: x[1], reverse=True)
+            self.hints_seen = dict(sorted_hints[:HINTS_SEEN_MAX])
         self.last_activity_ts = time.time()
         self._invalidate_json_cache()
         self._pending_hint_save = True
