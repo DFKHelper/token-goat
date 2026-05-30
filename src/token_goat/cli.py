@@ -506,6 +506,11 @@ def symbol(
             "marker; ``--strict`` returns 'no matches' instead."
         ),
     ),
+    show_refs: bool = typer.Option(
+        False,
+        "--refs",
+        help="Annotate each result with its reference count: [N refs].",
+    ),
 ) -> None:
     """Find a symbol definition by name (function, class, method, type, constant, etc.).
 
@@ -532,12 +537,16 @@ def symbol(
             sig_part = f"  {row['signature']}" if row.get("signature") else ""
             kind_name = f"{row['kind']} {row['name']}"
             not_indexed_suffix = " (not yet indexed)" if row.get("not_indexed") else ""
+            ref_count = row.get("ref_count")
+            ref_suffix = f"  [{ref_count} refs]" if ref_count is not None else ""
             if use_tty_color:
                 kind_name = f"\033[90m{kind_name}\033[0m"
                 sig_part = f"\033[2m{sig_part}\033[0m"
                 if not_indexed_suffix:
                     not_indexed_suffix = f"\033[33m{not_indexed_suffix}\033[0m"
-            typer.echo(f"{project_prefix}{row['file']}:{row['line']}: {kind_name}{sig_part}{not_indexed_suffix}")
+                if ref_suffix:
+                    ref_suffix = f"\033[36m{ref_suffix}\033[0m"
+            typer.echo(f"{project_prefix}{row['file']}:{row['line']}: {kind_name}{sig_part}{ref_suffix}{not_indexed_suffix}")
 
     def _emit_results(
         results: list[dict],
@@ -687,6 +696,21 @@ def symbol(
 
     from . import read_commands  # noqa: PLC0415
 
+    if show_refs and results:
+        try:
+            _db2 = _lazy_import("db")
+            with _db2.open_project_readonly(proj.hash) as _rconn:
+                count_row = _rconn.execute(
+                    "SELECT COUNT(*) AS cnt FROM refs WHERE symbol_name = ?",
+                    (name,),
+                ).fetchone()
+            ref_count_val: int | None = int(count_row["cnt"]) if count_row else None
+        except Exception:  # noqa: BLE001
+            ref_count_val = None
+        if ref_count_val is not None:
+            for r in results:
+                r["ref_count"] = ref_count_val
+
     hint = read_commands._not_indexed_hint(proj.hash)
     inline_hit = False
     close = []
@@ -785,6 +809,87 @@ def ref(
             typer.echo(hint)
         else:
             typer.echo(f"No references found for {name!r}")
+
+
+@app.command(rich_help_panel="Core")
+def refs(
+    symbol: str,
+    file: str | None = typer.Option(None, "--file", "-f", help="Only show refs in this file (partial path match)"),
+    limit: int = typer.Option(50, "--limit", "-n", help="Cap results (default 50)"),
+    as_json: bool = _OPT_JSON,
+) -> None:
+    """Show all files and line numbers where SYMBOL is referenced.
+
+    Each result shows the file path, line number, and the surrounding line of
+    source code.  Use ``--file`` to restrict output to a single file.  Use
+    ``--limit`` to cap results (default 50).
+
+    Example usage::
+
+        token-goat refs login
+        token-goat refs login --file src/auth.py
+        token-goat refs login --json
+    """
+    proj = _require_project()
+
+    if file is not None:
+        rows_raw = _query_project(
+            proj.hash,
+            "SELECT file_rel, line, col, context FROM refs "
+            "WHERE symbol_name = ? AND file_rel LIKE ? "
+            "ORDER BY file_rel, line LIMIT ?",
+            (symbol, f"%{file}%", limit),
+        )
+    else:
+        rows_raw = _query_project(
+            proj.hash,
+            "SELECT file_rel, line, col, context FROM refs "
+            "WHERE symbol_name = ? "
+            "ORDER BY file_rel, line LIMIT ?",
+            (symbol, limit),
+        )
+
+    results = [
+        {
+            "symbol": symbol,
+            "file": r["file_rel"],
+            "line": r["line"],
+            "col": r["col"],
+            "context": r["context"],
+        }
+        for r in rows_raw
+    ]
+
+    if as_json:
+        typer.echo(json.dumps(results))
+        return
+
+    if not results:
+        from . import read_commands  # noqa: PLC0415
+
+        hint = read_commands._not_indexed_hint(proj.hash)
+        if hint:
+            typer.echo(hint)
+        elif file is not None:
+            typer.echo(f"No references to {symbol!r} found in files matching {file!r}")
+        else:
+            typer.echo(f"No references found for {symbol!r}")
+        return
+
+    use_tty_color = sys.stdout.isatty()
+    for row in results:
+        loc = f"{row['file']}:{row['line']}"
+        ctx = row.get("context") or ""
+        ctx_stripped = ctx.strip()
+        if ctx_stripped:
+            sep = "  "
+            if use_tty_color:
+                ctx_part = f"{sep}\033[2m{ctx_stripped}\033[0m"
+            else:
+                ctx_part = f"{sep}{ctx_stripped}"
+        else:
+            ctx_part = ""
+        typer.echo(f"{loc}{ctx_part}")
 
 
 def _keyword_fallback_hits(
