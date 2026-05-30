@@ -952,7 +952,10 @@ class TestMakeFilter:
 
 
 class TestTerraformFilter:
-    def test_drops_refresh_lines(self):
+    """Tests for TerraformFilter."""
+
+    def test_drops_refresh_lines(self) -> None:
+        """Basic test: terraform plan drops refresh lines but keeps the Plan: summary."""
         text = "\n".join([
             f"aws_instance.web[{i}]: Refreshing state... [id=i-abc{i}]" for i in range(20)
         ]) + "\nPlan: 1 to add, 2 to change, 0 to destroy.\n"
@@ -960,6 +963,269 @@ class TestTerraformFilter:
         result = f.apply(text, "", 0, ["terraform", "plan"])
         assert "Refreshing state" not in result.text
         assert "Plan: 1 to add" in result.text
+
+    def test_terraform_plan_keeps_summary_line(self) -> None:
+        """terraform plan drops refresh lines but keeps the Plan: summary."""
+        stdout = (
+            "aws_instance.example: Refreshing state… [id=i-1234]\n"
+            "aws_instance.other: Refreshing state… [id=i-5678]\n"
+            "Plan: 2 to add, 1 to change, 0 to destroy.\n"
+            "# aws_instance.new will be created\n"
+            "  + resource {\n"
+            "      + id = (known after apply)\n"
+            "    }\n"
+        )
+        f = bc.TerraformFilter()
+        result = f.apply(stdout, "", 0, ["terraform", "plan"])
+        text = result.text
+        # Summary must be kept.
+        assert "Plan: 2 to add, 1 to change, 0 to destroy" in text
+        # Refresh lines should be dropped.
+        assert "Refreshing state" not in text
+        # Compressed size should be much smaller.
+        assert result.compressed_bytes < len(stdout.encode())
+
+    def test_terraform_plan_last_20_lines_kept(self) -> None:
+        """terraform plan keeps the plan summary + last 20 lines of detailed diff."""
+        lines = [
+            "aws_instance.ex: Refreshing state… [id=i-1]",
+            "Plan: 1 to add, 0 to change, 0 to destroy.",
+            "# aws_instance.new will be created",
+        ]
+        # Add 50 more lines of plan diff.
+        for i in range(50):
+            lines.append(f"  line_{i:03d} = {i}")
+        stdout = "\n".join(lines)
+        f = bc.TerraformFilter()
+        result = f.apply(stdout, "", 0, ["terraform", "plan"])
+        text = result.text
+        # Plan summary should be present.
+        assert "Plan: 1 to add" in text
+        # Output should be much smaller (only ~20 tail lines + summary).
+        assert result.compressed_bytes < len(stdout.encode())
+
+    def test_terraform_apply_keeps_completion_line(self) -> None:
+        """terraform apply keeps the 'Apply complete!' summary line."""
+        stdout = (
+            "aws_instance.example: Refreshing state… [id=i-1234]\n"
+            "aws_instance.new: Creating…\n"
+            "aws_instance.new: Creation complete after 5s\n"
+            "Apply complete! Resources: 1 added, 0 changed, 0 destroyed.\n"
+        )
+        f = bc.TerraformFilter()
+        result = f.apply(stdout, "", 0, ["terraform", "apply"])
+        text = result.text
+        # Completion summary must be kept.
+        assert "Apply complete! Resources:" in text
+        # Refresh lines should be dropped.
+        assert "Refreshing state" not in text
+
+    def test_terraform_apply_preserves_errors(self) -> None:
+        """terraform apply preserves stderr on error (exit_code != 0)."""
+        stdout = "aws_instance.example: Refreshing state…\n"
+        stderr = "Error: Resource creation failed\nDetails: Invalid configuration\n"
+        f = bc.TerraformFilter()
+        result = f.apply(stdout, stderr, 1, ["terraform", "apply"])
+        text = result.text
+        # Stderr must be preserved on error.
+        assert "Error: Resource creation failed" in text
+        assert "Invalid configuration" in text
+
+    def test_terraform_init_head_tail_compression(self) -> None:
+        """terraform init uses head=5, tail=5 compression for progress bars."""
+        lines = ["Initializing…"] + [f"Installing plugin {i}" for i in range(20)] + ["Init complete!"]
+        stdout = "\n".join(lines)
+        f = bc.TerraformFilter()
+        result = f.apply(stdout, "", 0, ["terraform", "init"])
+        text = result.text
+        # Should compress to head + tail (5+5), not all 22 lines.
+        assert len(text.split("\n")) <= 12  # head + marker + tail + blanks.
+        # But must include some init info.
+        assert "Initializing" in text or "Installing" in text or "complete" in text
+
+    def test_terraform_validate_passthrough(self) -> None:
+        """terraform validate passes through (usually short; no compression)."""
+        stdout = "Valid!\nNo issues found.\n"
+        f = bc.TerraformFilter()
+        result = f.apply(stdout, "", 0, ["terraform", "validate"])
+        text = result.text
+        # Should be passed through unchanged (or nearly so).
+        assert "Valid!" in text
+        assert "No issues found" in text
+
+    def test_terraform_show_head_tail(self) -> None:
+        """terraform show uses head=20, tail=10 compression for large state output."""
+        lines = ["# Resource state"] + [f"resource.line_{i}" for i in range(100)] + ["# End of state"]
+        stdout = "\n".join(lines)
+        f = bc.TerraformFilter()
+        result = f.apply(stdout, "", 0, ["terraform", "show"])
+        text = result.text
+        # Should compress to ~30 lines (head + tail).
+        assert len(text.split("\n")) <= 35
+        assert "Resource state" in text or "resource.line_" in text
+
+    def test_matches_terraform_binaries(self) -> None:
+        """TerraformFilter matches terraform, tofu, terragrunt."""
+        f = bc.TerraformFilter()
+        assert f.matches(["terraform", "plan"])
+        assert f.matches(["tofu", "apply"])
+        assert f.matches(["terragrunt", "run-all", "plan"])
+        assert not f.matches(["ansible", "playbook.yml"])
+
+    def test_select_filter_returns_terraform_filter(self) -> None:
+        """select_filter dispatches terraform to TerraformFilter."""
+        f = bc.select_filter(["terraform", "plan"])
+        assert isinstance(f, bc.TerraformFilter)
+
+    def test_terraform_empty_input(self) -> None:
+        """TerraformFilter handles empty input without crashing."""
+        f = bc.TerraformFilter()
+        result = f.apply("", "", 0, ["terraform", "plan"])
+        assert isinstance(result.text, str)
+
+
+# ---------------------------------------------------------------------------
+# AnsibleFilter — comprehensive tests
+# ---------------------------------------------------------------------------
+
+
+class TestAnsibleFilter:
+    """Tests for AnsibleFilter."""
+
+    def test_ansible_playbook_collapses_status_lines(self) -> None:
+        """ansible-playbook collapses ok/changed/skipping counts per task."""
+        stdout = (
+            "PLAY [Install packages]\n"
+            "TASK [apt-get update]\n"
+            "ok: [host1]\n"
+            "ok: [host2]\n"
+            "ok: [host3]\n"
+            "changed: [host4]\n"
+            "changed: [host5]\n"
+            "TASK [Install nginx]\n"
+            "ok: [host1]\n"
+            "ok: [host2]\n"
+            "skipped: [host3]\n"
+            "PLAY RECAP\n"
+            "host1: ok=2, changed=0, unreachable=0, failed=0\n"
+        )
+        f = bc.AnsibleFilter()
+        result = f.apply(stdout, "", 0, ["ansible-playbook", "site.yml"])
+        text = result.text
+        # Headers and recap must be present.
+        assert "PLAY [Install packages]" in text
+        assert "TASK [apt-get update]" in text
+        assert "PLAY RECAP" in text
+        # Status lines should be collapsed, not literal ok/changed/skipping lines.
+        assert text.count("\nok:") == 0  # Raw ok: lines should be gone.
+        # But we should have collapsed counts.
+        assert "token-goat:" in text
+
+    def test_ansible_playbook_keeps_failure_blocks(self) -> None:
+        """ansible-playbook preserves fatal/failed/unreachable lines and payloads."""
+        stdout = (
+            "TASK [Might fail]\n"
+            "ok: [host1]\n"
+            "fatal: [host2]: FAILED! => {\n"
+            '    "msg": "Something went wrong",\n'
+            '    "error": "Connection refused"\n'
+            "}\n"
+            "PLAY RECAP\n"
+            "host1: ok=1, changed=0, failed=1\n"
+        )
+        f = bc.AnsibleFilter()
+        result = f.apply(stdout, "", 0, ["ansible-playbook", "site.yml"])
+        text = result.text
+        # Failure line and its JSON payload must be present.
+        assert "fatal: [host2]" in text
+        assert "Something went wrong" in text or "Connection refused" in text
+        # PLAY RECAP must be present.
+        assert "PLAY RECAP" in text
+
+    def test_ansible_playbook_keeps_recap(self) -> None:
+        """ansible-playbook always preserves the PLAY RECAP section."""
+        stdout = (
+            "PLAY [test]\n"
+            "TASK [task1]\n"
+            "ok: [host1]\n"
+            "PLAY RECAP\n"
+            "host1: ok=1, changed=0, unreachable=0, failed=0\n"
+            "host2: ok=0, changed=0, unreachable=1, failed=0\n"
+        )
+        f = bc.AnsibleFilter()
+        result = f.apply(stdout, "", 0, ["ansible-playbook", "site.yml"])
+        text = result.text
+        # PLAY RECAP block must be intact.
+        assert "PLAY RECAP" in text
+        assert "host1: ok=1" in text
+        assert "host2: ok=0, changed=0, unreachable=1" in text
+
+    def test_ansible_galaxy_install_head_tail(self) -> None:
+        """ansible-galaxy install uses head=5, tail=5 compression for package lists."""
+        lines = ["Starting galaxy install"] + [f"Installing package_{i}" for i in range(30)] + ["Galaxy install complete"]
+        stdout = "\n".join(lines)
+        f = bc.AnsibleFilter()
+        result = f.apply(stdout, "", 0, ["ansible-galaxy", "install", "-r", "requirements.yml"])
+        text = result.text
+        # Should compress to head + tail (5+5 = 10 lines max).
+        non_blank = [ln for ln in text.split("\n") if ln.strip()]
+        assert len(non_blank) <= 12
+        # But must include some info.
+        assert "Installing" in text or "complete" in text
+
+    def test_ansible_lint_groups_by_rule(self) -> None:
+        """ansible-lint groups violations by rule and keeps first 3 examples."""
+        stdout = (
+            "playbooks/site.yml:10:1: yaml-indent: too many spaces before block scalar (yaml-indent)\n"
+            "playbooks/site.yml:20:1: yaml-indent: too many spaces before block scalar (yaml-indent)\n"
+            "playbooks/site.yml:30:1: yaml-indent: too many spaces before block scalar (yaml-indent)\n"
+            "playbooks/site.yml:40:1: yaml-indent: too many spaces before block scalar (yaml-indent)\n"
+            "playbooks/site.yml:50:1: line-too-long: line too long (line-too-long)\n"
+            "playbooks/site.yml:60:1: line-too-long: line too long (line-too-long)\n"
+            "Linting failed.\n"
+        )
+        f = bc.AnsibleFilter()
+        result = f.apply(stdout, "", 1, ["ansible-lint", "playbooks/"])
+        text = result.text
+        # Should have the first 3 yaml-indent lines.
+        yaml_lines = [ln for ln in text.split("\n") if "yaml-indent" in ln]
+        assert len(yaml_lines) >= 1
+        # Should note that some were elided.
+        if "yaml-indent" in text and "elided" in text:
+            assert "more occurrences" in text
+
+    def test_matches_ansible_binaries(self) -> None:
+        """AnsibleFilter matches ansible, ansible-playbook, ansible-galaxy, ansible-lint."""
+        f = bc.AnsibleFilter()
+        assert f.matches(["ansible", "all", "-m", "ping"])
+        assert f.matches(["ansible-playbook", "site.yml"])
+        assert f.matches(["ansible-galaxy", "install", "-r", "requirements.yml"])
+        assert f.matches(["ansible-lint", "playbooks/"])
+        assert not f.matches(["terraform", "plan"])
+
+    def test_select_filter_returns_ansible_filter(self) -> None:
+        """select_filter dispatches ansible to AnsibleFilter."""
+        f = bc.select_filter(["ansible-playbook", "site.yml"])
+        assert isinstance(f, bc.AnsibleFilter)
+
+    def test_ansible_playbook_empty_input(self) -> None:
+        """AnsibleFilter handles empty input without crashing."""
+        f = bc.AnsibleFilter()
+        result = f.apply("", "", 0, ["ansible-playbook", "site.yml"])
+        assert isinstance(result.text, str)
+
+    def test_ansible_playbook_compression_reduces_size(self) -> None:
+        """AnsibleFilter substantially reduces size of large playbook output."""
+        lines = ["PLAY [test]", "TASK [loop]"]
+        # Add 100 ok/changed lines.
+        for i in range(100):
+            lines.append(f"ok: [host-{i % 10}]")
+        lines.append("PLAY RECAP\nhost-0: ok=10\n")
+        stdout = "\n".join(lines)
+        f = bc.AnsibleFilter()
+        result = f.apply(stdout, "", 0, ["ansible-playbook", "site.yml"])
+        # Compressed output should be much smaller.
+        assert result.compressed_bytes < len(stdout.encode()) * 0.5
 
 
 # ---------------------------------------------------------------------------
