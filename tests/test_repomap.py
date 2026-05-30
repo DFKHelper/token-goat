@@ -1115,3 +1115,102 @@ def test_build_map_size_fallback_no_minor_file_collapse(tmp_path, tmp_data_dir, 
         "minor-files annotation must not appear in the size-fallback path — "
         "the _LOW_RANK_THRESHOLD is meaningless when ranks are byte sizes"
     )
+
+
+# ---------------------------------------------------------------------------
+# lang_breakdown tests
+# ---------------------------------------------------------------------------
+
+def test_lang_breakdown_single_language():
+    files = {
+        "src/a.py": {"language": "python", "size": 100, "mtime": 1.0},
+        "src/b.py": {"language": "python", "size": 200, "mtime": 1.0},
+    }
+    result = repomap.lang_breakdown(files)
+    assert "Python: 100%" in result
+
+
+def test_lang_breakdown_two_languages():
+    files = {
+        "src/a.py": {"language": "python", "size": 100, "mtime": 1.0},
+        "src/b.ts": {"language": "typescript", "size": 100, "mtime": 1.0},
+    }
+    result = repomap.lang_breakdown(files)
+    assert "Python" in result
+    assert "Typescript" in result or "TypeScript" in result or "typescript" in result.lower()
+    assert "50%" in result
+
+
+def test_lang_breakdown_empty_files():
+    assert repomap.lang_breakdown({}) == ""
+
+
+def test_lang_breakdown_folds_many_languages_into_other():
+    files = {f"src/f{i}.x": {"language": f"lang{i}", "size": 100, "mtime": 1.0} for i in range(10)}
+    result = repomap.lang_breakdown(files)
+    assert "Other" in result
+
+
+def test_lang_breakdown_four_languages_no_other():
+    files = {
+        "a.py": {"language": "python", "size": 100, "mtime": 1.0},
+        "b.ts": {"language": "typescript", "size": 100, "mtime": 1.0},
+        "c.go": {"language": "go", "size": 100, "mtime": 1.0},
+        "d.rs": {"language": "rust", "size": 100, "mtime": 1.0},
+    }
+    result = repomap.lang_breakdown(files)
+    assert "Other" not in result
+
+
+def test_lang_breakdown_in_build_map_footer(ts_project):
+    text = repomap.build_map(ts_project, budget_tokens=4000)
+    # The ts_sample has typescript files; the breakdown should mention it.
+    assert "typescript" in text.lower() or "Typescript" in text
+
+
+# ---------------------------------------------------------------------------
+# build_map_mermaid tests
+# ---------------------------------------------------------------------------
+
+def test_build_map_mermaid_starts_with_graph_td(ts_project):
+    diagram = repomap.build_map_mermaid(ts_project)
+    assert diagram.startswith("graph TD")
+
+
+def test_build_map_mermaid_contains_file_node(ts_project):
+    diagram = repomap.build_map_mermaid(ts_project)
+    assert "index" in diagram  # index.ts node must be present
+
+
+def test_build_map_mermaid_is_string(ts_project):
+    diagram = repomap.build_map_mermaid(ts_project)
+    assert isinstance(diagram, str)
+    assert len(diagram) > 10
+
+
+def test_build_map_mermaid_top_n_limits_nodes(tmp_path, tmp_data_dir, make_project):
+    from token_goat.parser import index_project
+
+    proj_root = tmp_path / "mermaid_topn"
+    src = proj_root / "src"
+    src.mkdir(parents=True)
+    pad = "# padding\n" * 6
+    for i in range(15):
+        (src / f"mod_{i:02d}.py").write_text(f"{pad}def fn_{i}(): pass\n")
+    proj = make_project(proj_root)
+    index_project(proj, full=True)
+
+    diagram5 = repomap.build_map_mermaid(proj, top_n=5)
+    diagram15 = repomap.build_map_mermaid(proj, top_n=15)
+    # 5-node diagram must define fewer node labels than 15-node one
+    node_lines_5 = [ln for ln in diagram5.splitlines() if '["' in ln and "-->" not in ln]
+    node_lines_15 = [ln for ln in diagram15.splitlines() if '["' in ln and "-->" not in ln]
+    assert len(node_lines_5) <= len(node_lines_15)
+    assert len(node_lines_5) <= 5
+
+
+def test_mermaid_id_replaces_slashes():
+    node_id = repomap._mermaid_id("src/token_goat/db.py")
+    assert "/" not in node_id
+    assert "." not in node_id
+    assert node_id.startswith("f_")
