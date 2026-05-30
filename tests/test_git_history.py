@@ -385,6 +385,40 @@ class TestIndexProjectHistory:
             count = index_project_history(tmp_path, "a" * 40)
         assert count == 0
 
+    def test_no_merges_flag_present(self, git_repo: Path, tmp_path: Path):
+        """git log must include --no-merges so merge commits are excluded."""
+        db_path = tmp_path / "project.db"
+        captured_args: list[list[str]] = []
+
+        original_run_git = __import__(
+            "token_goat.git_history", fromlist=["_run_git"]
+        )._run_git
+
+        def _capturing_run_git(args: list[str], cwd: Path, timeout: int = 10):
+            captured_args.append(args)
+            return original_run_git(args, cwd, timeout)
+
+        with (
+            patch("token_goat.paths.project_db_path", return_value=db_path),
+            patch("token_goat.db.open_project") as mock_open_project,
+            patch("token_goat.git_history._run_git", _capturing_run_git),
+        ):
+            conn = sqlite3.connect(str(db_path))
+            from contextlib import contextmanager as cm
+
+            @cm
+            def _fake_open(_hash):
+                yield conn
+
+            mock_open_project.side_effect = _fake_open
+            index_project_history(git_repo, "a" * 40)
+
+        all_args = [arg for args in captured_args for arg in args]
+        assert "--no-merges" in all_args, (
+            f"git log must include --no-merges to exclude merge commits; "
+            f"got args: {captured_args}"
+        )
+
     def test_git_log_after_uses_string_format(self, git_repo: Path, tmp_path: Path):
         """Verify the git log command uses '60 days ago' format, not raw Unix int."""
         db_path = tmp_path / "project.db"
