@@ -154,13 +154,13 @@ class TestSmartDefaultBashOutput:
         assert "--full" in result.stdout
 
     def test_large_output_head_line_count(self, tmp_data_dir):
-        # The displayed output must contain exactly HEAD + 1 marker + TAIL lines.
+        # The displayed output must contain exactly HEAD + 1 marker + TAIL content lines.
         oid = _seed_large_bash()
         runner = CliRunner()
         result = runner.invoke(app, ["bash-output", oid])
         assert result.exit_code == 0
-        lines = result.stdout.rstrip("\n").splitlines()
-        assert len(lines) == _SMART_DEFAULT_HEAD + 1 + _SMART_DEFAULT_TAIL
+        content_lines = [ln for ln in result.stdout.rstrip("\n").splitlines() if not ln.startswith("# cached")]
+        assert len(content_lines) == _SMART_DEFAULT_HEAD + 1 + _SMART_DEFAULT_TAIL
 
     def test_full_flag_returns_everything(self, tmp_data_dir):
         # --full must suppress smart default and return all lines.
@@ -169,8 +169,8 @@ class TestSmartDefaultBashOutput:
         runner = CliRunner()
         result = runner.invoke(app, ["bash-output", oid, "--full"])
         assert result.exit_code == 0
-        lines = result.stdout.rstrip("\n").splitlines()
-        assert len(lines) == n
+        content_lines = [ln for ln in result.stdout.rstrip("\n").splitlines() if not ln.startswith("# cached")]
+        assert len(content_lines) == n
         assert "token-goat:" not in result.stdout
 
     def test_tail_flag_bypasses_smart_default(self, tmp_data_dir):
@@ -179,8 +179,8 @@ class TestSmartDefaultBashOutput:
         runner = CliRunner()
         result = runner.invoke(app, ["bash-output", oid, "--tail", "5"])
         assert result.exit_code == 0
-        lines = result.stdout.rstrip("\n").splitlines()
-        assert len(lines) == 5
+        content_lines = [ln for ln in result.stdout.rstrip("\n").splitlines() if not ln.startswith("# cached")]
+        assert len(content_lines) == 5
         assert "token-goat:" not in result.stdout
 
     def test_grep_flag_bypasses_smart_default(self, tmp_data_dir):
@@ -234,8 +234,8 @@ class TestSmartDefaultWebOutput:
         runner = CliRunner()
         result = runner.invoke(app, ["web-output", oid, "--full"])
         assert result.exit_code == 0
-        lines = result.stdout.rstrip("\n").splitlines()
-        assert len(lines) == n
+        content_lines = [ln for ln in result.stdout.rstrip("\n").splitlines() if not ln.startswith("# cached")]
+        assert len(content_lines) == n
         assert "token-goat:" not in result.stdout
 
     def test_web_tail_flag_bypasses_smart_default(self, tmp_data_dir):
@@ -243,8 +243,8 @@ class TestSmartDefaultWebOutput:
         runner = CliRunner()
         result = runner.invoke(app, ["web-output", oid, "--tail", "3"])
         assert result.exit_code == 0
-        lines = result.stdout.rstrip("\n").splitlines()
-        assert len(lines) == 3
+        content_lines = [ln for ln in result.stdout.rstrip("\n").splitlines() if not ln.startswith("# cached")]
+        assert len(content_lines) == 3
         assert "token-goat:" not in result.stdout
 
     def test_web_grep_flag_bypasses_smart_default(self, tmp_data_dir):
@@ -495,3 +495,154 @@ class TestWebOutputRecallStat:
         """web_output_recall must be in _KIND_TO_SOURCE → SOURCE_WEB."""
         from token_goat.stats import SOURCE_WEB, kind_to_source
         assert kind_to_source("web_output_recall") == SOURCE_WEB
+
+
+# ---------------------------------------------------------------------------
+# Case-insensitive --grep (default) and --case-sensitive flag
+# ---------------------------------------------------------------------------
+
+class TestGrepCaseInsensitive:
+    """--grep is case-insensitive by default; --case-sensitive restores old behaviour."""
+
+    def _seed_mixed_case(self) -> str:
+        meta = bash_cache.store_output(
+            "ci-sess", "make test",
+            "PASSED: auth_test\nfailed: db_test\nPASSED: api_test\n", "", 0,
+        )
+        assert meta is not None
+        bash_cache.write_sidecar(meta)
+        return meta.output_id
+
+    def test_grep_case_insensitive_by_default(self, tmp_data_dir):
+        oid = self._seed_mixed_case()
+        runner = CliRunner()
+        result = runner.invoke(app, ["bash-output", oid, "--grep", "passed"])
+        assert result.exit_code == 0
+        assert "PASSED: auth_test" in result.stdout
+        assert "PASSED: api_test" in result.stdout
+        assert "failed: db_test" not in result.stdout
+
+    def test_grep_case_sensitive_flag_excludes_mismatched_case(self, tmp_data_dir):
+        oid = self._seed_mixed_case()
+        runner = CliRunner()
+        result = runner.invoke(app, ["bash-output", oid, "--grep", "passed", "--case-sensitive"])
+        assert result.exit_code == 0
+        assert "PASSED" not in result.stdout
+        assert "failed: db_test" not in result.stdout
+
+    def test_grep_case_sensitive_flag_matches_exact_case(self, tmp_data_dir):
+        oid = self._seed_mixed_case()
+        runner = CliRunner()
+        result = runner.invoke(app, ["bash-output", oid, "--grep", "PASSED", "--case-sensitive"])
+        assert result.exit_code == 0
+        assert "PASSED: auth_test" in result.stdout
+        assert "PASSED: api_test" in result.stdout
+        assert "failed: db_test" not in result.stdout
+
+    def test_web_output_grep_case_insensitive_by_default(self, tmp_data_dir):
+        meta = web_cache.store_output(
+            "ci-web-sess", "https://example.com/api",
+            "Error: connection refused\nerror: timeout\nOK: 200\n", 200,
+        )
+        assert meta is not None
+        web_cache.write_sidecar(meta)
+        runner = CliRunner()
+        result = runner.invoke(app, ["web-output", meta.output_id, "--grep", "error"])
+        assert result.exit_code == 0
+        assert "Error: connection refused" in result.stdout
+        assert "error: timeout" in result.stdout
+        assert "OK: 200" not in result.stdout
+
+
+# ---------------------------------------------------------------------------
+# Age header in text mode
+# ---------------------------------------------------------------------------
+
+class TestOutputAgeHeader:
+    """bash-output and web-output prepend a '# cached X ago' header in text mode."""
+
+    def test_bash_output_shows_age_header(self, tmp_data_dir):
+        meta = bash_cache.store_output("age-sess", "pytest -v", "some output\n", "", 0)
+        assert meta is not None
+        bash_cache.write_sidecar(meta)
+        runner = CliRunner()
+        result = runner.invoke(app, ["bash-output", meta.output_id])
+        assert result.exit_code == 0
+        first_line = result.stdout.splitlines()[0]
+        assert first_line.startswith("# cached")
+        assert "exit=0" in first_line
+        assert "pytest -v" in first_line
+
+    def test_web_output_shows_age_header(self, tmp_data_dir):
+        meta = web_cache.store_output("age-web-sess", "https://example.com/doc", "body text\n", 200)
+        assert meta is not None
+        web_cache.write_sidecar(meta)
+        runner = CliRunner()
+        result = runner.invoke(app, ["web-output", meta.output_id])
+        assert result.exit_code == 0
+        first_line = result.stdout.splitlines()[0]
+        assert first_line.startswith("# cached")
+        assert "status=200" in first_line
+        assert "example.com" in first_line
+
+    def test_age_header_absent_in_json_mode(self, tmp_data_dir):
+        meta = bash_cache.store_output("age-json-sess", "echo hi", "hi\n", "", 0)
+        assert meta is not None
+        bash_cache.write_sidecar(meta)
+        runner = CliRunner()
+        result = runner.invoke(app, ["bash-output", meta.output_id, "--json"])
+        assert result.exit_code == 0
+        payload = json.loads(result.stdout)
+        assert "output_id" in payload
+        assert not result.stdout.startswith("# cached")
+
+    def test_age_header_no_crash_without_sidecar(self, tmp_data_dir):
+        meta = bash_cache.store_output("age-nosidecar", "ls -la", "file1\nfile2\n", "", 0)
+        assert meta is not None
+        runner = CliRunner()
+        result = runner.invoke(app, ["bash-output", meta.output_id])
+        assert result.exit_code == 0
+        assert "file1" in result.stdout
+
+
+# ---------------------------------------------------------------------------
+# web-output --from-session
+# ---------------------------------------------------------------------------
+
+class TestWebOutputFromSession:
+    """--from-session lists all web outputs for a given session."""
+
+    def test_from_session_lists_matching_entries(self, tmp_data_dir):
+        m1 = web_cache.store_output("sess-abc123", "https://example.com/p1", "body1\n", 200)
+        m2 = web_cache.store_output("sess-abc123", "https://example.com/p2", "body2\n", 200)
+        web_cache.store_output("other-sess-xyz", "https://other.com/p", "other\n", 200)
+        assert m1 is not None and m2 is not None
+        runner = CliRunner()
+        result = runner.invoke(app, ["web-output", "--from-session", "sess-abc123"])
+        assert result.exit_code == 0
+        assert m1.output_id in result.stdout
+        assert m2.output_id in result.stdout
+        assert "other.com" not in result.stdout
+
+    def test_from_session_empty_when_no_match(self, tmp_data_dir):
+        web_cache.store_output("sess-xyz999", "https://example.com/p", "body\n", 200)
+        runner = CliRunner()
+        result = runner.invoke(app, ["web-output", "--from-session", "nonexistent-session"])
+        assert result.exit_code == 0
+        assert "no web outputs" in result.stdout.lower()
+
+    def test_from_session_json_output(self, tmp_data_dir):
+        meta = web_cache.store_output("sess-json42", "https://example.com/api", "data\n", 200)
+        assert meta is not None
+        web_cache.write_sidecar(meta)
+        runner = CliRunner()
+        result = runner.invoke(app, ["web-output", "--from-session", "sess-json42", "--json"])
+        assert result.exit_code == 0
+        rows = json.loads(result.stdout)
+        assert isinstance(rows, list)
+        assert any(r["output_id"] == meta.output_id for r in rows)
+
+    def test_missing_output_id_without_from_session_errors(self, tmp_data_dir):
+        runner = CliRunner()
+        result = runner.invoke(app, ["web-output"])
+        assert result.exit_code != 0

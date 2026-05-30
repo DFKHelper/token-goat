@@ -1579,8 +1579,9 @@ _GREP_MAX_DEFAULT = 20
 # it reads the default at registration time and does not mutate the objects.
 _OPT_HEAD: int = typer.Option(0, "--head", help="Show first N lines (0 = no head limit)")  # noqa: B008
 _OPT_TAIL: int = typer.Option(0, "--tail", help="Show last N lines (0 = no tail limit)")  # noqa: B008
-_OPT_GREP: str | None = typer.Option(None, "--grep", "-g", help="Show only lines matching the (case-sensitive) substring")  # noqa: B008
+_OPT_GREP: str | None = typer.Option(None, "--grep", "-g", help="Show only lines matching the substring (case-insensitive by default; see --case-sensitive)")  # noqa: B008
 _OPT_GREP_MAX: int = typer.Option(_GREP_MAX_DEFAULT, "--grep-max", help="Max matching lines to show with --grep (0 = no cap)")  # noqa: B008
+_OPT_CASE_SENSITIVE: bool = typer.Option(False, "--case-sensitive", help="Make --grep matching case-sensitive")  # noqa: B008
 _OPT_FULL: bool = typer.Option(False, "--full", help="Return the entire cached output (disables smart-default head+tail)")  # noqa: B008
 _OPT_HEAD_TAIL: bool = typer.Option(False, "--head-tail", help="Emit first+last 20 lines with an omission marker instead of full body")  # noqa: B008
 
@@ -1592,6 +1593,7 @@ def _apply_recall_filters(
     tail: int,
     grep: str | None,
     full: bool,
+    case_sensitive: bool = False,
 ) -> list[str]:
     """Apply the standard head/tail/grep/full slicing pipeline to *lines*.
 
@@ -1605,16 +1607,22 @@ def _apply_recall_filters(
         lines: Source lines (already split on newlines).
         head:  Return first N lines (0 = no limit).
         tail:  Return last N lines (0 = no limit).
-        grep:  Case-sensitive substring filter; ``None`` or ``""`` = no filter.
+        grep:  Substring filter; ``None`` or ``""`` = no filter.  Case-insensitive
+               by default; pass ``case_sensitive=True`` for exact matching.
         full:  When True, skip the smart-default elision even if no explicit
                slice flags were passed.
+        case_sensitive: When True, apply grep as an exact-case substring match.
 
     Returns:
         Filtered list of lines; caller joins with ``"\\n"`` for output.
     """
     slicing_requested = bool(grep) or head > 0 or tail > 0
     if grep:
-        lines = [ln for ln in lines if grep in ln]
+        if case_sensitive:
+            lines = [ln for ln in lines if grep in ln]
+        else:
+            _lc = grep.lower()
+            lines = [ln for ln in lines if _lc in ln.lower()]
     if head > 0:
         lines = lines[:head]
     if tail > 0:
@@ -1669,6 +1677,21 @@ def _apply_grep_cap(
     return matched_lines[:grep_max], footer
 
 
+def _format_age(age_secs: float) -> str:
+    """Return a human-readable age string for *age_secs* seconds.
+
+    Examples: ``"3s ago"``, ``"4m ago"``, ``"2h ago"``, ``"1d ago"``.
+    """
+    secs = int(age_secs)
+    if secs < 60:
+        return f"{secs}s ago"
+    if secs < 3600:
+        return f"{secs // 60}m ago"
+    if secs < 86400:
+        return f"{secs // 3600}h ago"
+    return f"{secs // 86400}d ago"
+
+
 def _run_output_recall_command(
     *,
     output_id: str,
@@ -1682,6 +1705,7 @@ def _run_output_recall_command(
     not_found_msg: str,
     head_tail: bool = False,
     grep_max: int = _GREP_MAX_DEFAULT,
+    case_sensitive: bool = False,
 ) -> None:
     """Shared implementation for bash-output and web-output recall commands.
 
@@ -1698,6 +1722,8 @@ def _run_output_recall_command(
         grep_max: Cap on grep-filtered results (Item 10).  Prepends a
             ``Match count: N`` header and appends a truncation footer when the
             cap fires.  ``0`` means no cap.
+        case_sensitive: When True, apply ``--grep`` as a case-sensitive match
+            (default is case-insensitive).
     """
     from . import db as _db  # noqa: PLC0415
 
@@ -1727,11 +1753,20 @@ def _run_output_recall_command(
         _error(not_found_msg)
         raise typer.Exit(1)
 
+    # Resolve grep matching key once (case-folded or raw) so the check is
+    # applied consistently across both the line filter and the JSON match count.
+    _grep_key = grep if (grep and case_sensitive) else (grep.lower() if grep else None)
+
+    def _grep_matches(line: str) -> bool:
+        if _grep_key is None:
+            return True
+        return _grep_key in (line if case_sensitive else line.lower())
+
     lines = body.splitlines()
     _slicing_requested = grep or head > 0 or tail > 0 or head_tail
     _grep_footer = ""
     if grep:
-        matched = [ln for ln in lines if grep in ln]
+        matched = [ln for ln in lines if _grep_matches(ln)]
         match_count = len(matched)
         matched, _grep_footer = _apply_grep_cap(matched, grep_max)
         lines = matched
@@ -1798,12 +1833,40 @@ def _run_output_recall_command(
             "total_lines": len(original_lines),
         }
         if grep:
-            payload["match_count"] = len([ln for ln in original_lines if grep in ln])
+            payload["match_count"] = len([ln for ln in original_lines if _grep_matches(ln)])
         payload.update(meta)
         if sidecar is not None:
             payload.update(vars(sidecar))
         typer.echo(json.dumps(payload, ensure_ascii=False, separators=(",", ":")))
         return
+
+    # Text mode: prepend a one-line metadata header showing cache age and key
+    # context fields (exit code for bash, status code for web, and a preview).
+    # Loading meta + sidecar is fast (small JSON files); the header gives the
+    # agent the most useful facts without forcing a --json round-trip.
+    sidecar = read_sidecar(output_id)
+    _header_parts: list[str] = []
+    if sidecar is not None:
+        _meta_stat = load_output_meta(output_id)
+        if _meta_stat is not None and "mtime" in _meta_stat:
+            _age = time.time() - float(_meta_stat["mtime"])
+            _header_parts.append(f"cached {_format_age(_age)}")
+        # bash sidecar fields
+        _exit = getattr(sidecar, "exit_code", None)
+        if _exit is not None:
+            _header_parts.append(f"exit={_exit}")
+        _cmd = getattr(sidecar, "cmd_preview", None)
+        if _cmd:
+            _header_parts.append(f"$ {_cmd}")
+        # web sidecar fields
+        _status = getattr(sidecar, "status_code", None)
+        if _status is not None:
+            _header_parts.append(f"status={_status}")
+        _url = getattr(sidecar, "url_preview", None)
+        if _url:
+            _header_parts.append(_url)
+    if _header_parts:
+        typer.echo("# " + "  ".join(_header_parts))
 
     typer.echo(sliced)
 
@@ -1815,6 +1878,7 @@ def cmd_bash_output(
     tail: int = _OPT_TAIL,
     grep: str | None = _OPT_GREP,
     grep_max: int = _OPT_GREP_MAX,
+    case_sensitive: bool = _OPT_CASE_SENSITIVE,
     full: bool = _OPT_FULL,
     head_tail: bool = _OPT_HEAD_TAIL,
     json_output: bool = _OPT_JSON,
@@ -1830,9 +1894,10 @@ def cmd_bash_output(
     30 lines and last 80 lines with an elision marker.  Pass ``--full`` to
     get everything.  Combine ``--head``, ``--tail``, and ``--grep`` to
     narrow further; those flags suppress the smart default automatically.
-    Use ``--head-tail`` to get just the first+last 20 lines (useful for large
-    outputs where you only need the gist).  Use ``--grep-max N`` to cap
-    the number of matching lines returned (default 20; 0 = no cap).
+    ``--grep`` is case-insensitive by default; add ``--case-sensitive`` for
+    exact matching.  Use ``--head-tail`` to get just the first+last 20 lines
+    (useful for large outputs where you only need the gist).  Use ``--grep-max N``
+    to cap the number of matching lines returned (default 20; 0 = no cap).
     JSON mode includes the full path and stored byte size.
     """
     from . import bash_cache  # noqa: PLC0415
@@ -1849,19 +1914,29 @@ def cmd_bash_output(
         not_found_msg=f"no cached output for id: {output_id}",
         head_tail=head_tail,
         grep_max=grep_max,
+        case_sensitive=case_sensitive,
     )
 
 
 @app.command("web-output", rich_help_panel="Core")
 def cmd_web_output(
-    output_id: str = typer.Argument(..., help="ID returned by the post-fetch hook or `web-history`."),
+    output_id: str | None = typer.Argument(None, help="ID returned by the post-fetch hook or `web-history`. Omit when using --from-session."),
     head: int = _OPT_HEAD,
     tail: int = _OPT_TAIL,
     grep: str | None = _OPT_GREP,
     grep_max: int = _OPT_GREP_MAX,
+    case_sensitive: bool = _OPT_CASE_SENSITIVE,
     full: bool = _OPT_FULL,
     head_tail: bool = _OPT_HEAD_TAIL,
     json_output: bool = _OPT_JSON,
+    from_session: str | None = typer.Option(  # noqa: B008
+        None,
+        "--from-session",
+        help=(
+            "List all web outputs cached during SESSION_ID instead of retrieving a specific entry. "
+            "When set, the output_id argument is not required."
+        ),
+    ),
 ) -> None:
     """Retrieve a sliced view of a cached WebFetch response body.
 
@@ -1874,13 +1949,52 @@ def cmd_web_output(
     30 lines and last 80 lines with an elision marker.  Pass ``--full`` to
     get everything.  Combine ``--head``, ``--tail``, and ``--grep`` to
     narrow further; those flags suppress the smart default automatically.
-    Use ``--head-tail`` to get just the first+last 20 lines (useful for large
-    documentation pages where you only need the gist).  Use ``--grep-max N``
-    to cap the number of matching lines returned (default 20; 0 = no cap).
-    JSON mode includes the full path, stored byte size, status code, and a
-    1-based ``numbered_lines`` list anchored to the original body.
+    ``--grep`` is case-insensitive by default; add ``--case-sensitive`` for
+    exact matching.  Use ``--head-tail`` to get just the first+last 20 lines
+    (useful for large documentation pages where you only need the gist).
+    Use ``--grep-max N`` to cap the number of matching lines returned
+    (default 20; 0 = no cap).  JSON mode includes the full path, stored byte
+    size, status code, and a 1-based ``numbered_lines`` list anchored to the
+    original body.
+
+    Use ``--from-session SESSION_ID`` to list all web outputs cached during a
+    specific session without needing to know their IDs in advance.
     """
     from . import web_cache  # noqa: PLC0415
+    from .cache_common import safe_session_fragment  # noqa: PLC0415
+
+    if from_session is not None:
+        # Listing mode: show all web outputs whose ID starts with the session fragment.
+        _sess_prefix = safe_session_fragment(from_session) + "-"
+        all_entries = web_cache.list_outputs()
+        entries = [e for e in all_entries if str(e["output_id"]).startswith(_sess_prefix)]
+        if not entries:
+            typer.echo(f"(no web outputs cached for session: {from_session})")
+            return
+        if json_output:
+            out: list[dict[str, object]] = []
+            for e in entries:
+                row = dict(e)
+                sidecar = web_cache.read_sidecar(str(e["output_id"]))
+                if sidecar is not None:
+                    row.update({"url_preview": sidecar.url_preview, "status_code": sidecar.status_code})
+                out.append(row)
+            typer.echo(json.dumps(out, ensure_ascii=False, separators=(",", ":")))
+            return
+        now = time.time()
+        for e in entries:
+            oid = str(e["output_id"])
+            size = int(e.get("size_bytes", 0))  # type: ignore[arg-type]
+            age = int(now - float(e.get("mtime", now)))  # type: ignore[arg-type]
+            sidecar = web_cache.read_sidecar(oid)
+            url_str = sidecar.url_preview if sidecar is not None else "(no sidecar)"
+            status_str = f" status={sidecar.status_code}" if sidecar is not None and sidecar.status_code is not None else ""
+            typer.echo(f"{oid}  {size:>10,}B  {age:>6}s ago{status_str}  {url_str}")
+        return
+
+    if output_id is None:
+        _error("output_id is required unless --from-session is specified")
+        raise typer.Exit(2)
 
     _run_output_recall_command(
         output_id=output_id,
@@ -1894,6 +2008,7 @@ def cmd_web_output(
         not_found_msg=f"no cached web output for id: {output_id}",
         head_tail=head_tail,
         grep_max=grep_max,
+        case_sensitive=case_sensitive,
     )
 
 
