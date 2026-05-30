@@ -425,6 +425,71 @@ def main() -> None:
         except Exception as e:  # noqa: BLE001
             _LOG.exception("failed to emit hook response: %s", e)
         raise SystemExit(0) from None
+
+
+# ---------------------------------------------------------------------------
+# Symbol command helpers
+# ---------------------------------------------------------------------------
+
+# How recently a file must have been modified to qualify for an on-the-fly
+# parse when it is not yet in the index.  60 s covers the "just saved a new
+# file and immediately ran symbol" case without scanning every file on disk.
+_INLINE_INDEX_RECENCY_SECS = 60
+
+
+def _inline_symbol_search(name: str, proj: Project) -> list[dict]:
+    """Parse recently-modified unindexed files and search for *name*.
+
+    Called when the DB returns 0 results for a project that is otherwise
+    indexed.  Walks files under the project root whose mtime is within
+    :data:`_INLINE_INDEX_RECENCY_SECS`, runs them through
+    :func:`~token_goat.parser.index_file`, and returns any symbol whose name
+    matches (exact, case-sensitive).  Results are annotated with the
+    ``not_indexed`` flag so callers can surface the ``(not yet indexed)``
+    marker to the user.
+
+    Returns an empty list on any error so the caller falls through normally.
+    """
+    try:
+        from . import parser as parser_mod  # noqa: PLC0415
+
+        cutoff = time.time() - _INLINE_INDEX_RECENCY_SECS
+        results: list[dict] = []
+        root = proj.root
+        for candidate in root.rglob("*"):
+            if not candidate.is_file():
+                continue
+            # Skip directories we never index.
+            if any(part in parser_mod.SKIP_DIRS for part in candidate.parts):
+                continue
+            suffix = candidate.suffix.lower()
+            basename = candidate.name.lower()
+            if basename not in parser_mod._KNOWN_BASENAMES and suffix not in parser_mod._KNOWN_EXTENSIONS:
+                continue
+            try:
+                if candidate.stat().st_mtime < cutoff:
+                    continue
+            except OSError:
+                continue
+            fi = parser_mod.index_file(proj, candidate)
+            if fi is None:
+                continue
+            for sym in fi.symbols:
+                if sym.name == name:
+                    results.append({
+                        "file": fi.rel_path,
+                        "line": sym.line,
+                        "kind": sym.kind,
+                        "name": sym.name,
+                        "signature": sym.signature,
+                        "not_indexed": True,
+                    })
+        return results
+    except Exception:  # noqa: BLE001
+        _LOG.debug("_inline_symbol_search failed for %r", name, exc_info=True)
+        return []
+
+
 @app.command(rich_help_panel="Core")
 def symbol(
     name: str,
@@ -466,10 +531,13 @@ def symbol(
             project_prefix = f"[{row.get('project', '')}] " if "project" in row else ""
             sig_part = f"  {row['signature']}" if row.get("signature") else ""
             kind_name = f"{row['kind']} {row['name']}"
+            not_indexed_suffix = " (not yet indexed)" if row.get("not_indexed") else ""
             if use_tty_color:
                 kind_name = f"\033[90m{kind_name}\033[0m"
                 sig_part = f"\033[2m{sig_part}\033[0m"
-            typer.echo(f"{project_prefix}{row['file']}:{row['line']}: {kind_name}{sig_part}")
+                if not_indexed_suffix:
+                    not_indexed_suffix = f"\033[33m{not_indexed_suffix}\033[0m"
+            typer.echo(f"{project_prefix}{row['file']}:{row['line']}: {kind_name}{sig_part}{not_indexed_suffix}")
 
     def _emit_results(
         results: list[dict],
@@ -620,9 +688,22 @@ def symbol(
     from . import read_commands  # noqa: PLC0415
 
     hint = read_commands._not_indexed_hint(proj.hash)
+    inline_hit = False
     close = []
     redirected = None
     if not results and not hint:
+        # Project is indexed but symbol not found — check recently-modified files
+        # that the background worker may not have processed yet.
+        inline = _inline_symbol_search(name, proj)
+        if inline:
+            results = inline
+            inline_hit = True
+            _LOG.info(
+                "symbol: inline fallback found %d match(es) for %r in recently-modified files",
+                len(inline), name,
+            )
+
+    if not results and not hint and not inline_hit:
         from difflib import get_close_matches  # noqa: PLC0415
 
         pool = _project_symbol_pool(proj.hash)
@@ -646,9 +727,12 @@ def symbol(
         "symbol_lookup", name, len(results), scope="project",
         project_hash=proj.hash,
     )
+    not_found_extra = hint
+    if inline_hit and not not_found_extra:
+        not_found_extra = None
     _emit_results(
         results,
-        not_found_extra=hint,
+        not_found_extra=not_found_extra,
         close_matches=close,
         redirected_from=redirected,
     )
