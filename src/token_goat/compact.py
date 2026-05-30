@@ -4319,7 +4319,11 @@ def _render(
 
         for entry in normal_files:
             ranges_str = _format_ranges(entry.line_ranges)
-            line = f"- → {_short_path(entry.rel_or_abs, project_root=cwd)}{_count_suffix(entry.read_count)}{ranges_str}"
+            # Files read 3+ times get an explicit "(read Nx)" annotation so post-compaction
+            # Claude can immediately identify which files received the most attention.
+            # Files read once or twice get no annotation — the path alone is sufficient.
+            read_annotation = f" (read {entry.read_count}x)" if entry.read_count >= 3 else ""
+            line = f"- → {_short_path(entry.rel_or_abs, max_len=80, project_root=cwd)}{read_annotation}{ranges_str}"
             cost = _token_count(line)
             if files_used + header_cost + cost > files_budget:
                 break
