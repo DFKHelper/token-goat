@@ -37,6 +37,7 @@ __all__ = [
     "LOG",
     "bytes_to_tokens",
     "deny_redirect",
+    "emit_if_new_hint",
     "extract_tool_response_text",
     "get_session_context",
     "get_tool_input",
@@ -706,6 +707,62 @@ class _DedupeHintBuilder(Protocol):
     """Callable that returns a hint object (with ``tokens_saved``) or ``None``."""
 
     def __call__(self, session_id: str, cache: object) -> object | None: ...
+
+
+def emit_if_new_hint(
+    cache: object | None,
+    fingerprint: str,
+    hint_text: str,
+    stat_key: str,
+    context_parts: list[str],
+) -> bool:
+    """Append *hint_text* to *context_parts* and record metrics iff *fingerprint* is new.
+
+    Centralises the three-step dedup→emit pattern used across hooks_read.py,
+    hooks_grep_symbol_redirect, and hints.py:
+
+    1. Check if fingerprint already seen via :meth:`cache.has_hint_fingerprint`
+    2. Record it via :meth:`cache.mark_hint_seen`
+    3. Increment the per-type counter via :meth:`cache.record_hint_emitted`
+
+    Returns True when the hint was appended, False when suppressed or cache is None.
+
+    This helper is intentionally simpler than ``_emit_dedup_budgeted_hint`` in
+    hooks_read.py — it has no budget checking, verbose-stub fallback, or stat recording.
+    Use it for lightweight one-shot hints (surgical suggestions, git history, symbol
+    redirects) that don't compete for session-wide quota.  For heavyweight hints with
+    budget constraints (index-only, structured-file), use ``_emit_dedup_budgeted_hint``
+    instead.
+
+    Args:
+        cache:          Session cache or ``None`` (returns False if ``None``).
+        fingerprint:    Unique key for this hint — dedup is skipped when the
+                        fingerprint is already in ``cache.hints_seen``.
+        hint_text:      Text to append to *context_parts* when new.
+        stat_key:       Stat kind string for ``record_hint_emitted``, e.g.
+                        ``"surgical_read_suggestion"`` or ``"git_history"``.
+        context_parts:  List to append *hint_text* to; mutated in place.
+
+    Returns:
+        ``True`` when the hint was appended, ``False`` when suppressed or cache is None.
+    """
+    if cache is None:
+        return False
+    try:
+        has_hint_fp = cache.has_hint_fingerprint(fingerprint)  # type: ignore[attr-defined]
+    except (AttributeError, TypeError):
+        return False
+
+    if has_hint_fp:
+        return False
+
+    context_parts.append(hint_text)
+    try:
+        cache.mark_hint_seen(fingerprint)  # type: ignore[attr-defined]
+        cache.record_hint_emitted(stat_key)  # type: ignore[attr-defined]
+    except (AttributeError, TypeError):
+        pass
+    return True
 
 
 def run_dedup_hint(

@@ -1925,7 +1925,13 @@ class TestImageCacheEviction:
         stem = image_shrink._cache_path_for(src)
         cache_file = stem.with_suffix(".webp")
         cache_file.parent.mkdir(parents=True, exist_ok=True)
-        cache_file.write_bytes(b"cached-output")
+        # Write a minimal valid WebP so the corruption-detection check passes.
+        import io as _io
+
+        from PIL import Image as _Image
+        _buf = _io.BytesIO()
+        _Image.new("RGB", (2, 2)).save(_buf, format="WEBP")
+        cache_file.write_bytes(_buf.getvalue())
 
         # Backdate mtime so we can detect a bump.
         old_ts = time.time() - 3600  # 1 hour ago
