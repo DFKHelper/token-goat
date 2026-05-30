@@ -10,6 +10,7 @@ __all__ = [
     "dispatch",
     "emit",
     "fail_soft",
+    "get_hook_context_remaining_ms",
     "normalize_payload",
     "pre_compact",
     "read_payload",
@@ -17,6 +18,7 @@ __all__ = [
 ]
 
 import contextlib
+import contextvars
 import functools
 import json
 import logging
@@ -45,6 +47,14 @@ _LOG = get_logger("hooks")
 # Avoids a datetime.now() call on every hook dispatch (hooks fire on every
 # Read/Write/Edit/Bash tool use; the date string changes at most once a day).
 _log_date_cached: str = ""
+
+# Context-local watchdog budget tracking: stores (start_time_s, budget_ms, event_name)
+# for the currently-executing hook. Used by DB layers to apply shorter timeouts
+# when running inside a hook handler (where watchdog budget is limited).
+# None when not inside a hook, or when the hook has not been initialized yet.
+_hook_context: contextvars.ContextVar[tuple[float, int, str] | None] = contextvars.ContextVar(
+    "tg_hook_context", default=None
+)
 
 
 def _setup_logging() -> None:
@@ -222,6 +232,23 @@ def _resolved_watchdog_ms() -> int:
     if parsed > _HOOK_WATCHDOG_MS_CEIL:
         return _HOOK_WATCHDOG_MS_CEIL
     return parsed
+
+
+def get_hook_context_remaining_ms() -> int:
+    """Return milliseconds remaining until the hook watchdog deadline.
+
+    If called outside a hook, returns a large number (1000000 ms).
+    If called inside a hook and the deadline has passed, returns 0.
+    Useful for DB layers to apply shorter timeouts when running hot against
+    the watchdog budget.
+    """
+    ctx = _hook_context.get()
+    if ctx is None:
+        return 1_000_000
+    start_time_s, budget_ms, _event_name = ctx
+    elapsed_ms = (time.monotonic() - start_time_s) * 1000
+    remaining = max(0, budget_ms - elapsed_ms)
+    return int(remaining)
 
 
 def read_payload(input_file: Path | None = None) -> HookPayload:
@@ -801,6 +828,10 @@ def dispatch(event: str, payload: HookPayload) -> dict[str, object]:
         return dict(CONTINUE())
     _LOG.debug("hook %s started", safe_event)
     t0 = time.monotonic()
+    # Re-read the env on every dispatch (cheap dict lookup) so operators can
+    # widen the budget on slow Windows boxes without restarting the agent.
+    watchdog_ms = _resolved_watchdog_ms()
+    timeout_s = watchdog_ms / 1000.0
     # Run the handler in a daemon thread so a hung handler cannot block the
     # dispatcher beyond the watchdog budget.  The thread keeps running to
     # completion in the background (preserving fail_soft semantics — the
@@ -808,10 +839,24 @@ def dispatch(event: str, payload: HookPayload) -> dict[str, object]:
     # daemon=True ensures the process can exit on Windows even if the thread
     # is wedged on an unkillable syscall.
     handler_result: dict[str, object] = {}
+    result_lock = threading.Lock()
 
     def _run_handler() -> None:
         try:
-            handler_result.update(dict(handler(payload)))
+            # Set the hook context before running the handler so DB layers and
+            # other components can query the remaining watchdog budget and apply
+            # shorter timeouts when running hot.
+            _hook_context.set((t0, watchdog_ms, safe_event))
+            try:
+                handler_result_local = dict(handler(payload))
+                # Guard the shared dict update with a lock to prevent data races
+                # (reading handler_result in the main thread while the worker thread
+                # is writing it would cause undefined behaviour in CPython and
+                # actual corruption in other implementations).
+                with result_lock:
+                    handler_result.update(handler_result_local)
+            finally:
+                _hook_context.set(None)
         except BaseException:  # noqa: BLE001
             # Top-level safety net: catch exceptions from handlers whose
             # fail_soft decorator is missing or ineffective (e.g. test injection).
@@ -824,10 +869,6 @@ def dispatch(event: str, payload: HookPayload) -> dict[str, object]:
         daemon=True,
     )
     worker.start()
-    # Re-read the env on every dispatch (cheap dict lookup) so operators can
-    # widen the budget on slow Windows boxes without restarting the agent.
-    watchdog_ms = _resolved_watchdog_ms()
-    timeout_s = watchdog_ms / 1000.0
     worker.join(timeout_s)
     if worker.is_alive():
         _LOG.warning(
@@ -840,7 +881,10 @@ def dispatch(event: str, payload: HookPayload) -> dict[str, object]:
         watchdog_result["_tg_watchdog_tripped"] = True
         watchdog_result["_tg_watchdog_budget_ms"] = watchdog_ms
         return watchdog_result
-    result: dict[str, object] = dict(handler_result)
+    # Guard the read of the shared dict after the timeout expires and we know
+    # the worker thread has finished (is_alive() returned False).
+    with result_lock:
+        result = dict(handler_result)
     elapsed_ms = (time.monotonic() - t0) * 1000
     if elapsed_ms >= _HOOK_SLOW_MS:
         _LOG.warning("hook %s slow: %.1fms (check for blockage or I/O delays)", safe_event, elapsed_ms)
