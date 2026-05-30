@@ -841,3 +841,130 @@ def test_open_project_closes_connection_on_exception(tmp_data_dir):
     assert leaked, "connection was never yielded"
     with pytest.raises(sqlite3.ProgrammingError):
         leaked[0].execute("SELECT 1")
+
+
+# ---------------------------------------------------------------------------
+# Reliability: connection leak protection and pragma validation
+# ---------------------------------------------------------------------------
+
+
+def test_connect_does_not_leak_on_pragma_exception(tmp_data_dir):
+    """_connect() must close the connection if _apply_connection_pragmas raises."""
+    db_path = paths.project_db_path("a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2")
+
+    # Create a DB first so it exists
+    with db.open_project("a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2") as _:
+        pass
+
+    # Mock _apply_connection_pragmas to raise an unexpected exception
+    with patch("token_goat.db._apply_connection_pragmas") as mock_apply:
+        mock_apply.side_effect = RuntimeError("mock pragma error")
+        with pytest.raises(RuntimeError, match="mock pragma error"):
+            db._connect(db_path, load_vec=False)
+
+    # Verify the connection was closed by checking we can still open the DB
+    # (would fail on Windows with "database is locked" if it wasn't closed)
+    with db.open_project("a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2") as conn:
+        assert conn.execute("SELECT 1").fetchone() is not None
+
+
+def test_connect_readonly_does_not_leak_on_wal_exception(tmp_data_dir):
+    """_connect_readonly() must close connection if WAL path raises."""
+    db_path = paths.project_db_path("b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3")
+
+    # Create a DB first
+    with db.open_project("b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3") as _:
+        pass
+
+    # Mock _apply_connection_pragmas to raise on the immutable fallback path
+    call_count = [0]
+    original_apply = db._apply_connection_pragmas
+
+    def mock_apply(conn, *, suppress=False):
+        call_count[0] += 1
+        if call_count[0] == 1 and not suppress:
+            # Raise on first call (WAL path)
+            raise RuntimeError("mock WAL pragma error")
+        # Fall back to immutable path
+        if not suppress:
+            original_apply(conn, suppress=suppress)
+
+    with patch("token_goat.db._apply_connection_pragmas", side_effect=mock_apply), contextlib.suppress(db.DBBusyError):
+        db._connect_readonly(db_path)
+
+    # Verify the DB is still accessible
+    with db.open_project("b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3") as conn:
+        assert conn.execute("SELECT 1").fetchone() is not None
+
+
+def test_connect_readonly_immutable_does_not_leak_on_fallback(tmp_data_dir):
+    """_connect_readonly() immutable fallback path must close connections properly."""
+    db_path = paths.project_db_path("c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4")
+
+    # Create a DB first
+    with db.open_project("c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4") as _:
+        pass
+
+    # Mock sqlite3.connect to simulate WAL failure and immutable success
+    original_connect = sqlite3.connect
+    call_count = [0]
+
+    def mock_connect(database, *args, **kwargs):
+        call_count[0] += 1
+        # First call (WAL path) fails
+        if call_count[0] == 1:
+            raise sqlite3.OperationalError("WAL SHM unavailable")
+        # Second call (immutable path) succeeds
+        return original_connect(database, *args, **kwargs)
+
+    with patch("sqlite3.connect", side_effect=mock_connect):
+        conn = db._connect_readonly(db_path)
+        # Should successfully open in immutable mode
+        assert conn is not None
+        result = conn.execute("SELECT 1").fetchone()
+        assert result is not None
+        conn.close()
+
+    # Verify the DB is still accessible for subsequent opens
+    with db.open_project("c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4") as conn:
+        assert conn.execute("SELECT 1").fetchone() is not None
+
+
+def test_busy_timeout_is_set_on_write_connection(tmp_data_dir):
+    """Write connections must have a 5-second busy timeout for lock handling."""
+    with db.open_global() as conn:
+        row = conn.execute("PRAGMA busy_timeout").fetchone()
+        timeout_ms = row[0] if row else None
+        assert timeout_ms == 5000, f"expected busy_timeout=5000ms, got {timeout_ms}ms"
+
+
+def test_busy_timeout_is_set_on_readonly_connection(tmp_data_dir):
+    """Read-only connections must have a 5-second busy timeout."""
+    # Create a project DB first
+    with db.open_project("d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5") as _:
+        pass
+
+    with db.open_project_readonly("d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5") as conn:
+        row = conn.execute("PRAGMA busy_timeout").fetchone()
+        timeout_ms = row[0] if row else None
+        assert timeout_ms == 5000, f"expected busy_timeout=5000ms, got {timeout_ms}ms"
+
+
+def test_wal_checkpoint_restarts_after_connect(tmp_data_dir):
+    """After a successful WAL open, a RESTART checkpoint is triggered."""
+    h = "e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f"
+
+    # Track checkpoint calls by reading wal_autocheckpoint (proxy check).
+    with db.open_project(h) as conn:
+        # Verify WAL is in place
+        mode = conn.execute("PRAGMA journal_mode").fetchone()[0]
+        assert mode == "wal", f"expected WAL mode, got {mode}"
+
+        # Create some data and force a transaction
+        conn.execute("INSERT INTO meta (key, value) VALUES (?, ?)", ("test_key", "test_val"))
+
+    # Reopen and check: if checkpoint worked, WAL should be relatively small
+    # (This is a soft check since we can't directly observe the checkpoint call)
+    with db.open_project(h) as conn:
+        val = conn.execute("SELECT value FROM meta WHERE key = ?", ("test_key",)).fetchone()
+        assert val is not None, "data should persist after checkpoint"

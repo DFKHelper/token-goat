@@ -200,6 +200,12 @@ def _connect(db_path: Path, *, load_vec: bool = True) -> sqlite3.Connection:
         else:
             _LOG.debug("journal_mode for %s: WAL confirmed", db_path.name)
         _apply_connection_pragmas(conn)
+        # Explicit checkpoint to flush any pending WAL data from prior readers,
+        # especially in high-contention scenarios where autocheckpoint may be blocked.
+        try:
+            conn.execute("PRAGMA wal_checkpoint(RESTART)").fetchone()
+        except sqlite3.OperationalError as e:
+            _LOG.debug("WAL checkpoint failed (non-fatal): %s", e)
     except sqlite3.OperationalError as e:
         # INFO (not WARNING): expected in sandboxed contexts like Codex
         # unelevated.  File loggers capture it; lastResort stderr handler
@@ -213,14 +219,23 @@ def _connect(db_path: Path, *, load_vec: bool = True) -> sqlite3.Connection:
         uri = str(db_path.as_uri()) + "?mode=ro&immutable=1"
         conn = sqlite3.connect(uri, uri=True, isolation_level=None, timeout=10.0)
         conn.row_factory = sqlite3.Row
-        _apply_connection_pragmas(conn, suppress=True)
-        # Validate the fallback open with a real read; SQLite is otherwise lazy
-        # and the failure would surface inside the caller's first query.
-        conn.execute("SELECT 1 FROM sqlite_master LIMIT 1").fetchone()
+        try:
+            _apply_connection_pragmas(conn, suppress=True)
+            # Validate the fallback open with a real read; SQLite is otherwise lazy
+            # and the failure would surface inside the caller's first query.
+            conn.execute("SELECT 1 FROM sqlite_master LIMIT 1").fetchone()
+        except Exception as e:  # noqa: BLE001
+            # Catch all exceptions here to avoid leaking the fallback connection.
+            _close_conn(conn)
+            raise
     except sqlite3.DatabaseError:
         # Genuine corruption (not WAL/SHM access failure) — close so callers
         # can rename/delete the file, then re-raise.
-        conn.close()
+        _close_conn(conn)
+        raise
+    except Exception:  # noqa: BLE001
+        # Catch any other exception (e.g., from _apply_connection_pragmas) to avoid leaking.
+        _close_conn(conn)
         raise
     if load_vec:
         try:
@@ -861,7 +876,10 @@ def _connect_readonly(db_path: Path) -> sqlite3.Connection:
         # Force SQLite to actually open the DB file and its WAL sidecars.
         conn.execute("SELECT 1 FROM sqlite_master LIMIT 1").fetchone()
         return conn
-    except (sqlite3.OperationalError, sqlite3.DatabaseError) as exc:
+    except Exception as exc:  # noqa: BLE001
+        # Catch all exceptions from the WAL path to ensure we close the connection
+        # and attempt fallback. This includes OperationalError, DatabaseError, and
+        # any other exceptions (e.g., from _apply_connection_pragmas).
         _LOG.info(
             "WAL read-only open failed for %s (%s) — retrying in immutable mode",
             db_path.name,
@@ -877,11 +895,14 @@ def _connect_readonly(db_path: Path) -> sqlite3.Connection:
             # Verify the immutable open actually works (same lazy-open reason).
             conn.execute("SELECT 1 FROM sqlite_master LIMIT 1").fetchone()
             return conn
-        except sqlite3.DatabaseError as exc2:
+        except (sqlite3.DatabaseError, Exception) as exc2:  # noqa: BLE001
+            # Catch both DatabaseError and any other exception to avoid leaking the connection.
             _close_conn(conn)
-            raise DBBusyError(
-                f"read-only connection failed for {db_path.name}: {exc2}"
-            ) from exc2
+            if isinstance(exc2, sqlite3.DatabaseError):
+                raise DBBusyError(
+                    f"read-only connection failed for {db_path.name}: {exc2}"
+                ) from exc2
+            raise
 
 
 @contextlib.contextmanager
