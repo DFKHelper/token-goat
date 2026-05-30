@@ -397,6 +397,54 @@ def _build_recovery_hint(session_id: str) -> str | None:
     # Both helpers fail-soft to "" when their inputs are missing.
     resume_anchor = _resume_anchor_for_recovery(raw_edited, cache)
 
+    # -1. Edited files — highest-value recovery context. Surfaces the files
+    # the agent was actively modifying, sorted by edit count desc. This section
+    # complements the annotated Files section below: it covers files that were
+    # edited but never read (so absent from cache.files) and ensures
+    # heavily-edited files appear first regardless of read recency.
+    # Cap at 5 entries so the section stays under ~60 tokens.
+    if raw_edited:
+        import contextlib as _contextlib2  # noqa: PLC0415
+        edited_sorted = sorted(raw_edited.items(), key=lambda kv: (kv[1], kv[0]), reverse=True)
+        edited_lines = ["**Edited**:"]
+        for _ep, _ec in edited_sorted[:5]:
+            import os as _os2  # noqa: PLC0415
+            with _contextlib2.suppress(Exception):
+                _ep = _os2.path.basename(_ep) or _ep
+            edited_lines.append(f"- {_ep} ✎×{_ec}")
+        dropped_edited = len(raw_edited) - len(edited_sorted[:5])
+        if dropped_edited > 0:
+            edited_lines.append(f"- +{dropped_edited} more")
+        sections.append("\n".join(edited_lines))
+
+    # -0.5. Last bash commands — compact recap of commands NOT already covered
+    # by the full Bash section below (i.e. commands whose output is below the
+    # _RECOVERY_MIN_BYTES threshold). This surfaces small-output commands like
+    # `git commit`, `git push`, or a quick `uv run ruff check --fix` that would
+    # otherwise be invisible. Commands already in bash_entries are skipped here
+    # to avoid duplication.
+    # Gate: only emit when there are edited files (context is worth surfacing)
+    # or when there are >= 2 bash history entries. A single trivial command
+    # (e.g. ls) with no edits is noise, not signal.
+    _has_meaningful_bash = bool(raw_edited) or len(cache.bash_history) >= 2
+    if cache.bash_history and _has_meaningful_bash:
+        import datetime as _datetime2  # noqa: PLC0415
+        _bash_entry_ids = {be.output_id for be in bash_entries}
+        _small_cmds = sorted(
+            (
+                be for be in cache.bash_history.values()
+                if be.output_id not in _bash_entry_ids
+            ),
+            key=lambda be: be.ts, reverse=True,
+        )[:3]
+        if _small_cmds:
+            cmd_lines = ["**Last commands**:"]
+            for _be in _small_cmds:
+                _ts_str = _datetime2.datetime.fromtimestamp(_be.ts).strftime("%H:%M")
+                _exit_str = "" if _be.exit_code is None else f" exit={_be.exit_code}"
+                cmd_lines.append(f"- `{_be.cmd_preview}`{_exit_str} @ {_ts_str}")
+            sections.append("\n".join(cmd_lines))
+
     # 0. Loaded skills — single-line format matching compact.py's manifest.
     # Deduplicate by skill name to avoid listing the same skill multiple times
     # if it was updated mid-session, and flag stale skills (loaded 6+ hours ago).
