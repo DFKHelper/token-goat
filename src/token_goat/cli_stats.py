@@ -40,6 +40,8 @@ def _write_raw(text: str) -> None:
 def stats(
     window: int = typer.Option(30, "--window", "-w", help="Days to include (0 = all time)"),
     json_output: bool = typer.Option(False, "--json"),
+    by_project: bool = False,
+    top: int = 10,
 ) -> None:
     """Show cumulative token savings."""
     summary = stats_mod.summarize(window_days=window)
@@ -60,5 +62,8 @@ def stats(
                 separators=(",", ":"),
             )
         )
+        return
+    if by_project:
+        _write_raw(stats_mod.render_by_project(summary, top=top))
         return
     _write_raw(stats_mod.render_text(summary))

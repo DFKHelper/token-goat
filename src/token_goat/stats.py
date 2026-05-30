@@ -235,6 +235,7 @@ __all__ = [
     "SOURCE_WEB",
     "StatsSummary",
     "kind_to_source",
+    "render_by_project",
     "render_text",
     "summarize",
 ]
@@ -641,7 +642,7 @@ def _short_project(root: str) -> str:
     return tail[:28]
 
 
-def _to_stats_data(summary: StatsSummary) -> StatsData:
+def _to_stats_data(summary: StatsSummary, top_projects: int = 5) -> StatsData:
     """Convert StatsSummary to the render layer's StatsData."""
     from . import __version__  # noqa: PLC0415
     from .render.types import DayStat, KindStat, ProjectStat, SourceStat, StatsData, TotalStats
@@ -701,7 +702,7 @@ def _to_stats_data(summary: StatsSummary) -> StatsData:
             events=p["events"],
         )
         for p in summary.by_project
-    ][:5]
+    ][:top_projects]
 
     # Per-source rollup mirrors the legacy renderer's "By source" panel.
     # Empty when older summaries (pre by_source rollup) are passed in, which
@@ -828,7 +829,7 @@ def render_text(
     """
     try:
         from .render.stats_renderer import render_stats
-        return render_stats(_to_stats_data(summary))
+        return render_stats(_to_stats_data(summary, top_projects=top_projects))
     except Exception as exc:  # noqa: BLE001
         _LOG.warning("new renderer failed (%s: %s), falling back to rich", type(exc).__name__, exc, exc_info=True)
 
@@ -1041,4 +1042,90 @@ def render_text(
             )
         )
 
+    return buf.getvalue()
+
+
+def render_by_project(summary: StatsSummary, top: int = 10) -> str:
+    """Render a focused per-project breakdown table, ordered by tokens saved.
+
+    Shows up to *top* projects. Each row includes the project basename, tokens
+    saved, bytes saved, event count, and share of the total. A path sub-row below
+    each entry shows the short project hash and full absolute path.
+
+    Falls back gracefully to a plain-text table when rich is unavailable.
+    """
+    try:
+        from .render.stats_renderer import (  # noqa: PLC0415
+            _render_by_project_section,
+            _render_header,
+            _render_kpi_section,
+        )
+        data = _to_stats_data(summary, top_projects=top)
+        sections = [
+            _render_header(data),
+            _render_kpi_section(data),
+            _render_by_project_section(data),
+            [""],
+        ]
+        return "\n".join(line for section in sections for line in section)
+    except Exception as exc:  # noqa: BLE001
+        _LOG.warning("new renderer failed for by-project (%s: %s), falling back", type(exc).__name__, exc)
+
+    try:
+        import io
+
+        from rich.console import Console
+        from rich.text import Text as RichText
+    except ImportError:
+        lines = [f"By project (top {top}):"]
+        if not summary.by_project:
+            lines.append("  (no project data recorded yet)")
+            return "\n".join(lines)
+        lines.append(f"  {'project':<28}  {'tokens':>10}  {'bytes':>10}  {'events':>7}")
+        for p in summary.by_project[:top]:
+            label = _short_project(p["project_root"])
+            lines.append(
+                f"  {label:<28}  {_fmt_tokens(p['tokens_saved']):>10}  "
+                f"{_fmt_bytes(p['bytes_saved']):>10}  {p['events']:>7}"
+            )
+            lines.append(f"    {p['project_hash'][:8]}  {p['project_root'] or '(unknown)'}")
+        return "\n".join(lines)
+
+    buf = io.StringIO()
+    console = Console(
+        file=buf,
+        force_terminal=True,
+        color_system="truecolor",
+        width=80,
+        legacy_windows=False,
+    )
+
+    projs = summary.by_project[:top]
+    if not projs:
+        console.print(RichText("(no project data recorded yet)", style="dim italic"))
+        return buf.getvalue()
+
+    window_desc = "all time" if summary.window_days == 0 else f"last {summary.window_days} days"
+    console.print(RichText(f"By project (top {top})  —  {window_desc}", style="bold"))
+
+    max_bytes = max((p["bytes_saved"] for p in projs), default=0)
+    tbl = _make_stats_table("project")
+    for p in projs:
+        label = _short_project(p["project_root"])
+        bar, bar_style = _bar_text(p["bytes_saved"], max_bytes)
+        tbl.add_row(
+            label,
+            RichText(bar, style=bar_style),
+            _fmt_bytes(p["bytes_saved"]),
+            _fmt_tokens(p["tokens_saved"]),
+            f"{p['events']} ev",
+        )
+    console.print(tbl)
+    for p in projs:
+        safe_root = _strip_ansi(p["project_root"]) if p["project_root"] else "(unknown)"
+        console.print(
+            RichText("    ", style="")
+            + RichText(f"{p['project_hash'][:8]}  ", style="dim cyan")
+            + RichText(safe_root, style="dim")
+        )
     return buf.getvalue()

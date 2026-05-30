@@ -699,8 +699,7 @@ def _render_by_project_section(stats: StatsData) -> list[str]:
 
     project_total_bytes = sum(p.bytes for p in stats.by_project)
     project_total_tokens = sum(p.tokens for p in stats.by_project)
-
-    lines: list[str] = [*_section_header("By project (top 5)"), _table_header("project")]
+    lines: list[str] = [*_section_header(f"By project (top {len(stats.by_project)})"), _table_header("project")]
 
     def _share(p: ProjectStat) -> float:
         """Fraction of the cross-project total this project represents."""
