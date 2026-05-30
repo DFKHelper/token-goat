@@ -1212,3 +1212,108 @@ class TestUnsupportedFormatHandling:
         finally:
             if original_pil is not None:
                 PILModule.open = original_pil
+
+
+# ---------------------------------------------------------------------------
+# Animated GIF passthrough
+# ---------------------------------------------------------------------------
+
+class TestAnimatedGifPassthrough:
+    """Animated GIFs must be returned unchanged (shrink returns None)."""
+
+    def test_animated_gif_returns_none(self, tmp_data_dir, tmp_path):
+        """shrink() must return None for an animated GIF so the caller uses the original."""
+        pytest.importorskip("PIL")
+        from PIL import Image
+
+        p = tmp_path / "anim.gif"
+        frame1 = Image.new("RGB", (200, 200), (255, 0, 0))
+        frame2 = Image.new("RGB", (200, 200), (0, 255, 0))
+        frame3 = Image.new("RGB", (200, 200), (0, 0, 255))
+        frames = [frame1.convert("P"), frame2.convert("P"), frame3.convert("P")]
+        frames[0].save(
+            p,
+            format="GIF",
+            save_all=True,
+            append_images=frames[1:],
+            loop=0,
+            duration=100,
+        )
+
+        # Verify the GIF actually has multiple frames before testing shrink.
+        with Image.open(p) as _check:
+            is_anim = getattr(_check, "is_animated", None) or getattr(_check, "n_frames", 1) > 1
+        if not is_anim:
+            pytest.skip("Could not create animated GIF on this Pillow build")
+
+        # Ensure the file is large enough to pass the threshold check.
+        if p.stat().st_size <= image_shrink._LOSSLESS_FORMAT_THRESHOLD_BYTES:
+            with p.open("ab") as fh:
+                fh.write(b"\x00" * (image_shrink._LOSSLESS_FORMAT_THRESHOLD_BYTES + 1 - p.stat().st_size))
+
+        result = image_shrink.shrink(p)
+        assert result is None, (
+            "shrink() must return None for animated GIF; animation cannot survive lossy re-encode"
+        )
+
+    def test_single_frame_gif_is_processed(self, tmp_data_dir, tmp_path):
+        """A single-frame GIF is a regular still image and must be compressed normally."""
+        pytest.importorskip("PIL")
+        from PIL import Image
+
+        p = tmp_path / "static.gif"
+        img = Image.new("RGB", (800, 600), (100, 150, 200)).convert("P")
+        img.save(p, format="GIF")
+
+        # Verify it really is single-frame.
+        with Image.open(p) as _check:
+            is_anim = getattr(_check, "is_animated", None) or getattr(_check, "n_frames", 1) > 1
+        if is_anim:
+            pytest.skip("Pillow created multi-frame output for single-frame input; skip")
+
+        if p.stat().st_size <= image_shrink._LOSSLESS_FORMAT_THRESHOLD_BYTES:
+            with p.open("ab") as fh:
+                fh.write(b"\x00" * (image_shrink._LOSSLESS_FORMAT_THRESHOLD_BYTES + 1 - p.stat().st_size))
+
+        result = image_shrink.shrink(p)
+        # A static GIF above threshold should be compressed to a lossy format.
+        assert result is not None, (
+            "shrink() must compress a single-frame GIF; it is a normal still image"
+        )
+
+
+# ---------------------------------------------------------------------------
+# Progressive JPEG output
+# ---------------------------------------------------------------------------
+
+class TestProgressiveJpeg:
+    """JPEG output must use progressive encoding (APP0 or SOF2 marker)."""
+
+    def test_jpeg_output_is_progressive(self, tmp_data_dir, tmp_path, monkeypatch):
+        """When TOKEN_GOAT_IMAGE_FORMAT=jpeg, the output JPEG file must be progressive."""
+        pytest.importorskip("PIL")
+        import random
+
+        from PIL import Image
+
+        monkeypatch.setenv("TOKEN_GOAT_IMAGE_FORMAT", "jpeg")
+
+        p = tmp_path / "photo.bmp"
+        img = Image.new("RGB", (1600, 1200))
+        img.putdata([
+            (random.randint(0, 255), random.randint(0, 255), random.randint(0, 255))
+            for _ in range(1600 * 1200)
+        ])
+        img.save(p, "BMP")
+
+        assert p.stat().st_size > image_shrink.SIZE_THRESHOLD_BYTES
+
+        result = image_shrink.shrink(p)
+        assert result is not None
+        assert result.suffix.lower() == ".jpg"
+
+        # Progressive JPEG contains the SOF2 marker (0xFF 0xC2).
+        data = result.read_bytes()
+        assert b"\xff\xc2" in data, (
+            "Expected SOF2 marker (0xFF 0xC2) for progressive JPEG output"
+        )
