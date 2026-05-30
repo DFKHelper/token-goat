@@ -224,3 +224,43 @@ def test_comment_above_class_is_not_treated_as_decorator():
     symbols, _, _, _ = extract(src, "comment.ts")
     foo = next(s for s in symbols if s.name == "Foo")
     assert foo.line == 2  # the // comment must stay outside
+
+
+def test_class_methods_have_parent_name():
+    """All methods on a class should carry parent_name = class name."""
+    src = b"""export class MyService {
+  constructor(private url: string) {}
+
+  async fetchData(id: number): Promise<string> {
+    return '';
+  }
+
+  render(): void {}
+}
+"""
+    symbols, _, _, _ = extract(src, "service.ts")
+    methods = {s.name: s for s in symbols if s.kind == "method"}
+    assert "fetchData" in methods
+    assert "render" in methods
+    assert methods["fetchData"].parent_name == "MyService"
+    assert methods["render"].parent_name == "MyService"
+
+
+def test_class_methods_are_not_top_level_functions():
+    """Class methods should not be emitted with kind='function'."""
+    src = b"""export class Calc {
+  add(a: number, b: number): number { return a + b; }
+  sub(a: number, b: number): number { return a - b; }
+}
+
+export function topLevel(): void {}
+"""
+    symbols, _, _, _ = extract(src, "calc.ts")
+    top = next(s for s in symbols if s.name == "topLevel")
+    assert top.kind == "function"
+    assert top.parent_name is None
+
+    add = next((s for s in symbols if s.name == "add"), None)
+    if add:
+        assert add.kind == "method"
+        assert add.parent_name == "Calc"

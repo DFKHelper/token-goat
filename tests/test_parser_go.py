@@ -158,3 +158,107 @@ const (
     assert "MaxConn" in names
     assert "Debug" in names
     assert "AppName" in names
+
+
+def test_interface_method_extracted():
+    """Methods inside a Go interface should be emitted as individual method symbols."""
+    src = b"""package io
+
+type Reader interface {
+    Read(p []byte) (n int, err error)
+}
+"""
+    symbols, _, _, _ = extract(src, "reader.go")
+    names = {s.name for s in symbols}
+    assert "Read" in names
+    read = next(s for s in symbols if s.name == "Read")
+    assert read.kind == "method"
+    assert read.parent_name == "Reader"
+
+
+def test_interface_method_parent_name_set():
+    """Interface method symbols carry the enclosing interface name as parent_name."""
+    src = b"""package net
+
+type Conn interface {
+    Read(b []byte) (n int, err error)
+    Write(b []byte) (n int, err error)
+    Close() error
+}
+"""
+    symbols, _, _, _ = extract(src, "conn.go")
+    method_syms = {s.name: s for s in symbols if s.kind == "method"}
+    assert "Read" in method_syms
+    assert "Write" in method_syms
+    assert "Close" in method_syms
+    assert method_syms["Read"].parent_name == "Conn"
+    assert method_syms["Write"].parent_name == "Conn"
+    assert method_syms["Close"].parent_name == "Conn"
+
+
+def test_receiver_method_parent_name_set():
+    """Receiver methods should have parent_name set to the receiver type."""
+    src = b"""package main
+
+type Server struct {
+    Port int
+}
+
+func (s *Server) Run() error {
+    return nil
+}
+"""
+    symbols, _, _, _ = extract(src, "server.go")
+    run = next((s for s in symbols if s.name == "Run"), None)
+    assert run is not None
+    assert run.kind == "method"
+    assert run.parent_name == "Server"
+
+
+def test_interface_method_line_numbers():
+    """Interface method symbols should have accurate 1-indexed line numbers."""
+    src = b"""package io
+
+type Writer interface {
+    Write(p []byte) (n int, err error)
+}
+"""
+    symbols, _, _, _ = extract(src, "writer.go")
+    write = next((s for s in symbols if s.name == "Write"), None)
+    assert write is not None
+    assert write.line == 4
+
+
+def test_embedded_interface_not_extracted_as_method():
+    """Embedded interface names inside an interface body are not emitted as methods."""
+    src = b"""package io
+
+type Reader interface {
+    Read(p []byte) (n int, err error)
+}
+
+type ReadWriter interface {
+    Reader
+    Write(p []byte) (n int, err error)
+}
+"""
+    symbols, _, _, _ = extract(src, "rw.go")
+    method_names = {s.name for s in symbols if s.kind == "method" and s.parent_name == "ReadWriter"}
+    assert "Write" in method_names
+    assert "Reader" not in method_names
+
+
+def test_handler_interface_method_in_fixture(go_extracted):
+    """The fixture's Handler.Serve method should be extracted as a symbol."""
+    symbols, _, _, _ = go_extracted
+    serve = next((s for s in symbols if s.name == "Serve"), None)
+    assert serve is not None
+    assert serve.kind == "method"
+    assert serve.parent_name == "Handler"
+
+
+def test_run_method_has_receiver_parent(go_extracted):
+    """The fixture's Server.Run receiver method should have parent_name='Server'."""
+    symbols, _, _, _ = go_extracted
+    run = next(s for s in symbols if s.name == "Run")
+    assert run.parent_name == "Server"

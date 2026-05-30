@@ -32,6 +32,18 @@ _GO_IMPORT_RE = re.compile(r'"([^"]+)"')
 
 _IDENT_RE = re.compile(r"([A-Za-z_][A-Za-z0-9_]*)\s*(?:=|[A-Za-z_\(])")
 
+# Interface block header: `type Foo interface {`
+_IFACE_HEADER_RE = re.compile(r"^type\s+([A-Za-z_][A-Za-z0-9_]*)\s+interface\s*\{")
+
+# Interface method signature line: starts with an identifier followed by `(`
+# Must be indented (not at column 0) to distinguish from top-level decls.
+# Group 1 = method name; group 2 = everything from `(` to end of line (signature).
+_IFACE_METHOD_RE = re.compile(r"^\s+([A-Za-z_][A-Za-z0-9_]*)\s*(\(.*)")
+
+# Receiver method declaration: `func (recv ReceiverType) MethodName`
+# Group 1 = receiver type (pointer stripped); group 2 = method name.
+_RECEIVER_RE = re.compile(r"^func\s*\(\s*\w+\s+\*?([A-Za-z_][A-Za-z0-9_]*)\s*\)\s+([A-Za-z_][A-Za-z0-9_]*)")
+
 # Patterns for package-level const/var declarations — hoisted to module level so
 # _extract_const_var_inner (called once per Go file) does not recompile them on
 # every source line.  Four patterns cover the two keywords × two forms (single-line
@@ -125,6 +137,88 @@ def _extract_const_var_inner(source: bytes) -> list[Symbol]:
     return symbols
 
 
+def _extract_interface_methods(source: bytes) -> list[Symbol]:
+    """Extract method signatures from Go interface bodies as individual symbols.
+
+    Tree-sitter's SymbolInfo pass surfaces only the interface name (e.g. ``Handler``),
+    not the individual methods declared inside it (e.g. ``Serve``).  This regex pass
+    walks each ``type Foo interface { ... }`` block and emits one Symbol per method
+    with ``parent_name`` set to the enclosing interface name.
+
+    Only callable method signatures (lines matching ``MethodName(``) are collected;
+    embedded interface names (e.g. ``Reader`` inside ``ReadWriter``) are skipped.
+    """
+    try:
+        return _extract_interface_methods_inner(source)
+    except (re.error, ValueError, IndexError) as exc:
+        _LOG.debug("_extract_interface_methods: parse error: %s", exc, exc_info=True)
+        return []
+
+
+def _extract_interface_methods_inner(source: bytes) -> list[Symbol]:
+    symbols: list[Symbol] = []
+    text = source.decode("utf-8", errors="replace")
+    lines = text.splitlines()
+    n = len(lines)
+    i = 0
+    while i < n:
+        m = _IFACE_HEADER_RE.match(lines[i])
+        if m:
+            iface_name = m.group(1)
+            depth = 1
+            j = i + 1
+            while j < n and depth > 0:
+                line = lines[j]
+                depth += line.count("{") - line.count("}")
+                if depth > 0:
+                    mm = _IFACE_METHOD_RE.match(line)
+                    if mm:
+                        method_name = mm.group(1)
+                        sig_tail = mm.group(2).strip()
+                        sig = f"{method_name}({sig_tail[1:]}"[:200] if sig_tail.startswith("(") else None
+                        symbols.append(Symbol(
+                            name=method_name,
+                            kind="method",
+                            line=j + 1,
+                            end_line=j + 1,
+                            signature=sig,
+                            parent_name=iface_name,
+                        ))
+                j += 1
+            i = j
+        else:
+            i += 1
+    return symbols
+
+
+def _set_receiver_parents(symbols: list[Symbol], source: bytes) -> None:
+    """Set ``parent_name`` on receiver methods that tree-sitter left unparented.
+
+    Tree-sitter's structure walk emits ``func (s *Server) Run()`` as a ``Method``
+    node but does not populate the receiver type as ``parent_name``.  We scan the
+    source for receiver declarations and match each one against the symbols list
+    by name and line proximity, setting ``parent_name`` to the receiver type.
+    """
+    try:
+        text = source.decode("utf-8", errors="replace")
+    except (UnicodeDecodeError, AttributeError):
+        return
+    lines = text.splitlines()
+    receiver_by_name: dict[tuple[str, int], str] = {}
+    for i, line in enumerate(lines):
+        m = _RECEIVER_RE.match(line)
+        if m:
+            receiver_type = m.group(1)
+            method_name = m.group(2)
+            receiver_by_name[(method_name, i + 1)] = receiver_type
+
+    for sym in symbols:
+        if sym.kind == "method" and sym.parent_name is None:
+            parent = receiver_by_name.get((sym.name, sym.line))
+            if parent:
+                sym.parent_name = parent
+
+
 def extract(source: bytes, rel_path: str) -> tuple[list[Symbol], list[Ref], list[ImpExp], list[Section]]:
     """Extract symbols, refs, and imports from a Go file."""
     collected = common.collect_symbols_and_refs(
@@ -159,5 +253,15 @@ def extract(source: bytes, rel_path: str) -> tuple[list[Symbol], list[Ref], list
         return m.group(1) if m else ""
 
     common.add_imports(imp_exp, result.imports, _extract_go_import_target)  # type: ignore[attr-defined]
+
+    # --- interface methods (not surfaced by tlp structure/symbols walk) ---
+    for iface_sym in _extract_interface_methods(source):
+        key = (iface_sym.name, iface_sym.line)
+        if key not in seen_names:
+            seen_names.add(key)
+            symbols.append(iface_sym)
+
+    # --- receiver method parent tracking ---
+    _set_receiver_parents(symbols, source)
 
     return symbols, refs, imp_exp, []
