@@ -3649,6 +3649,90 @@ def cmd_clean_cache(
             typer.echo(f"  {target}: ERROR — {info.get('error', 'unknown')}")
 
 
+@app.command("clean", rich_help_panel="Advanced")
+def cmd_clean(
+    images: bool = typer.Option(False, "--images", help="Clear the image shrink cache."),  # noqa: B008
+    bash: bool = typer.Option(False, "--bash", help="Clear the bash output cache."),  # noqa: B008
+    web: bool = typer.Option(False, "--web", help="Clear the web output cache."),  # noqa: B008
+    sessions: bool = typer.Option(False, "--sessions", help="Remove session files older than --older-than days."),  # noqa: B008
+    all_caches: bool = typer.Option(False, "--all", help="Clear all caches (equivalent to --images --bash --web --sessions)."),  # noqa: B008
+    dry_run: bool = typer.Option(False, "--dry-run", help="Print what would be deleted without deleting."),  # noqa: B008
+    older_than: int = typer.Option(7, "--older-than", help="Only delete files older than N days (applies to all categories)."),  # noqa: B008
+) -> None:
+    """Clear caches to free disk space.
+
+    Specify one or more target flags, or use ``--all`` to clear everything.
+    Use ``--dry-run`` to preview what would be removed without making changes.
+    The ``--older-than DAYS`` filter applies to all categories (default: 7 days).
+
+    Examples::
+
+        token-goat clean --all
+        token-goat clean --bash --web --dry-run
+        token-goat clean --sessions --older-than 30
+    """
+    import contextlib  # noqa: PLC0415
+    import time as _time  # noqa: PLC0415
+
+    from . import paths as _paths  # noqa: PLC0415
+
+    if all_caches:
+        images = bash = web = sessions = True
+
+    if not any([images, bash, web, sessions]):
+        _error("specify at least one target: --images, --bash, --web, --sessions, or --all")
+        raise typer.Exit(2)
+
+    prefix = "[dry run] " if dry_run else ""
+    cutoff = _time.time() - older_than * 86400
+
+    def _clear_dir(cache_dir: Path, label: str) -> None:
+        if not cache_dir.exists():
+            typer.echo(f"{prefix}skipped — {label} cache dir does not exist")
+            return
+        files = [f for f in cache_dir.iterdir() if f.is_file() and not f.is_symlink()]
+        eligible = [f for f in files if f.stat().st_mtime < cutoff]
+        total_bytes = sum(f.stat().st_size for f in eligible)
+        mb = total_bytes / (1024 * 1024)
+        if not eligible:
+            typer.echo(f"{prefix}nothing to remove — {label} (0 files older than {older_than}d)")
+            return
+        if not dry_run:
+            for f in eligible:
+                with contextlib.suppress(OSError):
+                    f.unlink(missing_ok=True)
+        typer.echo(f"{prefix}cleared {len(eligible)} file(s) ({mb:.1f} MB) — {label}")
+
+    if images:
+        _clear_dir(_paths.image_cache_dir(), "images")
+
+    if bash:
+        _clear_dir(_paths.data_dir() / "bash_outputs", "bash")
+
+    if web:
+        _clear_dir(_paths.data_dir() / "web_outputs", "web")
+
+    if sessions:
+        sess_dir = _paths.data_dir() / "sessions"
+        if not sess_dir.exists():
+            typer.echo(f"{prefix}skipped — sessions dir does not exist")
+        else:
+            files = [
+                f for f in sess_dir.iterdir()
+                if f.is_file() and f.suffix == ".json" and f.stat().st_mtime < cutoff
+            ]
+            total_bytes = sum(f.stat().st_size for f in files)
+            mb = total_bytes / (1024 * 1024)
+            if not files:
+                typer.echo(f"{prefix}nothing to remove — sessions (0 files older than {older_than}d)")
+            else:
+                if not dry_run:
+                    for f in files:
+                        with contextlib.suppress(OSError):
+                            f.unlink(missing_ok=True)
+                typer.echo(f"{prefix}cleared {len(files)} file(s) ({mb:.1f} MB) — sessions")
+
+
 # ---------------------------------------------------------------------------
 # Hook-registry startup assertion
 # ---------------------------------------------------------------------------
