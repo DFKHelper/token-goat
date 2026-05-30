@@ -857,6 +857,63 @@ class TestNotIndexedHint:
         hint = _not_indexed_hint(proj.hash)
         assert hint is None
 
+    def test_detects_indexing_in_progress(self, tmp_data_dir, make_project, tmp_path, monkeypatch):
+        """_not_indexed_hint returns 'in progress' message when indexing is active."""
+        from token_goat import worker
+        from token_goat.read_commands import _not_indexed_hint
+
+        proj_root = tmp_path / "in_progress"
+        proj_root.mkdir()
+        proj = make_project(proj_root)
+
+        # Mock _index_spawn_active to return True
+        monkeypatch.setattr(worker, "_index_spawn_active", lambda marker: True)
+
+        hint = _not_indexed_hint(proj.hash)
+        assert hint is not None
+        assert "indexing is currently in progress" in hint
+
+    def test_detects_indexing_failed(self, tmp_data_dir, make_project, tmp_path, monkeypatch):
+        """_not_indexed_hint returns 'failed' message when marker exists but process is gone."""
+        from token_goat import paths, worker
+        from token_goat.read_commands import _not_indexed_hint
+
+        proj_root = tmp_path / "failed"
+        proj_root.mkdir()
+        proj = make_project(proj_root)
+
+        # Create a stale marker file (process is gone)
+        marker_dir = paths.locks_dir()
+        marker_dir.mkdir(parents=True, exist_ok=True)
+        marker = marker_dir / f"{proj.hash}.indexing"
+        marker.write_text("99999\n0.0\n", encoding="utf-8")
+
+        # Mock _index_spawn_active to return False (stale/gone process)
+        monkeypatch.setattr(worker, "_index_spawn_active", lambda m: False)
+
+        hint = _not_indexed_hint(proj.hash)
+        assert hint is not None
+        assert "may have failed" in hint
+
+    def test_detects_not_yet_started(self, tmp_data_dir, make_project, tmp_path, monkeypatch):
+        """_not_indexed_hint returns generic message when no marker exists."""
+        from token_goat import worker
+        from token_goat.read_commands import _not_indexed_hint
+
+        proj_root = tmp_path / "not_started"
+        proj_root.mkdir()
+        proj = make_project(proj_root)
+
+        # Mock _index_spawn_active to return False and ensure marker doesn't exist
+        monkeypatch.setattr(worker, "_index_spawn_active", lambda marker: False)
+
+        hint = _not_indexed_hint(proj.hash)
+        assert hint is not None
+        assert "not yet indexed" in hint
+        # Should not say "in progress" or "may have failed"
+        assert "in progress" not in hint
+        assert "may have failed" not in hint
+
     @pytest.mark.skip(
         reason="CI-only flake on Python 3.13: monkeypatch on db.project_has_files "
         "doesn't propagate to read_commands.db.project_has_files lookup. The "

@@ -862,6 +862,13 @@ def _auto_index_if_needed(proj: Project) -> None:
                     proj.root,
                     pid,
                 )
+            else:
+                _LOG.warning(
+                    "session-start: auto-index spawn returned no PID for %s; "
+                    "indexing may be already active or spawn failed; "
+                    "check index-spawn.log for details",
+                    proj.root,
+                )
         else:
             _LOG.debug(
                 "session-start: project %s already indexed; skipping auto-index",
