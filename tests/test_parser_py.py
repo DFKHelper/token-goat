@@ -221,3 +221,45 @@ def test_no_decorator_extension_for_const_var():
     if mc:
         # Whatever line it reports, it must not be the comment line.
         assert mc[0].line == 2
+
+
+def test_property_classmethod_staticmethod_extracted_as_method():
+    """@property, @classmethod, and @staticmethod are all emitted with kind='method'."""
+    src = b"""class MyClass:
+    def __init__(self, x):
+        self._x = x
+
+    @property
+    def value(self):
+        return self._x
+
+    @classmethod
+    def create(cls, x):
+        return cls(x)
+
+    @staticmethod
+    def helper():
+        return 42
+"""
+    symbols, _, _, _ = extract(src, "cls.py")
+    by_name = {s.name: s for s in symbols if s.parent_name == "MyClass"}
+    assert "value" in by_name
+    assert "create" in by_name
+    assert "helper" in by_name
+    assert by_name["value"].kind == "method"
+    assert by_name["create"].kind == "method"
+    assert by_name["helper"].kind == "method"
+
+
+def test_property_method_parent_name_set():
+    """@property methods carry parent_name = enclosing class."""
+    src = b"""class Config:
+    @property
+    def debug(self) -> bool:
+        return self._debug
+"""
+    symbols, _, _, _ = extract(src, "cfg.py")
+    debug = next((s for s in symbols if s.name == "debug"), None)
+    assert debug is not None
+    assert debug.parent_name == "Config"
+    assert debug.kind == "method"
