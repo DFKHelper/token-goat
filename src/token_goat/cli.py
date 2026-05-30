@@ -1448,6 +1448,77 @@ def caption_instead(path: str) -> None:
     typer.echo("v2 feature, not in v1")
 
 
+_WATCH_POLL_INTERVAL = 5.0
+
+
+def _watch_project(proj: Project) -> None:
+    """Poll the project directory for changed files and reindex them.
+
+    Runs until interrupted by Ctrl+C.  Falls back to polling (no watchdog
+    required) by scanning file mtimes every ``_WATCH_POLL_INTERVAL`` seconds.
+    """
+    from . import db  # noqa: PLC0415
+    from .parser import (  # noqa: PLC0415
+        SKIP_DIRS,
+        _is_generated_filename,
+        index_file,
+        write_file_index,
+    )
+
+    typer.echo(f"Watching {proj.root} — press Ctrl+C to stop")
+
+    # Snapshot: rel_path -> mtime
+    mtimes: dict[str, float] = {}
+
+    def _scan_mtimes() -> dict[str, float]:
+        result: dict[str, float] = {}
+        root = proj.root
+        for dirpath, dirs, files in __import__("os").walk(root):
+            dirs[:] = [d for d in dirs if d not in SKIP_DIRS]
+            base = Path(dirpath)
+            for name in files:
+                if _is_generated_filename(name):
+                    continue
+                fp = base / name
+                with contextlib.suppress(OSError):
+                    result[fp.relative_to(root).as_posix()] = fp.stat().st_mtime
+        return result
+
+    # Build initial snapshot without printing anything (index already ran)
+    mtimes = _scan_mtimes()
+
+    try:
+        while True:
+            time.sleep(_WATCH_POLL_INTERVAL)
+            new_mtimes = _scan_mtimes()
+
+            changed: list[str] = []
+            for rel, mtime in new_mtimes.items():
+                if mtimes.get(rel) != mtime:
+                    changed.append(rel)
+            # Also track deletions (removed files need no reindex, just update snapshot)
+
+            for rel in changed:
+                fp = proj.root / rel
+                fi = index_file(proj, fp)
+                if fi is None:
+                    _LOG.debug("watch: index_file returned None for %s", rel)
+                    continue
+                try:
+                    with db.project_writer_lock(proj.hash, timeout_sec=10.0), db.open_project(proj.hash) as conn:
+                        write_file_index(conn, fi)
+                except Exception as exc:  # noqa: BLE001
+                    _LOG.warning("watch: failed to write index for %s: %s", rel, exc)
+                    continue
+                n_sym = len(fi.symbols)
+                sym_word = "symbol" if n_sym == 1 else "symbols"
+                typer.echo(f"reindexed: {rel} ({n_sym} {sym_word})")
+
+            mtimes = new_mtimes
+    except KeyboardInterrupt:
+        typer.echo("Stopped watching.")
+
+
 @app.command(rich_help_panel="Core")
 def index(
     full: bool = typer.Option(False, "--full"),
@@ -1455,6 +1526,7 @@ def index(
     root: str | None = typer.Option(None, "--root", help="Index an arbitrary directory (skips project detection)"),
     skills: bool = typer.Option(False, "--skills", help="Index ~/.claude/skills/"),
     plugins: bool = typer.Option(False, "--plugins", help="Index ~/.claude/plugins/"),
+    watch: bool = typer.Option(False, "--watch", help="Watch for file changes and reindex automatically (polling, Ctrl+C to stop)."),
 ) -> None:
     """Rebuild project/global indices."""
     from . import paths as _paths  # noqa: PLC0415
@@ -1543,6 +1615,9 @@ def index(
             )
         except emb.EmbeddingsUnavailable as e:
             typer.echo(f"Embeddings skipped: {e}")
+
+    if watch:
+        _watch_project(proj)
 
 
 @app.command(rich_help_panel="Core")
