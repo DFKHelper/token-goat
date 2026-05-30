@@ -256,6 +256,7 @@ class _RepomapToml(TypedDict, total=False):
     """Expected shape of the [repomap] TOML section."""
 
     compact_file_threshold: int
+    exclude_tests: bool
 
 
 class _StatsToml(TypedDict, total=False):
@@ -612,9 +613,17 @@ class RepomapConfig:
         compact_file_threshold: File count above which compact mode suppresses
             the per-file list preamble.  Default 50.  Set to 0 to disable
             (always emit the full list even in compact mode).
+        exclude_tests: When True (default), test directories (``tests/``,
+            ``__tests__/``, ``test/``, ``spec/``, ``e2e/``) are excluded from
+            the repo map.  Test files import production modules heavily, which
+            inflates PageRank of those modules via test edges rather than real
+            production dependencies.  The map is more useful when it reflects
+            production structure only.  Set to False to include test files.
+            Override at runtime by setting ``TOKEN_GOAT_REPOMAP_EXCLUDE_TESTS=0``.
     """
 
     compact_file_threshold: int = 50
+    exclude_tests: bool = True
 
 
 @dataclass
@@ -1081,6 +1090,9 @@ def load() -> Config:
             100_000,
             "repomap.compact_file_threshold",
         ),
+        exclude_tests=_validated_bool(
+            rm_raw.get("exclude_tests", True), True, "repomap.exclude_tests"
+        ),
     )
     # Apply env override for repomap compact file threshold
     rm.compact_file_threshold = _env_int(
@@ -1275,6 +1287,7 @@ def save(config: Config) -> None:
         },
         "repomap": {
             "compact_file_threshold": config.repomap.compact_file_threshold,
+            "exclude_tests": config.repomap.exclude_tests,
         },
         "stats": {
             "record_zero_savings": stats.record_zero_savings,

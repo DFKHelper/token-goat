@@ -939,17 +939,23 @@ class TestExcludedPaths:
     """
 
     def setup_method(self):
-        # _is_excluded_path is lru_cached at module scope; clear before each
-        # case so prior assertions don't leak through and mask a regression.
-        repomap._is_excluded_path.cache_clear()
+        # _is_excluded_path_cached is lru_cached; clear before each case so
+        # prior assertions don't leak through and mask a regression.
+        repomap._is_excluded_path_cached.cache_clear()
 
     def test_tests_fixtures_excluded(self):
         assert repomap._is_excluded_path("tests/fixtures/foo.py")
         assert repomap._is_excluded_path("tests/fixtures/sub/bar.py")
 
+    def test_tests_dir_excluded_by_default(self):
+        # tests/ itself is now excluded by default (exclude_tests=True) because
+        # test files import production modules heavily and inflate PageRank.
+        assert repomap._is_excluded_path("tests/test_repomap.py")
+        assert repomap._is_excluded_path("__tests__/foo.test.ts")
+        assert repomap._is_excluded_path("spec/my_spec.rb")
+
     def test_normal_source_not_excluded(self):
         assert not repomap._is_excluded_path("src/token_goat/parser.py")
-        assert not repomap._is_excluded_path("tests/test_repomap.py")
         assert not repomap._is_excluded_path("README.md")
 
     def test_uv_cache_root_excluded(self):
@@ -988,6 +994,33 @@ class TestExcludedPaths:
         # before normalisation).  Both should produce the same verdict.
         assert repomap._is_excluded_path(".uv-cache\\foo.py")
         assert repomap._is_excluded_path("tests\\fixtures\\foo.py")
+
+    def test_build_output_dirs_excluded(self):
+        # dist/, build/, node_modules/ are generated and should not appear in map
+        assert repomap._is_excluded_path("dist/index.js")
+        assert repomap._is_excluded_path("build/main.py")
+        assert repomap._is_excluded_path("node_modules/react/index.js")
+        assert repomap._is_excluded_path("target/debug/myapp")
+        assert repomap._is_excluded_path(".venv/lib/python3.11/site.py")
+
+    def test_generated_suffixes_excluded(self):
+        # Minified assets and source maps are never navigational
+        assert repomap._is_excluded_path("src/app.min.js")
+        assert repomap._is_excluded_path("src/bundle.js.map")
+        assert repomap._is_excluded_path("src/compiled.pyc")
+        assert repomap._is_excluded_path("src/app.min.css")
+        assert repomap._is_excluded_path("dist/chunk.bundle.js")
+
+    def test_pycache_excluded_anywhere(self):
+        # __pycache__ dirs nested anywhere in the tree should be dropped
+        assert repomap._is_excluded_path("src/token_goat/__pycache__/db.cpython-312.pyc")
+        assert repomap._is_excluded_path("__pycache__/cli.pyc")
+
+    def test_ci_cache_dirs_excluded(self):
+        # pytest, mypy, ruff cache dirs should not appear in the map
+        assert repomap._is_excluded_path(".pytest_cache/v/cache/nodeids")
+        assert repomap._is_excluded_path(".mypy_cache/3.12/token_goat/db.data.json")
+        assert repomap._is_excluded_path(".ruff_cache/0.1.0/foo")
 
 
 # ---------------------------------------------------------------------------
