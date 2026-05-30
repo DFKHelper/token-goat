@@ -537,3 +537,140 @@ class TestWebFetchCacheConfig:
 
         cfg = cfg_mod.load()
         assert cfg.webfetch.max_bytes == 32 * 1024 * 1024  # default preserved
+
+
+class TestEnvIntHelper:
+    """Tests for the _env_int helper function (DRY consolidation)."""
+
+    def test_env_int_unset_returns_default(self, monkeypatch):
+        """When env var is unset, _env_int returns the default."""
+        import token_goat.config as cfg_mod
+
+        monkeypatch.delenv("TOKEN_GOAT_TEST_VAR", raising=False)
+        result = cfg_mod._env_int("TOKEN_GOAT_TEST_VAR", default=42, lo=0, hi=100, config_path="test.var")
+        assert result == 42
+
+    def test_env_int_empty_string_returns_default(self, monkeypatch):
+        """When env var is empty string, _env_int returns the default."""
+        import token_goat.config as cfg_mod
+
+        monkeypatch.setenv("TOKEN_GOAT_TEST_VAR", "")
+        result = cfg_mod._env_int("TOKEN_GOAT_TEST_VAR", default=42, lo=0, hi=100, config_path="test.var")
+        assert result == 42
+
+    def test_env_int_whitespace_only_returns_default(self, monkeypatch):
+        """When env var is whitespace-only, _env_int returns the default."""
+        import token_goat.config as cfg_mod
+
+        monkeypatch.setenv("TOKEN_GOAT_TEST_VAR", "   \t  ")
+        result = cfg_mod._env_int("TOKEN_GOAT_TEST_VAR", default=42, lo=0, hi=100, config_path="test.var")
+        assert result == 42
+
+    def test_env_int_valid_value_in_range(self, monkeypatch):
+        """When env var is a valid int in range, _env_int returns it."""
+        import token_goat.config as cfg_mod
+
+        monkeypatch.setenv("TOKEN_GOAT_TEST_VAR", "75")
+        result = cfg_mod._env_int("TOKEN_GOAT_TEST_VAR", default=42, lo=0, hi=100, config_path="test.var")
+        assert result == 75
+
+    def test_env_int_valid_value_at_lower_bound(self, monkeypatch):
+        """When env var equals lo, _env_int returns it."""
+        import token_goat.config as cfg_mod
+
+        monkeypatch.setenv("TOKEN_GOAT_TEST_VAR", "0")
+        result = cfg_mod._env_int("TOKEN_GOAT_TEST_VAR", default=42, lo=0, hi=100, config_path="test.var")
+        assert result == 0
+
+    def test_env_int_valid_value_at_upper_bound(self, monkeypatch):
+        """When env var equals hi, _env_int returns it."""
+        import token_goat.config as cfg_mod
+
+        monkeypatch.setenv("TOKEN_GOAT_TEST_VAR", "100")
+        result = cfg_mod._env_int("TOKEN_GOAT_TEST_VAR", default=42, lo=0, hi=100, config_path="test.var")
+        assert result == 100
+
+    def test_env_int_value_below_range_returns_default(self, monkeypatch):
+        """When env var is below lo, _env_int returns the default."""
+        import token_goat.config as cfg_mod
+
+        monkeypatch.setenv("TOKEN_GOAT_TEST_VAR", "-1")
+        result = cfg_mod._env_int("TOKEN_GOAT_TEST_VAR", default=42, lo=0, hi=100, config_path="test.var")
+        assert result == 42
+
+    def test_env_int_value_above_range_returns_default(self, monkeypatch):
+        """When env var is above hi, _env_int returns the default."""
+        import token_goat.config as cfg_mod
+
+        monkeypatch.setenv("TOKEN_GOAT_TEST_VAR", "101")
+        result = cfg_mod._env_int("TOKEN_GOAT_TEST_VAR", default=42, lo=0, hi=100, config_path="test.var")
+        assert result == 42
+
+    def test_env_int_non_numeric_value_returns_default(self, monkeypatch):
+        """When env var is not numeric, _env_int returns the default."""
+        import token_goat.config as cfg_mod
+
+        monkeypatch.setenv("TOKEN_GOAT_TEST_VAR", "not-a-number")
+        result = cfg_mod._env_int("TOKEN_GOAT_TEST_VAR", default=42, lo=0, hi=100, config_path="test.var")
+        assert result == 42
+
+    def test_env_int_float_string_rejected(self, monkeypatch):
+        """When env var is a float string like '75.0' or '75.7', _env_int rejects it."""
+        import token_goat.config as cfg_mod
+
+        # int() rejects float strings, so _env_int falls back to default
+        monkeypatch.setenv("TOKEN_GOAT_TEST_VAR", "75.0")
+        result = cfg_mod._env_int("TOKEN_GOAT_TEST_VAR", default=42, lo=0, hi=100, config_path="test.var")
+        assert result == 42
+
+    def test_env_int_float_with_decimal_rejected(self, monkeypatch):
+        """When env var is '75.7', _env_int rejects it and returns default."""
+        import token_goat.config as cfg_mod
+
+        monkeypatch.setenv("TOKEN_GOAT_TEST_VAR", "75.7")
+        result = cfg_mod._env_int("TOKEN_GOAT_TEST_VAR", default=42, lo=0, hi=100, config_path="test.var")
+        assert result == 42
+
+    def test_env_int_with_whitespace_padding(self, monkeypatch):
+        """When env var has leading/trailing whitespace, _env_int strips it."""
+        import token_goat.config as cfg_mod
+
+        monkeypatch.setenv("TOKEN_GOAT_TEST_VAR", "  75  ")
+        result = cfg_mod._env_int("TOKEN_GOAT_TEST_VAR", default=42, lo=0, hi=100, config_path="test.var")
+        assert result == 75
+
+    def test_env_int_logs_on_invalid(self, monkeypatch, caplog):
+        """When env var is invalid, _env_int logs a warning."""
+        import logging
+
+        import token_goat.config as cfg_mod
+
+        monkeypatch.setenv("TOKEN_GOAT_TEST_VAR", "not-a-number")
+        with caplog.at_level(logging.WARNING):
+            result = cfg_mod._env_int("TOKEN_GOAT_TEST_VAR", default=42, lo=0, hi=100, config_path="test.var")
+        assert result == 42
+        assert any("not an int" in record.message for record in caplog.records)
+
+    def test_env_int_logs_on_out_of_range(self, monkeypatch, caplog):
+        """When env var is out of range, _env_int logs a warning."""
+        import logging
+
+        import token_goat.config as cfg_mod
+
+        monkeypatch.setenv("TOKEN_GOAT_TEST_VAR", "999")
+        with caplog.at_level(logging.WARNING):
+            result = cfg_mod._env_int("TOKEN_GOAT_TEST_VAR", default=42, lo=0, hi=100, config_path="test.var")
+        assert result == 42
+        assert any("out of range" in record.message for record in caplog.records)
+
+    def test_env_int_logs_on_success(self, monkeypatch, caplog):
+        """When env var is valid, _env_int logs an info message."""
+        import logging
+
+        import token_goat.config as cfg_mod
+
+        monkeypatch.setenv("TOKEN_GOAT_TEST_VAR", "75")
+        with caplog.at_level(logging.INFO):
+            result = cfg_mod._env_int("TOKEN_GOAT_TEST_VAR", default=42, lo=0, hi=100, config_path="test.var")
+        assert result == 75
+        assert any("overridden by environment" in record.message for record in caplog.records)

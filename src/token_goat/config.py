@@ -153,6 +153,35 @@ def _apply_env_disable(cfg_obj: Any, attr: str, env_key: str, label: str) -> Non
         setattr(cfg_obj, attr, False)
 
 
+def _env_int(env_key: str, default: int, lo: int, hi: int, config_path: str) -> int:
+    """Read and validate an integer from an environment variable.
+
+    Retrieves the env var, strips whitespace, parses as int, validates range,
+    logs on success or failure, and returns the validated value or default.
+
+    Args:
+        env_key: Environment variable name.
+        default: Fallback value when var is unset or invalid.
+        lo: Lower bound (inclusive).
+        hi: Upper bound (inclusive).
+        config_path: Human-readable config path for logging (e.g., "hints.bash_dedup_min_bytes").
+
+    Returns:
+        Validated int in [lo, hi], or default on parse/range error.
+    """
+    env_val = os.environ.get(env_key, "").strip()
+    if not env_val:
+        return default
+    try:
+        v = _validated_int(env_val, default, lo, hi, config_path + "(env)")
+        if v != default:
+            _LOG.info("%s overridden by environment: %d", config_path, v)
+        return v
+    except (TypeError, ValueError):
+        _LOG.warning("%s env override invalid (not an int): %s; using default %d", config_path, env_val, default)
+        return default
+
+
 class _CompactAssistToml(TypedDict, total=False):
     """Expected shape of the [compact_assist] TOML section."""
 
@@ -969,26 +998,12 @@ def load() -> Config:
     )
     _apply_env_disable(bc, "enabled", _ENV_BASH_COMPRESS, "bash_compress")
     # Apply env overrides for bash output cache caps
-    try:
-        env_bash_max_files = os.environ.get(_ENV_BASH_CACHE_MAX_FILES)
-        if env_bash_max_files:
-            v = int(env_bash_max_files)
-            if 1 <= v <= 1_000_000:
-                bc.cache_max_file_count = v
-            else:
-                _LOG.warning("TOKEN_GOAT_BASH_CACHE_MAX_FILES must be in [1, 1_000_000]")
-    except ValueError:
-        _LOG.warning("TOKEN_GOAT_BASH_CACHE_MAX_FILES must be an integer")
-    try:
-        env_bash_max_bytes = os.environ.get(_ENV_BASH_CACHE_MAX_BYTES)
-        if env_bash_max_bytes:
-            v = int(env_bash_max_bytes)
-            if 1024 <= v <= 4 * 1024 * 1024 * 1024:
-                bc.cache_max_bytes = v
-            else:
-                _LOG.warning("TOKEN_GOAT_BASH_CACHE_MAX_BYTES must be in [1024, 4GiB]")
-    except ValueError:
-        _LOG.warning("TOKEN_GOAT_BASH_CACHE_MAX_BYTES must be an integer")
+    bc.cache_max_file_count = _env_int(
+        _ENV_BASH_CACHE_MAX_FILES, bc.cache_max_file_count, 1, 1_000_000, "bash_compress.cache_max_file_count"
+    )
+    bc.cache_max_bytes = _env_int(
+        _ENV_BASH_CACHE_MAX_BYTES, bc.cache_max_bytes, 1024, 4 * 1024 * 1024 * 1024, "bash_compress.cache_max_bytes"
+    )
 
     sb_raw: _SessionBriefToml = cast("_SessionBriefToml", raw.get("session_brief", {}))
     sb = SessionBriefConfig(
@@ -1067,10 +1082,10 @@ def load() -> Config:
             "repomap.compact_file_threshold",
         ),
     )
-    env_rm_threshold = os.environ.get(_ENV_REPOMAP_COMPACT_THRESHOLD, "").strip()
-    if env_rm_threshold:
-        parsed_threshold = _validated_int(env_rm_threshold, 50, 0, 100_000, "repomap.compact_file_threshold(env)")
-        rm.compact_file_threshold = parsed_threshold
+    # Apply env override for repomap compact file threshold
+    rm.compact_file_threshold = _env_int(
+        _ENV_REPOMAP_COMPACT_THRESHOLD, rm.compact_file_threshold, 0, 100_000, "repomap.compact_file_threshold"
+    )
 
     stats_raw: _StatsToml = cast("_StatsToml", raw.get("stats", {}))
     stats = StatsConfig(
@@ -1106,54 +1121,16 @@ def load() -> Config:
     )
     # Opt-in env override: TOKEN_GOAT_HINT_JSON_SIDECAR=1/true/yes/on enables.
     _apply_env_enable(hints_cfg, "json_sidecar", _ENV_HINT_JSON_SIDECAR, "hints.json_sidecar")
-    # Integer env override: TOKEN_GOAT_BASH_DEDUP_MIN_BYTES=<bytes> (0-100000)
-    bash_dedup_env = os.environ.get(_ENV_BASH_DEDUP_MIN_BYTES, "").strip()
-    if bash_dedup_env:
-        try:
-            bash_dedup_bytes = int(bash_dedup_env)
-            if 0 <= bash_dedup_bytes <= 100000:
-                _LOG.info(
-                    "hints.bash_dedup_min_bytes overridden by environment: %d",
-                    bash_dedup_bytes,
-                )
-                hints_cfg.bash_dedup_min_bytes = bash_dedup_bytes
-        except ValueError:
-            _LOG.warning(
-                "hints.bash_dedup_min_bytes env override invalid (not an int): %s; ignoring",
-                bash_dedup_env,
-            )
-    # Integer env override: TOKEN_GOAT_WEB_DEDUP_MIN_BYTES=<bytes> (0-100000)
-    web_dedup_env = os.environ.get(_ENV_WEB_DEDUP_MIN_BYTES, "").strip()
-    if web_dedup_env:
-        try:
-            web_dedup_bytes = int(web_dedup_env)
-            if 0 <= web_dedup_bytes <= 100000:
-                _LOG.info(
-                    "hints.web_dedup_min_bytes overridden by environment: %d",
-                    web_dedup_bytes,
-                )
-                hints_cfg.web_dedup_min_bytes = web_dedup_bytes
-        except ValueError:
-            _LOG.warning(
-                "hints.web_dedup_min_bytes env override invalid (not an int): %s; ignoring",
-                web_dedup_env,
-            )
-    # Integer env override: TOKEN_GOAT_GREP_DEDUP_MIN_MATCHES=<count> (0-100000)
-    grep_dedup_env = os.environ.get(_ENV_GREP_DEDUP_MIN_MATCHES, "").strip()
-    if grep_dedup_env:
-        try:
-            grep_dedup_matches = int(grep_dedup_env)
-            if 0 <= grep_dedup_matches <= 100000:
-                _LOG.info(
-                    "hints.grep_dedup_min_matches overridden by environment: %d",
-                    grep_dedup_matches,
-                )
-                hints_cfg.grep_dedup_min_matches = grep_dedup_matches
-        except ValueError:
-            _LOG.warning(
-                "hints.grep_dedup_min_matches env override invalid (not an int): %s; ignoring",
-                grep_dedup_env,
-            )
+    # Integer env overrides for dedup thresholds
+    hints_cfg.bash_dedup_min_bytes = _env_int(
+        _ENV_BASH_DEDUP_MIN_BYTES, hints_cfg.bash_dedup_min_bytes, 0, 100000, "hints.bash_dedup_min_bytes"
+    )
+    hints_cfg.web_dedup_min_bytes = _env_int(
+        _ENV_WEB_DEDUP_MIN_BYTES, hints_cfg.web_dedup_min_bytes, 0, 100000, "hints.web_dedup_min_bytes"
+    )
+    hints_cfg.grep_dedup_min_matches = _env_int(
+        _ENV_GREP_DEDUP_MIN_MATCHES, hints_cfg.grep_dedup_min_matches, 0, 100000, "hints.grep_dedup_min_matches"
+    )
 
     wf_raw: _WebFetchToml = cast("_WebFetchToml", raw.get("webfetch", {}))
     wf_cfg = WebFetchConfig(
@@ -1168,26 +1145,12 @@ def load() -> Config:
         ),
     )
     # Apply env overrides for web cache caps
-    try:
-        env_max_files = os.environ.get(_ENV_WEB_CACHE_MAX_FILES)
-        if env_max_files:
-            v = int(env_max_files)
-            if 1 <= v <= 1_000_000:
-                wf_cfg.max_file_count = v
-            else:
-                _LOG.warning("TOKEN_GOAT_WEB_CACHE_MAX_FILES must be in [1, 1_000_000]")
-    except ValueError:
-        _LOG.warning("TOKEN_GOAT_WEB_CACHE_MAX_FILES must be an integer")
-    try:
-        env_max_bytes = os.environ.get(_ENV_WEB_CACHE_MAX_BYTES)
-        if env_max_bytes:
-            v = int(env_max_bytes)
-            if 1024 <= v <= 4 * 1024 * 1024 * 1024:
-                wf_cfg.max_bytes = v
-            else:
-                _LOG.warning("TOKEN_GOAT_WEB_CACHE_MAX_BYTES must be in [1024, 4GiB]")
-    except ValueError:
-        _LOG.warning("TOKEN_GOAT_WEB_CACHE_MAX_BYTES must be an integer")
+    wf_cfg.max_file_count = _env_int(
+        _ENV_WEB_CACHE_MAX_FILES, wf_cfg.max_file_count, 1, 1_000_000, "webfetch.max_file_count"
+    )
+    wf_cfg.max_bytes = _env_int(
+        _ENV_WEB_CACHE_MAX_BYTES, wf_cfg.max_bytes, 1024, 4 * 1024 * 1024 * 1024, "webfetch.max_bytes"
+    )
 
     _LOG.debug(
         "config resolved: compact_assist enabled=%s triggers=%s min_events=%d max_tokens=%d; "
