@@ -1887,7 +1887,7 @@ def _format_bash_command_for_hint(command: str) -> str:
     if not parts:
         return safe
 
-    result_parts = []
+    result_parts: list[str] = []
     current_len = 0
 
     for part in parts:
@@ -1909,6 +1909,27 @@ def _format_bash_command_for_hint(command: str) -> str:
         result = result + "…"
 
     return result
+
+
+def _get_first_line_preview(output_text: str, max_len: int = 60) -> str | None:
+    """Extract the first non-empty line from bash output for display in a hint.
+
+    Returns None if the output is empty or contains only whitespace.
+    Truncates lines longer than *max_len* with an ellipsis.
+    Sanitizes for injection safety.
+    """
+    if not output_text:
+        return None
+    for line in output_text.splitlines():
+        stripped = line.strip()
+        if stripped:
+            # Sanitize the line for hint-text injection safety
+            safe = _sanitize_hint_path(stripped)
+            # Truncate if needed
+            if len(safe) > max_len:
+                safe = safe[:max_len] + "…"
+            return safe
+    return None
 
 
 def _build_bash_dedup_hint_inner(
@@ -2039,6 +2060,121 @@ def _build_bash_dedup_hint_inner(
     if cache is not None:
         _record_dedup_hint_emitted(cache, cmd_sha, "bash_dedup", fp_key)
     return ReadHint(_apply_terse(hint_text), tokens_avoided)
+
+
+# ---------------------------------------------------------------------------
+# Cross-session bash cache-hit hint
+# ---------------------------------------------------------------------------
+
+
+@_failsoft_hint
+def build_bash_cache_hit_hint(
+    *,
+    session_id: str,
+    command: str,
+    cache: session.SessionCache | None = None,
+) -> ReadHint | None:
+    """Return a hint when *command* has a cached output from a prior session.
+
+    Complements :func:`build_bash_dedup_hint` which fires when the same command
+    has been run *in the current session*.  This function fires when the command
+    has never been run in the current session but there is still output cached
+    on disk from a previous session — saving the runtime cost and the duplicated
+    bytes in the conversation.
+
+    Returns ``None`` (no hint) when:
+
+    * no session_id or command is provided
+    * the command is already recorded in the current session (dedup path handles it)
+    * no on-disk cached entry exists for this command
+    * the cached output is too small to be worth the hint overhead
+    * the cached output is older than :data:`STALE_READ_AGE_SECONDS`
+    """
+    if not _check_dedup_preconditions(
+        session_id=session_id,
+        required_param=command,
+        cache=cache,
+    ):
+        return None
+
+    from . import bash_cache  # noqa: PLC0415
+
+    cmd_sha = bash_cache.command_hash(command)
+
+    # If the current session already has this command, the dedup hint handles it.
+    current_entry = session.lookup_bash_entry(session_id, cmd_sha, cache=cache)
+    if current_entry is not None:
+        return None
+
+    # Look for a cached output from any prior session.
+    meta = bash_cache.find_cached_for_command(command)
+    if meta is None:
+        return None
+
+    # Apply the same minimum-size guard used by the dedup hint.
+    total_bytes = meta.stdout_bytes + meta.stderr_bytes
+    if _check_dedup_min_threshold(
+        total_bytes,
+        _get_bash_dedup_min_bytes,
+        cache,
+        "bash_cache_hit_below_threshold",
+    ):
+        return None
+
+    # Apply staleness guard: a very old cache entry is likely stale.
+    import time as _time  # noqa: PLC0415
+
+    now = _time.time()
+    age = now - meta.ts
+    stale_threshold = _session_stale_threshold(cache, now) if cache is not None else STALE_READ_AGE_SECONDS
+    if age > stale_threshold:
+        _LOG.debug(
+            "build_bash_cache_hit_hint: prior-session cache entry for %s is %.0fs old (threshold=%.0fs); skipping",
+            sanitize_log_str(command, max_len=100), age, stale_threshold,
+        )
+        if cache is not None:
+            cache.record_hint_suppressed("bash_cache_hit_stale")
+        return None
+
+    # Fingerprint dedup: emit only once per command per session.
+    fp_key = _hint_fingerprint(cmd_sha, path="bash_prior")
+    if cache is not None and cache.has_hint_fingerprint(fp_key):
+        _LOG.debug(
+            "build_bash_cache_hit_hint: fingerprint key %s already seen; skipping",
+            fp_key,
+        )
+        return None
+
+    if cache is not None:
+        cache.mark_hint_seen(fp_key)
+
+    from . import cache_common as _cc  # noqa: PLC0415
+
+    tokens_avoided = _est_tokens_from_chars(total_bytes)
+    exit_str = "" if meta.exit_code is None else f" x={meta.exit_code}"
+    short_id = _cc.short_output_id(meta.output_id)
+    age_str = f"{int(age // 3600)}h" if age >= 3600 else f"{int(age // 60)}m"
+
+    # Try to load the first line of output for a preview hint
+    preview_text = ""
+    try:
+        from . import bash_cache as _bc  # noqa: PLC0415
+        body = _bc.load_output(meta.output_id)
+        if body:
+            first_line = _get_first_line_preview(body)
+            if first_line:
+                # Escape single quotes for display
+                preview_text = f" Preview: '{first_line}'"
+    except Exception:  # noqa: BLE001 — fail-soft: preview must never break the hint
+        pass
+
+    return ReadHint(
+        _apply_terse(
+            f"Command cached {age_str} ago: {total_bytes:,}B{exit_str}, ~{tokens_avoided}t. "
+            f"Use `token-goat bash-output {short_id}` to read without re-running.{preview_text}"
+        ),
+        tokens_avoided,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -2445,6 +2581,14 @@ def _build_web_dedup_hint_inner(
     status_str = (
         f" status={entry.status_code}" if entry.status_code is not None else ""
     )
+    # Format content-type for display (e.g., "html" from "text/html")
+    content_type_str = ""
+    content_type = getattr(entry, "content_type", None)
+    if content_type:
+        # Extract the main type: "text/html" → "html", "application/json" → "json"
+        ct_parts = content_type.split("/")
+        content_type_str = f" {ct_parts[1]}" if len(ct_parts) >= 2 else f" {content_type}"
+
     from . import cache_common as _cc  # noqa: PLC0415
 
     # Show the --grep PATTERN recall hint only once per session.  On the first
@@ -2474,7 +2618,7 @@ def _build_web_dedup_hint_inner(
         recall_str = f"id={short_id}"
     return ReadHint(
         _apply_terse(
-            f"URL ({int(age)}s): {entry.body_bytes:,}B{status_str}, ~{tokens_avoided}t. "
+            f"URL ({int(age)}s): {entry.body_bytes:,}B{status_str}{content_type_str}, ~{tokens_avoided}t. "
             f"{recall_str}{grep_suffix}"
         ),
         tokens_avoided,
@@ -2574,11 +2718,19 @@ def build_web_cache_hit_hint(
     status_str = (
         f" status={meta.status_code}" if meta.status_code is not None else ""
     )
+    # Format content-type for display (e.g., "html" from "text/html")
+    content_type_str = ""
+    content_type = getattr(meta, "content_type", None)
+    if content_type:
+        # Extract the main type: "text/html" → "html", "application/json" → "json"
+        ct_parts = content_type.split("/")
+        content_type_str = f" {ct_parts[1]}" if len(ct_parts) >= 2 else f" {content_type}"
+
     short_id = _cc.short_output_id(meta.output_id)
     age_str = f"{int(age // 3600)}h" if age >= 3600 else f"{int(age // 60)}m"
     return ReadHint(
         _apply_terse(
-            f"URL cached {age_str} ago: {meta.body_bytes:,}B{status_str}, ~{tokens_avoided}t. "
+            f"URL cached {age_str} ago: {meta.body_bytes:,}B{status_str}{content_type_str}, ~{tokens_avoided}t. "
             f"Use `token-goat web-output {short_id}` to read without re-fetching."
         ),
         tokens_avoided,

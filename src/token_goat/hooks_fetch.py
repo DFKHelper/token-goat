@@ -311,15 +311,16 @@ def pre_fetch(payload: HookPayload) -> HookResponse:
 _WEB_CACHE_MIN_BYTES: int = 1024
 
 
-def _extract_web_response(payload: HookPayload) -> tuple[str, int | None]:
-    """Pull (body, status_code) from a PostToolUse WebFetch payload.
+def _extract_web_response(payload: HookPayload) -> tuple[str, int | None, str | None]:
+    """Pull (body, status_code, content_type) from a PostToolUse WebFetch payload.
 
     Defensive about payload-shape drift between harness versions.  The text
     body is extracted via :func:`hooks_common.extract_tool_response_text` which
     handles all shapes (bare string, MCP content array, named-field dict).
     Status code is read at ``status_code``, ``status``, or ``code`` and coerced
     via int — string-typed codes are accepted to handle harnesses that surface
-    them as ``"200"``.
+    them as ``"200"``.  Content-type is read from response headers or metadata
+    when available, normalized to the base MIME type (e.g. "text/html").
     """
     from .hooks_common import extract_tool_response_text  # noqa: PLC0415
 
@@ -328,12 +329,13 @@ def _extract_web_response(payload: HookPayload) -> tuple[str, int | None]:
         text_keys=("output", "text", "body", "content", "response"),
     )
 
-    # Status code lives in the raw dict only — extract it separately.
+    # Status code and content-type live in the raw dict only — extract separately.
     raw_resp: object = payload.get("tool_response") if isinstance(payload, dict) else None
     if raw_resp is None and isinstance(payload, dict):
         raw_resp = payload.get("tool_result") or payload.get("response")
 
     status_val: object = None
+    content_type_val: object = None
     if isinstance(raw_resp, dict):
         status_val = (
             raw_resp.get("status_code")
@@ -342,6 +344,13 @@ def _extract_web_response(payload: HookPayload) -> tuple[str, int | None]:
             if "status" in raw_resp
             else raw_resp.get("code")
         )
+        # Try to extract content-type from headers or metadata
+        headers = raw_resp.get("headers")
+        if isinstance(headers, dict):
+            content_type_val = headers.get("content-type") or headers.get("Content-Type")
+        if not content_type_val:
+            # Fallback to direct content_type field if headers don't have it
+            content_type_val = raw_resp.get("content_type") or raw_resp.get("content-type")
 
     status_code: int | None = None
     if is_real_int(status_val):
@@ -352,7 +361,12 @@ def _extract_web_response(payload: HookPayload) -> tuple[str, int | None]:
         except (TypeError, ValueError):
             status_code = None
 
-    return body, status_code
+    # Normalize content-type: extract just the MIME type, drop charset and other params
+    content_type: str | None = None
+    if isinstance(content_type_val, str):
+        content_type = content_type_val.split(";")[0].strip().lower()
+
+    return body, status_code, content_type
 
 
 def post_fetch(payload: HookPayload) -> HookResponse:
@@ -388,7 +402,7 @@ def post_fetch(payload: HookPayload) -> HookResponse:
         # don't double-cache them here.
         return CONTINUE()
 
-    body, status_code = _extract_web_response(payload)
+    body, status_code, content_type = _extract_web_response(payload)
 
     # Strip script/style/nav/header/footer blocks from HTML responses before
     # caching.  These blocks are typically 60-90% of raw HTML bytes and pure
@@ -420,6 +434,7 @@ def post_fetch(payload: HookPayload) -> HookResponse:
     cfg = config.load()
     meta = web_cache.store_output(
         session_id, url, body, status_code,
+        content_type=content_type,
         max_total_bytes=cfg.webfetch.max_bytes,
         max_file_count=cfg.webfetch.max_file_count,
     )
@@ -436,6 +451,7 @@ def post_fetch(payload: HookPayload) -> HookResponse:
             body_bytes=meta.body_bytes,
             status_code=meta.status_code,
             truncated=meta.truncated,
+            content_type=meta.content_type,
         )
     except (ValueError, OSError) as exc:
         _LOG.debug("post-fetch: session record failed: %s", exc)

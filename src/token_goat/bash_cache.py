@@ -31,6 +31,7 @@ __all__ = [
     "BashOutputMeta",
     "command_hash",
     "evict_old_entries",
+    "find_cached_for_command",
     "glob_hash",
     "load_output",
     "load_output_meta",
@@ -421,3 +422,42 @@ def read_sidecar(output_id: str) -> BashOutputMeta | None:
         )
     except (TypeError, ValueError):
         return None
+
+
+def find_cached_for_command(command: str) -> BashOutputMeta | None:
+    """Return the most recent on-disk cached entry for *command*, or None.
+
+    Scans all sidecar files in the bash_outputs store and returns the entry
+    whose ``cmd_sha`` matches the hash of *command*, favouring the most recently
+    written file.  Used by the pre-Bash hook to emit a cross-session
+    cache-hit hint when the same command was run in a prior session and the
+    output is still on disk but has not been recorded in the current session.
+
+    This is intentionally a linear scan over sidecar metadata — not body text
+    — so the I/O cost is proportional to the number of cached entries (not
+    their sizes).  In the typical usage pattern (≤ a few hundred cached commands)
+    the scan completes in milliseconds.
+
+    Returns ``None`` on any I/O error (fail-soft contract).
+    """
+    target_sha = command_hash(command)
+    best: BashOutputMeta | None = None
+    with safe_cache_op("find_cached_for_command", log=_LOG):
+        cache_dir = _bash_outputs_dir()
+        if not cache_dir.is_dir():
+            return None
+        for sidecar_path in sorted(
+            cache_dir.glob("*.json"), key=lambda p: p.stat().st_mtime, reverse=True
+        ):
+            # Extract output_id from sidecar filename (strip .json)
+            candidate_id = sidecar_path.stem
+            # Skip glob-result entries (prefixed with "glob_")
+            if candidate_id.startswith("glob_"):
+                continue
+            meta = read_sidecar(candidate_id)
+            if meta is None:
+                continue
+            if meta.cmd_sha == target_sha and (meta.stdout_bytes + meta.stderr_bytes) > 0:
+                best = meta
+                break  # sorted newest-first; first match is the freshest
+    return best

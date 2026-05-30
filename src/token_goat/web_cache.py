@@ -109,6 +109,8 @@ class WebOutputMeta:
     ``token-goat web-history`` output but capped to keep the manifest budget
     predictable.  ``status_code`` is optional because not every harness
     surfaces it; absence means "unknown" rather than "succeeded" or "failed".
+    ``content_type`` is the MIME type from the response (e.g. "text/html" or
+    "application/json"), or None if not captured.
     """
 
     output_id: str
@@ -118,6 +120,7 @@ class WebOutputMeta:
     status_code: int | None
     ts: float
     truncated: bool
+    content_type: str | None = None
 
 
 def _web_outputs_dir() -> Path:
@@ -152,6 +155,7 @@ def store_output(
     body: str,
     status_code: int | None,
     *,
+    content_type: str | None = None,
     max_total_bytes: int = DEFAULT_MAX_TOTAL_BYTES,
     max_file_count: int = 4096,
 ) -> WebOutputMeta | None:
@@ -187,6 +191,7 @@ def store_output(
             status_code=status_code,
             ts=time.time(),
             truncated=truncated,
+            content_type=content_type,
         )
 
         _LOG.debug(
