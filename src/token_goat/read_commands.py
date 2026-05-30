@@ -61,9 +61,33 @@ class _DepNode(TypedDict):
 
 
 def _not_indexed_hint(project_hash: str) -> str | None:
-    """Return a one-line hint when this project has no indexed files."""
+    """Return a one-line hint when this project has no indexed files.
+
+    Distinguishes three cases:
+    - Indexing currently in progress: return "indexing in progress" hint.
+    - Indexing previously spawned but PID is gone: return "may have failed" hint.
+    - Indexing never started: return generic "not yet indexed" hint.
+    """
     try:
         if not db.project_has_files(project_hash):
+            # Check if an index spawn is currently active.
+            from . import paths, worker  # noqa: PLC0415
+
+            marker = paths.locks_dir() / f"{project_hash}.indexing"
+            if worker._index_spawn_active(marker):
+                return (
+                    "(indexing is currently in progress — try again in a moment, "
+                    "or run `token-goat index --full` to force synchronous indexing.)"
+                )
+
+            # Check if marker exists but process is gone (may have failed).
+            if marker.exists():
+                return (
+                    "(a previous indexing attempt may have failed — "
+                    "run `token-goat index --full` to retry, or check the logs.)"
+                )
+
+            # Marker does not exist — auto-index was never spawned or already cleared.
             return (
                 "(project not yet indexed. auto-indexing started in the "
                 "background on first SessionStart; if it has not finished, "

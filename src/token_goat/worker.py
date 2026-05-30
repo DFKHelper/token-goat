@@ -1562,20 +1562,40 @@ def spawn_index_detached(project_root: str, project_hash: str) -> int | None:
     cmd = paths.python_runner_argv("index", "--full")
     creationflags = _detach_creationflags()
 
+    # Open a log file for stderr so we can diagnose spawn failures.
+    # Rolling logs are already handled by paths.logs_dir() + daily rotation.
+    log_file = None
+    try:
+        log_path = paths.logs_dir() / "index-spawn.log"
+        log_file = open(str(log_path), "a", encoding="utf-8")  # noqa: SIM115
+    except OSError as e:
+        _LOG.warning("could not open log file for index spawn stderr: %s", e)
+
     try:
         proc = subprocess.Popen(
             cmd,
             cwd=project_root,
             stdin=subprocess.DEVNULL,
             stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
+            stderr=log_file if log_file else subprocess.DEVNULL,
             close_fds=True,
             creationflags=creationflags,
             start_new_session=(sys.platform != "win32"),
         )
     except (OSError, FileNotFoundError) as e:
         _LOG.error("failed to spawn auto-index: %s", e)
+        with contextlib.suppress(OSError):
+            if log_file:
+                log_file.close()
         return None
+    finally:
+        # Close the file handle in the parent process; the child inherited it
+        # and will have its own reference. Closing early avoids a file handle leak
+        # in the parent. On Windows, close_fds=True should prevent the inherit,
+        # but on POSIX we explicitly pass the FD so we must close it here.
+        with contextlib.suppress(OSError):
+            if log_file:
+                log_file.close()
 
     # Record the spawn so concurrent SessionStart hooks don't pile on. The
     # marker self-expires via PID-liveness + TTL — no explicit cleanup needed.
