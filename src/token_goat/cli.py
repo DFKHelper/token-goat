@@ -4174,6 +4174,120 @@ def cmd_sessions_show(
             typer.echo(f"  ... and {len(web_hist) - 15} more")
 
 
+@app.command("export", rich_help_panel="Core")
+def cmd_export(
+    fmt: str = typer.Option("json", "--format", "-f", help="Output format: json, csv, or ctags."),  # noqa: B008
+    output: str | None = typer.Option(None, "--output", "-o", help="Write output to FILE instead of stdout."),  # noqa: B008
+    project: str | None = typer.Option(None, "--project", "-p", help="Project root (default: current directory)."),  # noqa: B008
+) -> None:
+    """Export the indexed symbol database for a project.
+
+    Dumps all symbols from the project's index in the requested format so they
+    can be consumed by editors, scripts, or other LLM workflows without going
+    through SQLite directly.
+
+    Supported formats::
+
+        json  — JSON array of objects: name, kind, file, start_line, end_line, parent_name
+        csv   — CSV with the same columns (header row included)
+        ctags — ctags-compatible output for Vim, Emacs, VS Code
+
+    Examples::
+
+        token-goat export
+        token-goat export --format csv --output symbols.csv
+        token-goat export --format ctags --output tags
+        token-goat export --format json --project /path/to/project
+    """
+    import csv as _csv  # noqa: PLC0415
+    import io  # noqa: PLC0415
+    from pathlib import Path as _Path  # noqa: PLC0415
+
+    _db = _lazy_import("db")
+
+    from .project import find_project  # noqa: PLC0415
+
+    root = _Path(project) if project else _Path(os.getcwd())
+    proj = find_project(root)
+    if proj is None:
+        _error("no project detected — run from a project directory or pass --project")
+        raise typer.Exit(1)
+
+    fmt_lower = fmt.lower()
+    if fmt_lower not in {"json", "csv", "ctags"}:
+        _error(f"unknown format {fmt!r} — choose json, csv, or ctags")
+        raise typer.Exit(1)
+
+    try:
+        with _db.open_project_readonly(proj.hash) as conn:
+            rows = conn.execute(
+                """
+                SELECT s.name, s.kind, s.file_rel, s.line, s.end_line,
+                       p.name AS parent_name
+                FROM   symbols s
+                LEFT JOIN symbols p ON p.id = s.parent_id
+                ORDER BY s.file_rel, s.line
+                """
+            ).fetchall()
+    except FileNotFoundError:
+        rows = []
+    except Exception as exc:  # noqa: BLE001
+        _error(f"could not read project index: {exc}")
+        raise typer.Exit(1) from exc
+
+    def _to_dicts() -> list[dict[str, object]]:
+        return [
+            {
+                "name": row["name"],
+                "kind": row["kind"],
+                "file": row["file_rel"],
+                "start_line": row["line"],
+                "end_line": row["end_line"],
+                "parent_name": row["parent_name"],
+            }
+            for row in rows
+        ]
+
+    if fmt_lower == "json":
+        text = json.dumps(_to_dicts(), ensure_ascii=False, indent=2)
+
+    elif fmt_lower == "csv":
+        buf = io.StringIO()
+        writer = _csv.DictWriter(
+            buf,
+            fieldnames=["name", "kind", "file", "start_line", "end_line", "parent_name"],
+            lineterminator="\n",
+        )
+        writer.writeheader()
+        writer.writerows(_to_dicts())
+        text = buf.getvalue()
+
+    else:  # ctags
+        lines: list[str] = [
+            "!_TAG_FILE_SORTED\t1\t/0=unsorted, 1=sorted, 2=foldcase/",
+            "!_TAG_FILE_FORMAT\t2\t/extended format/",
+        ]
+        for row in rows:
+            name = row["name"]
+            file_rel = row["file_rel"].replace("\\", "/")
+            line_num = row["line"]
+            kind = str(row["kind"])
+            kind_char = kind[0] if kind else "?"
+            parent_name = row["parent_name"]
+            tag = f"{name}\t{file_rel}\t{line_num};\"\t{kind_char}"
+            if parent_name:
+                tag += f"\tclass:{parent_name}"
+            lines.append(tag)
+        text = "\n".join(lines) + ("\n" if lines else "")
+
+    if output:
+        out_path = _Path(output)
+        out_path.write_text(text, encoding="utf-8")
+        typer.echo(f"exported {len(rows)} symbol(s) to {out_path}", err=True)
+    else:
+        typer.echo(text, nl=False)
+
+
 @app.command("clean", rich_help_panel="Advanced")
 def cmd_clean(
     images: bool = typer.Option(False, "--images", help="Clear the image shrink cache."),  # noqa: B008
