@@ -450,6 +450,7 @@ class TestDoctorConfigurationSection:
             "hint_budget.max_structured_per_session",
             "hint_budget.max_index_only_per_session",
             "repomap.compact_file_threshold",  # RepomapConfig
+            "repomap.exclude_tests",
             "stats.record_zero_savings",  # StatsConfig
             "webfetch.allow",  # WebFetchConfig
             "webfetch.deny",

@@ -146,15 +146,49 @@ _MIN_DISPLAY_LINES: Final[int] = 4
 # Maximum symbol names shown per kind group in render_summary output.
 # Keeping this small prevents any one kind from dominating the text budget.
 _MAX_NAMES_PER_KIND: Final[int] = 6
-# POSIX path prefixes excluded from the map — these dirs are test fixtures or
+# POSIX path prefixes excluded from the map — these dirs are test files,
 # generated/transient artifacts that distort PageRank and pollute "Top modules"
-# with non-source content.  Test fixture stubs accumulate refs from every
-# parser test; uv build/cache dirs leak vendored packaging code when the cache
-# is co-located with the source tree (a common Windows + uv layout).
-_EXCLUDED_PREFIXES: Final[tuple[str, ...]] = (
-    "tests/fixtures/",
+# with non-source content.  Test files accumulate refs to every production
+# module they cover; uv build/cache dirs leak vendored packaging code when the
+# cache is co-located with the source tree (a common Windows + uv layout).
+#
+# ``tests/`` is excluded by default because test files import production
+# modules extensively, which inflates the PageRank of those modules via
+# edges sourced from test code rather than actual production dependencies.
+# The map is more useful when it reflects production structure only.
+# Control this via config ``[repomap] exclude_tests = false`` or the
+# ``TOKEN_GOAT_REPOMAP_EXCLUDE_TESTS=0`` env var.
+_EXCLUDED_PREFIXES_BASE: Final[tuple[str, ...]] = (
     ".uv-cache/",
     ".uv-cache-local/",
+    "dist/",
+    "build/",
+    "node_modules/",
+    ".next/",
+    ".nuxt/",
+    "__pycache__/",
+    ".pytest_cache/",
+    ".mypy_cache/",
+    ".ruff_cache/",
+    "target/",         # Rust/Java build output
+    "out/",            # general build output
+    ".output/",        # Nuxt/Vite output
+    "vendor/",         # Go vendor dirs
+    ".venv/",
+    "venv/",
+    "env/",
+    ".tox/",
+    "htmlcov/",        # coverage HTML reports
+    "site/",           # MkDocs / Sphinx generated site
+)
+
+_EXCLUDED_PREFIXES_TESTS: Final[tuple[str, ...]] = (
+    "tests/fixtures/",
+    "tests/",
+    "__tests__/",
+    "test/",
+    "spec/",
+    "e2e/",
 )
 
 # POSIX path substrings excluded from the map — used for transient directories
@@ -164,7 +198,8 @@ _EXCLUDED_PREFIXES: Final[tuple[str, ...]] = (
 # ``_EXCLUDED_PREFIXES`` because substring checks are O(n) per call; keeping
 # the list tiny preserves the lru_cache benefit on the hot path.
 _EXCLUDED_SUBSTRINGS: Final[tuple[str, ...]] = (
-    "/.tmp",  # uv tmp build/cache dirs (``.uv-cache/.tmp<hash>/``)
+    "/.tmp",   # uv tmp build/cache dirs (``.uv-cache/.tmp<hash>/``)
+    "/__pycache__/",  # nested pycache dirs (e.g. src/pkg/__pycache__/)
 )
 
 # Generated artifact filenames (exact match on basename, lowercase) that
@@ -179,6 +214,20 @@ _EXCLUDED_BASENAMES: Final[frozenset[str]] = frozenset({
     ".coverage",
     "lcov.info",
 })
+
+# Generated file suffixes (lowercase) — minified / compiled assets that are
+# never worth reading in a repo map.  Checked against the full basename so
+# ``app.bundle.js.map`` matches ``.js.map``.
+_EXCLUDED_SUFFIXES: Final[tuple[str, ...]] = (
+    ".min.js",
+    ".min.css",
+    ".bundle.js",
+    ".js.map",
+    ".css.map",
+    ".pyc",
+    ".pyo",
+    ".pyd",
+)
 # Bytes-per-line divisor used to estimate line count from file size.
 # Code files average 30–60 bytes/line; 50 gives a conservative (slightly
 # over-counting) estimate so we include borderline files rather than drop them.
@@ -193,40 +242,83 @@ _PAGERANK_TOL_NORMAL: Final[float] = 1e-6
 _PAGERANK_TOL_FALLBACK: Final[float] = 1e-4
 
 
-@lru_cache(maxsize=2048)
-def _is_excluded_path(rel_path: str) -> bool:
-    """Return True if rel_path is under an excluded prefix, substring, or basename.
+def _get_excluded_prefixes() -> tuple[str, ...]:
+    """Return the active prefix exclusion tuple, including or excluding tests per config.
 
-    Three filters apply, in cheap-to-expensive order:
+    Reads ``[repomap] exclude_tests`` from config (default ``True``).  The result
+    is effectively process-constant because config is loaded once and the tuple is
+    cached inside the caller's ``lru_cache`` via the ``_is_excluded_path`` key.
+    The ``TOKEN_GOAT_REPOMAP_EXCLUDE_TESTS=0`` env var overrides the config.
+    """
+    import os  # noqa: PLC0415
+    env_val = os.environ.get("TOKEN_GOAT_REPOMAP_EXCLUDE_TESTS", "").strip().lower()
+    if env_val in ("0", "false", "no", "off"):
+        exclude_tests = False
+    elif env_val in ("1", "true", "yes", "on"):
+        exclude_tests = True
+    else:
+        try:
+            from . import config as _cfg  # noqa: PLC0415
+            exclude_tests = _cfg.load().repomap.exclude_tests
+        except (OSError, ValueError, AttributeError):
+            exclude_tests = True
+        except Exception:  # noqa: BLE001
+            exclude_tests = True
+
+    if exclude_tests:
+        return _EXCLUDED_PREFIXES_BASE + _EXCLUDED_PREFIXES_TESTS
+    return _EXCLUDED_PREFIXES_BASE
+
+
+@lru_cache(maxsize=4096)
+def _is_excluded_path_cached(rel_path: str, prefixes: tuple[str, ...]) -> bool:
+    """Cached inner implementation — see :func:`_is_excluded_path` for the public API.
+
+    Four filters apply, in cheap-to-expensive order:
       1. ``_EXCLUDED_BASENAMES`` — exact basename match (generated coverage
          artifacts that survive ``SKIP_FILE_BASENAMES``).
-      2. ``_EXCLUDED_PREFIXES`` — POSIX path prefix match (test fixtures, uv
-         cache roots).
-      3. ``_EXCLUDED_SUBSTRINGS`` — substring match (uv tmp dirs whose suffix
+      2. ``_EXCLUDED_SUFFIXES`` — generated file suffix match (minified assets,
+         compiled bytecode, source maps).
+      3. ``prefixes`` — POSIX path prefix match (test dirs, build outputs, caches).
+      4. ``_EXCLUDED_SUBSTRINGS`` — substring match (uv tmp dirs whose suffix
          is random per build).
 
-    Cached with lru_cache so repeated calls across build_map invocations for
-    the same file pay only a dict lookup.  The result depends only on rel_path
-    and the module-level exclusion constants, all of which are stable within
-    a process lifetime.
+    ``prefixes`` is a parameter (not a global) so the cache key captures the
+    active exclude_tests setting — a config change in the same process issues
+    a new cache key and avoids stale results.
     """
     posix = rel_path.replace("\\", "/") if "\\" in rel_path else rel_path
     # 1. basename (cheapest — single rsplit + frozenset lookup)
     basename = posix.rsplit("/", 1)[-1].lower()
     if basename in _EXCLUDED_BASENAMES:
         return True
-    # 2. prefix
-    if any(posix.startswith(p) for p in _EXCLUDED_PREFIXES):
+    # 2. suffix (minified assets, bytecode — endswith on basename only)
+    if any(basename.endswith(s) for s in _EXCLUDED_SUFFIXES):
         return True
-    # 3. substring (variable-suffix tmp dirs)
+    # 3. prefix
+    if any(posix.startswith(p) for p in prefixes):
+        return True
+    # 4. substring (variable-suffix tmp dirs, nested pycache)
     return any(s in posix for s in _EXCLUDED_SUBSTRINGS)
+
+
+def _is_excluded_path(rel_path: str) -> bool:
+    """Return True if rel_path should be excluded from the repo map.
+
+    Convenience wrapper around :func:`_is_excluded_path_cached` that resolves
+    the active prefix tuple (including or excluding test dirs based on config).
+    Tests and direct callers use this function; :func:`_is_map_worthy` also
+    calls it internally.
+    """
+    return _is_excluded_path_cached(rel_path, _get_excluded_prefixes())
 
 
 def _is_map_worthy(rel_path: str, approx_lines: int) -> bool:
     """Return True if this file should appear in the repo map.
 
-    Excludes test fixture stubs (which distort PageRank by accumulating refs
-    from all parser tests) and trivially small files (empty __init__.py, etc.).
+    Excludes test dirs, generated build artifacts, and trivially small files
+    (empty __init__.py stubs, etc.).  Test exclusion is controlled via config
+    ``[repomap] exclude_tests`` (default True).
     """
     if _is_excluded_path(rel_path):
         return False

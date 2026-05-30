@@ -866,6 +866,8 @@ def doctor(  # noqa: C901
         )
         # repomap (r1): compact-mode file threshold for `token-goat map --compact`.
         ok("repomap.compact_file_threshold", str(cfg.repomap.compact_file_threshold))
+        # repomap (r2): exclude test dirs from repo map PageRank computation.
+        ok("repomap.exclude_tests", str(cfg.repomap.exclude_tests).lower())
         # stats (r2): record_zero_savings switch.  Suggestion-only hints (zero
         # tokens saved, zero injection cost) skip writing stat rows by default
         # to keep the hot pre-read path cheap.  Surfacing it explicitly avoids
