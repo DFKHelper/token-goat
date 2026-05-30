@@ -1850,6 +1850,66 @@ _BASH_DEDUP_LIGHT_MAX_BYTES: int = 999
 # it whole when only a snippet is needed wastes significant context.
 _BASH_DEDUP_GREP_SUGGEST_BYTES: int = 5000
 
+# Maximum length for a command string in a hint before it's truncated with ellipsis.
+# Commands often contain long argument lists (e.g., test paths) that don't add
+# clarity to the dedup hint; this cap ensures the hint stays focused on the
+# subcommand and key args while staying within token budget.
+_MAX_BASH_COMMAND_DISPLAY_LEN: int = 60
+
+
+def _format_bash_command_for_hint(command: str) -> str:
+    """Format a bash command for display in a dedup hint with intelligent truncation.
+
+    - Sanitizes newlines/CRs (injection defence)
+    - Extracts the main command/subcommand for clarity
+    - Truncates long argument lists to stay concise
+    - Shows enough context for the agent to understand what ran
+
+    Examples:
+        "pytest tests/auth/test_login.py::test_valid_password"
+        -> "pytest tests/auth/test_login.py::test_valid…" (if too long)
+
+        "find /srv/data -name '*.log' -type f -mtime +30"
+        -> "find /srv/data -name '*.log'…"
+
+        "uv run ruff check --fix src/"
+        -> "uv run ruff check --fix src/"
+    """
+    # First sanitize for injection safety
+    safe = _sanitize_hint_path(command)
+
+    # If already short, return as-is
+    if len(safe) <= _MAX_BASH_COMMAND_DISPLAY_LEN:
+        return safe
+
+    # For longer commands, greedily include parts until we hit the limit
+    parts = safe.split()
+    if not parts:
+        return safe
+
+    result_parts = []
+    current_len = 0
+
+    for part in parts:
+        # Calculate length if we add this part (accounting for space separator)
+        sep = " " if result_parts else ""
+        candidate_len = current_len + len(sep) + len(part)
+
+        # Stop if adding this part would exceed limit
+        if candidate_len > _MAX_BASH_COMMAND_DISPLAY_LEN:
+            break
+
+        result_parts.append(part)
+        current_len = candidate_len
+
+    result = " ".join(result_parts)
+
+    # Append ellipsis if truncated
+    if result != safe:
+        result = result + "…"
+
+    return result
+
 
 def _build_bash_dedup_hint_inner(
     *,
@@ -1877,7 +1937,7 @@ def _build_bash_dedup_hint_inner(
     if entry is None:
         return None
 
-    cmd_short = _sanitize_hint_path(command)
+    cmd_short = _format_bash_command_for_hint(command)
     is_stale, age = _check_entry_staleness(
         entry, cache, "build_bash_dedup_hint", "bash_dedup_stale",
         detail=cmd_short,
@@ -1945,10 +2005,12 @@ def _build_bash_dedup_hint_inner(
         exit_str = ""
     else:
         fail_prefix = ""
-        exit_str = "" if entry.exit_code is None else f" exit={entry.exit_code}"
+        exit_str = "" if entry.exit_code is None else f" x={entry.exit_code}"
 
     if total_bytes <= _BASH_DEDUP_LIGHT_MAX_BYTES:
-        hint_text = f"{fail_prefix}`{cmd_short}` cached ({int(age)}s, {total_bytes}B{exit_str}). `{recall_cmd}`"
+        # For very small output, include outcome indicator for context
+        outcome = " (empty)" if total_bytes == 0 else f" {total_bytes}B"
+        hint_text = f"{fail_prefix}`{cmd_short}` cached ({int(age)}s{outcome}{exit_str}). `{recall_cmd}`"
         if cache is not None and dedup_key:
             _record_bash_dedup_emitted(cache, dedup_key)
         if cache is not None:
