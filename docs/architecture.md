@@ -109,4 +109,16 @@ A subsequent loop produced 57 commits primarily around reliability, security, an
 - **`session.save_locked()` honest about lock-acquisition failures.** Three consecutive `_acquire_session_lock` timeouts flip `cache.unavailable = True` and the writer short-circuits. Previously the merge proceeded without the cross-process serialization guarantee on timeout, risking lost updates from concurrent hooks.
 - **New doctor sections.** `Hook wrapper` checks existence, content drift, and invocation. `DB contention` scans the worker stderr log for `session slow` warnings in the last 24 h and reports count + max latency with `<10` / `10-49` / `>=50` tier thresholds. Cache file-count overage flags when bash_outputs exceeds the new per-cache `max_file_count` (default 4096 bodies = 8192 dir entries including sidecars).
 
+### 16-iter loop (May 2026 — post-1.0.0)
+
+A post-release loop added nine new bash-compression filters, fixed the "project not yet indexed" diagnosis gap, and consolidated repeated patterns.
+
+- **Nine new bash-compress filters (22 → 31 total).** `EzaFilter` trims `eza`/`exa`/`ls` listings to header + 25 + 5 entries (flat) or 40 + 10 (tree mode). `TreeFilter` trims `tree` to 50 + 10 preserving the final directory/file count line. `FdFilter` trims `fd`/`fdfind` path lists to 35 + 5. `BatFilter` strips ANSI chrome and box-drawing borders from `bat`/`batcat` output, caps at 50 lines. `DeltaFilter` strips ANSI and decorative separators from `delta` diff output, caps at 80 lines. `JqFilter` and `YqFilter` cap JSON/YAML processor output at 200 and 150 lines respectively, preserving closing structure. `FzfFilter` passes through compact fzf selection output and caps long upstream pipes at 50 lines. `LazyGitFilter` detects TUI control sequences and returns an actionable note instead of raw escape codes. `GhFilter` gains list-subcommand truncation (30 rows + count summary for `pr list`, `run list`, `issue list`).
+- **`_head_tail_compress` shared helper.** All truncating filters now call a single `_head_tail_compress(lines, head, tail, label)` function rather than each re-implementing the slicing and marker pattern.
+- **`project not yet indexed` diagnosis.** Background-index spawns now write `stderr` to `index-spawn.log` instead of `DEVNULL`. `_not_indexed_hint` distinguishes three states: *indexing in progress* (PID alive), *spawn failed* (marker present, PID gone), *not yet started* — giving actionable guidance in each case. `_auto_index_if_needed` warns in logs when the spawn returns no PID.
+- **Consistent LRU eviction for `hints_seen` cap.** Both `mark_hint_seen` and `_merge_session_caches` now use the same lowest-count eviction strategy when the 500-entry cap is reached.
+- **`load_session_safe` helper.** Centralises the repeated `try/except(OSError, ValueError)` session-load pattern from `hooks_read`, `hooks_edit`, and `hints` into one fail-soft helper in `hooks_common`.
+- **Manifest section header clarity.** `Syms` → `Symbols Accessed`, `Ran` → `Recent Commands`, `Web` → `Web Fetches`, `Grep` → `Patterns Searched`.
+- **~20% test suite speed improvement.** Eviction fixture file count reduced from 4098 to 100; session-cache parameter added to manifest-trim loops to eliminate repeated disk I/O.
+
 For installation and usage, see the [README](../README.md).
