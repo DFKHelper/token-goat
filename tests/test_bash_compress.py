@@ -2418,3 +2418,75 @@ class TestYqFilter:
         output = "{}"
         result = f.compress(output, "", 0, ["yq", "."])
         assert result == "{}"
+
+
+# --- FzfFilter tests (fuzzy finder output compression) -------------------------
+
+class TestFzfFilter:
+    """Test FzfFilter compression for fzf output."""
+
+    def test_fzf_matches_binary(self) -> None:
+        """FzfFilter matches 'fzf' binary."""
+        f = bc.FzfFilter()
+        assert f.matches(["fzf", "--multi"])
+        assert f.matches(["fzf"])
+
+    def test_fzf_short_output_passthrough(self) -> None:
+        """FzfFilter passes through short output (≤50 lines) unchanged."""
+        f = bc.FzfFilter()
+        lines = "\n".join([f"item_{i}" for i in range(30)])
+        result = f.compress(lines, "", 0, ["fzf"])
+        assert result == lines
+        assert "elided" not in result
+
+    def test_fzf_long_output_compressed(self) -> None:
+        """FzfFilter compresses long output (>50 lines): first 40 + last 10 + marker."""
+        f = bc.FzfFilter()
+        lines = "\n".join([f"item_{i}" for i in range(100)])
+        result = f.compress(lines, "", 0, ["fzf"])
+        assert "elided" in result
+        result_lines = result.split("\n")
+        # Should have: 40 head + 1 marker + 10 tail = 51 lines
+        assert len(result_lines) == 51
+        assert result_lines[0] == "item_0"
+        assert result_lines[40].startswith("...")
+        assert result_lines[-1] == "item_99"
+
+    def test_fzf_empty_output(self) -> None:
+        """FzfFilter handles empty output without error."""
+        f = bc.FzfFilter()
+        result = f.compress("", "", 0, ["fzf"])
+        assert result == ""
+
+
+# --- LazyGitFilter tests (git TUI output compression) --------------------------
+
+class TestLazyGitFilter:
+    """Test LazyGitFilter compression for lazygit output."""
+
+    def test_lazygit_matches_binary(self) -> None:
+        """LazyGitFilter matches 'lazygit' binary."""
+        f = bc.LazyGitFilter()
+        assert f.matches(["lazygit"])
+        assert f.matches(["lazygit", "--version"])
+
+    def test_lazygit_empty_output(self) -> None:
+        """LazyGitFilter returns helpful message for empty output."""
+        f = bc.LazyGitFilter()
+        result = f.compress("", "", 0, ["lazygit"])
+        assert "[lazygit is an interactive terminal UI" in result
+
+    def test_lazygit_ansi_codes_detected(self) -> None:
+        """LazyGitFilter detects ANSI escape codes and returns helpful message."""
+        f = bc.LazyGitFilter()
+        output_with_ansi = "Some output\x1b[1;32mcolored text\x1b[0m"
+        result = f.compress(output_with_ansi, "", 0, ["lazygit"])
+        assert "[lazygit is an interactive terminal UI" in result
+
+    def test_lazygit_plain_text_passthrough(self) -> None:
+        """LazyGitFilter passes through plain text output (unusual but possible)."""
+        f = bc.LazyGitFilter()
+        output = "plain text log output\nline 2\nline 3"
+        result = f.compress(output, "", 0, ["lazygit"])
+        # Plain text without ANSI codes should pass through
+        assert result.strip() == output.strip()

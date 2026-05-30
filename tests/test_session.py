@@ -979,20 +979,25 @@ class TestHintsSeenCap:
     """HINTS_SEEN_MAX cap — hints_seen is cleared via mark_hint_seen() when exceeded."""
 
     def test_hints_seen_capped_via_mark(self, tmp_data_dir):
-        """hints_seen is cleared (reset to empty set) when mark_hint_seen pushes it past HINTS_SEEN_MAX."""
+        """hints_seen is capped via LRU when mark_hint_seen exceeds HINTS_SEEN_MAX."""
         sid = "hints_cap_1"
         cache = session.load(sid)
-        # Fill hints_seen to exactly the cap using mark_hint_seen so the
-        # enforcement path in SessionCache.mark_hint_seen() fires correctly.
-        for i in range(session.HINTS_SEEN_MAX):
+        # Build hints_seen with a high-count fingerprint before reaching the cap.
+        # Mark fp_overflow multiple times first to give it a high count.
+        for _ in range(100):
+            cache.mark_hint_seen("fp_overflow")
+        # Now fill the rest up to the cap with single-count entries.
+        for i in range(session.HINTS_SEEN_MAX - 1):
             cache.mark_hint_seen(f"fp_{i}")
-        # One more push past the cap — should trigger the clear.
-        cache.mark_hint_seen("fp_overflow")
-        # After the clear, only the newly-added fingerprint remains (or it
-        # may be empty depending on whether the clear happens before or after
-        # the add — the production code clears then the loop continues, so
-        # "fp_overflow" was added before clear fired; check cap is satisfied).
+        # At this point, len(hints_seen) == HINTS_SEEN_MAX and fp_overflow has count 100.
+        assert len(cache.hints_seen) == session.HINTS_SEEN_MAX
+        # Add one more entry to trigger LRU eviction.
+        cache.mark_hint_seen("fp_trigger")
+        # After LRU, the cap is respected.
         assert len(cache.hints_seen) <= session.HINTS_SEEN_MAX
+        # The high-count fingerprint (fp_overflow with count 100) should survive LRU.
+        assert "fp_overflow" in cache.hints_seen
+        assert cache.hints_seen["fp_overflow"] == 100
 
     def test_hints_seen_cleared_after_cap_roundtrip(self, tmp_data_dir):
         """After cap fires and cache is saved+loaded, hints_seen is compact."""
@@ -2917,6 +2922,39 @@ class TestSessionCAS:
 
         assert len(merged.hints_seen) <= HINTS_SEEN_MAX, (
             f"hints_seen grew to {len(merged.hints_seen)} after merge, cap is {HINTS_SEEN_MAX}"
+        )
+
+    def test_merge_hints_seen_lru_preserves_highest_counts(self, tmp_data_dir):
+        """When hints_seen exceeds cap after merge, LRU keeps highest-count entries."""
+        from token_goat.session import HINTS_SEEN_MAX, _merge_session_caches
+
+        sid = "cas_merge_hints_seen_lru"
+
+        # Create two sides that, when merged, exceed the cap.
+        # Local has entries with higher counts; remote has entries with lower counts.
+        local = session.load(sid)
+        local.hints_seen = {f"hot_{i}": 100 - i for i in range(250)}  # 100, 99, 98, ..., 50
+
+        remote = session.load(sid)
+        remote.hints_seen = {f"cold_{i}": i for i in range(250)}  # 0, 1, 2, ..., 249
+
+        merged = _merge_session_caches(local, remote)
+
+        # After merge, the dict should be capped to HINTS_SEEN_MAX.
+        assert len(merged.hints_seen) == HINTS_SEEN_MAX
+
+        # The LRU eviction should prefer entries with higher counts.
+        # We expect the "hot_" entries (with counts > 100) and some "cold_" entries
+        # with the highest counts (249, 248, etc.) to remain.
+        hot_count = sum(1 for k in merged.hints_seen if k.startswith("hot_"))
+        cold_count = sum(1 for k in merged.hints_seen if k.startswith("cold_"))
+
+        # The "hot_" entries dominate because they have higher counts (50-100).
+        # Even the lowest "hot_" count (50) is higher than most "cold_" counts.
+        # We expect at least 240 "hot_" entries to be preserved.
+        assert hot_count >= 240, (
+            f"LRU eviction should preserve high-count entries; "
+            f"got {hot_count} hot, {cold_count} cold"
         )
 
 
