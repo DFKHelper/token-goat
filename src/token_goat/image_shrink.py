@@ -458,7 +458,7 @@ def _sweep_orphans() -> None:
         _LOG.info("_sweep_orphans: removed %d orphan blob(s)", removed)
 
 
-def shrink(src_path: Path) -> Path | None:
+def shrink(src_path: Path, *, _session_id: str | None = None) -> Path | None:
     """Compress and cache a large image; return the cached output path, or None on failure.
 
     Processing pipeline:
@@ -475,6 +475,13 @@ def shrink(src_path: Path) -> Path | None:
          are composited over a white background by _ensure_rgb() before JPEG save.
     6. Log size reduction percentage for telemetry.
 
+    Args:
+        src_path: Path to the source image file.
+        _session_id: (Internal, optional) Session ID used to track per-session shrink
+            budgets. When provided, the session cache records this shrink event for
+            later dedup analysis. Callers should not set this parameter directly;
+            it is for use by hooks that have session context.
+
     Returns ``None`` (never raises) on any PIL, OS, or memory error. Callers treat
     ``None`` as "use original path". On success returns the cached output ``Path``.
     Callers that want an alt-text summary should reopen the result with PIL and
@@ -483,6 +490,40 @@ def shrink(src_path: Path) -> Path | None:
     # Fire the one-shot orphan sweep on first shrink call in this process.
     # The sweep is fail-soft: any error is logged and skipped, never blocking.
     _sweep_orphans()
+
+    # Track per-session shrink count to detect repeated shrinking of the same
+    # image (e.g., a generated screenshot appearing 50 times in a session).
+    # If an image at the same absolute path is shrunk >3 times in a session,
+    # we log a hint so the hook can emit a "use --session <id>" suggestion
+    # for surgical reads instead of repeatedly shrinking the same input.
+    # This is best-effort: if the session ID is not provided or if the session
+    # cache is unavailable, the tracking is skipped (fail-soft).
+    if _session_id:
+        try:
+            from . import session as _session_module  # noqa: PLC0415
+            _sess = _session_module.safe_load(_session_id)
+            if _sess and not _sess.unavailable:
+                # Use str(src_path.resolve()) as the per-image key — absolute,
+                # canonical path that resolves symlinks so the same physical file
+                # is always tracked under one key even if accessed via different paths.
+                _img_key = str(src_path.resolve())
+                _shrink_count = _sess.image_shrink_count.get(_img_key, 0) + 1
+                _sess.image_shrink_count[_img_key] = _shrink_count
+                # Log once every 10 shrinks to avoid log spam when count > 3.
+                # Helps operators notice the pattern without overwhelming the logs.
+                if _shrink_count > 3 and _shrink_count % 10 == 1:
+                    _LOG.info(
+                        "image %s has been shrunk %d times in this session; "
+                        "consider using token-goat read/section for surgical access",
+                        src_path.name, _shrink_count,
+                    )
+                # Mutate the session cache in-memory; the hook's post-read handler
+                # will persist it to disk. Fail-soft: if the save later fails, we
+                # still return the shrunken image (never block the agent).
+        except Exception as exc:  # noqa: BLE001
+            # Any error in session tracking (load, mutation) is benign and logged.
+            _LOG.debug("image_shrink: per-session tracking failed: %s", exc)
+            pass
 
     t0 = time.time()
     # Validate input path for safety
@@ -515,6 +556,44 @@ def shrink(src_path: Path) -> Path | None:
     for suffix in suffixes:
         candidate = stem.with_suffix(suffix)
         if candidate.exists():
+            # Before returning a cached image, validate that it's readable.
+            # A truncated cache file (partial write from an interrupted shrink)
+            # will cause Pillow to raise UnidentifiedImageError or
+            # DecompressionBombError. If the cached file is corrupt, delete it,
+            # log a warning, and fall through to re-shrink from the original source.
+            # This ensures that transient cache corruption doesn't block the agent.
+            try:
+                from PIL import Image as _ValidateImage  # noqa: PLC0415
+                with _ValidateImage.open(candidate) as _:
+                    pass  # File is readable; proceed to use it.
+            except (OSError, EOFError) as exc:
+                # OSError: file deleted between exists() and open() (rare race)
+                # EOFError: truncated file (corrupt cache entry)
+                # Both cases: fall through to re-shrink below.
+                _LOG.warning(
+                    "image cache corruption detected: %s (%s), will re-shrink from %s",
+                    candidate.name, type(exc).__name__, src_path.name,
+                )
+                try:
+                    candidate.unlink()
+                except OSError as _unlink_exc:
+                    _LOG.debug("failed to unlink corrupt cache file %s: %s", candidate.name, _unlink_exc)
+                continue  # Try next suffix or fall through to re-shrink.
+            except Exception as exc:  # noqa: BLE001 — Pillow raises many exception types
+                # UnidentifiedImageError, DecompressionBombError, MemoryError, etc.
+                # Any unexpected error during validation: delete the corrupt entry
+                # and re-shrink. This prevents a partially-written or corrupted
+                # cache file from causing the hook to return None (treat as failure).
+                _LOG.warning(
+                    "image cache validation failed: %s (%s: %s), will re-shrink from %s",
+                    candidate.name, type(exc).__name__, exc, src_path.name,
+                )
+                try:
+                    candidate.unlink()
+                except OSError as _unlink_exc:
+                    _LOG.debug("failed to unlink corrupt cache file %s: %s", candidate.name, _unlink_exc)
+                continue  # Try next suffix or fall through to re-shrink.
+
             elapsed = time.time() - t0
             _LOG.debug("image cache hit: %s -> %s (%.3fs)", src_path.name, candidate.name, elapsed)
             # Bump mtime so the LRU evictor in worker.evict_image_cache_if_over_limit
