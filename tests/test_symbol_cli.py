@@ -276,3 +276,159 @@ def test_symbol_all_projects_json(indexed_ts_dir, tmp_data_dir, monkeypatch):
     assert isinstance(data, list)
     assert len(data) >= 1
     assert any(r["name"] == "greet" for r in data)
+
+
+# ---------------------------------------------------------------------------
+# refs command
+# ---------------------------------------------------------------------------
+
+def test_refs_json_output(indexed_ts_dir, tmp_data_dir, monkeypatch):
+    proj_root, proj = indexed_ts_dir
+    monkeypatch.chdir(proj_root)
+
+    from typer.testing import CliRunner
+
+    from token_goat.cli import app
+
+    runner = CliRunner()
+    result = runner.invoke(app, ["refs", "greet", "--json"])
+    assert result.exit_code == 0
+    data = json.loads(result.output.strip())
+    assert isinstance(data, list)
+    assert len(data) >= 1
+    first = data[0]
+    assert first["symbol"] == "greet"
+    assert "file" in first
+    assert "line" in first
+    assert isinstance(first["line"], int)
+
+
+def test_refs_plain_output_format(indexed_ts_dir, tmp_data_dir, monkeypatch):
+    proj_root, proj = indexed_ts_dir
+    monkeypatch.chdir(proj_root)
+
+    from typer.testing import CliRunner
+
+    from token_goat.cli import app
+
+    runner = CliRunner()
+    result = runner.invoke(app, ["refs", "greet"])
+    assert result.exit_code == 0
+    lines = [ln for ln in result.output.splitlines() if ln.strip()]
+    assert len(lines) >= 1
+    # Each line must contain a colon separating file:line
+    for line in lines:
+        assert ":" in line
+
+
+def test_refs_no_results(indexed_ts_dir, tmp_data_dir, monkeypatch):
+    proj_root, proj = indexed_ts_dir
+    monkeypatch.chdir(proj_root)
+
+    from typer.testing import CliRunner
+
+    from token_goat.cli import app
+
+    runner = CliRunner()
+    result = runner.invoke(app, ["refs", "__no_such_symbol_xyz__"])
+    assert result.exit_code == 0
+    assert "no references" in result.output.lower()
+
+
+def test_refs_file_filter(indexed_ts_dir, tmp_data_dir, monkeypatch):
+    proj_root, proj = indexed_ts_dir
+    monkeypatch.chdir(proj_root)
+
+    from typer.testing import CliRunner
+
+    from token_goat.cli import app
+
+    runner = CliRunner()
+    result = runner.invoke(app, ["refs", "greet", "--file", "index.ts", "--json"])
+    assert result.exit_code == 0
+    data = json.loads(result.output.strip())
+    assert isinstance(data, list)
+    for row in data:
+        assert "index.ts" in row["file"]
+
+
+def test_refs_limit(indexed_ts_dir, tmp_data_dir, monkeypatch):
+    proj_root, proj = indexed_ts_dir
+    monkeypatch.chdir(proj_root)
+
+    from typer.testing import CliRunner
+
+    from token_goat.cli import app
+
+    runner = CliRunner()
+    result = runner.invoke(app, ["refs", "greet", "--limit", "1", "--json"])
+    assert result.exit_code == 0
+    data = json.loads(result.output.strip())
+    assert len(data) <= 1
+
+
+def test_refs_no_project_is_graceful():
+    from unittest.mock import patch as mock_patch
+
+    from typer.testing import CliRunner
+
+    from token_goat.cli import app
+
+    runner = CliRunner()
+    with mock_patch("token_goat.project.find_project", return_value=None):
+        result = runner.invoke(app, ["refs", "foo"])
+    assert result.exit_code != 0
+    assert "no project detected" in result.output.lower()
+
+
+# ---------------------------------------------------------------------------
+# symbol --refs flag
+# ---------------------------------------------------------------------------
+
+def test_symbol_refs_flag_json(indexed_ts_dir, tmp_data_dir, monkeypatch):
+    proj_root, proj = indexed_ts_dir
+    monkeypatch.chdir(proj_root)
+
+    from typer.testing import CliRunner
+
+    from token_goat.cli import app
+
+    runner = CliRunner()
+    result = runner.invoke(app, ["symbol", "greet", "--refs", "--json"])
+    assert result.exit_code == 0
+    data = json.loads(result.output.strip())
+    assert isinstance(data, list)
+    assert len(data) >= 1
+    assert "ref_count" in data[0]
+    assert isinstance(data[0]["ref_count"], int)
+
+
+def test_symbol_refs_flag_plain(indexed_ts_dir, tmp_data_dir, monkeypatch):
+    proj_root, proj = indexed_ts_dir
+    monkeypatch.chdir(proj_root)
+
+    from typer.testing import CliRunner
+
+    from token_goat.cli import app
+
+    runner = CliRunner()
+    result = runner.invoke(app, ["symbol", "greet", "--refs"])
+    assert result.exit_code == 0
+    assert "refs]" in result.output
+
+
+def test_symbol_without_refs_flag_no_ref_count(indexed_ts_dir, tmp_data_dir, monkeypatch):
+    proj_root, proj = indexed_ts_dir
+    monkeypatch.chdir(proj_root)
+
+    from typer.testing import CliRunner
+
+    from token_goat.cli import app
+
+    runner = CliRunner()
+    result = runner.invoke(app, ["symbol", "greet", "--json"])
+    assert result.exit_code == 0
+    data = json.loads(result.output.strip())
+    assert isinstance(data, list)
+    assert len(data) >= 1
+    assert "ref_count" not in data[0]
