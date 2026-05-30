@@ -55,6 +55,8 @@ _DISPATCH_CASES: list[tuple[list[str], str]] = [
     (["cargo", "build", "--release"], "cargo"),
     (["cargo", "test"], "cargo"),
     (["cargo", "check"], "cargo"),
+    (["cargo", "clippy"], "cargo"),
+    (["cargo", "run"], "cargo"),
     # ---- NodePackageFilter ----
     (["npm", "install"], "npm"),
     (["npm", "ci"], "npm"),
@@ -457,6 +459,40 @@ error: aborting due to previous error
 """
 
 
+_CARGO_TEST_STDOUT = """\
+running 5 tests
+test auth::test_login_ok ... ok
+test auth::test_logout ... ok
+test auth::test_bad_password ... FAILED
+test db::test_connect ... ok
+test db::test_query ... ok
+
+failures:
+
+---- auth::test_bad_password stdout ----
+thread 'auth::test_bad_password' panicked at 'assertion failed: result.is_ok()'
+src/auth.rs:42
+
+failures:
+    auth::test_bad_password
+
+test result: FAILED. 1 failed; 4 passed; 0 ignored; 0 measured; 0 filtered out; finished in 0.12s
+"""
+
+_CARGO_CLIPPY_STDERR = """\
+   Checking tokio v1.38.0
+   Checking serde v1.0.197
+   Checking my-project v0.1.0 (/src)
+warning: unused variable: `x`
+ --> src/main.rs:5:9
+  |
+5 |     let x = 1;
+  |         ^ help: if this is intentional, prefix it with an underscore: `_x`
+
+warning: 1 warning emitted
+"""
+
+
 class TestCargoFilter:
     def test_error_preserved(self) -> None:
         f = bc.CargoFilter()
@@ -467,9 +503,8 @@ class TestCargoFilter:
     def test_compiling_lines_collapsed(self) -> None:
         f = bc.CargoFilter()
         out = _apply(f, stdout="", stderr=_CARGO_OUTPUT_STDERR)
-        # 9 Compiling lines → collapsed summary should appear.
-        assert "Compiling" in out  # first two are kept
-        assert "collapsed" in out  # marker for the collapsed ones
+        assert "Compiling" in out
+        assert "collapsed" in out
 
     def test_savings_ratio(self) -> None:
         f = bc.CargoFilter()
@@ -478,6 +513,55 @@ class TestCargoFilter:
         ) + "\n   Finished dev [unoptimized] target(s) in 30s\n"
         ratio = _savings_ratio(f, stdout="", stderr=big_stderr)
         assert ratio >= 0.20, f"CargoFilter savings {ratio:.0%} < 20%"
+
+    def test_cargo_test_pass_lines_collapsed(self) -> None:
+        f = bc.CargoFilter()
+        argv = ["cargo", "test"]
+        result = f.apply(_CARGO_TEST_STDOUT, "", 1, argv)
+        out = result.text
+        assert "auth::test_bad_password" in out
+        assert "assertion failed" in out
+        assert "test result: FAILED" in out
+        assert "collapsed 4 passing" in out
+
+    def test_cargo_test_fail_line_preserved(self) -> None:
+        f = bc.CargoFilter()
+        argv = ["cargo", "test"]
+        result = f.apply(_CARGO_TEST_STDOUT, "", 1, argv)
+        assert "FAILED" in result.text
+
+    def test_cargo_clippy_checking_lines_suppressed(self) -> None:
+        f = bc.CargoFilter()
+        argv = ["cargo", "clippy"]
+        result = f.apply("", _CARGO_CLIPPY_STDERR, 0, argv)
+        out = result.text
+        assert "unused variable" in out
+        assert "dropped" in out
+        assert "Checking" not in out or "dropped" in out
+
+    def test_cargo_clippy_warning_preserved(self) -> None:
+        f = bc.CargoFilter()
+        argv = ["cargo", "clippy"]
+        result = f.apply("", _CARGO_CLIPPY_STDERR, 0, argv)
+        assert "unused variable" in result.text
+        assert "help: if this is intentional" in result.text
+
+    def test_cargo_run_passthrough(self) -> None:
+        f = bc.CargoFilter()
+        argv = ["cargo", "run"]
+        stdout = "Hello, world!\nProgram finished with code 0\n"
+        result = f.apply(stdout, "", 0, argv)
+        assert "Hello, world!" in result.text
+        assert "Program finished" in result.text
+
+    def test_cargo_build_dispatches_to_build(self) -> None:
+        f = bc.CargoFilter()
+        big_stderr = "\n".join(
+            [f"   Compiling crate{i} v1.0.{i}" for i in range(20)]
+        ) + "\n   Finished dev target(s) in 5s\n"
+        result = f.apply("", big_stderr, 0, ["cargo", "build"])
+        assert "collapsed" in result.text
+        assert "Finished" in result.text
 
 
 # --- NodePackageFilter ------------------------------------------------------

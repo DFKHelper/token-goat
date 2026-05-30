@@ -1207,15 +1207,33 @@ _CARGO_COMPILING_RE: Final[re.Pattern[str]] = re.compile(
     r"^\s*Compiling\s+\S+\s+v\S+"
 )
 _CARGO_PROGRESS_RE: Final[re.Pattern[str]] = re.compile(
-    r"^\s*(Downloading|Fetching|Updating|Documenting|Checking|Building)\s+\S"
+    r"^\s*(Downloading|Fetching|Updating|Documenting|Building)\s+\S"
+)
+_CARGO_CHECKING_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\s*Checking\s+\S+\s+v\S+"
 )
 _CARGO_FINISHED_RE: Final[re.Pattern[str]] = re.compile(
     r"^\s*Finished\s+(dev|release|test)"
 )
+_CARGO_TEST_PASS_RE: Final[re.Pattern[str]] = re.compile(
+    r"^test\s+\S.*\s\.\.\.\s+ok\s*$"
+)
+_CARGO_TEST_FAIL_RE: Final[re.Pattern[str]] = re.compile(
+    r"^test\s+\S.*\s\.\.\.\s+FAILED\s*$"
+)
+_CARGO_TEST_RESULT_RE: Final[re.Pattern[str]] = re.compile(
+    r"^test result:"
+)
+_CARGO_TEST_RUNNING_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\s*Running\s+(?:unittests|tests/|target/)"
+)
+_CARGO_ERROR_CODE_RE: Final[re.Pattern[str]] = re.compile(
+    r"^error\[E\d+\]"
+)
 
 
 class CargoFilter(Filter):
-    """Compress cargo build / test / check output.
+    """Compress cargo build / check / test / clippy / run output.
 
     Cargo emits a ``Compiling foo v0.1.0`` line per crate (often dozens),
     plus optional ``Downloading``, ``Fetching``, ``Updating`` lines.  These
@@ -1223,14 +1241,15 @@ class CargoFilter(Filter):
 
     Compression model:
 
-    * **Drop** ``Compiling`` lines beyond a head + tail sample (keep first 2
-      and last 2 so the agent can see what triggered the build).
-    * **Drop** ``Downloading`` / ``Fetching`` / ``Updating`` / ``Documenting``
-      lines unless followed by an error.
-    * **Keep** every ``warning:`` and ``error:`` block in full (Rust diagnostics
-      span multiple lines with arrow-pointers; preserving them is essential).
-    * **Keep** the ``Finished`` summary line.
-    * **Keep** ``cargo test`` output (delegates to test-style filtering).
+    * **build / check**: drop ``Compiling`` lines beyond a head + tail sample
+      (keep first 2 and last 2); drop ``Downloading``/``Fetching``/``Updating``
+      progress; keep every ``warning:``/``error:`` block and the ``Finished``
+      summary line.
+    * **test**: drop passing ``test foo ... ok`` lines (count them); keep every
+      ``FAILED`` line, failure details, and the final ``test result:`` summary.
+    * **clippy**: suppress ``Checking crate v...`` progress lines; keep every
+      ``warning:``/``error:`` diagnostic and the final summary.
+    * **run**: pass through — script output is load-bearing.
     """
 
     name = "cargo"
@@ -1239,8 +1258,18 @@ class CargoFilter(Filter):
     def compress(
         self, stdout: str, stderr: str, exit_code: int, argv: list[str],
     ) -> str:
-        # Cargo writes progress / errors to stderr; only test bodies to stdout.
-        # Note: reversed order (stderr first) — we swap the arguments.
+        positionals = _positional_args(argv[1:])
+        subcommand = positionals[0] if positionals else ""
+
+        if subcommand == "test":
+            return self._compress_test(stdout, stderr)
+        if subcommand == "clippy":
+            return self._compress_clippy(stdout, stderr)
+        if subcommand == "run":
+            return self._combine_output(stdout, stderr)
+        return self._compress_build(stdout, stderr)
+
+    def _compress_build(self, stdout: str, stderr: str) -> str:
         merged = self._combine_output(stderr, stdout)
         lines = merged.split("\n")
         compiled: list[str] = []
@@ -1250,11 +1279,10 @@ class CargoFilter(Filter):
             if _CARGO_COMPILING_RE.match(line):
                 compiled.append(line)
                 continue
-            if _CARGO_PROGRESS_RE.match(line):
+            if _CARGO_CHECKING_RE.match(line) or _CARGO_PROGRESS_RE.match(line):
                 dropped_progress += 1
                 continue
             kept.append(line)
-        # Reinject a compact compilation summary.
         if compiled:
             if len(compiled) <= 4:
                 kept = compiled + kept
@@ -1267,6 +1295,72 @@ class CargoFilter(Filter):
                 ]
         if dropped_progress:
             kept.append(f"[token-goat: dropped {dropped_progress} cargo progress lines]")
+        return self._finalize(kept)
+
+    def _compress_test(self, stdout: str, stderr: str) -> str:
+        # cargo test: stderr has compiler progress, stdout has test output.
+        # Merge compiler noise first, then test results.
+        build_part = self._compress_build("", stderr) if stderr.strip() else ""
+        test_lines = stdout.split("\n")
+        kept: list[str] = []
+        pass_count = 0
+        fail_names: list[str] = []
+        for line in test_lines:
+            if _CARGO_TEST_PASS_RE.match(line):
+                pass_count += 1
+                continue
+            if _CARGO_TEST_FAIL_RE.match(line):
+                fail_names.append(line)
+                kept.append(line)
+                continue
+            if _CARGO_TEST_RUNNING_RE.match(line):
+                # "Running unittests/tests/..." — keep as section marker.
+                kept.append(line)
+                continue
+            kept.append(line)
+        notes: list[str] = []
+        if pass_count:
+            notes.append(f"collapsed {pass_count} passing test lines")
+        self._emit_notes(kept, notes)
+        test_out = self._finalize(kept)
+        if build_part.strip() and test_out.strip():
+            return build_part.rstrip() + "\n---\n" + test_out
+        return build_part if build_part.strip() else test_out
+
+    def _compress_clippy(self, stdout: str, stderr: str) -> str:
+        merged = self._combine_output(stderr, stdout)
+        lines = merged.split("\n")
+        compiled: list[str] = []
+        kept: list[str] = []
+        dropped_checking = 0
+        dropped_progress = 0
+        for line in lines:
+            if _CARGO_COMPILING_RE.match(line):
+                compiled.append(line)
+                continue
+            if _CARGO_CHECKING_RE.match(line):
+                dropped_checking += 1
+                continue
+            if _CARGO_PROGRESS_RE.match(line):
+                dropped_progress += 1
+                continue
+            kept.append(line)
+        if compiled:
+            if len(compiled) <= 4:
+                kept = compiled + kept
+            else:
+                kept = [
+                    *compiled[:2],
+                    f"[token-goat: collapsed {len(compiled) - 4} 'Compiling …' lines]",
+                    *compiled[-2:],
+                    *kept,
+                ]
+        notes: list[str] = []
+        if dropped_checking:
+            notes.append(f"dropped {dropped_checking} 'Checking …' lines")
+        if dropped_progress:
+            notes.append(f"dropped {dropped_progress} cargo progress lines")
+        self._emit_notes(kept, notes)
         return self._finalize(kept)
 
 
