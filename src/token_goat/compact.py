@@ -14,6 +14,7 @@ __all__ = [
     "is_noise_path",
     "_dedup_grep_entries",
     "_build_sealed_block",
+    "_format_hint_telemetry",
     "_get_inline_diff_for_file",
     "_get_whole_repo_diff",
 ]
@@ -271,6 +272,10 @@ def _compute_manifest_fingerprint(cache: SessionCache) -> str:  # type: ignore[n
     edited_files = cache.edited_files if isinstance(cache.edited_files, dict) else {}
     bash_dedup_ids = sorted(getattr(cache, "bash_dedup_emitted_ids", set()) or [])
 
+    hints_emitted = int(getattr(cache, "hints_emitted", 0) or 0)
+    _suppressed_raw = getattr(cache, "hints_suppressed_by_type", None) or {}
+    hints_suppressed = sum(_suppressed_raw.values()) if isinstance(_suppressed_raw, dict) else 0
+
     payload = json.dumps(
         {
             "age_tier": age_tier,
@@ -282,6 +287,8 @@ def _compute_manifest_fingerprint(cache: SessionCache) -> str:  # type: ignore[n
             "files": _dict_payload(getattr(cache, "files", None)),
             "glob_history": _list_payload(getattr(cache, "glob_history", None)),
             "greps": _list_payload(getattr(cache, "greps", None)),
+            "hints_emitted": hints_emitted,
+            "hints_suppressed": hints_suppressed,
             "skill_history": _dict_payload(getattr(cache, "skill_history", None)),
             "web_history": _dict_payload(getattr(cache, "web_history", None)),
         },
@@ -2209,6 +2216,25 @@ def _format_decision_entry(entry: object) -> str:
     return f"- 💡 {tag_str}{text}"
 
 
+def _format_hint_telemetry(cache: object) -> str | None:
+    """Return a one-line hint activity summary for the manifest header, or None.
+
+    Emitted only when at least one hint was emitted or suppressed this session.
+    Both zeroes means no hints fired at all (e.g. first tool call, cold session)
+    and the line adds no signal.
+
+    Format: ``(12 hints emitted, 4 suppressed)``
+    """
+    emitted = int(getattr(cache, "hints_emitted", 0) or 0)
+    _sup_raw = getattr(cache, "hints_suppressed_by_type", None) or {}
+    suppressed = sum(_sup_raw.values()) if isinstance(_sup_raw, dict) else 0
+    if emitted == 0 and suppressed == 0:
+        return None
+    if suppressed == 0:
+        return f"({emitted} hints emitted)"
+    return f"({emitted} hints emitted, {suppressed} suppressed)"
+
+
 def _select_top_glob_entries(glob_history: object) -> list[object]:
     """Pick up to :data:`_MAX_GLOB_ENTRIES` glob scans worth surfacing in the manifest.
 
@@ -3706,6 +3732,9 @@ def _render(
     header_lines: list[str] = [
         "## Token-Goat Session Manifest",
     ]
+    _hint_telemetry = _format_hint_telemetry(cache)
+    if _hint_telemetry:
+        header_lines.append(_hint_telemetry)
 
     # Get cwd early so it can be used by both diff summary and commits section.
     cwd = getattr(cache, "cwd", None)
