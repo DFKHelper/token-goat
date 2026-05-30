@@ -38,6 +38,10 @@ import re as _re
 import time
 from collections.abc import Callable
 from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from .session import SessionCache
 
 from .hooks_common import (
     CONTINUE,
@@ -506,7 +510,7 @@ def _build_git_hint(cwd: str | None, file_path: str) -> str | None:
 
 
 def _append_hint_if_new(
-    cache: object,
+    cache: SessionCache | None,
     fingerprint: str,
     hint_text: str,
     stat_key: str,
@@ -526,11 +530,13 @@ def _append_hint_if_new(
 
     Returns True when the hint was appended, False when suppressed.
     """
-    if cache.has_hint_fingerprint(fingerprint):  # type: ignore[union-attr]
+    if cache is None:
+        return False
+    if cache.has_hint_fingerprint(fingerprint):
         return False
     context_parts.append(hint_text)
-    cache.mark_hint_seen(fingerprint)  # type: ignore[union-attr]
-    cache.record_hint_emitted(stat_key)  # type: ignore[union-attr]
+    cache.mark_hint_seen(fingerprint)
+    cache.record_hint_emitted(stat_key)
     return True
 
 
@@ -1533,6 +1539,10 @@ def pre_read(payload: HookPayload) -> HookResponse:
         if unchanged_response is not None:
             return unchanged_response
 
+        # Session cache required for all hint paths below — bail early if unavailable.
+        if cache is None:
+            return CONTINUE()
+
         # Diff-aware path: file was read AND edited in this session AND we have
         # a snapshot to compare against.  When applicable, the diff hint replaces
         # the standard cache hint — both communicate the same idea (you've seen
@@ -1694,9 +1704,9 @@ def pre_read(payload: HookPayload) -> HookResponse:
         # Skip git hint for files edited this session (agent already knows they changed).
         # Skip for new sessions (<120s) where git history is not yet relevant.
         _written_key = session._normalize_path(file_path)  # type: ignore[attr-defined]
-        _edited: dict[str, int] = cache.edited_files if isinstance(cache.edited_files, dict) else {}
+        _git_edited: dict[str, int] = cache.edited_files if isinstance(cache.edited_files, dict) else {}
         _created_ts = getattr(cache, 'created_ts', time.time())
-        _is_edited = _written_key in _edited
+        _is_edited = _written_key in _git_edited
         _is_new_session = False
         if isinstance(_created_ts, (int, float)):
             _session_age = time.time() - _created_ts

@@ -54,7 +54,10 @@ __all__ = [
 ]
 
 from pathlib import Path
-from typing import Any, Protocol, TypedDict, TypeGuard, cast
+from typing import TYPE_CHECKING, Any, Protocol, TypedDict, TypeGuard, cast
+
+if TYPE_CHECKING:
+    from .session import SessionCache
 
 # ---------------------------------------------------------------------------
 # Typed shape for inbound hook payloads
@@ -599,7 +602,7 @@ def is_real_int(value: object) -> TypeGuard[int]:
     return isinstance(value, int) and not isinstance(value, bool)
 
 
-def load_session_safe(session_id: str) -> object | None:
+def load_session_safe(session_id: str) -> SessionCache | None:
     """Load the session cache, returning None on any error (fail-soft).
 
     Centralises the ``try: session.load(session_id) except ...: return None``

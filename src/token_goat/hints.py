@@ -299,7 +299,7 @@ def compute_stale_threshold(session_age_secs: float) -> float:
     return max(900.0, min(STALE_READ_AGE_SECONDS, session_age_secs * 0.25))
 
 
-def _session_stale_threshold(cache: session.SessionCache, now: float) -> float:
+def _session_stale_threshold(cache: session.SessionCache | None, now: float) -> float:
     """Extract session age and compute stale threshold in one helper.
 
     This DRY helper eliminates the repeated pattern:
@@ -637,7 +637,7 @@ def _build_read_hint_inner(
     entry = session.get_file_entry(session_id, file_path, cache=cache)
     if entry is not None:
         # Curator: if the agent has been ignoring re-read dedup hints, stop emitting them.
-        if not _curator_should_emit(cache):
+        if cache is None or not _curator_should_emit(cache):
             return None
         # Budget: hard cap on total dedup hints for the session.
         if cache is not None and not _hint_budget_check(cache, _HINT_KIND_DEDUP):
@@ -2114,7 +2114,7 @@ def _build_grep_dedup_hint_inner(
             return None
 
         # Estimate the bytes that would land in context if the agent re-runs.
-        bytes_avoided = entry.result_count * _GREP_AVG_BYTES_PER_RESULT
+        bytes_avoided = (entry.result_count or 0) * _GREP_AVG_BYTES_PER_RESULT
         tokens_avoided = _est_tokens_from_chars(bytes_avoided)
         pattern_short = _truncate_pattern_display(pattern)
         path_str = f" in `{_sanitize_hint_path(path)}`" if path else ""
@@ -2277,7 +2277,7 @@ def _build_glob_dedup_hint_inner(
         )
         return None
 
-    bytes_avoided = entry.result_count * _GLOB_AVG_BYTES_PER_RESULT
+    bytes_avoided = (entry.result_count or 0) * _GLOB_AVG_BYTES_PER_RESULT
     tokens_avoided = _est_tokens_from_chars(bytes_avoided)
     pattern_short = _sanitize_hint_path(pattern)
     path_str = f" in `{_sanitize_hint_path(path)}`" if path else ""
