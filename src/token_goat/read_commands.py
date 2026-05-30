@@ -471,12 +471,54 @@ def _resolve_file_target(file_part: str) -> _FileTarget:
     return _FileTarget(project=None, rel_path=None, current_project=proj)
 
 
+# ANSI escape for dim/faint text — used to visually distinguish context lines from
+# the core symbol body on TTY output.  The reset code (\x1b[0m) restores normal
+# rendering after each context line so subsequent lines are unaffected.
+_ANSI_DIM = "\x1b[2m"
+_ANSI_RESET = "\x1b[0m"
+
+
+def _apply_context_gutter(
+    text: str,
+    context_before: int,
+    context_after: int,
+    *,
+    no_color: bool,
+) -> str:
+    """Return *text* with context lines visually distinguished from the core body.
+
+    On TTY with color enabled, context lines get a dim ``│ `` gutter prefix so the
+    core symbol body stands out.  With ``no_color=True`` (or piped output) the text
+    is returned unchanged.
+
+    *context_before* and *context_after* are the number of leading/trailing lines
+    that are context (not part of the core symbol).  When both are zero the input
+    is returned as-is.
+    """
+    if no_color or (context_before == 0 and context_after == 0):
+        return text
+    lines = text.split("\n")
+    total = len(lines)
+    result: list[str] = []
+    for i, line in enumerate(lines):
+        is_context = i < context_before or i >= total - context_after
+        if is_context:
+            result.append(f"{_ANSI_DIM}│ {line}{_ANSI_RESET}")
+        else:
+            result.append(f"  {line}")
+    return "\n".join(result)
+
+
 def _emit_text_result(
     text: str,
     rel_path: str,
     item: str,
     separator_label: str,
     no_header: bool,
+    *,
+    context_before: int = 0,
+    context_after: int = 0,
+    no_color: bool = False,
 ) -> None:
     """Emit *text* to stdout, optionally prefixed with a ``## …`` header (Item 15).
 
@@ -488,10 +530,36 @@ def _emit_text_result(
     suppressed by default so callers do not pay ~10 tokens per surgical read.
     Pass ``--header`` (``no_header=False`` with explicit override) or redirect
     to a TTY to restore it; pass ``--no-header`` to force suppression.
+
+    When *context_before* or *context_after* is non-zero and stdout is a TTY
+    (and ``no_color`` is False), context lines are rendered with a dim ``│ ``
+    gutter prefix so the core symbol body stands out visually.
     """
     if not no_header and sys.stdout.isatty():
         typer.echo(f"## {rel_path} — {separator_label}: {item}")
-    typer.echo(text)
+    is_tty = sys.stdout.isatty()
+    apply_color = is_tty and not no_color
+    display_text = _apply_context_gutter(text, context_before, context_after, no_color=not apply_color)
+    typer.echo(display_text)
+
+
+def _context_bounds(result: read_replacement.SymbolResult | read_replacement.SectionResult | dict) -> tuple[int, int]:
+    """Return (context_before, context_after) line counts from a read result dict.
+
+    Uses ``start_line``/``end_line`` (expanded by context) vs ``core_start_line``/
+    ``core_end_line`` (the raw symbol/section bounds before context expansion).
+    Falls back to (0, 0) when the core fields are absent (e.g. LineRangeResult or
+    a cached result from an older format).
+    """
+    core_start = result.get("core_start_line")
+    core_end = result.get("core_end_line")
+    if core_start is None or core_end is None:
+        return 0, 0
+    start = result.get("start_line", core_start)
+    end = result.get("end_line", core_end)
+    before = max(0, core_start - start)
+    after = max(0, end - core_end)
+    return before, after
 
 
 def _run_read_like_command(
@@ -505,6 +573,7 @@ def _run_read_like_command(
     stat_kind: str,
     reader: _ReaderCallable,
     no_header: bool = False,
+    no_color: bool = False,
 ) -> None:
     """Unified handler for read/section/deps CLI commands.
 
@@ -525,6 +594,7 @@ def _run_read_like_command(
             or ``None``.
         no_header: When True, suppress the ``## path — label: item`` header line.
             Defaults to False; auto-suppressed in non-TTY contexts (Item 15).
+        no_color: When True, suppress ANSI color/dim escapes even on TTY output.
     """
     if "::" not in target:
         _emit_read_error(
@@ -588,7 +658,11 @@ def _run_read_like_command(
             out = {k: v for k, v in cached_result.items() if k not in ("bytes_total", "bytes_extracted")}
             typer.echo(json.dumps(out, separators=(",", ":")))
         else:
-            _emit_text_result(cached_result["text"], file_target.rel_path, item_part, separator_label, no_header)
+            cb, ca = _context_bounds(cached_result)
+            _emit_text_result(
+                cached_result["text"], file_target.rel_path, item_part, separator_label, no_header,
+                context_before=cb, context_after=ca, no_color=no_color,
+            )
         return
 
     result = reader(file_target.project, file_target.rel_path, item_part, context_lines=context_lines)
@@ -666,8 +740,12 @@ def _run_read_like_command(
             out["_project_root"] = str(file_target.project.root)
             typer.echo(json.dumps(out, separators=(",", ":")))
             return
+        cb, ca = _context_bounds(result)
         typer.echo(note, err=True)
-        _emit_text_result(result["text"], file_target.rel_path, item_part, separator_label, no_header)
+        _emit_text_result(
+            result["text"], file_target.rel_path, item_part, separator_label, no_header,
+            context_before=cb, context_after=ca, no_color=no_color,
+        )
         return
 
     if json_output:
@@ -675,7 +753,11 @@ def _run_read_like_command(
         out = {k: v for k, v in result.items() if k not in ("bytes_total", "bytes_extracted")}
         typer.echo(json.dumps(out, separators=(",", ":")))
         return
-    _emit_text_result(result["text"], file_target.rel_path, item_part, separator_label, no_header)
+    cb, ca = _context_bounds(result)
+    _emit_text_result(
+        result["text"], file_target.rel_path, item_part, separator_label, no_header,
+        context_before=cb, context_after=ca, no_color=no_color,
+    )
 
 
 def deps(
@@ -860,9 +942,10 @@ def read(
     target: str = typer.Argument(..., help="<file>::<symbol|N-M> — e.g., 'parser.py::index_project', 'auth.py::Session.refresh' for a method, or 'parser.py::100-200' for a line range."),
     session_id: str | None = _OPT_SESSION_ID,
     json_output: bool = typer.Option(False, "--json"),
-    context_lines: int = typer.Option(0, "--context", "-c", help="Extra lines before/after"),
+    context_lines: int = typer.Option(0, "--context", "-c", help="Extra lines before/after the symbol body. Context lines are visually distinguished on TTY output."),
     no_header: bool = typer.Option(False, "--no-header", help="Suppress the '## path — symbol: name' header line (auto-suppressed in non-TTY contexts)"),
     header: bool = typer.Option(False, "--header", help="Force the '## path — symbol: name' header even in non-TTY contexts"),
+    no_color: bool = typer.Option(False, "--no-color", help="Suppress ANSI color/dim escapes (useful when piping output)"),
 ) -> None:
     """Read just <symbol> from <file>, not the whole file.
 
@@ -899,6 +982,7 @@ def read(
         stat_kind="read_replacement",
         reader=read_replacement.read_symbol,
         no_header=_no_header,
+        no_color=no_color,
     )
 
 
@@ -906,9 +990,10 @@ def section(
     target: str = typer.Argument(..., help="<file>::<heading> — e.g., 'README.md::Install'. Append #N to disambiguate duplicate headings, e.g. 'doc.md::Setup#2'."),
     session_id: str | None = _OPT_SESSION_ID,
     json_output: bool = typer.Option(False, "--json"),
-    context_lines: int = typer.Option(0, "--context", "-c", help="Extra lines before/after"),
+    context_lines: int = typer.Option(0, "--context", "-c", help="Extra lines before/after the section body. Context lines are visually distinguished on TTY output."),
     no_header: bool = typer.Option(False, "--no-header", help="Suppress the '## path — heading: name' header line (auto-suppressed in non-TTY contexts)"),
     header: bool = typer.Option(False, "--header", help="Force the '## path — heading: name' header even in non-TTY contexts"),
+    no_color: bool = typer.Option(False, "--no-color", help="Suppress ANSI color/dim escapes (useful when piping output)"),
 ) -> None:
     """Extract just <heading> section from <file>, not the whole file.
 
@@ -927,6 +1012,7 @@ def section(
         stat_kind="section_replacement",
         reader=read_replacement.read_section,
         no_header=no_header or not header and not sys.stdout.isatty(),
+        no_color=no_color,
     )
 
 

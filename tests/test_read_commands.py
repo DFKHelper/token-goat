@@ -141,6 +141,185 @@ def test_run_read_like_command_with_header_tty(capsys: pytest.CaptureFixture[str
 
 
 # ---------------------------------------------------------------------------
+# _apply_context_gutter — context line visual distinction
+# ---------------------------------------------------------------------------
+
+def test_apply_context_gutter_no_context() -> None:
+    from token_goat.read_commands import _apply_context_gutter
+    text = "line1\nline2\nline3"
+    result = _apply_context_gutter(text, 0, 0, no_color=False)
+    assert result == text
+
+
+def test_apply_context_gutter_no_color_passthrough() -> None:
+    from token_goat.read_commands import _apply_context_gutter
+    text = "ctx1\nbody1\nbody2\nctx2"
+    result = _apply_context_gutter(text, 1, 1, no_color=True)
+    assert result == text
+
+
+def test_apply_context_gutter_dims_before_and_after() -> None:
+    from token_goat.read_commands import _ANSI_DIM, _ANSI_RESET, _apply_context_gutter
+    text = "ctx_before\nbody_line\nctx_after"
+    result = _apply_context_gutter(text, 1, 1, no_color=False)
+    lines = result.split("\n")
+    assert _ANSI_DIM in lines[0] and "ctx_before" in lines[0] and _ANSI_RESET in lines[0]
+    assert _ANSI_DIM not in lines[1] and "body_line" in lines[1]
+    assert _ANSI_DIM in lines[2] and "ctx_after" in lines[2] and _ANSI_RESET in lines[2]
+
+
+def test_apply_context_gutter_only_before() -> None:
+    from token_goat.read_commands import _ANSI_DIM, _apply_context_gutter
+    text = "ctx1\nctx2\nbody"
+    result = _apply_context_gutter(text, 2, 0, no_color=False)
+    lines = result.split("\n")
+    assert _ANSI_DIM in lines[0]
+    assert _ANSI_DIM in lines[1]
+    assert _ANSI_DIM not in lines[2]
+
+
+def test_apply_context_gutter_only_after() -> None:
+    from token_goat.read_commands import _ANSI_DIM, _apply_context_gutter
+    text = "body\nctx1\nctx2"
+    result = _apply_context_gutter(text, 0, 2, no_color=False)
+    lines = result.split("\n")
+    assert _ANSI_DIM not in lines[0]
+    assert _ANSI_DIM in lines[1]
+    assert _ANSI_DIM in lines[2]
+
+
+def test_emit_text_result_context_gutter_on_tty(capsys: pytest.CaptureFixture[str]) -> None:
+    from token_goat.read_commands import _ANSI_DIM
+    with patch.object(sys.stdout, "isatty", return_value=True):
+        _emit_text_result(
+            "before\nbody\nafter",
+            "src/foo.py", "my_func", "symbol",
+            no_header=True,
+            context_before=1, context_after=1, no_color=False,
+        )
+    out = capsys.readouterr().out
+    assert _ANSI_DIM in out
+    assert "before" in out
+    assert "body" in out
+    assert "after" in out
+
+
+def test_emit_text_result_no_color_suppresses_ansi(capsys: pytest.CaptureFixture[str]) -> None:
+    from token_goat.read_commands import _ANSI_DIM
+    with patch.object(sys.stdout, "isatty", return_value=True):
+        _emit_text_result(
+            "before\nbody\nafter",
+            "src/foo.py", "my_func", "symbol",
+            no_header=True,
+            context_before=1, context_after=1, no_color=True,
+        )
+    out = capsys.readouterr().out
+    assert _ANSI_DIM not in out
+    assert "before\nbody\nafter" in out
+
+
+def test_emit_text_result_non_tty_no_ansi(capsys: pytest.CaptureFixture[str]) -> None:
+    from token_goat.read_commands import _ANSI_DIM
+    with patch.object(sys.stdout, "isatty", return_value=False):
+        _emit_text_result(
+            "before\nbody\nafter",
+            "src/foo.py", "my_func", "symbol",
+            no_header=True,
+            context_before=1, context_after=1, no_color=False,
+        )
+    out = capsys.readouterr().out
+    assert _ANSI_DIM not in out
+
+
+# ---------------------------------------------------------------------------
+# _context_bounds — derive context_before / context_after from result dict
+# ---------------------------------------------------------------------------
+
+def test_context_bounds_no_context() -> None:
+    from token_goat.read_commands import _context_bounds
+    result = {"start_line": 5, "end_line": 10, "core_start_line": 5, "core_end_line": 10}
+    assert _context_bounds(result) == (0, 0)
+
+
+def test_context_bounds_with_context() -> None:
+    from token_goat.read_commands import _context_bounds
+    result = {"start_line": 3, "end_line": 12, "core_start_line": 5, "core_end_line": 10}
+    assert _context_bounds(result) == (2, 2)
+
+
+def test_context_bounds_missing_core_fields() -> None:
+    from token_goat.read_commands import _context_bounds
+    result = {"start_line": 5, "end_line": 10}
+    assert _context_bounds(result) == (0, 0)
+
+
+def test_context_bounds_asymmetric() -> None:
+    from token_goat.read_commands import _context_bounds
+    result = {"start_line": 1, "end_line": 15, "core_start_line": 4, "core_end_line": 12}
+    assert _context_bounds(result) == (3, 3)
+
+
+# ---------------------------------------------------------------------------
+# read_replacement — core_start_line / core_end_line in SymbolResult
+# ---------------------------------------------------------------------------
+
+def test_read_symbol_core_lines_no_context(ts_project):
+    from token_goat import read_replacement
+    result = read_replacement.read_symbol(ts_project, "index.ts", "greet", context_lines=0)
+    assert result is not None
+    assert result["core_start_line"] == result["start_line"]
+    assert result["core_end_line"] == result["end_line"]
+
+
+def test_read_symbol_core_lines_with_context(ts_project):
+    from token_goat import read_replacement
+    result = read_replacement.read_symbol(ts_project, "index.ts", "greet", context_lines=2)
+    assert result is not None
+    assert result["core_start_line"] >= result["start_line"]
+    assert result["core_end_line"] <= result["end_line"]
+    assert result["core_start_line"] <= result["core_end_line"]
+
+
+def test_run_read_like_command_no_color_flag(capsys: pytest.CaptureFixture[str]) -> None:
+    from token_goat.read_commands import _ANSI_DIM, _run_read_like_command
+    mock_result = {
+        "text": "before\nbody\nafter",
+        "start_line": 3,
+        "end_line": 7,
+        "core_start_line": 4,
+        "core_end_line": 6,
+        "bytes_total": 1000,
+        "bytes_extracted": 50,
+        "bytes_saved": 950,
+    }
+    mock_reader = MagicMock(return_value=mock_result)
+    file_target = _make_file_target()
+
+    with (
+        patch("token_goat.read_commands._resolve_file_target", return_value=file_target),
+        patch("token_goat.db.record_stat"),
+        patch("token_goat.read_commands.session.mark_file_read"),
+        patch.object(sys.stdout, "isatty", return_value=True),
+    ):
+        _run_read_like_command(
+            target="src/foo.py::my_func",
+            session_id=None,
+            json_output=False,
+            context_lines=1,
+            separator_label="symbol",
+            missing_label="Symbol",
+            stat_kind="read_replacement",
+            reader=mock_reader,
+            no_header=True,
+            no_color=True,
+        )
+
+    out = capsys.readouterr().out
+    assert _ANSI_DIM not in out
+    assert "before\nbody\nafter" in out
+
+
+# ---------------------------------------------------------------------------
 # stub_view — regression for start_line vs line column name
 # ---------------------------------------------------------------------------
 
