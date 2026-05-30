@@ -1991,6 +1991,106 @@ class TestEzaFilter:
         assert result == output
 
 
+class TestFdFilter:
+    """Test FdFilter compression for fd / fdfind output."""
+
+    def test_matches_fd_binary(self) -> None:
+        """FdFilter matches 'fd' binary."""
+        f = bc.FdFilter()
+        assert f.matches(["fd", "pattern"])
+
+    def test_matches_fdfind_binary(self) -> None:
+        """FdFilter matches 'fdfind' binary (Ubuntu package name)."""
+        f = bc.FdFilter()
+        assert f.matches(["fdfind", "pattern"])
+
+    def test_matches_fd_with_exe_extension(self) -> None:
+        """FdFilter matches 'fd.exe' on Windows."""
+        f = bc.FdFilter()
+        assert f.matches(["fd.exe", "pattern"])
+
+    def test_small_output_passes_through(self) -> None:
+        """Output with ≤40 lines passes through unchanged."""
+        f = bc.FdFilter()
+        paths = [f"path/to/file{i}.txt" for i in range(30)]
+        output = "\n".join(paths)
+        result = f.compress(output, "", 0, ["fd", "pattern"])
+        # Should be unchanged
+        assert result == output.rstrip()
+        # No compression marker should appear
+        assert "elided" not in result
+
+    def test_large_output_compressed(self) -> None:
+        """Output with >40 lines is compressed."""
+        f = bc.FdFilter()
+        paths = [f"path/to/file{i}.txt" for i in range(60)]
+        output = "\n".join(paths)
+        result = f.compress(output, "", 0, ["fd", "pattern"])
+        # Should contain compression marker
+        assert "elided" in result
+        # Should contain "more paths" language
+        assert "more paths" in result
+        # First 35 paths should be present
+        assert "path/to/file0.txt" in result
+        assert "path/to/file34.txt" in result
+        # Last 5 should be present
+        assert "path/to/file59.txt" in result
+        # Some middle paths should be missing
+        assert "path/to/file40.txt" not in result
+
+    def test_boundary_exactly_40_lines(self) -> None:
+        """Exactly 40 lines passes through without compression."""
+        f = bc.FdFilter()
+        paths = [f"file{i}.txt" for i in range(40)]
+        output = "\n".join(paths)
+        result = f.compress(output, "", 0, ["fd", "test"])
+        # Should pass through unchanged
+        assert result == output.rstrip()
+        assert "elided" not in result
+
+    def test_boundary_41_lines(self) -> None:
+        """41 lines triggers compression."""
+        f = bc.FdFilter()
+        paths = [f"file{i}.txt" for i in range(41)]
+        output = "\n".join(paths)
+        result = f.compress(output, "", 0, ["fd", "test"])
+        # Should be compressed
+        assert "elided" in result
+
+    def test_exit_code_preserved(self) -> None:
+        """Exit codes are preserved through compression."""
+        f = bc.FdFilter()
+        paths = [f"file{i}.txt" for i in range(60)]
+        output = "\n".join(paths)
+        result = f.apply(output, "", 0, ["fd", "pattern"])
+        assert result.exit_code == 0
+
+        result_not_found = f.apply("", "", 1, ["fd", "pattern"])
+        assert result_not_found.exit_code == 1
+
+    def test_compression_ratio(self) -> None:
+        """Compression reduces large outputs significantly."""
+        f = bc.FdFilter()
+        paths = [f"very/long/path/to/file{i:04d}.txt" for i in range(100)]
+        output = "\n".join(paths)
+        result = f.compress(output, "", 0, ["fd", "test"])
+        # Should keep only ~40 lines (35 + marker + 5)
+        result_lines = [ln for ln in result.split("\n") if ln.strip()]
+        assert len(result_lines) < len(paths) / 2  # Less than half the original
+
+    def test_empty_output(self) -> None:
+        """Empty output is handled correctly."""
+        f = bc.FdFilter()
+        result = f.compress("", "", 1, ["fd", "pattern"])
+        assert result == ""
+
+    def test_filter_in_registry(self) -> None:
+        """FdFilter is registered in the global FILTERS list."""
+        fd_filter = bc.select_filter(["fd", "pattern"])
+        assert fd_filter is not None
+        assert fd_filter.name == "fd"
+
+
 class TestTreeFilter:
     def test_matches_tree_binary(self) -> None:
         """TreeFilter matches 'tree' binary."""

@@ -71,6 +71,7 @@ __all__ = [
     "strip_progress",
     "truncate_middle",
     "EzaFilter",
+    "FdFilter",
     "PythonFilter",
     "TreeFilter",
     "UvFilter",
@@ -3087,6 +3088,61 @@ class EzaFilter(Filter):
         return "\n".join(kept).rstrip()
 
 
+# --- fd / fdfind -------------------------------------------------------
+
+#: Threshold: outputs with more lines than this are compressed.
+_FD_COMPRESS_THRESHOLD = 40
+
+
+class FdFilter(Filter):
+    """Compress ``fd`` / ``fdfind`` file search output.
+
+    The ``fd`` command is a fast alternative to ``find`` and can produce
+    large path lists when searching recursively across many directories.
+
+    Compression model:
+
+    * **Pass-through** when output has ≤ 40 lines — fully readable.
+    * **Summarise** when output exceeds 40 lines: keep first 35 lines +
+      last 5 lines + "... N more paths ..." marker in between.
+    """
+
+    name = "fd"
+    binaries = frozenset(["fd", "fdfind"])
+
+    def matches(self, argv: list[str]) -> bool:  # noqa: D102
+        if not argv:
+            return False
+        stem = Path(argv[0]).stem.lower()
+        # Strip .exe on Windows
+        if stem.endswith(".exe"):
+            stem = stem[:-4]
+        return stem in self.binaries
+
+    def compress(
+        self, stdout: str, stderr: str, exit_code: int, argv: list[str],
+    ) -> str:
+        merged = self._combine_output(stdout, stderr)
+        text = normalise(merged)
+
+        lines = text.split("\n")
+        non_empty = [ln for ln in lines if ln.strip()]
+
+        if len(non_empty) <= _FD_COMPRESS_THRESHOLD:
+            return text.rstrip()
+
+        # Keep first 35 + last 5 + marker
+        head_keep = 35
+        tail_keep = 5
+        elided = len(non_empty) - head_keep - tail_keep
+
+        head_lines = non_empty[:head_keep]
+        tail_lines = non_empty[-tail_keep:]
+
+        result = head_lines + [f"... [{elided} more paths elided by token-goat]"] + tail_lines
+        return "\n".join(result)
+
+
 class TreeFilter(Filter):
     """Compress ``tree`` binary output.
 
@@ -3201,6 +3257,7 @@ FILTERS: list[Filter] = [
     PipFilter(),
     UvFilter(),
     EzaFilter(),
+    FdFilter(),
     TreeFilter(),
     PythonFilter(),
 ]
