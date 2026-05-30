@@ -914,6 +914,50 @@ class TestNotIndexedHint:
         assert "in progress" not in hint
         assert "may have failed" not in hint
 
+    def test_handles_malformed_marker(self, tmp_data_dir, make_project, tmp_path):
+        """_not_indexed_hint correctly handles malformed marker file.
+
+        _index_spawn_active returns False for malformed markers (ValueError on int/float
+        conversion), so the hint should fall through to the "may have failed" case
+        since marker.exists() is True.
+        """
+        from token_goat import paths
+        from token_goat.read_commands import _not_indexed_hint
+
+        proj_root = tmp_path / "malformed"
+        proj_root.mkdir()
+        proj = make_project(proj_root)
+
+        # Create a malformed marker file
+        marker_dir = paths.locks_dir()
+        marker_dir.mkdir(parents=True, exist_ok=True)
+        marker = marker_dir / f"{proj.hash}.indexing"
+        marker.write_text("not-a-pid\nnot-a-timestamp\n", encoding="utf-8")
+
+        # _index_spawn_active returns False for malformed markers
+        # so the hint should say "may have failed" since marker exists
+        hint = _not_indexed_hint(proj.hash)
+        assert hint is not None
+        assert "may have failed" in hint
+
+    def test_handles_missing_locks_dir(self, tmp_data_dir, make_project, tmp_path):
+        """_not_indexed_hint correctly handles missing locks/ directory.
+
+        When locks_dir doesn't exist yet, marker.exists() returns False,
+        so the hint should say "not yet indexed" (never started).
+        """
+        from token_goat.read_commands import _not_indexed_hint
+
+        proj_root = tmp_path / "no_locks_dir"
+        proj_root.mkdir()
+        proj = make_project(proj_root)
+
+        # Don't create locks_dir—it doesn't exist yet
+        # marker.exists() on a path under non-existent parent returns False
+        hint = _not_indexed_hint(proj.hash)
+        assert hint is not None
+        assert "not yet indexed" in hint
+
     @pytest.mark.skip(
         reason="CI-only flake on Python 3.13: monkeypatch on db.project_has_files "
         "doesn't propagate to read_commands.db.project_has_files lookup. The "
