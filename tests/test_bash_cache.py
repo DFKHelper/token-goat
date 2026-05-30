@@ -258,3 +258,42 @@ class TestSessionLookup:
 
     def test_lookup_missing_returns_none(self, tmp_data_dir):
         assert session.lookup_bash_entry("lookup-2", "deadbeef") is None
+
+
+class TestCommandHashCwdScoping:
+    def test_same_command_different_cwd_different_hash(self):
+        """Two projects running the same command must not share a cache key."""
+        h1 = bash_cache.command_hash("pytest tests/", "/home/user/projectA")
+        h2 = bash_cache.command_hash("pytest tests/", "/home/user/projectB")
+        assert h1 != h2
+
+    def test_same_command_no_cwd_is_stable(self):
+        """Backwards-compat: omitting cwd produces the same hash as before."""
+        h_none = bash_cache.command_hash("pytest tests/")
+        h_none2 = bash_cache.command_hash("pytest tests/", None)
+        assert h_none == h_none2
+
+    def test_cwd_none_differs_from_empty_cwd(self):
+        """cwd=None (no info) differs from cwd='' (empty string) for safety."""
+        h_none = bash_cache.command_hash("pytest tests/", None)
+        h_empty = bash_cache.command_hash("pytest tests/", "")
+        assert h_none != h_empty
+
+    def test_find_cached_for_command_scoped_to_cwd(self, tmp_data_dir):
+        """find_cached_for_command does not return entries from a different project."""
+        cmd = "pytest tests/"
+        cwd_a = "/home/user/projectA"
+        cwd_b = "/home/user/projectB"
+
+        meta_a = bash_cache.store_output("sess-cwd-a", cmd, "X" * 500, "", 0, cwd=cwd_a)
+        assert meta_a is not None
+        bash_cache.write_sidecar(meta_a)
+
+        # Same session_id, different project — must not match.
+        result = bash_cache.find_cached_for_command(cmd, cwd=cwd_b)
+        assert result is None
+
+        # Correct project — must match.
+        result2 = bash_cache.find_cached_for_command(cmd, cwd=cwd_a)
+        assert result2 is not None
+        assert result2.cmd_sha == meta_a.cmd_sha

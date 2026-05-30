@@ -1969,6 +1969,7 @@ def build_bash_dedup_hint(
     session_id: str,
     command: str,
     cache: session.SessionCache | None = None,
+    cwd: str | None = None,
 ) -> ReadHint | None:
     """Return a hint when *command* was run earlier in this session.
 
@@ -1977,6 +1978,9 @@ def build_bash_dedup_hint(
     the agent retrieve the cached output via ``token-goat bash-output``
     instead of re-running — avoiding both the runtime cost and the duplicated
     output bytes in the conversation.
+
+    *cwd* scopes the cache key to the current project so ``pytest tests/`` run
+    in project A does not match a prior run from project B.
 
     Returns ``None`` (no hint) when:
 
@@ -1988,7 +1992,7 @@ def build_bash_dedup_hint(
       window the model's context has likely scrolled past the old result)
     """
     return _build_bash_dedup_hint_inner(
-        session_id=session_id, command=command, cache=cache,
+        session_id=session_id, command=command, cache=cache, cwd=cwd,
     )
 
 
@@ -2090,6 +2094,7 @@ def _build_bash_dedup_hint_inner(
     session_id: str,
     command: str,
     cache: session.SessionCache | None,
+    cwd: str | None = None,
 ) -> ReadHint | None:
     """Inner implementation; may raise.
 
@@ -2106,7 +2111,7 @@ def _build_bash_dedup_hint_inner(
 
     from . import bash_cache  # noqa: PLC0415
 
-    cmd_sha = bash_cache.command_hash(command)
+    cmd_sha = bash_cache.command_hash(command, cwd)
     entry = session.lookup_bash_entry(session_id, cmd_sha, cache=cache)
     if entry is None:
         return None
@@ -2226,6 +2231,7 @@ def build_bash_cache_hit_hint(
     session_id: str,
     command: str,
     cache: session.SessionCache | None = None,
+    cwd: str | None = None,
 ) -> ReadHint | None:
     """Return a hint when *command* has a cached output from a prior session.
 
@@ -2234,6 +2240,9 @@ def build_bash_cache_hit_hint(
     has never been run in the current session but there is still output cached
     on disk from a previous session — saving the runtime cost and the duplicated
     bytes in the conversation.
+
+    *cwd* scopes the lookup to the current project so ``pytest tests/`` in
+    project A does not return a hit from project B's prior session.
 
     Returns ``None`` (no hint) when:
 
@@ -2252,7 +2261,7 @@ def build_bash_cache_hit_hint(
 
     from . import bash_cache  # noqa: PLC0415
 
-    cmd_sha = bash_cache.command_hash(command)
+    cmd_sha = bash_cache.command_hash(command, cwd)
 
     # If the current session already has this command, the dedup hint handles it.
     current_entry = session.lookup_bash_entry(session_id, cmd_sha, cache=cache)
@@ -2260,7 +2269,7 @@ def build_bash_cache_hit_hint(
         return None
 
     # Look for a cached output from any prior session.
-    meta = bash_cache.find_cached_for_command(command)
+    meta = bash_cache.find_cached_for_command(command, cwd)
     if meta is None:
         return None
 

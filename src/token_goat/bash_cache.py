@@ -120,14 +120,17 @@ def _bash_outputs_dir() -> Path:
     return get_cache_dir("bash_outputs")
 
 
-def command_hash(command: str) -> str:
-    """Return a short content hash for *command* (first 16 hex chars of SHA-256).
+def command_hash(command: str, cwd: str | None = None) -> str:
+    """Return a short content hash for *command* scoped to *cwd*.
 
-    Thin wrapper around :func:`cache_common.short_content_hash` kept for
-    backwards compatibility and for use in :func:`session.mark_bash_run` which
-    passes the hash independently of the output ID.
+    Including the working directory prevents cross-project cache collisions:
+    ``pytest tests/`` run in two different project roots would otherwise hash
+    identically and the pre-Bash dedup hint could surface output from the wrong
+    project.  When *cwd* is ``None`` (backwards-compat callers without CWD),
+    only the command string is hashed.
     """
-    return short_content_hash(command)
+    key = command if cwd is None else f"{cwd}\x00{command}"
+    return short_content_hash(key)
 
 
 def glob_hash(pattern: str, path: str | None) -> str:
@@ -205,14 +208,21 @@ def load_glob_result(
         return None
 
 
-def output_id_for(session_id: str, command: str, ts: float | None = None) -> str:
+def output_id_for(
+    session_id: str,
+    command: str,
+    ts: float | None = None,
+    *,
+    cwd: str | None = None,
+) -> str:
     """Build a filesystem-safe ID for the (session, command, time) tuple.
 
     Delegates to :func:`cache_common.build_output_id` with the command hash as
     the content token.  The millisecond timestamp ensures two invocations of
-    the same command in the same session do not collide.
+    the same command in the same session do not collide.  *cwd* is forwarded to
+    :func:`command_hash` so the ID is project-scoped.
     """
-    return build_output_id(session_id, command_hash(command), ts)
+    return build_output_id(session_id, command_hash(command, cwd), ts)
 
 
 def store_output(
@@ -222,6 +232,7 @@ def store_output(
     stderr: str,
     exit_code: int | None,
     *,
+    cwd: str | None = None,
     max_total_bytes: int = DEFAULT_MAX_TOTAL_BYTES,
     max_file_count: int = DEFAULT_MAX_FILE_COUNT,
 ) -> BashOutputMeta | None:
@@ -234,10 +245,12 @@ def store_output(
     is back under ``max_total_bytes`` and the file count is at or under
     ``max_file_count``; the eviction is best-effort and a failed pass simply
     leaves the directory slightly over budget — the next call will try again.
+    *cwd* is included in the cache key so commands from different projects do
+    not share entries.
     """
     meta: BashOutputMeta | None = None
     with safe_cache_op("store_output", log=_LOG):
-        out_id = output_id_for(session_id, command)
+        out_id = output_id_for(session_id, command, cwd=cwd)
         path = safe_join_output_id(out_id, _bash_outputs_dir, "bash_cache")
         if path is None:
             return None
@@ -291,7 +304,7 @@ def store_output(
 
         meta = BashOutputMeta(
             output_id=out_id,
-            cmd_sha=command_hash(command),
+            cmd_sha=command_hash(command, cwd),
             cmd_preview=sanitize_log_str(command, max_len=120),
             stdout_bytes=stdout_bytes,
             stderr_bytes=stderr_bytes,
@@ -424,14 +437,18 @@ def read_sidecar(output_id: str) -> BashOutputMeta | None:
         return None
 
 
-def find_cached_for_command(command: str) -> BashOutputMeta | None:
+def find_cached_for_command(command: str, cwd: str | None = None) -> BashOutputMeta | None:
     """Return the most recent on-disk cached entry for *command*, or None.
 
     Scans all sidecar files in the bash_outputs store and returns the entry
-    whose ``cmd_sha`` matches the hash of *command*, favouring the most recently
-    written file.  Used by the pre-Bash hook to emit a cross-session
-    cache-hit hint when the same command was run in a prior session and the
-    output is still on disk but has not been recorded in the current session.
+    whose ``cmd_sha`` matches the hash of *command* (scoped to *cwd*),
+    favouring the most recently written file.  Used by the pre-Bash hook to
+    emit a cross-session cache-hit hint when the same command was run in a
+    prior session and the output is still on disk but has not been recorded in
+    the current session.
+
+    *cwd* scopes the lookup to the current project so ``pytest tests/`` run in
+    project A does not return cached output from project B.
 
     This is intentionally a linear scan over sidecar metadata — not body text
     — so the I/O cost is proportional to the number of cached entries (not
@@ -440,7 +457,7 @@ def find_cached_for_command(command: str) -> BashOutputMeta | None:
 
     Returns ``None`` on any I/O error (fail-soft contract).
     """
-    target_sha = command_hash(command)
+    target_sha = command_hash(command, cwd)
     best: BashOutputMeta | None = None
     with safe_cache_op("find_cached_for_command", log=_LOG):
         cache_dir = _bash_outputs_dir()
