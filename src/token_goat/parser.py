@@ -265,6 +265,7 @@ class IndexProjectResult(TypedDict):
     errors: int
     languages: list[str]
     duration_sec: float
+    total_symbols: int
 
 
 def _language_importer(module_name: str, attr: str = "extract") -> Callable[[], Extractor]:
@@ -540,6 +541,10 @@ def index_file(project: Project, file_path: Path) -> FileIndex | None:
     """
     t0 = time.time()
     try:
+        pre_mtime = file_path.stat().st_mtime
+    except OSError:
+        pre_mtime = None
+    try:
         raw = file_path.read_bytes()
     except OSError as e:
         _LOG.warning("read failed: %s: %s", file_path, e)
@@ -595,6 +600,13 @@ def index_file(project: Project, file_path: Path) -> FileIndex | None:
         stat = file_path.stat()
     except OSError as e:
         _LOG.warning("stat failed after reading: %s: %s", file_path, e)
+        return None
+
+    if pre_mtime is not None and stat.st_mtime != pre_mtime:
+        _LOG.debug(
+            "index_file: mtime changed during read (pre=%.6f post=%.6f) — skipping %s (will retry on next write)",
+            pre_mtime, stat.st_mtime, rel,
+        )
         return None
 
     elapsed = time.time() - t0
@@ -787,6 +799,7 @@ def index_project(
     n_indexed = 0
     n_skipped_unchanged = 0
     n_errors = 0
+    n_symbols = 0
     languages: set[str] = set()
     # Collect rel_paths seen in this walk so the end-of-loop stale-file prune
     # can reuse them without a second O(n) relative_to() pass over all files.
@@ -841,6 +854,7 @@ def index_project(
                     else:
                         write_file_index(conn, fi)
                         n_indexed += 1
+                        n_symbols += len(fi.symbols)
                         languages.add(fi.language)
                         if existing_sha is not None:
                             _LOG.debug("updated changed file: %s", fi.rel_path)
@@ -924,6 +938,7 @@ def index_project(
         "errors": n_errors,
         "languages": sorted(languages),
         "duration_sec": round(elapsed, 2),
+        "total_symbols": n_symbols,
     }
 
     files_per_sec = n_total / elapsed if elapsed > 0 else 0.0
