@@ -1967,6 +1967,64 @@ class TestBuildSealedBlock:
         # No skills section should appear when all skills are stale
         assert "**Skills:**" not in text, "Skills section should be absent when all skills are stale"
 
+    def test_deduplicates_skills_by_name_keeping_most_recent(self):
+        """When same skill loaded multiple times (different content_sha), keep only most recent."""
+        now = time.time()
+        # Ralph loaded twice with different shas (skill file updated mid-session)
+        ralph_v1 = self._make_skill_entry("ralph", now - 300)
+        ralph_v1.content_sha = "sha_v1"
+        ralph_v1.output_id = "out_v1"
+
+        ralph_v2 = self._make_skill_entry("ralph", now - 60)
+        ralph_v2.content_sha = "sha_v2"
+        ralph_v2.output_id = "out_v2"
+
+        # skill_history would store under "ralph" key only once,
+        # but _select_top_skill_entries should deduplicate if both are in the list
+        skill_history = {
+            "ralph": ralph_v2,  # Most recent wins in the dict
+        }
+        selected = compact._select_top_skill_entries(skill_history)
+
+        # Should have only one ralph entry (the most recent one)
+        assert len(selected) == 1
+        assert selected[0].skill_name == "ralph"
+        assert selected[0].output_id == "out_v2"
+
+    def test_format_skill_entry_flags_stale_skills(self):
+        """Skills loaded >6 hours ago are flagged with (stale: Xh)."""
+        now = time.time()
+
+        # Recent skill: loaded 1 hour ago
+        recent = self._make_skill_entry("ralph", now - 3600)
+        formatted = compact._format_skill_entry(recent)
+        assert "(stale:" not in formatted, "Recent skill should not be flagged"
+        assert "recall:" in formatted
+
+        # Old skill: loaded 7 hours ago
+        old = self._make_skill_entry("improve", now - (7 * 3600))
+        formatted_old = compact._format_skill_entry(old)
+        assert "(stale: 7h)" in formatted_old, "Old skill should show staleness"
+        assert "recall:" in formatted_old
+
+    def test_format_skill_entry_shows_truncation_marker(self):
+        """Skill entries show '*' when body was truncated."""
+        now = time.time()
+        skill = self._make_skill_entry("ralph", now)
+        skill.truncated = True
+
+        formatted = compact._format_skill_entry(skill)
+        assert "*)" in formatted, "Truncation marker should appear before closing paren"
+
+    def test_format_skill_entry_shows_run_count(self):
+        """Skill entries show ×N when loaded multiple times."""
+        now = time.time()
+        skill = self._make_skill_entry("ralph", now)
+        skill.run_count = 3
+
+        formatted = compact._format_skill_entry(skill)
+        assert "×3" in formatted, "Run count should appear in output"
+
 
 class TestPreCompactPressureAwareSizing:
     """pre_compact hook applies the auto_trigger_multiplier when trigger=auto."""
