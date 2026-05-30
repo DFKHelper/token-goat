@@ -206,3 +206,88 @@ class TestEnvHelper:
     def test_helper_returns_false_when_disabled(self, monkeypatch):
         monkeypatch.setenv("TOKEN_GOAT_BASH_COMPRESS", "0")
         assert hooks_read._bash_compress_enabled() is False
+
+
+# ---------------------------------------------------------------------------
+# Integration tests: new filter families through hook dispatcher
+# ---------------------------------------------------------------------------
+
+
+class TestNewFilterIntegration:
+    """Verify that new filter families (eza, tree, bat, delta, jq, yq, etc.)
+    dispatch correctly through the hook and get wrapped for compression.
+    """
+
+    def test_eza_command_wrapped_via_hook(self, tmp_data_dir, monkeypatch):
+        """eza --git --long dispatches to EzaFilter and gets wrapped."""
+        monkeypatch.delenv("TOKEN_GOAT_BASH_COMPRESS", raising=False)
+        result = _dispatch(_payload("eza --git --long"))
+        assert "hookSpecificOutput" in result
+        new_cmd = result["hookSpecificOutput"]["updatedInput"]["command"]
+        assert "token_goat.cli" in new_cmd
+        assert "compress" in new_cmd
+        assert "--filter" in new_cmd and "eza" in new_cmd
+
+    def test_tree_command_wrapped_via_hook(self, tmp_data_dir, monkeypatch):
+        """tree -L 3 dispatches to TreeFilter and gets wrapped."""
+        monkeypatch.delenv("TOKEN_GOAT_BASH_COMPRESS", raising=False)
+        result = _dispatch(_payload("tree -L 3"))
+        assert "hookSpecificOutput" in result
+        new_cmd = result["hookSpecificOutput"]["updatedInput"]["command"]
+        assert "--filter" in new_cmd and "tree" in new_cmd
+
+    def test_fd_command_wrapped_via_hook(self, tmp_data_dir, monkeypatch):
+        """fd pattern dispatches to FdFilter and gets wrapped."""
+        monkeypatch.delenv("TOKEN_GOAT_BASH_COMPRESS", raising=False)
+        result = _dispatch(_payload("fd '.*\\.py$'"))
+        assert "hookSpecificOutput" in result
+        new_cmd = result["hookSpecificOutput"]["updatedInput"]["command"]
+        assert "--filter" in new_cmd and "fd" in new_cmd
+
+    def test_delta_command_wrapped_via_hook(self, tmp_data_dir, monkeypatch):
+        """delta file1 file2 dispatches to DeltaFilter and gets wrapped."""
+        monkeypatch.delenv("TOKEN_GOAT_BASH_COMPRESS", raising=False)
+        result = _dispatch(_payload("delta file1 file2"))
+        assert "hookSpecificOutput" in result
+        new_cmd = result["hookSpecificOutput"]["updatedInput"]["command"]
+        assert "--filter" in new_cmd and "delta" in new_cmd
+
+    def test_jq_command_wrapped_via_hook(self, tmp_data_dir, monkeypatch):
+        """jq . data.json dispatches to JqFilter and gets wrapped."""
+        monkeypatch.delenv("TOKEN_GOAT_BASH_COMPRESS", raising=False)
+        result = _dispatch(_payload("jq . data.json"))
+        assert "hookSpecificOutput" in result
+        new_cmd = result["hookSpecificOutput"]["updatedInput"]["command"]
+        assert "--filter" in new_cmd and "jq" in new_cmd
+
+    def test_yq_command_wrapped_via_hook(self, tmp_data_dir, monkeypatch):
+        """yq . config.yaml dispatches to YqFilter and gets wrapped."""
+        monkeypatch.delenv("TOKEN_GOAT_BASH_COMPRESS", raising=False)
+        result = _dispatch(_payload("yq . config.yaml"))
+        assert "hookSpecificOutput" in result
+        new_cmd = result["hookSpecificOutput"]["updatedInput"]["command"]
+        assert "--filter" in new_cmd and "yq" in new_cmd
+
+    def test_fzf_command_wrapped_via_hook(self, tmp_data_dir, monkeypatch):
+        """fzf < input dispatches to FzfFilter and gets wrapped."""
+        monkeypatch.delenv("TOKEN_GOAT_BASH_COMPRESS", raising=False)
+        result = _dispatch(_payload("fzf"))
+        assert "hookSpecificOutput" in result
+        new_cmd = result["hookSpecificOutput"]["updatedInput"]["command"]
+        assert "--filter" in new_cmd and "fzf" in new_cmd
+
+    def test_lazygit_command_wrapped_via_hook(self, tmp_data_dir, monkeypatch):
+        """lazygit dispatches to LazyGitFilter and gets wrapped."""
+        monkeypatch.delenv("TOKEN_GOAT_BASH_COMPRESS", raising=False)
+        result = _dispatch(_payload("lazygit"))
+        assert "hookSpecificOutput" in result
+        new_cmd = result["hookSpecificOutput"]["updatedInput"]["command"]
+        assert "--filter" in new_cmd and "lazygit" in new_cmd
+
+    def test_gh_command_wrapped_via_hook(self, tmp_data_dir, monkeypatch):
+        """gh pr list dispatches to GhFilter and gets wrapped."""
+        monkeypatch.delenv("TOKEN_GOAT_BASH_COMPRESS", raising=False)
+        result = _dispatch(_payload("gh pr list"))
+        assert "hookSpecificOutput" in result
+        new_cmd = result["hookSpecificOutput"]["updatedInput"]["command"]
+        assert "--filter" in new_cmd and "gh" in new_cmd
