@@ -48,12 +48,14 @@ __all__ = [
     "record_cached_stat",
     "record_hint_stat_pair",
     "run_dedup_hint",
+    "update_session",
     "_is_quiet_hours",
     "sanitize_log_str",
     "sanitize_opt",
     "validate_cwd",
 ]
 
+from collections.abc import Callable
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Protocol, TypedDict, TypeGuard, cast
 
@@ -629,6 +631,54 @@ def load_session_safe(session_id: str) -> SessionCache | None:
         return None
 
 
+def update_session(session_id: str, fn: Callable[[Any], None]) -> bool:
+    """Load session cache, call a mutation function, and save — fail-soft pattern.
+
+    Centralises the load→mutate→save pattern that appears across multiple hook
+    handlers (hooks_edit.py, hooks_read.py, hooks_common.py).  The pattern is:
+
+    .. code-block:: python
+
+        cache = load_session_safe(session_id)
+        if cache is not None:
+            fn(cache)  # mutate in place
+            session.save(cache)
+
+    This helper eliminates the boilerplate and ensures consistent error handling
+    across call sites.  Failures at any step are logged at debug level and
+    swallowed (fail-soft) so the hook never aborts on cache issues.
+
+    Args:
+        session_id: The session ID string (from the hook payload).
+        fn:         Callable that receives the loaded cache and mutates it in place.
+                    Called only if the cache loads successfully; signature is
+                    ``fn(cache: SessionCache) -> None``.  Exceptions raised by
+                    *fn* are caught and logged.
+
+    Returns:
+        ``True`` if the cache was loaded, mutated, and saved successfully.
+        ``False`` if the load failed or *fn* raised an exception.
+    """
+    from . import session  # noqa: PLC0415
+
+    cache = load_session_safe(session_id)
+    if cache is None:
+        return False
+
+    try:
+        fn(cache)
+    except Exception:  # noqa: BLE001
+        LOG.debug("update_session: mutation function failed", exc_info=True)
+        return False
+
+    try:
+        session.save(cache)
+        return True
+    except Exception:  # noqa: BLE001
+        LOG.debug("update_session: save failed", exc_info=True)
+        return False
+
+
 def _coerce_content_array(items: list[object]) -> str:
     """Concatenate text from an MCP-style ``content`` array.
 
@@ -803,7 +853,7 @@ def run_dedup_hint(
     if not session_id:
         return None
 
-    cache = session.safe_load(session_id, caller="run_dedup_hint")
+    cache = load_session_safe(session_id)
     if cache is None:
         return None
 

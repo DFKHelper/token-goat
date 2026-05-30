@@ -426,7 +426,12 @@ class TestImageShrinkCacheHit:
         stem = shrink_mod._cache_path_for(src)
         stem.parent.mkdir(parents=True, exist_ok=True)
         cached = stem.with_suffix(".jpg")
-        cached.write_bytes(b"cached")
+        import io
+
+        from PIL import Image as _Image
+        _buf = io.BytesIO()
+        _Image.new("RGB", (2, 2)).save(_buf, format="JPEG")
+        cached.write_bytes(_buf.getvalue())
 
         result = shrink(src)
         assert result == cached
