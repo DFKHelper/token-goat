@@ -158,6 +158,29 @@ def _handle_web_dedup(payload: HookPayload, url: str) -> HookResponse | None:
     )
 
 
+def _handle_web_cache_hit(payload: HookPayload, url: str) -> HookResponse | None:
+    """Return a cache-hit hint when *url* has a cached body from a prior session.
+
+    Fires when the URL is not in the current session's web history but there
+    is still a body on disk from a previous session.  This is the cross-session
+    counterpart to :func:`_handle_web_dedup`.
+    Returns ``None`` when no prior cached entry exists or the session has
+    already seen this URL (the dedup path handles that case).
+    """
+    from .hints import build_web_cache_hit_hint  # noqa: PLC0415
+    from .hooks_common import run_dedup_hint  # noqa: PLC0415
+
+    return run_dedup_hint(
+        payload,
+        builder=lambda sid, cache: build_web_cache_hit_hint(
+            session_id=sid, url=url, cache=cache,
+        ),
+        stat_kind="web_cache_hit_hint",
+        detail=sanitize_log_str(url, max_len=200),
+        log_label="pre-fetch",
+    )
+
+
 def _check_url_allowdeny(url: str) -> HookResponse | None:
     """Check *url* against the configured deny/allow glob lists.
 
@@ -265,6 +288,14 @@ def pre_fetch(payload: HookPayload) -> HookResponse:
         dedup = _handle_web_dedup(payload, url)
         if dedup is not None:
             return dedup
+
+        # Cross-session cache hit: the URL was not fetched in this session but
+        # has a cached body on disk from a prior session.  Emit a hint so the
+        # agent can retrieve it without a network round-trip.
+        cache_hit = _handle_web_cache_hit(payload, url)
+        if cache_hit is not None:
+            return cache_hit
+
         return CONTINUE()
 
     return CONTINUE()

@@ -40,6 +40,7 @@ __all__ = [
     "OUTPUT_FILENAME_RE",
     "WebOutputMeta",
     "evict_old_entries",
+    "find_cached_for_url",
     "list_outputs",
     "load_output",
     "load_output_meta",
@@ -290,3 +291,39 @@ def read_sidecar(output_id: str) -> WebOutputMeta | None:
         )
     except (TypeError, ValueError):
         return None
+
+
+def find_cached_for_url(url: str) -> WebOutputMeta | None:
+    """Return the most recent on-disk cached entry for *url*, or None.
+
+    Scans all sidecar files in the web_outputs store and returns the entry
+    whose ``url_sha`` matches the hash of *url*, favouring the most recently
+    written file.  Used by the pre-WebFetch hook to emit a cross-session
+    cache-hit hint when the same URL was fetched in a prior session and the
+    body is still on disk but has not been recorded in the current session.
+
+    This is intentionally a linear scan over sidecar metadata — not body text
+    — so the I/O cost is proportional to the number of cached entries (not
+    their sizes).  In the typical usage pattern (≤ a few hundred cached URLs)
+    the scan completes in milliseconds.
+
+    Returns ``None`` on any I/O error (fail-soft contract).
+    """
+    target_sha = url_hash(url)
+    best: WebOutputMeta | None = None
+    with safe_cache_op("find_cached_for_url", log=_LOG):
+        cache_dir = _web_outputs_dir()
+        if not cache_dir.is_dir():
+            return None
+        for sidecar_path in sorted(
+            cache_dir.glob("*.json"), key=lambda p: p.stat().st_mtime, reverse=True
+        ):
+            # Extract output_id from sidecar filename (strip .json)
+            candidate_id = sidecar_path.stem
+            meta = read_sidecar(candidate_id)
+            if meta is None:
+                continue
+            if meta.url_sha == target_sha and meta.body_bytes > 0:
+                best = meta
+                break  # sorted newest-first; first match is the freshest
+    return best

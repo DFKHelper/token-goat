@@ -30,6 +30,7 @@ __all__ = [
     "build_read_hint",
     "build_structured_file_hint",
     "build_unchanged_file_hint",
+    "build_web_cache_hit_hint",
     "build_web_dedup_hint",
     "compute_stale_threshold",
     "_emit_json_sidecar",
@@ -2413,6 +2414,110 @@ def _build_web_dedup_hint_inner(
         _apply_terse(
             f"URL ({int(age)}s): {entry.body_bytes:,}B{status_str}, ~{tokens_avoided}t. "
             f"{recall_str}{grep_suffix}"
+        ),
+        tokens_avoided,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Cross-session web cache-hit hint
+# ---------------------------------------------------------------------------
+
+
+@_failsoft_hint
+def build_web_cache_hit_hint(
+    *,
+    session_id: str,
+    url: str,
+    cache: session.SessionCache | None = None,
+) -> ReadHint | None:
+    """Return a hint when *url* has a cached body on disk from a prior session.
+
+    Complements :func:`build_web_dedup_hint` which fires when the same URL has
+    been fetched *in the current session*.  This function fires when the URL
+    has never been fetched in the current session but there is still a body
+    cached on disk from a previous session — saving the network round-trip and
+    the duplicated bytes in the conversation.
+
+    Returns ``None`` (no hint) when:
+
+    * no session_id or url is provided
+    * the URL is already recorded in the current session (dedup path handles it)
+    * no on-disk cached entry exists for this URL
+    * the cached body is too small to be worth the hint overhead
+    * the cached body is older than :data:`STALE_READ_AGE_SECONDS` (the page
+      likely changed; a fresh fetch is the right call)
+    """
+    if not _check_dedup_preconditions(
+        session_id=session_id,
+        required_param=url,
+        cache=cache,
+    ):
+        return None
+
+    from . import web_cache  # noqa: PLC0415
+
+    url_sha = web_cache.url_hash(url)
+
+    # If the current session already has this URL, the dedup hint handles it.
+    current_entry = session.lookup_web_entry(session_id, url_sha, cache=cache)
+    if current_entry is not None:
+        return None
+
+    # Look for a cached body from any prior session.
+    meta = web_cache.find_cached_for_url(url)
+    if meta is None:
+        return None
+
+    # Apply the same minimum-size guard used by the dedup hint.
+    cfg = config.load()
+    if _check_dedup_min_threshold(
+        meta.body_bytes,
+        lambda: cfg.hints.web_dedup_min_bytes,
+        cache,
+        "web_cache_hit_below_threshold",
+    ):
+        return None
+
+    # Apply staleness guard: a very old cache entry is likely stale.
+    import time as _time  # noqa: PLC0415
+
+    now = _time.time()
+    age = now - meta.ts
+    stale_threshold = _session_stale_threshold(cache, now) if cache is not None else STALE_READ_AGE_SECONDS
+    if age > stale_threshold:
+        _LOG.debug(
+            "build_web_cache_hit_hint: prior-session cache entry for %s is %.0fs old (threshold=%.0fs); skipping",
+            sanitize_log_str(url, max_len=100), age, stale_threshold,
+        )
+        if cache is not None:
+            cache.record_hint_suppressed("web_cache_hit_stale")
+        return None
+
+    # Fingerprint dedup: emit only once per URL per session.
+    fp_key = _hint_fingerprint(url_sha, path="web_prior")
+    if cache is not None and cache.has_hint_fingerprint(fp_key):
+        _LOG.debug(
+            "build_web_cache_hit_hint: fingerprint key %s already seen; skipping",
+            fp_key,
+        )
+        return None
+
+    if cache is not None:
+        cache.mark_hint_seen(fp_key)
+
+    from . import cache_common as _cc  # noqa: PLC0415
+
+    tokens_avoided = _est_tokens_from_chars(meta.body_bytes)
+    status_str = (
+        f" status={meta.status_code}" if meta.status_code is not None else ""
+    )
+    short_id = _cc.short_output_id(meta.output_id)
+    age_str = f"{int(age // 3600)}h" if age >= 3600 else f"{int(age // 60)}m"
+    return ReadHint(
+        _apply_terse(
+            f"URL cached {age_str} ago: {meta.body_bytes:,}B{status_str}, ~{tokens_avoided}t. "
+            f"Use `token-goat web-output {short_id}` to read without re-fetching."
         ),
         tokens_avoided,
     )
