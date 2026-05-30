@@ -983,6 +983,13 @@ class SessionCache:
     # so operators can tune thresholds based on real session data.
     # Missing in older sessions → empty dict. Persisted via to_dict/from_dict.
     hints_suppressed_by_type: dict[str, int] = field(default_factory=dict)
+    # Per-session image shrink budget tracking: maps absolute file path (str(path.resolve()))
+    # → count of times shrink() was called on that path this session.  Used to detect
+    # and warn when the same large image is shrunk repeatedly (e.g., a generated
+    # screenshot appearing 50 times). When count > 3, logs a hint suggesting surgical
+    # reads via token-goat read/section instead of repeated shrinking.
+    # Missing in older sessions → empty dict. Persisted via to_dict/from_dict.
+    image_shrink_count: dict[str, int] = field(default_factory=dict)
     # Monotonically-incrementing version counter for optimistic CAS in save().
     # Starts at 0 for a new session; each successful save() increments by 1.
     # When two concurrent processes both load version N, the second to save
@@ -1058,6 +1065,7 @@ class SessionCache:
             last_manifest_ts=self.last_manifest_ts,
             version=self.version,
             hint_category_history={k: [1 if v else 0 for v in lst] for k, lst in self.hint_category_history.items()},
+            image_shrink_count=self.image_shrink_count,
             cwd=self.cwd,
         )
 
@@ -1368,6 +1376,17 @@ class SessionCache:
                 if bools:
                     hint_category_history[cat_key] = bools[-_HINT_CAT_HISTORY_MAX:]
 
+        # image_shrink_count: dict[str, int] — per-image shrink budget tracking.
+        # Maps absolute path (str(path.resolve())) → shrink count this session.
+        # Missing in older sessions → empty dict (backward compat). Malformed entries are skipped.
+        image_shrink_count: dict[str, int] = {}
+        raw_shrink_count = d.get("image_shrink_count", {})
+        if isinstance(raw_shrink_count, dict):
+            for img_path, count in raw_shrink_count.items():
+                if isinstance(img_path, str) and img_path:
+                    with contextlib.suppress(TypeError, ValueError):
+                        image_shrink_count[img_path] = max(0, int(count))
+
         return cls(
             session_id=session_id,
             started_ts=float(d.get("started_ts", now)),
@@ -1396,6 +1415,7 @@ class SessionCache:
             last_manifest_ts=_coerce_ts(d.get("last_manifest_ts", 0.0)),
             version=_coerce_nonneg_int(d.get("version", 0)) if isinstance(d.get("version"), (int, float)) else 0,
             hint_category_history=hint_category_history,
+            image_shrink_count=image_shrink_count,
             cwd=str(d["cwd"]) if isinstance(d.get("cwd"), str) else None,
         )
 
@@ -1925,6 +1945,7 @@ class _SessionDict(TypedDict, total=False):
     last_manifest_ts: float
     version: int
     hint_category_history: dict[str, list[int]]
+    image_shrink_count: dict[str, int]
     cwd: str | None
 
 
