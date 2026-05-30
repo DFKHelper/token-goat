@@ -1707,3 +1707,129 @@ def test_ansible_precedes_python_catchall_in_registry() -> None:
     assert names.index("ansible") < names.index("python"), (
         "AnsibleFilter must be registered before PythonFilter (catch-all)."
     )
+
+
+# ---------------------------------------------------------------------------
+# GhFilter _compress_gh_list — targeted tests (iteration 3)
+# ---------------------------------------------------------------------------
+
+class TestGhFilterCompressGhList:
+    """Tests for the _compress_gh_list() helper and its routing in GhFilter.compress()."""
+
+    # ------------------------------------------------------------------
+    # issue list — same row-cap logic as pr/run list
+    # ------------------------------------------------------------------
+
+    def test_issue_list_truncates_at_30_rows(self) -> None:
+        """gh issue list with >30 data rows is truncated to first 30 + summary."""
+        f = bc.GhFilter()
+        header = "Showing 50 of 50 open issues in owner/repo\n"
+        rows = [f"#{i:04d}\topen\tBug report {i}\t2026-05-{i % 28 + 1:02d}" for i in range(50)]
+        big_output = header + "\n".join(rows)
+
+        out = f.compress(big_output, "", 0, ["gh", "issue", "list"])
+
+        # Count summary present
+        assert "showing first 30 of 50 issues" in out
+        # First row preserved
+        assert "#0000" in out
+        # 30th row (0-indexed 29) preserved; 31st (index 30) elided
+        assert f"#{29:04d}" in out
+        assert f"#{30:04d}" not in out
+
+    def test_issue_list_under_threshold_passes_through(self) -> None:
+        """gh issue list with ≤30 rows passes through without truncation."""
+        f = bc.GhFilter()
+        header = "Showing 10 of 10 open issues in owner/repo\n"
+        rows = [f"#{i}\topen\tIssue {i}" for i in range(10)]
+        output = header + "\n".join(rows)
+
+        out = f.compress(output, "", 0, ["gh", "issue", "list"])
+
+        assert "showing first 30" not in out
+        # All rows present
+        for i in range(10):
+            assert f"#{i}" in out
+
+    def test_pr_list_exactly_30_rows_passes_through(self) -> None:
+        """gh pr list with exactly 30 data rows passes through unchanged."""
+        f = bc.GhFilter()
+        header = "Showing 30 of 30 pull requests\n"
+        rows = [f"#{i}\topen\tPR {i}" for i in range(30)]
+        output = header + "\n".join(rows)
+
+        out = f.compress(output, "", 0, ["gh", "pr", "list"])
+
+        assert "showing first 30" not in out
+        assert "#29" in out
+
+    def test_pr_list_31_rows_triggers_truncation(self) -> None:
+        """gh pr list with 31 data rows triggers truncation (over-threshold by 1)."""
+        f = bc.GhFilter()
+        header = "Showing 31 of 31 pull requests\n"
+        rows = [f"#{i}\topen\tPR {i}" for i in range(31)]
+        output = header + "\n".join(rows)
+
+        out = f.compress(output, "", 0, ["gh", "pr", "list"])
+
+        assert "showing first 30 of 31 prs" in out
+        assert "#30" not in out  # 31st row (0-indexed 30) is elided
+
+    # ------------------------------------------------------------------
+    # Non-list subcommands must NOT be row-truncated
+    # ------------------------------------------------------------------
+
+    def test_pr_view_not_row_truncated(self) -> None:
+        """gh pr view passes through all content without row truncation."""
+        f = bc.GhFilter()
+        # Build pr view output that looks like a long PR body (not tabular rows).
+        header_block = (
+            "title:\tAdd great feature\n"
+            "state:\tOPEN\n"
+            "author:\talice\n"
+            "body:\n"
+        )
+        body_lines = "\n".join([f"  Line {i} of the PR body." for i in range(50)])
+        output = header_block + body_lines
+
+        out = f.compress(output, "", 0, ["gh", "pr", "view", "42"])
+
+        # Must not emit a row-count summary
+        assert "showing first 30" not in out
+        # Body lines must be intact (squeeze_blank_lines may merge blanks but text stays)
+        assert "Line 0 of the PR body" in out
+        assert "Line 49 of the PR body" in out
+
+    def test_gh_api_not_row_truncated(self) -> None:
+        """gh api passes through without row truncation."""
+        f = bc.GhFilter()
+        # Simulate gh api returning 50 JSON lines (one item per line).
+        json_lines = [f'{{"id": {i}, "name": "item{i}"}}' for i in range(50)]
+        output = "\n".join(json_lines)
+
+        out = f.compress(output, "", 0, ["gh", "api", "/repos/owner/repo/issues"])
+
+        assert "showing first 30" not in out
+        assert '"id": 49' in out  # Last item must be present
+
+    def test_run_list_label_says_runs(self) -> None:
+        """_compress_gh_list uses 'runs' (not 'prs' or 'issues') for run list."""
+        f = bc.GhFilter()
+        header = "Showing 40 runs\n"
+        rows = [f"completed\trun-{i}" for i in range(40)]
+        output = header + "\n".join(rows)
+
+        out = f.compress(output, "", 0, ["gh", "run", "list"])
+
+        assert "showing first 30 of 40 runs" in out
+
+    def test_issue_list_label_says_issues(self) -> None:
+        """_compress_gh_list uses 'issues' (not 'runs' or 'prs') for issue list."""
+        f = bc.GhFilter()
+        header = "Showing 40 issues\n"
+        rows = [f"open\t#{i}\tBug {i}" for i in range(40)]
+        output = header + "\n".join(rows)
+
+        out = f.compress(output, "", 0, ["gh", "issue", "list"])
+
+        assert "showing first 30 of 40 issues" in out
