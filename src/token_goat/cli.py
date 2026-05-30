@@ -1491,9 +1491,16 @@ def index(
 
     assert proj is not None  # guaranteed: all branches either set proj or return/exit early
 
+    import sys as _sys  # noqa: PLC0415
+
+    _tty = _sys.stderr.isatty()
+
     def _progress(done: int, total: int) -> None:
-        """Emit an indexing progress line to stderr."""
-        typer.echo(f"  {done}/{total} files processed...", err=True)
+        if _tty:
+            _sys.stderr.write(f"\r  {done}/{total} files scanned...")
+            _sys.stderr.flush()
+        else:
+            typer.echo(f"  {done}/{total} files scanned...", err=True)
 
     _LOG.info("index start: project=%s mode=%s", proj.root.name, "full" if full else "incremental")
     try:
@@ -1501,6 +1508,10 @@ def index(
     except Exception as exc:  # noqa: BLE001
         _error(f"indexing failed: {exc}")
         raise typer.Exit(1) from None
+
+    if _tty and summary["total_files"] > 0:
+        _sys.stderr.write("\r" + " " * 40 + "\r")
+        _sys.stderr.flush()
 
     langs = ", ".join(summary["languages"]) if summary["languages"] else "none"
     _LOG.info(
@@ -1511,11 +1522,12 @@ def index(
         summary["errors"],
         summary["duration_sec"],
     )
+    sym_part = f", {summary['total_symbols']} symbols" if summary["total_symbols"] > 0 else ""
     typer.echo(
         f"Indexed {summary['total_files']} files "
         f"({summary['indexed']} indexed, "
         f"{summary['skipped_unchanged']} skipped unchanged, "
-        f"{summary['errors']} errors) "
+        f"{summary['errors']} errors{sym_part}) "
         f"— {langs} "
         f"— in {summary['duration_sec']}s"
     )
