@@ -3729,9 +3729,25 @@ def config_validate(
 
 
 @config_app.command()
-def get(key: str) -> None:
-    """Get config value."""
+def get(
+    key: str | None = typer.Argument(None, help="Dotted key to retrieve (e.g. compact_assist.enabled). Omit to show all config in TOML format."),  # noqa: B008
+) -> None:
+    """Show current config value(s).
+
+    With no KEY, prints the full config.toml in TOML format.  With KEY, prints
+    just that value (supports dot notation: ``compact_assist.max_manifest_tokens``).
+    Sections are accepted as keys and return a JSON object.
+    """
+    import tomli_w  # noqa: PLC0415
+
     cfg = config_mod.load()
+
+    if key is None:
+        data = asdict(cfg)
+        data["schema_version"] = config_mod.CONFIG_SCHEMA_VERSION
+        typer.echo(tomli_w.dumps(data).rstrip())
+        return
+
     try:
         value = _config_get_value(cfg, key)
     except KeyError:
@@ -3746,7 +3762,13 @@ def get(key: str) -> None:
 
 @config_app.command()
 def set(key: str, value: str) -> None:
-    """Set config value."""
+    """Set a config value, creating config.toml if it does not exist.
+
+    VALUE is coerced to the correct type automatically:
+    booleans accept ``true``/``false``/``yes``/``no``/``1``/``0``,
+    integers accept decimal strings, lists accept comma-separated values or
+    a JSON array literal.
+    """
     cfg = config_mod.load()
     try:
         updated = _config_set_value(cfg, key, value)
@@ -3759,8 +3781,70 @@ def set(key: str, value: str) -> None:
 
     config_mod.save(cfg)
     if is_dataclass(updated) and not isinstance(updated, type):
-        updated = asdict(updated)
-    typer.echo(json.dumps(updated, ensure_ascii=False, separators=(",", ":")))
+        updated_display = json.dumps(asdict(updated), ensure_ascii=False)
+    else:
+        updated_display = json.dumps(updated, ensure_ascii=False)
+    typer.echo(f"Set {key} = {updated_display}")
+
+
+@config_app.command()
+def reset(
+    key: str | None = typer.Argument(None, help="Dotted key to reset (e.g. compact_assist.enabled). Omit to reset ALL settings."),  # noqa: B008
+    yes: bool = typer.Option(False, "--yes", "-y", help="Skip confirmation prompt."),  # noqa: B008
+) -> None:
+    """Reset config to defaults — one key or everything.
+
+    With no KEY, deletes config.toml entirely (restoring all defaults).  With
+    KEY, removes that specific key from the file so it falls back to its default.
+    Prompts for confirmation when deleting the whole file unless ``--yes`` is given.
+    """
+    from . import paths as _paths  # noqa: PLC0415
+
+    cfg_path = _paths.config_path()
+
+    if key is None:
+        if not cfg_path.exists():
+            typer.echo("Config file does not exist — already at defaults.")
+            return
+        if not yes:
+            confirmed = typer.confirm("Delete config.toml and restore all defaults?", default=False)
+            if not confirmed:
+                typer.echo("Aborted.")
+                raise typer.Exit(0)
+        cfg_path.unlink()
+        config_mod._config_mtime_cache = None  # type: ignore[attr-defined]
+        typer.echo(f"Deleted {cfg_path} — all settings restored to defaults.")
+        return
+
+    # Single-key reset: load current config, reset that field to its default,
+    # then save.  If the key is a section, replace the whole sub-dataclass.
+    cfg = config_mod.load()
+    defaults = config_mod.Config()
+    try:
+        default_value = _config_get_value(defaults, key)
+    except KeyError:
+        _error(f"unknown config key: {key}")
+        raise typer.Exit(2) from None
+
+    parts = [p for p in key.split(".") if p]
+    target: object = cfg
+    for part in parts[:-1]:
+        target = getattr(target, part)
+    setattr(target, parts[-1], default_value)
+    config_mod.save(cfg)
+    if is_dataclass(default_value) and not isinstance(default_value, type):
+        default_display = json.dumps(asdict(default_value), ensure_ascii=False)
+    else:
+        default_display = json.dumps(default_value, ensure_ascii=False)
+    typer.echo(f"Reset {key} = {default_display} (default)")
+
+
+@config_app.command()
+def path() -> None:
+    """Print the path to token-goat's config.toml."""
+    from . import paths as _paths  # noqa: PLC0415
+
+    typer.echo(str(_paths.config_path()))
 
 
 @app.command("clean-cache", rich_help_panel="Advanced")

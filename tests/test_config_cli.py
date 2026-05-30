@@ -18,17 +18,17 @@ def test_config_get_and_set_round_trip(tmp_data_dir):
 
     result = runner.invoke(app, ["config", "set", "compact_assist.enabled", "false"])
     assert result.exit_code == 0
-    assert json.loads(result.output) is False
+    assert "compact_assist.enabled" in result.output
     assert config_mod.load().compact_assist.enabled is False
 
     result = runner.invoke(app, ["config", "set", "compact_assist.min_events", "9"])
     assert result.exit_code == 0
-    assert json.loads(result.output) == 9
+    assert "compact_assist.min_events" in result.output
     assert config_mod.load().compact_assist.min_events == 9
 
     result = runner.invoke(app, ["config", "set", "compact_assist.triggers", "manual,auto"])
     assert result.exit_code == 0
-    assert json.loads(result.output) == ["manual", "auto"]
+    assert "compact_assist.triggers" in result.output
     assert config_mod.load().compact_assist.triggers == ["manual", "auto"]
 
 
@@ -75,7 +75,8 @@ def test_config_set_max_manifest_tokens_round_trip(tmp_data_dir):
     runner = CliRunner()
     result = runner.invoke(app, ["config", "set", "compact_assist.max_manifest_tokens", "250"])
     assert result.exit_code == 0
-    assert json.loads(result.output) == 250
+    assert "compact_assist.max_manifest_tokens" in result.output
+    assert "250" in result.output
     assert config_mod.load().compact_assist.max_manifest_tokens == 250
 
     # Read it back via CLI to confirm persistence
@@ -102,7 +103,7 @@ def test_config_set_triggers_json_list_syntax(tmp_data_dir):
     runner = CliRunner()
     result = runner.invoke(app, ["config", "set", "compact_assist.triggers", '["manual"]'])
     assert result.exit_code == 0
-    assert json.loads(result.output) == ["manual"]
+    assert "compact_assist.triggers" in result.output
     assert config_mod.load().compact_assist.triggers == ["manual"]
 
 
@@ -114,7 +115,7 @@ def test_config_set_enabled_truthy_variants(tmp_data_dir):
         runner.invoke(app, ["config", "set", "compact_assist.enabled", "false"])
         result = runner.invoke(app, ["config", "set", "compact_assist.enabled", truthy])
         assert result.exit_code == 0, f"Failed for truthy={truthy!r}"
-        assert json.loads(result.output) is True, f"Expected True for truthy={truthy!r}"
+        assert config_mod.load().compact_assist.enabled is True, f"Expected True for truthy={truthy!r}"
 
 
 def test_config_set_enabled_falsy_variants(tmp_data_dir):
@@ -125,7 +126,7 @@ def test_config_set_enabled_falsy_variants(tmp_data_dir):
         runner.invoke(app, ["config", "set", "compact_assist.enabled", "true"])
         result = runner.invoke(app, ["config", "set", "compact_assist.enabled", falsy])
         assert result.exit_code == 0, f"Failed for falsy={falsy!r}"
-        assert json.loads(result.output) is False, f"Expected False for falsy={falsy!r}"
+        assert config_mod.load().compact_assist.enabled is False, f"Expected False for falsy={falsy!r}"
 
 
 # ---------------------------------------------------------------------------
@@ -388,3 +389,122 @@ class TestConfigValidate:
             "Did you add a section to config._KNOWN_SECTIONS without also updating "
             "config_validate()'s _KNOWN_TOP_LEVEL?"
         )
+
+
+# ---------------------------------------------------------------------------
+# config get (no-arg — TOML dump)
+# ---------------------------------------------------------------------------
+
+def test_config_get_no_arg_dumps_toml(tmp_data_dir):
+    """config get with no argument prints all config in TOML format."""
+    runner = CliRunner()
+    result = runner.invoke(app, ["config", "get"])
+    assert result.exit_code == 0
+    import tomllib
+    parsed = tomllib.loads(result.output)
+    assert "compact_assist" in parsed
+    assert "bash_compress" in parsed
+    assert "hints" in parsed
+
+
+def test_config_get_no_arg_reflects_changed_value(tmp_data_dir):
+    """config get (no-arg) shows a value changed via config set."""
+    runner = CliRunner()
+    runner.invoke(app, ["config", "set", "compact_assist.min_events", "7"])
+    result = runner.invoke(app, ["config", "get"])
+    assert result.exit_code == 0
+    import tomllib
+    parsed = tomllib.loads(result.output)
+    assert parsed["compact_assist"]["min_events"] == 7
+
+
+# ---------------------------------------------------------------------------
+# config set output format
+# ---------------------------------------------------------------------------
+
+def test_config_set_output_format(tmp_data_dir):
+    """config set prints 'Set KEY = VALUE' on success."""
+    runner = CliRunner()
+    result = runner.invoke(app, ["config", "set", "compact_assist.min_events", "11"])
+    assert result.exit_code == 0
+    assert result.output.strip() == "Set compact_assist.min_events = 11"
+
+
+def test_config_set_bool_output_format(tmp_data_dir):
+    """config set for a bool field prints the canonical JSON boolean."""
+    runner = CliRunner()
+    result = runner.invoke(app, ["config", "set", "compact_assist.enabled", "false"])
+    assert result.exit_code == 0
+    assert result.output.strip() == "Set compact_assist.enabled = false"
+
+
+# ---------------------------------------------------------------------------
+# config path
+# ---------------------------------------------------------------------------
+
+def test_config_path_prints_path(tmp_data_dir):
+    """config path prints a non-empty filesystem path."""
+    runner = CliRunner()
+    result = runner.invoke(app, ["config", "path"])
+    assert result.exit_code == 0
+    output = result.output.strip()
+    assert output  # non-empty
+    assert "config" in output.lower() or "token" in output.lower() or "goat" in output.lower()
+
+
+# ---------------------------------------------------------------------------
+# config reset
+# ---------------------------------------------------------------------------
+
+def test_config_reset_single_key(tmp_data_dir):
+    """config reset KEY restores that key to its default without deleting the file."""
+    runner = CliRunner()
+    runner.invoke(app, ["config", "set", "compact_assist.min_events", "99"])
+    assert config_mod.load().compact_assist.min_events == 99
+
+    result = runner.invoke(app, ["config", "reset", "compact_assist.min_events"])
+    assert result.exit_code == 0
+    assert "compact_assist.min_events" in result.output
+    assert config_mod.load().compact_assist.min_events == 3  # default
+
+
+def test_config_reset_all_with_yes_flag(tmp_data_dir):
+    """config reset --yes deletes config.toml and restores all defaults."""
+    from token_goat import paths as _paths
+    runner = CliRunner()
+    runner.invoke(app, ["config", "set", "compact_assist.min_events", "99"])
+    assert _paths.config_path().exists()
+
+    result = runner.invoke(app, ["config", "reset", "--yes"])
+    assert result.exit_code == 0
+    assert not _paths.config_path().exists()
+    assert config_mod.load().compact_assist.min_events == 3  # default restored
+
+
+def test_config_reset_all_prompts_confirmation(tmp_data_dir):
+    """config reset (no --yes) prompts; answering 'n' aborts without deleting."""
+    from token_goat import paths as _paths
+    runner = CliRunner()
+    runner.invoke(app, ["config", "set", "compact_assist.min_events", "55"])
+    assert _paths.config_path().exists()
+
+    # Simulate user typing 'n' at the prompt
+    result = runner.invoke(app, ["config", "reset"], input="n\n")
+    assert result.exit_code == 0
+    assert _paths.config_path().exists()  # file still there
+    assert config_mod.load().compact_assist.min_events == 55  # unchanged
+
+
+def test_config_reset_all_no_file_is_noop(tmp_data_dir):
+    """config reset when no config file exists reports already-at-defaults."""
+    runner = CliRunner()
+    result = runner.invoke(app, ["config", "reset", "--yes"])
+    assert result.exit_code == 0
+    assert "default" in result.output.lower()
+
+
+def test_config_reset_unknown_key_exits_2(tmp_data_dir):
+    """config reset with an unknown key exits with code 2."""
+    runner = CliRunner()
+    result = runner.invoke(app, ["config", "reset", "compact_assist.no_such_field"])
+    assert result.exit_code == 2
