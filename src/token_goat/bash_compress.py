@@ -112,6 +112,11 @@ __all__ = [
     "AwsCliFilter",
     "GcloudFilter",
     "AzureCliFilter",
+    # Database CLI filters
+    "PsqlFilter",
+    "MySQLFilter",
+    "Sqlite3Filter",
+    "RedisCLIFilter",
 ]
 
 import math
@@ -8668,6 +8673,583 @@ class SemgrepFilter(Filter):
 
 
 # ---------------------------------------------------------------------------
+# Database CLI filters
+# ---------------------------------------------------------------------------
+
+# --- psql ------------------------------------------------------------------
+
+#: psql connection error prefix emitted before any query result.
+_PSQL_CONN_ERROR_RE: Final[re.Pattern[str]] = re.compile(
+    r"^psql:\s+error:", re.IGNORECASE,
+)
+#: psql \timing output: "Time: 3.412 ms"
+_PSQL_TIMING_RE: Final[re.Pattern[str]] = re.compile(
+    r"^Time:\s+[\d.]+\s+ms", re.IGNORECASE,
+)
+#: DML result lines: "INSERT 0 5", "UPDATE 3", "DELETE 7", "CREATE TABLE", etc.
+_PSQL_CMD_TAG_RE: Final[re.Pattern[str]] = re.compile(
+    r"^(INSERT|UPDATE|DELETE|TRUNCATE|SELECT|CREATE|DROP|ALTER|COPY|"
+    r"DO|GRANT|REVOKE|SET|BEGIN|COMMIT|ROLLBACK)\b",
+    re.IGNORECASE,
+)
+#: psql NOTICE / WARNING server messages.
+_PSQL_NOTICE_RE: Final[re.Pattern[str]] = re.compile(
+    r"^(NOTICE|WARNING|HINT|DETAIL):", re.IGNORECASE,
+)
+#: psql ERROR lines — kept verbatim.
+_PSQL_ERROR_RE: Final[re.Pattern[str]] = re.compile(
+    r"^(ERROR|FATAL|PANIC):", re.IGNORECASE,
+)
+#: psql table border line: starts with one or more dashes/plusses (ASCII art table).
+_PSQL_TABLE_BORDER_RE: Final[re.Pattern[str]] = re.compile(r"^[+\-]+$|^\([\d]+ rows?\)$")
+#: psql "N rows" footer.
+_PSQL_ROWS_RE: Final[re.Pattern[str]] = re.compile(r"^\((\d+) rows?\)$")
+#: Migration DDL lines: CREATE TABLE, CREATE INDEX, CREATE SEQUENCE, CREATE TYPE, etc.
+_PSQL_CREATE_RE: Final[re.Pattern[str]] = re.compile(
+    r"^(CREATE TABLE|CREATE INDEX|CREATE UNIQUE INDEX|CREATE SEQUENCE|"
+    r"CREATE TYPE|CREATE FUNCTION|CREATE VIEW|CREATE TRIGGER|ALTER TABLE|"
+    r"ADD CONSTRAINT)\b",
+    re.IGNORECASE,
+)
+
+
+class PsqlFilter(Filter):
+    """Compress ``psql`` PostgreSQL CLI output.
+
+    Compression model:
+
+    * **Keep** ``\\timing`` output (``Time: Xms``).
+    * **Keep** DML result tags (``INSERT N``, ``UPDATE N``, ``DELETE N``, etc.).
+    * **Keep** NOTICE / WARNING / HINT / DETAIL messages.
+    * **Keep** ERROR / FATAL / PANIC messages verbatim.
+    * **Keep** ``psql: error:`` connection errors verbatim.
+    * **Collapse** SELECT table output with >20 rows: keep headers + first 5
+      data rows + ``(N rows)`` footer.
+    * **Collapse** long migration output (repeated CREATE TABLE/INDEX lines):
+      summarise as ``Created N tables, N indexes``.
+    """
+
+    name = "psql"
+    binaries = frozenset(["psql"])
+
+    _TABLE_ROW_THRESHOLD: int = 20
+    _TABLE_KEEP_ROWS: int = 5
+
+    def compress(
+        self, stdout: str, stderr: str, exit_code: int, argv: list[str],
+    ) -> str:
+        merged = self._combine_output(stdout, stderr)
+        return self._compress_psql(merged)
+
+    def _compress_psql(self, text: str) -> str:
+        lines = text.split("\n")
+
+        # Check for migration-style output first (bulk DDL).
+        create_tables = sum(
+            1 for ln in lines if re.match(r"^CREATE TABLE\b", ln, re.IGNORECASE)
+        )
+        create_indexes = sum(
+            1 for ln in lines
+            if re.match(r"^CREATE (UNIQUE )?INDEX\b", ln, re.IGNORECASE)
+        )
+        if create_tables >= 3:
+            # Summarise the bulk DDL block; keep non-DDL lines.
+            non_ddl: list[str] = []
+            for ln in lines:
+                if _PSQL_CREATE_RE.match(ln):
+                    continue
+                non_ddl.append(ln)
+            summary_parts = [f"{create_tables} tables"]
+            if create_indexes:
+                summary_parts.append(f"{create_indexes} indexes")
+            non_ddl.insert(0, f"[token-goat: Created {', '.join(summary_parts)}]")
+            return self._finalize(non_ddl)
+
+        # Pass for SELECT table output: detect header separator and data rows.
+        kept: list[str] = []
+        # State: collecting a tabular SELECT result.
+        in_table = False
+        header_lines: list[str] = []  # column header + separator border
+        data_rows: list[str] = []
+        after_header = False
+
+        def flush_table() -> None:
+            nonlocal in_table, header_lines, data_rows, after_header
+            if not header_lines:
+                in_table = False
+                return
+            total_rows = len(data_rows)
+            kept.extend(header_lines)
+            if total_rows > self._TABLE_ROW_THRESHOLD:
+                kept.extend(data_rows[: self._TABLE_KEEP_ROWS])
+                kept.append(
+                    f"[token-goat: {total_rows} rows (showing first {self._TABLE_KEEP_ROWS})]"
+                )
+            else:
+                kept.extend(data_rows)
+            in_table = False
+            header_lines = []
+            data_rows = []
+            after_header = False
+
+        for line in lines:
+            # Always keep connection errors, errors, timing, DML tags, notices.
+            if (
+                _PSQL_CONN_ERROR_RE.match(line)
+                or _PSQL_ERROR_RE.match(line)
+                or _PSQL_TIMING_RE.match(line)
+                or _PSQL_CMD_TAG_RE.match(line)
+                or _PSQL_NOTICE_RE.match(line)
+            ):
+                if in_table:
+                    flush_table()
+                kept.append(line)
+                continue
+
+            # Detect start of ASCII table (top border or column header border).
+            # psql renders: " col1 | col2 \n------+------\n val | val \n------+------\n(N rows)"
+            # The first dashes-only line after the column names is the separator.
+            stripped = line.strip()
+
+            # Top border of aligned table output (e.g. "------+------").
+            is_border = bool(re.match(r"^[-+]+$", stripped))
+            # "N rows" footer.
+            rows_m = _PSQL_ROWS_RE.match(stripped)
+
+            if rows_m:
+                # Footer of a SELECT result.
+                if in_table:
+                    flush_table()
+                kept.append(line)
+                continue
+
+            if is_border:
+                if not in_table:
+                    # Beginning of a table: the line before this was the header.
+                    # Move last kept line into header_lines.
+                    if kept:
+                        header_lines.append(kept.pop())
+                    header_lines.append(line)
+                    in_table = True
+                    after_header = True
+                else:
+                    if after_header:
+                        header_lines.append(line)
+                        after_header = False
+                    else:
+                        # Closing border — flush.
+                        flush_table()
+                        kept.append(line)
+                continue
+
+            if in_table:
+                data_rows.append(line)
+            else:
+                kept.append(line)
+
+        if in_table:
+            flush_table()
+
+        return self._finalize(kept)
+
+
+# --- mysql / mysqldump -------------------------------------------------------
+
+#: "N rows in set (0.00 sec)" — keep.
+_MYSQL_ROWS_IN_SET_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\d+ rows? in set", re.IGNORECASE,
+)
+#: "N row affected (0.00 sec)" — keep.
+_MYSQL_ROWS_AFFECTED_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\d+ rows? affected", re.IGNORECASE,
+)
+#: MySQL WARNING line (from mysql CLI).
+_MYSQL_WARNING_RE: Final[re.Pattern[str]] = re.compile(
+    r"^(WARNING|WARN)\b", re.IGNORECASE,
+)
+#: MySQL ERROR line.
+_MYSQL_ERROR_RE: Final[re.Pattern[str]] = re.compile(
+    r"^(ERROR|FATAL)\b", re.IGNORECASE,
+)
+#: mysqldump "-- Table structure for table `foo`" comment.
+_MYSQLDUMP_TABLE_STRUCT_RE: Final[re.Pattern[str]] = re.compile(
+    r"^-- Table structure for table\b", re.IGNORECASE,
+)
+#: mysqldump header banner lines ("-- MySQL dump …", "-- Host:", "-- Server version:").
+_MYSQLDUMP_BANNER_RE: Final[re.Pattern[str]] = re.compile(
+    r"^-- (MySQL dump|Host:|Server version:|Dump completed)", re.IGNORECASE,
+)
+#: mysqldump "-- Dumping data for table" comment.
+_MYSQLDUMP_DATA_RE: Final[re.Pattern[str]] = re.compile(
+    r"^-- Dumping (data|events|routines|triggers) for\b", re.IGNORECASE,
+)
+#: MySQL table border line in tabular query output.
+_MYSQL_TABLE_BORDER_RE: Final[re.Pattern[str]] = re.compile(r"^\+-+")
+
+
+class MySQLFilter(Filter):
+    """Compress ``mysql`` and ``mysqldump`` output.
+
+    Compression model (mysql query results):
+
+    * **Collapse** SELECT table results with >20 rows: keep headers + first 5
+      rows + ``"X rows in set"`` footer.
+    * **Keep** ``"N rows in set"`` / ``"N rows affected"`` summary lines.
+    * **Keep** WARNING lines.
+    * **Keep** ERROR lines verbatim.
+
+    Compression model (mysqldump):
+
+    * **Keep** the dump header banner.
+    * **Keep** the first 3 CREATE TABLE blocks; collapse the rest to a count.
+    * **Keep** ``-- Dumping data for table`` markers.
+    * **Keep** ERROR lines verbatim.
+    """
+
+    name = "mysql"
+    binaries = frozenset(["mysql", "mysqldump"])
+
+    _TABLE_ROW_THRESHOLD: int = 20
+    _TABLE_KEEP_ROWS: int = 5
+    _DUMP_KEEP_TABLES: int = 3
+
+    def compress(
+        self, stdout: str, stderr: str, exit_code: int, argv: list[str],
+    ) -> str:
+        binary_name = Path(argv[0]).name.lower() if argv else ""
+        merged = self._combine_output(stdout, stderr)
+        if "mysqldump" in binary_name:
+            return self._compress_dump(merged)
+        return self._compress_query(merged)
+
+    def _compress_query(self, text: str) -> str:
+        """Compress tabular mysql query results."""
+        lines = text.split("\n")
+        kept: list[str] = []
+        # State machine phases:
+        #   0 = outside table
+        #   1 = saw top border
+        #   2 = saw column header row
+        #   3 = saw second border (now collecting data rows)
+        phase = 0
+        header_lines: list[str] = []
+        data_rows: list[str] = []
+
+        def flush_table() -> None:
+            nonlocal phase, header_lines, data_rows
+            kept.extend(header_lines)
+            total = len(data_rows)
+            if total > self._TABLE_ROW_THRESHOLD:
+                kept.extend(data_rows[: self._TABLE_KEEP_ROWS])
+                kept.append(
+                    f"[token-goat: {total} rows (showing first {self._TABLE_KEEP_ROWS})]"
+                )
+            else:
+                kept.extend(data_rows)
+            phase = 0
+            header_lines = []
+            data_rows = []
+
+        for line in lines:
+            # Always keep signal lines.
+            if (
+                _MYSQL_ERROR_RE.match(line)
+                or _MYSQL_WARNING_RE.match(line)
+                or _MYSQL_ROWS_IN_SET_RE.match(line)
+                or _MYSQL_ROWS_AFFECTED_RE.match(line)
+            ):
+                if phase > 0:
+                    flush_table()
+                kept.append(line)
+                continue
+
+            stripped = line.strip()
+            is_border = bool(_MYSQL_TABLE_BORDER_RE.match(stripped))
+
+            if is_border:
+                if phase == 0:
+                    # Top border: start collecting header.
+                    phase = 1
+                    header_lines.append(line)
+                elif phase == 1:
+                    # Second border immediately after top: malformed; keep.
+                    header_lines.append(line)
+                    phase = 2
+                elif phase == 2:
+                    # Border after column name row: this is the header separator.
+                    header_lines.append(line)
+                    phase = 3
+                else:
+                    # phase == 3: closing border.
+                    flush_table()
+                    kept.append(line)
+                continue
+
+            if phase == 0:
+                kept.append(line)
+            elif phase == 1:
+                # Column name row.
+                header_lines.append(line)
+                phase = 2
+            elif phase == 2:
+                # Should be the separator border; treat as column row just in case.
+                header_lines.append(line)
+            else:
+                # phase == 3: data rows.
+                data_rows.append(line)
+
+        if phase > 0:
+            flush_table()
+
+        return self._finalize(kept)
+
+    def _compress_dump(self, text: str) -> str:
+        """Compress mysqldump output: keep first N CREATE TABLE blocks."""
+        lines = text.split("\n")
+        kept: list[str] = []
+        tables_kept = 0
+        tables_collapsed = 0
+        in_create = False  # inside a CREATE TABLE block
+        skip_block = False  # skipping a collapsed CREATE TABLE block
+
+        for line in lines:
+            # Always keep errors.
+            if _MYSQL_ERROR_RE.match(line):
+                kept.append(line)
+                continue
+
+            # mysqldump banner / data markers — always keep.
+            if _MYSQLDUMP_BANNER_RE.match(line) or _MYSQLDUMP_DATA_RE.match(line):
+                kept.append(line)
+                continue
+
+            # "-- Table structure for table `name`" comment — keep with first N tables.
+            if _MYSQLDUMP_TABLE_STRUCT_RE.match(line):
+                if tables_kept < self._DUMP_KEEP_TABLES:
+                    tables_kept += 1
+                    in_create = True
+                    skip_block = False
+                    kept.append(line)
+                else:
+                    tables_collapsed += 1
+                    in_create = True
+                    skip_block = True
+                continue
+
+            if in_create:
+                # A blank line between table blocks closes the block.
+                if not line.strip():
+                    in_create = False
+                    skip_block = False
+                    if not skip_block:
+                        kept.append(line)
+                    continue
+                if not skip_block:
+                    kept.append(line)
+                continue
+
+            kept.append(line)
+
+        notes: list[str] = []
+        if tables_collapsed:
+            notes.append(f"Dumping {tables_kept + tables_collapsed} tables...")
+        self._emit_notes(kept, notes)
+        return self._finalize(kept)
+
+
+# --- sqlite3 ---------------------------------------------------------------
+
+#: sqlite3 error lines.
+_SQLITE3_ERROR_RE: Final[re.Pattern[str]] = re.compile(
+    r"^(Error:|Parse error:|Runtime error:)", re.IGNORECASE,
+)
+#: sqlite3 .schema / .tables output opener (CREATE TABLE / CREATE INDEX / etc.).
+_SQLITE3_SCHEMA_RE: Final[re.Pattern[str]] = re.compile(
+    r"^(CREATE TABLE|CREATE INDEX|CREATE UNIQUE INDEX|CREATE VIEW|CREATE TRIGGER)\b",
+    re.IGNORECASE,
+)
+
+
+class Sqlite3Filter(Filter):
+    """Compress ``sqlite3`` CLI output.
+
+    Compression model:
+
+    * **Collapse** long SELECT results (>20 rows): keep first 5 + count marker.
+    * **Keep** ``.schema`` output as-is (usually compact; only truncate when
+      giant via the universal line cap).
+    * **Keep** error lines (``Error:``, ``Parse error:``, ``Runtime error:``)
+      verbatim.
+    """
+
+    name = "sqlite3"
+    binaries = frozenset(["sqlite3"])
+
+    _ROW_THRESHOLD: int = 20
+    _KEEP_ROWS: int = 5
+
+    def compress(
+        self, stdout: str, stderr: str, exit_code: int, argv: list[str],
+    ) -> str:
+        merged = self._combine_output(stdout, stderr)
+        lines = merged.split("\n")
+        # Schema output (detected by majority of lines starting with CREATE): pass through.
+        non_empty = [ln for ln in lines if ln.strip()]
+        schema_lines = [ln for ln in non_empty if _SQLITE3_SCHEMA_RE.match(ln)]
+        if non_empty and len(schema_lines) / len(non_empty) >= 0.5:
+            # Majority is schema — keep as-is; line cap handles giant files.
+            return merged
+
+        # For query results: keep errors always; collapse long output.
+        errors = [ln for ln in lines if _SQLITE3_ERROR_RE.match(ln)]
+        data_lines = [ln for ln in lines if not _SQLITE3_ERROR_RE.match(ln)]
+        non_empty_data = [ln for ln in data_lines if ln.strip()]
+
+        kept: list[str] = []
+        kept.extend(errors)
+
+        if len(non_empty_data) > self._ROW_THRESHOLD:
+            kept.extend(non_empty_data[: self._KEEP_ROWS])
+            kept.append(
+                f"[token-goat: {len(non_empty_data)} rows "
+                f"(showing first {self._KEEP_ROWS})]"
+            )
+        else:
+            kept.extend(data_lines)
+
+        return self._finalize(kept)
+
+
+# --- redis-cli ---------------------------------------------------------------
+
+#: redis-cli error lines ("ERR ...", "WRONGTYPE ...", "(error) ...").
+_REDIS_ERROR_RE: Final[re.Pattern[str]] = re.compile(
+    r"^(\(error\)|ERR |WRONGTYPE |NOAUTH |NOSCRIPT |BUSYKEY |MISCONF )",
+    re.IGNORECASE,
+)
+#: A single "OK" line (from SET / HSET / etc.).
+_REDIS_OK_RE: Final[re.Pattern[str]] = re.compile(r"^OK$")
+#: SCAN output: "1) (cursor)" line or "2) 1) key" list lines.
+_REDIS_SCAN_CURSOR_RE: Final[re.Pattern[str]] = re.compile(r"^\d+\) \(integer\) \d+")
+#: Individual key/value lines in list output: "1) \"key\"" or " 1) \"key\"".
+_REDIS_LIST_ITEM_RE: Final[re.Pattern[str]] = re.compile(r"^\s*\d+\)\s+")
+
+
+class RedisCLIFilter(Filter):
+    """Compress ``redis-cli`` output.
+
+    Compression model:
+
+    * **Collapse** ``KEYS *`` output with >20 keys: keep first 10 + count.
+    * **Collapse** ``LRANGE`` / ``SMEMBERS`` / ``HGETALL`` results with >20
+      items: keep first 10 + count.
+    * **Collapse** bulk ``OK`` lines (repeated SET operations): count summary.
+    * **Collapse** ``SCAN`` cursor pages: emit final key total.
+    * **Keep** error lines verbatim.
+    """
+
+    name = "redis-cli"
+    binaries = frozenset(["redis-cli"])
+
+    _LIST_THRESHOLD: int = 20
+    _LIST_KEEP: int = 10
+
+    def compress(
+        self, stdout: str, stderr: str, exit_code: int, argv: list[str],
+    ) -> str:
+        merged = self._combine_output(stdout, stderr)
+        lines = merged.split("\n")
+
+        # Detect SCAN output: multiple cursor blocks.
+        if self._is_scan_output(lines):
+            return self._compress_scan(lines)
+
+        # Detect bulk OK (multiple consecutive OK lines).
+        ok_count = sum(1 for ln in lines if _REDIS_OK_RE.match(ln.strip()))
+        if ok_count >= 5:
+            return self._compress_bulk_ok(lines, ok_count)
+
+        # Detect long list-style output (numbered items).
+        list_items = [ln for ln in lines if _REDIS_LIST_ITEM_RE.match(ln)]
+        if len(list_items) > self._LIST_THRESHOLD:
+            return self._compress_list(lines, list_items)
+
+        # Default: keep everything; errors always pass through.
+        return self._finalize(lines)
+
+    def _is_scan_output(self, lines: list[str]) -> bool:
+        """Return True when output looks like one or more SCAN cursor responses.
+
+        SCAN responses have the distinctive shape:
+          1) (integer) <cursor>   ← cursor line
+          2) 1) "key1"            ← start of key sublist
+             2) "key2"
+        The cursor line matches ``^\\d+\\) \\(integer\\) \\d+``.  Plain list
+        output (LRANGE / SMEMBERS) never has that cursor pattern.
+        """
+        return any(re.match(r"^\d+\) \(integer\) \d+", ln) for ln in lines)
+
+    def _compress_scan(self, lines: list[str]) -> str:
+        """Collapse SCAN pages to a total key count."""
+        all_keys: list[str] = []
+        errors: list[str] = []
+        # Collect all quoted key entries from the nested list.
+        for line in lines:
+            if _REDIS_ERROR_RE.match(line):
+                errors.append(line)
+                continue
+            # Key entries look like: `1) "keyname"` (indented or not).
+            m = re.match(r'^\s*\d+\)\s+"(.+)"', line)
+            if m:
+                all_keys.append(m.group(1))
+
+        kept: list[str] = errors
+        total = len(all_keys)
+        if total > self._LIST_KEEP:
+            kept += [f'"{k}"' for k in all_keys[: self._LIST_KEEP]]
+            kept.append(
+                f"[token-goat: {total} keys total (showing first {self._LIST_KEEP})]"
+            )
+        else:
+            kept += [f'"{k}"' for k in all_keys]
+        return self._finalize(kept)
+
+    def _compress_bulk_ok(self, lines: list[str], ok_count: int) -> str:
+        """Collapse repeated OK lines to a count; keep non-OK lines."""
+        kept: list[str] = []
+        for line in lines:
+            if _REDIS_OK_RE.match(line.strip()):
+                continue
+            if _REDIS_ERROR_RE.match(line):
+                kept.append(line)
+                continue
+            kept.append(line)
+        kept.append(f"[token-goat: {ok_count} OK responses]")
+        return self._finalize(kept)
+
+    def _compress_list(self, lines: list[str], list_items: list[str]) -> str:
+        """Collapse long list output to first N items + count."""
+        kept: list[str] = []
+        item_count = 0
+        total = len(list_items)
+        for line in lines:
+            if _REDIS_ERROR_RE.match(line):
+                kept.append(line)
+                continue
+            if _REDIS_LIST_ITEM_RE.match(line):
+                if item_count < self._LIST_KEEP:
+                    kept.append(line)
+                item_count += 1
+            else:
+                kept.append(line)
+        if total > self._LIST_KEEP:
+            kept.append(
+                f"[token-goat: {total} items (showing first {self._LIST_KEEP})]"
+            )
+        return self._finalize(kept)
+
+
+# ---------------------------------------------------------------------------
 # Public registry & dispatch
 # ---------------------------------------------------------------------------
 
@@ -8786,6 +9368,11 @@ FILTERS: list[Filter] = [
     TrivyFilter(),
     SnykFilter(),
     SemgrepFilter(),
+    # Database CLI filters — disjoint binaries from all other filters.
+    PsqlFilter(),
+    MySQLFilter(),
+    Sqlite3Filter(),
+    RedisCLIFilter(),
 ]
 
 
