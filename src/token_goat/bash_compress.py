@@ -101,6 +101,9 @@ __all__ = [
     "SwiftFilter",
     "TreeFilter",
     "UvFilter",
+    "CondaFilter",
+    "PnpmFilter",
+    "YarnFilter",
     "XcodeFilter",
     "YqFilter",
     # Security scanners
@@ -6257,7 +6260,16 @@ class UvFilter(Filter):
     def compress(
         self, stdout: str, stderr: str, exit_code: int, argv: list[str],
     ) -> str:
+        # Detect freeze/list subcommands: ``uv pip freeze`` / ``uv pip list``
+        positionals = [tok for tok in argv[1:] if not tok.startswith("-")]
+        is_freeze_or_list = (
+            len(positionals) >= 2
+            and positionals[0] == "pip"
+            and positionals[1] in {"freeze", "list"}
+        )
         merged = self._combine_output(stdout, stderr)
+        if is_freeze_or_list:
+            return self._compress_freeze_list(merged)
         lines = merged.split("\n")
         kept: list[str] = []
         downloads = 0
@@ -6275,6 +6287,467 @@ class UvFilter(Filter):
             notes.append(f"dropped {downloads} Downloading/Fetching progress lines")
         if diff_lines:
             notes.append(f"dropped {diff_lines} per-package +/- diff lines")
+        self._emit_notes(kept, notes)
+        return self._finalize(kept)
+
+    def _compress_freeze_list(self, text: str) -> str:
+        """Compress ``uv pip freeze`` / ``uv pip list`` output.
+
+        When the list exceeds 50 package lines, keep the first 20 and
+        append a count summary.  Error lines are always preserved verbatim.
+        """
+        lines = [ln for ln in text.split("\n") if ln.strip()]
+        # Preserve error lines regardless of list length.
+        error_lines = [ln for ln in lines if _ERROR_SIGNAL_RE.search(ln)]
+        pkg_lines = [ln for ln in lines if not _ERROR_SIGNAL_RE.search(ln)]
+        _UV_FREEZE_THRESHOLD = 50
+        _UV_FREEZE_SHOW = 20
+        if len(pkg_lines) <= _UV_FREEZE_THRESHOLD:
+            return text.rstrip()
+        shown = pkg_lines[:_UV_FREEZE_SHOW]
+        remaining = len(pkg_lines) - _UV_FREEZE_SHOW
+        result = shown + [f"[token-goat: {remaining} more packages elided; use uv pip freeze for full list]"]
+        if error_lines:
+            result.extend(error_lines)
+        return "\n".join(result)
+
+
+# --- conda -------------------------------------------------------------------
+
+#: Conda download/extract progress bar lines
+_CONDA_DOWNLOAD_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\s*(?:[A-Za-z0-9_\-.]+-[\d.]+\s+\||\[[-#\s]+\]|\d+%|\d+\s*(?:KB|MB|kB|B)/s|"
+    r"Downloading and Extracting Packages:)",
+)
+#: Conda individual package install lines: "  - pkgname version build"
+_CONDA_PKG_INSTALL_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\s{2}-\s+\S"
+)
+#: Conda solving/metadata lines to keep (status lines)
+_CONDA_STATUS_RE: Final[re.Pattern[str]] = re.compile(
+    r"^(?:Collecting package metadata|Solving environment|Preparing transaction|"
+    r"Executing transaction|Verifying transaction|done\b)",
+    re.IGNORECASE,
+)
+
+
+class CondaFilter(Filter):
+    """Compress ``conda install`` / ``conda create`` / ``conda list`` output.
+
+    Conda emits verbose per-package download progress, solver output, and
+    install listings.  The interesting signals are the phase headers, solver
+    outcome, and final transaction summary.
+
+    Compression model for ``conda install`` / ``conda create``:
+
+    * **Keep** phase headers: "Collecting package metadata...", "Solving
+      environment:", "Preparing transaction:", "Executing transaction:", "done".
+    * **Drop** progress bar lines (``[####] 100%``, speed/size bars, "Downloading
+      and Extracting Packages:" body lines) — collapse to a count summary.
+    * **Collapse** individual package install lines (``  - pkgname version``) to
+      a count summary.
+    * **Keep** every ``error:`` / ``ERROR`` / ``CondaError`` line verbatim.
+
+    Compression model for ``conda list``:
+
+    * **Pass-through** when ≤ 50 lines.
+    * **Truncate** to first 20 lines + count when > 50 lines.
+
+    Compression model for ``conda env export``:
+
+    * **Pass-through** when ≤ 50 lines (YAML header + deps).
+    * **Truncate** dep lines to first 20 + count when > 50 lines.
+    """
+
+    name = "conda"
+    binaries = frozenset(["conda", "mamba", "micromamba"])
+
+    def matches(self, argv: list[str]) -> bool:  # noqa: D102
+        if not argv:
+            return False
+        stem = Path(argv[0]).stem.lower()
+        if stem not in self.binaries:
+            return False
+        positionals = [tok for tok in argv[1:] if not tok.startswith("-")]
+        if not positionals:
+            return True
+        return positionals[0] in {
+            "install", "create", "update", "upgrade", "remove", "uninstall",
+            "list", "env",
+        }
+
+    def compress(
+        self, stdout: str, stderr: str, exit_code: int, argv: list[str],
+    ) -> str:
+        positionals = [tok for tok in argv[1:] if not tok.startswith("-")]
+        subcmd = positionals[0] if positionals else ""
+
+        merged = self._combine_output(stdout, stderr)
+
+        # ``conda list`` — simple package listing
+        if subcmd == "list":
+            return self._compress_pkg_list(merged, label="conda list")
+
+        # ``conda env export`` — YAML with pinned deps
+        if subcmd == "env" and len(positionals) >= 2 and positionals[1] == "export":
+            return self._compress_env_export(merged)
+
+        # ``conda install`` / ``conda create`` / ``conda update`` / ``conda remove``
+        return self._compress_install(merged)
+
+    def _compress_install(self, text: str) -> str:
+        """Compress conda install/create/update/remove output."""
+        lines = text.split("\n")
+        kept: list[str] = []
+        downloads_dropped = 0
+        pkg_installs = 0
+        in_download_section = False
+
+        for line in lines:
+            # Always preserve error lines.
+            if _ERROR_SIGNAL_RE.search(line):
+                kept.append(line)
+                in_download_section = False
+                continue
+            # Detect "Downloading and Extracting Packages:" section header.
+            if re.match(r"^Downloading and Extracting Packages", line, re.IGNORECASE):
+                in_download_section = True
+                kept.append(line)
+                continue
+            # End download section when we see a blank line or a new phase.
+            if in_download_section:
+                if not line.strip():
+                    in_download_section = False
+                    kept.append(line)
+                    continue
+                if _CONDA_STATUS_RE.match(line):
+                    in_download_section = False
+                    # Fall through to normal processing below.
+                elif _CONDA_DOWNLOAD_RE.match(line) or line.strip().startswith("|"):
+                    downloads_dropped += 1
+                    continue
+                elif re.match(r"^\s{2,}[\w.-]", line):
+                    # Package progress bar row like "  pkgname-1.0 | 100 KB |"
+                    downloads_dropped += 1
+                    continue
+                else:
+                    in_download_section = False
+            # Phase header lines — always keep.
+            if _CONDA_STATUS_RE.match(line):
+                kept.append(line)
+                continue
+            # Individual package install diff lines "  - pkgname version build"
+            if _CONDA_PKG_INSTALL_RE.match(line):
+                pkg_installs += 1
+                continue
+            # Progress bar noise outside download section.
+            if _CONDA_DOWNLOAD_RE.match(line):
+                downloads_dropped += 1
+                continue
+            kept.append(line)
+
+        notes: list[str] = []
+        if downloads_dropped:
+            notes.append(f"collapsed {downloads_dropped} download/progress lines")
+        if pkg_installs:
+            notes.append(f"collapsed {pkg_installs} package install lines")
+        self._emit_notes(kept, notes)
+        return self._finalize(kept)
+
+    def _compress_pkg_list(self, text: str, label: str = "packages") -> str:
+        """Compress ``conda list`` output (>50 packages → first 20 + count)."""
+        lines = text.split("\n")
+        # Preserve header comment lines (start with #).
+        header = [ln for ln in lines if ln.startswith("#")]
+        pkg_lines = [ln for ln in lines if ln.strip() and not ln.startswith("#")]
+        _THRESHOLD = 50
+        _SHOW = 20
+        if len(pkg_lines) <= _THRESHOLD:
+            return text.rstrip()
+        shown = header + pkg_lines[:_SHOW]
+        remaining = len(pkg_lines) - _SHOW
+        shown.append(f"[token-goat: {remaining} more packages elided; run conda list for full output]")
+        return "\n".join(shown)
+
+    def _compress_env_export(self, text: str) -> str:
+        """Compress ``conda env export`` YAML (>50 dep lines → first 20 + count)."""
+        lines = text.split("\n")
+        # Separate YAML header (name:, channels:, prefix:) from dep lines.
+        dep_lines: list[str] = []
+        other_lines: list[str] = []
+        in_deps = False
+        for ln in lines:
+            if ln.strip().startswith("dependencies:"):
+                in_deps = True
+                other_lines.append(ln)
+            elif in_deps and re.match(r"^\s+-\s", ln):
+                dep_lines.append(ln)
+            else:
+                if in_deps:
+                    in_deps = False
+                other_lines.append(ln)
+
+        _THRESHOLD = 50
+        _SHOW = 20
+        if len(dep_lines) <= _THRESHOLD:
+            return text.rstrip()
+
+        # Find insertion point (after "dependencies:" line).
+        dep_start_idx = next(
+            (i for i, ln in enumerate(other_lines) if ln.strip().startswith("dependencies:")),
+            len(other_lines),
+        )
+        remaining = len(dep_lines) - _SHOW
+        result = (
+            other_lines[: dep_start_idx + 1]
+            + dep_lines[:_SHOW]
+            + [f"  # [token-goat: {remaining} more dependencies elided]"]
+            + other_lines[dep_start_idx + 1 :]
+        )
+        return "\n".join(result)
+
+
+# --- pnpm -------------------------------------------------------------------
+
+#: pnpm per-package download/fetch progress lines
+_PNPM_PROGRESS_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\s*(?:Resolving|Downloading|Fetching)[:\s].*\d+/\d+"
+    r"|\s+\d+\s+packages?\s+(?:fetched|resolved|downloaded|linked)"
+)
+#: pnpm lockfile/packages summary lines to keep
+_PNPM_SUMMARY_RE: Final[re.Pattern[str]] = re.compile(
+    r"^(?:Packages:|Already up to date|Progress:|WARN|ERR!|added|removed|changed)",
+    re.IGNORECASE,
+)
+
+
+class PnpmFilter(Filter):
+    """Compress ``pnpm install`` / ``pnpm add`` / ``pnpm run`` output.
+
+    pnpm emits resolver/download progress lines while installing packages.
+    The interesting signals are the ``Packages: +N -M`` summary and the
+    lockfile change notice.
+
+    Compression model for ``pnpm install`` / ``pnpm add``:
+
+    * **Keep** "Packages: +N -M" (install summary) → always kept.
+    * **Keep** "Already up to date" → kept.
+    * **Keep** lockfile change lines (``Lockfile is up to date``, ``Saved
+      lockfile``) → kept.
+    * **Collapse** individual package download/fetch progress (``Resolving N/M``,
+      ``Downloading N/M``) → count note.
+    * **Keep** every ``warn``/``ERR!``/error line verbatim.
+
+    Compression model for ``pnpm run <script>``:
+
+    * Prepend "pnpm run: " label to first non-empty output line, keep rest.
+    """
+
+    name = "pnpm"
+    binaries = frozenset(["pnpm"])
+
+    def matches(self, argv: list[str]) -> bool:  # noqa: D102
+        if not argv:
+            return False
+        stem = Path(argv[0]).stem.lower()
+        if stem.endswith(".exe"):
+            stem = stem[:-4]
+        return stem == "pnpm"
+
+    def compress(
+        self, stdout: str, stderr: str, exit_code: int, argv: list[str],
+    ) -> str:
+        positionals = [tok for tok in argv[1:] if not tok.startswith("-")]
+        subcmd = positionals[0] if positionals else ""
+
+        merged = self._combine_output(stdout, stderr)
+
+        if subcmd == "run" and len(positionals) >= 2:
+            return self._compress_run(merged, positionals[1])
+
+        # install / add / remove / update / import
+        return self._compress_install(merged)
+
+    def _compress_install(self, text: str) -> str:
+        lines = text.split("\n")
+        kept: list[str] = []
+        progress_dropped = 0
+
+        for line in lines:
+            if _ERROR_SIGNAL_RE.search(line):
+                kept.append(line)
+                continue
+            # Keep summary/status lines verbatim.
+            if _PNPM_SUMMARY_RE.match(line):
+                kept.append(line)
+                continue
+            # Lockfile / workspace notices.
+            if re.match(r"^\s*(?:Lockfile|Saved|node_modules|symlink)", line, re.IGNORECASE):
+                kept.append(line)
+                continue
+            # Collapse resolver/download progress.
+            if _PNPM_PROGRESS_RE.search(line):
+                progress_dropped += 1
+                continue
+            kept.append(line)
+
+        notes: list[str] = []
+        if progress_dropped:
+            notes.append(f"collapsed {progress_dropped} resolver/download progress lines")
+        self._emit_notes(kept, notes)
+        return self._finalize(kept)
+
+    def _compress_run(self, text: str, script: str) -> str:
+        """Prepend 'pnpm run <script>: ' to the first non-empty output line."""
+        lines = text.split("\n")
+        out: list[str] = []
+        labelled = False
+        for line in lines:
+            if not labelled and line.strip():
+                out.append(f"pnpm run {script}: {line}")
+                labelled = True
+            else:
+                out.append(line)
+        return self._finalize(out)
+
+
+# --- yarn -------------------------------------------------------------------
+
+#: Yarn classic fetch individual package lines
+_YARN_CLASSIC_FETCH_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\s*(?:Fetching|Saving|Linking)\s+dependency\s+graph"
+    r"|\[2/4\]\s+Fetching\s+packages\.\.\.\s*$"
+    r"|\s{2,}Fetching\s+\S"
+)
+#: Yarn classic warning dedup key (normalize warning message)
+_YARN_WARNING_RE: Final[re.Pattern[str]] = re.compile(
+    r"^warning\s+", re.IGNORECASE,
+)
+#: Yarn berry (v2+) resolution/fetch progress
+_YARN_BERRY_PROGRESS_RE: Final[re.Pattern[str]] = re.compile(
+    r"^➤\s+YN\d{4}:\s+(?:[│└]\s+)?\S.*(?:\d+/\d+|\d+\.\d+\s*[KMG]?B)"
+)
+#: Yarn berry "Done" summary line
+_YARN_BERRY_DONE_RE: Final[re.Pattern[str]] = re.compile(
+    r"^➤\s+YN0000:\s+·\s+Done"
+)
+
+
+class YarnFilter(Filter):
+    """Compress ``yarn install`` output for both classic (v1) and berry (v2+).
+
+    Yarn classic emits ``[1/4]`` phase headers and per-package fetch lines.
+    Yarn berry (PnP) emits ``YN####`` structured log lines.
+
+    Compression model — Yarn classic:
+
+    * **Keep** "yarn install v1.X.X" banner → kept.
+    * **Keep** "[1/4] Resolving packages..." / "[3/4] Linking dependencies..."
+      / "[4/4] Building..." phase lines → kept.
+    * **Collapse** "[2/4] Fetching packages..." body (individual fetch lines)
+      → count summary.
+    * **Keep** "Done in Xs." → kept.
+    * **Deduplicate** ``warning ...`` lines (keep first occurrence per
+      unique message prefix).
+
+    Compression model — Yarn berry:
+
+    * **Keep** resolution summary (``YN0000: Resolution step``) → kept.
+    * **Collapse** per-package fetch progress lines → count summary.
+    * **Keep** ``YN0000: Done`` → kept.
+    * **Keep** every ``YN0001`` (error) line verbatim.
+    """
+
+    name = "yarn"
+    binaries = frozenset(["yarn"])
+
+    def matches(self, argv: list[str]) -> bool:  # noqa: D102
+        if not argv:
+            return False
+        stem = Path(argv[0]).stem.lower()
+        if stem.endswith(".exe"):
+            stem = stem[:-4]
+        return stem == "yarn"
+
+    def compress(
+        self, stdout: str, stderr: str, exit_code: int, argv: list[str],
+    ) -> str:
+        merged = self._combine_output(stdout, stderr)
+        # Detect berry by presence of YN#### prefixes.
+        if re.search(r"^➤\s+YN\d{4}:", merged, re.MULTILINE):
+            return self._compress_berry(merged)
+        return self._compress_classic(merged)
+
+    def _compress_classic(self, text: str) -> str:
+        """Compress yarn classic (v1) install output."""
+        lines = text.split("\n")
+        kept: list[str] = []
+        fetch_dropped = 0
+        warnings_seen: dict[str, int] = {}
+        in_fetch_phase = False
+
+        for line in lines:
+            if _ERROR_SIGNAL_RE.search(line):
+                kept.append(line)
+                in_fetch_phase = False
+                continue
+            # Deduplicate warning lines.
+            if _YARN_WARNING_RE.match(line):
+                # Key on the first 60 chars of the warning message.
+                key = line[:60]
+                warnings_seen[key] = warnings_seen.get(key, 0) + 1
+                if warnings_seen[key] == 1:
+                    kept.append(line)
+                # else: duplicate warning — silently drop
+                continue
+            # Detect fetch phase start: "[2/4] Fetching packages..."
+            if re.match(r"^\[2/4\]", line):
+                in_fetch_phase = True
+                kept.append(line)
+                continue
+            # Any other phase header ends the fetch phase.
+            if re.match(r"^\[\d/\d\]", line):
+                in_fetch_phase = False
+                kept.append(line)
+                continue
+            # In fetch phase: collapse individual package fetch lines.
+            if in_fetch_phase and line.strip() and not re.match(r"^\[", line):
+                fetch_dropped += 1
+                continue
+            kept.append(line)
+
+        notes: list[str] = []
+        if fetch_dropped:
+            notes.append(f"collapsed {fetch_dropped} individual fetch lines")
+        dup_warnings = sum(v - 1 for v in warnings_seen.values() if v > 1)
+        if dup_warnings:
+            notes.append(f"deduplicated {dup_warnings} repeated warning lines")
+        self._emit_notes(kept, notes)
+        return self._finalize(kept)
+
+    def _compress_berry(self, text: str) -> str:
+        """Compress yarn berry (v2+) install output."""
+        lines = text.split("\n")
+        kept: list[str] = []
+        fetch_dropped = 0
+
+        for line in lines:
+            if _ERROR_SIGNAL_RE.search(line):
+                kept.append(line)
+                continue
+            # Always keep error YN codes (YN0001) and done line.
+            if re.match(r"^➤\s+YN0001:", line) or _YARN_BERRY_DONE_RE.match(line):
+                kept.append(line)
+                continue
+            # Collapse per-package fetch progress (lines with byte counts or N/M).
+            if _YARN_BERRY_PROGRESS_RE.match(line):
+                fetch_dropped += 1
+                continue
+            kept.append(line)
+
+        notes: list[str] = []
+        if fetch_dropped:
+            notes.append(f"collapsed {fetch_dropped} per-package fetch/progress lines")
         self._emit_notes(kept, notes)
         return self._finalize(kept)
 
@@ -10898,6 +11371,11 @@ FILTERS: list[Filter] = [
     # test-runner filters together and documents the split clearly.
     VitestFilter(),
     CargoFilter(),
+    # PnpmFilter and YarnFilter are more specific than NodePackageFilter and must
+    # precede it so that pnpm/yarn commands get dedicated compression rather than
+    # the generic npm/pnpm/yarn/bun handler.
+    PnpmFilter(),
+    YarnFilter(),
     NodePackageFilter(),
     # DockerComposeFilter must precede DockerFilter: both match `docker`, but
     # DockerComposeFilter only fires when the `compose` subcommand is present,
@@ -10994,6 +11472,9 @@ FILTERS: list[Filter] = [
     XcodeFilter(),
     PipFilter(),
     UvFilter(),
+    # CondaFilter handles conda/mamba/micromamba package management; disjoint
+    # binaries from every other filter so position is cosmetic.
+    CondaFilter(),
     CurlFilter(),
     RsyncFilter(),
     DotnetFilter(),
