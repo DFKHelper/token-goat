@@ -216,6 +216,12 @@ __all__ = [
     "CppcheckFilter",
     # clang-tidy C/C++ linter
     "ClangTidyFilter",
+    # Cloudflare Wrangler CLI
+    "WranglerFilter",
+    # Hardhat Ethereum development framework
+    "HardhatFilter",
+    # Serverless Framework deploy/invoke
+    "ServerlessFilter",
 ]
 
 import math
@@ -17251,6 +17257,521 @@ class ClangTidyFilter(Filter):
 
 
 # ---------------------------------------------------------------------------
+# Cloudflare Wrangler CLI
+# ---------------------------------------------------------------------------
+
+#: Wrangler asset upload progress lines — one per file, hundreds on large sites:
+#:   "+ /index.html (1234 bytes)"
+#:   "Uploading 42 assets to KV namespace ..."
+#:   "Uploading asset /assets/logo.png (23456 bytes)"
+_WRANGLER_ASSET_UPLOAD_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\s*(?:\+\s+/\S+\s+\(\d+\s+bytes?\)|"
+    r"Uploading\s+asset\s+/\S+|"
+    r"Uploading\s+\d+\s+assets?\s+to\s+\S+|"
+    r"No\s+cached\s+assets\s+found\.\s+Uploading\s+all\s+\d+|"
+    r"Diff\s+result:\s+\d+\s+added|"
+    r"↑\s+\S+\s+\(\d+\s+bytes?\))",
+    re.IGNORECASE,
+)
+#: Wrangler "Skipping upload of asset" or "N assets already up to date" lines
+_WRANGLER_ASSET_SKIP_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\s*(?:Skipping\s+upload\s+of\s+asset\s+|"
+    r"\d+\s+assets?\s+(?:already\s+(?:up\s+to\s+date|uploaded)|unchanged)|"
+    r"All\s+\d+\s+assets?\s+are\s+already\s+up\s+to\s+date)",
+    re.IGNORECASE,
+)
+#: Wrangler build/bundle step noise:
+#:   "Building..."
+#:   "Bundling with esbuild..."
+#:   "Checking for common issues..."
+_WRANGLER_BUILD_STEP_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\s*(?:Building\.\.\.|"
+    r"Bundling\s+with\s+esbuild|"
+    r"Checking\s+for\s+common\s+issues|"
+    r"Running\s+custom\s+build|"
+    r"Processing\s+dependencies|"
+    r"Minif(?:ying|ied)\s+|"
+    r"Wrote\s+script\s+to\s+\S+\.js\b)",
+    re.IGNORECASE,
+)
+#: Wrangler deploy/publish success and summary lines (always keep):
+#:   "Published my-worker (0.25 sec)"
+#:   "Deployed my-worker triggers: (routes)"
+#:   "✨  Built successfully"
+#:   "Total Upload: 42.3 KiB / gzip: 14.1 KiB"
+#:   "Current Deployment ID: abc123"
+#:   "Uploaded my-worker (0.5 sec)"
+#:   "Your worker has access to the following bindings:"
+_WRANGLER_SUMMARY_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\s*(?:Published\s+\S+\s+\(|"
+    r"Deployed\s+\S+|"
+    r"Uploaded\s+\S+\s+\(|"
+    r"Total\s+Upload:|"
+    r"Current\s+Deployment\s+ID:|"
+    r"✨\s+Built\s+successfully|"
+    r"Your\s+worker\s+has\s+access|"
+    r"\d+\s+requests?\s+were\s+served|"
+    r"View\s+your\s+(?:worker|pages\s+site)\s+at\b|"
+    r"Success!?\s*$|"
+    r"Deployment\s+(?:complete|ready)|"
+    r"pages\.dev|"
+    r"workers\.dev)",
+    re.IGNORECASE,
+)
+#: Wrangler "Your worker has access to the following bindings:" detail lines:
+#:   "- KV Namespaces:"
+#:   "  - MY_KV: kv_namespace_id_abc"
+_WRANGLER_BINDING_DETAIL_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\s+- \w+\s*(?:Namespaces?|Buckets?|Databases?|Variables?):",
+    re.IGNORECASE,
+)
+#: Wrangler tail / dev session noise lines:
+#:   "[wrangler:inf] Ready on http://localhost:8787"
+#:   "[mf:inf] Worker reloaded! (123ms)"
+#:   "[mf:inf] Reloading..."
+_WRANGLER_DEV_NOISE_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\s*\[(?:wrangler|mf):\w+\]\s+(?:Reloading\b|Worker\s+reloaded!|"
+    r"GET\s+|POST\s+|PUT\s+|PATCH\s+|DELETE\s+|OPTIONS\s+|HEAD\s+)",
+    re.IGNORECASE,
+)
+#: Wrangler KV / D1 / R2 bulk operation progress:
+#:   "Inserting 500 rows..."
+#:   "Processing chunk 1/10..."
+_WRANGLER_BULK_PROGRESS_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\s*(?:Inserting\s+\d+\s+rows|"
+    r"Processing\s+chunk\s+\d+/\d+|"
+    r"Writing\s+\d+\s+key[s/])",
+    re.IGNORECASE,
+)
+
+
+class WranglerFilter(Filter):
+    """Compress Cloudflare ``wrangler deploy`` / ``publish`` / ``pages`` output.
+
+    Wrangler emits one line per asset upload (can be hundreds for a Pages site),
+    verbose esbuild bundling steps, and deployment event chatter.  The actual
+    signal is the final "Published/Deployed" summary line and any errors.
+
+    Compression model:
+
+    * **Asset upload lines** (``+ /file.html (N bytes)``, ``Uploading asset``):
+      collapsed to a count.
+    * **Asset-skip lines** (``N assets already up to date``): collapsed to a
+      count.
+    * **Build step noise** (``Building...``, ``Bundling with esbuild``): dropped.
+    * **Dev-mode noise** (``[wrangler:inf] Reloading...``, HTTP access lines):
+      dropped.
+    * **Bulk-operation progress** (``Processing chunk N/M``): collapsed.
+    * **Summary / success lines** (``Published``, ``Deployed``, ``Total Upload``):
+      always kept.
+    * **Error lines**: always kept.
+    * **Errors** (exit_code != 0): preserve all stderr unchanged.
+    """
+
+    name = "wrangler"
+    binaries = frozenset(["wrangler", "wrangler2"])
+
+    def compress(
+        self, stdout: str, stderr: str, exit_code: int, argv: list[str],
+    ) -> str:
+        err_output = _preserve_stderr_on_error(stdout, stderr, exit_code)
+        if err_output is not None:
+            return err_output
+
+        combined = self._combine_output(stdout, stderr)
+        lines = combined.split("\n")
+        kept: list[str] = []
+        upload_count = 0
+        skip_count = 0
+        dropped_build = 0
+        dropped_dev = 0
+        bulk_count = 0
+
+        for line in lines:
+            # Error signals and summary lines — always keep.
+            if _ERROR_SIGNAL_RE.search(line) or _WRANGLER_SUMMARY_RE.match(line):
+                kept.append(line)
+                continue
+            # Asset upload lines — count.
+            if _WRANGLER_ASSET_UPLOAD_RE.match(line):
+                upload_count += 1
+                continue
+            # Asset-skip lines — count.
+            if _WRANGLER_ASSET_SKIP_RE.match(line):
+                skip_count += 1
+                continue
+            # Build step noise — drop.
+            if _WRANGLER_BUILD_STEP_RE.match(line):
+                dropped_build += 1
+                continue
+            # Dev-mode HTTP access / reload noise — drop.
+            if _WRANGLER_DEV_NOISE_RE.match(line):
+                dropped_dev += 1
+                continue
+            # Bulk operation progress — count.
+            if _WRANGLER_BULK_PROGRESS_RE.match(line):
+                bulk_count += 1
+                continue
+            kept.append(line)
+
+        out: list[str] = []
+        if upload_count:
+            out.append(
+                f"[token-goat: {upload_count} asset upload line(s) collapsed; "
+                f"run with TOKEN_GOAT_BASH_COMPRESS=0 for full list]"
+            )
+        if skip_count:
+            out.append(
+                f"[token-goat: {skip_count} asset-skip line(s) collapsed]"
+            )
+        if bulk_count:
+            out.append(
+                f"[token-goat: {bulk_count} bulk-operation progress line(s) collapsed]"
+            )
+        out.extend(kept)
+
+        notes: list[str] = []
+        if dropped_build:
+            notes.append(f"dropped {dropped_build} build-step noise line(s)")
+        if dropped_dev:
+            notes.append(f"dropped {dropped_dev} dev-mode noise line(s)")
+        self._emit_notes(out, notes)
+        return self._finalize(out)
+
+
+# ---------------------------------------------------------------------------
+# Hardhat Ethereum development framework
+# ---------------------------------------------------------------------------
+
+#: Hardhat compilation step: "Compiling X files with Solc 0.8.24"
+_HARDHAT_COMPILING_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\s*Compiling\s+\d+\s+(?:file[s]?\s+with|Solidity\s+file[s]?)",
+    re.IGNORECASE,
+)
+#: Hardhat "Solc ... finished in Ns" per-compiler-version progress
+_HARDHAT_SOLC_FINISHED_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\s*Solc\s+\S+\s+finished\s+in\s+\d",
+    re.IGNORECASE,
+)
+#: Hardhat deployment transaction receipt noise:
+#:   "deployer: 0xabc..."
+#:   "Deployment transaction: 0xdef..."
+#:   "Gas used: 1234567"
+_HARDHAT_TX_NOISE_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\s*(?:deployer:|"
+    r"Deployment\s+transaction:|"
+    r"Gas\s+used:\s+\d|"
+    r"Transaction\s+hash:\s+0x|"
+    r"Block\s+(?:number|hash):|"
+    r"Nonce:\s+\d|"
+    r"Value:\s+\d|"
+    r"From:\s+0x|"
+    r"To:\s+0x|"
+    r"Contract\s+address:\s+0x\w{40}\s*$)",
+    re.IGNORECASE,
+)
+#: Hardhat test framework output — passing test lines:
+#:   "    ✓ should transfer tokens (45ms)"
+#:   "    ✔ deploys successfully"
+_HARDHAT_PASS_TEST_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\s+(?:✓|✔|√)\s+",
+)
+#: Hardhat test summary (always keep):
+#:   "N passing (2s)"
+#:   "N pending"
+#:   "N failing"
+_HARDHAT_TEST_SUMMARY_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\s*\d+\s+(?:passing|failing|pending)\b",
+    re.IGNORECASE,
+)
+#: Hardhat failure block header (always keep):
+#:   "N failing"
+#:   "AssertionError: ..."
+_HARDHAT_FAILURE_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\s*(?:\d+\s+failing\b|AssertionError:|Error:|expected\s+)",
+    re.IGNORECASE,
+)
+#: Hardhat "Compilation finished successfully" or "Nothing to compile"
+_HARDHAT_COMPILE_DONE_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\s*(?:Compilation\s+finished\s+successfully|Nothing\s+to\s+compile|"
+    r"Compiled\s+\d+\s+Solidity\s+file|No\s+need\s+to\s+generate\s+any\s+compiler)",
+    re.IGNORECASE,
+)
+#: Hardhat warnings about compiler settings (keep — actionable):
+#:   "HardhatError: HH..."
+#:   "Warning: ..."
+_HARDHAT_WARN_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\s*(?:HardhatError:|HardhatWarning:|Warning:|ProviderError:|"
+    r"Duplicate\s+definition\s+of\b)",
+    re.IGNORECASE,
+)
+#: Hardhat network/deployment header lines (keep — high value):
+#:   "Deploying MyContract..."
+#:   "MyContract deployed to: 0x..."
+#:   "Running scripts/deploy.ts"
+_HARDHAT_DEPLOY_HEADER_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\s*(?:Deploying\s+\w|"
+    r"\w[\w\s]*\s+deployed\s+to:\s+0x|"
+    r"Running\s+\S+\.(?:ts|js)\b|"
+    r"Network:\s+\w|"
+    r"Deploying\s+contracts\s+with\s+the\s+account)",
+    re.IGNORECASE,
+)
+
+
+class HardhatFilter(Filter):
+    """Compress Hardhat Ethereum development framework output.
+
+    ``npx hardhat compile`` can emit dozens of "Compiling N files with Solc
+    0.8.x" lines (one per version combination).  ``npx hardhat test`` emits
+    one line per passing test (often 100+), drowning out failures.  Deployment
+    scripts emit verbose transaction receipts with gas, block number, and full
+    address data.
+
+    Compression model:
+
+    * **Compilation step lines** (``Compiling N files with Solc``): collapsed
+      to a count; ``Compilation finished successfully`` always kept.
+    * **``Solc X finished in Ns``** per-version timing: collapsed to a count.
+    * **Passing test lines** (``✓ / ✔ description``): collapsed to a count.
+    * **Test summary** (``N passing``, ``N failing``): always kept.
+    * **Failure blocks** (``N failing``, ``AssertionError``): always kept.
+    * **Transaction receipt noise** (gas, block, nonce, addresses): dropped.
+    * **Deployment header lines** (``Deploying X...``, ``X deployed to: 0x``):
+      always kept.
+    * **Warning / error lines**: always kept.
+    * **Errors** (exit_code != 0): preserve all stderr unchanged.
+    """
+
+    name = "hardhat"
+    binaries = frozenset(["hardhat"])
+
+    def compress(
+        self, stdout: str, stderr: str, exit_code: int, argv: list[str],
+    ) -> str:
+        err_output = _preserve_stderr_on_error(stdout, stderr, exit_code)
+        if err_output is not None:
+            return err_output
+
+        combined = self._combine_output(stdout, stderr)
+        lines = combined.split("\n")
+        kept: list[str] = []
+        compiling_count = 0
+        solc_timing_count = 0
+        pass_count = 0
+        tx_noise_count = 0
+
+        for line in lines:
+            # Error signals, warnings, failure headers — always keep.
+            if (
+                _ERROR_SIGNAL_RE.search(line)
+                or _HARDHAT_FAILURE_RE.match(line)
+                or _HARDHAT_WARN_RE.match(line)
+            ):
+                kept.append(line)
+                continue
+            # Compilation done / deploy header / test summary — always keep.
+            if (
+                _HARDHAT_COMPILE_DONE_RE.match(line)
+                or _HARDHAT_DEPLOY_HEADER_RE.match(line)
+                or _HARDHAT_TEST_SUMMARY_RE.match(line)
+            ):
+                kept.append(line)
+                continue
+            # Compiling step lines — count.
+            if _HARDHAT_COMPILING_RE.match(line):
+                compiling_count += 1
+                continue
+            # Solc per-version timing — count.
+            if _HARDHAT_SOLC_FINISHED_RE.match(line):
+                solc_timing_count += 1
+                continue
+            # Passing test lines — count.
+            if _HARDHAT_PASS_TEST_RE.match(line):
+                pass_count += 1
+                continue
+            # Transaction receipt noise — drop.
+            if _HARDHAT_TX_NOISE_RE.match(line):
+                tx_noise_count += 1
+                continue
+            kept.append(line)
+
+        out: list[str] = []
+        if compiling_count:
+            out.append(
+                f"[token-goat: collapsed {compiling_count} Solidity compilation step line(s); "
+                f"run with TOKEN_GOAT_BASH_COMPRESS=0 for full output]"
+            )
+        if solc_timing_count:
+            out.append(
+                f"[token-goat: collapsed {solc_timing_count} Solc per-version timing line(s)]"
+            )
+        out.extend(kept)
+
+        notes: list[str] = []
+        if pass_count:
+            notes.append(f"collapsed {pass_count} passing test line(s)")
+        if tx_noise_count:
+            notes.append(f"dropped {tx_noise_count} transaction receipt noise line(s)")
+        self._emit_notes(out, notes)
+        return self._finalize(out)
+
+
+# ---------------------------------------------------------------------------
+# Serverless Framework (serverless.com) deploy / info / invoke
+# ---------------------------------------------------------------------------
+
+#: Serverless "Serverless: Packaging service..." and step progress lines
+_SLS_STEP_PROGRESS_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\s*Serverless:\s+(?:Packaging\s+service|"
+    r"Excluding\s+development\s+dependencies|"
+    r"Creating\s+Stack\.\.\.|"
+    r"Checking\s+Stack\s+create\s+progress|"
+    r"Stack\s+create\s+finished|"
+    r"Uploading\s+CloudFormation\s+file\s+to\s+S3|"
+    r"Uploading\s+artifacts|"
+    r"Uploading\s+service\s+\S+\.zip\s+file\s+to\s+S3|"
+    r"Validating\s+template|"
+    r"Updating\s+Stack\.\.\.|"
+    r"Checking\s+Stack\s+update\s+progress|"
+    r"Stack\s+update\s+finished|"
+    r"Executing\s+Changeset|"
+    r"Removing\s+old\s+service\s+artifacts\s+from\s+S3)",
+    re.IGNORECASE,
+)
+#: Serverless CloudFormation stack event lines — IN_PROGRESS (drop) and
+#: COMPLETE/FAILED (keep).  One CF event per resource per status transition.
+_SLS_CF_IN_PROGRESS_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\s*(?:AWS::|ServerlessDeployment).*_IN_PROGRESS\s*$|"
+    r"^\s+\w+_IN_PROGRESS\s+(?:AWS::|ServerlessDeployment)",
+)
+_SLS_CF_COMPLETE_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\s*(?:AWS::|ServerlessDeployment).*_COMPLETE\s*$|"
+    r"^\s+(?:CREATE|UPDATE|DELETE|REPLACE|ROLLBACK)_COMPLETE\s+",
+)
+_SLS_CF_FAILED_RE: Final[re.Pattern[str]] = re.compile(
+    r"\w+_FAILED\s+",
+)
+#: Serverless "Service Information" section header and endpoint/function lines
+#: — always keep (these are the useful output).
+_SLS_SERVICE_INFO_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\s*(?:Service\s+Information|service:\s+\S|stage:\s+\S|region:\s+\S|"
+    r"stack:\s+\S|resources:|api\s+keys:|endpoints:|functions:|layers:|"
+    r"ANY\s+-\s+https://|GET\s+-\s+https://|POST\s+-\s+https://|"
+    r"PUT\s+-\s+https://|DELETE\s+-\s+https://|"
+    r"Serverless:\s+Stack\s+Tags|"
+    r"Serverless:\s+Invoke\s+|"
+    r"Serverless:\s+(?:Done!|WARNING:|ERROR:))",
+    re.IGNORECASE,
+)
+#: Serverless final deploy summary (always keep):
+#:   "Service deployed to stack my-service-dev (42s)"
+#:   "✔ Service deployed"
+#:   "Serverless: Run the 'serverless info' command"
+_SLS_SUMMARY_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\s*(?:Service\s+deployed\s+to\s+stack\s+|"
+    r"✔\s+Service\s+deployed|"
+    r"Serverless:\s+Run\s+the\s+'serverless|"
+    r"Deployed\s+functions:|"
+    r"Stack\s+Outputs\b)",
+    re.IGNORECASE,
+)
+#: Serverless dotted progress / "." dot lines emitted during CF polling
+_SLS_DOT_PROGRESS_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\s*\.+\s*$"
+)
+#: Serverless "Serverless: ......." tick lines during polling
+_SLS_TICK_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\s*Serverless:\s+\.+\s*$"
+)
+
+
+class ServerlessFilter(Filter):
+    """Compress Serverless Framework ``deploy`` / ``info`` / ``invoke`` output.
+
+    The Serverless Framework CLI emits verbose CloudFormation stack event lines
+    (one per resource per status transition), upload step announcements, and
+    polling dots during the CF change-set execution.  On a service with 20+
+    Lambda functions and associated IAM roles / log groups, a deploy generates
+    100-300 lines; the actual signal is the endpoint URLs and final summary.
+
+    Compression model:
+
+    * **Step progress lines** (``Serverless: Packaging service...``):
+      collapsed to a count.
+    * **CF ``_IN_PROGRESS`` event lines**: dropped — completion events carry
+      the same information.
+    * **CF ``_COMPLETE`` event lines**: always kept.
+    * **CF ``_FAILED`` event lines**: always kept.
+    * **Service information section** (endpoints, function names): always kept.
+    * **Final summary** (``Service deployed to stack ...``): always kept.
+    * **Dot / tick progress** (``....``, ``Serverless: ....``): dropped.
+    * **Error lines**: always kept.
+    * **Errors** (exit_code != 0): preserve all stderr unchanged.
+    """
+
+    name = "serverless"
+    binaries = frozenset(["serverless", "sls"])
+
+    def compress(
+        self, stdout: str, stderr: str, exit_code: int, argv: list[str],
+    ) -> str:
+        err_output = _preserve_stderr_on_error(stdout, stderr, exit_code)
+        if err_output is not None:
+            return err_output
+
+        combined = self._combine_output(stdout, stderr)
+        lines = combined.split("\n")
+        kept: list[str] = []
+        step_count = 0
+        in_progress_count = 0
+        dot_count = 0
+
+        for line in lines:
+            # Error signals and CF failure events — always keep.
+            if _ERROR_SIGNAL_RE.search(line) or _SLS_CF_FAILED_RE.search(line):
+                kept.append(line)
+                continue
+            # Service info / summary lines — always keep.
+            if (
+                _SLS_SERVICE_INFO_RE.match(line)
+                or _SLS_SUMMARY_RE.match(line)
+                or _SLS_CF_COMPLETE_RE.match(line)
+            ):
+                kept.append(line)
+                continue
+            # Step progress lines — count.
+            if _SLS_STEP_PROGRESS_RE.match(line):
+                step_count += 1
+                continue
+            # CF IN_PROGRESS event lines — drop.
+            if _SLS_CF_IN_PROGRESS_RE.match(line):
+                in_progress_count += 1
+                continue
+            # Dot / tick progress — drop.
+            if _SLS_DOT_PROGRESS_RE.match(line) or _SLS_TICK_RE.match(line):
+                dot_count += 1
+                continue
+            kept.append(line)
+
+        out: list[str] = []
+        if step_count:
+            out.append(
+                f"[token-goat: collapsed {step_count} Serverless deploy step line(s); "
+                f"run with TOKEN_GOAT_BASH_COMPRESS=0 for full output]"
+            )
+        out.extend(kept)
+
+        notes: list[str] = []
+        if in_progress_count:
+            notes.append(f"dropped {in_progress_count} CF _IN_PROGRESS event line(s)")
+        if dot_count:
+            notes.append(f"dropped {dot_count} polling dot line(s)")
+        self._emit_notes(out, notes)
+        return self._finalize(out)
+
+
+# ---------------------------------------------------------------------------
 # Public registry & dispatch
 # ---------------------------------------------------------------------------
 
@@ -17381,6 +17902,18 @@ FILTERS: list[Filter] = [
     # WasmPackFilter handles `wasm-pack build/test/pack/publish`; disjoint
     # binary from every other filter so position is cosmetic.
     WasmPackFilter(),
+    # WranglerFilter handles Cloudflare `wrangler deploy/publish/pages`; disjoint
+    # binary from every other filter so position is cosmetic — placed alongside
+    # other cloud deploy tooling.
+    WranglerFilter(),
+    # HardhatFilter handles `hardhat compile/test/run` and `npx hardhat …`.  Must
+    # follow NodePackageFilter (same npx prefix reasoning as TurboFilter/NxFilter);
+    # HardhatFilter.matches() explicitly checks argv[1] == "hardhat" for npx.
+    HardhatFilter(),
+    # ServerlessFilter handles `serverless deploy/info/invoke` and the `sls`
+    # alias; disjoint binaries from every other filter so position is cosmetic —
+    # placed alongside other cloud/IaC deploy tooling.
+    ServerlessFilter(),
     # AnsibleFilter and PreCommitFilter have disjoint binaries from every
     # other filter (``ansible*`` and ``pre-commit`` respectively), so their
     # position within the registry is purely cosmetic — placed alongside
