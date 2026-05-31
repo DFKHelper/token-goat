@@ -6,6 +6,13 @@ __all__ = [
     "Harness",
     "HookPayload",
     "HookResponse",
+    "_SkipResult",
+    "_check_compact_skip_sentinel",
+    "_check_compact_skip_sentinel_detail",
+    "_current_session_counts",
+    "_is_noop_session",
+    "_read_sentinel_counts",
+    "_write_compact_skip_sentinel",
     "denormalize_response",
     "dispatch",
     "emit",
@@ -569,39 +576,128 @@ def _compact_skip_ttl_secs() -> float:
     return _COMPACT_SKIP_TTL_SECS
 
 
+class _SkipResult:
+    """Lightweight result object returned by :func:`_check_compact_skip_sentinel_detail`.
+
+    Attributes:
+        should_skip:  True when the sentinel is fresh and the hook should short-circuit.
+        reason:       Human-readable skip reason string, or empty string when not skipping.
+                      Possible values:
+                      - ``"ttl_not_expired"``        — sentinel is fresh and within TTL
+                      - ``"fingerprint_match"``       — (reserved; currently unused by the
+                                                         mtime-based sentinel, kept for
+                                                         forward compatibility)
+                      - ``"noop_session"``            — session has zero activity
+                      - ``""``                         — sentinel is absent or busted
+        age_secs:     Age of the sentinel file in seconds (0.0 when no sentinel).
+    """
+
+    __slots__ = ("should_skip", "reason", "age_secs")
+
+    def __init__(self, should_skip: bool, reason: str, age_secs: float) -> None:
+        self.should_skip = should_skip
+        self.reason = reason
+        self.age_secs = age_secs
+
+    # Boolean coercion so old code that does ``if _check_compact_skip_sentinel(...)``
+    # still works when we expose a detail wrapper.
+    def __bool__(self) -> bool:
+        return self.should_skip
+
+
+def _read_sentinel_counts(sentinel_path: object) -> tuple[int | None, int | None]:
+    """Read the ``edited_count`` and ``bash_count`` stored in *sentinel_path*.
+
+    The sentinel file is JSON when written by :func:`_write_compact_skip_sentinel`.
+    Legacy sentinels written by ``touch()`` (empty or non-JSON) return
+    ``(None, None)`` — the caller treats ``None`` as "no count available" and
+    skips the count-comparison gate.
+
+    Returns ``(edited_count, bash_count)`` as integers, or ``(None, None)``
+    on any parse error.
+    """
+    import json as _json  # noqa: PLC0415
+    try:
+        raw = sentinel_path.read_text(encoding="utf-8").strip()  # type: ignore[union-attr]
+        if not raw:
+            return None, None
+        data = _json.loads(raw)
+        edited = data.get("edited_count")
+        bash = data.get("bash_count")
+        if isinstance(edited, int) and isinstance(bash, int):
+            return edited, bash
+    except Exception:  # noqa: BLE001
+        pass
+    return None, None
+
+
+def _current_session_counts(session_id: str) -> tuple[int, int]:
+    """Return ``(edited_count, bash_count)`` for *session_id* from the session JSON.
+
+    Loads the session cache at the JSON level (no heavy deserialization) to
+    extract the two count fields.  Returns ``(0, 0)`` on any load failure so
+    the count comparison always has a baseline.
+
+    This function is called on the sentinel hot-path; it reads one JSON file
+    and does minimal work — no DB, no tree-sitter, no embeddings.
+    """
+    try:
+        import json as _json  # noqa: PLC0415
+
+        session_file = paths.session_cache_path(session_id)
+        raw = session_file.read_text(encoding="utf-8")
+        data = _json.loads(raw)
+        edited = data.get("edited_files", {})
+        bash = data.get("bash_history", {})
+        edited_count = len(edited) if isinstance(edited, dict) else 0
+        bash_count = len(bash) if isinstance(bash, dict) else 0
+        return edited_count, bash_count
+    except Exception:  # noqa: BLE001
+        return 0, 0
+
+
 def _check_compact_skip_sentinel(session_id: str) -> bool:
     """Return True if a fresh compact-skip sentinel exists for *session_id*.
 
+    This is the legacy boolean interface; it delegates to
+    :func:`_check_compact_skip_sentinel_detail` and returns only the
+    ``should_skip`` flag.  New code should use the detail variant.
+    """
+    return _check_compact_skip_sentinel_detail(session_id).should_skip
+
+
+def _check_compact_skip_sentinel_detail(session_id: str) -> _SkipResult:
+    """Return a :class:`_SkipResult` describing whether and why the sentinel is fresh.
+
     Reads only ``paths`` (already imported at module load) on the fast path —
-    no other token_goat module is touched when the sentinel is absent or
-    stale.  The sentinel is considered fresh when its mtime is within the
-    configured TTL (default ``_COMPACT_SKIP_TTL_SECS`` seconds).
+    no other token_goat module is touched when the sentinel is absent or stale.
+    The sentinel is considered fresh when all of the following hold:
 
-    Activity floor (iter 60): the sentinel is invalidated when the session
-    JSON file's mtime is newer than the sentinel's mtime.  Every session-state
-    update (post-Read, post-Edit, post-Bash, ...) touches the session file, so
-    "session file mtime > sentinel mtime" is a sufficient proxy for "the user
-    has been active since we wrote the sentinel".  Without this floor a quiet
-    session that fires PreCompact once (sentinel written) could suppress every
-    PreCompact for the next 5 minutes even after the agent generates dozens of
-    edits — exactly when a manifest is most valuable.
+    1. **TTL**: sentinel age is within the configured TTL (default 300 s).
+    2. **Activity floor (mtime)**: session JSON mtime is not newer than the
+       sentinel mtime (guards against edits that occurred after sentinel write).
+    3. **Activity floor (counts)**: the session's current ``edited_count`` and
+       ``bash_count`` match the values stored inside the sentinel JSON.  If the
+       session has more edits or bash commands than when the sentinel was written
+       it means real work happened, and the manifest should be regenerated.
+       Sentinels written by older code (no JSON content) skip this check so
+       the upgrade is backwards-compatible.
 
-    Negative-age defence (iter 60): if the sentinel mtime is in the future
-    (clock skew, NTP step, manually edited file), log a warning and return
-    False so the slow path rebuilds the manifest.  Mirrors the manifest
-    sidecar's negative-age defence in ``compact._read_manifest_sidecar``.
+    Negative-age defence: if the sentinel mtime is in the future (clock skew,
+    NTP step, manually edited file), log a warning and return ``False`` so the
+    slow path rebuilds the manifest.
 
-    Any filesystem error (missing file, permission denied, stat failure)
-    returns False so the normal path runs.
+    Any filesystem error (missing file, permission denied, stat failure) returns
+    a not-skipping result so the normal path runs.
     """
     try:
         sentinel = paths.compact_skip_sentinel_path(session_id)
     except ValueError:
-        return False
+        return _SkipResult(False, "", 0.0)
     try:
         sentinel_mtime = sentinel.stat().st_mtime
     except OSError:
-        return False
+        return _SkipResult(False, "", 0.0)
 
     now = time.time()
     age = now - sentinel_mtime
@@ -615,55 +711,116 @@ def _check_compact_skip_sentinel(session_id: str) -> bool:
             " — ignoring sentinel, falling back to full pre-compact path",
             session_id[:16], -age,
         )
-        return False
+        return _SkipResult(False, "", 0.0)
     if age >= _compact_skip_ttl_secs():
-        return False
+        _LOG.debug(
+            "compact-skip sentinel expired session=%s age=%.0fs ttl=%.0fs",
+            session_id[:16], age, _compact_skip_ttl_secs(),
+        )
+        return _SkipResult(False, "", age)
 
-    # Activity floor: any session-state update since the sentinel was written
-    # should bust the cache.  ``session_cache_path`` returns the JSON we write
-    # on every post-tool hook; its mtime tracks "last session activity".
+    # Activity floor (mtime): any session-state update since the sentinel was
+    # written should bust the cache.
     try:
         session_file = paths.session_cache_path(session_id)
     except ValueError:
-        # Bad session_id (path traversal etc.) — already a no-op for the
-        # session subsystem, no manifest to be had.  Skip is safe.
-        return True
+        # Bad session_id (path traversal etc.) — no manifest to be had.
+        return _SkipResult(True, "ttl_not_expired", age)
     try:
         session_mtime = session_file.stat().st_mtime
     except OSError:
-        # No session file → nothing to invalidate against.  Original behaviour
-        # (skip is fine) preserved.
-        return True
+        # No session file → nothing to invalidate against.  Skip is safe.
+        return _SkipResult(True, "ttl_not_expired", age)
+
     # +2.0 s grace handles the case where the sentinel was written immediately
     # after a session save in the same hook firing — filesystem mtime
-    # resolution on Windows (FAT/exFAT) is 2 s; on NTFS/ext4 it is ~ns.  The
-    # grace prevents a same-tick race from looking like "activity after
-    # sentinel" on coarse-resolution clocks. FAT32 requires the full 2s grace
-    # (NTFS clocks tick ns but FAT32 has 2s granularity).
+    # resolution on Windows (FAT/exFAT) is 2 s; on NTFS/ext4 it is ~ns.
     if session_mtime > sentinel_mtime + 2.0:
         _LOG.debug(
-            "compact-skip sentinel busted by activity session=%s"
+            "compact-skip sentinel busted by mtime activity session=%s"
             " (session_mtime=%.3f > sentinel_mtime=%.3f)",
             session_id[:16], session_mtime, sentinel_mtime,
         )
-        return False
-    return True
+        return _SkipResult(False, "", age)
+
+    # Activity floor (counts): read edited_count + bash_count from the sentinel
+    # JSON and compare against the live session.  A count increase since the
+    # sentinel was written means real work happened regardless of mtime resolution.
+    sentinel_edited, sentinel_bash = _read_sentinel_counts(sentinel)
+    if sentinel_edited is not None and sentinel_bash is not None:
+        current_edited, current_bash = _current_session_counts(session_id)
+        if current_edited > sentinel_edited or current_bash > sentinel_bash:
+            _LOG.debug(
+                "compact-skip sentinel busted by count increase session=%s"
+                " edited=%d→%d bash=%d→%d",
+                session_id[:16],
+                sentinel_edited, current_edited,
+                sentinel_bash, current_bash,
+            )
+            return _SkipResult(False, "", age)
+
+    _LOG.debug(
+        "compact-skip sentinel fresh session=%s age=%.0fs reason=ttl_not_expired",
+        session_id[:16], age,
+    )
+    return _SkipResult(True, "ttl_not_expired", age)
 
 
-def _write_compact_skip_sentinel(session_id: str) -> None:
-    """Write (or touch) the compact-skip sentinel for *session_id*.
+def _write_compact_skip_sentinel(
+    session_id: str,
+    *,
+    edited_count: int = 0,
+    bash_count: int = 0,
+) -> None:
+    """Write the compact-skip sentinel for *session_id* with activity counts.
+
+    Stores ``edited_count`` and ``bash_count`` inside the sentinel so
+    :func:`_check_compact_skip_sentinel_detail` can detect activity that
+    happened after the sentinel was written even when the session file's
+    mtime resolution is coarse (FAT32: 2 s).
 
     Creates the ``compact_skip/`` directory as needed.  Errors are silently
     swallowed — a failure to write the sentinel only means the next call pays
     the full import cost instead of taking the fast path; the hook still
     returns ``{"continue": true}`` correctly.
     """
+    import json as _json  # noqa: PLC0415
     try:
         sentinel = paths.compact_skip_sentinel_path(session_id)
         paths.ensure_dir(sentinel.parent)
-        sentinel.touch()
+        payload = _json.dumps(
+            {"edited_count": edited_count, "bash_count": bash_count},
+            separators=(",", ":"),
+        )
+        sentinel.write_text(payload, encoding="utf-8")
     except Exception:  # noqa: BLE001
         pass
+
+
+def _is_noop_session(cache: object) -> bool:
+    """Return True when the session has no meaningful activity worth manifesting.
+
+    A session is a noop when ALL of the following hold:
+    - zero edited files
+    - zero bash commands
+    - zero symbols accessed (all file entries have empty ``symbols_read``)
+
+    This is the cheapest possible check: three attribute reads and a loop over
+    what is usually an empty dict.  Called before any heavy manifest rendering
+    so the PreCompact hook can skip even the manifest fingerprint computation.
+    """
+    edited: dict = getattr(cache, "edited_files", None) or {}
+    if edited:
+        return False
+    bash: dict = getattr(cache, "bash_history", None) or {}
+    if bash:
+        return False
+    files: dict = getattr(cache, "files", None) or {}
+    for entry in files.values():
+        syms = getattr(entry, "symbols_read", None)
+        if syms:
+            return False
+    return True
 
 
 @fail_soft
@@ -681,9 +838,14 @@ def pre_compact(payload: HookPayload) -> HookResponse:
     """
     # --- Sentinel fast-path (before any heavy imports) ---
     session_id = payload.get("session_id")
-    if session_id and _check_compact_skip_sentinel(str(session_id)):
-        _LOG.debug("pre-compact: sentinel fast-path for session=%s", str(session_id)[:16])
-        return CONTINUE()
+    if session_id:
+        skip_result = _check_compact_skip_sentinel_detail(str(session_id))
+        if skip_result.should_skip:
+            _LOG.debug(
+                "pre-compact: sentinel fast-path session=%s reason=%s age=%.0fs",
+                str(session_id)[:16], skip_result.reason, skip_result.age_secs,
+            )
+            return CONTINUE()
 
     from . import compact as compact_mod  # noqa: PLC0415
     from . import config as config_mod  # noqa: PLC0415
@@ -710,6 +872,23 @@ def pre_compact(payload: HookPayload) -> HookResponse:
     session_cache = session_mod.safe_load(session_id, caller="pre-compact")
     if session_cache is None:
         _write_compact_skip_sentinel(str(session_id))
+        return CONTINUE()
+
+    # --- Noop session fast-path ---
+    # If the session has zero edits, zero bash commands, and zero symbols
+    # accessed there is nothing worth preserving.  Skip manifest construction
+    # entirely and write the sentinel with current counts so the next
+    # PreCompact doesn't have to re-check.
+    #
+    # Guard: only apply when min_events >= 1.  When min_events is 0 the caller
+    # explicitly requested "always run"; skip the noop gate so test code that
+    # uses min_events=0 with mock sessions still reaches build_manifest_with_count.
+    if cfg.min_events >= 1 and _is_noop_session(session_cache):
+        _LOG.debug(
+            "pre-compact: skipping — noop session (no edits, no bash, no symbols) session=%s",
+            str(session_id)[:16],
+        )
+        _write_compact_skip_sentinel(str(session_id), edited_count=0, bash_count=0)
         return CONTINUE()
 
     # Compute adaptive budget based on session complexity.
@@ -747,13 +926,22 @@ def pre_compact(payload: HookPayload) -> HookResponse:
     manifest, n_events = compact_mod.build_manifest_with_count(
         session_id, max_tokens=effective_tokens
     )
+
+    # Compute counts once for sentinel writes below.
+    _sentinel_edited = len(getattr(session_cache, "edited_files", None) or {})
+    _sentinel_bash = len(getattr(session_cache, "bash_history", None) or {})
+
     if n_events < cfg.min_events:
         _LOG.info("pre-compact: skipping manifest (events=%d < min=%d)", n_events, cfg.min_events)
-        _write_compact_skip_sentinel(str(session_id))
+        _write_compact_skip_sentinel(
+            str(session_id), edited_count=_sentinel_edited, bash_count=_sentinel_bash,
+        )
         return CONTINUE()
 
     if not manifest:
-        _write_compact_skip_sentinel(str(session_id))
+        _write_compact_skip_sentinel(
+            str(session_id), edited_count=_sentinel_edited, bash_count=_sentinel_bash,
+        )
         return CONTINUE()
 
     _LOG.info(

@@ -3544,6 +3544,16 @@ def compact_hint(
             "live hook does.  Use 'manual' (default) to preview a user-invoked /compact."
         ),
     ),
+    explain_skip: bool = typer.Option(
+        False,
+        "--explain-skip",
+        help=(
+            "Show a detailed breakdown of why the compact-skip sentinel fired (or didn't), "
+            "including skip reason, sentinel age, and the per-gate evaluation chain.  "
+            "Useful when diagnosing silent skips where the hook returns {continue:true} "
+            "without injecting a manifest."
+        ),
+    ),
 ) -> None:
     """Show the compaction manifest token-goat would inject for a session.
 
@@ -3555,6 +3565,7 @@ def compact_hint(
     * Trigger membership in ``cfg.triggers`` (simulate via ``--trigger``)
     * Pressure-aware budget boost when ``trigger=auto`` (via ``auto_trigger_multiplier``)
     * Compact-skip sentinel fast-path (would the hook short-circuit silently?)
+    * Noop-session gate (zero edits, zero bash, zero symbols)
     * ``min_events`` event-count gate
     * Sidecar manifest cache hit (the 1-line "unchanged since" stub)
 
@@ -3565,6 +3576,9 @@ def compact_hint(
     Use this to debug why a manifest is (or isn't) being emitted, what its
     final size will be, and which sections survive after the per-section
     budget split.
+
+    Add ``--explain-skip`` to see a detailed breakdown of the skip gates,
+    including the sentinel reason, age, and activity-floor counts.
     """
     from . import compact as compact_mod  # noqa: PLC0415
     from . import config as config_mod  # noqa: PLC0415
@@ -3589,13 +3603,28 @@ def compact_hint(
 
     # --- Apply hook-side gates so the preview matches reality ----------------
     trigger_allowed = bool(cfg.triggers) and trigger in cfg.triggers
-    # Defensive: `_check_compact_skip_sentinel` is fail-soft in the hook path,
-    # but if it ever raises (e.g. a future refactor introduces a non-OSError
-    # branch), fall back to "no fast-path" so the preview still renders.
+    # Use the detail variant so we can surface reason + age in --explain-skip.
     try:
-        sentinel_fast_path = hooks_cli_mod._check_compact_skip_sentinel(session_id)
+        skip_detail = hooks_cli_mod._check_compact_skip_sentinel_detail(session_id)
+        sentinel_fast_path = bool(skip_detail)
+        sentinel_reason = skip_detail.reason
+        sentinel_age = skip_detail.age_secs
     except Exception:  # noqa: BLE001
         sentinel_fast_path = False
+        sentinel_reason = ""
+        sentinel_age = 0.0
+
+    # Noop-session gate: mirror the pre_compact guard.
+    _is_noop = False
+    try:
+        from . import session as _session_mod  # noqa: PLC0415
+
+        _sc = _session_mod.safe_load(session_id, caller="compact-hint")
+        if _sc is not None:
+            _is_noop = hooks_cli_mod._is_noop_session(_sc)
+    except Exception:  # noqa: BLE001
+        pass
+
     n_events = compact_mod.event_count(session_id)
     events_sufficient = n_events >= cfg.min_events
 
@@ -3605,10 +3634,12 @@ def compact_hint(
     # full gate chain accurately.
     manifest = compact_mod.build_manifest(session_id, max_tokens=effective_tokens)
     is_cached_stub = manifest.startswith("## Token-Goat Manifest — unchanged since")
+    quality_score = compact_mod._score_manifest([manifest]) if manifest else 0
     would_emit = bool(
         cfg.enabled
         and trigger_allowed
         and not sentinel_fast_path
+        and not _is_noop
         and events_sufficient
         and manifest
     )
@@ -3626,7 +3657,11 @@ def compact_hint(
             "event_count": n_events,
             "events_sufficient": events_sufficient,
             "sentinel_fast_path": sentinel_fast_path,
+            "sentinel_reason": sentinel_reason,
+            "sentinel_age_secs": sentinel_age,
+            "is_noop_session": _is_noop,
             "is_cached_stub": is_cached_stub,
+            "quality_score": quality_score,
             "token_estimate": compact_mod.estimate_tokens(manifest) if manifest else 0,
             "char_count": len(manifest),
             "would_emit": would_emit,
@@ -3655,7 +3690,31 @@ def compact_hint(
         else "absent or stale (hook would run normally)"
     )
     typer.echo(f"compact-skip sentinel: {sentinel_state}")
-    typer.echo("")
+
+    if explain_skip or sentinel_fast_path or _is_noop:
+        typer.echo("")
+        typer.echo("--- skip gate breakdown ---")
+        typer.echo(f"  sentinel_fast_path : {sentinel_fast_path}")
+        if sentinel_fast_path or sentinel_age > 0.0:
+            reason_str = sentinel_reason if sentinel_reason else "(none)"
+            typer.echo(f"  sentinel reason    : {reason_str}")
+            typer.echo(f"  sentinel age       : {sentinel_age:.0f}s")
+            # Surface activity-floor counts when available.
+            try:
+                _sent_path = hooks_cli_mod.paths.compact_skip_sentinel_path(session_id)
+                _s_edited, _s_bash = hooks_cli_mod._read_sentinel_counts(_sent_path)
+                _c_edited, _c_bash = hooks_cli_mod._current_session_counts(session_id)
+                if _s_edited is not None:
+                    typer.echo(
+                        f"  sentinel counts    : edited={_s_edited}, bash={_s_bash}"
+                    )
+                    typer.echo(
+                        f"  current counts     : edited={_c_edited}, bash={_c_bash}"
+                    )
+            except Exception:  # noqa: BLE001
+                pass
+        typer.echo(f"  noop_session       : {_is_noop}")
+        typer.echo("")
 
     # Gate chain — fail-fast in the order the live hook applies them.
     if not cfg.enabled:

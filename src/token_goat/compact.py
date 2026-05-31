@@ -21,6 +21,8 @@ __all__ = [
     "_extract_test_failures",
     "_extract_dep_changes",
     "_format_session_stats",
+    "_score_manifest",
+    "_MANIFEST_THIN_THRESHOLD",
 ]
 
 import hashlib
@@ -1553,6 +1555,85 @@ def _session_activity_score(cache: SessionCache) -> int:
         + skill_count * 1
         + blocker_count * 5
     )
+
+
+# ---------------------------------------------------------------------------
+# Manifest quality score
+# ---------------------------------------------------------------------------
+
+# Score threshold below which the manifest is treated as a noop (score == 0)
+# or flagged as thin (score < _MANIFEST_THIN_THRESHOLD) at DEBUG level.
+_MANIFEST_THIN_THRESHOLD: Final[int] = 5
+
+
+def _score_manifest(sections: list[str]) -> int:
+    """Assign a quality score to the manifest sections list.
+
+    Scoring weights:
+    - ``+10`` for each edited file line (``✎×`` badge in Files Edited section)
+    - ``+5``  for each test failure line (``✗`` prefix)
+    - ``+3``  for each bash command line (``- `` prefix in **Bash** section)
+    - ``+2``  for each symbol entry line (``- `` prefix in **Symbols** section)
+
+    The function operates on rendered section strings, not on raw session data,
+    so it reflects the actual content of the manifest rather than a proxy count.
+
+    Returns a non-negative integer.  Score 0 means the manifest is empty (noop).
+    Score < :data:`_MANIFEST_THIN_THRESHOLD` means the manifest is thin and may
+    not preserve enough context across compaction.
+
+    Args:
+        sections: List of rendered section strings, as returned by the manifest
+                  builder (e.g. the list of ``"**Edited**:..."`` blocks).
+
+    Returns:
+        Non-negative integer quality score.
+    """
+    score = 0
+    in_edited = False
+    in_bash = False
+    in_symbols = False
+    for section in sections:
+        in_edited = False
+        in_bash = False
+        in_symbols = False
+        for line in section.splitlines():
+            stripped = line.strip()
+            # Section header detection — determines which scoring rule to apply.
+            if stripped.startswith("**Edited**"):
+                in_edited = True
+                in_bash = False
+                in_symbols = False
+                continue
+            if stripped.startswith("**Bash**"):
+                in_edited = False
+                in_bash = True
+                in_symbols = False
+                continue
+            if stripped.startswith("**Symbols**"):
+                in_edited = False
+                in_bash = False
+                in_symbols = True
+                continue
+            if stripped.startswith("**") and stripped.endswith("**:"):
+                # Unknown section header — reset context.
+                in_edited = False
+                in_bash = False
+                in_symbols = False
+                continue
+            if not stripped.startswith("- "):
+                continue
+            # Score based on active section context and line content.
+            if in_edited:
+                score += 10
+            elif in_bash:
+                score += 3
+            elif in_symbols:
+                score += 2
+            # Test failure lines: present in multiple sections as "✗" prefix.
+            if "✗" in stripped or "✗" in stripped:
+                score += 5
+    return score
 
 
 # Cache for blocker error previews keyed by output_id.  A render of the manifest
@@ -3099,6 +3180,25 @@ def _build_manifest_from_cache(
         token_estimate,
         elapsed,
     )
+
+    # Manifest quality check: score the rendered output and log a DEBUG note
+    # when the manifest is thin (low signal) so operators can tune thresholds.
+    # Pass the full manifest as a single section — _score_manifest scans all lines.
+    if result:
+        _quality_score = _score_manifest([result])
+        if _quality_score == 0:
+            _LOG.debug(
+                "build_manifest: quality score=0 (noop manifest) session=%s — "
+                "consider tightening min_events gate",
+                session_id[:8],
+            )
+        elif _quality_score < _MANIFEST_THIN_THRESHOLD:
+            _LOG.debug(
+                "build_manifest: thin manifest quality score=%d (<%d) session=%s — "
+                "manifest may not preserve enough context",
+                _quality_score, _MANIFEST_THIN_THRESHOLD, session_id[:8],
+            )
+
     return result
 
 
