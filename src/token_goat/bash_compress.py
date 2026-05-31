@@ -70,7 +70,9 @@ __all__ = [
     "strip_ansi",
     "strip_progress",
     "truncate_middle",
+    "AntFilter",
     "BatFilter",
+    "BazelFilter",
     "CmakeFilter",
     "CurlFilter",
     "DeltaFilter",
@@ -4482,6 +4484,14 @@ _GRADLE_FAILURE_SECTION_RE: Final[re.Pattern[str]] = re.compile(
 _GRADLE_TEST_SUMMARY_RE: Final[re.Pattern[str]] = re.compile(
     r"^.*tests? (?:passed|failed)"
 )
+#: Gradle download progress: "Download https://..." or "Downloading https://..."
+_GRADLE_DOWNLOAD_RE: Final[re.Pattern[str]] = re.compile(
+    r"^(?:Download|Downloading)\s+https?://"
+)
+#: Gradle daemon startup messages
+_GRADLE_DAEMON_RE: Final[re.Pattern[str]] = re.compile(
+    r"^(?:Starting Gradle Daemon|Gradle Daemon|Daemon started)"
+)
 
 
 class GradleFilter(Filter):
@@ -4495,6 +4505,10 @@ class GradleFilter(Filter):
     * **build/test/check**: keep ``BUILD SUCCESSFUL/FAILED`` line + last 30
       lines (includes test summary). Drop progress output (``> Task :``,
       ``> Configure project``).
+    * **download progress** (``Download https://...``): collapse to a count
+      summary line regardless of subcommand.
+    * **daemon messages** (``Starting Gradle Daemon``, ``Daemon started``):
+      drop on successful builds; keep on failure so context is preserved.
     * **dependencies**: head=10, tail=10 compression (dependency trees are
       massive).
     * **tasks**: head=20, tail=5 compression (task list can be large).
@@ -4534,14 +4548,28 @@ class GradleFilter(Filter):
         return _head_tail_compress(lines, head=10, tail=10, label="lines")
 
     def _compress_build(self, lines: list[str]) -> str:
-        """Compress build/test/check output: keep result + last 30 lines."""
+        """Compress build/test/check output: keep result + last 30 lines.
+
+        Also collapses download-progress lines and drops daemon start messages
+        (both are pure noise on a successful build).
+        """
         kept: list[str] = []
         dropped_progress = 0
+        dropped_downloads = 0
+        dropped_daemon = 0
 
         for line in lines:
-            # Drop progress lines with > Task or > Configure.
+            # Drop task/configure progress lines.
             if _GRADLE_TASK_PROGRESS_RE.match(line):
                 dropped_progress += 1
+                continue
+            # Collapse download progress lines.
+            if _GRADLE_DOWNLOAD_RE.match(line):
+                dropped_downloads += 1
+                continue
+            # Drop daemon startup messages on successful builds.
+            if _GRADLE_DAEMON_RE.match(line):
+                dropped_daemon += 1
                 continue
             kept.append(line)
 
@@ -4551,9 +4579,207 @@ class GradleFilter(Filter):
         notes: list[str] = []
         if dropped_progress:
             notes.append(f"dropped {dropped_progress} task-progress lines")
+        if dropped_downloads:
+            notes.append(f"collapsed {dropped_downloads} dependency download lines")
+        if dropped_daemon:
+            notes.append(f"dropped {dropped_daemon} Gradle Daemon startup lines")
 
         self._emit_notes(tail_lines, notes)
         return self._finalize(tail_lines)
+
+
+# --- Ant -------------------------------------------------------------------
+
+#: Ant task output lines: "[echo] ..." / "[mkdir] ..." / "[copy] ..." / "[javac] ..."
+_ANT_TASK_LINE_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\s*\[([a-zA-Z0-9_-]+)\]\s"
+)
+#: Ant build result banners
+_ANT_BUILD_RESULT_RE: Final[re.Pattern[str]] = re.compile(
+    r"^BUILD (?:SUCCESSFUL|FAILED)"
+)
+#: Ant javac error/warning lines: "[javac] /path/to/File.java:N: error: ..."
+#: or "[javac] error:" or "[javac] warning:"
+_ANT_JAVAC_DIAG_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\s*\[javac\]\s+(?:.*:\s+)?(?:error|warning):"
+)
+#: Pure-noise task types: echo, mkdir, copy, delete, move — collapsed to counts
+_ANT_COLLAPSIBLE_TASKS: Final[frozenset[str]] = frozenset([
+    "echo", "mkdir", "copy", "delete", "move", "chmod", "touch", "get",
+])
+
+
+class AntFilter(Filter):
+    """Compress ``ant`` build output.
+
+    Apache Ant emits one bracketed task line per action (``[echo]``, ``[mkdir]``,
+    ``[copy]``, ``[javac]``, etc.).  On a large build this produces hundreds of
+    identical-pattern lines that are pure noise unless compilation fails.
+
+    Compression model:
+
+    * **Collapsible task types** (``[echo]``, ``[mkdir]``, ``[copy]``, ``[delete]``,
+      ``[move]``, ``[chmod]``, ``[touch]``, ``[get]``): collapse consecutive runs of
+      the same task type to ``[task ×N]`` counts.
+    * **[javac] error:** and **[javac] warning:** lines: always keep verbatim.
+    * **BUILD SUCCESSFUL / BUILD FAILED** banners: always keep.
+    * **Other task types** (``[jar]``, ``[junit]``, etc.): pass through unchanged
+      (these are usually short and carry signal).
+    """
+
+    name = "ant"
+    binaries = frozenset(["ant"])
+
+    def compress(
+        self, stdout: str, stderr: str, exit_code: int, argv: list[str],
+    ) -> str:
+        merged = self._combine_output(stdout, stderr)
+        lines = merged.split("\n")
+        kept: list[str] = []
+        # task_type -> count of lines collapsed in the current run
+        task_counts: dict[str, int] = {}
+
+        def flush_task_counts() -> None:
+            for task_type, count in sorted(task_counts.items()):
+                kept.append(f"[token-goat: [{task_type}] ×{count} lines collapsed]")
+            task_counts.clear()
+
+        for line in lines:
+            # Always preserve diagnostics from [javac] (errors, warnings).
+            if _ANT_JAVAC_DIAG_RE.match(line):
+                flush_task_counts()
+                kept.append(line)
+                continue
+            # Always preserve build result banners.
+            if _ANT_BUILD_RESULT_RE.match(line):
+                flush_task_counts()
+                kept.append(line)
+                continue
+            m = _ANT_TASK_LINE_RE.match(line)
+            if m:
+                task_type = m.group(1).lower()
+                if task_type in _ANT_COLLAPSIBLE_TASKS:
+                    task_counts[task_type] = task_counts.get(task_type, 0) + 1
+                    continue
+                else:
+                    # Non-collapsible task: flush pending counts, then keep.
+                    flush_task_counts()
+                    kept.append(line)
+                    continue
+            # Non-task line (timestamps, blank lines, etc.).
+            flush_task_counts()
+            kept.append(line)
+
+        flush_task_counts()
+        return self._finalize(kept)
+
+
+# --- Bazel -----------------------------------------------------------------
+
+#: Bazel INFO lines worth keeping: analyzed/found targets, elapsed time
+_BAZEL_INFO_KEEP_RE: Final[re.Pattern[str]] = re.compile(
+    r"^INFO:\s+(?:Analyzed|Found)\s+\d+"
+)
+#: Bazel INFO "From Compiling ..." lines — collapse to count
+_BAZEL_INFO_COMPILE_RE: Final[re.Pattern[str]] = re.compile(
+    r"^INFO:\s+(?:From Compiling|From Generating|From Linking|From "
+    r"ProtoCompile|From [A-Za-z]+ src/)"
+)
+#: Generic INFO progress lines to collapse (e.g. "INFO: Build option ...")
+_BAZEL_INFO_PROGRESS_RE: Final[re.Pattern[str]] = re.compile(r"^INFO:\s")
+#: Bazel test result lines: "//pkg:target    PASSED in Xs" or "FAILED in Xs"
+_BAZEL_TEST_RESULT_RE: Final[re.Pattern[str]] = re.compile(
+    r"^//\S+\s+(PASSED|FAILED|TIMEOUT|NO STATUS)\b"
+)
+#: Bazel elapsed time: "Elapsed time: X.Xs"
+_BAZEL_ELAPSED_RE: Final[re.Pattern[str]] = re.compile(r"^Elapsed time:\s+\d")
+#: Bazel build failure banner
+_BAZEL_FAIL_BANNER_RE: Final[re.Pattern[str]] = re.compile(
+    r"^(?:FAILED:|ERROR:|FAIL:|Build did NOT complete|Target //)"
+)
+#: Bazel "Build completed successfully" summary
+_BAZEL_BUILD_OK_RE: Final[re.Pattern[str]] = re.compile(
+    r"^(?:Build completed successfully|INFO: Build completed)"
+)
+
+
+class BazelFilter(Filter):
+    """Compress ``bazel build`` / ``bazel test`` / ``bazel run`` output.
+
+    Bazel emits hundreds of ``INFO: From Compiling …`` lines per build plus
+    per-test result lines.  Signal is concentrated in failure lines and a few
+    key INFO summaries.
+
+    Compression model:
+
+    * **Keep** ``INFO: Analyzed N targets`` and ``INFO: Found N targets`` verbatim.
+    * **Collapse** ``INFO: From Compiling src/…`` and similar action-progress
+      lines to a single count summary.
+    * **Collapse** other ``INFO:`` progress lines to a single count summary.
+    * **Keep** ``//pkg:target  PASSED in Xs`` lines for failing targets verbatim;
+      collapse passing targets to a count.
+    * **Keep** ``Elapsed time: X.Xs`` lines verbatim.
+    * **Keep** ``FAILED: Build did NOT complete successfully`` and any error
+      banners verbatim.
+    * **Keep** ``Build completed successfully`` / ``INFO: Build completed`` lines.
+    """
+
+    name = "bazel"
+    binaries = frozenset(["bazel", "bazelisk"])
+
+    def compress(
+        self, stdout: str, stderr: str, exit_code: int, argv: list[str],
+    ) -> str:
+        merged = self._combine_output(stdout, stderr)
+        lines = merged.split("\n")
+        kept: list[str] = []
+        compile_count = 0
+        info_progress_count = 0
+        test_pass_count = 0
+
+        for line in lines:
+            # Always keep elapsed time and build result banners.
+            if _BAZEL_ELAPSED_RE.match(line) or _BAZEL_FAIL_BANNER_RE.match(line):
+                kept.append(line)
+                continue
+            # Always keep build success summaries.
+            if _BAZEL_BUILD_OK_RE.match(line):
+                kept.append(line)
+                continue
+            # Keep "Analyzed / Found N targets" INFO lines.
+            if _BAZEL_INFO_KEEP_RE.match(line):
+                kept.append(line)
+                continue
+            # Collapse "From Compiling …" and similar action-progress INFO lines.
+            if _BAZEL_INFO_COMPILE_RE.match(line):
+                compile_count += 1
+                continue
+            # Test result lines: keep failures verbatim, count passes.
+            if _BAZEL_TEST_RESULT_RE.match(line):
+                m = _BAZEL_TEST_RESULT_RE.match(line)
+                status = m.group(1) if m else ""
+                if status == "PASSED":
+                    test_pass_count += 1
+                else:
+                    # FAILED / TIMEOUT / NO STATUS — always keep
+                    kept.append(line)
+                continue
+            # Remaining INFO: lines — collapse to count.
+            if _BAZEL_INFO_PROGRESS_RE.match(line):
+                info_progress_count += 1
+                continue
+            # Everything else: keep.
+            kept.append(line)
+
+        notes: list[str] = []
+        if compile_count:
+            notes.append(f"collapsed {compile_count} 'INFO: From …' compile-action lines")
+        if info_progress_count:
+            notes.append(f"collapsed {info_progress_count} INFO: progress lines")
+        if test_pass_count:
+            notes.append(f"collapsed {test_pass_count} PASSED test targets")
+        self._emit_notes(kept, notes)
+        return self._finalize(kept)
 
 
 # --- Maven -----------------------------------------------------------------
@@ -5147,12 +5373,14 @@ FILTERS: list[Filter] = [
     LinterFilter(),
     GrepFilter(),
     GitFilter(),
-    # GoTestFilter, GradleFilter, and MavenFilter must precede MakeFilter so their
-    # specialized subcommands route correctly; other subcommands fall through to
-    # MakeFilter for generic build-system compression.
+    # GoTestFilter, GradleFilter, MavenFilter, AntFilter, and BazelFilter must
+    # precede MakeFilter so their specialized subcommands route correctly; other
+    # subcommands fall through to MakeFilter for generic build-system compression.
     GoTestFilter(),
     GradleFilter(),
     MavenFilter(),
+    AntFilter(),
+    BazelFilter(),
     MakeFilter(),
     TerraformFilter(),
     # AnsibleFilter and PreCommitFilter have disjoint binaries from every
