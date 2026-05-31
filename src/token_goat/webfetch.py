@@ -110,6 +110,33 @@ _ALLOW_UNRESOLVED = os.environ.get("TOKEN_GOAT_WEBFETCH_ALLOW_UNRESOLVED", "").s
     "1", "true", "yes", "on"
 )
 
+# Configurable request timeout for fetch_url().  Defaults to 30 s; overridable
+# via TOKEN_GOAT_WEBFETCH_TIMEOUT_SECS (float seconds) for slow networks or
+# strict CI environments that need a tighter budget.
+def _webfetch_timeout() -> float:
+    """Return the configured HTTP request timeout in seconds.
+
+    Reads ``TOKEN_GOAT_WEBFETCH_TIMEOUT_SECS`` at call time so that tests can
+    set the env var after import without a module reload.  Invalid values fall
+    back to the 30 s default with a debug log rather than crashing the hook.
+    """
+    raw = os.environ.get("TOKEN_GOAT_WEBFETCH_TIMEOUT_SECS", "").strip()
+    if not raw:
+        return 30.0
+    try:
+        val = float(raw)
+        if val <= 0:
+            _LOG.debug(
+                "TOKEN_GOAT_WEBFETCH_TIMEOUT_SECS=%r is not positive; using 30s default", raw
+            )
+            return 30.0
+        return val
+    except ValueError:
+        _LOG.debug(
+            "TOKEN_GOAT_WEBFETCH_TIMEOUT_SECS=%r is not a valid float; using 30s default", raw
+        )
+        return 30.0
+
 
 def _is_ssrf_safe(url: str) -> bool:
     """Return True only if the URL is safe to fetch (not an SSRF risk).
@@ -690,7 +717,7 @@ def fetch_url(
     url: str,
     *,
     shrink_if_image: bool = True,
-    timeout_sec: float = 30.0,
+    timeout_sec: float | None = None,
     max_size_bytes: int = 50 * 1024 * 1024,
 ) -> Path:
     """Download a URL. Return the local cached path. Shrink if image and big enough.
@@ -704,8 +731,17 @@ def fetch_url(
     DNS rebinding protection: the hostname is resolved once (in ``_is_ssrf_safe``
     above) and the validated IP is pinned for the actual TCP connection so a
     hostile DNS server cannot return a different address at connect time.
+
+    Args:
+        timeout_sec: Request timeout in seconds.  Defaults to the value of
+            ``TOKEN_GOAT_WEBFETCH_TIMEOUT_SECS`` (float) or 30 s when the env var
+            is absent.  Pass an explicit value to override the env var for a
+            single call (useful in tests).
     """
     import httpx  # noqa: PLC0415 — deferred to avoid startup cost on every hook fire
+
+    # Resolve effective timeout: explicit argument wins over env var.
+    _timeout = timeout_sec if timeout_sec is not None else _webfetch_timeout()
 
     if len(url) > _MAX_URL_LEN:
         raise ValueError(f"URL too long ({len(url)} chars, max {_MAX_URL_LEN})")
@@ -779,7 +815,7 @@ def fetch_url(
                 headers["If-Modified-Since"] = meta["last_modified"]
             try:
                 with httpx.Client(
-                    timeout=timeout_sec, follow_redirects=True, transport=_transport
+                    timeout=_timeout, follow_redirects=True, transport=_transport
                 ) as client:
                     r = client.get(url, headers=headers)
                 # Post-redirect SSRF check: the revalidation response may have
@@ -825,7 +861,7 @@ def fetch_url(
     response_headers: httpx.Headers | None = None
     try:
         with httpx.Client(
-            timeout=timeout_sec, follow_redirects=True, transport=_transport
+            timeout=_timeout, follow_redirects=True, transport=_transport
         ) as client, \
                 client.stream("GET", url) as r:
             r.raise_for_status()
@@ -853,7 +889,7 @@ def fetch_url(
         ) from exc
     except httpx.TimeoutException as exc:
         raise RuntimeError(
-            f"Request timed out after {timeout_sec}s fetching {_truncate_url(url)!r}"
+            f"Request timed out after {_timeout}s fetching {_truncate_url(url)!r}"
         ) from exc
     except httpx.RequestError as exc:
         raise RuntimeError(

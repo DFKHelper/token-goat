@@ -298,7 +298,10 @@ def evict_cache_dir(
             if body.exists():
                 continue
             try:
-                sp.unlink()
+                # missing_ok=True handles the concurrent-delete race: if another
+                # process already removed this orphan sidecar between the body.exists()
+                # check above and this unlink, we treat it as success.
+                sp.unlink(missing_ok=True)
             except OSError as exc:
                 _log.debug("%s: orphan sidecar removal failed: %s: %s", log_name, sp.name, exc)
     except OSError:
@@ -313,6 +316,13 @@ def evict_cache_dir(
     for fp, _mtime, size in entries:
         if total <= max_total_bytes and remaining <= max_file_count:
             break
+        # Concurrent-eviction safety: two worker processes may both reach this
+        # loop with the same set of candidate files.  The first to call unlink()
+        # succeeds; the second receives FileNotFoundError (a subclass of OSError).
+        # We only adjust accounting (total, remaining, removed) when *our* unlink
+        # succeeds so double-counting is impossible.  The `continue` after any
+        # OSError skips the sidecar cleanup, which is safe — the first process will
+        # handle the sidecar on its own pass, or the orphan sweep will catch it.
         try:
             fp.unlink()
             total -= size
@@ -324,7 +334,7 @@ def evict_cache_dir(
         try:
             sidecar.unlink()
         except FileNotFoundError:
-            pass
+            pass  # already removed by a concurrent eviction pass — harmless
         except OSError as exc:
             _log.debug("%s: sidecar cleanup failed for %s: %s", log_name, sidecar.name, exc)
     if removed:
