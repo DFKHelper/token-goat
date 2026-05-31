@@ -75,6 +75,7 @@ __all__ = [
     "BazelFilter",
     "BundlerFilter",
     "CmakeFilter",
+    "ComposerFilter",
     "CurlFilter",
     "DeltaFilter",
     "DiffFilter",
@@ -84,6 +85,7 @@ __all__ = [
     "GradleFilter",
     "JqFilter",
     "MavenFilter",
+    "MixFilter",
     "PythonFilter",
     "RsyncFilter",
     "RubyFilter",
@@ -5636,6 +5638,320 @@ class XcodeFilter(Filter):
         return self._finalize(kept)
 
 
+# --- Elixir Mix -------------------------------------------------------------
+
+#: mix deps.get: "* Getting dep-name (hex package)"
+_MIX_GETTING_DEP_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\* Getting (\S+)\s"
+)
+#: mix compile: "Compiling N files (.ex)"
+_MIX_COMPILING_RE: Final[re.Pattern[str]] = re.compile(
+    r"^Compiling \d+ file"
+)
+#: mix compile: "Generated app_name app"
+_MIX_GENERATED_RE: Final[re.Pattern[str]] = re.compile(
+    r"^Generated \S+ app$"
+)
+#: mix compile: "warning: ..."
+_MIX_WARNING_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\s*warning:"
+)
+#: mix test: ExUnit progress dots / letters (. E F *)
+_MIX_TEST_DOTS_RE: Final[re.Pattern[str]] = re.compile(
+    r"^[.EF*]+\s*$"
+)
+#: mix test: "N tests, N failures" summary
+_MIX_TEST_SUMMARY_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\d+ tests?, \d+ failure"
+)
+#: mix test: "Finished in N.Ns (..." — keep
+_MIX_TEST_FINISHED_RE: Final[re.Pattern[str]] = re.compile(
+    r"^Finished in \d"
+)
+#: mix test: failure section header "  N) TestModule.test_name"
+_MIX_TEST_FAILURE_HEADER_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\s+\d+\)"
+)
+#: mix ecto.migrate: migration lines to keep (may be prefixed by Logger timestamp)
+_MIX_MIGRATION_RE: Final[re.Pattern[str]] = re.compile(
+    r"== (?:Running|Migrated)"
+)
+
+
+class MixFilter(Filter):
+    """Compress ``mix`` Elixir task output.
+
+    Mix is the Elixir build and task runner.  It covers dependency fetching
+    (``mix deps.get``), compilation (``mix compile``), testing (``mix test``),
+    and database migrations (``mix ecto.migrate``).
+
+    Compression model:
+
+    * **mix deps.get**: ``* Getting dep-name (hex package)`` lines → collapsed
+      to a single ``[token-goat: Fetching N dependencies]`` summary.
+    * **mix compile**: ``Compiling N files (.ex)`` lines → kept; ``warning: …``
+      lines → kept; ``Generated app_name app`` lines → kept; other progress
+      dropped.
+    * **mix test**: ExUnit dot/letter progress (``...EF*``) collapsed to a
+      pass/fail count; failure blocks with their context kept verbatim; the
+      ``N tests, N failures`` / ``Finished in Xs`` summary kept.
+    * **mix ecto.migrate**: ``== Running …`` / ``== Migrated …`` lines kept;
+      per-query noise dropped.
+    * **Errors** (exit_code != 0): stderr preserved unchanged.
+    """
+
+    name = "mix"
+    binaries = frozenset(["mix"])
+    subcommands = frozenset([
+        "compile", "test", "deps.get", "phx.server", "ecto.migrate",
+        "ecto.create", "ecto.drop", "ecto.rollback", "run", "release",
+    ])
+
+    def matches(self, argv: list[str]) -> bool:
+        """Match ``mix`` with any subcommand listed in :attr:`subcommands` or no subcommand."""
+        if not argv:
+            return False
+        stem = Path(argv[0]).stem.lower()
+        if stem != "mix":
+            return False
+        # When no subcommand is given, still match so output is at least normalised.
+        if not self.subcommands:
+            return True
+        positionals = _positional_args(argv[1:])
+        if not positionals:
+            return True
+        return positionals[0] in self.subcommands
+
+    def compress(
+        self, stdout: str, stderr: str, exit_code: int, argv: list[str],
+    ) -> str:
+        positionals = _positional_args(argv[1:])
+        subcommand = positionals[0] if positionals else ""
+
+        if subcommand == "deps.get":
+            return self._compress_deps_get(stdout, stderr)
+        if subcommand == "compile":
+            return self._compress_compile(stdout, stderr)
+        if subcommand == "test":
+            return self._compress_test(stdout, stderr, exit_code)
+        if subcommand in ("ecto.migrate", "ecto.rollback"):
+            return self._compress_migrate(stdout, stderr)
+        # Generic: ANSI/progress already stripped; just combine.
+        return self._combine_output(stdout, stderr)
+
+    def _compress_deps_get(self, stdout: str, stderr: str) -> str:
+        merged = self._combine_output(stdout, stderr)
+        lines = merged.split("\n")
+        kept: list[str] = []
+        fetch_count = 0
+        for line in lines:
+            if _MIX_GETTING_DEP_RE.match(line):
+                fetch_count += 1
+                continue
+            kept.append(line)
+        if fetch_count:
+            kept.insert(0, f"[token-goat: Fetching {fetch_count} dependencies]")
+        return self._finalize(kept)
+
+    def _compress_compile(self, stdout: str, stderr: str) -> str:
+        merged = self._combine_output(stdout, stderr)
+        lines = merged.split("\n")
+        kept: list[str] = []
+        dropped = 0
+        for line in lines:
+            if (
+                _MIX_COMPILING_RE.match(line)
+                or _MIX_WARNING_RE.match(line)
+                or _MIX_GENERATED_RE.match(line)
+                or _ERROR_SIGNAL_RE.search(line)
+            ):
+                kept.append(line)
+                continue
+            # Drop other mix compile noise (e.g. "Resolving Hex dependencies...")
+            if line.strip() and not line.startswith("[") and not line.startswith("="):
+                dropped += 1
+                continue
+            kept.append(line)
+        notes: list[str] = []
+        if dropped:
+            notes.append(f"dropped {dropped} mix compile progress lines")
+        self._emit_notes(kept, notes)
+        return self._finalize(kept)
+
+    def _compress_test(self, stdout: str, stderr: str, exit_code: int) -> str:
+        merged = self._combine_output(stdout, stderr)
+        lines = merged.split("\n")
+        kept: list[str] = []
+        dot_pass = 0
+        dot_fail = 0
+        in_failure = False
+
+        for line in lines:
+            # Summary and timing lines: always keep.
+            if _MIX_TEST_SUMMARY_RE.match(line) or _MIX_TEST_FINISHED_RE.match(line):
+                in_failure = False
+                kept.append(line)
+                continue
+            # Failure header "  N) Test.name" starts a failure block.
+            if _MIX_TEST_FAILURE_HEADER_RE.match(line):
+                in_failure = True
+                kept.append(line)
+                continue
+            # Inside a failure block, keep everything (context is load-bearing).
+            if in_failure:
+                kept.append(line)
+                continue
+            # Dot progress lines: count passes and failures.
+            if _MIX_TEST_DOTS_RE.match(line):
+                dot_pass += line.count(".")
+                dot_fail += line.count("F") + line.count("E")
+                continue
+            kept.append(line)
+
+        notes: list[str] = []
+        if dot_pass or dot_fail:
+            notes.append(f"collapsed progress: {dot_pass} passed, {dot_fail} failed")
+        self._emit_notes(kept, notes)
+        return self._finalize(kept)
+
+    def _compress_migrate(self, stdout: str, stderr: str) -> str:
+        merged = self._combine_output(stdout, stderr)
+        lines = merged.split("\n")
+        kept: list[str] = []
+        dropped = 0
+        for line in lines:
+            if _MIX_MIGRATION_RE.search(line) or _ERROR_SIGNAL_RE.search(line):
+                kept.append(line)
+                continue
+            if line.strip():
+                dropped += 1
+                continue
+            kept.append(line)
+        notes: list[str] = []
+        if dropped:
+            notes.append(f"dropped {dropped} migration detail lines")
+        self._emit_notes(kept, notes)
+        return self._finalize(kept)
+
+
+# --- PHP Composer -----------------------------------------------------------
+
+#: composer install/update: "  - Installing vendor/package (version): Loading from cache"
+_COMPOSER_INSTALL_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\s+- Installing (\S+) \("
+)
+#: composer install/update: "  - Downloading vendor/package (version)"
+_COMPOSER_DOWNLOADING_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\s+- Downloading (\S+) \("
+)
+#: composer: progress percentage lines "  - Downloading vendor/package (version) (100%)"
+_COMPOSER_DOWNLOAD_PROGRESS_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\s+- (?:Installing|Downloading) .+\(\d+%\)"
+)
+#: composer autoload lines to keep
+_COMPOSER_AUTOLOAD_RE: Final[re.Pattern[str]] = re.compile(
+    r"^Generating(?: optimized)? autoload"
+)
+#: composer "Package operations: N installs, M updates, ..." — keep
+_COMPOSER_OPERATIONS_RE: Final[re.Pattern[str]] = re.compile(
+    r"^Package operations:"
+)
+#: composer: "N packages you are using are looking for funding" — drop (pure noise)
+_COMPOSER_FUNDING_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\d+ packages? you are using are looking for funding"
+)
+#: composer: deprecation / constraint warning lines
+_COMPOSER_WARNING_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\s*(?:Warning|Deprecation|deprecated|constraint):", re.IGNORECASE
+)
+
+
+class ComposerFilter(Filter):
+    """Compress ``composer install``, ``composer update``, and ``composer require`` output.
+
+    PHP Composer emits one line per package for installs, downloads, and
+    cache hits.  A project with 100+ dependencies can produce 300+ lines
+    that are essentially all noise.
+
+    Compression model:
+
+    * **Collapse** ``  - Installing vendor/package (version): Loading from cache``
+      and ``  - Downloading …`` lines into install/download counts.
+    * **Drop** partial-download percentage lines (``(10%)``, ``(50%)``, …).
+    * **Drop** ``N packages you are using are looking for funding`` (pure noise).
+    * **Keep first occurrence** of each unique deprecation/constraint warning;
+      deduplicate repeated warnings.
+    * **Keep** ``Generating autoload files`` / ``Generated optimized autoload files``
+      banners verbatim.
+    * **Keep** ``Package operations: N installs, M updates`` summary line.
+    * **Keep** every error line verbatim.
+    """
+
+    name = "composer"
+    binaries = frozenset(["composer", "composer.phar"])
+    subcommands = frozenset(["install", "update", "require", "remove", "dump-autoload"])
+
+    def compress(
+        self, stdout: str, stderr: str, exit_code: int, argv: list[str],
+    ) -> str:
+        merged = self._combine_output(stdout, stderr)
+        lines = merged.split("\n")
+        kept: list[str] = []
+        install_count = 0
+        download_count = 0
+        dropped_progress = 0
+        dropped_funding = 0
+        seen_warnings: set[str] = set()
+        dropped_dup_warnings = 0
+
+        for line in lines:
+            # Always keep errors verbatim.
+            if _ERROR_SIGNAL_RE.search(line):
+                kept.append(line)
+                continue
+            # Drop partial-download percentage lines (noise).
+            if _COMPOSER_DOWNLOAD_PROGRESS_RE.match(line):
+                dropped_progress += 1
+                continue
+            # Drop funding noise.
+            if _COMPOSER_FUNDING_RE.match(line):
+                dropped_funding += 1
+                continue
+            # Collapse install lines to a count.
+            if _COMPOSER_INSTALL_RE.match(line):
+                install_count += 1
+                continue
+            # Collapse download lines to a count.
+            if _COMPOSER_DOWNLOADING_RE.match(line):
+                download_count += 1
+                continue
+            # Deduplicate deprecation/constraint warnings (keep first occurrence).
+            if _COMPOSER_WARNING_RE.match(line):
+                key = line.strip()
+                if key in seen_warnings:
+                    dropped_dup_warnings += 1
+                    continue
+                seen_warnings.add(key)
+                kept.append(line)
+                continue
+            # Always keep autoload, operations summary, and other informational lines.
+            kept.append(line)
+
+        notes: list[str] = []
+        if install_count:
+            notes.append(f"collapsed {install_count} package install lines")
+        if download_count:
+            notes.append(f"collapsed {download_count} package download lines")
+        if dropped_progress:
+            notes.append(f"dropped {dropped_progress} download-progress lines")
+        if dropped_funding:
+            notes.append(f"dropped {dropped_funding} funding-notice lines")
+        if dropped_dup_warnings:
+            notes.append(f"deduplicated {dropped_dup_warnings} repeated warnings")
+        self._emit_notes(kept, notes)
+        return self._finalize(kept)
+
+
 # ---------------------------------------------------------------------------
 # Helpers shared by filters
 # ---------------------------------------------------------------------------
@@ -5726,6 +6042,11 @@ FILTERS: list[Filter] = [
     # binaries from every other filter so their position is cosmetic.
     RubyFilter(),
     BundlerFilter(),
+    # MixFilter handles Elixir mix tasks (compile, test, deps.get, ecto.migrate, …).
+    # ComposerFilter handles PHP Composer (install, update, require).  Both have
+    # disjoint binaries from every other filter so position is cosmetic.
+    MixFilter(),
+    ComposerFilter(),
     # CmakeFilter precedes MakeFilter so cmake's configure/build output gets
     # the specialised percentage-line collapsing; cmake can also drive make
     # but cmake --build wraps the actual build system transparently.
