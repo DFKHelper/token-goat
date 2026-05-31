@@ -168,6 +168,24 @@ class TestScoreManifestBreakdown:
         assert "**Edited**" in breakdown
         assert breakdown.get("**Symbols**", 0) == 0
 
+    def test_failure_line_scores_once_not_twice(self):
+        # A "✗" test-failure line inside **Bash** should receive exactly +3 (Bash)
+        # + +5 (✗) = +8 total.  The tautological `or "✗" in stripped` bug that
+        # existed on both sides of the `or` was dead code; removing it must not
+        # change the score at all — this test guards that the score is stable.
+        section = "**Bash**:\n- ✗ pytest tests/  (exit 1)\n"
+        score = compact._score_manifest([section])
+        # +3 for Bash line, +5 for ✗ marker = 8
+        assert score == 8
+
+    def test_score_manifest_breakdown_failure_line(self):
+        # _score_manifest_breakdown must produce the same total as _score_manifest
+        # for a section containing a ✗ failure line (regression for tautological-or fix).
+        section = "**Bash**:\n- ✗ pytest tests/  (exit 1)\n- run.sh\n"
+        total_score = compact._score_manifest([section])
+        breakdown = compact._score_manifest_breakdown([section])
+        assert sum(breakdown.values()) == total_score
+
 
 # ---------------------------------------------------------------------------
 # compact-hint --sections flag

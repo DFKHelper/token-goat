@@ -1634,7 +1634,7 @@ def _score_manifest(sections: list[str]) -> int:
             elif in_symbols:
                 score += 2
             # Test failure lines: present in multiple sections as "✗" prefix.
-            if "✗" in stripped or "✗" in stripped:
+            if "✗" in stripped:
                 score += 5
     return score
 
@@ -1693,7 +1693,7 @@ def _score_manifest_breakdown(
                 pts += 3
             elif in_symbols:
                 pts += 2
-            if "✗" in stripped or "✗" in stripped:
+            if "✗" in stripped:
                 pts += 5
             if pts > 0:
                 result[current_section] = result.get(current_section, 0) + pts

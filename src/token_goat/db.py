@@ -244,7 +244,7 @@ def _connect(db_path: Path, *, load_vec: bool = True) -> sqlite3.Connection:
             sqlite_vec.load(conn)
             conn.enable_load_extension(False)
             _LOG.debug("sqlite-vec loaded for %s", db_path.name)
-        except (sqlite3.OperationalError, AttributeError, ModuleNotFoundError) as e:
+        except Exception as e:  # noqa: BLE001
             _LOG.warning("sqlite-vec unavailable: %s", e)
     _LOG.debug("connection opened: %s", db_path.name)
     return conn
