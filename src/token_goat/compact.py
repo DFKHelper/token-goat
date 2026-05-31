@@ -17,6 +17,9 @@ __all__ = [
     "_format_hint_telemetry",
     "_get_inline_diff_for_file",
     "_get_whole_repo_diff",
+    "_extract_test_failures",
+    "_extract_dep_changes",
+    "_format_session_stats",
 ]
 
 import hashlib
@@ -152,6 +155,21 @@ _MAX_TODO_SUBJECT_CHARS: Final[int] = 50
 # the dedup hint suppresses on size anyway, and the manifest line itself costs
 # tokens that would not be paid back even if the agent acted on the hint.
 _MIN_BASH_BYTES_FOR_MANIFEST: Final[int] = 400
+
+# Maximum FAILED test names extracted from pytest output for the
+# "### Recent Test Failures" section.  10 covers the typical red-bar scenario
+# without overwhelming the manifest with a long failure list.
+_MAX_TEST_FAILURES: Final[int] = 10
+
+# Maximum dependency change lines shown in the "### Dependency Changes" section.
+# Package manager installs often list many packages; cap at 8 so the section
+# stays within budget while still surfacing the most important changes.
+_MAX_DEP_CHANGES: Final[int] = 8
+
+# Maximum number of last bash command previews added to the MUST_PRESERVE
+# sealed block for continuity.  Three covers the recent command context without
+# bloating the sealed block beyond its 80-token cap.
+_MAX_SEALED_BASH_CMDS: Final[int] = 3
 
 # Maximum web fetches listed in the "Web Fetches" section of the manifest.
 # Web fetches capture documentation, API responses, and external context the
@@ -1860,6 +1878,198 @@ def _render_what_worked_section(entries: list[object], now_ts: float) -> list[st
     return lines
 
 
+def _extract_test_failures(bash_history: object) -> list[str]:
+    """Scan bash_history for pytest runs and extract FAILED test names.
+
+    Searches all test-runner entries (any ``_is_test_command`` match) in
+    *bash_history* and loads their cached outputs via :mod:`bash_cache`.
+    Lines matching the ``FAILED tests/...::...`` pattern are extracted and
+    returned as a deduplicated list, newest-run first, capped at
+    :data:`_MAX_TEST_FAILURES`.
+
+    Returns an empty list when: no test commands ran, no cached output is
+    available, or no ``FAILED`` lines are found.  All errors are swallowed
+    — manifest construction must never raise.
+    """
+    if not isinstance(bash_history, dict) or not bash_history:
+        return []
+
+    # Collect test-runner entries, sorted most-recent first.
+    test_entries = sorted(
+        (e for e in bash_history.values() if _is_test_command(e)),
+        key=lambda e: getattr(e, "ts", 0.0),
+        reverse=True,
+    )
+    if not test_entries:
+        return []
+
+    try:
+        from . import bash_cache as _bash_cache_mod  # noqa: PLC0415
+    except Exception:  # noqa: BLE001
+        return []
+
+    # Pattern: "FAILED tests/foo/bar.py::ClassName::test_name" or
+    #          "FAILED tests/foo/bar.py::test_name" (no class)
+    # Also catches "FAILED src/..." for non-standard layouts.
+    _FAILED_RE = re.compile(
+        r"FAILED\s+((?:tests?|src)[^\s]+::[\w\[\]<>-]+(?:::[\w\[\]<>-]+)*)",
+        re.IGNORECASE,
+    )
+
+    seen: set[str] = set()
+    failures: list[str] = []
+
+    for entry in test_entries:
+        if len(failures) >= _MAX_TEST_FAILURES:
+            break
+        output_id = getattr(entry, "output_id", "") or ""
+        if not output_id:
+            continue
+        try:
+            raw = _bash_cache_mod.load_output(output_id)
+        except Exception:  # noqa: BLE001
+            continue
+        if not raw:
+            continue
+        for line in raw.splitlines():
+            m = _FAILED_RE.search(line)
+            if m:
+                name = sanitize_log_str(m.group(1), max_len=120)
+                if name and name not in seen:
+                    seen.add(name)
+                    failures.append(name)
+                    if len(failures) >= _MAX_TEST_FAILURES:
+                        break
+
+    return failures
+
+
+# Package manager command prefixes that indicate a dependency change.
+# Matches the beginning of cmd_preview (lowercased, stripped).
+_DEP_COMMAND_PREFIXES: Final[tuple[str, ...]] = (
+    "pip install",
+    "pip3 install",
+    "uv add",
+    "uv pip install",
+    "npm install",
+    "npm i ",
+    "yarn add",
+    "yarn install",
+    "pnpm add",
+    "pnpm install",
+    "cargo add",
+    "poetry add",
+    "gem install",
+)
+
+
+def _is_dep_command(entry: object) -> bool:
+    """Return True when *entry*'s cmd_preview looks like a package-install command."""
+    cmd = getattr(entry, "cmd_preview", "").strip().lower()
+    return any(cmd.startswith(prefix) for prefix in _DEP_COMMAND_PREFIXES)
+
+
+def _extract_dep_changes(bash_history: object) -> list[str]:
+    """Scan bash_history for package-manager runs and extract dependency change lines.
+
+    Searches the most-recent install command entries, loads their cached outputs,
+    and returns lines that indicate packages were added or updated (e.g.
+    ``Added: requests==2.31.0`` or ``+ requests 2.31.0``).  Capped at
+    :data:`_MAX_DEP_CHANGES`.
+
+    Returns an empty list when no relevant commands are found or all fail.
+    All errors are swallowed.
+    """
+    if not isinstance(bash_history, dict) or not bash_history:
+        return []
+
+    dep_entries = sorted(
+        (e for e in bash_history.values() if _is_dep_command(e)),
+        key=lambda e: getattr(e, "ts", 0.0),
+        reverse=True,
+    )
+    if not dep_entries:
+        return []
+
+    try:
+        from . import bash_cache as _bash_cache_mod  # noqa: PLC0415
+    except Exception:  # noqa: BLE001
+        return []
+
+    # Patterns that indicate a package was added/updated/installed.
+    # Covers pip/uv ("Successfully installed foo-1.0"), npm ("added 3 packages"),
+    # cargo ("Compiling / Adding foo v1.0"), yarn ("info Direct dependencies").
+    _CHANGE_PATTERNS = (
+        re.compile(r"successfully installed\s+(.+)", re.IGNORECASE),
+        re.compile(r"^\+\s+([\w@/-][\w@/.-]+)", re.MULTILINE),
+        re.compile(r"added\s+\d+\s+package", re.IGNORECASE),
+        re.compile(r"^\s*added\s+([\w@/-].+)", re.IGNORECASE | re.MULTILINE),
+        re.compile(r"updated\s+([\w@/-].+)", re.IGNORECASE),
+        re.compile(r"resolved\s+([\w@/-].+)", re.IGNORECASE),
+        re.compile(r"compiling\s+([\w-]+)\s+v([\d.]+)", re.IGNORECASE),
+    )
+
+    seen: set[str] = set()
+    changes: list[str] = []
+
+    for entry in dep_entries[:3]:  # only check the 3 most-recent installs
+        if len(changes) >= _MAX_DEP_CHANGES:
+            break
+        output_id = getattr(entry, "output_id", "") or ""
+        if not output_id:
+            continue
+        try:
+            raw = _bash_cache_mod.load_output(output_id)
+        except Exception:  # noqa: BLE001
+            continue
+        if not raw:
+            continue
+        for line in raw.splitlines():
+            stripped = line.strip()
+            if not stripped:
+                continue
+            for pat in _CHANGE_PATTERNS:
+                m = pat.search(stripped)
+                if m:
+                    clean = sanitize_log_str(stripped, max_len=100)
+                    if clean and clean not in seen:
+                        seen.add(clean)
+                        changes.append(clean)
+                        if len(changes) >= _MAX_DEP_CHANGES:
+                            break
+            if len(changes) >= _MAX_DEP_CHANGES:
+                break
+
+    return changes
+
+
+def _format_session_stats(cache: object) -> str | None:
+    """Return a compact 1-line session stats summary for the manifest header.
+
+    Format: ``Stats: 3 edited  12 bash  7 hints suppressed``
+
+    Shows: edited file count, bash command count, total hints suppressed.
+    Returns None when all three values are zero (nothing worth showing).
+    """
+    edited_count = len(getattr(cache, "edited_files", None) or {})
+    bash_count = len(getattr(cache, "bash_history", None) or {})
+    _sup_raw = getattr(cache, "hints_suppressed_by_type", None) or {}
+    suppressed = sum(_sup_raw.values()) if isinstance(_sup_raw, dict) else 0
+
+    if edited_count == 0 and bash_count == 0 and suppressed == 0:
+        return None
+
+    parts: list[str] = []
+    if edited_count:
+        parts.append(f"{edited_count} edited")
+    if bash_count:
+        parts.append(f"{bash_count} bash")
+    if suppressed:
+        parts.append(f"{suppressed} hints suppressed")
+
+    return "Stats: " + "  ".join(parts) if parts else None
+
+
 def _middle_truncate(text: str, max_lines: int = 20) -> str:
     """Return *text* middle-truncated to at most *max_lines* lines.
 
@@ -3352,6 +3562,8 @@ def _build_sealed_block(
     edited_clean: dict[str, int],
     blocker_entries: list[object],
     raw_skills: dict,
+    test_failure_names: list[str] | None = None,
+    raw_bash: dict | None = None,
 ) -> list[str]:
     """Build the above-the-fold sealed block prepended before the main manifest body.
 
@@ -3363,6 +3575,8 @@ def _build_sealed_block(
         ✎ auth.py×3  db.py  session.py
         ⛔ pytest tests/  (exit 1)
         🧠 ralph  plugin:improve
+        ❌ tests/test_auth.py::test_login
+        🕐 uv run pytest  git diff  ruff check
         <</preserve>>
 
     The RESUME line tells the post-compact agent which single file to re-read
@@ -3372,10 +3586,18 @@ def _build_sealed_block(
     line is small (~14-25 chars) and sits inside the preserve markers
     so the compaction LLM is unlikely to summarise it away.
 
-    The block is omitted entirely (empty list) when all three content slots
-    are empty.  Content is bounded at 80 tokens (≤ 320 characters).  The
-    markdown header makes the block discoverable to structured queries while
-    the XML-like inner markers provide fail-safe signal for the compaction LLM.
+    Slot (d): up to 3 unique source files extracted from *test_failure_names*
+    (the ``tests/...`` paths before the ``::`` separator).  These are the files
+    the agent most likely needs to re-read after compaction to fix the failures.
+
+    Slot (e): the last :data:`_MAX_SEALED_BASH_CMDS` bash command previews
+    extracted from *raw_bash* (most-recent first).  Provides continuity of the
+    command sequence even after compaction drops the full bash section.
+
+    The block is omitted entirely (empty list) when all five content slots are
+    empty.  Content is bounded at 80 tokens (≤ 320 characters).  The markdown
+    header makes the block discoverable to structured queries while the XML-like
+    inner markers provide fail-safe signal for the compaction LLM.
     """
 
     # Slot (a): ≤3 edited basenames with edit counts
@@ -3439,9 +3661,54 @@ def _build_sealed_block(
         if names:
             skill_slot = "🧠 " + "  ".join(names)
 
-    # Skip the entire block when all three content slots are empty.
+    # Slot (d): up to 3 unique test-file paths extracted from test_failure_names.
+    # These are the files the agent will most likely need to re-read/fix after
+    # compaction — listing them in the sealed block guards against them being
+    # elided even when the full ### Recent Test Failures section is dropped.
+    fail_files_slot = ""
+    if test_failure_names:
+        # Extract the file path from each "tests/foo.py::TestClass::test_name" entry.
+        _seen_fail_files: set[str] = set()
+        _fail_file_names: list[str] = []
+        for _fn in test_failure_names:
+            _parts = _fn.split("::")
+            if _parts:
+                _fpath = os.path.basename(_parts[0])
+                if _fpath and _fpath not in _seen_fail_files:
+                    _seen_fail_files.add(_fpath)
+                    _fail_file_names.append(sanitize_log_str(_fpath, max_len=40))
+                    if len(_fail_file_names) >= 3:
+                        break
+        if _fail_file_names:
+            fail_files_slot = "❌ " + "  ".join(_fail_file_names)
+
+    # Slot (e): last _MAX_SEALED_BASH_CMDS bash command previews for continuity.
+    # Gives the post-compact agent the immediate command context (what was just
+    # run) without relying on the full bash section surviving compaction.
+    bash_cmds_slot = ""
+    if isinstance(raw_bash, dict) and raw_bash:
+        # Pick the most-recent commands, excluding no-ops and blockers.
+        _blocker_oids = {getattr(e, "output_id", None) for e in blocker_entries}
+        _recent_bash = heapq.nlargest(
+            _MAX_SEALED_BASH_CMDS,
+            (
+                e for e in raw_bash.values()
+                if not _is_noop_bash_command(e)
+                and getattr(e, "output_id", None) not in _blocker_oids
+            ),
+            key=lambda e: getattr(e, "ts", 0.0),
+        )
+        _bash_previews = [
+            sanitize_log_str(getattr(e, "cmd_preview", ""), max_len=40)
+            for e in _recent_bash
+        ]
+        _bash_previews = [p for p in _bash_previews if p]
+        if _bash_previews:
+            bash_cmds_slot = "🕐 " + "  ".join(_bash_previews)
+
+    # Skip the entire block when all five content slots are empty.
     # The RESUME line is derived from those slots so an empty block stays empty.
-    if not edit_slot and not blocker_slot and not skill_slot:
+    if not edit_slot and not blocker_slot and not skill_slot and not fail_files_slot and not bash_cmds_slot:
         return []
 
     # RESUME pointer — first inner line so post-compact attention lands on it first.
@@ -3454,24 +3721,30 @@ def _build_sealed_block(
     elif blocker_cmd_word:
         resume_slot = f"🎯 RESUME: re-run {blocker_cmd_word}"
 
-    inner = [s for s in (resume_slot, edit_slot, blocker_slot, skill_slot) if s]
+    inner = [s for s in (resume_slot, edit_slot, blocker_slot, skill_slot, fail_files_slot, bash_cmds_slot) if s]
     block = ["### MUST_PRESERVE", "<<preserve>>"] + inner + ["<</preserve>>"]
 
     # Enforce 80-token cap: if the block is too large, truncate inner content.
     # The RESUME line is the highest-priority anchor — keep it intact and trim
-    # the other slots first.  If still over after trimming, drop the skill slot.
+    # the other slots first.  Drop in priority order: bash_cmds (lowest) first,
+    # then fail_files, then skill.
     block_text = "\n".join(block)
     if _token_count(block_text) > 80:
         # Preserve resume_slot verbatim; trim the rest to 60 chars each.
-        trimmed_rest = [line[:60] for line in (edit_slot, blocker_slot, skill_slot) if line]
+        trimmed_rest = [
+            line[:60]
+            for line in (edit_slot, blocker_slot, skill_slot, fail_files_slot, bash_cmds_slot)
+            if line
+        ]
         inner_trimmed = ([resume_slot] if resume_slot else []) + trimmed_rest
         block = ["### MUST_PRESERVE", "<<preserve>>"] + inner_trimmed + ["<</preserve>>"]
-        # If still over the cap, drop the skill slot (lowest signal of the three).
-        # Compare the truncated form: inner_trimmed holds line[:60] copies, not originals.
-        truncated_skill = skill_slot[:60] if skill_slot else ""
-        if _token_count("\n".join(block)) > 80 and truncated_skill and truncated_skill in inner_trimmed:
-            inner_trimmed.remove(truncated_skill)
-            block = ["### MUST_PRESERVE", "<<preserve>>"] + inner_trimmed + ["<</preserve>>"]
+        # Drop lowest-signal slots until we fit, in order: bash_cmds → fail_files → skill.
+        for _drop_slot in (bash_cmds_slot[:60] if bash_cmds_slot else "",
+                           fail_files_slot[:60] if fail_files_slot else "",
+                           skill_slot[:60] if skill_slot else ""):
+            if _drop_slot and _drop_slot in inner_trimmed and _token_count("\n".join(block)) > 80:
+                inner_trimmed.remove(_drop_slot)
+                block = ["### MUST_PRESERVE", "<<preserve>>"] + inner_trimmed + ["<</preserve>>"]
 
     return block
 
@@ -3734,6 +4007,11 @@ def _render(
     if _hint_telemetry:
         header_lines.append(_hint_telemetry)
 
+    # Session stats: edited count, bash count, hints suppressed — 1 compact line.
+    _session_stats = _format_session_stats(cache)
+    if _session_stats:
+        header_lines.append(_session_stats)
+
     # Get cwd early so it can be used by both diff summary and commits section.
     cwd = getattr(cache, "cwd", None)
     created_ts = getattr(cache, "created_ts", 0.0)
@@ -3797,6 +4075,29 @@ def _render(
         ]
     else:
         skill_lines = []
+
+    # ── 0c. Recent Test Failures — pytest FAILED lines from bash history ────────
+    # Extracted from the most-recent test-runner outputs in bash_history.
+    # Helps the compaction LLM preserve "what is still broken" context without
+    # requiring the agent to re-run tests after compaction.
+    # Cap: _MAX_TEST_FAILURES names; each name is ~30 chars → ~8 tokens/entry.
+    _test_failure_names = _extract_test_failures(raw_bash)
+    test_failure_lines: list[str] = []
+    if _test_failure_names:
+        test_failure_lines.append("### Recent Test Failures")
+        for _tf in _test_failure_names:
+            test_failure_lines.append(f"- {_tf}")
+
+    # ── 0d. Dependency Changes — pip/uv/npm install output ──────────────────
+    # Captures packages added/updated this session so the compaction LLM knows
+    # about new dependencies even if the install command is no longer in context.
+    # Cap: _MAX_DEP_CHANGES lines from the 3 most-recent install commands.
+    _dep_changes = _extract_dep_changes(raw_bash)
+    dep_change_lines: list[str] = []
+    if _dep_changes:
+        dep_change_lines.append("### Dependency Changes")
+        for _dc in _dep_changes:
+            dep_change_lines.append(f"- {_dc}")
 
     # ── 0b. Uncommitted Changes — git diff --stat + status --short ───────────
     # Ground-truth picture of what's on disk regardless of which tool made the
@@ -3967,11 +4268,14 @@ def _render(
     # deduction _section_budgets over-allocates by ~20-80 tokens and the assembled
     # manifest consistently exceeds max_tokens on sessions with active blockers /
     # edited files / skills.
-    sealed_block = _build_sealed_block(edited_clean, blocker_entries, raw_skills)
+    sealed_block = _build_sealed_block(
+        edited_clean, blocker_entries, raw_skills, _test_failure_names, raw_bash,
+    )
     sealed_tokens = _token_count("\n".join(sealed_block)) if sealed_block else 0
 
     fixed_text = "\n".join(
         header_lines + blocker_lines + decision_lines + skill_lines
+        + test_failure_lines + dep_change_lines
         + uncommitted_lines + edited_lines + stale_lines
     )
     fixed_tokens = _token_count(fixed_text) + sealed_tokens
@@ -4476,34 +4780,38 @@ def _render(
     # with no entries) and silently strip the legend line before any content.
     #
     # Drop order (lowest signal → highest):
-    #   1. todos     — TaskList entries (usually fresh from disk; cheap to recover)
-    #   2. files     — Key Files Read (read-only context, already implied by syms)
-    #   3. grep      — Investigation history (least load-bearing)
-    #   4. glob      — Directory scan history
-    #   5. web       — Reference material URLs
-    #   6. syms      — Symbol detail per file
+    #   1. todos       — TaskList entries (usually fresh from disk; cheap to recover)
+    #   2. files       — Key Files Read (read-only context, already implied by syms)
+    #   3. grep        — Investigation history (least load-bearing)
+    #   4. glob        — Directory scan history
+    #   5. web         — Reference material URLs
+    #   6. syms        — Symbol detail per file
     #   7. what_worked — Curated "tests were green" pointer
-    #   8. bash      — Command history (current work context — only drop under extreme pressure)
-    #   9. stale     — Outdated snapshot warnings (small, useful — kept above bash)
+    #   8. dep_changes — Dependency changes (recoverable from git diff)
+    #   9. bash        — Command history (current work context — only drop under extreme pressure)
+    #  10. stale       — Outdated snapshot warnings (small, useful — kept above bash)
+    #  11. test_failures — Recent test failures (high value for active fix cycles)
     # Protected (never wholesale-dropped):
     #   sealed, header, blockers, decisions, skills, uncommitted, edited, legend.
     _section_groups: list[tuple[str, list[str], bool]] = [
-        ("sealed",      sealed_block,        True),
-        ("header",      header_lines,        True),
-        ("blockers",    blocker_lines,       True),
-        ("decisions",   decision_lines,      True),
-        ("skills",      skill_lines,         True),
-        ("uncommitted", uncommitted_lines,   True),
-        ("edited",      edited_lines,        True),
-        ("stale",       stale_lines,         False),
-        ("bash",        bash_lines,          False),
-        ("what_worked", what_worked_lines,   False),
-        ("syms",        sym_lines,           False),
-        ("web",         web_lines,           False),
-        ("glob",        glob_lines,          False),
-        ("grep",        grep_lines,          False),
-        ("files",       files_lines,         False),
-        ("todos",       todo_lines,          False),
+        ("sealed",        sealed_block,          True),
+        ("header",        header_lines,          True),
+        ("blockers",      blocker_lines,         True),
+        ("decisions",     decision_lines,        True),
+        ("skills",        skill_lines,           True),
+        ("test_failures", test_failure_lines,    True),
+        ("uncommitted",   uncommitted_lines,     True),
+        ("edited",        edited_lines,          True),
+        ("stale",         stale_lines,           False),
+        ("bash",          bash_lines,            False),
+        ("what_worked",   what_worked_lines,     False),
+        ("syms",          sym_lines,             False),
+        ("web",           web_lines,             False),
+        ("glob",          glob_lines,            False),
+        ("dep_changes",   dep_change_lines,      False),
+        ("grep",          grep_lines,            False),
+        ("files",         files_lines,           False),
+        ("todos",         todo_lines,            False),
     ]
     # ── Apply noise floor: drop small unprotected sections ───────────────────
     _section_groups = _apply_noise_floor(_section_groups, noise_floor_tokens)
@@ -4596,7 +4904,7 @@ def _render(
 
         _droppable_names_in_drop_order = [
             "todos", "files", "grep", "glob", "web",
-            "syms", "what_worked", "bash", "stale",
+            "syms", "what_worked", "dep_changes", "bash", "stale",
         ]
         _live_groups = list(_section_groups)
         _solved = False
