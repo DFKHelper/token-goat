@@ -228,6 +228,8 @@ __all__ = [
     "FlyFilter",
     # Foundry/Forge Solidity compile + test
     "ForgeFilter",
+    # golangci-lint multi-linter Go aggregator
+    "GolangciLintFilter",
 ]
 
 import math
@@ -1981,10 +1983,18 @@ _CARGO_TEST_RUNNING_RE: Final[re.Pattern[str]] = re.compile(
 _CARGO_ERROR_CODE_RE: Final[re.Pattern[str]] = re.compile(
     r"^error\[E\d+\]"
 )
+#: ``cargo bench`` result lines: "test bench_foo ... bench: 1,234 ns/iter (+/- 56)"
+_CARGO_BENCH_RESULT_RE: Final[re.Pattern[str]] = re.compile(
+    r"^test\s+\S+.*\s\.\.\.\s+bench:"
+)
+#: ``cargo bench`` "running N tests" section header
+_CARGO_BENCH_RUNNING_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\s*running \d+ test"
+)
 
 
 class CargoFilter(Filter):
-    """Compress cargo build / check / test / clippy / run output.
+    """Compress cargo build / check / test / clippy / run / bench output.
 
     Cargo emits a ``Compiling foo v0.1.0`` line per crate (often dozens),
     plus optional ``Downloading``, ``Fetching``, ``Updating`` lines.  These
@@ -2000,6 +2010,10 @@ class CargoFilter(Filter):
       ``FAILED`` line, failure details, and the final ``test result:`` summary.
     * **clippy**: suppress ``Checking crate v...`` progress lines; keep every
       ``warning:``/``error:`` diagnostic and the final summary.
+    * **bench**: collapse the compiler progress via ``_compress_build``; keep
+      every benchmark result line (``test foo ... bench: N ns/iter``) verbatim;
+      collapse the ``Finished`` line but drop redundant ``running N tests``
+      headers when there is only one bench harness section.
     * **run**: pass through — script output is load-bearing.
     """
 
@@ -2016,6 +2030,8 @@ class CargoFilter(Filter):
             return self._compress_test(stdout, stderr)
         if subcommand == "clippy":
             return self._compress_clippy(stdout, stderr)
+        if subcommand == "bench":
+            return self._compress_bench(stdout, stderr)
         if subcommand == "run":
             return self._combine_output(stdout, stderr)
         return self._compress_build(stdout, stderr)
@@ -2113,6 +2129,62 @@ class CargoFilter(Filter):
             notes.append(f"dropped {dropped_progress} cargo progress lines")
         self._emit_notes(kept, notes)
         return self._finalize(kept)
+
+    def _compress_bench(self, stdout: str, stderr: str) -> str:
+        """``cargo bench``: collapse compiler progress; keep all bench result lines.
+
+        Bench output shape (stdout):
+
+        .. code-block:: text
+
+            running 3 tests
+            test bench_foo ... bench:       1,234 ns/iter (+/- 56)
+            test bench_bar ... bench:       5,678 ns/iter (+/- 89)
+            test bench_baz ... bench:         123 ns/iter (+/-  4)
+
+            test result: ok. 0 passed; 0 failed; 0 ignored; 3 measured; 0 filtered
+
+        The compiler emits noise to stderr (same as build).  This method:
+
+        * Strips compiler progress (``Compiling``, ``Downloading``, ``Checking``)
+          via the existing ``_compress_build`` helper.
+        * Passes all ``test ... bench: N ns/iter`` result lines through verbatim —
+          they are the signal.
+        * When there is only one ``running N tests`` section, collapses the header
+          since the count is already implicit in the result lines.
+        * Keeps ``test result:`` summary lines verbatim.
+        """
+        # Build phase on stderr — collapse compiler noise, keep errors/warnings.
+        build_part = self._compress_build("", stderr) if stderr.strip() else ""
+
+        bench_lines = stdout.split("\n")
+        kept: list[str] = []
+        running_headers: list[str] = []
+
+        for line in bench_lines:
+            if _CARGO_BENCH_RUNNING_RE.match(line):
+                running_headers.append(line)
+                # Defer adding until we know if there is more than one section.
+                continue
+            kept.append(line)
+
+        # Only one "running N tests" section → drop it (redundant with result lines).
+        # More than one → keep all (multiple bench harnesses, e.g. criterion suites).
+        if len(running_headers) > 1:
+            # Re-insert headers before their associated bench lines.
+            # Because we stripped them, just prepend the list.
+            kept = running_headers + kept
+
+        notes: list[str] = []
+        if len(running_headers) == 1:
+            notes.append("dropped 1 'running N tests' header (single bench suite)")
+        bench_out_lines = kept[:]
+        self._emit_notes(bench_out_lines, notes)
+        bench_out = self._finalize(bench_out_lines)
+
+        if build_part.strip() and bench_out.strip():
+            return build_part.rstrip() + "\n---\n" + bench_out
+        return build_part if build_part.strip() else bench_out
 
 
 # --- Node package managers (npm / pnpm / yarn) -----------------------------
@@ -5169,6 +5241,10 @@ class GitBlameFilter(Filter):
 _GO_TEST_RUN_RE: Final[re.Pattern[str]] = re.compile(
     r"^=== (RUN|PAUSE|CONT|NAME)\s"
 )
+# ``go test -race`` data-race report fences: "==================" lines that
+# surround a WARNING: DATA RACE block.
+_GO_RACE_FENCE_RE: Final[re.Pattern[str]] = re.compile(r"^={10,}\s*$")
+_GO_RACE_WARNING_RE: Final[re.Pattern[str]] = re.compile(r"^WARNING: DATA RACE")
 _GO_TEST_PASS_RE: Final[re.Pattern[str]] = re.compile(
     r"^\s*--- PASS:\s"
 )
@@ -5221,6 +5297,10 @@ class GoTestFilter(Filter):
       through unchanged so the caller can parse it (compression would corrupt JSON).
     * **SKIP lines**: Collapsed separately since they indicate intentionally
       skipped tests (not failures); count reported in notes.
+    * **Race detector blocks** (``go test -race``): ``==================`` /
+      ``WARNING: DATA RACE`` fence blocks are kept verbatim as they are critical
+      signal.  Goroutine stack frames inside a race block are collapsed to the
+      first 5 frames + count marker to limit line count on deep stacks.
     """
 
     name = "go-test"
@@ -5254,10 +5334,104 @@ class GoTestFilter(Filter):
         in_fail_block = False
         dropped_run = 0
         dropped_download = 0
+        # Race detector state: a race block spans from "==================" before
+        # "WARNING: DATA RACE" through the closing "==================".
+        in_race_block = False
+        race_block_lines: list[str] = []
+        race_pending_fence = False  # leading "==================" before WARNING seen
+        race_goroutine_frames: int = 0  # frame count inside current goroutine section
+        _MAX_RACE_GOROUTINE_FRAMES = 5
+        _GOROUTINE_HEADER_RE = re.compile(r"^(?:Goroutine \d+|Previous|Current)\s")
+        race_count = 0
+
+        def _flush_race_block() -> None:
+            """Emit a race block with goroutine-stack frame collapsing."""
+            nonlocal race_goroutine_frames
+            # Walk the block, collapsing goroutine stack frames > limit.
+            in_goroutine = False
+            goroutine_frame_count = 0
+            goroutine_frames_dropped = 0
+            for rline in race_block_lines:
+                if _GOROUTINE_HEADER_RE.match(rline):
+                    # Flush frame-drop note for the previous goroutine section.
+                    if goroutine_frames_dropped:
+                        kept.append(
+                            f"    [token-goat: +{goroutine_frames_dropped} goroutine frames omitted]"
+                        )
+                    in_goroutine = True
+                    goroutine_frame_count = 0
+                    goroutine_frames_dropped = 0
+                    kept.append(rline)
+                    continue
+                if in_goroutine:
+                    # Stack frame lines are indented with whitespace.
+                    if rline.startswith((" ", "\t")) and rline.strip():
+                        goroutine_frame_count += 1
+                        if goroutine_frame_count <= _MAX_RACE_GOROUTINE_FRAMES:
+                            kept.append(rline)
+                        else:
+                            goroutine_frames_dropped += 1
+                        continue
+                    else:
+                        # Leaving goroutine section.
+                        if goroutine_frames_dropped:
+                            kept.append(
+                                f"    [token-goat: +{goroutine_frames_dropped} goroutine frames omitted]"
+                            )
+                        in_goroutine = False
+                        goroutine_frame_count = 0
+                        goroutine_frames_dropped = 0
+                kept.append(rline)
+            # Final flush.
+            if goroutine_frames_dropped:
+                kept.append(
+                    f"    [token-goat: +{goroutine_frames_dropped} goroutine frames omitted]"
+                )
+
         for line in lines:
             if line.startswith("go: downloading"):
                 dropped_download += 1
                 continue
+
+            # --- Race detector block handling ---
+            # A race block: "==================" → "WARNING: DATA RACE" → ... → "==================".
+            if _GO_RACE_FENCE_RE.match(line):
+                if in_race_block:
+                    # Closing fence — flush the collected block.
+                    race_block_lines.append(line)
+                    _flush_race_block()
+                    race_block_lines = []
+                    in_race_block = False
+                    race_pending_fence = False
+                elif not race_pending_fence:
+                    # Opening fence — hold it until we confirm this is a race block.
+                    race_pending_fence = True
+                    race_block_lines = [line]
+                else:
+                    # Two consecutive fences without WARNING in between — not a race block.
+                    kept.extend(race_block_lines)
+                    kept.append(line)
+                    race_block_lines = []
+                    race_pending_fence = False
+                continue
+
+            if race_pending_fence:
+                race_block_lines.append(line)
+                if _GO_RACE_WARNING_RE.match(line):
+                    in_race_block = True
+                    race_count += 1
+                    race_pending_fence = False
+                elif not line.strip():
+                    # Blank line right after fence = not a race block.
+                    kept.extend(race_block_lines)
+                    race_block_lines = []
+                    race_pending_fence = False
+                continue
+
+            if in_race_block:
+                race_block_lines.append(line)
+                continue
+
             # FAIL opens a multi-line block preserved until next testcase.
             if _GO_TEST_FAIL_RE.match(line):
                 in_fail_block = True
@@ -5286,7 +5460,14 @@ class GoTestFilter(Filter):
             # Anything else: preserve and exit fail block.
             in_fail_block = False
             kept.append(line)
+
+        # Flush any unclosed race block (e.g. truncated output).
+        if race_block_lines:
+            _flush_race_block()
+
         notes: list[str] = []
+        if race_count:
+            notes.append(f"kept {race_count} DATA RACE block(s) verbatim (goroutine stacks collapsed)")
         if pass_count:
             notes.append(f"collapsed {pass_count} PASS testcases")
         if skip_count:
@@ -5491,6 +5672,151 @@ class GoFilter(Filter):
                 f"[token-goat: dropped {dropped_progress} '{subcommand}' progress lines]"
             )
         return self._finalize(kept)
+
+
+# --- golangci-lint -----------------------------------------------------------
+
+#: golangci-lint issue line: "file.go:12:34: message (lintername)"
+_GOLANGCI_ISSUE_RE: Final[re.Pattern[str]] = re.compile(
+    r"^(?P<file>[^:\s][^:]*\.go):(?P<line>\d+)(?::\d+)?:\s+(?P<msg>.+?)\s+\((?P<linter>[^)]+)\)\s*$"
+)
+#: golangci-lint summary line: "Found N issues."  or "Issues found."
+_GOLANGCI_SUMMARY_RE: Final[re.Pattern[str]] = re.compile(
+    r"^(?:Found \d+ issues?\.|Issues? found\.|Run with --fix)"
+    r"|^(?:ERRO\s|WARN\s)",
+    re.IGNORECASE,
+)
+#: golangci-lint section header emitted in ``--out-format=text`` (default):
+#: "  [file.go:12] message" block grouping markers are not present;
+#: but some CI setups print "Level XX: ..." or linter-name headers.
+_GOLANGCI_LINTER_HEADER_RE: Final[re.Pattern[str]] = re.compile(
+    r"^(?:\s*\[(?P<linter>[a-z0-9_-]+)\]\s*$|linter:\s+(?P<linter2>[a-z0-9_-]+)\s*$)",
+    re.IGNORECASE,
+)
+#: golangci-lint version / configuration lines to drop (noise on success).
+_GOLANGCI_NOISE_RE: Final[re.Pattern[str]] = re.compile(
+    r"^(?:golangci-lint\s+version|time=|level=(?:info|debug)|msg=\"(?:Running|Starting|Finishing))",
+    re.IGNORECASE,
+)
+
+
+class GolangciLintFilter(Filter):
+    """Compress ``golangci-lint run`` output.
+
+    golangci-lint is a meta-linter that aggregates many Go linters and can
+    emit thousands of lines on a large codebase.  The dominant noise patterns:
+
+    * Repeated issues in the same file from the same linter (e.g. 50 ``unused``
+      issues in one file).
+    * ``time=...  level=info  msg=...`` structured log lines from ``--verbose``
+      or CI configurations.
+    * A large number of ``(lintername)`` tags repeated on every line.
+
+    Compression model:
+
+    * **Per-(file, linter) deduplication**: when >10 issues share the same
+      file and linter, keep the first 3 + a count marker.  The first issue
+      always carries the file:line context the developer needs.
+    * **Drop** ``time=... level=info/debug msg=...`` structured log lines.
+    * **Keep** all error/warning/fatal log lines (``level=error``, ``ERRO``).
+    * **Keep** the final summary line verbatim.
+    * **Keep** issues from different linters in separate groups so the agent
+      sees linter-level signal rather than raw issue counts.
+
+    Matches ``golangci-lint run …`` and ``npx golangci-lint run …``.
+    """
+
+    name = "golangci-lint"
+    binaries = frozenset(["golangci-lint"])
+
+    _MAX_ISSUES_PER_FILE_LINTER: int = 10
+    _KEEP_FIRST_N: int = 3
+
+    def matches(self, argv: list[str]) -> bool:  # noqa: D102
+        if not argv:
+            return False
+        stem = Path(argv[0]).stem.lower()
+        # Direct invocation: golangci-lint run / golangci-lint
+        if stem == "golangci-lint":
+            return True
+        # npx golangci-lint run
+        return stem in ("npx", "pnpx") and len(argv) > 1 and "golangci-lint" in argv[1]
+
+    def compress(
+        self, stdout: str, stderr: str, exit_code: int, argv: list[str],
+    ) -> str:
+        merged = self._combine_output(stdout, stderr)
+        lines = merged.split("\n")
+
+        # Per-(file, linter) issue counter.
+        issue_counts: dict[tuple[str, str], int] = {}
+        kept: list[str] = []
+        noise_dropped = 0
+        issues_collapsed = 0
+
+        for line in lines:
+            # Drop structured-log noise lines (info/debug level).
+            if _GOLANGCI_NOISE_RE.match(line):
+                noise_dropped += 1
+                continue
+
+            # Always keep summary / error log lines.
+            if _GOLANGCI_SUMMARY_RE.match(line):
+                kept.append(line)
+                continue
+
+            m = _GOLANGCI_ISSUE_RE.match(line)
+            if m:
+                file_path = m.group("file")
+                linter = m.group("linter")
+                key = (file_path, linter)
+                count = issue_counts.get(key, 0)
+                issue_counts[key] = count + 1
+                if count < self._KEEP_FIRST_N:
+                    kept.append(line)
+                elif count == self._KEEP_FIRST_N:
+                    # Emit placeholder — actual total not known yet; will be
+                    # updated at end via post-pass.
+                    kept.append(f"[token-goat: __placeholder__{file_path}__{linter}__]")
+                    issues_collapsed += 1
+                # else: drop additional issues for this (file, linter) pair.
+                continue
+
+            kept.append(line)
+
+        # Replace placeholders with actual counts.
+        final: list[str] = []
+        for line in kept:
+            if line.startswith("[token-goat: __placeholder__"):
+                # Extract file and linter from the placeholder.
+                rest = line[len("[token-goat: __placeholder__"):-2]  # strip prefix + "]"
+                parts = rest.split("__")
+                if len(parts) >= 2:
+                    fp, lnt = parts[0], parts[1]
+                    total = issue_counts.get((fp, lnt), self._KEEP_FIRST_N + 1)
+                    extra = total - self._KEEP_FIRST_N
+                    final.append(
+                        f"[token-goat: +{extra} more {lnt} issues in {fp} omitted]"
+                    )
+                else:
+                    final.append(line)
+            else:
+                final.append(line)
+
+        notes: list[str] = []
+        if noise_dropped:
+            notes.append(f"dropped {noise_dropped} structured-log noise lines")
+        if issues_collapsed:
+            total_issues = sum(issue_counts.values())
+            kept_issues = sum(
+                min(v, self._KEEP_FIRST_N) for v in issue_counts.values()
+            )
+            notes.append(
+                f"collapsed {total_issues - kept_issues} issues "
+                f"({issues_collapsed} file/linter groups exceeded {self._MAX_ISSUES_PER_FILE_LINTER})"
+            )
+        self._emit_notes(final, notes)
+        return self._finalize(final)
 
 
 # --- Make / Ninja / Gradle / Maven / Go build / mod / vet / generate ----------
@@ -6108,6 +6434,11 @@ class AwsCliFilter(Filter):
       "N items (showing first 3)" keeping only the first 3 items.
     * **S3 upload/download lines**: collapse to a count summary.
     * **S3 progress bars**: drop; keep only the final transfer summary line.
+    * **CloudFormation describe-stack-events**: within the ``StackEvents`` JSON
+      array, collapse consecutive ``IN_PROGRESS`` events for the same logical
+      resource to the first occurrence + count, since a deploying stack can emit
+      50–200 ``UPDATE_IN_PROGRESS`` events for the same resource during a rolling
+      update.  ``COMPLETE``, ``FAILED``, and ``ROLLBACK`` events are always kept.
     * **Error messages**: kept verbatim (non-zero exit code or ``ERROR``/``An error``).
     """
 
@@ -6133,10 +6464,20 @@ class AwsCliFilter(Filter):
             and positionals[0] == "s3"
             and positionals[1] in ("cp", "sync", "mv")
         )
+        # CloudFormation describe-stack-events — deduplicate IN_PROGRESS events.
+        is_cfn_events = (
+            len(positionals) >= 2
+            and positionals[0] == "cloudformation"
+            and positionals[1] == "describe-stack-events"
+        )
 
         text = stdout
         if is_s3_transfer:
             text = self._compress_s3_transfer(text)
+        elif is_cfn_events:
+            compressed = self._compress_cfn_stack_events(text)
+            if compressed is not None:
+                text = compressed
         else:
             compressed = self._compress_json_array(text)
             if compressed is not None:
@@ -6182,6 +6523,100 @@ class AwsCliFilter(Filter):
                     changed = True
         if not changed:
             return None
+        return json.dumps(data, indent=2)
+
+    def _compress_cfn_stack_events(self, text: str) -> str | None:
+        """Deduplicate ``aws cloudformation describe-stack-events`` JSON output.
+
+        The ``StackEvents`` array can contain hundreds of events for the same
+        resource (repeated ``UPDATE_IN_PROGRESS`` during a rolling update).
+        Strategy:
+
+        * Parse the JSON.  If ``StackEvents`` is absent or short (<= threshold),
+          fall through to the generic array compressor.
+        * For each logical resource (keyed by ``LogicalResourceId``), collapse
+          consecutive ``IN_PROGRESS`` events beyond the first one.
+        * ``COMPLETE``, ``FAILED``, ``ROLLBACK_*``, and ``SKIPPED`` events are
+          always kept.
+        * A ``__token_goat__`` summary entry is inserted after each collapsed
+          run with the count and the resource id.
+        * Returns the compressed JSON string, or ``None`` on parse failure.
+        """
+        import json  # noqa: PLC0415
+
+        stripped = text.strip()
+        if not stripped or stripped[0] != "{":
+            return None
+        try:
+            data = json.loads(stripped)
+        except (ValueError, json.JSONDecodeError):
+            return None
+
+        events = data.get("StackEvents")
+        if not isinstance(events, list):
+            return None
+        if len(events) <= self._JSON_ARRAY_THRESHOLD:
+            return None  # Short enough — use default path.
+
+        # Deduplicate: collapse consecutive IN_PROGRESS for the same resource.
+        # Events are ordered newest-first in AWS output; we process in that order.
+        kept_events: list[object] = []
+        in_progress_run: dict[str, int] = {}  # resource_id → count of consecutive IN_PROGRESS
+        last_resource_status: dict[str, str] = {}
+
+        for event in events:
+            if not isinstance(event, dict):
+                kept_events.append(event)
+                continue
+            resource_id = str(event.get("LogicalResourceId", ""))
+            status = str(event.get("ResourceStatus", ""))
+            is_in_progress = status.endswith("_IN_PROGRESS")
+
+            if is_in_progress:
+                prev_status = last_resource_status.get(resource_id, "")
+                if prev_status.endswith("_IN_PROGRESS") and prev_status == status:
+                    # Consecutive IN_PROGRESS for the same resource — collapse.
+                    in_progress_run[resource_id] = in_progress_run.get(resource_id, 0) + 1
+                    continue
+                else:
+                    # First IN_PROGRESS for this resource in this run — keep.
+                    # Flush any previous collapse count for this resource.
+                    prev_count = in_progress_run.pop(resource_id, 0)
+                    if prev_count:
+                        kept_events.append({
+                            "__token_goat__": (
+                                f"{prev_count} repeated {prev_status} event(s) "
+                                f"for {resource_id} collapsed"
+                            )
+                        })
+                    kept_events.append(event)
+            else:
+                # Terminal or other status — flush any pending collapse.
+                prev_count = in_progress_run.pop(resource_id, 0)
+                if prev_count:
+                    prev_status = last_resource_status.get(resource_id, "IN_PROGRESS")
+                    kept_events.append({
+                        "__token_goat__": (
+                            f"{prev_count} repeated {prev_status} event(s) "
+                            f"for {resource_id} collapsed"
+                        )
+                    })
+                kept_events.append(event)
+
+            last_resource_status[resource_id] = status
+
+        # Flush any remaining in-progress runs at end of list.
+        for resource_id, count in in_progress_run.items():
+            if count:
+                prev_status = last_resource_status.get(resource_id, "IN_PROGRESS")
+                kept_events.append({
+                    "__token_goat__": (
+                        f"{count} repeated {prev_status} event(s) "
+                        f"for {resource_id} collapsed"
+                    )
+                })
+
+        data["StackEvents"] = kept_events
         return json.dumps(data, indent=2)
 
     def _compress_s3_transfer(self, text: str) -> str:
@@ -18310,8 +18745,11 @@ FILTERS: list[Filter] = [
     # than the generic make/build-system compression in MakeFilter.
     # GradleFilter, MavenFilter, AntFilter, and BazelFilter must also precede
     # MakeFilter for the same reason.
+    # GolangciLintFilter handles `golangci-lint` exclusively; disjoint from
+    # GoFilter which only claims the `go` binary.  Placed alongside Go tooling.
     GoTestFilter(),
     GoFilter(),
+    GolangciLintFilter(),
     GradleFilter(),
     MavenFilter(),
     # JavacFilter handles standalone `javac` invocations; disjoint from
