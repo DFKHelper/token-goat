@@ -69,10 +69,12 @@ _DISPATCH_CASES: list[tuple[list[str], str]] = [
     (["docker", "build", "-t", "my-image", "."], "docker"),
     (["docker", "run", "--rm", "alpine"], "docker"),
     (["podman", "build", "."], "docker"),
+    # ---- KubectlLogsFilter (precedes KubectlFilter; matches `kubectl logs`) ----
+    (["kubectl", "logs", "my-pod"], "kubectl-logs"),
+    # ---- HelmFilter (dedicated; precedes KubectlFilter which previously claimed `helm`) ----
+    (["helm", "install", "my-release", "chart/"], "helm"),
     # ---- KubectlFilter ----
     (["kubectl", "get", "pods"], "kubectl"),
-    (["kubectl", "logs", "my-pod"], "kubectl"),
-    (["helm", "install", "my-release", "chart/"], "kubectl"),
     # ---- AwsCliFilter (registered before AwsFilter; wins dispatch for `aws`) ----
     (["aws", "s3", "ls"], "aws-cli"),
     (["aws", "ec2", "describe-instances"], "aws-cli"),
