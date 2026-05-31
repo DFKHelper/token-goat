@@ -2034,7 +2034,7 @@ def _reindex_active_projects() -> None:
                 _record_index_failure(ph, "<project>")
                 continue
             _record_index_success(ph, "<project>")
-            if summary["indexed"] > 0 or summary["errors"] > 0:
+            if summary["indexed"] > 0 or summary["errors"] > 0:  # type: ignore[operator]
                 _LOG.info(
                     "periodic reindex: root=%s indexed=%d skipped=%d errors=%d dur=%.2fs",
                     row["root"],
@@ -2300,7 +2300,7 @@ def _process_dirty_entries(entries: list[DirtyQueueEntry]) -> None:
 
             _record_index_success(ph, "<project>")
             projects_processed += 1
-            if result["errors"] > 0:
+            if result["errors"] > 0:  # type: ignore[operator]
                 _LOG.warning(
                     "reindexed %d/%d files in project %s after dirty queue drain"
                     " (errors=%d dur=%.2fs)",
