@@ -3742,3 +3742,316 @@ class TestMaxInputBytesConstant:
 
     def test_safe_decode_exported(self) -> None:
         assert "_safe_decode" in bc.__all__
+
+
+# ---------------------------------------------------------------------------
+# BlackIsortFilter
+# ---------------------------------------------------------------------------
+
+
+class TestBlackFilter:
+    """Tests for BlackIsortFilter when invoked as black."""
+
+    def test_collapses_reformatted_lines_beyond_sample(self) -> None:
+        """More than 5 'reformatted' lines should be collapsed to a count."""
+        lines = [f"reformatted src/module{i}.py" for i in range(10)]
+        lines.append("All done! ✨ 🍰 ✨")
+        lines.append("10 files reformatted")
+        text = "\n".join(lines)
+        f = bc.BlackIsortFilter()
+        result = f.apply(text, "", 0, ["black", "."])
+        assert "reformatted src/module0.py" in result.text
+        assert "reformatted src/module4.py" in result.text
+        # module5 onwards should not appear as individual lines
+        assert "reformatted src/module9.py" not in result.text
+        assert "+5 more reformatted files" in result.text
+        assert "All done!" in result.text
+
+    def test_keeps_all_reformatted_when_under_sample(self) -> None:
+        """Five or fewer 'reformatted' lines should all appear verbatim."""
+        lines = [f"reformatted src/file{i}.py" for i in range(4)]
+        lines.append("All done! ✨ 🍰 ✨")
+        text = "\n".join(lines)
+        f = bc.BlackIsortFilter()
+        result = f.apply(text, "", 0, ["black", "."])
+        for i in range(4):
+            assert f"reformatted src/file{i}.py" in result.text
+        assert "more reformatted" not in result.text
+
+    def test_keeps_error_lines(self) -> None:
+        """error: / Oh no! lines must survive compression."""
+        text = (
+            "reformatted a.py\n"
+            "Oh no!\n"
+            "error: cannot format b.py: INTERNAL ERROR\n"
+            "1 file reformatted, 1 file failed to reformat.\n"
+        )
+        f = bc.BlackIsortFilter()
+        result = f.apply(text, "", 1, ["black", "."])
+        assert "Oh no!" in result.text
+        assert "error: cannot format b.py" in result.text
+        assert "1 file reformatted" in result.text
+
+    def test_keeps_would_reformat_in_check_mode(self) -> None:
+        """'would reformat' lines (--check mode) should be sample-collapsed like reformatted."""
+        lines = [f"would reformat src/f{i}.py" for i in range(8)]
+        lines.append("Oh no! 💥 💔 💥")
+        lines.append("8 files would be reformatted")
+        text = "\n".join(lines)
+        f = bc.BlackIsortFilter()
+        result = f.apply(text, "", 1, ["black", "--check", "."])
+        assert "would reformat src/f0.py" in result.text
+        assert "+3 more reformatted files" in result.text
+        assert "8 files would be reformatted" in result.text
+
+    def test_select_filter_dispatches_black(self) -> None:
+        """select_filter routes 'black .' to BlackIsortFilter."""
+        f = bc.select_filter(["black", "."])
+        assert f is not None
+        assert f.name == "black-isort"
+
+    def test_exported_in_all(self) -> None:
+        assert "BlackIsortFilter" in bc.__all__
+
+
+class TestIsortFilter:
+    """Tests for BlackIsortFilter when invoked as isort."""
+
+    def test_collapses_fixing_lines_beyond_sample(self) -> None:
+        """More than 5 'Fixing' lines should be collapsed to a count."""
+        lines = [f"Fixing src/module{i}.py" for i in range(9)]
+        lines.append("Skipped 2 files")
+        text = "\n".join(lines)
+        f = bc.BlackIsortFilter()
+        result = f.apply(text, "", 0, ["isort", "."])
+        assert "Fixing src/module0.py" in result.text
+        assert "Fixing src/module4.py" in result.text
+        assert "Fixing src/module8.py" not in result.text
+        assert "+4 more fixed files" in result.text
+        assert "Skipped 2 files" in result.text
+
+    def test_keeps_all_fixing_when_under_sample(self) -> None:
+        """Five or fewer 'Fixing' lines should all appear verbatim."""
+        lines = [f"Fixing src/x{i}.py" for i in range(3)]
+        text = "\n".join(lines)
+        f = bc.BlackIsortFilter()
+        result = f.apply(text, "", 0, ["isort", "."])
+        for i in range(3):
+            assert f"Fixing src/x{i}.py" in result.text
+        assert "more fixed files" not in result.text
+
+    def test_keeps_error_lines(self) -> None:
+        """ERROR lines must survive compression."""
+        text = (
+            "Fixing a.py\n"
+            "ERROR: broken.py — SyntaxError\n"
+            "Skipped 1 files\n"
+        )
+        f = bc.BlackIsortFilter()
+        result = f.apply(text, "", 1, ["isort", "src/"])
+        assert "ERROR: broken.py" in result.text
+        assert "Skipped 1 files" in result.text
+
+    def test_select_filter_dispatches_isort(self) -> None:
+        """select_filter routes 'isort .' to BlackIsortFilter."""
+        f = bc.select_filter(["isort", "."])
+        assert f is not None
+        assert f.name == "black-isort"
+
+
+# ---------------------------------------------------------------------------
+# SysPackageFilter
+# ---------------------------------------------------------------------------
+
+
+class TestSysPackageFilterApt:
+    """Tests for SysPackageFilter when invoked as apt-get / apt."""
+
+    def _apt_stdout(self) -> str:
+        return (
+            "Reading package lists... Done\n"
+            "Building dependency tree... Done\n"
+            "Reading state information... Done\n"
+            "The following NEW packages will be installed:\n"
+            "  curl wget git\n"
+            "Get:1 http://archive.ubuntu.com/ubuntu focal/main amd64 curl amd64 7.68.0 [161 kB]\n"
+            "Get:2 http://archive.ubuntu.com/ubuntu focal/main amd64 wget amd64 1.20.3 [90 kB]\n"
+            "Get:3 http://archive.ubuntu.com/ubuntu focal/main amd64 git amd64 2.25.1 [2494 kB]\n"
+            "Fetched 2745 kB in 2s (1372 kB/s)\n"
+            "Unpacking curl (7.68.0-1ubuntu2.22) ...\n"
+            "Unpacking wget (1.20.3-1ubuntu1) ...\n"
+            "Unpacking git (1:2.25.1-1ubuntu3.13) ...\n"
+            "Setting up curl (7.68.0-1ubuntu2.22) ...\n"
+            "Setting up wget (1.20.3-1ubuntu1) ...\n"
+            "Setting up git (1:2.25.1-1ubuntu3.13) ...\n"
+            "Processing triggers for man-db (2.9.1-1) ...\n"
+        )
+
+    def test_collapses_download_lines(self) -> None:
+        """'Get:N http://…' lines should be collapsed to a count note."""
+        f = bc.SysPackageFilter()
+        result = f.apply(self._apt_stdout(), "", 0, ["apt-get", "install", "curl"])
+        assert "Get:1" not in result.text
+        assert "collapsed 3 'Get:N' download lines" in result.text
+
+    def test_collapses_unpack_setup_lines(self) -> None:
+        """'Unpacking' and 'Setting up' lines should be collapsed."""
+        f = bc.SysPackageFilter()
+        result = f.apply(self._apt_stdout(), "", 0, ["apt-get", "install", "curl"])
+        assert "Unpacking curl" not in result.text
+        assert "Setting up curl" not in result.text
+        assert "collapsed 6 'Unpacking/Setting up' lines" in result.text
+
+    def test_keeps_package_list_header(self) -> None:
+        """'The following NEW packages' block headers should survive."""
+        f = bc.SysPackageFilter()
+        result = f.apply(self._apt_stdout(), "", 0, ["apt-get", "install", "curl"])
+        assert "The following NEW packages will be installed:" in result.text
+
+    def test_keeps_fetched_summary(self) -> None:
+        """'Fetched X MB in Ys' summary should survive."""
+        f = bc.SysPackageFilter()
+        result = f.apply(self._apt_stdout(), "", 0, ["apt-get", "install", "curl"])
+        assert "Fetched 2745 kB in 2s" in result.text
+
+    def test_keeps_reading_boilerplate(self) -> None:
+        """'Reading package lists' and 'Building dependency tree' are kept for context."""
+        f = bc.SysPackageFilter()
+        result = f.apply(self._apt_stdout(), "", 0, ["apt-get", "install", "curl"])
+        assert "Reading package lists" in result.text
+
+    def test_collapses_triggers(self) -> None:
+        """'Processing triggers for' lines should be collapsed."""
+        f = bc.SysPackageFilter()
+        result = f.apply(self._apt_stdout(), "", 0, ["apt-get", "install", "curl"])
+        assert "Processing triggers for man-db" not in result.text
+        assert "collapsed 1 'Processing triggers' lines" in result.text
+
+    def test_keeps_error_lines(self) -> None:
+        """E: error lines must survive compression."""
+        text = (
+            "Reading package lists... Done\n"
+            "E: Could not get lock /var/lib/dpkg/lock — open (11: Resource temporarily unavailable)\n"
+        )
+        f = bc.SysPackageFilter()
+        result = f.apply(text, "", 100, ["apt-get", "install", "curl"])
+        assert "E: Could not get lock" in result.text
+
+    def test_select_filter_dispatches_apt_get(self) -> None:
+        """select_filter routes 'apt-get install' to SysPackageFilter."""
+        f = bc.select_filter(["apt-get", "install", "curl"])
+        assert f is not None
+        assert f.name == "sys-pkg"
+
+    def test_select_filter_dispatches_apt(self) -> None:
+        """select_filter routes 'apt install' to SysPackageFilter."""
+        f = bc.select_filter(["apt", "install", "curl"])
+        assert f is not None
+        assert f.name == "sys-pkg"
+
+    def test_exported_in_all(self) -> None:
+        assert "SysPackageFilter" in bc.__all__
+
+
+class TestSysPackageFilterApk:
+    """Tests for SysPackageFilter when invoked as apk."""
+
+    def _apk_stdout(self) -> str:
+        return (
+            "fetch http://dl-cdn.alpinelinux.org/alpine/v3.18/main/x86_64/APKINDEX.tar.gz\n"
+            "fetch http://dl-cdn.alpinelinux.org/alpine/v3.18/community/x86_64/APKINDEX.tar.gz\n"
+            "(1/3) Installing libgcc (12.2.1_git20220924-r10)\n"
+            "(2/3) Installing libstdc++ (12.2.1_git20220924-r10)\n"
+            "(3/3) Installing bash (5.2.15-r5)\n"
+            "OK: 20 MiB in 18 packages\n"
+        )
+
+    def test_collapses_fetch_lines(self) -> None:
+        """'fetch http://…' lines should be collapsed."""
+        f = bc.SysPackageFilter()
+        result = f.apply(self._apk_stdout(), "", 0, ["apk", "add", "bash"])
+        assert "fetch http://" not in result.text
+        assert "collapsed 2 'fetch' download lines" in result.text
+
+    def test_collapses_installing_lines(self) -> None:
+        """'(N/N) Installing …' lines should be collapsed."""
+        f = bc.SysPackageFilter()
+        result = f.apply(self._apk_stdout(), "", 0, ["apk", "add", "bash"])
+        assert "(1/3) Installing" not in result.text
+        assert "collapsed 3 'Installing' progress lines" in result.text
+
+    def test_keeps_ok_summary(self) -> None:
+        """'OK: N MiB in M packages' summary should survive."""
+        f = bc.SysPackageFilter()
+        result = f.apply(self._apk_stdout(), "", 0, ["apk", "add", "bash"])
+        assert "OK: 20 MiB in 18 packages" in result.text
+
+    def test_keeps_error_lines(self) -> None:
+        """Error messages must survive."""
+        text = (
+            "fetch http://dl-cdn.alpinelinux.org/alpine/v3.18/main/x86_64/APKINDEX.tar.gz\n"
+            "ERROR: unable to fetch package: network timeout\n"
+        )
+        f = bc.SysPackageFilter()
+        result = f.apply(text, "", 1, ["apk", "add", "curl"])
+        assert "ERROR: unable to fetch package" in result.text
+
+    def test_select_filter_dispatches_apk(self) -> None:
+        """select_filter routes 'apk add' to SysPackageFilter."""
+        f = bc.select_filter(["apk", "add", "bash"])
+        assert f is not None
+        assert f.name == "sys-pkg"
+
+
+class TestSysPackageFilterBrew:
+    """Tests for SysPackageFilter when invoked as brew."""
+
+    def _brew_stdout(self) -> str:
+        return (
+            "==> Auto-updated Homebrew!\n"
+            "Updated 3 taps (homebrew/core, homebrew/cask, homebrew/services).\n"
+            "==> Downloading https://formulae.brew.sh/api/formula.jws.json\n"
+            "==> Fetching dependencies for wget: libidn2, libunistring\n"
+            "==> Downloading https://ghcr.io/v2/homebrew/core/libidn2/manifests/2.3.4\n"
+            "==> Downloading https://ghcr.io/v2/homebrew/core/wget/manifests/1.21.3\n"
+            "==> Installing dependencies for wget: libidn2\n"
+            "==> Installing wget\n"
+            "==> Pouring wget--1.21.3.arm64_ventura.bottle.tar.gz\n"
+            "🍺  /opt/homebrew/Cellar/wget/1.21.3: 55 files, 5.5MB\n"
+        )
+
+    def test_collapses_progress_lines_beyond_sample(self) -> None:
+        """More than 3 '==> Downloading/Fetching/etc' lines are collapsed."""
+        f = bc.SysPackageFilter()
+        result = f.apply(self._brew_stdout(), "", 0, ["brew", "install", "wget"])
+        # Sample has 3 lines kept, the rest collapsed
+        assert "more brew progress lines collapsed" in result.text
+
+    def test_keeps_summary_bottle_line(self) -> None:
+        """The '🍺 /opt/homebrew/…' bottle summary should survive."""
+        f = bc.SysPackageFilter()
+        result = f.apply(self._brew_stdout(), "", 0, ["brew", "install", "wget"])
+        assert "🍺" in result.text
+
+    def test_keeps_error_lines(self) -> None:
+        """Error: lines must survive."""
+        text = (
+            "==> Downloading https://formulae.brew.sh/api/formula.jws.json\n"
+            "Error: No available formula or cask with the name \"missingpkg\".\n"
+        )
+        f = bc.SysPackageFilter()
+        result = f.apply(text, "", 1, ["brew", "install", "missingpkg"])
+        assert "No available formula" in result.text
+
+    def test_keeps_already_installed(self) -> None:
+        """'Warning: wget 1.21.3 is already installed' should survive."""
+        text = "Warning: wget 1.21.3 is already installed and up-to-date\n"
+        f = bc.SysPackageFilter()
+        result = f.apply(text, "", 0, ["brew", "install", "wget"])
+        assert "already installed" in result.text
+
+    def test_select_filter_dispatches_brew(self) -> None:
+        """select_filter routes 'brew install' to SysPackageFilter."""
+        f = bc.select_filter(["brew", "install", "wget"])
+        assert f is not None
+        assert f.name == "sys-pkg"
