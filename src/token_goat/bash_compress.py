@@ -235,6 +235,10 @@ __all__ = [
     "GhCopilotFilter",
     "GeminiCliFilter",
     "ClaudeCliFilter",
+    "CursorFilter",
+    "WindsurfFilter",
+    "OpenCodeFilter",
+    "ContinueFilter",
 ]
 
 import math
@@ -19168,6 +19172,462 @@ class ClaudeCliFilter(Filter):
         return self._finalize(out)
 
 
+# cursor ──────────────────────────────────────────────────────────────────────
+#: Cursor startup / extension host lines (VSCode-derived CLI startup noise)
+_CURSOR_STARTUP_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\s*(?:Extension\s+host\s+(?:started|starting)|"
+    r"Extension\s+'cursor[^']*'\s+activated|"
+    r"Starting\s+debug\s+adapter|"
+    r"Opening\s+folder\s*\.*\s*$|"
+    r"Restoring\s+(?:windows?|session)|"
+    r"Reusing\s+existing\s+extension\s+host|"
+    r"Connection\s+(?:established|to\s+remote)|"
+    r"Tunnel\s+(?:connected|connecting|status))",
+    re.IGNORECASE,
+)
+#: Cursor telemetry / analytics lines
+_CURSOR_TELEMETRY_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\s*(?:Telemetry\s+is\s+(?:disabled|enabled)|"
+    r"Crash\s+reporter|"
+    r"Sending\s+telemetry|"
+    r"Analytics:)",
+    re.IGNORECASE,
+)
+#: Cursor version banner: "Cursor 0.42.3" or "Cursor v0.42.3"
+_CURSOR_BANNER_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\s*Cursor\s+v?\d+\.\d+",
+    re.IGNORECASE,
+)
+
+
+class CursorFilter(Filter):
+    """Compress ``cursor`` (Cursor AI editor) CLI output.
+
+    The ``cursor`` CLI (built on VS Code) emits extension host startup lines,
+    telemetry notices, extension activation messages, and tunnel/connection
+    status lines that surround the actual editor output or error messages.
+
+    Compression model:
+
+    * **Extension host / startup lines** (``Extension host started``,
+      ``Starting debug adapter``, ``Opening folder…``): dropped.
+    * **Telemetry lines** (``Telemetry is disabled``, ``Crash reporter``):
+      dropped.
+    * **Version banner** (``Cursor 0.42.3``): dropped.
+    * **Error lines**: always kept.
+    * **Errors** (exit_code != 0): preserve all stderr unchanged.
+    """
+
+    name = "cursor"
+    binaries = frozenset(["cursor"])
+    subcommands: frozenset[str] = frozenset()
+
+    def matches(self, argv: list[str]) -> bool:  # noqa: D102
+        if not argv:
+            return False
+        p = Path(argv[0])
+        return p.stem.lower() in {"cursor"}
+
+    def compress(
+        self, stdout: str, stderr: str, exit_code: int, argv: list[str],
+    ) -> str:
+        err_output = _preserve_stderr_on_error(stdout, stderr, exit_code)
+        if err_output is not None:
+            return err_output
+
+        combined = self._combine_output(stdout, stderr)
+        lines = combined.split("\n")
+        kept: list[str] = []
+        dropped_noise = 0
+
+        for line in lines:
+            # Error signals — always keep.
+            if _ERROR_SIGNAL_RE.search(line):
+                kept.append(line)
+                continue
+            # Version banner — drop.
+            if _CURSOR_BANNER_RE.match(line):
+                dropped_noise += 1
+                continue
+            # Startup / extension host lines — drop.
+            if _CURSOR_STARTUP_RE.match(line):
+                dropped_noise += 1
+                continue
+            # Telemetry lines — drop.
+            if _CURSOR_TELEMETRY_RE.match(line):
+                dropped_noise += 1
+                continue
+            kept.append(line)
+
+        notes: list[str] = []
+        if dropped_noise:
+            notes.append(f"dropped {dropped_noise} startup/telemetry noise line(s)")
+        self._emit_notes(kept, notes)
+        return self._finalize(kept)
+
+
+# windsurf ────────────────────────────────────────────────────────────────────
+#: Windsurf startup / extension activation lines
+_WINDSURF_STARTUP_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\s*(?:Extension\s+host\s+(?:started|starting)|"
+    r"Extension\s+'\S+'\s+activated|"
+    r"Starting\s+debug\s+adapter|"
+    r"Opening\s+folder\s*\.*\s*$|"
+    r"Restoring\s+(?:windows?|session)|"
+    r"Reusing\s+existing\s+extension\s+host)",
+    re.IGNORECASE,
+)
+#: Windsurf Codeium-specific noise lines
+_WINDSURF_CODEIUM_NOISE_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\s*(?:Codeium\s*(?::\s*)?(?:Activating|Activated|index(?:ing)?:?\s*loading|"
+    r"index\s+(?:loaded|ready)|Extension\s+loaded)|"
+    r"Connecting\s+to\s+Codeium\s+server|"
+    r"Authentication\s+status\s*:|"
+    r"Model\s+status\s*:|"
+    r"Codeium\s+(?:ready|connected|disconnected))",
+    re.IGNORECASE,
+)
+#: Windsurf version banner: "Windsurf 1.2.3" or "Windsurf v1.2.3"
+_WINDSURF_BANNER_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\s*Windsurf\s+v?\d+\.\d+",
+    re.IGNORECASE,
+)
+#: Windsurf telemetry lines
+_WINDSURF_TELEMETRY_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\s*(?:Telemetry\s+is\s+(?:disabled|enabled)|Crash\s+reporter)",
+    re.IGNORECASE,
+)
+
+
+class WindsurfFilter(Filter):
+    """Compress ``windsurf`` (Codeium Windsurf AI editor) CLI output.
+
+    The ``windsurf`` CLI emits VS Code–style startup noise plus Codeium-specific
+    activation and index-loading lines that surround actual output.
+
+    Compression model:
+
+    * **Startup / extension host lines**: dropped.
+    * **Codeium activation / index-load lines** (``Codeium: Activating…``,
+      ``Codeium index: loading…``, ``Connecting to Codeium server``,
+      ``Authentication status:``): dropped.
+    * **Version banner** (``Windsurf 1.2.3``): dropped.
+    * **Telemetry lines**: dropped.
+    * **Error lines**: always kept.
+    * **Errors** (exit_code != 0): preserve all stderr unchanged.
+    """
+
+    name = "windsurf"
+    binaries = frozenset(["windsurf"])
+    subcommands: frozenset[str] = frozenset()
+
+    def matches(self, argv: list[str]) -> bool:  # noqa: D102
+        if not argv:
+            return False
+        p = Path(argv[0])
+        return p.stem.lower() in {"windsurf"}
+
+    def compress(
+        self, stdout: str, stderr: str, exit_code: int, argv: list[str],
+    ) -> str:
+        err_output = _preserve_stderr_on_error(stdout, stderr, exit_code)
+        if err_output is not None:
+            return err_output
+
+        combined = self._combine_output(stdout, stderr)
+        lines = combined.split("\n")
+        kept: list[str] = []
+        dropped_noise = 0
+
+        for line in lines:
+            # Error signals — always keep.
+            if _ERROR_SIGNAL_RE.search(line):
+                kept.append(line)
+                continue
+            # Version banner — drop.
+            if _WINDSURF_BANNER_RE.match(line):
+                dropped_noise += 1
+                continue
+            # Startup / extension host lines — drop.
+            if _WINDSURF_STARTUP_RE.match(line):
+                dropped_noise += 1
+                continue
+            # Codeium-specific noise — drop.
+            if _WINDSURF_CODEIUM_NOISE_RE.match(line):
+                dropped_noise += 1
+                continue
+            # Telemetry lines — drop.
+            if _WINDSURF_TELEMETRY_RE.match(line):
+                dropped_noise += 1
+                continue
+            kept.append(line)
+
+        notes: list[str] = []
+        if dropped_noise:
+            notes.append(f"dropped {dropped_noise} startup/activation noise line(s)")
+        self._emit_notes(kept, notes)
+        return self._finalize(kept)
+
+
+# opencode ────────────────────────────────────────────────────────────────────
+#: opencode version banner: "OpenCode v0.3.1" or "opencode 0.3.1"
+_OPENCODE_BANNER_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\s*(?:Open[Cc]ode|opencode)\s+v?\d+\.\d+",
+    re.IGNORECASE,
+)
+#: opencode provider/model status lines: "Provider: openai" / "Model: gpt-4o"
+_OPENCODE_STATUS_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\s*(?:Provider|Model|Mode)\s*:\s*\S",
+    re.IGNORECASE,
+)
+#: opencode context/token meter: "Context: 1234 / 128000 tokens"
+_OPENCODE_CONTEXT_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\s*Context\s*:\s*[\d,]+\s*/\s*[\d,]+",
+    re.IGNORECASE,
+)
+#: opencode tool call outbound: "→ tool_name(…)" or "-> tool_name"
+_OPENCODE_TOOL_CALL_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\s*(?:→|->)\s+\w+\s*\(",
+)
+#: opencode tool result inbound: "← result (N chars)" or "<- result"
+_OPENCODE_TOOL_RESULT_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\s*(?:←|<-)\s+\S.*\(\d+\s+chars?\)",
+)
+#: opencode spinner dots: bare line of dots "... " or "⠋" / "⠙"
+_OPENCODE_SPINNER_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\s*(?:[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏]|\.{2,})\s*$",
+)
+#: opencode session-saved footer: "Session saved to ~/.opencode/sessions/…"
+_OPENCODE_SESSION_SAVE_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\s*Session\s+saved\s+to\s+\S+",
+    re.IGNORECASE,
+)
+
+
+class OpenCodeFilter(Filter):
+    """Compress ``opencode`` (opencode AI CLI) terminal output.
+
+    opencode emits a TUI-style session header, provider/model status lines,
+    per-turn context meters, tool call I/O arrows, spinner frames, and a
+    session-saved footer.
+
+    Compression model:
+
+    * **Version banner** (``OpenCode v0.3.1``): dropped.
+    * **Provider/model status** (``Provider: openai``, ``Model: gpt-4o``): kept
+      as the last seen value for debugging context.
+    * **Context/token meter** (``Context: X / Y tokens``): kept as the last
+      seen value.
+    * **Tool call lines** (``→ tool_name(…)``, ``← result (N chars)``):
+      collapsed to a count.
+    * **Spinner dots**: dropped.
+    * **Session-saved footer**: dropped.
+    * **The actual AI response body**: always kept verbatim.
+    * **Error lines**: always kept.
+    * **Errors** (exit_code != 0): preserve all stderr unchanged.
+    """
+
+    name = "opencode"
+    binaries = frozenset(["opencode"])
+    subcommands: frozenset[str] = frozenset()
+
+    def matches(self, argv: list[str]) -> bool:  # noqa: D102
+        if not argv:
+            return False
+        p = Path(argv[0])
+        return p.stem.lower() in {"opencode"}
+
+    def compress(
+        self, stdout: str, stderr: str, exit_code: int, argv: list[str],
+    ) -> str:
+        err_output = _preserve_stderr_on_error(stdout, stderr, exit_code)
+        if err_output is not None:
+            return err_output
+
+        combined = self._combine_output(stdout, stderr)
+        lines = combined.split("\n")
+        kept: list[str] = []
+        tool_call_count = 0
+        last_provider: str | None = None
+        last_model: str | None = None
+        last_context: str | None = None
+        dropped_noise = 0
+
+        for line in lines:
+            # Error signals — always keep.
+            if _ERROR_SIGNAL_RE.search(line):
+                kept.append(line)
+                continue
+            # Version banner — drop.
+            if _OPENCODE_BANNER_RE.match(line):
+                dropped_noise += 1
+                continue
+            # Provider/model status — keep last seen.
+            if _OPENCODE_STATUS_RE.match(line):
+                stripped = line.strip()
+                if stripped.lower().startswith("provider"):
+                    last_provider = stripped
+                elif stripped.lower().startswith("model"):
+                    last_model = stripped
+                else:
+                    dropped_noise += 1
+                continue
+            # Context meter — keep last seen.
+            if _OPENCODE_CONTEXT_RE.match(line):
+                last_context = line.strip()
+                continue
+            # Tool call / result arrows — count.
+            if _OPENCODE_TOOL_CALL_RE.match(line) or _OPENCODE_TOOL_RESULT_RE.match(line):
+                tool_call_count += 1
+                continue
+            # Spinner dots — drop.
+            if _OPENCODE_SPINNER_RE.match(line):
+                dropped_noise += 1
+                continue
+            # Session-saved footer — drop.
+            if _OPENCODE_SESSION_SAVE_RE.match(line):
+                dropped_noise += 1
+                continue
+            kept.append(line)
+
+        out: list[str] = list(kept)
+        if tool_call_count:
+            out.append(
+                f"[token-goat: {tool_call_count} tool call/result line(s) collapsed; "
+                f"run with TOKEN_GOAT_BASH_COMPRESS=0 for full output]"
+            )
+
+        notes: list[str] = []
+        if last_provider:
+            notes.append(f"provider: {last_provider}")
+        if last_model:
+            notes.append(f"model: {last_model}")
+        if last_context:
+            notes.append(f"context: {last_context}")
+        if dropped_noise:
+            notes.append(f"dropped {dropped_noise} noise line(s)")
+        self._emit_notes(out, notes)
+        return self._finalize(out)
+
+
+# continue ────────────────────────────────────────────────────────────────────
+#: Continue.dev indexing progress: "Indexing: 42/1234 files…"
+_CONTINUE_INDEXING_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\s*Indexing\s*:\s*\d+\s*/\s*\d+\s*files?",
+    re.IGNORECASE,
+)
+#: Continue.dev model loading noise: "Loading model: codestral…"
+_CONTINUE_MODEL_LOAD_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\s*Loading\s+model\s*:\s*\S",
+    re.IGNORECASE,
+)
+#: Continue.dev config-loaded lines: "Config loaded from ~/.continue/config.json"
+_CONTINUE_CONFIG_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\s*Config\s+(?:loaded\s+from|reloaded|initializ)",
+    re.IGNORECASE,
+)
+#: Continue.dev token stats: "Tokens: 1234 prompt, 567 completion"
+_CONTINUE_TOKENS_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\s*Tokens\s*:\s*\d[\d,]*\s+prompt,\s+\d[\d,]*\s+completion",
+    re.IGNORECASE,
+)
+#: Continue.dev version banner: "Continue v0.9.x" or "Continue.dev v0.9.x"
+_CONTINUE_BANNER_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\s*Continue(?:\.dev)?\s+v?\d+\.\d+",
+    re.IGNORECASE,
+)
+
+
+class ContinueFilter(Filter):
+    """Compress ``continue`` (Continue.dev AI CLI) terminal output.
+
+    The Continue.dev CLI emits indexing progress lines, model-loading notices,
+    config-loaded messages, and token stats lines around the actual AI response.
+
+    Compression model:
+
+    * **Indexing progress** (``Indexing: 42/1234 files…``): collapsed to a
+      single summary line showing the final count.
+    * **Model-loading noise** (``Loading model: codestral…``): dropped.
+    * **Config-loaded lines** (``Config loaded from …``): dropped.
+    * **Token stats** (``Tokens: X prompt, Y completion``): kept as the last
+      seen value.
+    * **Version banner** (``Continue v0.9.x``): dropped.
+    * **The actual AI response body**: always kept verbatim.
+    * **Error lines**: always kept.
+    * **Errors** (exit_code != 0): preserve all stderr unchanged.
+    """
+
+    name = "continue"
+    binaries = frozenset(["continue"])
+    subcommands: frozenset[str] = frozenset()
+
+    def matches(self, argv: list[str]) -> bool:  # noqa: D102
+        if not argv:
+            return False
+        p = Path(argv[0])
+        return p.stem.lower() in {"continue"}
+
+    def compress(
+        self, stdout: str, stderr: str, exit_code: int, argv: list[str],
+    ) -> str:
+        err_output = _preserve_stderr_on_error(stdout, stderr, exit_code)
+        if err_output is not None:
+            return err_output
+
+        combined = self._combine_output(stdout, stderr)
+        lines = combined.split("\n")
+        kept: list[str] = []
+        indexing_count = 0
+        last_indexing_line: str | None = None
+        last_tokens: str | None = None
+        dropped_noise = 0
+
+        for line in lines:
+            # Error signals — always keep.
+            if _ERROR_SIGNAL_RE.search(line):
+                kept.append(line)
+                continue
+            # Version banner — drop.
+            if _CONTINUE_BANNER_RE.match(line):
+                dropped_noise += 1
+                continue
+            # Indexing progress — count, keep last seen.
+            if _CONTINUE_INDEXING_RE.match(line):
+                indexing_count += 1
+                last_indexing_line = line.strip()
+                continue
+            # Model-loading noise — drop.
+            if _CONTINUE_MODEL_LOAD_RE.match(line):
+                dropped_noise += 1
+                continue
+            # Config-loaded lines — drop.
+            if _CONTINUE_CONFIG_RE.match(line):
+                dropped_noise += 1
+                continue
+            # Token stats — keep last seen.
+            if _CONTINUE_TOKENS_RE.match(line):
+                last_tokens = line.strip()
+                continue
+            kept.append(line)
+
+        out: list[str] = list(kept)
+        if indexing_count:
+            summary = last_indexing_line or f"{indexing_count} indexing progress line(s)"
+            out.append(
+                f"[token-goat: {indexing_count} indexing progress line(s) collapsed; "
+                f"last: {summary}; run with TOKEN_GOAT_BASH_COMPRESS=0 for full output]"
+            )
+
+        notes: list[str] = []
+        if last_tokens:
+            notes.append(f"tokens: {last_tokens}")
+        if dropped_noise:
+            notes.append(f"dropped {dropped_noise} noise line(s)")
+        self._emit_notes(out, notes)
+        return self._finalize(out)
+
+
 FILTERS: list[Filter] = [
     PytestFilter(),
     JestFilter(),
@@ -19467,6 +19927,14 @@ FILTERS: list[Filter] = [
     GeminiCliFilter(),
     # ClaudeCliFilter handles `claude` (Claude Code CLI); disjoint binary.
     ClaudeCliFilter(),
+    # CursorFilter handles `cursor` (Cursor AI editor CLI); disjoint binary.
+    CursorFilter(),
+    # WindsurfFilter handles `windsurf` (Codeium Windsurf AI editor CLI); disjoint binary.
+    WindsurfFilter(),
+    # OpenCodeFilter handles `opencode` (opencode AI CLI); disjoint binary.
+    OpenCodeFilter(),
+    # ContinueFilter handles `continue` (Continue.dev AI CLI); disjoint binary.
+    ContinueFilter(),
 ]
 
 
