@@ -590,6 +590,59 @@ class TestPytestFilter:
         assert "FAILED tests/test_x.py::test_one" in result.text
         assert "1 failed, 4 passed" in result.text
 
+    def test_xdist_prefix_stripped(self):
+        """pytest-xdist [gwN] prefixes are stripped before processing."""
+        text = (
+            "[gw0] [ 25%] PASSED tests/test_a.py::test_one\n"
+            "[gw1] [ 50%] PASSED tests/test_b.py::test_two\n"
+            "[gw0] [ 75%] FAILED tests/test_c.py::test_three\n"
+            "[gw1] [100%] PASSED tests/test_d.py::test_four\n"
+            "= 1 failed, 3 passed in 2.1s =\n"
+        )
+        f = bc.PytestFilter()
+        result = f.apply(text, "", 1, ["pytest", "-n", "2"])
+        # PASSED lines should be collapsed (not kept verbatim)
+        assert "PASSED tests/test_a" not in result.text
+        assert "collapsed" in result.text
+        # FAILED line must survive
+        assert "FAILED tests/test_c.py::test_three" in result.text
+        # The [gwN] prefix itself should be gone
+        assert "[gw0]" not in result.text
+        assert "[gw1]" not in result.text
+
+    def test_coverage_table_collapsed(self):
+        """pytest-cov per-file coverage rows are collapsed; TOTAL line kept."""
+        cov_header = "Name                    Stmts   Miss  Cover\n"
+        sep = "----------------------------------------------\n"
+        rows = "\n".join(
+            [f"src/module_{i}.py          100      0   100%" for i in range(20)]
+        )
+        total = "TOTAL                    2000      0   100%\n"
+        text = cov_header + sep + rows + "\n" + sep + total
+        f = bc.PytestFilter()
+        result = f.apply(text, "", 0, ["pytest", "--cov"])
+        assert "TOTAL" in result.text
+        # Individual module rows should be collapsed
+        assert "src/module_0.py" not in result.text
+        assert "collapsed" in result.text
+
+    def test_slow_durations_collapsed(self):
+        """The slowest-N-durations section keeps first 5 entries; rest collapsed."""
+        header = "= slowest 20 durations =\n"
+        durations = "\n".join(
+            [f"{20 - i:.2f}s call tests/test_{i}.py::test_slow" for i in range(20)]
+        )
+        text = header + durations + "\n= 0 failed, 20 passed in 25.5s =\n"
+        f = bc.PytestFilter()
+        result = f.apply(text, "", 0, ["pytest", "--durations=20"])
+        # First 5 entries should survive
+        assert "20.00s call" in result.text
+        assert "16.00s call" in result.text
+        # The rest should be collapsed
+        assert "collapsed" in result.text
+        # The final summary should survive
+        assert "0 failed, 20 passed" in result.text
+
 
 # ---------------------------------------------------------------------------
 # Jest filter
@@ -694,6 +747,61 @@ class TestDockerFilter:
         assert "sha256:" not in result.text
         assert "12.3MB / 50.0MB" not in result.text
         assert "[1/3] FROM alpine" in result.text
+
+    def test_drops_buildkit_cached_lines(self):
+        """BuildKit CACHED lines are dropped and counted."""
+        text = "\n".join([
+            "#1 [internal] load build context",
+            "#2 CACHED",
+            "#3 CACHED",
+            "#4 CACHED",
+            "#5 [1/2] RUN apt-get install -y curl",
+            "#6 DONE 2.1s",
+        ])
+        f = bc.DockerFilter()
+        result = f.apply(text, "", 0, ["docker", "build"])
+        # The content lines should not contain "#N CACHED" (only the summary marker).
+        content_lines = [
+            ln for ln in result.text.splitlines()
+            if not ln.startswith("[token-goat:")
+        ]
+        assert not any("CACHED" in ln for ln in content_lines)
+        # The summary marker must mention the count.
+        assert "3 CACHED" in result.text
+
+    def test_drops_push_layer_noise(self):
+        """docker push 'Layer already exists' / 'Mounted from' lines are dropped."""
+        stderr = "\n".join([
+            "The push refers to repository [docker.io/myimage]",
+            "abc123: Layer already exists",
+            "def456: Layer already exists",
+            "ghi789: Mounted from library/ubuntu",
+            "latest: digest: sha256:abc123 size: 1234",
+        ])
+        f = bc.DockerFilter()
+        result = f.apply("", stderr, 0, ["docker", "push"])
+        assert "Layer already exists" not in result.text
+        assert "Mounted from" not in result.text
+        # The final digest line is signal — keep it
+        assert "digest" in result.text
+
+    def test_drops_pull_layer_status_lines(self):
+        """docker pull per-layer status lines are dropped."""
+        stderr = "\n".join([
+            "latest: Pulling from library/ubuntu",
+            "a1b2c3d4e5f6: Pull complete",
+            "b2c3d4e5f6a1: Verifying Checksum",
+            "c3d4e5f6a1b2: Download complete",
+            "d4e5f6a1b2c3: Already exists",
+            "Status: Downloaded newer image for ubuntu:latest",
+        ])
+        f = bc.DockerFilter()
+        result = f.apply("", stderr, 0, ["docker", "pull"])
+        assert "Pull complete" not in result.text
+        assert "Verifying Checksum" not in result.text
+        assert "Already exists" not in result.text
+        # Status line is signal
+        assert "Downloaded newer image" in result.text
 
 
 # ---------------------------------------------------------------------------
@@ -4633,6 +4741,36 @@ class TestGoTestFilter:
         f = bc.select_filter(["go", "build", "./..."])
         assert f is not None
         assert f.name != "go-test"
+
+    def test_json_flag_passes_through_unchanged(self) -> None:
+        """go test -json emits JSON objects; the filter must not touch them."""
+        json_lines = "\n".join([
+            '{"Action":"run","Test":"TestFoo"}',
+            '{"Action":"pass","Test":"TestFoo","Elapsed":0.001}',
+            '{"Action":"run","Test":"TestBar"}',
+            '{"Action":"fail","Test":"TestBar","Elapsed":0.002}',
+        ])
+        f = bc.GoTestFilter()
+        result = f.apply(json_lines, "", 1, ["go", "test", "-json", "./..."])
+        # JSON lines must survive unchanged so downstream parsers work.
+        assert '{"Action":"fail"' in result.text
+        assert '{"Action":"pass"' in result.text
+        # No compression markers should be added
+        assert "[token-goat:" not in result.text
+
+    def test_skip_lines_counted_separately(self) -> None:
+        """go test SKIP lines are counted separately from PASS lines."""
+        text = (
+            "=== RUN   TestSkipped\n"
+            "    --- SKIP: TestSkipped (0.00s): not supported on this platform\n"
+            "=== RUN   TestPassing\n"
+            "--- PASS: TestPassing (0.00s)\n"
+            "ok  \tgithub.com/org/repo\t0.003s\n"
+        )
+        f = bc.GoTestFilter()
+        result = f.apply(text, "", 0, ["go", "test"])
+        assert "collapsed 1 SKIP testcases" in result.text
+        assert "collapsed 1 PASS testcases" in result.text
 
 
 # ---------------------------------------------------------------------------
