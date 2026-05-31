@@ -55,10 +55,12 @@ from __future__ import annotations
 
 __all__ = [
     "DEFAULT_MAX_BYTES",
+    "DEFAULT_MAX_INPUT_BYTES",
     "DEFAULT_MAX_LINES",
     "CompressedOutput",
     "Filter",
     "FILTERS",
+    "_safe_decode",
     "bytes_to_tokens",
     "cap_bytes",
     "cap_tokens",
@@ -136,6 +138,7 @@ __all__ = [
 ]
 
 import math
+import os
 import re
 import shlex
 from collections.abc import Iterable
@@ -170,12 +173,77 @@ DEFAULT_MAX_BYTES: Final[int] = 64 * 1024
 #: causing a multi-second pause in the hook.
 MAX_INSPECT_BYTES: Final[int] = 2 * 1024 * 1024
 
+#: Maximum bytes of input the filter pipeline will accept before truncating.
+#: Applies to the combined raw stdout + stderr *before* normalisation so that
+#: even ANSI-heavy output (which can be 3–5× larger raw than clean) cannot
+#: cause a multi-second stall inside the filter.  Override via the env var
+#: ``TOKEN_GOAT_FILTER_MAX_BYTES`` (integer bytes).
+DEFAULT_MAX_INPUT_BYTES: Final[int] = 500 * 1024  # 500 KiB
+
+def _get_max_input_bytes() -> int:
+    """Return the effective MAX_INPUT_BYTES cap (env override or default)."""
+    raw = os.environ.get("TOKEN_GOAT_FILTER_MAX_BYTES", "")
+    if raw.strip():
+        try:
+            val = int(raw.strip())
+            if val > 0:
+                return val
+        except ValueError:
+            pass
+    return DEFAULT_MAX_INPUT_BYTES
+
 #: Trailing marker appended to every compressed output so the agent knows it is
 #: looking at a summary and can opt out if it needs the raw view.  Kept short
 #: so the meta-cost of the marker is dwarfed by the savings.
 _COMPRESSION_MARKER_FMT: Final[str] = (
     "\n[token-goat: {filter} filter -{pct:.0f}%; TOKEN_GOAT_BASH_COMPRESS=0 to disable]"
 )
+
+# ---------------------------------------------------------------------------
+# Encoding safety helpers
+# ---------------------------------------------------------------------------
+
+# Null bytes are valid Unicode (U+0000) so ``errors="replace"`` in
+# ``bytes.decode`` does *not* strip them.  They slip through from binary
+# output (e.g. ``xxd``, raw memory dumps, corrupt logs) and can cause
+# surprising behaviour in regex matchers and line-splitters.
+_NULL_BYTE_RE: Final[re.Pattern[bytes]] = re.compile(rb"\x00")
+
+# ANSI escape sequences that span line boundaries: rare but possible when a
+# terminal captures a CSI sequence whose parameter list contains a literal LF
+# (non-standard but seen in some multiplexers).  The sequence starts with ESC [
+# and ends with a letter, but the parameter bytes may include 0x0a.  We leave
+# the bulk of ANSI stripping to strip_ansi(); _safe_decode only ensures the
+# string is well-formed before any regex work begins.
+
+
+def _safe_decode(data: bytes | str) -> str:
+    """Return a clean Unicode string safe for all filter logic.
+
+    Handles:
+
+    * ``bytes`` input — decoded as UTF-8 with ``errors="replace"`` so
+      non-UTF-8 sequences become U+FFFD rather than raising.
+    * Null bytes (``\\x00``) — stripped unconditionally.  They are valid
+      Unicode but invisible, break many regex matchers, and never carry
+      meaningful content in captured shell output.
+    * Already-decoded ``str`` — null bytes are still stripped so callers
+      don't need to check which path was taken.
+
+    This function is intentionally *not* responsible for ANSI stripping or
+    progress-line collapsing; those are handled by :func:`normalise`.
+    """
+    if isinstance(data, bytes):
+        # Strip null bytes before decoding to avoid them surviving as U+FFFD
+        # (which ``errors="replace"`` would produce only for *invalid* bytes,
+        # not for ``\\x00`` which is a valid byte value).
+        data = _NULL_BYTE_RE.sub(b"", data)
+        return data.decode("utf-8", errors="replace")
+    # str path: strip null bytes only.
+    if "\x00" in data:
+        return data.replace("\x00", "")
+    return data
+
 
 # ---------------------------------------------------------------------------
 # Common text-shaping helpers
@@ -680,6 +748,16 @@ def _preserve_stderr_on_error(
 # Public dataclass
 # ---------------------------------------------------------------------------
 
+# TODO(CompressResult): A future improvement is to rename / alias
+# ``CompressedOutput`` to ``CompressResult`` and add a ``notes: list[str]``
+# field (already present) plus a ``filter_name: str`` field (already present)
+# so external tooling can consume compression metadata in a stable, named
+# structure.  The current ``CompressedOutput`` already carries all of these
+# fields; the rename is purely cosmetic and should be done with a deprecation
+# shim (``CompressResult = CompressedOutput``) to avoid breaking callers.
+# Fields already present: compressed_text (text), original_bytes,
+# compressed_bytes, filter_name, notes.
+
 @dataclass
 class CompressedOutput:
     """Result of running a :class:`Filter` over a captured command output.
@@ -873,24 +951,74 @@ class Filter:
         Wraps :meth:`compress` with the universal pipeline that every filter
         needs:
 
-        1. Compute original byte count from raw stdout + stderr.
-        2. Run :func:`normalise` over both streams (strip ANSI / progress).
-        3. Bail out early when post-normalisation input exceeds
+        1. Sanitise both streams via :func:`_safe_decode` (strips null bytes,
+           ensures well-formed Unicode).
+        2. Apply the pre-filter input cap (:data:`DEFAULT_MAX_INPUT_BYTES` /
+           ``TOKEN_GOAT_FILTER_MAX_BYTES``) to keep filter runtime bounded
+           even before normalisation.
+        3. Compute original byte count from raw stdout + stderr.
+        4. Early-return an empty :class:`CompressedOutput` when both streams
+           are empty after sanitisation — avoids invoking :meth:`compress`
+           with empty strings, which is harmless but wasteful and can trigger
+           off-by-one issues in filters that call ``"".split("\\n")``.
+        5. Run :func:`normalise` over both streams (strip ANSI / progress).
+        6. Bail out early when post-normalisation input exceeds
            :data:`MAX_INSPECT_BYTES`, for runaway logs we head/tail truncate
            rather than risk a slow per-line filter pass.
-        4. Call :meth:`compress` to produce the structurally-compressed body.
-        5. Cap line count via :func:`truncate_middle_smart` (error-preserving).
-        6. Cap byte count via :func:`cap_bytes` as a hard backstop.
-        7. Return the result wrapped in a :class:`CompressedOutput`.
+        7. Call :meth:`compress` to produce the structurally-compressed body.
+        8. Cap line count via :func:`truncate_middle_smart` (error-preserving).
+        9. Cap byte count via :func:`cap_bytes` as a hard backstop.
+        10. Return the result wrapped in a :class:`CompressedOutput`.
 
         Errors from :meth:`compress` are caught and logged; the fallback is a
         truncated view of the raw normalised text so the agent always sees
         *something*.
         """
+        # Step 1: sanitise — strip null bytes, ensure well-formed Unicode.
+        stdout = _safe_decode(stdout)
+        stderr = _safe_decode(stderr)
+
+        # Step 2: pre-filter input cap.  Truncate *before* normalisation so
+        # even the normalisation pass stays O(capped_bytes).  The cap is
+        # applied per-stream; the total budget is 2× the per-stream limit so
+        # that combined stdout+stderr stays within 2×MAX_INPUT_BYTES.
+        max_input = _get_max_input_bytes()
+        notes: list[str] = []
+        stdout_bytes = stdout.encode("utf-8", errors="replace")
+        stderr_bytes = stderr.encode("utf-8", errors="replace")
+        if len(stdout_bytes) > max_input:
+            stdout = stdout_bytes[:max_input].decode("utf-8", errors="replace")
+            notes.append(
+                f"input truncated at {max_input // 1024}KB"
+                " (TOKEN_GOAT_FILTER_MAX_BYTES)"
+            )
+        if len(stderr_bytes) > max_input:
+            stderr = stderr_bytes[:max_input].decode("utf-8", errors="replace")
+            if not any("input truncated" in n for n in notes):
+                notes.append(
+                    f"stderr truncated at {max_input // 1024}KB"
+                    " (TOKEN_GOAT_FILTER_MAX_BYTES)"
+                )
+
         original_bytes = len(stdout.encode("utf-8", errors="replace")) + len(
             stderr.encode("utf-8", errors="replace")
         )
-        notes: list[str] = []
+
+        # Step 4: early-return on empty input.  Both streams empty means there
+        # is nothing to compress; returning immediately avoids calling
+        # compress("", "", ...) which is benign but causes filters that do
+        # ``"".split("\\n")`` to produce [""] instead of [] — a subtle
+        # off-by-one that some filters mishandle.
+        if not stdout.strip() and not stderr.strip():
+            return CompressedOutput(
+                text="",
+                original_bytes=0,
+                compressed_bytes=0,
+                filter_name=self.name,
+                exit_code=exit_code,
+                notes=notes,
+            )
+
         try:
             norm_out = normalise(stdout)
             norm_err = normalise(stderr)
