@@ -84,7 +84,9 @@ __all__ = [
     "EzaFilter",
     "FdFilter",
     "FlutterFilter",
+    "GoFilter",
     "GradleFilter",
+    "JavacFilter",
     "JqFilter",
     "MavenFilter",
     "MixFilter",
@@ -92,6 +94,7 @@ __all__ = [
     "PythonFilter",
     "RsyncFilter",
     "RubyFilter",
+    "SbtFilter",
     "SwiftFilter",
     "TreeFilter",
     "UvFilter",
@@ -2828,6 +2831,200 @@ class GoTestFilter(Filter):
         return self._finalize(kept)
 
 
+# --- GoFilter (go build / run / get / mod / install / clean) ------------------
+
+#: ``go build ./...`` → keep error lines, drop "# pkg/path" headers
+#: Reuses _GO_BUILD_PKG_HEADER_RE and _GO_MOD_DOWNLOADING_RE defined above.
+
+#: ``go get`` / ``go mod download``: "go: downloading module@version"
+_GO_GET_DOWNLOADING_RE: Final[re.Pattern[str]] = re.compile(
+    r"^go: (downloading|extracting|finding|fetching)\s"
+)
+#: ``go mod tidy`` / ``go get`` informational lines (non-error)
+_GO_MOD_INFO_RE: Final[re.Pattern[str]] = re.compile(
+    r"^go: found\s|^go: added\s|^go: upgraded\s|^go: downgraded\s|^go: removed\s"
+)
+#: ``go run`` header / build phase noise
+_GO_RUN_BUILDING_RE: Final[re.Pattern[str]] = re.compile(
+    r"^go: building\s|^go: warning:"
+)
+#: ``go test ./...`` package-level result: "ok  pkg Xs" or "FAIL pkg Xs" or "?   pkg"
+_GO_PKG_OK_RE: Final[re.Pattern[str]] = re.compile(
+    r"^ok\s+\S"
+)
+_GO_PKG_FAIL_RE: Final[re.Pattern[str]] = re.compile(
+    r"^(?:FAIL|---)\s+\S"
+)
+#: Generic go error line (reuses _GO_ERROR_RE for file:line:col pattern)
+#: but also covers plain "go build: ..." error messages
+_GO_BUILD_ERROR_PLAIN_RE: Final[re.Pattern[str]] = re.compile(
+    r"^go\s+\w+:|^# .*\(exit status"
+)
+
+
+class GoFilter(Filter):
+    """Compress ``go build``, ``go run``, ``go get``, ``go mod``, ``go install``
+    and ``go clean`` output.
+
+    These subcommands emit download-progress spam, ``# pkg/path`` package
+    header lines that carry no signal on success, and ``go: downloading …``
+    dependency-fetch lines that can number in the hundreds. Signal is
+    concentrated in error/warning diagnostics and the final status line.
+
+    Compression model:
+
+    * **go build / go install / go run** (pre-build phase):
+      Drop ``# pkg/path`` package-header lines when the build succeeds
+      (they have no error following them); keep all file:line:col error
+      and warning lines verbatim.
+    * **go get / go mod download**:
+      Collapse ``go: downloading …`` / ``go: extracting …`` / ``go: finding …``
+      lines to a single count note.
+    * **go mod tidy**:
+      Keep ``go: found/added/upgraded/downgraded/removed …`` module-change
+      lines (these carry signal); collapse repetitive download lines.
+    * **go test ./...** (package-level results only — per-test detail is
+      handled by :class:`GoTestFilter`):
+      Collapse ``ok  pkg Xs`` passing-package lines to a count; keep all
+      ``FAIL pkg`` lines verbatim.
+
+    ``go test`` is explicitly excluded from this filter's :meth:`matches`
+    so that :class:`GoTestFilter` (registered first) handles it.
+    """
+
+    name = "go"
+    binaries = frozenset(["go"])
+
+    #: Subcommands handled by this filter.  ``test`` is intentionally absent
+    #: so GoTestFilter (registered before GoFilter) wins for ``go test``.
+    _GO_SUBCOMMANDS: frozenset[str] = frozenset([
+        "build", "run", "get", "mod", "install", "clean", "generate",
+        "vet", "env", "fix",
+    ])
+
+    def matches(self, argv: list[str]) -> bool:  # noqa: D102
+        if not argv:
+            return False
+        stem = Path(argv[0]).stem.lower()
+        if stem != "go":
+            return False
+        positionals = _positional_args(argv[1:])
+        # No subcommand (bare ``go``) or unrecognised — don't match, let
+        # MakeFilter catch it as a generic build tool.
+        if not positionals:
+            return False
+        return positionals[0] in self._GO_SUBCOMMANDS
+
+    def compress(
+        self, stdout: str, stderr: str, exit_code: int, argv: list[str],
+    ) -> str:
+        positionals = _positional_args(argv[1:])
+        subcommand = positionals[0] if positionals else ""
+
+        merged = self._combine_output(stdout, stderr)
+        lines = merged.split("\n")
+
+        if subcommand in ("get",) or (
+            subcommand == "mod" and len(positionals) > 1 and positionals[1] == "download"
+        ):
+            return self._compress_go_get(lines)
+        if subcommand == "mod":
+            return self._compress_go_mod_tidy(lines)
+        if subcommand in ("build", "install", "run", "clean", "fix", "env"):
+            return self._compress_go_build_like(lines, exit_code)
+        if subcommand in ("vet", "generate"):
+            return self._compress_go_vet_like(lines, subcommand)
+        # Fallback: apply download-line collapsing only.
+        return self._compress_go_get(lines)
+
+    # ------------------------------------------------------------------
+    # Subcommand helpers
+    # ------------------------------------------------------------------
+
+    def _compress_go_build_like(self, lines: list[str], exit_code: int) -> str:
+        """``go build`` / ``go install`` / ``go run``: drop headers, keep errors."""
+        kept: list[str] = []
+        dropped_headers = 0
+        dropped_downloads = 0
+
+        for line in lines:
+            if _GO_GET_DOWNLOADING_RE.match(line) or _GO_MOD_DOWNLOADING_RE.match(line):
+                dropped_downloads += 1
+                continue
+            if _GO_BUILD_PKG_HEADER_RE.match(line):
+                # On success these carry no info.  On failure they precede the
+                # actual error lines which we always keep, so suppress them
+                # unconditionally — the errors that follow are enough context.
+                dropped_headers += 1
+                continue
+            kept.append(line)
+
+        notes: list[str] = []
+        if dropped_headers:
+            notes.append(f"suppressed {dropped_headers} package header lines")
+        if dropped_downloads:
+            notes.append(f"collapsed {dropped_downloads} 'go: downloading' lines")
+        self._emit_notes(kept, notes)
+        return self._finalize(kept)
+
+    def _compress_go_get(self, lines: list[str]) -> str:
+        """``go get`` / ``go mod download``: collapse download lines to count."""
+        kept: list[str] = []
+        dropped_downloads = 0
+
+        for line in lines:
+            if _GO_GET_DOWNLOADING_RE.match(line) or _GO_MOD_DOWNLOADING_RE.match(line):
+                dropped_downloads += 1
+                continue
+            kept.append(line)
+
+        if dropped_downloads:
+            kept.append(
+                f"[token-goat: collapsed {dropped_downloads} "
+                f"'go: downloading/extracting' lines]"
+            )
+        return self._finalize(kept)
+
+    def _compress_go_mod_tidy(self, lines: list[str]) -> str:
+        """``go mod tidy``: keep module-change lines, collapse downloads."""
+        kept: list[str] = []
+        dropped_downloads = 0
+
+        for line in lines:
+            if _GO_GET_DOWNLOADING_RE.match(line) or _GO_MOD_DOWNLOADING_RE.match(line):
+                dropped_downloads += 1
+                continue
+            # Module-change informational lines are always kept (signal).
+            kept.append(line)
+
+        if dropped_downloads:
+            kept.append(
+                f"[token-goat: collapsed {dropped_downloads} "
+                f"'go: downloading/extracting' lines]"
+            )
+        return self._finalize(kept)
+
+    def _compress_go_vet_like(self, lines: list[str], subcommand: str) -> str:
+        """``go vet`` / ``go generate``: drop progress noise, keep warnings."""
+        kept: list[str] = []
+        dropped_progress = 0
+
+        for line in lines:
+            if _GO_VET_PROGRESS_RE.match(line):
+                dropped_progress += 1
+                continue
+            if _GO_GENERATE_TRIGGER_RE.match(line):
+                dropped_progress += 1
+                continue
+            kept.append(line)
+
+        if dropped_progress:
+            kept.append(
+                f"[token-goat: dropped {dropped_progress} '{subcommand}' progress lines]"
+            )
+        return self._finalize(kept)
+
+
 # --- Make / Ninja / Gradle / Maven / Go build / mod / vet / generate ----------
 
 _MAKE_RECURSE_RE: Final[re.Pattern[str]] = re.compile(
@@ -5191,6 +5388,259 @@ class MavenFilter(Filter):
         return self._finalize(kept)
 
 
+# --- JavacFilter (standalone javac invocations) ----------------------------
+
+#: javac "Note: file.java uses unchecked or unsafe operations" lines
+_JAVAC_NOTE_RE: Final[re.Pattern[str]] = re.compile(
+    r"^Note:\s+\S.*\.java\s+uses (unchecked or unsafe|preview language|deprecated)"
+)
+#: javac "Note: Some input files use unchecked or unsafe operations." (summary note)
+_JAVAC_NOTE_SUMMARY_RE: Final[re.Pattern[str]] = re.compile(
+    r"^Note:\s+(?:Some input files use|Recompile with -Xlint)"
+)
+#: javac error line: "File.java:N: error: ..." or "error: N error(s)"
+_JAVAC_ERROR_RE: Final[re.Pattern[str]] = re.compile(
+    r"^(?:\S.*\.java:\d+:|error:|Error\s+\(|\d+ error)"
+)
+#: javac warning line: "File.java:N: warning: ..." or "warning: N warning(s)"
+_JAVAC_WARNING_RE: Final[re.Pattern[str]] = re.compile(
+    r"^(?:\S.*\.java:\d+: warning:|warning:|\d+ warning)"
+)
+#: javac summary line: "N error(s)" or "N warning(s)"
+_JAVAC_SUMMARY_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\d+ (?:error|warning)s?"
+)
+#: javac "^" caret pointer lines (diagnostic context)
+_JAVAC_CARET_RE: Final[re.Pattern[str]] = re.compile(r"^\s*\^\s*$")
+#: javac source-context line embedded in error block: looks like source code
+#: These are lines immediately after "file:N: error:" that show the source snippet
+_JAVAC_SOURCE_SNIPPET_RE: Final[re.Pattern[str]] = re.compile(
+    r"^(?:\s{4,}|\t)"
+)
+
+
+class JavacFilter(Filter):
+    """Compress standalone ``javac`` compiler output.
+
+    ``javac`` emits one ``Note:`` line per source file that uses unchecked or
+    unsafe operations (can be dozens), plus optional ``error:`` / ``warning:``
+    diagnostic blocks with source-context snippets.  On a large project the
+    note spam dwarfs the actual errors.
+
+    Compression model:
+
+    * **Note: file.java uses unchecked …** lines: collapse to a count note.
+    * **Note: Some input files use …** / **Recompile with -Xlint**: drop
+      (redundant with the count note above).
+    * **error:** lines: always keep verbatim.
+    * **warning:** lines: always keep verbatim.
+    * **N error(s) / N warning(s)** summary: always keep.
+    * **Source-context snippets** (indented source lines + ``^`` caret under
+      an error): keep verbatim (they are the most useful part of the error).
+    * **Blank lines** between error blocks: drop (reduce visual noise).
+    """
+
+    name = "javac"
+    binaries = frozenset(["javac"])
+
+    def compress(
+        self, stdout: str, stderr: str, exit_code: int, argv: list[str],
+    ) -> str:
+        merged = self._combine_output(stdout, stderr)
+        lines = merged.split("\n")
+        kept: list[str] = []
+        dropped_notes = 0
+        in_diag_block = False  # True while inside an error/warning block
+
+        for line in lines:
+            # Collapse per-file Note: lines.
+            if _JAVAC_NOTE_RE.match(line):
+                dropped_notes += 1
+                continue
+            # Drop summary note lines (redundant).
+            if _JAVAC_NOTE_SUMMARY_RE.match(line):
+                continue
+            # Always keep error and warning diagnostic lines; they open a block.
+            if _JAVAC_ERROR_RE.match(line) or _JAVAC_WARNING_RE.match(line):
+                in_diag_block = True
+                kept.append(line)
+                continue
+            # Keep N error(s) / N warning(s) summary lines.
+            if _JAVAC_SUMMARY_RE.match(line):
+                in_diag_block = False
+                kept.append(line)
+                continue
+            # Inside a diagnostic block keep source snippets and caret lines.
+            if in_diag_block and (
+                _JAVAC_CARET_RE.match(line)
+                or _JAVAC_SOURCE_SNIPPET_RE.match(line)
+                or line.strip()  # any non-blank continuation
+            ):
+                if not line.strip():
+                    # Blank line ends the block; drop it to reduce noise.
+                    in_diag_block = False
+                else:
+                    kept.append(line)
+                continue
+            # Blank lines outside a block: drop.
+            if not line.strip():
+                continue
+            # Anything else (e.g. "1 error" summary not matched above): keep.
+            in_diag_block = False
+            kept.append(line)
+
+        notes: list[str] = []
+        if dropped_notes:
+            notes.append(
+                f"collapsed {dropped_notes} 'Note: … uses unchecked/unsafe' lines"
+            )
+        self._emit_notes(kept, notes)
+        return self._finalize(kept)
+
+
+# --- SbtFilter (Scala Build Tool) ------------------------------------------
+
+#: sbt [info] lines worth keeping: compilation start and done
+_SBT_INFO_COMPILING_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\[info\]\s+Compiling\s+\d+"
+)
+_SBT_INFO_DONE_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\[info\]\s+Done (?:compiling|packaging)\."
+)
+#: sbt [info] loading / project-resolution lines: collapse to count
+_SBT_INFO_LOADING_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\[info\]\s+(?:Loading |Set current project|Resolving |Fetching |"
+    r"Download|Updating|Wrote |Packaging |"
+    r"Main Scala API documentation|Making\s)"
+)
+#: sbt [warn] lines
+_SBT_WARN_RE: Final[re.Pattern[str]] = re.compile(r"^\[warn\]\s")
+#: sbt [error] lines (always keep)
+_SBT_ERROR_RE: Final[re.Pattern[str]] = re.compile(r"^\[error\]\s")
+#: sbt test-run ScalaTest/MUnit/JUnit dot-progress (dots and letters on their own line)
+_SBT_TEST_PROGRESS_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\[info\]\s+[\.FEI!]+\s*$"
+)
+#: sbt "Total time: Xs" summary
+_SBT_TOTAL_TIME_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\[(?:success|info)\]\s+Total time:"
+)
+#: sbt "[success] Total time: ..." or "BUILD SUCCESS"
+_SBT_SUCCESS_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\[success\]\s"
+)
+#: sbt "Failed tests:" error block header
+_SBT_FAILED_TESTS_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\[error\]\s+Failed tests:"
+)
+#: sbt test result summary: "[info] Tests: succeeded X, failed Y"
+_SBT_TEST_SUMMARY_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\[info\]\s+(?:Tests: succeeded|All tests passed|Test run (?:finished|failed))"
+)
+
+#: Maximum [warn] lines per unique category prefix to keep (first N kept, rest collapsed).
+_SBT_MAX_WARN_PER_CATEGORY: Final[int] = 5
+
+
+class SbtFilter(Filter):
+    """Compress ``sbt`` (Scala Build Tool) output.
+
+    sbt produces extensive ``[info]`` loading/resolution spam before any
+    compilation starts, ScalaTest dot-progress bars, and verbose warning
+    blocks.  Signal is concentrated in ``[error]`` lines, the compilation
+    status, and the test summary.
+
+    Compression model:
+
+    * **[info] Compiling N Scala sources …**: keep verbatim.
+    * **[info] Done compiling.** / **[info] Done packaging.**: keep verbatim.
+    * **[info] Loading …** / **[info] Set current project …** / resolution
+      noise: collapse to a count note.
+    * **[warn] …** lines: keep the first :data:`_SBT_MAX_WARN_PER_CATEGORY`
+      per unique warning-category prefix, collapse the rest.
+    * **[error] …** lines: always keep verbatim.
+    * **[info] …** ScalaTest/MUnit dot-progress (lines of ``.FEI!``):
+      collapse to a count note.
+    * **Total time: Xs** / **[success] …**: keep verbatim.
+    * **[error] Failed tests:** block: keep verbatim.
+    * **[info] Tests: succeeded …** summary: keep verbatim.
+    """
+
+    name = "sbt"
+    binaries = frozenset(["sbt"])
+
+    def matches(self, argv: list[str]) -> bool:  # noqa: D102
+        if not argv:
+            return False
+        p = Path(argv[0])
+        stem = p.stem.lower()
+        name = p.name.lower()
+        # Match "sbt" and "./sbt" (common wrapper script invocation).
+        return stem in self.binaries or name in self.binaries
+
+    def compress(
+        self, stdout: str, stderr: str, exit_code: int, argv: list[str],
+    ) -> str:
+        merged = self._combine_output(stdout, stderr)
+        lines = merged.split("\n")
+        kept: list[str] = []
+        dropped_loading = 0
+        dropped_test_progress = 0
+        # Track [warn] lines per category; category = first ~40 chars of text.
+        warn_counts: dict[str, int] = {}
+        dropped_warn_extra = 0
+
+        for line in lines:
+            # Always keep [error] lines.
+            if _SBT_ERROR_RE.match(line):
+                kept.append(line)
+                continue
+            # Always keep compilation start / done messages.
+            if _SBT_INFO_COMPILING_RE.match(line) or _SBT_INFO_DONE_RE.match(line):
+                kept.append(line)
+                continue
+            # Always keep test summary lines.
+            if _SBT_TEST_SUMMARY_RE.match(line):
+                kept.append(line)
+                continue
+            # Always keep total-time / success lines.
+            if _SBT_TOTAL_TIME_RE.match(line) or _SBT_SUCCESS_RE.match(line):
+                kept.append(line)
+                continue
+            # Collapse loading / resolution [info] noise.
+            if _SBT_INFO_LOADING_RE.match(line):
+                dropped_loading += 1
+                continue
+            # Collapse test dot-progress [info] lines.
+            if _SBT_TEST_PROGRESS_RE.match(line):
+                dropped_test_progress += 1
+                continue
+            # Deduplicate [warn] lines per category.
+            if _SBT_WARN_RE.match(line):
+                # Use the first 60 chars as the category key (strips variable
+                # file/line suffixes but preserves the warning type).
+                category = line[:60].strip()
+                count = warn_counts.get(category, 0)
+                warn_counts[category] = count + 1
+                if count < _SBT_MAX_WARN_PER_CATEGORY:
+                    kept.append(line)
+                else:
+                    dropped_warn_extra += 1
+                continue
+            # Anything else: keep.
+            kept.append(line)
+
+        notes: list[str] = []
+        if dropped_loading:
+            notes.append(f"collapsed {dropped_loading} [info] loading/resolution lines")
+        if dropped_test_progress:
+            notes.append(f"collapsed {dropped_test_progress} test dot-progress lines")
+        if dropped_warn_extra:
+            notes.append(f"collapsed {dropped_warn_extra} duplicate [warn] lines")
+        self._emit_notes(kept, notes)
+        return self._finalize(kept)
+
+
 # --- Ruby / RSpec / Minitest ------------------------------------------------
 
 #: RSpec dot-progress line: a line containing only ".", "F", "E", "*" chars + optional
@@ -6739,14 +7189,23 @@ FILTERS: list[Filter] = [
     LinterFilter(),
     GrepFilter(),
     GitFilter(),
-    # GoTestFilter, GradleFilter, MavenFilter, AntFilter, and BazelFilter must
-    # precede MakeFilter so their specialized subcommands route correctly; other
-    # subcommands fall through to MakeFilter for generic build-system compression.
+    # GoTestFilter must precede GoFilter: `go test` routes to the dedicated
+    # test filter; other go subcommands (build/get/mod/…) route to GoFilter.
+    # GoFilter must precede MakeFilter so `go build` routes to GoFilter rather
+    # than the generic make/build-system compression in MakeFilter.
+    # GradleFilter, MavenFilter, AntFilter, and BazelFilter must also precede
+    # MakeFilter for the same reason.
     GoTestFilter(),
+    GoFilter(),
     GradleFilter(),
     MavenFilter(),
+    # JavacFilter handles standalone `javac` invocations; disjoint from
+    # AntFilter (which handles [javac] lines inside ant builds).
+    JavacFilter(),
     AntFilter(),
     BazelFilter(),
+    # SbtFilter handles `sbt` and `./sbt`; disjoint from every other filter.
+    SbtFilter(),
     MakeFilter(),
     TerraformFilter(),
     # AnsibleFilter and PreCommitFilter have disjoint binaries from every

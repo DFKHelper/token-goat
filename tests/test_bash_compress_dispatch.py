@@ -101,7 +101,7 @@ _DISPATCH_CASES: list[tuple[list[str], str]] = [
     # ---- MakeFilter ----
     (["make", "all"], "make"),
     (["ninja", "-C", "build/"], "make"),
-    (["go", "build", "./..."], "make"),
+    (["go", "build", "./..."], "go"),
     (["gradle", "build"], "gradle"),
     # ---- GoTestFilter ----
     (["go", "test", "./..."], "go-test"),
@@ -294,14 +294,14 @@ def test_uv_sync_routes_to_uv_not_generic() -> None:
     assert f.name == "uv"
 
 
-def test_uv_run_go_routes_to_make() -> None:
-    """'uv run go build ./...' strips 'uv run', leaving 'go build', → MakeFilter."""
+def test_uv_run_go_routes_to_go() -> None:
+    """'uv run go build ./...' strips 'uv run', leaving 'go build', → GoFilter."""
     argv = ["uv", "run", "go", "build", "./..."]
     f = bc.select_filter(argv)
-    # 'uv run' is a two-token prefix, stripping leaves ['go', 'build', './...']
-    # MakeFilter covers 'go'.
+    # 'uv run' is a two-token prefix; stripping leaves ['go', 'build', './...']
+    # GoFilter (registered before MakeFilter) handles go build.
     assert f is not None
-    assert f.name == "make"
+    assert f.name == "go"
 
 
 # ---------------------------------------------------------------------------
@@ -1543,21 +1543,21 @@ def test_go_test_precedes_make_in_registry() -> None:
     )
 
 
-def test_go_build_routes_to_make_not_go_test() -> None:
-    """`go build ./...` continues to route to MakeFilter, not GoTestFilter."""
+def test_go_build_routes_to_go_not_go_test() -> None:
+    """`go build ./...` routes to GoFilter, not GoTestFilter."""
     f = bc.select_filter(["go", "build", "./..."])
     assert f is not None
-    assert f.name == "make", (
+    assert f.name == "go", (
         "go build is not a test command; GoTestFilter.matches() must return "
-        "False so MakeFilter handles it."
+        "False; GoFilter (registered after GoTestFilter) handles it."
     )
 
 
-def test_go_vet_routes_to_make() -> None:
-    """`go vet ./...` is not a test command either, so MakeFilter handles it."""
+def test_go_vet_routes_to_go() -> None:
+    """`go vet ./...` is handled by GoFilter."""
     f = bc.select_filter(["go", "vet", "./..."])
     assert f is not None
-    assert f.name == "make"
+    assert f.name == "go"
 
 
 # ---------------------------------------------------------------------------
