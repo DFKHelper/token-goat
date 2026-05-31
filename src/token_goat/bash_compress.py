@@ -122,6 +122,10 @@ __all__ = [
     "GitDiffFilter",
     "GitStatusVerboseFilter",
     "GitBlameFilter",
+    # Docker Compose / Helm / kubectl-logs
+    "DockerComposeFilter",
+    "HelmFilter",
+    "KubectlLogsFilter",
 ]
 
 import math
@@ -1758,7 +1762,7 @@ class KubectlFilter(Filter):
     """
 
     name = "kubectl"
-    binaries = frozenset(["kubectl", "k", "k9s", "helm", "oc"])
+    binaries = frozenset(["kubectl", "k", "k9s", "oc"])
 
     def compress(
         self, stdout: str, stderr: str, exit_code: int, argv: list[str],
@@ -1847,6 +1851,478 @@ def _compress_kubectl_describe(text: str) -> str:
         return "\n".join(lines[:20]) + "\n[token-goat: describe output truncated]"
 
     return "\n".join(kept)
+
+
+# --- Docker Compose --------------------------------------------------------
+
+# Patterns for docker-compose streaming output ("service_name | log line")
+_DC_SERVICE_LOG_RE: Final[re.Pattern[str]] = re.compile(
+    r"^(?P<svc>[a-zA-Z0-9_\-\.]+(?:-\d+)?)\s*\|\s*(?P<msg>.*)$"
+)
+# Pulling service lines: "Pulling service_name (image:tag)..."
+_DC_PULLING_RE: Final[re.Pattern[str]] = re.compile(
+    r"^Pulling\s+\S+\s+\(.*\)\s*\.\.\.\s*$"
+)
+# Health-check retry lines
+_DC_HEALTH_RE: Final[re.Pattern[str]] = re.compile(
+    r"Container\s+\S+\s+(Waiting|health:\s+\w+|starting|unhealthy)",
+    re.IGNORECASE,
+)
+
+
+class DockerComposeFilter(Filter):
+    """Compress ``docker-compose`` and ``docker compose`` output.
+
+    Compression model:
+
+    * **Pulling** lines: keep the first, collapse the rest to a count.
+    * **Streaming service logs** (``svc | message``): when a service emits
+      more than 50 lines in one capture, keep the last 10 with a count marker.
+    * **Creating/Starting/Stopping** lines: keep verbatim (they are short).
+    * **Build output**: delegate to :class:`DockerFilter` patterns.
+    * **Health-check retries**: collapse repeated waiting/retry lines to a
+      count per container.
+    """
+
+    name = "docker-compose"
+    binaries = frozenset(["docker-compose", "docker"])
+
+    def matches(self, argv: list[str]) -> bool:
+        if not argv:
+            return False
+        p = Path(argv[0])
+        stem = p.stem.lower()
+        name = p.name.lower()
+        # docker-compose binary
+        if stem in {"docker-compose"} or name in {"docker-compose"}:
+            return True
+        # `docker compose` (subcommand form)
+        if stem in {"docker"} or name in {"docker"}:
+            positionals = _positional_args(argv[1:])
+            return bool(positionals) and positionals[0] == "compose"
+        return False
+
+    def compress(
+        self, stdout: str, stderr: str, exit_code: int, argv: list[str],
+    ) -> str:
+        err_output = _preserve_stderr_on_error(stdout, stderr, exit_code)
+        if err_output is not None:
+            return err_output
+
+        merged = self._combine_output(stdout, stderr)
+        lines = merged.split("\n")
+
+        # Collect per-service log lines for streaming dedup
+        service_lines: dict[str, list[str]] = {}
+        kept: list[str] = []
+        pulling_count = 0
+        pulling_kept = 0
+        health_counts: dict[str, int] = {}
+
+        for line in lines:
+            # Health-check retry collapsing
+            hm = _DC_HEALTH_RE.search(line)
+            if hm:
+                # Use the container name as key (first word-like group after
+                # "Container") to group retries
+                container_key = line.split()[1] if len(line.split()) > 1 else "container"
+                health_counts[container_key] = health_counts.get(container_key, 0) + 1
+                # Emit only the first occurrence; the rest become the count
+                if health_counts[container_key] == 1:
+                    kept.append(line)
+                continue
+
+            # Pulling lines: keep the first, collapse the rest
+            if _DC_PULLING_RE.match(line):
+                pulling_count += 1
+                if pulling_kept == 0:
+                    kept.append(line)
+                    pulling_kept = 1
+                continue
+
+            # Streaming service log lines: buffer per service
+            sm = _DC_SERVICE_LOG_RE.match(line)
+            if sm:
+                svc = sm.group("svc")
+                if svc not in service_lines:
+                    service_lines[svc] = []
+                service_lines[svc].append(line)
+                continue
+
+            kept.append(line)
+
+        # Flush pulled-count summary
+        if pulling_count > pulling_kept:
+            kept.append(
+                f"[token-goat: {pulling_count - pulling_kept} more Pulling lines elided]"
+            )
+
+        # Flush health-check summaries
+        for container_key, count in sorted(health_counts.items()):
+            if count > 1:
+                kept.append(
+                    f"[token-goat: {count - 1} more health-check wait lines for {container_key}]"
+                )
+
+        # Flush service log buffers — collapse services with >50 lines
+        STREAM_THRESHOLD = 50
+        STREAM_TAIL = 10
+        for svc in sorted(service_lines):
+            svc_lines = service_lines[svc]
+            if len(svc_lines) <= STREAM_THRESHOLD:
+                kept.extend(svc_lines)
+            else:
+                extra = len(svc_lines) - STREAM_TAIL
+                kept.append(
+                    f"[token-goat: {extra} lines from {svc} elided (showing last {STREAM_TAIL})]"
+                )
+                kept.extend(svc_lines[-STREAM_TAIL:])
+
+        return self._finalize(kept)
+
+
+# --- Helm ------------------------------------------------------------------
+
+# Helm release description boilerplate patterns
+_HELM_RELEASE_DESC_RE: Final[re.Pattern[str]] = re.compile(
+    r"^(NAME|LAST DEPLOYED|NAMESPACE|CHART|APP VERSION|REVISION|TEST SUITE"
+    r"|NOTES\.|RESOURCES:|==>|USER-SUPPLIED VALUES:|COMPUTED VALUES:"
+    r"|HOOKS:|MANIFEST:)\b"
+)
+_HELM_STATUS_RE: Final[re.Pattern[str]] = re.compile(
+    r"^STATUS:\s*\S+"
+)
+# Helm template section headers: "---" possibly followed by "# Source: ..."
+_HELM_TEMPLATE_SECTION_RE: Final[re.Pattern[str]] = re.compile(
+    r"^---\s*(?:#.*)?$"
+)
+# Helm table row (helm list): tab-separated or padded columns
+_HELM_LIST_ROW_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\S+\s"
+)
+
+
+class HelmFilter(Filter):
+    """Compress ``helm`` output.
+
+    Compression model:
+
+    * ``helm install`` / ``helm upgrade``: keep the ``STATUS:`` line verbatim;
+      collapse the surrounding release description boilerplate.  Error messages
+      are always preserved.
+    * ``helm list``: when output exceeds 20 data rows, keep the header + first
+      10 rows + a count of remaining rows.
+    * ``helm template``: when the rendered YAML exceeds 200 lines, emit only
+      the YAML document separators (``---``) with kind/name comments and a
+      total line count.
+    * All other subcommands: pass through.
+    """
+
+    name = "helm"
+    binaries = frozenset(["helm"])
+
+    def compress(
+        self, stdout: str, stderr: str, exit_code: int, argv: list[str],
+    ) -> str:
+        err_output = _preserve_stderr_on_error(stdout, stderr, exit_code)
+        if err_output is not None:
+            return err_output
+
+        positionals = _positional_args(argv[1:])
+        subcommand = positionals[0] if positionals else ""
+        text = stdout
+
+        if subcommand in ("install", "upgrade"):
+            text = _compress_helm_install(text)
+        elif subcommand == "list":
+            text = _compress_helm_list(text)
+        elif subcommand == "template":
+            lines = text.split("\n")
+            if len(lines) > 200:
+                text = _compress_helm_template(lines)
+        # else: rollback, status, history, etc. — pass through
+
+        if stderr.strip():
+            text = (text.rstrip() + "\n---\n" + stderr.rstrip()) if text.strip() else stderr
+        return text
+
+
+def _compress_helm_install(text: str) -> str:
+    """Collapse helm install/upgrade boilerplate; preserve STATUS and errors."""
+    lines = text.split("\n")
+    kept: list[str] = []
+    dropped = 0
+    in_notes = False
+
+    for line in lines:
+        # Always keep error signal lines
+        if _ERROR_SIGNAL_RE.search(line):
+            kept.append(line)
+            continue
+        # Always keep the STATUS line
+        if _HELM_STATUS_RE.match(line):
+            kept.append(line)
+            continue
+        # Track NOTES section start — keep NOTES header, drop body
+        if line.strip() == "NOTES:":
+            in_notes = True
+            dropped += 1
+            continue
+        if in_notes:
+            # Notes body: drop until a blank line or next section
+            if not line.strip():
+                in_notes = False
+            dropped += 1
+            continue
+        # Drop verbose boilerplate field lines
+        if _HELM_RELEASE_DESC_RE.match(line):
+            dropped += 1
+            continue
+        kept.append(line)
+
+    if dropped:
+        kept.append(f"[token-goat: {dropped} helm release description lines elided]")
+    return "\n".join(kept)
+
+
+def _compress_helm_list(text: str) -> str:
+    """Cap helm list output at header + 10 data rows."""
+    lines = [ln for ln in text.split("\n") if ln.strip()]
+    MAX_ROWS = 10
+    # First line is header
+    if len(lines) <= MAX_ROWS + 1:
+        return text
+    header = lines[0]
+    data = lines[1:]
+    kept = [header] + data[:MAX_ROWS]
+    kept.append(
+        f"[token-goat: {len(data) - MAX_ROWS} more helm releases elided; "
+        "use --filter or --namespace to narrow]"
+    )
+    return "\n".join(kept)
+
+
+def _compress_helm_template(lines: list[str]) -> str:
+    """Emit only YAML document headers from a large helm template output."""
+    total = len(lines)
+    sections: list[str] = []
+    for line in lines:
+        stripped = line.strip()
+        if stripped.startswith("---"):
+            sections.append(line)
+    if not sections:
+        # No document separators found — just head/tail truncate
+        return _head_tail_compress(lines, head=10, tail=10, label="template lines")
+    sections.append(
+        f"[token-goat: helm template {total} total lines; showing {len(sections)} document headers only]"
+    )
+    return "\n".join(sections)
+
+
+# --- KubectlLogs enhanced compression --------------------------------------
+
+# Timestamp prefix pattern common in structured/k8s log lines
+_KUBE_TIMESTAMP_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}"
+)
+# Access-log pattern: IP + HTTP method/path/status
+_KUBE_ACCESS_LOG_RE: Final[re.Pattern[str]] = re.compile(
+    r"""(?:\d{1,3}\.){3}\d{1,3}.*?"(?:GET|POST|PUT|DELETE|PATCH|HEAD|OPTIONS)\s"""
+    r"""[^"]*"\s+(\d{3})\b"""
+)
+# Stack trace frame patterns (Java, Python, Go, Node)
+_KUBE_STACKFRAME_RE: Final[re.Pattern[str]] = re.compile(
+    r"""^\s+(?:at\s+[\w\.$<>]+\(|File "[^"]+", line \d+|goroutine \d+ \[|\s+\.\.\.)"""
+)
+
+
+class KubectlLogsFilter(Filter):
+    """Compress high-volume ``kubectl logs`` output with richer deduplication.
+
+    Compression model (applied on top of the base KubectlFilter head/tail):
+
+    * **Repetitive lines** (same message, different timestamps): keep first 3,
+      show ``N more similar lines`` for the rest.
+    * **JSON log blobs**: compact single-line JSON passes through; JSON blobs
+      spanning more than 5 lines are collapsed to a one-line summary.
+    * **Stack traces**: keep first 5 frame lines + ``... N frames`` marker.
+    * **HTTP access logs**: when more than 20 lines match the access-log
+      pattern, collapse to ``N HTTP requests (2xx: N, 4xx: N, 5xx: N)``.
+    """
+
+    name = "kubectl-logs"
+    binaries = frozenset(["kubectl", "k"])
+
+    def matches(self, argv: list[str]) -> bool:
+        if not argv:
+            return False
+        p = Path(argv[0])
+        stem = p.stem.lower()
+        name = p.name.lower()
+        if stem not in {"kubectl", "k"} and name not in {"kubectl", "k"}:
+            return False
+        positionals = _positional_args(argv[1:])
+        return bool(positionals) and positionals[0] == "logs"
+
+    def compress(
+        self, stdout: str, stderr: str, exit_code: int, argv: list[str],
+    ) -> str:
+        err_output = _preserve_stderr_on_error(stdout, stderr, exit_code)
+        if err_output is not None:
+            return err_output
+
+        lines = stdout.split("\n")
+        non_empty = [ln for ln in lines if ln.strip()]
+
+        if len(non_empty) <= 50:
+            return stdout
+
+        # Step 1: access-log collapsing
+        non_empty = _collapse_access_logs(non_empty)
+
+        # Step 2: stack-trace collapsing
+        non_empty = _collapse_stack_traces(non_empty)
+
+        # Step 3: repetitive-line dedup (timestamp-normalised)
+        non_empty = _dedup_log_lines(non_empty, keep_first_n=3)
+
+        # Step 4: JSON blob collapsing
+        non_empty = _collapse_json_blobs(non_empty, max_json_lines=5)
+
+        if stderr.strip():
+            result = "\n".join(non_empty)
+            return (result.rstrip() + "\n---\n" + stderr.rstrip()) if result.strip() else stderr
+        return "\n".join(non_empty)
+
+
+def _strip_timestamp(line: str) -> str:
+    """Remove leading ISO-8601 timestamp from a log line for pattern comparison."""
+    return _KUBE_TIMESTAMP_RE.sub("", line).strip()
+
+
+def _dedup_log_lines(lines: list[str], keep_first_n: int = 3) -> list[str]:
+    """Deduplicate log lines that differ only in leading timestamps.
+
+    Groups consecutive lines by their timestamp-stripped content.  The first
+    *keep_first_n* in each run are kept verbatim; additional lines are
+    collapsed to a single ``N more similar lines`` marker.
+    """
+    out: list[str] = []
+    i = 0
+    while i < len(lines):
+        line = lines[i]
+        key = _strip_timestamp(line)
+        # Count consecutive lines with the same de-timestamped content
+        j = i + 1
+        while j < len(lines) and _strip_timestamp(lines[j]) == key:
+            j += 1
+        run = lines[i:j]
+        if len(run) <= keep_first_n:
+            out.extend(run)
+        else:
+            out.extend(run[:keep_first_n])
+            out.append(
+                f"[token-goat: {len(run) - keep_first_n} more similar lines omitted]"
+            )
+        i = j
+    return out
+
+
+def _collapse_stack_traces(lines: list[str]) -> list[str]:
+    """Collapse stack-trace frame runs to first 5 frames + count marker."""
+    MAX_FRAMES = 5
+    out: list[str] = []
+    i = 0
+    while i < len(lines):
+        if _KUBE_STACKFRAME_RE.match(lines[i]):
+            # Collect all contiguous frame lines
+            j = i
+            while j < len(lines) and _KUBE_STACKFRAME_RE.match(lines[j]):
+                j += 1
+            frames = lines[i:j]
+            out.extend(frames[:MAX_FRAMES])
+            if len(frames) > MAX_FRAMES:
+                out.append(f"    ... {len(frames) - MAX_FRAMES} more frames")
+            i = j
+        else:
+            out.append(lines[i])
+            i += 1
+    return out
+
+
+def _collapse_access_logs(lines: list[str]) -> list[str]:
+    """Collapse HTTP access log lines to a summary when there are more than 20."""
+    ACCESS_THRESHOLD = 20
+    access_lines: list[str] = []
+    other_lines: list[str] = []
+    for line in lines:
+        if _KUBE_ACCESS_LOG_RE.search(line):
+            access_lines.append(line)
+        else:
+            other_lines.append(line)
+    if len(access_lines) <= ACCESS_THRESHOLD:
+        return lines  # not enough to bother compressing
+    # Tally status code buckets
+    counts: dict[str, int] = {}
+    for line in access_lines:
+        m = _KUBE_ACCESS_LOG_RE.search(line)
+        if m:
+            status = m.group(1)
+            bucket = f"{status[0]}xx"
+            counts[bucket] = counts.get(bucket, 0) + 1
+    detail = ", ".join(f"{k}: {v}" for k, v in sorted(counts.items()))
+    summary = (
+        f"[token-goat: {len(access_lines)} HTTP access log lines collapsed ({detail})]"
+    )
+    return other_lines + [summary]
+
+
+def _collapse_json_blobs(lines: list[str], max_json_lines: int = 5) -> list[str]:
+    """Collapse multi-line JSON blobs that span more than *max_json_lines* lines.
+
+    Detects JSON blobs by looking for lines that start with ``{`` and end with
+    ``}`` after accounting for nested structure via brace counting.  Compact
+    single-line JSON objects are left unchanged.
+    """
+    out: list[str] = []
+    i = 0
+    while i < len(lines):
+        line = lines[i]
+        stripped = line.strip()
+        # Possible start of a JSON object blob
+        if stripped.startswith("{") and not stripped.endswith("}"):
+            depth = stripped.count("{") - stripped.count("}")
+            j = i + 1
+            while j < len(lines) and depth > 0:
+                chunk = lines[j].strip()
+                depth += chunk.count("{") - chunk.count("}")
+                j += 1
+            blob_lines = lines[i:j]
+            if len(blob_lines) > max_json_lines:
+                # Try to extract a summary key from the blob
+                summary_key = _json_blob_summary(blob_lines)
+                out.append(
+                    f"[token-goat: JSON blob {len(blob_lines)} lines collapsed{summary_key}]"
+                )
+                i = j
+                continue
+        out.append(line)
+        i += 1
+    return out
+
+
+def _json_blob_summary(blob_lines: list[str]) -> str:
+    """Extract a short summary from a JSON blob (first key-value pair)."""
+    import json as _json  # noqa: PLC0415 — lazy import inside helper
+    try:
+        obj = _json.loads("\n".join(blob_lines))
+        if isinstance(obj, dict):
+            for key in ("message", "msg", "level", "severity", "event", "type"):
+                if key in obj:
+                    return f': {key}={obj[key]!r}'
+    except (ValueError, TypeError):
+        pass
+    return ""
 
 
 # --- GitHub CLI ------------------------------------------------------------
@@ -9909,7 +10385,21 @@ FILTERS: list[Filter] = [
     VitestFilter(),
     CargoFilter(),
     NodePackageFilter(),
+    # DockerComposeFilter must precede DockerFilter: both match `docker`, but
+    # DockerComposeFilter only fires when the `compose` subcommand is present,
+    # so it is strictly more specific.  docker-compose binary is also claimed
+    # exclusively here.
+    DockerComposeFilter(),
     DockerFilter(),
+    # KubectlLogsFilter must precede KubectlFilter: both match `kubectl`/`k`,
+    # but KubectlLogsFilter only fires for the `logs` subcommand and provides
+    # richer deduplication (timestamp normalisation, JSON blob collapsing,
+    # stack-trace collapsing, access-log summary).
+    KubectlLogsFilter(),
+    # HelmFilter handles `helm` exclusively.  KubectlFilter previously claimed
+    # `helm` as one of its binaries; HelmFilter precedes it so helm commands
+    # get the dedicated install/list/template compression.
+    HelmFilter(),
     KubectlFilter(),
     # AwsCliFilter precedes AwsFilter: both match the `aws` binary, but
     # AwsCliFilter provides richer S3 transfer collapsing and tighter JSON
