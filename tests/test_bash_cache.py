@@ -297,3 +297,41 @@ class TestCommandHashCwdScoping:
         result2 = bash_cache.find_cached_for_command(cmd, cwd=cwd_a)
         assert result2 is not None
         assert result2.cmd_sha == meta_a.cmd_sha
+
+    def test_find_cached_for_command_tolerates_concurrent_deletion(self, tmp_data_dir):
+        """find_cached_for_command returns a result even if some sidecars are concurrently deleted.
+
+        Regression test for TOCTOU: sorted(..., key=lambda p: p.stat().st_mtime)
+        would raise OSError if a sidecar was deleted between glob() and stat().
+        The OSError would propagate to safe_cache_op and make the whole function
+        return None, silently dropping a valid cache hit.
+        """
+        from pathlib import Path
+        from unittest.mock import patch
+
+        cmd = "pytest tests/"
+        cwd = "/home/user/project"
+
+        # Store two entries for the same command so there are multiple sidecars.
+        meta1 = bash_cache.store_output("sess-del-a", cmd, "Z" * 500, "", 0, cwd=cwd)
+        assert meta1 is not None
+        bash_cache.write_sidecar(meta1)
+        meta2 = bash_cache.store_output("sess-del-b", cmd, "Z" * 600, "", 0, cwd=cwd)
+        assert meta2 is not None
+        bash_cache.write_sidecar(meta2)
+
+        original_stat = Path.stat
+
+        def flaky_stat(self: Path, **kwargs: object) -> object:
+            # Simulate one sidecar being deleted during the sort by raising
+            # OSError on the first stat() call inside the sort key.
+            if self.suffix == ".json" and "sess-del-a" in self.name:
+                raise OSError("simulated concurrent deletion")
+            return original_stat(self, **kwargs)
+
+        with patch.object(Path, "stat", flaky_stat):
+            result = bash_cache.find_cached_for_command(cmd, cwd=cwd)
+
+        # The lookup must still succeed using the surviving sidecar.
+        assert result is not None
+        assert result.cmd_sha == bash_cache.command_hash(cmd, cwd)

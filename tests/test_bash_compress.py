@@ -463,6 +463,28 @@ class TestDetectFromCommand:
     def test_unknown_binary(self):
         assert bc.detect_from_command("totally-unknown") is None
 
+    def test_quoted_angle_bracket_not_rejected(self):
+        """A > or < inside a quoted argument must not be treated as a shell redirect.
+
+        Regression test: the raw-string check `">" in command` incorrectly
+        rejected commands like `pytest -k "count > 0"` where the > is inside
+        shell quotes and is part of an argument value, not a redirect operator.
+        Fix: redirect operators are now checked against parsed argv tokens, so
+        quoted occurrences are correctly allowed through.
+        """
+        # > inside double-quoted argument — should be allowed
+        result = bc.detect_from_command('pytest -k "count > 0"')
+        assert result is not None, 'pytest -k "count > 0" should be accepted (> is quoted)'
+
+        # < inside single-quoted argument — should be allowed
+        result2 = bc.detect_from_command("pytest -k 'size < 100'")
+        assert result2 is not None, "pytest -k 'size < 100' should be accepted (< is quoted)"
+
+        # Bare redirect (unquoted) must still be rejected
+        assert bc.detect_from_command("pytest > out.txt") is None, "bare > redirect must be rejected"
+        assert bc.detect_from_command("pytest < input.txt") is None, "bare < redirect must be rejected"
+        assert bc.detect_from_command("pytest >> log.txt") is None, "bare >> redirect must be rejected"
+
 
 # ---------------------------------------------------------------------------
 # Generic Filter contract

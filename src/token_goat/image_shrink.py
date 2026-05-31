@@ -439,16 +439,15 @@ def _sweep_orphans() -> None:
                 st = fp.stat()
                 age = now - st.st_mtime
                 if age > age_secs:
-                    # On FAT32/network drives, mtime resolution is 2 seconds, so a
-                    # recently-deleted or renamed sidecar might still appear in stat.
-                    # Verify with exists() after a tiny delay to let the filesystem
-                    # stabilize before we commit to deletion. This ensures we don't
-                    # unlink a blob whose sidecar is in flight.
-                    time.sleep(0.01)  # 10 ms — negligible for orphan sweep, safe margin for FAT32
-                    if fp.exists():
-                        fp.unlink()
-                        removed += 1
-                        _LOG.debug("_sweep_orphans: removed %s (age=%.1f days)", fp.name, age / 86400.0)
+                    # Files older than orphan_age_secs (default 7 days) are safe
+                    # to remove. Any concurrent deletion is handled by the OSError
+                    # catch below (FileNotFoundError is a subclass of OSError).
+                    # A sleep+exists() check was previously here but added 10ms of
+                    # latency per orphan and provided no real protection — the OSError
+                    # catch already handles all concurrent-deletion races.
+                    fp.unlink()
+                    removed += 1
+                    _LOG.debug("_sweep_orphans: removed %s (age=%.1f days)", fp.name, age / 86400.0)
             except OSError as exc:
                 _LOG.debug("_sweep_orphans: failed to remove %s: %s", fp.name, exc)
                 continue

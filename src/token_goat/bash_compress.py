@@ -11843,16 +11843,35 @@ def detect_from_command(command: str) -> tuple[Filter, list[str]] | None:
     """
     if not command or len(command) > 65_536:
         return None
-    # Reject commands containing shell control operators (pipe, redirect,
-    # subshell, command substitution).  Those cannot be safely wrapped
-    # because the wrapper would only intercept the first stage of the pipe.
-    # The user can still opt into wrapping by writing the pipeline themselves
-    # against ``token-goat compress``.
-    if any(op in command for op in ("|", "&&", "||", ";", "$(", "`", ">", "<")):
+    # Reject commands that contain unquoted shell control operators — those
+    # cannot be safely wrapped because the wrapper only intercepts a single
+    # command, not a pipeline or sequence.  We split first so that operators
+    # inside quoted arguments (e.g. pytest -k "count > 0") are NOT mistaken for
+    # shell redirects.  Operators that must appear unquoted to have shell
+    # meaning are checked against the raw string for the ones that shlex cannot
+    # hide (pipe, command substitution, semicolon, logical AND/OR) and against
+    # individual argv tokens for redirection (> < >> 2> >&).
+    #
+    # Raw-string checks: these operators can never appear as bare tokens AND
+    # be "just part of an argument" in normal shell usage, so checking the raw
+    # string is safe for them.
+    if any(op in command for op in ("&&", "||", "$(", "`")):
+        return None
+    # Pipe and semicolon: a lone | or ; in the raw string signals a pipeline /
+    # command list.  Quoted occurrences are extremely rare in practice and not
+    # worth the complexity of a post-split check.
+    if "|" in command or ";" in command:
         return None
     try:
         argv = shlex.split(command, posix=True)
     except ValueError:
+        return None
+    # Post-split redirect check: after shlex removes quotes, a bare > or < token
+    # means shell redirect.  Inside quotes (e.g. -k "a > b") shlex folds the >
+    # into the surrounding token, so it won't appear as a standalone element.
+    # Common redirect forms: >, <, >>, 2>, 2>>, >&, &>, 1>, 1>>, /dev/null sinks.
+    _REDIRECT_TOKEN_RE = re.compile(r"^(\d*)(>>?|<<?).*$|^&>$|^>&.*$")  # noqa: N806
+    if any(_REDIRECT_TOKEN_RE.match(tok) for tok in argv):
         return None
     filter_ = select_filter(argv)
     if filter_ is None:
