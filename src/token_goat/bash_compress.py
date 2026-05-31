@@ -128,6 +128,10 @@ __all__ = [
     "RedisCLIFilter",
     # Code formatter filters
     "BlackIsortFilter",
+    "PrettierFilter",
+    # Monorepo build orchestrators
+    "NxFilter",
+    "LernaFilter",
     # System package manager filters
     "SysPackageFilter",
     # Dedicated git sub-filters (higher-fidelity compression than GitFilter)
@@ -12939,6 +12943,355 @@ class ProtocFilter(Filter):
         return self._finalize(kept)
 
 
+# --- Nx / Lerna (monorepo build orchestrators) -----------------------------
+
+# NX target header: "NX  Running target build for project foo and 3 tasks it depends on"
+_NX_HEADER_RE: Final[re.Pattern[str]] = re.compile(
+    r"^(?:\s*>?\s*)?NX\s+(?:Running target|Affected|Running N?x|Finishing|Finished|Ran target|Successfully ran)",
+    re.IGNORECASE,
+)
+# NX per-project success/failure status lines:
+#   "✔  nx run @myorg/lib:build (4s)"
+#   "✖  nx run @myorg/app:build (failed)"
+#   "✓  1/4 succeeded"
+# Note: do NOT include '>' here — task-header lines start with '> nx run …'
+# and must be handled by _NX_TASK_HEADER_RE instead.
+_NX_STATUS_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\s*[✔✖✓✗×]\s+(?:nx run|(?:\d+/\d+ (?:succeeded|failed)))",
+)
+# NX cache hit lines: "... [existing outputs match the cache, left as is]"
+_NX_CACHE_HIT_RE: Final[re.Pattern[str]] = re.compile(
+    r"\[existing outputs match the cache|cache hit\]",
+    re.IGNORECASE,
+)
+# NX separator / decoration lines: long dash/equals lines, blank "> " lines
+_NX_SEPARATOR_RE: Final[re.Pattern[str]] = re.compile(
+    r"^[\s>]*[—\-─═]{10,}\s*$|^>\s*$"
+)
+# NX "Nx run target" task header (per-project task start, verbose mode):
+#   "> nx run @myorg/lib:build"
+_NX_TASK_HEADER_RE: Final[re.Pattern[str]] = re.compile(
+    r"^>\s*(?:nx|NX)\s+run\s+\S+:\S+"
+)
+# NX summary: "Ran target X for N projects (Xs)" / "N/M succeeded"
+_NX_SUMMARY_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\s*[✔✖✓✗]?\s*\d+/\d+\s+(?:succeeded|failed)|Ran target|Successfully ran",
+    re.IGNORECASE,
+)
+
+# Lerna info/verbose lines we want to drop (timing, npm script echoes)
+_LERNA_VERBOSE_RE: Final[re.Pattern[str]] = re.compile(
+    r"^lerna\s+(?:verb|verbose|timing)\s",
+    re.IGNORECASE,
+)
+# Lerna "info" lines: keep only certain important ones
+_LERNA_INFO_RE: Final[re.Pattern[str]] = re.compile(
+    r"^lerna\s+info\s",
+    re.IGNORECASE,
+)
+# Lerna per-package "Ran npm script" / "run Ran npm script" lines (verbose run output)
+_LERNA_RAN_RE: Final[re.Pattern[str]] = re.compile(
+    r"^lerna\s+info\s+run\s+Ran npm script",
+    re.IGNORECASE,
+)
+# Lerna success/error lines — always keep
+_LERNA_OUTCOME_RE: Final[re.Pattern[str]] = re.compile(
+    r"^lerna\s+(?:success|error|ERR!)\b",
+    re.IGNORECASE,
+)
+# Lerna "notice" lines (changelog, git, publish noise).
+# Match "lerna notice" with optional trailing whitespace/content.
+_LERNA_NOTICE_RE: Final[re.Pattern[str]] = re.compile(
+    r"^lerna\s+notice(?:\s|$)",
+    re.IGNORECASE,
+)
+
+
+class NxFilter(Filter):
+    """Compress ``nx`` Nx monorepo build/test/lint output.
+
+    ``nx run-many`` and ``nx affected`` emit one status line per project plus
+    verbose task headers, separator lines, and cache-hit annotations.  On a
+    large monorepo a single ``nx run-many --target=build`` can produce several
+    hundred lines before the summary.
+
+    Compression model:
+
+    * **Keep** the initial "NX  Running target …" header line.
+    * **Keep** all per-project status lines starting with ✔ / ✖ / ✓ / ✗
+      (success / failure indicators).
+    * **Drop** per-project task header lines (``> nx run @scope/pkg:target``)
+      beyond the first 5 that fail — successful task headers are noise.
+    * **Drop** NX separator / decoration lines (long dash sequences, blank
+      ``> `` lines).
+    * **Drop** cache-hit annotation lines (``[existing outputs match the cache…]``).
+    * **Keep** all ``NX  Ran target … for N projects (Xs)`` summary lines.
+    * **Keep** the success/failure tally lines (``N/M succeeded [K read from cache]``).
+    * **Keep** any error lines (exit_code != 0, stack traces, compilation errors).
+    """
+
+    name = "nx"
+    binaries = frozenset(["nx", "npx", "pnpx"])
+
+    def matches(self, argv: list[str]) -> bool:
+        if not argv:
+            return False
+        stem = Path(argv[0]).stem.lower()
+        if stem == "nx":
+            return True
+        # npx nx ... / pnpx nx ...
+        return stem in ("npx", "pnpx") and len(argv) > 1 and argv[1].lower() == "nx"
+
+    _FAIL_TASK_SAMPLE = 5  # show up to this many failed task headers
+
+    def compress(
+        self, stdout: str, stderr: str, exit_code: int, argv: list[str],
+    ) -> str:
+        combined = self._combine_output(stdout, stderr)
+        lines = combined.split("\n")
+        kept: list[str] = []
+        dropped_separators = 0
+        dropped_cache = 0
+        dropped_task_headers = 0
+        fail_task_count = 0
+
+        for line in lines:
+            # Always keep NX main header lines
+            if _NX_HEADER_RE.match(line):
+                kept.append(line)
+                continue
+            # Per-project status lines (✔ / ✖ / ✓ / ✗)
+            if _NX_STATUS_RE.match(line):
+                kept.append(line)
+                continue
+            # Summary lines
+            if _NX_SUMMARY_RE.match(line):
+                kept.append(line)
+                continue
+            # Separator / decoration lines — drop silently
+            if _NX_SEPARATOR_RE.match(line):
+                dropped_separators += 1
+                continue
+            # Cache-hit annotations — check BEFORE task-header because a cache
+            # line looks like "> nx run @scope/pkg:target  [existing outputs…]"
+            # which would match _NX_TASK_HEADER_RE first if we don't short-circuit.
+            if _NX_CACHE_HIT_RE.search(line):
+                dropped_cache += 1
+                continue
+            # Per-task headers ("> nx run @scope/pkg:target") — keep a few failed ones
+            if _NX_TASK_HEADER_RE.match(line):
+                if exit_code != 0 and fail_task_count < self._FAIL_TASK_SAMPLE:
+                    kept.append(line)
+                    fail_task_count += 1
+                else:
+                    dropped_task_headers += 1
+                continue
+            # Always keep error signals
+            if _ERROR_SIGNAL_RE.search(line):
+                kept.append(line)
+                continue
+            kept.append(line)
+
+        notes: list[str] = []
+        if dropped_separators:
+            notes.append(f"dropped {dropped_separators} separator/decoration lines")
+        if dropped_cache:
+            notes.append(f"dropped {dropped_cache} cache-hit annotation lines")
+        if dropped_task_headers:
+            notes.append(f"dropped {dropped_task_headers} per-task header lines")
+        self._emit_notes(kept, notes)
+        return self._finalize(kept)
+
+
+class LernaFilter(Filter):
+    """Compress ``lerna`` monorepo task runner output.
+
+    ``lerna run <script>`` emits verbose "info run Ran npm script 'X' in
+    '@scope/pkg' in Ns:" per-package lines, plus ``lerna info`` bootstrap
+    noise, ``lerna notice`` changelog/publish lines, and ``lerna verb``
+    verbose timing lines.
+
+    Compression model:
+
+    * **Drop** ``lerna verb`` / ``lerna verbose`` timing lines entirely.
+    * **Drop** ``lerna notice`` publish / changelog noise.
+    * **Drop** ``lerna info run Ran npm script …`` per-package timing lines
+      beyond the first 5 — they are useful as a sample but repetitive at scale.
+    * **Keep** ``lerna info`` lines that are NOT per-package "Ran npm script"
+      timing lines (e.g., "lerna info Executing command in 12 packages: …").
+    * **Keep** all ``lerna success`` / ``lerna error`` / ``lerna ERR!`` lines.
+    * **Keep** any stderr error lines.
+    """
+
+    name = "lerna"
+    binaries = frozenset(["lerna"])
+
+    _SAMPLE_SIZE = 5
+
+    def compress(
+        self, stdout: str, stderr: str, exit_code: int, argv: list[str],
+    ) -> str:
+        combined = self._combine_output(stdout, stderr)
+        lines = combined.split("\n")
+        kept: list[str] = []
+        dropped_verbose = 0
+        dropped_notice = 0
+        ran_sample: list[str] = []
+        ran_extra = 0
+
+        for line in lines:
+            # Drop verbose timing lines
+            if _LERNA_VERBOSE_RE.match(line):
+                dropped_verbose += 1
+                continue
+            # Drop notice lines (changelog, publish, git-tag noise)
+            if _LERNA_NOTICE_RE.match(line):
+                dropped_notice += 1
+                continue
+            # Per-package "Ran npm script" info timing lines — sample
+            if _LERNA_RAN_RE.match(line):
+                if len(ran_sample) < self._SAMPLE_SIZE:
+                    ran_sample.append(line)
+                else:
+                    ran_extra += 1
+                continue
+            # Always keep outcome lines
+            if _LERNA_OUTCOME_RE.match(line):
+                kept.append(line)
+                continue
+            # Keep other lerna info lines (general status, package counts)
+            if _LERNA_INFO_RE.match(line):
+                kept.append(line)
+                continue
+            # Keep everything else (npm script output, error text)
+            kept.append(line)
+
+        out: list[str] = []
+        out.extend(ran_sample)
+        if ran_extra:
+            out.append(
+                f"[token-goat: +{ran_extra} more 'Ran npm script' lines; "
+                f"run with TOKEN_GOAT_BASH_COMPRESS=0 for full list]"
+            )
+        out.extend(kept)
+        notes: list[str] = []
+        if dropped_verbose:
+            notes.append(f"dropped {dropped_verbose} lerna verb/timing lines")
+        if dropped_notice:
+            notes.append(f"dropped {dropped_notice} lerna notice lines")
+        self._emit_notes(out, notes)
+        return self._finalize(out)
+
+
+# --- Prettier (JavaScript formatter) -----------------------------------------
+
+# Prettier --write emits one line per processed file, optionally with a timing:
+#   "src/foo.ts 203ms"
+#   "src/bar/index.js 12ms (unchanged)"
+#   "src/baz.css 45ms"
+# In --check mode it emits:
+#   "Checking formatting..."
+#   "src/foo.ts"
+#   "src/bar.ts"
+#   "Code style issues found in N files. Forgot to run Prettier?"
+_PRETTIER_FILE_RE: Final[re.Pattern[str]] = re.compile(
+    # A file line: optional leading spaces, a path (contains '/' or '.'),
+    # optional timing (e.g. "203ms") and optional status annotation.
+    # Excludes lines starting with '[' (token-goat notes) or pure text.
+    r"^(?!\[)\s*\S+[./]\S*\s*(?:\d+ms)?\s*(?:\(unchanged\))?\s*$"
+)
+# Prettier summary / error lines — always keep
+_PRETTIER_SUMMARY_RE: Final[re.Pattern[str]] = re.compile(
+    r"^(?:All matched files|Code style issues found|Checking formatting|"
+    r"Pretty-Format:|prettier \[warn\]|prettier \[error\]|\[warn\]|\[error\])",
+    re.IGNORECASE,
+)
+# Prettier "unchanged" annotation: keep files with (unchanged) as a sample too
+_PRETTIER_UNCHANGED_RE: Final[re.Pattern[str]] = re.compile(
+    r"\(unchanged\)\s*$"
+)
+
+
+class PrettierFilter(Filter):
+    """Compress ``prettier --write`` / ``prettier --check`` output.
+
+    ``prettier --write .`` emits one line per processed file (with optional
+    timing like ``203ms``).  On a large project this is hundreds of lines
+    before the summary.
+
+    Compression model:
+
+    * **Sample** changed-file lines: keep the first 5, collapse the rest to a
+      count.  The sample tells the agent *which* files changed; the count
+      conveys scale.
+    * **Drop** ``(unchanged)`` file lines entirely — they carry no signal.
+    * **Keep** all summary / warning / error lines
+      (``All matched files use Prettier standards``,
+      ``Code style issues found in N files``, ``[warn]``, ``[error]``).
+    * **Keep** any line containing an error signal (from ``_ERROR_SIGNAL_RE``).
+    """
+
+    name = "prettier"
+    binaries = frozenset(["prettier", "npx", "pnpx"])
+
+    def matches(self, argv: list[str]) -> bool:
+        if not argv:
+            return False
+        stem = Path(argv[0]).stem.lower()
+        if stem == "prettier":
+            return True
+        # npx prettier ... / pnpx prettier ...
+        return stem in ("npx", "pnpx") and len(argv) > 1 and argv[1].lower() == "prettier"
+
+    _SAMPLE_SIZE: int = 5
+
+    def compress(
+        self, stdout: str, stderr: str, exit_code: int, argv: list[str],
+    ) -> str:
+        combined = self._combine_output(stdout, stderr)
+        lines = combined.split("\n")
+        kept: list[str] = []
+        changed_sample: list[str] = []
+        changed_extra = 0
+        dropped_unchanged = 0
+
+        for line in lines:
+            # Always keep error signals
+            if _ERROR_SIGNAL_RE.search(line):
+                kept.append(line)
+                continue
+            # Always keep summary / warning / error annotation lines
+            if _PRETTIER_SUMMARY_RE.match(line):
+                kept.append(line)
+                continue
+            # File lines with (unchanged) — drop
+            if _PRETTIER_FILE_RE.match(line) and _PRETTIER_UNCHANGED_RE.search(line):
+                dropped_unchanged += 1
+                continue
+            # Changed file lines — sample
+            if _PRETTIER_FILE_RE.match(line):
+                if len(changed_sample) < self._SAMPLE_SIZE:
+                    changed_sample.append(line)
+                else:
+                    changed_extra += 1
+                continue
+            kept.append(line)
+
+        out: list[str] = []
+        out.extend(changed_sample)
+        if changed_extra:
+            out.append(
+                f"[token-goat: +{changed_extra} more formatted files; "
+                f"run with TOKEN_GOAT_BASH_COMPRESS=0 for full list]"
+            )
+        out.extend(kept)
+        notes: list[str] = []
+        if dropped_unchanged:
+            notes.append(f"dropped {dropped_unchanged} unchanged-file lines")
+        self._emit_notes(out, notes)
+        return self._finalize(out)
+
+
 # ---------------------------------------------------------------------------
 # Public registry & dispatch
 # ---------------------------------------------------------------------------
@@ -12960,6 +13313,14 @@ FILTERS: list[Filter] = [
     PnpmFilter(),
     YarnFilter(),
     NodePackageFilter(),
+    # NxFilter handles `nx` (Nx monorepo) and `npx nx` / `pnpx nx`.  Must
+    # follow NodePackageFilter so that plain `npx <not-nx>` still routes to
+    # NodePackageFilter; NxFilter.matches() explicitly checks argv[1] == "nx"
+    # before claiming npx.  LernaFilter claims `lerna` exclusively and is
+    # disjoint from every other filter, so position is cosmetic — placed
+    # alongside NxFilter as both are monorepo orchestrators.
+    NxFilter(),
+    LernaFilter(),
     # DockerComposeFilter must precede DockerFilter: both match `docker`, but
     # DockerComposeFilter only fires when the `compose` subcommand is present,
     # so it is strictly more specific.  docker-compose binary is also claimed
@@ -13109,6 +13470,10 @@ FILTERS: list[Filter] = [
     # Code formatter filters — disjoint binaries from all other filters.
     # BlackIsortFilter handles both `black` and `isort`.
     BlackIsortFilter(),
+    # PrettierFilter handles `prettier`, `npx prettier`, and `pnpx prettier`.
+    # Must follow NodePackageFilter (which claims npx/pnpx generically) because
+    # PrettierFilter.matches() checks argv[1] == "prettier" before claiming npx.
+    PrettierFilter(),
     # SysPackageFilter handles system package managers: apt-get, apt, apk, brew.
     SysPackageFilter(),
     # ProtocFilter handles the Protocol Buffer compiler (protoc) and buf.
