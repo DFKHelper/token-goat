@@ -1,26 +1,9 @@
 """Tests for RubyFilter, BundlerFilter, and CmakeFilter in token_goat.bash_compress."""
 from __future__ import annotations
 
+from filter_test_helpers import apply_filter as _apply
+
 from token_goat import bash_compress as bc
-
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
-
-def _apply(
-    filter_: bc.Filter,
-    stdout: str = "",
-    stderr: str = "",
-    exit_code: int = 0,
-    argv: list[str] | None = None,
-) -> str:
-    """Run filter_.apply() and return the compressed text."""
-    if argv is None:
-        argv = [filter_.name]
-    result = filter_.apply(stdout, stderr, exit_code, argv)
-    return result.text
-
 
 # ===========================================================================
 # RubyFilter — matches()
