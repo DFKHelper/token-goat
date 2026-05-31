@@ -1812,6 +1812,37 @@ def detect_aider() -> bool:
         return False
 
 
+def detect_cline() -> bool:
+    """Return True if Cline (AI coding extension CLI) is on PATH or importable."""
+    if shutil.which("cline") or shutil.which("claude-dev"):
+        return True
+    try:
+        import importlib.util  # noqa: PLC0415
+
+        return importlib.util.find_spec("cline") is not None
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def detect_windsurf() -> bool:
+    """Return True if Windsurf (Codeium AI editor) is on PATH or its config dir exists."""
+    if shutil.which("windsurf"):
+        return True
+    # Windsurf stores its config/extensions in ~/.windsurf or ~/AppData/Roaming/Windsurf
+    if (Path.home() / ".windsurf").exists():
+        return True
+    if sys.platform == "win32":
+        appdata = Path(os.environ.get("APPDATA", ""))
+        if appdata and (appdata / "Windsurf").exists():
+            return True
+    return False
+
+
+def detect_copilot_cli() -> bool:
+    """Return True if the standalone GitHub Copilot CLI binary is on PATH."""
+    return bool(shutil.which("copilot") or shutil.which("github-copilot-cli"))
+
+
 def detect_harnesses() -> list[str]:
     """Return a list of harness names that appear to be present on this machine.
 
@@ -1854,6 +1885,13 @@ def detect_harnesses() -> list[str]:
             found.append("openclaw")
     except Exception:  # noqa: BLE001
         pass
+
+    if detect_cline():
+        found.append("cline")
+    if detect_windsurf():
+        found.append("windsurf")
+    if detect_copilot_cli():
+        found.append("copilot-cli")
 
     return found
 

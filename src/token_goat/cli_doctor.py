@@ -396,6 +396,21 @@ def doctor(  # noqa: C901
                 )
         else:
             ok("gemini", "not detected")
+
+        if _install.detect_cline():
+            ok("cline", "detected — bash output compression active for `cline` commands")
+        else:
+            ok("cline", "not detected")
+
+        if _install.detect_windsurf():
+            ok("windsurf", "detected — bash output compression active for `windsurf` commands")
+        else:
+            ok("windsurf", "not detected")
+
+        if _install.detect_copilot_cli():
+            ok("copilot-cli", "detected — bash output compression active for `copilot` commands")
+        else:
+            ok("copilot-cli", "not detected")
     except Exception as _e_tools:  # noqa: BLE001
         flag("third-party tools", f"check failed — {_e_tools}", warn=True)
 
