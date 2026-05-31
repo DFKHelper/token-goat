@@ -192,7 +192,10 @@ def doctor(  # noqa: C901
     # ------------------------------------------------------------------
     typer.echo("Versions")
     py_ver = f"{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}"
-    ok("Python", py_ver)
+    if sys.version_info < (3, 11):  # noqa: UP036
+        flag("Python", f"{py_ver} — minimum supported is 3.11; upgrade to avoid compatibility issues")
+    else:
+        ok("Python", py_ver)
     try:
         import importlib.metadata
 
@@ -200,6 +203,35 @@ def doctor(  # noqa: C901
     except importlib.metadata.PackageNotFoundError:
         cc_ver = "unknown"
     ok("token-goat", cc_ver)
+
+    # PyPI version check — non-blocking, 2 s timeout, skip gracefully if offline.
+    def _check_pypi_version() -> str:
+        import json as _json  # noqa: PLC0415
+        import urllib.request  # noqa: PLC0415
+
+        if cc_ver == "unknown":
+            return "installed version unknown — skipping"
+        try:
+            url = "https://pypi.org/pypi/token-goat/json"
+            req = urllib.request.Request(url, headers={"User-Agent": "token-goat-doctor/1.0"})
+            with urllib.request.urlopen(req, timeout=2) as resp:
+                data = _json.loads(resp.read())
+            latest = data["info"]["version"]
+            if latest == cc_ver:
+                return f"{cc_ver} (latest)"
+            # Simple version comparison using tuple split on dots.
+            def _vtup(v: str) -> tuple[int, ...]:
+                try:
+                    return tuple(int(x) for x in v.split("."))
+                except ValueError:
+                    return (0,)
+            if _vtup(latest) > _vtup(cc_ver):
+                raise ValueError(f"{cc_ver} installed, {latest} available — run `uv tool install --reinstall token-goat`")
+            return f"{cc_ver} (PyPI has {latest})"
+        except OSError:
+            return "PyPI unreachable (offline?)"
+
+    _check_step("token-goat (PyPI)", _check_pypi_version, warn=True)
 
     def _check_uv() -> str:
         uv_out = subprocess.run(
@@ -258,6 +290,43 @@ def doctor(  # noqa: C901
                 )
     except OSError as _e:
         flag("fastembed model", f"could not enumerate models_dir — {_e}", warn=True)
+
+    # ------------------------------------------------------------------
+    # 2a. Disk space
+    # ------------------------------------------------------------------
+    # Token-goat caches (models, images, bash/web outputs, project DBs) can
+    # grow to several GB on a busy install.  Warn early if the data directory
+    # partition is running low so the user can run `token-goat clean` before
+    # hitting an OS-level write error inside a hook.
+    typer.echo("\nDisk space")
+    try:
+        import shutil as _shutil  # noqa: PLC0415
+
+        _data = paths.data_dir()
+        # Use the parent if data_dir doesn't exist yet — shutil.disk_usage
+        # requires an existing path.
+        _check_path = _data if _data.exists() else _data.parent if _data.parent.exists() else Path.cwd()
+        _total, _used, _free = _shutil.disk_usage(_check_path)
+        _free_mb = _free // (1024 * 1024)
+        _total_gb = _total / (1024 ** 3)
+        _pct_free = _free / _total * 100 if _total > 0 else 0
+        _free_str = f"{_free_mb:,} MB free of {_total_gb:.1f} GB ({_pct_free:.0f}% free) on {_check_path}"
+        _WARN_MB = 500
+        if _free_mb < _WARN_MB:
+            flag(
+                "data dir partition",
+                f"{_free_str} — below {_WARN_MB} MB; run `token-goat clean` to reclaim cache space",
+            )
+        elif _free_mb < 2048:
+            flag(
+                "data dir partition",
+                f"{_free_str} — getting low; consider `token-goat clean`",
+                warn=True,
+            )
+        else:
+            ok("data dir partition", _free_str)
+    except Exception as _e_disk:  # noqa: BLE001
+        flag("data dir partition", f"disk_usage failed — {_e_disk}", warn=True)
 
     # ------------------------------------------------------------------
     # 2b. Installation status — verify token-goat artefacts actually landed in
@@ -467,6 +536,51 @@ def doctor(  # noqa: C901
         flag("detected", "no project marker found in cwd or parents", warn=True)
 
     # ------------------------------------------------------------------
+    # 8a. All-projects index health
+    # ------------------------------------------------------------------
+    # The per-project check above only covers the cwd.  Surfacing all indexed
+    # projects lets a user spot a large index they forgot about, detect a DB
+    # that went corrupt or missing, and understand the total index footprint.
+    typer.echo("\nIndexed projects")
+    try:
+        with _db.open_global_readonly() as _idx_conn:
+            _idx_conn.row_factory = __import__("sqlite3").Row
+            _all_projs = _idx_conn.execute("SELECT hash, root FROM projects").fetchall()
+        if not _all_projs:
+            ok("(none)", "no projects indexed yet — run `token-goat index` inside a project")
+        else:
+            _total_files_all = 0
+            _inaccessible: list[str] = []
+            _proj_rows_out: list[str] = []
+            for _pr in _all_projs:
+                _ph = _pr["hash"]
+                _pr_root = _pr["root"]
+                _proj_db_path = paths.project_db_path(_ph)
+                if not _proj_db_path.exists():
+                    _inaccessible.append(f"{_pr_root} (DB missing: {_proj_db_path})")
+                    continue
+                try:
+                    with _db.open_project_readonly(_ph) as _pc:
+                        _pfc = _pc.execute("SELECT COUNT(*) FROM files").fetchone()[0]
+                    _total_files_all += _pfc
+                    _proj_rows_out.append(f"{_pr_root} ({_pfc} files)")
+                except Exception as _pe:  # noqa: BLE001
+                    _inaccessible.append(f"{_pr_root} ({_pe})")
+            ok("total projects", str(len(_all_projs)))
+            ok("total indexed files", str(_total_files_all))
+            # Show up to 5 projects inline to avoid overwhelming output.
+            for _pline in _proj_rows_out[:5]:
+                ok("project", _pline)
+            if len(_proj_rows_out) > 5:
+                ok("...", f"({len(_proj_rows_out) - 5} more — run `token-goat stats --by-project` for full list)")
+            for _bad in _inaccessible:
+                flag("inaccessible", _bad, warn=True)
+    except FileNotFoundError:
+        ok("(none)", "no global.db yet — nothing indexed")
+    except Exception as _e_idx:  # noqa: BLE001
+        flag("index health", str(_e_idx), warn=True)
+
+    # ------------------------------------------------------------------
     # 8b. Hook wrapper
     # Checked before the Worker section: a missing or stale wrapper causes
     # hooks to silently fail, which then manifests as worker symptoms.
@@ -576,7 +690,7 @@ def doctor(  # noqa: C901
             flag("pid file", f"unreadable — {e}", warn=True)
     else:
         ok("pid file", "not present")
-        ok("status", "not running")
+        flag("status", "not running — run `token-goat worker --start` to enable incremental indexing", warn=True)
 
     # Worker claim file — the authoritative single-worker lock. A stale claim
     # left by a crashed worker is auto-reclaimed on the next spawn, but it is
