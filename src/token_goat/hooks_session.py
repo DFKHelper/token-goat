@@ -1013,6 +1013,19 @@ def session_start(payload: HookPayload) -> HookResponse:
         sanitize_opt(session_id), sanitize_opt(cwd), sanitize_opt(source),
     )
 
+    # Best-effort stale session cleanup: remove session JSON files older than
+    # 7 days.  This supplements the worker's periodic _cleanup_old_sessions
+    # task and ensures cleanup happens even when the worker is not running.
+    # The 7-day cutoff matches _SESSION_RETENTION_DAYS in worker.py.
+    # All errors are suppressed — cleanup must never block session startup.
+    try:
+        from . import session as _session  # noqa: PLC0415
+        _cleaned = _session.cleanup_stale(max_age_hours=168.0)
+        if _cleaned:
+            _LOG.info("session-start: cleaned up %d stale session file(s) (>7d)", _cleaned)
+    except Exception:  # noqa: BLE001
+        _LOG.debug("session-start: stale session cleanup failed (non-fatal)", exc_info=True)
+
     _try_recovery_response(session_id, source)
     # Project detection and worker watchdog must run in both branches —
     # ``source == "compact"`` doesn't change the fact that the worker may

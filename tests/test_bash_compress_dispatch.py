@@ -62,8 +62,8 @@ _DISPATCH_CASES: list[tuple[list[str], str]] = [
     # ---- NodePackageFilter ----
     (["npm", "install"], "npm"),
     (["npm", "ci"], "npm"),
-    (["pnpm", "install"], "npm"),
-    (["yarn", "install"], "npm"),
+    (["pnpm", "install"], "pnpm"),
+    (["yarn", "install"], "yarn"),
     (["bun", "install"], "npm"),
     # ---- DockerFilter ----
     (["docker", "build", "-t", "my-image", "."], "docker"),
