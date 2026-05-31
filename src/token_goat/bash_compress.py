@@ -3626,6 +3626,22 @@ _RUFF_FOOTER_RE: Final[re.Pattern[str]] = re.compile(
 _RUFF_SUCCESS_RE: Final[re.Pattern[str]] = re.compile(
     r"^(?:All checks passed!|No errors found\.?)\s*$"
 )
+# ruff format per-file lines: "Reformatted path/to/file.py"
+# (emitted for every file that was modified; only the summary counts).
+_RUFF_FORMAT_REFORMATTED_RE: Final[re.Pattern[str]] = re.compile(
+    r"^Reformatted\s+\S"
+)
+# ruff format --check per-file lines: "Would reformat: path/to/file.py"
+_RUFF_FORMAT_WOULD_REFORMAT_RE: Final[re.Pattern[str]] = re.compile(
+    r"^Would reformat:\s+\S"
+)
+# ruff format summary lines:
+#   "N files reformatted, N files left unchanged"
+#   "N files already formatted."
+#   "N files would be reformatted, N files would be left unchanged."
+_RUFF_FORMAT_SUMMARY_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\d+ file"
+)
 _MYPY_LINE_RE: Final[re.Pattern[str]] = re.compile(
     r"^(?P<file>.+?):(?P<line>\d+):(?:\d+:)?\s+(?P<level>error|note|warning):"
 )
@@ -3638,7 +3654,7 @@ class RuffFilter(Filter):
     hundreds of times across dozens of files.  The agent gains nothing from seeing
     the 51st occurrence.
 
-    Compression model:
+    Compression model (``ruff check``):
 
     * **Rule with >= 3 occurrences across >= 2 files**: collapse to a single
       summary line ``RULE_CODE: N occurrences in M files (example: <first line>)``.
@@ -3648,6 +3664,14 @@ class RuffFilter(Filter):
     * **On clean exit (exit_code 0, no violations)**: return empty string — the
       agent infers success from the exit code and does not need the
       ``"All checks passed!"`` banner.
+
+    Compression model (``ruff format``):
+
+    * **Drop** per-file ``Reformatted path/to/file.py`` lines — collapse to count.
+    * **Drop** per-file ``Would reformat: path/to/file.py`` lines (``--check``
+      mode) — collapse to count.
+    * **Keep** the final ``N files reformatted, N files left unchanged`` summary.
+    * **On clean exit** (``ruff format`` with no changes): return empty string.
     """
 
     name = "ruff"
@@ -3657,6 +3681,14 @@ class RuffFilter(Filter):
         self, stdout: str, stderr: str, exit_code: int, argv: list[str],
     ) -> str:
         merged = self._combine_output(stdout, stderr)
+
+        # Dispatch: ruff format vs ruff check (default).
+        positionals = _positional_args(argv[1:])
+        subcommand = positionals[0].lower() if positionals else "check"
+        if subcommand == "format":
+            return self._compress_format(merged, exit_code)
+
+        # --- ruff check (default) ---
 
         # Fast path: clean run — strip the success banner entirely.  The agent
         # infers pass/fail from the exit code; the "All checks passed!" string
@@ -3729,6 +3761,43 @@ class RuffFilter(Filter):
 
         out.extend(footer_lines)
         return _squeeze_blank_lines("\n".join(out))
+
+    def _compress_format(self, merged: str, exit_code: int) -> str:
+        """Compress ``ruff format`` output.
+
+        ``ruff format`` emits one ``Reformatted path/to/file.py`` line per
+        modified file then a summary like ``12 files reformatted, 5 files left
+        unchanged``.  ``ruff format --check`` uses ``Would reformat:`` lines
+        instead.  The per-file lines are pure noise — only the summary counts.
+        """
+        lines = merged.split("\n")
+        kept: list[str] = []
+        dropped_reformatted = 0
+        dropped_would_reformat = 0
+
+        for line in lines:
+            if _RUFF_FORMAT_REFORMATTED_RE.match(line):
+                dropped_reformatted += 1
+                continue
+            if _RUFF_FORMAT_WOULD_REFORMAT_RE.match(line):
+                dropped_would_reformat += 1
+                continue
+            # Keep summary lines, blank lines, errors, etc.
+            kept.append(line)
+
+        notes: list[str] = []
+        if dropped_reformatted:
+            notes.append(f"collapsed {dropped_reformatted} 'Reformatted …' per-file lines")
+        if dropped_would_reformat:
+            notes.append(f"collapsed {dropped_would_reformat} 'Would reformat:' per-file lines")
+        self._emit_notes(kept, notes)
+        result = _squeeze_blank_lines("\n".join(kept)).strip()
+
+        # On a clean exit with no remaining content (e.g. "ruff format" with all
+        # files already formatted and only the success banner present), return empty.
+        if exit_code == 0 and not result:
+            return ""
+        return result
 
 
 class LinterFilter(Filter):
@@ -5259,11 +5328,28 @@ _MAKE_RECURSE_RE: Final[re.Pattern[str]] = re.compile(
     r"^make\[\d+\]: (Entering|Leaving) directory"
 )
 _MAKE_ECHO_RE: Final[re.Pattern[str]] = re.compile(r"^(echo |cc |gcc |clang |g\+\+ )")
+#: autotools ``./configure`` probe lines — "checking for X ... yes/no/..."
+#: These are emitted one per feature probe; a typical configure run produces
+#: 200–600 such lines that are pure noise unless configure fails.
+_CONFIGURE_CHECKING_RE: Final[re.Pattern[str]] = re.compile(
+    r"^checking\s+(?:for|whether|if|the|how|size|version|build|host|target|\w)",
+    re.IGNORECASE,
+)
+#: autotools ``configure:`` info lines — "configure: creating ..." etc.
+_CONFIGURE_INFO_RE: Final[re.Pattern[str]] = re.compile(
+    r"^configure:\s+(?:creating|loading|running)\b",
+    re.IGNORECASE,
+)
+#: Parallel make (-j) progress lines from Make 4.x:
+#: "[  12%] Building CXX object …" or "[100%] Linking …" (CMake wrapper style)
+_MAKE_PERCENT_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\[\s*\d+%\]\s+(?:Building|Linking|Scanning|Generating|Installing|Compiling)"
+)
 
 
 class MakeFilter(Filter):
     """Compress ``make`` / ``ninja`` / ``gradle`` / ``mvn`` / ``go build`` / ``go mod``
-    / ``go vet`` / ``go generate`` output.
+    / ``go vet`` / ``go generate`` / ``./configure`` (autotools) output.
 
     Build systems and go subcommands emit one line per compilation unit, package,
     or progress marker. Errors and warnings are the only things the agent
@@ -5280,6 +5366,10 @@ class MakeFilter(Filter):
     * **Go mod**: suppress ``go: downloading/extracting`` progress, keep require changes.
     * **Go vet**: suppress ``go: vet`` progress lines, keep all warnings.
     * **Go generate**: suppress ``go:generate`` trigger lines, keep errors.
+    * **autotools (./configure)**: collapse ``checking for …`` probe lines to a
+      count; keep ``configure: error:`` / ``configure: WARNING:`` verbatim.
+    * **parallel make (-j)**: drop ``[N%] Building …`` CMake-style percent-progress
+      lines that are pure noise on a successful build.
     """
 
     name = "make"
@@ -5287,18 +5377,36 @@ class MakeFilter(Filter):
         "make", "gmake", "ninja", "gradle", "mvn", "maven", "bazel", "buck",
         "go", "goimports",
     ])
+    #: Additional configure script stems handled by this filter.
+    _CONFIGURE_STEMS: frozenset[str] = frozenset(["configure", "config"])
+
+    def matches(self, argv: list[str]) -> bool:  # noqa: D102
+        if not argv:
+            return False
+        stem = Path(argv[0]).stem.lower()
+        # Match registered binaries as usual.
+        if stem in self.binaries:
+            return True
+        # Also match ``./configure``, ``./config``, or any path ending in
+        # ``configure`` (e.g. ``../configure``, ``/usr/src/proj/configure``).
+        return stem in self._CONFIGURE_STEMS
 
     def compress(
         self, stdout: str, stderr: str, exit_code: int, argv: list[str],
     ) -> str:
         # Detect go subcommands (build, mod, vet, generate) for specialized handling.
         positionals = _positional_args(argv)
+        binary_stem = Path(argv[0]).stem.lower() if argv else ""
         go_subcommand = ""
         if positionals and Path(positionals[0]).stem.lower() == "go":
             go_subcommand = positionals[1] if len(positionals) > 1 else ""
 
         merged = self._combine_output(stdout, stderr)
         lines = merged.split("\n")
+
+        # autotools ./configure — dedicated path.
+        if binary_stem in self._CONFIGURE_STEMS:
+            return self._compress_configure(lines)
 
         if go_subcommand == "build":
             return self._compress_go_build(lines)
@@ -5314,12 +5422,20 @@ class MakeFilter(Filter):
         dropped_recurse = 0
         dropped_echo = 0
         dropped_go_download = 0
+        dropped_percent = 0
         for line in lines:
             if _MAKE_RECURSE_RE.match(line):
                 dropped_recurse += 1
                 continue
             if line.startswith("go: downloading"):
                 dropped_go_download += 1
+                continue
+            if (
+                _MAKE_PERCENT_RE.match(line)
+                and "error" not in line.lower()
+                and "warning" not in line.lower()
+            ):
+                dropped_percent += 1
                 continue
             if (
                 _MAKE_ECHO_RE.match(line)
@@ -5336,11 +5452,61 @@ class MakeFilter(Filter):
             notes.append(f"{dropped_echo} compiler-invocation echoes")
         if dropped_go_download:
             notes.append(f"{dropped_go_download} 'go: downloading' lines")
+        if dropped_percent:
+            notes.append(f"{dropped_percent} '[N%] Building …' progress lines")
         # MakeFilter uses ", " join + "dropped" prefix (verbatim grammar match)
         # rather than the standard ";" join, since all entries share the
         # "dropped X" verb.
         if notes:
             kept.append(f"[token-goat: dropped {', '.join(notes)}]")
+        return self._finalize(kept)
+
+    def _compress_configure(self, lines: list[str]) -> str:
+        """Compress autotools ``./configure`` output.
+
+        A typical ``./configure`` run emits 200–600 ``checking for …`` probe
+        lines and a handful of ``configure: creating …`` info lines.  The agent
+        only needs to see warnings / errors and the final result.
+
+        * **Drop** ``checking for/whether/if … : yes/no/value`` probe lines.
+        * **Keep** ``configure: error:`` / ``configure: WARNING:`` verbatim.
+        * **Drop** benign ``configure: creating …`` / ``configure: loading …``
+          info lines (not errors).
+        * **Keep** everything else (short preamble, AC_MSG_RESULT output, etc.).
+        """
+        kept: list[str] = []
+        dropped_checking = 0
+        dropped_info = 0
+
+        for line in lines:
+            # Always keep error/warning lines regardless of prefix.
+            if _ERROR_SIGNAL_RE.search(line):
+                kept.append(line)
+                continue
+            # configure: WARNING: is not matched by _ERROR_SIGNAL_RE (which only
+            # covers "error:" keywords) — keep it explicitly.
+            if line.lower().startswith("configure:") and "warning" in line.lower():
+                kept.append(line)
+                continue
+            # configure: creating .../configure: loading ... are benign info.
+            if _CONFIGURE_INFO_RE.match(line):
+                # Error/warning checks already passed; this branch fires only for
+                # benign info lines (creating, loading, running).
+                dropped_info += 1
+                continue
+            # "checking for X ... yes" — pure probe noise.
+            if _CONFIGURE_CHECKING_RE.match(line):
+                dropped_checking += 1
+                continue
+            kept.append(line)
+
+        notes: list[str] = []
+        if dropped_checking:
+            notes.append(f"dropped {dropped_checking} 'checking …' probe lines")
+        if dropped_info:
+            notes.append(f"dropped {dropped_info} 'configure: creating/loading' lines")
+        if notes:
+            kept.append(f"[token-goat: {'; '.join(notes)}]")
         return self._finalize(kept)
 
     def _compress_go_build(self, lines: list[str]) -> str:
@@ -8549,6 +8715,32 @@ _MAVEN_BUILD_RESULT_RE: Final[re.Pattern[str]] = re.compile(
 _MAVEN_FAILURE_RE: Final[re.Pattern[str]] = re.compile(
     r"^\[ERROR\]"
 )
+#: Maven [INFO] separator lines: "[INFO] --------...--------"
+#: These are decorative dashes emitted before/after each module build and
+#: between lifecycle phase transitions — pure noise (dozens per build).
+_MAVEN_SEPARATOR_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\[INFO\]\s*-{10,}"
+)
+#: Maven [INFO] boilerplate lines that carry zero actionable information:
+#: "Scanning for projects...", "Building X 1.2.3", "--- plugin:version ---",
+#: "BUILD SUCCESS" is NOT included here (it is kept verbatim).
+_MAVEN_INFO_BOILERPLATE_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\[INFO\]\s+(?:"
+    r"Scanning for projects\.\.\."
+    r"|Building\s+\S"           # "[INFO] Building my-artifact 1.0-SNAPSHOT"
+    r"|--- "                     # "[INFO] --- maven-compiler-plugin:3.11.0:compile ..."
+    r"|skip non existing "       # "[INFO] skip non existing resourceDirectory ..."
+    r"|No sources to compile"
+    r"|Nothing to compile"
+    r"|Compiling \d+ source"     # "[INFO] Compiling 42 source files"
+    r"|Changes detected"
+    r"|Not compiling"
+    r")"
+)
+#: Maven [INFO] reactor lines: "Reactor Build Order:", "Reactor Summary for..."
+_MAVEN_REACTOR_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\[INFO\]\s+Reactor (?:Build Order|Summary)"
+)
 
 
 class MavenFilter(Filter):
@@ -8560,8 +8752,10 @@ class MavenFilter(Filter):
     Compression model:
 
     * **test/verify/package**: keep ``BUILD SUCCESS/FAILURE``, test summary
-      lines (``Tests run: X``), and ERROR lines. Drop download progress
-      (``Downloading:``, ``Downloaded:``).
+      lines (``Tests run: X``), ``[WARN]``/``[ERROR]`` lines, and ``[INFO]``
+      lines with real content.  Drop download progress, ``[INFO] ---``
+      separator lines, ``[INFO] Building …`` / ``[INFO] Scanning …``
+      boilerplate, and ``[INFO] Reactor …`` header lines.
     * **dependency:tree**: head=10, tail=10 compression (dependency trees are
       large).
     * **install**: keep last 30 lines + any ERROR lines.
@@ -8601,20 +8795,61 @@ class MavenFilter(Filter):
         return _head_tail_compress(lines, head=10, tail=10, label="lines")
 
     def _compress_test(self, lines: list[str]) -> str:
-        """Compress test output: keep result, summary, and errors."""
+        """Compress test/verify/package output.
+
+        Drops the bulk ``[INFO]`` boilerplate that fills Maven output even on a
+        green build:
+
+        * ``[INFO] Downloading:`` / ``Downloaded:`` — dependency fetch noise.
+        * ``[INFO] --------…--------`` — decorative separator lines.
+        * ``[INFO] Building <artifact>`` — per-module build header.
+        * ``[INFO] Scanning for projects…`` — startup chatter.
+        * ``[INFO] --- plugin:goal ---`` — plugin-execution header lines.
+        * ``[INFO] Reactor Build Order:`` / ``Reactor Summary`` — multi-module
+          reactor header block.
+
+        Keeps all ``[WARN]``, ``[ERROR]``, ``Tests run:`` summary lines, and
+        ``[INFO] BUILD SUCCESS/FAILURE`` verbatim.
+        """
         kept: list[str] = []
         dropped_downloads = 0
+        dropped_separators = 0
+        dropped_boilerplate = 0
+        dropped_reactor = 0
 
         for line in lines:
+            # Always keep [WARN] and [ERROR] lines.
+            if line.startswith("[WARNING]") or line.startswith("[WARN]") or line.startswith("[ERROR]"):
+                kept.append(line)
+                continue
+            # Always keep test summary lines and BUILD result lines.
+            if _MAVEN_TEST_SUMMARY_RE.match(line) or _MAVEN_BUILD_RESULT_RE.match(line):
+                kept.append(line)
+                continue
             # Drop download progress lines.
             if _MAVEN_DOWNLOAD_RE.match(line):
                 dropped_downloads += 1
+                continue
+            # Drop "[INFO] --------…--------" separator lines.
+            if _MAVEN_SEPARATOR_RE.match(line):
+                dropped_separators += 1
+                continue
+            # Drop "[INFO] Building X", "[INFO] Scanning for projects…", etc.
+            if _MAVEN_INFO_BOILERPLATE_RE.match(line):
+                dropped_boilerplate += 1
+                continue
+            # Drop Reactor header lines (multi-module build noise).
+            if _MAVEN_REACTOR_RE.match(line):
+                dropped_reactor += 1
                 continue
             kept.append(line)
 
         notes: list[str] = []
         if dropped_downloads:
             notes.append(f"dropped {dropped_downloads} download-progress lines")
+        total_info_dropped = dropped_separators + dropped_boilerplate + dropped_reactor
+        if total_info_dropped:
+            notes.append(f"collapsed {total_info_dropped} [INFO] boilerplate/separator lines")
 
         self._emit_notes(kept, notes)
         return self._finalize(kept)

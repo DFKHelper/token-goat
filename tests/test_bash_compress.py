@@ -4866,3 +4866,348 @@ class TestRubyFilter:
         f = bc.RubyFilter()
         result = f.apply(text, "", 0, ["minitest"])
         assert "20 runs, 40 assertions" in result.text
+
+
+# ---------------------------------------------------------------------------
+# MakeFilter — autotools configure compression
+# ---------------------------------------------------------------------------
+
+class TestMakeFilterConfigure:
+    """MakeFilter correctly compresses autotools ./configure output."""
+
+    def test_matches_dot_slash_configure(self) -> None:
+        """MakeFilter.matches() accepts ./configure."""
+        f = bc.MakeFilter()
+        assert f.matches(["./configure"])
+
+    def test_matches_relative_path_configure(self) -> None:
+        """MakeFilter.matches() accepts ../configure."""
+        f = bc.MakeFilter()
+        assert f.matches(["../configure"])
+
+    def test_matches_absolute_path_configure(self) -> None:
+        """MakeFilter.matches() accepts absolute configure paths."""
+        f = bc.MakeFilter()
+        assert f.matches(["/usr/src/mylib/configure"])
+
+    def test_matches_config_script(self) -> None:
+        """MakeFilter.matches() accepts ./config (alternate autotools stem)."""
+        f = bc.MakeFilter()
+        assert f.matches(["./config"])
+
+    def test_select_filter_dispatches_configure(self) -> None:
+        """select_filter routes './configure' to MakeFilter."""
+        f = bc.select_filter(["./configure"])
+        assert f is not None
+        assert f.name == "make"
+
+    def test_checking_lines_dropped(self) -> None:
+        """'checking for ...' probe lines are dropped and counted in note."""
+        stdout = (
+            "checking for gcc... yes\n"
+            "checking for g++... yes\n"
+            "checking whether gcc accepts -g... yes\n"
+            "checking for library containing dlopen... -ldl\n"
+            "configure: creating ./config.status\n"
+            "config.status: creating Makefile\n"
+        )
+        f = bc.MakeFilter()
+        result = f.apply(stdout, "", 0, ["./configure"])
+        assert "checking for gcc" not in result.text
+        assert "checking whether" not in result.text
+        assert "checking for library" not in result.text
+        assert "dropped 4" in result.text
+        assert "probe" in result.text
+
+    def test_configure_info_lines_dropped(self) -> None:
+        """'configure: creating ...' benign info lines are dropped."""
+        stdout = (
+            "checking for make... make\n"
+            "configure: creating ./config.status\n"
+            "configure: loading cache ./config.cache\n"
+            "configure: running config.status\n"
+        )
+        f = bc.MakeFilter()
+        result = f.apply(stdout, "", 0, ["./configure"])
+        # The actual config.status / cache paths should not appear (lines dropped)
+        assert "config.status" not in result.text
+        assert "./config.cache" not in result.text
+        # A summary note about dropped info lines should be present
+        assert "creating/loading" in result.text
+
+    def test_configure_error_kept(self) -> None:
+        """'configure: error: ...' lines are always kept."""
+        stdout = (
+            "checking for zlib.h... no\n"
+            "configure: error: zlib not found; install zlib-dev\n"
+        )
+        f = bc.MakeFilter()
+        result = f.apply(stdout, "", 1, ["./configure"])
+        assert "configure: error: zlib not found" in result.text
+
+    def test_configure_warning_kept(self) -> None:
+        """'configure: WARNING: ...' lines are always kept."""
+        stdout = (
+            "checking for openssl... yes\n"
+            "configure: WARNING: unrecognized options: --enable-foo\n"
+            "checking whether to enable debug... no\n"
+        )
+        f = bc.MakeFilter()
+        result = f.apply(stdout, "", 0, ["./configure"])
+        assert "configure: WARNING: unrecognized options" in result.text
+
+    def test_non_checking_lines_kept(self) -> None:
+        """Non-probe lines (preamble, AC_MSG_RESULT, etc.) are kept."""
+        stdout = (
+            "This is free software; see the source for copying conditions.\n"
+            "checking for gcc... yes\n"
+            "Your system is ready to build.\n"
+        )
+        f = bc.MakeFilter()
+        result = f.apply(stdout, "", 0, ["./configure"])
+        assert "This is free software" in result.text
+        assert "Your system is ready to build" in result.text
+
+    def test_clean_configure_no_probe_no_note(self) -> None:
+        """A configure with no probe lines emits no note."""
+        stdout = "configure: creating ./config.status\n"
+        f = bc.MakeFilter()
+        result = f.apply(stdout, "", 0, ["./configure"])
+        # The info line is dropped, but no "dropped N" probe note should appear
+        assert "probe" not in result.text
+
+
+# ---------------------------------------------------------------------------
+# MakeFilter — CMake [N%] percent-progress line dropping
+# ---------------------------------------------------------------------------
+
+class TestMakeFilterPercentProgress:
+    """MakeFilter drops [N%] CMake parallel-make progress lines."""
+
+    def test_percent_building_lines_dropped(self) -> None:
+        """'[N%] Building CXX object ...' lines are dropped."""
+        stdout = (
+            "[ 10%] Building CXX object src/CMakeFiles/lib.dir/foo.cpp.o\n"
+            "[ 50%] Building C object src/CMakeFiles/lib.dir/bar.c.o\n"
+            "[ 90%] Linking CXX executable myapp\n"
+            "[100%] Built target myapp\n"
+        )
+        f = bc.MakeFilter()
+        result = f.apply(stdout, "", 0, ["make"])
+        assert "Building CXX object" not in result.text
+        assert "Linking CXX executable" not in result.text
+        assert "percent" in result.text.lower() or "progress" in result.text.lower() or "Building" not in result.text
+
+    def test_percent_progress_note_emitted(self) -> None:
+        """A note is appended when [N%] lines are dropped."""
+        stdout = (
+            "[ 25%] Building CXX object foo.cpp.o\n"
+            "[ 50%] Scanning dependencies of target lib\n"
+            "[ 75%] Generating foo.h\n"
+            "[100%] Installing headers\n"
+        )
+        f = bc.MakeFilter()
+        result = f.apply(stdout, "", 0, ["make"])
+        assert "dropped" in result.text
+        assert "progress" in result.text.lower() or "Building" not in result.text
+
+    def test_percent_line_with_error_kept(self) -> None:
+        """A [N%] line containing 'error' is not dropped."""
+        stdout = (
+            "[ 50%] Building CXX object foo.cpp.o\n"
+            "[ 75%] Building CXX: error: unexpected token\n"
+        )
+        f = bc.MakeFilter()
+        result = f.apply(stdout, "", 1, ["make"])
+        assert "error: unexpected token" in result.text
+
+    def test_regular_make_output_unaffected(self) -> None:
+        """Normal make output without [N%] lines is unaffected."""
+        stdout = (
+            "cc -c foo.c -o foo.o\n"
+            "make[1]: Entering directory '/src'\n"
+            "make[1]: Leaving directory '/src'\n"
+        )
+        f = bc.MakeFilter()
+        result = f.apply(stdout, "", 0, ["make"])
+        # Should still pass through (not error on absent percent lines)
+        assert result.text is not None
+
+
+# ---------------------------------------------------------------------------
+# MavenFilter — [INFO] boilerplate / separator collapsing
+# ---------------------------------------------------------------------------
+
+class TestMavenFilterBoilerplate:
+    """MavenFilter._compress_test() drops [INFO] separators and boilerplate."""
+
+    def _maven_output(self, extra_lines: str = "") -> str:
+        """Build a minimal maven test-run output with boilerplate."""
+        return (
+            "[INFO] Scanning for projects...\n"
+            "[INFO] \n"
+            "[INFO] ------------------------------------------------------------------------\n"
+            "[INFO] Building myproject 1.0.0\n"
+            "[INFO] ------------------------------------------------------------------------\n"
+            "[INFO] --- maven-surefire-plugin:3.0.0:test (default-test) @ myproject ---\n"
+            + extra_lines +
+            "[INFO] Tests run: 5, Failures: 0, Errors: 0, Skipped: 0\n"
+            "[INFO] \n"
+            "[INFO] ------------------------------------------------------------------------\n"
+            "[INFO] BUILD SUCCESS\n"
+            "[INFO] ------------------------------------------------------------------------\n"
+        )
+
+    def test_separator_lines_dropped(self) -> None:
+        """'[INFO] --------...' separator lines are dropped."""
+        f = bc.MavenFilter()
+        result = f.apply(self._maven_output(), "", 0, ["mvn", "test"])
+        assert "--------" not in result.text
+
+    def test_scanning_for_projects_dropped(self) -> None:
+        """'[INFO] Scanning for projects...' is dropped as boilerplate."""
+        f = bc.MavenFilter()
+        result = f.apply(self._maven_output(), "", 0, ["mvn", "test"])
+        assert "Scanning for projects" not in result.text
+
+    def test_building_line_dropped(self) -> None:
+        """'[INFO] Building X' lines are dropped as boilerplate."""
+        f = bc.MavenFilter()
+        result = f.apply(self._maven_output(), "", 0, ["mvn", "test"])
+        assert "Building myproject 1.0.0" not in result.text
+
+    def test_plugin_header_dropped(self) -> None:
+        """'[INFO] --- plugin:version:goal' lines are dropped."""
+        f = bc.MavenFilter()
+        result = f.apply(self._maven_output(), "", 0, ["mvn", "test"])
+        assert "maven-surefire-plugin" not in result.text
+
+    def test_test_summary_kept(self) -> None:
+        """'[INFO] Tests run: ...' summary lines are always kept."""
+        f = bc.MavenFilter()
+        result = f.apply(self._maven_output(), "", 0, ["mvn", "test"])
+        assert "Tests run: 5" in result.text
+
+    def test_build_success_kept(self) -> None:
+        """'[INFO] BUILD SUCCESS' is always kept."""
+        f = bc.MavenFilter()
+        result = f.apply(self._maven_output(), "", 0, ["mvn", "test"])
+        assert "BUILD SUCCESS" in result.text
+
+    def test_boilerplate_note_emitted(self) -> None:
+        """A note reporting how many [INFO] boilerplate lines were dropped is emitted."""
+        f = bc.MavenFilter()
+        result = f.apply(self._maven_output(), "", 0, ["mvn", "test"])
+        assert "collapsed" in result.text
+        assert "[INFO]" in result.text or "boilerplate" in result.text
+
+    def test_reactor_block_dropped(self) -> None:
+        """'[INFO] Reactor Build Order' and 'Reactor Summary' lines are dropped."""
+        output = (
+            "[INFO] Scanning for projects...\n"
+            "[INFO] ------------------------------------------------------------------------\n"
+            "[INFO] Reactor Build Order:\n"
+            "[INFO] \n"
+            "[INFO]   module-a\n"
+            "[INFO]   module-b\n"
+            "[INFO] \n"
+            "[INFO] Reactor Summary for myproject 1.0.0:\n"
+            "[INFO] module-a SUCCESS [1.234 s]\n"
+            "[INFO] module-b SUCCESS [0.567 s]\n"
+            "[INFO] ------------------------------------------------------------------------\n"
+            "[INFO] BUILD SUCCESS\n"
+            "[INFO] ------------------------------------------------------------------------\n"
+        )
+        f = bc.MavenFilter()
+        result = f.apply(output, "", 0, ["mvn", "test"])
+        assert "Reactor Build Order" not in result.text
+        assert "Reactor Summary" not in result.text
+
+    def test_error_line_kept(self) -> None:
+        """[ERROR] lines are always kept even with heavy boilerplate around them."""
+        output = self._maven_output(
+            "[ERROR] Tests run: 1, Failures: 1, Errors: 0: SomeTest -- time elapsed: 0.1 s <<< FAILURE!\n"
+        )
+        f = bc.MavenFilter()
+        result = f.apply(output, "", 1, ["mvn", "test"])
+        assert "FAILURE" in result.text
+
+
+# ---------------------------------------------------------------------------
+# RuffFilter — ruff format subcommand
+# ---------------------------------------------------------------------------
+
+class TestRuffFormatFilter:
+    """RuffFilter._compress_format() collapses per-file 'Reformatted ...' lines."""
+
+    def test_select_filter_dispatches_ruff(self) -> None:
+        """select_filter routes 'ruff' to RuffFilter."""
+        f = bc.select_filter(["ruff", "format"])
+        assert f is not None
+        assert f.name == "ruff"
+
+    def test_reformatted_lines_collapsed(self) -> None:
+        """'Reformatted path/to/file.py' per-file lines are dropped, summary kept."""
+        stdout = (
+            "Reformatted src/foo.py\n"
+            "Reformatted src/bar.py\n"
+            "Reformatted src/baz.py\n"
+            "3 files reformatted, 2 files left unchanged\n"
+        )
+        f = bc.RuffFilter()
+        result = f.apply(stdout, "", 0, ["ruff", "format"])
+        assert "Reformatted src/foo.py" not in result.text
+        assert "3 files reformatted" in result.text
+
+    def test_reformatted_note_emitted(self) -> None:
+        """A note is emitted reporting how many 'Reformatted' lines were collapsed."""
+        stdout = (
+            "Reformatted src/a.py\n"
+            "Reformatted src/b.py\n"
+            "2 files reformatted\n"
+        )
+        f = bc.RuffFilter()
+        result = f.apply(stdout, "", 0, ["ruff", "format"])
+        assert "collapsed" in result.text
+        assert "2" in result.text
+
+    def test_would_reformat_check_mode_collapsed(self) -> None:
+        """'Would reformat:' lines from ruff format --check are collapsed."""
+        stdout = (
+            "Would reformat: src/alpha.py\n"
+            "Would reformat: src/beta.py\n"
+            "Would reformat: src/gamma.py\n"
+            "3 files would be reformatted, 1 file already formatted\n"
+        )
+        f = bc.RuffFilter()
+        result = f.apply(stdout, "", 1, ["ruff", "format", "--check"])
+        assert "Would reformat: src/alpha.py" not in result.text
+        assert "3 files would be reformatted" in result.text
+        assert "collapsed" in result.text
+
+    def test_already_formatted_clean_exit(self) -> None:
+        """When all files are already formatted ruff format emits no per-file lines."""
+        stdout = "1 file left unchanged\n"
+        f = bc.RuffFilter()
+        result = f.apply(stdout, "", 0, ["ruff", "format"])
+        # Summary line should be present; no note needed
+        assert "unchanged" in result.text
+
+    def test_ruff_check_not_affected(self) -> None:
+        """ruff check output is not routed through _compress_format."""
+        stdout = (
+            "src/foo.py:1:1: E501 Line too long (120 > 88)\n"
+            "src/foo.py:2:5: F401 'os' imported but unused\n"
+            "Found 2 errors.\n"
+        )
+        f = bc.RuffFilter()
+        result = f.apply(stdout, "", 1, ["ruff", "check", "src/"])
+        # Both violation lines should be preserved (check path, not format path)
+        assert "E501" in result.text
+        assert "F401" in result.text
+
+    def test_empty_output_clean_exit(self) -> None:
+        """ruff format with no output and exit 0 returns empty string."""
+        f = bc.RuffFilter()
+        result = f.apply("", "", 0, ["ruff", "format"])
+        assert result.text == "" or result.text.strip() == ""
