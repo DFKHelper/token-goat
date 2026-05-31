@@ -93,6 +93,10 @@ __all__ = [
     "_serialize_result_cache_entry",
     "_serialize_skill_entry",
     "_serialize_web_entry",
+    # Size-cap helpers exposed for testing
+    "_SESSION_MAX_BYTES",
+    "_get_session_max_bytes",
+    "_trim_session_for_size",
 ]
 
 import contextlib
@@ -2410,6 +2414,142 @@ def safe_load(session_id: str, *, caller: str = "safe_load") -> SessionCache | N
         return None
 
 
+# ---------------------------------------------------------------------------
+# Session file size cap
+# ---------------------------------------------------------------------------
+
+_SESSION_MAX_BYTES: Final[int] = 2 * 1024 * 1024  # 2 MB default
+
+
+def _get_session_max_bytes() -> int:
+    """Return the session file size cap in bytes.
+
+    Reads ``TOKEN_GOAT_SESSION_MAX_BYTES`` from the environment.  If the value
+    is absent, non-numeric, or zero/negative, falls back to
+    :data:`_SESSION_MAX_BYTES` (2 MB).
+    """
+    raw = os.environ.get("TOKEN_GOAT_SESSION_MAX_BYTES", "").strip()
+    if raw:
+        try:
+            v = int(raw)
+            if v > 0:
+                return v
+        except (ValueError, TypeError):
+            pass
+    return _SESSION_MAX_BYTES
+
+
+def _trim_session_for_size(cache: SessionCache, max_bytes: int) -> bool:
+    """Trim *cache* in-place until its serialized size fits within *max_bytes*.
+
+    Trim order (largest-contributor-first, repeated up to 5 passes):
+
+    1. ``result_cache`` (dict keyed by ``file::symbol``)
+    2. ``bash_history`` (dict keyed by cmd SHA)
+    3. ``web_history`` (dict keyed by URL SHA)
+    4. ``greps`` (list)
+    5. ``glob_history`` (list)
+    6. ``hints_seen`` (dict keyed by fingerprint)
+    7. ``bash_dedup_emitted_ids`` (set)
+
+    Each pass drops 25 % of the current entries from the largest collection
+    (oldest-first for dicts/lists with a ``ts`` field; arbitrary order for
+    ``bash_dedup_emitted_ids``).
+
+    The following fields are **never** trimmed because they are load-bearing
+    for hint correctness: ``files``, ``edited_files``, ``skill_history``,
+    ``decisions``, ``hint_category_stats``.
+
+    Returns ``True`` if any trimming was performed, ``False`` if the cache
+    was already within the limit.
+    """
+    cache._invalidate_json_cache()
+    current_size = len(cache.to_json().encode("utf-8"))
+    if current_size <= max_bytes:
+        return False
+
+    _LOG.warning(
+        "session size cap: %s serialized to %d bytes (cap=%d); trimming",
+        cache.session_id[:16], current_size, max_bytes,
+    )
+    trimmed = False
+
+    for _pass in range(5):
+        cache._invalidate_json_cache()
+        current_size = len(cache.to_json().encode("utf-8"))
+        if current_size <= max_bytes:
+            break
+
+        # Build candidate list: (size_proxy, name) for non-empty trimmable collections.
+        candidates: list[tuple[int, str]] = []
+        if cache.result_cache:
+            candidates.append((len(cache.result_cache), "result_cache"))
+        if cache.bash_history:
+            candidates.append((len(cache.bash_history), "bash_history"))
+        if cache.web_history:
+            candidates.append((len(cache.web_history), "web_history"))
+        if cache.greps:
+            candidates.append((len(cache.greps), "greps"))
+        if cache.glob_history:
+            candidates.append((len(cache.glob_history), "glob_history"))
+        if cache.hints_seen:
+            candidates.append((len(cache.hints_seen), "hints_seen"))
+        if cache.bash_dedup_emitted_ids:
+            candidates.append((len(cache.bash_dedup_emitted_ids), "bash_dedup_emitted_ids"))
+
+        if not candidates:
+            break  # nothing left to trim
+
+        candidates.sort(reverse=True)
+        target_name = candidates[0][1]
+        target_count = candidates[0][0]
+        drop_n = max(1, target_count // 4)  # drop 25 %
+
+        if target_name == "result_cache":
+            # Drop oldest entries (by ts).
+            ordered = sorted(cache.result_cache.items(), key=lambda kv: kv[1].ts)
+            to_remove = {k for k, _ in ordered[:drop_n]}
+            cache.result_cache = {k: v for k, v in cache.result_cache.items() if k not in to_remove}
+        elif target_name == "bash_history":
+            ordered_bash = sorted(cache.bash_history.items(), key=lambda kv: kv[1].ts)
+            to_remove_bash = {k for k, _ in ordered_bash[:drop_n]}
+            cache.bash_history = {k: v for k, v in cache.bash_history.items() if k not in to_remove_bash}
+        elif target_name == "web_history":
+            ordered_web = sorted(cache.web_history.items(), key=lambda kv: kv[1].ts)
+            to_remove_web = {k for k, _ in ordered_web[:drop_n]}
+            cache.web_history = {k: v for k, v in cache.web_history.items() if k not in to_remove_web}
+        elif target_name == "greps":
+            # Oldest-first (list is ordered by insertion time; ts field confirms).
+            cache.greps = sorted(cache.greps, key=lambda g: g.ts)[drop_n:]
+        elif target_name == "glob_history":
+            cache.glob_history = sorted(cache.glob_history, key=lambda g: g.ts)[drop_n:]
+        elif target_name == "hints_seen":
+            # Drop lowest-count (least-important) fingerprints first.
+            sorted_hints = sorted(cache.hints_seen.items(), key=lambda x: x[1])
+            cache.hints_seen = dict(sorted_hints[drop_n:])
+        elif target_name == "bash_dedup_emitted_ids":
+            # Arbitrary order; just drop *drop_n* items.
+            lst = list(cache.bash_dedup_emitted_ids)
+            cache.bash_dedup_emitted_ids = set(lst[drop_n:])
+
+        trimmed = True
+
+    cache._invalidate_json_cache()
+    final_size = len(cache.to_json().encode("utf-8"))
+    if final_size > max_bytes:
+        _LOG.warning(
+            "session size cap: could not reduce %s below cap after 5 passes "
+            "(final=%d bytes, cap=%d)",
+            cache.session_id[:16], final_size, max_bytes,
+        )
+    else:
+        _LOG.info(
+            "session size cap: trimmed %s to %d bytes (cap=%d)",
+            cache.session_id[:16], final_size, max_bytes,
+        )
+    return trimmed
+
+
 def save(cache: SessionCache) -> None:
     """Atomically persist the session cache to disk with cross-process CAS.
 
@@ -2511,6 +2651,10 @@ def save(cache: SessionCache) -> None:
                     cache.version,
                 ) + 1
                 cache._invalidate_json_cache()
+
+                # Size cap: trim oldest entries before writing if the serialized
+                # JSON would exceed the configured maximum (default 2 MB).
+                _trim_session_for_size(cache, _get_session_max_bytes())
 
                 try:
                     paths.atomic_write_text(p, cache.to_json())
