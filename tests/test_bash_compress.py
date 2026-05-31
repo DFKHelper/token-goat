@@ -5486,3 +5486,281 @@ class TestDotnetFilterFormat:
         assert "HTTP OK" not in result.text
         assert "Resolving conflicts" not in result.text
         assert "Restore succeeded." in result.text
+
+
+# ---------------------------------------------------------------------------
+# NxFilter
+# ---------------------------------------------------------------------------
+
+
+class TestNxFilter:
+    """Tests for NxFilter — Nx monorepo build output compression."""
+
+    def test_drops_separator_lines(self) -> None:
+        """Long dash separator / decoration lines are dropped silently."""
+        text = (
+            "NX  Running target build for project myapp and 3 tasks it depends on\n"
+            "\n"
+            "——————————————————————————————————————————————————————————\n"
+            "\n"
+            "✔  nx run @myorg/lib:build (4s)\n"
+            "\n"
+            " NX   Ran target build for 2 projects (6s)\n"
+        )
+        f = bc.NxFilter()
+        result = f.apply(text, "", 0, ["nx", "run-many", "--target=build"])
+        assert "——————" not in result.text
+        assert "NX  Running target" in result.text
+        assert "Ran target build" in result.text
+
+    def test_keeps_status_lines(self) -> None:
+        """Per-project ✔ / ✖ status lines are kept verbatim."""
+        text = (
+            "NX  Running target test for 3 projects\n"
+            "✔  nx run @myorg/lib:test (2s)\n"
+            "✔  nx run @myorg/core:test (1s)\n"
+            "✖  nx run @myorg/app:test (failed)\n"
+            " NX   Ran target test for 3 projects (5s)\n"
+            "   ✖    1/3 targets failed\n"
+        )
+        f = bc.NxFilter()
+        result = f.apply(text, "", 1, ["nx", "run-many", "--target=test"])
+        assert "✔  nx run @myorg/lib:test" in result.text
+        assert "✖  nx run @myorg/app:test" in result.text
+        assert "1/3 targets failed" in result.text
+
+    def test_drops_cache_hit_annotations(self) -> None:
+        """Cache-hit annotation lines are dropped."""
+        text = (
+            "NX  Running target build for 2 projects\n"
+            "> nx run @myorg/lib:build  [existing outputs match the cache, left as is]\n"
+            "✔  nx run @myorg/lib:build (0s)\n"
+            " NX   Ran target build for 1 project (0s)\n"
+        )
+        f = bc.NxFilter()
+        result = f.apply(text, "", 0, ["nx", "run-many", "--target=build"])
+        assert "existing outputs match the cache" not in result.text
+        assert "✔  nx run @myorg/lib:build" in result.text
+
+    def test_drops_task_headers_on_success(self) -> None:
+        """Per-task headers ('> nx run scope/pkg:target') are dropped on clean exit."""
+        text = (
+            "NX  Running target build for 2 projects\n"
+            "> nx run @myorg/lib:build\n"
+            "> nx run @myorg/app:build\n"
+            "✔  nx run @myorg/lib:build (3s)\n"
+            "✔  nx run @myorg/app:build (4s)\n"
+        )
+        f = bc.NxFilter()
+        result = f.apply(text, "", 0, ["nx", "run-many", "--target=build"])
+        assert "> nx run @myorg/lib:build" not in result.text
+        assert "✔  nx run @myorg/lib:build" in result.text
+
+    def test_keeps_failed_task_headers_as_sample(self) -> None:
+        """Up to 5 failing task headers are kept when exit_code != 0."""
+        headers = [f"> nx run @myorg/pkg{i}:build" for i in range(8)]
+        text = "\n".join(headers) + "\n✖  nx run @myorg/pkg0:build (failed)\n"
+        f = bc.NxFilter()
+        result = f.apply(text, "", 1, ["nx", "run-many", "--target=build"])
+        # First 5 kept, rest dropped
+        assert "> nx run @myorg/pkg0:build" in result.text
+        assert "> nx run @myorg/pkg4:build" in result.text
+        assert "> nx run @myorg/pkg7:build" not in result.text
+
+    def test_dispatch_nx_binary(self) -> None:
+        """select_filter routes 'nx run-many ...' to NxFilter."""
+        f = bc.select_filter(["nx", "run-many", "--target=build"])
+        assert f is not None
+        assert f.name == "nx"
+
+    def test_dispatch_npx_nx(self) -> None:
+        """select_filter routes 'npx nx ...' to NxFilter."""
+        f = bc.select_filter(["npx", "nx", "build"])
+        assert f is not None
+        assert f.name == "nx"
+
+    def test_exported_in_all(self) -> None:
+        assert "NxFilter" in bc.__all__
+
+
+# ---------------------------------------------------------------------------
+# LernaFilter
+# ---------------------------------------------------------------------------
+
+
+class TestLernaFilter:
+    """Tests for LernaFilter — Lerna monorepo task output compression."""
+
+    def test_drops_verbose_lines(self) -> None:
+        """lerna verb/verbose timing lines are dropped (only appear in note, not verbatim)."""
+        text = (
+            "lerna info versioning independent\n"
+            "lerna verb symlink /path/to/node_modules\n"
+            "lerna verbose filter include all packages\n"
+            "lerna info Executing command in 3 packages: \"npm run build\"\n"
+            "lerna success run Ran npm script 'build' in 3 packages in 5.1s:\n"
+        )
+        f = bc.LernaFilter()
+        result = f.apply(text, "", 0, ["lerna", "run", "build"])
+        # Verbose lines should not appear verbatim; they may appear in the drop-count note.
+        assert "lerna verb symlink" not in result.text
+        assert "lerna verbose filter" not in result.text
+        assert "lerna info versioning" in result.text
+        assert "lerna success" in result.text
+
+    def test_drops_notice_lines(self) -> None:
+        """lerna notice lines (changelog, publish noise) are dropped."""
+        text = (
+            "lerna info Executing command in 2 packages: \"npm run test\"\n"
+            "lerna notice cli v7.4.2\n"
+            "lerna notice\n"
+            "lerna success run Ran npm script 'test' in 2 packages in 2.0s:\n"
+        )
+        f = bc.LernaFilter()
+        result = f.apply(text, "", 0, ["lerna", "run", "test"])
+        # Notice lines should not appear verbatim (only in the drop-count note).
+        assert "lerna notice cli v7.4.2" not in result.text
+        assert "lerna success" in result.text
+        # A count note should mention dropped notice lines.
+        assert "notice" in result.text
+
+    def test_samples_ran_npm_script_lines(self) -> None:
+        """More than 5 'Ran npm script' info lines are collapsed to a count."""
+        ran_lines = [
+            f"lerna info run Ran npm script 'build' in '@myorg/pkg{i}' in 1.{i}s:"
+            for i in range(8)
+        ]
+        text = "\n".join(ran_lines) + "\nlerna success run Ran npm script 'build' in 8 packages in 12s:\n"
+        f = bc.LernaFilter()
+        result = f.apply(text, "", 0, ["lerna", "run", "build"])
+        assert "lerna info run Ran npm script 'build' in '@myorg/pkg0'" in result.text
+        assert "lerna info run Ran npm script 'build' in '@myorg/pkg4'" in result.text
+        assert "lerna info run Ran npm script 'build' in '@myorg/pkg7'" not in result.text
+        assert "+3 more" in result.text
+        assert "lerna success" in result.text
+
+    def test_keeps_all_ran_lines_when_under_sample(self) -> None:
+        """Five or fewer 'Ran npm script' lines are kept verbatim."""
+        ran_lines = [
+            f"lerna info run Ran npm script 'build' in '@myorg/pkg{i}' in 0.5s:"
+            for i in range(3)
+        ]
+        text = "\n".join(ran_lines) + "\nlerna success run Ran npm script 'build' in 3 packages in 1.5s:\n"
+        f = bc.LernaFilter()
+        result = f.apply(text, "", 0, ["lerna", "run", "build"])
+        for i in range(3):
+            assert f"@myorg/pkg{i}" in result.text
+        assert "more" not in result.text
+
+    def test_keeps_error_lines(self) -> None:
+        """lerna error / lerna ERR! lines survive compression."""
+        text = (
+            "lerna info Executing command in 2 packages: \"npm run build\"\n"
+            "lerna verb progress filtering packages\n"
+            "lerna error run Failed to run script 'build' in '@myorg/broken'\n"
+            "lerna ERR! errno 1\n"
+        )
+        f = bc.LernaFilter()
+        result = f.apply(text, "", 1, ["lerna", "run", "build"])
+        assert "lerna error run" in result.text
+        assert "lerna ERR!" in result.text
+        # Verbose line should not appear verbatim (may appear in note text only).
+        assert "lerna verb progress" not in result.text
+
+    def test_dispatch_lerna(self) -> None:
+        """select_filter routes 'lerna run build' to LernaFilter."""
+        f = bc.select_filter(["lerna", "run", "build"])
+        assert f is not None
+        assert f.name == "lerna"
+
+    def test_exported_in_all(self) -> None:
+        assert "LernaFilter" in bc.__all__
+
+
+# ---------------------------------------------------------------------------
+# PrettierFilter
+# ---------------------------------------------------------------------------
+
+
+class TestPrettierFilter:
+    """Tests for PrettierFilter — prettier --write output compression."""
+
+    def test_samples_changed_files_beyond_limit(self) -> None:
+        """More than 5 changed file lines are collapsed to a count."""
+        lines = [f"src/module{i}.ts 42ms" for i in range(9)]
+        lines.append("All matched files use Prettier standards.")
+        text = "\n".join(lines)
+        f = bc.PrettierFilter()
+        result = f.apply(text, "", 0, ["prettier", "--write", "."])
+        assert "src/module0.ts" in result.text
+        assert "src/module4.ts" in result.text
+        assert "src/module8.ts" not in result.text
+        assert "+4 more formatted files" in result.text
+        assert "All matched files" in result.text
+
+    def test_keeps_all_changed_when_under_sample(self) -> None:
+        """Five or fewer changed file lines are kept verbatim."""
+        lines = [f"src/foo{i}.js 10ms" for i in range(4)]
+        text = "\n".join(lines)
+        f = bc.PrettierFilter()
+        result = f.apply(text, "", 0, ["prettier", "--write", "src/"])
+        for i in range(4):
+            assert f"src/foo{i}.js" in result.text
+        assert "more formatted" not in result.text
+
+    def test_drops_unchanged_file_lines(self) -> None:
+        """File lines with (unchanged) are dropped entirely (only a count note remains)."""
+        text = (
+            "src/modified.ts 88ms\n"
+            "src/untouched.ts 12ms (unchanged)\n"
+            "src/also_clean.js 9ms (unchanged)\n"
+            "All matched files use Prettier standards.\n"
+        )
+        f = bc.PrettierFilter()
+        result = f.apply(text, "", 0, ["prettier", "--write", "."])
+        assert "src/modified.ts" in result.text
+        # Unchanged-file lines should not appear verbatim.
+        assert "src/untouched.ts" not in result.text
+        assert "src/also_clean.js" not in result.text
+        # The note should record how many were dropped.
+        assert "dropped 2 unchanged" in result.text
+        assert "All matched files" in result.text
+
+    def test_keeps_summary_lines(self) -> None:
+        """Summary and warning lines are always kept."""
+        text = (
+            "Checking formatting...\n"
+            "src/broken.ts\n"
+            "Code style issues found in 1 file. Forgot to run Prettier?\n"
+        )
+        f = bc.PrettierFilter()
+        result = f.apply(text, "", 1, ["prettier", "--check", "."])
+        assert "Checking formatting" in result.text
+        assert "Code style issues found" in result.text
+
+    def test_keeps_error_lines(self) -> None:
+        """Lines with error signals survive compression."""
+        text = (
+            "src/good.ts 10ms\n"
+            "[error] src/bad.ts: SyntaxError: Unexpected token\n"
+            "prettier [error] failed to parse\n"
+        )
+        f = bc.PrettierFilter()
+        result = f.apply(text, "", 1, ["prettier", "--write", "."])
+        assert "[error] src/bad.ts" in result.text
+        assert "prettier [error]" in result.text
+
+    def test_dispatch_prettier(self) -> None:
+        """select_filter routes 'prettier --write .' to PrettierFilter."""
+        f = bc.select_filter(["prettier", "--write", "."])
+        assert f is not None
+        assert f.name == "prettier"
+
+    def test_dispatch_npx_prettier(self) -> None:
+        """select_filter routes 'npx prettier --write .' to PrettierFilter."""
+        f = bc.select_filter(["npx", "prettier", "--write", "."])
+        assert f is not None
+        assert f.name == "prettier"
+
+    def test_exported_in_all(self) -> None:
+        assert "PrettierFilter" in bc.__all__
