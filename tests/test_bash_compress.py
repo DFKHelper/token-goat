@@ -1318,12 +1318,15 @@ class TestAnsibleFilter:
         f = bc.AnsibleFilter()
         result = f.apply(stdout, "", 1, ["ansible-lint", "playbooks/"])
         text = result.text
-        # Should have the first 3 yaml-indent lines.
-        yaml_lines = [ln for ln in text.split("\n") if "yaml-indent" in ln]
-        assert len(yaml_lines) >= 1
-        # Should note that some were elided.
-        if "yaml-indent" in text and "elided" in text:
-            assert "more occurrences" in text
+        # Should have the first 3 yaml-indent violation lines (not 4).
+        yaml_viol_lines = [
+            ln for ln in text.split("\n")
+            if "yaml-indent" in ln and "elided" not in ln and "token-goat" not in ln
+        ]
+        assert 1 <= len(yaml_viol_lines) <= 3
+        # Should note that the 4th occurrence was elided (singular or plural accepted).
+        assert "elided" in text
+        assert "more occurrence" in text  # matches "more occurrence" and "more occurrences"
 
     def test_matches_ansible_binaries(self) -> None:
         """AnsibleFilter matches ansible, ansible-playbook, ansible-galaxy, ansible-lint."""
@@ -5211,3 +5214,238 @@ class TestRuffFormatFilter:
         f = bc.RuffFilter()
         result = f.apply("", "", 0, ["ruff", "format"])
         assert result.text == "" or result.text.strip() == ""
+
+
+# ---------------------------------------------------------------------------
+# JestFilter — Failures: repeated-summary section (verbose mode)
+# ---------------------------------------------------------------------------
+
+
+class TestJestFilterVerboseFeatures:
+    """Tests for --verbose-mode improvements to JestFilter."""
+
+    def test_collapses_failures_section_duplicate(self) -> None:
+        """The 'Failures:' repeated-summary block is collapsed to a note."""
+        text = (
+            "FAIL src/foo.test.js\n"
+            "  ● describe > test name\n"
+            "    Expected: 1\n"
+            "    Received: 2\n"
+            "\n"
+            "Failures:\n"
+            "  1. describe > test name\n"
+            "     Expected: 1\n"
+            "     Received: 2\n"
+            "\n"
+            "Test Suites: 1 failed, 1 total\n"
+            "Tests:       1 failed, 1 total\n"
+            "Time:        1.234 s\n"
+        )
+        f = bc.JestFilter()
+        result = f.apply(text, "", 1, ["jest", "--verbose"])
+        # Inline FAIL block must survive.
+        assert "FAIL src/foo.test.js" in result.text
+        assert "Expected: 1" in result.text
+        # The 'Failures:' header and its duplicate content must be dropped.
+        assert result.text.count("Expected: 1") == 1, (
+            "Failure details should appear exactly once (inline), not duplicated"
+        )
+        # A note should explain what was collapsed.
+        assert "duplicate" in result.text or "Failures:" in result.text or "collapsed" in result.text
+        # Summary lines must be preserved.
+        assert "Test Suites: 1 failed" in result.text
+        assert "Tests:       1 failed" in result.text
+
+    def test_summary_lines_after_failures_section_are_kept(self) -> None:
+        """Summary lines (Test Suites:, Tests:, Time:) following 'Failures:' are kept."""
+        text = (
+            "PASS src/bar.test.js\n"
+            "FAIL src/foo.test.js\n"
+            "  ● test fails\n"
+            "\n"
+            "Failures:\n"
+            "  1. test fails\n"
+            "     Expected true but got false\n"
+            "\n"
+            "Test Suites: 1 failed, 2 total\n"
+            "Tests:       1 failed, 5 total\n"
+        )
+        f = bc.JestFilter()
+        result = f.apply(text, "", 1, ["jest", "--verbose"])
+        assert "Test Suites: 1 failed, 2 total" in result.text
+        assert "Tests:       1 failed, 5 total" in result.text
+        # PASS file should be collapsed.
+        assert "PASS src/bar.test.js" not in result.text
+
+    def test_no_failures_section_unchanged(self) -> None:
+        """Output without a 'Failures:' section passes through normally."""
+        text = (
+            "PASS src/a.test.js\n"
+            "PASS src/b.test.js\n"
+            "Tests: 10 passed, 10 total\n"
+        )
+        f = bc.JestFilter()
+        result = f.apply(text, "", 0, ["jest"])
+        assert "Tests: 10 passed" in result.text
+        assert "collapsed 2 PASS files" in result.text
+
+
+# ---------------------------------------------------------------------------
+# AnsibleFilter — ansible-lint with modern rule-code format
+# ---------------------------------------------------------------------------
+
+
+class TestAnsibleLintModernFormat:
+    """Tests for ansible-lint ≥ 6 modern rule-code format."""
+
+    def test_modern_yaml_rule_grouped(self) -> None:
+        """Modern yaml[tag] rule codes are grouped and first 3 kept."""
+        stdout = "\n".join([
+            f"yaml[line-length]: ./playbooks/site.yml:{10 + i}:80: Line too long (120 > 80 chars)"
+            for i in range(6)
+        ]) + "\nLinting completed.\n"
+        f = bc.AnsibleFilter()
+        result = f.apply(stdout, "", 1, ["ansible-lint", "playbooks/"])
+        # First 3 violations should appear.
+        assert "yaml[line-length]" in result.text
+        lines_with_rule = [ln for ln in result.text.splitlines() if "yaml[line-length]" in ln]
+        # Should have ≤ 3 actual violation lines (plus possibly elision note).
+        violation_lines = [ln for ln in lines_with_rule if "elided" not in ln and "token-goat" not in ln]
+        assert 1 <= len(violation_lines) <= 3
+        # Should mention that some were elided.
+        assert "elided" in result.text or "more occurrence" in result.text
+
+    def test_modern_compound_rule_grouped(self) -> None:
+        """Modern compound rule codes (command-instead-of-module[command]) are grouped."""
+        lines_input = [
+            f"command-instead-of-module[command]: ./tasks/main.yml:{i}:1: Use the git module"
+            for i in range(5)
+        ]
+        lines_input.append("Linting completed with 5 violations.\n")
+        stdout = "\n".join(lines_input)
+        f = bc.AnsibleFilter()
+        result = f.apply(stdout, "", 1, ["ansible-lint", "tasks/"])
+        assert "command-instead-of-module" in result.text
+        # Summary line must be preserved.
+        assert "Linting completed" in result.text
+
+    def test_legacy_format_still_works(self) -> None:
+        """Legacy ansible-lint format (file:line:col: rule: message) is still compressed.
+
+        With 5 violations of the same rule, only 3 appear in the output and an
+        elision note accounts for the remaining 2.  The total line count must be
+        smaller than the original (5 violation lines → 3 + 1 elision note = 4).
+        """
+        stdout = "\n".join([
+            f"playbooks/site.yml:{10 + i}:1: yaml-indent: too many spaces before block scalar"
+            for i in range(5)
+        ]) + "\nLinting failed.\n"
+        f = bc.AnsibleFilter()
+        result = f.apply(stdout, "", 1, ["ansible-lint", "playbooks/"])
+        # Should have at most 3 violation lines (not 5).
+        viol_lines = [
+            ln for ln in result.text.splitlines()
+            if "yaml-indent" in ln and "elided" not in ln and "token-goat" not in ln
+        ]
+        assert len(viol_lines) <= 3
+        # An elision note must account for the dropped violations.
+        assert "elided" in result.text or "more occurrence" in result.text
+        # Summary should be preserved.
+        assert "Linting failed." in result.text
+
+    def test_multiple_rules_each_gets_3_examples(self) -> None:
+        """Multiple distinct rules each get up to 3 violation examples."""
+        yaml_lines = [
+            f"yaml[line-length]: ./file.yml:{i}:80: Too long"
+            for i in range(4)
+        ]
+        truthy_lines = [
+            f"yaml[truthy]: ./vars.yml:{i}:1: Use true/false"
+            for i in range(4)
+        ]
+        stdout = "\n".join(yaml_lines + truthy_lines) + "\nDone.\n"
+        f = bc.AnsibleFilter()
+        result = f.apply(stdout, "", 1, ["ansible-lint", "playbooks/"])
+        text = result.text
+        # Both rules should appear.
+        assert "yaml[line-length]" in text
+        assert "yaml[truthy]" in text
+        # Each rule should have at most 3 violation lines (not 4).
+        ll_violations = [ln for ln in text.splitlines()
+                         if "yaml[line-length]" in ln and "elided" not in ln and "token-goat" not in ln]
+        truthy_violations = [ln for ln in text.splitlines()
+                              if "yaml[truthy]" in ln and "elided" not in ln and "token-goat" not in ln]
+        assert len(ll_violations) <= 3
+        assert len(truthy_violations) <= 3
+
+    def test_first_violation_is_included(self) -> None:
+        """The first violation (index 0) is always included — off-by-one regression guard."""
+        stdout = "yaml[line-length]: ./file.yml:10:80: Line too long\nLinting failed.\n"
+        f = bc.AnsibleFilter()
+        result = f.apply(stdout, "", 1, ["ansible-lint", "file.yml"])
+        # The single violation must appear in the output.
+        assert "yaml[line-length]" in result.text
+        assert "./file.yml:10:80" in result.text
+
+
+# ---------------------------------------------------------------------------
+# DotnetFilter — format subcommand and improved restore
+# ---------------------------------------------------------------------------
+
+
+class TestDotnetFilterFormat:
+    """Tests for dotnet format subcommand compression."""
+
+    def test_format_collapses_per_file_lines(self) -> None:
+        """Per-file 'Formatted code in …' lines are collapsed to a count."""
+        lines = [
+            "  Formatted code in 'src/Foo.cs'.",
+            "  Formatted code in 'src/Bar.cs'.",
+            "  Fixed code style violations in 'src/Baz.cs'.",
+        ]
+        text = "\n".join(lines) + "\nFormat complete - no diagnostics found.\n"
+        f = bc.DotnetFilter()
+        result = f.apply(text, "", 0, ["dotnet", "format"])
+        # Per-file lines should be gone.
+        assert "Formatted code in" not in result.text
+        assert "Fixed code style" not in result.text
+        # A note should mention the count.
+        assert "collapsed" in result.text or "3" in result.text
+        # Summary should be kept.
+        assert "Format complete" in result.text
+
+    def test_format_keeps_violation_lines(self) -> None:
+        """Error lines (IDE violations) are preserved even in format output."""
+        text = (
+            "  Formatted code in 'src/Clean.cs'.\n"
+            "  src/Broken.cs(10,5): error IDE0059: Unnecessary assignment of a value to 'x'\n"
+            "Format complete.\n"
+        )
+        f = bc.DotnetFilter()
+        result = f.apply(text, "", 1, ["dotnet", "format"])
+        assert "IDE0059" in result.text
+        assert "Formatted code in" not in result.text
+
+    def test_format_empty_no_changes(self) -> None:
+        """'dotnet format' with no files to change emits only the summary."""
+        text = "Format complete - no diagnostics found.\n"
+        f = bc.DotnetFilter()
+        result = f.apply(text, "", 0, ["dotnet", "format"])
+        assert "Format complete" in result.text
+
+    def test_restore_drops_nuget_http_noise(self) -> None:
+        """NuGet HTTP GET / OK lines and conflict-resolution lines are dropped."""
+        text = (
+            "  Determining projects to restore...\n"
+            "  HTTP GET https://api.nuget.org/v3-flatcontainer/newtonsoft.json/index.json\n"
+            "  HTTP OK https://api.nuget.org/v3-flatcontainer/newtonsoft.json/index.json 234ms\n"
+            "  Resolving conflicts for Newtonsoft.Json 13.0.1\n"
+            "  Restored /src/MyApp/MyApp.csproj (1.23 sec)\n"
+            "Restore succeeded.\n"
+        )
+        f = bc.DotnetFilter()
+        result = f.apply(text, "", 0, ["dotnet", "restore"])
+        assert "HTTP GET" not in result.text
+        assert "HTTP OK" not in result.text
+        assert "Resolving conflicts" not in result.text
+        assert "Restore succeeded." in result.text
