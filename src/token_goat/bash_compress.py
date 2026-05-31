@@ -222,6 +222,12 @@ __all__ = [
     "HardhatFilter",
     # Serverless Framework deploy/invoke
     "ServerlessFilter",
+    # Erlang/OTP rebar3 build + test runner
+    "ErlangFilter",
+    # Fly.io deployment CLI
+    "FlyFilter",
+    # Foundry/Forge Solidity compile + test
+    "ForgeFilter",
 ]
 
 import math
@@ -17778,6 +17784,431 @@ class ServerlessFilter(Filter):
 #: Ordered registry of built-in filters.  First match wins, so more-specific
 #: filters (named binaries) precede the generic fallback.  Users can append
 #: their own :class:`Filter` subclasses but cannot redefine built-ins.
+# ---------------------------------------------------------------------------
+# Erlang/OTP — rebar3 compile, eunit, common_test
+# ---------------------------------------------------------------------------
+
+#: rebar3 "Compiling src/foo.erl" per-file progress line
+_REBAR3_COMPILING_RE: Final[re.Pattern[str]] = re.compile(
+    r"^==>\s+\S+\s+\(compile\)|"
+    r"^Compiling\s+\S+\.erl\b",
+    re.IGNORECASE,
+)
+#: rebar3 dependency-fetch progress: "Fetching foo 1.2.3" / "Already up-to-date"
+_REBAR3_FETCH_RE: Final[re.Pattern[str]] = re.compile(
+    r"^(?:Fetching|Downloading|Resolving|Locking)\s+\S|"
+    r"^\s*Already\s+up-to-date\b|"
+    r"^\s*All\s+dependencies\s+already\s+locked\b",
+    re.IGNORECASE,
+)
+#: rebar3 "===> Verifying dependencies" / "===> Analyzing applications" noise
+_REBAR3_STEP_NOISE_RE: Final[re.Pattern[str]] = re.compile(
+    r"^===>\s+(?:Verifying\s+dependencies|Analyzing\s+applications|"
+    r"Building\s+rebar3\b|Compiling\s+rebar3\b|"
+    r"Using\s+locked\s+dependencies|"
+    r"Updating\s+base\s+application\b)",
+    re.IGNORECASE,
+)
+#: EUnit individual test pass: "  foo_tests:bar_test...ok"
+_REBAR3_EUNIT_PASS_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\s+\S+_tests?:\S+\.\.\.(ok|passed)\s*$",
+    re.IGNORECASE,
+)
+#: Common Test "PASSED" test case lines
+_REBAR3_CT_PASS_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\s+(?:tc_passed|PASSED|ok)\s+\S+\s*$|"
+    r"^\s+\d+\s+tests?,\s+\d+\s+(?:passed|ok)\b",
+    re.IGNORECASE,
+)
+#: rebar3 "===> Tests passed" / "===> N tests passed" summary (always keep)
+_REBAR3_SUMMARY_RE: Final[re.Pattern[str]] = re.compile(
+    r"^===>\s+(?:Tests?\s+passed|Done\.|Finished\.|"
+    r"\d+\s+tests?\s+passed|All\s+\d+\s+tests?\s+passed)|"
+    r"^\s*All\s+\d+\s+tests?\s+passed\b|"
+    r"^\s*\d+\s+tests?,\s+\d+\s+(?:failed|errors?)\b|"
+    r"Test\s+Summary\s*:.*passed\b",
+    re.IGNORECASE,
+)
+#: rebar3 failure markers (always keep)
+_REBAR3_FAILURE_RE: Final[re.Pattern[str]] = re.compile(
+    r"^===>\s+(?:ERROR|FAILED|Test\s+Failed|Tests?\s+Failed)|"
+    r"^\s*(?:FAILED|ERROR|failed|error)\s*$|"
+    r"^\s*\*\*\*",
+    re.IGNORECASE,
+)
+
+
+class ErlangFilter(Filter):
+    """Compress ``rebar3`` Erlang/OTP build and test output.
+
+    ``rebar3 compile`` emits one line per ``.erl`` source file compiled; a
+    medium project with 50+ modules produces 50+ near-identical lines.
+    ``rebar3 eunit`` and ``rebar3 ct`` emit one line per passing test case.
+
+    Compression model:
+
+    * **Per-file compilation lines** (``Compiling foo.erl``): collapsed to a
+      count; the ``==> app (compile)`` step header is always kept.
+    * **Dependency-fetch noise** (``Fetching``, ``Downloading``,
+      ``Already up-to-date``): collapsed to a count.
+    * **Step-noise lines** (``==> Verifying dependencies``,
+      ``==> Analyzing applications``): dropped.
+    * **EUnit/CT passing test lines**: collapsed to a count.
+    * **Test summary / ``Tests passed`` lines**: always kept.
+    * **Failure lines** and error blocks: always kept.
+    * **Errors** (exit_code != 0): preserve all stderr unchanged.
+    """
+
+    name = "rebar3"
+    binaries = frozenset(["rebar3", "rebar"])
+    subcommands = frozenset([
+        "compile", "test", "eunit", "ct", "cover", "dialyzer",
+        "deps", "upgrade", "release", "escriptize", "shell",
+        "clean", "xref", "check", "as",
+    ])
+
+    def compress(
+        self, stdout: str, stderr: str, exit_code: int, argv: list[str],
+    ) -> str:
+        err_output = _preserve_stderr_on_error(stdout, stderr, exit_code)
+        if err_output is not None:
+            return err_output
+
+        combined = self._combine_output(stdout, stderr)
+        lines = combined.split("\n")
+        kept: list[str] = []
+        compiling_count = 0
+        fetch_count = 0
+        pass_count = 0
+        dropped_noise = 0
+
+        for line in lines:
+            # Error signals and failure markers — always keep.
+            if _ERROR_SIGNAL_RE.search(line) or _REBAR3_FAILURE_RE.match(line):
+                kept.append(line)
+                continue
+            # Summary lines — always keep.
+            if _REBAR3_SUMMARY_RE.search(line):
+                kept.append(line)
+                continue
+            # Per-file compilation lines — count.
+            if _REBAR3_COMPILING_RE.match(line):
+                compiling_count += 1
+                continue
+            # Dependency-fetch noise — count.
+            if _REBAR3_FETCH_RE.match(line):
+                fetch_count += 1
+                continue
+            # Step-noise lines — drop.
+            if _REBAR3_STEP_NOISE_RE.match(line):
+                dropped_noise += 1
+                continue
+            # EUnit/CT passing test lines — count.
+            if _REBAR3_EUNIT_PASS_RE.match(line) or _REBAR3_CT_PASS_RE.match(line):
+                pass_count += 1
+                continue
+            kept.append(line)
+
+        out: list[str] = []
+        if compiling_count:
+            out.append(
+                f"[token-goat: {compiling_count} .erl compilation line(s) collapsed; "
+                f"run with TOKEN_GOAT_BASH_COMPRESS=0 for full output]"
+            )
+        if fetch_count:
+            out.append(
+                f"[token-goat: {fetch_count} dependency-fetch line(s) collapsed]"
+            )
+        out.extend(kept)
+
+        notes: list[str] = []
+        if pass_count:
+            notes.append(f"collapsed {pass_count} passing test line(s)")
+        if dropped_noise:
+            notes.append(f"dropped {dropped_noise} rebar3 step-noise line(s)")
+        self._emit_notes(out, notes)
+        return self._finalize(out)
+
+
+# ---------------------------------------------------------------------------
+# Fly.io deployment CLI (fly / flyctl)
+# ---------------------------------------------------------------------------
+
+#: fly deploy "==> Releasing" step header (always keep)
+_FLY_STEP_HEADER_RE: Final[re.Pattern[str]] = re.compile(
+    r"^==>\s+(?:Releasing|Building|Creating|Validating|Updating|Destroying|Monitoring)",
+    re.IGNORECASE,
+)
+#: fly deploy per-machine status/progress: "--> Waiting for machine X to start"
+#: and "machine X is now in a started state" (keep 1st occurrence per machine id)
+_FLY_MACHINE_WAIT_RE: Final[re.Pattern[str]] = re.compile(
+    r"^(?:-->?\s+Waiting\s+for|"
+    r"\s*Machine\s+[0-9a-zA-Z]+\s+is\s+now\s+in|"
+    r"\s*\[[\s\d]+\]\s+Machine\s+[0-9a-zA-Z]+)",
+    re.IGNORECASE,
+)
+#: fly build step noise: "Sending build context", "Step N/M :", "--->"
+_FLY_BUILD_STEP_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\s*(?:Sending\s+build\s+context|"
+    r"Step\s+\d+/\d+\s*:|"
+    r"-{3}>\s*\w|"
+    r"Successfully\s+built\s+[0-9a-f]{8,}|"  # short image id
+    r"Successfully\s+tagged\s+\S+)",
+    re.IGNORECASE,
+)
+#: fly deploy image layer progress: "#N DONE" / "transferring context"
+_FLY_LAYER_PROGRESS_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\s*#\d+\s+(?:CACHED|DONE|sha256:|transferring)|"
+    r"^\s*CACHED\s+\[",
+    re.IGNORECASE,
+)
+#: fly deploy "Watch your deployment at https://fly.io/apps/..." (keep)
+#: "Visit your newly deployed app at https://..." (keep)
+_FLY_SUMMARY_RE: Final[re.Pattern[str]] = re.compile(
+    r"(?:Watch\s+your\s+deployment|"
+    r"Visit\s+your\s+newly\s+deployed|"
+    r"Deployed\s+\S+\s+v\d|"
+    r"v\d+\s+deployed\s+successfully|"
+    r"Release\s+command\s+succeeded|"
+    r"Monitoring\s+deployment\s+\(Ctrl-C)",
+    re.IGNORECASE,
+)
+#: fly "Checking DNS configuration" and other polling dots (drop)
+_FLY_POLLING_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\s*(?:Checking\s+DNS\s+configuration|"
+    r"Waiting\s+for\s+IPv[46]|"
+    r"The\s+above\s+IP\s+address\s+may\s+need)",
+    re.IGNORECASE,
+)
+
+
+class FlyFilter(Filter):
+    """Compress ``fly`` (flyctl) deployment and status output.
+
+    ``fly deploy`` emits Docker build layers, per-machine wait messages,
+    polling dots and DNS-check lines that dwarf the useful deploy summary.
+    ``fly status`` emits a per-machine table that can have dozens of rows for
+    apps with many instances.
+
+    Compression model:
+
+    * **Docker build step lines** (``Step N/M``, ``--->``, ``CACHED``,
+      ``#N DONE``): collapsed to a count.
+    * **Per-machine wait lines** (``Waiting for machine X``,
+      ``Machine X is now in a started state``): collapsed to a count.
+    * **DNS/polling noise** (``Checking DNS configuration``,
+      ``Waiting for IPv6``): dropped.
+    * **Step headers** (``==> Releasing``, ``==> Building``): always kept.
+    * **Deploy summary** (``Deployed X v1``, ``Visit your …``): always kept.
+    * **Error lines**: always kept.
+    * **Errors** (exit_code != 0): preserve all stderr unchanged.
+    """
+
+    name = "fly"
+    binaries = frozenset(["fly", "flyctl"])
+    subcommands = frozenset([
+        "deploy", "status", "apps", "machines", "logs", "scale",
+        "secrets", "volumes", "regions", "releases", "info",
+        "launch", "destroy", "resume", "suspend", "open",
+    ])
+
+    def compress(
+        self, stdout: str, stderr: str, exit_code: int, argv: list[str],
+    ) -> str:
+        err_output = _preserve_stderr_on_error(stdout, stderr, exit_code)
+        if err_output is not None:
+            return err_output
+
+        combined = self._combine_output(stdout, stderr)
+        lines = combined.split("\n")
+        kept: list[str] = []
+        build_step_count = 0
+        machine_wait_count = 0
+        dropped_noise = 0
+
+        for line in lines:
+            # Error signals — always keep.
+            if _ERROR_SIGNAL_RE.search(line):
+                kept.append(line)
+                continue
+            # Deploy summary and step headers — always keep.
+            if _FLY_SUMMARY_RE.search(line) or _FLY_STEP_HEADER_RE.match(line):
+                kept.append(line)
+                continue
+            # Docker build step noise — count.
+            if _FLY_BUILD_STEP_RE.match(line) or _FLY_LAYER_PROGRESS_RE.match(line):
+                build_step_count += 1
+                continue
+            # Per-machine wait lines — count.
+            if _FLY_MACHINE_WAIT_RE.match(line):
+                machine_wait_count += 1
+                continue
+            # DNS / polling noise — drop.
+            if _FLY_POLLING_RE.match(line):
+                dropped_noise += 1
+                continue
+            kept.append(line)
+
+        out: list[str] = []
+        if build_step_count:
+            out.append(
+                f"[token-goat: {build_step_count} Docker build step line(s) collapsed; "
+                f"run with TOKEN_GOAT_BASH_COMPRESS=0 for full output]"
+            )
+        if machine_wait_count:
+            out.append(
+                f"[token-goat: {machine_wait_count} per-machine wait line(s) collapsed]"
+            )
+        out.extend(kept)
+
+        notes: list[str] = []
+        if dropped_noise:
+            notes.append(f"dropped {dropped_noise} DNS/polling noise line(s)")
+        self._emit_notes(out, notes)
+        return self._finalize(out)
+
+
+# ---------------------------------------------------------------------------
+# Foundry / Forge — Solidity compile + test (forge build / forge test)
+# ---------------------------------------------------------------------------
+
+#: forge compile per-file progress: "Compiling N files with solc 0.8.24"
+#: and "Solc 0.8.24 finished in 3.45s"
+_FORGE_COMPILING_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\s*Compiling\s+\d+\s+(?:file[s]?\s+with|Solidity\s+file[s]?)|"
+    r"^\s*Solc\s+\S+\s+finished\s+in\s+\d",
+    re.IGNORECASE,
+)
+#: forge test passing test lines: "[PASS] testFoo() (gas: 12345)"
+_FORGE_PASS_TEST_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\s*\[(?:PASS|OK)\]\s+\S+\s+\(gas:",
+    re.IGNORECASE,
+)
+#: forge test suite header: "Running N tests for src/Foo.t.sol:FooTest"
+#: Always keep — anchors the failure context.
+_FORGE_SUITE_HEADER_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\s*Running\s+\d+\s+test[s]?\s+for\s+\S+",
+    re.IGNORECASE,
+)
+#: forge test summary: "Test result: ok. N passed; 0 failed; 0 skipped;"
+#: and "Suite result: ok. N passed; ..."
+_FORGE_SUMMARY_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\s*(?:Test\s+result|Suite\s+result|Overall\s+result)\s*:",
+    re.IGNORECASE,
+)
+#: forge compile done: "Compiler run successful" / "Nothing to compile"
+_FORGE_COMPILE_DONE_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\s*(?:Compiler\s+run\s+successful|"
+    r"Nothing\s+to\s+compile|"
+    r"Compiled\s+\d+\s+Solidity\s+file[s]?)",
+    re.IGNORECASE,
+)
+#: forge failure header: "[FAIL. Counterexample: ...]" / "[FAIL]"
+_FORGE_FAILURE_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\s*\[(?:FAIL|ERROR)\]",
+    re.IGNORECASE,
+)
+#: forge gas report table separator rows only: | ----- | ----- |
+#: Pure separator rows (only pipes, dashes, and spaces) are cosmetic noise.
+#: Header rows (| Function Name | … |) and data rows are always kept.
+_FORGE_GAS_TABLE_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\s*\|[-\s|]+\|\s*$",   # separator row: | ----- | ----- |
+)
+#: forge "Ran N test suites" footer (always keep)
+_FORGE_FOOTER_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\s*Ran\s+\d+\s+test\s+suite[s]?\s+in\s+\d",
+    re.IGNORECASE,
+)
+
+
+class ForgeFilter(Filter):
+    """Compress Foundry ``forge build`` / ``forge test`` output.
+
+    Foundry emits one "Compiling N files with solc" line per compiler
+    version, one "[PASS] testFoo() (gas: ...)" line per passing test, and
+    verbose gas-report table separators — all of which dwarf any failures.
+
+    Compression model:
+
+    * **Compilation step lines** (``Compiling N files with solc``,
+      ``Solc X finished in Ns``): collapsed to a count; ``Compiler run
+      successful`` is always kept.
+    * **Passing test lines** (``[PASS] / [OK]``): collapsed to a count.
+    * **Gas-report table separator rows**: dropped (headers and data rows kept).
+    * **Test suite headers** (``Running N tests for …``): always kept.
+    * **Test summary** (``Test result: ok. N passed``): always kept.
+    * **Failure lines** (``[FAIL]``, ``[ERROR]``): always kept.
+    * **Error lines**: always kept.
+    * **Errors** (exit_code != 0): preserve all stderr unchanged.
+    """
+
+    name = "forge"
+    binaries = frozenset(["forge"])
+    subcommands = frozenset([
+        "build", "test", "script", "verify-contract", "flatten",
+        "inspect", "coverage", "snapshot", "clean", "install",
+        "update", "remove", "init", "compile",
+    ])
+
+    def compress(
+        self, stdout: str, stderr: str, exit_code: int, argv: list[str],
+    ) -> str:
+        err_output = _preserve_stderr_on_error(stdout, stderr, exit_code)
+        if err_output is not None:
+            return err_output
+
+        combined = self._combine_output(stdout, stderr)
+        lines = combined.split("\n")
+        kept: list[str] = []
+        compiling_count = 0
+        pass_count = 0
+        dropped_gas_sep = 0
+
+        for line in lines:
+            # Error signals and failure headers — always keep.
+            if _ERROR_SIGNAL_RE.search(line) or _FORGE_FAILURE_RE.match(line):
+                kept.append(line)
+                continue
+            # Compile-done / suite headers / summaries / footer — always keep.
+            if (
+                _FORGE_COMPILE_DONE_RE.match(line)
+                or _FORGE_SUITE_HEADER_RE.match(line)
+                or _FORGE_SUMMARY_RE.match(line)
+                or _FORGE_FOOTER_RE.match(line)
+            ):
+                kept.append(line)
+                continue
+            # Compilation step lines — count.
+            if _FORGE_COMPILING_RE.match(line):
+                compiling_count += 1
+                continue
+            # Passing test lines — count.
+            if _FORGE_PASS_TEST_RE.match(line):
+                pass_count += 1
+                continue
+            # Gas-report table separator rows — drop (cosmetic noise).
+            if _FORGE_GAS_TABLE_RE.match(line):
+                dropped_gas_sep += 1
+                continue
+            kept.append(line)
+
+        out: list[str] = []
+        if compiling_count:
+            out.append(
+                f"[token-goat: {compiling_count} Solidity compilation step line(s) collapsed; "
+                f"run with TOKEN_GOAT_BASH_COMPRESS=0 for full output]"
+            )
+        out.extend(kept)
+
+        notes: list[str] = []
+        if pass_count:
+            notes.append(f"collapsed {pass_count} passing test line(s)")
+        if dropped_gas_sep:
+            notes.append(f"dropped {dropped_gas_sep} gas-report table separator row(s)")
+        self._emit_notes(out, notes)
+        return self._finalize(out)
+
+
 FILTERS: list[Filter] = [
     PytestFilter(),
     JestFilter(),
@@ -18052,6 +18483,18 @@ FILTERS: list[Filter] = [
     # ClangTidyFilter handles `clang-tidy`, `run-clang-tidy`, and
     # `run-clang-tidy.py`; disjoint from every other filter.
     ClangTidyFilter(),
+    # ErlangFilter handles `rebar3` / `rebar` Erlang/OTP build and test output;
+    # disjoint binaries from every other filter so position is cosmetic —
+    # placed alongside other language build tools.
+    ErlangFilter(),
+    # FlyFilter handles `fly` / `flyctl` deploy and status commands; disjoint
+    # binaries from every other filter so position is cosmetic — placed
+    # alongside other cloud deploy tooling.
+    FlyFilter(),
+    # ForgeFilter handles `forge build/test/script` (Foundry Solidity toolchain);
+    # disjoint binary from every other filter so position is cosmetic —
+    # placed alongside HardhatFilter as both target EVM smart contracts.
+    ForgeFilter(),
 ]
 
 
