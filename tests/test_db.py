@@ -968,3 +968,36 @@ def test_wal_checkpoint_restarts_after_connect(tmp_data_dir):
     with db.open_project(h) as conn:
         val = conn.execute("SELECT value FROM meta WHERE key = ?", ("test_key",)).fetchone()
         assert val is not None, "data should persist after checkpoint"
+
+
+def test_sqlite_vec_load_unexpected_exception_does_not_leak_connection(tmp_data_dir):
+    """When sqlite_vec.load() raises an unexpected exception (not OperationalError /
+    AttributeError / ModuleNotFoundError), the connection must be returned usable
+    rather than leaking.  Before the fix, only those three exception types were caught;
+    a RuntimeError (or any other type) would propagate out of _connect with the
+    sqlite3 connection object still open and unreachable by the caller.
+
+    After the fix, the broad ``except Exception`` clause catches everything and
+    logs a warning, so open_global / open_project still receive a valid connection.
+    """
+    import gc
+
+    h = "f1a2b3c4d5e6f1a2b3c4d5e6f1a2b3c4d5e6f1a2"
+
+    class _FakeSqliteVec:
+        """Stub that raises RuntimeError from load() to simulate an unexpected error."""
+        def load(self, conn: sqlite3.Connection) -> None:  # noqa: ARG002
+            raise RuntimeError("simulated unexpected sqlite-vec load failure")
+
+    # Patch sqlite_vec so that its load() raises RuntimeError.
+    with (
+        patch.dict("sys.modules", {"sqlite_vec": _FakeSqliteVec()}),
+        db.open_project(h) as conn,
+    ):
+        # If we reach here the connection was not leaked — it was returned from
+        # _connect despite the RuntimeError from sqlite_vec.load().
+        row = conn.execute("SELECT 1").fetchone()
+        assert row is not None, "connection from _connect is not usable after sqlite_vec error"
+
+    # Force GC to surface any unclosed connection ResourceWarning (Python 3.12+)
+    gc.collect()

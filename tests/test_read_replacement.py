@@ -2034,3 +2034,36 @@ def test_cli_read_cross_project_json_includes_project_root(
     assert result.exit_code == 0
     data = json.loads(result.output.strip())
     assert "from_b" in data.get("symbol", "") or "text" in data
+
+
+# ---------------------------------------------------------------------------
+# UTF-8 BOM handling regression tests (iter-35 fix)
+# ---------------------------------------------------------------------------
+
+def test_read_line_range_strips_utf8_bom(tmp_path, tmp_data_dir, make_project):
+    """read_line_range must not include a UTF-8 BOM (U+FEFF) in the returned text.
+
+    Notepad on Windows saves UTF-8 files with a BOM by default.  Before the fix
+    _read_file_lines used encoding='utf-8' which preserved the BOM as the first
+    character of the first line, making any returned snippet start with '\\ufeff'.
+    The fix uses 'utf-8-sig' which strips the BOM automatically.
+    """
+    from token_goat.project import make_project_at
+
+    proj_root = tmp_path / "bom_test"
+    proj_root.mkdir()
+    # Write a Python file with UTF-8 BOM (as Notepad would produce on Windows)
+    bom_file = proj_root / "bom_file.py"
+    bom_file.write_bytes(b"\xef\xbb\xbfdef greet():\n    return 'hello'\n")
+
+    proj = make_project_at(proj_root)
+    result = read_replacement.read_line_range(proj, "bom_file.py", 1, 2)
+
+    assert result is not None, "read_line_range returned None for BOM file"
+    first_line = result["text"].splitlines()[0]
+    assert "﻿" not in first_line, (
+        f"BOM character found in first line: {first_line!r}"
+    )
+    assert first_line == "def greet():", (
+        f"First line content wrong after BOM strip: {first_line!r}"
+    )

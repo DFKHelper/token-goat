@@ -763,7 +763,7 @@ def _read_file_lines(abs_path: Path) -> tuple[list[str], int] | None:
         return None
 
     try:
-        full_text = abs_path.read_text(encoding="utf-8", errors="replace")
+        full_text = abs_path.read_text(encoding="utf-8-sig", errors="replace")
     except OSError as e:
         _LOG.warning("read failed: %s: %s", abs_path, e)
         return None
