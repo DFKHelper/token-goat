@@ -389,7 +389,7 @@ def doctor(  # noqa: C901
             if "installed" in gemini_status:
                 ok("gemini", f"detected, hooks {gemini_status}")
             else:
-                ok(
+                flag(
                     "gemini",
                     f"detected — hooks {gemini_status}; run `token-goat install --target gemini` to install",
                     warn=True,

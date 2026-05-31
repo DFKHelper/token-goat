@@ -679,7 +679,7 @@ def _read_sentinel_counts(sentinel_path: object) -> tuple[int | None, int | None
     """
     import json as _json  # noqa: PLC0415
     try:
-        raw = sentinel_path.read_text(encoding="utf-8").strip()  # type: ignore[union-attr]
+        raw = sentinel_path.read_text(encoding="utf-8").strip()  # type: ignore[union-attr,attr-defined]
         if not raw:
             return None, None
         data = _json.loads(raw)
