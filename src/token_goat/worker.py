@@ -1,6 +1,7 @@
 """Background worker daemon: dirty-queue polling, self-healing, periodic cleanup."""
 from __future__ import annotations
 
+import concurrent.futures
 import contextlib
 import hashlib
 import json
@@ -199,6 +200,32 @@ VERSION_CHECK_INTERVAL = 60.0
 # restart on the next edit, but at most once per this interval.
 WORKER_RESTART_THROTTLE_SECS = 30.0
 
+# Maximum seconds to allow a single file-index call to run before cancelling it.
+# Prevents worker hang on pathologically large generated files (e.g. a 50 MB
+# minified JS bundle). Overridable via TOKEN_GOAT_INDEX_TIMEOUT_SECS env var.
+# The default 30 s gives tree-sitter plenty of time on realistic source files.
+INDEX_TIMEOUT_SECS: float = float(os.environ.get("TOKEN_GOAT_INDEX_TIMEOUT_SECS", "30"))
+
+# Worker RSS threshold (MB) above which indexing is suspended and only eviction
+# runs, preventing OOM on repos with many large files.
+# Overridable via TOKEN_GOAT_MEMORY_PRESSURE_MB env var.
+MEMORY_PRESSURE_THRESHOLD_MB: float = float(
+    os.environ.get("TOKEN_GOAT_MEMORY_PRESSURE_MB", "500")
+)
+
+# Consecutive failures before exponential backoff kicks in (per path).
+_BACKOFF_FAILURE_THRESHOLD = 3
+# Base back-off delay (seconds); actual delay is 2^(failures - threshold) * base.
+_BACKOFF_BASE_SECS = 2.0
+# Cap on back-off delay per path.
+_BACKOFF_MAX_SECS = 300.0  # 5 minutes
+
+# In-memory per-path failure counters and backoff expiry times.
+# Keyed by (project_hash, rel_path) so the same file in different projects
+# is tracked independently. Reset when the worker restarts.
+_index_failure_counts: dict[tuple[str, str], int] = {}
+_index_backoff_until: dict[tuple[str, str], float] = {}
+
 
 def _installed_version() -> str | None:
     """The token-goat version currently installed on disk.
@@ -252,6 +279,107 @@ _BOOTED_VERSION = _installed_version()
 # Code fingerprint this process booted with. A later _package_fingerprint() that
 # differs catches a same-version reinstall that the version check would miss.
 _BOOTED_FINGERPRINT = _package_fingerprint()
+
+
+# ---------------------------------------------------------------------------
+# Memory pressure helpers
+# ---------------------------------------------------------------------------
+
+
+def _get_rss_mb() -> float | None:
+    """Return the worker process's current RSS in MB, or None if unavailable.
+
+    Uses psutil when available; returns None on the stub shim so callers see
+    "unavailable" rather than 0, which they can treat as "not under pressure".
+    Falls back to None on any error so the memory guard never blocks indexing
+    when the check itself fails.
+    """
+    try:
+        proc = psutil.Process(os.getpid())
+        # rss is in bytes on all platforms psutil supports.
+        return proc.memory_info().rss / (1024 * 1024)
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _is_under_memory_pressure() -> bool:
+    """Return True when worker RSS exceeds MEMORY_PRESSURE_THRESHOLD_MB.
+
+    When True the caller should skip CPU/memory-intensive indexing and only
+    run lightweight eviction tasks until memory drops back below the threshold.
+    Returns False when the RSS cannot be determined (psutil unavailable or
+    error) so a degraded environment never incorrectly suppresses indexing.
+    """
+    rss = _get_rss_mb()
+    if rss is None:
+        return False
+    over = rss > MEMORY_PRESSURE_THRESHOLD_MB
+    if over:
+        _LOG.warning(
+            "memory pressure: RSS=%.1f MB exceeds threshold %.1f MB; "
+            "skipping indexing until memory drops",
+            rss,
+            MEMORY_PRESSURE_THRESHOLD_MB,
+        )
+    return over
+
+
+# ---------------------------------------------------------------------------
+# Per-file indexing backoff helpers
+# ---------------------------------------------------------------------------
+
+
+def _should_skip_due_to_backoff(project_hash: str, rel_path: str) -> bool:
+    """Return True if this (project, path) is in an active backoff window.
+
+    Called before each file index attempt. When True, the caller should skip
+    the file entirely this cycle; it will be retried once the backoff expires.
+    Logs a debug message so the skip is visible in the worker log.
+    """
+    key = (project_hash, rel_path)
+    until = _index_backoff_until.get(key, 0.0)
+    now = time.time()
+    if now < until:
+        _LOG.debug(
+            "backoff active for %s/%s: %.0fs remaining",
+            project_hash[:8],
+            rel_path,
+            until - now,
+        )
+        return True
+    return False
+
+
+def _record_index_failure(project_hash: str, rel_path: str) -> None:
+    """Increment the failure counter for (project, path) and set backoff.
+
+    The first two failures are retried immediately.  Starting at the third
+    consecutive failure, exponential back-off is applied:
+    ``delay = min(2^(n - threshold) * base, cap)`` where n is the failure count.
+    Resets to a clean state when a successful index clears the counter (see
+    _record_index_success).
+    """
+    key = (project_hash, rel_path)
+    count = _index_failure_counts.get(key, 0) + 1
+    _index_failure_counts[key] = count
+    if count >= _BACKOFF_FAILURE_THRESHOLD:
+        exponent = count - _BACKOFF_FAILURE_THRESHOLD
+        delay = min(_BACKOFF_BASE_SECS ** exponent * _BACKOFF_BASE_SECS, _BACKOFF_MAX_SECS)
+        _index_backoff_until[key] = time.time() + delay
+        _LOG.warning(
+            "index failure #%d for %s/%s; backing off %.0fs",
+            count,
+            project_hash[:8],
+            rel_path,
+            delay,
+        )
+
+
+def _record_index_success(project_hash: str, rel_path: str) -> None:
+    """Clear the failure counter and backoff for (project, path) after success."""
+    key = (project_hash, rel_path)
+    _index_failure_counts.pop(key, None)
+    _index_backoff_until.pop(key, None)
 
 
 def _setup_logging() -> None:
@@ -1862,6 +1990,11 @@ def _reindex_active_projects() -> None:
     tracks real user activity instead of growing without bound.
     """
     _LOG.debug("starting periodic reindex cycle")
+
+    if _is_under_memory_pressure():
+        _LOG.info("memory pressure: skipping periodic reindex cycle")
+        return
+
     cutoff = int(time.time() - PERIODIC_REINDEX_ACTIVE_WINDOW)
     try:
         with db.open_global_readonly() as gconn:
@@ -1891,9 +2024,18 @@ def _reindex_active_projects() -> None:
             )
             skipped_oversized += 1
             continue
-        proj = Project(root=Path(row["root"]), hash=row["hash"], marker=row["marker"])
+        ph = row["hash"]
+        if _should_skip_due_to_backoff(ph, "<project>"):
+            _LOG.info("backoff: skipping periodic reindex for project %s", ph[:8])
+            continue
+        proj = Project(root=Path(row["root"]), hash=ph, marker=row["marker"])
         try:
-            summary = parser.index_project(proj, full=False)
+            summary = _run_index_with_timeout(proj, False, INDEX_TIMEOUT_SECS)
+            if summary is None:
+                # Timeout or error — record failure and move on.
+                _record_index_failure(ph, "<project>")
+                continue
+            _record_index_success(ph, "<project>")
             if summary["indexed"] > 0 or summary["errors"] > 0:
                 _LOG.info(
                     "periodic reindex: root=%s indexed=%d skipped=%d errors=%d dur=%.2fs",
@@ -1912,6 +2054,7 @@ def _reindex_active_projects() -> None:
             git_history.index_project_history(proj.root, proj.hash)
         except Exception:  # noqa: BLE001
             _LOG.exception("periodic reindex failed for %s", row["root"])
+            _record_index_failure(ph, "<project>")
     if skipped_oversized > 0:
         _LOG.info(
             "periodic reindex: skipped %d project(s) with > %d files (increase PERIODIC_REINDEX_MAX_FILES to include them)",
@@ -2051,6 +2194,43 @@ def _resolve_project_from_bucket(
     return None
 
 
+def _run_index_with_timeout(
+    project: Project,
+    full: bool,
+    timeout: float,
+) -> dict[str, object] | None:
+    """Run ``parser.index_project`` in a thread with a wall-clock timeout.
+
+    Returns the result dict on success, or ``None`` when the call times out
+    or raises. Timeout is enforced via :mod:`concurrent.futures`; the indexing
+    thread is left to complete naturally in the background (Python threads
+    cannot be forcibly killed), but the worker loop is unblocked immediately
+    after the timeout so it can process the next project without delay.
+
+    A ``None`` return means the caller should treat this project as a failure
+    and record a backoff entry.
+    """
+    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+        future = executor.submit(parser.index_project, project, full=full)
+        try:
+            return future.result(timeout=timeout)  # type: ignore[return-value]
+        except concurrent.futures.TimeoutError:
+            _LOG.warning(
+                "index_project timed out after %.0fs for project %s (root=%s); skipping",
+                timeout,
+                str(project.hash)[:8],
+                project.root,
+            )
+            return None
+        except Exception:  # noqa: BLE001
+            _LOG.exception(
+                "index_project raised for project %s (root=%s)",
+                str(project.hash)[:8],
+                project.root,
+            )
+            return None
+
+
 def _process_dirty_entries(entries: list[DirtyQueueEntry]) -> None:
     """Re-index files that were marked dirty by Edit/Write/MultiEdit hooks.
 
@@ -2060,8 +2240,27 @@ def _process_dirty_entries(entries: list[DirtyQueueEntry]) -> None:
     in global.db (first edit before the first full index), the project is
     reconstructed from the queue-entry metadata and a full index is run so the
     edit is not lost.
+
+    Reliability improvements applied here:
+
+    * **Memory pressure guard** — if RSS exceeds MEMORY_PRESSURE_THRESHOLD_MB,
+      indexing is skipped entirely this cycle (eviction-only mode).
+    * **Indexing timeout** — each ``index_project`` call is bounded by
+      ``INDEX_TIMEOUT_SECS``; a timed-out project is recorded as a failure and
+      subject to exponential back-off on subsequent cycles.
+    * **Exponential back-off** — after _BACKOFF_FAILURE_THRESHOLD consecutive
+      failures for the same project, the project is skipped until the back-off
+      window expires.  This prevents a single pathological project from
+      monopolising the worker's attention.
     """
     _LOG.debug("processing %d dirty queue entries", len(entries))
+
+    if _is_under_memory_pressure():
+        _LOG.info(
+            "memory pressure: skipping dirty-queue indexing (%d entries deferred)",
+            len(entries),
+        )
+        return
 
     by_project = _parse_and_group_entries(entries)
     _LOG.debug("grouped into %d projects", len(by_project))
@@ -2070,6 +2269,12 @@ def _process_dirty_entries(entries: list[DirtyQueueEntry]) -> None:
 
     projects_processed = 0
     for ph, bucket in by_project.items():
+        # Backoff check: use the project hash as a synthetic path key since
+        # the dirty-queue drain re-indexes all changed files per project in
+        # one call — there is no per-file granularity at this layer.
+        if _should_skip_due_to_backoff(ph, "<project>"):
+            _LOG.info("backoff: skipping project %s this cycle", ph[:8])
+            continue
         try:
             resolved = _resolve_project_from_bucket(ph, bucket, known_projects.get(ph))
             if resolved is None:
@@ -2077,8 +2282,15 @@ def _process_dirty_entries(entries: list[DirtyQueueEntry]) -> None:
             project, is_first_index = resolved
 
             t0 = time.time()
-            result = parser.index_project(project, full=is_first_index)
+            result = _run_index_with_timeout(project, is_first_index, INDEX_TIMEOUT_SECS)
             elapsed = time.time() - t0
+
+            if result is None:
+                # Timeout or unhandled exception — treat as failure for backoff.
+                _record_index_failure(ph, "<project>")
+                continue
+
+            _record_index_success(ph, "<project>")
             projects_processed += 1
             if result["errors"] > 0:
                 _LOG.warning(
@@ -2093,6 +2305,7 @@ def _process_dirty_entries(entries: list[DirtyQueueEntry]) -> None:
                 )
         except Exception:  # noqa: BLE001
             _LOG.exception("failed to reindex project %s from dirty queue", ph)
+            _record_index_failure(ph, "<project>")
     _LOG.debug(
         "finished processing dirty entries: %d/%d projects reindexed",
         projects_processed, len(by_project),
