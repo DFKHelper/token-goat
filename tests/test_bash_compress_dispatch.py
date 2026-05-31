@@ -49,8 +49,10 @@ _DISPATCH_CASES: list[tuple[list[str], str]] = [
     (["uv", "run", "pytest", "tests/"], "pytest"),
     # ---- JestFilter ----
     (["jest", "--watchAll=false"], "jest"),
-    (["vitest", "run"], "jest"),
     (["mocha", "tests/*.spec.js"], "jest"),
+    # ---- VitestFilter ----
+    (["vitest", "run"], "vitest"),
+    (["vitest", "--watch"], "vitest"),
     # ---- CargoFilter ----
     (["cargo", "build", "--release"], "cargo"),
     (["cargo", "test"], "cargo"),
@@ -80,8 +82,10 @@ _DISPATCH_CASES: list[tuple[list[str], str]] = [
     # ---- MypyFilter ----
     (["mypy", "src/"], "mypy"),
     (["dmypy", "run", "--", "src/"], "mypy"),
+    # ---- ESLintFilter ----
+    (["eslint", "src/", "--ext", ".ts"], "eslint"),
+    (["eslint", "."], "eslint"),
     # ---- LinterFilter ----
-    (["eslint", "src/", "--ext", ".ts"], "linter"),
     (["pylint", "src/"], "linter"),
     (["pyright", "src/"], "linter"),
     (["tsc", "--noEmit"], "linter"),
