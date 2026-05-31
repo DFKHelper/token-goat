@@ -1661,6 +1661,30 @@ def pre_read(payload: HookPayload) -> HookResponse:
                     context_parts.append(hint_text)
                     cache.mark_hint_seen(fingerprint)
 
+            # When the file was edited since the last read AND no diff hint or
+            # session hint fired (diff too small, no snapshot, first-read-after-edit),
+            # inject a lightweight "file changed since last read" note so the agent
+            # knows the content it may remember from context is stale.  This fires
+            # only when context_parts is still empty to avoid duplicating a message
+            # already present from the diff or session hint paths above.
+            if not context_parts and entry is not None and entry.last_edit_ts > entry.last_read_ts:
+                _fname = sanitize_log_str(file_path, max_len=256)
+                from .hints import _hint_fingerprint as _hfp  # noqa: PLC0415
+                _changed_note = (
+                    f"Note: `{sanitize_log_str(file_path, max_len=200)}` was edited since you last read it. "
+                    f"The version you may remember from context may be stale."
+                )
+                _changed_fp = _hfp(_changed_note, path=file_path)
+                if not cache.has_hint_fingerprint(_changed_fp):
+                    cache.mark_hint_seen(_changed_fp)
+                    cache.record_hint_emitted("file_changed_since_read")
+                    record_hint_stat_pair("file_changed_since_read", _changed_note, _fname)
+                    context_parts.append(_changed_note)
+                    _LOG.debug(
+                        "pre-read: file-changed-since-read note for %s",
+                        sanitize_log_str(file_path),
+                    )
+
         # File written this session but never read back — the content the model
         # wrote may still be in context from the Write/Edit tool result, making a
         # full re-read redundant.  Only fires when no other hint was emitted, so

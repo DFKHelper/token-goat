@@ -18,6 +18,8 @@ __all__ = [
     "build_map",
     "build_map_json",
     "build_map_mermaid",
+    "build_map_since",
+    "changed_files_since",
     "compute_ranks",
     "estimate_tokens",
     "lang_breakdown",
@@ -1124,6 +1126,126 @@ def build_map(
         use_summary_line,
         elapsed,
     )
+    return "".join(out)
+
+
+def changed_files_since(project: Project, ref: str) -> frozenset[str]:
+    """Return POSIX-relative paths of files changed since *ref*.
+
+    Runs ``git diff --name-only <ref>`` in the project root and returns the
+    set of changed file paths relative to the project root.  Fail-soft: any
+    git error (invalid ref, no git repo) returns an empty frozenset so the
+    caller can still render a normal map.
+    """
+    from .util import run_git  # noqa: PLC0415
+
+    try:
+        result = run_git(
+            ["diff", "--name-only", ref],
+            cwd=str(project.root),
+            timeout=10,
+        )
+        if result.returncode != 0:
+            _LOG.debug(
+                "changed_files_since: git diff failed for ref=%r: %s",
+                ref, result.stderr.strip(),
+            )
+            return frozenset()
+        paths: set[str] = set()
+        for line in result.stdout.splitlines():
+            p = line.strip()
+            if p:
+                paths.add(p)
+        return frozenset(paths)
+    except Exception:  # noqa: BLE001
+        _LOG.debug("changed_files_since: unexpected error for ref=%r", ref, exc_info=True)
+        return frozenset()
+
+
+def build_map_since(
+    project: Project,
+    ref: str,
+    *,
+    budget_tokens: int = 4000,
+    compact: bool | None = None,
+    full: bool = False,
+) -> str:
+    """Build a repo map filtered to files changed since *ref*.
+
+    Runs ``git diff --name-only <ref>`` to find changed files, then renders a
+    map that shows only those files (sorted by PageRank descending).  When no
+    files match (clean working tree or invalid ref), a short informational
+    message is returned.  Unknown refs produce the same message rather than an
+    error, since fail-soft is preferred for hook/CLI contexts.
+
+    The header includes the ref and the change count so the agent can see at a
+    glance what was diffed.  Changed-only mode skips the minor-file collapsing
+    logic (there is no long tail) and does not emit the language breakdown
+    footer.
+    """
+    changed = changed_files_since(project, ref)
+    if not changed:
+        return (
+            f"# {project.root.name} — changes since {ref}\n\n"
+            f"(no changed files found, or `{ref}` is not a valid git ref)\n"
+        )
+
+    data = _load_and_rank(project)
+    if data is None:
+        return (
+            f"# {project.root.name} — changes since {ref}\n\n"
+            "(no files indexed — run `token-goat index --full`)\n"
+        )
+
+    use_compact = compact if compact is not None else budget_tokens < _AUTO_COMPACT_BUDGET
+
+    header = (
+        f"# {project.root.name} — {len(changed)} file(s) changed since `{ref}`\n"
+    )
+    out = [header]
+    used = estimate_tokens(header)
+    included = 0
+    cache_writes: list[tuple[str, float, int, str]] = []
+
+    for rel, info in data.ranked:
+        if rel not in changed:
+            continue
+        if used >= budget_tokens:
+            break
+
+        rendered, _is_hit = _get_rendered_summary(
+            rel, info, data, cache_writes, compact=use_compact,
+        )
+        # Prefix with a [changed] marker so it stands out visually.
+        rendered = f"[changed] {rendered}"
+
+        rendered_tokens = estimate_tokens(rendered)
+        if used + rendered_tokens > budget_tokens:
+            break
+        out.append(rendered)
+        used += rendered_tokens
+        included += 1
+
+    # Files that changed but are not in the index (new/deleted/untracked)
+    indexed_rels = frozenset(rel for rel, _ in data.ranked)
+    unindexed = sorted(changed - indexed_rels)
+    if unindexed:
+        unindexed_block = "Unindexed changed files:\n" + "".join(
+            f"  {p}\n" for p in unindexed
+        )
+        out.append(unindexed_block)
+
+    if included < len(changed):
+        omitted = len(changed) - included
+        out.append(f"+{omitted} more changed files (budget exhausted)\n")
+
+    if cache_writes:
+        try:
+            with db.open_project(project.hash) as conn:
+                _write_summary_cache(conn, cache_writes)
+        except Exception:  # noqa: BLE001
+            pass
+
     return "".join(out)
 
 

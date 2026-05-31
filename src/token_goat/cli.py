@@ -1196,11 +1196,22 @@ def cmd_map(
         "--top-n",
         help="Number of top files to include in the mermaid diagram.",
     ),
+    since: str | None = typer.Option(  # noqa: B008
+        None,
+        "--since",
+        help=(
+            "Show only files changed since this git ref (commit, branch, or tag). "
+            "Example: --since HEAD~1, --since main, --since v1.0.0"
+        ),
+    ),
 ) -> None:
     """Generate a PageRank-ranked, token-budgeted overview of the current project.
 
     Formats: text (default), json, mermaid.  Use --format mermaid to emit a
     Mermaid graph TD diagram suitable for GitHub READMEs.
+
+    Use --since <ref> to show only files changed since a git ref (branch,
+    commit, tag).  Example: --since HEAD~1 or --since main.
     """
     from . import repomap  # noqa: PLC0415
 
@@ -1219,11 +1230,33 @@ def cmd_map(
         raise typer.Exit(1)
 
     _LOG.info(
-        "map start: project=%s budget=%d format=%s compact=%s full=%s",
-        proj.root.name, budget, fmt, compact, full,
+        "map start: project=%s budget=%d format=%s compact=%s full=%s since=%s",
+        proj.root.name, budget, fmt, compact, full, since,
     )
     t0 = time.monotonic()
     try:
+        # --since: show only changed files, regardless of format
+        if since is not None:
+            text = repomap.build_map_since(
+                proj,
+                since,
+                budget_tokens=budget,
+                compact=True if compact else None,
+                full=full,
+            )
+            elapsed = time.monotonic() - t0
+            _LOG.info("map complete: project=%s since=%s dur=%.3fs", proj.root.name, since, elapsed)
+            changed_lines = sum(1 for line in text.splitlines() if "[changed]" in line)
+            _record_lookup_stat(
+                "map_lookup",
+                f"budget={budget},mode=since,ref={since}",
+                changed_lines,
+                scope="project",
+                project_hash=proj.hash,
+            )
+            typer.echo(text)
+            return
+
         if fmt == "json":
             data = repomap.build_map_json(proj)
             elapsed = time.monotonic() - t0
