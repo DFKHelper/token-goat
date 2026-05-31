@@ -10,6 +10,7 @@ __all__ = [
     "build_manifest_with_count",
     "build_manifest_adaptive",
     "compute_adaptive_budget",
+    "_compute_budget_multiplier",
     "event_count",
     "is_noise_path",
     "_dedup_grep_entries",
@@ -294,13 +295,25 @@ def _compute_manifest_fingerprint(cache: SessionCache) -> str:  # type: ignore[n
     _suppressed_raw = getattr(cache, "hints_suppressed_by_type", None) or {}
     hints_suppressed = sum(_suppressed_raw.values()) if isinstance(_suppressed_raw, dict) else 0
 
+    # Explicit counts added alongside the full dicts: even if two sessions
+    # produce identical compressed manifest text (same SHA), a difference in
+    # edited_count or bash_count signals that meaningful activity happened and
+    # the cache should be invalidated.  The dict payloads already capture this
+    # information, but including the raw counts as a top-level key makes the
+    # invalidation intent explicit and ensures fingerprint comparisons are
+    # stable even when the dict serialization order changes.
+    edited_count = len(edited_files)
+    bash_count = len(getattr(cache, "bash_history", None) or {})
+
     payload = json.dumps(
         {
             "age_tier": age_tier,
+            "bash_count": bash_count,
             "bash_dedup_emitted_ids": bash_dedup_ids,
             "bash_history": _dict_payload(getattr(cache, "bash_history", None)),
             "cwd": getattr(cache, "cwd", None),
             "decisions": _list_payload(getattr(cache, "decisions", None)),
+            "edited_count": edited_count,
             "edited_files": sorted(edited_files.items()),
             "files": _dict_payload(getattr(cache, "files", None)),
             "glob_history": _list_payload(getattr(cache, "glob_history", None)),
@@ -2884,6 +2897,47 @@ def compute_adaptive_budget(
     return max(min_total, min(max_total, total))
 
 
+def _compute_budget_multiplier(
+    cache: SessionCache,  # type: ignore[name-defined]
+    base_multiplier: float,
+) -> float:
+    """Return an adaptive multiplier for the manifest token budget.
+
+    Escalates automatically when the session is complex enough to warrant a
+    larger manifest without operator intervention.  Two triggers:
+
+    - **Large edit surface**: > 10 edited files → the agent touched many files
+      and the manifest must list more of them to be useful post-compact.
+    - **Many test failures**: > 5 distinct failing tests in recent bash history →
+      a failing test suite is the highest-value context to preserve.
+
+    When either trigger fires the returned multiplier is ``max(base, 2.5)``,
+    which exceeds the default ``auto_trigger_multiplier`` of 2.0.  When neither
+    fires the base multiplier is returned unchanged.
+
+    Args:
+        cache: Loaded :class:`session.SessionCache` for the current session.
+        base_multiplier: The configured ``auto_trigger_multiplier`` (e.g. 2.0).
+
+    Returns:
+        A float ≥ *base_multiplier*.
+    """
+    _EDITED_FILES_THRESHOLD: int = 10
+    _TEST_FAILURES_THRESHOLD: int = 5
+    _ESCALATED_MULTIPLIER: float = 2.5
+
+    edited_count = len(cache.edited_files) if isinstance(cache.edited_files, dict) else 0
+    if edited_count > _EDITED_FILES_THRESHOLD:
+        return max(base_multiplier, _ESCALATED_MULTIPLIER)
+
+    bash_hist = getattr(cache, "bash_history", None) or {}
+    failure_names = _extract_test_failures(bash_hist)
+    if len(failure_names) > _TEST_FAILURES_THRESHOLD:
+        return max(base_multiplier, _ESCALATED_MULTIPLIER)
+
+    return base_multiplier
+
+
 def build_manifest_adaptive(session_id: str) -> str:
     """Load session cache and build manifest with adaptively-computed token budget.
 
@@ -4874,16 +4928,21 @@ def _render(
     # estimate_tokens uses len/3.5 (slightly more generous).  In rare cases
     # the assembled total can still exceed max_tokens by a few tokens.
     #
-    # Strategy: drop unprotected sections wholesale in reverse priority order
-    # (todos → files → grep → glob → web → syms → what_worked → bash → stale)
-    # before any line-by-line trimming.  Wholesale section drops never leave
-    # an orphan ``**Files:**`` header with no entries — a known defect of the
-    # previous bottom-popping approach.  Protected sections (sealed, header,
-    # blockers, decisions, skills, uncommitted, edited) and the legend are
-    # never wholesale-dropped — they carry the highest post-compact recovery
-    # signal.  As a final fallback when wholesale drops are exhausted, the
-    # tail is line-trimmed but the legend (last line) is pinned in place so
-    # marker explanations always survive.
+    # Strategy: for each droppable section in priority order, first try
+    # truncating it to 3 items (keeping the header + a "+N more" tail) before
+    # wholesale-dropping it.  This preserves the section header — which tells
+    # the compaction LLM that the section *exists* — while recovering most of
+    # the token cost.  Only if truncation is still over budget do we remove the
+    # section entirely.
+    #
+    # Drop order (lowest signal → highest):
+    #   todos → files → grep → glob → web → syms → what_worked → dep_changes
+    #   → bash → stale
+    # Protected sections (sealed, header, blockers, decisions, skills,
+    # uncommitted, edited) and the legend are never wholesale-dropped — they
+    # carry the highest post-compact recovery signal.  As a final fallback when
+    # wholesale drops are exhausted, the tail is line-trimmed but the legend
+    # (last line) is pinned in place so marker explanations always survive.
     if token_count > max_tokens:
         _LOG.info(
             "_render: safety trim for session=%s (%d tokens > %d budget)",
@@ -4902,6 +4961,27 @@ def _render(
                 body = _strip_common_prefix_from_sections(body, _applied_prefix)
             return "\n".join(body).rstrip()
 
+        def _truncate_section_lines(lines: list[str], keep_items: int = 3) -> list[str]:
+            """Return *lines* truncated to *keep_items* bullet items plus a "+N more" tail.
+
+            The first line is treated as the section header and is always kept.
+            When there are *keep_items* or fewer bullet lines the original list
+            is returned unchanged (nothing to gain from truncation).
+
+            A "+N more" suffix line is appended so the compaction LLM knows the
+            section has additional entries it can recover on demand.
+            """
+            if len(lines) <= keep_items + 1:  # header + keep_items
+                return lines
+            item_lines = lines[1:]  # lines after the header
+            hidden = len(item_lines) - keep_items
+            if hidden <= 0:
+                return lines
+            return [lines[0]] + item_lines[:keep_items] + [f"- ... (+{hidden} more)"]
+
+        # How many items to keep when truncating a section before wholesale drop.
+        _SECTION_TRUNCATE_KEEP: int = 3
+
         _droppable_names_in_drop_order = [
             "todos", "files", "grep", "glob", "web",
             "syms", "what_worked", "dep_changes", "bash", "stale",
@@ -4909,6 +4989,33 @@ def _render(
         _live_groups = list(_section_groups)
         _solved = False
         for _drop_name in _droppable_names_in_drop_order:
+            # Phase 1: try truncating the section to 3 items before dropping.
+            _truncate_idx = next(
+                (i for i, (n, _l, _p) in enumerate(_live_groups) if n == _drop_name),
+                -1,
+            )
+            if _truncate_idx >= 0:
+                _orig_name, _orig_lines, _orig_protected = _live_groups[_truncate_idx]
+                _truncated_lines = _truncate_section_lines(_orig_lines, _SECTION_TRUNCATE_KEEP)
+                if len(_truncated_lines) < len(_orig_lines):
+                    _trial_groups = list(_live_groups)
+                    _trial_groups[_truncate_idx] = (_orig_name, _truncated_lines, _orig_protected)
+                    _trial_text = _assemble(_trial_groups)
+                    if estimate_tokens(_trial_text) <= max_tokens:
+                        _live_groups = _trial_groups
+                        result = _trial_text
+                        _solved = True
+                        _LOG.info(
+                            "_render: safety trim truncated section=%s to %d items (session=%s)",
+                            _drop_name, _SECTION_TRUNCATE_KEEP, session_id[:8],
+                        )
+                        break
+                    _LOG.debug(
+                        "_render: safety trim truncation of section=%s still over budget, will drop",
+                        _drop_name,
+                    )
+
+            # Phase 2: wholesale-drop the section.
             _live_groups = [
                 (n, lns, p) for (n, lns, p) in _live_groups if n != _drop_name
             ]
