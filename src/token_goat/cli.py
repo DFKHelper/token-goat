@@ -3528,7 +3528,20 @@ def post_skill(
 
 @app.command("compact-hint", rich_help_panel="Advanced")
 def compact_hint(
-    session_id: str = typer.Option(..., "--session-id", "-s", help="Claude session_id"),
+    session_id: str = typer.Option(
+        "",
+        "--session-id",
+        "-s",
+        help=(
+            "Claude session_id to inspect.  Pass 'auto' (or omit and use --auto) "
+            "to auto-detect the most-recently-modified session file."
+        ),
+    ),
+    auto: bool = typer.Option(
+        False,
+        "--auto",
+        help="Auto-detect the most-recently-modified session and use it.",
+    ),
     json_output: bool = _OPT_JSON,
     max_tokens: int = typer.Option(
         0,
@@ -3554,6 +3567,34 @@ def compact_hint(
             "without injecting a manifest."
         ),
     ),
+    show_diff: bool = typer.Option(
+        False,
+        "--diff",
+        help=(
+            "Show a unified diff between the manifest that would be emitted NOW and "
+            "the manifest from the last emit stored in the text sidecar.  "
+            "Lines prefixed '+' are new; lines prefixed '-' were removed.  "
+            "Prints 'No previous manifest to compare against' when no sidecar exists yet."
+        ),
+    ),
+    show_sections: bool = typer.Option(
+        False,
+        "--sections",
+        help=(
+            "List just the section names in the manifest, plus the estimated token count "
+            "for each, without printing the full text.  Empty sections are flagged.  "
+            "Useful for quickly auditing what made it into the manifest."
+        ),
+    ),
+    show_score: bool = typer.Option(
+        False,
+        "--score",
+        help=(
+            "Print the manifest quality score (from _score_manifest) with a per-section "
+            "breakdown of what contributed to the score, plus whether the session would "
+            "trigger the noop fast-path."
+        ),
+    ),
 ) -> None:
     """Show the compaction manifest token-goat would inject for a session.
 
@@ -3577,14 +3618,42 @@ def compact_hint(
     final size will be, and which sections survive after the per-section
     budget split.
 
+    Pass ``--session-id auto`` or ``--auto`` to skip looking up the session ID
+    manually — token-goat will use the most-recently-modified session file.
+
     Add ``--explain-skip`` to see a detailed breakdown of the skip gates,
     including the sentinel reason, age, and activity-floor counts.
+
+    Add ``--diff`` to compare the current manifest against the last emitted one.
+
+    Add ``--sections`` to list section names and token counts without full text.
+
+    Add ``--score`` to see the manifest quality score with a section breakdown.
     """
+    import difflib  # noqa: PLC0415
+
     from . import compact as compact_mod  # noqa: PLC0415
     from . import config as config_mod  # noqa: PLC0415
     from . import hooks_cli as hooks_cli_mod  # noqa: PLC0415
+    from . import paths as paths_mod  # noqa: PLC0415
 
-    _validate_session_id(session_id)
+    # --- Resolve session ID --------------------------------------------------
+    # Support --session-id auto, --auto flag, or a missing session_id.
+    resolved_session_id = session_id.strip()
+    if auto or resolved_session_id.lower() == "auto" or not resolved_session_id:
+        detected = compact_mod.find_latest_session_id()
+        if not detected:
+            typer.echo(
+                "No session files found under token-goat data directory.  "
+                "Start a Claude Code session first, or pass --session-id explicitly.",
+                err=True,
+            )
+            raise typer.Exit(code=1)
+        if not resolved_session_id or resolved_session_id.lower() == "auto":
+            typer.echo(f"(auto-detected session: {detected})")
+        resolved_session_id = detected
+
+    _validate_session_id(resolved_session_id)
 
     cfg = config_mod.load().compact_assist
 
@@ -3605,7 +3674,7 @@ def compact_hint(
     trigger_allowed = bool(cfg.triggers) and trigger in cfg.triggers
     # Use the detail variant so we can surface reason + age in --explain-skip.
     try:
-        skip_detail = hooks_cli_mod._check_compact_skip_sentinel_detail(session_id)
+        skip_detail = hooks_cli_mod._check_compact_skip_sentinel_detail(resolved_session_id)
         sentinel_fast_path = bool(skip_detail)
         sentinel_reason = skip_detail.reason
         sentinel_age = skip_detail.age_secs
@@ -3619,20 +3688,32 @@ def compact_hint(
     try:
         from . import session as _session_mod  # noqa: PLC0415
 
-        _sc = _session_mod.safe_load(session_id, caller="compact-hint")
+        _sc = _session_mod.safe_load(resolved_session_id, caller="compact-hint")
         if _sc is not None:
             _is_noop = hooks_cli_mod._is_noop_session(_sc)
     except Exception:  # noqa: BLE001
         pass
 
-    n_events = compact_mod.event_count(session_id)
+    n_events = compact_mod.event_count(resolved_session_id)
     events_sufficient = n_events >= cfg.min_events
+
+    # --- For --diff: capture the prior manifest text BEFORE build_manifest
+    # writes a new text sidecar.  build_manifest updates the sidecar on every
+    # full render, so if we read it after we'd always see the current version.
+    _prior_manifest_text: str | None = None
+    if show_diff:
+        try:
+            text_sidecar = paths_mod.manifest_text_sidecar_path(resolved_session_id)
+            if text_sidecar.exists():
+                _prior_manifest_text = text_sidecar.read_text(encoding="utf-8")
+        except Exception:  # noqa: BLE001
+            _prior_manifest_text = None
 
     # Render the manifest with the *effective* budget (matching the hook).
     # We still render even when gates fail so the user can see "what would
     # have been emitted if the gates passed" — but `would_emit` reflects the
     # full gate chain accurately.
-    manifest = compact_mod.build_manifest(session_id, max_tokens=effective_tokens)
+    manifest = compact_mod.build_manifest(resolved_session_id, max_tokens=effective_tokens)
     is_cached_stub = manifest.startswith("## Token-Goat Manifest — unchanged since")
     quality_score = compact_mod._score_manifest([manifest]) if manifest else 0
     would_emit = bool(
@@ -3669,6 +3750,66 @@ def compact_hint(
         }, separators=(",", ":")))
         return
 
+    # --- --sections: list section names + token counts -----------------------
+    if show_sections:
+        if not manifest:
+            typer.echo("(no manifest to parse sections from)")
+            return
+        sections_list = compact_mod._parse_manifest_sections(manifest)
+        total_tokens = compact_mod.estimate_tokens(manifest)
+        typer.echo(f"Manifest sections  (~{total_tokens} tokens total):")
+        typer.echo("")
+        for sec_name, sec_tokens, sec_empty in sections_list:
+            empty_tag = "  [empty, would be dropped]" if sec_empty else ""
+            protected_tag = "  [protected]" if "Edited" in sec_name or "MUST_PRESERVE" in sec_name else ""
+            typer.echo(f"  {sec_name:<30}  {sec_tokens:>4} tokens{protected_tag}{empty_tag}")
+        return
+
+    # --- --score: quality score breakdown ------------------------------------
+    if show_score:
+        score_breakdown = compact_mod._score_manifest_breakdown([manifest]) if manifest else {}
+        activity_score = compact_mod._session_activity_score(_sc) if not _is_noop and "_sc" in dir() and _sc is not None else 0  # type: ignore[possibly-undefined]
+        typer.echo(f"Quality score: {quality_score}")
+        typer.echo(f"Noop fast-path would fire: {_is_noop}")
+        typer.echo(f"Session activity score: {activity_score}  (floor={compact_mod._ACTIVITY_FLOOR})")
+        if score_breakdown:
+            typer.echo("")
+            typer.echo("Score breakdown by section:")
+            for sec, pts in sorted(score_breakdown.items(), key=lambda x: -x[1]):
+                typer.echo(f"  {sec:<30}  +{pts}")
+        else:
+            typer.echo("(no scored content in manifest)")
+        return
+
+    # --- --diff: unified diff against last emitted manifest ------------------
+    if show_diff:
+        # _prior_manifest_text was captured BEFORE build_manifest ran above, so
+        # it reflects the previous emit, not the one we just rendered.
+        if _prior_manifest_text is None:  # type: ignore[possibly-undefined]
+            typer.echo("No previous manifest to compare against.")
+            typer.echo(
+                "(The text sidecar is written the first time compact-hint or the "
+                "PreCompact hook renders a manifest for this session.)"
+            )
+            return
+
+        current_text = manifest or ""
+        prior_lines = _prior_manifest_text.splitlines(keepends=True)
+        current_lines = current_text.splitlines(keepends=True)
+        diff_lines = list(difflib.unified_diff(
+            prior_lines,
+            current_lines,
+            fromfile="previous manifest",
+            tofile="current manifest",
+            lineterm="",
+        ))
+        if not diff_lines:
+            typer.echo("Manifest unchanged from last emit (no diff).")
+        else:
+            for dl in diff_lines:
+                typer.echo(dl)
+        return
+
     # --- Human-readable preview with explicit gate chain ---------------------
     typer.echo(f"compact-assist enabled: {cfg.enabled}")
     typer.echo(f"triggers: {', '.join(cfg.triggers)}")
@@ -3701,9 +3842,9 @@ def compact_hint(
             typer.echo(f"  sentinel age       : {sentinel_age:.0f}s")
             # Surface activity-floor counts when available.
             try:
-                _sent_path = hooks_cli_mod.paths.compact_skip_sentinel_path(session_id)
+                _sent_path = hooks_cli_mod.paths.compact_skip_sentinel_path(resolved_session_id)
                 _s_edited, _s_bash = hooks_cli_mod._read_sentinel_counts(_sent_path)
-                _c_edited, _c_bash = hooks_cli_mod._current_session_counts(session_id)
+                _c_edited, _c_bash = hooks_cli_mod._current_session_counts(resolved_session_id)
                 if _s_edited is not None:
                     typer.echo(
                         f"  sentinel counts    : edited={_s_edited}, bash={_s_bash}"
