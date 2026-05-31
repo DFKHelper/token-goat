@@ -3,6 +3,7 @@ from __future__ import annotations
 
 __all__ = [
     "AddSymbolFn",
+    "AddFn",
     "CALL_RE",
     "KindStr",
     "add_imports",
@@ -19,10 +20,13 @@ __all__ = [
     "extract_refs_from_source",
     "get_tlp",
     "kind_str",
+    "make_add_fn",
     "make_add_symbol",
     "make_process_config",
+    "merge_extra_symbols",
     "offset_to_line",
     "parse_source",
+    "safe_regex_parse",
     "scan_flat_headers",
     "sym_kind_str",
 ]
@@ -943,3 +947,174 @@ def scan_flat_headers(
         assign_flat_end_lines(sections, len(lines))
 
     return symbols, sections
+
+
+# ---------------------------------------------------------------------------
+# Fail-safe regex parse wrapper
+# ---------------------------------------------------------------------------
+
+_REGEX_PARSE_ERRORS = (re.error, ValueError, IndexError)
+
+
+def safe_regex_parse(
+    fn: Callable[..., list[object]],
+    *args: object,
+    log: logging.Logger,
+    label: str,
+    empty: list[object] | None = None,
+) -> list[object]:
+    """Call *fn(\\*args)* and return its result, or *empty* if a parse error occurs.
+
+    Consolidates the identical ``try / except (re.error, ValueError, IndexError)``
+    wrapper functions that appear in every language adapter::
+
+        def _extract_X(source):
+            try:
+                return _extract_X_inner(source)
+            except (re.error, ValueError, IndexError) as exc:
+                _LOG.debug("_extract_X: parse error: %s", exc, exc_info=True)
+                return []
+
+    Usage::
+
+        syms = common.safe_regex_parse(
+            _extract_const_var_inner, source,
+            log=_LOG, label="_extract_const_var",
+        )
+
+    Parameters
+    ----------
+    fn:
+        The inner function to call.
+    *args:
+        Positional arguments forwarded to *fn*.
+    log:
+        Logger instance for the calling module.
+    label:
+        Short identifier prepended to the debug message (typically the outer
+        function name, e.g. ``"_extract_const_var"``).
+    empty:
+        Value to return on error.  Defaults to ``[]``.  Pass ``([], [])``
+        (or any other falsy-but-typed value) for functions that return a tuple
+        of lists (e.g. ``php._extract_php_symbols_inner`` returns
+        ``(list[Symbol], list[ImpExp])``).
+    """
+    try:
+        return fn(*args)  # type: ignore[return-value]
+    except _REGEX_PARSE_ERRORS as exc:
+        log.debug("%s: parse error: %s", label, exc, exc_info=True)
+        return [] if empty is None else empty  # type: ignore[return-value]
+
+
+# ---------------------------------------------------------------------------
+# Dedup-and-append extra symbols
+# ---------------------------------------------------------------------------
+
+
+def merge_extra_symbols(
+    symbols: list[Symbol],
+    seen_names: set[tuple[str, int]],
+    extras: list[Symbol],
+) -> None:
+    """Append *extras* to *symbols*, skipping any whose (name, line) key is already in *seen_names*.
+
+    Consolidates the identical dedup-and-append loop found in every language
+    adapter that runs a secondary regex pass after the tree-sitter pass::
+
+        for extra in _extract_X(source):
+            key = (extra.name, extra.line)
+            if key not in seen_names:
+                seen_names.add(key)
+                symbols.append(extra)
+
+    Mutates both *symbols* and *seen_names* in-place.
+
+    Parameters
+    ----------
+    symbols:
+        The primary symbol list to extend.
+    seen_names:
+        The deduplication set, updated as each extra is appended.
+    extras:
+        The list of additional symbols to merge in.
+    """
+    for extra in extras:
+        key = (extra.name, extra.line)
+        if key not in seen_names:
+            seen_names.add(key)
+            symbols.append(extra)
+
+
+# ---------------------------------------------------------------------------
+# Local add() closure factory
+# ---------------------------------------------------------------------------
+
+
+class AddFn(Protocol):
+    """Protocol for the ``add`` closure returned by :func:`make_add_fn`.
+
+    Matches the ``add(name, kind, lineno, sig=None, parent=None)`` signature
+    used by ``cpp.py``, ``ruby.py``, and ``php.py`` to append deduplicated
+    :class:`~token_goat.parser.Symbol` objects.
+    """
+
+    def __call__(
+        self,
+        name: str,
+        kind: str,
+        lineno: int,
+        sig: str | None = None,
+        parent: str | None = None,
+    ) -> None: ...
+
+
+def make_add_fn(
+    symbols: list[Symbol],
+    seen_names: set[tuple[str, int]],
+) -> AddFn:
+    """Return an ``add(name, kind, lineno, sig, parent)`` closure.
+
+    Consolidates the identical local ``add()`` closures defined inside the
+    ``_extract_*_inner`` functions of ``cpp.py``, ``ruby.py``, and
+    ``php.py``::
+
+        def add(name, kind, lineno, sig=None, parent=None):
+            key = (name, lineno)
+            if key not in seen_names:
+                seen_names.add(key)
+                symbols.append(Symbol(
+                    name=name, kind=kind, line=lineno, end_line=lineno,
+                    signature=sig[:200] if sig else None, parent_name=parent,
+                ))
+
+    Parameters
+    ----------
+    symbols:
+        The list to append :class:`~token_goat.parser.Symbol` objects to.
+    seen_names:
+        Deduplication set of ``(name, line)`` pairs; mutated in place.
+    """
+    from ..parser import Symbol as _Symbol  # noqa: PLC0415
+
+    def _add(
+        name: str,
+        kind: str,
+        lineno: int,
+        sig: str | None = None,
+        parent: str | None = None,
+    ) -> None:
+        key = (name, lineno)
+        if key not in seen_names:
+            seen_names.add(key)
+            symbols.append(
+                _Symbol(
+                    name=name,
+                    kind=kind,
+                    line=lineno,
+                    end_line=lineno,
+                    signature=sig[:200] if sig else None,
+                    parent_name=parent,
+                )
+            )
+
+    return _add  # type: ignore[return-value]

@@ -53,11 +53,7 @@ _TOP_FUN_RE = re.compile(
 
 
 def _extract_kotlin_symbols(source: bytes) -> list[Symbol]:
-    try:
-        return _extract_kotlin_symbols_inner(source)
-    except (re.error, ValueError, IndexError) as exc:
-        _LOG.debug("_extract_kotlin_symbols: parse error: %s", exc, exc_info=True)
-        return []
+    return common.safe_regex_parse(_extract_kotlin_symbols_inner, source, log=_LOG, label="_extract_kotlin_symbols")  # type: ignore[return-value]
 
 
 def _extract_kotlin_symbols_inner(source: bytes) -> list[Symbol]:

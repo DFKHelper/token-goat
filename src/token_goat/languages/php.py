@@ -67,11 +67,10 @@ _REQUIRE_RE = re.compile(r"^(?:require|include)(?:_once)?\s+['\"]([^'\"]+)['\"]"
 def _extract_php_symbols(
     source: bytes, seen_names: set[tuple[str, int]]
 ) -> tuple[list[Symbol], list[ImpExp]]:
-    try:
-        return _extract_php_symbols_inner(source, seen_names)
-    except (re.error, ValueError, IndexError) as exc:
-        _LOG.debug("_extract_php_symbols: parse error: %s", exc, exc_info=True)
-        return [], []
+    return common.safe_regex_parse(  # type: ignore[return-value]
+        _extract_php_symbols_inner, source, seen_names,
+        log=_LOG, label="_extract_php_symbols", empty=([], []),
+    )
 
 
 def _extract_php_symbols_inner(
@@ -91,14 +90,7 @@ def _extract_php_symbols_inner(
     def current_class() -> str | None:
         return context_stack[-1][0] if context_stack else None
 
-    def add(name: str, kind: str, lineno: int, sig: str | None = None, parent: str | None = None) -> None:
-        key = (name, lineno)
-        if key not in seen_names:
-            seen_names.add(key)
-            symbols.append(Symbol(
-                name=name, kind=kind, line=lineno, end_line=lineno,
-                signature=sig[:200] if sig else None, parent_name=parent,
-            ))
+    add = common.make_add_fn(symbols, seen_names)
 
     for i, raw_line in enumerate(lines, 1):
         line = raw_line.rstrip()

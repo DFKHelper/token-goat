@@ -55,11 +55,7 @@ _CONSTRUCTOR_RE = re.compile(
 
 
 def _extract_extras(source: bytes, class_names: frozenset[str]) -> list[Symbol]:
-    try:
-        return _extract_extras_inner(source, class_names)
-    except (re.error, ValueError, IndexError) as exc:
-        _LOG.debug("_extract_extras: parse error: %s", exc, exc_info=True)
-        return []
+    return common.safe_regex_parse(_extract_extras_inner, source, class_names, log=_LOG, label="_extract_extras")  # type: ignore[return-value]
 
 
 def _extract_extras_inner(source: bytes, class_names: frozenset[str]) -> list[Symbol]:
@@ -154,11 +150,7 @@ def extract(source: bytes, rel_path: str) -> tuple[list[Symbol], list[Ref], list
 
     class_names = frozenset(s.name for s in symbols if s.kind in ("class", "enum", "interface", "type") and s.name)
 
-    for extra in _extract_extras(source, class_names):
-        key = (extra.name, extra.line)
-        if key not in seen_names:
-            seen_names.add(key)
-            symbols.append(extra)
+    common.merge_extra_symbols(symbols, seen_names, _extract_extras(source, class_names))
 
     # using imports
     text = source.decode("utf-8", errors="replace")

@@ -85,11 +85,7 @@ _NOT_FUNC = re.compile(
 
 
 def _extract_symbols(source: bytes, language: str) -> list[Symbol]:
-    try:
-        return _extract_symbols_inner(source, language)
-    except (re.error, ValueError, IndexError) as exc:
-        _LOG.debug("_extract_symbols(%s): parse error: %s", language, exc, exc_info=True)
-        return []
+    return common.safe_regex_parse(_extract_symbols_inner, source, language, log=_LOG, label=f"_extract_symbols({language})")  # type: ignore[return-value]
 
 
 def _extract_symbols_inner(source: bytes, language: str) -> list[Symbol]:
@@ -102,14 +98,7 @@ def _extract_symbols_inner(source: bytes, language: str) -> list[Symbol]:
     # Track anonymous typedef struct start lines: } TypeName; needs the start line
     anon_typedef_starts: list[int] = []
 
-    def add(name: str, kind: str, lineno: int, sig: str | None = None, parent: str | None = None) -> None:
-        key = (name, lineno)
-        if key not in seen:
-            seen.add(key)
-            symbols.append(Symbol(
-                name=name, kind=kind, line=lineno, end_line=lineno,
-                signature=sig[:200] if sig else None, parent_name=parent,
-            ))
+    add = common.make_add_fn(symbols, seen)
 
     for i, raw_line in enumerate(lines, 1):
         line = raw_line.strip()
