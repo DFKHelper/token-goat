@@ -208,6 +208,14 @@ __all__ = [
     "HaskellFilter",
     # R CMD check / R package build tool
     "RCmdFilter",
+    # Conan C/C++ package manager
+    "ConanFilter",
+    # vcpkg C++ package manager
+    "VcpkgFilter",
+    # cppcheck C/C++ static analysis
+    "CppcheckFilter",
+    # clang-tidy C/C++ linter
+    "ClangTidyFilter",
 ]
 
 import math
@@ -16732,6 +16740,516 @@ class RCmdFilter(Filter):
         return self._finalize(out)
 
 
+# --- conan -----------------------------------------------------------------
+
+#: Conan install/create per-package progress: "package/1.0: Calling build()"
+#: and "package/1.0: Package 'abc123' created"
+_CONAN_PKG_PROGRESS_RE: Final[re.Pattern[str]] = re.compile(
+    r"^[\w.+-]+/[\w.+:-]+(?:@[\w/]+)?\s*:\s+"
+    r"(?:Package\s+'[0-9a-f]+'\s+(?:created|already exists|built)|"
+    r"Calling\s+(?:build|package|package_info|config_options|configure|requirements|"
+    r"package_id|validate|generate|layout)\(\)|"
+    r"Exporting\s+package|"
+    r"Copying|"
+    r"Generating\s+(?:the\s+)?(?:package|generators)|"
+    r"Building\s+(?:the\s+)?package|"
+    r"Decompressing\s+|"
+    r"Downloading|"
+    r"WARN:\s+Build\s+folder\s+is\s+different)",
+)
+
+#: Conan "Requirement <pkg> from <remote>" lines during dependency resolution
+_CONAN_REQUIREMENT_RE: Final[re.Pattern[str]] = re.compile(
+    r"^(?:Requirement|Graph\s+root|Requirements?:|"
+    r"Packages:|Build\s+requirements?:)",
+    re.IGNORECASE,
+)
+
+#: Conan "Install finished" / "Package installed" summary — always keep
+_CONAN_DONE_RE: Final[re.Pattern[str]] = re.compile(
+    r"^(?:Install\s+finished|"
+    r"Conan\s+profile:|"
+    r"Cross\s+build\s+from|"
+    r"Package\s+(?:installed|created))",
+    re.IGNORECASE,
+)
+
+#: Conan download-progress lines like "Downloading conan_sources.tgz"
+_CONAN_DOWNLOAD_RE: Final[re.Pattern[str]] = re.compile(
+    r"^(?:Downloading\s+conan_|"
+    r"Checking\s+checksum|"
+    r"\d+/\d+\s+bytes\s+downloaded)",
+    re.IGNORECASE,
+)
+
+
+class ConanFilter(Filter):
+    """Compress ``conan install`` / ``conan create`` / ``conan build`` output.
+
+    Conan C/C++ package manager emits verbose per-package lifecycle lines for
+    every dependency.  On a project with 20+ transitive dependencies, the
+    output can easily run to 500+ lines even though nothing failed.
+
+    Compression model:
+
+    * **Per-package lifecycle lines** (``pkg/ver: Calling build()``,
+      ``pkg/ver: Package 'abc123' created``, ``Downloading conan_sources.tgz``,
+      etc.): collapsed to a count summary.
+    * **Download-progress lines**: collapsed into the lifecycle count.
+    * **``Requirements:`` / ``Packages:``** dependency resolution blocks:
+      kept (they are the relevant summary of what was resolved).
+    * **``Install finished``** / **``Package created``** summary lines: always kept.
+    * **error/warning** diagnostics: always kept verbatim.
+    """
+
+    name = "conan"
+    binaries = frozenset(["conan", "conan2"])
+
+    def compress(
+        self, stdout: str, stderr: str, exit_code: int, argv: list[str],
+    ) -> str:
+        err_output = _preserve_stderr_on_error(stdout, stderr, exit_code)
+        if err_output is not None:
+            return err_output
+
+        combined = self._combine_output(stdout, stderr)
+        lines = combined.split("\n")
+        kept: list[str] = []
+        pkg_progress_count = 0
+        download_count = 0
+
+        for line in lines:
+            # Always keep error/warning diagnostics.
+            if _ERROR_SIGNAL_RE.search(line):
+                kept.append(line)
+                continue
+            # Always keep summary/done lines.
+            if _CONAN_DONE_RE.match(line):
+                kept.append(line)
+                continue
+            # Keep dependency resolution summary blocks.
+            if _CONAN_REQUIREMENT_RE.match(line):
+                kept.append(line)
+                continue
+            # Collapse per-package lifecycle lines.
+            if _CONAN_PKG_PROGRESS_RE.match(line):
+                pkg_progress_count += 1
+                continue
+            # Collapse download-progress lines.
+            if _CONAN_DOWNLOAD_RE.match(line):
+                download_count += 1
+                continue
+            kept.append(line)
+
+        notes: list[str] = []
+        total_dropped = pkg_progress_count + download_count
+        if total_dropped:
+            parts = []
+            if pkg_progress_count:
+                parts.append(f"{pkg_progress_count} package lifecycle")
+            if download_count:
+                parts.append(f"{download_count} download")
+            notes.append(f"collapsed {total_dropped} conan progress lines ({', '.join(parts)})")
+        self._emit_notes(kept, notes)
+        return self._finalize(kept)
+
+
+# --- vcpkg -----------------------------------------------------------------
+
+#: vcpkg "Building <port>:x64-linux..." progress line
+_VCPKG_BUILDING_RE: Final[re.Pattern[str]] = re.compile(
+    r"^Building\s+\S+:\S+\.\.\.",
+)
+
+#: vcpkg "Installing <port>:x64-linux..." progress line
+_VCPKG_INSTALLING_RE: Final[re.Pattern[str]] = re.compile(
+    r"^Installing\s+\S+:\S+\.\.\.",
+)
+
+#: vcpkg "Detecting compiler hash for triplet ..." line
+_VCPKG_DETECTING_RE: Final[re.Pattern[str]] = re.compile(
+    r"^Detecting\s+compiler\s+hash",
+)
+
+#: vcpkg "The following packages will be built and installed:" or
+#: "Additional packages (*) will be modified to complete this operation."
+_VCPKG_PLAN_RE: Final[re.Pattern[str]] = re.compile(
+    r"^(?:The\s+following\s+packages\s+will\s+be|"
+    r"Additional\s+packages\s+\(\*\))",
+    re.IGNORECASE,
+)
+
+#: vcpkg "Elapsed time for package <name>: N.Nms" — timing noise
+_VCPKG_ELAPSED_RE: Final[re.Pattern[str]] = re.compile(
+    r"^Elapsed\s+time\s+for\s+package\s+\S+:\s+\d",
+)
+
+#: vcpkg success / done: "CMake projects should use..." or "Total install time..."
+_VCPKG_DONE_RE: Final[re.Pattern[str]] = re.compile(
+    r"^(?:Total\s+install\s+time:|"
+    r"CMake\s+projects\s+should\s+use|"
+    r"All\s+requested\s+packages\s+are\s+currently\s+installed|"
+    r"Package\s+\S+:\S+\s+is\s+already\s+installed)",
+    re.IGNORECASE,
+)
+
+#: vcpkg per-file extraction: "  -- Extracting source ..." sub-step lines
+_VCPKG_EXTRACTING_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\s*--\s+(?:Extracting\s+source|Applying\s+patch|"
+    r"Using\s+cached\s+archive|"
+    r"Downloading\s+https?://|"
+    r"Fetching\s+\S+|"
+    r"Stored\s+binaries\s+in\s+)",
+    re.IGNORECASE,
+)
+
+
+class VcpkgFilter(Filter):
+    """Compress ``vcpkg install`` / ``vcpkg upgrade`` output.
+
+    vcpkg C++ package manager emits one ``Building <port>:triplet...`` and
+    ``Installing <port>:triplet...`` line per port, plus sub-step lines for
+    source extraction, patch application, and binary caching.  A project with
+    30 transitive dependencies generates 60+ progress lines before any
+    compiler output appears.
+
+    Compression model:
+
+    * **``Building/Installing <port>:triplet...``** lines: collapsed to a count
+      summary (one line each, so N ports → 2N lines compressed to 1).
+    * **Per-step sub-lines** (``-- Extracting source``, ``-- Applying patch``,
+      ``-- Downloading``): collapsed into the same count.
+    * **``Elapsed time for package``** timing lines: dropped (redundant noise).
+    * **``Detecting compiler hash``**: dropped.
+    * **Plan summary** (``The following packages will be built``): kept.
+    * **Done/completion** lines (``Total install time``): always kept.
+    * **error/warning** diagnostics: always kept verbatim.
+    """
+
+    name = "vcpkg"
+    binaries = frozenset(["vcpkg"])
+
+    def compress(
+        self, stdout: str, stderr: str, exit_code: int, argv: list[str],
+    ) -> str:
+        err_output = _preserve_stderr_on_error(stdout, stderr, exit_code)
+        if err_output is not None:
+            return err_output
+
+        combined = self._combine_output(stdout, stderr)
+        lines = combined.split("\n")
+        kept: list[str] = []
+        building_count = 0
+        installing_count = 0
+        substep_count = 0
+        timing_count = 0
+
+        for line in lines:
+            # Always keep error/warning diagnostics.
+            if _ERROR_SIGNAL_RE.search(line):
+                kept.append(line)
+                continue
+            # Always keep plan and completion lines.
+            if _VCPKG_PLAN_RE.match(line) or _VCPKG_DONE_RE.match(line):
+                kept.append(line)
+                continue
+            # Collapse "Building <port>:triplet..." lines.
+            if _VCPKG_BUILDING_RE.match(line):
+                building_count += 1
+                continue
+            # Collapse "Installing <port>:triplet..." lines.
+            if _VCPKG_INSTALLING_RE.match(line):
+                installing_count += 1
+                continue
+            # Collapse sub-step lines (extracting, patching, downloading).
+            if _VCPKG_EXTRACTING_RE.match(line):
+                substep_count += 1
+                continue
+            # Drop elapsed-time and compiler-hash-detection noise.
+            if _VCPKG_ELAPSED_RE.match(line) or _VCPKG_DETECTING_RE.match(line):
+                timing_count += 1
+                continue
+            kept.append(line)
+
+        notes: list[str] = []
+        if building_count or installing_count:
+            parts = []
+            if building_count:
+                parts.append(f"{building_count} Building")
+            if installing_count:
+                parts.append(f"{installing_count} Installing")
+            notes.append(f"collapsed {building_count + installing_count} vcpkg port lines ({', '.join(parts)})")
+        if substep_count:
+            notes.append(f"collapsed {substep_count} vcpkg sub-step lines")
+        if timing_count:
+            notes.append(f"dropped {timing_count} vcpkg timing/detection lines")
+        self._emit_notes(kept, notes)
+        return self._finalize(kept)
+
+
+# --- cppcheck --------------------------------------------------------------
+
+#: cppcheck "Checking <file>..." progress line
+_CPPCHECK_CHECKING_RE: Final[re.Pattern[str]] = re.compile(
+    r"^Checking\s+\S.*\.\.\.",
+)
+
+#: cppcheck "N/M files checked N% done" progress line
+_CPPCHECK_PROGRESS_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\d+/\d+\s+files\s+checked\s+\d+%\s+done",
+)
+
+#: cppcheck diagnostic line: "[file.cpp:N]: (error|warning|style|performance|portability|information) message"
+_CPPCHECK_DIAGNOSTIC_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\[.+\.(?:c|cpp|cxx|cc|h|hpp|hxx):\d+\]:",
+)
+
+#: cppcheck "[file]: (error|warning|style|...) message" variant (no line number)
+_CPPCHECK_DIAG_NOLINE_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\[.+\]:\s*\((?:error|warning|style|performance|portability|information)\)",
+    re.IGNORECASE,
+)
+
+#: cppcheck "Checking configuration …" verbose mode lines
+_CPPCHECK_CONFIG_RE: Final[re.Pattern[str]] = re.compile(
+    r"^(?:Checking\s+configuration|"
+    r"Active\s+checkers:|"
+    r"Enabled\s+checkers:|"
+    r"cppcheck:\s+(?:error:|warning:|note:))",
+    re.IGNORECASE,
+)
+
+#: cppcheck "N errors" / "N warnings" summary line
+_CPPCHECK_SUMMARY_RE: Final[re.Pattern[str]] = re.compile(
+    r"^(?:\d+\s+(?:error|warning|style|performance|portability)s?(?:\s+(?:found|detected))?|"
+    r"No\s+errors\s+found|"
+    r"Done\s+processing|"
+    r"cppcheck:\s+.*(?:done|finished)|"
+    r"\d+\s+unique\s+error)",
+    re.IGNORECASE,
+)
+
+
+class CppcheckFilter(Filter):
+    """Compress ``cppcheck`` C/C++ static analysis output.
+
+    cppcheck emits one ``Checking <file>...`` progress line per translation
+    unit and (in verbose/progress mode) one ``N/M files checked N% done`` line
+    per batch.  On a project with hundreds of files these are pure noise unless
+    a diagnostic follows.
+
+    Compression model:
+
+    * **``Checking <file>...``** progress lines: collapsed to a count.
+    * **``N/M files checked N% done``** progress lines: dropped (redundant with
+      the file-count summary).
+    * **``[file.cpp:N]: (severity) message``** diagnostic lines: always kept
+      verbatim — these are the entire point of running cppcheck.
+    * **``Checking configuration ...``** verbose-mode lines: collapsed to a count.
+    * **Summary lines** (``N errors found``, ``No errors found``): always kept.
+    * **error/warning** signals in any other line: always kept.
+    """
+
+    name = "cppcheck"
+    binaries = frozenset(["cppcheck"])
+
+    def compress(
+        self, stdout: str, stderr: str, exit_code: int, argv: list[str],
+    ) -> str:
+        # cppcheck sends most output (including diagnostics) to stderr by default.
+        # Combine both streams so nothing is lost.
+        combined = self._combine_output(stdout, stderr)
+        lines = combined.split("\n")
+        kept: list[str] = []
+        checking_count = 0
+        progress_count = 0
+        config_count = 0
+
+        for line in lines:
+            # Always keep diagnostic lines — these are the primary output.
+            if _CPPCHECK_DIAGNOSTIC_RE.match(line) or _CPPCHECK_DIAG_NOLINE_RE.match(line):
+                kept.append(line)
+                continue
+            # Always keep generic error/warning signals.
+            if _ERROR_SIGNAL_RE.search(line):
+                kept.append(line)
+                continue
+            # Always keep summary lines.
+            if _CPPCHECK_SUMMARY_RE.match(line):
+                kept.append(line)
+                continue
+            # Collapse "Checking <file>..." progress.
+            if _CPPCHECK_CHECKING_RE.match(line):
+                checking_count += 1
+                continue
+            # Drop "N/M files checked N% done" lines — captured by count above.
+            if _CPPCHECK_PROGRESS_RE.match(line):
+                progress_count += 1
+                continue
+            # Collapse verbose "Checking configuration..." lines.
+            if _CPPCHECK_CONFIG_RE.match(line):
+                config_count += 1
+                continue
+            kept.append(line)
+
+        notes: list[str] = []
+        if checking_count:
+            notes.append(f"collapsed {checking_count} 'Checking <file>...' progress lines")
+        if progress_count:
+            notes.append(f"dropped {progress_count} file-progress percentage lines")
+        if config_count:
+            notes.append(f"collapsed {config_count} configuration-check lines")
+        self._emit_notes(kept, notes)
+        return self._finalize(kept)
+
+
+# --- clang-tidy ------------------------------------------------------------
+
+#: clang-tidy per-file progress: "N warnings generated."
+_CLANG_TIDY_WARNINGS_GENERATED_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\d+\s+warning(?:s)?\s+generated\.",
+)
+
+#: clang-tidy "clang-tidy: Processing N files..."  (only shown with -p)
+_CLANG_TIDY_PROCESSING_RE: Final[re.Pattern[str]] = re.compile(
+    r"^clang-tidy:\s+Processing\s+\d+",
+    re.IGNORECASE,
+)
+
+#: clang-tidy diagnostic header: "file.cpp:N:N: warning: message [check-name]"
+_CLANG_TIDY_DIAG_RE: Final[re.Pattern[str]] = re.compile(
+    r"^.+\.(?:c|cpp|cxx|cc|h|hpp|hxx):\d+:\d+:\s+(?:error|warning|note|remark):",
+)
+
+#: clang-tidy "note: did you mean ..." detail line (part of diagnostic context)
+_CLANG_TIDY_NOTE_RE: Final[re.Pattern[str]] = re.compile(
+    r"^.+:\d+:\d+:\s+note:",
+)
+
+#: clang-tidy code-context lines: the source excerpt and caret line that
+#: appear under each diagnostic.  These are highly verbose — 2 lines per
+#: diagnostic per include chain.  We collapse runs after keeping the first.
+_CLANG_TIDY_CONTEXT_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\s+(?:\^[~\^]*|~+)\s*$|"   # caret/tilde underlining line
+    r"^\s{4,}\S",                  # indented source-code context line
+)
+
+#: clang-tidy "In file included from ..." expansion lines
+_CLANG_TIDY_INCLUDE_RE: Final[re.Pattern[str]] = re.compile(
+    r"^In\s+file\s+included\s+from\s+",
+)
+
+#: clang-tidy "clang-tidy: N warnings treated as errors" summary
+_CLANG_TIDY_SUMMARY_RE: Final[re.Pattern[str]] = re.compile(
+    r"^(?:clang-tidy:\s+\d+|"
+    r"Suppressed\s+\d+|"
+    r"\d+\s+warning[s]?\s+(?:treated\s+as\s+error|and\s+\d+\s+error))",
+    re.IGNORECASE,
+)
+
+
+class ClangTidyFilter(Filter):
+    """Compress ``clang-tidy`` C/C++ linter output.
+
+    clang-tidy emits a structured diagnostic per check violation, but surrounds
+    each diagnostic with verbose source-context lines (the offending source
+    text plus caret underlines) and ``In file included from …`` expansion
+    chains.  On large codebases each actual violation can generate 10-30
+    context lines, inflating 20 real findings to 200+ output lines.
+
+    Compression model:
+
+    * **Diagnostic headers** (``file.cpp:N:N: warning: … [check-name]``):
+      always kept verbatim — these are the actionable output.
+    * **``note:`` lines** that immediately follow a diagnostic: kept (they
+      carry fix-it suggestions and related-location context).
+    * **Source-context lines** (indented source text + caret/tilde underlines):
+      collapsed — keep at most 1 context block per diagnostic, drop the rest.
+    * **``In file included from …``** chains: collapsed to a count (usually
+      irrelevant noise for style/bug checks).
+    * **``N warnings generated.``** per-file progress lines: collapsed to a
+      total count.
+    * **Summary lines** (``clang-tidy: N warnings treated as errors``):
+      always kept.
+    * **error/warning** signals in any other line: always kept.
+    """
+
+    name = "clang-tidy"
+    binaries = frozenset(["clang-tidy", "run-clang-tidy", "run-clang-tidy.py"])
+
+    def compress(
+        self, stdout: str, stderr: str, exit_code: int, argv: list[str],
+    ) -> str:
+        # clang-tidy sends diagnostics to stdout and progress to stderr.
+        combined = self._combine_output(stdout, stderr)
+        lines = combined.split("\n")
+        kept: list[str] = []
+        warnings_generated = 0
+        include_chains = 0
+        context_dropped = 0
+        # Track whether we are inside the context block of a diagnostic.
+        in_diag_context = False
+        context_kept_for_current = False
+
+        for line in lines:
+            # Summary lines — always keep.
+            if _CLANG_TIDY_SUMMARY_RE.match(line):
+                kept.append(line)
+                in_diag_context = False
+                context_kept_for_current = False
+                continue
+            # Diagnostic headers — always keep; begin a new context block.
+            if _CLANG_TIDY_DIAG_RE.match(line):
+                kept.append(line)
+                in_diag_context = True
+                context_kept_for_current = False
+                continue
+            # Note lines following a diagnostic — always keep (fix-it hints).
+            if _CLANG_TIDY_NOTE_RE.match(line) and in_diag_context:
+                kept.append(line)
+                continue
+            # Error/warning signals outside of the structured diagnostic format.
+            if _ERROR_SIGNAL_RE.search(line):
+                kept.append(line)
+                in_diag_context = False
+                continue
+            # "N warnings generated." per-file progress — count.
+            if _CLANG_TIDY_WARNINGS_GENERATED_RE.match(line):
+                m = re.match(r"^(\d+)", line)
+                if m:
+                    warnings_generated += int(m.group(1))
+                continue
+            # "clang-tidy: Processing N files..." progress.
+            if _CLANG_TIDY_PROCESSING_RE.match(line):
+                continue
+            # "In file included from ..." — count.
+            if _CLANG_TIDY_INCLUDE_RE.match(line):
+                include_chains += 1
+                continue
+            # Source-context / caret lines: keep at most one block per diagnostic.
+            if _CLANG_TIDY_CONTEXT_RE.match(line) and in_diag_context:
+                if not context_kept_for_current:
+                    kept.append(line)
+                    context_kept_for_current = True
+                else:
+                    context_dropped += 1
+                continue
+            # Any other line resets the in-context state.
+            in_diag_context = False
+            context_kept_for_current = False
+            kept.append(line)
+
+        notes: list[str] = []
+        if warnings_generated:
+            notes.append(f"collapsed {warnings_generated} total 'N warnings generated' progress lines")
+        if include_chains:
+            notes.append(f"collapsed {include_chains} 'In file included from' chains")
+        if context_dropped:
+            notes.append(f"dropped {context_dropped} redundant source-context/caret lines")
+        self._emit_notes(kept, notes)
+        return self._finalize(kept)
+
+
 # ---------------------------------------------------------------------------
 # Public registry & dispatch
 # ---------------------------------------------------------------------------
@@ -16989,6 +17507,18 @@ FILTERS: list[Filter] = [
     # RCmdFilter handles `R CMD check/INSTALL` and `Rscript` invocations;
     # disjoint binaries from every other filter so position is cosmetic.
     RCmdFilter(),
+    # ConanFilter handles `conan install/create/build`; disjoint binary from
+    # every other filter so position is cosmetic — placed alongside other C/C++ tooling.
+    ConanFilter(),
+    # VcpkgFilter handles `vcpkg install/upgrade/remove`; disjoint binary from
+    # every other filter so position is cosmetic — placed alongside other C/C++ tooling.
+    VcpkgFilter(),
+    # CppcheckFilter handles `cppcheck` C/C++ static analysis; disjoint binary
+    # from every other filter so position is cosmetic.
+    CppcheckFilter(),
+    # ClangTidyFilter handles `clang-tidy`, `run-clang-tidy`, and
+    # `run-clang-tidy.py`; disjoint from every other filter.
+    ClangTidyFilter(),
 ]
 
 
