@@ -142,9 +142,19 @@ class TestFindInAllProjects:
         assert find_in_all_projects("tool.md") is not None
         assert find_in_all_projects("plugin.md") is not None
 
-    def test_raises_for_ambiguous_file_name(self, tmp_data_dir, tmp_path):
+    def test_same_rel_path_across_projects_prefers_most_recent(self, tmp_data_dir, tmp_path):
+        """When the same relative path exists in multiple projects, the most
+        recently indexed project is returned instead of raising AmbiguousFileMatch.
+
+        This is the correct behavior: the newest index is most authoritative.
+        AmbiguousFileMatch is reserved for genuinely different paths that happen
+        to match the same bare filename (e.g. 'a/shared.md' vs 'b/shared.md').
+        """
+        import time
+
+        from token_goat import db as _db
         from token_goat.parser import index_project
-        from token_goat.read_replacement import AmbiguousFileMatch, find_in_all_projects
+        from token_goat.read_replacement import find_in_all_projects
 
         skills_root = tmp_path / "skills"
         skills_root.mkdir()
@@ -159,11 +169,53 @@ class TestFindInAllProjects:
         index_project(skills_proj, full=True)
         index_project(plugins_proj, full=True)
 
+        # Mark plugins_proj as more recently indexed.
+        base_ts = int(time.time())
+        with _db.open_global() as gconn:
+            gconn.execute(
+                "UPDATE projects SET last_seen = ? WHERE hash = ?",
+                (base_ts + 100, plugins_proj.hash),
+            )
+            gconn.execute(
+                "UPDATE projects SET last_seen = ? WHERE hash = ?",
+                (base_ts, skills_proj.hash),
+            )
+
+        result = find_in_all_projects("shared.md")
+        assert result is not None, "Should find shared.md in one project."
+        found_proj, found_rel = result
+        assert found_rel == "shared.md"
+        assert found_proj.hash == plugins_proj.hash, (
+            "Most-recently-indexed project must be preferred over older one."
+        )
+
+    def test_raises_for_ambiguous_file_at_different_paths(self, tmp_data_dir, tmp_path):
+        """AmbiguousFileMatch is raised when the same bare filename resolves to
+        *different* relative paths across projects (e.g. 'a/foo.md' vs 'b/foo.md')."""
+        from token_goat.parser import index_project
+        from token_goat.read_replacement import AmbiguousFileMatch, find_in_all_projects
+
+        proj_a_root = tmp_path / "proj_a"
+        proj_a_root.mkdir()
+        (proj_a_root / "a").mkdir()
+        (proj_a_root / "a" / "shared.md").write_text("# A\n", encoding="utf-8")
+
+        proj_b_root = tmp_path / "proj_b"
+        proj_b_root.mkdir()
+        (proj_b_root / "b").mkdir()
+        (proj_b_root / "b" / "shared.md").write_text("# B\n", encoding="utf-8")
+
+        proj_a = make_project_at(proj_a_root)
+        proj_b = make_project_at(proj_b_root)
+        index_project(proj_a, full=True)
+        index_project(proj_b, full=True)
+
+        # Different rel_paths ('a/shared.md' vs 'b/shared.md') → still ambiguous.
         with pytest.raises(AmbiguousFileMatch) as excinfo:
             find_in_all_projects("shared.md")
         assert set(excinfo.value.candidates) == {
-            f"{skills_proj.hash[:8]}:shared.md",
-            f"{plugins_proj.hash[:8]}:shared.md",
+            f"{proj_a.hash[:8]}:a/shared.md",
+            f"{proj_b.hash[:8]}:b/shared.md",
         }
 
     def test_handles_corrupt_global_db_gracefully(self, tmp_data_dir, monkeypatch):

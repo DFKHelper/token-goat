@@ -570,17 +570,30 @@ def _resolve_file_rel_db(project: Project, file_part: str) -> str | None:
 def find_in_all_projects(file_part: str) -> tuple[Project, str] | None:
     """Search every indexed project for a file matching file_part.
 
-    Returns (project, rel_path) for the single unambiguous match, or None.
-    Raises AmbiguousFileMatch when multiple indexed files match across projects.
-    Used as a cross-project fallback so `token-goat section
-    "superman/SKILL.md::Heading"` works from any working directory once the
+    Returns ``(project, rel_path)`` for the best unambiguous match, or ``None``.
+
+    When the same filename exists in exactly one project, that match is returned.
+    When it exists in multiple projects but every match resolves to the *same*
+    relative path (e.g. two repos each have ``shared.py``), the most recently
+    indexed project (highest ``last_seen`` timestamp) is returned instead of
+    raising — this is the common case when a skill file is indexed from both a
+    project mirror and the ~/.claude/skills/ directory.
+
+    Raises :exc:`AmbiguousFileMatch` when multiple projects match at different
+    paths or when within-project ambiguity is detected, so the caller can
+    surface all candidates.
+
+    Used as a cross-project fallback so ``token-goat section
+    "superman/SKILL.md::Heading"`` works from any working directory once the
     skills dir has been indexed.
     """
     from . import db as _db  # noqa: PLC0415
 
     try:
         with _db.open_global_readonly() as gconn:
-            rows = gconn.execute("SELECT hash, root, marker FROM projects").fetchall()
+            rows = gconn.execute(
+                "SELECT hash, root, marker, last_seen FROM projects"
+            ).fetchall()
     except FileNotFoundError:
         return None
     except (OSError, sqlite3.Error) as exc:
@@ -597,7 +610,8 @@ def find_in_all_projects(file_part: str) -> tuple[Project, str] | None:
         return None
 
     _LOG.debug("find_in_all_projects: searching %d indexed project(s) for %r", len(rows), file_part)
-    matches: list[tuple[Project, str]] = []
+    # Extend matches to carry the last_seen timestamp for tie-breaking.
+    matches: list[tuple[Project, str, int]] = []  # (project, rel_path, last_seen)
     # Formatted as "{project_hash_prefix}:{rel_path}" for error messages.
     # Collects both within-project ambiguities (from AmbiguousFileMatch) and
     # cross-project ambiguities (multiple projects each returning a distinct match).
@@ -605,6 +619,7 @@ def find_in_all_projects(file_part: str) -> tuple[Project, str] | None:
     project_errors: list[str] = []
     for row in rows:
         proj = Project(root=Path(row["root"]), hash=row["hash"], marker=row["marker"])
+        last_seen: int = int(row["last_seen"]) if row["last_seen"] is not None else 0
         try:
             rel = resolve_file_rel(proj, file_part)
         except AmbiguousFileMatch as exc:
@@ -622,14 +637,33 @@ def find_in_all_projects(file_part: str) -> tuple[Project, str] | None:
             project_errors.append(f"{proj.hash[:8]}: {exc}")
             continue
         if rel is not None:
-            matches.append((proj, rel))
+            matches.append((proj, rel, last_seen))
     if len(matches) == 1:
-        proj, rel = matches[0]
+        proj, rel, _ = matches[0]
         _LOG.debug("find_in_all_projects: found %r in project %s", rel, proj.hash[:8])
-        return matches[0]
+        return proj, rel
+    if len(matches) > 1 and not cross_project_candidates:
+        # Multiple projects each have a single unambiguous match.
+        # If all of them resolve to the same relative path, pick the most
+        # recently indexed project (highest last_seen) rather than raising —
+        # this is the typical "file mirrored across repos" situation and the
+        # most recent index is the most authoritative copy.
+        rel_paths = {rel for _, rel, _ in matches}
+        if len(rel_paths) == 1:
+            best = max(matches, key=lambda t: t[2])
+            proj, rel, _ = best
+            _LOG.debug(
+                "find_in_all_projects: %d projects share rel_path %r; "
+                "chose most-recently-indexed project %s (last_seen=%d)",
+                len(matches),
+                rel,
+                proj.hash[:8],
+                best[2],
+            )
+            return proj, rel
     # Combine unambiguous-but-multiple matches with any per-project ambiguous candidates,
     # deduplicate, and raise so the caller can surface all possibilities.
-    all_candidates = [f"{proj.hash[:8]}:{rel}" for proj, rel in matches]
+    all_candidates = [f"{proj.hash[:8]}:{rel}" for proj, rel, _ in matches]
     all_candidates.extend(cross_project_candidates)
     if len(all_candidates) > 1:
         # sorted(set(...)) deduplicates without allocating a temporary dict —
@@ -649,7 +683,7 @@ def find_in_all_projects(file_part: str) -> tuple[Project, str] | None:
         )
     if not matches:
         _LOG.debug("find_in_all_projects: no match found for %r across %d project(s)", file_part, len(rows))
-    return matches[0] if matches else None
+    return (matches[0][0], matches[0][1]) if matches else None
 
 
 def _extract_snippet(
