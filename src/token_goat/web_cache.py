@@ -381,6 +381,24 @@ def find_cached_for_url(url: str) -> WebOutputMeta | None:
             if meta is None:
                 continue
             if meta.url_sha == target_sha and meta.body_bytes > 0:
+                # Guard: verify the body file actually exists.  A sidecar without
+                # its body is an orphan left by a partial write or an interrupted
+                # eviction.  Treat it as a cache miss and clean up the sidecar so
+                # it doesn't accumulate indefinitely.
+                body_path = sidecar_path.with_suffix(".txt")
+                if not body_path.exists():
+                    _LOG.debug(
+                        "web_cache: orphan sidecar (no body) for id=%s; removing",
+                        candidate_id,
+                    )
+                    try:
+                        sidecar_path.unlink()
+                    except OSError as _exc:
+                        _LOG.debug(
+                            "web_cache: failed to remove orphan sidecar %s: %s",
+                            sidecar_path.name, _exc,
+                        )
+                    continue
                 best = meta
                 break  # sorted newest-first; first match is the freshest
     return best

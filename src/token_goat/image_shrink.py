@@ -37,9 +37,11 @@ __all__ = [
 ]
 
 import contextlib
+import errno
 import functools
 import hashlib
 import os
+import shutil
 import stat
 import time
 from pathlib import Path
@@ -458,6 +460,28 @@ def _sweep_orphans() -> None:
         _LOG.info("_sweep_orphans: removed %d orphan blob(s)", removed)
 
 
+# Minimum free-disk-space required before writing a shrunk image to the cache.
+# Below this threshold the shrink is skipped and the original path is returned
+# so a full disk doesn't stall the hook with a partial-write crash.
+# Configurable via TOKEN_GOAT_MIN_FREE_MB (integer MiB).
+_MIN_FREE_MB: int = int(os.getenv("TOKEN_GOAT_MIN_FREE_MB", "50"))
+_MIN_FREE_BYTES: int = _MIN_FREE_MB * 1024 * 1024
+
+
+def _check_disk_space(path: Path) -> bool:
+    """Return True if there is at least _MIN_FREE_BYTES free on *path*'s filesystem.
+
+    Uses :func:`shutil.disk_usage` which is cross-platform and does not require
+    OS-specific imports.  Falls back to True on any error so a transient stat
+    failure never prevents a shrink that could succeed.
+    """
+    try:
+        usage = shutil.disk_usage(path)
+        return usage.free >= _MIN_FREE_BYTES
+    except OSError:
+        return True  # fail-open: if we can't check, try the write anyway
+
+
 def shrink(src_path: Path, *, _session_id: str | None = None) -> Path | None:
     """Compress and cache a large image; return the cached output path, or None on failure.
 
@@ -575,6 +599,19 @@ def shrink(src_path: Path, *, _session_id: str | None = None) -> Path | None:
                     return None
         except Exception:  # noqa: BLE001
             pass  # Unreadable or exotic format; fall through to normal pipeline
+
+    # Disk-space guard: check free space on the cache volume before attempting
+    # to write.  A Pillow save to a full disk produces a partial file (ENOSPC)
+    # that would be flagged as a corrupt cache entry on the next read.  Skipping
+    # the shrink entirely returns the original path unchanged — the worst outcome
+    # is that the model sees a larger image, not a crash.
+    cache_vol = paths.image_cache_dir()
+    if not _check_disk_space(cache_vol):
+        _LOG.warning(
+            "shrink: skipping %s — less than %d MB free on cache volume",
+            src_path.name, _MIN_FREE_MB,
+        )
+        return None
 
     paths.ensure_dir(paths.image_cache_dir())
 
@@ -781,6 +818,24 @@ def shrink(src_path: Path, *, _session_id: str | None = None) -> Path | None:
             elapsed,
         )
         return final_path
+    except OSError as e:
+        elapsed = time.time() - t0
+        # ENOSPC (errno 28 on POSIX; also surfaces on Windows as errno 28 via CRT)
+        # means the disk filled up mid-write.  The partial cache file is gone
+        # (atomic_write / Pillow flushes to a tmp then renames; if that fails the
+        # tmp is left behind and the rename never happens).  Log a targeted warning
+        # and return None so the caller falls back to the original path.
+        if e.errno == errno.ENOSPC:
+            _LOG.warning(
+                "shrink: disk full writing cache for %s — returning original path (%.3fs)",
+                src_path.name, elapsed,
+            )
+        else:
+            _LOG.warning(
+                "shrink failed for %s (%s): %s (%.3fs)",
+                src_path, type(e).__name__, e, elapsed, exc_info=True,
+            )
+        return None
     except Exception as e:  # noqa: BLE001 — PIL raises many undocumented exception subclasses
         elapsed = time.time() - t0
         _LOG.warning(
