@@ -628,9 +628,14 @@ class TestCheckEntryStatelessness:
         assert is_stale is False
         assert 9 <= age <= 15  # 10s old with some tolerance
 
-    def test_old_entry_is_stale(self) -> None:
+    def test_old_entry_is_stale(self, monkeypatch) -> None:
         """_check_entry_staleness returns (True, age) for an old entry."""
+        import token_goat.hints as _hints
         from token_goat.hints import _check_entry_staleness
+
+        # _record_dedup_stale opens the stats DB; mock it so this unit test
+        # stays fast and doesn't touch the real or tmp DB at all.
+        monkeypatch.setattr(_hints, "_record_dedup_stale", lambda *a, **kw: None)
 
         now = time.time()
         # Default stale threshold is STALE_READ_AGE_SECONDS (1800s)

@@ -1,9 +1,35 @@
 """End-to-end: post_read snapshots, post_edit invalidates, pre_read emits diff."""
 from __future__ import annotations
 
+import threading
+
 from hook_helpers import assert_continue as _assert_continue
 
 from token_goat import hooks_edit, hooks_read, session
+
+
+def _post_edit_sync(payload: dict) -> dict:
+    """Call post_edit and join the predictive-snapshot background thread.
+
+    Captures the daemon thread spawned by ``_pre_snapshot_imports`` and joins
+    it before returning, eliminating the need for ``time.sleep()`` in tests.
+    """
+    threads: list[threading.Thread] = []
+    original = hooks_edit._pre_snapshot_imports
+
+    def _capturing(*args, **kwargs):
+        t = original(*args, **kwargs)
+        threads.append(t)
+        return t
+
+    hooks_edit._pre_snapshot_imports = _capturing  # type: ignore[assignment]
+    try:
+        result = hooks_edit.post_edit(payload)
+    finally:
+        hooks_edit._pre_snapshot_imports = original  # type: ignore[assignment]
+    for t in threads:
+        t.join(timeout=5)
+    return result
 
 
 class TestDiffHintEndToEnd:
@@ -176,9 +202,7 @@ class TestPredictivePrefetchTelemetry:
     ):
         """When the diff hint fires against a kind=predictive snapshot, a
         predictive_prefetch_hit row appears in the global stats DB."""
-        import time
-
-        from token_goat import db, hooks_edit, hooks_read, snapshots
+        from token_goat import db, hooks_edit, hooks_read, snapshots  # noqa: F401
 
         (tmp_path / ".git").mkdir()
 
@@ -194,13 +218,12 @@ class TestPredictivePrefetchTelemetry:
         sid = "pred-prefetch-tele-01"
 
         # 1. Edit main.py — triggers the predictive-prefetch snapshot of util.py.
-        _assert_continue(hooks_edit.post_edit({
+        # _post_edit_sync joins the daemon thread so no sleep is needed.
+        _assert_continue(_post_edit_sync({
             "session_id": sid,
             "tool_input": {"file_path": str(main_py)},
             "cwd": str(tmp_path),
         }))
-        # Wait for the daemon thread to finish.
-        time.sleep(0.4)
 
         # Sanity: the predictive snapshot exists and is tagged.
         assert snapshots.load_kind(sid, str(util_py)) == "predictive", (

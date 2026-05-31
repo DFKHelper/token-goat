@@ -29,14 +29,20 @@ class TestFindLatestSessionId:
         assert result is None
 
     def test_returns_latest_session(self, tmp_data_dir):
-        import time
+        import os  # noqa: PLC0415
 
         sid1 = "find-latest-alpha"
         sid2 = "find-latest-beta"
 
         session.mark_file_read(sid1, "/proj/a.py", offset=0, limit=10)
-        time.sleep(0.05)
         session.mark_file_read(sid2, "/proj/b.py", offset=0, limit=10)
+
+        # Force distinct mtimes without sleeping: stamp sid2's file 1 s ahead.
+        sessions_dir = paths.data_dir() / "sessions"
+        f2 = sessions_dir / f"{sid2}.json"
+        f1 = sessions_dir / f"{sid1}.json"
+        t1 = f1.stat().st_mtime
+        os.utime(str(f2), (t1 + 1.0, t1 + 1.0))
 
         result = compact.find_latest_session_id()
         assert result == sid2

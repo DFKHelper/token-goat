@@ -150,17 +150,26 @@ class TestRenderTrimLoop:
     """The O(n) trim loop in _render() must keep the manifest within max_tokens."""
 
     def _build_large_session(self, session_id: str, n: int = 60) -> None:
+        from unittest.mock import patch  # noqa: PLC0415
+
+        import token_goat.session as _session_mod  # noqa: PLC0415
         from token_goat import session  # noqa: PLC0415
 
-        # Load cache once and pass it to each mark_* call to avoid repeated
-        # disk I/O — we save only once at the end instead of n+n/2 times.
+        # Suppress intermediate disk writes: each mark_* call normally calls
+        # save() once, producing n+n/2 atomic file writes for n=200.  We defer
+        # saving to a single write at the end by patching save() to a no-op
+        # during the build loop, which cuts setup time by ~10x.
         cache = None
-        for i in range(n):
-            cache = session.mark_file_read(
-                session_id, f"/very/long/path/to/module_{i:04d}.py", offset=0, limit=500, cache=cache
-            )
-        for i in range(n // 2):
-            cache = session.mark_file_edited(session_id, f"/very/long/path/to/edited_{i:04d}.py", cache=cache)
+        with patch.object(_session_mod, "save", return_value=None):
+            for i in range(n):
+                cache = session.mark_file_read(
+                    session_id, f"/very/long/path/to/module_{i:04d}.py", offset=0, limit=500, cache=cache
+                )
+            for i in range(n // 2):
+                cache = session.mark_file_edited(session_id, f"/very/long/path/to/edited_{i:04d}.py", cache=cache)
+        # Flush the final state to disk once.
+        if cache is not None:
+            _session_mod.save(cache)
 
     def test_trim_produces_output_within_token_budget(self, tmp_data_dir):
         from token_goat.compact import build_manifest, estimate_tokens  # noqa: PLC0415

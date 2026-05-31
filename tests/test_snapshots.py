@@ -278,14 +278,42 @@ class TestPostReadSnapshots:
         assert snapshots.load("post-read-snap-2", str(src)) is None
 
 
+def _post_edit_sync(payload: dict) -> dict:
+    """Call post_edit and join the predictive-snapshot background thread before returning.
+
+    Avoids time.sleep() in tests by capturing the daemon thread from
+    ``_pre_snapshot_imports`` via a monkeypatch and joining it.  Tests that
+    need the snapshot to be present immediately should call this instead of
+    ``hooks_edit.post_edit`` directly.
+    """
+    import threading
+
+    from token_goat import hooks_edit
+
+    threads: list[threading.Thread] = []
+    original = hooks_edit._pre_snapshot_imports
+
+    def _capturing(*args, **kwargs):
+        t = original(*args, **kwargs)
+        threads.append(t)
+        return t
+
+    hooks_edit._pre_snapshot_imports = _capturing  # type: ignore[assignment]
+    try:
+        result = hooks_edit.post_edit(payload)
+    finally:
+        hooks_edit._pre_snapshot_imports = original  # type: ignore[assignment]
+    for t in threads:
+        t.join(timeout=5)
+    return result
+
+
 class TestPredictiveSnapshot:
     """Item 17: post_edit pre-snapshots locally imported modules for .py files."""
 
     def test_relative_import_creates_snapshot(self, tmp_path, tmp_data_dir):
         """Editing a .py file with a relative import pre-snapshots the imported module."""
-        import time
-
-        from token_goat import hooks_edit
+        from token_goat import hooks_edit  # noqa: F401 — ensure module is loaded
 
         # Create two files: main.py imports .util
         util_py = tmp_path / "util.py"
@@ -302,10 +330,7 @@ class TestPredictiveSnapshot:
             "tool_response": "ok",
             "cwd": str(tmp_path),
         }
-        _assert_continue(hooks_edit.post_edit(payload))
-
-        # Give the daemon thread time to complete
-        time.sleep(0.3)
+        _assert_continue(_post_edit_sync(payload))
 
         stored = snapshots.load(sid, str(util_py))
         assert stored == util_py.read_bytes(), (
@@ -314,9 +339,7 @@ class TestPredictiveSnapshot:
 
     def test_non_python_file_no_snapshot(self, tmp_path, tmp_data_dir):
         """post_edit on a non-.py file does not trigger predictive snapshots."""
-        import time
-
-        from token_goat import hooks_edit
+        from token_goat import hooks_edit  # noqa: F401 — ensure module is loaded
 
         ts_file = tmp_path / "component.ts"
         ts_file.write_text("import { foo } from './bar';\n", encoding="utf-8")
@@ -329,8 +352,8 @@ class TestPredictiveSnapshot:
             "tool_response": "ok",
             "cwd": str(tmp_path),
         }
+        # Non-.py file: no snapshot thread is spawned, so direct post_edit is fine.
         _assert_continue(hooks_edit.post_edit(payload))
-        time.sleep(0.15)
 
         # No snapshots should have been created for this session
         session_dir_base = snapshots._session_dir(sid)
@@ -340,9 +363,7 @@ class TestPredictiveSnapshot:
 
     def test_cap_at_three_imports(self, tmp_path, tmp_data_dir):
         """Predictive snapshot caps at 3 imports per post_edit."""
-        import time
-
-        from token_goat import hooks_edit
+        from token_goat import hooks_edit  # noqa: F401 — ensure module is loaded
 
         # Create 5 sibling modules
         for i in range(5):
@@ -360,8 +381,7 @@ class TestPredictiveSnapshot:
             "tool_response": "ok",
             "cwd": str(tmp_path),
         }
-        _assert_continue(hooks_edit.post_edit(payload))
-        time.sleep(0.4)
+        _assert_continue(_post_edit_sync(payload))
 
         # Count how many mod*.py files got snapshotted
         snap_count = sum(
@@ -581,9 +601,7 @@ class TestPredictivePrefetchAttribution:
     def test_predictive_snapshot_kind_is_predictive(self, tmp_path, tmp_data_dir):
         """End-to-end: editing a .py with a local import tags the prefetched
         snapshot as ``predictive`` (not the default ``read``)."""
-        import time
-
-        from token_goat import hooks_edit
+        from token_goat import hooks_edit  # noqa: F401 — ensure module is loaded
 
         util_py = tmp_path / "util.py"
         util_py.write_text("def helper(): pass\n", encoding="utf-8")
@@ -599,8 +617,8 @@ class TestPredictivePrefetchAttribution:
             "tool_response": "ok",
             "cwd": str(tmp_path),
         }
-        _assert_continue(hooks_edit.post_edit(payload))
-        time.sleep(0.3)
+        # Use _post_edit_sync to join the daemon thread before asserting.
+        _assert_continue(_post_edit_sync(payload))
 
         # The prefetched util.py snapshot must carry the predictive tag.
         assert snapshots.load_kind(sid, str(util_py)) == "predictive"

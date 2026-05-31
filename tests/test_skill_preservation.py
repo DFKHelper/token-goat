@@ -110,16 +110,26 @@ class TestSkillCacheStoreAndLoad:
         assert found is not None
         assert found.output_id == meta_new.output_id
 
-    def test_lookup_all_by_name_returns_newest_first(self, tmp_data_dir):
+    def test_lookup_all_by_name_returns_newest_first(self, tmp_data_dir, monkeypatch):
         """Every cached entry for the same skill is returned, newest first."""
+        import token_goat.skill_cache as _sc_mod  # noqa: PLC0415
+
+        # Use monotonically increasing fake timestamps to guarantee ordering
+        # without sleeping. Each store_output call gets a distinct ts.
+        _ts = [1000.0]
+
+        def _fake_time():
+            val = _ts[0]
+            _ts[0] += 1.0
+            return val
+
+        monkeypatch.setattr(_sc_mod.time, "time", _fake_time)
         meta_a = skill_cache.store_output("sess-all", "ralph", "v1 body " * 100)
         assert meta_a is not None
         skill_cache.write_sidecar(meta_a)
-        time.sleep(0.05)
         meta_b = skill_cache.store_output("sess-all", "ralph", "v2 body " * 100)
         assert meta_b is not None
         skill_cache.write_sidecar(meta_b)
-        time.sleep(0.05)
         meta_c = skill_cache.store_output("sess-all2", "ralph", "v3 body " * 100)
         assert meta_c is not None
         skill_cache.write_sidecar(meta_c)

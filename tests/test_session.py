@@ -190,14 +190,18 @@ class TestLineRanges:
         Regression: bare save(cache) skipped _commit_mutation, so last_activity_ts
         was never updated on that path.
         """
-        import time
+        import time  # noqa: PLC0415
 
-        from token_goat.session import _MAX_SYMBOLS_PER_FILE
+        import token_goat.session as _session_mod  # noqa: PLC0415
+        from token_goat.session import _MAX_SYMBOLS_PER_FILE  # noqa: PLC0415
 
         sid = "s_symbols_cap"
-        # Fill up to the cap.
-        for i in range(_MAX_SYMBOLS_PER_FILE):
-            session.mark_file_read(sid, "f.py", symbol=f"sym_{i}")
+        # Fill up to the cap — batch writes to avoid N×(load+save) disk overhead.
+        cache = session.load(sid)
+        with patch.object(_session_mod, "save", return_value=None):
+            for i in range(_MAX_SYMBOLS_PER_FILE):
+                cache = session.mark_file_read(sid, "f.py", symbol=f"sym_{i}", cache=cache)
+        _session_mod.save(cache)
 
         before = time.time() - 1
         cache = session.mark_file_read(sid, "f.py", symbol="overflow_sym")
@@ -704,12 +708,17 @@ class TestResultCache:
 
     def test_capacity_evicts_oldest_fifo(self, tmp_data_dir):
         """Filling past RESULT_CACHE_MAX evicts oldest entries in insertion order."""
+        import token_goat.session as _session_mod  # noqa: PLC0415
+
         sid = "rc_session_4"
-        # Fill to cap + 5
-        for i in range(session.RESULT_CACHE_MAX + 5):
-            session.put_result_cache(
-                sid, f"f{i}.py", "x", "symbol", "sha", {"text": f"r{i}"}
-            )
+        # Fill to cap + 5 — batch writes to avoid N×(load+save) disk overhead.
+        cache = session.load(sid)
+        with patch.object(_session_mod, "save", return_value=None):
+            for i in range(session.RESULT_CACHE_MAX + 5):
+                session.put_result_cache(
+                    sid, f"f{i}.py", "x", "symbol", "sha", {"text": f"r{i}"}, cache=cache
+                )
+        _session_mod.save(cache)
         cache = session.load(sid)
         # Should be at most RESULT_CACHE_MAX entries
         assert len(cache.result_cache) <= session.RESULT_CACHE_MAX
@@ -723,12 +732,17 @@ class TestResultCache:
 
     def test_update_existing_key_does_not_evict(self, tmp_data_dir):
         """Re-storing an existing key updates value without triggering FIFO eviction."""
+        import token_goat.session as _session_mod  # noqa: PLC0415
+
         sid = "rc_session_5"
-        # Fill exactly to cap
-        for i in range(session.RESULT_CACHE_MAX):
-            session.put_result_cache(
-                sid, f"f{i}.py", "x", "symbol", "sha", {"text": f"r{i}"}
-            )
+        # Fill exactly to cap — batch writes to avoid N×(load+save) disk overhead.
+        cache = session.load(sid)
+        with patch.object(_session_mod, "save", return_value=None):
+            for i in range(session.RESULT_CACHE_MAX):
+                session.put_result_cache(
+                    sid, f"f{i}.py", "x", "symbol", "sha", {"text": f"r{i}"}, cache=cache
+                )
+        _session_mod.save(cache)
         # Update an existing entry (should be a no-op for eviction)
         session.put_result_cache(sid, "f0.py", "x", "symbol", "sha", {"text": "updated"})
         # f0 must still be present with updated text — it was not evicted
@@ -742,12 +756,18 @@ class TestResultCache:
 
     def test_eviction_retains_most_entries(self, tmp_data_dir):
         """After one eviction batch, at least 80 % of cap entries remain."""
+        import token_goat.session as _session_mod  # noqa: PLC0415
+
         sid = "rc_session_retain"
-        # Trigger eviction exactly once by filling to cap + 1
-        for i in range(session.RESULT_CACHE_MAX + 1):
-            session.put_result_cache(
-                sid, f"g{i}.py", "y", "symbol", "sha", {"text": f"r{i}"}
-            )
+        # Trigger eviction exactly once by filling to cap + 1.
+        # Batch writes to avoid N×(load+save) disk overhead.
+        cache = session.load(sid)
+        with patch.object(_session_mod, "save", return_value=None):
+            for i in range(session.RESULT_CACHE_MAX + 1):
+                session.put_result_cache(
+                    sid, f"g{i}.py", "y", "symbol", "sha", {"text": f"r{i}"}, cache=cache
+                )
+        _session_mod.save(cache)
         cache = session.load(sid)
         min_retained = int(session.RESULT_CACHE_MAX * 0.8)
         assert len(cache.result_cache) >= min_retained
@@ -945,18 +965,28 @@ class TestGrepHistoryCap:
 
     def test_greps_capped_at_max(self, tmp_data_dir):
         """Filling past GREPS_HISTORY_MAX keeps at most GREPS_HISTORY_MAX entries."""
+        import token_goat.session as _session_mod  # noqa: PLC0415
+
         sid = "greps_cap_1"
-        for i in range(session.GREPS_HISTORY_MAX + 5):
-            session.mark_grep(sid, f"pattern_{i}", "/proj/src")
+        cache = session.load(sid)
+        with patch.object(_session_mod, "save", return_value=None):
+            for i in range(session.GREPS_HISTORY_MAX + 5):
+                cache = session.mark_grep(sid, f"pattern_{i}", "/proj/src", cache=cache)
+        _session_mod.save(cache)
         cache = session.load(sid)
         assert len(cache.greps) <= session.GREPS_HISTORY_MAX
 
     def test_greps_cap_evicts_oldest(self, tmp_data_dir):
         """When the cap fires, the oldest (first) entries are evicted."""
+        import token_goat.session as _session_mod  # noqa: PLC0415
+
         sid = "greps_cap_2"
         n = session.GREPS_HISTORY_MAX + 3
-        for i in range(n):
-            session.mark_grep(sid, f"pattern_{i}", "/proj/src")
+        cache = session.load(sid)
+        with patch.object(_session_mod, "save", return_value=None):
+            for i in range(n):
+                cache = session.mark_grep(sid, f"pattern_{i}", "/proj/src", cache=cache)
+        _session_mod.save(cache)
         cache = session.load(sid)
         patterns = [g.pattern for g in cache.greps]
         # The first (oldest) patterns must be gone
@@ -968,9 +998,14 @@ class TestGrepHistoryCap:
 
     def test_greps_exactly_at_cap_not_evicted(self, tmp_data_dir):
         """Exactly GREPS_HISTORY_MAX entries: no eviction occurs."""
+        import token_goat.session as _session_mod  # noqa: PLC0415
+
         sid = "greps_cap_3"
-        for i in range(session.GREPS_HISTORY_MAX):
-            session.mark_grep(sid, f"pat_{i}", "/proj/src")
+        cache = session.load(sid)
+        with patch.object(_session_mod, "save", return_value=None):
+            for i in range(session.GREPS_HISTORY_MAX):
+                cache = session.mark_grep(sid, f"pat_{i}", "/proj/src", cache=cache)
+        _session_mod.save(cache)
         cache = session.load(sid)
         assert len(cache.greps) == session.GREPS_HISTORY_MAX
 
@@ -1813,18 +1848,28 @@ class TestGlobHistoryCap:
 
     def test_glob_capped_at_max(self, tmp_data_dir):
         """Filling past GLOB_HISTORY_MAX keeps at most GLOB_HISTORY_MAX entries."""
+        import token_goat.session as _session_mod  # noqa: PLC0415
+
         sid = "glob_cap_1"
-        for i in range(session.GLOB_HISTORY_MAX + 5):
-            session.mark_glob_run(sid, f"**/{i}/*.py", result_count=i)
+        cache = session.load(sid)
+        with patch.object(_session_mod, "save", return_value=None):
+            for i in range(session.GLOB_HISTORY_MAX + 5):
+                cache = session.mark_glob_run(sid, f"**/{i}/*.py", result_count=i, cache=cache)
+        _session_mod.save(cache)
         cache = session.load(sid)
         assert len(cache.glob_history) <= session.GLOB_HISTORY_MAX
 
     def test_glob_cap_evicts_oldest(self, tmp_data_dir):
         """When the cap fires, the oldest (first) patterns are evicted."""
+        import token_goat.session as _session_mod  # noqa: PLC0415
+
         sid = "glob_cap_2"
         n = session.GLOB_HISTORY_MAX + 3
-        for i in range(n):
-            session.mark_glob_run(sid, f"**/pat_{i}/*.py", result_count=i)
+        cache = session.load(sid)
+        with patch.object(_session_mod, "save", return_value=None):
+            for i in range(n):
+                cache = session.mark_glob_run(sid, f"**/pat_{i}/*.py", result_count=i, cache=cache)
+        _session_mod.save(cache)
         cache = session.load(sid)
         patterns = [g.pattern for g in cache.glob_history]
         # The first (oldest) patterns must be gone
@@ -1836,9 +1881,14 @@ class TestGlobHistoryCap:
 
     def test_glob_exactly_at_cap_not_evicted(self, tmp_data_dir):
         """Exactly GLOB_HISTORY_MAX entries: no eviction occurs."""
+        import token_goat.session as _session_mod  # noqa: PLC0415
+
         sid = "glob_cap_3"
-        for i in range(session.GLOB_HISTORY_MAX):
-            session.mark_glob_run(sid, f"**/cap_{i}/*.py", result_count=i)
+        cache = session.load(sid)
+        with patch.object(_session_mod, "save", return_value=None):
+            for i in range(session.GLOB_HISTORY_MAX):
+                cache = session.mark_glob_run(sid, f"**/cap_{i}/*.py", result_count=i, cache=cache)
+        _session_mod.save(cache)
         cache = session.load(sid)
         assert len(cache.glob_history) == session.GLOB_HISTORY_MAX
 
@@ -1909,10 +1959,15 @@ class TestSessionEvictionFIFO:
 
     def test_glob_history_eviction_exact_threshold(self, tmp_data_dir):
         """At exactly GLOB_HISTORY_MAX entries, no eviction occurs."""
+        import token_goat.session as _session_mod  # noqa: PLC0415
+
         sid = "glob_exact_cap"
-        # Add exactly GLOB_HISTORY_MAX entries
-        for i in range(session.GLOB_HISTORY_MAX):
-            session.mark_glob_run(sid, f"pattern_{i:03d}", result_count=10 + i)
+        # Add exactly GLOB_HISTORY_MAX entries — batch writes to avoid N×save.
+        cache = session.load(sid)
+        with patch.object(_session_mod, "save", return_value=None):
+            for i in range(session.GLOB_HISTORY_MAX):
+                cache = session.mark_glob_run(sid, f"pattern_{i:03d}", result_count=10 + i, cache=cache)
+        _session_mod.save(cache)
         cache = session.load(sid)
         assert len(cache.glob_history) == session.GLOB_HISTORY_MAX
         # Verify first entry is still present
@@ -1920,10 +1975,15 @@ class TestSessionEvictionFIFO:
 
     def test_glob_history_eviction_at_cap_plus_one(self, tmp_data_dir):
         """At GLOB_HISTORY_MAX + 1, the oldest entry is evicted immediately."""
+        import token_goat.session as _session_mod  # noqa: PLC0415
+
         sid = "glob_at_cap_plus_one"
-        # Add GLOB_HISTORY_MAX + 1 entries
-        for i in range(session.GLOB_HISTORY_MAX + 1):
-            session.mark_glob_run(sid, f"pat_{i:03d}", result_count=i)
+        # Add GLOB_HISTORY_MAX + 1 entries — batch writes to avoid N×save.
+        cache = session.load(sid)
+        with patch.object(_session_mod, "save", return_value=None):
+            for i in range(session.GLOB_HISTORY_MAX + 1):
+                cache = session.mark_glob_run(sid, f"pat_{i:03d}", result_count=i, cache=cache)
+        _session_mod.save(cache)
         cache = session.load(sid)
         # Should be capped at GLOB_HISTORY_MAX
         assert len(cache.glob_history) == session.GLOB_HISTORY_MAX
@@ -1935,11 +1995,16 @@ class TestSessionEvictionFIFO:
 
     def test_glob_history_eviction_batch_25_entries(self, tmp_data_dir):
         """Adding 25 entries beyond cap evicts correctly, keeps newest."""
+        import token_goat.session as _session_mod  # noqa: PLC0415
+
         sid = "glob_batch_evict"
-        # Add GLOB_HISTORY_MAX + 25 entries
+        # Add GLOB_HISTORY_MAX + 25 entries — batch writes to avoid N×save.
         total = session.GLOB_HISTORY_MAX + 25
-        for i in range(total):
-            session.mark_glob_run(sid, f"batch_{i:03d}", result_count=100 + i)
+        cache = session.load(sid)
+        with patch.object(_session_mod, "save", return_value=None):
+            for i in range(total):
+                cache = session.mark_glob_run(sid, f"batch_{i:03d}", result_count=100 + i, cache=cache)
+        _session_mod.save(cache)
         cache = session.load(sid)
         # Should be at or below GLOB_HISTORY_MAX
         assert len(cache.glob_history) <= session.GLOB_HISTORY_MAX
@@ -1951,50 +2016,62 @@ class TestSessionEvictionFIFO:
 
     def test_bash_history_eviction_fifo_order(self, tmp_data_dir):
         """Bash history eviction preserves insertion order, evicts oldest."""
+        import unittest.mock  # noqa: PLC0415
+
         from token_goat import bash_cache
 
         sid = "bash_fifo_order"
-        # Add BASH_HISTORY_MAX + 10 entries
-        for i in range(session.BASH_HISTORY_MAX + 10):
-            cmd = f"cmd_{i:04d}"
-            cmd_sha = bash_cache.command_hash(cmd)
-            session.mark_bash_run(
-                sid,
-                cmd_sha,
-                cmd_preview=cmd,
-                output_id=f"out_{i}",
-                stdout_bytes=1000,
-                stderr_bytes=0,
-                exit_code=0,
-                truncated=False,
-            )
-        cache = session.load(sid)
+        # Add BASH_HISTORY_MAX + 10 entries; suppress intermediate saves.
+        cache = None
+        with unittest.mock.patch.object(session, "save", return_value=None):
+            for i in range(session.BASH_HISTORY_MAX + 10):
+                cmd = f"cmd_{i:04d}"
+                cmd_sha = bash_cache.command_hash(cmd)
+                cache = session.mark_bash_run(
+                    sid,
+                    cmd_sha,
+                    cmd_preview=cmd,
+                    output_id=f"out_{i}",
+                    stdout_bytes=1000,
+                    stderr_bytes=0,
+                    exit_code=0,
+                    truncated=False,
+                    cache=cache,
+                )
+        if cache is not None:
+            session.save(cache)
+        loaded = session.load(sid)
         # Should be capped at BASH_HISTORY_MAX
-        assert len(cache.bash_history) <= session.BASH_HISTORY_MAX
+        assert len(loaded.bash_history) <= session.BASH_HISTORY_MAX
         # Most recent command's output should be in the history
         # Find the last command that made it through
         max_i = session.BASH_HISTORY_MAX + 10 - 1
         last_cmd = f"cmd_{max_i:04d}"
-        assert any(last_cmd in e.cmd_preview for e in cache.bash_history.values())
+        assert any(last_cmd in e.cmd_preview for e in loaded.bash_history.values())
 
     def test_web_history_eviction_preserves_newest(self, tmp_data_dir):
         """Web history eviction at FIFO cap preserves newest entries."""
-        from token_goat import web_cache
+        import token_goat.session as _session_mod  # noqa: PLC0415
+        from token_goat import web_cache  # noqa: PLC0415
 
         sid = "web_fifo_newest"
-        # Add WEB_HISTORY_MAX + 15 entries
-        for i in range(session.WEB_HISTORY_MAX + 15):
-            url = f"https://example.com/page_{i}"
-            url_sha = web_cache.url_hash(url)
-            session.mark_web_fetch(
-                sid,
-                url_sha,
-                url_preview=url,
-                output_id=f"web_out_{i}",
-                body_bytes=5000,
-                status_code=200,
-                truncated=False,
-            )
+        # Add WEB_HISTORY_MAX + 15 entries — batch writes to avoid N×(load+save).
+        cache = session.load(sid)
+        with patch.object(_session_mod, "save", return_value=None):
+            for i in range(session.WEB_HISTORY_MAX + 15):
+                url = f"https://example.com/page_{i}"
+                url_sha = web_cache.url_hash(url)
+                cache = session.mark_web_fetch(
+                    sid,
+                    url_sha,
+                    url_preview=url,
+                    output_id=f"web_out_{i}",
+                    body_bytes=5000,
+                    status_code=200,
+                    truncated=False,
+                    cache=cache,
+                )
+        _session_mod.save(cache)
         cache = session.load(sid)
         # Should be capped at WEB_HISTORY_MAX
         assert len(cache.web_history) <= session.WEB_HISTORY_MAX
@@ -2102,59 +2179,84 @@ class TestLegacyHighCapSessionLoad:
 
     def test_bash_history_over_new_cap_loads_without_error(self, tmp_data_dir):
         """A session JSON with 150 bash entries (old cap=200) loads intact."""
+        import unittest.mock  # noqa: PLC0415
+
         sid = "legacy-bash-150"
         # Write 150 entries under the old cap; new cap is 75 but load should not crash.
-        for i in range(150):
-            session.mark_bash_run(
-                sid, f"sha{i:04d}", f"pytest tests/test_{i}.py",
-                f"out-{i}", stdout_bytes=1000, stderr_bytes=0,
-                exit_code=0, truncated=False,
-            )
+        # Suppress intermediate saves (150 atomic writes) — flush once at the end.
+        cache = None
+        with unittest.mock.patch.object(session, "save", return_value=None):
+            for i in range(150):
+                cache = session.mark_bash_run(
+                    sid, f"sha{i:04d}", f"pytest tests/test_{i}.py",
+                    f"out-{i}", stdout_bytes=1000, stderr_bytes=0,
+                    exit_code=0, truncated=False, cache=cache,
+                )
+        if cache is not None:
+            session.save(cache)
         # Force-persist so we have a JSON file with 150 entries.
-        cache = session.load(sid)
+        loaded = session.load(sid)
         # The in-memory dict may have been evicted to BASH_HISTORY_MAX already;
         # either way, loading must succeed and result must be a valid cache.
-        assert isinstance(cache, session.SessionCache)
-        assert len(cache.bash_history) <= session.BASH_HISTORY_MAX
+        assert isinstance(loaded, session.SessionCache)
+        assert len(loaded.bash_history) <= session.BASH_HISTORY_MAX
 
     def test_web_history_over_new_cap_loads_without_error(self, tmp_data_dir):
         """A session JSON with 150 web entries loads intact under the new 75 cap."""
+        import unittest.mock  # noqa: PLC0415
+
         sid = "legacy-web-150"
-        for i in range(150):
-            session.mark_web_fetch(
-                sid, f"sha{i:04d}", f"https://example.com/page/{i}",
-                f"wout-{i}", body_bytes=2000, status_code=200, truncated=False,
-            )
-        cache = session.load(sid)
-        assert isinstance(cache, session.SessionCache)
-        assert len(cache.web_history) <= session.WEB_HISTORY_MAX
+        cache = None
+        with unittest.mock.patch.object(session, "save", return_value=None):
+            for i in range(150):
+                cache = session.mark_web_fetch(
+                    sid, f"sha{i:04d}", f"https://example.com/page/{i}",
+                    f"wout-{i}", body_bytes=2000, status_code=200, truncated=False, cache=cache,
+                )
+        if cache is not None:
+            session.save(cache)
+        loaded = session.load(sid)
+        assert isinstance(loaded, session.SessionCache)
+        assert len(loaded.web_history) <= session.WEB_HISTORY_MAX
 
     def test_grep_history_over_new_cap_loads_without_error(self, tmp_data_dir):
         """A session JSON with 150 grep entries loads intact under the new 75 cap."""
+        import unittest.mock  # noqa: PLC0415
+
         sid = "legacy-grep-150"
-        for i in range(150):
-            session.mark_grep(sid, f"pattern_{i}", f"/proj/src_{i}")
-        cache = session.load(sid)
-        assert isinstance(cache, session.SessionCache)
-        assert len(cache.greps) <= session.GREPS_HISTORY_MAX
+        cache = None
+        with unittest.mock.patch.object(session, "save", return_value=None):
+            for i in range(150):
+                cache = session.mark_grep(sid, f"pattern_{i}", f"/proj/src_{i}", cache=cache)
+        if cache is not None:
+            session.save(cache)
+        loaded = session.load(sid)
+        assert isinstance(loaded, session.SessionCache)
+        assert len(loaded.greps) <= session.GREPS_HISTORY_MAX
 
     def test_next_write_after_oversize_load_stays_bounded(self, tmp_data_dir):
         """After loading an oversize session, the next write keeps history bounded."""
+        import unittest.mock  # noqa: PLC0415
+
         sid = "legacy-write-bounded"
-        for i in range(150):
-            session.mark_bash_run(
-                sid, f"sha{i:04d}", f"cmd {i}",
-                f"out-{i}", stdout_bytes=500, stderr_bytes=0,
-                exit_code=0, truncated=False,
-            )
+        cache = None
+        with unittest.mock.patch.object(session, "save", return_value=None):
+            for i in range(150):
+                cache = session.mark_bash_run(
+                    sid, f"sha{i:04d}", f"cmd {i}",
+                    f"out-{i}", stdout_bytes=500, stderr_bytes=0,
+                    exit_code=0, truncated=False, cache=cache,
+                )
+        if cache is not None:
+            session.save(cache)
         # One more write should trigger eviction to BASH_HISTORY_MAX.
         session.mark_bash_run(
             sid, "shaXXXX", "final cmd",
             "out-final", stdout_bytes=500, stderr_bytes=0,
             exit_code=0, truncated=False,
         )
-        cache = session.load(sid)
-        assert len(cache.bash_history) <= session.BASH_HISTORY_MAX
+        loaded = session.load(sid)
+        assert len(loaded.bash_history) <= session.BASH_HISTORY_MAX
 
 
 class TestSessionSchemaMigration:
@@ -2282,21 +2384,17 @@ class TestSharedHistoryHelpers:
 
     def test_dict_history_evicts_at_cap_plus_one(self, tmp_data_dir):
         """Dict history evicts oldest batch when exceeding cap (new key triggers eviction)."""
+        import token_goat.session as _session_mod  # noqa: PLC0415
+
         sid = "dict_evict_1"
         cache = session.load(sid)
-        # Fill bash_history to BASH_HISTORY_MAX with new keys
-        for i in range(session.BASH_HISTORY_MAX):
-            session.mark_bash_run(
-                sid,
-                f"sha_{i}",
-                f"cmd_{i}",
-                f"out_{i}",
-                100,
-                0,
-                0,
-                False,
-                cache=cache,
-            )
+        # Fill bash_history to BASH_HISTORY_MAX with new keys — batch to avoid N×save.
+        with patch.object(_session_mod, "save", return_value=None):
+            for i in range(session.BASH_HISTORY_MAX):
+                cache = session.mark_bash_run(
+                    sid, f"sha_{i}", f"cmd_{i}", f"out_{i}", 100, 0, 0, False, cache=cache,
+                )
+        _session_mod.save(cache)
         cache = session.load(sid)
         assert len(cache.bash_history) == session.BASH_HISTORY_MAX
         # Adding one more (cap+1) triggers eviction: oldest batch is removed
@@ -2309,21 +2407,17 @@ class TestSharedHistoryHelpers:
 
     def test_dict_history_batch_eviction_respects_batch_size(self, tmp_data_dir):
         """Dict history evicts exactly batch_size entries at a time."""
+        import token_goat.session as _session_mod  # noqa: PLC0415
+
         sid = "dict_batch_1"
         cache = session.load(sid)
-        # Fill to capacity
-        for i in range(session.BASH_HISTORY_MAX):
-            session.mark_bash_run(
-                sid,
-                f"sha_{i}",
-                f"cmd_{i}",
-                f"out_{i}",
-                100,
-                0,
-                0,
-                False,
-                cache=cache,
-            )
+        # Fill to capacity — batch writes to avoid N×(load+save) disk overhead.
+        with patch.object(_session_mod, "save", return_value=None):
+            for i in range(session.BASH_HISTORY_MAX):
+                cache = session.mark_bash_run(
+                    sid, f"sha_{i}", f"cmd_{i}", f"out_{i}", 100, 0, 0, False, cache=cache,
+                )
+        _session_mod.save(cache)
         cache = session.load(sid)
         initial_count = len(cache.bash_history)
         # Add one more to trigger eviction
@@ -2337,11 +2431,15 @@ class TestSharedHistoryHelpers:
 
     def test_list_history_evicts_at_cap_plus_one(self, tmp_data_dir):
         """List history keeps only max_size entries when exceeding cap."""
+        import token_goat.session as _session_mod  # noqa: PLC0415
+
         sid = "list_evict_1"
         cache = session.load(sid)
-        # Fill grep history to GREPS_HISTORY_MAX
-        for i in range(session.GREPS_HISTORY_MAX):
-            session.mark_grep(sid, f"pattern_{i}", "/src", cache=cache)
+        # Fill grep history to GREPS_HISTORY_MAX — batch writes to avoid N×save.
+        with patch.object(_session_mod, "save", return_value=None):
+            for i in range(session.GREPS_HISTORY_MAX):
+                cache = session.mark_grep(sid, f"pattern_{i}", "/src", cache=cache)
+        _session_mod.save(cache)
         cache = session.load(sid)
         assert len(cache.greps) == session.GREPS_HISTORY_MAX
         # Adding one more should evict oldest to keep at max
@@ -2351,10 +2449,15 @@ class TestSharedHistoryHelpers:
 
     def test_list_history_keeps_most_recent(self, tmp_data_dir):
         """List history evicts oldest entries, keeping most recent entries."""
+        import token_goat.session as _session_mod  # noqa: PLC0415
+
         sid = "list_recent_1"
-        # Add more than GREPS_HISTORY_MAX entries
-        for i in range(session.GREPS_HISTORY_MAX + 5):
-            session.mark_grep(sid, f"pattern_{i}", "/src")
+        # Add more than GREPS_HISTORY_MAX entries — batch to avoid N×save.
+        cache = session.load(sid)
+        with patch.object(_session_mod, "save", return_value=None):
+            for i in range(session.GREPS_HISTORY_MAX + 5):
+                cache = session.mark_grep(sid, f"pattern_{i}", "/src", cache=cache)
+        _session_mod.save(cache)
         cache = session.load(sid)
         patterns = [g.pattern for g in cache.greps]
         # Oldest patterns should be gone
@@ -2365,41 +2468,38 @@ class TestSharedHistoryHelpers:
 
     def test_web_history_uses_dict_helper(self, tmp_data_dir):
         """Web history uses _append_to_dict_history and respects caps like bash."""
+        import token_goat.session as _session_mod  # noqa: PLC0415
+
         sid = "web_dict_1"
         cache = session.load(sid)
-        # Fill web_history
-        for i in range(session.WEB_HISTORY_MAX):
-            session.mark_web_fetch(
-                sid,
-                f"sha_{i}",
-                f"http://example.com/{i}",
-                f"out_{i}",
-                1000,
-                200,
-                False,
-                cache=cache,
-            )
+        # Fill web_history — batch writes to avoid N×(load+save) disk overhead.
+        with patch.object(_session_mod, "save", return_value=None):
+            for i in range(session.WEB_HISTORY_MAX):
+                cache = session.mark_web_fetch(
+                    sid, f"sha_{i}", f"http://example.com/{i}", f"out_{i}", 1000, 200, False,
+                    cache=cache,
+                )
+        _session_mod.save(cache)
         cache = session.load(sid)
         assert len(cache.web_history) == session.WEB_HISTORY_MAX
         # Add one more to trigger eviction
         session.mark_web_fetch(
-            sid,
-            "sha_final",
-            "http://example.com/final",
-            "out_final",
-            1000,
-            200,
-            False,
+            sid, "sha_final", "http://example.com/final", "out_final", 1000, 200, False,
         )
         cache = session.load(sid)
         assert len(cache.web_history) <= session.WEB_HISTORY_MAX
 
     def test_glob_history_uses_list_helper(self, tmp_data_dir):
         """Glob history uses _append_to_list_history and keeps most recent."""
+        import token_goat.session as _session_mod  # noqa: PLC0415
+
         sid = "glob_list_1"
-        # Add more than GLOB_HISTORY_MAX
-        for i in range(session.GLOB_HISTORY_MAX + 3):
-            session.mark_glob_run(sid, f"**/{i}/*.py", result_count=i)
+        # Add more than GLOB_HISTORY_MAX — batch to avoid N×save.
+        cache = session.load(sid)
+        with patch.object(_session_mod, "save", return_value=None):
+            for i in range(session.GLOB_HISTORY_MAX + 3):
+                cache = session.mark_glob_run(sid, f"**/{i}/*.py", result_count=i, cache=cache)
+        _session_mod.save(cache)
         cache = session.load(sid)
         assert len(cache.glob_history) == session.GLOB_HISTORY_MAX
         # Oldest should be evicted
