@@ -71,8 +71,15 @@ _DISPATCH_CASES: list[tuple[list[str], str]] = [
     # ---- ESLintFilter ----
     (["eslint", "src/", "--ext", ".ts"], "eslint"),
     (["eslint", "."], "eslint"),
+    # ---- PylintFilter (dedicated, before LinterFilter) ----
+    (["pylint", "src/"], "pylint"),
+    # ---- OxlintFilter ----
+    (["oxlint", "src/"], "oxlint"),
+    (["oxc_linter", "src/"], "oxlint"),
+    # ---- TurboFilter ----
+    (["turbo", "run", "build"], "turbo"),
+    (["npx", "turbo", "run", "build"], "turbo"),
     # ---- LinterFilter ----
-    (["pylint", "src/"], "linter"),
     (["pyright", "src/"], "linter"),
     (["tsc", "--noEmit"], "linter"),
     # ---- GrepFilter ----
