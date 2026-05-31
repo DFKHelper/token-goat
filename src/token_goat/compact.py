@@ -3018,8 +3018,6 @@ def _load_task_list(session_id: str) -> list[dict[str, str]]:
     Returns an empty list on any error (missing directory, permission denied,
     malformed JSON) so callers never need to handle exceptions.
     """
-    import json as _json  # noqa: PLC0415
-
     from . import paths as paths_mod  # noqa: PLC0415
 
     try:
@@ -3034,7 +3032,7 @@ def _load_task_list(session_id: str) -> list[dict[str, str]]:
         for p in tasks_dir.glob("*.json"):
             try:
                 raw = p.read_text(encoding="utf-8", errors="replace")
-                data = _json.loads(raw)
+                data = json.loads(raw)
                 if not isinstance(data, dict):
                     continue
                 task_id = str(data.get("id", p.stem))

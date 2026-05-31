@@ -84,8 +84,16 @@ def _emit_json(data: object, *, indent: int | None = None) -> None:
 
         if json_output:
             _emit_json(results)
+
+    When *indent* is ``None`` (the default), compact ``separators=(",", ":")`` are
+    used to minimise output size — consistent with all other JSON-output sites in
+    this module.  Passing a non-``None`` *indent* enables pretty-printing and
+    omits the separators override so indented output remains readable.
     """
-    typer.echo(json.dumps(data, indent=indent))
+    if indent is None:
+        typer.echo(json.dumps(data, separators=(",", ":")))
+    else:
+        typer.echo(json.dumps(data, indent=indent))
     raise typer.Exit(0)
 
 
@@ -140,7 +148,7 @@ def _emit_path_result(path: Path, json_output: bool) -> None:
                      When False, emit the bare path string.
     """
     if json_output:
-        typer.echo(json.dumps({"path": str(path), "size": path.stat().st_size}))
+        typer.echo(json.dumps({"path": str(path), "size": path.stat().st_size}, separators=(",", ":")))
     else:
         typer.echo(str(path))
 
@@ -660,9 +668,9 @@ def symbol(
                 # unconditionally would be a breaking change for anyone who
                 # parses the JSON output today.
                 envelope = {"redirected_from": redirected_from, "results": results}
-                typer.echo(json.dumps(envelope))
+                typer.echo(json.dumps(envelope, separators=(",", ":")))
             else:
-                typer.echo(json.dumps(results))
+                typer.echo(json.dumps(results, separators=(",", ":")))
         elif results:
             if redirected_from is not None:
                 marker = f"(redirected from: {redirected_from!r})"
@@ -896,7 +904,7 @@ def ref(
     ]
 
     if as_json:
-        typer.echo(json.dumps(results))
+        typer.echo(json.dumps(results, separators=(",", ":")))
     elif results:
         use_tty_color = sys.stdout.isatty()
         for row in results:
@@ -964,7 +972,7 @@ def refs(
     ]
 
     if as_json:
-        typer.echo(json.dumps(results))
+        typer.echo(json.dumps(results, separators=(",", ":")))
         return
 
     if not results:
@@ -1472,8 +1480,6 @@ def git_history_cmd(
 @app.command("cache-audit", rich_help_panel="Advanced")
 def cache_audit() -> None:
     """Audit Claude Code config for patterns that bust the prompt cache."""
-    import json as _json  # noqa: PLC0415
-
     from . import install  # noqa: PLC0415
 
     issues: list[str] = []
@@ -1482,7 +1488,7 @@ def cache_audit() -> None:
     settings_path = install.claude_settings_path()
     if settings_path.exists():
         try:
-            cfg = _json.loads(settings_path.read_text(encoding="utf-8"))
+            cfg = json.loads(settings_path.read_text(encoding="utf-8"))
             hooks = cfg.get("hooks", {})
             pre_hooks = hooks.get("PreToolUse", [])
             post_hooks = hooks.get("PostToolUse", [])
@@ -3290,11 +3296,7 @@ def cmd_image_shrink(
         raise typer.Exit(0)
     stats = image_shrink.stats_for(src, out)
     if json_output:
-        import json as _json  # noqa: PLC0415
-
-        typer.echo(
-            _json.dumps({"shrunken_path": str(out), **stats})
-        )
+        typer.echo(json.dumps({"shrunken_path": str(out), **stats}, separators=(",", ":")))
     else:
         typer.echo(
             f"{src} → {out} "
@@ -3612,9 +3614,7 @@ def compact_hint(
     )
 
     if json_output:
-        import json as _json  # noqa: PLC0415
-
-        typer.echo(_json.dumps({
+        typer.echo(json.dumps({
             "enabled": cfg.enabled,
             "triggers": cfg.triggers,
             "trigger_requested": trigger,
