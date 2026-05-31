@@ -2357,6 +2357,43 @@ class TestMypyFilterExtra:
         f = bc.select_filter(["mypy", "src/"])
         assert isinstance(f, bc.MypyFilter)
 
+    def test_show_error_codes_different_codes_grouped(self) -> None:
+        """Errors with different [error-code] suffixes but identical structure are
+        grouped together so only the first 3 are kept, not 3 per error code."""
+        lines = []
+        # 5 errors all sharing the same structural message but different codes.
+        for i, code in enumerate(
+            ["assignment", "attr-defined", "arg-type", "return-value", "misc"]
+        ):
+            lines.append(
+                f"src/foo.py:{i + 1}: error: Incompatible type in assignment  [{code}]"
+            )
+        lines.append("Found 5 errors in 1 file (checked 1 source file)")
+        stdout = "\n".join(lines)
+        f = bc.MypyFilter()
+        result = f.apply(stdout, "", 1, ["mypy", "--show-error-codes", "src/"])
+        # Only 3 error lines should be kept (deduplicated despite different codes).
+        error_lines = [ln for ln in result.text.split("\n") if "error:" in ln and "src/foo.py" in ln]
+        assert len(error_lines) == 3
+        assert "suppressed" in result.text
+
+    def test_show_error_codes_standalone_code_line_dropped(self) -> None:
+        """Standalone ``  [error-code]`` lines are dropped as noise."""
+        lines = [
+            "src/foo.py:1: error: Incompatible type",
+            "  [assignment]",
+            "src/foo.py:2: error: Missing argument",
+            "Found 2 errors in 1 file (checked 1 source file)",
+        ]
+        stdout = "\n".join(lines)
+        f = bc.MypyFilter()
+        result = f.apply(stdout, "", 1, ["mypy", "src/"])
+        # Standalone code line must not appear in output.
+        assert "  [assignment]" not in result.text
+        # Both error lines must still be present.
+        assert "Incompatible type" in result.text
+        assert "Missing argument" in result.text
+
 
 # ---------------------------------------------------------------------------
 # Edge cases: empty stdout / binary not in FILTERS

@@ -622,3 +622,64 @@ class TestSbtFilterTestOutput:
             self.SBT, stdout=_SBT_FAILED_TEST_OUTPUT, exit_code=1, argv=["sbt", "test"]
         )
         assert "[info] Tests: succeeded 1, failed 1" in out
+
+
+class TestSbtFilterScalaTestVerbose:
+    """SbtFilter collapses ScalaTest/Specs2/MUnit verbose passing-test lines."""
+
+    SBT = bc.SbtFilter()
+
+    def test_scalatest_passing_lines_collapsed(self) -> None:
+        """[info]   - test name (N ms) lines are collapsed to a count."""
+        lines = [
+            "[info] MySpec:",
+            "[info] - test addition (5 ms)",
+            "[info] - test subtraction (3 ms)",
+            "[info] - test multiplication (4 ms)",
+            "[info] Tests: succeeded 3, failed 0, canceled 0, ignored 0, pending 0",
+            "[info] All tests passed.",
+            "[success] Total time: 2 s",
+        ]
+        out = _apply(self.SBT, stdout="\n".join(lines), argv=["sbt", "test"])
+        # Passing test lines should be collapsed.
+        assert "[info] - test addition" not in out
+        assert "collapsed" in out and "passing-test" in out
+        # Summary must be kept.
+        assert "All tests passed" in out
+
+    def test_scalatest_failed_line_kept(self) -> None:
+        """[info]   - test name *** FAILED *** lines are never collapsed."""
+        lines = [
+            "[info] - passing test (2 ms)",
+            "[info] - failing test *** FAILED ***",
+            "[info]   expected 1 but was 2",
+            "[info] Tests: succeeded 1, failed 1, canceled 0, ignored 0, pending 0",
+        ]
+        out = _apply(self.SBT, stdout="\n".join(lines), exit_code=1, argv=["sbt", "test"])
+        # The failed line must survive.
+        assert "*** FAILED ***" in out
+        # The passing line must be collapsed.
+        assert "[info] - passing test" not in out
+
+    def test_specs2_plus_style_passing_line_collapsed(self) -> None:
+        """[info]   + test name (Specs2 style) passing lines are collapsed."""
+        lines = [
+            "[info] + feature works correctly",
+            "[info] + another feature works",
+            "[info] Tests: succeeded 2, failed 0, canceled 0, ignored 0, pending 0",
+            "[success] Total time: 1 s",
+        ]
+        out = _apply(self.SBT, stdout="\n".join(lines), argv=["sbt", "test"])
+        assert "[info] + feature works correctly" not in out
+        assert "collapsed" in out and "passing-test" in out
+
+    def test_munit_checkmark_style_passing_line_collapsed(self) -> None:
+        """[info]   ✓ test name (MUnit style) passing lines are collapsed."""
+        lines = [
+            "[info] ✓ test one (45 ms)",
+            "[info] ✓ test two (12 ms)",
+            "[info] Passed: Total 2, Failed 0, Errors 0, Passed 2",
+        ]
+        out = _apply(self.SBT, stdout="\n".join(lines), argv=["sbt", "test"])
+        assert "[info] ✓ test one" not in out
+        assert "collapsed" in out and "passing-test" in out

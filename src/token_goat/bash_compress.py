@@ -3239,6 +3239,20 @@ _GH_LOG_GROUP_RE: Final[re.Pattern[str]] = re.compile(
 _GH_LOG_ENDGROUP_RE: Final[re.Pattern[str]] = re.compile(
     r"^##\[endgroup\]"
 )
+# ``##[command]echo "Hello"`` — command-echo lines emitted by the runner
+# shell for every step command.  They are purely structural noise: the agent
+# already sees the command in the workflow YAML.
+_GH_LOG_COMMAND_RE: Final[re.Pattern[str]] = re.compile(
+    r"^##\[command\]"
+)
+# ``gh run view --log`` output format: each line is prefixed with the step name
+# followed by a TAB character before the timestamp.
+# e.g.: ``build (ubuntu-latest)\t2024-01-15T12:34:56.1234567Z message here``
+# We strip everything up to and including the first tab so that the timestamp
+# stripper can then remove the timestamp prefix normally.
+_GH_LOG_STEP_PREFIX_RE: Final[re.Pattern[str]] = re.compile(
+    r"^[^\t]+\t"
+)
 # ``Run actions/checkout@v3`` setup lines (appear at the start of action runs).
 _GH_LOG_SETUP_ACTION_RE: Final[re.Pattern[str]] = re.compile(
     r"^Run [a-zA-Z0-9_.-]+/[a-zA-Z0-9_.-]+@"
@@ -3265,12 +3279,17 @@ class GhRunLogFilter(Filter):
     """Compress ``gh run view --log`` GitHub Actions raw log output.
 
     ``gh run view --log`` dumps every log line from every step, each prefixed
-    with an ISO-8601 timestamp.  A 100-step CI run easily produces 2,000+
-    lines.
+    with a step-name column, a TAB, and an ISO-8601 timestamp.  A 100-step CI
+    run easily produces 2,000+ lines.
 
     Compression model:
 
+    * **Strip** step-name TAB prefix (``build (ubuntu-latest)\t``) before
+      timestamp processing — this is the column format used by the actual
+      ``gh run view --log`` CLI output.
     * **Strip** ISO-8601 timestamp prefixes (``2024-01-15T12:34:56.1234567Z``).
+    * **Drop** ``##[command]…`` lines — these are runner shell command-echo
+      lines that duplicate the workflow YAML; they add no information.
     * **Collapse** ``##[group]`` / ``##[endgroup]`` bodies when the group
       contains more than 20 lines and has no failure signal — keep the group
       name and a line count.
@@ -3306,13 +3325,19 @@ class GhRunLogFilter(Filter):
         self, stdout: str, stderr: str, exit_code: int, argv: list[str],
     ) -> str:
         merged = self._combine_output(stdout, stderr)
+        # ``gh run view --log`` prefixes each line with a step-name column
+        # separated by a TAB from the timestamp.  Strip that prefix first so
+        # the shared timestamp stripper can find the ISO-8601 prefix normally.
+        raw_lines = merged.split("\n")
+        step_stripped = [_GH_LOG_STEP_PREFIX_RE.sub("", ln) for ln in raw_lines]
         # Strip timestamp prefixes upfront using the shared helper so the rest
         # of the loop works on clean, prefix-free lines.
-        lines = _strip_timestamps(merged.split("\n"))
+        lines = _strip_timestamps(step_stripped)
         kept: list[str] = []
         setup_actions: list[str] = []
         dropped_boilerplate = 0
         dropped_cleanup = 0
+        dropped_commands = 0
         collapsed_groups = 0
 
         # Group-collapse state.
@@ -3343,6 +3368,13 @@ class GhRunLogFilter(Filter):
             # Post-run cleanup — drop.
             if _GH_LOG_POST_STEP_RE.match(line):
                 dropped_cleanup += 1
+                continue
+
+            # Command-echo lines (##[command]…) — pure noise; the agent can read
+            # the workflow YAML for the command definition.  Keep them when they
+            # contain a failure signal (unusual but possible with error traps).
+            if _GH_LOG_COMMAND_RE.match(line) and not _GH_LOG_FAILURE_RE.search(line):
+                dropped_commands += 1
                 continue
 
             # Group markers.
@@ -3385,6 +3417,8 @@ class GhRunLogFilter(Filter):
         notes: list[str] = []
         if dropped_boilerplate:
             notes.append(f"dropped {dropped_boilerplate} boilerplate lines")
+        if dropped_commands:
+            notes.append(f"dropped {dropped_commands} ##[command] echo lines")
         if dropped_cleanup:
             notes.append(f"dropped {dropped_cleanup} cleanup lines")
         if collapsed_groups:
@@ -4082,6 +4116,19 @@ _MYPY_SUMMARY_RE: Final[re.Pattern[str]] = re.compile(
 _MYPY_NOTE_CONTINUATION_RE: Final[re.Pattern[str]] = re.compile(
     r"^(?P<file>.+?):(?P<line>\d+):(?:\d+:)?\s+note:"
 )
+# Standalone ``  [error-code]`` suffix lines emitted by mypy when
+# ``--show-error-codes`` is active alongside multi-line note output.
+# They look like:  ``  [assignment]`` or ``  [attr-defined]`` on their own line.
+_MYPY_STANDALONE_ERROR_CODE_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\s+\[[a-z][a-z0-9-]*\]\s*$"
+)
+# Trailing ``  [error-code]`` appended to error-message text (``--show-error-codes``).
+# Strip this before normalising so that structurally identical errors with
+# different codes group correctly: "Incompatible type [assignment]" and
+# "Incompatible type [attr-defined]" describe the same structural pattern.
+_MYPY_TRAILING_ERROR_CODE_RE: Final[re.Pattern[str]] = re.compile(
+    r"\s+\[[a-z][a-z0-9-]*\]\s*$"
+)
 
 
 class MypyFilter(Filter):
@@ -4105,6 +4152,13 @@ class MypyFilter(Filter):
       references (``note: See https://mypy.readthedocs.io/…``).
     * **Drop** ``(errors prevented further checking)`` annotations — they add
       noise without actionable information.
+    * **Normalise** away trailing ``[error-code]`` suffixes (produced by
+      ``--show-error-codes`` / ``--show-error-end``) before deduplication so
+      ``"Incompatible type [assignment]"`` and
+      ``"Incompatible type [attr-defined]"`` are grouped as the same structural
+      error.  The original line (with the code) is still emitted verbatim.
+    * **Drop** standalone ``  [error-code]`` lines (a bare error-code annotation
+      on its own line, also a ``--show-error-codes`` artefact).
 
     On a 2 000-line mypy run with 300 errors the output typically shrinks to
     30–60 lines while preserving all unique error messages.
@@ -4133,6 +4187,13 @@ class MypyFilter(Filter):
                 kept.append(line)
                 continue
 
+            # Drop standalone ``  [error-code]`` lines (a --show-error-codes
+            # artefact: mypy sometimes emits the error code on its own line as
+            # a continuation of the previous diagnostic).
+            if _MYPY_STANDALONE_ERROR_CODE_RE.match(line):
+                dropped_notes += 1
+                continue
+
             m = _MYPY_LINE_RE.match(line)
             if m is None:
                 # Not a diagnostic line — keep as-is (could be a blank line,
@@ -4153,6 +4214,10 @@ class MypyFilter(Filter):
                 # line/column refs so structurally identical errors group together.
                 normalised = re.sub(r'"[^"]*"', '"…"', msg)
                 normalised = re.sub(r"'[^']*'", "'…'", normalised)
+                # Strip trailing ``[error-code]`` suffix (--show-error-codes) so
+                # that "Incompatible type [assignment]" and
+                # "Incompatible type [attr-defined]" normalise to the same key.
+                normalised = _MYPY_TRAILING_ERROR_CODE_RE.sub("", normalised).strip()
                 count = error_msg_counts.get(normalised, 0)
                 error_msg_counts[normalised] = count + 1
                 if count < 3:
@@ -9159,6 +9224,12 @@ _SBT_ERROR_RE: Final[re.Pattern[str]] = re.compile(r"^\[error\]\s")
 _SBT_TEST_PROGRESS_RE: Final[re.Pattern[str]] = re.compile(
     r"^\[info\]\s+[\.FEI!]+\s*$"
 )
+#: ScalaTest / Specs2 verbose passing-test lines: ``[info]   - test name (N second(s), N ms)``
+#: or ``[info]   + test name`` (Specs2) or ``[info]   ✓ test name`` (MUnit).
+#: These are collapsed when there are many; failures (``[info]   - *** FAILED ***``) are kept.
+_SBT_SCALATEST_PASS_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\[info\]\s+(?:- (?!.*\*\*\* FAILED \*\*\*)|[+✓]\s)\S"
+)
 #: sbt "Total time: Xs" summary
 _SBT_TOTAL_TIME_RE: Final[re.Pattern[str]] = re.compile(
     r"^\[(?:success|info)\]\s+Total time:"
@@ -9199,6 +9270,10 @@ class SbtFilter(Filter):
     * **[error] …** lines: always keep verbatim.
     * **[info] …** ScalaTest/MUnit dot-progress (lines of ``.FEI!``):
       collapse to a count note.
+    * **ScalaTest/Specs2/MUnit verbose passing-test lines**
+      (``[info]   - test name (N ms)``, ``[info]   + test name``,
+      ``[info]   ✓ test name``): collapse to a count note.  Failure markers
+      (``*** FAILED ***``) are always kept verbatim.
     * **Total time: Xs** / **[success] …**: keep verbatim.
     * **[error] Failed tests:** block: keep verbatim.
     * **[info] Tests: succeeded …** summary: keep verbatim.
@@ -9224,6 +9299,7 @@ class SbtFilter(Filter):
         kept: list[str] = []
         dropped_loading = 0
         dropped_test_progress = 0
+        dropped_passing_tests = 0
         # Track [warn] lines per category; category = first ~40 chars of text.
         warn_counts: dict[str, int] = {}
         dropped_warn_extra = 0
@@ -9253,6 +9329,12 @@ class SbtFilter(Filter):
             if _SBT_TEST_PROGRESS_RE.match(line):
                 dropped_test_progress += 1
                 continue
+            # Collapse ScalaTest/Specs2/MUnit verbose passing-test lines
+            # (``[info]   - test name (N ms)``, ``[info]   + test name``).
+            # The regex already excludes ``*** FAILED ***`` lines.
+            if _SBT_SCALATEST_PASS_RE.match(line):
+                dropped_passing_tests += 1
+                continue
             # Deduplicate [warn] lines per category.
             if _SBT_WARN_RE.match(line):
                 # Use the first 60 chars as the category key (strips variable
@@ -9273,6 +9355,8 @@ class SbtFilter(Filter):
             notes.append(f"collapsed {dropped_loading} [info] loading/resolution lines")
         if dropped_test_progress:
             notes.append(f"collapsed {dropped_test_progress} test dot-progress lines")
+        if dropped_passing_tests:
+            notes.append(f"collapsed {dropped_passing_tests} verbose passing-test lines")
         if dropped_warn_extra:
             notes.append(f"collapsed {dropped_warn_extra} duplicate [warn] lines")
         self._emit_notes(kept, notes)

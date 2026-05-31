@@ -143,6 +143,47 @@ class TestGhRunLogFilter:
         assert "Process completed with exit code 1" in result.text
         assert "FAILED: tests/test_foo.py" in result.text
 
+    # --- ##[command] echo dropping ---
+
+    def test_drops_command_echo_lines(self) -> None:
+        stdout = (
+            "##[command]echo Hello\n"
+            "##[command]/bin/bash -e /runner/_temp/step.sh\n"
+            "Actual step output here\n"
+        )
+        result = self._filter().apply(stdout, "", 0, ["gh", "run", "view", "1", "--log"])
+        # The raw command bodies must not appear, only the collapsed note may
+        # mention "##[command]".
+        assert "echo Hello" not in result.text
+        assert "/runner/_temp/step.sh" not in result.text
+        assert "Actual step output here" in result.text
+        assert "##[command] echo lines" in result.text
+
+    def test_command_echo_with_failure_signal_kept(self) -> None:
+        """A ##[command] line that contains an error signal must be preserved."""
+        stdout = (
+            "##[command]echo 'Error: something went wrong'\n"
+            "Normal output\n"
+        )
+        result = self._filter().apply(stdout, "", 0, ["gh", "run", "view", "1", "--log"])
+        # Contains 'Error:' — must not be dropped.
+        assert "Error: something went wrong" in result.text
+
+    # --- step-name TAB prefix stripping ---
+
+    def test_strips_step_name_tab_prefix(self) -> None:
+        """Lines in ``gh run view --log`` real output have step-name\ttimestamp format."""
+        stdout = (
+            "build (ubuntu-latest)\t2024-01-15T12:34:56.1234567Z Hello from step\n"
+            "test (ubuntu-latest)\t2024-01-15T12:34:57.0000000Z Test line\n"
+        )
+        result = self._filter().apply(stdout, "", 0, ["gh", "run", "view", "1", "--log"])
+        # Step-name prefix and timestamp must both be stripped.
+        assert "ubuntu-latest" not in result.text
+        assert "2024-01-15T" not in result.text
+        assert "Hello from step" in result.text
+        assert "Test line" in result.text
+
     # --- combined scenario ---
 
     def test_combined_compression(self) -> None:
