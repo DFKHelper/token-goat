@@ -5764,3 +5764,400 @@ class TestPrettierFilter:
 
     def test_exported_in_all(self) -> None:
         assert "PrettierFilter" in bc.__all__
+
+
+# ---------------------------------------------------------------------------
+# TestCurlFilter
+# ---------------------------------------------------------------------------
+
+
+class TestCurlFilter:
+    """Tests for CurlFilter (curl + wget HTTP client compression)."""
+
+    def _f(self) -> bc.CurlFilter:
+        return bc.CurlFilter()
+
+    # --- curl -v ---
+
+    def test_curl_verbose_drops_connection_metadata(self) -> None:
+        """Lines starting with '*' (TLS handshake, connection info) are dropped."""
+        f = self._f()
+        stderr = (
+            "* Trying 93.184.216.34:443...\n"
+            "* Connected to example.com (93.184.216.34) port 443 (#0)\n"
+            "* ALPN: offers h2,http/1.1\n"
+            "* TLS 1.3 connection using TLS_AES_128_GCM_SHA256\n"
+            "* Server certificate: example.com\n"
+        )
+        result = f.apply("", stderr, 0, ["curl", "-v", "https://example.com"])
+        assert "TLS" not in result.text
+        assert "ALPN" not in result.text
+        assert "token-goat" in result.text
+        assert "connection-metadata" in result.text
+
+    def test_curl_verbose_drops_request_headers(self) -> None:
+        """Lines starting with '>' (request headers) are dropped."""
+        f = self._f()
+        stderr = (
+            "> GET / HTTP/2\n"
+            "> Host: example.com\n"
+            "> User-Agent: curl/7.88.1\n"
+            "> Accept: */*\n"
+            ">\n"
+        )
+        result = f.apply("", stderr, 0, ["curl", "-v", "https://example.com"])
+        assert "User-Agent" not in result.text
+        assert "request-header" in result.text
+
+    def test_curl_verbose_keeps_status_line(self) -> None:
+        """HTTP response status line is preserved (stripped of '< ' prefix)."""
+        f = self._f()
+        stderr = (
+            "< HTTP/2 200\n"
+            "< content-type: text/html; charset=UTF-8\n"
+            "< server: ECS (nyb/1D20)\n"
+            "< x-cache: HIT\n"
+        )
+        result = f.apply("response body", stderr, 0, ["curl", "-v", "https://example.com"])
+        assert "HTTP/2 200" in result.text
+        assert "content-type: text/html" in result.text
+        # x-cache and server are not in the useful-headers allowlist
+        assert "x-cache" not in result.text
+        assert "server: ECS" not in result.text
+
+    def test_curl_verbose_keeps_location_header_on_redirect(self) -> None:
+        """Location header is in the allowlist and preserved for redirect chains."""
+        f = self._f()
+        stderr = (
+            "< HTTP/1.1 301 Moved Permanently\n"
+            "< Location: https://new.example.com/\n"
+            "< Content-Length: 0\n"
+            "< Date: Mon, 01 Jan 2024 00:00:00 GMT\n"
+        )
+        result = f.apply("", stderr, 0, ["curl", "-v", "https://old.example.com"])
+        assert "HTTP/1.1 301" in result.text
+        assert "Location: https://new.example.com/" in result.text
+        assert "Date:" not in result.text
+
+    def test_curl_progress_lines_dropped(self) -> None:
+        """curl progress bar table lines are dropped."""
+        f = self._f()
+        stderr = (
+            "  % Total    % Received % Xferd  Average Speed   Time    Time     Time  Current\n"
+            "                                 Dload  Upload   Total   Spent    Left  Speed\n"
+            "100  1270  100  1270    0     0   5234      0 --:--:-- --:--:-- --:--:--  5252\n"
+        )
+        result = f.apply("body", stderr, 0, ["curl", "https://example.com"])
+        assert "% Total" not in result.text
+        assert "Dload" not in result.text
+        assert "progress" in result.text
+
+    def test_curl_response_body_preserved(self) -> None:
+        """stdout (response body) always passes through."""
+        f = self._f()
+        body = '{"status": "ok", "value": 42}'
+        result = f.apply(body, "", 0, ["curl", "https://api.example.com/status"])
+        assert body in result.text
+
+    def test_curl_error_message_preserved(self) -> None:
+        """curl error messages (curl: (6) ...) are never dropped."""
+        f = self._f()
+        stderr = "curl: (6) Could not resolve host: nosuchdomain.invalid\n"
+        result = f.apply("", stderr, 1, ["curl", "https://nosuchdomain.invalid"])
+        assert "curl: (6)" in result.text
+
+    # --- wget ---
+
+    def test_wget_drops_connecting_lines(self) -> None:
+        """wget verbose connection-setup lines are dropped."""
+        f = self._f()
+        stderr = (
+            "--2024-01-01 12:00:00--  https://example.com/file.zip\n"
+            "Resolving example.com... 93.184.216.34\n"
+            "Connecting to example.com|93.184.216.34|:443... connected.\n"
+            "HTTP request sent, awaiting response... 200 OK\n"
+            "Length: 12345 (12K) [application/zip]\n"
+            "Saving to: 'file.zip'\n"
+            "2024-01-01 12:00:01 (1.23 MB/s) - 'file.zip' saved [12345/12345]\n"
+        )
+        result = f.apply("", stderr, 0, ["wget", "https://example.com/file.zip"])
+        assert "Resolving" not in result.text
+        assert "Connecting to" not in result.text
+        # The saved line should be kept
+        assert "saved" in result.text
+
+    def test_wget_verbose_timestamp_url_lines_dropped(self) -> None:
+        """wget '-v' timestamp+URL lines are dropped; only saved line kept."""
+        f = self._f()
+        stderr = (
+            "2024-01-01 12:00:00 URL: https://example.com/page [200 OK]\n"
+            "2024-01-01 12:00:01 (500 KB/s) - 'page' saved [4096/4096]\n"
+        )
+        result = f.apply("", stderr, 0, ["wget", "-v", "https://example.com/page"])
+        # The URL: timestamp line should be dropped
+        assert "URL:" not in result.text
+        # The saved line should be kept
+        assert "saved" in result.text
+
+    def test_wget_select_filter(self) -> None:
+        """select_filter routes wget to CurlFilter."""
+        f = bc.select_filter(["wget", "https://example.com"])
+        assert f is not None
+        assert f.name == "curl"
+
+    def test_curl_select_filter(self) -> None:
+        """select_filter routes curl to CurlFilter."""
+        f = bc.select_filter(["curl", "-v", "https://example.com"])
+        assert f is not None
+        assert f.name == "curl"
+
+    def test_exported_in_all(self) -> None:
+        assert "CurlFilter" in bc.__all__
+
+
+# ---------------------------------------------------------------------------
+# TestPhpStanFilter
+# ---------------------------------------------------------------------------
+
+
+class TestPhpStanFilter:
+    """Tests for PhpStanFilter (phpstan + psalm PHP static analysis)."""
+
+    def _f(self) -> bc.PhpStanFilter:
+        return bc.PhpStanFilter()
+
+    def _phpstan_table(self, filename: str, rows: list[tuple[int, str]]) -> str:
+        """Build a minimal PHPStan table output."""
+        lines = [
+            " ------ ------------------------------------------------------------------ ",
+            f"  Line   {filename}                                                        ",
+            " ------ ------------------------------------------------------------------ ",
+        ]
+        for lineno, msg in rows:
+            lines.append(f"  {lineno}    {msg}")
+        lines += [
+            " ------ ------------------------------------------------------------------ ",
+            "",
+            " [ERROR] Found 2 errors",
+            "",
+        ]
+        return "\n".join(lines)
+
+    def test_drops_separator_lines(self) -> None:
+        """Table separator lines (--- rows) are dropped."""
+        f = self._f()
+        text = self._phpstan_table("src/Foo.php", [(42, "Property $bar not found.")])
+        result = f.apply(text, "", 1, ["phpstan", "analyse", "src/"])
+        assert "------" not in result.text
+
+    def test_keeps_summary_line(self) -> None:
+        """The [ERROR] / [OK] summary line is preserved."""
+        f = self._f()
+        text = self._phpstan_table("src/Foo.php", [(42, "Property $bar not found.")])
+        result = f.apply(text, "", 1, ["phpstan", "analyse", "src/"])
+        assert "[ERROR]" in result.text
+
+    def test_keeps_error_rows(self) -> None:
+        """Error row lines (line number + message) are preserved."""
+        f = self._f()
+        text = self._phpstan_table("src/Foo.php", [
+            (10, "Call to undefined method Foo::bar()."),
+            (20, "Property $x not found."),
+        ])
+        result = f.apply(text, "", 1, ["phpstan", "analyse", "src/"])
+        assert "Call to undefined method" in result.text
+        assert "Property $x not found" in result.text
+
+    def test_deduplicates_repeated_errors_per_file(self) -> None:
+        """More than 3 occurrences of the same message in one file get a note."""
+        f = self._f()
+        same_msg = "Parameter #1 (string) of function strlen expects string."
+        rows = [(i, same_msg) for i in range(1, 8)]  # 7 identical rows
+        text = self._phpstan_table("src/Bar.php", rows)
+        result = f.apply(text, "", 1, ["phpstan", "analyse", "src/"])
+        # First 3 kept, rest collapsed
+        count = result.text.count(same_msg)
+        assert count == 3
+        assert "+4 more duplicate" in result.text
+
+    def test_drops_info_banner_lines(self) -> None:
+        """Loading config / PHPStan banner lines are dropped."""
+        f = self._f()
+        text = (
+            "PHPStan - PHP Static Analysis Tool\n"
+            "Loading configuration from phpstan.neon\n"
+            " [OK] No errors\n"
+        )
+        result = f.apply(text, "", 0, ["phpstan", "analyse", "src/"])
+        assert "PHPStan - PHP Static Analysis Tool" not in result.text
+        assert "Loading configuration" not in result.text
+        assert "[OK]" in result.text
+
+    def test_psalm_drops_progress_lines(self) -> None:
+        """Psalm scanning/progress lines are dropped."""
+        f = self._f()
+        text = (
+            "Scanning files...\n"
+            "Analyzing files...\n"
+            "Checking src/Foo.php\n"
+            "ERROR: UndefinedVariable - src/Foo.php:42:5 - Cannot find referenced variable $bar\n"
+            "Found 1 error\n"
+        )
+        result = f.apply(text, "", 1, ["psalm"])
+        assert "Scanning files" not in result.text
+        assert "Analyzing files" not in result.text
+        assert "UndefinedVariable" in result.text
+
+    def test_psalm_keeps_error_lines(self) -> None:
+        """Psalm ERROR: lines are preserved."""
+        f = self._f()
+        text = (
+            "Scanning files...\n"
+            "ERROR: MixedInferredReturnType - src/Bar.php:10:1 - Could not infer return type\n"
+        )
+        result = f.apply(text, "", 1, ["psalm"])
+        assert "MixedInferredReturnType" in result.text
+
+    def test_psalm_collapses_repeated_error_type(self) -> None:
+        """Psalm: same error type beyond 3 occurrences gets a collapse note."""
+        f = self._f()
+        errors = "\n".join(
+            f"ERROR: UndefinedVariable - src/File{i}.php:{i}:1 - Cannot find $x"
+            for i in range(1, 8)
+        )
+        result = f.apply(errors, "", 1, ["psalm"])
+        # First 3 kept; 4 collapsed
+        count = result.text.count("UndefinedVariable")
+        # The kept lines + the collapse note text
+        assert count >= 3
+        assert "collapsed +4 more UndefinedVariable" in result.text
+
+    def test_dispatch_phpstan(self) -> None:
+        """select_filter routes phpstan to PhpStanFilter."""
+        f = bc.select_filter(["phpstan", "analyse", "src/"])
+        assert f is not None
+        assert f.name == "phpstan"
+
+    def test_dispatch_psalm(self) -> None:
+        """select_filter routes psalm to PhpStanFilter."""
+        f = bc.select_filter(["psalm"])
+        assert f is not None
+        assert f.name == "phpstan"
+
+    def test_exported_in_all(self) -> None:
+        assert "PhpStanFilter" in bc.__all__
+
+
+# ---------------------------------------------------------------------------
+# TestSwiftLintFilter
+# ---------------------------------------------------------------------------
+
+
+class TestSwiftLintFilter:
+    """Tests for SwiftLintFilter (SwiftLint linter compression)."""
+
+    def _f(self) -> bc.SwiftLintFilter:
+        return bc.SwiftLintFilter()
+
+    def _violation(self, path: str, line: int, severity: str, msg: str, rule: str) -> str:
+        return f"{path}:{line}:1: {severity}: {msg} ({rule})"
+
+    def test_drops_progress_lines(self) -> None:
+        """Linting progress and configuration lines are dropped."""
+        f = self._f()
+        text = (
+            "Linting Swift files in current working directory\n"
+            "Loading configuration from '.swiftlint.yml'\n"
+            + self._violation("/src/Foo.swift", 10, "warning", "Line too long", "line_length")
+            + "\n"
+            "Done linting! The lint checker found 1 violation, 0 serious in 1 file.\n"
+        )
+        result = f.apply(text, "", 1, ["swiftlint"])
+        assert "Linting Swift files" not in result.text
+        assert "Loading configuration" not in result.text
+
+    def test_keeps_error_violations(self) -> None:
+        """error: violations are always kept."""
+        f = self._f()
+        text = (
+            self._violation("/src/Foo.swift", 5, "error", "Unused Declaration", "unused_declaration")
+            + "\n"
+        )
+        result = f.apply(text, "", 2, ["swiftlint"])
+        assert "unused_declaration" in result.text
+        assert "Unused Declaration" in result.text
+
+    def test_keeps_serious_violations(self) -> None:
+        """serious: violations are always kept."""
+        f = self._f()
+        text = (
+            self._violation("/src/Bar.swift", 12, "serious", "Force Cast", "force_cast")
+            + "\n"
+        )
+        result = f.apply(text, "", 2, ["swiftlint"])
+        assert "force_cast" in result.text
+
+    def test_samples_warning_violations_per_rule(self) -> None:
+        """Only first 3 warning violations per rule are kept; rest get a note."""
+        f = self._f()
+        lines = "\n".join(
+            self._violation(f"/src/File{i}.swift", i * 10, "warning", "Line too long", "line_length")
+            for i in range(1, 8)
+        )
+        result = f.apply(lines + "\n", "", 1, ["swiftlint"])
+        # First 3 kept; note mentions 4 more
+        assert "+4 more line_length warning(s) elided" in result.text
+
+    def test_different_rules_each_get_3_samples(self) -> None:
+        """Each rule gets its own 3-violation budget independently."""
+        f = self._f()
+        lines: list[str] = []
+        for i in range(1, 5):
+            lines.append(self._violation(f"/src/A{i}.swift", i, "warning", "Long line", "line_length"))
+        for i in range(1, 5):
+            lines.append(self._violation(f"/src/B{i}.swift", i, "warning", "Trailing whitespace", "trailing_whitespace"))
+        text = "\n".join(lines) + "\n"
+        result = f.apply(text, "", 1, ["swiftlint"])
+        assert "+1 more line_length warning(s) elided" in result.text
+        assert "+1 more trailing_whitespace warning(s) elided" in result.text
+
+    def test_summary_line_preserved(self) -> None:
+        """Done linting! summary line is preserved at the end."""
+        f = self._f()
+        text = (
+            self._violation("/src/Foo.swift", 1, "warning", "Line too long", "line_length")
+            + "\n"
+            "Done linting! The lint checker found 1 violation, 0 serious in 1 file.\n"
+        )
+        result = f.apply(text, "", 1, ["swiftlint"])
+        assert "Done linting!" in result.text
+
+    def test_mixed_errors_and_warnings(self) -> None:
+        """Errors always kept regardless of count; warnings are sampled."""
+        f = self._f()
+        lines: list[str] = []
+        for i in range(1, 6):
+            lines.append(self._violation(f"/src/E{i}.swift", i, "error", "Force Unwrap", "force_unwrapping"))
+        for i in range(1, 6):
+            lines.append(self._violation(f"/src/W{i}.swift", i, "warning", "Trailing newline", "trailing_newline"))
+        text = "\n".join(lines) + "\n"
+        result = f.apply(text, "", 2, ["swiftlint"])
+        # All 5 errors kept
+        assert result.text.count("force_unwrapping") == 5
+        # Only 3 warnings kept + note
+        assert "+2 more trailing_newline warning(s) elided" in result.text
+
+    def test_dispatch_swiftlint(self) -> None:
+        """select_filter routes swiftlint to SwiftLintFilter."""
+        f = bc.select_filter(["swiftlint"])
+        assert f is not None
+        assert f.name == "swiftlint"
+
+    def test_dispatch_swiftlint_lint_subcommand(self) -> None:
+        """select_filter routes swiftlint with lint subcommand to SwiftLintFilter."""
+        f = bc.select_filter(["swiftlint", "lint", "--path", "Sources/"])
+        assert f is not None
+        assert f.name == "swiftlint"
+
+    def test_exported_in_all(self) -> None:
+        assert "SwiftLintFilter" in bc.__all__

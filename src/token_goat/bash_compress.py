@@ -180,6 +180,10 @@ __all__ = [
     "OxlintFilter",
     # pylint dedicated filter (higher-fidelity than LinterFilter)
     "PylintFilter",
+    # PHP static analysis
+    "PhpStanFilter",
+    # Swift linter
+    "SwiftLintFilter",
 ]
 
 import math
@@ -8221,16 +8225,35 @@ _CURL_USEFUL_HEADER_RE: Final[re.Pattern[str]] = re.compile(
     r"^<\s+(content-type|location|content-length|www-authenticate|x-ratelimit):",
     re.IGNORECASE,
 )
-# curl progress bars: "  % Total    % Received..." / "100  1234"
+# curl progress bars emitted to stderr when not redirected.
+# Three distinct formats to match:
+#   "  % Total    % Received ..."  — column header line
+#   "                              Dload  Upload   Total ..."  — unit header line
+#   "100  1270  100  1270    0  ..."  — numeric data line (may have no leading space)
 _CURL_PROGRESS_RE: Final[re.Pattern[str]] = re.compile(
-    r"^\s+%\s+Total|^\s+\d+\s+\d+\s+\d+\s+\d+\s+\d+"
+    r"^\s+%\s+Total"                   # column header
+    r"|^\s+Dload\s+Upload\s"           # unit header
+    r"|^\d{1,3}\s+\d+\s+\d+\s+\d+\s"  # numeric data row (starts with percent value)
+    r"|^\s+\d+\s+\d+\s+\d+\s+\d+\s+\d+"  # numeric data row with leading spaces
 )
 # wget log lines: "--YYYY-MM-DD HH:MM:SS--" / "Resolving ..." / "Connecting ..."
+# Also matches wget verbose timestamp+URL lines ("2024-01-01 12:00:00 URL:...")
+# and redirect note lines ("Location: ... [following]").
 _WGET_NOISE_RE: Final[re.Pattern[str]] = re.compile(
-    r"^--\d{4}-\d{2}-\d{2}|^(Resolving|Connecting to|Reusing|Sending|Saving to|HTTP request sent|Length:|Location:)"
+    r"^--\d{4}-\d{2}-\d{2}"
+    r"|^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2} URL:"
+    r"|^(Resolving|Connecting to|Reusing|Sending|Saving to|HTTP request sent|Length:|Location:)"
 )
 _WGET_STATUS_RE: Final[re.Pattern[str]] = re.compile(
     r"^HTTP request sent|(\d{3} [A-Za-z ]+)\."
+)
+# wget response status line embedded in the verbose output, e.g. "HTTP/1.1 200 OK"
+_WGET_HTTP_STATUS_RE: Final[re.Pattern[str]] = re.compile(
+    r"^HTTP/[\d.]+\s+(\d{3})"
+)
+# wget "YYYY-MM-DD HH:MM:SS (N MB/s) - 'file' saved [N/N]" lines: keep these.
+_WGET_SAVED_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2} \("
 )
 
 
@@ -8275,6 +8298,10 @@ class CurlFilter(Filter):
 
         if binary == "wget":
             for line in lines:
+                # Keep the "saved" completion line and HTTP status lines.
+                if _WGET_SAVED_RE.match(line) or _WGET_HTTP_STATUS_RE.match(line):
+                    kept.append(line)
+                    continue
                 if _WGET_NOISE_RE.match(line):
                     dropped_meta += 1
                     continue
@@ -10851,6 +10878,280 @@ class ComposerFilter(Filter):
             notes.append(f"dropped {dropped_funding} funding-notice lines")
         if dropped_dup_warnings:
             notes.append(f"deduplicated {dropped_dup_warnings} repeated warnings")
+        self._emit_notes(kept, notes)
+        return self._finalize(kept)
+
+
+# ---------------------------------------------------------------------------
+# PHPStan / Psalm — PHP static analysis
+# ---------------------------------------------------------------------------
+
+# PHPStan table separator line: " ------ ----...---- "
+_PHPSTAN_SEP_RE: Final[re.Pattern[str]] = re.compile(r"^\s*-{3,}")
+# PHPStan file header line inside the table: " Line  src/Foo.php "
+_PHPSTAN_FILE_HEADER_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\s+Line\s+\S.*\.php\s*$"
+)
+# PHPStan error/note row inside the table: "  42   Property $x not found."
+_PHPSTAN_ROW_RE: Final[re.Pattern[str]] = re.compile(r"^\s+(\d+)\s+(.+)$")
+# PHPStan summary lines: "[ERROR] Found N error(s)" / "[OK] No errors"
+_PHPSTAN_SUMMARY_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\s*\[(ERROR|OK|WARNING|NOTE)\]", re.IGNORECASE,
+)
+# Psalm error line: "ERROR: ... at /path/file.php:42:1"
+_PSALM_ERROR_RE: Final[re.Pattern[str]] = re.compile(
+    r"^(ERROR|INFO|FATAL): \w+ - .+\.php:\d+",
+    re.IGNORECASE,
+)
+# Psalm scanning-progress line: "Scanning files..." / "Analyzing files..."
+_PSALM_PROGRESS_RE: Final[re.Pattern[str]] = re.compile(
+    r"^(Scanning|Analyzing|Checking|Parsing|Caching|Target PHP|Psalm|PHP version|"
+    r"Running Psalm|No errors|Checked \d|INFO:|Found \d+ error)",
+    re.IGNORECASE,
+)
+# phpstan/psalm "Loading configuration" / "Note: " informational lines
+_PHPSTAN_INFO_RE: Final[re.Pattern[str]] = re.compile(
+    r"^(Note: |Loading config|Found cached|Autoload|Bootstrapping|"
+    r"PHPStan - PHP Static|Psalm is running)",
+    re.IGNORECASE,
+)
+
+
+class PhpStanFilter(Filter):
+    """Compress ``phpstan analyse`` and ``psalm`` PHP static analysis output.
+
+    Both tools can emit hundreds of error rows for a brownfield codebase.  The
+    repetitive nature of "same rule, many files" creates noise that buries the
+    first occurrence the agent most needs to see.
+
+    Compression model for **phpstan**:
+
+    * **Keep** the table header row and the ``[ERROR]`` / ``[OK]`` summary.
+    * **Per file**: keep the first three unique error messages; collapse
+      additional occurrences of the same message to a count note.
+    * **Drop** table separator lines (pure ``---`` rows).
+    * **Drop** info lines (config-loading, cache-loading, banner).
+
+    Compression model for **psalm**:
+
+    * **Keep** all ``ERROR:`` lines verbatim.
+    * **Collapse** duplicate error *types* beyond the third occurrence.
+    * **Drop** scanning/progress lines (``Scanning files…``, ``Analyzing…``).
+    * **Keep** the final summary (``Found N errors``, ``No errors found``).
+    """
+
+    name = "phpstan"
+    binaries = frozenset(["phpstan", "psalm", "psalm.phar", "phpstan.phar"])
+
+    def compress(
+        self, stdout: str, stderr: str, exit_code: int, argv: list[str],
+    ) -> str:
+        binary = Path(argv[0]).stem.lower() if argv else "phpstan"
+        # psalm.phar → "psalm", phpstan.phar → "phpstan"
+        if binary.endswith(".phar"):
+            binary = binary[:-5]
+        merged = self._combine_output(stdout, stderr)
+        lines = merged.split("\n")
+
+        if binary == "psalm":
+            return self._compress_psalm(lines)
+        return self._compress_phpstan(lines)
+
+    def _compress_phpstan(self, lines: list[str]) -> str:
+        """Compress PHPStan table-style output."""
+        kept: list[str] = []
+        dropped_sep = 0
+        dropped_info = 0
+
+        # Per-file deduplication: file → {msg: count}
+        current_file: str = ""
+        file_msgs: dict[str, dict[str, int]] = {}
+
+        def flush_file_dedup(file: str, msgs: dict[str, int]) -> None:
+            extra_count = sum(max(0, c - 3) for c in msgs.values())
+            if extra_count:
+                kept.append(
+                    f"  [token-goat: +{extra_count} more duplicate error(s) in {file}]"
+                )
+
+        for line in lines:
+            # Info / banner lines: drop
+            if _PHPSTAN_INFO_RE.match(line):
+                dropped_info += 1
+                continue
+            # Summary lines: keep (and flush pending dedup note first)
+            if _PHPSTAN_SUMMARY_RE.match(line):
+                if current_file:
+                    flush_file_dedup(current_file, file_msgs.get(current_file, {}))
+                    current_file = ""
+                kept.append(line)
+                continue
+            # Separator lines: drop
+            if _PHPSTAN_SEP_RE.match(line) and not _PHPSTAN_ROW_RE.match(line):
+                dropped_sep += 1
+                continue
+            # File header row: flush previous, start tracking new file
+            if _PHPSTAN_FILE_HEADER_RE.match(line):
+                if current_file:
+                    flush_file_dedup(current_file, file_msgs.get(current_file, {}))
+                # Extract filename from "  Line  src/Foo.php"
+                parts = line.strip().split(None, 1)
+                current_file = parts[1].strip() if len(parts) > 1 else line.strip()
+                file_msgs.setdefault(current_file, {})
+                kept.append(line)
+                continue
+            # Error row: deduplicate by message within the current file
+            m = _PHPSTAN_ROW_RE.match(line)
+            if m and current_file:
+                msg = m.group(2).strip()
+                counts = file_msgs.setdefault(current_file, {})
+                counts[msg] = counts.get(msg, 0) + 1
+                if counts[msg] <= 3:
+                    kept.append(line)
+                # else silently elide; will be reported in the flush note
+                continue
+            kept.append(line)
+
+        if current_file:
+            flush_file_dedup(current_file, file_msgs.get(current_file, {}))
+
+        notes: list[str] = []
+        if dropped_sep:
+            notes.append(f"dropped {dropped_sep} table-separator lines")
+        if dropped_info:
+            notes.append(f"dropped {dropped_info} info/banner lines")
+        self._emit_notes(kept, notes)
+        return self._finalize(kept)
+
+    def _compress_psalm(self, lines: list[str]) -> str:
+        """Compress Psalm output."""
+        kept: list[str] = []
+        dropped_progress = 0
+
+        # Deduplicate by error type (word after "ERROR: ")
+        error_type_counts: dict[str, int] = {}
+
+        for line in lines:
+            if _PSALM_PROGRESS_RE.match(line):
+                dropped_progress += 1
+                continue
+            m = _PSALM_ERROR_RE.match(line)
+            if m:
+                # Extract error type: "ERROR: UnresolvableInclude - ..."
+                parts = line.split(":", 2)
+                error_type = parts[1].strip().split("-")[0].strip() if len(parts) >= 2 else "?"
+                error_type_counts[error_type] = error_type_counts.get(error_type, 0) + 1
+                if error_type_counts[error_type] <= 3:
+                    kept.append(line)
+                else:
+                    # Emit a trailing note later
+                    pass
+                continue
+            kept.append(line)
+
+        notes: list[str] = []
+        if dropped_progress:
+            notes.append(f"dropped {dropped_progress} progress/info lines")
+        collapsed = {k: v - 3 for k, v in error_type_counts.items() if v > 3}
+        if collapsed:
+            for etype, extra in sorted(collapsed.items()):
+                notes.append(f"collapsed +{extra} more {etype} occurrence(s)")
+        self._emit_notes(kept, notes)
+        return self._finalize(kept)
+
+
+# ---------------------------------------------------------------------------
+# SwiftLint
+# ---------------------------------------------------------------------------
+
+# SwiftLint violation line: "/path/to/File.swift:10:1: warning: ..."
+# or compact format:        "File.swift:10: warning: ..."
+_SWIFTLINT_VIOLATION_RE: Final[re.Pattern[str]] = re.compile(
+    r"^(.+\.swift):(\d+)(?::\d+)?: (warning|error|serious): (.+?) \(([a-z_]+)\)\s*$",
+    re.IGNORECASE,
+)
+# SwiftLint progress/info lines
+_SWIFTLINT_PROGRESS_RE: Final[re.Pattern[str]] = re.compile(
+    r"^(Linting Swift files|Loading configuration|Linting '|Done linting!|"
+    r"Resolved \d|warning: .+ is deprecated|Ignoring '.+' in '|"
+    r"^\s*$)",
+    re.IGNORECASE,
+)
+# SwiftLint summary line: "Done linting! The lint checker found N violations, M serious in K files."
+_SWIFTLINT_SUMMARY_RE: Final[re.Pattern[str]] = re.compile(
+    r"^Done linting!", re.IGNORECASE,
+)
+
+
+class SwiftLintFilter(Filter):
+    """Compress ``swiftlint`` (SwiftLint) linter output.
+
+    SwiftLint emits one diagnostic line per violation.  On a large codebase
+    the ``warning`` category can easily reach thousands of lines — many of them
+    the same rule firing repeatedly across different files.
+
+    Compression model:
+
+    * **Keep** all ``error:`` and ``serious:`` violations verbatim.
+    * **Per rule** (the ``(rule_id)`` suffix): keep the first three ``warning``
+      violations; collapse additional occurrences to a count note.
+    * **Keep** the final ``Done linting!`` summary line verbatim.
+    * **Drop** progress/setup lines (``Linting Swift files in …``,
+      ``Loading configuration …``).
+    """
+
+    name = "swiftlint"
+    binaries = frozenset(["swiftlint"])
+
+    def compress(
+        self, stdout: str, stderr: str, exit_code: int, argv: list[str],
+    ) -> str:
+        merged = self._combine_output(stdout, stderr)
+        lines = merged.split("\n")
+        kept: list[str] = []
+        dropped_progress = 0
+        # rule_id → count of warning violations seen so far
+        warning_rule_counts: dict[str, int] = {}
+        summary_line: str = ""
+
+        for line in lines:
+            # Always keep the summary line (set aside, emit last).
+            if _SWIFTLINT_SUMMARY_RE.match(line):
+                summary_line = line
+                continue
+            # Progress lines: drop
+            if _SWIFTLINT_PROGRESS_RE.match(line):
+                dropped_progress += 1
+                continue
+            m = _SWIFTLINT_VIOLATION_RE.match(line)
+            if m:
+                severity = m.group(3).lower()
+                rule_id = m.group(5).lower()
+                if severity in ("error", "serious"):
+                    kept.append(line)
+                else:
+                    # warning: keep first 3 per rule
+                    warning_rule_counts[rule_id] = (
+                        warning_rule_counts.get(rule_id, 0) + 1
+                    )
+                    if warning_rule_counts[rule_id] <= 3:
+                        kept.append(line)
+                continue
+            kept.append(line)
+
+        # Emit per-rule collapse notes before the summary.
+        for rule_id, count in sorted(warning_rule_counts.items()):
+            if count > 3:
+                kept.append(
+                    f"[token-goat: +{count - 3} more {rule_id} warning(s) elided]"
+                )
+
+        if summary_line:
+            kept.append(summary_line)
+
+        notes: list[str] = []
+        if dropped_progress:
+            notes.append(f"dropped {dropped_progress} progress/info lines")
         self._emit_notes(kept, notes)
         return self._finalize(kept)
 
@@ -13861,6 +14162,12 @@ FILTERS: list[Filter] = [
     # disjoint binaries from every other filter so position is cosmetic.
     MixFilter(),
     ComposerFilter(),
+    # PhpStanFilter handles `phpstan analyse` and `psalm`; disjoint binaries from
+    # every other filter so position is cosmetic — placed alongside PHP tooling.
+    PhpStanFilter(),
+    # SwiftLintFilter handles `swiftlint`; disjoint from SwiftFilter (which claims
+    # `swift build/test/run`).  Position is cosmetic.
+    SwiftLintFilter(),
     # CmakeFilter precedes MakeFilter so cmake's configure/build output gets
     # the specialised percentage-line collapsing; cmake can also drive make
     # but cmake --build wraps the actual build system transparently.
