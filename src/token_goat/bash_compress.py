@@ -73,6 +73,7 @@ __all__ = [
     "AntFilter",
     "BatFilter",
     "BazelFilter",
+    "BundlerFilter",
     "CmakeFilter",
     "CurlFilter",
     "DeltaFilter",
@@ -85,6 +86,7 @@ __all__ = [
     "MavenFilter",
     "PythonFilter",
     "RsyncFilter",
+    "RubyFilter",
     "SwiftFilter",
     "TreeFilter",
     "UvFilter",
@@ -4871,6 +4873,231 @@ class MavenFilter(Filter):
         return self._finalize(kept)
 
 
+# --- Ruby / RSpec / Minitest ------------------------------------------------
+
+#: RSpec dot-progress line: a line containing only ".", "F", "E", "*" chars + optional
+#: newline (emitted without any leading text in RSpec's default progress formatter).
+_RSPEC_PROGRESS_RE: Final[re.Pattern[str]] = re.compile(r"^[\.FE\*]+$")
+#: RSpec example-summary line: "N examples, N failures" (or "N failure")
+_RSPEC_SUMMARY_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\d+ examples?,\s+\d+ failures?"
+)
+#: RSpec finished-with-time summary: "Finished in X seconds"
+_RSPEC_FINISHED_RE: Final[re.Pattern[str]] = re.compile(r"^Finished in \d")
+#: RSpec failure block header: "Failures:" section header
+_RSPEC_FAILURE_SECTION_RE: Final[re.Pattern[str]] = re.compile(r"^Failures:\s*$")
+#: RSpec failed example index: "  1) SomeClass some method ..."
+_RSPEC_FAIL_INDEX_RE: Final[re.Pattern[str]] = re.compile(r"^\s+\d+\)\s+\S")
+#: Minitest pass-line: "X runs, X assertions, 0 failures, 0 errors, 0 skips"
+_MINITEST_SUMMARY_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\d+ runs?,\s+\d+ assertions?"
+)
+#: Minitest single-test result line: "E" or "." or "F" or "S" standing alone
+#: (Minitest uses the same dot-progress as RSpec)
+
+
+class RubyFilter(Filter):
+    """Compress ``ruby``, ``rspec``, ``minitest``, and ``rake`` output.
+
+    RSpec default formatter emits a "." per passing example and an "F" / "E"
+    per failure, with full failure messages printed at the end.  Minitest
+    uses the same dot-progress style.
+
+    Compression model:
+
+    * **RSpec dot-progress lines**: count "." chars (passes) and keep "F" / "E"
+      chars verbatim (each signals a failure that will appear in the failure
+      section).  Emit ``[token-goat: N passing examples]`` in place of all
+      dot-lines.
+    * **Keep** the ``Failures:`` section and every failure block verbatim.
+    * **Keep** the ``Finished in X seconds`` and ``N examples, N failures``
+      summary lines.
+    * **Minitest**: same dot-counting; keep ``N runs, N assertions, N failures``
+      summary.
+    * **rake**: pass through with basic dedupe (rake output is tool-specific
+      and not safely compressible without schema knowledge).
+    """
+
+    name = "ruby"
+    binaries = frozenset(["ruby", "rspec", "minitest", "rake", "rspec2"])
+
+    def matches(self, argv: list[str]) -> bool:  # noqa: D102
+        if not argv:
+            return False
+        p = Path(argv[0])
+        stem = p.stem.lower()
+        name = p.name.lower()
+        # Match rspec, minitest, ruby, rake directly.
+        # "bundle exec rspec" is handled by prefix stripping → the inner binary
+        # (rspec) becomes argv[0] after _strip_prefixes.
+        return stem in self.binaries or name in self.binaries
+
+    def compress(
+        self, stdout: str, stderr: str, exit_code: int, argv: list[str],
+    ) -> str:
+        merged = self._combine_output(stdout, stderr)
+
+        binary = Path(argv[0]).stem.lower() if argv else ""
+
+        # rake: dedupe only — task output is load-bearing.
+        if binary == "rake":
+            return _squeeze_blank_lines("\n".join(dedupe_consecutive(merged.split("\n"))))
+
+        # rspec / minitest / ruby: dot-progress compression.
+        return self._compress_test(merged)
+
+    def _compress_test(self, text: str) -> str:
+        """Collapse dot-progress, keep failures and summary lines."""
+        lines = text.split("\n")
+        kept: list[str] = []
+        pass_count = 0
+        in_failure_section = False
+
+        for line in lines:
+            # Blank lines close the current fail block but are still kept for
+            # separation when we are already in the failure section.
+            if not line.strip():
+                if in_failure_section:
+                    kept.append(line)
+                continue
+
+            # RSpec "Failures:" section header.
+            if _RSPEC_FAILURE_SECTION_RE.match(line):
+                in_failure_section = True
+                kept.append(line)
+                continue
+
+            # Inside the failure section: keep everything verbatim.
+            if in_failure_section:
+                kept.append(line)
+                continue
+
+            # Dot-progress lines: count passes, preserve failures.
+            if _RSPEC_PROGRESS_RE.match(line):
+                dot_passes = line.count(".")
+                pass_count += dot_passes
+                # Keep any failure/error chars verbatim on a separate line so
+                # the agent sees there are failures even before the Failures: block.
+                fail_chars = "".join(c for c in line if c in "FE")
+                if fail_chars:
+                    kept.append(f"[{fail_chars}]  (failures in progress output)")
+                continue
+
+            # Summary / finished lines: always keep.
+            if _RSPEC_SUMMARY_RE.match(line) or _MINITEST_SUMMARY_RE.match(line):
+                kept.append(line)
+                continue
+            if _RSPEC_FINISHED_RE.match(line):
+                kept.append(line)
+                continue
+
+            # Everything else: keep.
+            kept.append(line)
+
+        if pass_count:
+            # Prepend the collapsed count just before the failure section (or at end).
+            note = f"[token-goat: collapsed {pass_count} passing examples/dots]"
+            # Insert before first kept failure-section line or at end.
+            for i, kline in enumerate(kept):
+                if _RSPEC_FAILURE_SECTION_RE.match(kline):
+                    kept.insert(i, note)
+                    break
+            else:
+                kept.append(note)
+
+        return self._finalize(kept)
+
+
+# --- Bundler ----------------------------------------------------------------
+
+#: "Using gem-name N.N.N" lines emitted during `bundle install`
+_BUNDLER_USING_RE: Final[re.Pattern[str]] = re.compile(
+    r"^Using\s+\S+\s+[\d.]+"
+)
+#: "Fetching gem-name N.N.N" or "Installing gem-name N.N.N" progress lines
+_BUNDLER_FETCH_INSTALL_RE: Final[re.Pattern[str]] = re.compile(
+    r"^(?:Fetching|Installing)\s+\S+\s+[\d.]+"
+)
+#: Completion banners: "Bundle complete!" / "Bundle updated!"
+_BUNDLER_COMPLETE_RE: Final[re.Pattern[str]] = re.compile(
+    r"^Bundle (?:complete!|updated!|installed!)"
+)
+#: Gems-in-groups line: "Gems in the groups..."
+_BUNDLER_GROUPS_RE: Final[re.Pattern[str]] = re.compile(
+    r"^Gems in the groups?"
+)
+#: Gemfile.lock diff summary: "Gemfile.lock was changed" / "N gemfiles changed"
+_BUNDLER_LOCK_SUMMARY_RE: Final[re.Pattern[str]] = re.compile(
+    r"^(?:Gemfile\.lock|gemfiles?) (?:was|were) (?:changed|updated)|"
+    r"^\d+ gems? (?:installed|updated|removed)"
+)
+
+
+class BundlerFilter(Filter):
+    """Compress ``bundle install``, ``bundle update``, and ``bundler`` output.
+
+    Bundler emits one "Using gem-name version" line per gem already satisfied
+    plus "Fetching …" / "Installing …" lines for new gems.  On a project with
+    100+ gems this produces 100+ identical-looking lines.  The only lines the
+    agent needs are the completion banner and any error output.
+
+    Compression model:
+
+    * **Collapse** "Using gem-name version" lines to a single count summary.
+    * **Collapse** "Fetching … version" / "Installing … version" lines to a
+      count summary (separate from "Using" because these indicate actual work).
+    * **Keep** ``Bundle complete!`` / ``Bundle updated!`` banners verbatim.
+    * **Keep** ``Gems in the groups: …`` lines verbatim (group membership is
+      actionable context).
+    * **Keep** Gemfile.lock change-summary lines verbatim.
+    * **Keep** every error/warning line verbatim.
+    """
+
+    name = "bundler"
+    binaries = frozenset(["bundle", "bundler"])
+
+    def compress(
+        self, stdout: str, stderr: str, exit_code: int, argv: list[str],
+    ) -> str:
+        merged = self._combine_output(stdout, stderr)
+        lines = merged.split("\n")
+        kept: list[str] = []
+        using_count = 0
+        fetch_install_count = 0
+
+        for line in lines:
+            # Always keep errors/warnings verbatim.
+            if _ERROR_SIGNAL_RE.search(line):
+                kept.append(line)
+                continue
+            # Collapse "Using …" lines.
+            if _BUNDLER_USING_RE.match(line):
+                using_count += 1
+                continue
+            # Collapse "Fetching …" / "Installing …" lines.
+            if _BUNDLER_FETCH_INSTALL_RE.match(line):
+                fetch_install_count += 1
+                continue
+            # Keep completion banners, group lines, and lock summaries.
+            if (
+                _BUNDLER_COMPLETE_RE.match(line)
+                or _BUNDLER_GROUPS_RE.match(line)
+                or _BUNDLER_LOCK_SUMMARY_RE.match(line)
+            ):
+                kept.append(line)
+                continue
+            # Everything else: keep.
+            kept.append(line)
+
+        notes: list[str] = []
+        if using_count:
+            notes.append(f"collapsed {using_count} 'Using gem' lines")
+        if fetch_install_count:
+            notes.append(f"collapsed {fetch_install_count} 'Fetching/Installing gem' lines")
+        self._emit_notes(kept, notes)
+        return self._finalize(kept)
+
+
 # --- cmake -----------------------------------------------------------------
 
 #: CMake configure-phase progress: "-- Configuring done (0.2s)"
@@ -4878,18 +5105,44 @@ _CMAKE_CONFIG_RE: Final[re.Pattern[str]] = re.compile(
     r"^-- (?:Configuring|Generating|Build files|Detecting|Check for|Looking for|"
     r"Found|Using|CMAKE|Performing Test|Could(?: NOT)? find|The (?:C|CXX|Fortran) compiler)"
 )
+#: CMake "-- Found PackageName: ..." package-found lines
+_CMAKE_FOUND_RE: Final[re.Pattern[str]] = re.compile(r"^-- Found \S")
+#: CMake "-- Configuring done" / "-- Build files have been written to:" — always keep
+_CMAKE_DONE_RE: Final[re.Pattern[str]] = re.compile(
+    r"^-- (?:Configuring done|Generating done|Build files have been written)"
+)
 #: CMake build-phase percentage lines: "[  5%] Building CXX object ..."
 _CMAKE_PERCENT_RE: Final[re.Pattern[str]] = re.compile(
-    r"^\[\s*\d+%\]\s+(?:Building|Linking|Compiling|Generating|Scanning|Creating)\s"
+    r"^\[\s*\d+%\]\s+(?:Building|Compiling|Generating|Scanning|Creating)\s"
+)
+#: CMake "[N%] Linking CXX/C executable/library ..." — always keep
+_CMAKE_LINK_PERCENT_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\[\s*\d+%\]\s+Linking\s"
+)
+#: CMake "[100%] Built target ..." — always keep
+_CMAKE_BUILT_TARGET_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\[\s*100%\]\s+Built target\s"
 )
 #: CMake Makefile link/ar lines (emitted without a percentage prefix).
 _CMAKE_LINK_RE: Final[re.Pattern[str]] = re.compile(
     r"^(?:Linking\s|Archiving\s|cd\s.*&&\s*(?:ar |ranlib |ld ))"
 )
+#: ctest: "N/N Test #N: TestName ... Passed Xs" passing result (no leading whitespace)
+_CTEST_PASS_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\d+/\d+\s+Test\s+#\d+:.*\bPassed\b"
+)
+#: ctest: "N/N Test #N: TestName ... ***Failed" or "***Not Run" failing result
+_CTEST_FAIL_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\d+/\d+\s+Test\s+#\d+:.*\*\*\*"
+)
+#: ctest summary: "N% tests passed, N tests failed out of N"
+_CTEST_SUMMARY_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\d+% tests passed"
+)
 
 
 class CmakeFilter(Filter):
-    """Compress ``cmake`` configure and build output.
+    """Compress ``cmake`` configure, build, and ``ctest`` output.
 
     CMake produces two kinds of noisy output:
 
@@ -4902,17 +5155,20 @@ class CmakeFilter(Filter):
       object …`` line per translation unit.  A project with 500 .cpp files
       produces 500 identical-looking progress lines.
 
+    * **ctest**: emits one result line per test (``Test #N: … Passed Xs``).
+
     Compression model:
 
-    * **Configure phase**: keep the first 5 ``--`` probe lines (enough to
-      show compiler / toolchain selection) and any ``ERROR`` / ``WARN`` lines;
-      drop the rest; always keep the final ``-- Configuring done`` /
-      ``-- Build files have been written to:`` lines.
-    * **Build phase**: collapse consecutive ``[N%] Building …`` lines using
-      :func:`dedupe_numeric_runs`; keep the final percentage or ``FAILED`` line.
+    * **Configure phase**: collapse ``-- Found PackageName: …`` lines to a
+      count ``[token-goat: Found N packages]``; keep the first 5 other ``--``
+      probe lines; always keep ``-- Configuring done`` / ``-- Build files have
+      been written to:`` lines; drop the rest.
+    * **Build phase**: collapse ``[N%] Building …`` lines to a progress summary;
+      keep ``[N%] Linking …`` and ``[100%] Built target …`` verbatim.
+    * **ctest**: collapse passing ``Passed`` result lines to a count; keep
+      every ``***Failed`` / ``***Not Run`` line verbatim; keep the summary.
     * **Keep** every ``warning:`` / ``error:`` / ``CMake Error`` / ``CMake
       Warning`` diagnostic verbatim.
-    * **Keep** the final ``[100%] Built target …`` summary line.
     """
 
     name = "cmake"
@@ -4921,39 +5177,105 @@ class CmakeFilter(Filter):
     def compress(
         self, stdout: str, stderr: str, exit_code: int, argv: list[str],
     ) -> str:
+        binary = Path(argv[0]).stem.lower() if argv else ""
+        if binary == "ctest":
+            return self._compress_ctest(stdout, stderr)
         merged = self._combine_output(stdout, stderr)
-        lines = merged.split("\n")
+        return self._compress_cmake(merged)
+
+    def _compress_cmake(self, text: str) -> str:
+        """Compress cmake configure + build output."""
+        lines = text.split("\n")
         kept: list[str] = []
         config_probes_kept = 0
         dropped_probes = 0
         dropped_percent = 0
+        found_packages = 0
+        last_percent_line: str | None = None
 
         for line in lines:
             # Always keep error/warning diagnostics.
             if _ERROR_SIGNAL_RE.search(line) or "CMake Error" in line or "CMake Warning" in line:
                 kept.append(line)
                 continue
-            # Configure-phase ``-- …`` probe lines.
+            # Always keep "-- Configuring done" and "-- Build files" lines.
+            if _CMAKE_DONE_RE.match(line):
+                kept.append(line)
+                continue
+            # Collapse "-- Found PackageName: ..." lines to a count.
+            if _CMAKE_FOUND_RE.match(line):
+                found_packages += 1
+                continue
+            # Configure-phase ``-- …`` probe lines: keep first 5, drop rest.
             if _CMAKE_CONFIG_RE.match(line):
                 config_probes_kept += 1
-                if config_probes_kept <= 5 or line.startswith("-- Configuring") or line.startswith("-- Build files"):
+                if config_probes_kept <= 5:
                     kept.append(line)
                 else:
                     dropped_probes += 1
                 continue
-            # Build-phase ``[N%] …`` percentage lines — batch them for dedupe.
+            # Keep "[N%] Linking ..." verbatim.
+            if _CMAKE_LINK_PERCENT_RE.match(line):
+                kept.append(line)
+                continue
+            # Keep "[100%] Built target ..." verbatim.
+            if _CMAKE_BUILT_TARGET_RE.match(line):
+                kept.append(line)
+                continue
+            # Build-phase "[N%] Building ..." lines — count and track last.
             if _CMAKE_PERCENT_RE.match(line):
                 dropped_percent += 1
-                # Still capture them in a temporary list so we can emit a
-                # compact summary (first, last, count) rather than raw lines.
+                last_percent_line = line
                 continue
             kept.append(line)
 
+        # Emit found-packages summary before any other notes.
+        if found_packages:
+            kept.append(f"[token-goat: Found {found_packages} packages (-- Found ... lines collapsed)]")
         notes: list[str] = []
         if dropped_probes:
             notes.append(f"collapsed {dropped_probes} cmake probe/feature-check lines")
         if dropped_percent:
-            notes.append(f"collapsed {dropped_percent} [N%] build-progress lines")
+            # Include the last percent line so the agent sees the peak progress.
+            if last_percent_line:
+                notes.append(
+                    f"collapsed {dropped_percent} [N%] build-progress lines "
+                    f"(last: {last_percent_line.strip()})"
+                )
+            else:
+                notes.append(f"collapsed {dropped_percent} [N%] build-progress lines")
+        self._emit_notes(kept, notes)
+        return self._finalize(kept)
+
+    def _compress_ctest(self, stdout: str, stderr: str) -> str:
+        """Compress ctest output: collapse passing tests, keep failures."""
+        merged = self._combine_output(stdout, stderr)
+        lines = merged.split("\n")
+        kept: list[str] = []
+        pass_count = 0
+
+        for line in lines:
+            # Always keep error/warning lines.
+            if _ERROR_SIGNAL_RE.search(line):
+                kept.append(line)
+                continue
+            # Passing test: count, drop.
+            if _CTEST_PASS_RE.match(line):
+                pass_count += 1
+                continue
+            # Failing test: keep verbatim.
+            if _CTEST_FAIL_RE.match(line):
+                kept.append(line)
+                continue
+            # Summary line: always keep.
+            if _CTEST_SUMMARY_RE.match(line):
+                kept.append(line)
+                continue
+            kept.append(line)
+
+        notes: list[str] = []
+        if pass_count:
+            notes.append(f"collapsed {pass_count} passing ctest results")
         self._emit_notes(kept, notes)
         return self._finalize(kept)
 
@@ -5399,6 +5721,11 @@ FILTERS: list[Filter] = [
     CurlFilter(),
     RsyncFilter(),
     DotnetFilter(),
+    # RubyFilter handles rspec / minitest / ruby / rake.  BundlerFilter handles
+    # `bundle install` / `bundle update` / `bundler`.  Both have disjoint
+    # binaries from every other filter so their position is cosmetic.
+    RubyFilter(),
+    BundlerFilter(),
     # CmakeFilter precedes MakeFilter so cmake's configure/build output gets
     # the specialised percentage-line collapsing; cmake can also drive make
     # but cmake --build wraps the actual build system transparently.
