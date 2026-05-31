@@ -83,8 +83,10 @@ __all__ = [
     "MavenFilter",
     "PythonFilter",
     "RsyncFilter",
+    "SwiftFilter",
     "TreeFilter",
     "UvFilter",
+    "XcodeFilter",
     "YqFilter",
 ]
 
@@ -4857,6 +4859,235 @@ def _split_into_hunks(block: list[str]) -> list[list[str]]:
     return hunks
 
 
+# --- Swift -----------------------------------------------------------------
+
+#: Swift compiler build-phase lines: "CompileSwift normal arm64 path/to/File.swift"
+_SWIFT_COMPILE_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\s*(CompileSwift|CompileSwiftSources|MergeSwiftModule|"
+    r"PhaseScriptExecution|CpResource|CpHeader|ProcessInfoPlistFile|"
+    r"Ld\s|CodeSign\s|Touch\s|"
+    r"note:\s+compile\s+Swift\s+module)"
+    r"\s"
+)
+#: Swift test result lines: "Test Case '-[Module.TestClass testMethod]' passed"
+_SWIFT_TEST_PASS_RE: Final[re.Pattern[str]] = re.compile(
+    r"^Test Case\s+.+\s+passed\s+\(",
+)
+#: Swift test case "started" lines — pure noise, always dropped
+_SWIFT_TEST_START_RE: Final[re.Pattern[str]] = re.compile(
+    r"^Test Case\s+.+\s+started\.$",
+)
+#: Swift test failure lines
+_SWIFT_TEST_FAIL_RE: Final[re.Pattern[str]] = re.compile(
+    r"^Test Case\s+.+\s+failed\s+\(",
+)
+#: Swift test suite summary: "Test Suite '…' passed" / "Test Suite '…' failed"
+_SWIFT_SUITE_RE: Final[re.Pattern[str]] = re.compile(
+    r"^Test Suite\s+.+\s+(passed|failed)\s+at\b",
+)
+#: Swift overall test results: "Executed N tests, with N failures"
+_SWIFT_RESULTS_RE: Final[re.Pattern[str]] = re.compile(
+    r"^Executed \d+ test",
+)
+#: Swift build completion line
+_SWIFT_BUILD_COMPLETE_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\*\*\s*BUILD SUCCEEDED\s*\*\*|^\*\*\s*BUILD FAILED\s*\*\*"
+    r"|^Build complete!",
+)
+#: Swift warning/error lines (file:line:col: warning/error: message)
+_SWIFT_DIAG_RE: Final[re.Pattern[str]] = re.compile(
+    r"^.*:\d+:\d+:\s+(warning|error):\s"
+)
+
+
+class SwiftFilter(Filter):
+    """Compress ``swift build`` / ``swift test`` / ``swift run`` / ``swift package`` output.
+
+    The Swift Package Manager (SPM) and Swift compiler emit verbose build-phase
+    lines (``CompileSwift normal arm64 …``) for every source file and verbose
+    test-case lines for every passing test.  These are pure noise unless the
+    build or a test fails.
+
+    Compression model:
+
+    * **Build phase** (``swift build``, ``swift package``):
+
+      - Collapse ``CompileSwift`` / ``CompileSwiftSources`` / ``MergeSwiftModule``
+        / ``Ld`` / ``CodeSign`` / ``Touch`` build-phase lines into a count summary.
+      - Keep every ``warning:`` / ``error:`` diagnostic line verbatim.
+      - Keep ``Build complete!`` and ``** BUILD SUCCEEDED/FAILED **`` lines.
+
+    * **Test phase** (``swift test``):
+
+      - Collapse ``Test Case '…' passed`` lines into a count.
+      - Keep every failing test case line and any indented failure body.
+      - Keep ``Test Suite …`` summary lines.
+      - Keep ``Executed N tests, with N failures`` final result lines.
+    """
+
+    name = "swift"
+    binaries = frozenset(["swift"])
+    subcommands = frozenset(["build", "test", "run", "package"])
+
+    def compress(
+        self, stdout: str, stderr: str, exit_code: int, argv: list[str],
+    ) -> str:
+        positionals = _positional_args(argv[1:])
+        subcommand = positionals[0] if positionals else ""
+        if subcommand == "test":
+            return self._compress_test(stdout, stderr)
+        return self._compress_build(stdout, stderr)
+
+    def _compress_build(self, stdout: str, stderr: str) -> str:
+        merged = self._combine_output(stdout, stderr)
+        lines = merged.split("\n")
+        kept: list[str] = []
+        compile_count = 0
+        for line in lines:
+            # Always keep diagnostics (warnings, errors) and completion lines.
+            if _SWIFT_DIAG_RE.match(line) or _SWIFT_BUILD_COMPLETE_RE.match(line):
+                kept.append(line)
+                continue
+            # Collapse verbose build-phase lines.
+            if _SWIFT_COMPILE_RE.match(line):
+                compile_count += 1
+                continue
+            kept.append(line)
+        notes: list[str] = []
+        if compile_count:
+            notes.append(f"collapsed {compile_count} Swift build-phase lines")
+        self._emit_notes(kept, notes)
+        return self._finalize(kept)
+
+    def _compress_test(self, stdout: str, stderr: str) -> str:
+        merged = self._combine_output(stdout, stderr)
+        lines = merged.split("\n")
+        kept: list[str] = []
+        pass_count = 0
+        in_fail_block = False
+        for line in lines:
+            # "Test Case '…' started." — always noise, drop silently.
+            if _SWIFT_TEST_START_RE.match(line):
+                continue
+            # Passing test: count, drop.
+            if _SWIFT_TEST_PASS_RE.match(line):
+                in_fail_block = False
+                pass_count += 1
+                continue
+            # Failing test: keep and open fail block.
+            if _SWIFT_TEST_FAIL_RE.match(line):
+                in_fail_block = True
+                kept.append(line)
+                continue
+            # Suite summaries and overall results are always kept.
+            if _SWIFT_SUITE_RE.match(line) or _SWIFT_RESULTS_RE.match(line):
+                in_fail_block = False
+                kept.append(line)
+                continue
+            # Indented failure body lines inside a fail block.
+            if in_fail_block and (line.startswith(("  ", "\t")) or not line.strip()):
+                kept.append(line)
+                continue
+            # Any other non-indented line exits the fail block.
+            in_fail_block = False
+            # Also keep build-phase output that may appear before the tests.
+            if _SWIFT_COMPILE_RE.match(line):
+                # Silently drop compile lines during test run.
+                continue
+            kept.append(line)
+        notes: list[str] = []
+        if pass_count:
+            notes.append(f"collapsed {pass_count} passing Swift test cases")
+        self._emit_notes(kept, notes)
+        return self._finalize(kept)
+
+
+# --- Xcode -----------------------------------------------------------------
+
+#: xcodebuild section banner: "=== BUILD TARGET Foo OF PROJECT Bar WITH CONFIGURATION Debug ==="
+_XCODE_SECTION_RE: Final[re.Pattern[str]] = re.compile(
+    r"^=== .+ ===$"
+)
+#: xcodebuild build-phase compilation lines (the most voluminous output)
+_XCODE_COMPILE_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\s*(CompileSwiftSources|CompileSwift|CompileC|CpHeader|"
+    r"ProcessInfoPlistFile|CopySwiftLibs|GenerateDSYMFile|"
+    r"Ld\s|CodeSign\s|Touch\s|PhaseScriptExecution\s|"
+    r"MergeSwiftModule\s|CompileAssetCatalog\s|"
+    r"RegisterWithLaunchServices\s|Validate\s|CreateBuildDirectory\s)"
+    r"\s*"
+)
+#: xcodebuild final status banner
+_XCODE_STATUS_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\*\*\s*BUILD (SUCCEEDED|FAILED)\s*\*\*"
+    r"|^\*\*\s*TEST (SUCCEEDED|FAILED)\s*\*\*"
+    r"|^\*\*\s*RUN (SUCCEEDED|FAILED)\s*\*\*"
+)
+#: xcodebuild warning/error diagnostics (file:line:col: warning/error)
+_XCODE_DIAG_RE: Final[re.Pattern[str]] = re.compile(
+    r"^.+:\d+:\d+:\s+(warning|error):\s"
+)
+#: xcodebuild sub-task lines with a leading timestamp/progress number
+_XCODE_TASK_BODY_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\s{4,}"
+)
+
+
+class XcodeFilter(Filter):
+    """Compress ``xcodebuild`` output.
+
+    ``xcodebuild`` is one of the most verbose build tools in the Apple
+    ecosystem.  A typical build of an iOS app emits thousands of lines for
+    each compilation unit (``CompileSwiftSources``, ``CpHeader``,
+    ``ProcessInfoPlistFile``, etc.) followed by section banners and the final
+    ``** BUILD SUCCEEDED **`` or ``** BUILD FAILED **`` line.
+
+    Compression model:
+
+    * **Keep** ``=== BUILD TARGET … ===`` section headers verbatim (useful for
+      navigation; usually 1–5 lines per target).
+    * **Keep** ``** BUILD SUCCEEDED **`` / ``** BUILD FAILED **`` banner.
+    * **Keep** every ``warning:`` / ``error:`` diagnostic line verbatim.
+    * **Collapse** ``CompileSwiftSources``, ``CpHeader``, ``ProcessInfoPlistFile``
+      and other repetitive build-phase lines into a per-type count summary.
+    """
+
+    name = "xcode"
+    binaries = frozenset(["xcodebuild"])
+
+    def compress(
+        self, stdout: str, stderr: str, exit_code: int, argv: list[str],
+    ) -> str:
+        merged = self._combine_output(stdout, stderr)
+        lines = merged.split("\n")
+        kept: list[str] = []
+        compile_count = 0
+        for line in lines:
+            # Always keep section headers, status banners, and diagnostics.
+            if (
+                _XCODE_SECTION_RE.match(line)
+                or _XCODE_STATUS_RE.match(line)
+                or _XCODE_DIAG_RE.match(line)
+            ):
+                kept.append(line)
+                continue
+            # Collapse verbose build-phase task lines.
+            if _XCODE_COMPILE_RE.match(line):
+                compile_count += 1
+                continue
+            # Deeply indented task-body lines (sub-output of a build phase):
+            # drop when the parent phase is already collapsed.
+            if _XCODE_TASK_BODY_RE.match(line):
+                compile_count += 1
+                continue
+            kept.append(line)
+        notes: list[str] = []
+        if compile_count:
+            notes.append(f"collapsed {compile_count} xcodebuild build-phase lines")
+        self._emit_notes(kept, notes)
+        return self._finalize(kept)
+
+
 # ---------------------------------------------------------------------------
 # Helpers shared by filters
 # ---------------------------------------------------------------------------
@@ -4930,6 +5161,11 @@ FILTERS: list[Filter] = [
     # other deployment-style tooling.
     AnsibleFilter(),
     PreCommitFilter(),
+    # SwiftFilter handles `swift build/test/run/package`; registered before
+    # XcodeFilter (disjoint binaries so ordering is cosmetic but explicit).
+    SwiftFilter(),
+    # XcodeFilter handles `xcodebuild` (disjoint from every other filter).
+    XcodeFilter(),
     PipFilter(),
     UvFilter(),
     CurlFilter(),
