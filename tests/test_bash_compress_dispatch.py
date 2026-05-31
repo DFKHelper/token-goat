@@ -93,10 +93,13 @@ _DISPATCH_CASES: list[tuple[list[str], str]] = [
     (["grep", "-r", "pattern", "src/"], "grep"),
     (["rg", "pattern", "src/"], "grep"),
     (["ag", "pattern"], "grep"),
-    # ---- GitFilter ----
-    (["git", "status"], "git"),
-    (["git", "log", "--oneline"], "git"),
-    (["git", "diff", "HEAD"], "git"),
+    # ---- GitFilter and dedicated sub-filters ----
+    # git status / log / diff are now claimed by the dedicated sub-filters
+    # (GitStatusVerboseFilter, GitLogFilter, GitDiffFilter); git push still
+    # routes to the generic GitFilter.
+    (["git", "status"], "git-status"),
+    (["git", "log", "--oneline"], "git-log"),
+    (["git", "diff", "HEAD"], "git-diff"),
     (["git", "push", "origin", "main"], "git"),
     # ---- MakeFilter ----
     (["make", "all"], "make"),
@@ -245,12 +248,12 @@ def test_git_grep_routes_to_grep() -> None:
     )
 
 
-def test_git_status_routes_to_git() -> None:
-    """'git status' → GitFilter (not GrepFilter)."""
+def test_git_status_routes_to_git_status() -> None:
+    """'git status' → GitStatusVerboseFilter (higher-fidelity, registered before GitFilter)."""
     argv = ["git", "status"]
     f = bc.select_filter(argv)
     assert f is not None
-    assert f.name == "git"
+    assert f.name == "git-status"
 
 
 def test_py_dot_test_dispatches_to_pytest() -> None:

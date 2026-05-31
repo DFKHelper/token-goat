@@ -371,8 +371,9 @@ class TestSelectFilter:
         assert f is not None and f.name == "kubectl"
 
     def test_git(self):
+        # git status is now handled by GitStatusVerboseFilter (higher-fidelity)
         f = bc.select_filter(["git", "status"])
-        assert f is not None and f.name == "git"
+        assert f is not None and f.name in ("git", "git-status")
 
     def test_cargo(self):
         f = bc.select_filter(["cargo", "build"])
@@ -1400,10 +1401,10 @@ class TestGrepFilter:
         assert f.name == "grep"
 
     def test_select_filter_git_still_dispatches_git_log(self):
-        """Git log is still handled by GitFilter, not GrepFilter."""
+        """Git log is handled by GitLogFilter (or GitFilter as fallback), not GrepFilter."""
         f = bc.select_filter(["git", "log"])
         assert f is not None
-        assert f.name == "git"
+        assert f.name in ("git", "git-log")
 
     def test_boundary_exactly_30_lines(self):
         """Exactly 30 non-empty lines: pass-through (not compressed)."""

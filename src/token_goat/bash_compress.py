@@ -117,6 +117,11 @@ __all__ = [
     "MySQLFilter",
     "Sqlite3Filter",
     "RedisCLIFilter",
+    # Dedicated git sub-filters (higher-fidelity compression than GitFilter)
+    "GitLogFilter",
+    "GitDiffFilter",
+    "GitStatusVerboseFilter",
+    "GitBlameFilter",
 ]
 
 import math
@@ -2725,6 +2730,645 @@ def _compress_git_remote(stdout: str, stderr: str) -> str:
     if dropped:
         kept.append(f"[token-goat: dropped {dropped} 'remote:' progress lines]")
     return "\n".join(kept)
+
+
+# --- Git dedicated sub-filters ------------------------------------------------
+#
+# These four filters provide higher-fidelity compression than the generic
+# GitFilter dispatch for the four highest-volume git subcommands.  They are
+# registered *before* GitFilter in FILTERS so they claim first-match priority;
+# GitFilter remains the catch-all for every other git subcommand.
+
+# ---- GitLogFilter helpers ----------------------------------------------------
+
+_GIT_LOG_ONELINE_RE: Final[re.Pattern[str]] = re.compile(
+    r"^[0-9a-f]{7,}\s"  # short hash followed by space (--oneline format)
+)
+_GIT_LOG_DIFF_HUNK_RE: Final[re.Pattern[str]] = re.compile(r"^@@\s")
+_GIT_LOG_MERGE_RE: Final[re.Pattern[str]] = re.compile(r"^Merge:")
+_GIT_LOG_STAT_SUMMARY_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\s*\d+ files? changed"
+)
+# Lines in full-format git log that are good candidates for a one-liner summary.
+_GIT_LOG_AUTHOR_RE: Final[re.Pattern[str]] = re.compile(r"^Author:\s+(.+)")
+_GIT_LOG_DATE_RE: Final[re.Pattern[str]] = re.compile(r"^Date:\s+(.+)")
+
+
+def _compress_git_log_enhanced(stdout: str, stderr: str, argv: list[str]) -> str:
+    """Compress ``git log`` output with format-aware strategies.
+
+    Dispatch table (examined in order):
+    * ``--oneline`` / ``--format=oneline``: keep first 20 lines, collapse rest.
+    * ``-p`` / ``--patch``: full-log + patch; collapse large patch sections.
+    * ``--stat``: keep first 10 commit stat blocks; collapse remaining files.
+    * Full format (default): collapse each commit block to one line when >10.
+    """
+    flags = set(argv)
+
+    # ------------------------------------------------------------------ oneline
+    is_oneline = (
+        "--oneline" in flags
+        or "--format=oneline" in flags
+        or "--pretty=oneline" in flags
+        or any(a.startswith("--format=%h") or a.startswith("--pretty=%h") for a in argv)
+    )
+    # Heuristic: if every non-empty line matches the short-hash pattern it's oneline.
+    non_empty = [ln for ln in stdout.split("\n") if ln.strip()]
+    if non_empty and all(_GIT_LOG_ONELINE_RE.match(ln) for ln in non_empty[:5]):
+        is_oneline = True
+
+    if is_oneline:
+        lines = [ln for ln in stdout.split("\n") if ln.strip()]
+        if len(lines) > 20:
+            elided = len(lines) - 20
+            kept_lines = lines[:20] + [f"[token-goat: +{elided} more commits]"]
+        else:
+            kept_lines = lines
+        out = "\n".join(kept_lines)
+        if stderr.strip():
+            out += "\n---\n" + stderr.rstrip()
+        return out
+
+    # ----------------------------------------------------------------- -p patch
+    is_patch = "-p" in flags or "--patch" in flags or "-u" in flags
+    if is_patch:
+        return _compress_git_log_patch(stdout, stderr)
+
+    # -------------------------------------------------------------------- --stat
+    is_stat = "--stat" in flags or "--shortstat" in flags or "--name-status" in flags
+    if is_stat:
+        return _compress_git_log_stat(stdout, stderr)
+
+    # ---------------------------------------------------------- full format (default)
+    return _compress_git_log_full(stdout, stderr)
+
+
+def _compress_git_log_full(stdout: str, stderr: str) -> str:
+    """Collapse each commit block to one line when there are more than 10 commits."""
+    blocks = split_blocks(stdout, _GIT_LOG_COMMIT_RE)
+    if not blocks:
+        return stdout
+    prelude = blocks[0] if not _GIT_LOG_COMMIT_RE.match(blocks[0]) else ""
+    commits = [b for b in blocks if _GIT_LOG_COMMIT_RE.match(b)]
+    if len(commits) <= 10:
+        return stdout
+
+    collapsed: list[str] = []
+    for block in commits:
+        lines = block.split("\n")
+        hash_line = lines[0] if lines else ""
+        # Preserve merge indicator
+        merge = next((ln for ln in lines if _GIT_LOG_MERGE_RE.match(ln)), "")
+        author = ""
+        date_str = ""
+        subject = ""
+        for ln in lines:
+            if not author:
+                m = _GIT_LOG_AUTHOR_RE.match(ln)
+                if m:
+                    author = m.group(1).split("<")[0].strip()
+            if not date_str:
+                m = _GIT_LOG_DATE_RE.match(ln)
+                if m:
+                    date_str = m.group(1).strip()
+            # Subject is the first non-empty indented line after a blank line
+            if not subject and ln.startswith("    ") and ln.strip():
+                subject = ln.strip()
+        parts = [hash_line]
+        if merge:
+            parts.append(merge)
+        detail_parts = []
+        if author:
+            detail_parts.append(author)
+        if date_str:
+            detail_parts.append(date_str)
+        if subject:
+            detail_parts.append(f'"{subject}"')
+        if detail_parts:
+            parts.append("  " + " | ".join(detail_parts))
+        collapsed.append("\n".join(parts))
+
+    text = (prelude + "\n" if prelude else "") + "\n\n".join(collapsed)
+    if stderr.strip():
+        text += "\n---\n" + stderr.rstrip()
+    return text
+
+
+def _compress_git_log_patch(stdout: str, stderr: str) -> str:
+    """Compress ``git log -p``: collapse large per-commit diff sections."""
+    _MAX_PATCH_LINES_PER_COMMIT = 30
+    blocks = split_blocks(stdout, _GIT_LOG_COMMIT_RE)
+    if not blocks:
+        return stdout
+    prelude = blocks[0] if not _GIT_LOG_COMMIT_RE.match(blocks[0]) else ""
+    commits = [b for b in blocks if _GIT_LOG_COMMIT_RE.match(b)]
+
+    out_blocks: list[str] = []
+    for block in commits:
+        lines = block.split("\n")
+        # Separate the commit header from the diff body.
+        diff_start = next(
+            (i for i, ln in enumerate(lines) if _GIT_DIFF_FILE_RE.match(ln)), None
+        )
+        if diff_start is None:
+            # No diff section — keep as-is.
+            out_blocks.append(block)
+            continue
+        header_lines = lines[:diff_start]
+        diff_lines = lines[diff_start:]
+        if len(diff_lines) > _MAX_PATCH_LINES_PER_COMMIT:
+            elided = len(diff_lines) - _MAX_PATCH_LINES_PER_COMMIT
+            diff_lines = (
+                diff_lines[:_MAX_PATCH_LINES_PER_COMMIT]
+                + [f"--- patch: {elided} lines omitted by token-goat ---"]
+            )
+        out_blocks.append("\n".join(header_lines + diff_lines))
+
+    text = (prelude + "\n" if prelude else "") + "\n".join(out_blocks)
+    if stderr.strip():
+        text += "\n---\n" + stderr.rstrip()
+    return text
+
+
+def _compress_git_log_stat(stdout: str, stderr: str) -> str:
+    """Compress ``git log --stat``: collapse file-stat sections when >20 files."""
+    _MAX_STAT_FILES = 20
+    blocks = split_blocks(stdout, _GIT_LOG_COMMIT_RE)
+    if not blocks:
+        return stdout
+    prelude = blocks[0] if not _GIT_LOG_COMMIT_RE.match(blocks[0]) else ""
+    commits = [b for b in blocks if _GIT_LOG_COMMIT_RE.match(b)]
+
+    out_blocks: list[str] = []
+    for block in commits:
+        lines = block.split("\n")
+        # Count lines that look like file-stat entries (contain "|" with +/-)
+        stat_lines = [ln for ln in lines if " | " in ln and ("++" in ln or "--" in ln)]
+        if len(stat_lines) > _MAX_STAT_FILES:
+            elided = len(stat_lines) - _MAX_STAT_FILES
+            # Replace all stat lines with first N + summary
+            new_lines: list[str] = []
+            stat_idx = 0
+            replaced = False
+            for ln in lines:
+                if " | " in ln and ("++" in ln or "--" in ln):
+                    if stat_idx < _MAX_STAT_FILES:
+                        new_lines.append(ln)
+                    elif not replaced:
+                        new_lines.append(
+                            f"[token-goat: +{elided} more stat lines omitted]"
+                        )
+                        replaced = True
+                    stat_idx += 1
+                else:
+                    new_lines.append(ln)
+            block = "\n".join(new_lines)
+        out_blocks.append(block)
+
+    text = (prelude + "\n" if prelude else "") + "\n".join(out_blocks)
+    if stderr.strip():
+        text += "\n---\n" + stderr.rstrip()
+    return text
+
+
+class GitLogFilter(Filter):
+    """Compress ``git log`` output with format-aware strategies.
+
+    Registered before :class:`GitFilter` so it claims ``git log`` exclusively.
+    Handles ``--oneline``, ``-p`` / ``--patch``, ``--stat``, and the default
+    full format, each with tailored compression.
+    """
+
+    name = "git-log"
+    binaries = frozenset(["git"])
+    subcommands = frozenset(["log"])
+
+    def compress(
+        self, stdout: str, stderr: str, exit_code: int, argv: list[str],
+    ) -> str:
+        return _compress_git_log_enhanced(stdout, stderr, argv)
+
+
+# ---- GitDiffFilter helpers ---------------------------------------------------
+
+_GIT_DIFF_BINARY_RE: Final[re.Pattern[str]] = re.compile(
+    r"^Binary files? .+ (?:and .+ )?differ$"
+)
+_GIT_DIFF_STAT_FILE_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\s+\S.*\|\s+\d+"  # "  path/to/file | N ++-"
+)
+_GIT_DIFF_STAT_SUMMARY_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\s*\d+ files? changed"
+)
+_GIT_DIFF_HEADER_RE: Final[re.Pattern[str]] = re.compile(
+    r"^(?:diff --git|index |--- |[+]{3} )"
+)
+
+
+def _compress_git_diff_enhanced(stdout: str, stderr: str, argv: list[str]) -> str:
+    """Compress ``git diff`` / ``git show`` with stat-aware strategies.
+
+    * ``--stat`` / ``--shortstat``: if >20 files, keep first 10 + summary.
+    * Default: binary file diffs → one-line summary; large hunks → truncated.
+    """
+    flags = set(argv)
+    is_stat = "--stat" in flags or "--shortstat" in flags or "--name-only" in flags
+
+    if is_stat:
+        return _compress_git_diff_stat(stdout, stderr)
+
+    return _compress_git_diff_body(stdout, stderr)
+
+
+def _compress_git_diff_stat(stdout: str, stderr: str) -> str:
+    """Collapse ``git diff --stat`` when it lists more than 20 files."""
+    _MAX_STAT_FILES = 20
+    _HEAD_FILES = 10
+    lines = stdout.split("\n")
+    stat_lines = [ln for ln in lines if _GIT_DIFF_STAT_FILE_RE.match(ln)]
+    summary_lines = [ln for ln in lines if _GIT_DIFF_STAT_SUMMARY_RE.match(ln)]
+    other_lines = [
+        ln for ln in lines
+        if not _GIT_DIFF_STAT_FILE_RE.match(ln) and not _GIT_DIFF_STAT_SUMMARY_RE.match(ln)
+    ]
+
+    if len(stat_lines) <= _MAX_STAT_FILES:
+        out = stdout
+    else:
+        elided = len(stat_lines) - _HEAD_FILES
+        # Parse +/- totals from the dropped lines for the summary
+        adds = dels = 0
+        for ln in stat_lines[_HEAD_FILES:]:
+            adds += ln.count("+")
+            dels += ln.count("-")
+        kept_stat = stat_lines[:_HEAD_FILES] + [
+            f" [token-goat: +{elided} more files changed, +{adds} -{dels} lines]"
+        ]
+        out_lines = other_lines + kept_stat + summary_lines
+        out = "\n".join(out_lines)
+
+    if stderr.strip():
+        out = out.rstrip() + "\n---\n" + stderr.rstrip()
+    return out
+
+
+def _compress_git_diff_body(stdout: str, stderr: str) -> str:
+    """Compress full diff body: binary summaries + large-hunk truncation."""
+    _MAX_HUNK_LINES = 50
+    _HUNK_HEAD_KEEP = 20
+    _HUNK_TAIL_KEEP = 5
+
+    file_blocks = split_blocks(stdout, _GIT_DIFF_FILE_RE)
+    if not file_blocks:
+        return stdout
+
+    out_blocks: list[str] = []
+    for block in file_blocks:
+        if not _GIT_DIFF_FILE_RE.match(block):
+            out_blocks.append(block)
+            continue
+
+        block_lines = block.split("\n")
+
+        # Binary file: collapse to the summary line (already one line in git output).
+        if any(_GIT_DIFF_BINARY_RE.match(ln) for ln in block_lines):
+            binary_summary = next(
+                (ln for ln in block_lines if _GIT_DIFF_BINARY_RE.match(ln)), None
+            )
+            # Keep the diff --git header line for file context.
+            header = block_lines[0] if block_lines else ""
+            if binary_summary:
+                out_blocks.append(header + "\n" + binary_summary)
+            else:
+                out_blocks.append(block)
+            continue
+
+        # Large-hunk truncation: compress each hunk independently.
+        hunks = split_blocks(block, _GIT_DIFF_HUNK_RE)
+        if len(hunks) <= 1:
+            # No hunks or single hunk smaller than threshold — pass through.
+            out_blocks.append(block)
+            continue
+
+        compressed_hunks: list[str] = []
+        for hunk in hunks:
+            hunk_lines = hunk.split("\n")
+            # Keep all --- +++ header lines (they are in the non-hunk first block).
+            changed = [
+                ln for ln in hunk_lines
+                if ln.startswith("+") or ln.startswith("-")
+            ]
+            if len(changed) > _MAX_HUNK_LINES:
+                head = hunk_lines[:_HUNK_HEAD_KEEP]
+                tail = hunk_lines[-_HUNK_TAIL_KEEP:]
+                omitted = len(hunk_lines) - _HUNK_HEAD_KEEP - _HUNK_TAIL_KEEP
+                compressed_hunks.append(
+                    "\n".join(head)
+                    + f"\n... {omitted} lines omitted by token-goat ...\n"
+                    + "\n".join(tail)
+                )
+            else:
+                compressed_hunks.append(hunk)
+        out_blocks.append("\n".join(compressed_hunks))
+
+    text = "\n".join(out_blocks)
+    if stderr.strip():
+        text += "\n---\n" + stderr.rstrip()
+    return text
+
+
+class GitDiffFilter(Filter):
+    """Compress ``git diff`` and ``git show`` output.
+
+    Handles binary-file summaries, large-hunk truncation, and ``--stat`` mode.
+    Registered before :class:`GitFilter` so it claims ``git diff`` / ``git show``
+    exclusively with richer compression than the baseline three-hunk cap.
+    """
+
+    name = "git-diff"
+    binaries = frozenset(["git"])
+    subcommands = frozenset(["diff", "show"])
+
+    def compress(
+        self, stdout: str, stderr: str, exit_code: int, argv: list[str],
+    ) -> str:
+        return _compress_git_diff_enhanced(stdout, stderr, argv)
+
+
+# ---- GitStatusVerboseFilter helpers -----------------------------------------
+
+_GIT_STATUS_UNTRACKED_HEADER_RE: Final[re.Pattern[str]] = re.compile(
+    r"^Untracked files:"
+)
+_GIT_STATUS_NOISE_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\s*\(use \"git (?:add|restore|rm|checkout|reset)"
+    r"|^no changes added to commit"
+    r"|^nothing to commit, working tree clean"
+    r"|^nothing added to commit but untracked files present"
+)
+
+
+def _compress_git_status_verbose(stdout: str, stderr: str) -> str:
+    """Compress full ``git status``.
+
+    * Short / porcelain format (lines start with ``M ``, ``?? ``, etc.) is
+      passed through as-is — already compact.
+    * Full verbose format: strip boilerplate advice lines; if untracked file
+      list exceeds 10 items, keep first 5 + count marker.
+    """
+    lines = stdout.split("\n")
+    if not lines:
+        return stdout
+
+    # Detect short/porcelain format: non-empty lines all match XY-space pattern.
+    non_empty = [ln for ln in lines if ln.strip()]
+    _SHORT_STATUS_RE = re.compile(r"^[MADRCU?! ][MADRCU?! ] ")
+    if non_empty and all(_SHORT_STATUS_RE.match(ln) for ln in non_empty[:5]):
+        # Already compact — pass through.
+        out = stdout
+        if stderr.strip():
+            out = out.rstrip() + "\n---\n" + stderr.rstrip()
+        return out
+
+    # Full verbose mode: strip noise lines, truncate untracked file list.
+    kept: list[str] = []
+    in_untracked = False
+    untracked_files: list[str] = []
+
+    for line in lines:
+        if _GIT_STATUS_NOISE_RE.match(line):
+            continue
+        if _GIT_STATUS_UNTRACKED_HEADER_RE.match(line):
+            in_untracked = True
+            kept.append(line)
+            continue
+        if in_untracked:
+            # Untracked file entries are indented with a tab.
+            if line.startswith("\t") and line.strip():
+                untracked_files.append(line)
+                continue
+            else:
+                # Flush collected untracked files.
+                _MAX_UNTRACKED = 5
+                if len(untracked_files) > _MAX_UNTRACKED:
+                    elided = len(untracked_files) - _MAX_UNTRACKED
+                    kept.extend(untracked_files[:_MAX_UNTRACKED])
+                    kept.append(
+                        f"\t[token-goat: +{elided} more untracked files]"
+                    )
+                else:
+                    kept.extend(untracked_files)
+                untracked_files = []
+                in_untracked = False
+                kept.append(line)
+                continue
+        kept.append(line)
+
+    # Flush any trailing untracked section.
+    if untracked_files:
+        _MAX_UNTRACKED = 5
+        if len(untracked_files) > _MAX_UNTRACKED:
+            elided = len(untracked_files) - _MAX_UNTRACKED
+            kept.extend(untracked_files[:_MAX_UNTRACKED])
+            kept.append(f"\t[token-goat: +{elided} more untracked files]")
+        else:
+            kept.extend(untracked_files)
+
+    out = "\n".join(kept)
+    if stderr.strip():
+        out = out.rstrip() + "\n---\n" + stderr.rstrip()
+    return _squeeze_blank_lines(out)
+
+
+class GitStatusVerboseFilter(Filter):
+    """Compress ``git status`` output.
+
+    * Passes short / porcelain format (``-s`` / ``--short``) through unchanged.
+    * Full verbose format: removes boilerplate advice lines; truncates untracked
+      file lists exceeding 10 items to first 5 + count.
+
+    Registered before :class:`GitFilter` for higher-fidelity status handling.
+    """
+
+    name = "git-status"
+    binaries = frozenset(["git"])
+    subcommands = frozenset(["status"])
+
+    def compress(
+        self, stdout: str, stderr: str, exit_code: int, argv: list[str],
+    ) -> str:
+        return _compress_git_status_verbose(stdout, stderr)
+
+
+# ---- GitBlameFilter helpers --------------------------------------------------
+
+_GIT_BLAME_LINE_RE: Final[re.Pattern[str]] = re.compile(
+    # Porcelain format: 40-char hash + line-no + ...  OR
+    # Standard annotated format: hash (Author Date) line content
+    r"^([0-9a-f]{7,40})\s"
+)
+_GIT_BLAME_AUTHOR_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\^?([0-9a-f]{7,40})\s+\(([^)]+?)\s+\d{4}-\d\d-\d\d"
+)
+
+
+def _compress_git_blame(stdout: str, stderr: str) -> str:
+    """Compress ``git blame``: collapse consecutive same-commit runs.
+
+    For each run of lines attributed to the same commit hash, emit the first
+    line of the run verbatim followed by a collapse marker; subsequent lines
+    in the run are dropped.  This can reduce a large blame output by 80%+ on
+    files with stable authorship.
+    """
+    lines = stdout.split("\n")
+    if not lines:
+        return stdout
+
+    # Determine if this is porcelain format (40-hex-char at start).
+    _PORCELAIN_RE = re.compile(r"^[0-9a-f]{40} \d+ \d+")
+    is_porcelain = any(_PORCELAIN_RE.match(ln) for ln in lines[:5] if ln.strip())
+
+    if is_porcelain:
+        return _compress_git_blame_porcelain(lines, stderr)
+
+    return _compress_git_blame_annotated(lines, stderr)
+
+
+def _compress_git_blame_annotated(lines: list[str], stderr: str) -> str:
+    """Collapse same-author runs in standard annotated blame format."""
+    out: list[str] = []
+    current_hash: str | None = None
+    current_author: str | None = None
+    run_count = 0
+    run_start_line: str = ""
+
+    def _flush() -> None:
+        if run_count == 0:
+            return
+        out.append(run_start_line)
+        if run_count > 1:
+            out.append(
+                f"[token-goat: {run_count - 1} more lines by {current_author} ({current_hash[:8] if current_hash else '?'})]"
+            )
+
+    for line in lines:
+        m = _GIT_BLAME_AUTHOR_RE.match(line)
+        if m:
+            commit_hash = m.group(1)[:8]
+            author = m.group(2).strip()
+            if commit_hash == current_hash:
+                run_count += 1
+            else:
+                _flush()
+                current_hash = commit_hash
+                current_author = author
+                run_start_line = line
+                run_count = 1
+        else:
+            # Non-blame line (empty, separator, etc.) — flush and emit as-is.
+            _flush()
+            current_hash = None
+            current_author = None
+            run_count = 0
+            run_start_line = ""
+            out.append(line)
+
+    _flush()
+    out_text = "\n".join(out)
+    if stderr.strip():
+        out_text += "\n---\n" + stderr.rstrip()
+    return out_text
+
+
+def _compress_git_blame_porcelain(lines: list[str], stderr: str) -> str:
+    """Collapse same-commit runs in porcelain blame format (``git blame --porcelain``)."""
+    _PORCELAIN_HEADER_RE = re.compile(r"^([0-9a-f]{40}) (\d+) (\d+)(?: (\d+))?$")
+    _AUTHOR_RE = re.compile(r"^author (.+)")
+
+    out: list[str] = []
+    current_hash: str | None = None
+    current_author: str | None = None
+    run_count = 0
+    block_lines: list[str] = []
+
+    i = 0
+    while i < len(lines):
+        line = lines[i]
+        m = _PORCELAIN_HEADER_RE.match(line)
+        if m:
+            commit_hash = m.group(1)
+            if commit_hash == current_hash:
+                # Same commit — scan forward past this block's metadata to the content line.
+                run_count += 1
+                i += 1
+                while i < len(lines) and not lines[i].startswith("\t"):
+                    i += 1
+                i += 1  # skip the content line
+                continue
+            else:
+                # New commit — flush previous run.
+                if block_lines:
+                    out.extend(block_lines)
+                    if run_count > 1:
+                        out.append(
+                            f"[token-goat: {run_count - 1} more lines by "
+                            f"{current_author} ({current_hash[:8] if current_hash else '?'})]"
+                        )
+                # Start new block.
+                current_hash = commit_hash
+                current_author = None
+                run_count = 1
+                block_lines = [line]
+                i += 1
+                # Collect metadata lines until the content line.
+                while i < len(lines) and not lines[i].startswith("\t"):
+                    meta = lines[i]
+                    am = _AUTHOR_RE.match(meta)
+                    if am:
+                        current_author = am.group(1).strip()
+                    block_lines.append(meta)
+                    i += 1
+                if i < len(lines):
+                    block_lines.append(lines[i])  # content line
+                    i += 1
+                continue
+        else:
+            out.append(line)
+            i += 1
+
+    # Flush final block.
+    if block_lines:
+        out.extend(block_lines)
+        if run_count > 1:
+            out.append(
+                f"[token-goat: {run_count - 1} more lines by "
+                f"{current_author} ({current_hash[:8] if current_hash else '?'})]"
+            )
+
+    out_text = "\n".join(out)
+    if stderr.strip():
+        out_text += "\n---\n" + stderr.rstrip()
+    return out_text
+
+
+class GitBlameFilter(Filter):
+    """Compress ``git blame`` output by collapsing same-commit/author runs.
+
+    Handles both the default annotated format and ``--porcelain``.  A file
+    with stable authorship (e.g. written by one person) can be compressed
+    from hundreds of lines to a handful.
+
+    Registered before :class:`GitFilter` so it claims ``git blame`` exclusively.
+    """
+
+    name = "git-blame"
+    binaries = frozenset(["git"])
+    subcommands = frozenset(["blame"])
+
+    def compress(
+        self, stdout: str, stderr: str, exit_code: int, argv: list[str],
+    ) -> str:
+        return _compress_git_blame(stdout, stderr)
 
 
 # --- Go ----------------------------------------------------------------
@@ -9286,6 +9930,13 @@ FILTERS: list[Filter] = [
     ESLintFilter(),
     LinterFilter(),
     GrepFilter(),
+    # Dedicated git sub-filters must precede GitFilter: each claims a specific
+    # subcommand (log / diff / show / status / blame) with richer compression.
+    # GitFilter remains the catch-all for every other git subcommand.
+    GitLogFilter(),
+    GitDiffFilter(),
+    GitStatusVerboseFilter(),
+    GitBlameFilter(),
     GitFilter(),
     # GoTestFilter must precede GoFilter: `go test` routes to the dedicated
     # test filter; other go subcommands (build/get/mod/…) route to GoFilter.
