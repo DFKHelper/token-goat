@@ -239,6 +239,8 @@ __all__ = [
     "WindsurfFilter",
     "OpenCodeFilter",
     "ContinueFilter",
+    # Cline (formerly Claude Dev) AI coding assistant VS Code extension / CLI
+    "ClineFilter",
 ]
 
 import math
@@ -19628,6 +19630,171 @@ class ContinueFilter(Filter):
         return self._finalize(out)
 
 
+# cline ───────────────────────────────────────────────────────────────────────
+#: Cline version banner: "Cline v3.x.x" / "cline v3.x.x"
+_CLINE_BANNER_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\s*(?:Cline|claude-dev)\s+v\d+\.\d+",
+    re.IGNORECASE,
+)
+#: Cline token usage line: "Tokens: 12,345 (↑ 5,432 in, ↓ 6,913 out)"
+_CLINE_TOKENS_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\s*Tokens\s*:\s*[\d,]+\s*\(",
+    re.IGNORECASE,
+)
+#: Cline API cost line: "API Cost: $0.0456"
+_CLINE_COST_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\s*API\s+Cost\s*:\s*\$[\d.]+",
+    re.IGNORECASE,
+)
+#: Cline context window meter: "Context Window: 45,678 / 200,000 tokens (22%)"
+_CLINE_CONTEXT_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\s*Context\s+Window\s*:\s*[\d,]+\s*/\s*[\d,]+\s+tokens",
+    re.IGNORECASE,
+)
+#: Cline spinner / progress lines: "Thinking..." / "Processing..." / "Streaming response..."
+_CLINE_SPINNER_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\s*(?:Thinking|Processing|Streaming\s+response)\s*\.{0,3}\s*$",
+    re.IGNORECASE,
+)
+#: Cline startup noise: "Loading workspace..." / "Initializing..."
+_CLINE_STARTUP_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\s*(?:Loading\s+workspace|Initializing\s+Cline|Starting\s+Cline)\s*\.{0,3}\s*$",
+    re.IGNORECASE,
+)
+#: Cline MCP server status: "MCP Server 'filesystem' connected (3 tools enabled)"
+_CLINE_MCP_STATUS_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\s*MCP\s+Server\s+['\"]?\w",
+    re.IGNORECASE,
+)
+#: Cline file-read progress (no content): "Reading file: src/utils.py..."
+_CLINE_FILE_READ_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\s*Reading\s+file\s*:\s*\S+\s*\.{0,3}\s*$",
+    re.IGNORECASE,
+)
+#: Cline "Cline wants to execute:" user-approval request — always keep
+_CLINE_WANTS_EXECUTE_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\s*Cline\s+wants\s+to\s+(?:execute|run|write|read|create|delete|use)\s*:",
+    re.IGNORECASE,
+)
+
+
+class ClineFilter(Filter):
+    """Compress ``cline`` (Cline AI coding assistant) terminal output.
+
+    Cline (formerly Claude Dev / claude-dev) emits version banners, per-turn
+    token usage and API cost lines, context-window meters, "Thinking…" spinners,
+    MCP server connection status, file-read progress lines, and startup noise
+    that surround the actual AI response content.
+
+    Compression model:
+
+    * **Version banner** (``Cline v3.x.x``): dropped.
+    * **Token usage lines** (``Tokens: 12,345 (↑ … in, ↓ … out)``): kept as
+      the last seen value per session run.
+    * **API cost lines** (``API Cost: $0.0456``): kept as the last seen value.
+    * **Context window meter** (``Context Window: X / Y tokens (Z%)``): kept
+      as the last seen value.
+    * **Spinner / progress lines** (``Thinking…``, ``Processing…``,
+      ``Streaming response…``): dropped.
+    * **Startup noise** (``Loading workspace…``): dropped.
+    * **MCP server status lines** (``MCP Server '…' connected``): dropped.
+    * **File-read progress lines** (``Reading file: src/foo.py…``): collapsed
+      to a count (no content, just progress chatter).
+    * **"Cline wants to execute:" lines**: always kept (user approval requests).
+    * **The actual AI response body**: kept verbatim.
+    * **Error lines**: always kept.
+    * **Errors** (exit_code != 0): preserve all stderr unchanged.
+    """
+
+    name = "cline"
+    binaries = frozenset(["cline", "claude-dev"])
+    subcommands: frozenset[str] = frozenset()
+
+    def matches(self, argv: list[str]) -> bool:  # noqa: D102
+        if not argv:
+            return False
+        p = Path(argv[0])
+        return p.stem.lower() in {"cline", "claude-dev"}
+
+    def compress(
+        self, stdout: str, stderr: str, exit_code: int, argv: list[str],
+    ) -> str:
+        err_output = _preserve_stderr_on_error(stdout, stderr, exit_code)
+        if err_output is not None:
+            return err_output
+
+        combined = self._combine_output(stdout, stderr)
+        lines = combined.split("\n")
+        kept: list[str] = []
+        last_tokens: str | None = None
+        last_cost: str | None = None
+        last_context: str | None = None
+        file_read_count = 0
+        dropped_noise = 0
+
+        for line in lines:
+            # Error signals — always keep.
+            if _ERROR_SIGNAL_RE.search(line):
+                kept.append(line)
+                continue
+            # "Cline wants to execute:" — always keep (user approval requests).
+            if _CLINE_WANTS_EXECUTE_RE.match(line):
+                kept.append(line)
+                continue
+            # Version banner — drop.
+            if _CLINE_BANNER_RE.match(line):
+                dropped_noise += 1
+                continue
+            # Token usage — keep last seen.
+            if _CLINE_TOKENS_RE.match(line):
+                last_tokens = line.strip()
+                continue
+            # API cost — keep last seen.
+            if _CLINE_COST_RE.match(line):
+                last_cost = line.strip()
+                continue
+            # Context window meter — keep last seen.
+            if _CLINE_CONTEXT_RE.match(line):
+                last_context = line.strip()
+                continue
+            # Spinner / progress lines — drop.
+            if _CLINE_SPINNER_RE.match(line):
+                dropped_noise += 1
+                continue
+            # Startup noise — drop.
+            if _CLINE_STARTUP_RE.match(line):
+                dropped_noise += 1
+                continue
+            # MCP server status — drop.
+            if _CLINE_MCP_STATUS_RE.match(line):
+                dropped_noise += 1
+                continue
+            # File-read progress (no content) — count.
+            if _CLINE_FILE_READ_RE.match(line):
+                file_read_count += 1
+                continue
+            kept.append(line)
+
+        out: list[str] = list(kept)
+        if file_read_count:
+            out.append(
+                f"[token-goat: {file_read_count} file-read progress line(s) collapsed; "
+                f"run with TOKEN_GOAT_BASH_COMPRESS=0 for full output]"
+            )
+
+        notes: list[str] = []
+        if last_tokens:
+            notes.append(f"tokens: {last_tokens}")
+        if last_cost:
+            notes.append(f"cost: {last_cost}")
+        if last_context:
+            notes.append(f"context: {last_context}")
+        if dropped_noise:
+            notes.append(f"dropped {dropped_noise} noise line(s)")
+        self._emit_notes(out, notes)
+        return self._finalize(out)
+
+
 FILTERS: list[Filter] = [
     PytestFilter(),
     JestFilter(),
@@ -19935,6 +20102,10 @@ FILTERS: list[Filter] = [
     OpenCodeFilter(),
     # ContinueFilter handles `continue` (Continue.dev AI CLI); disjoint binary.
     ContinueFilter(),
+    # ClineFilter handles `cline` and `claude-dev` (Cline AI coding assistant);
+    # disjoint binaries from every other filter so position is cosmetic —
+    # placed alongside other AI coding assistant CLI filters.
+    ClineFilter(),
 ]
 
 
