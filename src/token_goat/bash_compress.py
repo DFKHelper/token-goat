@@ -196,6 +196,12 @@ __all__ = [
     "JuliaFilter",
     # Python tox multi-environment test runner
     "ToxFilter",
+    # Crystal language spec runner / shards dependency manager
+    "CrystalFilter",
+    # HashiCorp Vault CLI
+    "VaultFilter",
+    # HashiCorp Packer image builder
+    "PackerFilter",
 ]
 
 import math
@@ -15806,6 +15812,439 @@ class ToxFilter(Filter):
 
 
 # ---------------------------------------------------------------------------
+# Crystal language spec runner / shards dependency manager
+# ---------------------------------------------------------------------------
+
+#: Crystal spec "Compiling <file>" or "Linking crystal spec" progress lines
+_CRYSTAL_COMPILING_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\s*(?:Compiling\s+\S+|Linking\s+crystal\s+spec|"
+    r"crystal\s+spec\s+\S+\.cr\b)",
+    re.IGNORECASE,
+)
+#: Crystal spec individual pass line: "  ✓ description (Xms)"
+_CRYSTAL_SPEC_PASS_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\s*(?:\.\s*)+$|^\s*✓\s+.+\(\d+",
+    re.IGNORECASE,
+)
+#: Crystal spec dot-only progress line (when running without verbose)
+_CRYSTAL_DOT_PROGRESS_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\s*[.]+\s*$"
+)
+#: Crystal spec summary: "Finished in X seconds" / "N examples, M failures"
+#: or "X examples, 0 failures" / "Pending: N"
+_CRYSTAL_SUMMARY_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\s*(?:Finished\s+in\s+[\d.]+\s+(?:second|millisecond)|"
+    r"\d+\s+example[s]?[,\s]|"
+    r"Pending:\s+\d+|"
+    r"\d+\s+failure[s]?|"
+    r"(?:All\s+)?\d+\s+spec[s]?\s+(?:passed|failed))",
+    re.IGNORECASE,
+)
+#: Crystal spec failure block header: "Failures:" or "  1) DescriptionPath"
+_CRYSTAL_FAILURE_HEADER_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\s*(?:Failures:|Errors:|\d+\)\s+\S)",
+    re.IGNORECASE,
+)
+#: Crystal "shards install" / "shards update" progress lines
+#: "  Using pkg (v1.0.0)" / "Writing shard.lock"
+_CRYSTAL_SHARDS_PROGRESS_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\s*(?:Using\s+\S+\s+\(|Writing\s+shard\.lock|"
+    r"Fetching\s+https?://|Cloning\s+\S+|Resolving\s+\S+|"
+    r"Updating\s+\S+\s+\(|Installed\s+\S+|Installing\s+\S+)",
+    re.IGNORECASE,
+)
+#: Crystal "shards install" final summary: "Shards are up to date." / "N shards installed"
+_CRYSTAL_SHARDS_DONE_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\s*(?:Shards\s+are\s+up\s+to\s+date|"
+    r"\d+\s+shard[s]?\s+(?:installed|updated)|"
+    r"Dependencies\s+installed)",
+    re.IGNORECASE,
+)
+
+
+class CrystalFilter(Filter):
+    """Compress Crystal language ``crystal spec`` / ``shards`` output.
+
+    Crystal's spec runner (its built-in test framework, inspired by RSpec) and
+    the ``shards`` dependency manager both produce noisy output: compilation
+    progress lines, dot-per-test pass lines, and shard installation chatter.
+
+    Compression model:
+
+    * **Compilation progress lines** (``Compiling``, ``Linking crystal spec``):
+      collapsed to a count.
+    * **Dot-only progress lines** (``....``): dropped.
+    * **Individual passing spec lines** (``✓ description``): collapsed to a
+      count.
+    * **Spec summary lines** (``N examples, M failures``, ``Finished in X``):
+      always kept.
+    * **Failure block header** (``Failures:``): always kept; full failure detail
+      follows verbatim.
+    * **Error lines**: always kept.
+    * **shards install/update progress** (``Using pkg``, ``Fetching``):
+      collapsed to a count.
+    * **shards final summary** (``Shards are up to date``): always kept.
+    * **Errors** (exit_code != 0): stderr preserved unchanged.
+    """
+
+    name = "crystal"
+    binaries = frozenset(["crystal", "shards"])
+
+    def compress(
+        self, stdout: str, stderr: str, exit_code: int, argv: list[str],
+    ) -> str:
+        err_output = _preserve_stderr_on_error(stdout, stderr, exit_code)
+        if err_output is not None:
+            return err_output
+
+        combined = self._combine_output(stdout, stderr)
+        lines = combined.split("\n")
+        kept: list[str] = []
+        compiling_count = 0
+        pass_count = 0
+        shard_progress_count = 0
+        dot_count = 0
+
+        for line in lines:
+            # Error signals and failure headers — always keep.
+            if _ERROR_SIGNAL_RE.search(line) or _CRYSTAL_FAILURE_HEADER_RE.match(line):
+                kept.append(line)
+                continue
+            # Spec summary and shards-done lines — always keep.
+            if _CRYSTAL_SUMMARY_RE.match(line) or _CRYSTAL_SHARDS_DONE_RE.match(line):
+                kept.append(line)
+                continue
+            # Compilation / linking progress — count.
+            if _CRYSTAL_COMPILING_RE.match(line):
+                compiling_count += 1
+                continue
+            # Dot-only progress lines — drop.
+            if _CRYSTAL_DOT_PROGRESS_RE.match(line):
+                dot_count += 1
+                continue
+            # Individual passing spec lines — count.
+            if _CRYSTAL_SPEC_PASS_RE.match(line):
+                pass_count += 1
+                continue
+            # Shards install/update progress — count.
+            if _CRYSTAL_SHARDS_PROGRESS_RE.match(line):
+                shard_progress_count += 1
+                continue
+            kept.append(line)
+
+        out: list[str] = []
+        if compiling_count:
+            out.append(
+                f"[token-goat: collapsed {compiling_count} Crystal compilation/linking line(s); "
+                f"run with TOKEN_GOAT_BASH_COMPRESS=0 for full output]"
+            )
+        if shard_progress_count:
+            out.append(
+                f"[token-goat: {shard_progress_count} shard dependency action(s) "
+                f"(Using/Fetching/Installing); run with TOKEN_GOAT_BASH_COMPRESS=0 for full list]"
+            )
+        out.extend(kept)
+
+        notes: list[str] = []
+        if pass_count:
+            notes.append(f"collapsed {pass_count} passing Crystal spec line(s)")
+        if dot_count:
+            notes.append(f"dropped {dot_count} dot-progress line(s)")
+        self._emit_notes(out, notes)
+        return self._finalize(out)
+
+
+# ---------------------------------------------------------------------------
+# HashiCorp Vault CLI
+# ---------------------------------------------------------------------------
+
+#: Vault "Key   Value" / "---   -----" table header/divider lines
+_VAULT_TABLE_DIVIDER_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\s*-{3,}\s+-{3,}\s*$"
+)
+#: Vault lease / token metadata lines emitted after every operation:
+#:   "lease_id           secret/data/foo/bar"
+#:   "lease_renewable    false"
+#:   "lease_duration     768h"
+_VAULT_LEASE_META_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\s*(?:lease_(?:id|renewable|duration|accessor)|"
+    r"token_(?:policies|accessor|type|ttl|issue_time|expire_time|"
+    r"explicit_max_ttl|num_uses)|"
+    r"renewable\s+(?:true|false)|"
+    r"request_id\s+[0-9a-f-]{36})\s",
+    re.IGNORECASE,
+)
+#: Vault "Success! Data written to: <path>" or "Success! Enabled ... at: ..."
+_VAULT_SUCCESS_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\s*Success!\s+",
+    re.IGNORECASE,
+)
+#: Vault "WARNING:" or "==> Vault server configuration:" header lines
+_VAULT_HEADER_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\s*(?:WARNING|==>|Key\s+Value\s*$)",
+    re.IGNORECASE,
+)
+#: Vault auth login output header
+_VAULT_AUTH_HEADER_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\s*(?:Token\s+information:|The\s+token\s+information|"
+    r"Complete\s+the\s+following|"
+    r"vault\s+(?:kv|secrets|auth|policy|lease|token)\s)",
+    re.IGNORECASE,
+)
+#: Vault list item lines: "  foo/" or "  bar" — plain indented paths
+_VAULT_LIST_ITEM_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\s{1,6}[a-zA-Z0-9_./-]+/?$"
+)
+#: Vault "vault kv list" header: "Keys"
+_VAULT_LIST_HEADER_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\s*Keys\s*$",
+    re.IGNORECASE,
+)
+
+
+class VaultFilter(Filter):
+    """Compress HashiCorp Vault CLI (``vault``) output.
+
+    The Vault CLI emits verbose token/lease metadata after every operation,
+    table dividers that consume a line each, and listing output that can be
+    hundreds of lines for large secret trees.
+
+    Compression model:
+
+    * **Lease and token metadata lines** (``lease_id``, ``lease_duration``,
+      ``token_policies``, ``renewable``, ``request_id``): collapsed to a count.
+    * **Table divider lines** (``--- -----``): dropped (structural noise).
+    * **``kv list`` item lines**: when > 10 items, collapsed to a count with
+      the first 5 shown; <= 10 items kept verbatim.
+    * **``Success!`` lines**: always kept.
+    * **``WARNING:`` and ``==>`` header lines**: always kept.
+    * **Error lines**: always kept.
+    * **Errors** (exit_code != 0): stderr preserved unchanged.
+    """
+
+    name = "vault"
+    binaries = frozenset(["vault"])
+
+    def compress(
+        self, stdout: str, stderr: str, exit_code: int, argv: list[str],
+    ) -> str:
+        err_output = _preserve_stderr_on_error(stdout, stderr, exit_code)
+        if err_output is not None:
+            return err_output
+
+        combined = self._combine_output(stdout, stderr)
+        lines = combined.split("\n")
+        kept: list[str] = []
+        meta_count = 0
+        divider_count = 0
+
+        # Detect kv-list mode: vault kv list / vault list
+        is_list_cmd = bool(
+            len(argv) >= 2
+            and argv[0].lower() in ("vault",)
+            and (
+                (argv[1].lower() == "list")
+                or (len(argv) >= 3 and argv[1].lower() == "kv" and argv[2].lower() == "list")
+            )
+        )
+        list_items: list[str] = []
+        in_list_body = False
+
+        for line in lines:
+            # Error signals — always keep.
+            if _ERROR_SIGNAL_RE.search(line):
+                kept.append(line)
+                continue
+            # Success / header / auth header — always keep.
+            if (
+                _VAULT_SUCCESS_RE.match(line)
+                or _VAULT_HEADER_RE.match(line)
+                or _VAULT_AUTH_HEADER_RE.match(line)
+            ):
+                kept.append(line)
+                continue
+            # Table divider — drop.
+            if _VAULT_TABLE_DIVIDER_RE.match(line):
+                divider_count += 1
+                continue
+            # Lease / token metadata — count.
+            if _VAULT_LEASE_META_RE.match(line):
+                meta_count += 1
+                continue
+            # List mode: collect items for potential collapsing.
+            if is_list_cmd:
+                if _VAULT_LIST_HEADER_RE.match(line):
+                    kept.append(line)
+                    in_list_body = True
+                    continue
+                if in_list_body and _VAULT_LIST_ITEM_RE.match(line):
+                    list_items.append(line)
+                    continue
+                in_list_body = False
+            kept.append(line)
+
+        # Collapse list items when there are more than 10.
+        _LIST_COLLAPSE_THRESHOLD = 10
+        if list_items:
+            if len(list_items) <= _LIST_COLLAPSE_THRESHOLD:
+                kept.extend(list_items)
+            else:
+                kept.extend(list_items[:5])
+                kept.append(
+                    f"[token-goat: {len(list_items) - 5} more secret path(s) omitted; "
+                    f"run with TOKEN_GOAT_BASH_COMPRESS=0 for full list]"
+                )
+
+        notes: list[str] = []
+        if meta_count:
+            notes.append(f"collapsed {meta_count} Vault lease/token metadata line(s)")
+        if divider_count:
+            notes.append(f"dropped {divider_count} table divider line(s)")
+        self._emit_notes(kept, notes)
+        return self._finalize(kept)
+
+
+# ---------------------------------------------------------------------------
+# HashiCorp Packer image builder
+# ---------------------------------------------------------------------------
+
+#: Packer "Waiting for SSH" / "Waiting for WinRM" poll lines
+_PACKER_WAITING_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\s*(?:==>|)\s*[\w.-]+:\s+(?:Waiting\s+for\s+(?:SSH|WinRM|instance|"
+    r"AMI|connection)|Polling\s+for\s+|Retrying\s+in\s+\d+)",
+    re.IGNORECASE,
+)
+#: Packer provisioner step lines: "==> <builder>: Provisioning with shell script"
+_PACKER_PROVISIONER_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\s*==>?\s*[\w.-]+:\s+(?:Running\s+provisioner:|Provisioning\s+with\s+|"
+    r"Executing\s+script:|Running\s+local\s+shell\s+script:|"
+    r"Uploading\s+\S+\s+=>)",
+    re.IGNORECASE,
+)
+#: Packer "==> <builder>: Pausing X seconds before next provisioner"
+_PACKER_PAUSE_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\s*==>?\s*[\w.-]+:\s+Pausing\s+\d+\s+seconds",
+    re.IGNORECASE,
+)
+#: Packer network heartbeat lines: "[c] Received disconnect / Net tcp keepalive"
+#: Lines start with "==> <builder>:" or "    <builder>:"
+_PACKER_NETWORK_NOISE_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\s*(?:==>?|)?\s*[\w.-]+:\s+\[c\]\s+(?:Received\s+disconnect|"
+    r"Net\s+tcp|SSH|channel\s+close)",
+    re.IGNORECASE,
+)
+#: Packer build-step header: "==> <builder>: Creating ..." / "Starting ..."
+_PACKER_BUILD_STEP_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\s*==>?\s*[\w.-]+:\s+(?:Creating|Starting|Stopping|Destroying|"
+    r"Terminating|Registering|Deregistering|Tagging|Setting\s+up|"
+    r"Cleaning\s+up|Deleting|Adding)\s+",
+    re.IGNORECASE,
+)
+#: Packer final artifact / builds-finished lines:
+#:   "==> Builds finished. The artifacts..." or "--> <builder>: AMI: ami-xxx"
+_PACKER_ARTIFACT_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\s*(?:==>?\s*Builds\s+finished|-->\s*[\w.-]+:)",
+    re.IGNORECASE,
+)
+#: Packer "Build '<name>' finished." summary line
+_PACKER_BUILD_FINISHED_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\s*(?:==>?\s*[\w.-]+:\s+Build\s+'\S+'\s+finished|Build\s+'\S+'\s+finished)",
+    re.IGNORECASE,
+)
+
+
+class PackerFilter(Filter):
+    """Compress HashiCorp Packer (``packer build``) image build output.
+
+    A Packer build run can produce thousands of lines: SSH connection polling,
+    per-provisioner step announcements, heartbeat/keepalive noise, and verbose
+    network-layer messages.  Signal lines are the artifact IDs, errors, and
+    build step headers.
+
+    Compression model:
+
+    * **"Waiting for SSH/WinRM" poll lines**: collapsed to a count.
+    * **Network/SSH heartbeat lines** (``[c] Received disconnect``, ``[c] Net
+      tcp``): dropped (low-signal connection-layer noise).
+    * **"Pausing N seconds" lines**: dropped (timing noise between
+      provisioners).
+    * **Provisioner step announcement lines**: collapsed to a count.
+    * **Build step lines** (``Creating``, ``Tagging``, ``Stopping``): kept
+      (each represents a meaningful API call with potential for failure).
+    * **Artifact lines** (``-->``, ``Builds finished``): always kept.
+    * **Error / failure lines**: always kept.
+    * **Errors** (exit_code != 0): stderr preserved unchanged.
+    """
+
+    name = "packer"
+    binaries = frozenset(["packer"])
+
+    def compress(
+        self, stdout: str, stderr: str, exit_code: int, argv: list[str],
+    ) -> str:
+        err_output = _preserve_stderr_on_error(stdout, stderr, exit_code)
+        if err_output is not None:
+            return err_output
+
+        combined = self._combine_output(stdout, stderr)
+        lines = combined.split("\n")
+        kept: list[str] = []
+        waiting_count = 0
+        provisioner_count = 0
+        noise_count = 0
+
+        for line in lines:
+            # Error signals — always keep.
+            if _ERROR_SIGNAL_RE.search(line):
+                kept.append(line)
+                continue
+            # Artifact / build-finished summary — always keep.
+            if _PACKER_ARTIFACT_RE.match(line) or _PACKER_BUILD_FINISHED_RE.match(line):
+                kept.append(line)
+                continue
+            # Build step lines (Creating/Tagging/etc) — always keep
+            # (each is a meaningful API call with potential for failure).
+            if _PACKER_BUILD_STEP_RE.match(line):
+                kept.append(line)
+                continue
+            # SSH/WinRM wait polling — count.
+            if _PACKER_WAITING_RE.match(line):
+                waiting_count += 1
+                continue
+            # Provisioner step announcements — count.
+            if _PACKER_PROVISIONER_RE.match(line):
+                provisioner_count += 1
+                continue
+            # Network heartbeat / keepalive — drop.
+            if _PACKER_NETWORK_NOISE_RE.match(line):
+                noise_count += 1
+                continue
+            # Pause lines — drop.
+            if _PACKER_PAUSE_RE.match(line):
+                noise_count += 1
+                continue
+            kept.append(line)
+
+        out: list[str] = []
+        if waiting_count:
+            out.append(
+                f"[token-goat: {waiting_count} SSH/WinRM connection-wait poll line(s) collapsed; "
+                f"run with TOKEN_GOAT_BASH_COMPRESS=0 for full output]"
+            )
+        if provisioner_count:
+            out.append(
+                f"[token-goat: collapsed {provisioner_count} provisioner step announcement(s)]"
+            )
+        out.extend(kept)
+
+        notes: list[str] = []
+        if noise_count:
+            notes.append(f"dropped {noise_count} network/heartbeat/pause noise line(s)")
+        self._emit_notes(out, notes)
+        return self._finalize(out)
+
+
+# ---------------------------------------------------------------------------
 # Public registry & dispatch
 # ---------------------------------------------------------------------------
 
@@ -16044,6 +16483,15 @@ FILTERS: list[Filter] = [
     # ToxFilter handles `tox` multi-environment Python test-runner output;
     # disjoint binary from every other filter so position is cosmetic.
     ToxFilter(),
+    # CrystalFilter handles `crystal spec` test runs and `shards` dependency
+    # manager output; disjoint binaries from every other filter.
+    CrystalFilter(),
+    # VaultFilter handles the HashiCorp Vault CLI (`vault`); disjoint binary
+    # from every other filter so position is cosmetic.
+    VaultFilter(),
+    # PackerFilter handles HashiCorp Packer (`packer build/validate/init`);
+    # disjoint binary from every other filter so position is cosmetic.
+    PackerFilter(),
 ]
 
 
