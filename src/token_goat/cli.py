@@ -543,22 +543,69 @@ def _glob_to_sql_like(query: str) -> str:
 def _rank_symbol_results(results: list[dict], query: str) -> list[dict]:
     """Sort results by match tier: exact name → prefix → substring.
 
-    Within each tier the original DB order is preserved (stable sort).
+    Within each tier, non-test files rank above test files — a production
+    definition (``src/models.py``) is almost always more relevant than a
+    same-named stub or fixture (``tests/test_models.py``, ``spec/``,
+    ``__tests__/``).  When both tier and test-file status tie, the original
+    DB order is preserved (stable sort).
+
     Wildcard queries skip tiering and return in DB order.
     """
     if _is_glob_pattern(query):
         return results
     q_lower = query.lower()
 
-    def _tier(row: dict) -> int:
+    def _sort_key(row: dict) -> tuple[int, int]:
         n = row["name"].lower()
+        # Primary key: name-match tier (0=exact, 1=prefix, 2=substring).
         if n == q_lower:
-            return 0
-        if n.startswith(q_lower):
-            return 1
-        return 2
+            tier = 0
+        elif n.startswith(q_lower):
+            tier = 1
+        else:
+            tier = 2
+        # Secondary key: 0 for non-test paths, 1 for test paths so tests
+        # sink below production definitions at the same tier.
+        file_path = row.get("file", "")
+        is_test = _is_test_path(file_path)
+        return (tier, int(is_test))
 
-    return sorted(results, key=_tier)
+    return sorted(results, key=_sort_key)
+
+
+def _is_test_path(file_path: str) -> bool:
+    """Return True when *file_path* looks like a test or spec file.
+
+    Covers the common conventions across Python, JavaScript/TypeScript,
+    Go, Ruby, and Rust:
+
+    * Leading path component is ``tests``, ``test``, ``spec``, or ``__tests__``
+    * Any path component is one of those names (e.g. ``src/tests/…``)
+    * Filename starts with ``test_`` (pytest convention)
+    * Filename ends with ``_test.py``, ``_test.go``, ``_spec.rb``, ``.test.ts``,
+      ``.test.js``, ``.spec.ts``, ``.spec.js``
+
+    False positives are acceptable — this is a tie-breaking hint, not a hard
+    filter.  When every match is a test file the function returns True for all
+    of them and the original DB order is preserved.
+    """
+    normed = file_path.replace("\\", "/")
+    parts = normed.split("/")
+    # Check any path component against known test-directory names.
+    test_dirs = {"tests", "test", "spec", "__tests__"}
+    for part in parts[:-1]:  # all but the filename
+        if part.lower() in test_dirs:
+            return True
+    basename = parts[-1].lower() if parts else ""
+    # Filename-level patterns.
+    if basename.startswith("test_"):
+        return True
+    test_suffixes = (
+        "_test.py", "_test.go", "_spec.rb",
+        ".test.ts", ".test.js", ".spec.ts", ".spec.js",
+        ".test.tsx", ".spec.tsx",
+    )
+    return any(basename.endswith(s) for s in test_suffixes)
 
 
 @app.command(rich_help_panel="Core")
