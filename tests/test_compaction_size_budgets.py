@@ -8,9 +8,14 @@ shipping rather than silently eating into the live compaction budget.
 
 Each assertion has a small slack above the *current* observed size:
 
-* Recovery hint: saturated fixtures produce ~475 tokens (14 entries across
-  three sections, each with a ~47-char ``output_id``).  Budget set at 500
-  for headroom against a single small format addition without flapping.
+* Recovery hint (saturated): iter-29 added ``### Pending Work`` and
+  ``### Key Commands`` sections to the hint.  Saturated fixtures now produce
+  ~548 tokens (files+bash+web + two new sections).  Budget bumped to 580
+  for headroom against a small format addition without flapping.
+* Recovery hint (files-only): the ``### Key Commands`` section adds ~20-30
+  tokens even for files-only sessions (at least the map-compact command is
+  always shown; .py files trigger the symbol/read commands too).  Budget
+  bumped to 240.
 * Pre-compact manifest: 420-token slack above the 400-token configured
   ceiling — the trim pass keeps the rendered output under the budget the
   caller passed, so this is a sanity check that the trim is happening.
@@ -28,11 +33,14 @@ from token_goat.repomap import estimate_tokens
 # Budgets — adjust deliberately if behaviour intentionally changes.
 # ---------------------------------------------------------------------------
 
-# Saturated hint measures ~475 tokens (long synthetic IDs).  Real-session IDs
-# are the same length, so this matches production.  500 gives a 25-token cushion.
-_RECOVERY_HINT_SATURATED_BUDGET = 500
-# Files-only hint is one-line-per-file with no IDs, so it stays well under.
-_RECOVERY_HINT_LOPSIDED_BUDGET = 200
+# Saturated hint measures ~548 tokens after iter-29 added ### Pending Work
+# and ### Key Commands sections (14 entries across three sections + two new
+# sections).  580 gives a 32-token cushion for minor format additions.
+_RECOVERY_HINT_SATURATED_BUDGET = 580
+# Files-only hint is one-line-per-file with no IDs plus ### Key Commands.
+# With .py files the Key Commands section adds symbol/read commands too.
+# Observed ~218 tokens; 240 gives ~22-token headroom.
+_RECOVERY_HINT_LOPSIDED_BUDGET = 240
 _MANIFEST_BUDGET = 420  # slack above the 400-token configured ceiling
 
 
