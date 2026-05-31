@@ -223,10 +223,11 @@ def _index_history_inner(project_root: Path, project_hash: str) -> int:
             in_txn = True
         except sqlite3.OperationalError as exc:
             _LOG.debug("git_history: BEGIN skipped (%s); using autocommit", exc)
+        n_errors = 0
         try:
             for commit in commits:
                 try:
-                    conn.execute(
+                    cur = conn.execute(
                         "INSERT OR IGNORE INTO git_commits"
                         "(commit_short, summary, author_ts, changed_files) "
                         "VALUES (?, ?, ?, ?)",
@@ -237,14 +238,19 @@ def _index_history_inner(project_root: Path, project_hash: str) -> int:
                             json.dumps(commit["changed_files"]),
                         ),
                     )
-                    stored += 1
+                    stored += cur.rowcount  # 1 for new insert, 0 for ignored duplicate
                 except Exception as exc:  # noqa: BLE001
+                    n_errors += 1
                     _LOG.debug(
                         "git_history: failed to store commit %s: %s",
                         commit["commit_short"], exc,
                     )
-            # Stamp last_indexed_at only when at least one commit stored — a wholly-failed batch must leave the index stale so the next cycle retries, rather than being suppressed for _REINDEX_STALENESS_SECS.
-            if stored:
+            # Stamp last_indexed_at when the index is up-to-date: either new commits
+            # were stored, or all commits were already present (all-duplicates = already
+            # fresh). Only skip the timestamp when every insert failed with an exception
+            # (wholly-failed batch) so the next cycle retries instead of being suppressed
+            # for _REINDEX_STALENESS_SECS.
+            if stored > 0 or n_errors < len(commits):
                 conn.execute(
                     "INSERT OR REPLACE INTO git_history_meta(key, value) "
                     "VALUES ('last_indexed_at', ?)",
