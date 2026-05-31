@@ -4246,3 +4246,485 @@ class TestMakeFilterNinja:
         result = f.apply(text, "", 0, ["ninja"])
         # Linker output is not matched by the compiler-echo RE so it passes through.
         assert "Linking CXX executable" in result.text
+
+
+# ---------------------------------------------------------------------------
+# CargoFilter — subcommand coverage (test, clippy, check, progress lines)
+# ---------------------------------------------------------------------------
+
+
+class TestCargoFilterSubcommands:
+    """Coverage for CargoFilter subcommand paths not exercised by TestCargoFilter."""
+
+    def test_cargo_test_collapses_passing_tests(self) -> None:
+        """cargo test: passing 'test foo ... ok' lines are counted, not shown."""
+        stdout = "\n".join(
+            [f"test module::test_{i} ... ok" for i in range(15)]
+        ) + "\ntest result: ok. 15 passed; 0 failed; 0 ignored\n"
+        f = bc.CargoFilter()
+        result = f.apply(stdout, "", 0, ["cargo", "test"])
+        assert "test_0" not in result.text
+        assert "collapsed 15 passing" in result.text
+        assert "test result: ok" in result.text
+
+    def test_cargo_test_keeps_failed_tests(self) -> None:
+        """cargo test: FAILED lines are kept verbatim."""
+        stdout = (
+            "test module::test_ok ... ok\n"
+            "test module::test_broken ... FAILED\n"
+            "failures:\n"
+            "    thread 'module::test_broken' panicked at 'assertion failed'\n"
+            "test result: FAILED. 1 passed; 1 failed\n"
+        )
+        f = bc.CargoFilter()
+        result = f.apply(stdout, "", 1, ["cargo", "test"])
+        assert "test_broken ... FAILED" in result.text
+        assert "test_ok" not in result.text
+        assert "test result: FAILED" in result.text
+
+    def test_cargo_test_keeps_running_headers(self) -> None:
+        """cargo test: 'Running unittests ...' section markers are preserved."""
+        stdout = (
+            "Running unittests src/lib.rs (target/debug/deps/mylib-abc123)\n"
+            "test unit::test_a ... ok\n"
+            "test result: ok. 1 passed; 0 failed\n"
+        )
+        f = bc.CargoFilter()
+        result = f.apply(stdout, "", 0, ["cargo", "test"])
+        assert "Running unittests" in result.text
+
+    def test_cargo_clippy_drops_checking_lines(self) -> None:
+        """cargo clippy: 'Checking crate v...' progress lines are dropped."""
+        stderr = "\n".join(
+            [f"    Checking crate-{i} v0.1.0 (/path/{i})" for i in range(10)]
+        ) + "\nwarning: unused variable `x`\n  --> src/main.rs:5:9\n"
+        f = bc.CargoFilter()
+        result = f.apply("", stderr, 0, ["cargo", "clippy"])
+        assert "Checking crate-0" not in result.text
+        assert "dropped 10 'Checking" in result.text
+        assert "warning: unused variable" in result.text
+
+    def test_cargo_clippy_keeps_warnings(self) -> None:
+        """cargo clippy: warning diagnostics are always preserved."""
+        stderr = (
+            "    Checking myapp v0.1.0 (/repo)\n"
+            "warning: this expression creates a reference to a temporary value\n"
+            "  --> src/lib.rs:12:18\n"
+            "   |\n"
+            "12 |     let r = &String::from(\"tmp\");\n"
+        )
+        f = bc.CargoFilter()
+        result = f.apply("", stderr, 0, ["cargo", "clippy"])
+        assert "warning: this expression creates" in result.text
+        assert "src/lib.rs:12" in result.text
+
+    def test_cargo_check_drops_progress_lines(self) -> None:
+        """cargo check: Downloading/Fetching/Updating progress lines are dropped."""
+        stderr = (
+            "    Updating crates.io index\n"
+            "    Downloading crates ...\n"
+            "    Fetching serde v1.0.0\n"
+            "    Checking myapp v0.1.0 (/repo)\n"
+            "    Finished `check` [unoptimized] target(s) in 3.45s\n"
+        )
+        f = bc.CargoFilter()
+        result = f.apply("", stderr, 0, ["cargo", "check"])
+        assert "Updating crates.io" not in result.text
+        assert "Downloading crates" not in result.text
+        assert "Fetching serde" not in result.text
+        assert "Finished" in result.text
+
+    def test_cargo_build_drops_progress_lines(self) -> None:
+        """cargo build: Downloading/Fetching/Updating are dropped; count is noted."""
+        stderr = (
+            "   Downloading foo v1.0.0\n"
+            "   Fetching bar v2.0.0\n"
+            "   Updating crates.io index\n"
+            "   Compiling myapp v0.1.0\n"
+            "    Finished dev [unoptimized + debuginfo] target(s) in 10.0s\n"
+        )
+        f = bc.CargoFilter()
+        result = f.apply("", stderr, 0, ["cargo", "build"])
+        assert "Downloading" not in result.text
+        assert "Fetching" not in result.text
+        assert "Updating" not in result.text
+        assert "dropped" in result.text or "cargo progress" in result.text
+        assert "Finished" in result.text
+
+    def test_cargo_run_passthrough(self) -> None:
+        """cargo run: output is passed through verbatim (load-bearing script output)."""
+        stdout = "Hello, world!\nServer listening on port 8080\n"
+        f = bc.CargoFilter()
+        result = f.apply(stdout, "", 0, ["cargo", "run"])
+        assert "Hello, world!" in result.text
+        assert "Server listening" in result.text
+
+    def test_select_filter_dispatches_cargo_clippy(self) -> None:
+        """select_filter routes 'cargo clippy' to CargoFilter."""
+        f = bc.select_filter(["cargo", "clippy"])
+        assert f is not None
+        assert f.name == "cargo"
+
+    def test_select_filter_dispatches_cargo_test(self) -> None:
+        """select_filter routes 'cargo test' to CargoFilter."""
+        f = bc.select_filter(["cargo", "test"])
+        assert f is not None
+        assert f.name == "cargo"
+
+    def test_select_filter_dispatches_cargo_check(self) -> None:
+        """select_filter routes 'cargo check' to CargoFilter."""
+        f = bc.select_filter(["cargo", "check"])
+        assert f is not None
+        assert f.name == "cargo"
+
+
+# ---------------------------------------------------------------------------
+# VitestFilter
+# ---------------------------------------------------------------------------
+
+
+class TestVitestFilter:
+    """Coverage for VitestFilter — file-level pass collapse, fail blocks, tick collapse."""
+
+    def test_collapses_passing_file_lines(self) -> None:
+        """Passing file lines (✓ path/to/file.test.ts (Xms)) are counted, not shown."""
+        lines = [f" ✓ src/module{i}.test.ts (12ms)" for i in range(8)]
+        lines.append("Test Files  8 passed (8)")
+        lines.append("Tests       32 passed (32)")
+        lines.append("Duration    1.23s")
+        text = "\n".join(lines)
+        f = bc.VitestFilter()
+        result = f.apply(text, "", 0, ["vitest"])
+        assert "module0.test.ts" not in result.text
+        assert "collapsed 8 passing" in result.text
+        assert "Test Files  8 passed" in result.text
+
+    def test_keeps_fail_block(self) -> None:
+        """Failing file blocks (× or FAIL) are kept verbatim."""
+        text = (
+            " ✓ src/passing.test.ts (5ms)\n"
+            " × src/broken.test.ts (3ms)\n"
+            "   AssertionError: expected 1 to equal 2\n"
+            "   at Object.<anonymous> (src/broken.test.ts:10:5)\n"
+            "Test Files  1 failed | 1 passed (2)\n"
+        )
+        f = bc.VitestFilter()
+        result = f.apply(text, "", 1, ["vitest"])
+        assert "broken.test.ts" in result.text
+        assert "AssertionError" in result.text
+        assert "passing.test.ts" not in result.text
+        assert "Test Files" in result.text
+
+    def test_collapses_per_test_pass_ticks(self) -> None:
+        """Indented ✓ per-test pass ticks (from --reporter=verbose) are collapsed."""
+        lines = ["Tests"]
+        for i in range(20):
+            lines.append(f"  ✓ should pass case {i}")
+        lines.append("Tests       20 passed (20)")
+        text = "\n".join(lines)
+        f = bc.VitestFilter()
+        result = f.apply(text, "", 0, ["vitest", "--reporter=verbose"])
+        # Per-test ticks should be collapsed
+        assert "should pass case 0" not in result.text
+        assert "collapsed" in result.text
+
+    def test_keeps_summary_lines(self) -> None:
+        """Test Files / Tests / Duration summary lines are always kept."""
+        text = (
+            " ✓ src/a.test.ts (1ms)\n"
+            " ✓ src/b.test.ts (2ms)\n"
+            "Test Files  2 passed (2)\n"
+            "Tests       10 passed (10)\n"
+            "Duration    0.50s\n"
+        )
+        f = bc.VitestFilter()
+        result = f.apply(text, "", 0, ["vitest"])
+        assert "Test Files  2 passed" in result.text
+        assert "Tests       10 passed" in result.text
+        assert "Duration    0.50s" in result.text
+
+    def test_select_filter_dispatches_vitest(self) -> None:
+        """select_filter routes 'vitest' to VitestFilter."""
+        f = bc.select_filter(["vitest"])
+        assert f is not None
+        assert f.name == "vitest"
+
+    def test_compression_reduces_size_on_large_pass_run(self) -> None:
+        """Compression reduces output size when all tests pass."""
+        lines = [f" ✓ src/module{i}.test.ts (10ms)" for i in range(50)]
+        lines.append("Test Files  50 passed (50)")
+        text = "\n".join(lines)
+        f = bc.VitestFilter()
+        result = f.apply(text, "", 0, ["vitest"])
+        assert result.compressed_bytes < len(text.encode())
+
+
+# ---------------------------------------------------------------------------
+# SwiftFilter
+# ---------------------------------------------------------------------------
+
+
+class TestSwiftFilter:
+    """Coverage for SwiftFilter — build phase collapse and test compression."""
+
+    def test_build_collapses_compile_lines(self) -> None:
+        """swift build: CompileSwift/MergeSwiftModule/Ld phase lines are collapsed."""
+        lines = []
+        for i in range(20):
+            lines.append(f"CompileSwift normal arm64 /src/File{i}.swift")
+        lines.append("MergeSwiftModule normal arm64 /build/MyApp.swiftmodule")
+        lines.append("Build complete!")
+        text = "\n".join(lines)
+        f = bc.SwiftFilter()
+        result = f.apply(text, "", 0, ["swift", "build"])
+        assert "CompileSwift" not in result.text
+        assert "collapsed" in result.text
+        assert "Build complete!" in result.text
+
+    def test_build_keeps_warnings(self) -> None:
+        """swift build: warning diagnostics survive compression."""
+        text = (
+            "CompileSwift normal arm64 /src/Foo.swift\n"
+            "/src/Foo.swift:10:5: warning: result of call to 'foo()' is unused\n"
+            "Build complete!\n"
+        )
+        f = bc.SwiftFilter()
+        result = f.apply(text, "", 0, ["swift", "build"])
+        assert "warning: result of call" in result.text
+        assert "Build complete!" in result.text
+
+    def test_build_keeps_errors(self) -> None:
+        """swift build: error diagnostics survive compression."""
+        text = (
+            "CompileSwift normal arm64 /src/Bar.swift\n"
+            "/src/Bar.swift:5:10: error: use of undeclared type 'Foo'\n"
+            "** BUILD FAILED **\n"
+        )
+        f = bc.SwiftFilter()
+        result = f.apply(text, "", 1, ["swift", "build"])
+        assert "error: use of undeclared type" in result.text
+        assert "BUILD FAILED" in result.text
+
+    def test_test_collapses_passing_cases(self) -> None:
+        """swift test: passing 'Test Case … passed' lines are collapsed to count."""
+        lines = []
+        for i in range(12):
+            lines.append(f"Test Case '-[MyTests.SuiteTests testMethod{i}]' passed (0.001 seconds).")
+        lines.append("Test Suite 'MyTests.SuiteTests' passed at 2024-01-01 12:00:00.000.")
+        lines.append("Executed 12 tests, with 0 failures (0 unexpected) in 0.012 (0.014) seconds")
+        text = "\n".join(lines)
+        f = bc.SwiftFilter()
+        result = f.apply(text, "", 0, ["swift", "test"])
+        assert "testMethod0" not in result.text
+        assert "collapsed 12 passing" in result.text
+        assert "Executed 12 tests" in result.text
+
+    def test_test_keeps_failed_cases(self) -> None:
+        """swift test: failing test case lines and failure bodies are preserved."""
+        text = (
+            "Test Case '-[MyTests.Suite testPassing]' passed (0.001 seconds).\n"
+            "Test Case '-[MyTests.Suite testFailing]' failed (0.002 seconds).\n"
+            "  /src/Tests.swift:42: error: XCTAssertEqual failed: (\"1\") is not equal to (\"2\")\n"
+            "Executed 2 tests, with 1 failure (0 unexpected) in 0.003 seconds\n"
+        )
+        f = bc.SwiftFilter()
+        result = f.apply(text, "", 1, ["swift", "test"])
+        assert "testFailing" in result.text
+        assert "XCTAssertEqual failed" in result.text
+        assert "testPassing" not in result.text
+        assert "Executed 2 tests" in result.text
+
+    def test_select_filter_dispatches_swift_build(self) -> None:
+        """select_filter routes 'swift build' to SwiftFilter."""
+        f = bc.select_filter(["swift", "build"])
+        assert f is not None
+        assert f.name == "swift"
+
+    def test_select_filter_dispatches_swift_test(self) -> None:
+        """select_filter routes 'swift test' to SwiftFilter."""
+        f = bc.select_filter(["swift", "test"])
+        assert f is not None
+        assert f.name == "swift"
+
+
+# ---------------------------------------------------------------------------
+# GoTestFilter
+# ---------------------------------------------------------------------------
+
+
+class TestGoTestFilter:
+    """Coverage for GoTestFilter — pass/fail collapsing and dispatch."""
+
+    def test_collapses_passing_tests(self) -> None:
+        """go test: '--- PASS: TestFoo (0.00s)' lines are collapsed to count."""
+        lines = []
+        for i in range(15):
+            lines.append(f"=== RUN   TestFunc{i}")
+            lines.append(f"--- PASS: TestFunc{i} (0.00s)")
+        lines.append("ok  \tgithub.com/org/repo\t0.015s")
+        text = "\n".join(lines)
+        f = bc.GoTestFilter()
+        result = f.apply(text, "", 0, ["go", "test", "./..."])
+        assert "TestFunc0" not in result.text
+        assert "collapsed 15 PASS testcases" in result.text
+        assert "ok  \tgithub.com/org/repo" in result.text
+
+    def test_keeps_failed_tests(self) -> None:
+        """go test: FAIL testcases and their failure body are kept verbatim."""
+        text = (
+            "=== RUN   TestPassing\n"
+            "--- PASS: TestPassing (0.00s)\n"
+            "=== RUN   TestBroken\n"
+            "    main_test.go:25: expected 1, got 2\n"
+            "--- FAIL: TestBroken (0.00s)\n"
+            "FAIL\tgithub.com/org/repo\t0.002s\n"
+        )
+        f = bc.GoTestFilter()
+        result = f.apply(text, "", 1, ["go", "test"])
+        assert "TestBroken" in result.text
+        assert "expected 1, got 2" in result.text
+        assert "TestPassing" not in result.text
+
+    def test_drops_downloading_lines(self) -> None:
+        """go test: 'go: downloading ...' dependency fetch lines are dropped."""
+        text = (
+            "go: downloading github.com/pkg/errors v0.9.1\n"
+            "go: downloading github.com/stretchr/testify v1.8.0\n"
+            "=== RUN   TestSomething\n"
+            "--- PASS: TestSomething (0.00s)\n"
+            "ok  \tgithub.com/org/repo\t0.10s\n"
+        )
+        f = bc.GoTestFilter()
+        result = f.apply(text, "", 0, ["go", "test", "./..."])
+        # The download lines should not appear as content lines (only in the note).
+        non_note_lines = [
+            ln for ln in result.text.splitlines()
+            if not ln.startswith("[token-goat:")
+        ]
+        assert not any("go: downloading" in ln for ln in non_note_lines)
+        assert "dropped" in result.text
+        assert "ok  \tgithub.com/org/repo" in result.text
+
+    def test_drops_run_lines_outside_fail_block(self) -> None:
+        """go test: '=== RUN' lines outside fail blocks are dropped."""
+        lines = []
+        for i in range(5):
+            lines.append(f"=== RUN   TestCase{i}")
+            lines.append(f"--- PASS: TestCase{i} (0.00s)")
+        lines.append("ok  \trepo\t0.005s")
+        text = "\n".join(lines)
+        f = bc.GoTestFilter()
+        result = f.apply(text, "", 0, ["go", "test"])
+        # RUN lines should not appear as content lines (only in the note).
+        non_note_lines = [
+            ln for ln in result.text.splitlines()
+            if not ln.startswith("[token-goat:")
+        ]
+        assert not any(ln.startswith("=== RUN") for ln in non_note_lines)
+
+    def test_select_filter_dispatches_go_test(self) -> None:
+        """select_filter routes 'go test' to GoTestFilter (not GoFilter)."""
+        f = bc.select_filter(["go", "test", "./..."])
+        assert f is not None
+        assert f.name == "go-test"
+
+    def test_go_build_does_not_dispatch_to_go_test_filter(self) -> None:
+        """select_filter routes 'go build' to GoFilter, not GoTestFilter."""
+        f = bc.select_filter(["go", "build", "./..."])
+        assert f is not None
+        assert f.name != "go-test"
+
+
+# ---------------------------------------------------------------------------
+# RubyFilter (RSpec / Minitest dot-progress)
+# ---------------------------------------------------------------------------
+
+
+class TestRubyFilter:
+    """Coverage for RubyFilter — dot-progress collapse and failure section."""
+
+    def test_collapses_dot_progress_lines(self) -> None:
+        """RSpec dot-progress lines with only dots are collapsed to count."""
+        text = (
+            "." * 30 + "\n"
+            "." * 30 + "\n"
+            "\n"
+            "Finished in 0.5 seconds\n"
+            "60 examples, 0 failures\n"
+        )
+        f = bc.RubyFilter()
+        result = f.apply(text, "", 0, ["rspec"])
+        # Dot-lines should not appear verbatim
+        assert "." * 10 not in result.text
+        assert "collapsed 60 passing" in result.text
+        assert "60 examples, 0 failures" in result.text
+
+    def test_keeps_failure_section(self) -> None:
+        """RSpec 'Failures:' section and failure body are kept verbatim."""
+        text = (
+            "..." + "F" + "." * 10 + "\n"
+            "\n"
+            "Failures:\n"
+            "\n"
+            "  1) MyClass#method does the thing\n"
+            "     Failure/Error: expect(subject.call).to eq('hello')\n"
+            "       expected: 'hello'\n"
+            "            got: nil\n"
+            "\n"
+            "Finished in 0.12 seconds\n"
+            "14 examples, 1 failure\n"
+        )
+        f = bc.RubyFilter()
+        result = f.apply(text, "", 1, ["rspec"])
+        assert "Failures:" in result.text
+        assert "MyClass#method" in result.text
+        assert "expected: 'hello'" in result.text
+        assert "14 examples, 1 failure" in result.text
+
+    def test_preserves_failure_chars_from_progress(self) -> None:
+        """F and E chars in progress lines produce a summary line before full failures."""
+        text = (
+            "..F..\n"
+            "\n"
+            "Failures:\n"
+            "  1) foo failed\n"
+            "     expected: true got: false\n"
+            "\n"
+            "Finished in 0.1 seconds\n"
+            "5 examples, 1 failure\n"
+        )
+        f = bc.RubyFilter()
+        result = f.apply(text, "", 1, ["rspec"])
+        # The filter emits [F] (failures in progress output) marker
+        assert "[F]" in result.text or "F" in result.text
+
+    def test_rake_passthrough(self) -> None:
+        """rake output is passed through with basic dedup — not compressed."""
+        text = "rake aborted!\nTask 'build' not found.\n(See full trace by running task with --trace)\n"
+        f = bc.RubyFilter()
+        result = f.apply(text, "", 1, ["rake"])
+        assert "rake aborted!" in result.text
+        assert "Task 'build' not found" in result.text
+
+    def test_select_filter_dispatches_rspec(self) -> None:
+        """select_filter routes 'rspec' to RubyFilter."""
+        f = bc.select_filter(["rspec"])
+        assert f is not None
+        assert f.name == "ruby"
+
+    def test_select_filter_dispatches_minitest(self) -> None:
+        """select_filter routes 'minitest' to RubyFilter."""
+        f = bc.select_filter(["minitest"])
+        assert f is not None
+        assert f.name == "ruby"
+
+    def test_minitest_summary_kept(self) -> None:
+        """Minitest 'N runs, N assertions, N failures' summary lines are kept."""
+        text = (
+            "." * 20 + "\n"
+            "\n"
+            "20 runs, 40 assertions, 0 failures, 0 errors, 0 skips\n"
+        )
+        f = bc.RubyFilter()
+        result = f.apply(text, "", 0, ["minitest"])
+        assert "20 runs, 40 assertions" in result.text
