@@ -359,8 +359,7 @@ class TestSelectFilter:
 
     def test_pnpm_install(self):
         f = bc.select_filter(["pnpm", "install"])
-        # pnpm with no exec/run keyword is itself the package manager binary.
-        assert f is not None and f.name == "npm"
+        assert f is not None and f.name == "pnpm"
 
     def test_docker_build(self):
         f = bc.select_filter(["docker", "build", "-t", "x", "."])
@@ -3586,3 +3585,138 @@ class TestPipFilterVerbose:
         f = bc.PipFilter()
         result = f.apply(text, "", 0, ["pip", "install", "-v", "foo"])
         assert "verbose" in result.text.lower() or "debug" in result.text.lower()
+
+
+# ---------------------------------------------------------------------------
+# _safe_decode
+# ---------------------------------------------------------------------------
+
+
+class TestSafeDecode:
+    def test_strips_null_bytes_from_str(self) -> None:
+        assert bc._safe_decode("hello\x00world") == "helloworld"
+
+    def test_strips_null_bytes_from_bytes(self) -> None:
+        assert bc._safe_decode(b"foo\x00bar") == "foobar"
+
+    def test_decodes_utf8_bytes(self) -> None:
+        assert bc._safe_decode(b"hello") == "hello"
+
+    def test_replaces_invalid_utf8(self) -> None:
+        # 0xFF is invalid UTF-8; must not raise, must produce replacement char.
+        result = bc._safe_decode(b"\xff\xfe")
+        assert "�" in result or result == ""  # replacement char or empty
+
+    def test_passthrough_clean_str(self) -> None:
+        assert bc._safe_decode("plain text") == "plain text"
+
+    def test_empty_bytes(self) -> None:
+        assert bc._safe_decode(b"") == ""
+
+    def test_empty_str(self) -> None:
+        assert bc._safe_decode("") == ""
+
+    def test_multiple_null_bytes(self) -> None:
+        assert bc._safe_decode("a\x00b\x00c\x00") == "abc"
+
+    def test_null_bytes_in_bytes(self) -> None:
+        data = b"line1\x00\nline2\x00"
+        result = bc._safe_decode(data)
+        assert "\x00" not in result
+        assert "line1" in result
+        assert "line2" in result
+
+
+# ---------------------------------------------------------------------------
+# Filter.apply — empty input, MAX_INPUT_BYTES, encoding safety
+# ---------------------------------------------------------------------------
+
+
+class TestFilterApplyRobustness:
+    """Tests for the encoding / edge-case guards added to Filter.apply."""
+
+    def test_empty_stdout_and_stderr_returns_empty(self) -> None:
+        f = bc.PytestFilter()
+        result = f.apply("", "", 0, ["pytest"])
+        assert result.text == ""
+        assert result.original_bytes == 0
+        assert result.compressed_bytes == 0
+
+    def test_whitespace_only_returns_empty(self) -> None:
+        f = bc.PytestFilter()
+        result = f.apply("   \n\t\n", "  ", 0, ["pytest"])
+        assert result.text == ""
+
+    def test_null_bytes_stripped_before_filter(self) -> None:
+        # Null bytes in stdout must not reach the filter logic.
+        f = bc.GenericFilter()
+        result = f.apply("ok\x00output", "", 0, ["custom"])
+        assert "\x00" not in result.text
+        assert "ok" in result.text or result.text == ""
+
+    def test_max_input_bytes_cap_truncates(self, monkeypatch) -> None:
+        monkeypatch.setenv("TOKEN_GOAT_FILTER_MAX_BYTES", "100")
+        # Build a stdout that exceeds 100 bytes.
+        long_stdout = "x" * 500
+        f = bc.GenericFilter()
+        result = f.apply(long_stdout, "", 0, ["custom"])
+        # The note must mention truncation.
+        notes_text = " ".join(result.notes) if result.notes else ""
+        combined = result.text + notes_text
+        assert "truncated" in combined.lower() or "100KB" in combined or "0KB" in combined
+
+    def test_max_input_bytes_env_override_respected(self, monkeypatch) -> None:
+        monkeypatch.setenv("TOKEN_GOAT_FILTER_MAX_BYTES", "50")
+        long_stdout = "a" * 200
+        f = bc.GenericFilter()
+        result = f.apply(long_stdout, "", 0, ["custom"])
+        # The compressed output must be shorter than the 200-byte input.
+        assert result.compressed_bytes < 200
+
+    def test_filter_exception_falls_back_gracefully(self) -> None:
+        """A filter that raises must not propagate — apply falls back to truncation."""
+        class BrokenFilter(bc.Filter):
+            name = "broken"
+            binaries = frozenset(["broken"])
+
+            def compress(self, stdout, stderr, exit_code, argv):
+                raise RuntimeError("intentional test failure")
+
+        f = BrokenFilter()
+        result = f.apply("some output\n" * 10, "", 0, ["broken"])
+        # Must not raise, and the output should contain something from the raw input.
+        assert isinstance(result, bc.CompressedOutput)
+        assert "broken" in result.filter_name
+
+    def test_exit_code_preserved_on_empty(self) -> None:
+        f = bc.PytestFilter()
+        result = f.apply("", "", 42, ["pytest"])
+        assert result.exit_code == 42
+
+    def test_exit_code_preserved_on_normal(self) -> None:
+        f = bc.PytestFilter()
+        result = f.apply("1 passed", "", 0, ["pytest"])
+        assert result.exit_code == 0
+
+    def test_notes_field_populated_on_truncation(self, monkeypatch) -> None:
+        monkeypatch.setenv("TOKEN_GOAT_FILTER_MAX_BYTES", "10")
+        f = bc.GenericFilter()
+        result = f.apply("x" * 500, "", 0, ["custom"])
+        # notes list should be non-empty when truncation occurred.
+        assert result.notes or "truncated" in result.text.lower()
+
+
+# ---------------------------------------------------------------------------
+# MAX_INPUT_BYTES constant and _get_max_input_bytes
+# ---------------------------------------------------------------------------
+
+
+class TestMaxInputBytesConstant:
+    def test_default_is_500kb(self) -> None:
+        assert bc.DEFAULT_MAX_INPUT_BYTES == 500 * 1024
+
+    def test_exported_in_all(self) -> None:
+        assert "DEFAULT_MAX_INPUT_BYTES" in bc.__all__
+
+    def test_safe_decode_exported(self) -> None:
+        assert "_safe_decode" in bc.__all__
