@@ -85,13 +85,18 @@ class TestNoSessionId:
 class TestFileNotCachedNotLarge:
     def test_small_uncached_file_returns_none(self, tmp_data_dir, tmp_path):
         # No git/marker so no project; ensure no crash.
-        result = build_read_hint(
-            session_id="s1",
-            file_path=str(tmp_path / "small.py"),
-            offset=0,
-            limit=50,
-            cwd=str(tmp_path),
-        )
+        # Mock find_project to avoid a slow directory walk — this test exercises
+        # the "file not in cache, file not large" path, not project detection.
+        with patch("token_goat.hints.find_project", return_value=None), \
+             patch("token_goat.hints._get_indexed_symbols_and_line_count",
+                   return_value=([], None, False)):
+            result = build_read_hint(
+                session_id="s1",
+                file_path=str(tmp_path / "small.py"),
+                offset=0,
+                limit=50,
+                cwd=str(tmp_path),
+            )
         assert result is None
 
     def test_no_cwd_returns_none(self, tmp_data_dir):
@@ -387,17 +392,26 @@ class TestNonProjectCwd:
         assert hint is None
 
     def test_cwd_with_no_project_marker_returns_none(self, tmp_data_dir, tmp_path):
-        """tmp_path has no .git or other markers → find_project returns None."""
+        """tmp_path has no .git or other markers → find_project returns None.
+
+        Mock find_project to return None immediately — this test verifies
+        build_read_hint's behaviour when no project is detected, not the
+        project-detection walk itself (which would scan the entire directory
+        tree up to the filesystem root and add ~2 s on Windows).
+        """
         src_file = tmp_path / "afile.py"
         _make_large_file(src_file, n_lines=LARGE_FILE_LINE_THRESHOLD + 10)
 
-        hint = build_read_hint(
-            session_id="s_noproj",
-            file_path=str(src_file),
-            offset=0,
-            limit=2000,
-            cwd=str(tmp_path),
-        )
+        with patch("token_goat.hints.find_project", return_value=None), \
+             patch("token_goat.hints._get_indexed_symbols_and_line_count",
+                   return_value=([], None, False)):
+            hint = build_read_hint(
+                session_id="s_noproj",
+                file_path=str(src_file),
+                offset=0,
+                limit=2000,
+                cwd=str(tmp_path),
+            )
         assert hint is None
 
 
@@ -3093,12 +3107,17 @@ class TestMinFileLinesForHint:
         assert hint is not None, "With threshold=0, hints must emit"
 
     def test_threshold_30_file_25_lines_suppressed(self, tmp_data_dir, monkeypatch):
-        """With threshold=30, a 25-line file is suppressed."""
+        """With threshold=30, a 25-line file is suppressed.
+
+        _indexed_line_count is mocked to return None so the disk-fallback
+        path is exercised, which avoids a slow find_project directory walk.
+        """
         from token_goat import config as config_module
 
         mock_config = config_module.Config()
         mock_config.hints.min_file_lines_for_hint = 30
         monkeypatch.setattr(config_module, "load", lambda: mock_config)
+        monkeypatch.setattr("token_goat.hints._indexed_line_count", lambda _fp, _cwd: None)
 
         sid = "s_min_lines_30_small"
         path = str(tmp_data_dir / "small.py")
@@ -3158,12 +3177,19 @@ class TestMinFileLinesForHint:
         re-read with limit=200 (> _NARROW_EXPLICIT_READ_LINES=50 to bypass the
         surgical-nag guard).  Without the fix, max_line=200 < 300 → suppressed.
         With the fix, on-disk count=500 >= 300 → not suppressed.
+
+        _indexed_line_count is mocked to return None (simulating an unindexed project)
+        so the fallback disk-read path is exercised.  This also avoids a slow
+        find_project directory walk from the tmp_data_dir location.
         """
         from token_goat import config as config_module
 
         mock_config = config_module.Config()
         mock_config.hints.min_file_lines_for_hint = 300
         monkeypatch.setattr(config_module, "load", lambda: mock_config)
+        # Return None from _indexed_line_count so the disk-fallback path is exercised
+        # and we avoid a slow find_project directory walk.
+        monkeypatch.setattr("token_goat.hints._indexed_line_count", lambda _fp, _cwd: None)
 
         sid = "s_large_partial_no_suppress"
         path = str(tmp_data_dir / "large_partially_read.py")
@@ -3197,12 +3223,16 @@ class TestMinFileLinesForHint:
         The symbol-only path at `if entry.symbols_read and not entry.line_ranges:` is
         unreachable inside the `if entry.line_ranges:` branch that guards the suppression
         block, so a separate early-return was needed.
+
+        _indexed_line_count is mocked to return None so the disk-fallback path runs
+        and the slow find_project directory walk is avoided.
         """
         from token_goat import config as config_module
 
         mock_config = config_module.Config()
         mock_config.hints.min_file_lines_for_hint = 100  # threshold above file size
         monkeypatch.setattr(config_module, "load", lambda: mock_config)
+        monkeypatch.setattr("token_goat.hints._indexed_line_count", lambda _fp, _cwd: None)
 
         sid = "s_symbol_plus_ranges_small"
         path = str(tmp_data_dir / "small_mixed_access.py")
@@ -3263,6 +3293,9 @@ class TestMinFileLinesForHint:
         mock_config = config_module.Config()
         mock_config.hints.min_file_lines_for_hint = 30
         monkeypatch.setattr(config_module, "load", lambda: mock_config)
+        # Mock find_project to avoid a slow directory walk for a file that is not
+        # in the session cache and doesn't exist on disk.
+        monkeypatch.setattr("token_goat.hints.find_project", lambda _cwd: None)
 
         # Verify that None line count bypasses suppression.
         assert not _should_suppress_full_file_hint(None), "None line count should not suppress"
@@ -3711,18 +3744,24 @@ class TestCoreadSuggestions:
                 assert module_count <= 3, f"hint should suggest max 3 modules, got {module_count}: {hint}"
 
     def test_coread_hint_not_fired_without_project(self, tmp_path):
-        """Coread hint suppressed when project cannot be found."""
-        # No .git marker, so find_project will return None
+        """Coread hint suppressed when project cannot be found.
+
+        Mock find_project to return None immediately — the test validates
+        build_read_hint's coread-suppression logic when no project exists,
+        not the find_project walk itself (which scans the whole directory
+        tree up to the filesystem root and costs ~2 s on Windows).
+        """
         src_file = tmp_path / "orphan.py"
         src_file.write_text("import something\n")
 
-        hint = build_read_hint(
-            session_id="s_coread_noproject",
-            file_path=str(src_file),
-            offset=None,
-            limit=None,
-            cwd=str(tmp_path),
-        )
+        with patch("token_goat.hints.find_project", return_value=None):
+            hint = build_read_hint(
+                session_id="s_coread_noproject",
+                file_path=str(src_file),
+                offset=None,
+                limit=None,
+                cwd=str(tmp_path),
+            )
 
         # No hint expected when project is not found
         assert hint is None or "import" not in str(hint).lower()

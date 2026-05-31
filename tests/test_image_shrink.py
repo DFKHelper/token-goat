@@ -2,15 +2,57 @@
 from __future__ import annotations
 
 import os
+import random
 import time
+from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 from hook_helpers import make_large_jpeg as _make_large_jpeg
 from hook_helpers import make_small_jpeg as _make_small_jpeg
 
-from token_goat import image_shrink
+from token_goat import image_shrink, paths
 from token_goat.config import ImageShrinkConfig
 from token_goat.config import load as load_config
+
+# ---------------------------------------------------------------------------
+# Module-scoped shared fixture: one large JPEG created and shrunk once per
+# test module.  Tests that only need to verify shrink output (read-only) can
+# use this instead of calling _make_large_jpeg() + shrink() themselves, saving
+# ~2.5 s of Pillow encode/decode overhead per test.
+#
+# Constraint: tests that mutate the source file or corrupt the image cache
+# must NOT use this fixture — they keep their own function-scoped tmp_path.
+# ---------------------------------------------------------------------------
+
+@pytest.fixture(scope="module")
+def shared_shrunk_jpeg(tmp_path_factory):
+    """Create a large JPEG and shrink it once per module; yield (src, result).
+
+    Uses a fixed random seed so the content hash is deterministic across
+    runs, enabling the image_shrink content-addressed cache to be warm on
+    all subsequent calls in this fixture's scope.
+    """
+    tmp = tmp_path_factory.mktemp("shared_jpeg")
+    # Patch data_dir for the duration of this fixture so shrink() writes the
+    # cache to an isolated directory rather than the real user data dir.
+    with patch.object(paths, "data_dir", return_value=tmp):
+        from PIL import Image as PILImage
+
+        src = tmp / "shared_large.jpg"
+        rng = random.Random(0xC0FFEE)  # fixed seed — deterministic content hash
+        pixels = [
+            (rng.randint(0, 255), rng.randint(0, 255), rng.randint(0, 255))
+            for _ in range(1600 * 1200)
+        ]
+        img = PILImage.new("RGB", (1600, 1200))
+        img.putdata(pixels)
+        src.parent.mkdir(parents=True, exist_ok=True)
+        img.save(src, "JPEG", quality=95)
+
+        result = image_shrink.shrink(src)
+        assert result is not None, "shared_shrunk_jpeg fixture: shrink() returned None"
+        yield src, result
 
 # ---------------------------------------------------------------------------
 # 1. is_image_path
@@ -62,8 +104,14 @@ class TestShouldShrink:
         assert p.stat().st_size <= image_shrink.SIZE_THRESHOLD_BYTES
         assert image_shrink.should_shrink(p) is False
 
-    def test_true_for_large_image(self, tmp_path):
-        p = _make_large_jpeg(tmp_path)
+    def test_true_for_large_image(self, shared_shrunk_jpeg):
+        """Large JPEG source must report should_shrink=True.
+
+        Uses the module-scoped shared_shrunk_jpeg fixture to avoid the ~2.5 s
+        Pillow encode cost — should_shrink only stat()s the file and checks
+        the extension, so any large JPEG source works fine here.
+        """
+        p, _result = shared_shrunk_jpeg
         assert p.stat().st_size > image_shrink.SIZE_THRESHOLD_BYTES
         assert image_shrink.should_shrink(p) is True
 
@@ -111,7 +159,6 @@ class TestFormatThreshold:
         assert image_shrink.format_threshold("mystery.heic") == image_shrink.SIZE_THRESHOLD_BYTES
 
     def test_path_input_equivalent_to_string(self):
-        from pathlib import Path
         assert (
             image_shrink.format_threshold(Path("/abs/foo.png"))
             == image_shrink.format_threshold("foo.png")
@@ -134,11 +181,14 @@ class TestShrinkSmall:
 # ---------------------------------------------------------------------------
 
 class TestShrinkLargeJpeg:
-    def test_output_smaller_and_dimensions_constrained(self, tmp_data_dir, tmp_path):
-        p = _make_large_jpeg(tmp_path)
-        src_size = p.stat().st_size
+    def test_output_smaller_and_dimensions_constrained(self, shared_shrunk_jpeg):
+        """Verify shrink output is smaller and within MAX_LONG_EDGE.
 
-        result = image_shrink.shrink(p)
+        Uses the module-scoped shared_shrunk_jpeg fixture to avoid re-running
+        the ~2.5 s Pillow encode/decode cycle for each read-only assertion.
+        """
+        p, result = shared_shrunk_jpeg
+        src_size = p.stat().st_size
 
         assert result is not None, "Expected a shrunken output"
         assert result.exists(), "Shrunken path must exist on disk"
@@ -157,10 +207,15 @@ class TestShrinkLargeJpeg:
 # ---------------------------------------------------------------------------
 
 class TestShrinkIdempotent:
-    def test_same_cache_path_on_second_call(self, tmp_data_dir, tmp_path):
-        p = _make_large_jpeg(tmp_path)
+    def test_same_cache_path_on_second_call(self, shared_shrunk_jpeg):
+        """Second call on the same source must return the same cached path.
 
-        result1 = image_shrink.shrink(p)
+        Uses the module-scoped shared_shrunk_jpeg fixture.  The fixture already
+        ran shrink(src) once; a second call here exercises the cache-hit path
+        without re-encoding, making the test near-instant.
+        """
+        p, result1 = shared_shrunk_jpeg
+
         result2 = image_shrink.shrink(p)
 
         assert result1 is not None
@@ -192,19 +247,29 @@ class TestShrinkIdempotent:
 # ---------------------------------------------------------------------------
 
 class TestCacheInvalidation:
-    def test_same_cache_path_after_mtime_only_change(self, tmp_data_dir, tmp_path):
+    def test_same_cache_path_after_mtime_only_change(self, shared_shrunk_jpeg, tmp_path):
         """A bare touch — mtime bumped, content unchanged — is a cache hit. The
         key is content-addressed, so unchanged bytes reuse the existing entry
-        instead of triggering a redundant re-shrink."""
-        p = _make_large_jpeg(tmp_path)
+        instead of triggering a redundant re-shrink.
 
-        result1 = image_shrink.shrink(p)
+        Uses shared_shrunk_jpeg so we skip the ~2.5 s first-shrink cost.  We
+        copy the source to an isolated path so bumping its mtime does not affect
+        the other module-scoped fixture users.  The copy has the same content
+        hash, so the second shrink() is a near-instant cache hit in the same
+        (shared fixture's) image-cache directory.
+        """
+        import shutil
+
+        src, result1 = shared_shrunk_jpeg
         assert result1 is not None
 
-        new_mtime = p.stat().st_mtime + 1000.0
-        os.utime(p, (new_mtime, new_mtime))
+        src_copy = tmp_path / "mtime_test.jpg"
+        shutil.copy2(src, src_copy)
 
-        result2 = image_shrink.shrink(p)
+        new_mtime = src_copy.stat().st_mtime + 1000.0
+        os.utime(src_copy, (new_mtime, new_mtime))
+
+        result2 = image_shrink.shrink(src_copy)
         assert result2 is not None
         assert result1 == result2, "mtime-only change must still hit the cache"
 
@@ -231,10 +296,13 @@ class TestCacheInvalidation:
 # ---------------------------------------------------------------------------
 
 class TestStatsFor:
-    def test_stats_match_file_sizes(self, tmp_data_dir, tmp_path):
-        p = _make_large_jpeg(tmp_path)
-        shrunken = image_shrink.shrink(p)
-        assert shrunken is not None
+    def test_stats_match_file_sizes(self, shared_shrunk_jpeg):
+        """Verify stats_for returns correct measurements.
+
+        Uses the module-scoped shared_shrunk_jpeg fixture — no new image
+        creation or compression needed for these read-only assertions.
+        """
+        p, shrunken = shared_shrunk_jpeg
 
         stats = image_shrink.stats_for(p, shrunken)
 
@@ -436,15 +504,17 @@ class TestWebpCompressionRatio:
 # ---------------------------------------------------------------------------
 
 class TestTokenSavings:
-    def test_large_jpeg_saves_meaningful_tokens(self, tmp_data_dir, tmp_path):
+    def test_large_jpeg_saves_meaningful_tokens(self, shared_shrunk_jpeg):
         """A 1600×1200 JPEG must yield ≥1000 vision tokens saved after shrinking.
 
         1600×1200 → Claude tokenizes at (1568×1176)÷750 ≈ 2459 tokens.
         Shrunken to 1024×768 → (1024×768)÷750 ≈ 1049 tokens.
         Expected savings ≈ 1410 tokens.
+
+        Uses the module-scoped shared_shrunk_jpeg fixture — read-only assertions
+        only; no new image creation or compression needed.
         """
-        p = _make_large_jpeg(tmp_path)
-        shrunken = image_shrink.shrink(p)
+        p, shrunken = shared_shrunk_jpeg
         assert shrunken is not None, "shrink() returned None — no output produced"
 
         stats = image_shrink.stats_for(p, shrunken)

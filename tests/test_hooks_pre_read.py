@@ -27,8 +27,21 @@ class TestPreReadHandlerDirect:
         _assert_continue(result)
         assert "hookSpecificOutput" not in result
 
-    def test_file_not_in_cache_nonexistent_file_no_hint(self, tmp_data_dir, tmp_path):
-        """File not in cache + file doesn't exist → no hint, continue:true."""
+    def test_file_not_in_cache_nonexistent_file_no_hint(
+        self, tmp_data_dir, tmp_path, monkeypatch
+    ):
+        """File not in cache + file doesn't exist → no hint, continue:true.
+
+        Mocks find_project at its canonical module location to avoid an expensive
+        filesystem walk from the deep Windows temp path to the filesystem root
+        (9 markers × N parent dirs ≈ 1-2 s).  Patching token_goat.project.find_project
+        covers all lazy local imports (``from .project import find_project`` inside
+        function bodies) as well as the module-level binding in hints.py.
+
+        The test exercises the "not in session cache, not found on disk" path, not
+        project-detection logic, so this mock is appropriate.
+        """
+        monkeypatch.setattr("token_goat.project.find_project", lambda _cwd: None)
         payload = {
             "session_id": "s2",
             "tool_name": "Read",
