@@ -233,6 +233,7 @@ __all__ = [
     # AI coding assistant CLI output filters
     "AiderFilter",
     "GhCopilotFilter",
+    "CopilotFilter",
     "GeminiCliFilter",
     "ClaudeCliFilter",
     "CursorFilter",
@@ -18820,9 +18821,11 @@ _GH_COPILOT_SPINNER_RE: Final[re.Pattern[str]] = re.compile(
     r"^\s*(?:Asking GitHub Copilot|Generating|Thinking|Fetching)\s*\.{0,3}\s*$",
     re.IGNORECASE,
 )
-#: gh copilot "Welcome to GitHub Copilot in the CLI" banner lines
+#: gh copilot / standalone copilot banner lines
+#: Matches "Welcome to GitHub Copilot in the CLI", "Using GitHub Copilot",
+#: "Authenticated as: …", and the standalone binary's "GitHub Copilot v1.x.x" line.
 _GH_COPILOT_BANNER_RE: Final[re.Pattern[str]] = re.compile(
-    r"^\s*(?:Welcome to GitHub Copilot|Using GitHub Copilot|Authenticated as)",
+    r"^\s*(?:Welcome to GitHub Copilot|Using GitHub Copilot|Authenticated as|GitHub Copilot\s+v\d+)",
     re.IGNORECASE,
 )
 
@@ -18888,6 +18891,76 @@ class GhCopilotFilter(Filter):
                 dropped_noise += 1
                 continue
             # Welcome/auth banners — drop.
+            if _GH_COPILOT_BANNER_RE.match(line):
+                dropped_noise += 1
+                continue
+            # Disclaimer/review footers — drop.
+            if _GH_COPILOT_DISCLAIMER_RE.match(line):
+                dropped_noise += 1
+                continue
+            kept.append(line)
+
+        notes: list[str] = []
+        if dropped_noise:
+            notes.append(f"dropped {dropped_noise} boilerplate/disclaimer line(s)")
+        self._emit_notes(kept, notes)
+        return self._finalize(kept)
+
+
+class CopilotFilter(Filter):
+    """Compress output from the standalone ``copilot`` binary.
+
+    The standalone ``copilot`` binary (``npm i -g @githubnext/github-copilot-cli``)
+    produces the same class of boilerplate as ``gh copilot`` but is invoked without
+    the ``gh`` wrapper — e.g. ``copilot explain "git stash"``.
+
+    Compression model (identical to :class:`GhCopilotFilter`):
+
+    * **Version/auth banners** (``GitHub Copilot v1.x.x``, ``Authenticated as …``):
+      dropped.
+    * **Spinner / progress lines** (``Generating…``, ``Thinking…``,
+      ``Asking GitHub Copilot…``): dropped.
+    * **Disclaimer / review footers** (``Disclaimer:``, ``Always review``,
+      ``Note:``, ``Tip:``): dropped.
+    * **The actual explanation or suggestion body**: always kept verbatim.
+    * **Errors** (exit_code != 0): preserve all output unchanged.
+
+    Note: this filter intentionally does **not** match ``gh copilot …`` — that is
+    handled by :class:`GhCopilotFilter`.  Only the stem ``copilot`` (without a
+    ``gh`` prefix) is claimed here.
+    """
+
+    name = "copilot"
+    binaries = frozenset(["copilot"])
+
+    def matches(self, argv: list[str]) -> bool:  # noqa: D102
+        if not argv:
+            return False
+        stem = Path(argv[0]).stem.lower()
+        return stem == "copilot"
+
+    def compress(
+        self, stdout: str, stderr: str, exit_code: int, argv: list[str],
+    ) -> str:
+        err_output = _preserve_stderr_on_error(stdout, stderr, exit_code)
+        if err_output is not None:
+            return err_output
+
+        combined = self._combine_output(stdout, stderr)
+        lines = combined.split("\n")
+        kept: list[str] = []
+        dropped_noise = 0
+
+        for line in lines:
+            # Error signals — always keep.
+            if _ERROR_SIGNAL_RE.search(line):
+                kept.append(line)
+                continue
+            # Spinner / progress lines — drop.
+            if _GH_COPILOT_SPINNER_RE.match(line):
+                dropped_noise += 1
+                continue
+            # Version/auth banners — drop.
             if _GH_COPILOT_BANNER_RE.match(line):
                 dropped_noise += 1
                 continue
@@ -19853,6 +19926,9 @@ FILTERS: list[Filter] = [
     # the `gh` binary, but GhCopilotFilter only fires for `gh copilot explain/suggest`
     # and is therefore strictly more specific.
     GhCopilotFilter(),
+    # CopilotFilter handles the standalone `copilot` binary (no `gh` prefix).
+    # Placed immediately after GhCopilotFilter to keep both Copilot filters adjacent.
+    CopilotFilter(),
     # GhRunLogFilter must precede GhFilter: both match `gh`, but GhRunLogFilter
     # only fires for `gh run view --log` (the raw log variant) and provides
     # richer timestamp-stripping and group-collapsing.  GhFilter remains the
