@@ -281,3 +281,43 @@ class TestUrlNormalization:
         malformed = "not a url at all !!!"
         result = web_cache._normalize_url(malformed)
         assert isinstance(result, str)
+
+
+class TestFindCachedConcurrentDeletion:
+    def test_find_cached_for_url_tolerates_concurrent_deletion(self, tmp_data_dir):
+        """find_cached_for_url returns a result even if some sidecars are concurrently deleted.
+
+        Regression test for TOCTOU: sorted(..., key=lambda p: p.stat().st_mtime)
+        would raise OSError if a sidecar was deleted between glob() and stat().
+        The OSError would propagate to safe_cache_op and make the whole function
+        return None, silently dropping a valid cache hit.
+        """
+        from pathlib import Path
+        from unittest.mock import patch
+
+        url = "https://example.com/docs/api"
+        body = "API docs content " * 100
+
+        # Store two entries for the same URL so there are multiple sidecars.
+        meta1 = web_cache.store_output("sess-del-a", url, body, 200)
+        assert meta1 is not None
+        web_cache.write_sidecar(meta1)
+        meta2 = web_cache.store_output("sess-del-b", url, body + " v2", 200)
+        assert meta2 is not None
+        web_cache.write_sidecar(meta2)
+
+        original_stat = Path.stat
+
+        def flaky_stat(self: Path, **kwargs: object) -> object:
+            # Simulate one sidecar being deleted during the sort by raising
+            # OSError on the first stat() call inside the sort key.
+            if self.suffix == ".json" and "sess-del-a" in self.name:
+                raise OSError("simulated concurrent deletion")
+            return original_stat(self, **kwargs)
+
+        with patch.object(Path, "stat", flaky_stat):
+            result = web_cache.find_cached_for_url(url)
+
+        # The lookup must still succeed using the surviving sidecar.
+        assert result is not None
+        assert result.url_sha == web_cache.url_hash(url)
