@@ -19373,12 +19373,44 @@ _WINDSURF_TELEMETRY_RE: Final[re.Pattern[str]] = re.compile(
     re.IGNORECASE,
 )
 
+# windsurf Cascade patterns ───────────────────────────────────────────────────
+#: Windsurf Cascade AI status lines: "Cascade: connected", "Cascade v2.1.0", "AI assistant ready"
+_WINDSURF_CASCADE_STATUS_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\s*(?:Cascade\s*(?::\s*)?(?:connected|disconnected|ready|connecting|starting|"
+    r"model\s+loaded|indexing\s+workspace|context\s+limit|[a-z]+\.{3})|"
+    r"Cascade\s+v?\d+|"
+    r"AI\s+assistant\s+(?:ready|loaded|connecting))",
+    re.IGNORECASE,
+)
+#: Windsurf Cascade tool-call lines: "Cascade is reading file: …", "Cascade ran: …"
+_WINDSURF_CASCADE_TOOL_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\s*Cascade\s+(?:is\s+)?(?:reading|writing|running|executed|modified|created|deleted)\s+",
+    re.IGNORECASE,
+)
+#: Windsurf Cascade thinking/spinner lines: "Thinking…", "Generating…", "Cascade is thinking"
+_WINDSURF_CASCADE_SPINNER_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\s*(?:Thinking|Generating|Cascade\s+is\s+thinking|Processing\s+request)\s*\.{0,3}\s*$",
+    re.IGNORECASE,
+)
+#: Windsurf context window meter: "Context: 45678 / 200000 tokens"
+_WINDSURF_CONTEXT_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\s*(?:Context(?:\s+window)?|Token\s+(?:usage|count))\s*:\s*[\d,]+\s*/\s*[\d,]+",
+    re.IGNORECASE,
+)
+#: Windsurf session/workspace loading lines
+_WINDSURF_WORKSPACE_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\s*(?:Loading\s+workspace|Indexing\s+workspace|Workspace\s+(?:indexed|ready|loading)|"
+    r"Scanning\s+files|File\s+watcher)",
+    re.IGNORECASE,
+)
+
 
 class WindsurfFilter(Filter):
     """Compress ``windsurf`` (Codeium Windsurf AI editor) CLI output.
 
-    The ``windsurf`` CLI emits VS Code–style startup noise plus Codeium-specific
-    activation and index-loading lines that surround actual output.
+    The ``windsurf`` CLI emits VS Code–style startup noise, Codeium-specific
+    activation and index-loading lines, and Cascade AI status/tool-call lines
+    that surround actual output.
 
     Compression model:
 
@@ -19388,6 +19420,16 @@ class WindsurfFilter(Filter):
       ``Authentication status:``): dropped.
     * **Version banner** (``Windsurf 1.2.3``): dropped.
     * **Telemetry lines**: dropped.
+    * **Cascade AI status lines** (``Cascade: connected``, ``Cascade v2.1.0``,
+      ``AI assistant ready``): dropped (startup noise).
+    * **Cascade spinner lines** (``Thinking…``, ``Generating…``,
+      ``Cascade is thinking``): dropped.
+    * **Cascade tool-call lines** (``Cascade is reading file: …``,
+      ``Cascade wrote: …``): collapsed to a count.
+    * **Context window meters** (``Context: X / Y tokens``): kept as the last
+      seen value (useful for debugging context usage).
+    * **Workspace loading lines** (``Loading workspace``,
+      ``Indexing workspace``): dropped.
     * **Error lines**: always kept.
     * **Errors** (exit_code != 0): preserve all stderr unchanged.
     """
@@ -19413,6 +19455,8 @@ class WindsurfFilter(Filter):
         lines = combined.split("\n")
         kept: list[str] = []
         dropped_noise = 0
+        cascade_tool_count = 0
+        last_context: str | None = None
 
         for line in lines:
             # Error signals — always keep.
@@ -19435,13 +19479,42 @@ class WindsurfFilter(Filter):
             if _WINDSURF_TELEMETRY_RE.match(line):
                 dropped_noise += 1
                 continue
+            # Cascade AI status lines — drop.
+            if _WINDSURF_CASCADE_STATUS_RE.match(line):
+                dropped_noise += 1
+                continue
+            # Cascade spinner lines — drop.
+            if _WINDSURF_CASCADE_SPINNER_RE.match(line):
+                dropped_noise += 1
+                continue
+            # Cascade tool-call lines — count.
+            if _WINDSURF_CASCADE_TOOL_RE.match(line):
+                cascade_tool_count += 1
+                continue
+            # Context window meter — keep last seen.
+            if _WINDSURF_CONTEXT_RE.match(line):
+                last_context = line.strip()
+                continue
+            # Workspace loading lines — drop.
+            if _WINDSURF_WORKSPACE_RE.match(line):
+                dropped_noise += 1
+                continue
             kept.append(line)
 
+        out: list[str] = list(kept)
+
         notes: list[str] = []
+        if cascade_tool_count:
+            notes.append(
+                f"collapsed {cascade_tool_count} Cascade tool-call line(s); "
+                f"run with TOKEN_GOAT_BASH_COMPRESS=0 for full output"
+            )
+        if last_context:
+            notes.append(f"context: {last_context}")
         if dropped_noise:
             notes.append(f"dropped {dropped_noise} startup/activation noise line(s)")
-        self._emit_notes(kept, notes)
-        return self._finalize(kept)
+        self._emit_notes(out, notes)
+        return self._finalize(out)
 
 
 # opencode ────────────────────────────────────────────────────────────────────
