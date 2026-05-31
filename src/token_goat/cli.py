@@ -1,6 +1,7 @@
 """Typer CLI with stub subcommands."""
 from __future__ import annotations
 
+import builtins
 import contextlib
 import json
 import os
@@ -3112,22 +3113,55 @@ def doctor(  # noqa: C901
     cli_doctor.doctor(fix=fix)
 
 
+_VALID_TARGETS = {"claude", "codex", "gemini", "opencode", "openclaw", "all"}
+
+
 @app.command("install", rich_help_panel="Install")
 def cmd_install(
     codex: bool = typer.Option(False, "--codex", help="Also install Codex CLI integration"),  # noqa: B008
     opencode: bool = typer.Option(False, "--opencode", help="Also install opencode plugin bridge"),  # noqa: B008
     openclaw: bool = typer.Option(False, "--openclaw", help="Also install openclaw plugin bridge"),  # noqa: B008
+    target: list[str] = typer.Option(  # noqa: B008
+        None,
+        "--target",
+        help=(
+            "Install hooks for a specific tool. May be repeated. "
+            "Choices: claude, codex, opencode, openclaw, all. "
+            "Overrides --codex/--opencode/--openclaw when provided."
+        ),
+    ),
     dry_run: bool = typer.Option(False, "--dry-run", help="Print what would change; make no changes"),  # noqa: B008
     verify: bool = typer.Option(False, "--verify", help="After install, run a structured self-check"),  # noqa: B008
 ) -> None:
-    """One-time setup: scheduled tasks, settings.json, CLAUDE.md, skill, watchdog."""
+    """One-time setup: scheduled tasks, settings.json, CLAUDE.md, skill, watchdog.
+
+    Use --target to selectively install hooks for specific tools:
+
+        token-goat install --target claude
+        token-goat install --target codex
+        token-goat install --target all
+        token-goat install --target claude --target codex
+    """
     from . import install as inst  # noqa: PLC0415
+
+    targets: builtins.set[str] | None = None
+    if target:
+        unknown = builtins.set(target) - _VALID_TARGETS
+        if unknown:
+            typer.echo(
+                f"Unknown --target value(s): {', '.join(sorted(unknown))}. "
+                f"Valid choices: {', '.join(sorted(_VALID_TARGETS))}",
+                err=True,
+            )
+            raise typer.Exit(1)
+        targets = builtins.set(target)
 
     if dry_run:
         plan = inst.plan_install(
             install_codex=codex,
             install_opencode=opencode,
             install_openclaw=openclaw,
+            targets=targets,
         )
         typer.echo("token-goat install --dry-run (no changes made):")
         for row in plan:
@@ -3148,7 +3182,12 @@ def cmd_install(
         typer.echo(f"  [{icon}] {integration}: {state}")
     typer.echo("")
 
-    result = inst.install_all(install_codex=codex, install_opencode=opencode, install_openclaw=openclaw)
+    result = inst.install_all(
+        install_codex=codex,
+        install_opencode=opencode,
+        install_openclaw=openclaw,
+        targets=targets,
+    )
     typer.echo("token-goat install:")
     for step, detail in result.items():
         typer.echo(f"  {step}: {detail}")

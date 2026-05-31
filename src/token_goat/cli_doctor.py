@@ -366,6 +366,35 @@ def doctor(  # noqa: C901
         flag("installation", f"check failed — {_e}", warn=True)
 
     # ------------------------------------------------------------------
+    # 2c. Third-party AI tool compatibility hints
+    # ------------------------------------------------------------------
+    typer.echo("\nThird-party AI tools")
+    try:
+        from . import install as _install  # noqa: PLC0415
+
+        if _install.detect_aider():
+            flag(
+                "aider",
+                "detected — aider does not support hook-based auto-integration; "
+                "add `--read <file>` in your .aider.conf.yml to pass context manually",
+                warn=True,
+            )
+        else:
+            ok("aider", "not detected")
+
+        gemini_dir = Path.home() / ".gemini"
+        if gemini_dir.exists():
+            ok(
+                "gemini",
+                "detected — Gemini CLI uses a hook format not yet supported; "
+                "run `token-goat install --target gemini` when support lands",
+            )
+        else:
+            ok("gemini", "not detected")
+    except Exception as _e_tools:  # noqa: BLE001
+        flag("third-party tools", f"check failed — {_e_tools}", warn=True)
+
+    # ------------------------------------------------------------------
     # 3. SQLite
     # ------------------------------------------------------------------
     typer.echo("\nSQLite")
