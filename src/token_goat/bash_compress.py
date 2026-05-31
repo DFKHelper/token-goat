@@ -103,6 +103,11 @@ __all__ = [
     "UvFilter",
     "XcodeFilter",
     "YqFilter",
+    # Security scanners
+    "BanditFilter",
+    "TrivyFilter",
+    "SnykFilter",
+    "SemgrepFilter",
 ]
 
 import math
@@ -7566,6 +7571,638 @@ def _trim_repeated_prefix(
 
 
 # ---------------------------------------------------------------------------
+# Security scanners: Bandit, Trivy, Snyk, Semgrep
+# ---------------------------------------------------------------------------
+
+# --- Bandit ----------------------------------------------------------------
+
+#: "Run started:" banner line.
+_BANDIT_RUN_STARTED_RE: Final[re.Pattern[str]] = re.compile(r"^Run started:")
+#: "Test results:" section header.
+_BANDIT_TEST_RESULTS_RE: Final[re.Pattern[str]] = re.compile(r"^Test results:")
+#: Issue header — Severity + Confidence columns.
+_BANDIT_ISSUE_SEVERITY_RE: Final[re.Pattern[str]] = re.compile(
+    r"^>>\s+Issue:\s+\[", re.IGNORECASE,
+)
+#: Individual issue metadata lines (Location, More Info, …).
+_BANDIT_ISSUE_META_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\s+(Severity|Confidence|CWE|Location|More Info):",
+)
+#: "Code scanned:" stats block opener.
+_BANDIT_CODE_SCANNED_RE: Final[re.Pattern[str]] = re.compile(r"^Code scanned:")
+#: "Total issues (by severity)" table header.
+_BANDIT_TOTAL_ISSUES_RE: Final[re.Pattern[str]] = re.compile(
+    r"^Total issues \(by",
+)
+#: Numeric stat line inside the Code scanned / Total issues blocks.
+_BANDIT_STAT_LINE_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\s+\|?\s*\d"
+)
+#: "testing <file>" per-file progress line emitted with -v or in some versions.
+_BANDIT_TESTING_RE: Final[re.Pattern[str]] = re.compile(r"^testing\s")
+
+
+class BanditFilter(Filter):
+    """Compress ``bandit`` Python security-scan output.
+
+    Bandit emits one issue block per finding:
+
+    .. code-block:: text
+
+        >> Issue: [B101:assert_used] Use of assert detected.
+           Severity: Low   Confidence: High
+           CWE: CWE-703
+           Location: src/foo.py:42:4
+
+    On a large codebase the LOW severity blocks are often 80 %+ of the output
+    and rarely require immediate action.
+
+    Compression model:
+
+    * **Keep** the ``Run started:`` banner.
+    * **Keep** the ``Test results:`` section header.
+    * **Keep** HIGH and MEDIUM severity issue blocks verbatim.
+    * **Collapse** LOW severity issue blocks to a running count.
+    * **Keep** the ``Code scanned:`` stats block.
+    * **Keep** the ``Total issues (by severity)`` table.
+    * **Drop** per-file ``testing <file>`` progress lines.
+    """
+
+    name = "bandit"
+    binaries = frozenset(["bandit"])
+
+    def compress(
+        self, stdout: str, stderr: str, exit_code: int, argv: list[str],
+    ) -> str:
+        merged = self._combine_output(stdout, stderr)
+        lines = merged.split("\n")
+        kept: list[str] = []
+        low_dropped = 0
+
+        # State machine: are we inside an issue block?
+        in_issue = False
+        current_severity: str = ""
+        issue_buf: list[str] = []
+
+        def flush_issue() -> None:
+            nonlocal low_dropped
+            sev = current_severity.upper()
+            if sev in ("HIGH", "MEDIUM"):
+                kept.extend(issue_buf)
+            else:
+                low_dropped += 1
+
+        in_stats_block = False
+
+        for line in lines:
+            # Always drop per-file progress lines.
+            if _BANDIT_TESTING_RE.match(line):
+                continue
+
+            # Detect stats block openers — flush any pending issue first.
+            if _BANDIT_CODE_SCANNED_RE.match(line) or _BANDIT_TOTAL_ISSUES_RE.match(line):
+                if in_issue:
+                    flush_issue()
+                    in_issue = False
+                    issue_buf = []
+                    current_severity = ""
+                in_stats_block = True
+                kept.append(line)
+                continue
+
+            # Inside stats block: keep numeric stat lines and blank delimiters.
+            if in_stats_block:
+                if _BANDIT_STAT_LINE_RE.match(line) or not line.strip():
+                    kept.append(line)
+                else:
+                    # Next non-blank non-stat line closes the stats block.
+                    in_stats_block = False
+                    # Fall through to normal processing below.
+
+            if in_stats_block:
+                continue
+
+            # Issue block opener.
+            if _BANDIT_ISSUE_SEVERITY_RE.match(line):
+                if in_issue:
+                    flush_issue()
+                    issue_buf = []
+                    current_severity = ""
+                in_issue = True
+                issue_buf.append(line)
+                continue
+
+            # Inside an issue block, accumulate metadata lines.
+            if in_issue and (
+                _BANDIT_ISSUE_META_RE.match(line) or line.strip().startswith("--") or line.strip() == ""
+            ):
+                issue_buf.append(line)
+                if line.strip() == "" or line.strip().startswith("--"):
+                    # Blank or separator line terminates the block.
+                    flush_issue()
+                    in_issue = False
+                    issue_buf = []
+                    current_severity = ""
+                    if line.strip():
+                        kept.append(line)
+                else:
+                    # Extract severity for later decision.
+                    sev_m = re.search(r"Severity:\s*(\w+)", line, re.IGNORECASE)
+                    if sev_m:
+                        current_severity = sev_m.group(1)
+                continue
+
+            # Always keep: run banner, section headers, other lines.
+            if (
+                _BANDIT_RUN_STARTED_RE.match(line)
+                or _BANDIT_TEST_RESULTS_RE.match(line)
+            ):
+                kept.append(line)
+                continue
+
+            kept.append(line)
+
+        # Flush a trailing open issue block.
+        if in_issue:
+            flush_issue()
+
+        notes: list[str] = []
+        if low_dropped:
+            notes.append(f"collapsed {low_dropped} LOW severity issue block(s)")
+        self._emit_notes(kept, notes)
+        return self._finalize(kept)
+
+
+# --- Trivy -----------------------------------------------------------------
+
+#: Trivy INFO / WARN / DEBUG log lines emitted to stderr.
+_TRIVY_LOG_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}[^\s]*\s+(?:INFO|WARN|DEBUG|ERROR)\s",
+)
+#: Trivy table separator line (all dashes / plus).
+_TRIVY_TABLE_SEP_RE: Final[re.Pattern[str]] = re.compile(r"^[+|-]+$")
+#: Trivy vulnerability table data row — starts with "| library |".
+_TRIVY_TABLE_ROW_RE: Final[re.Pattern[str]] = re.compile(r"^\|")
+#: "Total: N (CRITICAL: X, HIGH: Y, MEDIUM: Z, LOW: W)" summary line.
+_TRIVY_TOTAL_RE: Final[re.Pattern[str]] = re.compile(
+    r"^Total:\s*\d+", re.IGNORECASE,
+)
+#: "No vulnerabilities found" messages.
+_TRIVY_NO_VULN_RE: Final[re.Pattern[str]] = re.compile(
+    r"no\s+vulnerabilit", re.IGNORECASE,
+)
+#: Target / library header lines (e.g. "Python (python-pkg)", "OS Packages").
+_TRIVY_TARGET_RE: Final[re.Pattern[str]] = re.compile(
+    r"^(?:[-=]+\s+)?(?:Python|Ruby|Node\.js|Go|Java|PHP|Rust|OS Packages|Alpine|"
+    r"Debian|Ubuntu|RHEL|CentOS|npm|pip|gem|cargo|pom\.xml|Gemfile\.lock|"
+    r"requirements|package-lock|yarn\.lock|composer\.lock|go\.sum|Cargo\.lock|\S+\s+\("
+    r")",
+    re.IGNORECASE,
+)
+
+
+class TrivyFilter(Filter):
+    """Compress ``trivy`` container/filesystem vulnerability scan output.
+
+    Trivy tables can be enormous when scanning a base image that carries
+    hundreds of MEDIUM/LOW findings while only a handful are CRITICAL/HIGH.
+
+    Compression model:
+
+    * **Drop** INFO/WARN/DEBUG log lines (timestamped lines to stderr) — they
+      are download/setup chatter, not findings.
+    * **Keep** CRITICAL and HIGH vulnerability rows in the table.
+    * **Collapse** MEDIUM, LOW, and UNKNOWN rows to per-library counts.
+    * **Keep** the ``Total: N (CRITICAL: X, HIGH: Y, ...)`` summary line.
+    * **Keep** "No vulnerabilities found" messages verbatim.
+    * **Keep** table header rows (column names + separator lines).
+    * **Keep** target/library section headers.
+    """
+
+    name = "trivy"
+    binaries = frozenset(["trivy"])
+
+    # Severity ordering — rows in the table have a SEVERITY column.
+    _HIGH_SEPS: Final[frozenset[str]] = frozenset(["CRITICAL", "HIGH"])
+
+    def compress(
+        self, stdout: str, stderr: str, exit_code: int, argv: list[str],
+    ) -> str:
+        # Merge stderr (log lines) and stdout (table) separately then combine.
+        # First strip log-noise from stderr.
+        clean_err_lines = [
+            ln for ln in stderr.split("\n")
+            if not _TRIVY_LOG_RE.match(ln)
+        ]
+        log_dropped = len(stderr.split("\n")) - len(clean_err_lines) if stderr.strip() else 0
+        clean_err = "\n".join(clean_err_lines).strip()
+
+        # Process stdout table.
+        out_lines = stdout.split("\n")
+        kept: list[str] = []
+        # Per-library MEDIUM/LOW/UNKNOWN collapsed counts: library → {sev: count}
+        low_med_counts: dict[str, dict[str, int]] = {}
+        in_table = False
+        # Column index of SEVERITY field — we parse it from the header row.
+        sev_col_idx: int = -1
+        lib_col_idx: int = -1
+
+        def _parse_table_cols(header_line: str) -> None:
+            nonlocal sev_col_idx, lib_col_idx
+            cols = [c.strip() for c in header_line.split("|")]
+            for i, c in enumerate(cols):
+                cu = c.upper()
+                if cu == "SEVERITY":
+                    sev_col_idx = i
+                if cu in ("LIBRARY", "PACKAGE", "VULNERABILITY ID") and lib_col_idx == -1:
+                    lib_col_idx = i
+
+        def _flush_low_med() -> None:
+            for lib, sev_counts in sorted(low_med_counts.items()):
+                summary = ", ".join(f"{sev}: {cnt}" for sev, cnt in sorted(sev_counts.items()))
+                kept.append(f"[token-goat: {lib} — {summary} (collapsed)]")
+            low_med_counts.clear()
+
+        for line in out_lines:
+            # No-vuln messages are always preserved.
+            if _TRIVY_NO_VULN_RE.search(line):
+                kept.append(line)
+                continue
+            # Total summary line — always keep.
+            if _TRIVY_TOTAL_RE.match(line):
+                _flush_low_med()
+                kept.append(line)
+                continue
+            # Table separator line.
+            if _TRIVY_TABLE_SEP_RE.match(line):
+                kept.append(line)
+                in_table = bool(line)
+                continue
+            # Table header row — detect column positions.
+            if in_table and line.startswith("|") and "SEVERITY" in line.upper():
+                _parse_table_cols(line)
+                kept.append(line)
+                continue
+            # Table data row.
+            if in_table and _TRIVY_TABLE_ROW_RE.match(line):
+                cols = [c.strip() for c in line.split("|")]
+                sev = ""
+                if 0 <= sev_col_idx < len(cols):
+                    sev = cols[sev_col_idx].upper()
+                if sev in self._HIGH_SEPS:
+                    kept.append(line)
+                else:
+                    # Collapse MEDIUM/LOW/UNKNOWN by library.
+                    lib = "unknown"
+                    if 0 <= lib_col_idx < len(cols):
+                        lib = cols[lib_col_idx] or "unknown"
+                    if lib not in low_med_counts:
+                        low_med_counts[lib] = {}
+                    low_med_counts[lib][sev or "UNKNOWN"] = (
+                        low_med_counts[lib].get(sev or "UNKNOWN", 0) + 1
+                    )
+                continue
+            # Target/library section header.
+            if _TRIVY_TARGET_RE.match(line) or line.startswith("=") or line.startswith("-"):
+                _flush_low_med()
+                in_table = False
+                sev_col_idx = -1
+                lib_col_idx = -1
+                kept.append(line)
+                continue
+            kept.append(line)
+
+        _flush_low_med()
+
+        out_text = self._finalize(kept)
+        notes: list[str] = []
+        if log_dropped:
+            notes.append(f"dropped {log_dropped} Trivy INFO/WARN/DEBUG log lines")
+        self._emit_notes(kept, notes)
+
+        if clean_err:
+            out_text = (out_text.rstrip() + "\n---\n" + clean_err) if out_text.strip() else clean_err
+        return out_text
+
+
+# --- Snyk ------------------------------------------------------------------
+
+#: Snyk "Testing <package>..." first line.
+_SNYK_TESTING_RE: Final[re.Pattern[str]] = re.compile(
+    r"^Testing\s", re.IGNORECASE,
+)
+#: Snyk dependency tree lines using box-drawing characters.
+_SNYK_TREE_LINE_RE: Final[re.Pattern[str]] = re.compile(
+    r"^(?:[├└│\s]|[|\\`][-\s]|  )"
+)
+#: Snyk vuln block opener — lines like "✗ High severity vulnerability found"
+#: or "Low severity vulnerability found in foo".
+_SNYK_VULN_HEADER_RE: Final[re.Pattern[str]] = re.compile(
+    r"(?:✗|x|X)?\s*(?:Critical|High|Medium|Low|Info)\s+severity",
+    re.IGNORECASE,
+)
+#: "More about this vulnerability:" URL-only lines.
+_SNYK_MORE_ABOUT_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\s*(?:More about this vulnerability|https?://\S+)",
+    re.IGNORECASE,
+)
+#: Snyk summary line — "✔ X unique vulnerabilities" or "✗ X issues".
+_SNYK_SUMMARY_RE: Final[re.Pattern[str]] = re.compile(
+    r"(?:✔|✗|Tested\s+\d+|unique vulnerabilities|no vulnerable paths|issues found)",
+    re.IGNORECASE,
+)
+#: License issue lines.
+_SNYK_LICENSE_RE: Final[re.Pattern[str]] = re.compile(
+    r"license", re.IGNORECASE,
+)
+
+
+class SnykFilter(Filter):
+    """Compress ``snyk`` security scan output.
+
+    Snyk output for a large monorepo can contain deep dependency trees,
+    lengthy vulnerability blocks, and "More about..." URL sections.
+
+    Compression model:
+
+    * **Keep** the first ``Testing <pkg>...`` line; drop subsequent progress
+      lines.
+    * **Collapse** deep dependency tree lines (├─, └─, │) to a count after
+      the first 10.
+    * **Keep** vulnerability block headers (severity + package name +
+      description opener).
+    * **Collapse** ``More about this vulnerability:`` / bare URL lines inside
+      a vuln block (typically 3–5 lines) to a single token-goat note.
+    * **Keep** summary lines (unique vulnerabilities, issues found, licence
+      issues).
+    * **Keep** license issue lines verbatim.
+    """
+
+    name = "snyk"
+    binaries = frozenset(["snyk"])
+
+    def compress(
+        self, stdout: str, stderr: str, exit_code: int, argv: list[str],
+    ) -> str:
+        merged = self._combine_output(stdout, stderr)
+        lines = merged.split("\n")
+        kept: list[str] = []
+
+        testing_seen = False
+        tree_lines = 0
+        tree_hidden = 0
+        in_more_about = False
+        more_about_dropped = 0
+
+        for line in lines:
+            # --- Testing progress ---
+            if _SNYK_TESTING_RE.match(line):
+                if not testing_seen:
+                    kept.append(line)
+                    testing_seen = True
+                # else drop subsequent "Testing ..." lines
+                continue
+
+            # --- Summary lines always kept ---
+            if _SNYK_SUMMARY_RE.search(line):
+                if tree_hidden:
+                    kept.append(f"[token-goat: +{tree_hidden} dependency tree lines collapsed]")
+                    tree_hidden = 0
+                kept.append(line)
+                continue
+
+            # --- License issue lines always kept ---
+            if _SNYK_LICENSE_RE.search(line) and not _SNYK_TREE_LINE_RE.match(line):
+                kept.append(line)
+                continue
+
+            # --- "More about..." / URL-only lines ---
+            if _SNYK_MORE_ABOUT_RE.match(line):
+                in_more_about = True
+                more_about_dropped += 1
+                continue
+            if in_more_about:
+                # The block ends when we hit a non-URL, non-blank line.
+                if line.strip() and not line.strip().startswith("http"):
+                    in_more_about = False
+                    if more_about_dropped:
+                        kept.append(
+                            f"[token-goat: collapsed {more_about_dropped} 'More about' URL line(s)]"
+                        )
+                        more_about_dropped = 0
+                    # Fall through to normal handling.
+                else:
+                    more_about_dropped += 1
+                    continue
+
+            # --- Vulnerability block headers ---
+            if _SNYK_VULN_HEADER_RE.search(line):
+                if tree_hidden:
+                    kept.append(f"[token-goat: +{tree_hidden} dependency tree lines collapsed]")
+                    tree_hidden = 0
+                kept.append(line)
+                continue
+
+            # --- Dependency tree lines ---
+            if _SNYK_TREE_LINE_RE.match(line) and line.strip():
+                tree_lines += 1
+                if tree_lines <= 10:
+                    kept.append(line)
+                else:
+                    tree_hidden += 1
+                continue
+
+            # --- All other lines pass through ---
+            if tree_hidden and not _SNYK_TREE_LINE_RE.match(line):
+                kept.append(f"[token-goat: +{tree_hidden} dependency tree lines collapsed]")
+                tree_hidden = 0
+            if more_about_dropped:
+                kept.append(
+                    f"[token-goat: collapsed {more_about_dropped} 'More about' URL line(s)]"
+                )
+                more_about_dropped = 0
+            kept.append(line)
+
+        # Flush trailing counts.
+        if tree_hidden:
+            kept.append(f"[token-goat: +{tree_hidden} dependency tree lines collapsed]")
+        if more_about_dropped:
+            kept.append(
+                f"[token-goat: collapsed {more_about_dropped} 'More about' URL line(s)]"
+            )
+        return self._finalize(kept)
+
+
+# --- Semgrep ---------------------------------------------------------------
+
+#: "Scanning N files..." progress line.
+_SEMGREP_SCANNING_RE: Final[re.Pattern[str]] = re.compile(
+    r"^(?:Scanning\s+\d+|Running\s+\d+)",
+    re.IGNORECASE,
+)
+#: Semgrep rule match header — "  severity   rule-id" or "rule-id" lines.
+_SEMGREP_RULE_HEADER_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\s*(ERROR|WARNING|INFO|HIGH|MEDIUM|LOW|CRITICAL)\s+\S"
+    r"|^[^\s/][^/\s]*\.[a-zA-Z0-9_-]+\s*$",
+    re.IGNORECASE,
+)
+#: File:line citation inside a rule match block.
+_SEMGREP_FILE_LOC_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\s+\d+\s*[│|]\s|^\s*[^:\s]+:\d+",
+)
+#: "Details:" URL line.
+_SEMGREP_DETAILS_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\s*Details:\s*https?://",
+    re.IGNORECASE,
+)
+#: Final summary line.
+_SEMGREP_SUMMARY_RE: Final[re.Pattern[str]] = re.compile(
+    r"^(?:Ran\s+\d+|Findings?:|✔|✘|\d+\s+finding)",
+    re.IGNORECASE,
+)
+#: Semgrep autofix / rule source annotation lines.
+_SEMGREP_ANNOTATION_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\s*(?:run|fix|autofix|rule):\s*https?://",
+    re.IGNORECASE,
+)
+
+
+class SemgrepFilter(Filter):
+    """Compress ``semgrep`` static analysis output.
+
+    Semgrep can emit thousands of lines when the same rule fires across
+    hundreds of files.  The agent needs rule identity, severity, and the
+    first few instances — not every occurrence.
+
+    Compression model:
+
+    * **Keep** the first ``Scanning N files...`` line.
+    * **Keep** rule match blocks (rule id + file:line + code snippet); drop
+      ``Details:`` / annotation URL lines.
+    * **Collapse** repeated matches for the same rule across many files: show
+      the first 3 instances, collapse the rest to a count.
+    * **Keep** the ``Ran N rules on N files: N findings`` summary.
+    """
+
+    name = "semgrep"
+    binaries = frozenset(["semgrep"])
+
+    # Max instances of the same rule to keep before collapsing.
+    _MAX_PER_RULE: int = 3
+
+    def compress(
+        self, stdout: str, stderr: str, exit_code: int, argv: list[str],
+    ) -> str:
+        merged = self._combine_output(stdout, stderr)
+        lines = merged.split("\n")
+        kept: list[str] = []
+
+        scanning_seen = False
+        details_dropped = 0
+        # rule_id → count of instances already emitted
+        rule_counts: dict[str, int] = {}
+        # rule_id → count of instances suppressed
+        rule_suppressed: dict[str, int] = {}
+
+        # We do a two-pass approach:
+        # Pass 1: split into blocks (each rule match is a block).
+        # Pass 2: emit first _MAX_PER_RULE blocks per rule, suppress rest.
+
+        # Build blocks: a block starts at a non-indented rule-id line and
+        # ends just before the next such line or the summary.
+        # For simplicity, we do a single pass with state tracking.
+
+        current_rule: str | None = None
+        current_block: list[str] = []
+
+        def flush_block() -> None:
+            nonlocal details_dropped
+            if current_rule is None:
+                kept.extend(current_block)
+                return
+            count = rule_counts.get(current_rule, 0)
+            if count < self._MAX_PER_RULE:
+                # Emit block, stripping Details: lines.
+                block_out = []
+                local_dropped = 0
+                for bl in current_block:
+                    if _SEMGREP_DETAILS_RE.match(bl) or _SEMGREP_ANNOTATION_RE.match(bl):
+                        local_dropped += 1
+                    else:
+                        block_out.append(bl)
+                if local_dropped:
+                    block_out.append(
+                        f"  [token-goat: collapsed {local_dropped} Details/annotation URL line(s)]"
+                    )
+                    details_dropped += local_dropped
+                kept.extend(block_out)
+                rule_counts[current_rule] = count + 1
+            else:
+                rule_suppressed[current_rule] = rule_suppressed.get(current_rule, 0) + 1
+
+        for line in lines:
+            # Scanning banner — keep first occurrence only.
+            if _SEMGREP_SCANNING_RE.match(line):
+                if not scanning_seen:
+                    # Flush any open block first.
+                    flush_block()
+                    current_rule = None
+                    current_block = []
+                    kept.append(line)
+                    scanning_seen = True
+                continue
+
+            # Summary line — flush and always keep.
+            if _SEMGREP_SUMMARY_RE.match(line):
+                flush_block()
+                current_rule = None
+                current_block = []
+                # Emit suppression notes before summary.
+                for rule_id, sup_cnt in sorted(rule_suppressed.items()):
+                    kept.append(
+                        f"[token-goat: {rule_id} — {sup_cnt} additional match(es) collapsed "
+                        f"(kept first {self._MAX_PER_RULE})]"
+                    )
+                rule_suppressed.clear()
+                kept.append(line)
+                continue
+
+            # Rule match header — non-indented rule id or severity+rule line.
+            # Detect by: non-blank, not starting with spaces, and looks like a
+            # rule path or severity keyword.
+            is_rule_header = (
+                line
+                and not line[0].isspace()
+                and (
+                    _SEMGREP_RULE_HEADER_RE.match(line)
+                    or "." in line.split("/")[-1]
+                    or re.match(r"^[a-zA-Z0-9_-]+\.[a-zA-Z0-9_-]+", line)
+                )
+                and not _SEMGREP_SUMMARY_RE.match(line)
+                and not _SEMGREP_SCANNING_RE.match(line)
+            )
+            if is_rule_header:
+                flush_block()
+                current_rule = line.strip()
+                current_block = [line]
+                continue
+
+            # Everything else goes into the current block.
+            current_block.append(line)
+
+        # Flush trailing block.
+        flush_block()
+        # Emit any unseen suppression notes at end.
+        for rule_id, sup_cnt in sorted(rule_suppressed.items()):
+            kept.append(
+                f"[token-goat: {rule_id} — {sup_cnt} additional match(es) collapsed "
+                f"(kept first {self._MAX_PER_RULE})]"
+            )
+
+        return self._finalize(kept)
+
+
+# ---------------------------------------------------------------------------
 # Public registry & dispatch
 # ---------------------------------------------------------------------------
 
@@ -7670,6 +8307,11 @@ FILTERS: list[Filter] = [
     JqFilter(),
     YqFilter(),
     PythonFilter(),
+    # Security scanners — disjoint binaries from all other filters.
+    BanditFilter(),
+    TrivyFilter(),
+    SnykFilter(),
+    SemgrepFilter(),
 ]
 
 
