@@ -4031,7 +4031,9 @@ class TestAllSectionsSimultaneous:
         self._build_full_session(sid)
         result = compact.build_manifest(sid, max_tokens=800)
         assert isinstance(result, str)
-        assert len(result) > 0
+        # Session has edited files and file reads — manifest must be non-empty
+        # and reference the edited source file.
+        assert "compact.py" in result
 
     def test_all_sections_budget_respected(self, tmp_data_dir):
         """Token count must not exceed max_tokens budget."""
@@ -6095,7 +6097,8 @@ class TestStringIOAssembly:
         session.mark_file_edited(sid, "src/foo.py")
         result = compact.build_manifest(sid)
         assert isinstance(result, str)
-        assert len(result) > 0
+        # The edited file must appear in the manifest.
+        assert "foo.py" in result
 
     def test_manifest_empty_for_empty_session(self, tmp_data_dir):
         sid = "sio-empty-abc"
@@ -6466,7 +6469,10 @@ class TestManifestCacheStub:
         assert "fp" in data
         assert "ts" in data
         assert isinstance(data["ts"], float)
-        assert len(data["sha"]) > 0
+        # sha is the first 16 hex chars of SHA-256 (see cache_common.short_content_hash).
+        assert len(data["sha"]) == 16
+        assert all(c in "0123456789abcdef" for c in data["sha"])
+        # fp must be a non-empty string fingerprint.
         assert len(data["fp"]) > 0
 
     # ------------------------------------------------------------------

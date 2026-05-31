@@ -685,9 +685,10 @@ class TestPythonFilter:
             argv=["python", "script.py"],
         )
 
-        # Should pass through without crashing.
+        # Should pass through without crashing — incomplete traceback is emitted verbatim.
         assert isinstance(result.text, str)
-        assert len(result.text) > 0
+        assert "Traceback" in result.text
+        assert "script.py" in result.text
 
 
 class TestFormatBashEntryRunCount:
