@@ -90,6 +90,9 @@ __all__ = [
     "JqFilter",
     "MavenFilter",
     "MixFilter",
+    "MSBuildFilter",
+    "NuGetFilter",
+    "PowerShellFilter",
     "PubFilter",
     "PythonFilter",
     "RsyncFilter",
@@ -7123,6 +7126,408 @@ class ComposerFilter(Filter):
 
 
 # ---------------------------------------------------------------------------
+# MSBuild
+# ---------------------------------------------------------------------------
+
+#: "Build started" / project-is-building header lines
+_MSBUILD_BUILD_STARTED_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\s*Build started",
+    re.IGNORECASE,
+)
+#: "Project ... is building" project header (multi-project parallel builds)
+_MSBUILD_PROJECT_BUILDING_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\s*Project\s+\".+\"\s+\(targets?\)",
+    re.IGNORECASE,
+)
+#: "Copying file from ... to ..." lines
+_MSBUILD_COPY_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\s*Copying file from\s+",
+    re.IGNORECASE,
+)
+#: "Creating directory ..." lines
+_MSBUILD_MKDIR_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\s*Creating directory\s+",
+    re.IGNORECASE,
+)
+#: Task name lines like "  GenerateResource:" / "  Csc:" / "  Link:"
+_MSBUILD_TASK_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\s{2,4}[A-Z][A-Za-z0-9]+:\s*$",
+)
+#: "Build succeeded." line
+_MSBUILD_SUCCEEDED_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\s*Build succeeded\.\s*$",
+    re.IGNORECASE,
+)
+#: "X Error(s) / Warning(s)" summary lines
+_MSBUILD_SUMMARY_COUNT_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\s*\d+\s+(?:Error|Warning)\(s\)\s*$",
+    re.IGNORECASE,
+)
+#: MSBuild error line with (file:line) location  e.g. "file.cs(10,5): error CS0001: ..."
+_MSBUILD_ERROR_RE: Final[re.Pattern[str]] = re.compile(
+    r".*\(\d+(?:,\d+)?\)\s*:\s*error\s+",
+    re.IGNORECASE,
+)
+#: MSBuild warning line with (file:line) location
+_MSBUILD_WARNING_RE: Final[re.Pattern[str]] = re.compile(
+    r".*\(\d+(?:,\d+)?\)\s*:\s*warning\s+(\w+)",
+    re.IGNORECASE,
+)
+#: General MSBuild "done building" / "target ... skipped" noise lines
+_MSBUILD_NOISE_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\s*(?:Done building|Target\s+\".+\"\s+skipped|Time Elapsed)\b",
+    re.IGNORECASE,
+)
+
+
+class MSBuildFilter(Filter):
+    """Compress ``msbuild`` / ``MSBuild.exe`` output.
+
+    MSBuild emits verbose per-target task and file-copy lines that add little
+    signal.  This filter collapses them to counts while keeping all actionable
+    content.
+
+    Compression model:
+
+    * **Build started / project-building headers**: keep the first occurrence;
+      collapse repeats to a count note.
+    * **Copying file from ... to ...**:  collapse all occurrences per pass to
+      a count note.
+    * **Creating directory ...**: collapse to a count note.
+    * **Task-name-only lines** (``  Csc:``, ``  Link:``): collapse to a count
+      note when no errors follow immediately.
+    * **Build succeeded.**: keep verbatim.
+    * **X Error(s) / X Warning(s)** summary lines: keep verbatim.
+    * **Error lines** with ``(file:line)`` location: keep verbatim.
+    * **Warning lines**: keep, but deduplicate same warning code.
+    * **General noise** (``Done building``, skipped targets, ``Time Elapsed``):
+      drop on success; keep on failure.
+    """
+
+    name = "msbuild"
+    binaries = frozenset(["msbuild", "msbuild.exe"])
+
+    def matches(self, argv: list[str]) -> bool:  # noqa: D102
+        if not argv:
+            return False
+        stem = Path(argv[0]).stem.lower()
+        name = Path(argv[0]).name.lower()
+        return stem == "msbuild" or name == "msbuild.exe"
+
+    def compress(
+        self, stdout: str, stderr: str, exit_code: int, argv: list[str],
+    ) -> str:
+        merged = self._combine_output(stdout, stderr)
+        lines = merged.split("\n")
+
+        kept: list[str] = []
+        build_started_count = 0
+        copy_count = 0
+        mkdir_count = 0
+        task_count = 0
+        dropped_noise = 0
+        seen_warning_codes: set[str] = set()
+        dup_warning_count = 0
+
+        for line in lines:
+            # Error lines: always keep
+            if _MSBUILD_ERROR_RE.match(line):
+                kept.append(line)
+                continue
+            # Summary count lines and build-succeeded: always keep
+            if _MSBUILD_SUCCEEDED_RE.match(line) or _MSBUILD_SUMMARY_COUNT_RE.match(line):
+                kept.append(line)
+                continue
+            # Warning lines: keep, but deduplicate same warning code
+            m = _MSBUILD_WARNING_RE.match(line)
+            if m:
+                code = m.group(1).upper()
+                if code in seen_warning_codes:
+                    dup_warning_count += 1
+                else:
+                    seen_warning_codes.add(code)
+                    kept.append(line)
+                continue
+            # "Build started" headers: keep first, collapse repeats
+            if _MSBUILD_BUILD_STARTED_RE.match(line) or _MSBUILD_PROJECT_BUILDING_RE.match(line):
+                build_started_count += 1
+                if build_started_count == 1:
+                    kept.append(line)
+                continue
+            # Copying file lines
+            if _MSBUILD_COPY_RE.match(line):
+                copy_count += 1
+                continue
+            # Creating directory lines
+            if _MSBUILD_MKDIR_RE.match(line):
+                mkdir_count += 1
+                continue
+            # Task-name-only lines (e.g. "  Csc:")
+            if _MSBUILD_TASK_RE.match(line):
+                task_count += 1
+                continue
+            # Noise lines on success
+            if _MSBUILD_NOISE_RE.match(line) and exit_code == 0:
+                dropped_noise += 1
+                continue
+            kept.append(line)
+
+        notes: list[str] = []
+        if build_started_count > 1:
+            notes.append(f"collapsed {build_started_count - 1} repeated build-started headers")
+        if copy_count:
+            notes.append(f"collapsed {copy_count} file-copy lines")
+        if mkdir_count:
+            notes.append(f"collapsed {mkdir_count} directory-creation lines")
+        if task_count:
+            notes.append(f"collapsed {task_count} task-name lines")
+        if dropped_noise:
+            notes.append(f"dropped {dropped_noise} noise lines")
+        if dup_warning_count:
+            notes.append(f"deduplicated {dup_warning_count} repeated warnings")
+        self._emit_notes(kept, notes)
+        return self._finalize(kept)
+
+
+# ---------------------------------------------------------------------------
+# NuGet
+# ---------------------------------------------------------------------------
+
+#: "Installing PackageName version X.Y.Z" lines
+_NUGET_INSTALLING_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\s*Installing\s+\S+\s+\d+\.\d+",
+    re.IGNORECASE,
+)
+#: "Restoring packages for ..." lines
+_NUGET_RESTORING_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\s*Restoring packages for\b",
+    re.IGNORECASE,
+)
+#: "OK https://..." download-confirmation lines
+_NUGET_OK_HTTPS_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\s*OK\s+https?://",
+    re.IGNORECASE,
+)
+#: "Package X [version] is already installed" lines
+_NUGET_ALREADY_INSTALLED_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\s*Package\s+\S+.*\bis already installed",
+    re.IGNORECASE,
+)
+#: "Successfully installed 'Package Version'" lines
+_NUGET_SUCCESS_INSTALL_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\s*Successfully installed\s+",
+    re.IGNORECASE,
+)
+
+
+class NuGetFilter(Filter):
+    """Compress ``nuget`` / ``nuget.exe`` / ``nuget restore`` output.
+
+    NuGet emits per-package download, restore, and install lines for each
+    package in the dependency graph.  This filter collapses them to counts.
+
+    Compression model:
+
+    * **Installing PackageName version**: collapse to a count note.
+    * **Restoring packages for ...**: collapse multiple to a single line.
+    * **OK https://...**: collapse per-package download confirmations to count.
+    * **Package ... is already installed**: collapse to a count note.
+    * **Successfully installed 'pkg version'**: keep a single summary count.
+    * **Error lines**: keep verbatim.
+    """
+
+    name = "nuget"
+    binaries = frozenset(["nuget", "nuget.exe"])
+
+    def matches(self, argv: list[str]) -> bool:  # noqa: D102
+        if not argv:
+            return False
+        stem = Path(argv[0]).stem.lower()
+        name_lower = Path(argv[0]).name.lower()
+        return stem == "nuget" or name_lower == "nuget.exe"
+
+    def compress(
+        self, stdout: str, stderr: str, exit_code: int, argv: list[str],
+    ) -> str:
+        merged = self._combine_output(stdout, stderr)
+        lines = merged.split("\n")
+
+        kept: list[str] = []
+        installing_count = 0
+        restoring_paths: list[str] = []
+        ok_download_count = 0
+        already_installed_count = 0
+        success_install_count = 0
+
+        for line in lines:
+            # Error lines: always keep
+            if _ERROR_SIGNAL_RE.search(line):
+                kept.append(line)
+                continue
+            if _NUGET_INSTALLING_RE.match(line):
+                installing_count += 1
+                continue
+            if _NUGET_RESTORING_RE.match(line):
+                restoring_paths.append(line.strip())
+                continue
+            if _NUGET_OK_HTTPS_RE.match(line):
+                ok_download_count += 1
+                continue
+            if _NUGET_ALREADY_INSTALLED_RE.match(line):
+                already_installed_count += 1
+                continue
+            if _NUGET_SUCCESS_INSTALL_RE.match(line):
+                success_install_count += 1
+                continue
+            kept.append(line)
+
+        # Emit a single "Restoring packages" line if any were seen
+        if restoring_paths:
+            if len(restoring_paths) == 1:
+                kept.insert(0, restoring_paths[0])
+            else:
+                kept.insert(0, f"Restoring packages for {len(restoring_paths)} projects")
+
+        notes: list[str] = []
+        if installing_count:
+            notes.append(f"collapsed {installing_count} package-install lines")
+        if ok_download_count:
+            notes.append(f"collapsed {ok_download_count} package-download lines")
+        if already_installed_count:
+            notes.append(f"collapsed {already_installed_count} already-installed lines")
+        if success_install_count:
+            notes.append(f"collapsed {success_install_count} successfully-installed lines")
+        self._emit_notes(kept, notes)
+        return self._finalize(kept)
+
+
+# ---------------------------------------------------------------------------
+# PowerShell
+# ---------------------------------------------------------------------------
+
+#: "VERBOSE: ..." lines (Set-PSDebug -Trace or $VerbosePreference)
+_PWSH_VERBOSE_RE: Final[re.Pattern[str]] = re.compile(
+    r"^VERBOSE:\s",
+    re.IGNORECASE,
+)
+#: "DEBUG: ..." lines
+_PWSH_DEBUG_RE: Final[re.Pattern[str]] = re.compile(
+    r"^DEBUG:\s",
+    re.IGNORECASE,
+)
+#: "WARNING: ..." lines
+_PWSH_WARNING_RE: Final[re.Pattern[str]] = re.compile(
+    r"^WARNING:\s",
+    re.IGNORECASE,
+)
+#: Install-Module progress lines ("PackageManagement\...") or "Install-Module: ..."
+_PWSH_INSTALL_MODULE_RE: Final[re.Pattern[str]] = re.compile(
+    r"^(?:Install-Module:|PackageManagement\\|Installing package)\s",
+    re.IGNORECASE,
+)
+#: Progress-record lines e.g. "Processing record X of Y" / "PROGRESS: X% complete"
+_PWSH_PROGRESS_RECORD_RE: Final[re.Pattern[str]] = re.compile(
+    r"^(?:Processing record\s+\d+\s+of\s+\d+|PROGRESS:\s+\d+%)",
+    re.IGNORECASE,
+)
+#: Terminating error indicator lines ("At line:", "CategoryInfo:", "FullyQualifiedErrorId:")
+_PWSH_TERMINATING_ERROR_RE: Final[re.Pattern[str]] = re.compile(
+    r"^(?:At\s+\S+:\d+\s+char:\d+|CategoryInfo\s*:|FullyQualifiedErrorId\s*:|\+\s+~~~)",
+)
+
+
+class PowerShellFilter(Filter):
+    """Compress ``pwsh`` / ``powershell`` / ``powershell.exe`` output.
+
+    PowerShell scripts commonly emit VERBOSE/DEBUG streams, Install-Module
+    progress, and progress-record lines that add noise without signal.
+
+    Compression model:
+
+    * **VERBOSE: ...** lines: collapse to a count note.
+    * **DEBUG: ...** lines: collapse to a count note.
+    * **WARNING: ...** lines: keep, but deduplicate identical warnings.
+    * **Install-Module / PackageManagement progress** lines: collapse to count.
+    * **Processing record X of Y** / progress-percent lines: collapse to count.
+    * **Terminating error blocks** (``At line:``, ``CategoryInfo:``): keep verbatim.
+    """
+
+    name = "powershell"
+    binaries = frozenset(["pwsh", "powershell", "powershell.exe"])
+
+    def matches(self, argv: list[str]) -> bool:  # noqa: D102
+        if not argv:
+            return False
+        stem = Path(argv[0]).stem.lower()
+        name_lower = Path(argv[0]).name.lower()
+        return stem in {"pwsh", "powershell"} or name_lower == "powershell.exe"
+
+    def compress(
+        self, stdout: str, stderr: str, exit_code: int, argv: list[str],
+    ) -> str:
+        merged = self._combine_output(stdout, stderr)
+        lines = merged.split("\n")
+
+        kept: list[str] = []
+        verbose_count = 0
+        debug_count = 0
+        install_module_count = 0
+        progress_count = 0
+        seen_warnings: set[str] = set()
+        dup_warning_count = 0
+
+        for line in lines:
+            # Terminating error detail lines: always keep
+            if _PWSH_TERMINATING_ERROR_RE.match(line):
+                kept.append(line)
+                continue
+            # General error signals: always keep
+            if _ERROR_SIGNAL_RE.search(line):
+                kept.append(line)
+                continue
+            # VERBOSE lines
+            if _PWSH_VERBOSE_RE.match(line):
+                verbose_count += 1
+                continue
+            # DEBUG lines
+            if _PWSH_DEBUG_RE.match(line):
+                debug_count += 1
+                continue
+            # WARNING lines: keep unique, deduplicate repeats
+            if _PWSH_WARNING_RE.match(line):
+                key = line.strip()
+                if key in seen_warnings:
+                    dup_warning_count += 1
+                else:
+                    seen_warnings.add(key)
+                    kept.append(line)
+                continue
+            # Install-Module progress lines
+            if _PWSH_INSTALL_MODULE_RE.match(line):
+                install_module_count += 1
+                continue
+            # Progress-record lines
+            if _PWSH_PROGRESS_RECORD_RE.match(line):
+                progress_count += 1
+                continue
+            kept.append(line)
+
+        notes: list[str] = []
+        if verbose_count:
+            notes.append(f"collapsed {verbose_count} VERBOSE lines")
+        if debug_count:
+            notes.append(f"collapsed {debug_count} DEBUG lines")
+        if install_module_count:
+            notes.append(f"collapsed {install_module_count} Install-Module progress lines")
+        if progress_count:
+            notes.append(f"collapsed {progress_count} progress-record lines")
+        if dup_warning_count:
+            notes.append(f"deduplicated {dup_warning_count} repeated warnings")
+        self._emit_notes(kept, notes)
+        return self._finalize(kept)
+
+
+# ---------------------------------------------------------------------------
 # Helpers shared by filters
 # ---------------------------------------------------------------------------
 
@@ -7230,6 +7635,14 @@ FILTERS: list[Filter] = [
     CurlFilter(),
     RsyncFilter(),
     DotnetFilter(),
+    # MSBuildFilter handles standalone `msbuild` / `MSBuild.exe` invocations;
+    # disjoint from DotnetFilter (which handles `dotnet build` MSBuild wrapping).
+    MSBuildFilter(),
+    # NuGetFilter handles standalone `nuget` / `nuget.exe` invocations;
+    # disjoint from DotnetFilter (which handles `dotnet restore`).
+    NuGetFilter(),
+    # PowerShellFilter handles `pwsh`, `powershell`, and `powershell.exe`.
+    PowerShellFilter(),
     # RubyFilter handles rspec / minitest / ruby / rake.  BundlerFilter handles
     # `bundle install` / `bundle update` / `bundler`.  Both have disjoint
     # binaries from every other filter so their position is cosmetic.
