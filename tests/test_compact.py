@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import time
+import unittest.mock
 
 import pytest
 from conftest import make_git_repo
@@ -129,10 +130,16 @@ class TestBuildManifest:
                 _cfg_mod.load().compact_assist, wide_session_threshold=200,
             ),
         ))
+        import token_goat.session as _session_mod  # noqa: PLC0415
+
         sid = "symbols-session-abc"
-        for i in range(16):
-            for _ in range(5):
-                session.mark_file_read(sid, f"/proj/src/noise{i:02d}.py", offset=0, limit=400)
+        # Batch the 80 fill writes to avoid 80×(load+save) disk overhead.
+        cache = session.load(sid)
+        with unittest.mock.patch.object(_session_mod, "save", return_value=None):
+            for i in range(16):
+                for _ in range(5):
+                    cache = session.mark_file_read(sid, f"/proj/src/noise{i:02d}.py", offset=0, limit=400, cache=cache)
+        _session_mod.save(cache)
         session.mark_file_read(sid, "/proj/src/parser.py", symbol="index_project")
         result = compact.build_manifest(sid)
         assert "**Symbols Accessed:**" in result
@@ -165,10 +172,15 @@ class TestBuildManifest:
         assert "db.py" in result
 
     def test_manifest_respects_token_budget(self, tmp_data_dir):
+        import token_goat.session as _session_mod  # noqa: PLC0415
+
         sid = "budget-session-abc"
-        # Add many files to push the manifest above a tiny budget
-        for i in range(20):
-            session.mark_file_read(sid, f"/proj/src/bigfile{i:02d}.py", offset=0, limit=500)
+        # Add many files to push the manifest above a tiny budget — batch writes.
+        cache = session.load(sid)
+        with unittest.mock.patch.object(_session_mod, "save", return_value=None):
+            for i in range(20):
+                cache = session.mark_file_read(sid, f"/proj/src/bigfile{i:02d}.py", offset=0, limit=500, cache=cache)
+        _session_mod.save(cache)
         result = compact.build_manifest(sid, max_tokens=50)
         max_chars = 50 * 4
         assert len(result) <= max_chars
@@ -1445,22 +1457,30 @@ class TestSymbolRankingByRecency:
                 _cfg_mod.load().compact_assist, wide_session_threshold=200,
             ),
         ))
+        import token_goat.session as _session_mod  # noqa: PLC0415
+
         sid = "symbol-recency-session-abc"
         _ts = _it.count(1_000_000_000.0, 0.01)
         monkeypatch.setattr(session.time, "time", lambda: next(_ts))
-        # Older symbol read
-        session.mark_file_read(sid, "/proj/src/older.py", symbol="old_sym")
-        # Many intervening files-with-symbols
-        for i in range(3):
-            session.mark_file_read(sid, f"/proj/src/mid{i}.py", symbol=f"mid_sym_{i}")
-        # Most-recent symbol read
-        session.mark_file_read(sid, "/proj/src/recent.py", symbol="recent_sym")
-        # Item #8 pads: heavily-read no-symbol files dominate **Files:** so the
-        # symbol-bearing files above stay out of **Files:** and therefore keep
-        # their symbol-detail lines in **Symbols Accessed:**.
-        for i in range(16):
-            for _ in range(8):
-                session.mark_file_read(sid, f"/proj/src/noise{i:02d}.py", offset=0, limit=600)
+        # Suppress intermediate saves: 16*8+5 = 133 atomic writes otherwise.
+        # Patch save() to a no-op during the loop and flush once at the end.
+        cache = None
+        with unittest.mock.patch.object(_session_mod, "save", return_value=None):
+            # Older symbol read
+            cache = session.mark_file_read(sid, "/proj/src/older.py", symbol="old_sym", cache=cache)
+            # Many intervening files-with-symbols
+            for i in range(3):
+                cache = session.mark_file_read(sid, f"/proj/src/mid{i}.py", symbol=f"mid_sym_{i}", cache=cache)
+            # Most-recent symbol read
+            cache = session.mark_file_read(sid, "/proj/src/recent.py", symbol="recent_sym", cache=cache)
+            # Item #8 pads: heavily-read no-symbol files dominate **Files:** so the
+            # symbol-bearing files above stay out of **Files:** and therefore keep
+            # their symbol-detail lines in **Symbols Accessed:**.
+            for i in range(16):
+                for _ in range(8):
+                    cache = session.mark_file_read(sid, f"/proj/src/noise{i:02d}.py", offset=0, limit=600, cache=cache)
+        if cache is not None:
+            _session_mod.save(cache)
         result = compact.build_manifest(sid)
         # In Symbols Accessed section, recent.py should appear before older.py
         symbols_section = result.split("**Symbols Accessed:**")[1] if "**Symbols Accessed:**" in result else result
@@ -2536,10 +2556,16 @@ class TestHotFileConsolidation:
 
     def test_more_than_six_hot_files_shows_overflow(self, tmp_data_dir):
         """When > 6 hot files exist, first 6 are named and '+N more' is appended."""
+        import token_goat.session as _session_mod  # noqa: PLC0415
+
         sid = "hot-overflow-session"
-        for i in range(8):
-            for _ in range(5):
-                session.mark_file_read(sid, f"/proj/src/hot{i}.py", offset=0, limit=50)
+        # Batch the 40 writes to avoid N×(load+save) disk overhead.
+        cache = session.load(sid)
+        with unittest.mock.patch.object(_session_mod, "save", return_value=None):
+            for i in range(8):
+                for _ in range(5):
+                    cache = session.mark_file_read(sid, f"/proj/src/hot{i}.py", offset=0, limit=50, cache=cache)
+        _session_mod.save(cache)
         result = compact.build_manifest(sid)
         assert "Hot (5+×):" in result
         # Should show overflow for the extra 2 files (8 - 6 = 2)
@@ -2549,10 +2575,16 @@ class TestHotFileConsolidation:
 
     def test_exactly_six_hot_files_no_overflow(self, tmp_data_dir):
         """Exactly 6 hot files: all shown by name, no '+N more'."""
+        import token_goat.session as _session_mod  # noqa: PLC0415
+
         sid = "hot-exactly-six-session"
-        for i in range(6):
-            for _ in range(5):
-                session.mark_file_read(sid, f"/proj/src/file{i}.py", offset=0, limit=50)
+        # Batch the 30 writes to avoid N×(load+save) disk overhead.
+        cache = session.load(sid)
+        with unittest.mock.patch.object(_session_mod, "save", return_value=None):
+            for i in range(6):
+                for _ in range(5):
+                    cache = session.mark_file_read(sid, f"/proj/src/file{i}.py", offset=0, limit=50, cache=cache)
+        _session_mod.save(cache)
         result = compact.build_manifest(sid)
         assert "Hot (5+×):" in result
         # No overflow expected
@@ -2815,17 +2847,22 @@ class TestSectionBudgets:
 
     def test_manifest_stays_within_budget_saturated_session(self, tmp_data_dir):
         """A heavily populated session never exceeds the token budget."""
+        import token_goat.session as _session_mod  # noqa: PLC0415
         from token_goat.repomap import estimate_tokens
 
         sid = "section-budget-saturated"
-        for i in range(20):
-            session.mark_file_edited(sid, f"/proj/src/edited_{i:02d}.py")
-        for i in range(15):
-            session.mark_file_read(sid, f"/proj/src/sym_{i:02d}.py", symbol=f"fn_{i}")
-        for i in range(20):
-            session.mark_file_read(sid, f"/proj/src/read_{i:02d}.py", offset=0, limit=100)
-        for i in range(10):
-            session.mark_grep(sid, f"pattern_{i}", "/proj/src")
+        # Batch the 65 writes to avoid N×(load+save) disk overhead.
+        cache = session.load(sid)
+        with unittest.mock.patch.object(_session_mod, "save", return_value=None):
+            for i in range(20):
+                cache = session.mark_file_edited(sid, f"/proj/src/edited_{i:02d}.py", cache=cache)
+            for i in range(15):
+                cache = session.mark_file_read(sid, f"/proj/src/sym_{i:02d}.py", symbol=f"fn_{i}", cache=cache)
+            for i in range(20):
+                cache = session.mark_file_read(sid, f"/proj/src/read_{i:02d}.py", offset=0, limit=100, cache=cache)
+            for i in range(10):
+                cache = session.mark_grep(sid, f"pattern_{i}", "/proj/src", cache=cache)
+        _session_mod.save(cache)
 
         budget = 400
         result = compact.build_manifest(sid, max_tokens=budget)
@@ -3145,12 +3182,18 @@ class TestComputeAdaptiveBudgetWithAge:
 
     def test_mature_session_capped_at_800(self, tmp_data_dir):
         """Mature session with maximum complexity is capped at 800 tokens."""
+        import token_goat.session as _session_mod  # noqa: PLC0415
+
         sid = "mature-ceiling"
-        for i in range(10):
-            session.mark_file_edited(sid, f"/proj/e{i}.py")
-        for i in range(10):
-            session.mark_file_read(sid, f"/proj/s{i}.py", symbol=f"fn_{i}")
-        session.mark_bash_run(sid, "sha_ceil", "pytest", "id_ceil", 2000, 1000, 0, False)
+        # Batch the 21 writes to avoid N×(load+save) disk overhead.
+        cache = session.load(sid)
+        with unittest.mock.patch.object(_session_mod, "save", return_value=None):
+            for i in range(10):
+                cache = session.mark_file_edited(sid, f"/proj/e{i}.py", cache=cache)
+            for i in range(10):
+                cache = session.mark_file_read(sid, f"/proj/s{i}.py", symbol=f"fn_{i}", cache=cache)
+            cache = session.mark_bash_run(sid, "sha_ceil", "pytest", "id_ceil", 2000, 1000, 0, False, cache=cache)
+        _session_mod.save(cache)
         cache = session.load(sid)
         budget = compact.compute_adaptive_budget(cache, age_seconds=7200)
         assert budget <= 800
@@ -5923,16 +5966,21 @@ class TestAdaptiveDirectoryGrouping:
 
     def test_many_edited_files_grouped_more_aggressively(self, tmp_data_dir, monkeypatch):
         """15+ edited files → grouping threshold reduced from 3 to 2."""
+        import token_goat.session as _session_mod  # noqa: PLC0415
+
         sid = "many-edits-abc"
-        # Create 18 edited files in 4 directories
-        for i in range(5):
-            session.mark_file_edited(sid, f"src/dir1/file{i}.py")
-        for i in range(5):
-            session.mark_file_edited(sid, f"src/dir2/file{i}.py")
-        for i in range(4):
-            session.mark_file_edited(sid, f"src/dir3/file{i}.py")
-        for i in range(4):
-            session.mark_file_edited(sid, f"src/dir4/file{i}.py")
+        # Create 18 edited files in 4 directories — batch to avoid N×save.
+        cache = session.load(sid)
+        with unittest.mock.patch.object(_session_mod, "save", return_value=None):
+            for i in range(5):
+                cache = session.mark_file_edited(sid, f"src/dir1/file{i}.py", cache=cache)
+            for i in range(5):
+                cache = session.mark_file_edited(sid, f"src/dir2/file{i}.py", cache=cache)
+            for i in range(4):
+                cache = session.mark_file_edited(sid, f"src/dir3/file{i}.py", cache=cache)
+            for i in range(4):
+                cache = session.mark_file_edited(sid, f"src/dir4/file{i}.py", cache=cache)
+        _session_mod.save(cache)
 
         # Mock git functions to prevent actual git calls
         monkeypatch.setattr(compact, "_get_git_diff_stat_summary", lambda cwd: "")
@@ -6064,13 +6112,18 @@ class TestDynamicMaxFilesRead:
     """max_key_files shrinks when many files are edited (inverted-pyramid priority)."""
 
     def test_ten_or_more_edits_limits_key_files_to_four(self, tmp_data_dir):
+        import token_goat.session as _session_mod  # noqa: PLC0415
+
         sid = "dynmax-10-abc"
         # 10 edited files → dynamic max = 4
-        for i in range(10):
-            session.mark_file_edited(sid, f"src/edit_{i:02d}.py")
-        # Add many plain reads so the Files section would normally be large
-        for i in range(12):
-            session.mark_file_read(sid, f"src/read_{i:02d}.py", offset=0, limit=50)
+        # Batch the 22 writes to avoid N×(load+save) disk overhead.
+        cache = session.load(sid)
+        with unittest.mock.patch.object(_session_mod, "save", return_value=None):
+            for i in range(10):
+                cache = session.mark_file_edited(sid, f"src/edit_{i:02d}.py", cache=cache)
+            for i in range(12):
+                cache = session.mark_file_read(sid, f"src/read_{i:02d}.py", offset=0, limit=50, cache=cache)
+        _session_mod.save(cache)
         result = compact.build_manifest(sid, max_tokens=2000)
         # Count entries under **Files:**
         if "**Files:**" in result:
@@ -6079,12 +6132,18 @@ class TestDynamicMaxFilesRead:
             assert len(file_entries) <= 6  # 4 + 2 mature bonus max
 
     def test_five_to_nine_edits_limits_key_files_to_six(self, tmp_data_dir):
+        import token_goat.session as _session_mod  # noqa: PLC0415
+
         sid = "dynmax-5-abc"
         # 7 edited files → dynamic max = 6
-        for i in range(7):
-            session.mark_file_edited(sid, f"src/edit_{i:02d}.py")
-        for i in range(12):
-            session.mark_file_read(sid, f"src/read_{i:02d}.py", offset=0, limit=50)
+        # Batch the 19 writes to avoid N×(load+save) disk overhead.
+        cache = session.load(sid)
+        with unittest.mock.patch.object(_session_mod, "save", return_value=None):
+            for i in range(7):
+                cache = session.mark_file_edited(sid, f"src/edit_{i:02d}.py", cache=cache)
+            for i in range(12):
+                cache = session.mark_file_read(sid, f"src/read_{i:02d}.py", offset=0, limit=50, cache=cache)
+        _session_mod.save(cache)
         result = compact.build_manifest(sid, max_tokens=2000)
         if "**Files:**" in result:
             files_section = result.split("**Files:**")[1].split("**")[0]
@@ -6092,12 +6151,18 @@ class TestDynamicMaxFilesRead:
             assert len(file_entries) <= 8  # 6 + 2 mature bonus max
 
     def test_fewer_than_five_edits_uses_default_max(self, tmp_data_dir):
+        import token_goat.session as _session_mod  # noqa: PLC0415
+
         sid = "dynmax-few-abc"
         # 2 edited files → dynamic max = _MAX_FILES_READ (10)
-        for i in range(2):
-            session.mark_file_edited(sid, f"src/edit_{i:02d}.py")
-        for i in range(15):
-            session.mark_file_read(sid, f"src/read_{i:02d}.py", offset=0, limit=50)
+        # Batch the 17 writes to avoid N×(load+save) disk overhead.
+        cache = session.load(sid)
+        with unittest.mock.patch.object(_session_mod, "save", return_value=None):
+            for i in range(2):
+                cache = session.mark_file_edited(sid, f"src/edit_{i:02d}.py", cache=cache)
+            for i in range(15):
+                cache = session.mark_file_read(sid, f"src/read_{i:02d}.py", offset=0, limit=50, cache=cache)
+        _session_mod.save(cache)
         result = compact.build_manifest(sid, max_tokens=3000)
         if "**Files:**" in result:
             files_section = result.split("**Files:**")[1].split("**")[0]
@@ -6107,11 +6172,17 @@ class TestDynamicMaxFilesRead:
 
     def test_dynamic_max_constant_boundary_ten(self, tmp_data_dir):
         """Exactly 10 edited files hits the >=10 branch (max=4), not the >=5 branch (max=6)."""
+        import token_goat.session as _session_mod  # noqa: PLC0415
+
         sid = "dynmax-boundary-abc"
-        for i in range(10):
-            session.mark_file_edited(sid, f"src/e_{i:02d}.py")
-        for i in range(15):
-            session.mark_file_read(sid, f"src/r_{i:02d}.py", offset=0, limit=50)
+        # Batch the 25 writes to avoid N×(load+save) disk overhead.
+        cache = session.load(sid)
+        with unittest.mock.patch.object(_session_mod, "save", return_value=None):
+            for i in range(10):
+                cache = session.mark_file_edited(sid, f"src/e_{i:02d}.py", cache=cache)
+            for i in range(15):
+                cache = session.mark_file_read(sid, f"src/r_{i:02d}.py", offset=0, limit=50, cache=cache)
+        _session_mod.save(cache)
         result = compact.build_manifest(sid, max_tokens=2000)
         if "**Files:**" in result:
             files_section = result.split("**Files:**")[1].split("**")[0]
@@ -6291,14 +6362,20 @@ class TestWideSessionSymbolReplacement:
 
     def test_under_threshold_emits_full_symbol_section(self, tmp_data_dir):
         """Fewer than threshold files: per-file symbol list is emitted normally."""
-        from token_goat.config import CompactAssistConfig
+        import token_goat.session as _session_mod  # noqa: PLC0415
+        from token_goat.config import CompactAssistConfig  # noqa: PLC0415
+
         sid = "wide-under-threshold-abc"
         threshold = CompactAssistConfig().wide_session_threshold
         # Stay under threshold: read (threshold - 2) files, each with a symbol.
+        # Batch to avoid N×(load+save) disk overhead.
         n = max(1, threshold - 2)
-        for i in range(n):
-            session.mark_file_read(sid, f"src/mod_{i:02d}.py", symbol=f"func_{i}")
-        session.mark_file_edited(sid, "src/target.py")
+        cache = session.load(sid)
+        with unittest.mock.patch.object(_session_mod, "save", return_value=None):
+            for i in range(n):
+                cache = session.mark_file_read(sid, f"src/mod_{i:02d}.py", symbol=f"func_{i}", cache=cache)
+            cache = session.mark_file_edited(sid, "src/target.py", cache=cache)
+        _session_mod.save(cache)
 
         result = compact.build_manifest(sid, max_tokens=2000)
 
@@ -6314,14 +6391,19 @@ class TestWideSessionSymbolReplacement:
 
     def test_at_threshold_emits_map_pointer(self, tmp_data_dir, monkeypatch):
         """Exactly at threshold files: symbol section replaced by map pointer."""
-        from token_goat.config import CompactAssistConfig
+        import token_goat.session as _session_mod  # noqa: PLC0415
+        from token_goat.config import CompactAssistConfig  # noqa: PLC0415
+
         sid = "wide-at-threshold-abc"
         threshold = CompactAssistConfig().wide_session_threshold
 
-        # Read exactly `threshold` files (each with a symbol so Syms section fires).
-        for i in range(threshold):
-            session.mark_file_read(sid, f"src/wide_{i:02d}.py", symbol=f"fn_{i}")
-        session.mark_file_edited(sid, "src/anchor.py")
+        # Read exactly `threshold` files — batch to avoid N×(load+save) disk overhead.
+        cache = session.load(sid)
+        with unittest.mock.patch.object(_session_mod, "save", return_value=None):
+            for i in range(threshold):
+                cache = session.mark_file_read(sid, f"src/wide_{i:02d}.py", symbol=f"fn_{i}", cache=cache)
+            cache = session.mark_file_edited(sid, "src/anchor.py", cache=cache)
+        _session_mod.save(cache)
 
         result = compact.build_manifest(sid, max_tokens=2000)
 

@@ -21,6 +21,7 @@ from __future__ import annotations
 __all__ = ["post_edit", "_edit_succeeded"]
 
 import os as _os
+import threading
 import time as _time
 
 from .hooks_common import (
@@ -373,14 +374,18 @@ def _parse_local_imports(source: str, file_path: str, cwd: str | None) -> list[s
     return results[:_PREDICTIVE_SNAPSHOT_CAP]
 
 
-def _pre_snapshot_imports(session_id: str, file_path: str, cwd: str | None) -> None:
+def _pre_snapshot_imports(
+    session_id: str, file_path: str, cwd: str | None
+) -> threading.Thread:
     """Read the edited .py file, parse its imports, and pre-snapshot imported files.
 
     Runs in a daemon thread so the hook returns immediately.  Capped at
     ``_PREDICTIVE_SNAPSHOT_CAP`` snapshots to limit I/O cost.  All errors are
     logged at debug level and swallowed per the fail-soft hook pattern.
+
+    Returns the started daemon thread so callers that need synchronous
+    completion (e.g. tests) can call ``t.join()`` on the returned value.
     """
-    import threading  # noqa: PLC0415
     from pathlib import Path  # noqa: PLC0415
 
     def _worker() -> None:
@@ -432,6 +437,7 @@ def _pre_snapshot_imports(session_id: str, file_path: str, cwd: str | None) -> N
 
     t = threading.Thread(target=_worker, daemon=True, name="tg-predictive-snapshot")
     t.start()
+    return t
 
 
 def post_edit(payload: HookPayload) -> HookResponse:

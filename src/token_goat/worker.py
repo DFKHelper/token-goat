@@ -2208,7 +2208,8 @@ def _run_index_with_timeout(
     A ``None`` return means the caller should treat this project as a failure
     and record a backoff entry.
     """
-    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+    executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+    try:
         future = executor.submit(parser.index_project, project, full=full)
         try:
             return future.result(timeout=timeout)  # type: ignore[return-value]
@@ -2227,6 +2228,15 @@ def _run_index_with_timeout(
                 project.root,
             )
             return None
+    finally:
+        # shutdown(wait=False) releases the worker thread immediately without
+        # blocking until it finishes.  Python threads cannot be forcibly
+        # killed, so a timed-out indexing thread will continue running in the
+        # background, but the caller is unblocked right away — which is the
+        # documented contract of this function.  Using wait=True (the default
+        # when exiting a ``with`` block) would defeat the timeout entirely by
+        # making the caller wait for the full thread duration on a timeout path.
+        executor.shutdown(wait=False)
 
 
 def _process_dirty_entries(entries: list[DirtyQueueEntry]) -> None:
