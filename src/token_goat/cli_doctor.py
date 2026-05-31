@@ -384,11 +384,16 @@ def doctor(  # noqa: C901
 
         gemini_dir = Path.home() / ".gemini"
         if gemini_dir.exists():
-            ok(
-                "gemini",
-                "detected — Gemini CLI uses a hook format not yet supported; "
-                "run `token-goat install --target gemini` when support lands",
-            )
+            from . import install as _inst  # noqa: PLC0415
+            gemini_status = _inst._check_gemini_settings()  # noqa: SLF001
+            if "installed" in gemini_status:
+                ok("gemini", f"detected, hooks {gemini_status}")
+            else:
+                ok(
+                    "gemini",
+                    f"detected — hooks {gemini_status}; run `token-goat install --target gemini` to install",
+                    warn=True,
+                )
         else:
             ok("gemini", "not detected")
     except Exception as _e_tools:  # noqa: BLE001

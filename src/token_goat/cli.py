@@ -3314,13 +3314,14 @@ def cmd_install(
 def cmd_uninstall(
     purge: bool = typer.Option(False, "--purge", help=r"Also delete %LOCALAPPDATA%\dfk-helper\token-goat"),  # noqa: B008
     codex: bool = typer.Option(False, "--codex", help="Also remove Codex CLI integration"),  # noqa: B008
+    gemini: bool = typer.Option(False, "--gemini", help="Also remove Gemini CLI hook integration"),  # noqa: B008
     opencode: bool = typer.Option(False, "--opencode", help="Also remove opencode plugin bridge"),  # noqa: B008
     openclaw: bool = typer.Option(False, "--openclaw", help="Also remove openclaw plugin bridge"),  # noqa: B008
 ) -> None:
     """Cleanly reverse install."""
     from . import install as inst  # noqa: PLC0415
 
-    result = inst.uninstall_all(purge=purge, codex=codex, opencode=opencode, openclaw=openclaw)
+    result = inst.uninstall_all(purge=purge, codex=codex, gemini=gemini, opencode=opencode, openclaw=openclaw)
     typer.echo("token-goat uninstall:")
     for step, detail in result.items():
         typer.echo(f"  {step}: {detail}")

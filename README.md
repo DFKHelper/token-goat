@@ -219,7 +219,7 @@ FAILED tests/test_x.py::test_one
 [token-goat: pytest filter compressed 4.8 KiB to 0.1 KiB (97% saved)]
 ```
 
-Thirty-five built-in filters cover the noisiest dev commands: `pytest`, `jest` / `vitest`, `cargo`, `npm` / `pnpm` / `yarn`, `docker`, `kubectl` / `helm`, `aws`, `ruff` / `eslint` / `mypy`, `git`, `make` / `gradle` / `mvn`, `go test`, `terraform`, `pip`, `python`, `uv`, `gh`, `ansible`, `pre-commit`, `grep`, `eza` / `exa` / `ls`, `tree`, `fd` / `fdfind`, `bat` / `batcat`, `delta`, `jq`, `yq`, `fzf`, `lazygit`, `curl` / `wget`, `rsync`, `dotnet`, `cmake` / `ctest`, and `diff` / `colordiff`. Each one strips ANSI escapes, collapses `\r` progress bars, dedupes repeated lines, groups linter issues by rule, keeps every error block verbatim, and caps total output at 1000 lines / 64 KiB. Disable globally with `TOKEN_GOAT_BASH_COMPRESS=0`, per-filter via `[bash_compress] disabled_filters = ["docker"]` in config.toml, or preview the output of any command with `token-goat compress --cmd '<your command>'`.
+128 built-in filters cover the noisiest dev commands: `pytest`, `jest` / `vitest`, `cargo`, `npm` / `pnpm` / `yarn` / `bun`, `docker`, `kubectl` / `helm`, `aws`, `ruff` / `eslint` / `mypy` / `pylint` / `oxlint`, `git`, `make` / `gradle` / `mvn` / `ant` / `bazel`, `go test` / `golangci-lint`, `terraform` / `pulumi` / `cdk`, `pip` / `uv` / `conda`, `python`, `gh`, `ansible`, `pre-commit`, `grep`, `eza` / `ls`, `fd`, `bat`, `jq`, `yq`, `curl` / `wget`, `rsync`, `dotnet`, `cmake` / `ctest`, `swift` / `xcodebuild`, `ruby` / `bundler`, `elixir` / `mix`, `php` / `composer`, `flutter` / `dart`, `rust` / `cargo`, `kotlin` / `ktlint`, `zig`, `crystal`, `haskell` / `cabal`, `nix`, `R`, `c++` (conan / vcpkg / cppcheck / clang-tidy), `wrangler` / `hardhat` / `serverless`, `erlang`, `fly.io`, `forge`, `elm`, `julia`, `tox`, `vault`, `packer`, `nx` / `lerna` / `turbo`, `prettier` / `biome`, `sass`, `wasm-pack`, `deno`, **and AI tool CLIs**: `aider`, `gemini`, `claude`, `gh copilot`, `cursor`, `windsurf`, `opencode`, `continue`. Each filter strips ANSI escapes, collapses `\r` progress bars, dedupes repeated lines, groups linter issues by rule, keeps every error block verbatim, and caps total output at 1000 lines / 64 KiB. Disable globally with `TOKEN_GOAT_BASH_COMPRESS=0`, per-filter via `[bash_compress] disabled_filters = ["docker"]` in config.toml, or preview the output of any command with `token-goat compress --cmd '<your command>'`.
 
 ## Install
 
@@ -250,6 +250,14 @@ token-goat install --codex
 ```
 
 The `--codex` flag patches both Claude Code and Codex CLI in one pass.
+
+### Gemini CLI users
+
+```
+token-goat install --gemini
+```
+
+The `--gemini` flag writes hook entries into `~/.gemini/settings.json` using Gemini CLI's `BeforeTool` / `AfterTool` / `SessionStart` / `PreCompress` event names. Token-goat translates between Gemini's snake_case tool names (`run_shell_command`, `read_file`, `grep_search`, etc.) and its internal format automatically. Image shrinking, session hints, post-edit indexing, compact assist, and bash output compression all work. To remove: `token-goat uninstall --gemini`.
 
 ### opencode users
 
@@ -663,7 +671,7 @@ Add-MpPreference -ExclusionPath "$env:LOCALAPPDATA\dfk-helper\token-goat"
 token-goat uninstall
 ```
 
-Reverses everything in [What gets installed?](#what-gets-installed): the scheduled task or systemd unit, the registry value or `.desktop` or `.plist`, the hook entries in `settings.json`, the `CLAUDE.md` block, the skill directory. Add `--codex`, `--opencode`, or `--openclaw` to also strip those integrations. Add `--purge` to also delete the data directory (cache, index, models, logs). Nothing else on the system depends on it.
+Reverses everything in [What gets installed?](#what-gets-installed): the scheduled task or systemd unit, the registry value or `.desktop` or `.plist`, the hook entries in `settings.json`, the `CLAUDE.md` block, the skill directory. Add `--codex`, `--gemini`, `--opencode`, or `--openclaw` to also strip those integrations. Add `--purge` to also delete the data directory (cache, index, models, logs). Nothing else on the system depends on it.
 
 ## About
 
@@ -673,7 +681,7 @@ This is a solo project. I use it daily on Windows 11. Tests run across Python 3.
 
 ## Requests and issues
 
-Want token-goat to support something it doesn't yet? Open a GitHub issue. Feature requests: a new agent CLI integration (Cursor, Aider, Continue, Cline), a new language adapter (Ruby, Swift, Kotlin, C++), or an image or document format the shrink path doesn't compress yet. Issues are public and searchable. That's where I work out what to build next. A short repro plus what you'd want the command to do is enough.
+Want token-goat to support something it doesn't yet? Open a GitHub issue. Feature requests: a new agent CLI integration (Cline, Copilot Workspace, or any tool not yet covered), a new language adapter, or an image or document format the shrink path doesn't compress yet. Issues are public and searchable. That's where I work out what to build next. A short repro plus what you'd want the command to do is enough.
 
 Bug reports go to the same place. The most useful ones include:
 - Your OS, shell, and token-goat version (`token-goat --version`)
