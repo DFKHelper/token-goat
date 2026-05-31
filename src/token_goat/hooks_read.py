@@ -31,10 +31,11 @@ CONTINUE; never modifies tool output.
 """
 from __future__ import annotations
 
-__all__ = ["post_bash", "post_read", "pre_read"]
+__all__ = ["post_bash", "post_read", "pre_read", "_safe_split_argv"]
 
 import contextlib
 import re as _re
+import shlex as _shlex
 import time
 from collections.abc import Callable
 from pathlib import Path
@@ -70,6 +71,36 @@ from .util import sanitize_surrogates as _sanitize_surrogates
 # value (including unset) leaves compression enabled.  Matches the pattern used
 # by compact_assist for consistency.
 _ENV_BASH_COMPRESS = "TOKEN_GOAT_BASH_COMPRESS"
+
+
+def _safe_split_argv(cmd: str) -> list[str]:
+    """Split a shell command string into an argv list, safely handling metacharacters.
+
+    Uses :func:`shlex.split` for correct POSIX tokenisation (handles quoted
+    strings, escaped characters, and multi-word arguments).  Falls back to a
+    simple whitespace split when ``shlex.split`` raises ``ValueError`` (e.g.
+    unbalanced quotes — common in generated or partial commands).
+
+    Shell metacharacters (``|``, ``&&``, ``;``, ``>``, ``<``, ``$()``,
+    backticks) are **not stripped**: they are passed through so callers that
+    need to detect pipeline stages can still find them in the result.  Callers
+    that want to reject piped commands should check ``any(op in cmd ...)``
+    before splitting, or inspect the returned tokens for metacharacter presence.
+
+    Args:
+        cmd: Raw shell command string from the hook payload.
+
+    Returns:
+        A list of argument tokens.  Returns ``[]`` for empty or whitespace-only
+        input.  Never raises.
+    """
+    if not cmd or not cmd.strip():
+        return []
+    try:
+        return _shlex.split(cmd, posix=True)
+    except ValueError:
+        # Unbalanced quotes or other shlex parse error — fall back to whitespace split.
+        return cmd.split()
 
 
 def _bash_compress_enabled() -> bool:

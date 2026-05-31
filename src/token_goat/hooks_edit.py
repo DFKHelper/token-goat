@@ -18,7 +18,10 @@ CONTINUE so a broken index pipeline cannot interrupt the agent.
 """
 from __future__ import annotations
 
-__all__ = ["post_edit"]
+__all__ = ["post_edit", "_edit_succeeded"]
+
+import os as _os
+import time as _time
 
 from .hooks_common import (
     CONTINUE,
@@ -33,6 +36,88 @@ from .hooks_common import (
 from .hooks_common import (
     LOG as _LOG,
 )
+
+# Maximum age (seconds) of a file's mtime before we consider the edit "too old"
+# to be from this tool call.  In practice an Edit tool call completes in well
+# under a second, so 10 seconds is a generous upper bound that still filters
+# out files whose mtime predates the current session by a wide margin.
+_EDIT_FRESHNESS_SECS: float = 10.0
+
+
+def _edit_succeeded(payload: HookPayload, file_path: str) -> bool:
+    """Return True when the edit actually modified the file on disk.
+
+    Two complementary checks (both must pass for the edit to be recorded):
+
+    1. **Tool-response error flag** — If the payload's ``tool_response`` is a
+       dict with ``is_error: true`` (Claude Code MCP wire format) or the
+       response text starts with ``"Error:"`` / ``"Failed:"`` (plain-text
+       harness error), the edit failed at the tool level and did not touch the
+       file.  We do not record it.
+
+    2. **File mtime freshness** — Even when no explicit error is present, the
+       file must exist and have been modified within the last
+       :data:`_EDIT_FRESHNESS_SECS` seconds.  This catches the case where the
+       tool reports success but the file on disk was read-only or the path was
+       wrong and no write occurred.
+
+    Fail-soft: any ``OSError`` during the stat call is treated as "edit
+    succeeded, proceed normally" so a transient permission issue never silently
+    drops a legitimate edit from the session cache.
+
+    Args:
+        payload: The PostToolUse hook payload.
+        file_path: The ``file_path`` extracted from ``tool_input``.
+
+    Returns:
+        ``True`` when the edit appears to have succeeded; ``False`` when there
+        is clear evidence it failed.
+    """
+    # Check 1: explicit tool-level error in the response.
+    tool_resp = payload.get("tool_response") if isinstance(payload, dict) else None
+    if isinstance(tool_resp, dict) and tool_resp.get("is_error") is True:
+        # Claude Code MCP wire format: {"is_error": true, ...}
+        _LOG.debug(
+            "post-edit: skipping session record for %s (is_error=true in tool_response)",
+            sanitize_log_str(file_path),
+        )
+        return False
+    if isinstance(tool_resp, str):
+        stripped = tool_resp.strip()
+        if stripped.startswith(("Error:", "Failed:", "Permission denied")):
+            _LOG.debug(
+                "post-edit: skipping session record for %s (error text in tool_response)",
+                sanitize_log_str(file_path),
+            )
+            return False
+
+    # Check 2: mtime freshness — the file must exist and have been written recently.
+    try:
+        from pathlib import Path as _Path  # noqa: PLC0415
+
+        p = _Path(file_path)
+        if not p.exists():
+            # File does not exist — Write may have failed, but could also be a
+            # deletion (MultiEdit of a non-existent file); be conservative and
+            # allow the record so the manifest doesn't miss the intent.
+            return True
+        mtime = _os.path.getmtime(file_path)
+        age = _time.time() - mtime
+        if age > _EDIT_FRESHNESS_SECS:
+            _LOG.debug(
+                "post-edit: file %s mtime is %.1fs old (> %.1fs threshold); "
+                "edit may not have written to disk — skipping session record",
+                sanitize_log_str(file_path), age, _EDIT_FRESHNESS_SECS,
+            )
+            return False
+    except OSError as exc:
+        # Transient stat error — fail open (record the edit) so a benign race
+        # doesn't silently drop the entry from the compaction manifest.
+        _LOG.debug(
+            "post-edit: stat failed for %s (%s); assuming edit succeeded",
+            sanitize_log_str(file_path), exc,
+        )
+    return True
 
 
 def _nudge_worker_if_down() -> None:
@@ -368,9 +453,15 @@ def post_edit(payload: HookPayload) -> HookResponse:
     file_path = tool_input.get("file_path")
 
     if session_id and file_path:
-        def _record_edit(cache):  # noqa: ARG001
-            session.mark_file_edited(session_id, file_path, cache=cache)
-        update_session(session_id, _record_edit)
+        if _edit_succeeded(payload, file_path):
+            def _record_edit(cache):  # noqa: ARG001
+                session.mark_file_edited(session_id, file_path, cache=cache)
+            update_session(session_id, _record_edit)
+        else:
+            _LOG.debug(
+                "post-edit: file %s not recorded (edit did not succeed)",
+                sanitize_log_str(file_path),
+            )
 
     if file_path:
         _LOG.debug("post-edit: enqueuing %s for reindex", sanitize_log_str(file_path))
