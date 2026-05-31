@@ -14584,6 +14584,431 @@ class BiomeFilter(Filter):
 
 
 # ---------------------------------------------------------------------------
+# ktlint (Kotlin linter)
+# ---------------------------------------------------------------------------
+
+#: ktlint plain-text issue line: "path/to/File.kt:12:5: error: ... (rule-id)"
+_KTLINT_ISSUE_RE: Final[re.Pattern[str]] = re.compile(
+    r"^(.+\.kt):(\d+):(\d+):\s+(error|warning):\s+(.+)\s+\(([^)]+)\)$",
+    re.IGNORECASE,
+)
+#: ktlint checkstyle XML wrapper lines — drop (only keep inner <error> lines)
+_KTLINT_CHECKSTYLE_TAG_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\s*<(?:\?xml|checkstyle|file)\b",
+    re.IGNORECASE,
+)
+#: ktlint checkstyle <error> line: `<error line="1" column="5" severity="error" message="..." source="rule"/>`
+_KTLINT_CHECKSTYLE_ERROR_RE: Final[re.Pattern[str]] = re.compile(
+    r'^\s*<error\b.*\bsource="([^"]+)"',
+    re.IGNORECASE,
+)
+#: ktlint summary / footer lines — always keep
+_KTLINT_SUMMARY_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\s*(?:\d+\s+lint\s+error|ktlint\s+\d+\.\d+|Kotlin\s+style\s+guide"
+    r"|No\s+lint\s+errors|Resolving|Checking|Formatting)",
+    re.IGNORECASE,
+)
+#: ktlint per-rule-set header when running grouped mode
+_KTLINT_RULESET_HEADER_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\s*\[ktlint(?::\S+)?\]",
+    re.IGNORECASE,
+)
+
+
+class KtlintFilter(Filter):
+    """Compress ``ktlint`` Kotlin linter output.
+
+    ktlint emits one line per violation (``path/file.kt:L:C: error: msg (rule-id)``).
+    On a large codebase or after an initial adoption, the same rule fires
+    hundreds of times across many files, drowning out rarer / higher-severity
+    issues.
+
+    Compression model:
+
+    * **Deduplicate by rule-id**: keep the first
+      :attr:`_KEEP_PER_RULE` occurrences of each rule; collapse the rest
+      to a ``(+N more)`` note.
+    * **Always keep** ``error``-severity lines regardless of dedup count.
+    * **Drop** checkstyle XML wrapper tags (``<checkstyle>``, ``<file>``,
+      ``<?xml …>``); keep ``<error …>`` entries for checkstyle output, also
+      subject to dedup by rule.
+    * **Always keep** summary / footer lines and ktlint version headers.
+    * **Passthrough** any line that does not match a known pattern.
+    """
+
+    name = "ktlint"
+    binaries = frozenset(["ktlint"])
+
+    _KEEP_PER_RULE: int = 3
+
+    def compress(
+        self, stdout: str, stderr: str, exit_code: int, argv: list[str],
+    ) -> str:
+        combined = self._combine_output(stdout, stderr)
+        lines = combined.split("\n")
+        kept: list[str] = []
+        rule_counts: dict[str, int] = {}
+        deduplicated = 0
+        dropped_xml_tags = 0
+
+        for line in lines:
+            # Summary / footer — always keep (check before error-signal so ktlint
+            # version headers and clean-run messages are not mistaken for errors).
+            if _KTLINT_SUMMARY_RE.match(line) or _KTLINT_RULESET_HEADER_RE.match(line):
+                kept.append(line)
+                continue
+            # Checkstyle XML wrapper tags (opening/self-closing) — drop.
+            # Check BEFORE _ERROR_SIGNAL_RE because <checkstyle> / <file> tags
+            # contain no actionable info and their text never matches known patterns.
+            if _KTLINT_CHECKSTYLE_TAG_RE.match(line):
+                dropped_xml_tags += 1
+                continue
+            # Closing XML tags (</file>, </checkstyle>) — drop silently.
+            if line.strip().startswith("</"):
+                dropped_xml_tags += 1
+                continue
+            # Checkstyle <error> line — must precede _ERROR_SIGNAL_RE check because
+            # `<error ...>` text contains "error" which would fire the generic signal,
+            # bypassing dedup logic.  Deduplicate by source/rule attribute.
+            m_cs = _KTLINT_CHECKSTYLE_ERROR_RE.match(line)
+            if m_cs:
+                rule = m_cs.group(1)
+                rule_counts[rule] = rule_counts.get(rule, 0) + 1
+                cnt = rule_counts[rule]
+                # In checkstyle format there is no explicit severity field easy to
+                # parse; treat all as dedup-eligible (error-severity entries are
+                # typically unique so the 3-limit still preserves them in practice).
+                if cnt <= self._KEEP_PER_RULE:
+                    kept.append(line)
+                else:
+                    if cnt == self._KEEP_PER_RULE + 1:
+                        kept.append(
+                            f"  [token-goat: +? more {rule} violations; "
+                            f"run with TOKEN_GOAT_BASH_COMPRESS=0 for full list]"
+                        )
+                    deduplicated += 1
+                continue
+            # Plain-text issue line — dedup by rule-id; always keep error severity.
+            # Must also precede _ERROR_SIGNAL_RE so that the file:line:col format is
+            # checked first and severity is extracted cleanly.
+            m = _KTLINT_ISSUE_RE.match(line)
+            if m:
+                severity = m.group(4).lower()
+                rule = m.group(6)
+                rule_counts[rule] = rule_counts.get(rule, 0) + 1
+                cnt = rule_counts[rule]
+                always_keep = severity == "error"
+                if always_keep or cnt <= self._KEEP_PER_RULE:
+                    kept.append(line)
+                else:
+                    if cnt == self._KEEP_PER_RULE + 1:
+                        kept.append(
+                            f"[token-goat: +? more {rule} warnings; "
+                            f"run with TOKEN_GOAT_BASH_COMPRESS=0 for full list]"
+                        )
+                    deduplicated += 1
+                continue
+            # Error signal — always keep (generic fallback for unexpected formats).
+            if _ERROR_SIGNAL_RE.search(line):
+                kept.append(line)
+                continue
+            kept.append(line)
+
+        notes: list[str] = []
+        if deduplicated:
+            notes.append(f"deduplicated {deduplicated} repeated-rule violation lines")
+        if dropped_xml_tags:
+            notes.append(f"dropped {dropped_xml_tags} checkstyle XML wrapper tags")
+        self._emit_notes(kept, notes)
+        return self._finalize(kept)
+
+
+# ---------------------------------------------------------------------------
+# Zig build system
+# ---------------------------------------------------------------------------
+
+#: Zig build step progress lines: "[N/M] zig build-exe ..." or "Building..."
+_ZIG_BUILD_STEP_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\s*\[\d+/\d+\]\s+"
+)
+#: Zig build summary on success: "Build Summary: N/M steps succeeded"
+_ZIG_BUILD_SUMMARY_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\s*Build\s+Summary:|^\s*\d+\s+step[s]?\s+(?:succeeded|failed)",
+    re.IGNORECASE,
+)
+#: Zig compile error/note line: "path/file.zig:L:C: error: ..."
+_ZIG_DIAG_RE: Final[re.Pattern[str]] = re.compile(
+    r"^(.+\.zig):(\d+):(\d+):\s+(error|note|warning):\s+",
+    re.IGNORECASE,
+)
+#: Zig test result lines: "test \"name\"... " + result
+_ZIG_TEST_LINE_RE: Final[re.Pattern[str]] = re.compile(
+    r'^\s*test\s+"[^"]*"\.\.\.',
+    re.IGNORECASE,
+)
+#: Zig test pass — individual test line ending with "ok"
+_ZIG_TEST_PASS_RE: Final[re.Pattern[str]] = re.compile(
+    r"\.\.\.\s+OK\s*$",
+    re.IGNORECASE,
+)
+#: Zig test summary: "All N tests passed." or "N passed; M failed."
+_ZIG_TEST_SUMMARY_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\s*(?:All \d+ tests? passed|Tests run:\s*\d|\d+ passed"
+    r"|\d+ test[s]? (?:passed|failed)|FAIL \()",
+    re.IGNORECASE,
+)
+#: Zig fetch/dependency lines: "fetch ...  [checksum]"
+_ZIG_FETCH_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\s*(?:fetching|fetch\s+https?://|info:\s+Found\s+cached)"
+    r"|\bzig\s+fetch\b",
+    re.IGNORECASE,
+)
+#: Zig "info: " prefix lines that are purely informational noise
+_ZIG_INFO_NOISE_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\s*info:\s+(?:Resolving|Downloading|Checking|Extracting|Cached)\b",
+    re.IGNORECASE,
+)
+
+
+class ZigFilter(Filter):
+    """Compress ``zig build`` / ``zig test`` output.
+
+    Zig's build system emits ``[N/M] step`` progress lines for every
+    compilation unit, which is very verbose on large projects.  The test
+    runner emits one line per passing test.
+
+    Compression model:
+
+    * **Build step progress** (``[N/M] …``): sample the first
+      :attr:`_STEP_SAMPLE` lines; collapse the rest to a count.  The sample
+      shows which steps are running; the count conveys scale.
+    * **Passing test lines** (``test "…"... OK``): collapsed to a count;
+      only failing/skipped tests are preserved verbatim.
+    * **Build summary** (``Build Summary: N/M steps succeeded``) and
+      **test summary** lines: always kept.
+    * **Diagnostic lines** (``file.zig:L:C: error/note/warning``):
+      always kept.
+    * **Fetch / dependency-resolution noise**: collapsed to a count.
+    * **Informational ``info:`` noise lines**: dropped on success.
+    """
+
+    name = "zig"
+    binaries = frozenset(["zig"])
+
+    _STEP_SAMPLE: int = 5
+
+    def compress(
+        self, stdout: str, stderr: str, exit_code: int, argv: list[str],
+    ) -> str:
+        combined = self._combine_output(stdout, stderr)
+        lines = combined.split("\n")
+        kept: list[str] = []
+        step_sample: list[str] = []
+        step_extra = 0
+        tests_passed = 0
+        fetch_count = 0
+        dropped_info = 0
+
+        for line in lines:
+            # Error signals — always keep
+            if _ERROR_SIGNAL_RE.search(line):
+                kept.append(line)
+                continue
+            # Build / test summary — always keep
+            if _ZIG_BUILD_SUMMARY_RE.match(line) or _ZIG_TEST_SUMMARY_RE.match(line):
+                kept.append(line)
+                continue
+            # Diagnostic lines — always keep
+            if _ZIG_DIAG_RE.match(line):
+                kept.append(line)
+                continue
+            # Build step progress — sample
+            if _ZIG_BUILD_STEP_RE.match(line):
+                if len(step_sample) < self._STEP_SAMPLE:
+                    step_sample.append(line)
+                else:
+                    step_extra += 1
+                continue
+            # Test pass lines — count only
+            if _ZIG_TEST_LINE_RE.match(line) and _ZIG_TEST_PASS_RE.search(line):
+                tests_passed += 1
+                continue
+            # Fetch / dependency noise — count
+            if _ZIG_FETCH_RE.match(line):
+                fetch_count += 1
+                continue
+            # Informational noise — drop on success
+            if _ZIG_INFO_NOISE_RE.match(line) and exit_code == 0:
+                dropped_info += 1
+                continue
+            kept.append(line)
+
+        # Emit step sample before the rest of kept
+        out: list[str] = list(step_sample)
+        if step_extra:
+            out.append(
+                f"[token-goat: +{step_extra} more build steps; "
+                f"run with TOKEN_GOAT_BASH_COMPRESS=0 for full list]"
+            )
+        out.extend(kept)
+
+        notes: list[str] = []
+        if tests_passed:
+            notes.append(f"collapsed {tests_passed} passing test lines")
+        if fetch_count:
+            notes.append(f"collapsed {fetch_count} fetch/dependency lines")
+        if dropped_info:
+            notes.append(f"dropped {dropped_info} informational noise lines")
+        self._emit_notes(out, notes)
+        return self._finalize(out)
+
+
+# ---------------------------------------------------------------------------
+# Sass / SCSS / Less CSS preprocessors
+# ---------------------------------------------------------------------------
+
+#: Sass/SCSS rendering progress line: "Rendering Complete, saving .css file..."
+_SASS_RENDERING_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\s*Rendering Complete|^\s*Wrote CSS to\b|^\s*Compiled\s+\S+\s+to\s+\S+"
+    r"|^\s*\S+\.(?:scss|sass|less)\s*→\s*\S+\.css",
+    re.IGNORECASE,
+)
+#: Sass individual file-write line: "      write dist/main.css"
+_SASS_WRITE_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\s+(?:write|wrote|output|compiled|created|Compiled)\s+\S+\.css",
+    re.IGNORECASE,
+)
+#: Sass source-map write line: "      write dist/main.css.map"
+_SASS_MAP_WRITE_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\s+(?:write|wrote)\s+\S+\.(?:css\.map|map)\s*$",
+    re.IGNORECASE,
+)
+#: Sass deprecation warning — flag first occurrence per message, collapse rest
+_SASS_DEPRECATION_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\s*(?:Deprecation\s+Warning|DEPRECATION\s+WARNING|DeprecationWarning)\b",
+    re.IGNORECASE,
+)
+#: Sass error line: "Error: ..." or "   on line N of path/file.scss"
+_SASS_ERROR_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\s*(?:Error:|on\s+line\s+\d+\s+of\b)",
+    re.IGNORECASE,
+)
+#: Sass/node-sass compilation summary
+_SASS_SUMMARY_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\s*(?:Compilation\s+(?:complete|failed)|sass\s+\d+\.\d+|"
+    r"\d+\s+file[s]?\s+(?:compiled|written|processed)|"
+    r"Finished\s+'sass'|Done\s+compiling\s+sass|"
+    r"No\s+changes,?\s+done|done\s+in\s+[\d.]+)",
+    re.IGNORECASE,
+)
+#: Less.js per-file compile line: "lessc input.less output.css"
+_LESS_COMPILE_LINE_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\s*lessc\s+\S+\.less\s+\S+\.css",
+    re.IGNORECASE,
+)
+#: Less.js parse error: "ParseError: ..."
+_LESS_ERROR_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\s*(?:ParseError|NameError|FileError):\s",
+    re.IGNORECASE,
+)
+
+
+class SassFilter(Filter):
+    """Compress ``sass`` / ``scss`` / ``lessc`` CSS preprocessor output.
+
+    Both Sass (Dart Sass, node-sass) and Less emit one line per compiled
+    output file plus optional source-map writes.  On a large project this is
+    dozens of lines before any summary.
+
+    Compression model:
+
+    * **File-write lines** (``write dist/main.css``): keep the first
+      :attr:`_WRITE_SAMPLE` lines; collapse the rest to a count.
+    * **Source-map write lines** (``write *.css.map``): always drop — they
+      carry no signal for the agent.
+    * **Deprecation warnings**: keep the first occurrence of each unique
+      deprecation message prefix; collapse duplicates to a count.
+    * **Error lines**: always kept (both ``Error:`` and ``on line N of``
+      context lines).
+    * **Summary / completion lines**: always kept.
+    * **Progress / rendering lines**: kept verbatim on failure; dropped on
+      success when they precede a summary.
+    """
+
+    name = "sass"
+    binaries = frozenset(["sass", "scss", "lessc", "node-sass"])
+
+    def matches(self, argv: list[str]) -> bool:
+        if not argv:
+            return False
+        stem = Path(argv[0]).stem.lower()
+        name = Path(argv[0]).name.lower()
+        return stem in self.binaries or name in self.binaries
+
+    _WRITE_SAMPLE: int = 5
+    _KEEP_PER_DEPRECATION: int = 2
+
+    def compress(
+        self, stdout: str, stderr: str, exit_code: int, argv: list[str],
+    ) -> str:
+        combined = self._combine_output(stdout, stderr)
+        lines = combined.split("\n")
+        kept: list[str] = []
+        write_sample: list[str] = []
+        write_extra = 0
+        dropped_map = 0
+        dedup_deprecations: dict[str, int] = {}
+        collapsed_deprecations = 0
+
+        for line in lines:
+            # Error signals — always keep
+            if _ERROR_SIGNAL_RE.search(line) or _SASS_ERROR_RE.match(line) or _LESS_ERROR_RE.match(line):
+                kept.append(line)
+                continue
+            # Summary / completion lines — always keep
+            if _SASS_SUMMARY_RE.match(line) or _SASS_RENDERING_RE.match(line):
+                kept.append(line)
+                continue
+            # Source-map write lines — always drop
+            if _SASS_MAP_WRITE_RE.match(line):
+                dropped_map += 1
+                continue
+            # Deprecation warnings — dedup by first ~50 chars as key
+            if _SASS_DEPRECATION_RE.match(line):
+                key = line.strip()[:60]
+                dedup_deprecations[key] = dedup_deprecations.get(key, 0) + 1
+                if dedup_deprecations[key] <= self._KEEP_PER_DEPRECATION:
+                    kept.append(line)
+                else:
+                    collapsed_deprecations += 1
+                continue
+            # File-write lines — sample
+            if _SASS_WRITE_RE.match(line):
+                if len(write_sample) < self._WRITE_SAMPLE:
+                    write_sample.append(line)
+                else:
+                    write_extra += 1
+                continue
+            kept.append(line)
+
+        out: list[str] = list(write_sample)
+        if write_extra:
+            out.append(
+                f"[token-goat: +{write_extra} more compiled CSS files; "
+                f"run with TOKEN_GOAT_BASH_COMPRESS=0 for full list]"
+            )
+        out.extend(kept)
+
+        notes: list[str] = []
+        if dropped_map:
+            notes.append(f"dropped {dropped_map} source-map write lines")
+        if collapsed_deprecations:
+            notes.append(f"collapsed {collapsed_deprecations} duplicate deprecation warnings")
+        self._emit_notes(out, notes)
+        return self._finalize(out)
+
+
+# ---------------------------------------------------------------------------
 # Public registry & dispatch
 # ---------------------------------------------------------------------------
 
@@ -14796,6 +15221,13 @@ FILTERS: list[Filter] = [
     # ProtocFilter handles the Protocol Buffer compiler (protoc) and buf.
     # Disjoint binaries from every other filter so position is cosmetic.
     ProtocFilter(),
+    # KtlintFilter handles `ktlint`; disjoint binary from every other filter.
+    KtlintFilter(),
+    # ZigFilter handles `zig build`, `zig test`, etc.; disjoint binary.
+    ZigFilter(),
+    # SassFilter handles `sass`, `scss`, `lessc`, and `node-sass`; disjoint
+    # binaries from every other filter so position is cosmetic.
+    SassFilter(),
 ]
 
 
