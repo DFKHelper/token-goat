@@ -21,6 +21,7 @@ import ctypes
 import os
 import signal
 import sys
+import threading
 import time
 from collections.abc import Callable
 from typing import TYPE_CHECKING
@@ -32,6 +33,12 @@ if TYPE_CHECKING:
     from .worker import CleanupStats, DirtyQueueEntry
 
 _LOG = get_logger("worker")
+
+# Module-level stop event used by signal handlers.  Set by _install_signal_handlers
+# so that SIGTERM/SIGINT causes the main loop to exit cleanly after the current
+# work unit finishes, rather than calling sys.exit() mid-index which can leave
+# SQLite WAL writes partially committed.
+_daemon_stop_event: threading.Event | None = None
 
 
 def cleanup_on_startup() -> CleanupStats:
@@ -50,15 +57,18 @@ def _process_dirty_entries(entries: list[DirtyQueueEntry]) -> None:
 
 
 def _graceful_shutdown(signum: int, frame: object) -> None:
-    """Signal handler: clean up the PID file before exiting.
+    """Signal handler: request a clean shutdown by setting the stop event.
 
-    Called on SIGTERM and SIGINT.  Explicitly removes the PID file as a
-    belt-and-suspenders measure alongside the ``atexit.register(_clear_pid)``
-    installed by :func:`run_daemon` — atexit fires on ``sys.exit`` (which this
-    handler calls), so the cleanup happens twice in the normal path, but only
-    the explicit call fires if the process is terminated in a way that bypasses
-    atexit (e.g. hard kill before Python's signal-handler dispatch completes on
-    some platforms).
+    Called on SIGTERM and SIGINT.  Rather than calling ``sys.exit()``
+    immediately — which can interrupt an in-progress ``index_project`` call
+    mid-write and corrupt the SQLite WAL — this handler sets the module-level
+    ``_daemon_stop_event`` so the main loop exits cleanly after the current
+    work unit finishes.
+
+    The PID file is also cleared here as a belt-and-suspenders measure: the
+    try/finally in ``run_daemon`` removes it on normal exit, but the explicit
+    removal here covers the edge case where the signal arrives while the main
+    loop is blocked in a long sleep (``stop_event.wait``).
 
     Note on ``pythonw.exe`` (Windows GUI subsystem): this process receives no
     console-control events, so SIGTERM / SIGINT never arrive via the terminal.
@@ -69,13 +79,20 @@ def _graceful_shutdown(signum: int, frame: object) -> None:
     Windows OS limitation and is not fixable in user-space.  The PID file will
     be cleaned up on the *next* worker startup via ``cleanup_on_startup()``.
     """
-    _LOG.debug("received signal %d; initiating clean shutdown", signum)
-    with contextlib.suppress(Exception):
-        _worker._clear_pid()
-    sys.exit(0)
+    _LOG.debug("received signal %d; requesting clean shutdown", signum)
+    global _daemon_stop_event  # noqa: PLW0603
+    if _daemon_stop_event is not None:
+        _daemon_stop_event.set()
+    else:
+        # No stop event available (e.g. signal arrived before run_daemon
+        # initialised _daemon_stop_event). Fall back to the old behaviour so
+        # the process still terminates on signal.
+        with contextlib.suppress(Exception):
+            _worker._clear_pid()
+        sys.exit(0)
 
 
-def _install_signal_handlers() -> None:
+def _install_signal_handlers(stop_event: threading.Event | None = None) -> None:
     """Register SIGTERM/SIGINT handlers that exit cleanly, suppressing errors on platforms
     where the signal module exists but signal installation is restricted (e.g. non-main threads).
 
@@ -86,7 +103,14 @@ def _install_signal_handlers() -> None:
     On Windows ``pythonw.exe`` (GUI subsystem, no console attached), neither
     SIGTERM nor SIGINT arrives via the terminal — console-control events are
     handled separately by :func:`_install_windows_console_handler`.
+
+    The *stop_event* is stored in the module-level ``_daemon_stop_event`` so the
+    signal handler can set it without requiring a closure.  When *stop_event* is
+    None the handler falls back to ``sys.exit`` (backward-compatible for callers
+    that do not supply a stop event, e.g. tests).
     """
+    global _daemon_stop_event  # noqa: PLW0603
+    _daemon_stop_event = stop_event
     for sig in (signal.SIGTERM, signal.SIGINT):
         if hasattr(signal, sig.name):
             with contextlib.suppress(ValueError, AttributeError):
@@ -262,7 +286,10 @@ def run_daemon(stop_event=None) -> None:
             """Return True when the caller has signalled the worker to shut down."""
             return stop_event is not None and stop_event.is_set()
 
-        _install_signal_handlers()
+        # Pass the stop_event to the signal installer so SIGTERM/SIGINT sets it
+        # instead of calling sys.exit() mid-index.  The Windows console handler
+        # already accepts stop_event directly.
+        _install_signal_handlers(stop_event=stop_event)
         if sys.platform == "win32":
             _install_windows_console_handler(stop_event=stop_event)
         _LOG.info("worker started, pid=%s", os.getpid())
