@@ -126,6 +126,10 @@ __all__ = [
     "MySQLFilter",
     "Sqlite3Filter",
     "RedisCLIFilter",
+    # Code formatter filters
+    "BlackIsortFilter",
+    # System package manager filters
+    "SysPackageFilter",
     # Dedicated git sub-filters (higher-fidelity compression than GitFilter)
     "GitLogFilter",
     "GitDiffFilter",
@@ -11636,6 +11640,339 @@ class RedisCLIFilter(Filter):
         return self._finalize(kept)
 
 
+# --- Black / isort ------------------------------------------------------------
+
+#: black "reformatted" line: "reformatted path/to/file.py"
+_BLACK_REFORMATTED_RE: Final[re.Pattern[str]] = re.compile(
+    r"^reformatted\s+\S"
+)
+#: black "would reformat" (check mode): "would reformat path/to/file.py"
+_BLACK_WOULD_REFORMAT_RE: Final[re.Pattern[str]] = re.compile(
+    r"^would reformat\s+\S", re.IGNORECASE
+)
+#: black summary line: "All done! ✨ 🍰 ✨ / N files reformatted"
+_BLACK_SUMMARY_RE: Final[re.Pattern[str]] = re.compile(
+    r"^All done!|^\d+ files? (?:reformatted|left unchanged|would be reformatted)"
+)
+#: black "Oh no!" error header
+_BLACK_ERROR_RE: Final[re.Pattern[str]] = re.compile(
+    r"^Oh no!|^error:|^cannot format", re.IGNORECASE
+)
+#: black "error: cannot format" detail line
+_BLACK_CANNOT_FORMAT_RE: Final[re.Pattern[str]] = re.compile(
+    r"^error: cannot format\s+\S", re.IGNORECASE
+)
+#: isort "Fixing" or "ERROR" line
+_ISORT_FIXING_RE: Final[re.Pattern[str]] = re.compile(
+    r"^Fixing\s+\S"
+)
+#: isort "Skipped" line
+_ISORT_SKIPPED_RE: Final[re.Pattern[str]] = re.compile(
+    r"^Skipped\s+\d+\s+files?", re.IGNORECASE
+)
+
+
+class BlackIsortFilter(Filter):
+    """Compress ``black`` and ``isort`` formatter output.
+
+    Both formatters emit one line per file they touch plus a summary.  On a
+    large codebase ``black .`` can produce hundreds of "reformatted …" lines
+    before the summary.  The agent only needs the summary and any error lines.
+
+    Compression model (black):
+
+    * **Drop** ``reformatted <file>`` / ``would reformat <file>`` lines beyond
+      the first 5 (keep first 5 as a sample, count the rest).
+    * **Keep** all ``Oh no!`` / ``error:`` / ``cannot format`` error lines.
+    * **Keep** the ``All done! …`` summary line and the ``N files reformatted``
+      tally line.
+
+    Compression model (isort):
+
+    * **Drop** ``Fixing <file>`` lines beyond the first 5 (same sample model).
+    * **Keep** any error lines and the final ``Skipped N files`` summary.
+    """
+
+    name = "black-isort"
+    binaries = frozenset(["black", "isort"])
+
+    _SAMPLE_SIZE: int = 5
+
+    def compress(
+        self, stdout: str, stderr: str, exit_code: int, argv: list[str],
+    ) -> str:
+        binary = Path(argv[0]).stem.lower() if argv else "black"
+        if binary == "isort":
+            return self._compress_isort(stdout, stderr)
+        return self._compress_black(stdout, stderr)
+
+    def _compress_black(self, stdout: str, stderr: str) -> str:
+        merged = self._combine_output(stdout, stderr)
+        lines = merged.split("\n")
+        kept: list[str] = []
+        reformat_sample: list[str] = []
+        reformat_extra = 0
+        for line in lines:
+            if _BLACK_ERROR_RE.match(line) or _BLACK_CANNOT_FORMAT_RE.match(line):
+                kept.append(line)
+                continue
+            if _BLACK_SUMMARY_RE.match(line):
+                kept.append(line)
+                continue
+            if _BLACK_REFORMATTED_RE.match(line) or _BLACK_WOULD_REFORMAT_RE.match(line):
+                if len(reformat_sample) < self._SAMPLE_SIZE:
+                    reformat_sample.append(line)
+                else:
+                    reformat_extra += 1
+                continue
+            kept.append(line)
+
+        # Prepend the sample (files are load-bearing: tells the agent *which*
+        # files changed) followed by the error + summary lines.
+        out: list[str] = []
+        out.extend(reformat_sample)
+        if reformat_extra:
+            out.append(
+                f"[token-goat: +{reformat_extra} more reformatted files; "
+                f"run with TOKEN_GOAT_BASH_COMPRESS=0 for full list]"
+            )
+        out.extend(kept)
+        return self._finalize(out)
+
+    def _compress_isort(self, stdout: str, stderr: str) -> str:
+        merged = self._combine_output(stdout, stderr)
+        lines = merged.split("\n")
+        kept: list[str] = []
+        fix_sample: list[str] = []
+        fix_extra = 0
+        for line in lines:
+            if _ERROR_SIGNAL_RE.search(line):
+                kept.append(line)
+                continue
+            if _ISORT_SKIPPED_RE.match(line):
+                kept.append(line)
+                continue
+            if _ISORT_FIXING_RE.match(line):
+                if len(fix_sample) < self._SAMPLE_SIZE:
+                    fix_sample.append(line)
+                else:
+                    fix_extra += 1
+                continue
+            kept.append(line)
+
+        out: list[str] = []
+        out.extend(fix_sample)
+        if fix_extra:
+            out.append(
+                f"[token-goat: +{fix_extra} more fixed files; "
+                f"run with TOKEN_GOAT_BASH_COMPRESS=0 for full list]"
+            )
+        out.extend(kept)
+        return self._finalize(out)
+
+
+# --- System package managers (apt-get / apt / apk / brew) --------------------
+
+#: apt/apt-get progress lines: "Get:1 http://... Packages [xxx kB]"
+_APT_GET_RE: Final[re.Pattern[str]] = re.compile(
+    r"^Get:\d+\s+http", re.IGNORECASE
+)
+#: apt "Fetched X MB in Ys (Z kB/s)" summary line
+_APT_FETCHED_RE: Final[re.Pattern[str]] = re.compile(
+    r"^Fetched\s+\d"
+)
+#: apt "Reading package lists…" / "Building dependency tree…" boilerplate
+_APT_BOILERPLATE_RE: Final[re.Pattern[str]] = re.compile(
+    r"^(?:Reading package lists|Building dependency tree|Reading state information"
+    r"|Calculating upgrade|Correcting dependencies|Hit:\d+\s)"
+)
+#: apt "Unpacking / Setting up / Preparing / Selecting" installation progress
+_APT_INSTALL_PROGRESS_RE: Final[re.Pattern[str]] = re.compile(
+    r"^(?:Unpacking |Setting up |Preparing to unpack |Selecting previously unselected)",
+)
+#: apt "Processing triggers for …" post-install hooks
+_APT_TRIGGERS_RE: Final[re.Pattern[str]] = re.compile(
+    r"^Processing triggers for ", re.IGNORECASE
+)
+#: apt "The following NEW packages will be installed:" / "upgraded:" summary block
+_APT_PKG_LIST_HDR_RE: Final[re.Pattern[str]] = re.compile(
+    r"^The following (?:NEW|extra|additional) packages"
+    r"|^The following packages will be (?:upgraded|removed|installed|REMOVED)"
+    r"|^NEW packages the following|^\d+ upgraded,\s+\d+ newly installed",
+    re.IGNORECASE,
+)
+#: apk "fetch http://..." / "(N/N) Installing …" lines
+_APK_FETCH_RE: Final[re.Pattern[str]] = re.compile(
+    r"^fetch\s+http", re.IGNORECASE
+)
+_APK_INSTALLING_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\(\s*\d+/\d+\)\s+(?:Installing|Upgrading|Purging|Reinstalling)\s+\S",
+    re.IGNORECASE,
+)
+#: apk "OK: N packages, N dirs" summary line
+_APK_OK_RE: Final[re.Pattern[str]] = re.compile(
+    r"^OK:\s+\d+", re.IGNORECASE
+)
+#: brew "==> Downloading / Fetching / Installing / Pouring" progress lines
+_BREW_PROGRESS_RE: Final[re.Pattern[str]] = re.compile(
+    r"^==> (?:Downloading|Fetching|Installing|Pouring|Tapping|Untapping"
+    r"|Auto-updated|Updating|Cloning)",
+    re.IGNORECASE,
+)
+#: brew "Already installed" or "is already installed" messages
+_BREW_ALREADY_RE: Final[re.Pattern[str]] = re.compile(
+    r"already installed", re.IGNORECASE
+)
+#: brew summary / warning / error lines (keep always)
+_BREW_SUMMARY_RE: Final[re.Pattern[str]] = re.compile(
+    r"^Warning:|^Error:|^==> Summary|^🍺|^\s*[\w\-]+\s+\d+\.\d",
+    re.IGNORECASE,
+)
+
+
+class SysPackageFilter(Filter):
+    """Compress ``apt-get`` / ``apt`` / ``apk`` / ``brew`` package-manager output.
+
+    System package managers produce verbose multi-line progress:
+
+    * apt/apt-get: ``Get:N http://…`` download lines (one per package),
+      ``Unpacking``/``Setting up`` lines, ``Reading package lists`` boilerplate.
+    * apk: ``(N/N) Installing …`` lines and ``fetch http://…`` downloads.
+    * brew: ``==> Downloading / Fetching / Pouring`` lines per package.
+
+    All of these are pure progress noise when the install succeeds.  The
+    interesting lines are the error/warning lines and the final summary.
+
+    Compression model:
+
+    * **apt/apt-get**: collapse ``Get:N`` download lines to a count; collapse
+      ``Unpacking``/``Setting up``/``Processing triggers`` to a count; keep
+      package-list headers (``The following NEW packages …``) and the
+      ``Fetched X MB in Ys`` network summary; keep all error/warning lines.
+    * **apk**: collapse ``(N/N) Installing …`` and ``fetch http://…`` lines to
+      counts; keep the ``OK: N packages`` summary and all error lines.
+    * **brew**: collapse ``==> Downloading/Fetching/Pouring/Installing`` lines to
+      a per-package count sample (first 3 + count); keep ``==> Summary`` and
+      all error/warning lines.
+    """
+
+    name = "sys-pkg"
+    binaries = frozenset(["apt-get", "apt", "apt-cache", "apk", "brew"])
+
+    def compress(
+        self, stdout: str, stderr: str, exit_code: int, argv: list[str],
+    ) -> str:
+        binary = Path(argv[0]).stem.lower() if argv else "apt-get"
+        if binary in ("apt-get", "apt", "apt-cache"):
+            return self._compress_apt(stdout, stderr)
+        if binary == "apk":
+            return self._compress_apk(stdout, stderr)
+        return self._compress_brew(stdout, stderr)
+
+    def _compress_apt(self, stdout: str, stderr: str) -> str:
+        merged = self._combine_output(stdout, stderr)
+        lines = merged.split("\n")
+        kept: list[str] = []
+        dl_count = 0
+        install_progress = 0
+        trigger_count = 0
+        for line in lines:
+            if _ERROR_SIGNAL_RE.search(line):
+                kept.append(line)
+                continue
+            if _APT_GET_RE.match(line):
+                dl_count += 1
+                continue
+            if _APT_BOILERPLATE_RE.match(line):
+                # Keep boilerplate but don't count it — it's short and provides context.
+                kept.append(line)
+                continue
+            if _APT_PKG_LIST_HDR_RE.match(line):
+                # Keep package-list summary headers verbatim.
+                kept.append(line)
+                continue
+            if _APT_FETCHED_RE.match(line):
+                kept.append(line)
+                continue
+            if _APT_INSTALL_PROGRESS_RE.match(line):
+                install_progress += 1
+                continue
+            if _APT_TRIGGERS_RE.match(line):
+                trigger_count += 1
+                continue
+            kept.append(line)
+
+        notes: list[str] = []
+        if dl_count:
+            notes.append(f"collapsed {dl_count} 'Get:N' download lines")
+        if install_progress:
+            notes.append(f"collapsed {install_progress} 'Unpacking/Setting up' lines")
+        if trigger_count:
+            notes.append(f"collapsed {trigger_count} 'Processing triggers' lines")
+        self._emit_notes(kept, notes)
+        return self._finalize(kept)
+
+    def _compress_apk(self, stdout: str, stderr: str) -> str:
+        merged = self._combine_output(stdout, stderr)
+        lines = merged.split("\n")
+        kept: list[str] = []
+        fetch_count = 0
+        install_count = 0
+        for line in lines:
+            if _ERROR_SIGNAL_RE.search(line):
+                kept.append(line)
+                continue
+            if _APK_OK_RE.match(line):
+                kept.append(line)
+                continue
+            if _APK_FETCH_RE.match(line):
+                fetch_count += 1
+                continue
+            if _APK_INSTALLING_RE.match(line):
+                install_count += 1
+                continue
+            kept.append(line)
+
+        notes: list[str] = []
+        if fetch_count:
+            notes.append(f"collapsed {fetch_count} 'fetch' download lines")
+        if install_count:
+            notes.append(f"collapsed {install_count} 'Installing' progress lines")
+        self._emit_notes(kept, notes)
+        return self._finalize(kept)
+
+    def _compress_brew(self, stdout: str, stderr: str) -> str:
+        merged = self._combine_output(stdout, stderr)
+        lines = merged.split("\n")
+        kept: list[str] = []
+        progress_sample: list[str] = []
+        progress_extra = 0
+        _SAMPLE = 3
+        for line in lines:
+            if _ERROR_SIGNAL_RE.search(line) or _BREW_SUMMARY_RE.match(line):
+                kept.append(line)
+                continue
+            if _BREW_ALREADY_RE.search(line):
+                kept.append(line)
+                continue
+            if _BREW_PROGRESS_RE.match(line):
+                if len(progress_sample) < _SAMPLE:
+                    progress_sample.append(line)
+                else:
+                    progress_extra += 1
+                continue
+            kept.append(line)
+
+        out: list[str] = []
+        out.extend(progress_sample)
+        if progress_extra:
+            out.append(
+                f"[token-goat: +{progress_extra} more brew progress lines collapsed]"
+            )
+        out.extend(kept)
+        return self._finalize(out)
+
+
 # ---------------------------------------------------------------------------
 # Public registry & dispatch
 # ---------------------------------------------------------------------------
@@ -11803,6 +12140,11 @@ FILTERS: list[Filter] = [
     MySQLFilter(),
     Sqlite3Filter(),
     RedisCLIFilter(),
+    # Code formatter filters — disjoint binaries from all other filters.
+    # BlackIsortFilter handles both `black` and `isort`.
+    BlackIsortFilter(),
+    # SysPackageFilter handles system package managers: apt-get, apt, apk, brew.
+    SysPackageFilter(),
 ]
 
 
