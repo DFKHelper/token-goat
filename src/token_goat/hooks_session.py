@@ -285,6 +285,310 @@ def _build_blocker_section(cache: object) -> tuple[str, str]:
         return "", ""
 
 
+def _build_pending_work_section(
+    cache: object,
+    raw_edited: dict[str, int],
+    bash_entries_in_hint: set[str],
+) -> str:
+    """Return a ``### Pending Work`` section string, or empty string.
+
+    Scans the session's bash_history for commands that started work but may
+    not have finished:
+
+    * **Failed pytest** — a pytest invocation whose exit_code != 0, within the
+      last 2 hours.  Reports the count of test failures extracted from stderr/
+      stdout preview when available, plus how long ago it ran.
+    * **Uncommitted edits** — files in *raw_edited* that have no successful
+      ``git commit`` after the most-recent edit.  A ``git commit`` is
+      considered successful when its ``exit_code == 0`` and ``cmd_preview``
+      starts with ``git commit``.
+    * **Non-zero uv run** — a ``uv run`` invocation (that is not pytest) whose
+      exit_code != 0 within the last 2 hours.
+
+    Returns at most 3 bullet points.  Returns an empty string when nothing
+    actionable is found (fail-soft on any exception).
+    """
+    import time as _time  # noqa: PLC0415
+
+    try:
+        bash_hist = getattr(cache, "bash_history", None) or {}
+        now = _time.time()
+        cutoff_2h = now - 7200  # 2-hour window
+        items: list[str] = []
+
+        # --- 1. Failed pytest ---
+        pytest_failures: list[object] = []
+        for be in bash_hist.values():
+            preview = getattr(be, "cmd_preview", "").strip().lower()
+            if not any(preview.startswith(p) for p in _PYTEST_PREFIXES):
+                continue
+            exit_code = getattr(be, "exit_code", None)
+            if isinstance(exit_code, int) and exit_code != 0:
+                ts = getattr(be, "ts", 0.0)
+                if ts >= cutoff_2h:
+                    pytest_failures.append(be)
+        if pytest_failures:
+            latest_fail = max(pytest_failures, key=lambda e: getattr(e, "ts", 0.0))
+            age_secs = now - getattr(latest_fail, "ts", now)
+            if age_secs < 60:
+                age_str = f"{int(age_secs)}s ago"
+            elif age_secs < 3600:
+                age_str = f"{int(age_secs / 60)}m ago"
+            else:
+                age_str = f"{int(age_secs / 3600)}h ago"
+            # Try to parse failure count from output (e.g. "2 failed" in pytest summary).
+            fail_count_str = ""
+            cmd_preview = getattr(latest_fail, "cmd_preview", "")
+            # Attempt to read the cached output and parse "N failed" from it.
+            try:
+                from . import bash_cache as _bc  # noqa: PLC0415
+                output_id = getattr(latest_fail, "output_id", "")
+                if output_id:
+                    blob = _bc.load(output_id)
+                    if blob:
+                        text = blob.decode("utf-8", errors="replace")
+                        import re as _re  # noqa: PLC0415
+                        m = _re.search(r"(\d+)\s+failed", text)
+                        if m:
+                            n = int(m.group(1))
+                            fail_count_str = f": {n} failure{'s' if n != 1 else ''}"
+            except Exception:  # noqa: BLE001
+                pass
+            items.append(f"pytest failed{fail_count_str} (last run {age_str})")
+
+        # --- 2. Uncommitted edits ---
+        if raw_edited:
+            # Check whether any successful git commit occurred *after* the most
+            # recent edit timestamp.  A "successful git commit" is exit_code==0
+            # and cmd_preview starting with "git commit" (case-insensitive).
+            latest_edit_ts = 0.0
+            try:
+                for _ep in raw_edited:
+                    fe = cache.files.get(_ep)  # type: ignore[union-attr]
+                    if fe is None:
+                        continue
+                    let = getattr(fe, "last_edit_ts", 0.0)
+                    if let > latest_edit_ts:
+                        latest_edit_ts = let
+            except Exception:  # noqa: BLE001
+                # Fall back: use current time so any commit is "before"
+                latest_edit_ts = now
+
+            last_commit_ts = 0.0
+            for be in bash_hist.values():
+                preview = getattr(be, "cmd_preview", "").strip().lower()
+                if preview.startswith("git commit"):
+                    ec = getattr(be, "exit_code", None)
+                    if ec == 0:
+                        ts = getattr(be, "ts", 0.0)
+                        if ts > last_commit_ts:
+                            last_commit_ts = ts
+
+            # If there are edits and no successful commit after the last edit,
+            # surface the uncommitted files.
+            if latest_edit_ts == 0.0 or last_commit_ts < latest_edit_ts:
+                import contextlib as _ctx_pw  # noqa: PLC0415
+                import os as _os_pw  # noqa: PLC0415
+                edited_names: list[str] = []
+                for _ep in sorted(raw_edited, key=lambda k: raw_edited[k], reverse=True)[:4]:
+                    with _ctx_pw.suppress(Exception):
+                        bn = _os_pw.path.basename(_ep)
+                        edited_names.append(bn or _ep)
+                if edited_names:
+                    remaining = len(raw_edited) - len(edited_names)
+                    suffix = f", +{remaining} more" if remaining > 0 else ""
+                    items.append(f"Uncommitted edits: {', '.join(edited_names)}{suffix}")
+
+        # --- 3. Non-zero uv run (non-pytest) ---
+        if len(items) < 3:
+            uv_failures: list[object] = []
+            for be in bash_hist.values():
+                preview = getattr(be, "cmd_preview", "").strip().lower()
+                # Skip pytest (already handled above) and trivial commands.
+                if any(preview.startswith(p) for p in _PYTEST_PREFIXES):
+                    continue
+                if not preview.startswith("uv run"):
+                    continue
+                exit_code = getattr(be, "exit_code", None)
+                if isinstance(exit_code, int) and exit_code != 0:
+                    ts = getattr(be, "ts", 0.0)
+                    if ts >= cutoff_2h:
+                        uv_failures.append(be)
+            if uv_failures:
+                latest_uv = max(uv_failures, key=lambda e: getattr(e, "ts", 0.0))
+                age_secs = now - getattr(latest_uv, "ts", now)
+                age_str = (
+                    f"{int(age_secs)}s ago" if age_secs < 60
+                    else f"{int(age_secs / 60)}m ago" if age_secs < 3600
+                    else f"{int(age_secs / 3600)}h ago"
+                )
+                cmd_preview = getattr(latest_uv, "cmd_preview", "uv run …")[:50]
+                ec = getattr(latest_uv, "exit_code", "?")
+                items.append(f"`{cmd_preview}` exited {ec} ({age_str})")
+
+        if not items:
+            return ""
+        lines = ["### Pending Work"]
+        for item in items[:3]:
+            lines.append(f"- {item}")
+        return "\n".join(lines)
+    except Exception:  # noqa: BLE001 — never break the hint
+        return ""
+
+
+def _build_key_commands_section(
+    has_edited_python: bool,
+    has_pytest: bool,
+    has_web: bool,
+) -> str:
+    """Return a ``### Key Commands`` section with 3-5 relevant token-goat commands.
+
+    The section is context-sensitive: which commands are included depends on
+    what the session has done (edited Python files, run pytest, fetched URLs).
+    ``token-goat map --compact`` is always included as the orientation command.
+
+    Returns the section string (always non-empty).
+    """
+    lines = ["### Key Commands"]
+    if has_edited_python:
+        lines.append("- `token-goat symbol <name>` — find a function or class")
+        lines.append("- `token-goat read \"file.py::FuncName\"` — read one function")
+    if has_pytest:
+        lines.append("- `token-goat bash-output <id> --tail 50` — see last test failure")
+    if has_web:
+        lines.append("- `token-goat web-output <id>` — re-read fetched page")
+    lines.append("- `token-goat map --compact` — oriented repo overview (300-token budget)")
+    return "\n".join(lines)
+
+
+def _diff_stats_for_file(session_id: str, file_path: str) -> tuple[int, int] | None:
+    """Return ``(added, removed)`` line counts between snapshot and current file.
+
+    Loads the snapshot stored at pre-edit time for *file_path* in *session_id*,
+    reads the current file from disk, and computes unified-diff line statistics.
+    Returns ``None`` when the snapshot is absent, the file is unreadable, or
+    diff computation fails (fail-soft).
+
+    The result is used to annotate edited-file entries in the recovery hint with
+    a ``(+N/-M lines)`` badge giving the model a sense of the change magnitude.
+
+    Path lookup strategy: snapshots are stored keyed by the literal path string
+    used at write time (e.g. ``C:/path/file.py``), while ``edited_files`` keys
+    are normalized (e.g. ``c:/path/file.py`` on Windows).  When the first load
+    attempt returns ``None``, a secondary attempt is made with the drive letter
+    upper-cased so that hook-stored snapshots are reachable from the normalized
+    dict key without platform-specific coupling in the caller.
+    """
+    import difflib as _difflib  # noqa: PLC0415
+
+    try:
+        from . import snapshots as _snap  # noqa: PLC0415
+
+        snap_bytes = _snap.load(session_id, file_path)
+        if snap_bytes is None:
+            # Secondary attempt: snapshots are stored using the literal path string
+            # from the agent's tool payload (e.g. "C:\path\file.py" on Windows),
+            # but edited_files keys are normalized ("c:/path/file.py").  Try several
+            # common variants so the lookup succeeds regardless of which form was
+            # used at store time.
+            import re as _re_dp  # noqa: PLC0415
+            _candidates: list[str] = []
+            # 1. Forward slashes → backslashes (Windows snapshot stored with backslashes)
+            _bs = file_path.replace("/", "\\")
+            if _bs != file_path:
+                _candidates.append(_bs)
+            # 2. Uppercase drive letter + backslashes (Windows normalised → native)
+            for _fp in [file_path, _bs]:
+                _up = _re_dp.sub(r"^([a-z]):[/\\]", lambda m: m.group(1).upper() + ":\\", _fp)
+                if _up != _fp:
+                    _candidates.append(_up)
+            for _alt in _candidates:
+                _ab = _snap.load(session_id, _alt)
+                if _ab is not None:
+                    snap_bytes = _ab
+                    break
+        if snap_bytes is None:
+            return None
+        try:
+            snap_text = snap_bytes.decode("utf-8", errors="replace")
+        except Exception:  # noqa: BLE001
+            return None
+        # Resolve the disk path to read the current file.
+        disk_path = file_path
+        # Read current file bytes.
+        try:
+            import pathlib as _pathlib  # noqa: PLC0415
+            current_bytes = _pathlib.Path(disk_path).read_bytes()
+            current_text = current_bytes.decode("utf-8", errors="replace")
+        except (OSError, UnicodeDecodeError):
+            return None
+        snap_lines = snap_text.splitlines(keepends=True)
+        current_lines = current_text.splitlines(keepends=True)
+        probe = list(_difflib.unified_diff(snap_lines, current_lines, n=0, lineterm=""))
+        added = sum(1 for ln in probe if ln[:1] == "+" and not ln.startswith("+++"))
+        removed = sum(1 for ln in probe if ln[:1] == "-" and not ln.startswith("---"))
+        return added, removed
+    except Exception:  # noqa: BLE001 — fail-soft
+        return None
+
+
+# Approximate chars-per-token ratio used by the recovery hint size guard.
+# A real tokenizer is not available in the hook subprocess; 4 chars/token is
+# a conservative underestimate for English prose with code mixed in.  Using a
+# slight underestimate means the guard fires a little early (better than over-
+# running the budget).
+_RECOVERY_CHARS_PER_TOKEN: int = 4
+
+
+def _truncate_recovery_hint(text: str, max_tokens: int = 800) -> str:
+    """Truncate *text* to at most *max_tokens* by dropping lower-priority sections.
+
+    Sections are dropped in ascending priority order:
+    1. ``### Key Commands`` (lowest: navigational reference, not load-bearing state)
+    2. ``### Pending Work`` (medium: useful but reconstructible from bash history)
+    3. ``**Symbols**`` (lower than Files/Bash/Web: the symbol list can be re-derived)
+
+    Truncation works at section granularity: an entire section is kept or
+    dropped, never split mid-section.  This ensures the surviving sections
+    remain coherent even at the cost of using slightly more budget than strictly
+    necessary.
+
+    If the text is still over budget after dropping all three sections, the
+    function hard-truncates at the character budget and appends an ellipsis.
+
+    Returns the (possibly shortened) text unchanged when it is within budget.
+    """
+    budget_chars = max_tokens * _RECOVERY_CHARS_PER_TOKEN
+    if len(text) <= budget_chars:
+        return text
+
+    def _drop_section(body: str, heading_prefix: str) -> str:
+        """Return *body* with the first section beginning ``heading_prefix``
+        removed.  A section extends from its heading line to (but not including)
+        the next blank-line-then-heading sequence or end of string."""
+        import re as _re  # noqa: PLC0415
+        # Match the heading and everything up to the next \n\n#-level heading or EOS.
+        pat = _re.compile(
+            r"(?:^|\n\n)" + _re.escape(heading_prefix) + r"[^\n]*\n(?:[^\n].*\n?)*",
+            _re.MULTILINE,
+        )
+        return pat.sub("", body).lstrip("\n")
+
+    # Drop in priority order.
+    for marker in ("### Key Commands", "### Pending Work", "**Symbols**"):
+        if len(text) <= budget_chars:
+            break
+        new_text = _drop_section(text, marker)
+        if new_text != text:
+            text = new_text
+
+    # Final fallback: hard truncate with ellipsis.
+    if len(text) > budget_chars:
+        text = text[:budget_chars - 3] + "..."
+
+    return text
+
+
 def _build_recovery_hint(session_id: str) -> str | None:
     """Return a compact recovery hint summarising pre-compaction state.
 
@@ -403,15 +707,35 @@ def _build_recovery_hint(session_id: str) -> str | None:
     # edited but never read (so absent from cache.files) and ensures
     # heavily-edited files appear first regardless of read recency.
     # Cap at 5 entries so the section stays under ~60 tokens.
+    # Diff stats: try to annotate each entry with (+N/-M lines) from snapshots.
     if raw_edited:
         import contextlib as _contextlib2  # noqa: PLC0415
+        import os as _os2  # noqa: PLC0415
         edited_sorted = sorted(raw_edited.items(), key=lambda kv: (kv[1], kv[0]), reverse=True)
         edited_lines = ["**Edited**:"]
         for _ep, _ec in edited_sorted[:5]:
-            import os as _os2  # noqa: PLC0415
+            # Compute diff stats from snapshot (best-effort; None → omit badge).
+            # The snapshot is keyed by the original path Claude used (rel_or_abs),
+            # while _ep is the normalized key.  Try rel_or_abs first (from the
+            # FileEntry if present), then fall back to the normalized key.
+            _snap_path = _ep
             with _contextlib2.suppress(Exception):
-                _ep = _os2.path.basename(_ep) or _ep
-            edited_lines.append(f"- {_ep} ✎×{_ec}")
+                _fe = cache.files.get(_ep)  # type: ignore[union-attr]
+                if _fe is not None and getattr(_fe, "rel_or_abs", ""):
+                    _snap_path = _fe.rel_or_abs
+            _diff = _diff_stats_for_file(session_id, _snap_path)
+            if _diff is None and _snap_path != _ep:
+                # Fallback: try the normalized key form
+                _diff = _diff_stats_for_file(session_id, _ep)
+            if _diff is not None:
+                _added, _removed = _diff
+                _diff_str = f" (+{_added}/-{_removed})"
+            else:
+                _diff_str = ""
+            _basename = _ep
+            with _contextlib2.suppress(Exception):
+                _basename = _os2.path.basename(_ep) or _ep
+            edited_lines.append(f"- {_basename} ✎×{_ec}{_diff_str}")
         dropped_edited = len(raw_edited) - len(edited_sorted[:5])
         if dropped_edited > 0:
             edited_lines.append(f"- +{dropped_edited} more")
@@ -600,6 +924,34 @@ def _build_recovery_hint(session_id: str) -> str | None:
     if not sections:
         return None
 
+    # 4. Pending work — surface unfinished tasks the agent may need to resume.
+    # This section is appended after the inventory sections so it reads as
+    # "here is what you were doing, and here is what was left unfinished".
+    _bash_in_hint_ids: set[str] = {be.output_id for be in bash_entries}
+    pending_section = _build_pending_work_section(cache, raw_edited, _bash_in_hint_ids)
+    if pending_section:
+        sections.append(pending_section)
+
+    # 5. Key commands — context-sensitive reminder of the most useful token-goat
+    # CLI commands for this session.  Always appended last (lowest priority for
+    # truncation) because it is navigational reference, not load-bearing state.
+    _has_edited_python = any(
+        getattr(entry, "rel_or_abs", "").endswith(".py")
+        for entry in files_keep
+    ) or any(str(ep).endswith(".py") for ep in raw_edited)
+    _has_pytest_in_hint = any(
+        any(getattr(be, "cmd_preview", "").strip().lower().startswith(p) for p in _PYTEST_PREFIXES)
+        for be in bash_entries
+    ) or any(
+        any(getattr(be, "cmd_preview", "").strip().lower().startswith(p) for p in _PYTEST_PREFIXES)
+        for be in (getattr(cache, "bash_history", {}) or {}).values()
+    )
+    _has_web_in_hint = bool(web_entries)
+    key_cmds_section = _build_key_commands_section(
+        _has_edited_python, _has_pytest_in_hint, _has_web_in_hint,
+    )
+    sections.append(key_cmds_section)
+
     parts = ["## Post-Compact Recovery"]
     # RESUME pointer — same anchor format as compact.py's sealed block, so the
     # pre-compact manifest's 🎯 RESUME line carries straight through to the
@@ -627,7 +979,10 @@ def _build_recovery_hint(session_id: str) -> str | None:
             "_Tip: use `token-goat skill-body <name> --section DoD` to fetch only one section._"
         )
     parts.extend(sections)
-    return "\n\n".join(parts)
+    hint_text = "\n\n".join(parts)
+    # Apply the 800-token size guard: drop lower-priority sections when over
+    # budget so the surviving hint stays coherent and within budget.
+    return _truncate_recovery_hint(hint_text)
 
 
 def _try_recovery_response(session_id: str | None, source: str) -> HookResponse | None:
