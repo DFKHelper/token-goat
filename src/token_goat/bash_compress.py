@@ -174,6 +174,12 @@ __all__ = [
     "GenericFilter",
     # Protobuf compiler filter
     "ProtocFilter",
+    # Turborepo monorepo task runner
+    "TurboFilter",
+    # oxlint JS/TS linter
+    "OxlintFilter",
+    # pylint dedicated filter (higher-fidelity than LinterFilter)
+    "PylintFilter",
 ]
 
 import math
@@ -13293,6 +13299,413 @@ class PrettierFilter(Filter):
 
 
 # ---------------------------------------------------------------------------
+# Turborepo
+# ---------------------------------------------------------------------------
+
+# Turbo task header: "• Packages in scope: app-a, app-b, ..."
+_TURBO_SCOPE_RE: Final[re.Pattern[str]] = re.compile(
+    r"^[•\*] Packages in scope:"
+)
+# Turbo task start line: "• Running build in 3 packages"  or  "tasks: 4"
+_TURBO_RUNNING_RE: Final[re.Pattern[str]] = re.compile(
+    r"^(?:[•\*] Running \w+ in \d+|tasks:\s*\d+)"
+)
+# Turbo per-package task line: "  @scope/pkg:build: ..." (any line from a task).
+# Group 1 captures the "package:task" task key (e.g. "docs:build").
+# Lines are typically indented by 2 spaces.
+_TURBO_TASK_LINE_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\s*([\w@/-]+:[\w-]+):\s"
+)
+# Turbo cache-hit replay lines — always drop (noise)
+_TURBO_CACHE_HIT_RE: Final[re.Pattern[str]] = re.compile(
+    r"cache hit,\s*replaying\s+(?:output|logs)",
+    re.IGNORECASE,
+)
+# Turbo cache miss lines — keep (useful: shows what had to rebuild)
+_TURBO_CACHE_MISS_RE: Final[re.Pattern[str]] = re.compile(
+    r"cache miss",
+    re.IGNORECASE,
+)
+# Turbo summary line: " Tasks:    5 successful, 5 total"
+_TURBO_SUMMARY_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\s*(?:Tasks|Time|Cached):\s"
+)
+# Turbo decorator / separator lines
+_TURBO_SEPARATOR_RE: Final[re.Pattern[str]] = re.compile(
+    r"^(?:\s*[─━═\-]{10,}\s*|>>> FULL TURBO)$"
+)
+
+
+class TurboFilter(Filter):
+    """Compress ``turbo run`` Turborepo task output.
+
+    ``turbo run build --filter=...`` emits per-package task headers, verbose
+    build output replayed from cache, and a compact final summary table.  On a
+    medium monorepo a single ``turbo run build`` can produce thousands of lines
+    (most from cache replay).
+
+    Compression model:
+
+    * **Keep** the opening scope/running lines ("• Running build in N packages").
+    * **Keep** cache-miss task header lines (``@scope/pkg:build: cache miss``):
+      they indicate what actually rebuilt.
+    * **Drop** cache-hit replay lines (``cache hit, replaying output``): their
+      content was already seen; the agent only needs to know the count.
+    * **Drop** per-package task header lines for *successful* cached tasks.
+    * **Keep** all error lines regardless of task (exit_code check or keyword).
+    * **Keep** the summary table (``Tasks:  N successful, M total``,
+      ``Time:``, ``Cached:``).
+    * **Summarise** dropped cache-hit / dropped task-header counts.
+    """
+
+    name = "turbo"
+    binaries = frozenset(["turbo", "npx", "pnpx"])
+
+    def matches(self, argv: list[str]) -> bool:
+        if not argv:
+            return False
+        stem = Path(argv[0]).stem.lower()
+        if stem == "turbo":
+            return True
+        # npx turbo ... / pnpx turbo ...
+        return stem in ("npx", "pnpx") and len(argv) > 1 and argv[1].lower() == "turbo"
+
+    # Maximum number of per-package verbose output lines to keep per package
+    # (applies only to the non-cache-hit task body lines)
+    _BODY_SAMPLE = 20
+
+    def compress(
+        self, stdout: str, stderr: str, exit_code: int, argv: list[str],
+    ) -> str:
+        combined = self._combine_output(stdout, stderr)
+        lines = combined.split("\n")
+        kept: list[str] = []
+        dropped_cache_hit = 0
+        dropped_task_body = 0
+        # Set of "package:task" keys whose output should be dropped (cache hits)
+        cache_hit_tasks: set[str] = set()
+
+        for line in lines:
+            # Scope / running header — always keep
+            if _TURBO_SCOPE_RE.match(line) or _TURBO_RUNNING_RE.match(line):
+                kept.append(line)
+                continue
+            # Summary table — always keep
+            if _TURBO_SUMMARY_RE.match(line):
+                kept.append(line)
+                continue
+            # Separator lines — drop silently
+            if _TURBO_SEPARATOR_RE.match(line):
+                continue
+            # Per-task line: any line from a package (header OR body)
+            tm = _TURBO_TASK_LINE_RE.match(line)
+            if tm:
+                task_key = tm.group(1)
+                if _TURBO_CACHE_HIT_RE.search(line):
+                    # Cache-hit announcement — record and drop
+                    cache_hit_tasks.add(task_key)
+                    dropped_cache_hit += 1
+                    continue
+                if task_key in cache_hit_tasks:
+                    # Body line from a known cache-hit task — drop
+                    # Always surface error signals even from cache-hit tasks
+                    if _ERROR_SIGNAL_RE.search(line):
+                        kept.append(line)
+                    else:
+                        dropped_task_body += 1
+                    continue
+                # Cache-miss task header or body — keep
+                kept.append(line)
+                continue
+            # Error lines — always keep regardless of mode
+            if _ERROR_SIGNAL_RE.search(line):
+                kept.append(line)
+                continue
+            kept.append(line)
+
+        notes: list[str] = []
+        if dropped_cache_hit:
+            notes.append(
+                f"dropped {dropped_cache_hit} cache-hit task header"
+                f"{'s' if dropped_cache_hit != 1 else ''}"
+            )
+        if dropped_task_body:
+            notes.append(
+                f"dropped {dropped_task_body} cache-hit task body line"
+                f"{'s' if dropped_task_body != 1 else ''}"
+            )
+        self._emit_notes(kept, notes)
+        return self._finalize(kept)
+
+
+# ---------------------------------------------------------------------------
+# oxlint
+# ---------------------------------------------------------------------------
+
+# oxlint file header: "  src/foo.ts" (indented path with extension)
+_OXLINT_FILE_HEADER_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\s{2,}\S+\.\w{1,10}\s*$"
+)
+# oxlint issue line: "    × Expect … (rule-name) …"  or  "    ✖ …"
+_OXLINT_ISSUE_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\s{4,}[×✖✗!]\s"
+)
+# oxlint location pointer line: "      ╭─[…:line:col]"  or  "   │ …"
+_OXLINT_LOCATION_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\s*(?:╭─\[|│\s|╰─)"
+)
+# oxlint summary: "Found N warnings and M errors."
+_OXLINT_SUMMARY_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\s*(?:Found \d+|Finished in \d+|oxlint v\d)",
+    re.IGNORECASE,
+)
+# oxlint rule name: last token inside parentheses at end of issue line
+_OXLINT_RULE_RE: Final[re.Pattern[str]] = re.compile(
+    r"\(([a-zA-Z0-9/_-]+)\)\s*$"
+)
+
+
+class OxlintFilter(Filter):
+    """Compress ``oxlint`` JavaScript/TypeScript linter output.
+
+    ``oxlint src/`` emits per-file issue blocks with Unicode box-drawing
+    location pointers and a final summary.  On a medium codebase this is
+    hundreds of lines, most of which repeat a handful of rules across many
+    files.
+
+    Compression model:
+
+    * **Deduplicate by rule**: within each file, keep the first 3 occurrences
+      of each rule code; collapse the rest to ``(+N more)``.
+    * **Drop** location-pointer lines (``╭─[…]`` / ``│`` / ``╰─``) for
+      deduplicated issues — they only add visual noise once deduplicated.
+    * **Keep** all summary lines (``Found N warnings and M errors``).
+    * **Keep** any line matching ``_ERROR_SIGNAL_RE``.
+    """
+
+    name = "oxlint"
+    binaries = frozenset(["oxlint", "oxc_linter"])
+
+    _KEEP_PER_RULE: int = 3  # keep up to N occurrences per rule per file
+
+    def compress(
+        self, stdout: str, stderr: str, exit_code: int, argv: list[str],
+    ) -> str:
+        combined = self._combine_output(stdout, stderr)
+        lines = combined.split("\n")
+        kept: list[str] = []
+        deduplicated = 0
+        dropped_location = 0
+        current_file: str | None = None
+        # Maps rule_name → count seen in current file
+        rule_counts: dict[str, int] = {}
+        # Whether the current issue block should be kept or suppressed
+        suppress_block = False
+
+        for line in lines:
+            # Always keep error signals
+            if _ERROR_SIGNAL_RE.search(line):
+                kept.append(line)
+                suppress_block = False
+                continue
+            # Summary line — always keep; reset file context
+            if _OXLINT_SUMMARY_RE.match(line):
+                kept.append(line)
+                current_file = None
+                rule_counts = {}
+                continue
+            # File header line
+            if _OXLINT_FILE_HEADER_RE.match(line):
+                current_file = line.strip()
+                rule_counts = {}
+                suppress_block = False
+                kept.append(line)
+                continue
+            # Issue line — check rule dedup
+            if _OXLINT_ISSUE_RE.match(line):
+                m = _OXLINT_RULE_RE.search(line)
+                rule = m.group(1) if m else "__unknown__"
+                rule_counts[rule] = rule_counts.get(rule, 0) + 1
+                if rule_counts[rule] <= self._KEEP_PER_RULE:
+                    kept.append(line)
+                    suppress_block = False
+                else:
+                    if rule_counts[rule] == self._KEEP_PER_RULE + 1:
+                        kept.append(
+                            f"  [token-goat: +? more {rule!r} in {current_file or 'file'}; "
+                            f"run with TOKEN_GOAT_BASH_COMPRESS=0 for full list]"
+                        )
+                    deduplicated += 1
+                    suppress_block = True
+                continue
+            # Location pointer lines — drop when suppressing
+            if _OXLINT_LOCATION_RE.match(line):
+                if suppress_block:
+                    dropped_location += 1
+                    continue
+                kept.append(line)
+                continue
+            kept.append(line)
+
+        notes: list[str] = []
+        if deduplicated:
+            notes.append(f"deduplicated {deduplicated} repeated-rule issue lines")
+        if dropped_location:
+            notes.append(f"dropped {dropped_location} location-pointer lines for deduped issues")
+        self._emit_notes(kept, notes)
+        return self._finalize(kept)
+
+
+# ---------------------------------------------------------------------------
+# pylint (dedicated — higher-fidelity than the generic LinterFilter path)
+# ---------------------------------------------------------------------------
+
+# pylint module header: "************* Module foo.bar"
+_PYLINT_MODULE_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\*{10,}\s+Module\s"
+)
+# pylint issue line: "src/foo.py:10:4: C0301 (line-too-long) Line too long..."
+# or shorter: "foo.py:10:0: W0611 (unused-import) ..."
+_PYLINT_ISSUE_RE: Final[re.Pattern[str]] = re.compile(
+    r"^[^\s].*:\d+:\d+:\s+[CWEFR]\d{4}"
+)
+# pylint message code capture: e.g. "C0301", "W0611"
+_PYLINT_CODE_RE: Final[re.Pattern[str]] = re.compile(
+    r"\s([CWEFR]\d{4})\s"
+)
+# pylint rating line: "Your code has been rated at 8.50/10 ..."
+_PYLINT_RATING_RE: Final[re.Pattern[str]] = re.compile(
+    r"^Your code has been rated at"
+)
+# pylint section separator / header noise
+_PYLINT_SEPARATOR_RE: Final[re.Pattern[str]] = re.compile(
+    r"^-{10,}$"
+)
+# pylint "Using config file" / "Loading plugin" header lines
+_PYLINT_CONFIG_RE: Final[re.Pattern[str]] = re.compile(
+    r"^(?:Using config file|Loading plugin|No config file found)"
+)
+
+
+class PylintFilter(Filter):
+    """Compress ``pylint`` static analysis output.
+
+    ``pylint src/`` emits per-module headers, one issue line per violation,
+    a separator, and a final rating.  On a large codebase with common issues
+    (e.g. C0301 line-too-long, W0611 unused-import) the same message code
+    fires hundreds of times across files, drowning out rarer/higher-severity
+    messages.
+
+    Compression model:
+
+    * **Deduplicate by message code**: keep the first 3 occurrences of each
+      message code (e.g. ``C0301``); collapse the rest to ``(+N more)``.
+    * **Always keep** Error (E) and Fatal (F) severity lines regardless of
+      dedup count — they signal crashes / syntax errors, never noise.
+    * **Drop** ``************* Module foo.bar`` headers when the module has
+      no kept issue lines (avoids orphan headers).
+    * **Drop** separator lines (``------``), config-loading noise.
+    * **Always keep** the final rating line (``Your code has been rated at …``).
+    """
+
+    name = "pylint"
+    binaries = frozenset(["pylint"])
+
+    _KEEP_PER_CODE: int = 3
+
+    def compress(
+        self, stdout: str, stderr: str, exit_code: int, argv: list[str],
+    ) -> str:
+        combined = self._combine_output(stdout, stderr)
+        lines = combined.split("\n")
+        kept: list[str] = []
+        code_counts: dict[str, int] = {}
+        deduplicated = 0
+        dropped_separators = 0
+        dropped_config = 0
+        pending_module: str | None = None
+        module_has_kept_issue = False
+
+        for line in lines:
+            # Rating line — always keep
+            if _PYLINT_RATING_RE.match(line):
+                kept.append(line)
+                continue
+            # Separator lines — drop
+            if _PYLINT_SEPARATOR_RE.match(line):
+                dropped_separators += 1
+                continue
+            # Config loading noise — drop
+            if _PYLINT_CONFIG_RE.match(line):
+                dropped_config += 1
+                continue
+            # Module header — hold pending until we know if it has kept issues
+            if _PYLINT_MODULE_RE.match(line):
+                # Flush previous pending header only if it had kept issues
+                if pending_module is not None and module_has_kept_issue:
+                    kept.append(pending_module)
+                elif pending_module is not None:
+                    pass  # orphan header dropped
+                pending_module = line
+                module_has_kept_issue = False
+                continue
+            # Issue line — dedup by message code, always keep E/F severity
+            if _PYLINT_ISSUE_RE.match(line):
+                m = _PYLINT_CODE_RE.search(line)
+                code = m.group(1) if m else "__unknown__"
+                severity = code[0] if code else "?"
+                code_counts[code] = code_counts.get(code, 0) + 1
+                always_keep = severity in ("E", "F")
+                if always_keep or code_counts[code] <= self._KEEP_PER_CODE:
+                    # Flush pending module header before first kept issue
+                    if pending_module is not None:
+                        kept.append(pending_module)
+                        pending_module = None
+                    module_has_kept_issue = True
+                    kept.append(line)
+                else:
+                    if code_counts[code] == self._KEEP_PER_CODE + 1:
+                        if pending_module is not None:
+                            kept.append(pending_module)
+                            pending_module = None
+                        module_has_kept_issue = True
+                        kept.append(
+                            f"  [token-goat: +? more {code} ({_pylint_code_name(line)}); "
+                            f"run with TOKEN_GOAT_BASH_COMPRESS=0 for full list]"
+                        )
+                    deduplicated += 1
+                continue
+            # Error signals — always keep
+            if _ERROR_SIGNAL_RE.search(line):
+                if pending_module is not None:
+                    kept.append(pending_module)
+                    pending_module = None
+                kept.append(line)
+                continue
+            kept.append(line)
+
+        # Flush trailing pending module header if it had kept issues
+        if pending_module is not None and module_has_kept_issue:
+            kept.append(pending_module)
+
+        notes: list[str] = []
+        if deduplicated:
+            notes.append(f"deduplicated {deduplicated} repeated-code issue lines")
+        if dropped_separators:
+            notes.append(f"dropped {dropped_separators} separator lines")
+        if dropped_config:
+            notes.append(f"dropped {dropped_config} config-loading lines")
+        self._emit_notes(kept, notes)
+        return self._finalize(kept)
+
+
+def _pylint_code_name(line: str) -> str:
+    """Extract the symbolic name from a pylint issue line, e.g. 'line-too-long'."""
+    m = re.search(r"\(([a-z][a-z0-9-]+)\)", line)
+    return m.group(1) if m else "?"
+
+
+# ---------------------------------------------------------------------------
 # Public registry & dispatch
 # ---------------------------------------------------------------------------
 
@@ -13319,8 +13732,11 @@ FILTERS: list[Filter] = [
     # before claiming npx.  LernaFilter claims `lerna` exclusively and is
     # disjoint from every other filter, so position is cosmetic — placed
     # alongside NxFilter as both are monorepo orchestrators.
+    # TurboFilter handles `turbo run …` and `npx turbo …`.  Must follow
+    # NodePackageFilter (same npx prefix reasoning as NxFilter).
     NxFilter(),
     LernaFilter(),
+    TurboFilter(),
     # DockerComposeFilter must precede DockerFilter: both match `docker`, but
     # DockerComposeFilter only fires when the `compose` subcommand is present,
     # so it is strictly more specific.  docker-compose binary is also claimed
@@ -13364,9 +13780,14 @@ FILTERS: list[Filter] = [
     GenericCIFilter(),
     RuffFilter(),
     MypyFilter(),
+    # PylintFilter is a dedicated, higher-fidelity handler for `pylint`; must
+    # precede LinterFilter which also claims `pylint` as a fallback binary.
+    # OxlintFilter handles `oxlint` / `oxc_linter`; disjoint from ESLintFilter.
     # ESLintFilter precedes LinterFilter so `eslint` routes to the dedicated
     # filter; LinterFilter handles tsc / stylelint / biome / rome / pyright /
-    # pylint which share no binaries with ESLintFilter.
+    # pylint (fallback) which share no binaries with ESLintFilter.
+    PylintFilter(),
+    OxlintFilter(),
     ESLintFilter(),
     LinterFilter(),
     GrepFilter(),
