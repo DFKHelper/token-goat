@@ -108,6 +108,10 @@ __all__ = [
     "TrivyFilter",
     "SnykFilter",
     "SemgrepFilter",
+    # Cloud CLI filters
+    "AwsCliFilter",
+    "GcloudFilter",
+    "AzureCliFilter",
 ]
 
 import math
@@ -3210,9 +3214,24 @@ _TF_REFRESH_RE: Final[re.Pattern[str]] = re.compile(
 _TF_PLAN_SUMMARY_RE: Final[re.Pattern[str]] = re.compile(
     r"^Plan: \d+ to (add|change|destroy|import)"
 )
+#: Terraform "No changes" plan output — resource is unchanged.
+_TF_NO_CHANGES_RE: Final[re.Pattern[str]] = re.compile(
+    r"^No changes\.|^(?:This plan does nothing|Nothing to do\.)",
+    re.IGNORECASE,
+)
+#: Terraform "Still creating..." / "Still modifying..." progress lines.
+_TF_STILL_RE: Final[re.Pattern[str]] = re.compile(
+    r"^[a-z0-9_.\[\]\"-]+: Still (?:creating|modifying|destroying)\.\.\.",
+    re.IGNORECASE,
+)
 #: Terraform apply completion: ``Apply complete! Resources: 5 added, 2 changed, 1 destroyed.``
 _TF_APPLY_COMPLETE_RE: Final[re.Pattern[str]] = re.compile(
     r"^Apply complete! Resources:"
+)
+#: Terraform creation/destruction completion lines.
+_TF_RESOURCE_COMPLETE_RE: Final[re.Pattern[str]] = re.compile(
+    r"^[a-z0-9_.\[\]\"-]+: (?:Creation|Destruction|Modifications?) complete",
+    re.IGNORECASE,
 )
 #: Terraform error or warning markers.
 _TF_ERROR_RE: Final[re.Pattern[str]] = re.compile(
@@ -3292,28 +3311,67 @@ class TerraformFilter(Filter):
         return text
 
     def _compress_terraform_plan(self, stdout: str) -> str:
-        """Compress terraform plan output: drop refresh, keep summary + last 20 lines."""
+        """Compress terraform plan output.
+
+        Drops refresh/read lines, collapses ``No changes.`` blocks for
+        unchanged resources, keeps addition/deletion/modification blocks,
+        keeps the ``Plan: N to add…`` summary line, and keeps the last 20
+        lines of detailed plan diff.
+        """
         lines = stdout.split("\n")
         kept: list[str] = []
         dropped_refresh = 0
+        dropped_no_change_blocks = 0
         plan_summary_idx = -1
 
-        # First pass: identify the plan summary line.
+        # First pass: identify the plan summary line index in the raw list.
         for i, line in enumerate(lines):
             if _TF_PLAN_SUMMARY_RE.match(line):
                 plan_summary_idx = i
                 break
 
-        # Second pass: filter refresh lines and identify tail section.
-        for line in lines:
+        # Second pass: filter refresh lines and collapse "No changes." blocks.
+        # A "No changes." block is: ``# resource.name is unchanged`` header
+        # followed by lines until the next blank or ``#`` header.  We drop the
+        # whole block because the Plan summary line already communicates the
+        # count.
+        i = 0
+        while i < len(lines):
+            line = lines[i]
+            # Drop refresh/read progress lines.
             if _TF_REFRESH_RE.match(line):
                 dropped_refresh += 1
+                i += 1
+                continue
+            # Detect "# resource will not be changed" / "No changes." blocks.
+            if (
+                line.startswith("# ")
+                and ("will not be" in line or "is up-to-date" in line or "not be created" in line)
+            ):
+                # Skip this comment block (indented body lines until the next blank line,
+                # ``#`` block header, or plan-summary line — whichever comes first).
+                i += 1
+                while i < len(lines):
+                    body = lines[i]
+                    if not body.strip():
+                        break  # blank line = block separator
+                    if body.startswith("# "):
+                        break  # next block comment
+                    if _TF_PLAN_SUMMARY_RE.match(body) or _TF_APPLY_COMPLETE_RE.match(body):
+                        break  # plan/apply summary — stop before consuming it
+                    i += 1
+                dropped_no_change_blocks += 1
+                continue
+            if _TF_NO_CHANGES_RE.match(line):
+                # "No changes." — keep this single summary line (it's the plan result).
+                kept.append(line)
+                i += 1
                 continue
             kept.append(line)
+            i += 1
 
         # If we have a plan summary, keep it and the last 20 lines.
         if plan_summary_idx >= 0:
-            # Rebuild: keep summary + last 20 lines.
             summary_line = None
             tail_start = max(0, len(lines) - 20)
             final_kept: list[str] = []
@@ -3324,38 +3382,445 @@ class TerraformFilter(Filter):
             if summary_line:
                 final_kept.append(summary_line)
             # Append tail lines (excluding the summary if it's in the tail).
-            for i, line in enumerate(lines):
-                if i >= tail_start and i != plan_summary_idx:
+            for j, line in enumerate(lines):
+                if j >= tail_start and j != plan_summary_idx:
                     if _TF_REFRESH_RE.match(line):
                         continue
                     final_kept.append(line)
             kept = final_kept
 
+        notes: list[str] = []
         if dropped_refresh:
-            kept.append(f"[token-goat: dropped {dropped_refresh} terraform refresh/read lines]")
+            notes.append(f"dropped {dropped_refresh} terraform refresh/read lines")
+        if dropped_no_change_blocks:
+            notes.append(f"collapsed {dropped_no_change_blocks} unchanged-resource block(s)")
+        self._emit_notes(kept, notes)
         return self._finalize(kept)
 
     def _compress_terraform_apply(self, stdout: str, stderr: str) -> str:
-        """Compress terraform apply output: keep summary + error lines."""
+        """Compress terraform apply output.
+
+        Collapses ``Still creating…`` / ``Still modifying…`` progress lines to
+        the last status per resource; keeps ``Creation complete`` /
+        ``Destruction complete``; keeps ``Apply complete!`` summary; keeps
+        all error blocks verbatim.
+        """
         merged = self._combine_output(stdout, stderr)
         lines = merged.split("\n")
         kept: list[str] = []
         dropped_refresh = 0
+        # resource_key -> last "Still ..." line seen
+        still_last: dict[str, str] = {}
+        still_dropped = 0
 
         for line in lines:
+            # Check resource-completion lines BEFORE the refresh filter because
+            # _TF_REFRESH_RE also matches "Modifications complete" (which is a
+            # completion signal, not noise).
+            if _TF_RESOURCE_COMPLETE_RE.match(line):
+                resource_key = line.split(":")[0].strip()
+                last_still = still_last.pop(resource_key, None)
+                if last_still:
+                    kept.append(last_still)
+                kept.append(line)
+                continue
             if _TF_REFRESH_RE.match(line):
                 dropped_refresh += 1
+                continue
+            # Collapse "Still creating/modifying..." — track last per resource.
+            if _TF_STILL_RE.match(line):
+                # Extract resource key (everything before ": Still")
+                resource_key = line.split(": Still")[0].strip()
+                if resource_key in still_last:
+                    still_dropped += 1
+                still_last[resource_key] = line
                 continue
             if _TF_APPLY_COMPLETE_RE.match(line) or _TF_ERROR_RE.match(line):
                 kept.append(line)
                 continue
-            # Keep non-refresh lines that are not pure progress.
+            # Keep non-refresh, non-progress lines.
             if line.strip():
                 kept.append(line)
 
+        # Flush any remaining "Still..." lines that didn't get a completion event.
+        for last_still in still_last.values():
+            kept.append(last_still)
+
+        notes: list[str] = []
         if dropped_refresh:
-            kept.append(f"[token-goat: dropped {dropped_refresh} terraform refresh/read lines]")
+            notes.append(f"dropped {dropped_refresh} terraform refresh/read lines")
+        if still_dropped:
+            notes.append(f"collapsed {still_dropped} Still creating/modifying line(s)")
+        self._emit_notes(kept, notes)
         return self._finalize(kept)
+
+
+# --- AWS CLI (enhanced) ----------------------------------------------------
+
+#: Matches AWS S3 upload lines: ``upload: local/path to s3://bucket/key``
+_AWS_UPLOAD_RE: Final[re.Pattern[str]] = re.compile(
+    r"^upload:\s+\S+\s+to\s+s3://",
+    re.IGNORECASE,
+)
+#: Matches AWS S3 download lines: ``download: s3://bucket/key to local/path``
+_AWS_DOWNLOAD_RE: Final[re.Pattern[str]] = re.compile(
+    r"^download:\s+s3://",
+    re.IGNORECASE,
+)
+#: Matches AWS S3 progress/transfer-rate lines emitted during cp/sync.
+_AWS_S3_PROGRESS_RE: Final[re.Pattern[str]] = re.compile(
+    r"^(?:Completed\s+\d|\d+(?:\.\d+)?\s*(?:KiB|MiB|GiB|B)/s|Calculating|"
+    r"upload\s+failed:|download\s+failed:)",
+    re.IGNORECASE,
+)
+
+
+class AwsCliFilter(Filter):
+    """Enhanced AWS CLI filter with S3 transfer collapsing and describe/list array truncation.
+
+    Extends the intent of the existing :class:`AwsFilter` with targeted rules
+    for the most common verbose patterns:
+
+    * **JSON arrays > 10 items** (``describe-*`` / ``list-*``): collapse to
+      "N items (showing first 3)" keeping only the first 3 items.
+    * **S3 upload/download lines**: collapse to a count summary.
+    * **S3 progress bars**: drop; keep only the final transfer summary line.
+    * **Error messages**: kept verbatim (non-zero exit code or ``ERROR``/``An error``).
+    """
+
+    name = "aws-cli"
+    binaries = frozenset(["aws", "aws2"])
+
+    # number of items to keep from a large JSON array
+    _JSON_ARRAY_THRESHOLD: int = 10
+    _JSON_ARRAY_KEEP: int = 3
+
+    def compress(
+        self, stdout: str, stderr: str, exit_code: int, argv: list[str],
+    ) -> str:
+        # Preserve all stderr on error.
+        err_output = _preserve_stderr_on_error(stdout, stderr, exit_code)
+        if err_output is not None:
+            return err_output
+
+        positionals = _positional_args(argv[1:])
+        # S3 transfer subcommands get transfer-line collapsing.
+        is_s3_transfer = (
+            len(positionals) >= 2
+            and positionals[0] == "s3"
+            and positionals[1] in ("cp", "sync", "mv")
+        )
+
+        text = stdout
+        if is_s3_transfer:
+            text = self._compress_s3_transfer(text)
+        else:
+            compressed = self._compress_json_array(text)
+            if compressed is not None:
+                text = compressed
+
+        if stderr.strip():
+            text = (text.rstrip() + "\n---\n" + stderr.rstrip()) if text.strip() else stderr
+        return text
+
+    def _compress_json_array(self, text: str) -> str | None:
+        """Collapse top-level or nested JSON arrays > _JSON_ARRAY_THRESHOLD items.
+
+        Returns the compressed JSON string or ``None`` when no compression was
+        applied (not JSON, or array is short enough).
+        """
+        import json  # noqa: PLC0415
+
+        stripped = text.strip()
+        if not stripped or stripped[0] not in "{[":
+            return None
+        try:
+            data = json.loads(stripped)
+        except (ValueError, json.JSONDecodeError):
+            return None
+
+        keep = self._JSON_ARRAY_KEEP
+        threshold = self._JSON_ARRAY_THRESHOLD
+        changed = False
+
+        if isinstance(data, list) and len(data) > threshold:
+            total = len(data)
+            data = data[:keep]
+            data.append({"__token_goat__": f"{total} items (showing first {keep})"})
+            changed = True
+        elif isinstance(data, dict):
+            for key, value in list(data.items()):
+                if isinstance(value, list) and len(value) > threshold:
+                    total = len(value)
+                    data[key] = [
+                        *value[:keep],
+                        {"__token_goat__": f"{total} items (showing first {keep})"},
+                    ]
+                    changed = True
+        if not changed:
+            return None
+        return json.dumps(data, indent=2)
+
+    def _compress_s3_transfer(self, text: str) -> str:
+        """Collapse S3 upload/download lines and progress bars to count summaries."""
+        lines = text.split("\n")
+        kept: list[str] = []
+        upload_count = 0
+        download_count = 0
+        progress_dropped = 0
+
+        for line in lines:
+            if _AWS_UPLOAD_RE.match(line):
+                upload_count += 1
+                continue
+            if _AWS_DOWNLOAD_RE.match(line):
+                download_count += 1
+                continue
+            if _AWS_S3_PROGRESS_RE.match(line):
+                progress_dropped += 1
+                continue
+            kept.append(line)
+
+        notes: list[str] = []
+        if upload_count:
+            notes.append(f"uploaded {upload_count} file(s)")
+        if download_count:
+            notes.append(f"downloaded {download_count} file(s)")
+        if progress_dropped:
+            notes.append(f"dropped {progress_dropped} progress line(s)")
+        self._emit_notes(kept, notes)
+        return self._finalize(kept)
+
+
+# --- Google Cloud SDK -------------------------------------------------------
+
+#: gcloud progress spinner characters (braille spinner).
+_GCLOUD_SPINNER_RE: Final[re.Pattern[str]] = re.compile(
+    r"^[⠏⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏]\s",
+)
+#: gcloud "Updated/Created/Deleted [URL]" status lines — always keep.
+_GCLOUD_STATUS_RE: Final[re.Pattern[str]] = re.compile(
+    r"^(?:Updated|Created|Deleted)\s+\[https?://",
+    re.IGNORECASE,
+)
+#: gcloud API enablement verbose lines.
+_GCLOUD_API_ENABLE_RE: Final[re.Pattern[str]] = re.compile(
+    r"^(?:Enabling service|Waiting for async operation|Operation \[operation-)",
+    re.IGNORECASE,
+)
+#: gcloud "Do you want to continue" prompt — keep.
+_GCLOUD_CONTINUE_RE: Final[re.Pattern[str]] = re.compile(
+    r"Do you want to continue",
+    re.IGNORECASE,
+)
+
+
+class GcloudFilter(Filter):
+    """Compress ``gcloud`` (Google Cloud SDK) output.
+
+    Compression model:
+
+    * **Spinner lines** (⠏⠋⠙… prefix): dropped entirely.
+    * **"Updated/Created/Deleted [url]"**: kept verbatim (actionable signal).
+    * **"Do you want to continue (Y/n)?"**: kept verbatim.
+    * **API enablement verbose lines**: collapsed to count.
+    * **Large JSON/YAML resource descriptions** (> 20 lines of structured data):
+      collapsed to ``Resource description: N lines (use --format=json for full output)``.
+    * **Errors** (non-zero exit code): kept verbatim.
+    """
+
+    name = "gcloud"
+    binaries = frozenset(["gcloud"])
+
+    _STRUCTURED_LINE_THRESHOLD: int = 20
+
+    def compress(
+        self, stdout: str, stderr: str, exit_code: int, argv: list[str],
+    ) -> str:
+        err_output = _preserve_stderr_on_error(stdout, stderr, exit_code)
+        if err_output is not None:
+            return err_output
+
+        text = self._compress_gcloud(stdout)
+        if stderr.strip():
+            text = (text.rstrip() + "\n---\n" + stderr.rstrip()) if text.strip() else stderr
+        return text
+
+    def _compress_gcloud(self, text: str) -> str:
+        lines = text.split("\n")
+        kept: list[str] = []
+        spinners_dropped = 0
+        api_enable_dropped = 0
+
+        for line in lines:
+            # Drop braille spinner progress lines.
+            if _GCLOUD_SPINNER_RE.match(line):
+                spinners_dropped += 1
+                continue
+            # Collapse API enablement verbose lines.
+            if _GCLOUD_API_ENABLE_RE.match(line):
+                api_enable_dropped += 1
+                continue
+            kept.append(line)
+
+        # Check if the kept output is a large structured-data block.
+        kept = self._maybe_collapse_structured(kept)
+
+        notes: list[str] = []
+        if spinners_dropped:
+            notes.append(f"dropped {spinners_dropped} spinner line(s)")
+        if api_enable_dropped:
+            notes.append(f"collapsed {api_enable_dropped} API enablement line(s)")
+        self._emit_notes(kept, notes)
+        return self._finalize(kept)
+
+    def _maybe_collapse_structured(self, lines: list[str]) -> list[str]:
+        """If the output looks like a large structured data block, collapse it."""
+        non_empty = [ln for ln in lines if ln.strip()]
+        if len(non_empty) <= self._STRUCTURED_LINE_THRESHOLD:
+            return lines
+        # Heuristic: structured data lines contain ":", "{", "}", "[", "]", "-"
+        # at high density with no obvious prose patterns.
+        structured_chars = frozenset(":{[]-")
+        structured_count = sum(
+            1 for ln in non_empty
+            if any(ch in ln for ch in structured_chars)
+            and not _GCLOUD_STATUS_RE.match(ln)
+            and not _GCLOUD_CONTINUE_RE.search(ln)
+        )
+        ratio = structured_count / len(non_empty) if non_empty else 0.0
+        if ratio >= 0.7:
+            return [
+                f"[Resource description: {len(non_empty)} lines "
+                f"(use --format=json to see full output)]"
+            ]
+        return lines
+
+
+# --- Azure CLI --------------------------------------------------------------
+
+#: Azure CLI "Command group ... is in preview" warning.
+_AZ_PREVIEW_RE: Final[re.Pattern[str]] = re.compile(
+    r"^(?:Command group|The command|This command).*\bis in preview",
+    re.IGNORECASE,
+)
+#: Azure CLI "Resource provider ... is not registered" — actionable, keep.
+_AZ_PROVIDER_RE: Final[re.Pattern[str]] = re.compile(
+    r"Resource provider .* is not registered",
+    re.IGNORECASE,
+)
+#: Azure CLI long-running operation progress JSON blobs.
+#: e.g. {"status": "Running", "percentComplete": 50.0}
+_AZ_PROGRESS_JSON_RE: Final[re.Pattern[str]] = re.compile(
+    r'^\s*\{[^}]*"(?:status|percentComplete|provisioningState)"[^}]*\}\s*$',
+)
+
+
+class AzureCliFilter(Filter):
+    """Compress ``az`` (Azure CLI) output.
+
+    Compression model:
+
+    * **Progress JSON blobs** (``{"status": "Running", ...}``): collapsed to
+      the final status only.
+    * **"Command group ... is in preview" warnings**: collapsed to a count.
+    * **"Resource provider ... is not registered"**: kept verbatim (actionable).
+    * **JSON arrays > 10 items**: collapsed to first 3 + count, like
+      :class:`AwsCliFilter`.
+    * **Error messages** (non-zero exit code): kept verbatim.
+    """
+
+    name = "azure-cli"
+    binaries = frozenset(["az"])
+
+    _JSON_ARRAY_THRESHOLD: int = 10
+    _JSON_ARRAY_KEEP: int = 3
+
+    def compress(
+        self, stdout: str, stderr: str, exit_code: int, argv: list[str],
+    ) -> str:
+        err_output = _preserve_stderr_on_error(stdout, stderr, exit_code)
+        if err_output is not None:
+            return err_output
+
+        text = self._compress_az(stdout)
+        if stderr.strip():
+            text = (text.rstrip() + "\n---\n" + stderr.rstrip()) if text.strip() else stderr
+        return text
+
+    def _compress_az(self, text: str) -> str:
+        # Try JSON array compression first (whole document).
+        compressed = self._compress_json_array(text)
+        if compressed is not None:
+            return compressed
+
+        lines = text.split("\n")
+        kept: list[str] = []
+        preview_dropped = 0
+        last_progress_status: str | None = None
+        in_progress_run = False
+
+        for line in lines:
+            # Collapse "is in preview" warnings.
+            if _AZ_PREVIEW_RE.match(line):
+                preview_dropped += 1
+                continue
+            # Collapse intermediate progress JSON blobs; keep the last one.
+            if _AZ_PROGRESS_JSON_RE.match(line):
+                last_progress_status = line.strip()
+                in_progress_run = True
+                continue
+            # When we leave a progress-json run, emit the last status.
+            if in_progress_run:
+                if last_progress_status:
+                    kept.append(last_progress_status)
+                in_progress_run = False
+                last_progress_status = None
+            kept.append(line)
+
+        # Flush any trailing progress run.
+        if in_progress_run and last_progress_status:
+            kept.append(last_progress_status)
+
+        notes: list[str] = []
+        if preview_dropped:
+            notes.append(f"collapsed {preview_dropped} preview warning(s)")
+        self._emit_notes(kept, notes)
+        return self._finalize(kept)
+
+    def _compress_json_array(self, text: str) -> str | None:
+        """Collapse top-level or nested JSON arrays > _JSON_ARRAY_THRESHOLD items."""
+        import json  # noqa: PLC0415
+
+        stripped = text.strip()
+        if not stripped or stripped[0] not in "{[":
+            return None
+        try:
+            data = json.loads(stripped)
+        except (ValueError, json.JSONDecodeError):
+            return None
+
+        keep = self._JSON_ARRAY_KEEP
+        threshold = self._JSON_ARRAY_THRESHOLD
+        changed = False
+
+        if isinstance(data, list) and len(data) > threshold:
+            total = len(data)
+            data = data[:keep]
+            data.append({"__token_goat__": f"{total} items (showing first {keep})"})
+            changed = True
+        elif isinstance(data, dict):
+            for key, value in list(data.items()):
+                if isinstance(value, list) and len(value) > threshold:
+                    total = len(value)
+                    data[key] = [
+                        *value[:keep],
+                        {"__token_goat__": f"{total} items (showing first {keep})"},
+                    ]
+                    changed = True
+        if not changed:
+            return None
+        return json.dumps(data, indent=2)
 
 
 # --- Ansible ---------------------------------------------------------------
@@ -8220,7 +8685,16 @@ FILTERS: list[Filter] = [
     NodePackageFilter(),
     DockerFilter(),
     KubectlFilter(),
+    # AwsCliFilter precedes AwsFilter: both match the `aws` binary, but
+    # AwsCliFilter provides richer S3 transfer collapsing and tighter JSON
+    # array thresholds.  AwsFilter is kept as a fallback for any edge case
+    # not covered by AwsCliFilter.
+    AwsCliFilter(),
     AwsFilter(),
+    # GcloudFilter handles the Google Cloud SDK `gcloud` binary.
+    GcloudFilter(),
+    # AzureCliFilter handles the Azure CLI `az` binary.
+    AzureCliFilter(),
     GhFilter(),
     RuffFilter(),
     MypyFilter(),

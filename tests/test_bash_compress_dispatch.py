@@ -73,9 +73,9 @@ _DISPATCH_CASES: list[tuple[list[str], str]] = [
     (["kubectl", "get", "pods"], "kubectl"),
     (["kubectl", "logs", "my-pod"], "kubectl"),
     (["helm", "install", "my-release", "chart/"], "kubectl"),
-    # ---- AwsFilter ----
-    (["aws", "s3", "ls"], "aws"),
-    (["aws", "ec2", "describe-instances"], "aws"),
+    # ---- AwsCliFilter (registered before AwsFilter; wins dispatch for `aws`) ----
+    (["aws", "s3", "ls"], "aws-cli"),
+    (["aws", "ec2", "describe-instances"], "aws-cli"),
     # ---- RuffFilter ----
     (["ruff", "check", "src/"], "ruff"),
     (["ruff", "check", "."], "ruff"),
