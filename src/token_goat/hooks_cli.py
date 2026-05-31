@@ -46,7 +46,7 @@ from .util import get_logger, sanitize_surrogates
 #: Valid harness identifiers used by :func:`normalize_payload`, :func:`denormalize_response`,
 #: and :func:`safe_run`.  Defined as a ``Literal`` so callers get a type error on
 #: an unrecognised harness name rather than silently applying the Claude path.
-Harness = Literal["claude", "codex"]
+Harness = Literal["claude", "codex", "gemini"]
 
 _LOG = get_logger("hooks")
 
@@ -124,6 +124,25 @@ def normalize_payload(payload: HookPayload, harness: Harness = "claude") -> Hook
         )
         return cast("HookPayload", {})
 
+    if harness == "gemini":
+        # Remap Gemini tool names to token-goat internal names.
+        mapped = _GEMINI_TOOL_NAME_MAP.get(tool_name)
+        if mapped is None:
+            _LOG.debug("normalize_payload: unknown Gemini tool %r — passing through", tool_name)
+        else:
+            payload = dict(payload)
+            payload["tool_name"] = mapped
+            # Remap tool_input keys for the translated tool.
+            raw_input = payload.get("tool_input") or {}
+            if isinstance(raw_input, dict):
+                key_map = _GEMINI_INPUT_KEY_MAP.get(mapped, {})
+                if key_map:
+                    new_input = {}
+                    for k, v in raw_input.items():
+                        new_input[key_map.get(k, k)] = v
+                    payload["tool_input"] = new_input
+        return cast("HookPayload", payload)
+
     # Both harnesses share the same inbound field names; no transformation needed.
     return payload
 
@@ -136,6 +155,32 @@ _HSO_CAMEL_TO_SNAKE: dict[str, str] = {
     "permissionDecision": "permission_decision",
     "permissionDecisionReason": "permission_decision_reason",
     "hookEventName": "hook_event_name",
+}
+
+
+# Gemini CLI tool name → token-goat internal tool name.
+# Gemini's tool names follow snake_case; token-goat uses PascalCase.
+_GEMINI_TOOL_NAME_MAP: dict[str, str] = {
+    "run_shell_command": "Bash",
+    "read_file": "Read",
+    "read_many_files": "Read",
+    "list_directory": "Read",
+    "write_file": "Write",
+    "replace": "Edit",
+    "glob": "Glob",
+    "grep_search": "Grep",
+    "search_file_content": "Grep",
+    "web_search": "WebFetch",
+    "web_fetch": "WebFetch",
+}
+
+# Gemini tool_input key → token-goat tool_input key, per remapped tool.
+# Only keys that differ between Gemini and token-goat need to appear here.
+_GEMINI_INPUT_KEY_MAP: dict[str, dict[str, str]] = {
+    "Read": {"path": "file_path"},
+    "Write": {"path": "file_path"},
+    "Edit": {"path": "file_path", "old_str": "old_string", "new_str": "new_string"},
+    "Grep": {"query": "pattern"},
 }
 
 
@@ -167,16 +212,32 @@ def denormalize_response(response: dict[str, object], harness: Harness = "claude
     ``_tg_elapsed_ms``) rather than the narrower ``HookResponse`` TypedDict, so
     the diagnostic key is preserved in the output.
     """
-    if harness != "codex":
-        return response
+    if harness == "codex":
+        hso = response.get("hookSpecificOutput")
+        if not isinstance(hso, dict):
+            return response
+        result = dict(response)
+        result["hookSpecificOutput"] = _translate_hso_to_codex(hso)
+        return result
 
-    hso = response.get("hookSpecificOutput")
-    if not isinstance(hso, dict):
-        return response
+    if harness == "gemini":
+        out: dict[str, object] = {}
+        # Map continue→decision: False→"deny", True (or absent)→"allow"
+        continue_val = response.get("continue", True)
+        out["decision"] = "allow" if continue_val else "deny"
+        # Propagate reason from hookSpecificOutput.permissionDecisionReason if present.
+        hso = response.get("hookSpecificOutput")
+        if isinstance(hso, dict):
+            reason = hso.get("permissionDecisionReason") or hso.get("additionalContext")
+            if reason:
+                out["reason"] = reason
+        # Pass through diagnostic fields for debugging.
+        for k in ("_tg_elapsed_ms", "_tg_handler", "_tg_error"):
+            if k in response:
+                out[k] = response[k]
+        return out
 
-    result = dict(response)
-    result["hookSpecificOutput"] = _translate_hso_to_codex(hso)
-    return result
+    return response
 
 
 _MAX_PAYLOAD_BYTES = 10 * 1024 * 1024  # 10 MB — guard against runaway harness output
