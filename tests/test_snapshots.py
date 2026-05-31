@@ -640,11 +640,12 @@ class TestSnapshotContentHashDedup:
 
         r1 = snapshots.store(sid, fp, content)
         assert r1 is not None
-        mtime1 = os.stat(r1.path).st_mtime
 
-        # Small sleep so a write would produce a different mtime.
-        import time
-        time.sleep(0.05)
+        # Backdate the file's mtime by 2 s so any subsequent write is
+        # unambiguously detectable without a real time.sleep().
+        past_ts = os.stat(r1.path).st_mtime - 2.0
+        os.utime(r1.path, (past_ts, past_ts))
+        mtime1 = os.stat(r1.path).st_mtime
 
         r2 = snapshots.store(sid, fp, content)
         assert r2 is not None

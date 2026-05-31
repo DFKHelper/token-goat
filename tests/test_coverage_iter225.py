@@ -351,24 +351,16 @@ def test_get_meta_does_not_raise_on_empty_table() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_count_suffix_zero_returns_empty() -> None:
-    # 0 is unremarkable per the docstring (n > 1 triggers annotation)
-    assert _count_suffix(0) == ""
-
-
-def test_count_suffix_one_returns_empty() -> None:
-    assert _count_suffix(1) == ""
-
-
-def test_count_suffix_two_returns_annotation() -> None:
-    result = _count_suffix(2)
-    assert "2" in result
-    assert len(result) > 0
-
-
-def test_count_suffix_large_n_contains_number() -> None:
-    result = _count_suffix(99)
-    assert "99" in result
+@pytest.mark.parametrize("n,expected", [
+    (0, ""),
+    (1, ""),
+    (2, "  ×2"),
+    (5, "  ×5"),
+    (99, "  ×99"),
+])
+def test_count_suffix(n: int, expected: str) -> None:
+    """_count_suffix returns '' for n<=1 and '  ×N' for n>1."""
+    assert _count_suffix(n) == expected
 
 
 # ---------------------------------------------------------------------------

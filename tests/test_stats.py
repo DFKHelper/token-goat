@@ -729,7 +729,9 @@ class TestRenderTextFallback:
             result = render_text(self._make_summary())
 
         assert isinstance(result, str)
-        assert len(result) > 0
+        # The fallback renderer must produce non-empty output that includes the
+        # event count from the summary (5 total_events).
+        assert "5" in result
 
     def test_fallback_output_contains_key_sections(self, tmp_data_dir):
         """Rich fallback output must include headline stats and a project table."""

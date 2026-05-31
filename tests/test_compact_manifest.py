@@ -185,6 +185,7 @@ class TestExtractDepChanges:
             result = _extract_dep_changes(hist)
 
         assert len(result) > 0
+        assert any("requests" in r for r in result)
 
     def test_handles_load_failure_gracefully(self):
         entry = _make_bash_entry("pip install foo", "out-1")

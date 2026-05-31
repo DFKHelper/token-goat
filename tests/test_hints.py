@@ -810,8 +810,13 @@ class TestCachedStaleEntry:
         path = "C:/proj/cycled.py"
         session.mark_file_read(sid, path, offset=0, limit=200)
         session.mark_file_edited(sid, path)
-        # Sleep a hair so timestamps differ even on coarse clocks.
-        time.sleep(0.01)
+        # Backdate last_edit_ts so the next mark_file_read timestamp is
+        # guaranteed to be strictly newer — avoids a real time.sleep().
+        from token_goat.session import _normalize_path
+        _cache = session.load(sid)
+        _entry = _cache.files[_normalize_path(path)]
+        _entry.last_edit_ts -= 1.0
+        session.save(_cache)
         session.mark_file_read(sid, path, offset=0, limit=200)
 
         hint = build_read_hint(

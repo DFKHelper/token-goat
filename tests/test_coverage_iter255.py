@@ -134,7 +134,8 @@ class TestSanitizeOpt:
     def test_dict_coerced_to_str(self):
         result = sanitize_opt({"key": "val"})
         assert isinstance(result, str)
-        assert len(result) > 0
+        assert "key" in result
+        assert "val" in result
 
     def test_list_coerced_to_str(self):
         result = sanitize_opt(["a", "b"])
