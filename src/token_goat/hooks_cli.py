@@ -305,7 +305,13 @@ def emit(result: dict[str, object]) -> None:
     buffer, or closed stream simply ends the call without surfacing an error
     to the harness, which would otherwise see the hook as failed.
     """
-    payload = json.dumps(result, ensure_ascii=False)
+    try:
+        payload = json.dumps(result, ensure_ascii=False)
+    except (TypeError, ValueError):
+        # Non-serializable value in result (e.g. datetime, set, bytes from a
+        # handler bug).  Fall back to default=str so the harness always receives
+        # valid JSON rather than a silent empty response.
+        payload = json.dumps(result, ensure_ascii=False, default=str)
     # Preferred: raw bytes through .buffer so UTF-8 is correct on Windows.
     try:
         sys.stdout.buffer.write(payload.encode("utf-8"))
